@@ -5,11 +5,14 @@ let discBytes = null;
 let playing = false;
 let playAfterLoad = false;
 let buttons = 0;
+let port2Buttons = 0;
 let lastFrame = 0;
 const context = $("screen").getContext("2d");
 let biosBytes = null;
 let fileGeneration = 0;
 let loadingFile = false;
+let backupGeneration = 0;
+let loadingBackup = false;
 let view = "play";
 
 function rows(target, names, values) {
@@ -29,6 +32,8 @@ function rows(target, names, values) {
 function releaseButtons() {
   buttons = 0;
   emulator?.set_buttons(0);
+  port2Buttons = 0;
+  emulator?.set_port2_buttons(0);
 }
 
 function pause() {
@@ -73,17 +78,19 @@ function render() {
     rows($("special"), ["PC", "SR", "PR", "GBR", "VBR", "MACH", "MACL"], emulator.special_registers());
     $("frames").textContent = emulator.frames();
   }
-  const ready = !loadingFile && machineStatus === "Ready";
+  const busy = loadingFile || loadingBackup;
+  const ready = !busy && machineStatus === "Ready";
   $("step").disabled = !ready;
   $("run").disabled = !ready;
   $("reset").disabled = loadingFile;
   const discReady = ready && $("mode").value === "disc";
   $("pause").disabled = !discReady;
   $("pause").textContent = playing ? "Pause" : "Resume";
-  $("restart").disabled = loadingFile || $("mode").value !== "disc" || !discBytes;
+  $("restart").disabled = busy || $("mode").value !== "disc" || !discBytes;
   $("frame").disabled = !discReady || playing;
-  $("play-homebrew").disabled = loadingFile;
-  const state = loadingFile ? "Loading image…" : $("error").textContent ? "Stopped — see error below" :
+  $("play-homebrew").disabled = busy;
+  $("backup-export").disabled = busy;
+  const state = loadingFile ? "Loading image…" : loadingBackup ? "Reading backup RAM…" : $("error").textContent ? "Stopped — see error below" :
     playing ? "Running" : discReady ? "Paused — Resume to play" : "Ready — Play Star Collector or open Debug";
   setText("player-status", `${state} · ${mode}`);
   $("recovery").hidden = !$("error").textContent || loadingFile;
@@ -139,6 +146,9 @@ function act(operation) {
 }
 
 function reset() {
+  if (loadingBackup) $("backup-status").textContent = "Backup import cancelled by boot change; backup RAM was preserved.";
+  backupGeneration++;
+  loadingBackup = false;
   pause();
   context.clearRect(0, 0, 320, 224);
   act(() => {
@@ -152,6 +162,51 @@ try {
   const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
   await init();
   emulator = new Emulator();
+  $("backup-import").addEventListener("change", async () => {
+    const generation = ++backupGeneration;
+    const file = $("backup-import").files[0];
+    $("backup-import").value = ""; // Selecting the same file again must work.
+    loadingBackup = false;
+    pause();
+    if (!file) { render(); return; }
+    if (file.size !== 32768) {
+      $("backup-status").textContent = `Backup unchanged: select a packed 32 KiB file (32768 bytes); received ${file.size} bytes.`;
+      render();
+      return;
+    }
+    loadingBackup = true;
+    $("backup-status").textContent = "Reading backup RAM locally…";
+    render();
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (generation !== backupGeneration) return;
+      emulator.import_backup_ram(bytes);
+      $("backup-status").textContent = "Imported 32768 backup bytes. Playback is paused; Reset to let the guest read the new data.";
+    } catch (error) {
+      if (generation !== backupGeneration) return;
+      $("backup-status").textContent = `Backup unchanged: could not import locally: ${error}`;
+    } finally {
+      if (generation === backupGeneration) { loadingBackup = false; render(); }
+    }
+  });
+  $("backup-export").addEventListener("click", () => {
+    pause();
+    let url;
+    try {
+      const bytes = emulator.export_backup_ram();
+      url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "saturn-backup.bin";
+      link.click();
+      $("backup-status").textContent = "Exported 32768 backup bytes. Keep this file to restore the backup in a later session.";
+    } catch (error) {
+      $("backup-status").textContent = `Could not export backup RAM: ${error}`;
+    } finally {
+      if (url) setTimeout(() => URL.revokeObjectURL(url), 1000);
+      render();
+    }
+  });
   $("reset").addEventListener("click", reset);
   $("restart").addEventListener("click", () => {
     reset();
@@ -275,14 +330,17 @@ try {
   });
   $("frame").addEventListener("click", () => act(advanceFrame));
   const keys = { ArrowUp: 1, ArrowDown: 2, ArrowLeft: 4, ArrowRight: 8, z: 64, Enter: 128 };
+  const port2Keys = { KeyI: 1, KeyK: 2, KeyJ: 4, KeyL: 8, KeyO: 16, KeyP: 32, KeyU: 64, ShiftRight: 128 };
   for (const eventName of ["keydown", "keyup"]) {
     window.addEventListener(eventName, (event) => {
       const mask = keys[event.key];
-      if (!mask || $("mode").value !== "disc" || loadingFile || document.activeElement !== $("screen")) return;
+      const port2Mask = port2Keys[event.code];
+      if ((!mask && !port2Mask) || $("mode").value !== "disc" || loadingFile || loadingBackup || document.activeElement !== $("screen")) return;
       event.preventDefault();
-      if (eventName === "keydown") buttons |= mask;
-      else buttons &= ~mask;
+      if (eventName === "keydown") { buttons |= mask ?? 0; port2Buttons |= port2Mask ?? 0; }
+      else { buttons &= ~(mask ?? 0); port2Buttons &= ~(port2Mask ?? 0); }
       emulator.set_buttons(buttons);
+      emulator.set_port2_buttons(port2Buttons);
     });
   }
   $("screen").addEventListener("blur", releaseButtons);
@@ -291,6 +349,7 @@ try {
   requestAnimationFrame(animate);
   $("controls").disabled = false;
   $("debug-controls").disabled = false;
+  $("backup-controls").disabled = false;
   reset();
 } catch (error) {
   $("error").textContent = `Could not load the Wasm module: ${error}. Build web/pkg and serve web/ over HTTP as described in README.`;

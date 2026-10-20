@@ -12,6 +12,7 @@ playability claim is made before post-merge Pages verification.
 | --- | --- |
 | src/cpu.rs | Independent SH-2 interpreter, architectural registers, delayed branches and sticky faults |
 | src/bus.rs | Aligned big-endian byte/word/long accesses, RAM, ROM, VRAM and MMIO routing |
+| src/backup.rs | Packed internal battery RAM, checked import and odd-byte access |
 | src/disc.rs | Bounded cooked ISO9660 and Saturn IP validation, first-read executable selection |
 | src/devices.rs | VDP2 bitmap rasterization and SMPC digital-pad electrical inputs |
 | src/lib.rs | Explicit cold-boot modes, CPU/device ownership, bounded deterministic frame scheduling |
@@ -20,9 +21,9 @@ playability claim is made before post-merge Pages verification.
 | homebrew/star-collector | Buildable MIT-licensed SH-2 guest and reproducible ISO builder |
 
 `Cpu::step(&mut impl Memory)` owns no bus pointers. `Machine::reset(Boot)` clears
-RAM, devices, ROM, counters, delay state and faults before attempting the selected
+volatile RAM, devices, ROM, counters, delay state and faults before attempting the selected
 boot. Invalid input leaves that mode selected and CPU in Reset, with no stale
-media or fallback. `step()` makes one bounded CPU step; exception entry or a
+media or fallback. Battery-backed bytes are retained. `step()` makes one bounded CPU step; exception entry or a
 sleeping step can retire no instructions. `run_steps(n)` accepts 1–10000 steps.
 `advance_frame()` performs 60000 steps with TVSTAT VBLANK clear,
 then 20000 with VBLANK set. Every frame has a bounded CPU budget and aborts on
@@ -87,7 +88,8 @@ bus locking/arbitration between processors, or native Sega BIOS compatibility.
 | Physical range | Behavior |
 | --- | --- |
 | 00000000–0007FFFF | Optional read-only 512 KiB external BIOS |
-| 00100000–0010007F | SMPC, only the port-1 direct registers below |
+| 00100000–0010007F | SMPC, only the two-port direct registers below |
+| 00180000–0018FFFF | 32 KiB backup RAM on odd byte addresses; other lanes/widths explicitly unsupported |
 | 00200000–002FFFFF | 1 MiB low work RAM |
 | 05E00000–05E7FFFF | 512 KiB VDP2 VRAM |
 | 05F80000–05F8011F | VDP2, only the listed register subset |
@@ -115,7 +117,8 @@ VDP2 controls is a debugger convenience, not hardware-accurate read behavior.
 No VDP1, CRAM palettes, tilemaps, other backgrounds, scrolling, scaling, blending,
 rotation, interlace or alternative resolutions are supported.
 
-SMPC uses byte accesses: PDR1 +75, DDR1 +79, IOSEL +7D, EXLE +7F (relative to
+SMPC uses byte accesses: PDR1/PDR2 +75/+77, DDR1/DDR2 +79/+7B,
+IOSEL +7D, EXLE +7F (relative to
 00100000, often accessed at 20100000). DDR1=60, IOSEL1=1 and EXLE1=0 select
 standard digital pad direct access. PDR1 TH/TR=11 returns pad identification/L;
 01 returns Right/Left/Down/Up; 10 returns Start/A/C/B; 00 returns R/X/Y/Z.
@@ -124,7 +127,33 @@ fail explicitly. Settling is immediate in the emulator; the guest includes a
 32-iteration delay after selecting a nibble to satisfy the hardware's 2 µs wait.
 Host masks are up/down/left/right/B/C/A/Start/Z/Y/X/R/L at bits 0–12. The browser
 maps arrows, Z (A) and Enter (Start), releases on blur and pauses on tab hiding.
-No INTBACK, SMPC commands/RTC/reset, multitaps, analog or port 2 is implemented.
+Port 2 uses the same direct protocol with independent button, PDR and DDR state,
+IOSEL bit 1 and EXLE bit 1. The browser maps I/K/J/L (up/down/left/right),
+U/O/P (A/B/C), Right Shift (Start); both pads release on focus loss, pause, settings
+and view navigation. No INTBACK, SMPC commands/RTC/reset, multitaps or analog mode
+is implemented. Two digital ports do not establish full SMPC conformance.
+
+Internal backup RAM is independent of volatile resets. The SCU manual §1.2,
+figs. 1.3/1.5 (pp.4/6) places its 64 KiB window at 00180000; the SMPC manual's
+SYSRES command (§2.3 p.29) specifies retention of 256 Kbit battery RAM. Supported
+MOV.B accesses use odd addresses 00180001–0018FFFF and their P1 cache-through
+aliases. Even byte lanes, word/long accesses and further mirrors remain explicit
+unsupported/unmapped accesses; bus-lane/open-bus conformance is pending. New
+machines start with zeroed, unformatted bytes; no BIOS filesystem is synthesized.
+Cold resets, successful boot-mode changes and rejected boot images retain these
+bytes while discarding volatile RAM/CPU/device state.
+
+The native/Wasm API accepts exactly 32768 packed bytes (ascending odd-address
+order, no header) and validates before mutation. Browser import pauses playback
+and replaces only backup RAM; it preserves CPU, media and runtime diagnostics.
+Export downloads a raw copy. Reset/mode changes cancel pending imports; a newer
+selection supersedes an older read. File errors and invalid lengths preserve all
+bytes. There is no automatic browser storage or network transfer. Reloading or
+closing loses the in-memory copy; users must explicitly export/import to retain
+it across sessions. These operations do not implement BIOS backup-library calls,
+cartridge RAM, save states or battery/RTC behavior. The original shared
+[diagnostic guest](../tests/fixtures/backup-pad.hex) and [tests](../tests/backup.rs)
+exercise real SH-2 loads/stores and port-2 reads natively and in Chromium/Wasm.
 
 ## Disc and BIOS-less HLE boot
 
@@ -188,9 +217,10 @@ and cycles, slave SH-2, SCU DMA/DSP/interrupts, SMPC commands/INTBACK, additiona
 modes, VDP1, CD-block runtime reads, BIOS services and native BIOS startup remain
 future compatibility work. Audio (68EC000/SCSP) is absent; this build is silent.
 Reference-emulator/hardware comparison, Gamepad API and performance
-measurements have not been performed. Sound is required by Issue #11 and remains
+measurements have not been performed. Sound is required by Issue #13 and remains
 missing. No dynarec, workers,
 server backend or general-game compatibility is introduced.
 
-Issue #11 remains open. See [hardware conformance and unresolved gaps](hardware-conformance.md)
-and [actual validation for this implementation](validation-issue-11.md).
+Issue #13 is incomplete and must remain open; #11 is superseded and closed.
+See [hardware conformance and unresolved gaps](hardware-conformance.md)
+and [current validation](validation-issue-13.md).

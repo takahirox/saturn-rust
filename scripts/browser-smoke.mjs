@@ -522,6 +522,131 @@ try {
   assert.equal(await value("active-mode"), "HLE bootstrap prototype");
   assert.equal(await value("pc"), "0x06000000");
   assert.deepEqual(pageErrors, []);
+
+  // Explicit backup import/export stays local and preserves machine state.
+  const backupBytes = Buffer.from(Array.from({length: 32768}, (_, i) => (i ^ (i >> 8)) & 255));
+  const backup = () => page.evaluate(async () => Array.from((await import("./app.js")).emulator.export_backup_ram()));
+  const beforeImport = await machine();
+  await context.setOffline(true);
+  await page.locator("#backup-import").setInputFiles({name:"original-backup.bin", mimeType:"application/octet-stream", buffer:backupBytes});
+  await page.waitForFunction(() => document.getElementById("backup-status").textContent.startsWith("Imported"));
+  assert.deepEqual(await machine(), beforeImport);
+  assert.deepEqual(Buffer.from(await backup()), backupBytes);
+  for (const size of [0, 1, 32767, 32769, 65536]) {
+    await page.locator("#backup-import").setInputFiles({name:"invalid-backup.bin", mimeType:"application/octet-stream", buffer:Buffer.alloc(size)});
+    assert.match(await value("backup-status"), /Backup unchanged/);
+    assert.deepEqual(Buffer.from(await backup()), backupBytes);
+    assert.deepEqual(await machine(), beforeImport);
+  }
+  const downloadReady = page.waitForEvent("download");
+  await page.locator("#backup-export").click();
+  const download = await downloadReady;
+  assert.equal(download.suggestedFilename(), "saturn-backup.bin");
+  assert.deepEqual(await readFile(await download.path()), backupBytes);
+  await page.evaluate(() => {
+    const original = File.prototype.arrayBuffer;
+    File.prototype.arrayBuffer = () => Promise.reject(new Error("simulated local read failure"));
+    window.restoreFailedBackupRead = () => { File.prototype.arrayBuffer = original; };
+  });
+  await page.locator("#backup-import").setInputFiles({name:"unreadable.bin", mimeType:"application/octet-stream", buffer:Buffer.alloc(32768)});
+  await page.waitForFunction(() => document.getElementById("backup-status").textContent.includes("simulated local read failure"));
+  await page.evaluate(() => window.restoreFailedBackupRead());
+  assert.deepEqual(Buffer.from(await backup()), backupBytes);
+  assert.deepEqual(await machine(), beforeImport);
+  // A late read cannot replace bytes after a rejected replacement or mode switch.
+  await page.evaluate(() => {
+    const original = File.prototype.arrayBuffer;
+    File.prototype.arrayBuffer = function () {
+      const file = this;
+      return new Promise((resolve) => { window.finishBackupRead = async () => resolve(await original.call(file)); });
+    };
+    window.restoreBackupRead = () => { File.prototype.arrayBuffer = original; };
+  });
+  const replacement = {name:"replacement.bin", mimeType:"application/octet-stream", buffer:Buffer.alloc(32768, 0x55)};
+  await page.locator("#backup-import").setInputFiles(replacement);
+  assert.equal(await page.locator("#run").isDisabled(), true);
+  assert.equal(await page.locator("#backup-export").isDisabled(), true);
+  await page.locator("#backup-import").setInputFiles({name:"invalid.bin", mimeType:"application/octet-stream", buffer:Buffer.alloc(1)});
+  await page.evaluate(async () => { await window.finishBackupRead(); });
+  assert.deepEqual(Buffer.from(await backup()), backupBytes);
+  await page.locator("#backup-import").setInputFiles(replacement);
+  await page.locator("#mode").selectOption("bios");
+  await page.evaluate(async () => { await window.finishBackupRead(); window.restoreBackupRead(); });
+  assert.match(await value("backup-status"), /cancelled by boot change/);
+  assert.deepEqual(Buffer.from(await backup()), backupBytes);
+  assert.match(await value("error"), /512 KiB/);
+  // The shared original guest executes real MOV.B instructions on Wasm too.
+  const backupRom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/backup-pad.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [offset, ...words] = line.trim().split(/\s+/).map((word) => parseInt(word, 16));
+    words.forEach((word, i) => backupRom.writeUInt16BE(word, offset + i * 2));
+  }
+  await page.locator("#bios").setInputFiles({name:"original-backup-pad.bin", mimeType:"application/octet-stream", buffer:backupRom});
+  await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
+  const romResults = await page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    emulator.set_port2_buttons(1);
+    emulator.run_steps(83);
+    return [emulator.export_backup_ram()[0], emulator.read_long(0x06001004)];
+  });
+  assert.deepEqual(romResults, [1, 0x3E]);
+  await page.locator("#reset").click();
+  assert.equal((await backup())[0], 1);
+  // The same diagnostic also boots via the existing original ISO container.
+  // This temporary local test image is not an additional completed demo game.
+  const backupDisc = Buffer.from(await readFile("web/star-collector.iso"));
+  backupRom.copy(backupDisc, 21 * 2048, 0x100, 0x150);
+  backupDisc.writeUInt32BE(0x50, 0xF4);
+  backupDisc.writeUInt32LE(0x50, 20 * 2048 + 68 + 10);
+  backupDisc.writeUInt32BE(0x50, 20 * 2048 + 68 + 14);
+  await page.locator("#mode").selectOption("disc");
+  await page.locator("#disc").setInputFiles({name:"original-backup-pad-test.iso", mimeType:"application/octet-stream", buffer:backupDisc});
+  await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
+  const samplePad = () => page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    emulator.run_steps(100);
+    return emulator.read_long(0x06001004);
+  });
+  await settings.click(); // Close settings; local discs remain paused.
+  await showView("play");
+  await page.locator("#screen").focus();
+  await page.keyboard.down("i");
+  assert.equal(await samplePad(), 0x3E);
+  await page.keyboard.up("i");
+  assert.equal(await samplePad(), 0x3F);
+  await page.keyboard.down("l");
+  assert.equal(await samplePad(), 0x37);
+  // View switching, window blur, settings and pause must release the second pad.
+  await showView("debug");
+  assert.equal(await samplePad(), 0x3F);
+  await page.keyboard.up("l");
+  await showView("play");
+  await page.locator("#screen").focus();
+  await page.keyboard.down("i");
+  assert.equal(await samplePad(), 0x3E);
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  assert.equal(await samplePad(), 0x3F);
+  await page.keyboard.up("i");
+  await page.keyboard.down("i");
+  await settings.click();
+  assert.equal(await samplePad(), 0x3F);
+  await page.keyboard.up("i");
+  await settings.click();
+  await page.locator("#pause").click();
+  await page.locator("#screen").focus();
+  await page.keyboard.down("i");
+  await page.locator("#pause").click();
+  assert.equal(await samplePad(), 0x3F);
+  await page.keyboard.up("i");
+  assert.equal((await backup())[0], 2);
+  const anotherTab = await context.newPage();
+  await context.setOffline(false);
+  await anotherTab.goto(address + prefix);
+  await anotherTab.waitForFunction(() => document.getElementById("status").textContent === "Ready");
+  assert(await anotherTab.evaluate(async () => (await import("./app.js")).emulator.export_backup_ram().every((byte) => byte === 0)));
+  await anotherTab.close();
+  assert.deepEqual(pageErrors, []);
   assert(requests.length > 0);
   const staticPaths = new Set([prefix, ...assets.map((asset) => prefix + asset), prefix + "favicon.ico", "/favicon.ico"]);
   assert(requests.every((r) => {
@@ -536,7 +661,7 @@ try {
   await missingBuild.waitForFunction(() => document.getElementById("status").textContent === "Initialization failed");
   assert.match(await missingBuild.locator("#error").textContent(), /Build web\/pkg and serve/);
   assert.equal(await missingBuild.locator("#reset").isDisabled(), true);
-  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races.`);
+  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation.`);
 } finally {
   if (browser) await browser.close();
   if (server?.pid && server.exitCode === null) {
