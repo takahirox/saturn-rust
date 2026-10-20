@@ -117,3 +117,17 @@ old workflow-owner, personal-BIOS and manual deployed-site gates. Continue pendi
 technical implementation without waiting for those inputs. No human-dependent
 post-merge verification is required. External administrative closure is not
 hardware evidence; do not reopen #11/#13 or claim #15 complete on this checkpoint.
+
+## PR review correction (2026-10-21)
+
+Related to #15. Updated [PR #16](https://github.com/takahirox/saturn-rust/pull/16)
+to remove the Issue-closing reference and its associated draft publication
+warning. Retained the plain related-Issue reference, partial outcome and full
+remaining-scope description. Keep that corrected description during subsequent
+publication; this checkpoint does not complete the umbrella Issue.
+
+Read back the live PR metadata and verified the exact corrected body, unchanged
+head commit, draft status and unmerged state. Rechecked upstream `main` at
+`1327d81dfd1a011b69990fd26abf4cefd04a9a52`. This revision changes only PR metadata
+and this validation record; the runtime suites above were not rerun. Markdown
+inspection and `git diff --check` passed. No push or merge was performed.
