@@ -41,10 +41,11 @@ checks actually performed, including failures, skipped checks, and unperformed
 checks with reasons.
 
 As described in the [development flow](development-flow.md#2-implement-the-smallest-complete-change),
-there are currently no configured build/test commands. For documentation and
-templates, inspect Markdown/template syntax, links, anchors, whitespace, and
-consistency. Do not require unrelated runtime suites, hardware checks, deployment
-verification, or new tooling for a documentation-only change.
+use the applicable [native, Wasm and browser checks](setup.md) for application
+changes. For documentation and templates, inspect Markdown/template syntax,
+links, anchors, whitespace, and consistency. Do not require unrelated runtime
+suites, hardware checks, deployment verification, or new tooling for a
+documentation-only change.
 
 ## Check pre-merge acceptance and post-merge verification
 
