@@ -14,7 +14,7 @@ impl fmt::Display for CpuError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotRunning => write!(f, "CPU is stopped; reset before stepping"),
-            Self::Bus { pc, source } => write!(f, "Fetch at PC 0x{pc:08X}: {source}"),
+            Self::Bus { pc, source } => write!(f, "Memory access at PC 0x{pc:08X}: {source}"),
             Self::UnsupportedOpcode { pc, opcode } => write!(
                 f,
                 "Unsupported opcode 0x{opcode:04X} at PC 0x{pc:08X}; exception handling is not implemented"
@@ -121,7 +121,11 @@ impl Cpu {
         let opcode = bus
             .read16(pc)
             .map_err(|source| CpuError::Bus { pc, source })?;
-        let branch = opcode & 0xF000 == 0xA000 || opcode == 0x000B;
+        // SH-1/SH-2 Programming Manual §6: branches are illegal in a slot.
+        let branch = matches!(opcode & 0xF000, 0xA000 | 0xB000)
+            || matches!(opcode & 0xFF00, 0x8900 | 0x8B00)
+            || opcode & 0xF0FF == 0x402B
+            || opcode == 0x000B;
         if branch && s.delay_target.is_some() {
             return Err(CpuError::BranchInDelaySlot { pc, opcode });
         }
@@ -129,19 +133,68 @@ impl Cpu {
         let m = ((opcode >> 4) & 15) as usize;
         let immediate = (opcode as u8 as i8 as i32) as u32;
         let mut next_branch = None;
+        let mut sequential_pc = pc.wrapping_add(2);
+        let access = |source| CpuError::Bus { pc, source };
         match opcode {
             0x0009 => (),                       // NOP
             0x000B => next_branch = Some(s.pr), // RTS latches PR before the slot
             _ if opcode & 0xF000 == 0xE000 => s.r[n] = immediate,
             _ if opcode & 0xF00F == 0x6003 => s.r[n] = s.r[m],
             _ if opcode & 0xF000 == 0x7000 => s.r[n] = s.r[n].wrapping_add(immediate),
-            _ if opcode & 0xF000 == 0xA000 => {
+            // MOV.B/W indirect loads sign-extend; MOV.L copies all bits.
+            _ if opcode & 0xF00F == 0x6000 => {
+                s.r[n] = bus.read8(s.r[m]).map_err(access)? as i8 as i32 as u32
+            }
+            _ if opcode & 0xF00F == 0x6001 => {
+                s.r[n] = bus.read16(s.r[m]).map_err(access)? as i16 as i32 as u32
+            }
+            _ if opcode & 0xF00F == 0x6002 => s.r[n] = bus.read32(s.r[m]).map_err(access)?,
+            _ if opcode & 0xF00F == 0x2000 => bus.write8(s.r[n], s.r[m] as u8).map_err(access)?,
+            _ if opcode & 0xF00F == 0x2001 => bus.write16(s.r[n], s.r[m] as u16).map_err(access)?,
+            _ if opcode & 0xF00F == 0x2002 => bus.write32(s.r[n], s.r[m]).map_err(access)?,
+            _ if opcode & 0xF000 == 0xD000 => {
+                // In a delay slot, PC-relative operands use branch destination + 2.
+                let operand_pc = s
+                    .delay_target
+                    .map_or(pc.wrapping_add(4), |target| target.wrapping_add(2));
+                let address = (operand_pc & !3).wrapping_add((opcode as u8 as u32) * 4);
+                s.r[n] = bus.read32(address).map_err(access)?;
+            }
+            _ if opcode & 0xF00F == 0x300C => s.r[n] = s.r[n].wrapping_add(s.r[m]),
+            _ if opcode & 0xF00F == 0x3008 => s.r[n] = s.r[n].wrapping_sub(s.r[m]),
+            _ if opcode & 0xF00F == 0x3000 => s.sr = (s.sr & !1) | u32::from(s.r[n] == s.r[m]),
+            _ if opcode & 0xF00F == 0x3002 => s.sr = (s.sr & !1) | u32::from(s.r[n] >= s.r[m]),
+            _ if opcode & 0xFF00 == 0xC800 => {
+                s.sr = (s.sr & !1) | u32::from(s.r[0] & (opcode as u8 as u32) == 0)
+            }
+            _ if opcode & 0xF0FF == 0x4010 => {
+                s.r[n] = s.r[n].wrapping_sub(1);
+                s.sr = (s.sr & !1) | u32::from(s.r[n] == 0);
+            }
+            _ if opcode & 0xF0FF == 0x4000 => {
+                s.sr = (s.sr & !1) | (s.r[n] >> 31);
+                s.r[n] <<= 1;
+            }
+            _ if opcode & 0xF0FF == 0x4008 => s.r[n] <<= 2,
+            _ if opcode & 0xF0FF == 0x4018 => s.r[n] <<= 8,
+            _ if matches!(opcode & 0xFF00, 0x8900 | 0x8B00) => {
+                if (s.sr & 1 != 0) == (opcode & 0xFF00 == 0x8900) {
+                    sequential_pc = pc
+                        .wrapping_add(4)
+                        .wrapping_add((immediate as i32 * 2) as u32);
+                }
+            }
+            _ if opcode & 0xF0FF == 0x402B => next_branch = Some(s.r[n]),
+            _ if matches!(opcode & 0xF000, 0xA000 | 0xB000) => {
+                if opcode & 0xF000 == 0xB000 {
+                    s.pr = pc.wrapping_add(4);
+                }
                 let displacement = ((opcode << 4) as i16 as i32) >> 4;
                 next_branch = Some(pc.wrapping_add(4).wrapping_add((displacement * 2) as u32));
             }
             _ => return Err(CpuError::UnsupportedOpcode { pc, opcode }),
         }
-        s.pc = s.delay_target.take().unwrap_or_else(|| pc.wrapping_add(2));
+        s.pc = s.delay_target.take().unwrap_or(sequential_pc);
         s.delay_target = next_branch;
         s.instructions += 1;
         Ok(())
@@ -318,5 +371,124 @@ mod tests {
         cpu.halt();
         assert_eq!(cpu.step(&mut bus), Err(CpuError::NotRunning));
         assert_eq!(cpu.state.status, CpuStatus::Halted);
+    }
+    #[test]
+    fn memory_instructions_obey_sign_extension_width_and_big_endian_access() {
+        let (mut cpu, mut bus) = setup(&[0x2310, 0x2311, 0x2312, 0x6430, 0x6531, 0x6632]);
+        cpu.state.r[1] = 0x89AB_CDEF;
+        cpu.state.r[3] = HIGH_WRAM + 0x100;
+        for width in [1, 2, 4] {
+            cpu.step(&mut bus).unwrap();
+            let expected = match width {
+                1 => 0xEF000000,
+                2 => 0xCDEF0000,
+                _ => 0x89ABCDEF,
+            };
+            assert_eq!(bus.read32(HIGH_WRAM + 0x100), Ok(expected));
+        }
+        for _ in 0..3 {
+            cpu.step(&mut bus).unwrap();
+        }
+        assert_eq!(&cpu.state.r[4..7], &[0xFFFFFF89, 0xFFFF89AB, 0x89ABCDEF]);
+        assert_eq!(cpu.state.sr, 0xF0);
+    }
+
+    #[test]
+    fn data_faults_do_not_retire_or_modify_destination_or_pending_slot() {
+        for opcode in [0x6120, 0x6121, 0x6122, 0x2210, 0x2211, 0x2212] {
+            let (mut cpu, mut bus) = setup(&[0xA001, opcode]);
+            cpu.state.r[1] = 0x12345678;
+            cpu.state.r[2] = 0x04000001;
+            cpu.step(&mut bus).unwrap();
+            let before = cpu.state.clone();
+            assert!(matches!(cpu.step(&mut bus), Err(CpuError::Bus { .. })));
+            assert_eq!(cpu.state.r, before.r);
+            assert_eq!(cpu.state.pc, before.pc);
+            assert_eq!(cpu.state.delay_target, before.delay_target);
+            assert_eq!(cpu.state.instructions, 1);
+        }
+    }
+
+    #[test]
+    fn arithmetic_flags_compare_unsigned_and_shift_carry_without_clobbering_sr() {
+        let (mut cpu, mut bus) = setup(&[
+            0x312C, 0x3128, 0x3120, 0x3122, 0x4100, 0x4108, 0x4118, 0x4110, 0xC880,
+        ]);
+        cpu.state.r[1] = 0xFFFFFFFF;
+        cpu.state.r[2] = 1;
+        cpu.state.sr = 0xF3;
+        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.state.r[1], 0);
+        assert_eq!(cpu.state.sr, 0xF3);
+        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.state.r[1], 0xFFFFFFFF);
+        cpu.step(&mut bus).unwrap(); // CMP/EQ false
+        assert_eq!(cpu.state.sr, 0xF2);
+        cpu.step(&mut bus).unwrap(); // unsigned >= true, despite high bit
+        assert_eq!(cpu.state.sr, 0xF3);
+        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.state.r[1], 0xFFFFFFFE);
+        assert_eq!(cpu.state.sr, 0xF3);
+        cpu.step(&mut bus).unwrap();
+        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.state.r[1], 0xFFFFF800);
+        assert_eq!(cpu.state.sr, 0xF3);
+        cpu.state.r[1] = 1;
+        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.state.r[1], 0);
+        assert_eq!(cpu.state.sr, 0xF3);
+        cpu.state.r[0] = 0x80;
+        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.state.sr, 0xF2);
+    }
+
+    #[test]
+    fn conditional_branches_have_no_slot_and_use_signed_pc_plus_four() {
+        for (opcode, t, target) in [
+            (0x89FE, 1, 0),
+            (0x8B7F, 0, 258),
+            (0x8980, 1, -252),
+            (0x8901, 0, 2),
+            (0x8B01, 1, 2),
+        ] {
+            let (mut cpu, mut bus) = setup(&[opcode, 0xE163]);
+            cpu.state.sr = 0xF0 | t;
+            cpu.step(&mut bus).unwrap();
+            assert_eq!(cpu.state.pc, HIGH_WRAM.wrapping_add(target as u32));
+            assert_eq!(cpu.state.delay_target, None);
+            assert_eq!(cpu.state.r[1], 0);
+        }
+        for opcode in [0x8900, 0x8B00, 0xB000, 0x412B] {
+            let (mut cpu, mut bus) = setup(&[0xA000, opcode]);
+            cpu.step(&mut bus).unwrap();
+            assert!(matches!(
+                cpu.step(&mut bus),
+                Err(CpuError::BranchInDelaySlot { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn calls_jumps_and_pc_relative_literals_use_architectural_pc() {
+        let (mut cpu, mut bus) = setup(&[0xB002, 0xD101, 0x0009, 0x0009, 0x412B, 0x7101]);
+        bus.write32(HIGH_WRAM + 12, HIGH_WRAM + 0x100).unwrap();
+        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.state.pr, HIGH_WRAM + 4);
+        cpu.step(&mut bus).unwrap();
+        // MOV.L in a slot uses (destination + 2) aligned down, then disp*4.
+        assert_eq!(cpu.state.r[1], HIGH_WRAM + 0x100);
+        assert_eq!(cpu.state.pc, HIGH_WRAM + 8);
+        cpu.step(&mut bus).unwrap();
+        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.state.pc, HIGH_WRAM + 0x100);
+        assert_eq!(cpu.state.r[1], HIGH_WRAM + 0x101); // target latched before slot
+        for offset in [0, 2] {
+            let (mut cpu, mut bus) = setup(&[0x0009, 0x0009]);
+            cpu.state.pc += offset;
+            bus.write16(HIGH_WRAM + offset, 0xD201).unwrap();
+            bus.write32(HIGH_WRAM + 8, 0xFEDCBA98).unwrap();
+            cpu.step(&mut bus).unwrap();
+            assert_eq!(cpu.state.r[2], 0xFEDCBA98);
+        }
     }
 }

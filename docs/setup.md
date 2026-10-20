@@ -1,7 +1,7 @@
 # Build, run and test
 
 Use a Rust stable toolchain managed by rustup, its `wasm32-unknown-unknown`
-target, and Python 3 for static serving. Node.js 18.17+ and npm are needed only for
+target, and Python 3.10+ for building the homebrew disc and static serving. Node.js 18.17+ and npm are needed only for
 the automated browser check. There is no application backend or JavaScript bundle
 step. Run commands from the repository root.
 
@@ -28,8 +28,16 @@ cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 ```
 
-The Rust library is browser-independent. Its tests use hand-authored instructions
-and synthetic reset vectors; no proprietary files are required.
+The Rust library is browser-independent. Tests cover instructions/flags/delay
+slots, synthetic BIOS vectors, RAM/VRAM/MMIO, digital-pad selection, VDP2 pixels,
+ISO parsing/errors and actual guest gameplay/completion/restart. No proprietary
+files are required. The committed sample can be rebuilt and verified without an
+external cross compiler or SDK:
+
+```sh
+python3 homebrew/star-collector/build.py
+python3 homebrew/star-collector/build.py --check
+```
 
 ## Build and serve the browser client
 
@@ -39,30 +47,48 @@ cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings
 python3 -m http.server 8000 --bind 127.0.0.1 --directory web
 ```
 
-Open <http://127.0.0.1:8000>. The build creates
+Open <http://127.0.0.1:8000>. The build regenerates the original licensed ISO and
+its public license, then creates
 `target/wasm32-unknown-unknown/release/saturn_rust.wasm` and the generated
-`web/pkg/saturn_rust.js` / `saturn_rust_bg.wasm`. Generated files are ignored by
-Git; rebuild them after changing Rust. Opening `index.html` as a `file:` URL will
-not work. The client needs browser support for ES modules, Wasm and the
+`web/pkg/saturn_rust.js` / `saturn_rust_bg.wasm`. Generated Wasm bindings are ignored
+by Git; the reproducible ISO and its license are committed. Rebuild after changing
+Rust or guest source. Opening `index.html` as a `file:` URL will not work. The client needs browser support for ES modules, Wasm and the
 `wasm-unsafe-eval` CSP directive; the tested browser is recorded in
-[validation results](validation-issue-3.md).
+[validation results](validation-issue-7.md).
 
-1. Leave **HLE bootstrap prototype** selected. Click Step to see `R0=5`, then
+1. Click **Play Homebrew** to fetch the packaged MIT-licensed Star Collector
+   ISO and boot it through BIOS-less HLE. Initial guest bitmap clearing takes a
+   few frames. Click the screen for keyboard focus; arrows move the cyan player,
+   yellow stars are collected one at a time. Five gold blocks and a green banner
+   mean success. Press **Enter / Start** to restart inside the guest, including
+   after completion. This is a silent build.
+2. Use **Pause/Resume** or **Advance frame** for deterministic inspection. **Reset**
+   cold-boots the currently loaded image. Changing tabs pauses and releases input;
+   losing keyboard focus releases held buttons. Choose **BIOS-less HLE disc** and
+   a local authorized ISO to use the same path without fetching the sample.
+   Only the documented single-area Saturn IP + ISO9660 cooked 2048-byte-sector
+   format and device subset are supported, up to 16 MiB. BIN/CUE, compressed images
+   and generic game compatibility are future work. Malformed or unsupported media
+   produce errors and stop the old machine.
+3. To inspect the preserved debugger fixture, select **HLE bootstrap prototype**.
+   Click Step to see `R0=5`, then
    Reset and Run the default 6 instructions. Expect `R0=4`, `R1=7`,
    `PC=0x0600000E`, and 6 retired instructions.
-2. Step again to see a pending branch, and again to execute its NOP delay slot.
+4. Step again to see a pending branch, and again to execute its NOP delay slot.
    Further bounded runs stay in that loop. This is a test/homebrew startup path,
    not BIOS service emulation.
-3. Choose **User-provided BIOS**. Missing input shows a size error and disables
+5. Choose **User-provided BIOS**. Missing input shows a size error and disables
    stepping. Select a legally obtained **raw 524288-byte** BIOS. Incorrect sizes
    are rejected; correct size validates the layout, not authenticity or region.
+   Native Sega BIOS boot is incomplete; BIOS mode never switches to HLE.
    PC and R15 are loaded from the first two big-endian vector words. Step or Run
    may stop immediately with the unsupported opcode and its PC.
-4. Reset restarts the selected mode. Changing mode or file performs a cold reset;
+6. Reset restarts the selected mode. Changing mode or file performs a cold reset;
    switching modes discards the previous file selection. Run accepts a whole
    count from 1 to 10000. Faults remain stopped until reset.
 
-Only static files are fetched. BIOS bytes are read via `File.arrayBuffer()` and
+Only static files, including the original MIT-licensed sample ISO, are fetched.
+Local BIOS/disc bytes are read via `File.arrayBuffer()` and
 copied into this tab's Wasm memory, with no upload, browser storage, analytics,
 CDN or external runtime assets. They are discarded from application state on mode
 change or tab close (this is not a secure memory-erasure guarantee). The fixture
@@ -89,13 +115,18 @@ assets, HTML/CSS/JS/Wasm responses and MIME types, stylesheet loading and Wasm
 initialization. It checks fixture results, controls, invalid run counts,
 missing/invalid BIOS, synthetic reset vectors, visible execution faults,
 reset/mode transitions, offline execution and the absence of requests carrying
-BIOS data. It uses no Sega firmware. Nonzero exit means failure.
+BIOS/disc data. It boots the actual ISO through Wasm, drives two distinct
+keyboard sequences, verifies guest-written position/score/completion/update
+counters and Canvas pixel differences, completes and restarts, rejects malformed
+local discs, checks pending-file/mode races and loads a local ISO offline. It uses
+only original licensed guest content and no Sega firmware. Nonzero exit means failure.
 
 ## GitHub Pages
 
 The [Browser Pages workflow](../.github/workflows/pages.yml) uses stable Rust,
 the committed Cargo/npm lockfiles, matching `wasm-bindgen-cli 0.2.129`, and
-`scripts/build-web.sh`. It runs all native checks above, Wasm build/Clippy and
+`scripts/build-web.sh`. It verifies the committed ISO against its source, then runs
+all native checks above, Wasm build/Clippy and
 the Chromium smoke test before uploading only `web/` through GitHub's Pages
 artifact action. Only successful `main` pushes (including merges) deploy through
 the `github-pages` environment; PRs targeting `main` validate without deployment
@@ -115,18 +146,20 @@ prefix; no custom domain or backend is required.
 
 Required post-merge verification (pending until actually performed):
 
-1. Enable Pages as above if needed. Verify the first `main` Actions deployment
-   succeeds and the public URL loads HTML, CSS, ES modules and Wasm. Reset, then
-   Run 6 in HLE mode must yield `R0=4`, `R1=7`, `PC=0x0600000E`. Confirm the
-   deployed Actions revision matches the latest `main`.
-2. On the next legitimate `main` push/merge, verify another automatic deployment
-   updates the site without an upload. Record failures and fix them in follow-up
-   work. Local validation does not verify production publication.
+1. After this change merges and **Browser Pages** deploys `main`, record the
+   deployed commit and successful Actions/environment deployment at
+   <https://takahirox.github.io/saturn-rust/>. Confirm HTML/CSS/ES modules/Wasm and
+   the sample ISO load at the project prefix.
+2. On the live page, click **Play Homebrew**, move using arrows, collect stars,
+   observe score blocks, reach the green completion banner and restart with
+   Enter. Record production-only defects and fix them in follow-up work.
 
-The hosted app remains the SH-2 bootstrap prototype described above, with no
-commercial-game compatibility. No Sega firmware or game media is distributed;
-user BIOS handling remains entirely local to the browser.
+These checks require the merged deployment and cannot be claimed from a green
+local smoke test. This implementation run does not push, publish or verify a new
+live revision.
 
-Use only BIOS/game data you are authorized to use. Never commit, redistribute or
-upload proprietary firmware or disc images to this repository. Disc loading is
-not implemented. See [provenance and roadmap](architecture.md#sources-and-provenance).
+The hosted build supports only the original silent Star Collector hardware
+subset. External BIOS mode retains local/private reset-vector stepping but does
+not promise a Sega BIOS splash screen or game boot. No proprietary BIOS/security
+code or commercial disc is distributed. See [architecture](architecture.md) and
+[game license/provenance](homebrew-provenance.md).
