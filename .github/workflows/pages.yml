@@ -27,6 +27,8 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
           rustup default stable
           rustup target add wasm32-unknown-unknown
+      - name: Verify reproducible homebrew image
+        run: python3 homebrew/star-collector/build.py --check
       - name: Check Rust
         run: |
           cargo fmt --check

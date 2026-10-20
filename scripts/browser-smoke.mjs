@@ -3,13 +3,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { lstat, mkdtemp, readdir, rm, symlink } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, readdir, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium } from "playwright";
 
 // Fail before upload if web/ includes anything beyond the public runtime assets.
-const assets = ["app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "style.css"];
+const assets = ["app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt"];
 assert.deepEqual((await readdir("web", { recursive: true })).sort(), [...assets, "pkg"].sort());
 assert((await lstat("web/pkg")).isDirectory());
 for (const asset of assets) {
@@ -146,6 +146,101 @@ try {
   await page.locator("#run").click();
   assert.equal(await value("instructions"), "10006");
   assert.equal(await value("r1"), "0x00000007");
+  // Same actual ISO + Wasm + input bridge + Canvas as the UI. Stop wall-clock
+  // playback and advance deterministic frames, with no game-specific host writes.
+  await context.setOffline(false);
+  await page.locator("#play-homebrew").click();
+  await page.waitForFunction(() => Number(document.getElementById("frames").textContent) > 0);
+  assert.equal(await value("active-mode"), "BIOS-less HLE disc");
+  await page.locator("#pause").click();
+  await page.locator("#reset").click();
+  const gameState = () => page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    const pixels = document.getElementById("screen").getContext("2d").getImageData(0,0,320,224).data;
+    let hash = 2166136261;
+    for (const byte of pixels) hash = Math.imul(hash ^ byte, 16777619) >>> 0;
+    return { state: Array.from({length: 5}, (_, i) => emulator.read_long(0x06010000 + i*4)),
+      instructions: Number(emulator.instruction_count()), hash,
+      progress: Array.from(pixels.slice((27*320+45)*4, (27*320+45)*4+4)),
+      banner: Array.from(pixels.slice((150*320+100)*4, (150*320+100)*4+4)) };
+  });
+  const stepFrames = (n) => page.evaluate(async (n) => {
+    const { advanceFrame } = await import("./app.js");
+    for (let i = 0; i < n; i++) advanceFrame();
+  }, n);
+  const hold = async (key, n) => {
+    await page.locator("#screen").focus();
+    await page.keyboard.down(key);
+    await stepFrames(n);
+    await page.keyboard.up(key);
+  };
+  await stepFrames(20);
+  const initial = await gameState();
+  assert.deepEqual(initial.state.slice(0,4), [32,112,0,0]);
+  assert(initial.instructions > 100000);
+  await hold("ArrowRight", 8);
+  const collected = await gameState();
+  assert.deepEqual(collected.state.slice(0,4), [64,112,1,0]);
+  assert.notEqual(initial.hash, collected.hash);
+  assert.deepEqual(collected.progress, [255,255,0,255]);
+  assert.notDeepEqual(collected.progress, initial.progress);
+  assert(collected.instructions > initial.instructions);
+  assert(collected.state[4] > initial.state[4]);
+  await hold("ArrowRight", 48);
+  const won = await gameState();
+  assert.deepEqual(won.state.slice(0,4), [256,112,5,1]);
+  assert.deepEqual(won.banner, [0,255,0,255]);
+  assert.notEqual(won.hash, collected.hash);
+  await hold("Enter", 20);
+  await stepFrames(2);
+  assert.deepEqual((await gameState()).state.slice(0,4), [32,112,0,0]);
+  assert.equal((await gameState()).hash, initial.hash);
+  // Second sequence: bypass the star at a different Y, then come back for it.
+  await hold("ArrowUp", 4);
+  await hold("ArrowRight", 8);
+  const missed = await gameState();
+  assert.deepEqual(missed.state.slice(0,4), [64,96,0,0]);
+  assert.notEqual(missed.hash, initial.hash);
+  await hold("ArrowDown", 4);
+  assert.deepEqual((await gameState()).state.slice(0,4), [64,112,1,0]);
+  // Losing focus must release held input, including while paused.
+  await page.keyboard.down("ArrowRight");
+  await page.locator("#count").focus();
+  await stepFrames(4);
+  assert.deepEqual((await gameState()).state.slice(0,4), [64,112,1,0]);
+  await page.keyboard.up("ArrowRight");
+  // Local supported ISO works offline, and selecting bad media clears old CPU.
+  const disc = await readFile("web/star-collector.iso");
+  await context.setOffline(true);
+  await page.locator("#disc").setInputFiles({name:"authorized-homebrew.iso", mimeType:"application/octet-stream", buffer:disc});
+  await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
+  await page.locator("#pause").click();
+  await page.locator("#reset").click();
+  await stepFrames(20);
+  assert.deepEqual((await gameState()).state.slice(0,4), [32,112,0,0]);
+  await page.locator("#disc").setInputFiles({name:"bad.iso", mimeType:"application/octet-stream", buffer:Buffer.alloc(disc.length)});
+  // setInputFiles does not await the async file read; wait for the parser result.
+  await page.waitForFunction(() => /missing Saturn hardware identifier/.test(document.getElementById("error").textContent));
+  assert.match(await value("error"), /missing Saturn hardware identifier/);
+  assert.equal(await page.locator("#frame").isDisabled(), true);
+  assert.equal(await value("pc"), "0x00000000");
+  await page.locator("#disc").setInputFiles({name:"raw.bin", mimeType:"application/octet-stream", buffer:Buffer.alloc(2352)});
+  assert.match(await value("error"), /2048-byte-sector ISO/);
+  // A disc read finishing after changing modes must not revive the old game.
+  await page.evaluate(() => {
+    const original = File.prototype.arrayBuffer;
+    File.prototype.arrayBuffer = function () {
+      const file = this;
+      return new Promise((resolve) => { window.finishDiscRead = async () => resolve(await original.call(file)); });
+    };
+    window.restoreDiscRead = () => { File.prototype.arrayBuffer = original; };
+  });
+  await page.locator("#disc").setInputFiles({name:"delayed.iso", mimeType:"application/octet-stream", buffer:disc});
+  await page.waitForFunction(() => typeof window.finishDiscRead === "function");
+  await page.locator("#mode").selectOption("hle");
+  await page.evaluate(async () => { await window.finishDiscRead(); window.restoreDiscRead(); });
+  assert.equal(await value("active-mode"), "HLE bootstrap prototype");
+  assert.equal(await value("pc"), "0x06000000");
   assert.deepEqual(pageErrors, []);
   assert(requests.length > 0);
   const staticPaths = new Set([prefix, ...assets.map((asset) => prefix + asset), prefix + "favicon.ico", "/favicon.ico"]);
@@ -161,7 +256,7 @@ try {
   await missingBuild.waitForFunction(() => document.getElementById("status").textContent === "Initialization failed");
   assert.match(await missingBuild.locator("#error").textContent(), /Build web\/pkg and serve/);
   assert.equal(await missingBuild.locator("#reset").isDisabled(), true);
-  console.log(`Browser smoke passed (${await browser.version()}): /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, mode switching, offline execution, no BIOS transmission.`);
+  console.log(`Browser smoke passed (${await browser.version()}): /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races.`);
 } finally {
   if (browser) await browser.close();
   if (server?.pid && server.exitCode === null) {

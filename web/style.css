@@ -20,3 +20,8 @@ caption { text-align: left; margin-bottom: .6rem; font-family: system-ui, sans-s
 th, td { padding: .35rem; border-bottom: 1px solid #304151; text-align: left; }
 td { color: #a3d8ff; }
 @media (max-width: 560px) { .registers { grid-template-columns: 1fr; } }
+
+section { margin: 1.5rem 0; }
+#screen { display: block; width: min(100%, 640px); height: auto; image-rendering: pixelated; background: #000; border: 2px solid #41556a; margin: 1rem 0; }
+#play-homebrew { background: #285d4b; font-weight: 700; }
+a { color: #a3d8ff; }

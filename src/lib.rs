@@ -1,6 +1,8 @@
 //! Browser-independent Saturn vertical slice; only the master SH-2 executes.
 pub mod bus;
 pub mod cpu;
+pub mod devices;
+pub mod disc;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
@@ -20,11 +22,13 @@ pub const FIXTURE: [u16; 9] = [
 pub enum BootMode {
     HlePrototype,
     ExternalBios,
+    HleDisc,
 }
 
 pub enum Boot<'a> {
     HlePrototype,
     ExternalBios(&'a [u8]),
+    HleDisc(&'a [u8]),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +36,8 @@ pub enum MachineError {
     Bus(BusError),
     Cpu(CpuError),
     StepLimit(u32),
+    Disc(disc::DiscError),
+    Video(String),
 }
 
 impl fmt::Display for MachineError {
@@ -39,6 +45,8 @@ impl fmt::Display for MachineError {
         match self {
             Self::Bus(error) => error.fmt(f),
             Self::Cpu(error) => error.fmt(f),
+            Self::Disc(error) => error.fmt(f),
+            Self::Video(error) => f.write_str(error),
             Self::StepLimit(n) => write!(f, "Run count {n} is outside 1..={MAX_RUN_STEPS}"),
         }
     }
@@ -60,6 +68,7 @@ pub struct Machine {
     cpu: Cpu,
     bus: Bus,
     mode: Option<BootMode>,
+    frames: u64,
 }
 
 impl Machine {
@@ -79,6 +88,7 @@ impl Machine {
     /// Cold reset clears both RAM banks, prior ROM, counters, delay state and faults.
     /// A rejected BIOS leaves ExternalBios selected and the CPU stopped in Reset.
     pub fn reset(&mut self, boot: Boot<'_>) -> Result<(), MachineError> {
+        self.frames = 0;
         self.cpu = Cpu::default();
         self.bus = Bus::default();
         match boot {
@@ -86,6 +96,17 @@ impl Machine {
                 self.mode = Some(BootMode::ExternalBios);
                 self.bus.load_bios(bytes)?;
                 self.cpu = Cpu::power_on(&self.bus)?;
+            }
+            Boot::HleDisc(image) => {
+                self.mode = Some(BootMode::HleDisc);
+                let boot = disc::parse(image).map_err(MachineError::Disc)?;
+                for (i, byte) in boot.ip.iter().enumerate() {
+                    self.bus.write8(disc::IP_ADDRESS + i as u32, *byte)?;
+                }
+                for (i, byte) in boot.executable.iter().enumerate() {
+                    self.bus.write8(boot.load_address + i as u32, *byte)?;
+                }
+                self.cpu = Cpu::start(disc::AIP_ENTRY, boot.stack);
             }
             Boot::HlePrototype => {
                 self.mode = Some(BootMode::HlePrototype);
@@ -95,6 +116,35 @@ impl Machine {
                 self.cpu = Cpu::start(FIXTURE_PC, HIGH_WRAM + WRAM_SIZE as u32);
             }
         }
+        Ok(())
+    }
+
+    pub fn set_buttons(&mut self, buttons: u16) {
+        self.bus.set_buttons(buttons);
+    }
+
+    pub fn frames(&self) -> u64 {
+        self.frames
+    }
+
+    pub fn framebuffer(&self) -> Result<Vec<u8>, MachineError> {
+        self.bus.vdp2.framebuffer().map_err(MachineError::Video)
+    }
+
+    /// Deterministic instruction budgets, not cycle-accurate Saturn timing.
+    /// One active phase followed by one blank phase. Guest polls TVSTAT.
+    /// No game-specific PC, state, opcode or memory interception.
+    pub fn advance_frame(&mut self) -> Result<(), MachineError> {
+        self.bus.vdp2.vblank = false;
+        for _ in 0..60_000 {
+            self.step()?;
+        }
+        self.bus.vdp2.vblank = true;
+        for _ in 0..20_000 {
+            self.step()?;
+        }
+        self.bus.vdp2.vblank = false;
+        self.frames += 1;
         Ok(())
     }
 

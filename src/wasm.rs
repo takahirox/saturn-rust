@@ -24,6 +24,29 @@ impl Emulator {
             .reset(Boot::ExternalBios(bytes))
             .map_err(js_error)
     }
+    pub fn reset_disc(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+        self.machine.reset(Boot::HleDisc(bytes)).map_err(js_error)
+    }
+    pub fn advance_frame(&mut self) -> Result<(), JsValue> {
+        self.machine.advance_frame().map_err(js_error)
+    }
+    pub fn framebuffer(&self) -> Result<Vec<u8>, JsValue> {
+        self.machine.framebuffer().map_err(js_error)
+    }
+    pub fn set_buttons(&mut self, buttons: u16) {
+        self.machine.set_buttons(buttons);
+    }
+    /// Read-only debugger access, also used to assert guest-written diagnostics.
+    pub fn read_long(&self, address: u32) -> Result<u32, JsValue> {
+        use crate::bus::Memory;
+        self.machine
+            .bus()
+            .read32(address)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+    pub fn frames(&self) -> String {
+        self.machine.frames().to_string()
+    }
     pub fn step(&mut self) -> Result<(), JsValue> {
         self.machine.step().map_err(js_error)
     }
@@ -47,6 +70,7 @@ impl Emulator {
     pub fn mode(&self) -> String {
         match self.machine.mode() {
             Some(BootMode::HlePrototype) => "HLE bootstrap prototype",
+            Some(BootMode::HleDisc) => "BIOS-less HLE disc",
             Some(BootMode::ExternalBios) => "User-provided BIOS",
             None => "Not selected",
         }
