@@ -153,7 +153,8 @@ impl Machine {
         Ok(())
     }
 
-    /// Stops immediately at the first error. Count is retired instructions, not cycles.
+    /// Bounded CPU steps, stopping at the first host error. Exception entry and
+    /// sleeping steps may retire no instructions; this is not a cycle budget.
     pub fn run_steps(&mut self, n: u32) -> Result<(), MachineError> {
         if !(1..=MAX_RUN_STEPS).contains(&n) {
             return Err(MachineError::StepLimit(n));

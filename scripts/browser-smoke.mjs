@@ -65,6 +65,7 @@ try {
     const { emulator } = await import("./app.js");
     return { registers: Array.from(emulator.registers()), special: Array.from(emulator.special_registers()),
       retired: String(emulator.instruction_count()), frames: String(emulator.frames()),
+      exceptions: emulator.exception_count(), lastException: emulator.last_exception(),
       delay: emulator.delay_target() ?? null, mode: emulator.mode(), status: emulator.status() };
   });
   // waitForFunction predicates must be synchronous in this Playwright version.
@@ -94,9 +95,11 @@ try {
       for (const id of controls) {
         const control = page.locator(`#${id}`);
         assert(await control.isVisible(), `Missing ${id} at ${width}`);
-        await control.scrollIntoViewIfNeeded();
+        // Chromium can round the intersection of a control clipped by <1 CSS px
+        // to "fully visible". Center explicitly before checking exact bounds.
+        await control.evaluate((element) => element.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }));
         const rect = await control.boundingBox();
-        assert(rect.x >= 0 && rect.x + rect.width <= width && rect.y >= 0 && rect.y + rect.height <= height, `Clipped ${id} at ${width}`);
+        assert(rect.x >= 0 && rect.x + rect.width <= width && rect.y >= 0 && rect.y + rect.height <= height, `Clipped ${id} at ${width}×${height}: ${JSON.stringify(rect)}`);
       }
       const boxes = await page.evaluate((ids) => ids.map((id) => {
         const {x, y, width, height} = document.getElementById(id).getBoundingClientRect();
@@ -190,7 +193,7 @@ try {
   bios.writeUInt32BE(0x100, 0);
   bios.writeUInt32BE(0x06100000, 4);
   bios.writeUInt16BE(0xE02A, 0x100); // MOV #42,R0
-  bios.writeUInt16BE(0xFFFF, 0x102); // deterministic unsupported opcode
+  bios.writeUInt16BE(0x6102, 0x102); // MOV.L @R0,R1: deterministic unaligned bus diagnostic
   await page.locator("#bios").setInputFiles({ name: "original-test-vectors.bin", mimeType: "application/octet-stream", buffer: bios });
   await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
   assert.equal(await value("pc"), "0x00000100");
@@ -199,7 +202,7 @@ try {
   await page.locator("#step").click();
   assert.equal(await value("r0"), "0x0000002A");
   await page.locator("#step").click();
-  assert.match(await value("error"), /Unsupported opcode 0xFFFF at PC 0x00000102/);
+  assert.match(await value("error"), /Memory access at PC 0x00000102: Unaligned 4-byte access at 0x0000002A/);
   assert.equal(await page.locator("#run").isDisabled(), true);
   const faulted = await machine();
   const faultText = await value("error");
@@ -216,6 +219,40 @@ try {
   assert.equal(await value("pc"), "0x00000100");
   assert.equal(await value("r0"), "0x00000000");
   await responsive(false);
+  // The exact same MIT-licensed synthetic ROM runs in tests/sh2_system.rs.
+  // Guest handlers manipulate their own exception stack; host only steps/reads.
+  const systemRom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/sh2-system.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [offset, ...words] = line.trim().split(/\s+/).map((word) => parseInt(word, 16));
+    words.forEach((word, i) => systemRom.writeUInt16BE(word, offset + i * 2));
+  }
+  await page.locator("#bios").setInputFiles({ name: "original-sh2-system.bin", mimeType: "application/octet-stream", buffer: systemRom });
+  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000100");
+  await page.locator("#count").fill("10000");
+  await page.locator("#run").click();
+  assert.equal(await value("error"), "");
+  assert.equal(await value("pc"), "0x0000011A");
+  assert.equal(await value("r0"), "0x00000023");
+  assert.equal(await value("r15"), "0x06100000");
+  assert.equal(await value("instructions"), "19");
+  assert.equal(await value("exceptions"), "3");
+  assert.equal(await value("last-exception"), "Vector 6 · saved PC 0x00000114");
+  assert.match(await value("status"), /Sleeping/);
+  assert.equal(await page.locator("#run").isDisabled(), true);
+  const sleeping = await machine();
+  await page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    if (emulator.read_long(0x06001000) !== 35) throw new Error("Guest result was not stored");
+    emulator.run_steps(10000);
+    emulator.advance_frame();
+  });
+  const afterSleep = await machine();
+  assert.deepEqual({ ...afterSleep, frames: sleeping.frames }, sleeping);
+  await page.locator("#reset").click();
+  assert.equal(await value("exceptions"), "0");
+  assert.equal(await value("last-exception"), "none");
+  await page.locator("#count").fill("6");
   // A malformed replacement must clear the previously running external ROM.
   await page.locator("#bios").setInputFiles({ name: "wrong.bin", mimeType: "application/octet-stream", buffer: Buffer.from([0, 0]) });
   assert.equal(await value("pc"), "0x00000000");

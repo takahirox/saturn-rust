@@ -26,6 +26,8 @@ through emulated SMPC hardware. Game rules and drawing execute as guest SH-2 cod
 
 - [Build, run, test and Pages setup](docs/setup.md)
 - [Supported CPU, disc boot and hardware; limitations and primary manuals](docs/architecture.md)
+- [Hardware conformance matrix and outstanding Issue #11 scope](docs/hardware-conformance.md)
+- [SH-2 expansion validation](docs/validation-issue-11.md)
 - [Game source, reproducible ISO build and MIT license](homebrew/star-collector/README.md)
 - [Redistribution/provenance audit](docs/homebrew-provenance.md)
 - [Play/Debug validation and pending deployment verification](docs/validation-issue-9.md)
@@ -42,8 +44,8 @@ The original **HLE bootstrap prototype** debugger fixture remains available in
 boot settings. In **Debug**, Reset, then Run 6 yields `R0=4`, `R1=7`,
 `PC=0x0600000E`. **User-provided BIOS** accepts a local raw 512 KiB file and uses
 its actual reset vectors. Native Sega
-BIOS boot/game support is incomplete and often faults on unsupported instructions
-or devices. BIOS mode never silently changes into HLE.
+BIOS boot/game support is incomplete and often faults on unimplemented devices
+or bus behavior. BIOS mode never silently changes into HLE.
 
 Local BIOS/disc bytes stay in the tab's memory, with no upload, browser storage,
 analytics, CDN or backend. Only public static assets and the licensed sample are

@@ -68,7 +68,7 @@
               <div id="bios-controls" hidden>
                 <label for="bios">Local raw BIOS (512 KiB / 524288 bytes)</label>
                 <input id="bios" type="file">
-                <p>Use a legally obtained BIOS. Correct size validates layout, not authenticity or region. Its real reset vectors are used; native Sega BIOS boot/game support is incomplete and often stops on unsupported opcodes. BIOS mode never redirects to HLE.</p>
+                <p>Use a legally obtained BIOS. Correct size validates layout, not authenticity or region. Its real reset vectors are used; native Sega BIOS boot/game support is incomplete and often stops on unimplemented device or bus behavior. BIOS mode never redirects to HLE.</p>
               </div>
               <p id="boot-warning">Changing mode or file cold-resets the machine and clears the previous selection. Opening or closing settings does not reset; opening pauses playback. Use Resume to continue.</p>
               <p class="privacy">Local files stay in this tab's memory. No uploads, browser storage or analytics. No Sega BIOS is bundled.</p>
@@ -82,6 +82,8 @@
           <div><dt>Active mode</dt><dd id="active-mode">Loading Wasm…</dd></div>
           <div><dt>Machine status</dt><dd id="status" aria-live="polite">Loading…</dd></div>
           <div><dt>Retired instructions</dt><dd id="instructions">0</dd></div>
+          <div><dt>Exceptions entered</dt><dd id="exceptions">0</dd></div>
+          <div><dt>Last exception</dt><dd id="last-exception">none</dd></div>
           <div><dt>Pending delay target</dt><dd><code id="delay">none</code></dd></div>
           <div><dt>Emulated frames</dt><dd id="frames">0</dd></div>
         </dl>
@@ -93,7 +95,7 @@
             <button id="frame" type="button" disabled>Advance frame</button>
           </div>
           <div class="actions run-controls">
-            <label for="count">Instructions</label>
+            <label for="count">CPU steps</label>
             <input id="count" type="number" min="1" max="10000" step="1" value="6">
             <button id="run" type="button">Run</button>
           </div>
@@ -102,7 +104,7 @@
           <h3>Bootstrap reference</h3>
           <p>In boot settings, choose <strong>HLE bootstrap prototype</strong>, then Reset and Run 6.</p>
           <p><code>R0=4 · R1=7 · PC=0x0600000E</code></p>
-          <p>Later runs stay in a BRA/NOP loop. Run is bounded to 10000 instructions. This original fixture is not Saturn BIOS service emulation.</p>
+          <p>Later runs stay in a BRA/NOP loop. Run is bounded to 10000 CPU steps; exception entry and sleeping steps may retire no instructions. This original fixture is not Saturn BIOS service emulation.</p>
         </aside>
       </section>
       <section id="register-panel" class="panel register-panel" aria-labelledby="register-heading" hidden>

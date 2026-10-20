@@ -64,6 +64,19 @@ impl Emulator {
     pub fn instruction_count(&self) -> String {
         self.machine.cpu_state().instructions.to_string()
     }
+    pub fn exception_count(&self) -> String {
+        self.machine.cpu_state().exceptions.to_string()
+    }
+    pub fn last_exception(&self) -> String {
+        self.machine
+            .cpu_state()
+            .last_exception
+            .as_ref()
+            .map_or_else(
+                || "none".into(),
+                |e| format!("Vector {} · saved PC 0x{:08X}", e.vector, e.saved_pc),
+            )
+    }
     pub fn delay_target(&self) -> Option<u32> {
         self.machine.cpu_state().delay_target
     }
@@ -80,6 +93,7 @@ impl Emulator {
         match &self.machine.cpu_state().status {
             CpuStatus::Reset => "Reset — waiting for valid boot input".into(),
             CpuStatus::Running => "Ready".into(),
+            CpuStatus::Sleeping => "Sleeping — waiting for an interrupt".into(),
             CpuStatus::Halted => "Halted".into(),
             CpuStatus::Faulted(error) => format!("Faulted: {error}"),
         }

@@ -1,13 +1,25 @@
-//! Original, instruction-counted SH-2 subset. See docs/architecture.md for sources.
+//! Independently written SH-2 reference interpreter. See docs/hardware-conformance.md.
 use crate::bus::{BusError, Memory};
 use std::fmt;
+
+const T: u32 = 1;
+const S: u32 = 2;
+const Q: u32 = 0x100;
+const M: u32 = 0x200;
+const SR_MASK: u32 = 0x3F3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CpuError {
     NotRunning,
-    Bus { pc: u32, source: BusError },
-    UnsupportedOpcode { pc: u32, opcode: u16 },
-    BranchInDelaySlot { pc: u32, opcode: u16 },
+    Bus {
+        pc: u32,
+        source: BusError,
+    },
+    ExceptionEntry {
+        pc: u32,
+        vector: u8,
+        source: BusError,
+    },
 }
 
 impl fmt::Display for CpuError {
@@ -15,32 +27,34 @@ impl fmt::Display for CpuError {
         match self {
             Self::NotRunning => write!(f, "CPU is stopped; reset before stepping"),
             Self::Bus { pc, source } => write!(f, "Memory access at PC 0x{pc:08X}: {source}"),
-            Self::UnsupportedOpcode { pc, opcode } => write!(
+            Self::ExceptionEntry { pc, vector, source } => write!(
                 f,
-                "Unsupported opcode 0x{opcode:04X} at PC 0x{pc:08X}; exception handling is not implemented"
-            ),
-            Self::BranchInDelaySlot { pc, opcode } => write!(
-                f,
-                "Branch 0x{opcode:04X} in delay slot at PC 0x{pc:08X}; slot-illegal exception is not implemented"
+                "Exception vector {vector} entry at PC 0x{pc:08X}: {source}"
             ),
         }
     }
 }
-
 impl std::error::Error for CpuError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CpuStatus {
     Reset,
     Running,
+    Sleeping,
     Halted,
     Faulted(CpuError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Exception {
+    pub vector: u8,
+    pub saved_pc: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CpuState {
     pub r: [u32; 16],
-    /// Address of the next instruction to fetch, including a pending delay slot.
+    /// Next fetch address; while sleeping, the instruction after SLEEP.
     pub pc: u32,
     pub sr: u32,
     pub pr: u32,
@@ -48,8 +62,11 @@ pub struct CpuState {
     pub vbr: u32,
     pub mach: u32,
     pub macl: u32,
+    /// Retired instructions; illegal instructions and interrupt entry do not retire.
     pub instructions: u64,
     pub delay_target: Option<u32>,
+    pub exceptions: u64,
+    pub last_exception: Option<Exception>,
     pub status: CpuStatus,
 }
 
@@ -66,14 +83,34 @@ impl Default for CpuState {
             macl: 0,
             instructions: 0,
             delay_target: None,
+            exceptions: 0,
+            last_exception: None,
             status: CpuStatus::Reset,
         }
+    }
+}
+
+impl CpuState {
+    fn set_t(&mut self, value: bool) {
+        self.sr = (self.sr & !T) | u32::from(value);
+    }
+
+    fn accumulator(&self) -> u64 {
+        ((self.mach as u64) << 32) | self.macl as u64
+    }
+
+    fn set_accumulator(&mut self, value: u64) {
+        self.mach = (value >> 32) as u32;
+        self.macl = value as u32;
     }
 }
 
 #[derive(Debug, Default)]
 pub struct Cpu {
     state: CpuState,
+    /// System/control transfers and delayed conditional branches inhibit interrupts
+    /// for one successor, including when the conditional branch is untaken.
+    interrupt_inhibited: bool,
 }
 
 impl Cpu {
@@ -88,23 +125,69 @@ impl Cpu {
             ..CpuState::default()
         };
         state.r[15] = sp;
-        Self { state }
+        Self {
+            state,
+            interrupt_inhibited: false,
+        }
     }
 
-    /// Power-on reset vectors are absolute physical addresses 0 and 4, not VBR-relative.
+    /// Power-on vectors are physical 0 and 4, not VBR-relative.
     pub fn power_on(bus: &impl Memory) -> Result<Self, BusError> {
         Ok(Self::start(bus.read32(0)?, bus.read32(4)?))
     }
 
-    /// Debugger stop, not an emulation of SLEEP or a hardware halt signal.
+    /// Debugger stop, separate from the architectural SLEEP state.
     pub fn halt(&mut self) {
         self.state.status = CpuStatus::Halted;
     }
 
-    /// One successful call retires exactly one instruction; faults are sticky.
+    /// The caller supplies the winning hardware interrupt and retries if deferred.
+    /// This is CPU entry only; device requests/acknowledgment are not synthesized here.
+    pub fn accept_interrupt(
+        &mut self,
+        bus: &mut impl Memory,
+        level: u8,
+        vector: u8,
+    ) -> Result<bool, CpuError> {
+        if !(1..=15).contains(&level) || level as u32 <= (self.state.sr >> 4) & 15 {
+            return Ok(false);
+        }
+        self.interrupt(bus, vector, level)
+    }
+
+    /// NMI has vector 11 and raises the interrupt mask to 15.
+    pub fn accept_nmi(&mut self, bus: &mut impl Memory) -> Result<bool, CpuError> {
+        self.interrupt(bus, 11, 15)
+    }
+
+    fn interrupt(
+        &mut self,
+        bus: &mut impl Memory,
+        vector: u8,
+        level: u8,
+    ) -> Result<bool, CpuError> {
+        if !matches!(self.state.status, CpuStatus::Running | CpuStatus::Sleeping)
+            || self.state.delay_target.is_some()
+            || self.interrupt_inhibited
+        {
+            return Ok(false);
+        }
+        let pc = self.state.pc;
+        let result = self.enter_exception(bus, vector, pc);
+        if let Err(error) = result {
+            self.state.status = CpuStatus::Faulted(error.clone());
+            return Err(error);
+        }
+        self.state.sr = (self.state.sr & !0xF0) | (level as u32) << 4;
+        Ok(true)
+    }
+
+    /// Bounded: sleeping calls return without fetching or retiring an instruction.
+    /// Faults caused by unavailable host bus/device behavior stay sticky until reset.
     pub fn step(&mut self, bus: &mut impl Memory) -> Result<(), CpuError> {
         match &self.state.status {
             CpuStatus::Running => (),
+            CpuStatus::Sleeping => return Ok(()),
             CpuStatus::Faulted(error) => return Err(error.clone()),
             _ => return Err(CpuError::NotRunning),
         }
@@ -115,76 +198,402 @@ impl Cpu {
         result
     }
 
-    fn execute(&mut self, bus: &mut impl Memory) -> Result<(), CpuError> {
+    fn enter_exception(
+        &mut self,
+        bus: &mut impl Memory,
+        vector: u8,
+        saved_pc: u32,
+    ) -> Result<(), CpuError> {
         let s = &mut self.state;
-        let pc = s.pc;
-        let opcode = bus
-            .read16(pc)
-            .map_err(|source| CpuError::Bus { pc, source })?;
-        // SH-1/SH-2 Programming Manual §6: branches are illegal in a slot.
-        let branch = matches!(opcode & 0xF000, 0xA000 | 0xB000)
-            || matches!(opcode & 0xFF00, 0x8900 | 0x8B00)
-            || opcode & 0xF0FF == 0x402B
-            || opcode == 0x000B;
-        if branch && s.delay_target.is_some() {
-            return Err(CpuError::BranchInDelaySlot { pc, opcode });
+        let access = |source| CpuError::ExceptionEntry {
+            pc: s.pc,
+            vector,
+            source,
+        };
+        // Bus operations are ordered SR push, PC push, vector fetch (SH7604 §4.1.2).
+        // A failed entry is a bounded diagnostic, not recursive host exception dispatch.
+        let sp = s.r[15].wrapping_sub(8);
+        bus.write32(sp.wrapping_add(4), s.sr).map_err(access)?;
+        bus.write32(sp, saved_pc).map_err(access)?;
+        let target = bus
+            .read32(s.vbr.wrapping_add(vector as u32 * 4))
+            .map_err(access)?;
+        s.r[15] = sp;
+        s.pc = target;
+        s.delay_target = None;
+        s.exceptions += 1;
+        s.last_exception = Some(Exception { vector, saved_pc });
+        s.status = CpuStatus::Running;
+        self.interrupt_inhibited = false;
+        Ok(())
+    }
+
+    fn illegal(&mut self, bus: &mut impl Memory) -> Result<(), CpuError> {
+        // SH7604 §4.5.3: a slot exception saves the pending jump destination.
+        let (vector, saved_pc) = self
+            .state
+            .delay_target
+            .map_or((4, self.state.pc), |target| (6, target));
+        self.enter_exception(bus, vector, saved_pc)
+    }
+
+    fn execute(&mut self, bus: &mut impl Memory) -> Result<(), CpuError> {
+        let pc = self.state.pc;
+        let access = |source| CpuError::Bus { pc, source };
+        let opcode = bus.read16(pc).map_err(access)?;
+        let rewrites_pc = matches!(opcode & 0xF000, 0xA000 | 0xB000)
+            || matches!(opcode & 0xFF00, 0x8900 | 0x8B00 | 0x8D00 | 0x8F00 | 0xC300)
+            || matches!(opcode & 0xF0FF, 0x0003 | 0x0023 | 0x400B | 0x402B)
+            || matches!(opcode, 0x000B | 0x002B);
+        if rewrites_pc && self.state.delay_target.is_some() {
+            return self.illegal(bus);
         }
+        if opcode & 0xFF00 == 0xC300 {
+            self.enter_exception(bus, opcode as u8, pc.wrapping_add(2))?;
+            self.state.instructions += 1;
+            return Ok(());
+        }
+
         let n = ((opcode >> 8) & 15) as usize;
         let m = ((opcode >> 4) & 15) as usize;
-        let immediate = (opcode as u8 as i8 as i32) as u32;
+        let imm = opcode as u8 as u32;
+        let signed_imm = opcode as u8 as i8 as i32 as u32;
+        let s = &mut self.state;
         let mut next_branch = None;
         let mut sequential_pc = pc.wrapping_add(2);
-        let access = |source| CpuError::Bus { pc, source };
+        let mut inhibit = false;
+        let operand_pc = s
+            .delay_target
+            .map_or(pc.wrapping_add(4), |target| target.wrapping_add(2));
+
         match opcode {
-            0x0009 => (),                       // NOP
-            0x000B => next_branch = Some(s.pr), // RTS latches PR before the slot
-            _ if opcode & 0xF000 == 0xE000 => s.r[n] = immediate,
+            0x0008 => s.sr &= !T, // CLRT
+            0x0018 => s.sr |= T,  // SETT
+            0x0028 => {
+                s.mach = 0;
+                s.macl = 0;
+            } // CLRMAC
+            0x0019 => s.sr &= !(M | Q | T), // DIV0U
+            0x0009 => (),
+            0x000B => next_branch = Some(s.pr),
+            0x001B => s.status = CpuStatus::Sleeping,
+            0x002B => {
+                // RTE: restore SR before executing the slot.
+                let target = bus.read32(s.r[15]).map_err(access)?;
+                let sr = bus.read32(s.r[15].wrapping_add(4)).map_err(access)?;
+                s.r[15] = s.r[15].wrapping_add(8);
+                s.sr = sr & SR_MASK;
+                next_branch = Some(target);
+            }
+            _ if opcode & 0xF000 == 0xE000 => s.r[n] = signed_imm,
+            _ if opcode & 0xF000 == 0x7000 => s.r[n] = s.r[n].wrapping_add(signed_imm),
             _ if opcode & 0xF00F == 0x6003 => s.r[n] = s.r[m],
-            _ if opcode & 0xF000 == 0x7000 => s.r[n] = s.r[n].wrapping_add(immediate),
-            // MOV.B/W indirect loads sign-extend; MOV.L copies all bits.
-            _ if opcode & 0xF00F == 0x6000 => {
-                s.r[n] = bus.read8(s.r[m]).map_err(access)? as i8 as i32 as u32
+            // Indirect and postincrement loads, with sign extension at byte/word widths.
+            _ if matches!(opcode & 0xF00F, 0x6000..=0x6002 | 0x6004..=0x6006) => {
+                let width = 1 << (opcode & 3);
+                let value = read_operand(bus, s.r[m], width).map_err(access)?;
+                if opcode & 4 != 0 && n != m {
+                    s.r[m] = s.r[m].wrapping_add(width);
+                }
+                s.r[n] = value;
             }
-            _ if opcode & 0xF00F == 0x6001 => {
-                s.r[n] = bus.read16(s.r[m]).map_err(access)? as i16 as i32 as u32
+            // Predecrement stores latch the source before changing the address register.
+            _ if matches!(opcode & 0xF00F, 0x2000..=0x2002 | 0x2004..=0x2006) => {
+                let width = 1 << (opcode & 3);
+                let address = s.r[n].wrapping_sub(if opcode & 4 != 0 { width } else { 0 });
+                write_operand(bus, address, width, s.r[m]).map_err(access)?;
+                s.r[n] = address;
             }
-            _ if opcode & 0xF00F == 0x6002 => s.r[n] = bus.read32(s.r[m]).map_err(access)?,
-            _ if opcode & 0xF00F == 0x2000 => bus.write8(s.r[n], s.r[m] as u8).map_err(access)?,
-            _ if opcode & 0xF00F == 0x2001 => bus.write16(s.r[n], s.r[m] as u16).map_err(access)?,
-            _ if opcode & 0xF00F == 0x2002 => bus.write32(s.r[n], s.r[m]).map_err(access)?,
-            _ if opcode & 0xF000 == 0xD000 => {
-                // In a delay slot, PC-relative operands use branch destination + 2.
-                let operand_pc = s
-                    .delay_target
-                    .map_or(pc.wrapping_add(4), |target| target.wrapping_add(2));
-                let address = (operand_pc & !3).wrapping_add((opcode as u8 as u32) * 4);
-                s.r[n] = bus.read32(address).map_err(access)?;
-            }
-            _ if opcode & 0xF00F == 0x300C => s.r[n] = s.r[n].wrapping_add(s.r[m]),
-            _ if opcode & 0xF00F == 0x3008 => s.r[n] = s.r[n].wrapping_sub(s.r[m]),
-            _ if opcode & 0xF00F == 0x3000 => s.sr = (s.sr & !1) | u32::from(s.r[n] == s.r[m]),
-            _ if opcode & 0xF00F == 0x3002 => s.sr = (s.sr & !1) | u32::from(s.r[n] >= s.r[m]),
-            _ if opcode & 0xFF00 == 0xC800 => {
-                s.sr = (s.sr & !1) | u32::from(s.r[0] & (opcode as u8 as u32) == 0)
-            }
-            _ if opcode & 0xF0FF == 0x4010 => {
-                s.r[n] = s.r[n].wrapping_sub(1);
-                s.sr = (s.sr & !1) | u32::from(s.r[n] == 0);
-            }
-            _ if opcode & 0xF0FF == 0x4000 => {
-                s.sr = (s.sr & !1) | (s.r[n] >> 31);
-                s.r[n] <<= 1;
-            }
-            _ if opcode & 0xF0FF == 0x4008 => s.r[n] <<= 2,
-            _ if opcode & 0xF0FF == 0x4018 => s.r[n] <<= 8,
-            _ if matches!(opcode & 0xFF00, 0x8900 | 0x8B00) => {
-                if (s.sr & 1 != 0) == (opcode & 0xFF00 == 0x8900) {
-                    sequential_pc = pc
-                        .wrapping_add(4)
-                        .wrapping_add((immediate as i32 * 2) as u32);
+            // R0-indexed loads/stores.
+            _ if matches!(opcode & 0xF00F, 0x0004..=0x0006 | 0x000C..=0x000E) => {
+                let width = 1 << (opcode & 3);
+                if opcode & 8 == 0 {
+                    write_operand(bus, s.r[n].wrapping_add(s.r[0]), width, s.r[m])
+                        .map_err(access)?;
+                } else {
+                    s.r[n] =
+                        read_operand(bus, s.r[m].wrapping_add(s.r[0]), width).map_err(access)?;
                 }
             }
-            _ if opcode & 0xF0FF == 0x402B => next_branch = Some(s.r[n]),
+            _ if matches!(opcode & 0xF000, 0x1000 | 0x5000) => {
+                let disp = (opcode as u32 & 15) * 4;
+                if opcode & 0xF000 == 0x1000 {
+                    bus.write32(s.r[n].wrapping_add(disp), s.r[m])
+                        .map_err(access)?;
+                } else {
+                    s.r[n] = bus.read32(s.r[m].wrapping_add(disp)).map_err(access)?;
+                }
+            }
+            _ if matches!(opcode & 0xFF00, 0x8000 | 0x8100 | 0x8400 | 0x8500) => {
+                // Here bits 7..4 select the base, not the usual n field.
+                let width = 1 << ((opcode >> 8) & 1);
+                let address = s.r[m].wrapping_add((opcode as u32 & 15) * width);
+                if opcode & 0x400 == 0 {
+                    write_operand(bus, address, width, s.r[0]).map_err(access)?;
+                } else {
+                    s.r[0] = read_operand(bus, address, width).map_err(access)?;
+                }
+            }
+            _ if matches!(opcode & 0xFF00, 0xC000..=0xC200 | 0xC400..=0xC600) => {
+                let width = 1 << ((opcode >> 8) & 3);
+                let address = s.gbr.wrapping_add(imm * width);
+                if opcode & 0x400 == 0 {
+                    write_operand(bus, address, width, s.r[0]).map_err(access)?;
+                } else {
+                    s.r[0] = read_operand(bus, address, width).map_err(access)?;
+                }
+            }
+            _ if opcode & 0xF000 == 0x9000 => {
+                s.r[n] = bus
+                    .read16(operand_pc.wrapping_add(imm * 2))
+                    .map_err(access)? as i16 as i32 as u32;
+            }
+            _ if opcode & 0xF000 == 0xD000 => {
+                s.r[n] = bus
+                    .read32((operand_pc & !3).wrapping_add(imm * 4))
+                    .map_err(access)?;
+            }
+            _ if opcode & 0xFF00 == 0xC700 => s.r[0] = (operand_pc & !3).wrapping_add(imm * 4), // MOVA
+            _ if opcode & 0xF0FF == 0x0029 => s.r[n] = s.sr & T, // MOVT
+            _ if opcode & 0xF00F == 0x6008 => {
+                s.r[n] = (s.r[m] & 0xFFFF0000) | (s.r[m] as u16).swap_bytes() as u32
+            }
+            _ if opcode & 0xF00F == 0x6009 => s.r[n] = s.r[m].rotate_left(16),
+            _ if opcode & 0xF00F == 0x200D => s.r[n] = (s.r[m] << 16) | (s.r[n] >> 16), // XTRCT
+            _ if opcode & 0xF00F == 0x600C => s.r[n] = s.r[m] & 0xFF,
+            _ if opcode & 0xF00F == 0x600D => s.r[n] = s.r[m] & 0xFFFF,
+            _ if opcode & 0xF00F == 0x600E => s.r[n] = s.r[m] as i8 as i32 as u32,
+            _ if opcode & 0xF00F == 0x600F => s.r[n] = s.r[m] as i16 as i32 as u32,
+            _ if opcode & 0xF00F == 0x300C => s.r[n] = s.r[n].wrapping_add(s.r[m]),
+            _ if opcode & 0xF00F == 0x3008 => s.r[n] = s.r[n].wrapping_sub(s.r[m]),
+            _ if matches!(opcode & 0xF00F, 0x300E | 0x300A | 0x600A) => {
+                // ADDC/SUBC/NEGC
+                let a = if opcode & 0xF000 == 0x6000 {
+                    0
+                } else {
+                    s.r[n] as u64
+                };
+                let b = s.r[m] as u64 + (s.sr & T) as u64;
+                if opcode & 15 == 14 {
+                    let sum = a + b;
+                    s.r[n] = sum as u32;
+                    s.set_t(sum > u32::MAX as u64);
+                } else {
+                    s.r[n] = a.wrapping_sub(b) as u32;
+                    s.set_t(a < b);
+                }
+            }
+            _ if matches!(opcode & 0xF00F, 0x300F | 0x300B) => {
+                let a = s.r[n] as i32;
+                let b = s.r[m] as i32;
+                let (value, overflow) = if opcode & 4 != 0 {
+                    a.overflowing_add(b)
+                } else {
+                    a.overflowing_sub(b)
+                };
+                s.r[n] = value as u32;
+                s.set_t(overflow);
+            }
+            _ if opcode & 0xF00F == 0x600B => s.r[n] = s.r[m].wrapping_neg(),
+            _ if opcode & 0xF00F == 0x3000 => s.set_t(s.r[n] == s.r[m]),
+            _ if opcode & 0xF00F == 0x3002 => s.set_t(s.r[n] >= s.r[m]),
+            _ if opcode & 0xF00F == 0x3003 => s.set_t(s.r[n] as i32 >= s.r[m] as i32),
+            _ if opcode & 0xF00F == 0x3006 => s.set_t(s.r[n] > s.r[m]),
+            _ if opcode & 0xF00F == 0x3007 => s.set_t(s.r[n] as i32 > s.r[m] as i32),
+            _ if opcode & 0xFF00 == 0x8800 => s.set_t(s.r[0] == signed_imm),
+            _ if opcode & 0xF0FF == 0x4011 => s.set_t(s.r[n] as i32 >= 0),
+            _ if opcode & 0xF0FF == 0x4015 => s.set_t(s.r[n] as i32 > 0),
+            _ if opcode & 0xF00F == 0x200C => s.set_t((s.r[n] ^ s.r[m]).to_be_bytes().contains(&0)),
+            _ if opcode & 0xF0FF == 0x4010 => {
+                s.r[n] = s.r[n].wrapping_sub(1);
+                s.set_t(s.r[n] == 0);
+            }
+            _ if opcode & 0xF00F == 0x2007 => {
+                // DIV0S
+                let q = s.r[n] >> 31;
+                let m_bit = s.r[m] >> 31;
+                s.sr = (s.sr & !(Q | M | T)) | (q << 8) | (m_bit << 9) | (q ^ m_bit);
+            }
+            _ if opcode & 0xF00F == 0x3004 => {
+                // Non-restoring division: select +/- by old Q/M; carry/borrow and
+                // the old dividend sign determine the next Q. No host division.
+                let negative = s.r[n] >> 31 != 0;
+                let old_q = s.sr & Q != 0;
+                let m_bit = s.sr & M != 0;
+                // P §6.19 updates Rn before reading Rm, which may alias Rn.
+                s.r[n] = (s.r[n] << 1) | (s.sr & T);
+                let (value, carry) = if old_q == m_bit {
+                    s.r[n].overflowing_sub(s.r[m])
+                } else {
+                    s.r[n].overflowing_add(s.r[m])
+                };
+                let q = negative ^ carry ^ m_bit;
+                s.r[n] = value;
+                s.sr = (s.sr & !Q) | if q { Q } else { 0 };
+                s.set_t(q == m_bit);
+            }
+            _ if opcode & 0xF00F == 0x0007 => s.macl = s.r[n].wrapping_mul(s.r[m]),
+            _ if opcode & 0xF00F == 0x200E => s.macl = (s.r[n] & 0xFFFF) * (s.r[m] & 0xFFFF),
+            _ if opcode & 0xF00F == 0x200F => {
+                s.macl = (s.r[n] as i16 as i32).wrapping_mul(s.r[m] as i16 as i32) as u32
+            }
+            _ if opcode & 0xF00F == 0x3005 => s.set_accumulator(s.r[n] as u64 * s.r[m] as u64),
+            _ if opcode & 0xF00F == 0x300D => {
+                s.set_accumulator((s.r[n] as i32 as i64 * s.r[m] as i32 as i64) as u64)
+            }
+            _ if matches!(opcode & 0xF00F, 0x000F | 0x400F) => {
+                let width = if opcode & 0x4000 == 0 { 4 } else { 2 };
+                // Read/increment Rn first, then Rm, including when n == m.
+                let a = read_operand(bus, s.r[n], width).map_err(access)? as i32 as i64;
+                let m_address = s.r[m].wrapping_add(if n == m { width } else { 0 });
+                let b = read_operand(bus, m_address, width).map_err(access)? as i32 as i64;
+                s.r[n] = s.r[n].wrapping_add(width);
+                s.r[m] = s.r[m].wrapping_add(width);
+                let product = a * b;
+                if s.sr & S == 0 {
+                    s.set_accumulator(s.accumulator().wrapping_add(product as u64));
+                } else if width == 2 {
+                    // SH-2 (unlike SH-1) leaves MACH unchanged for saturated MAC.W.
+                    s.macl = (s.macl as i32 as i64 + product)
+                        .clamp(i32::MIN as i64, i32::MAX as i64)
+                        as u32;
+                } else {
+                    let acc = ((s.accumulator() << 16) as i64) >> 16;
+                    let sum = (acc + product).clamp(-(1_i64 << 47), (1_i64 << 47) - 1);
+                    s.set_accumulator(sum as u64);
+                }
+            }
+            _ if opcode & 0xF00F == 0x2008 => s.set_t(s.r[n] & s.r[m] == 0),
+            _ if opcode & 0xF00F == 0x2009 => s.r[n] &= s.r[m],
+            _ if opcode & 0xF00F == 0x200A => s.r[n] ^= s.r[m],
+            _ if opcode & 0xF00F == 0x200B => s.r[n] |= s.r[m],
+            _ if opcode & 0xF00F == 0x6007 => s.r[n] = !s.r[m],
+            _ if matches!(opcode & 0xFF00, 0xC800..=0xCB00) => match (opcode >> 8) & 3 {
+                0 => s.set_t(s.r[0] & imm == 0),
+                1 => s.r[0] &= imm,
+                2 => s.r[0] ^= imm,
+                _ => s.r[0] |= imm,
+            },
+            _ if matches!(opcode & 0xFF00, 0xCC00..=0xCF00) => {
+                let address = s.gbr.wrapping_add(s.r[0]);
+                let value = bus.read8(address).map_err(access)?;
+                match (opcode >> 8) & 3 {
+                    0 => s.set_t(value & imm as u8 == 0),
+                    1 => bus.write8(address, value & imm as u8).map_err(access)?,
+                    2 => bus.write8(address, value ^ imm as u8).map_err(access)?,
+                    _ => bus.write8(address, value | imm as u8).map_err(access)?,
+                }
+            }
+            _ if opcode & 0xF0FF == 0x401B => {
+                // TAS.B: one synchronous read/modify/write.
+                let value = bus.read8(s.r[n]).map_err(access)?;
+                bus.write8(s.r[n], value | 0x80).map_err(access)?;
+                s.set_t(value == 0);
+            }
+            _ if matches!(
+                opcode & 0xF0FF,
+                0x4000 | 0x4020 | 0x4001 | 0x4021 | 0x4004 | 0x4005 | 0x4024 | 0x4025
+            ) =>
+            {
+                let old = s.r[n];
+                let right = opcode & 1 != 0;
+                let outgoing = if right { old & 1 } else { old >> 31 };
+                let incoming = if opcode & 4 == 0 {
+                    0
+                } else if opcode & 0x20 != 0 {
+                    s.sr & T
+                } else {
+                    outgoing
+                };
+                s.r[n] = if right {
+                    if opcode & 0x24 == 0x20 {
+                        ((old as i32) >> 1) as u32
+                    } else {
+                        (old >> 1) | (incoming << 31)
+                    }
+                } else {
+                    (old << 1) | incoming
+                };
+                s.set_t(outgoing != 0);
+            }
+            _ if matches!(
+                opcode & 0xF0FF,
+                0x4008 | 0x4009 | 0x4018 | 0x4019 | 0x4028 | 0x4029
+            ) =>
+            {
+                let amount = match opcode & 0x30 {
+                    0 => 2,
+                    0x10 => 8,
+                    _ => 16,
+                };
+                s.r[n] = if opcode & 1 != 0 {
+                    s.r[n] >> amount
+                } else {
+                    s.r[n] << amount
+                };
+            }
+            // System/control transfers share the architectural one-instruction IRQ inhibition.
+            _ if matches!(
+                opcode & 0xF0FF,
+                0x0002 | 0x0012 | 0x0022 | 0x000A | 0x001A | 0x002A
+            ) =>
+            {
+                s.r[n] = special(s, opcode & 15 == 2, (opcode >> 4) & 3);
+                inhibit = true;
+            }
+            _ if matches!(
+                opcode & 0xF0FF,
+                0x4003 | 0x4013 | 0x4023 | 0x4002 | 0x4012 | 0x4022
+            ) =>
+            {
+                let address = s.r[n].wrapping_sub(4);
+                bus.write32(address, special(s, opcode & 1 != 0, (opcode >> 4) & 3))
+                    .map_err(access)?;
+                s.r[n] = address;
+                inhibit = true;
+            }
+            _ if matches!(
+                opcode & 0xF0FF,
+                0x400E | 0x401E | 0x402E | 0x400A | 0x401A | 0x402A
+            ) =>
+            {
+                set_special(s, opcode & 15 == 14, (opcode >> 4) & 3, s.r[n]);
+                inhibit = true;
+            }
+            _ if matches!(
+                opcode & 0xF0FF,
+                0x4007 | 0x4017 | 0x4027 | 0x4006 | 0x4016 | 0x4026
+            ) =>
+            {
+                let value = bus.read32(s.r[n]).map_err(access)?;
+                s.r[n] = s.r[n].wrapping_add(4);
+                set_special(s, opcode & 1 != 0, (opcode >> 4) & 3, value);
+                inhibit = true;
+            }
+            _ if matches!(opcode & 0xFF00, 0x8900 | 0x8B00 | 0x8D00 | 0x8F00) => {
+                let taken = (s.sr & T != 0) == (opcode & 0x200 == 0);
+                let target = pc.wrapping_add(4).wrapping_add(signed_imm.wrapping_mul(2));
+                // H §4.6 Table 4.10: the successor must execute before IRQ/NMI
+                // acceptance even when BT/S or BF/S does not take the branch.
+                inhibit = opcode & 0x400 != 0;
+                if taken {
+                    if opcode & 0x400 != 0 {
+                        next_branch = Some(target);
+                    } else {
+                        sequential_pc = target;
+                    }
+                }
+            }
+            _ if matches!(opcode & 0xF0FF, 0x400B | 0x402B | 0x0003 | 0x0023) => {
+                next_branch = Some(if opcode & 0x4000 != 0 {
+                    s.r[n]
+                } else {
+                    pc.wrapping_add(4).wrapping_add(s.r[n])
+                });
+                if opcode & 0x20 == 0 {
+                    s.pr = pc.wrapping_add(4);
+                }
+            }
             _ if matches!(opcode & 0xF000, 0xA000 | 0xB000) => {
                 if opcode & 0xF000 == 0xB000 {
                     s.pr = pc.wrapping_add(4);
@@ -192,303 +601,58 @@ impl Cpu {
                 let displacement = ((opcode << 4) as i16 as i32) >> 4;
                 next_branch = Some(pc.wrapping_add(4).wrapping_add((displacement * 2) as u32));
             }
-            _ => return Err(CpuError::UnsupportedOpcode { pc, opcode }),
+            _ => return self.illegal(bus),
         }
         s.pc = s.delay_target.take().unwrap_or(sequential_pc);
         s.delay_target = next_branch;
         s.instructions += 1;
+        self.interrupt_inhibited = inhibit;
         Ok(())
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::bus::{Bus, HIGH_WRAM};
-
-    fn setup(opcodes: &[u16]) -> (Cpu, Bus) {
-        let mut bus = Bus::default();
-        for (i, opcode) in opcodes.iter().enumerate() {
-            bus.write16(HIGH_WRAM + i as u32 * 2, *opcode).unwrap();
-        }
-        (Cpu::start(HIGH_WRAM, 0x0610_0000), bus)
-    }
-
-    #[test]
-    fn nop_only_advances_pc_and_instruction_count() {
-        let (mut cpu, mut bus) = setup(&[0x0009]);
-        let mut expected = cpu.state.clone();
-        expected.pc += 2;
-        expected.instructions += 1;
-        cpu.step(&mut bus).unwrap();
-        assert_eq!(cpu.state, expected);
-    }
-
-    #[test]
-    fn mov_immediate_sign_extends_at_boundaries_into_every_register() {
-        for n in 0..16 {
-            for (immediate, expected) in [
-                (0x00, 0),
-                (0x7F, 127),
-                (0x80, 0xFFFF_FF80),
-                (0xFF, u32::MAX),
-            ] {
-                let (mut cpu, mut bus) = setup(&[0xE000 | (n << 8) | immediate]);
-                cpu.step(&mut bus).unwrap();
-                assert_eq!(cpu.state.r[n as usize], expected);
-                assert_eq!(cpu.state.pc, HIGH_WRAM + 2);
-                assert_eq!(cpu.state.sr, 0xF0);
-            }
-        }
-    }
-
-    #[test]
-    fn mov_register_copies_all_32_bits_and_leaves_source_and_flags() {
-        let (mut cpu, mut bus) = setup(&[0x6F23, 0x6FF3]);
-        cpu.state.r[2] = 0x89AB_CDEF;
-        cpu.state.sr = 0xF3;
-        for _ in 0..2 {
-            cpu.step(&mut bus).unwrap();
-            assert_eq!(cpu.state.r[15], 0x89AB_CDEF);
-            assert_eq!(cpu.state.r[2], 0x89AB_CDEF);
-            assert_eq!(cpu.state.sr, 0xF3);
-        }
-    }
-
-    #[test]
-    fn add_immediate_sign_extends_and_wraps_without_changing_flags() {
-        for (initial, immediate, expected) in [
-            (0, 0xFF, u32::MAX),
-            (u32::MAX, 1, 0),
-            (1, 0x80, 0xFFFF_FF81),
-            (0x7FFF_FFFF, 1, 0x8000_0000),
-            (1, 0x7F, 128),
-        ] {
-            let (mut cpu, mut bus) = setup(&[0x7300 | immediate]);
-            cpu.state.r[3] = initial;
-            cpu.state.sr = 0xF1;
-            cpu.step(&mut bus).unwrap();
-            assert_eq!(cpu.state.r[3], expected);
-            assert_eq!(cpu.state.sr, 0xF1);
-        }
-    }
-
-    #[test]
-    fn bra_latches_signed_pc_plus_four_target_and_executes_one_slot() {
-        for (opcode, displacement) in [
-            (0xA000, 0_i32),
-            (0xA001, 1),
-            (0xA7FF, 2047),
-            (0xA800, -2048),
-            (0xAFFF, -1),
-        ] {
-            let (mut cpu, mut bus) = setup(&[opcode, 0x7101, 0x7102]);
-            let target = HIGH_WRAM
-                .wrapping_add(4)
-                .wrapping_add((displacement * 2) as u32);
-            cpu.step(&mut bus).unwrap();
-            assert_eq!(cpu.state.pc, HIGH_WRAM + 2);
-            assert_eq!(cpu.state.delay_target, Some(target));
-            assert_eq!(cpu.state.r[1], 0);
-            cpu.step(&mut bus).unwrap();
-            assert_eq!(cpu.state.pc, target);
-            assert_eq!(cpu.state.r[1], 1);
-            assert_eq!(cpu.state.delay_target, None);
-            assert_eq!(cpu.state.instructions, 2);
-        }
-    }
-
-    #[test]
-    fn rts_returns_to_pr_after_one_slot_and_preserves_pr() {
-        let (mut cpu, mut bus) = setup(&[0x000B, 0xE22A, 0xE263]);
-        cpu.state.pr = HIGH_WRAM + 0x100;
-        cpu.step(&mut bus).unwrap();
-        assert_eq!(cpu.state.pc, HIGH_WRAM + 2);
-        assert_eq!(cpu.state.delay_target, Some(HIGH_WRAM + 0x100));
-        cpu.step(&mut bus).unwrap();
-        assert_eq!(cpu.state.pc, HIGH_WRAM + 0x100);
-        assert_eq!(cpu.state.r[2], 42);
-        assert_eq!(cpu.state.pr, HIGH_WRAM + 0x100);
-        assert_eq!(cpu.state.instructions, 2);
-    }
-
-    #[test]
-    fn unsupported_opcode_error_is_exact_sticky_and_has_no_retired_side_effects() {
-        let (mut cpu, mut bus) = setup(&[0xFFFF]);
-        let before = cpu.state.clone();
-        let error = CpuError::UnsupportedOpcode {
-            pc: HIGH_WRAM,
-            opcode: 0xFFFF,
-        };
-        assert_eq!(cpu.step(&mut bus), Err(error.clone()));
-        assert_eq!(
-            error.to_string(),
-            "Unsupported opcode 0xFFFF at PC 0x06000000; exception handling is not implemented"
-        );
-        let mut expected = before;
-        expected.status = CpuStatus::Faulted(error.clone());
-        assert_eq!(cpu.state, expected);
-        bus.write16(HIGH_WRAM, 0x0009).unwrap();
-        assert_eq!(cpu.step(&mut bus), Err(error));
-        assert_eq!(cpu.state, expected);
-    }
-
-    #[test]
-    fn bad_slot_does_not_commit_pending_branch() {
-        for opcode in [0xA000, 0x000B, 0xFFFF] {
-            let (mut cpu, mut bus) = setup(&[0xA001, opcode]);
-            cpu.step(&mut bus).unwrap();
-            let result = cpu.step(&mut bus);
-            if opcode == 0xFFFF {
-                assert!(matches!(result, Err(CpuError::UnsupportedOpcode { .. })));
-            } else {
-                assert_eq!(
-                    result,
-                    Err(CpuError::BranchInDelaySlot {
-                        pc: HIGH_WRAM + 2,
-                        opcode
-                    })
-                );
-            }
-            assert_eq!(cpu.state.pc, HIGH_WRAM + 2);
-            assert_eq!(cpu.state.delay_target, Some(HIGH_WRAM + 6));
-            assert_eq!(cpu.state.instructions, 1);
-        }
-    }
-
-    #[test]
-    fn fetch_faults_are_explicit_and_stopped_states_do_not_execute() {
-        let mut bus = Bus::default();
-        for pc in [0x0400_0000, HIGH_WRAM + 1] {
-            let mut cpu = Cpu::start(pc, 0);
-            assert!(matches!(cpu.step(&mut bus), Err(CpuError::Bus { pc: p, .. }) if pc == p));
-            assert_eq!(cpu.state.instructions, 0);
-            assert_eq!(cpu.state.pc, pc);
-        }
-        let mut cpu = Cpu::default();
-        assert_eq!(cpu.step(&mut bus), Err(CpuError::NotRunning));
-        cpu = Cpu::start(HIGH_WRAM, 0);
-        cpu.halt();
-        assert_eq!(cpu.step(&mut bus), Err(CpuError::NotRunning));
-        assert_eq!(cpu.state.status, CpuStatus::Halted);
-    }
-    #[test]
-    fn memory_instructions_obey_sign_extension_width_and_big_endian_access() {
-        let (mut cpu, mut bus) = setup(&[0x2310, 0x2311, 0x2312, 0x6430, 0x6531, 0x6632]);
-        cpu.state.r[1] = 0x89AB_CDEF;
-        cpu.state.r[3] = HIGH_WRAM + 0x100;
-        for width in [1, 2, 4] {
-            cpu.step(&mut bus).unwrap();
-            let expected = match width {
-                1 => 0xEF000000,
-                2 => 0xCDEF0000,
-                _ => 0x89ABCDEF,
-            };
-            assert_eq!(bus.read32(HIGH_WRAM + 0x100), Ok(expected));
-        }
-        for _ in 0..3 {
-            cpu.step(&mut bus).unwrap();
-        }
-        assert_eq!(&cpu.state.r[4..7], &[0xFFFFFF89, 0xFFFF89AB, 0x89ABCDEF]);
-        assert_eq!(cpu.state.sr, 0xF0);
-    }
-
-    #[test]
-    fn data_faults_do_not_retire_or_modify_destination_or_pending_slot() {
-        for opcode in [0x6120, 0x6121, 0x6122, 0x2210, 0x2211, 0x2212] {
-            let (mut cpu, mut bus) = setup(&[0xA001, opcode]);
-            cpu.state.r[1] = 0x12345678;
-            cpu.state.r[2] = 0x04000001;
-            cpu.step(&mut bus).unwrap();
-            let before = cpu.state.clone();
-            assert!(matches!(cpu.step(&mut bus), Err(CpuError::Bus { .. })));
-            assert_eq!(cpu.state.r, before.r);
-            assert_eq!(cpu.state.pc, before.pc);
-            assert_eq!(cpu.state.delay_target, before.delay_target);
-            assert_eq!(cpu.state.instructions, 1);
-        }
-    }
-
-    #[test]
-    fn arithmetic_flags_compare_unsigned_and_shift_carry_without_clobbering_sr() {
-        let (mut cpu, mut bus) = setup(&[
-            0x312C, 0x3128, 0x3120, 0x3122, 0x4100, 0x4108, 0x4118, 0x4110, 0xC880,
-        ]);
-        cpu.state.r[1] = 0xFFFFFFFF;
-        cpu.state.r[2] = 1;
-        cpu.state.sr = 0xF3;
-        cpu.step(&mut bus).unwrap();
-        assert_eq!(cpu.state.r[1], 0);
-        assert_eq!(cpu.state.sr, 0xF3);
-        cpu.step(&mut bus).unwrap();
-        assert_eq!(cpu.state.r[1], 0xFFFFFFFF);
-        cpu.step(&mut bus).unwrap(); // CMP/EQ false
-        assert_eq!(cpu.state.sr, 0xF2);
-        cpu.step(&mut bus).unwrap(); // unsigned >= true, despite high bit
-        assert_eq!(cpu.state.sr, 0xF3);
-        cpu.step(&mut bus).unwrap();
-        assert_eq!(cpu.state.r[1], 0xFFFFFFFE);
-        assert_eq!(cpu.state.sr, 0xF3);
-        cpu.step(&mut bus).unwrap();
-        cpu.step(&mut bus).unwrap();
-        assert_eq!(cpu.state.r[1], 0xFFFFF800);
-        assert_eq!(cpu.state.sr, 0xF3);
-        cpu.state.r[1] = 1;
-        cpu.step(&mut bus).unwrap();
-        assert_eq!(cpu.state.r[1], 0);
-        assert_eq!(cpu.state.sr, 0xF3);
-        cpu.state.r[0] = 0x80;
-        cpu.step(&mut bus).unwrap();
-        assert_eq!(cpu.state.sr, 0xF2);
-    }
-
-    #[test]
-    fn conditional_branches_have_no_slot_and_use_signed_pc_plus_four() {
-        for (opcode, t, target) in [
-            (0x89FE, 1, 0),
-            (0x8B7F, 0, 258),
-            (0x8980, 1, -252),
-            (0x8901, 0, 2),
-            (0x8B01, 1, 2),
-        ] {
-            let (mut cpu, mut bus) = setup(&[opcode, 0xE163]);
-            cpu.state.sr = 0xF0 | t;
-            cpu.step(&mut bus).unwrap();
-            assert_eq!(cpu.state.pc, HIGH_WRAM.wrapping_add(target as u32));
-            assert_eq!(cpu.state.delay_target, None);
-            assert_eq!(cpu.state.r[1], 0);
-        }
-        for opcode in [0x8900, 0x8B00, 0xB000, 0x412B] {
-            let (mut cpu, mut bus) = setup(&[0xA000, opcode]);
-            cpu.step(&mut bus).unwrap();
-            assert!(matches!(
-                cpu.step(&mut bus),
-                Err(CpuError::BranchInDelaySlot { .. })
-            ));
-        }
-    }
-
-    #[test]
-    fn calls_jumps_and_pc_relative_literals_use_architectural_pc() {
-        let (mut cpu, mut bus) = setup(&[0xB002, 0xD101, 0x0009, 0x0009, 0x412B, 0x7101]);
-        bus.write32(HIGH_WRAM + 12, HIGH_WRAM + 0x100).unwrap();
-        cpu.step(&mut bus).unwrap();
-        assert_eq!(cpu.state.pr, HIGH_WRAM + 4);
-        cpu.step(&mut bus).unwrap();
-        // MOV.L in a slot uses (destination + 2) aligned down, then disp*4.
-        assert_eq!(cpu.state.r[1], HIGH_WRAM + 0x100);
-        assert_eq!(cpu.state.pc, HIGH_WRAM + 8);
-        cpu.step(&mut bus).unwrap();
-        cpu.step(&mut bus).unwrap();
-        assert_eq!(cpu.state.pc, HIGH_WRAM + 0x100);
-        assert_eq!(cpu.state.r[1], HIGH_WRAM + 0x101); // target latched before slot
-        for offset in [0, 2] {
-            let (mut cpu, mut bus) = setup(&[0x0009, 0x0009]);
-            cpu.state.pc += offset;
-            bus.write16(HIGH_WRAM + offset, 0xD201).unwrap();
-            bus.write32(HIGH_WRAM + 8, 0xFEDCBA98).unwrap();
-            cpu.step(&mut bus).unwrap();
-            assert_eq!(cpu.state.r[2], 0xFEDCBA98);
-        }
+fn read_operand(bus: &impl Memory, address: u32, width: u32) -> Result<u32, BusError> {
+    match width {
+        1 => Ok(bus.read8(address)? as i8 as i32 as u32),
+        2 => Ok(bus.read16(address)? as i16 as i32 as u32),
+        _ => bus.read32(address),
     }
 }
+
+fn write_operand(
+    bus: &mut impl Memory,
+    address: u32,
+    width: u32,
+    value: u32,
+) -> Result<(), BusError> {
+    match width {
+        1 => bus.write8(address, value as u8),
+        2 => bus.write16(address, value as u16),
+        _ => bus.write32(address, value),
+    }
+}
+
+fn special(s: &CpuState, control: bool, index: u16) -> u32 {
+    match (control, index) {
+        (true, 0) => s.sr,
+        (true, 1) => s.gbr,
+        (true, _) => s.vbr,
+        (false, 0) => s.mach,
+        (false, 1) => s.macl,
+        (false, _) => s.pr,
+    }
+}
+
+fn set_special(s: &mut CpuState, control: bool, index: u16, value: u32) {
+    match (control, index) {
+        (true, 0) => s.sr = value & SR_MASK,
+        (true, 1) => s.gbr = value,
+        (true, _) => s.vbr = value,
+        (false, 0) => s.mach = value,
+        (false, 1) => s.macl = value,
+        (false, _) => s.pr = value,
+    }
+}
+
+#[cfg(test)]
+mod tests;
