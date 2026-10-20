@@ -54,37 +54,52 @@ its public license, then creates
 by Git; the reproducible ISO and its license are committed. Rebuild after changing
 Rust or guest source. Opening `index.html` as a `file:` URL will not work. The client needs browser support for ES modules, Wasm and the
 `wasm-unsafe-eval` CSP directive; the tested browser is recorded in
-[validation results](validation-issue-7.md).
+[validation results](validation-issue-9.md).
 
-1. Click **Play Homebrew** to fetch the packaged MIT-licensed Star Collector
-   ISO and boot it through BIOS-less HLE. Initial guest bitmap clearing takes a
-   few frames. Click the screen for keyboard focus; arrows move the cyan player,
-   yellow stars are collected one at a time. Five gold blocks and a green banner
+1. The default **Play** view centers the native 320×224 display, scaled at 10:7
+   with pixelated rendering. Click **Play Star Collector** to fetch the packaged
+   MIT-licensed ISO and boot it through BIOS-less HLE. Initial guest bitmap
+   clearing takes a few frames. Click the screen for keyboard focus; arrows move
+   the cyan player, yellow stars are collected one at a time. Five gold blocks and a green banner
    mean success. Press **Enter / Start** to restart inside the guest, including
    after completion. This is a silent build.
-2. Use **Pause/Resume** or **Advance frame** for deterministic inspection. **Reset**
-   cold-boots the currently loaded image. Changing tabs pauses and releases input;
-   losing keyboard focus releases held buttons. Choose **BIOS-less HLE disc** and
-   a local authorized ISO to use the same path without fetching the sample.
+2. Use the adjacent **Pause/Resume**, **Restart** and **Fullscreen** controls.
+   Restart cold-boots the selected disc and starts playback when settings are
+   closed. Fullscreen targets the player shell; exit with its button or the
+   browser's Escape action. Unavailable/denied requests show an explanation and
+   leave the normal player usable. Focus returns to the Fullscreen button on exit.
+   Losing display/window focus releases held buttons. Hiding the browser tab pauses.
+3. Choose **Debug** for CPU R0–R15 and special registers, retired instructions,
+   pending delay target, machine status, **Step**, **Run**, **Reset** and **Advance
+   frame**. Frame advancement requires a ready, paused disc. Switching Play/Debug
+   pauses and releases input without resetting, changing boot mode, discarding
+   selected files or clearing errors. Returning to Play requires **Resume**.
+   Invisible register tables are not refreshed during Play.
+4. Open **Load ISO / BIOS & boot settings** with click or Enter/Space on its
+   disclosure. Opening pauses and releases input; closing it does not reset or
+   resume. Even if a pending sample download finishes after you dismiss settings
+   or return from Debug, playback stays paused. Choose **BIOS-less HLE disc** and
+   a local authorized ISO to use the same loader without fetching the sample.
+   Local images load paused; close settings and use Resume to play.
    Only the documented single-area Saturn IP + ISO9660 cooked 2048-byte-sector
    format and device subset are supported, up to 16 MiB. BIN/CUE, compressed images
    and generic game compatibility are future work. Malformed or unsupported media
    produce errors and stop the old machine.
-3. To inspect the preserved debugger fixture, select **HLE bootstrap prototype**.
-   Click Step to see `R0=5`, then
+5. To inspect the preserved debugger fixture, select **HLE bootstrap prototype**
+   in settings and choose **Debug**. Click Step to see `R0=5`, then
    Reset and Run the default 6 instructions. Expect `R0=4`, `R1=7`,
    `PC=0x0600000E`, and 6 retired instructions.
-4. Step again to see a pending branch, and again to execute its NOP delay slot.
+6. Step again to see a pending branch, and again to execute its NOP delay slot.
    Further bounded runs stay in that loop. This is a test/homebrew startup path,
    not BIOS service emulation.
-5. Choose **User-provided BIOS**. Missing input shows a size error and disables
-   stepping. Select a legally obtained **raw 524288-byte** BIOS. Incorrect sizes
-   are rejected; correct size validates the layout, not authenticity or region.
+7. In settings, choose **User-provided BIOS**. Missing input shows a size error
+   and disables stepping. Select a legally obtained **raw 524288-byte** BIOS.
+   Incorrect sizes are rejected; correct size validates the layout, not authenticity or region.
    Native Sega BIOS boot is incomplete; BIOS mode never switches to HLE.
    PC and R15 are loaded from the first two big-endian vector words. Step or Run
    may stop immediately with the unsupported opcode and its PC.
-6. Reset restarts the selected mode. Changing mode or file performs a cold reset;
-   switching modes discards the previous file selection. Run accepts a whole
+8. Debug Reset restarts the selected mode. Changing mode or file performs a cold
+   reset; switching modes discards the previous file selection. Run accepts a whole
    count from 1 to 10000. Faults remain stopped until reset.
 
 Only static files, including the original MIT-licensed sample ISO, are fetched.
@@ -119,7 +134,22 @@ BIOS/disc data. It boots the actual ISO through Wasm, drives two distinct
 keyboard sequences, verifies guest-written position/score/completion/update
 counters and Canvas pixel differences, completes and restarts, rejects malformed
 local discs, checks pending-file/mode races and loads a local ISO offline. It uses
-only original licensed guest content and no Sega firmware. Nonzero exit means failure.
+only original licensed guest content and no Sega firmware. It also checks the
+Play-first state, keyboard view navigation and native settings disclosure,
+CPU/media/diagnostic preservation, pause and held-key release, hidden register
+updates, loading/view races, Play Restart and Debug frame advancement. At
+1440×900, 768×1024 and 390×844 it asserts native canvas dimensions, rendered 10:7
+ratio, pixelated scaling, no document horizontal overflow and reachable controls
+in Play, Debug and expanded settings (including a selected BIOS).
+
+The test exercises actual Fullscreen API entry/exit and focus restoration when
+the headless browser allows it, and reports the path taken. It always checks
+unavailable feedback and, when the API is enabled, a deterministic rejected
+request. Headless Chromium cannot establish OS fullscreen/Escape behavior or
+support in Safari, Firefox or mobile browsers; responsive tests resize a desktop
+browser and do not emulate touch hardware. Keyboard, not virtual touch controls,
+is required. See [Issue #9 validation](validation-issue-9.md) for actual browsers
+and results. Nonzero exit means failure.
 
 ## GitHub Pages
 
@@ -150,9 +180,12 @@ Required post-merge verification (pending until actually performed):
    deployed commit and successful Actions/environment deployment at
    <https://takahirox.github.io/saturn-rust/>. Confirm HTML/CSS/ES modules/Wasm and
    the sample ISO load at the project prefix.
-2. On the live page, click **Play Homebrew**, move using arrows, collect stars,
+2. On the live page, confirm the default **Play** view and click **Play Star
+   Collector**, move using arrows, collect stars,
    observe score blocks, reach the green completion banner and restart with
-   Enter. Record production-only defects and fix them in follow-up work.
+   Enter. Verify Pause/Resume, Restart, Debug registers/stepping, boot settings
+   and view switching without resets. Record production-only defects and fix
+   them in follow-up work.
 
 These checks require the merged deployment and cannot be claimed from a green
 local smoke test. This implementation run does not push, publish or verify a new
