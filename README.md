@@ -26,8 +26,9 @@ through emulated SMPC hardware. Game rules and drawing execute as guest SH-2 cod
 
 - [Build, run, test and Pages setup](docs/setup.md)
 - [Supported CPU, disc boot and hardware; limitations and primary manuals](docs/architecture.md)
-- [Hardware conformance matrix and outstanding Issue #13 scope](docs/hardware-conformance.md)
-- [Backup RAM and second-pad validation; remaining completion gates](docs/validation-issue-13.md)
+- [Hardware conformance matrix and outstanding Issue #15 scope](docs/hardware-conformance.md)
+- [Address-error implementation and automated validation](docs/validation-issue-15.md)
+- [Historical backup RAM and second-pad validation](docs/validation-issue-13.md)
 - [SH-2 expansion validation](docs/validation-issue-11.md)
 - [Game source, reproducible ISO build and MIT license](homebrew/star-collector/README.md)
 - [Redistribution/provenance audit](docs/homebrew-provenance.md)
@@ -66,8 +67,8 @@ from source, and smoke tests allow only known public assets in the upload.
 A repository administrator may need to select **Settings → Pages → Build and
 deployment → Source: GitHub Actions** and permit Actions/deployments. Check
 **Actions → Browser Pages** and the `github-pages` environment for failures.
-Local tests do not prove live publication; [post-merge verification](docs/setup.md#github-pages)
-remains necessary for the deployed revision.
+Local tests do not prove live publication. [Optional automated deployment checks](docs/setup.md#github-pages)
+are separate from Issue #15's native/Wasm/browser acceptance requirements.
 
 Contributor and AI agent guidance:
 

@@ -5,9 +5,9 @@ fn bios() -> Vec<u8> {
     bytes[0..4].copy_from_slice(&0x100_u32.to_be_bytes());
     bytes[4..8].copy_from_slice(&0x0610_0000_u32.to_be_bytes());
     bytes[0x100..0x102].copy_from_slice(&0xE02A_u16.to_be_bytes());
-    // MOV.L @R0,R1: R0=42 is unaligned. Keep the bounded host-bus fault fixture
-    // separate from guest illegal-instruction exception dispatch.
-    bytes[0x102..0x104].copy_from_slice(&0x6102_u16.to_be_bytes());
+    // MOV.B R0,@R0: ROM writes remain bounded host diagnostics, distinct from
+    // architectural CPU address errors and guest illegal-instruction dispatch.
+    bytes[0x102..0x104].copy_from_slice(&0x2000_u16.to_be_bytes());
     bytes
 }
 

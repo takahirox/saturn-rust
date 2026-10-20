@@ -32,9 +32,11 @@ The Rust library is browser-independent. Tests cover instructions/flags/delay
 slots, synthetic BIOS vectors, RAM/VRAM/MMIO, digital-pad selection, VDP2 pixels,
 ISO parsing/errors and actual guest gameplay/completion/restart. The shared
 original synthetic ROM also exercises guest trap/illegal/slot-illegal
-handlers, RTE and bounded SLEEP in native and Wasm execution. No proprietary
-files are required. See [Issue #13 coverage](hardware-conformance.md),
-[current validation](validation-issue-13.md) and
+handlers, RTE and bounded SLEEP in native and Wasm execution. An additional original
+synthetic BIOS tests address errors from data, branch slots and odd fetches,
+guest-written exception traces, RTE recovery and reset of a pending error.
+No proprietary files are required. See [Issue #15 coverage](hardware-conformance.md),
+[current validation](validation-issue-15.md) and
 [earlier SH-2 validation](validation-issue-11.md). The committed sample can be rebuilt and
 verified without an
 external cross compiler or SDK:
@@ -197,22 +199,12 @@ or repository setting, then push a fix or rerun the latest `main` workflow.
 The existing relative asset URLs and `wasm-unsafe-eval` CSP work at the project
 prefix; no custom domain or backend is required.
 
-Required post-merge verification (pending until actually performed):
-
-1. After this change merges and **Browser Pages** deploys `main`, record the
-   deployed commit and successful Actions/environment deployment at
-   <https://takahirox.github.io/saturn-rust/>. Confirm HTML/CSS/ES modules/Wasm and
-   the sample ISO load at the project prefix.
-2. On the live page, confirm the default **Play** view and click **Play Star
-   Collector**, move using arrows, collect stars,
-   observe score blocks, reach the green completion banner and restart with
-   Enter. Verify Pause/Resume, Restart, Debug registers/stepping, boot settings
-   and view switching without resets. Record production-only defects and fix
-   them in follow-up work.
-
-These checks require the merged deployment and cannot be claimed from a green
-local smoke test. This implementation run does not push, publish or verify a new
-live revision.
+Issue #15 requires no human post-merge verification. Mandatory checks run before
+merge using native/Wasm tests and the headless browser against the same static
+assets under `/saturn-rust/`. An optional automated deployed-site smoke check may
+report publication defects after merge; it is not an approval/closure gate.
+Local results do not prove a production deployment succeeded. This implementation
+run does not push, publish or verify a new live revision.
 
 The hosted build supports only the original silent Star Collector hardware
 subset. External BIOS mode retains local/private reset-vector stepping but does

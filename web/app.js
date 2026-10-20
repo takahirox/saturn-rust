@@ -61,6 +61,10 @@ function setText(id, text) {
   if ($(id).textContent !== text) $(id).textContent = text;
 }
 
+function canExecute(status = emulator.status()) {
+  return status === "Ready" || (status.startsWith("Sleeping") && emulator.address_error_pending());
+}
+
 function render() {
   if (!emulator) return;
   const machineStatus = emulator.status();
@@ -79,7 +83,7 @@ function render() {
     $("frames").textContent = emulator.frames();
   }
   const busy = loadingFile || loadingBackup;
-  const ready = !busy && machineStatus === "Ready";
+  const ready = !busy && canExecute(machineStatus);
   $("step").disabled = !ready;
   $("run").disabled = !ready;
   $("reset").disabled = loadingFile;
@@ -210,7 +214,7 @@ try {
   $("reset").addEventListener("click", reset);
   $("restart").addEventListener("click", () => {
     reset();
-    if ($("mode").value === "disc" && emulator.status() === "Ready" && !$("settings").open && view === "play") {
+    if ($("mode").value === "disc" && canExecute() && !$("settings").open && view === "play") {
       playing = true;
       lastFrame = 0;
       $("screen").focus();
@@ -267,7 +271,7 @@ try {
   const beginDisc = () => {
     const startPlaying = playAfterLoad;
     reset();
-    if (emulator.status() === "Ready") {
+    if (canExecute()) {
       playing = startPlaying && view === "play" && !$("settings").open;
       lastFrame = 0;
       if (playing) $("screen").focus();

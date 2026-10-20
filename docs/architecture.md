@@ -3,8 +3,8 @@
 This original Rust implementation now executes **Star Collector**, a silent,
 original Saturn-targeted SH-2 homebrew disc, through a documented BIOS-less HLE
 bootstrap. This is one small hardware subset, not general Saturn or commercial
-game compatibility. External Sega BIOS boot remains incomplete. No production
-playability claim is made before post-merge Pages verification.
+game compatibility. External Sega BIOS boot remains incomplete. Acceptance uses
+automated local/CI checks; live Pages inspection is not a completion gate.
 
 ## Component boundaries
 
@@ -75,9 +75,19 @@ successful entry saves the old SR/next PC, updates I, wakes SLEEP and jumps to t
 handler without retiring an instruction. These APIs are tested directly, but
 **Machine has no device interrupt controller or scheduler that calls them yet**.
 
-CPU/address errors (including delayed acceptance), reset variants, cache,
-SH7604 on-chip peripherals and dual-CPU integration are outstanding. Bus fetch,
-data and exception-entry failures remain explicit, sticky host diagnostics.
+CPU address errors dispatch vector 9 with next-PC/SR stacking, operand completion
+and delayed-branch deferral (SH7604 §§4.3/4.6/4.7). `src/cpu/memory.rs` checks
+alignment, on-chip widths and PC-relative/TAS restrictions before device access.
+Invalid reads return deterministic zero and invalid writes are suppressed;
+register/flag and auto-update effects still complete. This reproducibility policy
+does not emulate physical invalid-cycle bus data/signals. The pending latch is
+observable in `CpuState` and Wasm; reset clears it. Original synthetic BIOS tests
+exercise handler return and independently expected PC/SR traces in native/Wasm.
+See [address-error deviations](hardware-conformance.md#address-error-scope-and-deterministic-deviations).
+
+Reset variants, cache, SH7604 on-chip peripherals and dual-CPU integration are
+outstanding. Missing bus/device implementations and exception-entry failures
+remain explicit, sticky host diagnostics.
 Exception entry is bounded on a failing stack/vector access; successful writes
 before a later entry failure are not rolled back. This is not hardware double-
 fault emulation. The standalone instruction engine does not provide cycle timing,
@@ -212,15 +222,15 @@ added. Manuals/firmware are not redistributed.
 
 ## Remaining milestones
 
-Architectural address-error exceptions, hardware interrupt wiring, accurate timers
+Misaligned exception stacking, hardware interrupt wiring, accurate timers
 and cycles, slave SH-2, SCU DMA/DSP/interrupts, SMPC commands/INTBACK, additional VDP2
 modes, VDP1, CD-block runtime reads, BIOS services and native BIOS startup remain
 future compatibility work. Audio (68EC000/SCSP) is absent; this build is silent.
 Reference-emulator/hardware comparison, Gamepad API and performance
-measurements have not been performed. Sound is required by Issue #13 and remains
+measurements have not been performed. Sound is required by Issue #15 and remains
 missing. No dynarec, workers,
 server backend or general-game compatibility is introduced.
 
-Issue #13 is incomplete and must remain open; #11 is superseded and closed.
+Issue #15 tracks all unmet hardware criteria; #11/#13 remain closed and superseded.
 See [hardware conformance and unresolved gaps](hardware-conformance.md)
-and [current validation](validation-issue-13.md).
+and [current validation](validation-issue-15.md).
