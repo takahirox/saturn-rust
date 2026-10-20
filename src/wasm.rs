@@ -76,6 +76,9 @@ impl Emulator {
     pub fn exception_count(&self) -> String {
         self.machine.cpu_state().exceptions.to_string()
     }
+    pub fn address_error_pending(&self) -> bool {
+        self.machine.cpu_state().address_error_pending
+    }
     pub fn last_exception(&self) -> String {
         self.machine
             .cpu_state()

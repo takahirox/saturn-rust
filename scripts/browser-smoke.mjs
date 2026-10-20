@@ -66,6 +66,7 @@ try {
     return { registers: Array.from(emulator.registers()), special: Array.from(emulator.special_registers()),
       retired: String(emulator.instruction_count()), frames: String(emulator.frames()),
       exceptions: emulator.exception_count(), lastException: emulator.last_exception(),
+      addressErrorPending: emulator.address_error_pending(),
       delay: emulator.delay_target() ?? null, mode: emulator.mode(), status: emulator.status() };
   });
   // waitForFunction predicates must be synchronous in this Playwright version.
@@ -193,7 +194,7 @@ try {
   bios.writeUInt32BE(0x100, 0);
   bios.writeUInt32BE(0x06100000, 4);
   bios.writeUInt16BE(0xE02A, 0x100); // MOV #42,R0
-  bios.writeUInt16BE(0x6102, 0x102); // MOV.L @R0,R1: deterministic unaligned bus diagnostic
+  bios.writeUInt16BE(0x2000, 0x102); // MOV.B R0,@R0: explicit read-only ROM diagnostic
   await page.locator("#bios").setInputFiles({ name: "original-test-vectors.bin", mimeType: "application/octet-stream", buffer: bios });
   await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
   assert.equal(await value("pc"), "0x00000100");
@@ -202,7 +203,7 @@ try {
   await page.locator("#step").click();
   assert.equal(await value("r0"), "0x0000002A");
   await page.locator("#step").click();
-  assert.match(await value("error"), /Memory access at PC 0x00000102: Unaligned 4-byte access at 0x0000002A/);
+  assert.match(await value("error"), /Memory access at PC 0x00000102: Read-only BIOS: 1-byte write at 0x0000002A/);
   assert.equal(await page.locator("#run").isDisabled(), true);
   const faulted = await machine();
   const faultText = await value("error");
@@ -252,6 +253,79 @@ try {
   await page.locator("#reset").click();
   assert.equal(await value("exceptions"), "0");
   assert.equal(await value("last-exception"), "none");
+  await page.locator("#count").fill("6");
+  // Same original BIOS and golden exception trace as tests/sh2_address_errors.rs.
+  // The guest logs its own PC/SR frames and fixes an odd fetch PC with RTE.
+  const addressRom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/sh2-address-errors.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [offset, ...words] = line.trim().split(/\s+/).map((word) => parseInt(word, 16));
+    words.forEach((word, i) => addressRom.writeUInt16BE(word, offset + i * 2));
+  }
+  await page.locator("#bios").setInputFiles({ name: "original-sh2-address-errors.bin", mimeType: "application/octet-stream", buffer: addressRom });
+  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000100");
+  await page.locator("#count").fill("4");
+  await page.locator("#run").click();
+  assert.equal(await value("error"), "");
+  assert.equal(await value("pc"), "0x00000108");
+  assert.equal(await value("r1"), "0x06001005");
+  assert.equal(await value("exceptions"), "0");
+  assert.equal((await machine()).addressErrorPending, true);
+  await page.locator("#step").click();
+  assert.equal(await value("pc"), "0x00000200");
+  assert.equal(await value("instructions"), "4");
+  assert.equal(await value("last-exception"), "Vector 9 · saved PC 0x00000108");
+  assert.equal((await machine()).addressErrorPending, false);
+  await page.locator("#count").fill("1000");
+  await page.locator("#run").click();
+  assert.equal(await value("error"), "");
+  assert.equal(await value("pc"), "0x00000120");
+  assert.equal(await value("r1"), "0x06001003");
+  assert.equal(await value("r2"), "0x00000055");
+  assert.equal(await value("r6"), "0x00000000");
+  assert.equal(await value("r4"), "0x00000001");
+  assert.equal(await value("r5"), "0x00000007");
+  assert.equal(await value("r9"), "0x00000003");
+  assert.equal(await value("r15"), "0x06100000");
+  assert.equal(await value("instructions"), "55");
+  assert.equal(await value("exceptions"), "3");
+  assert.equal(await value("last-exception"), "Vector 9 · saved PC 0x0000011B");
+  assert.match(await value("status"), /Sleeping/);
+  const addressTrace = await page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    return { frames: Array.from({length: 6}, (_, i) => emulator.read_long(0x06002000 + i * 4)),
+      neighbors: [emulator.read_long(0x06001000), emulator.read_long(0x06001004)] };
+  });
+  assert.deepEqual(addressTrace, { frames: [0x108, 0xF0, 0x112, 0xF0, 0x11B, 0xF0], neighbors: [0, 0] });
+  const addressSleeping = await machine();
+  await page.locator("#reset").click();
+  await page.locator("#run").click();
+  assert.deepEqual(await machine(), addressSleeping);
+  // Reset must also discard an error that is still waiting for acceptance.
+  await page.locator("#reset").click();
+  await page.locator("#count").fill("4");
+  await page.locator("#run").click();
+  assert.equal((await machine()).addressErrorPending, true);
+  await page.locator("#reset").click();
+  assert.equal((await machine()).addressErrorPending, false);
+  assert.equal(await value("exceptions"), "0");
+  // RTE with an erroneous stack read defers through its SLEEP successor.
+  // The pending synchronous event must keep Debug Step/Run enabled.
+  const sleepingErrorRom = Buffer.alloc(524288);
+  sleepingErrorRom.writeUInt32BE(0x100, 0);
+  sleepingErrorRom.writeUInt32BE(0x06100000, 4);
+  [0xD101, 0x6F13, 0x002B, 0x001B, 0x0600, 0x1001].forEach((word, i) => sleepingErrorRom.writeUInt16BE(word, 0x100 + i * 2));
+  await page.locator("#bios").setInputFiles({ name: "original-sleeping-address-error.bin", mimeType: "application/octet-stream", buffer: sleepingErrorRom });
+  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000100");
+  await page.locator("#count").fill("4");
+  await page.locator("#run").click();
+  assert.equal((await machine()).addressErrorPending, true);
+  assert.match(await value("status"), /Sleeping/);
+  assert.equal(await page.locator("#step").isEnabled(), true);
+  assert.equal(await page.locator("#run").isEnabled(), true);
+  await page.locator("#step").click();
+  assert.match(await value("error"), /Exception vector 9 entry.*Unaligned/);
+  assert.equal(await page.locator("#step").isDisabled(), true);
   await page.locator("#count").fill("6");
   // A malformed replacement must clear the previously running external ROM.
   await page.locator("#bios").setInputFiles({ name: "wrong.bin", mimeType: "application/octet-stream", buffer: Buffer.from([0, 0]) });
@@ -661,7 +735,7 @@ try {
   await missingBuild.waitForFunction(() => document.getElementById("status").textContent === "Initialization failed");
   assert.match(await missingBuild.locator("#error").textContent(), /Build web\/pkg and serve/);
   assert.equal(await missingBuild.locator("#reset").isDisabled(), true);
-  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation.`);
+  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation.`);
 } finally {
   if (browser) await browser.close();
   if (server?.pid && server.exitCode === null) {

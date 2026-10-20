@@ -1,17 +1,19 @@
-# Hardware conformance for Issue #13
+# Hardware conformance for Issue #15
 
-**Status: incomplete; Issue #13 must remain open.** Issue #13 supersedes closed
-Issue #11 as the authoritative comprehensive tracker; do not reopen #11. This
-checkpoint adds internal backup-byte storage, explicit local import/export and a
-second direct digital pad. It does not deliver the complete Saturn hardware or
+**Status: incomplete; Issue #15 remains the comprehensive tracker.** It replaces
+the unmet scope of administratively closed Issues #11/#13; do not reopen either.
+This checkpoint adds SH-2 CPU address-error dispatch and an original synthetic
+BIOS fixture, preserving internal backup storage and both direct digital pads.
+It does not deliver the complete Saturn hardware or
 the two required new demonstrations. No overarching acceptance criterion is
 marked complete. An instruction/device test is evidence only for its exercised
 operation, not for the chip, its timing or general compatibility.
 
-Inspected upstream main: `80cb1509c96aea110f559ed41b200516c6d007c1` (2026-10-20),
+Inspected upstream main: `1327d81dfd1a011b69990fd26abf4cefd04a9a52` (2026-10-21),
 verified with `git ls-remote origin refs/heads/main`. The assigned readiness
-checkpoint is `640290a5dba4ce1d39eefeb0fa7bd0e67b8e9422`; no technical diagnosis
-was supplied. See [current validation](validation-issue-13.md) and the
+checkpoint is `6f219a42da4a43703214dc8fab3dc23d4c798ccc`; no technical diagnosis
+was supplied. See [current validation](validation-issue-15.md),
+[backup/pad validation](validation-issue-13.md) and the
 [historical SH-2 checkpoint](validation-issue-11.md). Update this matrix with each
 hardware change. **Pending** means required coverage or integrated native/Wasm
 validation remains missing, even when the documented subset has passing tests.
@@ -44,6 +46,18 @@ Native test keys refer to [src/cpu/tests.rs](../src/cpu/tests.rs):
 | sleep | `sleep_is_bounded_and_interrupt_entry_obeys_mask_vector_and_wakes_cpu` |
 | nop | `nop_only_advances_pc_and_instruction_count` |
 
+**AE** means [src/cpu/address_tests.rs](../src/cpu/address_tests.rs), whose nine
+tests cover vector 9, misaligned operands across addressing modes, completed
+auto-updates, saved PC/SR, branch deferral, SLEEP wake, on-chip width/PC-relative/
+TAS restrictions and bounded entry failure. Implementation:
+[`Cpu::step`, `Cpu::execute`, `Cpu::address_error`](../src/cpu.rs) and
+[`Operands::invalid/read/write`](../src/cpu/memory.rs). **AEROM** means
+[tests/sh2_address_errors.rs](../tests/sh2_address_errors.rs) and the same original
+[synthetic BIOS](../tests/fixtures/sh2-address-errors.hex) executed by the real
+browser Wasm in [browser-smoke.mjs](../scripts/browser-smoke.mjs). The guest logs
+three independently expected PC/SR frames, repairs an odd PC and returns via RTE.
+Neither fixture is Sega firmware or a complete BIOS-service implementation.
+
 **ROM** means [tests/sh2_system.rs](../tests/sh2_system.rs) and the same original
 [synthetic ROM](../tests/fixtures/sh2-system.hex) executed through the real browser
 Wasm in [browser-smoke.mjs](../scripts/browser-smoke.mjs). **BK** means the original [backup/port-2 guest](../tests/fixtures/backup-pad.hex)
@@ -61,8 +75,9 @@ instruction forms (53,752 valid encodings, 11,784 illegal encodings).
 ## SH-2 instruction families
 
 All rows describe functional interpreter behavior. Common outstanding limitations:
-no instruction cycles, pipeline/bus contention, architectural address-error
-exceptions or cache interactions. A valid opcode can still encounter a diagnostic
+no instruction cycles, pipeline/bus contention or cache interactions.
+Address-error entry is implemented with the invalid-cycle limitations below.
+A valid opcode can still encounter a diagnostic
 when it accesses a missing device. Architectural valid-instruction decoding does
 not turn those missing hardware paths into supported behavior.
 
@@ -144,9 +159,9 @@ not turn those missing hardware paths into supported behavior.
 | Register/reset model, H §§2/4.2 | Separate Cpu instances possible, power-on PC/SP vectors, SR=F0 | boot.rs | synthetic BIOS | Only master is owned/scheduled by Machine; manual reset absent | Pending |
 | General/slot illegal, H §4.5 | Vectors 4/6, correct saved PC, no retirement | exception | ROM | No double-fault bus handling | Pending |
 | TRAPA/RTE, H §§4.5/4.7 | Guest stack layout and handler return | exception, sh2_system.rs | ROM | System-level IRQ sources absent | Pending |
-| CPU address errors, H §4.3 | Bus validates alignment | bus.rs, CPU fault tests | bus diagnostic | **Missing** architectural vector 9 and delayed acceptance | Pending |
+| CPU address errors, H §§4.3/4.6/4.7, Tables 4.6/4.10/4.11 | Vector 9; odd/peripheral fetches; operand alignment/width/space restrictions; next PC/SR stack; completed auto-update; errors outrank caller IRQ/NMI; reset clears latch | AE, AEROM | AEROM | Invalid-cycle data/bus signals deterministic rather than physical; misaligned exception stacking (H §4.8.3) remains a sticky diagnostic | Pending |
 | Maskable IRQ/NMI, H §4.4 | Explicit caller-supplied level/vector, I mask, NMI vector 11, stack/wake | sleep, special | — | Missing device priority selection, assertion/acknowledgment, NMI signal latch | Pending |
-| Deferral, H §4.6 | Delay slots and one successor of control/system transfers | special | ROM (slots) | Address-error deferral missing | Pending |
+| Deferral, H §4.6 | IRQ/NMI defer through delayed successors and control/system successors; address errors defer only through delayed successors | special, AE | ROM, AEROM | No pipeline-cycle timing or device IRQ selection; unfetchable successor policy below | Pending |
 | Cache/address regions, H §2 and cache chapter | P1 external-bus alias only | bus.rs | SC | Cache lines, purge/associative access and coherency absent | Pending |
 | On-chip INTC, H interrupt controller | None | — | — | All registers/priority/vector interactions missing | Pending |
 | FRT, H timer chapter | None | — | — | Counter, compares, capture, overflow, IRQ missing | Pending |
@@ -244,7 +259,7 @@ manual entry in this table is an outstanding requirement, never a checked box.
 
 | Feature / reference | Current behavior / edge cases | Native | Browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- | --- |
-| BIOS ROM, O map | Exact 512 KiB, big endian, read-only, reset vectors | bus.rs, boot.rs | synthetic ROM | Real BIOS execution not validated | Pending |
+| BIOS ROM, O map | Exact 512 KiB, big endian, read-only, reset vectors; synthetic guest exception handlers | bus.rs, boot.rs, AEROM | ROM, AEROM | Full synthetic boot/MMIO/service coverage missing; genuine BIOS compatibility optional and not independently confirmed | Pending |
 | Low/high WRAM, O map | Independent 1 MiB banks; aligned B/W/L; P1 aliases | bus.rs | SC, ROM | Work RAM mirrors and timing missing | Pending |
 | Base-system address decoding, O map | Only documented subset in architecture.md | bus.rs | SC | A-bus/cartridge decoding and full base map missing | Pending |
 | MMIO widths/side effects, device manuals | Unsupported accesses return errors | devices.rs | SC | Full device routing/width rules missing | Pending |
@@ -337,7 +352,7 @@ storing a register without effects will not count as implementation.
 
 ## Concrete unresolved gaps and closure gates
 
-1. SH-2 architectural address errors and their delayed acceptance, reset domains,
+1. SH-2 misaligned exception stacking, remaining semantic/exception edges, reset domains,
    cache/coherency, mapped SH7604 peripherals, bus locking and integrated IRQs;
    independent slave execution and shared scheduling. CPU opcode decoding alone
    does not satisfy the CPU or multiprocessor criterion.
@@ -355,34 +370,48 @@ storing a register without effects will not count as implementation.
    VDP1+VDP2+audio playable game and the multiprocessor/SCU/runtime-CD/CD-DA/DSP/
    advanced-video/backup showcase. Both remain absent. Current synthetic ROMs
    and temporary backup/port-2 diagnostic ISO do not satisfy these requirements.
-8. Lawful local real-BIOS verification beyond vectors. No genuine BIOS was supplied
-   or searched for, and no retail/native BIOS compatibility is claimed. Future
-   verification must record only version/hash identifiers and observable results;
-   never commit or transmit firmware. Hardware/software gaps above must be fixed
-   before this verification is meaningful.
+8. Full original synthetic BIOS boot/MMIO/interrupt/service fixtures and separate
+   HLE ABI tests. Genuine BIOS/retail compatibility is **not independently
+   confirmed**, is optional, and never requires someone to supply firmware.
 9. Full conformance review and CI/native/Wasm/browser evidence for all the above.
    Existing subset tests pass locally, not a complete hardware conformance suite.
-10. Required public-site verification after eventual full implementation, merge and
-    Pages deployment. No push, PR, merge, comment or deployment is part of this node.
+10. Automated execution of both new demonstrations and all mandatory hardware
+    checks in native and Wasm/browser contexts. Live Pages inspection, personal
+    files, subjective review and external workflow confirmation are not gates.
 
-## Tracker closure and external automation — pending
+## Tracker closure and autonomous acceptance
 
-The [Issue #11 closure comment](https://github.com/takahirox/saturn-rust/issues/11#issuecomment-6292152071)
-was read directly. It states that a GitWeave node was explicitly instructed to
-close the source issue when its upstream result reported a merge, despite the
-partial PR and matrix saying it was incomplete. This is a demonstrated workflow
-problem, not evidence that any hardware criterion passed.
+[Issue #15](https://github.com/takahirox/saturn-rust/issues/15) supersedes prior
+closure-policy requirements. Partial hardware work can be reviewed using its
+actual technical evidence; external auto-close behavior does not block it.
+Administrative closure is not proof of completion. Report unmet criteria with
+plain references and continue implementation under the current umbrella backlog.
+Do not reopen #11/#13 or require workflow-owner confirmation, a real BIOS,
+manual hardware testing, subjective visual/audio approval or a live-site check.
+Existing CI runs native, Wasm and headless browser tests under `/saturn-rust/`.
+This node makes no remote changes; it neither investigates nor changes external
+GitWeave configuration. All hardware gaps above remain technical requirements.
 
-The tracked repository contains only `.github/workflows/pages.yml`, which builds,
-tests and deploys Pages; it has no issue-closing step or issue write permission.
-No GitWeave workflow implementation/configuration is present in this worktree.
-[AGENTS.md](../AGENTS.md) now explicitly preserves #13 on partial progress, and
-this checkpoint's Result must report incomplete status without closing keywords.
-Those instructions do **not** prove the external close node has been fixed.
-Before any intermediate merge enters that workflow, its owner must remove or
-bypass the merge-only close instruction and require the full #13 acceptance
-review. External enforcement remains **pending**; the automation acceptance
-criterion is unfulfilled. No issue state was modified here, and #11 stays closed.
+## Address-error scope and deterministic deviations
+
+H §4.3.2 requires an erroneous operand instruction to complete before accepting
+vector 9. `Operands` returns zero for an invalid read and suppresses invalid
+writes/device transactions, then the interpreter completes register/flag and
+predecrement/postincrement effects. This is an explicit reproducibility policy,
+not a claim about physical invalid-cycle data or bus signals. Successful valid
+cycles still go through ordinary `Memory`, including MMIO; unsupported hardware
+still fails rather than receiving a fabricated successful read.
+
+Acceptance occurs on the next eligible `step`, without retiring an instruction.
+The next PC and unchanged SR are stacked; taken branches save their destination.
+RTE with erroneous operands still executes its successor before acceptance;
+control/system transfers do not defer address errors. Odd/peripheral fetches do
+not decode or retire. At an unfetchable delayed successor, the interpreter
+finishes the branch boundary without retiring that successor and accepts the
+latch at the next step. Pipeline fetch contents and invalid bus data are not
+modeled. H §4.8.3 misaligned exception stacking, its undefined writes and nested
+address-error inhibition are still unsupported: failed entry is sticky/bounded.
+No full SH7604 conformance is claimed.
 
 ## Provenance and manual discrepancies
 

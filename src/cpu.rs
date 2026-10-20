@@ -2,6 +2,9 @@
 use crate::bus::{BusError, Memory};
 use std::fmt;
 
+mod memory;
+use memory::Operands;
+
 const T: u32 = 1;
 const S: u32 = 2;
 const Q: u32 = 0x100;
@@ -67,6 +70,8 @@ pub struct CpuState {
     pub delay_target: Option<u32>,
     pub exceptions: u64,
     pub last_exception: Option<Exception>,
+    /// Latched CPU address error, accepted before the next eligible fetch.
+    pub address_error_pending: bool,
     pub status: CpuStatus,
 }
 
@@ -85,6 +90,7 @@ impl Default for CpuState {
             delay_target: None,
             exceptions: 0,
             last_exception: None,
+            address_error_pending: false,
             status: CpuStatus::Reset,
         }
     }
@@ -111,6 +117,8 @@ pub struct Cpu {
     /// System/control transfers and delayed conditional branches inhibit interrupts
     /// for one successor, including when the conditional branch is untaken.
     interrupt_inhibited: bool,
+    /// Unlike control transfers, delayed branches also defer address errors.
+    address_error_inhibited: bool,
 }
 
 impl Cpu {
@@ -128,6 +136,7 @@ impl Cpu {
         Self {
             state,
             interrupt_inhibited: false,
+            address_error_inhibited: false,
         }
     }
 
@@ -169,6 +178,7 @@ impl Cpu {
         if !matches!(self.state.status, CpuStatus::Running | CpuStatus::Sleeping)
             || self.state.delay_target.is_some()
             || self.interrupt_inhibited
+            || self.state.address_error_pending
         {
             return Ok(false);
         }
@@ -187,11 +197,16 @@ impl Cpu {
     pub fn step(&mut self, bus: &mut impl Memory) -> Result<(), CpuError> {
         match &self.state.status {
             CpuStatus::Running => (),
-            CpuStatus::Sleeping => return Ok(()),
+            CpuStatus::Sleeping if !self.state.address_error_pending => return Ok(()),
+            CpuStatus::Sleeping => (),
             CpuStatus::Faulted(error) => return Err(error.clone()),
             _ => return Err(CpuError::NotRunning),
         }
-        let result = self.execute(bus);
+        let result = if self.state.address_error_pending && !self.address_error_inhibited {
+            self.address_error(bus)
+        } else {
+            self.execute(bus)
+        };
         if let Err(error) = &result {
             self.state.status = CpuStatus::Faulted(error.clone());
         }
@@ -225,6 +240,14 @@ impl Cpu {
         s.last_exception = Some(Exception { vector, saved_pc });
         s.status = CpuStatus::Running;
         self.interrupt_inhibited = false;
+        self.address_error_inhibited = false;
+        Ok(())
+    }
+
+    fn address_error(&mut self, bus: &mut impl Memory) -> Result<(), CpuError> {
+        // SH7604 §§4.3.2/4.7: save the next instruction, without changing I.
+        self.enter_exception(bus, 9, self.state.pc)?;
+        self.state.address_error_pending = false;
         Ok(())
     }
 
@@ -240,6 +263,20 @@ impl Cpu {
     fn execute(&mut self, bus: &mut impl Memory) -> Result<(), CpuError> {
         let pc = self.state.pc;
         let access = |source| CpuError::Bus { pc, source };
+        // SH7604 Table 4.6: no instruction fetches from odd addresses or
+        // on-chip peripheral modules. Do not send such reads to a device.
+        if pc & 1 != 0 || pc >= 0xFFFF_FE00 {
+            self.state.address_error_pending = true;
+            if !self.address_error_inhibited {
+                return self.address_error(bus);
+            }
+            // An unfetchable successor cannot decode/retire. Finish the branch
+            // boundary before accepting the latched error (Table 4.10).
+            self.state.pc = self.state.delay_target.take().unwrap_or(pc.wrapping_add(2));
+            self.address_error_inhibited = false;
+            self.interrupt_inhibited = false;
+            return Ok(());
+        }
         let opcode = bus.read16(pc).map_err(access)?;
         let rewrites_pc = matches!(opcode & 0xF000, 0xA000 | 0xB000)
             || matches!(opcode & 0xFF00, 0x8900 | 0x8B00 | 0x8D00 | 0x8F00 | 0xC300)
@@ -253,6 +290,11 @@ impl Cpu {
             self.state.instructions += 1;
             return Ok(());
         }
+
+        // Invalid operand cycles latch vector 9, allowing the instruction to
+        // complete before exception acceptance, including auto-update effects.
+        let mut operands = Operands::new(bus);
+        let bus = &mut operands;
 
         let n = ((opcode >> 8) & 15) as usize;
         let m = ((opcode >> 4) & 15) as usize;
@@ -345,12 +387,12 @@ impl Cpu {
             }
             _ if opcode & 0xF000 == 0x9000 => {
                 s.r[n] = bus
-                    .read16(operand_pc.wrapping_add(imm * 2))
+                    .pc_relative16(operand_pc.wrapping_add(imm * 2))
                     .map_err(access)? as i16 as i32 as u32;
             }
             _ if opcode & 0xF000 == 0xD000 => {
                 s.r[n] = bus
-                    .read32((operand_pc & !3).wrapping_add(imm * 4))
+                    .pc_relative32((operand_pc & !3).wrapping_add(imm * 4))
                     .map_err(access)?;
             }
             _ if opcode & 0xFF00 == 0xC700 => s.r[0] = (operand_pc & !3).wrapping_add(imm * 4), // MOVA
@@ -486,8 +528,8 @@ impl Cpu {
             }
             _ if opcode & 0xF0FF == 0x401B => {
                 // TAS.B: one synchronous read/modify/write.
-                let value = bus.read8(s.r[n]).map_err(access)?;
-                bus.write8(s.r[n], value | 0x80).map_err(access)?;
+                let value = bus.tas_read(s.r[n]).map_err(access)?;
+                bus.tas_write(s.r[n], value | 0x80).map_err(access)?;
                 s.set_t(value == 0);
             }
             _ if matches!(
@@ -601,12 +643,15 @@ impl Cpu {
                 let displacement = ((opcode << 4) as i16 as i32) >> 4;
                 next_branch = Some(pc.wrapping_add(4).wrapping_add((displacement * 2) as u32));
             }
-            _ => return self.illegal(bus),
+            _ => return self.illegal(bus.inner),
         }
         s.pc = s.delay_target.take().unwrap_or(sequential_pc);
         s.delay_target = next_branch;
         s.instructions += 1;
+        s.address_error_pending |= operands.address_error.get();
         self.interrupt_inhibited = inhibit;
+        self.address_error_inhibited =
+            next_branch.is_some() || matches!(opcode & 0xFF00, 0x8D00 | 0x8F00);
         Ok(())
     }
 }
@@ -654,5 +699,7 @@ fn set_special(s: &mut CpuState, control: bool, index: u16, value: u32) {
     }
 }
 
+#[cfg(test)]
+mod address_tests;
 #[cfg(test)]
 mod tests;
