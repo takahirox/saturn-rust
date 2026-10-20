@@ -60,13 +60,16 @@ exception counters are separate; the last vector/saved PC are inspectable in Deb
 Delayed targets and call return addresses latch before the slot; PC-relative slot
 operands use destination + 2. BT/S and BF/S create a slot when taken; the untaken
 path proceeds sequentially, following the instruction's specified operation.
+Both paths inhibit IRQ/NMI acceptance until the successor executes, independently
+of the pending branch target (SH7604 §4.6, Table 4.10).
 SLEEP retires once, holds the next PC, and makes subsequent steps return without
 fetching or retiring. It is distinct from a debugger halt. `run_steps(n)` bounds
 step attempts, including non-retiring exception entry and sleeping steps.
 
 CPU-level maskable interrupt and NMI entry APIs check the current SR mask and
 defer through a pending slot or the successor of any system/control-register
-transfer. The caller must select the request/vector and retry if deferred. A
+transfer or untaken BT/S or BF/S. The caller must select the request/vector and
+retry if deferred. A
 successful entry saves the old SR/next PC, updates I, wakes SLEEP and jumps to the
 handler without retiring an instruction. These APIs are tested directly, but
 **Machine has no device interrupt controller or scheduler that calls them yet**.

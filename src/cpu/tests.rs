@@ -788,6 +788,60 @@ fn div1_signed_mode_vectors_cover_add_subtract_carry_and_borrow() {
 }
 
 #[test]
+fn div1_same_register_reads_the_shifted_divisor_for_all_q_m_t_combinations() {
+    // P §6.19: Rn is shifted before Rm is read. With aliased operands,
+    // subtraction yields zero; addition doubles the shifted value.
+    // Columns are initial Q/M/T = 000, 001, 100, 101, 200, 201, 300, 301.
+    for (initial, results, flags) in [
+        (
+            1,
+            [0, 0, 4, 6, 4, 6, 0, 0],
+            [0x001, 0x001, 0x001, 0x001, 0x301, 0x301, 0x301, 0x301],
+        ),
+        (
+            0x40000000,
+            [0, 0, 0, 2, 0, 2, 0, 0],
+            [0x001, 0x001, 0x100, 0x100, 0x200, 0x200, 0x301, 0x301],
+        ),
+        (
+            0x80000000,
+            [0, 0, 0, 2, 0, 2, 0, 0],
+            [0x100, 0x100, 0x100, 0x100, 0x200, 0x200, 0x200, 0x200],
+        ),
+        (
+            0xC0000000,
+            [0, 0, 0, 2, 0, 2, 0, 0],
+            [0x100, 0x100, 0x001, 0x001, 0x301, 0x301, 0x200, 0x200],
+        ),
+    ] {
+        for (i, input_flags) in [0x000, 0x001, 0x100, 0x101, 0x200, 0x201, 0x300, 0x301]
+            .into_iter()
+            .enumerate()
+        {
+            let (mut cpu, mut bus) = setup(&[0x3114]); // DIV1 R1,R1
+            cpu.state.r[1] = initial;
+            cpu.state.sr = 0xF2 | input_flags;
+            cpu.step(&mut bus).unwrap();
+            assert_eq!(
+                cpu.state.r[1], results[i],
+                "{initial:08X} {input_flags:03X}"
+            );
+            assert_eq!(
+                cpu.state.sr,
+                0xF2 | flags[i],
+                "{initial:08X} {input_flags:03X}"
+            );
+        }
+    }
+    let (mut cpu, mut bus) = setup(&[0xE101, 0x0019, 0x3114]); // MOV #1,R1; DIV0U; DIV1 R1,R1
+    for _ in 0..3 {
+        cpu.step(&mut bus).unwrap();
+    }
+    assert_eq!(cpu.state.r[1], 0);
+    assert_eq!(cpu.state.sr, 0xF1);
+}
+
+#[test]
 fn control_and_system_register_transfers_cover_every_register_and_form() {
     for (index, control) in [
         (0, true),
@@ -1031,6 +1085,47 @@ fn interrupts_wait_for_slots_and_successors_of_all_special_transfers() {
             saved_pc: HIGH_WRAM + 6
         })
     );
+}
+
+#[test]
+fn delayed_conditional_branches_defer_irq_and_nmi_for_both_conditions() {
+    // SH7604 §4.6 Table 4.10 requires consecutive execution even when untaken.
+    for opcode in [0x8D03, 0x8F03] {
+        for taken in [false, true] {
+            for nmi in [false, true] {
+                let (mut cpu, mut bus) = setup(&[opcode, 0x7101]); // successor: ADD #1,R1
+                cpu.state.sr = u32::from((opcode == 0x8D03) == taken);
+                cpu.state.vbr = HIGH_WRAM + 0x100;
+                let vector = if nmi { 11 } else { 64 };
+                let handler = HIGH_WRAM + 0x400;
+                bus.write32(cpu.state.vbr + vector * 4, handler).unwrap();
+                cpu.step(&mut bus).unwrap();
+                let before = cpu.state.clone();
+                let accepted = if nmi {
+                    cpu.accept_nmi(&mut bus).unwrap()
+                } else {
+                    cpu.accept_interrupt(&mut bus, 7, vector as u8).unwrap()
+                };
+                assert!(!accepted, "{opcode:04X} taken={taken} nmi={nmi}");
+                assert_eq!(cpu.state, before);
+                cpu.step(&mut bus).unwrap();
+                assert_eq!(cpu.state.r[1], 1);
+                let saved_pc = HIGH_WRAM + if taken { 10 } else { 4 };
+                assert_eq!(cpu.state.pc, saved_pc);
+                let accepted = if nmi {
+                    cpu.accept_nmi(&mut bus).unwrap()
+                } else {
+                    cpu.accept_interrupt(&mut bus, 7, vector as u8).unwrap()
+                };
+                assert!(accepted, "{opcode:04X} taken={taken} nmi={nmi}");
+                assert_eq!(cpu.state.pc, handler);
+                assert_eq!(bus.read32(cpu.state.r[15]), Ok(saved_pc));
+                assert_eq!(bus.read32(cpu.state.r[15] + 4), Ok(before.sr));
+                assert_eq!(cpu.state.instructions, 2);
+                assert_eq!(cpu.state.exceptions, 1);
+            }
+        }
+    }
 }
 
 #[test]

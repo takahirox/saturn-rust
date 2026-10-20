@@ -32,9 +32,9 @@ Native test keys refer to [src/cpu/tests.rs](../src/cpu/tests.rs):
 | shift | `shifts_and_rotates_cover_sign_carry_and_preservation` |
 | multiply | `multiply_width_signedness_and_full_64_bit_accumulation` |
 | mac | `mac_signed_products_saturation_and_same_register_postincrements` |
-| divide | `div0s_initializes_q_m_t_for_every_sign_pair`, `unsigned_division_guest_sequences_produce_host_quotients`, `div1_signed_mode_vectors_cover_add_subtract_carry_and_borrow` |
+| divide | `div0s_initializes_q_m_t_for_every_sign_pair`, `unsigned_division_guest_sequences_produce_host_quotients`, `div1_signed_mode_vectors_cover_add_subtract_carry_and_borrow`, `div1_same_register_reads_the_shifted_divisor_for_all_q_m_t_combinations` |
 | branch | `bra_latches_signed_pc_plus_four_target_and_executes_one_slot`, `calls_jumps_and_pc_relative_literals_use_architectural_pc`, `far_branches_latch_register_targets_and_call_return_addresses`, `conditional_branches_have_no_slot_and_use_signed_pc_plus_four`, `delayed_conditional_branch_latches_t_and_untaken_branch_has_no_slot`, `rts_returns_to_pr_after_one_slot_and_preserves_pr` |
-| special | `control_and_system_register_transfers_cover_every_register_and_form`, `interrupts_wait_for_slots_and_successors_of_all_special_transfers` |
+| special | `control_and_system_register_transfers_cover_every_register_and_form`, `interrupts_wait_for_slots_and_successors_of_all_special_transfers`, `delayed_conditional_branches_defer_irq_and_nmi_for_both_conditions` |
 | exception | `trapa_rte_round_trip_restores_masked_sr_before_the_delay_slot`, `illegal_and_all_pc_writing_slot_instructions_dispatch_without_retiring`, `illegal_slots_dispatch_vector_six_and_save_the_branch_destination`, `unavailable_exception_vector_is_a_sticky_bounded_bus_diagnostic` |
 | sleep | `sleep_is_bounded_and_interrupt_entry_obeys_mask_vector_and_wakes_cpu` |
 | nop | `nop_only_advances_pc_and_instruction_count` |
@@ -62,19 +62,19 @@ not turn those missing hardware paths into supported behavior.
 | ADDV | 6.4 | Signed overflow boundaries, preserve other SR bits | arithmetic | — | Common limits |
 | AND | 6.5 | Register/zero-extended imm8/GBR byte RMW | logic | — | No cross-CPU bus arbitration |
 | BF | 6.6 | Signed displacement, both T conditions | branch | SC | Common limits |
-| BF/S | 6.7 | Taken slot; untaken sequential; latch T | branch | — | See discrepancy below |
+| BF/S | 6.7 | Taken slot; untaken sequential; latch T; IRQ/NMI deferred on both paths (H §4.6) | branch, special | — | See discrepancy below |
 | BRA | 6.8 | Signed disp12 bounds; exactly one slot | branch | SC, ROM | Common limits |
 | BRAF | 6.9 | Relative register target, wrapping, latching | branch | — | Common limits |
 | BSR | 6.10 | Signed disp12, PR=address+4, slot | branch | SC | Common limits |
 | BSRF | 6.11 | Relative register target and latched PR | branch | — | Common limits |
 | BT | 6.12 | Signed displacement, both T conditions | branch | SC | Common limits |
-| BT/S | 6.13 | Taken slot; untaken sequential; latch T | branch | ROM | See discrepancy below |
+| BT/S | 6.13 | Taken slot; untaken sequential; latch T; IRQ/NMI deferred on both paths (H §4.6) | branch, special | ROM | See discrepancy below |
 | CLRMAC | 6.14 | Clear MACH and MACL | multiply | — | Common limits |
 | CLRT | 6.15 | Clear T only | logic | — | Common limits |
 | CMP/cond | 6.16 | EQ reg/imm, HS/HI, GE/GT, PL/PZ, STR byte matches | compare | SC (EQ/HS) | Common limits |
 | DIV0S | 6.17 | All operand-sign combinations of Q/M/T | divide | — | Common limits |
 | DIV0U | 6.18 | Clear Q/M/T, preserve other flags | divide | — | Common limits |
-| DIV1 | 6.19 | Non-restoring add/subtract, Q/M/T, 32-step guest unsigned division | divide | — | No exhaustive signed-division sequence corpus |
+| DIV1 | 6.19 | Non-restoring add/subtract, Q/M/T, same-register read after shift, 32-step guest unsigned division | divide | — | No exhaustive signed-division sequence corpus |
 | DMULS.L | 6.20 | Signed 32×32 to MACH:MACL | multiply | — | Common limits |
 | DMULU.L | 6.21 | Unsigned 32×32 to MACH:MACL | multiply | — | Common limits |
 | DT | 6.22 | Wrapping decrement, zero sets T | arithmetic | SC | Common limits |
@@ -366,8 +366,14 @@ observations were used in this checkpoint.
   during saturated MAC.W; the native test checks preservation even at both limits.
 - P §§6.7/6.13 describe slot restrictions broadly, while the specified operation
   executes a slot only for a taken conditional branch. Untaken BT/S and BF/S
-  advance sequentially here; the native test asserts that no delay state remains.
-  Physical/differential confirmation of this distinction is still absent.
+  advance sequentially here without a pending jump target. H §4.6 Table 4.10
+  separately requires consecutive execution of a delayed branch and its successor.
+  Both outcomes therefore inhibit IRQ/NMI until the successor executes; native
+  tests check deferral, subsequent acceptance and the stacked PC/SR. Physical/
+  differential confirmation of slot restrictions on the untaken path is absent.
+- P §6.19 updates Rn with the shift/T input before reading Rm in DIV1. Aliased
+  operands therefore use the shifted value as divisor. Original native vectors
+  cover all eight Q/M/T combinations, old sign and addition-carry boundaries.
 - P §6.29 defines signed saturation on the lower 48 accumulator bits. This
   interpreter deterministically sign-extends the saturated value into the full
   64-bit pair; validation of upper MACH bits against hardware is outstanding.

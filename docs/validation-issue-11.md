@@ -61,6 +61,27 @@ bounds assertion remains intact. The corrected complete browser run passed.
 The previous unsupported-opcode diagnostic fixture now uses an unaligned data
 access, because illegal opcodes correctly enter guest exception handlers.
 
+## Review corrections (2026-10-20)
+
+Fixed DIV1's same-register operand ordering: the divisor is read after the
+destination shift/T update (Programming Manual §6.19). New original vectors
+cover all eight Q/M/T combinations with both old signs and addition-carry
+boundaries, plus `MOV #1,R1; DIV0U; DIV1 R1,R1` yielding zero.
+
+Untaken BT/S and BF/S now defer IRQ/NMI until their successor executes, using
+interrupt inhibition independently of the pending jump target (Hardware Manual
+§4.6, Table 4.10). Tests cover both branch outcomes and both interrupt types,
+unchanged CPU state on deferral, successor execution, subsequent acceptance and
+stacked PC/SR. Both new tests failed against the reviewed implementation before
+the fixes and pass with them.
+
+Validation repeated after these corrections: formatting, native build, all 54
+tests (37 CPU unit, 17 integration), native all-target Clippy, release Wasm build,
+Wasm Clippy, original ISO reproducibility and the full Chromium 145.0.7632.6
+browser suite passed. No tests were skipped. `npm ci --ignore-scripts` and Git
+whitespace checks passed. Issue #11 remains open with the same outstanding
+hardware requirements below.
+
 ## Unperformed required work / verification
 
 The missing systems in the matrix are not verified or accepted. In particular:

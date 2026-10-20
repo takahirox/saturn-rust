@@ -108,7 +108,8 @@ impl CpuState {
 #[derive(Debug, Default)]
 pub struct Cpu {
     state: CpuState,
-    /// System/control-register transfers inhibit interrupt acceptance for one successor.
+    /// System/control transfers and delayed conditional branches inhibit interrupts
+    /// for one successor, including when the conditional branch is untaken.
     interrupt_inhibited: bool,
 }
 
@@ -419,11 +420,12 @@ impl Cpu {
                 let negative = s.r[n] >> 31 != 0;
                 let old_q = s.sr & Q != 0;
                 let m_bit = s.sr & M != 0;
-                let shifted = (s.r[n] << 1) | (s.sr & T);
+                // P §6.19 updates Rn before reading Rm, which may alias Rn.
+                s.r[n] = (s.r[n] << 1) | (s.sr & T);
                 let (value, carry) = if old_q == m_bit {
-                    shifted.overflowing_sub(s.r[m])
+                    s.r[n].overflowing_sub(s.r[m])
                 } else {
-                    shifted.overflowing_add(s.r[m])
+                    s.r[n].overflowing_add(s.r[m])
                 };
                 let q = negative ^ carry ^ m_bit;
                 s.r[n] = value;
@@ -571,6 +573,9 @@ impl Cpu {
             _ if matches!(opcode & 0xFF00, 0x8900 | 0x8B00 | 0x8D00 | 0x8F00) => {
                 let taken = (s.sr & T != 0) == (opcode & 0x200 == 0);
                 let target = pc.wrapping_add(4).wrapping_add(signed_imm.wrapping_mul(2));
+                // H §4.6 Table 4.10: the successor must execute before IRQ/NMI
+                // acceptance even when BT/S or BF/S does not take the branch.
+                inhibit = opcode & 0x400 != 0;
                 if taken {
                     if opcode & 0x400 != 0 {
                         next_branch = Some(target);
