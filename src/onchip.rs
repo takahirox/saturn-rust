@@ -172,10 +172,9 @@ impl OnChip {
     }
 
     fn increment(&mut self) {
-        self.counter = self.counter.wrapping_add(1);
-        if self.counter == 0 {
-            self.status |= 2;
-        }
+        // Compare the value held BEFORE this count edge. The match flags,
+        // outputs and CCLRA clear take effect on the edge leaving that value
+        // (SH7604 §§11.4.2/11.4.3/11.4.6, figs. 11.6/11.7/11.11).
         let a = self.counter == self.compare[0];
         let b = self.counter == self.compare[1];
         if a {
@@ -186,9 +185,16 @@ impl OnChip {
             self.status |= 4;
             self.outputs[1] = self.output_control & 1 != 0;
         }
-        if a && self.status & 1 != 0 {
-            self.counter = 0;
+        // OVF describes FFFF -> 0000, not a clear from any other count
+        // (§§11.2.5/11.4.7, fig. 11.12). Both compares use the old value.
+        if self.counter == 0xFFFF {
+            self.status |= 2;
         }
+        self.counter = if a && self.status & 1 != 0 {
+            0
+        } else {
+            self.counter.wrapping_add(1)
+        };
     }
 
     /// Saturn's 16-bit communication strobe contains both edges, so either
@@ -306,25 +312,76 @@ mod tests {
     }
 
     #[test]
-    fn compares_clear_counter_overflow_and_output_levels_have_effects() {
+    fn compare_flags_outputs_and_clear_use_the_value_before_the_count_edge() {
         let mut chip = OnChip::default();
         write_pair(&mut chip, 4, 3); // OCRA=3
         chip.write8(FRT + 7, 0xF3).unwrap();
         write_pair(&mut chip, 4, 2); // OCRB=2
         chip.write8(FRT + 1, 1).unwrap(); // CCLRA
+        // SH7604 figs. 11.6/11.7/11.11: reaching N does not yet signal
+        // a match; the next count edge signals it and optionally clears FRC.
+        for (counter, status, outputs) in [
+            (1, 1, [false, false]),
+            (2, 1, [false, false]),
+            (3, 5, [false, true]),
+            (0, 13, [true, true]),
+        ] {
+            chip.advance_clocks(8);
+            assert_eq!(
+                (chip.counter, chip.status, chip.outputs),
+                (counter, status, outputs)
+            );
+        }
+        chip.read8(FRT + 1).unwrap();
+        chip.write8(FRT + 1, 1).unwrap();
         chip.advance_clocks(24);
-        assert_eq!(chip.counter, 0);
-        assert_eq!(chip.status, 0x0D);
-        assert_eq!(chip.outputs, [true, true]);
-        // At wrap, both compare flags and overflow can be asserted together.
-        write_pair(&mut chip, 4, 0);
-        chip.write8(FRT + 7, 0xE0).unwrap();
-        write_pair(&mut chip, 4, 0);
-        write_pair(&mut chip, 2, 0xFFFF);
+        assert_eq!((chip.counter, chip.status), (3, 5));
         chip.advance_clocks(8);
-        assert_eq!(chip.counter, 0);
-        assert_eq!(chip.status, 0x0F);
-        assert_eq!(chip.outputs, [false, false]);
+        assert_eq!((chip.counter, chip.status), (0, 13)); // Four-edge period.
+    }
+
+    #[test]
+    fn compare_zero_and_overflow_boundary_vectors() {
+        // Independently specified one-edge vectors from SH7604 §§11.2.5,
+        // 11.4.3/11.4.6/11.4.7, figs. 11.7/11.11/11.12.
+        for (initial, a, b, clear, counter, flags) in [
+            (0, 0, 0, false, 1, 0x0C),
+            (0, 0, 0, true, 0, 0x0C),
+            (0xFFFE, 0xFFFF, 0xFFFF, false, 0xFFFF, 0),
+            (0xFFFF, 0, 0, false, 0, 2),
+            (0xFFFF, 0, 0, true, 0, 2),
+            (0xFFFF, 0xFFFF, 0xFFFF, false, 0, 0x0E),
+            (0xFFFF, 0xFFFF, 0xFFFF, true, 0, 0x0E),
+            (3, 3, 0, true, 0, 8),    // Clearing to OCRB is not a B match.
+            (3, 3, 3, true, 0, 0x0C), // A clear preserves simultaneous B.
+        ] {
+            let mut chip = OnChip::default();
+            write_pair(&mut chip, 2, initial);
+            write_pair(&mut chip, 4, a);
+            chip.write8(FRT + 7, 0xF3).unwrap();
+            write_pair(&mut chip, 4, b);
+            chip.write8(FRT + 1, u8::from(clear)).unwrap();
+            chip.advance_clocks(7);
+            assert_eq!((chip.counter, chip.status), (initial, u8::from(clear)));
+            chip.advance_clocks(1);
+            assert_eq!(
+                (chip.counter, chip.status, chip.outputs),
+                (
+                    counter,
+                    flags | u8::from(clear),
+                    [flags & 8 != 0, flags & 4 != 0]
+                ),
+                "FRC={initial:04X}, OCRA={a:04X}, OCRB={b:04X}, CCLRA={clear}"
+            );
+        }
+        let mut chip = OnChip::default();
+        write_pair(&mut chip, 4, 0);
+        chip.write8(FRT + 1, 1).unwrap();
+        for _ in 0..3 {
+            chip.advance_clocks(8);
+            assert_eq!((chip.counter, chip.read8(FRT + 1).unwrap()), (0, 9));
+            chip.write8(FRT + 1, 1).unwrap(); // Compare=0 repeats every edge.
+        }
     }
 
     #[test]

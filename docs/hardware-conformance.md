@@ -69,8 +69,13 @@ SMPC timing. It is a diagnostic, not either of the two required new demos.
 [dual-sh2.hex](../tests/fixtures/dual-sh2.hex) and executed through browser Wasm
 in [browser-smoke.mjs](../scripts/browser-smoke.mjs). It computes shared results
 using both CPUs and acknowledges FRT interrupts in guest handlers.
-**FRT** means the five manual-derived unit tests in
-[src/onchip.rs](../src/onchip.rs). These tests do not establish physical timing.
+**FRT** means the six manual-derived unit tests in
+[src/onchip.rs](../src/onchip.rs), plus the original
+[compare IRQ guest](../tests/fixtures/frt-compare.hex) executed by
+[tests/dual_sh2.rs](../tests/dual_sh2.rs) and browser Wasm in
+[browser-smoke.mjs](../scripts/browser-smoke.mjs). Compare=0/3 tests check the
+edge leaving OCRA, SLEEP wake, exception frames, guest acknowledgment and RTE
+(H §§11.4.3/11.4.6, figs. 11.7/11.11). These tests do not establish physical timing.
 **SC** means actual Star
 Collector guest execution in [tests/game.rs](../tests/game.rs) and browser smoke.
 **—** means no evidence for that path. Decoder coverage is separate from semantic
@@ -169,7 +174,7 @@ not turn those missing hardware paths into supported behavior.
 | Deferral, H §4.6 | IRQ/NMI defer through delayed successors and control/system successors; address errors defer only through delayed successors | special, AE | ROM, AEROM | No pipeline-cycle timing or device IRQ selection; unfetchable successor policy below | Pending |
 | Cache/address regions, H §2 and cache chapter | P1 external-bus alias only | bus.rs | SC | Cache lines, purge/associative access and coherency absent | Pending |
 | On-chip INTC, H §§5.3.2/5.3.6/5.3.7 | CPU-local FRT priority in IPRB, VCRC/VCRD; masked/deferred level-sensitive requests; guest flag acknowledgment | FRT, DUAL | DUAL | Other sources/IPRA/ICR/SCI priority and external IRQ arbitration missing | Pending |
-| FRT, H §§11.1–11.5, tables 11.2/11.3 | FRC, OCRA/B, capture, divisors, overflow/compare/clear, TIER/FTCSR, shared TEMP, output level state and IRQ; Saturn capture wires (ST-202 §1.2) | FRT, DUAL | DUAL (capture) | Internal/external pin synchronization, WAIT, clock-switch edges and contention timing absent; no external clock source or output-pin routing | Pending |
+| FRT, H §§11.1–11.5, tables 11.2/11.3 | FRC, OCRA/B, capture, divisors, overflow/compare/clear, TIER/FTCSR, shared TEMP, output level state and IRQ; Saturn capture wires (ST-202 §1.2) | FRT, DUAL | FRT (compare), DUAL (capture) | Internal/external pin synchronization, WAIT, clock-switch edges and contention timing absent; no external clock source or output-pin routing | Pending |
 | Watchdog, H WDT chapter | None | — | — | Keyed registers, interval/reset modes missing | Pending |
 | SCI, H serial chapter | None | — | — | Serial registers, timing/status/IRQ missing | Pending |
 | On-chip DMAC, H DMA chapter | None | — | — | Channels, transfers, triggers/status/IRQ missing | Pending |

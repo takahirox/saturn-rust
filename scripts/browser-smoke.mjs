@@ -327,6 +327,37 @@ try {
   assert.match(await value("error"), /Exception vector 9 entry.*Unaligned/);
   assert.equal(await page.locator("#step").isDisabled(), true);
   await page.locator("#count").fill("6");
+  // SH7604 figs. 11.7/11.11: the shared native guest must wake only after
+  // the edge leaving OCRA, including OCRA=0. All timer setup is guest MMIO.
+  const compareRom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/frt-compare.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [offset, ...words] = line.trim().split(/\s+/).map((word) => parseInt(word, 16));
+    words.forEach((word, i) => compareRom.writeUInt16BE(word, offset + i * 2));
+  }
+  for (const compare of [0, 3]) {
+    compareRom.writeUInt16BE(0xE000 | compare, 0x114);
+    await page.locator("#bios").setInputFiles({ name: "original-frt-compare.bin", mimeType: "application/octet-stream", buffer: compareRom });
+    await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000100");
+    const trace = await page.evaluate(async (compare) => {
+      const { emulator } = await import("./app.js");
+      const pc = () => emulator.special_registers()[0];
+      for (let i = 0; i < 100 && pc() !== 0x13C; i++) emulator.step();
+      if (pc() !== 0x13C) throw new Error("Guest did not reach timer start");
+      const state = () => [pc(), emulator.exception_count()];
+      emulator.run_steps(16 * (compare + 1) - 1);
+      const beforeEdge = state();
+      emulator.step();
+      const onEdge = state();
+      emulator.step();
+      const accepted = [...state(), emulator.read_long(0x060FFFF8), emulator.read_long(0x060FFFFC)];
+      emulator.run_steps(100);
+      return { beforeEdge, onEdge, accepted,
+        done: [...state(), emulator.read_long(0x06002000), emulator.registers()[15]] };
+    }, compare);
+    assert.deepEqual(trace, { beforeEdge: [0x140, "0"], onEdge: [0x140, "0"],
+      accepted: [0x200, "1", 0x140, 0], done: [0x142, "1", 9, 0x06100000] });
+  }
   // Independent processors execute this same original licensed guest natively
   // in tests/dual_sh2.rs. All shared RAM/IRQ/SMPC changes are guest MMIO writes.
   const dualRom = Buffer.alloc(524288);

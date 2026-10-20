@@ -9,8 +9,12 @@ use saturn_rust::{
 };
 
 fn rom() -> Vec<u8> {
+    parse_rom(include_str!("fixtures/dual-sh2.hex"))
+}
+
+fn parse_rom(source: &str) -> Vec<u8> {
     let mut bytes = vec![0; BIOS_SIZE];
-    for line in include_str!("fixtures/dual-sh2.hex").lines() {
+    for line in source.lines() {
         if line.starts_with('#') || line.is_empty() {
             continue;
         }
@@ -23,6 +27,51 @@ fn rom() -> Vec<u8> {
         }
     }
     bytes
+}
+
+#[test]
+fn guest_compare_irq_waits_for_the_edge_leaving_ocra_and_wakes_sleep() {
+    // SH7604 §§11.4.3/11.4.6, figs. 11.7/11.11. Each phi/128 count
+    // edge takes 16 functional machine turns (not instruction-cycle timing).
+    for compare in [0, 3] {
+        let mut image = parse_rom(include_str!("fixtures/frt-compare.hex"));
+        image[0x114..0x116].copy_from_slice(&(0xE000u16 | compare).to_be_bytes());
+        let mut machine = Machine::new();
+        machine.reset(Boot::ExternalBios(&image)).unwrap();
+        for _ in 0..100 {
+            if machine.cpu_state().pc == 0x13C {
+                break;
+            }
+            machine.step().unwrap();
+        }
+        assert_eq!(machine.cpu_state().pc, 0x13C);
+        machine
+            .run_steps(16 * (u32::from(compare) + 1) - 1)
+            .unwrap();
+        assert_eq!(machine.cpu_state().status, CpuStatus::Sleeping);
+        assert_eq!(machine.cpu_state().exceptions, 0);
+        assert_eq!(machine.bus().read8(FRT + 1).unwrap(), 1);
+        assert_eq!(machine.bus().read8(FRT + 2).unwrap(), 0);
+        assert_eq!(machine.bus().read8(FRT + 3).unwrap(), compare as u8);
+        machine.step().unwrap(); // Edge leaving OCRA: clear FRC and set OCFA.
+        assert_eq!(machine.cpu_state().exceptions, 0);
+        assert_eq!(machine.bus().read8(FRT + 1).unwrap(), 9);
+        assert_eq!(machine.bus().read8(FRT + 2).unwrap(), 0);
+        assert_eq!(machine.bus().read8(FRT + 3).unwrap(), 0);
+        machine.step().unwrap(); // Next CPU boundary accepts the level request.
+        assert_eq!(machine.cpu_state().pc, 0x200);
+        assert_eq!(machine.cpu_state().exceptions, 1);
+        let exception = machine.cpu_state().last_exception.as_ref().unwrap();
+        assert_eq!((exception.vector, exception.saved_pc), (32, 0x140));
+        assert_eq!(machine.bus().read32(0x060FFFF8).unwrap(), 0x140);
+        assert_eq!(machine.bus().read32(0x060FFFFC).unwrap(), 0);
+        machine.run_steps(100).unwrap();
+        assert_eq!(machine.bus().read32(0x06002000).unwrap(), 9);
+        assert_eq!(machine.bus().read8(FRT + 1).unwrap(), 1);
+        assert_eq!(machine.cpu_state().exceptions, 1);
+        assert_eq!(machine.cpu_state().r[15], 0x06100000);
+        assert_eq!(machine.cpu_state().status, CpuStatus::Sleeping);
+    }
 }
 
 #[test]

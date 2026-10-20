@@ -80,7 +80,8 @@ and disable browser execution. No host writes guest state after boot.
 ## Checks run
 
 - `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`: pass;
-  81 native tests, none ignored. Existing address-error/system fixtures, backup,
+  83 native tests after the timer review correction below, none ignored.
+  Existing address-error/system fixtures, backup,
   both pads, parser, pixels and Star Collector completion/restart remain covered.
 - `cargo clippy --locked --all-targets -- -D warnings`: pass.
 - `python3 homebrew/star-collector/build.py --check`: pass, packaged ISO unchanged.
@@ -101,6 +102,31 @@ source workaround or dependency change. No deployment/live Pages, personal
 firmware, physical device, external workflow investigation or human sign-off was
 needed or performed. Genuine Sega BIOS/retail compatibility is **not independently
 confirmed**.
+
+## Timer compare review correction
+
+The review found that FRT compared the incremented count, making OCRA=3/CCLRA=1
+clear one count edge early and OCRA=0 wait until wraparound. Compare flags,
+output levels and counter clear now use the value held before the count edge,
+per SH7604 §§11.4.2/11.4.3/11.4.6, figs. 11.6/11.7/11.11. OVF still denotes
+FFFF→0000 (§§11.2.5/11.4.7, fig. 11.12), including simultaneous FFFF compares;
+clearing from other values does not assert overflow or compare against zero.
+
+Independent unit vectors cover the four-edge OCRA=3 period, compare=0 on the
+first and repeated edges, simultaneous A/B matches and overflow boundaries.
+The source-authored MIT-licensed [timer guest](../tests/fixtures/frt-compare.hex)
+sets all timer/INTC registers through SH-2 instructions. Native and browser Wasm
+tests check compare=0/3 IRQ timing, SLEEP wake, the stacked PC/SR, guest flag
+acknowledgment and RTE. These verify the existing functional clock quantum,
+not physical instruction timing. Both new unit tests and the guest test fail
+when only the previous `increment` implementation is restored; restoring the
+fix passes all 83 native tests.
+
+After this correction, formatting, locked build/test, native and Wasm Clippy,
+web build, both existing guest-media reproducibility checks, JavaScript syntax,
+and the extended Chromium 145.0.7632.6 browser suite all pass. The existing
+dual-CPU fixture and Star Collector ISO remain unchanged. No umbrella criterion
+is completed by this correction.
 
 ## Remaining scope and continuation
 
