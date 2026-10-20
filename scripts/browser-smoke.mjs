@@ -3,11 +3,28 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { lstat, mkdtemp, readdir, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { chromium } from "playwright";
 
-const server = spawn("python3", ["-u", "-m", "http.server", "0", "--bind", "127.0.0.1", "--directory", "web"], { stdio: ["ignore", "pipe", "pipe"] });
+// Fail before upload if web/ includes anything beyond the public runtime assets.
+const assets = ["app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "style.css"];
+assert.deepEqual((await readdir("web", { recursive: true })).sort(), [...assets, "pkg"].sort());
+assert((await lstat("web/pkg")).isDirectory());
+for (const asset of assets) {
+  const stat = await lstat(join("web", asset));
+  assert(stat.isFile() && stat.size > 0, `Expected a nonempty regular file: ${asset}`);
+}
+
+// Mount exactly web/ beneath the project-page prefix, with no repository fallback.
+const mount = await mkdtemp(join(tmpdir(), "saturn-rust-browser-"));
+const prefix = "/saturn-rust/";
+let server;
 let browser;
 try {
+  await symlink(resolve("web"), join(mount, "saturn-rust"), "dir");
+  server = spawn("python3", ["-u", "-m", "http.server", "0", "--bind", "127.0.0.1", "--directory", mount], { stdio: ["ignore", "pipe", "pipe"] });
   const address = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("Static server did not start")), 10000);
     server.once("error", (error) => { clearTimeout(timer); reject(error); });
@@ -22,10 +39,25 @@ try {
   const page = await context.newPage();
   const pageErrors = [];
   const requests = [];
+  const responses = new Map();
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("request", (request) => requests.push({ url: request.url(), method: request.method(), body: request.postData() }));
-  await page.goto(address);
+  page.on("response", (response) => responses.set(new URL(response.url()).pathname, response));
+  await page.goto(address + prefix);
   await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
+  for (const [asset, mime] of [
+    ["", "text/html"], ["style.css", "text/css"], ["app.js", "javascript"],
+    ["pkg/saturn_rust.js", "javascript"], ["pkg/saturn_rust_bg.wasm", "application/wasm"],
+  ]) {
+    const response = responses.get(prefix + asset);
+    assert(response, `Missing project-page asset: ${asset}`);
+    assert.equal(response.status(), 200);
+    assert(response.headers()["content-type"].includes(mime), `Wrong MIME type: ${asset}`);
+    if (asset.endsWith(".wasm")) {
+      assert.deepEqual((await response.body()).subarray(0, 4), Buffer.from([0, 97, 115, 109]));
+    }
+  }
+  assert(await page.evaluate(() => [...document.styleSheets].some((sheet) => sheet.href?.endsWith("/saturn-rust/style.css") && sheet.cssRules.length > 0)));
   const value = (id) => page.locator(`#${id}`).textContent();
   assert.equal(await value("active-mode"), "HLE bootstrap prototype");
   assert.equal(await value("pc"), "0x06000000");
@@ -33,6 +65,7 @@ try {
   assert.equal(await value("r0"), "0x00000005");
   assert.equal(await value("instructions"), "1");
   await page.locator("#reset").click();
+  await page.locator("#count").fill("6");
   await page.locator("#run").click();
   assert.equal(await value("pc"), "0x0600000E");
   assert.equal(await value("r0"), "0x00000004");
@@ -115,7 +148,7 @@ try {
   assert.equal(await value("r1"), "0x00000007");
   assert.deepEqual(pageErrors, []);
   assert(requests.length > 0);
-  const staticPaths = new Set(["/", "/style.css", "/app.js", "/pkg/saturn_rust.js", "/pkg/saturn_rust_bg.wasm", "/favicon.ico"]);
+  const staticPaths = new Set([prefix, ...assets.map((asset) => prefix + asset), prefix + "favicon.ico", "/favicon.ico"]);
   assert(requests.every((r) => {
     const url = new URL(r.url);
     return url.origin === address && staticPaths.has(url.pathname) && url.search === "" && r.method === "GET" && r.body === null;
@@ -124,16 +157,17 @@ try {
   await context.setOffline(false);
   const missingBuild = await context.newPage();
   await missingBuild.route("**/pkg/saturn_rust.js", (route) => route.abort());
-  await missingBuild.goto(address);
+  await missingBuild.goto(address + prefix);
   await missingBuild.waitForFunction(() => document.getElementById("status").textContent === "Initialization failed");
   assert.match(await missingBuild.locator("#error").textContent(), /Build web\/pkg and serve/);
   assert.equal(await missingBuild.locator("#reset").isDisabled(), true);
-  console.log(`Browser smoke passed (${await browser.version()}): fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, mode switching, offline execution, no BIOS transmission.`);
+  console.log(`Browser smoke passed (${await browser.version()}): /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, mode switching, offline execution, no BIOS transmission.`);
 } finally {
   if (browser) await browser.close();
-  if (server.pid && server.exitCode === null) {
+  if (server?.pid && server.exitCode === null) {
     const stopped = once(server, "exit");
     server.kill();
     await stopped;
   }
+  await rm(mount, { recursive: true, force: true });
 }

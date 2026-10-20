@@ -1,7 +1,7 @@
 # Build, run and test
 
 Use a Rust stable toolchain managed by rustup, its `wasm32-unknown-unknown`
-target, and Python 3 for static serving. Node.js 18+ and npm are needed only for
+target, and Python 3 for static serving. Node.js 18.17+ and npm are needed only for
 the automated browser check. There is no application backend or JavaScript bundle
 step. Run commands from the repository root.
 
@@ -83,10 +83,49 @@ On a machine with Google Chrome already installed, skip the browser download and
 use `BROWSER_CHANNEL=chrome npm run test:browser`. Linux hosts may need Playwright's
 documented browser system dependencies. The script starts and stops its own
 loopback static server on a free port and runs the real UI/Wasm in a headless
-browser. It checks fixture results, controls, invalid run counts, missing/invalid
-BIOS, synthetic reset vectors, visible execution faults, reset/mode transitions,
-offline execution and the absence of requests carrying BIOS data. It uses no
-Sega firmware. Nonzero exit means failure.
+browser mounted at `/saturn-rust/`, matching the GitHub project page. It rejects
+unexpected files or links in `web/` before upload and checks nonempty runtime
+assets, HTML/CSS/JS/Wasm responses and MIME types, stylesheet loading and Wasm
+initialization. It checks fixture results, controls, invalid run counts,
+missing/invalid BIOS, synthetic reset vectors, visible execution faults,
+reset/mode transitions, offline execution and the absence of requests carrying
+BIOS data. It uses no Sega firmware. Nonzero exit means failure.
+
+## GitHub Pages
+
+The [Browser Pages workflow](../.github/workflows/pages.yml) uses stable Rust,
+the committed Cargo/npm lockfiles, matching `wasm-bindgen-cli 0.2.129`, and
+`scripts/build-web.sh`. It runs all native checks above, Wasm build/Clippy and
+the Chromium smoke test before uploading only `web/` through GitHub's Pages
+artifact action. Only successful `main` pushes (including merges) deploy through
+the `github-pages` environment; PRs targeting `main` validate without deployment
+permissions. Main runs are serialized so deployments cannot overtake each other,
+and a current-`main` check prevents old reruns from publishing a stale revision.
+Superseded PR validation can be canceled. No `gh-pages` branch is used.
+
+One-time administrator setup may be required: **Settings → Pages → Build and
+deployment → Source: GitHub Actions**, with Actions and deployments permitted.
+The workflow does not enable Pages itself. The expected URL is
+<https://takahirox.github.io/saturn-rust/>; it is not live until Pages is enabled
+and the first successful deployment completes. On failure, inspect **Actions →
+Browser Pages** and the `github-pages` environment, correct the failing build/test
+or repository setting, then push a fix or rerun the latest `main` workflow.
+The existing relative asset URLs and `wasm-unsafe-eval` CSP work at the project
+prefix; no custom domain or backend is required.
+
+Required post-merge verification (pending until actually performed):
+
+1. Enable Pages as above if needed. Verify the first `main` Actions deployment
+   succeeds and the public URL loads HTML, CSS, ES modules and Wasm. Reset, then
+   Run 6 in HLE mode must yield `R0=4`, `R1=7`, `PC=0x0600000E`. Confirm the
+   deployed Actions revision matches the latest `main`.
+2. On the next legitimate `main` push/merge, verify another automatic deployment
+   updates the site without an upload. Record failures and fix them in follow-up
+   work. Local validation does not verify production publication.
+
+The hosted app remains the SH-2 bootstrap prototype described above, with no
+commercial-game compatibility. No Sega firmware or game media is distributed;
+user BIOS handling remains entirely local to the browser.
 
 Use only BIOS/game data you are authorized to use. Never commit, redistribute or
 upload proprietary firmware or disc images to this repository. Disc loading is
