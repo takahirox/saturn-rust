@@ -1,17 +1,21 @@
-//! Browser-independent Saturn vertical slice; only the master SH-2 executes.
+//! Browser-independent Saturn functional subset with independent SH-2 processors.
 pub mod backup;
 pub mod bus;
 pub mod cpu;
 pub mod devices;
 pub mod disc;
+pub mod onchip;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
-use bus::{Bus, BusError, HIGH_WRAM, Memory, WRAM_SIZE};
+use bus::{Bus, BusError, HIGH_WRAM, Memory, Processor, WRAM_SIZE};
 use cpu::{Cpu, CpuError, CpuState};
 use std::fmt;
 
 pub const MAX_RUN_STEPS: u32 = 10_000;
+/// Fixed peripheral-clock quantum per interpreter turn. This is a deterministic
+/// functional interleave, NOT measured SH-2 instruction timing or bus arbitration.
+pub const CLOCKS_PER_STEP: u32 = 8;
 pub const FIXTURE_PC: u32 = HIGH_WRAM;
 // Original homebrew: MOV #5,R0; ADD #-1,R0; MOV R0,R1; BRA +1;
 // ADD #3,R1 (slot); MOV #99,R1 (skipped); NOP; BRA -2; NOP (slot).
@@ -36,6 +40,7 @@ pub enum Boot<'a> {
 pub enum MachineError {
     Bus(BusError),
     Cpu(CpuError),
+    SlaveCpu(CpuError),
     StepLimit(u32),
     Disc(disc::DiscError),
     Video(String),
@@ -46,6 +51,7 @@ impl fmt::Display for MachineError {
         match self {
             Self::Bus(error) => error.fmt(f),
             Self::Cpu(error) => error.fmt(f),
+            Self::SlaveCpu(error) => write!(f, "Slave SH-2: {error}"),
             Self::Disc(error) => error.fmt(f),
             Self::Video(error) => f.write_str(error),
             Self::StepLimit(n) => write!(f, "Run count {n} is outside 1..={MAX_RUN_STEPS}"),
@@ -67,9 +73,13 @@ impl From<CpuError> for MachineError {
 #[derive(Default)]
 pub struct Machine {
     cpu: Cpu,
+    slave: Cpu,
     bus: Bus,
     mode: Option<BootMode>,
     frames: u64,
+    clocks: u64,
+    nmi_pending: bool,
+    fault: Option<MachineError>,
 }
 
 impl Machine {
@@ -78,6 +88,18 @@ impl Machine {
     }
     pub fn cpu_state(&self) -> &CpuState {
         self.cpu.state()
+    }
+    pub fn slave_state(&self) -> &CpuState {
+        self.slave.state()
+    }
+    pub fn clocks(&self) -> u64 {
+        self.clocks
+    }
+    pub fn fault(&self) -> Option<&MachineError> {
+        self.fault.as_ref()
+    }
+    pub fn can_wake_master(&self) -> bool {
+        self.nmi_pending || self.bus.can_wake_master()
     }
     pub fn mode(&self) -> Option<BootMode> {
         self.mode
@@ -91,7 +113,11 @@ impl Machine {
     /// A rejected BIOS leaves ExternalBios selected and the CPU stopped in Reset.
     pub fn reset(&mut self, boot: Boot<'_>) -> Result<(), MachineError> {
         self.frames = 0;
+        self.clocks = 0;
+        self.nmi_pending = false;
+        self.fault = None;
         self.cpu = Cpu::default();
+        self.slave = Cpu::default();
         self.bus.reset_volatile();
         match boot {
             Boot::ExternalBios(bytes) => {
@@ -164,7 +190,65 @@ impl Machine {
     }
 
     pub fn step(&mut self) -> Result<(), MachineError> {
-        self.cpu.step(&mut self.bus)?;
+        if let Some(error) = &self.fault {
+            return Err(error.clone());
+        }
+        let result = self.step_inner();
+        if let Err(error) = &result {
+            self.fault = Some(error.clone());
+        }
+        result
+    }
+
+    fn step_inner(&mut self) -> Result<(), MachineError> {
+        // Fixed ordering: master boundary, slave boundary, peripheral clocks,
+        // then SMPC completion. Shared writes are visible to the next CPU turn.
+        let mut memory = self.bus.for_cpu(Processor::Master);
+        let nmi_accepted = self.nmi_pending && self.cpu.accept_nmi(&mut memory)?;
+        if nmi_accepted {
+            self.nmi_pending = false;
+        }
+        let irq = self.bus.interrupt(Processor::Master);
+        let mut memory = self.bus.for_cpu(Processor::Master);
+        let irq_accepted = !nmi_accepted
+            && if let Some((level, vector)) = irq {
+                self.cpu.accept_interrupt(&mut memory, level, vector)?
+            } else {
+                false
+            };
+        if !nmi_accepted && !irq_accepted {
+            self.cpu.step(&mut memory)?;
+        }
+        if self.bus.slave_enabled {
+            let irq = self.bus.interrupt(Processor::Slave);
+            let mut memory = self.bus.for_cpu(Processor::Slave);
+            let accepted = if let Some((level, vector)) = irq {
+                self.slave
+                    .accept_interrupt(&mut memory, level, vector)
+                    .map_err(MachineError::SlaveCpu)?
+            } else {
+                false
+            };
+            if !accepted {
+                self.slave
+                    .step(&mut memory)
+                    .map_err(MachineError::SlaveCpu)?;
+            }
+        }
+        self.clocks += u64::from(CLOCKS_PER_STEP);
+        match self.bus.advance_clocks(CLOCKS_PER_STEP) {
+            Some(0x02) if !self.bus.slave_enabled => {
+                self.slave = Cpu::power_on(&self.bus)
+                    .map_err(|source| MachineError::SlaveCpu(CpuError::Bus { pc: 0, source }))?;
+                self.bus.set_slave_enabled(true);
+            }
+            Some(0x03) => {
+                self.bus.set_slave_enabled(false);
+                self.slave = Cpu::default();
+            }
+            Some(0x18) => self.nmi_pending = true,
+            _ => (),
+        }
         Ok(())
     }
 

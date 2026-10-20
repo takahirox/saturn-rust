@@ -16,9 +16,31 @@ pub struct Smpc {
     ddr: [u8; 2],
     iosel: u8,
     exle: u8,
+    sf: bool,
+    command: u8,
+    pending: Option<(u8, u32)>,
 }
 
 impl Smpc {
+    // ST-169 §2.3 pp.23/24/32: minimum 30 µs at the fixed NTSC 320
+    // reference clock (26.8741 MHz). Internal firmware/task jitter is absent.
+    pub const CPU_COMMAND_CLOCKS: u32 = 807;
+
+    pub(crate) fn busy(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    pub(crate) fn advance_clocks(&mut self, clocks: u32) -> Option<u8> {
+        let (command, remaining) = self.pending?;
+        if clocks < remaining {
+            self.pending = Some((command, remaining - clocks));
+            return None;
+        }
+        self.pending = None;
+        self.sf = false;
+        Some(command)
+    }
+
     pub fn set_buttons(&mut self, buttons: u16) {
         self.buttons[0] = buttons & 0x1FFF;
     }
@@ -30,6 +52,8 @@ impl Smpc {
     // ST-169, §1.2 pp.7–8 and §3.4 table 3.36 p.97. Standard digital pad only.
     pub fn read(&self, address: u32) -> Result<u8, BusError> {
         match address - SMPC {
+            0x5F => Ok(self.command),
+            0x63 => Ok(u8::from(self.sf)),
             offset @ (0x75 | 0x77) => {
                 let port = ((offset - 0x75) / 2) as usize;
                 let bit = 1 << port;
@@ -51,6 +75,11 @@ impl Smpc {
 
     pub fn write(&mut self, address: u32, value: u8) -> Result<(), BusError> {
         match address - SMPC {
+            0x63 if value == 1 => self.sf = true,
+            0x1F if matches!(value, 0x02 | 0x03 | 0x18) && self.sf && self.pending.is_none() => {
+                self.command = value;
+                self.pending = Some((value, Self::CPU_COMMAND_CLOCKS));
+            }
             0x75 => self.pdr[0] = value & 0x7F,
             0x77 => self.pdr[1] = value & 0x7F,
             0x79 => self.ddr[0] = value & 0x7F,
@@ -146,5 +175,44 @@ impl Vdp2 {
             }
         }
         Ok(pixels)
+    }
+}
+
+#[cfg(test)]
+mod smpc_command_tests {
+    use super::*;
+
+    #[test]
+    fn cpu_control_commands_require_sf_latch_output_and_complete_after_807_clocks() {
+        for command in [2, 3, 0x18] {
+            let mut smpc = Smpc::default();
+            assert_eq!(smpc.read(SMPC + 0x63).unwrap(), 0);
+            assert!(smpc.write(SMPC + 0x1F, command).is_err());
+            smpc.write(SMPC + 0x63, 1).unwrap();
+            smpc.write(SMPC + 0x1F, command).unwrap();
+            assert_eq!(smpc.read(SMPC + 0x5F).unwrap(), command);
+            assert_eq!(smpc.read(SMPC + 0x63).unwrap(), 1);
+            assert!(smpc.write(SMPC + 0x1F, 2).is_err()); // No overwrite while busy.
+            assert!(smpc.write(SMPC + 0x63, 0).is_err()); // Guest cannot clear SF.
+            assert_eq!(smpc.advance_clocks(806), None);
+            assert_eq!(smpc.read(SMPC + 0x63).unwrap(), 1);
+            assert_eq!(smpc.advance_clocks(1), Some(command));
+            assert_eq!(smpc.read(SMPC + 0x63).unwrap(), 0);
+            assert_eq!(smpc.advance_clocks(1000), None); // No duplicate completion.
+        }
+    }
+
+    #[test]
+    fn unsupported_commands_and_register_width_contract_are_explicit() {
+        let mut smpc = Smpc::default();
+        smpc.write(SMPC + 0x63, 1).unwrap();
+        for command in [0, 6, 7, 8, 9, 0x0D, 0x0E, 0x0F, 0x10, 0x19, 0x1A, 0xFF] {
+            assert!(smpc.write(SMPC + 0x1F, command).is_err());
+            assert_eq!(smpc.read(SMPC + 0x5F).unwrap(), 0);
+            assert_eq!(smpc.read(SMPC + 0x63).unwrap(), 1);
+            assert_eq!(smpc.advance_clocks(1000), None);
+        }
+        assert!(smpc.read(SMPC + 0x1F).is_err()); // Write-only COMREG.
+        assert!(smpc.write(SMPC + 0x5F, 0).is_err()); // Read-only OREG31.
     }
 }

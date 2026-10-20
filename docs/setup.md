@@ -35,8 +35,11 @@ original synthetic ROM also exercises guest trap/illegal/slot-illegal
 handlers, RTE and bounded SLEEP in native and Wasm execution. An additional original
 synthetic BIOS tests address errors from data, branch slots and odd fetches,
 guest-written exception traces, RTE recovery and reset of a pending error.
-No proprietary files are required. See [Issue #15 coverage](hardware-conformance.md),
-[current validation](validation-issue-15.md) and
+The original dual-SH-2 ROM additionally tests independent register/stack state,
+shared RAM, timed SSHON/SSHOFF, bidirectional FRT capture interrupts, SLEEP wake,
+slave restart and NMIREQ in both native and browser Wasm execution.
+No proprietary files are required. See [Issue #17 coverage](hardware-conformance.md),
+[current validation](validation-issue-17.md) and
 [earlier SH-2 validation](validation-issue-11.md). The committed sample can be rebuilt and
 verified without an
 external cross compiler or SDK:
@@ -44,6 +47,7 @@ external cross compiler or SDK:
 ```sh
 python3 homebrew/star-collector/build.py
 python3 homebrew/star-collector/build.py --check
+python3 tests/fixtures/build_dual_sh2.py --check
 ```
 
 ## Build and serve the browser client
@@ -118,10 +122,11 @@ Rust or guest source. Opening `index.html` as a `file:` URL will not work. The c
    Right Shift for Start. Both pads release with focus loss and pause.
 9. Debug Reset restarts the selected mode. Changing mode or file performs a cold
    reset; switching modes discards the previous file selection. Run accepts a whole
-   count from 1 to 10000 CPU steps. Exception entry and sleeping steps may retire
-   no instructions. SLEEP disables instruction controls until a reset or an
-   accepted hardware interrupt; device IRQ generation is not integrated yet.
-   Faults remain stopped until reset.
+   count from 1 to 10000 interleaved machine turns. Each turn attempts a master
+   step and, when enabled, a slave step; exception entry and sleeping turns may
+   retire no instructions. SLEEP keeps controls enabled when an implemented
+   peripheral or the slave can wake the master. CPU/device faults stop the entire
+   machine until reset.
 
 Only static files, including the original MIT-licensed sample ISO, are fetched.
 Local BIOS/disc bytes are read via `File.arrayBuffer()` and
@@ -162,7 +167,10 @@ updates, loading/view races, Play Restart and Debug frame advancement. At
 the hardware boundary it also executes an original backup/port-2 guest as a
 synthetic ROM and temporary local ISO, checks local backup import/export bytes,
 reset retention, rejected/read-failing imports and stale-read cancellation,
-second-pad input release and fresh-tab isolation. At
+second-pad input release and fresh-tab isolation. It also executes the original
+dual-SH-2 ROM, checking independent CPU registers/stacks, shared guest computation,
+FRT IRQ/capture results, two slave starts/stops, master NMI and a visible sticky
+slave exception-entry fault. At
 1440×900, 768×1024 and 390×844 it asserts native canvas dimensions, rendered 10:7
 ratio, pixelated scaling, no document horizontal overflow and reachable controls
 in Play, Debug and expanded settings (including a selected BIOS).
@@ -199,7 +207,7 @@ or repository setting, then push a fix or rerun the latest `main` workflow.
 The existing relative asset URLs and `wasm-unsafe-eval` CSP work at the project
 prefix; no custom domain or backend is required.
 
-Issue #15 requires no human post-merge verification. Mandatory checks run before
+Issue #17 requires no human post-merge verification. Mandatory checks run before
 merge using native/Wasm tests and the headless browser against the same static
 assets under `/saturn-rust/`. An optional automated deployed-site smoke check may
 report publication defects after merge; it is not an approval/closure gate.

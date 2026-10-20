@@ -1,22 +1,20 @@
 # Hardware conformance for Issue #15
 
-**Status: incomplete; Issue #15 remains the comprehensive tracker.** It replaces
-the unmet scope of administratively closed Issues #11/#13; do not reopen either.
-This checkpoint adds SH-2 CPU address-error dispatch and an original synthetic
-BIOS fixture, preserving internal backup storage and both direct digital pads.
-It does not deliver the complete Saturn hardware or
-the two required new demonstrations. No overarching acceptance criterion is
-marked complete. An instruction/device test is evidence only for its exercised
-operation, not for the chip, its timing or general compatibility.
+**Status: incomplete; Issue #17 is the active continuation tracker.** Issues
+#11/#13/#15 remain administratively closed; do not reopen them. This checkpoint
+adds independent slave SH-2 execution, CPU-local FRT/INTC behavior and timed
+SMPC SSHON/SSHOFF/NMIREQ. It preserves the address-error fixtures, Star Collector,
+backup RAM and both direct digital pads. It does not complete the Saturn hardware
+or either required new demonstration. No umbrella acceptance checkbox is met.
 
-Inspected upstream main: `1327d81dfd1a011b69990fd26abf4cefd04a9a52` (2026-10-21),
+Inspected upstream main: `dbd981b030a46daa6923072ce240680dd2e58ebf` (2026-10-21),
 verified with `git ls-remote origin refs/heads/main`. The assigned readiness
-checkpoint is `6f219a42da4a43703214dc8fab3dc23d4c798ccc`; no technical diagnosis
-was supplied. See [current validation](validation-issue-15.md),
+checkpoint is `850d3c1f9112d056281cfd967e3730320be4e1c8`; no technical diagnosis
+was supplied. See [current validation](validation-issue-17.md),
+[historical address-error validation](validation-issue-15.md),
 [backup/pad validation](validation-issue-13.md) and the
-[historical SH-2 checkpoint](validation-issue-11.md). Update this matrix with each
-hardware change. **Pending** means required coverage or integrated native/Wasm
-validation remains missing, even when the documented subset has passing tests.
+[historical SH-2 checkpoint](validation-issue-11.md). **Pending** means required
+coverage or integrated validation remains missing, even when a subset passes.
 
 ## References and evidence keys
 
@@ -66,6 +64,13 @@ the same first-read program. Browser BK evidence uses the real Wasm in
 [browser-smoke.mjs](../scripts/browser-smoke.mjs). It proves only odd-byte
 loads/stores, reset retention and direct digital input, not BIOS services or full
 SMPC timing. It is a diagnostic, not either of the two required new demos.
+**DUAL** means [tests/dual_sh2.rs](../tests/dual_sh2.rs) and the identical
+[original guest BIOS](../tests/fixtures/dual-sh2.s), reproducibly built as
+[dual-sh2.hex](../tests/fixtures/dual-sh2.hex) and executed through browser Wasm
+in [browser-smoke.mjs](../scripts/browser-smoke.mjs). It computes shared results
+using both CPUs and acknowledges FRT interrupts in guest handlers.
+**FRT** means the five manual-derived unit tests in
+[src/onchip.rs](../src/onchip.rs). These tests do not establish physical timing.
 **SC** means actual Star
 Collector guest execution in [tests/game.rs](../tests/game.rs) and browser smoke.
 **—** means no evidence for that path. Decoder coverage is separate from semantic
@@ -108,8 +113,8 @@ not turn those missing hardware paths into supported behavior.
 | EXTU | 6.24 | Byte/word zero extension | extend | — | Common limits | Pending |
 | JMP | 6.25 | Latched absolute target, one slot | branch | SC | Common limits | Pending |
 | JSR | 6.26 | Latched target and PR | branch | — | Common limits | Pending |
-| LDC | 6.27 | SR/GBR/VBR, reg/postincrement; SR reserved-bit mask | special | — | Device IRQ wiring absent | Pending |
-| LDS | 6.28 | MACH/MACL/PR, reg/postincrement | special | — | Device IRQ wiring absent | Pending |
+| LDC | 6.27 | SR/GBR/VBR, reg/postincrement; SR reserved-bit mask | special | — | Non-FRT device IRQ wiring absent | Pending |
+| LDS | 6.28 | MACH/MACL/PR, reg/postincrement | special | — | Non-FRT device IRQ wiring absent | Pending |
 | MAC.L | 6.29 | Signed product, wrapping 64-bit / saturated signed 48-bit; same-register increments | mac | — | Upper 16 MACH bits in S mode deterministic; no hardware comparison | Pending |
 | MAC.W | 6.31 | Signed product, wrapping 64-bit / saturated MACL, same-register increments | mac | — | SH-2-specific MACH preservation; see discrepancy | Pending |
 | MOV indirect/indexed/auto-update/reg | 6.32 | B/W/L, sign extension, n=m rules, R0 indexing | move | SC, ROM | Common limits | Pending |
@@ -156,21 +161,21 @@ not turn those missing hardware paths into supported behavior.
 
 | Feature / reference | Implemented behavior and edges | Native | Browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- | --- |
-| Register/reset model, H §§2/4.2 | Separate Cpu instances possible, power-on PC/SP vectors, SR=F0 | boot.rs | synthetic BIOS | Only master is owned/scheduled by Machine; manual reset absent | Pending |
+| Register/reset model, H §§2/4.2 | Independent machine-owned CPUs and power-on vectors, SR=F0, held-reset slave; SSHOFF clears slave CPU/FRT only | boot.rs, DUAL | DUAL | Manual reset, BSC/UBC preservation and BCR1 CPU identification absent | Pending |
 | General/slot illegal, H §4.5 | Vectors 4/6, correct saved PC, no retirement | exception | ROM | No double-fault bus handling | Pending |
-| TRAPA/RTE, H §§4.5/4.7 | Guest stack layout and handler return | exception, sh2_system.rs | ROM | System-level IRQ sources absent | Pending |
+| TRAPA/RTE, H §§4.5/4.7 | Guest stack layout and handler return | exception, sh2_system.rs | ROM | Non-FRT system IRQ sources absent | Pending |
 | CPU address errors, H §§4.3/4.6/4.7, Tables 4.6/4.10/4.11 | Vector 9; odd/peripheral fetches; operand alignment/width/space restrictions; next PC/SR stack; completed auto-update; errors outrank caller IRQ/NMI; reset clears latch | AE, AEROM | AEROM | Invalid-cycle data/bus signals deterministic rather than physical; misaligned exception stacking (H §4.8.3) remains a sticky diagnostic | Pending |
 | Maskable IRQ/NMI, H §4.4 | Explicit caller-supplied level/vector, I mask, NMI vector 11, stack/wake | sleep, special | — | Missing device priority selection, assertion/acknowledgment, NMI signal latch | Pending |
 | Deferral, H §4.6 | IRQ/NMI defer through delayed successors and control/system successors; address errors defer only through delayed successors | special, AE | ROM, AEROM | No pipeline-cycle timing or device IRQ selection; unfetchable successor policy below | Pending |
 | Cache/address regions, H §2 and cache chapter | P1 external-bus alias only | bus.rs | SC | Cache lines, purge/associative access and coherency absent | Pending |
-| On-chip INTC, H interrupt controller | None | — | — | All registers/priority/vector interactions missing | Pending |
-| FRT, H timer chapter | None | — | — | Counter, compares, capture, overflow, IRQ missing | Pending |
+| On-chip INTC, H §§5.3.2/5.3.6/5.3.7 | CPU-local FRT priority in IPRB, VCRC/VCRD; masked/deferred level-sensitive requests; guest flag acknowledgment | FRT, DUAL | DUAL | Other sources/IPRA/ICR/SCI priority and external IRQ arbitration missing | Pending |
+| FRT, H §§11.1–11.5, tables 11.2/11.3 | FRC, OCRA/B, capture, divisors, overflow/compare/clear, TIER/FTCSR, shared TEMP, output level state and IRQ; Saturn capture wires (ST-202 §1.2) | FRT, DUAL | DUAL (capture) | Internal/external pin synchronization, WAIT, clock-switch edges and contention timing absent; no external clock source or output-pin routing | Pending |
 | Watchdog, H WDT chapter | None | — | — | Keyed registers, interval/reset modes missing | Pending |
 | SCI, H serial chapter | None | — | — | Serial registers, timing/status/IRQ missing | Pending |
 | On-chip DMAC, H DMA chapter | None | — | — | Channels, transfers, triggers/status/IRQ missing | Pending |
 | DIVU, H division-unit chapter | None (separate from DIV1 instructions) | — | — | Mapped 32/64-bit division unit missing | Pending |
 | BSC/UBC/standby, H bus/break/power chapters | None | — | — | Software-visible control/register behavior missing | Pending |
-| Slave SH-2, O / Dual CPU User's Guide | None | — | — | Independent machine-owned CPU, reset/start/stop, signaling, scheduling missing | Pending |
+| Slave SH-2, [Dual CPU User's Guide][DUALREF] §§1/3/4, [SMPC] table 1.1 | Independent interpreter/registers/stacks, shared bus, SSHON/SSHOFF reset/start, bidirectional capture IRQs | DUAL | DUAL | BCR1 identity, cache coherence, bus contention and hardware-time scheduling absent | Pending |
 
 ## MC68EC000 instruction families
 
@@ -266,10 +271,10 @@ manual entry in this table is an outstanding requirement, never a checked box.
 | Backup byte storage, SCU §1.2 figs.1.3/1.5; SMPC §2.3 SYSRES p.29 | 32 KiB, odd byte addresses in 00180000–0018FFFF; P1 aliases; unformatted zero initialization | BK; `backup_byte_lanes_endpoints_and_cache_through_access_do_not_alias_work_ram` | BK | Even lanes/open bus, word/long semantics, additional mirrors and hardware lane confirmation pending | Pending |
 | Backup reset retention, SMPC §2.3 SYSRES p.29 | Bytes survive successful/rejected HLE, disc and ROM resets; new Machine starts empty | BK; `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot` | BK, reset/mode/read-race checks | Guest SYSRES and other power/reset domains missing | Pending |
 | Local backup import/export (host interface) | Exact 32768 packed bytes; atomic replacement; explicit local download; stale import cancellation; no network/storage | `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot` | Download byte comparison, offline import, invalid size/read errors, races, fresh-tab isolation | BIOS backup filesystem/calls and cartridge backup absent; no automatic cross-session persistence | Pending |
-| Shared event scheduler, O clock domains | Bounded active/blank instruction budgets only | game.rs | SC | Shared hardware time, scanlines, clocks/contention/order missing | Pending |
+| Shared event scheduler, O clock domains | Deterministic master/slave/peripheral ordering, eight-clock functional turns; legacy visible/blank budgets | game.rs, DUAL | SC, DUAL | Real instruction/bus cycles, scanline events, all clock domains and contention missing | Pending |
 | Video timing, VDP2 display registers | Pollable frame VBLANK bit | game.rs | SC | HBLANK, scanlines, PAL/NTSC, interlace/field behavior and IRQs missing | Pending |
 | Audio timing, SCSP/CD | None | — | — | Sample clocks, bounded stereo stream, underflow/muting missing | Pending |
-| Power/reset domains, SMPC / H | Cold reset clears volatile machine state, retains backup bytes; CPU SLEEP separate | boot.rs, sh2_system.rs | ROM/reset | Hard/soft/SMPC reset distinction and secondary CPU controls missing; explicit backup import/export supported | Pending |
+| Power/reset domains, SMPC / H | Cold reset clears both CPUs/devices and retains backup; SSHOFF resets slave CPU/FRT while retaining shared state; SLEEP distinct | boot.rs, sh2_system.rs, DUAL | ROM/reset, DUAL | Manual/system reset and remaining power/clock controls missing | Pending |
 
 ## SCU and DSP
 
@@ -343,8 +348,8 @@ storing a register without effects will not count as implementation.
 | BIOS services, [BOOT] | None | — | — | System/backup/CD calls and per-call ABI/side effects | Pending |
 | External BIOS execution, [BOOT] | Genuine reset vectors, original synthetic ROM handlers | boot.rs, sh2_system.rs | ROM | Genuine BIOS initialization/menu/boot **unverified**; no lawful local BIOS supplied | Pending |
 | SMPC direct digital port 1, [SMPC] §3 | Active-low nibble selection and button levels | devices.rs | SC | Full I/O mode behavior and timing | Pending |
-| SMPC commands/status/timing, [SMPC] command reference | None | — | — | SF, command sequencing/latency, INTBACK/status/interrupt | Pending |
-| SMPC reset/power/clock, [SMPC] system management | None | — | — | Master/slave/sound CPU controls and system reset/clock changes | Pending |
+| SMPC commands/status/timing, [SMPC] §1.2/§2.3 pp.23/24/32 | SF set/busy/clear; OREG31 at command start; 807 reference clocks (30 µs minimum) for 02/03/18; rejects unsupported commands and busy overwrite | smpc_command_tests, DUAL | DUAL | All other commands, SR, INTBACK, command jitter and SCU interrupt missing | Pending |
+| SMPC reset/power/clock, [SMPC] table 1.1/§2.3 | SSHON/SSHOFF slave reset domain; NMIREQ latches master NMI until accepted | DUAL | DUAL | Master/sound/CD power commands, SYSRES, clock change and reset-button enable missing | Pending |
 | RTC/region/system flags, [SMPC] | None | — | — | RTC registers/commands, deterministic clock input, flags | Pending |
 | SMPC direct digital port 2, [SMPC] §1.2 pp.7–9, §3.4 table 3.36 p.97 | Independent PDR2/DDR2, IOSEL2/EXLE2; active-low nibble reports; host keyboard levels | BK; `both_digital_ports_have_independent_direction_selection_and_enable_bits` | BK; I/K/J/L keyboard input and release checks | Settling remains immediate; no timed INTBACK/peripheral packets or external latch IRQ | Pending |
 | Analog pad, [SMPC] peripheral data; ST-151 peripheral standards | None | — | — | Analog axes/buttons, packet/command timing, browser mapping | Pending |
@@ -353,8 +358,8 @@ storing a register without effects will not count as implementation.
 ## Concrete unresolved gaps and closure gates
 
 1. SH-2 misaligned exception stacking, remaining semantic/exception edges, reset domains,
-   cache/coherency, mapped SH7604 peripherals, bus locking and integrated IRQs;
-   independent slave execution and shared scheduling. CPU opcode decoding alone
+   cache/coherency, remaining SH7604 peripherals, bus locking and non-FRT IRQs;
+   cycle-based dual-CPU scheduling and arbitration. CPU opcode decoding alone
    does not satisfy the CPU or multiprocessor criterion.
 2. Every MC68EC000 instruction family above, sound bus, SCSP synthesis/timing/DSP,
    CD-DA mixing and real browser audio. The current build remains silent.
@@ -381,16 +386,50 @@ storing a register without effects will not count as implementation.
 
 ## Tracker closure and autonomous acceptance
 
-[Issue #15](https://github.com/takahirox/saturn-rust/issues/15) supersedes prior
+[Issue #17](https://github.com/takahirox/saturn-rust/issues/17) continues #15 and supersedes prior
 closure-policy requirements. Partial hardware work can be reviewed using its
 actual technical evidence; external auto-close behavior does not block it.
 Administrative closure is not proof of completion. Report unmet criteria with
 plain references and continue implementation under the current umbrella backlog.
-Do not reopen #11/#13 or require workflow-owner confirmation, a real BIOS,
+Do not reopen #11/#13/#15 or require workflow-owner confirmation, a real BIOS,
 manual hardware testing, subjective visual/audio approval or a live-site check.
 Existing CI runs native, Wasm and headless browser tests under `/saturn-rust/`.
 This node makes no remote changes; it neither investigates nor changes external
 GitWeave configuration. All hardware gaps above remain technical requirements.
+
+## Dual-CPU/FRT scope and deterministic deviations
+
+`Machine::step` attempts a master boundary followed by a slave boundary (only
+when SSHON has completed), then advances both enabled FRTs and SMPC by eight
+reference clocks. Pending NMI precedes FRT selection; each CPU applies its own
+SR mask, delayed-branch and control-transfer inhibition. An accepted interrupt
+consumes that CPU's turn without retiring an instruction. Timers/commands advance
+during SLEEP. FRT requests remain asserted until guest software reads/clears
+FTCSR; exception acceptance does not clear a device flag. Slave reset discards
+its FRT and interrupt state while retaining shared memory and master state.
+A failure on either CPU stops subsequent machine turns until reset; successful
+earlier accesses within a failing turn are not rolled back.
+
+The eight-clock quantum is a **functional interleave**, not SH-2 opcode cycle
+accounting or Saturn hardware-time scheduling. `advance_frame` retains the
+60000/20000-turn visible/blank budgets; it has no scanline/HBlank events or bus
+arbitration. The 807-clock SMPC delay rounds the documented minimum 30 µs at
+26.8741 MHz upward; firmware jitter is absent. The guest sees completion at a
+turn boundary. Unsupported commands still fail explicitly. SF=0 command issue,
+SF clear writes and busy command overwrite are rejected; these invalid-software
+cases are diagnostics rather than a claim about physical firmware recovery.
+
+FRT byte accesses implement shared TEMP and observed-one/write-zero flags.
+The INTC subset accepts byte/word IPRB (FRT priority only), VCRC and VCRD. SCI
+priority writes fail. FRT words and unimplemented device accesses fail explicitly.
+The external-clock selection does not increment without an external clock source,
+which is not yet connected. Capture strobes at 01000000/01800000 and their P1
+aliases are write-only words, targeting slave/master respectively (ST-202 §1.2).
+A full strobe is modeled as a capture for either selected edge; electrical pulse
+width and synchronization are not modeled. Captures while the slave is held in
+reset are ignored. Other address mirrors and subcycle contention remain pending.
+FTOA/B output state is computed but not connected to external devices.
+No BSC master/slave identification or retail BIOS boot is claimed.
 
 ## Address-error scope and deterministic deviations
 
@@ -458,3 +497,5 @@ observations were used in this checkpoint.
 [CD]: https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-162-R1-092994.pdf
 [BOOT]: https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-079B-R3-011895.pdf
 [DISC]: https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-040-R4-051795.pdf
+
+[DUALREF]: https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-202-R1-120994.pdf

@@ -15,7 +15,8 @@ automated local/CI checks; live Pages inspection is not a completion gate.
 | src/backup.rs | Packed internal battery RAM, checked import and odd-byte access |
 | src/disc.rs | Bounded cooked ISO9660 and Saturn IP validation, first-read executable selection |
 | src/devices.rs | VDP2 bitmap rasterization and SMPC digital-pad electrical inputs |
-| src/lib.rs | Explicit cold-boot modes, CPU/device ownership, bounded deterministic frame scheduling |
+| src/lib.rs | Explicit cold-boot modes, independent master/slave ownership, bounded functional interleaving |
+| src/onchip.rs | Independent per-CPU FRT and FRT-related INTC registers |
 | src/wasm.rs | Thin Wasm adapter; no gameplay or browser APIs |
 | web/app.js | Local file handling, keyboard levels, animation scheduling and RGBA framebuffer copy to Canvas |
 | homebrew/star-collector | Buildable MIT-licensed SH-2 guest and reproducible ISO builder |
@@ -23,12 +24,14 @@ automated local/CI checks; live Pages inspection is not a completion gate.
 `Cpu::step(&mut impl Memory)` owns no bus pointers. `Machine::reset(Boot)` clears
 volatile RAM, devices, ROM, counters, delay state and faults before attempting the selected
 boot. Invalid input leaves that mode selected and CPU in Reset, with no stale
-media or fallback. Battery-backed bytes are retained. `step()` makes one bounded CPU step; exception entry or a
-sleeping step can retire no instructions. `run_steps(n)` accepts 1–10000 steps.
+media or fallback. Battery-backed bytes are retained. `step()` makes one bounded master turn and,
+when enabled, one slave turn, then advances peripherals by eight reference clocks;
+exception entry or a sleeping turn can retire no instructions. `run_steps(n)` accepts 1–10000 steps.
 `advance_frame()` performs 60000 steps with TVSTAT VBLANK clear,
 then 20000 with VBLANK set. Every frame has a bounded CPU budget and aborts on
-its first fault. This is a deterministic polling reference, not cycle-accurate
-Saturn timing, 60 Hz hardware execution, raster interrupts or bus arbitration.
+its first fault. This is a deterministic functional interleave, not SH-2 opcode cycle accounting,
+60 Hz hardware execution, raster interrupts or bus arbitration. See the
+[dual-CPU/FRT timing limits](hardware-conformance.md#dual-cpufrt-scope-and-deterministic-deviations).
 The browser advances at most one frame per requestAnimationFrame callback,
 limited to 60 updates per second; it does no catch-up loop. Actual speed depends
 on the browser. The guest waits for a VBLANK edge, so holding a key changes state
@@ -72,8 +75,10 @@ defer through a pending slot or the successor of any system/control-register
 transfer or untaken BT/S or BF/S. The caller must select the request/vector and
 retry if deferred. A
 successful entry saves the old SR/next PC, updates I, wakes SLEEP and jumps to the
-handler without retiring an instruction. These APIs are tested directly, but
-**Machine has no device interrupt controller or scheduler that calls them yet**.
+handler without retiring an instruction. Machine retries CPU-local FRT interrupt requests and SMPC master NMI at each
+processor boundary; acceptance consumes a turn without retiring an instruction.
+FRT requests stay asserted until the guest reads and clears FTCSR. Other device
+interrupt sources and full controller arbitration remain missing.
 
 CPU address errors dispatch vector 9 with next-PC/SR stacking, operand completion
 and delayed-branch deferral (SH7604 §§4.3/4.6/4.7). `src/cpu/memory.rs` checks
@@ -85,8 +90,17 @@ observable in `CpuState` and Wasm; reset clears it. Original synthetic BIOS test
 exercise handler return and independently expected PC/SR traces in native/Wasm.
 See [address-error deviations](hardware-conformance.md#address-error-scope-and-deterministic-deviations).
 
-Reset variants, cache, SH7604 on-chip peripherals and dual-CPU integration are
-outstanding. Missing bus/device implementations and exception-entry failures
+The slave starts held in reset; timed SMPC SSHON releases its power-on vectors
+from the shared BIOS and SSHOFF resets only the slave CPU/FRT, preserving shared
+RAM and master state. Both CPUs execute the same original interpreter with
+independent registers, stacks, delay/fault state and on-chip registers. The
+original diagnostic guest uses a guest-written shared flag to select setup;
+BCR1 hardware CPU identification remains missing. SMPC NMIREQ latches a master
+NMI and can wake SLEEP independently of SR.I. A fault on either CPU stops the
+entire machine until reset and identifies the slave when applicable.
+
+Manual reset variants, cache, remaining SH7604 peripherals and hardware cycle
+scheduling are outstanding. Missing bus/device implementations and exception-entry failures
 remain explicit, sticky host diagnostics.
 Exception entry is bounded on a failing stack/vector access; successful writes
 before a later entry failure are not rolled back. This is not hardware double-
@@ -98,12 +112,15 @@ bus locking/arbitration between processors, or native Sega BIOS compatibility.
 | Physical range | Behavior |
 | --- | --- |
 | 00000000–0007FFFF | Optional read-only 512 KiB external BIOS |
-| 00100000–0010007F | SMPC, only the two-port direct registers below |
+| 00100000–0010007F | SMPC direct ports plus SF/COMREG/OREG31 for SSHON/SSHOFF/NMIREQ |
 | 00180000–0018FFFF | 32 KiB backup RAM on odd byte addresses; other lanes/widths explicitly unsupported |
 | 00200000–002FFFFF | 1 MiB low work RAM |
+| 01000000 / 01800000 | Write-only word capture strobes to slave/master FRT |
 | 05E00000–05E7FFFF | 512 KiB VDP2 VRAM |
 | 05F80000–05F8011F | VDP2, only the listed register subset |
 | 06000000–060FFFFF | 1 MiB high work RAM |
+| FFFFFE10–FFFFFE19 | CPU-local FRT, byte accesses only |
+| FFFFFE60 / FFFFFE66 / FFFFFE68 | CPU-local FRT IPRB/VCRC/VCRD, byte/word |
 
 P1 cache-through addresses 20000000–3FFFFFFF map to the corresponding external
 physical address. No cache behavior or RAM mirrors are modeled. Words/longs
@@ -140,7 +157,11 @@ maps arrows, Z (A) and Enter (Start), releases on blur and pauses on tab hiding.
 Port 2 uses the same direct protocol with independent button, PDR and DDR state,
 IOSEL bit 1 and EXLE bit 1. The browser maps I/K/J/L (up/down/left/right),
 U/O/P (A/B/C), Right Shift (Start); both pads release on focus loss, pause, settings
-and view navigation. No INTBACK, SMPC commands/RTC/reset, multitaps or analog mode
+and view navigation. COMREG supports SSHON=02, SSHOFF=03 and NMIREQ=18. Guest software sets SF
+to one before issuing a command; OREG31 reports it immediately and SF clears at
+completion, after at least 807 reference clocks (minimum 30 µs at 26.8741 MHz,
+rounded to a turn). Busy command overwrite and unsupported commands fail.
+No INTBACK, other SMPC commands/RTC/system reset, multitaps or analog mode
 is implemented. Two digital ports do not establish full SMPC conformance.
 
 Internal backup RAM is independent of volatile resets. The SCU manual §1.2,
@@ -210,6 +231,7 @@ used as implementation code. Manual section/page references use printed pages.
 - [SH7604 Hardware Manual](https://github.com/luckyseoul/saturn-docs/blob/main/files/sh7604.pdf), §§2.1–2.3 (registers, alignment, address spaces), §4.1.3 table 4.3 and §4.2.2 (power-on vectors/reset), §§4.4–4.7 (interrupts, instruction exceptions, deferral, stack layout), §14.3 (sleep).
 - [Saturn Overview](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-103-R1-040194.pdf), hardware configuration/address map and subsystem roles.
 - [VDP2 User's Manual](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-058-R2-060194.pdf), §2.2 pp.18–23 TVMD/TVSTAT; §3 pp.29–40 VRAM/cycle patterns; §4 pp.48–63 BGON, bitmap, RGB555 and CHCTLA; §4 map offset; §5 coordinate increment; §10 priority. Register addresses in the manual are relative to VDP2 VRAM origin 05E00000.
+- [Dual CPU User's Guide](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-202-R1-120994.pdf), §§1.1/1.2 and §§3/4 shared devices, common power-on vectors and FRT capture signaling. The original diagnostic contains no SDK or manual sample code.
 - [SMPC User's Manual](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-169-R1-072694.pdf), §1.2 pp.5–8 byte-only register map; §3.1 pp.74–75 direct access; §3.4 table 3.36 p.97 digital-pad TH/TR protocol.
 - [Disc Format Standards](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-040-R4-051795.pdf), §§3–4, especially pp.25–31 IP fields, master stack and first-read file; ISO9660 directory record/volume layout.
 - [Boot ROM User's Manual](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-079B-R3-011895.pdf), §§1–3 startup/services. Full BIOS services are not implemented.
@@ -222,15 +244,16 @@ added. Manuals/firmware are not redistributed.
 
 ## Remaining milestones
 
-Misaligned exception stacking, hardware interrupt wiring, accurate timers
-and cycles, slave SH-2, SCU DMA/DSP/interrupts, SMPC commands/INTBACK, additional VDP2
+Misaligned exception stacking, non-FRT interrupt wiring, accurate hardware cycles
+and timer contention, remaining SH7604 peripherals, SCU DMA/DSP/interrupts,
+remaining SMPC commands/INTBACK, additional VDP2
 modes, VDP1, CD-block runtime reads, BIOS services and native BIOS startup remain
 future compatibility work. Audio (68EC000/SCSP) is absent; this build is silent.
 Reference-emulator/hardware comparison, Gamepad API and performance
-measurements have not been performed. Sound is required by Issue #15 and remains
+measurements have not been performed. Sound is required by Issue #17 and remains
 missing. No dynarec, workers,
 server backend or general-game compatibility is introduced.
 
-Issue #15 tracks all unmet hardware criteria; #11/#13 remain closed and superseded.
+Issue #17 continues all unmet hardware criteria; #11/#13/#15 remain closed.
 See [hardware conformance and unresolved gaps](hardware-conformance.md)
-and [current validation](validation-issue-15.md).
+and [current validation](validation-issue-17.md).

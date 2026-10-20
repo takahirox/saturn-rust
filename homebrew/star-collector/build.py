@@ -10,9 +10,9 @@ OUTPUT = HERE.parent.parent / 'web' / 'star-collector.iso'
 BASE = 0x06004000
 
 
-def assemble(source):
+def assemble(source, base=BASE):
     labels, entries = {}, []
-    pc = BASE
+    pc = base
     for raw in source.splitlines():
         line = raw.split(';')[0].strip().lower()
         if not line:
@@ -48,13 +48,13 @@ def assemble(source):
 
     for pc, op, a, size, raw in entries:
         try:
-            assert len(result) == pc - BASE
+            assert len(result) == pc - base
             if op == 'load':
                 literal = (pc + 9) & ~3
                 word(0xD000 | reg(a[1]) << 8 | (literal - ((pc + 4) & ~3)) // 4)
                 word(0xA000 | ((pc + size - (pc + 6)) // 2))
                 word(0x0009)
-                while (BASE + len(result)) % 4:
+                while (base + len(result)) % 4:
                     word(0x0009)
                 result.extend(struct.pack('>I', num(a[0])))
             elif op in ('bt.l', 'bf.l'):
@@ -62,6 +62,11 @@ def assemble(source):
                 word(0xA000 | branch(pc + 2, a[0], 12))
                 word(0x0009)
             elif op == 'nop': word(0x0009)
+            elif op == 'sleep': word(0x001B)
+            elif op == 'rte': word(0x002B)
+            elif op == 'ldc':
+                assert a[1] == 'sr'
+                word(0x400E | reg(a[0]) << 8)
             elif op == 'rts': word(0x000B)
             elif op == 'jmp': word(0x402B | reg(a[0][1:]) << 8)
             elif op in ('bra', 'bsr', 'bt', 'bf'):

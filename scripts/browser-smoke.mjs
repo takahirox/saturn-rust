@@ -327,6 +327,72 @@ try {
   assert.match(await value("error"), /Exception vector 9 entry.*Unaligned/);
   assert.equal(await page.locator("#step").isDisabled(), true);
   await page.locator("#count").fill("6");
+  // Independent processors execute this same original licensed guest natively
+  // in tests/dual_sh2.rs. All shared RAM/IRQ/SMPC changes are guest MMIO writes.
+  const dualRom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/dual-sh2.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [offset, ...words] = line.trim().split(/\s+/).map((word) => parseInt(word, 16));
+    words.forEach((word, i) => dualRom.writeUInt16BE(word, offset + i * 2));
+  }
+  await page.locator("#bios").setInputFiles({ name: "original-dual-sh2.bin", mimeType: "application/octet-stream", buffer: dualRom });
+  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  const dualStarted = await page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    for (let i = 0; i < 2000 && emulator.read_long(0x06002004) !== 1; i++) emulator.step();
+    return { boots: emulator.read_long(0x06002004), master: Array.from(emulator.registers()),
+      slave: Array.from(emulator.slave_registers()), retired: Number(emulator.slave_instruction_count()) };
+  });
+  assert.equal(dualStarted.boots, 1);
+  assert(dualStarted.retired > 0);
+  assert.equal(dualStarted.master[14], 42);
+  assert.equal(dualStarted.slave[14], 17);
+  assert.equal(dualStarted.master[15], 0x06100000);
+  assert.equal(dualStarted.slave[15], 0x060FE000);
+  await page.locator("#count").fill("4000");
+  await page.locator("#run").click();
+  assert.equal(await value("error"), "");
+  assert.match(await value("status"), /Sleeping/);
+  const dualResult = () => page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    return { mailbox: Array.from({length: 14}, (_, i) => emulator.read_long(0x06002000 + i * 4)),
+      slaveRetired: emulator.slave_instruction_count(), slavePc: emulator.slave_pc(),
+      slaveExceptions: emulator.slave_exception_count(), masterExceptions: emulator.exception_count(),
+      masterSp: emulator.registers()[15], clocks: Number(emulator.peripheral_clocks()) };
+  });
+  const dualFinished = await dualResult();
+  assert.deepEqual(dualFinished.mailbox.slice(0, 11), [1, 2, 35, 42, 2, 0x1234, 2, 0x5678, 2, 42, 0x600D]);
+  assert.deepEqual(dualFinished.mailbox.slice(11), [0x34E, 0xF0, 1]);
+  assert.equal(dualFinished.masterExceptions, "3");
+  assert.equal(dualFinished.masterSp, 0x06100000);
+  assert.equal(dualFinished.slaveRetired, "0");
+  assert.equal(dualFinished.slavePc, 0);
+  assert.equal(dualFinished.slaveExceptions, "0");
+  assert(dualFinished.clocks > 0);
+  await page.locator("#reset").click();
+  assert.equal((await dualResult()).clocks, 0);
+  await page.locator("#run").click();
+  const dualRepeat = await dualResult();
+  assert.deepEqual({ ...dualRepeat, clocks: dualFinished.clocks }, dualFinished);
+  // A slave exception-entry failure must be visible in the app, and bounded
+  // retries must not let the master continue changing RAM or CPU registers.
+  const badSlaveRom = Buffer.from(dualRom);
+  const badStack = badSlaveRom.indexOf(Buffer.from([0x06, 0x0F, 0xE0, 0x00]));
+  assert(badStack > 0);
+  badSlaveRom.writeUInt32BE(0x04000000, badStack);
+  await page.locator("#bios").setInputFiles({ name: "original-faulting-slave.bin", mimeType: "application/octet-stream", buffer: badSlaveRom });
+  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  await page.locator("#run").click();
+  assert.match(await value("error"), /Slave SH-2: Exception vector 66 entry/);
+  assert.match(await value("status"), /Faulted: Slave SH-2/);
+  assert.equal(await page.locator("#run").isDisabled(), true);
+  const stoppedAfterSlaveFault = await machine();
+  await page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    try { emulator.run_steps(10); } catch { /* Sticky error expected. */ }
+  });
+  assert.deepEqual(await machine(), stoppedAfterSlaveFault);
+  await page.locator("#count").fill("6");
   // A malformed replacement must clear the previously running external ROM.
   await page.locator("#bios").setInputFiles({ name: "wrong.bin", mimeType: "application/octet-stream", buffer: Buffer.from([0, 0]) });
   assert.equal(await value("pc"), "0x00000000");
@@ -735,7 +801,7 @@ try {
   await missingBuild.waitForFunction(() => document.getElementById("status").textContent === "Initialization failed");
   assert.match(await missingBuild.locator("#error").textContent(), /Build web\/pkg and serve/);
   assert.equal(await missingBuild.locator("#reset").isDisabled(), true);
-  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation.`);
+  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation.`);
 } finally {
   if (browser) await browser.close();
   if (server?.pid && server.exitCode === null) {

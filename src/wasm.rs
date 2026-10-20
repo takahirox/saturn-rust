@@ -56,6 +56,21 @@ impl Emulator {
     pub fn frames(&self) -> String {
         self.machine.frames().to_string()
     }
+    pub fn peripheral_clocks(&self) -> String {
+        self.machine.clocks().to_string()
+    }
+    pub fn slave_registers(&self) -> Vec<u32> {
+        self.machine.slave_state().r.to_vec()
+    }
+    pub fn slave_instruction_count(&self) -> String {
+        self.machine.slave_state().instructions.to_string()
+    }
+    pub fn slave_pc(&self) -> u32 {
+        self.machine.slave_state().pc
+    }
+    pub fn slave_exception_count(&self) -> String {
+        self.machine.slave_state().exceptions.to_string()
+    }
     pub fn step(&mut self) -> Result<(), JsValue> {
         self.machine.step().map_err(js_error)
     }
@@ -78,6 +93,9 @@ impl Emulator {
     }
     pub fn address_error_pending(&self) -> bool {
         self.machine.cpu_state().address_error_pending
+    }
+    pub fn hardware_wake_possible(&self) -> bool {
+        self.machine.can_wake_master()
     }
     pub fn last_exception(&self) -> String {
         self.machine
@@ -102,6 +120,9 @@ impl Emulator {
         .into()
     }
     pub fn status(&self) -> String {
+        if let Some(error) = self.machine.fault() {
+            return format!("Faulted: {error}");
+        }
         match &self.machine.cpu_state().status {
             CpuStatus::Reset => "Reset — waiting for valid boot input".into(),
             CpuStatus::Running => "Ready".into(),

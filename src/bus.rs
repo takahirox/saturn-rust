@@ -1,12 +1,25 @@
 //! Checked partial Saturn map; devices and cache-through aliases are documented separately.
 use crate::backup::{BACKUP_RAM, BACKUP_WINDOW, BackupRam};
 use crate::devices::{SMPC, Smpc, VDP2, VRAM, Vdp2};
+use crate::onchip::OnChip;
 use std::fmt;
 
 pub const BIOS_SIZE: usize = 512 * 1024;
 pub const WRAM_SIZE: usize = 1024 * 1024;
 pub const LOW_WRAM: u32 = 0x0020_0000;
 pub const HIGH_WRAM: u32 = 0x0600_0000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Processor {
+    Master = 0,
+    Slave = 1,
+}
+
+/// A CPU-local view of shared external memory and independent on-chip devices.
+pub struct CpuBus<'a> {
+    bus: &'a mut Bus,
+    processor: Processor,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusError {
@@ -65,6 +78,8 @@ pub struct Bus {
     pub(crate) vdp2: Vdp2,
     smpc: Smpc,
     pub(crate) backup: BackupRam,
+    onchip: [OnChip; 2],
+    pub(crate) slave_enabled: bool,
 }
 
 impl Default for Bus {
@@ -76,11 +91,42 @@ impl Default for Bus {
             vdp2: Vdp2::default(),
             smpc: Smpc::default(),
             backup: BackupRam::default(),
+            onchip: std::array::from_fn(|_| OnChip::default()),
+            slave_enabled: false,
         }
     }
 }
 
 impl Bus {
+    pub fn for_cpu(&mut self, processor: Processor) -> CpuBus<'_> {
+        CpuBus {
+            bus: self,
+            processor,
+        }
+    }
+
+    pub(crate) fn interrupt(&self, processor: Processor) -> Option<(u8, u8)> {
+        self.onchip[processor as usize].interrupt()
+    }
+
+    pub(crate) fn can_wake_master(&self) -> bool {
+        self.slave_enabled || self.smpc.busy() || self.onchip[0].can_request_interrupt()
+    }
+
+    pub(crate) fn set_slave_enabled(&mut self, enabled: bool) {
+        if !enabled {
+            self.onchip[1] = OnChip::default();
+        }
+        self.slave_enabled = enabled;
+    }
+
+    pub(crate) fn advance_clocks(&mut self, clocks: u32) -> Option<u8> {
+        self.onchip[0].advance_clocks(clocks);
+        if self.slave_enabled {
+            self.onchip[1].advance_clocks(clocks);
+        }
+        self.smpc.advance_clocks(clocks)
+    }
     /// Replaces ROM atomically. Machine reset separately discards old ROM first.
     pub fn load_bios(&mut self, bytes: &[u8]) -> Result<(), BusError> {
         if bytes.len() != BIOS_SIZE {
@@ -190,6 +236,18 @@ impl Bus {
         if !address.is_multiple_of(N as u32) {
             return Err(BusError::Unaligned { address, width: N });
         }
+        // ST-202 §1.2: word strobes signal slave at 21000000 and master
+        // at 21800000. Both cacheable and cache-through aliases share the wire.
+        if matches!(address, 0x0100_0000 | 0x0180_0000) {
+            if N != 2 {
+                return Err(BusError::UnsupportedDevice { address, width: N });
+            }
+            let target = usize::from(address == 0x0100_0000);
+            if target == 0 || self.slave_enabled {
+                self.onchip[target].capture_strobe();
+            }
+            return Ok(());
+        }
         if (BACKUP_RAM..BACKUP_RAM + BACKUP_WINDOW).contains(&address) {
             if N != 1 {
                 return Err(BusError::UnsupportedDevice { address, width: N });
@@ -237,21 +295,70 @@ impl Bus {
 
 impl Memory for Bus {
     fn read8(&self, address: u32) -> Result<u8, BusError> {
+        if address >= 0xFFFF_FE00 {
+            return self.onchip[0].read8(address);
+        }
         Ok(self.read::<1>(address)?[0])
     }
     fn read16(&self, address: u32) -> Result<u16, BusError> {
+        if address >= 0xFFFF_FE00 {
+            return self.onchip[0].read16(address);
+        }
         Ok(u16::from_be_bytes(self.read(address)?))
     }
     fn read32(&self, address: u32) -> Result<u32, BusError> {
         Ok(u32::from_be_bytes(self.read(address)?))
     }
     fn write8(&mut self, address: u32, value: u8) -> Result<(), BusError> {
+        if address >= 0xFFFF_FE00 {
+            return self.onchip[0].write8(address, value);
+        }
         self.write(address, [value])
     }
     fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
+        if address >= 0xFFFF_FE00 {
+            return self.onchip[0].write16(address, value);
+        }
         self.write(address, value.to_be_bytes())
     }
     fn write32(&mut self, address: u32, value: u32) -> Result<(), BusError> {
         self.write(address, value.to_be_bytes())
+    }
+}
+
+impl Memory for CpuBus<'_> {
+    fn read8(&self, address: u32) -> Result<u8, BusError> {
+        if address >= 0xFFFF_FE00 {
+            self.bus.onchip[self.processor as usize].read8(address)
+        } else {
+            self.bus.read8(address)
+        }
+    }
+    fn read16(&self, address: u32) -> Result<u16, BusError> {
+        if address >= 0xFFFF_FE00 {
+            self.bus.onchip[self.processor as usize].read16(address)
+        } else {
+            self.bus.read16(address)
+        }
+    }
+    fn read32(&self, address: u32) -> Result<u32, BusError> {
+        self.bus.read32(address)
+    }
+    fn write8(&mut self, address: u32, value: u8) -> Result<(), BusError> {
+        if address >= 0xFFFF_FE00 {
+            self.bus.onchip[self.processor as usize].write8(address, value)
+        } else {
+            self.bus.write8(address, value)
+        }
+    }
+    fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
+        if address >= 0xFFFF_FE00 {
+            self.bus.onchip[self.processor as usize].write16(address, value)
+        } else {
+            self.bus.write16(address, value)
+        }
+    }
+    fn write32(&mut self, address: u32, value: u32) -> Result<(), BusError> {
+        self.bus.write32(address, value)
     }
 }
