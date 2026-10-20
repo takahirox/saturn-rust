@@ -1,4 +1,5 @@
 //! Browser-independent Saturn vertical slice; only the master SH-2 executes.
+pub mod backup;
 pub mod bus;
 pub mod cpu;
 pub mod devices;
@@ -85,12 +86,13 @@ impl Machine {
         &self.bus
     }
 
-    /// Cold reset clears both RAM banks, prior ROM, counters, delay state and faults.
+    /// Cold reset clears volatile RAM, prior ROM, counters, delay state and faults.
+    /// Internal battery-backed RAM survives all boot selections and failed boots.
     /// A rejected BIOS leaves ExternalBios selected and the CPU stopped in Reset.
     pub fn reset(&mut self, boot: Boot<'_>) -> Result<(), MachineError> {
         self.frames = 0;
         self.cpu = Cpu::default();
-        self.bus = Bus::default();
+        self.bus.reset_volatile();
         match boot {
             Boot::ExternalBios(bytes) => {
                 self.mode = Some(BootMode::ExternalBios);
@@ -121,6 +123,19 @@ impl Machine {
 
     pub fn set_buttons(&mut self, buttons: u16) {
         self.bus.set_buttons(buttons);
+    }
+
+    pub fn set_port2_buttons(&mut self, buttons: u16) {
+        self.bus.set_port2_buttons(buttons);
+    }
+
+    pub fn backup_ram(&self) -> &[u8] {
+        self.bus.backup.bytes()
+    }
+
+    pub fn import_backup_ram(&mut self, bytes: &[u8]) -> Result<(), MachineError> {
+        self.bus.backup.import(bytes)?;
+        Ok(())
     }
 
     pub fn frames(&self) -> u64 {

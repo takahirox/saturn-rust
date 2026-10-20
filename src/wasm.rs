@@ -36,6 +36,15 @@ impl Emulator {
     pub fn set_buttons(&mut self, buttons: u16) {
         self.machine.set_buttons(buttons);
     }
+    pub fn set_port2_buttons(&mut self, buttons: u16) {
+        self.machine.set_port2_buttons(buttons);
+    }
+    pub fn export_backup_ram(&self) -> Vec<u8> {
+        self.machine.backup_ram().to_vec()
+    }
+    pub fn import_backup_ram(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+        self.machine.import_backup_ram(bytes).map_err(js_error)
+    }
     /// Read-only debugger access, also used to assert guest-written diagnostics.
     pub fn read_long(&self, address: u32) -> Result<u32, JsValue> {
         use crate::bus::Memory;

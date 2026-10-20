@@ -33,8 +33,9 @@ slots, synthetic BIOS vectors, RAM/VRAM/MMIO, digital-pad selection, VDP2 pixels
 ISO parsing/errors and actual guest gameplay/completion/restart. The shared
 original synthetic ROM also exercises guest trap/illegal/slot-illegal
 handlers, RTE and bounded SLEEP in native and Wasm execution. No proprietary
-files are required. See [Issue #11 coverage](hardware-conformance.md) and
-[validation](validation-issue-11.md). The committed sample can be rebuilt and
+files are required. See [Issue #13 coverage](hardware-conformance.md),
+[current validation](validation-issue-13.md) and
+[earlier SH-2 validation](validation-issue-11.md). The committed sample can be rebuilt and
 verified without an
 external cross compiler or SDK:
 
@@ -104,7 +105,16 @@ Rust or guest source. Opening `index.html` as a `file:` URL will not work. The c
    PC and R15 are loaded from the first two big-endian vector words. Step or Run
    may stop on unimplemented bus/device behavior with its PC. Illegal opcodes
    dispatch guest exception vectors; failing entry is reported explicitly.
-8. Debug Reset restarts the selected mode. Changing mode or file performs a cold
+8. **Backup RAM** in settings imports/exports a packed raw 32768-byte file. Import
+   pauses playback and replaces all backup bytes without resetting CPU/media.
+   Export your existing backup first if you need it. Backup survives Reset,
+   Restart, mode changes and rejected boots within this tab; export before closing
+   or reloading, then import to restore in a later session. No automatic browser
+   persistence or network transfer occurs. This is not a save state or BIOS
+   backup-file service; Star Collector does not use backup RAM. Guest programs
+   can also read a second direct digital pad: I/K/J/L directions, U/O/P for A/B/C,
+   Right Shift for Start. Both pads release with focus loss and pause.
+9. Debug Reset restarts the selected mode. Changing mode or file performs a cold
    reset; switching modes discards the previous file selection. Run accepts a whole
    count from 1 to 10000 CPU steps. Exception entry and sleeping steps may retire
    no instructions. SLEEP disables instruction controls until a reset or an
@@ -147,6 +157,10 @@ only original licensed guest content and no Sega firmware. It also checks the
 Play-first state, keyboard view navigation and native settings disclosure,
 CPU/media/diagnostic preservation, pause and held-key release, hidden register
 updates, loading/view races, Play Restart and Debug frame advancement. At
+the hardware boundary it also executes an original backup/port-2 guest as a
+synthetic ROM and temporary local ISO, checks local backup import/export bytes,
+reset retention, rejected/read-failing imports and stale-read cancellation,
+second-pad input release and fresh-tab isolation. At
 1440×900, 768×1024 and 390×844 it asserts native canvas dimensions, rendered 10:7
 ratio, pixelated scaling, no document horizontal overflow and reachable controls
 in Play, Debug and expanded settings (including a selected BIOS).

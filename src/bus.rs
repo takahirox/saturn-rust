@@ -1,4 +1,5 @@
 //! Checked partial Saturn map; devices and cache-through aliases are documented separately.
+use crate::backup::{BACKUP_RAM, BACKUP_WINDOW, BackupRam};
 use crate::devices::{SMPC, Smpc, VDP2, VRAM, Vdp2};
 use std::fmt;
 
@@ -13,6 +14,7 @@ pub enum BusError {
     Unmapped { address: u32, width: usize },
     ReadOnly { address: u32, width: usize },
     BiosLength { actual: usize },
+    BackupLength { actual: usize },
     UnsupportedDevice { address: u32, width: usize },
 }
 
@@ -36,6 +38,10 @@ impl fmt::Display for BusError {
                 f,
                 "Select a raw 512 KiB BIOS ({BIOS_SIZE} bytes); received {actual} bytes"
             ),
+            Self::BackupLength { actual } => write!(
+                f,
+                "Select a packed 32 KiB backup RAM file (32768 bytes); received {actual} bytes"
+            ),
         }
     }
 }
@@ -58,6 +64,7 @@ pub struct Bus {
     high: Vec<u8>,
     pub(crate) vdp2: Vdp2,
     smpc: Smpc,
+    pub(crate) backup: BackupRam,
 }
 
 impl Default for Bus {
@@ -68,6 +75,7 @@ impl Default for Bus {
             high: vec![0; WRAM_SIZE],
             vdp2: Vdp2::default(),
             smpc: Smpc::default(),
+            backup: BackupRam::default(),
         }
     }
 }
@@ -86,6 +94,20 @@ impl Bus {
 
     pub fn set_buttons(&mut self, buttons: u16) {
         self.smpc.set_buttons(buttons);
+    }
+
+    pub fn set_port2_buttons(&mut self, buttons: u16) {
+        self.smpc.set_port2_buttons(buttons);
+    }
+
+    /// Reset volatile hardware while retaining battery-backed bytes, including
+    /// when a subsequent boot image is rejected.
+    pub(crate) fn reset_volatile(&mut self) {
+        let backup = std::mem::take(&mut self.backup);
+        *self = Self {
+            backup,
+            ..Self::default()
+        };
     }
 
     // SH7604 §2.3: P1 cache-through accesses share the external physical bus.
@@ -121,6 +143,14 @@ impl Bus {
         let address = Self::physical(address);
         if !address.is_multiple_of(N as u32) {
             return Err(BusError::Unaligned { address, width: N });
+        }
+        if (BACKUP_RAM..BACKUP_RAM + BACKUP_WINDOW).contains(&address) {
+            if N != 1 {
+                return Err(BusError::UnsupportedDevice { address, width: N });
+            }
+            let mut bytes = [0; N];
+            bytes[0] = self.backup.read8(address)?;
+            return Ok(bytes);
         }
         if (SMPC..SMPC + 0x80).contains(&address) {
             if N != 1 {
@@ -159,6 +189,12 @@ impl Bus {
         let address = Self::physical(address);
         if !address.is_multiple_of(N as u32) {
             return Err(BusError::Unaligned { address, width: N });
+        }
+        if (BACKUP_RAM..BACKUP_RAM + BACKUP_WINDOW).contains(&address) {
+            if N != 1 {
+                return Err(BusError::UnsupportedDevice { address, width: N });
+            }
+            return self.backup.write8(address, bytes[0]);
         }
         if (SMPC..SMPC + 0x80).contains(&address) {
             if N != 1 {

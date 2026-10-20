@@ -11,31 +11,39 @@ pub const HEIGHT: usize = 224;
 /// Only electrical input levels cross this boundary; no guest memory is written.
 #[derive(Default)]
 pub struct Smpc {
-    buttons: u16,
-    pdr: u8,
-    ddr: u8,
+    buttons: [u16; 2],
+    pdr: [u8; 2],
+    ddr: [u8; 2],
     iosel: u8,
     exle: u8,
 }
 
 impl Smpc {
     pub fn set_buttons(&mut self, buttons: u16) {
-        self.buttons = buttons & 0x1FFF;
+        self.buttons[0] = buttons & 0x1FFF;
+    }
+
+    pub fn set_port2_buttons(&mut self, buttons: u16) {
+        self.buttons[1] = buttons & 0x1FFF;
     }
 
     // ST-169, §1.2 pp.7–8 and §3.4 table 3.36 p.97. Standard digital pad only.
     pub fn read(&self, address: u32) -> Result<u8, BusError> {
         match address - SMPC {
-            0x75 if self.ddr == 0x60 && self.iosel & 1 != 0 && self.exle & 1 == 0 => {
-                let nibble = match self.pdr & 0x60 {
-                    0x60 => 0x04 | u8::from(self.buttons & (1 << 12) == 0) << 3,
-                    0x20 => !self.buttons as u8 & 15,
-                    0x40 => !(self.buttons >> 4) as u8 & 15,
-                    _ => !(self.buttons >> 8) as u8 & 15,
+            offset @ (0x75 | 0x77) => {
+                let port = ((offset - 0x75) / 2) as usize;
+                let bit = 1 << port;
+                if self.ddr[port] != 0x60 || self.iosel & bit == 0 || self.exle & bit != 0 {
+                    return Err(BusError::UnsupportedDevice { address, width: 1 });
+                }
+                let nibble = match self.pdr[port] & 0x60 {
+                    0x60 => 0x04 | u8::from(self.buttons[port] & (1 << 12) == 0) << 3,
+                    0x20 => !self.buttons[port] as u8 & 15,
+                    0x40 => !(self.buttons[port] >> 4) as u8 & 15,
+                    _ => !(self.buttons[port] >> 8) as u8 & 15,
                 };
-                Ok((self.pdr & 0x60) | 0x10 | nibble)
+                Ok((self.pdr[port] & 0x60) | 0x10 | nibble)
             }
-            0x75 => Err(BusError::UnsupportedDevice { address, width: 1 }),
             // DDR/IOSEL/EXLE are write-only in hardware. Do not invent readback.
             _ => Err(BusError::UnsupportedDevice { address, width: 1 }),
         }
@@ -43,8 +51,10 @@ impl Smpc {
 
     pub fn write(&mut self, address: u32, value: u8) -> Result<(), BusError> {
         match address - SMPC {
-            0x75 => self.pdr = value & 0x7F,
-            0x79 => self.ddr = value & 0x7F,
+            0x75 => self.pdr[0] = value & 0x7F,
+            0x77 => self.pdr[1] = value & 0x7F,
+            0x79 => self.ddr[0] = value & 0x7F,
+            0x7B => self.ddr[1] = value & 0x7F,
             0x7D => self.iosel = value & 3,
             0x7F => self.exle = value & 3,
             _ => return Err(BusError::UnsupportedDevice { address, width: 1 }),

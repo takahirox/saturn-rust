@@ -71,7 +71,17 @@
                 <p>Use a legally obtained BIOS. Correct size validates layout, not authenticity or region. Its real reset vectors are used; native Sega BIOS boot/game support is incomplete and often stops on unimplemented device or bus behavior. BIOS mode never redirects to HLE.</p>
               </div>
               <p id="boot-warning">Changing mode or file cold-resets the machine and clears the previous selection. Opening or closing settings does not reset; opening pauses playback. Use Resume to continue.</p>
-              <p class="privacy">Local files stay in this tab's memory. No uploads, browser storage or analytics. No Sega BIOS is bundled.</p>
+              <p class="privacy">Local images and backup data stay in this tab's memory unless you export backup RAM. No uploads, browser storage or analytics. No Sega BIOS is bundled.</p>
+            </fieldset>
+            <fieldset id="backup-controls" disabled>
+              <legend>Backup RAM</legend>
+              <p>Backup RAM survives Reset, Restart and boot changes in this tab. Export it to keep a copy before closing or reloading. Star Collector does not use backup RAM.</p>
+              <label for="backup-import">Replace backup RAM from a local packed 32 KiB file</label>
+              <input id="backup-import" type="file" aria-describedby="backup-format">
+              <p id="backup-format">Import replaces all backup bytes and pauses playback. Only a 32768-byte raw file is accepted; this is not a save state or an ISO. Export your current backup first if you need to keep it.</p>
+              <button id="backup-export" type="button">Export backup RAM</button>
+              <p id="backup-status" role="status"></p>
+              <p>Second digital pad: <kbd>I K J L</kbd> directions, <kbd>U O P</kbd> A/B/C, <kbd>Right Shift</kbd> Start. The bundled game uses the first pad only.</p>
             </fieldset>
           </div>
         </details>

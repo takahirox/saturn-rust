@@ -26,7 +26,8 @@ through emulated SMPC hardware. Game rules and drawing execute as guest SH-2 cod
 
 - [Build, run, test and Pages setup](docs/setup.md)
 - [Supported CPU, disc boot and hardware; limitations and primary manuals](docs/architecture.md)
-- [Hardware conformance matrix and outstanding Issue #11 scope](docs/hardware-conformance.md)
+- [Hardware conformance matrix and outstanding Issue #13 scope](docs/hardware-conformance.md)
+- [Backup RAM and second-pad validation; remaining completion gates](docs/validation-issue-13.md)
 - [SH-2 expansion validation](docs/validation-issue-11.md)
 - [Game source, reproducible ISO build and MIT license](homebrew/star-collector/README.md)
 - [Redistribution/provenance audit](docs/homebrew-provenance.md)
@@ -50,6 +51,13 @@ or bus behavior. BIOS mode never silently changes into HLE.
 Local BIOS/disc bytes stay in the tab's memory, with no upload, browser storage,
 analytics, CDN or backend. Only public static assets and the licensed sample are
 fetched. Use files you are authorized to use; do not contribute proprietary media.
+
+Boot settings also offer **Backup RAM** import/export. The packed 32768-byte raw
+backup survives resets and boot changes in the current tab. Export before closing
+or reloading; import explicitly replaces the bytes. This is not a save state or
+BIOS backup-library emulation. Star Collector does not use it. A second direct
+digital pad is available to guest programs: I/K/J/L directions, U/O/P for A/B/C,
+Right Shift for Start. Both pads release on focus loss and pause.
 
 The **Browser Pages** workflow validates native Rust, Wasm and Chromium on pushes
 to `main` and PRs targeting `main`; successful `main` revisions deploy only `web/`.

@@ -1,5 +1,11 @@
 # Issue #11 implementation checkpoint validation
 
+Historical checkpoint record: Issue #11 was subsequently closed by external
+GitWeave automation despite incomplete hardware. Issue #13 is now the
+authoritative open completion tracker; do not reopen #11. Statements below about
+keeping #11 open describe the status/intention at the original checkpoint. See
+[current validation](validation-issue-13.md).
+
 This is **partial implementation**, not Issue completion. Issue #11 remains open.
 The [conformance matrix](hardware-conformance.md) records all remaining built-in
 hardware requirements and evidence limits. No push, PR, merge, comment or deployment
