@@ -4,66 +4,124 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
-  <title>saturn-rust · Play homebrew</title>
+  <title>saturn-rust · Star Collector</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <main>
-    <h1>saturn-rust <small>Playable homebrew</small></h1>
-    <p>A small original Saturn game running as guest SH-2 code with Rust VDP2 graphics and SMPC input. Silent; one supported game, no commercial-game compatibility.</p>
-    <section aria-labelledby="game-title">
-      <h2 id="game-title">Star Collector</h2>
-      <button id="play-homebrew" type="button" disabled>Play Homebrew</button>
-      <p>Move the cyan square with <strong>arrow keys</strong> to touch five yellow stars. Gold blocks show your score; a green banner means you won. <strong>Enter / Start</strong> restarts inside the guest program. Click the screen to focus keyboard input.</p>
-      <canvas id="screen" width="320" height="224" tabindex="0" aria-label="Emulated Saturn display. Arrow keys move; Enter restarts."></canvas>
-      <div class="actions">
-        <button id="pause" type="button" disabled>Resume</button>
-        <button id="frame" type="button" disabled>Advance frame</button>
-        <span>Emulated frames: <span id="frames">0</span></span>
-      </div>
-      <p>The sample and its original graphics are MIT licensed. <a href="star-collector-LICENSE.txt">License</a> · <a href="star-collector.iso" download>Download ISO</a> · <a href="https://github.com/takahirox/saturn-rust/tree/main/homebrew/star-collector">Buildable guest source</a></p>
+  <header class="site-header">
+    <a class="brand" href="https://github.com/takahirox/saturn-rust"><span class="brand-mark" aria-hidden="true">s</span>saturn-rust</a>
+    <nav aria-label="Emulator view">
+      <button id="view-play" type="button" aria-pressed="true" aria-controls="play-intro">Play</button>
+      <button id="view-debug" type="button" aria-pressed="false" aria-controls="debug-view">Debug</button>
+    </nav>
+    <a class="source-link" href="https://github.com/takahirox/saturn-rust">Source <span aria-hidden="true">↗</span></a>
+  </header>
+  <main id="main" class="view-play">
+    <section id="play-intro" class="intro" aria-labelledby="game-title">
+      <p class="eyebrow">Original Saturn homebrew</p>
+      <h1 id="game-title">Star Collector<span aria-hidden="true"> ✦</span></h1>
+      <p>Five stars. One little cyan explorer. Collect them all.</p>
+      <p class="disclosure">Guest SH-2 code · BIOS-less HLE · Silent prototype</p>
     </section>
-    <fieldset id="controls" disabled>
-      <legend>Boot and execution</legend>
-      <label for="mode">Boot selection</label>
-      <select id="mode">
-        <option value="disc">BIOS-less HLE disc (Star Collector hardware subset)</option>
-        <option value="hle" selected>HLE bootstrap prototype (no BIOS)</option>
-        <option value="bios">User-provided BIOS</option>
-      </select>
-      <div id="disc-controls" hidden>
-        <label for="disc">Local Saturn homebrew ISO (2048-byte sectors, up to 16 MiB)</label>
-        <input id="disc" type="file" accept=".iso">
-        <p>Choose an authorized image using the documented single-area IP/ISO9660 HLE boot contract. Other hardware, BIN/CUE, compressed discs and runtime BIOS/CD services are unsupported. Files stay in this tab; no upload or storage.</p>
-      </div>
-      <div id="bios-controls" hidden>
-        <label for="bios">Local raw BIOS (512 KiB / 524288 bytes)</label>
-        <input id="bios" type="file">
-        <p>Use a legally obtained BIOS. Bytes stay in this tab's memory; they are never uploaded or saved by this app.</p>
-      </div>
-      <p>Changing mode or file performs a cold reset. User-provided BIOS mode reads real reset vectors; native Sega BIOS boot/game support is incomplete and never redirects to HLE.</p>
-      <div class="actions">
-        <button id="reset" type="button">Reset</button>
-        <button id="step" type="button">Step</button>
-        <label for="count">Instructions</label>
-        <input id="count" type="number" min="1" max="10000" step="1" value="6">
-        <button id="run" type="button">Run</button>
-      </div>
-    </fieldset>
-    <p id="error" role="alert" aria-live="assertive"></p>
-    <p>Active mode: <strong id="active-mode">Loading Wasm…</strong></p>
-    <p id="status" aria-live="polite"></p>
-    <p>Retired instructions: <span id="instructions">0</span> · Pending delay target: <code id="delay">none</code></p>
-    <div class="registers">
-      <table><caption>Control and system registers</caption><tbody id="special"></tbody></table>
-      <table><caption>General registers</caption><tbody id="registers"></tbody></table>
+    <div id="debug-intro" class="intro studio-intro" hidden>
+      <p class="eyebrow">Emulator studio</p>
+      <h1>Debug</h1>
+      <p>Inspect the machine, one instruction or frame at a time.</p>
     </div>
-    <aside>
-      <h2>Try the BIOS-independent fixture</h2>
-      <p>Select HLE bootstrap prototype, Reset, then Run 6 instructions. Expected: <code>R0 = 0x00000004</code>, <code>R1 = 0x00000007</code>, <code>PC = 0x0600000E</code>. Later runs remain in a BRA/NOP loop. Run is always bounded to 10000 instructions.</p>
-      <p>This is an original test program, not a compatible HLE Saturn BIOS. External BIOS stepping will usually stop on an unsupported instruction.</p>
-    </aside>
+    <div class="workspace">
+      <section class="player-column" aria-label="Console player">
+        <div id="player-shell" class="player-shell">
+          <div class="player-topline"><span class="eyebrow">saturn-rust / display</span><span class="display-spec">320 × 224</span></div>
+          <div class="display-surround">
+            <canvas id="screen" width="320" height="224" tabindex="0" aria-label="Emulated Saturn display" aria-describedby="input-hint">Your browser needs Canvas support to display the game.</canvas>
+          </div>
+          <div class="player-toolbar">
+            <button id="play-homebrew" class="primary" type="button" disabled>Play Star Collector</button>
+            <button id="pause" type="button" disabled>Resume</button>
+            <button id="restart" type="button" disabled>Restart</button>
+            <button id="fullscreen" type="button">Fullscreen</button>
+          </div>
+          <p id="input-hint" class="input-hint">Click the display to focus · <kbd>↑ ↓ ← →</kbd> move · <kbd>Enter</kbd> / Start restarts</p>
+          <p id="fullscreen-status" class="fullscreen-status" role="status"></p>
+          <div class="player-feedback">
+            <p id="player-status" role="status">Loading emulator…</p>
+            <p id="error" role="alert"></p>
+            <p class="recovery" id="recovery" hidden>Try Restart or Debug → Reset, choose another image in boot settings, or Play Star Collector.</p>
+          </div>
+        </div>
+        <details id="settings" class="panel settings">
+          <summary>Load ISO / BIOS &amp; boot settings</summary>
+          <div class="settings-body">
+            <fieldset id="controls" disabled>
+              <legend>Boot image</legend>
+              <label for="mode">Boot selection</label>
+              <select id="mode" aria-describedby="boot-warning">
+                <option value="disc">BIOS-less HLE disc</option>
+                <option value="hle" selected>HLE bootstrap prototype (no BIOS)</option>
+                <option value="bios">User-provided BIOS</option>
+              </select>
+              <div id="disc-controls" hidden>
+                <label for="disc">Local Saturn homebrew ISO (2048-byte sectors, up to 16 MiB)</label>
+                <input id="disc" type="file" accept=".iso">
+                <p>Working HLE homebrew uses a narrow single-area Saturn IP / ISO9660 cooked ISO contract. Other hardware, BIN/CUE, compressed discs and runtime BIOS/CD services are unsupported.</p>
+              </div>
+              <div id="bios-controls" hidden>
+                <label for="bios">Local raw BIOS (512 KiB / 524288 bytes)</label>
+                <input id="bios" type="file">
+                <p>Use a legally obtained BIOS. Correct size validates layout, not authenticity or region. Its real reset vectors are used; native Sega BIOS boot/game support is incomplete and often stops on unsupported opcodes. BIOS mode never redirects to HLE.</p>
+              </div>
+              <p id="boot-warning">Changing mode or file cold-resets the machine and clears the previous selection. Opening or closing settings does not reset; opening pauses playback. Use Resume to continue.</p>
+              <p class="privacy">Local files stay in this tab's memory. No uploads, browser storage or analytics. No Sega BIOS is bundled.</p>
+            </fieldset>
+          </div>
+        </details>
+      </section>
+      <section id="debug-view" class="debug-panel panel" aria-labelledby="debug-heading" hidden>
+        <h2 id="debug-heading">Execution</h2>
+        <dl class="machine-state">
+          <div><dt>Active mode</dt><dd id="active-mode">Loading Wasm…</dd></div>
+          <div><dt>Machine status</dt><dd id="status" aria-live="polite">Loading…</dd></div>
+          <div><dt>Retired instructions</dt><dd id="instructions">0</dd></div>
+          <div><dt>Pending delay target</dt><dd><code id="delay">none</code></dd></div>
+          <div><dt>Emulated frames</dt><dd id="frames">0</dd></div>
+        </dl>
+        <fieldset id="debug-controls" disabled>
+          <legend>CPU &amp; frame controls</legend>
+          <div class="actions">
+            <button id="reset" type="button">Reset</button>
+            <button id="step" type="button">Step</button>
+            <button id="frame" type="button" disabled>Advance frame</button>
+          </div>
+          <div class="actions run-controls">
+            <label for="count">Instructions</label>
+            <input id="count" type="number" min="1" max="10000" step="1" value="6">
+            <button id="run" type="button">Run</button>
+          </div>
+        </fieldset>
+        <aside class="fixture-hint">
+          <h3>Bootstrap reference</h3>
+          <p>In boot settings, choose <strong>HLE bootstrap prototype</strong>, then Reset and Run 6.</p>
+          <p><code>R0=4 · R1=7 · PC=0x0600000E</code></p>
+          <p>Later runs stay in a BRA/NOP loop. Run is bounded to 10000 instructions. This original fixture is not Saturn BIOS service emulation.</p>
+        </aside>
+      </section>
+      <section id="register-panel" class="panel register-panel" aria-labelledby="register-heading" hidden>
+        <h2 id="register-heading">CPU registers</h2>
+        <div class="registers">
+          <table><caption>Control &amp; system</caption><tbody id="special"></tbody></table>
+          <table><caption>General purpose · R0–R15</caption><tbody id="registers"></tbody></table>
+        </div>
+      </section>
+    </div>
+    <details class="about">
+      <summary>About this prototype &amp; original game</summary>
+      <p>Move the cyan square to touch five yellow stars. Gold blocks show your score; a green banner means success. Graphics and game rules execute as guest SH-2 code. This is a silent, limited hardware prototype; general homebrew and commercial-game compatibility are not supported. Keyboard required; touchscreen controls are not included.</p>
+      <p>The sample and its original graphics are MIT licensed. <a href="star-collector-LICENSE.txt">License</a> · <a href="star-collector.iso" download>Download sample ISO</a> · <a href="https://github.com/takahirox/saturn-rust/tree/main/homebrew/star-collector">Buildable guest source</a></p>
+      <p>Switching Play / Debug pauses playback and releases held buttons. Returning to Play does not resume automatically. Moving focus away from the display also releases input.</p>
+    </details>
+    <noscript><p class="panel">JavaScript and WebAssembly are required to run the emulator. Enable JavaScript, then reload this page.</p></noscript>
   </main>
+  <footer>saturn-rust <span aria-hidden="true">/</span> An independent emulation experiment</footer>
   <script type="module" src="app.js"></script>
 </body>
 </html>

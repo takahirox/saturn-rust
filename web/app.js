@@ -3,12 +3,14 @@ const hex = (value) => `0x${value.toString(16).toUpperCase().padStart(8, "0")}`;
 export let emulator;
 let discBytes = null;
 let playing = false;
+let playAfterLoad = false;
 let buttons = 0;
 let lastFrame = 0;
 const context = $("screen").getContext("2d");
 let biosBytes = null;
 let fileGeneration = 0;
 let loadingFile = false;
+let view = "play";
 
 function rows(target, names, values) {
   target.replaceChildren(...names.map((name, i) => {
@@ -31,6 +33,7 @@ function releaseButtons() {
 
 function pause() {
   playing = false;
+  playAfterLoad = false;
   releaseButtons();
 }
 
@@ -48,25 +51,84 @@ function animate(now) {
   requestAnimationFrame(animate);
 }
 
+function setText(id, text) {
+  // Live regions should announce transitions, not every animation frame.
+  if ($(id).textContent !== text) $(id).textContent = text;
+}
+
 function render() {
-  $("active-mode").textContent = emulator.mode();
-  $("status").textContent = emulator.status();
-  $("instructions").textContent = emulator.instruction_count();
-  const target = emulator.delay_target();
-  $("delay").textContent = target === undefined ? "none" : hex(target);
-  rows($("registers"), Array.from({ length: 16 }, (_, i) => `R${i}`), emulator.registers());
-  rows($("special"), ["PC", "SR", "PR", "GBR", "VBR", "MACH", "MACL"], emulator.special_registers());
-  const ready = !loadingFile && emulator.status() === "Ready";
+  if (!emulator) return;
+  const machineStatus = emulator.status();
+  const mode = emulator.mode();
+  $("active-mode").textContent = mode;
+  setText("status", machineStatus);
+  // Keep register allocation and Wasm register reads out of the playback loop.
+  if (view === "debug") {
+    $("instructions").textContent = emulator.instruction_count();
+    const target = emulator.delay_target();
+    $("delay").textContent = target === undefined ? "none" : hex(target);
+    rows($("registers"), Array.from({ length: 16 }, (_, i) => `R${i}`), emulator.registers());
+    rows($("special"), ["PC", "SR", "PR", "GBR", "VBR", "MACH", "MACL"], emulator.special_registers());
+    $("frames").textContent = emulator.frames();
+  }
+  const ready = !loadingFile && machineStatus === "Ready";
   $("step").disabled = !ready;
   $("run").disabled = !ready;
   $("reset").disabled = loadingFile;
   const discReady = ready && $("mode").value === "disc";
   $("pause").disabled = !discReady;
   $("pause").textContent = playing ? "Pause" : "Resume";
+  $("restart").disabled = loadingFile || $("mode").value !== "disc" || !discBytes;
   $("frame").disabled = !discReady || playing;
-  $("frames").textContent = emulator.frames();
   $("play-homebrew").disabled = loadingFile;
+  const state = loadingFile ? "Loading image…" : $("error").textContent ? "Stopped — see error below" :
+    playing ? "Running" : discReady ? "Paused — Resume to play" : "Ready — Play Star Collector or open Debug";
+  setText("player-status", `${state} · ${mode}`);
+  $("recovery").hidden = !$("error").textContent || loadingFile;
 }
+
+// Navigation is presentational: preserve the machine, file generations and errors.
+for (const nextView of ["play", "debug"]) {
+  $(`view-${nextView}`).addEventListener("click", () => {
+    if (view === nextView) return;
+    pause();
+    view = nextView;
+    $("main").className = `view-${view}`;
+    for (const name of ["play", "debug"]) $(`view-${name}`).setAttribute("aria-pressed", String(view === name));
+    $("play-intro").hidden = view !== "play";
+    for (const id of ["debug-intro", "debug-view", "register-panel"]) $(id).hidden = view !== "debug";
+    render();
+  });
+}
+$("settings").addEventListener("toggle", () => {
+  if ($("settings").open) { pause(); render(); }
+});
+
+let fullscreenReturnFocus;
+$("fullscreen").addEventListener("click", async () => {
+  $("fullscreen-status").textContent = "";
+  if (!$("player-shell").requestFullscreen || !document.fullscreenEnabled) {
+    $("fullscreen-status").textContent = "Fullscreen is unavailable in this browser. The player still resizes with the window.";
+    return;
+  }
+  const exiting = document.fullscreenElement === $("player-shell");
+  try {
+    if (exiting) await document.exitFullscreen();
+    else {
+      fullscreenReturnFocus = document.activeElement;
+      await $("player-shell").requestFullscreen();
+    }
+  } catch (error) {
+    $("fullscreen-status").textContent = `Fullscreen could not ${exiting ? "exit" : "open"}: ${error}. You can keep playing here.`;
+  }
+});
+document.addEventListener("fullscreenchange", () => {
+  const fullscreen = document.fullscreenElement === $("player-shell");
+  $("fullscreen").textContent = fullscreen ? "Exit fullscreen" : "Fullscreen";
+  releaseButtons();
+  if (fullscreen) $("screen").focus();
+  else fullscreenReturnFocus?.focus();
+});
 
 function act(operation) {
   $("error").textContent = "";
@@ -89,6 +151,15 @@ try {
   await init();
   emulator = new Emulator();
   $("reset").addEventListener("click", reset);
+  $("restart").addEventListener("click", () => {
+    reset();
+    if ($("mode").value === "disc" && emulator.status() === "Ready" && !$("settings").open && view === "play") {
+      playing = true;
+      lastFrame = 0;
+      $("screen").focus();
+      render();
+    }
+  });
   $("step").addEventListener("click", () => act(() => emulator.step()));
   $("run").addEventListener("click", () => act(() => {
     const count = Number($("count").value);
@@ -118,9 +189,11 @@ try {
     if (!file) return;
     if (file.size !== 524288) {
       $("error").textContent = `Select a raw 512 KiB BIOS (524288 bytes); received ${file.size} bytes.`;
+      render();
       return;
     }
     loadingFile = true;
+    $("error").textContent = "";
     render();
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
@@ -135,11 +208,12 @@ try {
     }
   });
   const beginDisc = () => {
+    const startPlaying = playAfterLoad;
     reset();
     if (emulator.status() === "Ready") {
-      playing = true;
+      playing = startPlaying && view === "play" && !$("settings").open;
       lastFrame = 0;
-      $("screen").focus();
+      if (playing) $("screen").focus();
       render();
     }
   };
@@ -148,6 +222,8 @@ try {
     $("mode").dispatchEvent(new Event("change"));
     const generation = ++fileGeneration;
     loadingFile = true;
+    playAfterLoad = true;
+    $("error").textContent = "";
     render();
     try {
       const response = await fetch("./star-collector.iso");
@@ -172,9 +248,11 @@ try {
     if (!file) return;
     if (file.size < 45056 || file.size > 16777216 || file.size % 2048 !== 0) {
       $("error").textContent = "Select a complete 2048-byte-sector ISO (22 sectors to 16 MiB). BIN/CUE and compressed images are unsupported.";
+      render();
       return;
     }
     loadingFile = true;
+    $("error").textContent = "";
     render();
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
@@ -210,8 +288,11 @@ try {
   document.addEventListener("visibilitychange", () => { if (document.hidden) { pause(); render(); } });
   requestAnimationFrame(animate);
   $("controls").disabled = false;
+  $("debug-controls").disabled = false;
   reset();
 } catch (error) {
   $("error").textContent = `Could not load the Wasm module: ${error}. Build web/pkg and serve web/ over HTTP as described in README.`;
   $("status").textContent = "Initialization failed";
+  $("player-status").textContent = "Initialization failed — emulator unavailable";
+  $("recovery").hidden = false;
 }

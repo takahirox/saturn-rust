@@ -59,6 +59,99 @@ try {
   }
   assert(await page.evaluate(() => [...document.styleSheets].some((sheet) => sheet.href?.endsWith("/saturn-rust/style.css") && sheet.cssRules.length > 0)));
   const value = (id) => page.locator(`#${id}`).textContent();
+  const showView = (name) => page.locator(`#view-${name}`).click();
+  const settings = page.locator("#settings > summary");
+  const machine = () => page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    return { registers: Array.from(emulator.registers()), special: Array.from(emulator.special_registers()),
+      retired: String(emulator.instruction_count()), frames: String(emulator.frames()),
+      delay: emulator.delay_target() ?? null, mode: emulator.mode(), status: emulator.status() };
+  });
+  // waitForFunction predicates must be synchronous in this Playwright version.
+  await page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    window.emulatedFrames = () => Number(emulator.frames());
+  });
+  const responsive = async (isPlay) => {
+    for (const [width, height] of [[1440, 900], [768, 1024], [390, 844]]) {
+      await page.setViewportSize({ width, height });
+      const layout = await page.evaluate(() => {
+        const canvas = document.getElementById("screen");
+        const rect = canvas.getBoundingClientRect();
+        return { overflow: document.documentElement.scrollWidth > innerWidth,
+          left: rect.left, right: rect.right, width: rect.width, height: rect.height,
+          native: [canvas.width, canvas.height], pixels: getComputedStyle(canvas).imageRendering };
+      });
+      assert.equal(layout.overflow, false, `Horizontal overflow at ${width} in ${isPlay ? "Play" : "Debug"}`);
+      assert(layout.width >= Math.min(280, width - 80), `Canvas is too small at ${width}`);
+      assert(layout.left >= 0 && layout.right <= width);
+      assert(Math.abs(layout.width / layout.height - 320 / 224) < 0.005);
+      assert.deepEqual(layout.native, [320, 224]);
+      assert.equal(layout.pixels, "pixelated");
+      const controls = isPlay ? ["view-debug", "play-homebrew", "pause", "restart", "fullscreen"] : ["view-play", "step", "run", "reset", "frame", "count"];
+      if (await page.locator("#mode").isVisible()) controls.push("mode");
+      for (const id of ["disc", "bios"]) if (await page.locator(`#${id}`).isVisible()) controls.push(id);
+      for (const id of controls) {
+        const control = page.locator(`#${id}`);
+        assert(await control.isVisible(), `Missing ${id} at ${width}`);
+        await control.scrollIntoViewIfNeeded();
+        const rect = await control.boundingBox();
+        assert(rect.x >= 0 && rect.x + rect.width <= width && rect.y >= 0 && rect.y + rect.height <= height, `Clipped ${id} at ${width}`);
+      }
+      const boxes = await page.evaluate((ids) => ids.map((id) => {
+        const {x, y, width, height} = document.getElementById(id).getBoundingClientRect();
+        return {id, x, y, width, height};
+      }), controls);
+      for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i], b = boxes[j];
+        assert(a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y,
+          `Overlapping ${a.id}/${b.id} at ${width}`);
+      }
+      if (isPlay) {
+        // The primary action and display must share the initial viewport.
+        await page.evaluate(() => window.scrollTo(0, 0));
+        const canvas = await page.locator("#screen").boundingBox();
+        const cta = await page.locator("#play-homebrew").boundingBox();
+        assert(canvas.y >= 0 && canvas.y + canvas.height <= height);
+        assert(cta.y >= 0 && cta.y + cta.height <= height);
+      }
+      // Keyboard navigation works at every size, including with local media.
+      const beforeSwitch = await machine();
+      await page.locator(isPlay ? "#view-debug" : "#view-play").focus();
+      await page.keyboard.press("Enter");
+      await page.locator(isPlay ? "#view-play" : "#view-debug").focus();
+      await page.keyboard.press("Space");
+      assert.equal(await page.locator("#debug-view").isVisible(), !isPlay);
+      assert.deepEqual(await machine(), beforeSwitch);
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+  };
+  assert.equal(await page.locator("#view-play").getAttribute("aria-pressed"), "true");
+  assert.equal(await page.locator("#debug-view").isVisible(), false);
+  assert.equal(await page.locator("#register-panel").isVisible(), false);
+  assert.equal(await page.locator("#settings").getAttribute("open"), null);
+  assert.equal(await page.locator("#registers tr").count(), 0);
+  assert.equal(await value("play-homebrew"), "Play Star Collector");
+  await responsive(true);
+  const initialMachine = await machine();
+  // Native disclosure is keyboard operable and never boots or discards a machine.
+  await settings.focus();
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.getElementById("settings").open);
+  await page.locator("#mode").focus();
+  await page.keyboard.press("Tab");
+  assert.deepEqual(await machine(), initialMachine);
+  await settings.focus();
+  await page.keyboard.press("Space");
+  await page.waitForFunction(() => !document.getElementById("settings").open);
+  assert.deepEqual(await machine(), initialMachine);
+  await page.locator("#view-debug").focus();
+  await page.keyboard.press("Enter");
+  assert.equal(await page.locator("#debug-view").isVisible(), true);
+  assert.deepEqual(await machine(), initialMachine);
+  await settings.click();
+  await responsive(false);
+
   assert.equal(await value("active-mode"), "HLE bootstrap prototype");
   assert.equal(await value("pc"), "0x06000000");
   await page.locator("#step").click();
@@ -77,6 +170,16 @@ try {
     assert.match(await value("error"), /whole instruction count/);
     assert.equal(await value("instructions"), "6");
   }
+  await page.locator("#step").click();
+  assert.equal(await value("delay"), "0x0600000E");
+  const pendingBranch = await machine();
+  await showView("play");
+  await showView("debug");
+  assert.deepEqual(await machine(), pendingBranch);
+  assert.equal(await value("delay"), "0x0600000E");
+  await page.locator("#step").click();
+  assert.equal(await value("delay"), "none");
+  assert.equal(await value("pc"), "0x0600000E");
   await page.locator("#mode").selectOption("bios");
   assert.equal(await value("active-mode"), "User-provided BIOS");
   assert.match(await value("error"), /512 KiB/);
@@ -98,9 +201,21 @@ try {
   await page.locator("#step").click();
   assert.match(await value("error"), /Unsupported opcode 0xFFFF at PC 0x00000102/);
   assert.equal(await page.locator("#run").isDisabled(), true);
+  const faulted = await machine();
+  const faultText = await value("error");
+  await showView("play");
+  assert.equal(await value("error"), faultText);
+  await showView("debug");
+  assert.deepEqual(await machine(), faulted);
+  assert.equal(await value("error"), faultText);
+  assert.equal(await page.locator("#bios").evaluate((input) => input.files[0].name), "original-test-vectors.bin");
+  await settings.click();
+  await settings.click();
+  assert.deepEqual(await machine(), faulted);
   await page.locator("#reset").click();
   assert.equal(await value("pc"), "0x00000100");
   assert.equal(await value("r0"), "0x00000000");
+  await responsive(false);
   // A malformed replacement must clear the previously running external ROM.
   await page.locator("#bios").setInputFiles({ name: "wrong.bin", mimeType: "application/octet-stream", buffer: Buffer.from([0, 0]) });
   assert.equal(await value("pc"), "0x00000000");
@@ -146,13 +261,63 @@ try {
   await page.locator("#run").click();
   assert.equal(await value("instructions"), "10006");
   assert.equal(await value("r1"), "0x00000007");
+  // Presentation changes during a sample download preserve the load but cancel
+  // automatic playback, even after returning to Play and closing settings.
+  await context.setOffline(false);
+  await settings.click();
+  await showView("play");
+  let finishSample;
+  const sampleRequested = new Promise((resolve) => { finishSample = resolve; });
+  const sampleDeadline = setTimeout(() => finishSample(null), 10000).unref();
+  await page.route("**/star-collector.iso", (route) => finishSample(route));
+  await page.locator("#play-homebrew").click();
+  const sampleRoute = await sampleRequested;
+  clearTimeout(sampleDeadline);
+  assert(sampleRoute, "Sample ISO request did not start");
+  assert.match(await value("player-status"), /Loading image/);
+  await settings.click();
+  await page.locator("#mode").focus();
+  await settings.click();
+  await showView("debug");
+  await showView("play");
+  await sampleRoute.fulfill({status: 200, contentType: "application/octet-stream", body: await readFile("web/star-collector.iso")});
+  await page.waitForFunction(() => document.getElementById("pause").disabled === false);
+  assert.equal(await value("pause"), "Resume");
+  assert.match(await value("player-status"), /Paused/);
+  assert.equal(Number((await machine()).frames), 0);
+  await page.unroute("**/star-collector.iso");
   // Same actual ISO + Wasm + input bridge + Canvas as the UI. Stop wall-clock
   // playback and advance deterministic frames, with no game-specific host writes.
-  await context.setOffline(false);
   await page.locator("#play-homebrew").click();
-  await page.waitForFunction(() => Number(document.getElementById("frames").textContent) > 0);
+  await page.waitForFunction(() => window.emulatedFrames() > 0);
   assert.equal(await value("active-mode"), "BIOS-less HLE disc");
   await page.locator("#pause").click();
+  assert.match(await value("player-status"), /Paused/);
+  // Hidden register tables are not rewritten during real playback.
+  await page.evaluate(() => {
+    window.registerChanges = 0;
+    new MutationObserver(() => window.registerChanges++).observe(document.getElementById("registers"), {childList: true, subtree: true});
+  });
+  const observedFrames = Number((await machine()).frames);
+  await page.locator("#pause").click();
+  await page.waitForFunction((frames) => window.emulatedFrames() >= frames + 5, observedFrames);
+  assert.equal(await page.evaluate(() => window.registerChanges), 0);
+  // Switch while running/holding input in one event turn, so no timer races
+  // intervene between the machine snapshots. Other navigation uses real clicks.
+  const switchState = await page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    const before = String(emulator.instruction_count());
+    document.getElementById("screen").focus();
+    window.dispatchEvent(new KeyboardEvent("keydown", {key: "ArrowRight"}));
+    document.getElementById("view-debug").click();
+    return [before, String(emulator.instruction_count())];
+  });
+  assert.equal(switchState[0], switchState[1]);
+  assert.equal(await value("pause"), "Resume");
+  const pausedMachine = await machine();
+  await showView("play");
+  await showView("debug");
+  assert.deepEqual(await machine(), pausedMachine);
   await page.locator("#reset").click();
   const gameState = () => page.evaluate(async () => {
     const { emulator } = await import("./app.js");
@@ -209,12 +374,90 @@ try {
   await stepFrames(4);
   assert.deepEqual((await gameState()).state.slice(0,4), [64,112,1,0]);
   await page.keyboard.up("ArrowRight");
+  const stationary = (await gameState()).state.slice(0,4);
+  // Held buttons release on view changes, pause, settings and window blur.
+  for (const action of ["view-play", "settings", "pause", "window-blur"]) {
+    await page.locator("#screen").focus();
+    await page.keyboard.down("ArrowRight");
+    if (action === "window-blur") await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    else if (action === "pause") {
+      // Click resume and pause in one task; no real-time frame can run between.
+      await page.evaluate(() => {
+        document.getElementById("pause").click();
+        document.getElementById("pause").click();
+      });
+    } else if (action === "settings") {
+      await settings.click();
+      await page.locator("#disc").focus();
+      await page.keyboard.down("ArrowRight");
+      await page.keyboard.up("ArrowRight");
+      await settings.click();
+    } else await page.locator(`#${action}`).click();
+    await stepFrames(4);
+    assert.deepEqual((await gameState()).state.slice(0,4), stationary, `Stuck input after ${action}`);
+    await page.keyboard.up("ArrowRight");
+  }
+  // Opening settings during playback pauses; dismissing it never resumes/reset.
+  await page.locator("#pause").click();
+  await settings.click();
+  await page.waitForFunction(() => document.getElementById("pause").textContent === "Resume");
+  const settingsMachine = await machine();
+  await settings.click();
+  assert.deepEqual(await machine(), settingsMachine);
+  assert.equal(await value("pause"), "Resume");
+  await showView("debug");
+  const beforeFrame = Number((await machine()).frames);
+  await page.locator("#frame").click();
+  assert.equal(Number((await machine()).frames), beforeFrame + 1);
+  await showView("play");
+  // Exercise actual Fullscreen API when allowed by the headless browser.
+  let fullscreenResult = "unavailable";
+  await page.locator("#fullscreen").click();
+  await page.waitForFunction(() => document.fullscreenElement || document.getElementById("fullscreen-status").textContent);
+  if (await page.evaluate(() => !!document.fullscreenElement)) {
+    fullscreenResult = "entered/exited";
+    assert.equal(await page.evaluate(() => document.fullscreenElement.id), "player-shell");
+    await page.waitForFunction(() => document.activeElement === document.getElementById("screen"));
+    const rect = await page.locator("#screen").boundingBox();
+    assert(Math.abs(rect.width / rect.height - 10 / 7) < 0.005);
+    await page.locator("#fullscreen").click();
+    await page.waitForFunction(() => !document.fullscreenElement);
+    await page.waitForFunction(() => document.activeElement === document.getElementById("fullscreen") && document.getElementById("fullscreen").textContent === "Fullscreen");
+  } else assert.match(await value("fullscreen-status"), /unavailable|could not open/);
+  // Deterministic denied/unavailable paths, even on browsers that permit it.
+  await page.evaluate(() => {
+    window.originalFullscreen = document.getElementById("player-shell").requestFullscreen;
+    document.getElementById("player-shell").requestFullscreen = () => Promise.reject(new Error("test denial"));
+  });
+  if (await page.evaluate(() => document.fullscreenEnabled)) {
+    await page.locator("#fullscreen").click();
+    assert.match(await value("fullscreen-status"), /test denial/);
+  }
+  await page.evaluate(() => { document.getElementById("player-shell").requestFullscreen = undefined; });
+  await page.locator("#fullscreen").click();
+  assert.match(await value("fullscreen-status"), /unavailable/);
+  await page.evaluate(() => { document.getElementById("player-shell").requestFullscreen = window.originalFullscreen; });
+  await responsive(true);
+  await page.locator("#restart").click();
+  await page.waitForFunction(() => window.emulatedFrames() > 0);
+  assert.equal(await value("pause"), "Pause");
+  assert.match(await value("player-status"), /Running/);
+  await page.locator("#pause").click();
+  await showView("debug");
+  await settings.click();
   // Local supported ISO works offline, and selecting bad media clears old CPU.
   const disc = await readFile("web/star-collector.iso");
   await context.setOffline(true);
   await page.locator("#disc").setInputFiles({name:"authorized-homebrew.iso", mimeType:"application/octet-stream", buffer:disc});
   await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
-  await page.locator("#pause").click();
+  assert.equal(await value("pause"), "Resume");
+  await settings.click();
+  const localMachine = await machine();
+  await showView("play");
+  await showView("debug");
+  assert.deepEqual(await machine(), localMachine);
+  await settings.click();
+  assert.equal(await page.locator("#disc").evaluate((input) => input.files[0].name), "authorized-homebrew.iso");
   await page.locator("#reset").click();
   await stepFrames(20);
   assert.deepEqual((await gameState()).state.slice(0,4), [32,112,0,0]);
@@ -256,7 +499,7 @@ try {
   await missingBuild.waitForFunction(() => document.getElementById("status").textContent === "Initialization failed");
   assert.match(await missingBuild.locator("#error").textContent(), /Build web\/pkg and serve/);
   assert.equal(await missingBuild.locator("#reset").isDisabled(), true);
-  console.log(`Browser smoke passed (${await browser.version()}): /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races.`);
+  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races.`);
 } finally {
   if (browser) await browser.close();
   if (server?.pid && server.exitCode === null) {
