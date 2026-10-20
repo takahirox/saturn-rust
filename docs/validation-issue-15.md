@@ -120,14 +120,25 @@ hardware evidence; do not reopen #11/#13 or claim #15 complete on this checkpoin
 
 ## PR review correction (2026-10-21)
 
-Related to #15. Updated [PR #16](https://github.com/takahirox/saturn-rust/pull/16)
-to remove the Issue-closing reference and its associated draft publication
-warning. Retained the plain related-Issue reference, partial outcome and full
-remaining-scope description. Keep that corrected description during subsequent
-publication; this checkpoint does not complete the umbrella Issue.
+Related to #15. The earlier correction was not preserved during publication:
+review found a trailing Issue-closing reference in the live description of
+[PR #16](https://github.com/takahirox/saturn-rust/pull/16). Removed that line again,
+preserving every other byte of the description, including `Related to #15`, the
+partial outcome and full remaining-scope description. This checkpoint does not
+complete the umbrella Issue.
 
-Read back the live PR metadata and verified the exact corrected body, unchanged
-head commit, draft status and unmerged state. Rechecked upstream `main` at
+Read back the live PR metadata and verified the exact corrected body with no
+Issue-closing reference, unchanged head commit
+`f3979e766b345ee9df49e993007ea0ba0e707e29`, draft status and open, unmerged state.
+Verified that Issue #15 remains open. These are observations at correction time,
+not evidence that a later publication has preserved the description.
+
+Subsequent publication must retain the corrected live description and its plain
+`Related to #15` reference without appending a closing keyword. Read back the
+published description to verify this before reporting that publication preserved
+the correction.
+
+Rechecked upstream `main` at
 `1327d81dfd1a011b69990fd26abf4cefd04a9a52`. This revision changes only PR metadata
 and this validation record; the runtime suites above were not rerun. Markdown
 inspection and `git diff --check` passed. No push or merge was performed.
