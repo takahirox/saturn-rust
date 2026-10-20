@@ -1,0 +1,17 @@
+# Original synthetic SH-2 ROM, MIT licensed (see LICENSE next to this file).
+# Offset followed by big-endian words; unspecified bytes are zero.
+# Reset PC / SP; general illegal, slot illegal and TRAPA #32 vectors.
+0000 0000 0100 0610 0000
+0010 0000 0200
+0018 0000 0220
+0080 0000 0180
+# Main: MOV #5,R0; TRAPA #32; SETT; BT/S +1; ADD #1,R0 (slot);
+# skipped illegal; general illegal; BRA +1; TRAPA #0 (illegal slot);
+# skipped illegal; load result address; store R0; SLEEP; NOP; literal.
+0100 E005 C320 0018 8D01 7001 FFFF FFFF A001 C300 FFFF D101 2102 001B 0009 0600 1000
+# Trap handler: SHLL2 R0; RTE; ADD #2,R0 (slot).
+0180 4008 002B 7002
+# Illegal handler advances stacked PC by two, then RTE; ADD #4,R0 (slot).
+0200 6AF2 7A02 2FA2 002B 7004
+# Slot-illegal handler: RTE to pending branch target; ADD #8,R0 (slot).
+0220 002B 7008

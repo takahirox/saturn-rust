@@ -65,6 +65,8 @@ function render() {
   // Keep register allocation and Wasm register reads out of the playback loop.
   if (view === "debug") {
     $("instructions").textContent = emulator.instruction_count();
+    $("exceptions").textContent = emulator.exception_count();
+    $("last-exception").textContent = emulator.last_exception();
     const target = emulator.delay_target();
     $("delay").textContent = target === undefined ? "none" : hex(target);
     rows($("registers"), Array.from({ length: 16 }, (_, i) => `R${i}`), emulator.registers());

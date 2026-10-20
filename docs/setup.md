@@ -30,8 +30,12 @@ cargo clippy --locked --all-targets -- -D warnings
 
 The Rust library is browser-independent. Tests cover instructions/flags/delay
 slots, synthetic BIOS vectors, RAM/VRAM/MMIO, digital-pad selection, VDP2 pixels,
-ISO parsing/errors and actual guest gameplay/completion/restart. No proprietary
-files are required. The committed sample can be rebuilt and verified without an
+ISO parsing/errors and actual guest gameplay/completion/restart. The shared
+original synthetic ROM also exercises guest trap/illegal/slot-illegal
+handlers, RTE and bounded SLEEP in native and Wasm execution. No proprietary
+files are required. See [Issue #11 coverage](hardware-conformance.md) and
+[validation](validation-issue-11.md). The committed sample can be rebuilt and
+verified without an
 external cross compiler or SDK:
 
 ```sh
@@ -70,7 +74,8 @@ Rust or guest source. Opening `index.html` as a `file:` URL will not work. The c
    leave the normal player usable. Focus returns to the Fullscreen button on exit.
    Losing display/window focus releases held buttons. Hiding the browser tab pauses.
 3. Choose **Debug** for CPU R0–R15 and special registers, retired instructions,
-   pending delay target, machine status, **Step**, **Run**, **Reset** and **Advance
+   pending delay target, exception count/last vector, machine status, **Step**,
+   **Run**, **Reset** and **Advance
    frame**. Frame advancement requires a ready, paused disc. Switching Play/Debug
    pauses and releases input without resetting, changing boot mode, discarding
    selected files or clearing errors. Returning to Play requires **Resume**.
@@ -97,10 +102,14 @@ Rust or guest source. Opening `index.html` as a `file:` URL will not work. The c
    Incorrect sizes are rejected; correct size validates the layout, not authenticity or region.
    Native Sega BIOS boot is incomplete; BIOS mode never switches to HLE.
    PC and R15 are loaded from the first two big-endian vector words. Step or Run
-   may stop immediately with the unsupported opcode and its PC.
+   may stop on unimplemented bus/device behavior with its PC. Illegal opcodes
+   dispatch guest exception vectors; failing entry is reported explicitly.
 8. Debug Reset restarts the selected mode. Changing mode or file performs a cold
    reset; switching modes discards the previous file selection. Run accepts a whole
-   count from 1 to 10000. Faults remain stopped until reset.
+   count from 1 to 10000 CPU steps. Exception entry and sleeping steps may retire
+   no instructions. SLEEP disables instruction controls until a reset or an
+   accepted hardware interrupt; device IRQ generation is not integrated yet.
+   Faults remain stopped until reset.
 
 Only static files, including the original MIT-licensed sample ISO, are fetched.
 Local BIOS/disc bytes are read via `File.arrayBuffer()` and
