@@ -87,12 +87,47 @@ Optional reference-emulator/physical-hardware comparison, Gamepad API, audio,
 additional titles and baseline FPS measurement were not performed. The ISO omits
 Sega security code and is not claimed to boot on an authenticated stock console.
 
-## Required post-merge verification — pending
+## Required post-merge verification — passed
 
-After merge and successful **Browser Pages** deployment, record the published
-`main` revision and deployment, then verify the live page at
-<https://takahirox.github.io/saturn-rust/> loads the ISO, displays graphics, accepts
-arrows, updates score, reaches completion and restarts with Enter. Record and fix
-production-only defects. Local pre-merge tests do not establish production
-playability. This implementation did not push, open a PR, merge, comment or
-publish anything.
+Verified on 2026-10-20 after [PR #8](https://github.com/takahirox/saturn-rust/pull/8)
+merged as `63ad063097143d38eef7b2cfc4432abdc2d13719`.
+[Browser Pages run 39403141862](https://github.com/takahirox/saturn-rust/actions/runs/39403141862)
+completed both build and deployment successfully. GitHub Pages deployment
+`7196633965` reports success at `2026-10-20T09:49:25Z` for that exact revision and
+<https://takahirox.github.io/saturn-rust/>.
+
+An automated Playwright check using headless Chrome `155.0.8059.85` loaded that
+live URL and clicked **Play Homebrew**. HTML, CSS, JavaScript, Wasm and the sample
+ISO returned HTTP 200 at `/saturn-rust/`; relevant MIME types and Wasm magic were
+checked. HTML, CSS, app.js and the 131072-byte ISO matched the checkpoint files
+byte for byte. No application assets were replaced or served locally.
+
+The check read guest diagnostic memory and Canvas pixels, with keyboard events
+as the only gameplay input. Paused deterministic stepping used the live app's
+exported `advanceFrame`; ordinary animation playback was checked separately.
+No host writes to guest game state were used.
+
+| Observation | Guest x, y, score, completed | Canvas RGBA hash (FNV-1a) |
+| --- | --- | --- |
+| Initial, after 20 frames | 32, 112, 0, 0 | 2518147013 |
+| Right for 8 frames | 64, 112, 1, 0 | 4056288197 |
+| Right for another 48 frames | 256, 112, 5, 1 | 1490824133 |
+| Enter restart, then release | 32, 112, 0, 0 | 2518147013 |
+| Up 4 frames, right 8 frames | 64, 96, 0, 0 | 3994542021 |
+
+Moving down another 4 frames collected the bypassed star. Guest instruction
+counts increased from 1,600,000 initially to 6,080,000 at completion. The score
+pixel became yellow `[255,255,0,255]`; completion displayed the green banner
+`[0,255,0,255]`. Normal animation playback also reached score 5/completion using
+the right arrow and restarted using Enter. No page errors or production-only
+defects were observed in these checks.
+
+Two initial additional normal-playback probes failed assertions after an
+asynchronous wait predicate returned before the expected guest state. Loading
+the emulator reference first and using synchronous read-only wait predicates
+resolved the test-harness issue; the complete live check then passed. No
+application change was needed.
+
+Issue #7 was already closed when inspected after merge; its state was preserved.
+These results cover the original silent Star Collector subset, not broader
+Saturn or native Sega BIOS compatibility.
