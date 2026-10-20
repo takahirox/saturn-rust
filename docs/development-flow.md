@@ -40,10 +40,9 @@ Added complexity is not automatically beneficial; simplicity does not excuse
 missing requirements or necessary validation.
 
 Choose checks appropriate to the changed files and the actual repository tooling.
-The repository currently has no application files or configured build, test, lint,
-or runtime commands. Do not invent commands or add application scaffolding,
-dependencies, CI, or tooling merely to document a process. Inspect the repository
-again for future changes and use any relevant tooling that actually exists then.
+Use the actual [build, test and browser smoke commands](setup.md) for application
+changes. Do not add scaffolding, dependencies, CI, or tooling merely to document
+a process. Inspect the repository again for future changes and use relevant tooling.
 
 For templates and documentation, check Markdown and template syntax, relative
 links and anchors, whitespace, and consistency across the files. Use available
