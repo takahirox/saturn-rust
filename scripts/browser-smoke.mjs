@@ -219,6 +219,8 @@ try {
   await stepFrames(20);
   assert.deepEqual((await gameState()).state.slice(0,4), [32,112,0,0]);
   await page.locator("#disc").setInputFiles({name:"bad.iso", mimeType:"application/octet-stream", buffer:Buffer.alloc(disc.length)});
+  // setInputFiles does not await the async file read; wait for the parser result.
+  await page.waitForFunction(() => /missing Saturn hardware identifier/.test(document.getElementById("error").textContent));
   assert.match(await value("error"), /missing Saturn hardware identifier/);
   assert.equal(await page.locator("#frame").isDisabled(), true);
   assert.equal(await value("pc"), "0x00000000");
