@@ -447,8 +447,8 @@ edge/transfer coverage are still required. Unsupported registers fail explicitly
 | DMA channels 0–2 direct, [SCU] §§2.1/3.2, [SCUFINAL] #15–24 | Counts, address save/update, unaligned heads/tails, B-bus halfword strides, all seven edge triggers/GO, end/illegal IRQ and priority preemption; one queued retrigger | SCUV, SCUROM, BUSG / SCUROM, BUSG (all three channels) | Exhaustive trigger/device/boundary tests, actual bus latencies and prohibited three-channel behavior pending | Pending |
 | DMA indirect, [SCUFINAL] #24/25 | Final-spec count/write/read layout, source bit-31 end marker, separately granted descriptor words, table walking, write-address continuation | SCUV, IDESC, SCUROM / SCUROM | IDESC and BUSG cover descriptor bounds/alignment, all channel count widths, partial table faults/preemption/reset and deferred BSC/VRAM waits; complete device contention and transfer-error/count boundaries remain | Pending |
 | DMA device interactions, [SCU] §2.1 | High-RAM to VDP2 VRAM and executing DSP external RAM transfers, real IRQ handlers | SCUV, SCUROM / SCUROM | CLAB adds CD FIFO to high-RAM fixed-source DMA/IRQ; VDP1 routes and full cross-device arbitration remain | Pending |
-| SCU DSP execution/registers, [SCU] §4.5 pp.91–131/141–158 | ALU logical/arithmetic/shift/rotate, signed multiply, parallel X/Y/D1 moves, immediates, delayed jumps/subroutine control, BTM/LPS, END/ENDI, pause/step and read-cleared E/V | SCUV, SCUROM / SCUROM (product/sum/loop/ENDI) | One-successor PRAM-DMA prefetch has DSPBUS native vectors below; full conditional/DMA timing, conflicting bank access and ALU overflow/pipeline edge inventory pending | Pending |
-| SCU DSP memory/transfers, [SCU] §§3.3/4.1/4.5 pp.132–140, [SCUFINAL] #16/18/19/26/27 | Four 64-word banks, host ports, address counters, bounded asynchronous input/output DMA and HOLD, fixed/incrementing A-bus writes, separately granted B-bus halfwords, retained transfer data, END permits DMA continuation | SCUV, SCUROM, DSPD, DSPBUS / SCUROM + DSPD + DSPBUS (register-count, executed PRAM, VDP1/sound RAM routes) | Complete count/PRAM boundaries, cross-device arbitration/waits and data-bank conflicts lack complete evidence | Pending |
+| SCU DSP execution/registers, [SCU] §4.5 pp.91–131/141–158 | ALU logical/arithmetic/shift/rotate, signed multiply, parallel X/Y/D1 moves, immediates, delayed jumps/subroutine control, BTM/LPS, END/ENDI, pause/step and read-cleared E/V | SCUV, SCUROM / SCUROM (product/sum/loop/ENDI); DSPD now executes an MVI-PC entry into DMA-loaded code and its delay-slot write | One-successor PRAM-DMA prefetch has DSPBUS native vectors below; prohibited DMA-bank instruction accesses have explicit native/Wasm diagnostics. Full conditional/DMA timing and ALU overflow/pipeline edge inventory remain | Pending |
+| SCU DSP memory/transfers, [SCU] §§3.3/4.1/4.5 pp.132–140, [SCUFINAL] #16/18/19/26/27, [SOA8] §5.6 | Four 64-word banks, host ports, address counters, bounded asynchronous input/output DMA and HOLD, fixed/incrementing A-bus writes, separately granted B-bus halfwords, retained transfer data, END permits DMA continuation; PRG DMA begins at zero independently of host ports | SCUV, SCUROM, DSPD, DSPBUS / SCUROM + DSPD + DSPBUS; DSPD adds nonzero bootstraps, 256-word PRAM DMA, executed FF→00 wrap and operand/count mutations | Complete cross-device arbitration/waits, physical RAM-port timing and the rest of the pipeline inventory remain | Pending |
 | SCU timers, [SCU] §§2.2/3.4, [SCUFINAL] #30/31 | Raster-driven timer0 clear/compare and timer1 dot countdown, zero=512, no reload while active, compare-line selection | SCUV, TIME, SCUROM / SCUROM | Full television modes and beam-phase conformance pending | Pending |
 
 Implementation: [SCU ports/interrupts/timers](../src/scu.rs),
@@ -1589,14 +1589,14 @@ CPU traces remain enabled, including reset and browser execution.
 | --- | --- | --- | --- |
 | A-bus fixed-address DSP output | `Dsp::dma_beat` now accepts add0 and add1; add0 repeatedly writes the same longword and retains WA0 | `dsp_a_bus_output_fixed_increment_hold_and_register_counts_have_real_address_effects` checks add0/add1 × HOLD × immediate/M0/MC0 counts and follows with another transfer without rewriting WA0. DSPD inputs 7/11/17 then writes all three to one real RAM word, leaving its neighbor's canary intact | Full DMA arbitration/waits/device-boundary corpus remains |
 | Register-count transfers | Actual DSP instructions read the counter from MC0, increment CT0, transfer work RAM into M1, and move the next M0 word into M2 | DSPD observes last fixed write=17, neighbor=ABCDDCBA and postincrement source=1234. Changing count 3→2 yields last word=0, changing data 17→53 yields 53 | Complete zero-count/counter-wrap/pipeline conflict vectors remain |
-| Executed program-RAM DMA | DSP bootstrap uses register-count DMAH into PRAM and END; guest SH-2 polls EX/T0 and restarts the transferred code through SCU MMIO. The transferred MVI/ENDI writes actual data RAM | DSPD resets CT0 before its program transfer and observes stopped bootstrap PC=4, loaded-program PC=2 and loaded-code result=42; changing only the loaded MVI yields 99. Native/Wasm repeat after reset. A deliberate no-op PRAM transfer is rejected | Complete PRAM address/wrap and overlapping-execution conformance remain |
+| Executed program-RAM DMA | DSP bootstrap at 0x40 uses register-count DMAH into PRAM and END; PRG destination begins at 0. SH-2 polls EX/T0 and starts the transferred code. A bootstrap at 0xA0 polls T0 and enters loaded code with DSP MVI PC; a third at 0xC0 transfers all 256 words and executes FF→00 | DSPD observes stopped PC=44, loaded-program PC=2 and result=42; changed MVI yields 99. Further authored records check the DSP branch delay slot, loaded result=57, stopped PC=C3 and PC=1/result=107 after wrap; shortening the last transfer to 1 word removes result 107 | Physical PRAM access timing and the complete pipeline inventory remain |
 
 | Reproducible artifact | SHA-256 |
 | --- | --- |
 | `bsc-idle.hex` text | `520d1c5c7ecbf193e2026b84b9a02ebde9bae333008a5cb5b02cdd29581abce7` |
 | `bsc-idle.tsv` | `963682704345a648e959033139e0174fbf422b0d5947a577da2015965e283c53` |
-| `dsp-dma.hex` text | `ad520b55fa4c4d1fe9eba4649c18732722bd4b5bd8365a6f4f4308aaf477765c` |
-| `dsp-dma.tsv` | `2bbdcd58aa2ac660fbb1fa4f8389c7be3fdeb93a020f925d3b15f9a565aa1a99` |
+| `dsp-dma.hex` text | `fe17f7face81c0fdda685fa35701402e3fe8b8bf48637131492f7cab08196594` |
+| `dsp-dma.tsv` | `d6e5b296cb234168d89c07467cd4b60735f1b251b762ffc5a6af725a2092333a` |
 
 CI verifies both builders with `--check`. No guest computation or result is
 substituted by host code. Existing demonstration media are unchanged. All unmet
@@ -1792,7 +1792,7 @@ use the adjacent [fixture license](../tests/fixtures/LICENSE). References:
 | --- | --- | --- | --- |
 | Separate B-bus grants | `Dsp::dma_beat` retains an in-flight word across two external 16-bit cycles. Output samples DSP RAM once; input publishes RAM/count/address updates after the second successful cycle. | [Bus-spy vectors](../src/scu/dsp/tests.rs) check exactly one read/write per grant, eight output strides × HOLD, CT63→0 wrap, changed data between halves, partial faults and a second-half destination outside the allowed region. | BUSG now grants each SCU/DSP data phase with BSC/A-bus/VRAM waits. Full DSP bank-conflict/refresh/display/sound arbitration remains required. |
 | Hardware deadlines, preemption and reset | `Bus::advance_main_clocks` and `Scu::advance_dma` retain the partial DSP word while another DMA channel owns grants; reset cancels it. | `dsp_b_bus_halfwords_progress_on_separate_deadlines_and_reset_cancels_the_tail` in [bus.rs](../src/bus.rs): authored snapshots at clocks7/8/15/16, chunks1/3/8/17; `higher_dma_channel_can_preempt_between_dsp_b_bus_halves_without_losing_the_word` in [SCU tests](../src/scu/tests.rs): actual RAM copy/IRQ between halves. | CPU/DMA transaction ownership, BSC/VRAM waits and prohibited concurrent-start behavior remain required. |
-| Prefetched program versus PRAM DMA | `Dsp::step` latches the successor word. DMA writes update PRAM without changing that fetched word; LE and stopped host program writes invalidate the latch. Pause retains it. | `program_dma_cannot_replace_the_prefetched_successor_and_le_refetches_it`: actual PRAM DMA changes MOV7 to MOV9; the fetched instruction writes7, explicit LE writes9. A separate PRAM vector loads addressesFF/00 and executes the transferred MOV42/ENDI across wrap. Existing jump/BTM/LPS/step and executed-PRAM guests remain enabled. | This establishes a one-successor functional prefetch, not the complete undocumented pipeline/conflict behavior or physical RAM-port timing. |
+| Prefetched program versus PRAM DMA | `Dsp::step` latches the successor word. DMA writes update PRAM without changing that fetched word; LE and stopped host program writes invalidate the latch. Pause retains it. | `program_dma_cannot_replace_the_prefetched_successor_and_le_refetches_it`: actual PRAM DMA changes MOV7 to MOV9; the fetched instruction writes7, explicit LE writes9. `program_dma_starts_at_zero_and_full_count_wraps_without_changing_the_host_port` replaces the earlier incorrect host-cursor wrap oracle: it transfers 256 words starting at 0 and executes loaded instructions across FF→00. Existing jump/BTM/LPS/step and executed-PRAM guests remain enabled. | This establishes a one-successor functional prefetch, not the complete pipeline behavior or physical RAM-port timing. |
 | Guest-visible B-bus routes | DSPBUS uses all eight output stride encodings into VDP1 RAM and real sound-RAM input, with CT wrap and polling of EX/T0. Both SH-2 and DSP execute ordinary guest instructions. | All **30** authored words agree in native and browser Wasm, repeated after cold reset. Changing eight guest data literals changes only authored data records; changing add1 to add0 overwrites the high half and leaves the next word's canary intact. | These are diagnostic fixtures, not substitutes for either required demonstration or complete SCU acceptance. |
 
 | Artifact | SHA-256 |
@@ -2037,3 +2037,35 @@ they do not establish every instruction-specific prefetch sequence, RESET pin
 timing, SCSP RAM arbitration or sub-sample DSP/DMA scheduling. Internal DMA
 timing does not establish CPU/internal-bus arbitration or full write buffering.
 Other mandatory inventory entries above remain pending with their original scope.
+
+## SCU DSP program-DMA origin and data-bank restrictions
+
+Sources: [SOA Technical Bulletin #8][SOA8], §§1.4/4.1/5.6, and
+[SCU] §§3.3/4.3/4.4/4.5. SOA #8 specifies program-RAM location zero as the
+destination of PRG DMA. The previous implementation incorrectly reused the
+CPU's program upload cursor; an earlier native wrap vector encoded that same
+incorrect assumption. The independent cursor and replacement vectors below
+correct both. This entry supersedes the earlier host-cursor PRAM wrap claim.
+
+| Contract | Implementation | Independent native evidence | Guest / browser evidence |
+| --- | --- | --- | --- |
+| PRG DMA starts at zero, independent of host upload/PC | `Dma::program_address`, `Dsp::step/grant_dma_cycle/dma_beat` in [dsp.rs](../src/scu/dsp.rs) | `program_dma_starts_at_zero_and_full_count_wraps_without_changing_the_host_port` and `program_dma_count_forms_and_hold_use_a_private_zero_based_cursor` in [tests.rs](../src/scu/dsp/tests.rs): immediate/M3/MC3 counts 1/2/63/64/65/128/255/256, HOLD, low-eight-bit selection, CT63→0, host cursor unchanged and untouched PRAM suffix | Expanded [DSPD source](../tests/fixtures/build_dsp_dma.py) runs bootstraps at 0x40/0xA0/0xC0, then executes actual transferred instructions at0 and FF→00; [native](../tests/dsp_dma.rs) and [production Wasm](../scripts/browser-smoke.mjs) compare 13 authored words and repeat cold reset |
+| DSP control-flow entry into loaded code | Existing delayed `MVI PC` now reaches correctly placed DMA output | Existing delayed-branch/prefetch unit vectors remain enabled | DSPD's A0 bootstrap polls T0, executes MVI PC0 and its MC2 delay-slot write, then computes MC3=57 from the loaded program. Changing the slot and loaded instruction independently yields 11 and 77 |
+| Complete transfer and operand dependence | DMA count and program data drive actual PRAM writes, not a game/result hook | Native count-form matrix verifies every transferred word and retained suffix; retained-successor test still observes the old instruction before LE refetch | Guest SH-2 initializes all 256 source words through stores. Count 0 loads the last MVI at FF, yielding 107; count 1 leaves FF as NOP, yielding 0. Changing the last MVI yields 125. All other 13-word record fields retain their authored values |
+| Permitted parallel work and prohibited DMA-bank instructions | `Dsp::check_dma_bank` checks only selected X/Y/D1 sources, RAM destinations and taken immediate stores before changing state; `ScuError::DspDmaConflict` is explicit | `dma_bank_conflicts_are_diagnosed_before_any_parallel_instruction_side_effect`: all four banks, both DMA directions, ten source/destination forms, other-bank work, inactive fields, untaken conditions, independent CT register writes and bank availability after DMA completion | DSPD copies MC0→MC2 while M1 DMA runs, retaining 1234. Mutating that instruction to MC1→MC2 gives the expected bounded bank 1 / PC 02 diagnostic in native and Wasm, no result write, sticky retries and reset repetition |
+
+The bank restriction is a documented programming constraint, not a newly claimed
+automatic hardware stall. The emulator diagnoses violations instead of inventing
+a winner between simultaneous RAM accesses. This change does not restrict the
+stopped host data port or establish its physical arbitration. Complete physical
+RAM-port/DMA/pipeline timing and the other mandatory #17 acceptance entries remain
+required; no umbrella checkbox is checked.
+
+The expanded source, generated [ROM](../tests/fixtures/dsp-dma.hex) and
+[vectors](../tests/fixtures/dsp-dma.tsv) use the adjacent
+[MIT license](../tests/fixtures/LICENSE). The existing CI command
+`python3 tests/fixtures/build_dsp_dma.py --check` reproduces both files.
+Current hashes are recorded in the DSPD table above. The three licensed
+demonstration discs are unchanged.
+
+[SOA8]: https://github.com/luckyseoul/saturn-docs/blob/main/files/Sattechs.pdf

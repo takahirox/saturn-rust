@@ -22,6 +22,7 @@ pub(crate) const INTERRUPT_LEVELS: [u8; 32] = [
 pub enum ScuError {
     Bus(BusError),
     IllegalDsp { pc: u8, instruction: u32 },
+    DspDmaConflict { pc: u8, bank: u8 },
     DmaParameters { channel: usize },
 }
 impl From<BusError> for ScuError {
@@ -36,6 +37,10 @@ impl fmt::Display for ScuError {
             Self::IllegalDsp { pc, instruction } => write!(
                 f,
                 "SCU DSP illegal instruction {instruction:08X} at {pc:02X}"
+            ),
+            Self::DspDmaConflict { pc, bank } => write!(
+                f,
+                "SCU DSP at {pc:02X}: data bank {bank} is owned by DMA (SOA #8 §4.1)"
             ),
             Self::DmaParameters { channel } => write!(
                 f,

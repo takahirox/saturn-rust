@@ -185,6 +185,11 @@ no Sega BIOS, SDK, third-party core, captured emulator output or external assets
 are included. The [conformance inventory](hardware-conformance.md#bsc-intercycle-turnaround-and-scu-dsp-dma-execution)
 records the hashes and native/browser evidence. They are diagnostics and do not
 replace either required demo. All three existing demonstration media are unchanged.
+DSPD's expanded original fixture also includes nonzero-address bootstraps,
+SH-2 initialization of a full 256-word DSP program, DSP MVI-PC entry and FF→00
+execution. Its 13-word golden record and operand/count/bank-conflict mutations
+are authored from the primary programming contracts linked in the
+[program-DMA entry](hardware-conformance.md#scu-dsp-program-dma-origin-and-data-bank-restrictions).
 
 The original MIT [sprite rotation](../tests/fixtures/build_sprite_rotation.py) and
 [double-interlace](../tests/fixtures/build_sprite_interlace.py) builders generate

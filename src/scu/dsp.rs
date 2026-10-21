@@ -47,6 +47,9 @@ struct Dma {
     address: u32,
     add: u32,
     hold: bool,
+    // Technical Bulletin SOA #8 §5.6: every PRG transfer begins at zero.
+    // This cursor is independent of the CPU program-upload port and PC.
+    program_address: u8,
     // ST-097 §4.5: B-bus transfers use two external 16-bit cycles.
     // Retain the sampled longword between grants; a DSP RAM write between
     // its halves must not replace the low half of the in-flight word.
@@ -167,6 +170,55 @@ impl Dsp {
         let a = self.data_address.get();
         self.data[(a >> 6) as usize][(a & 63) as usize] = value;
         next_data_address(&self.data_address);
+        Ok(())
+    }
+    // SOA #8 §§1.4/4.1: arithmetic and the other three banks remain usable
+    // during DMA. Accessing the DMA bank is prohibited; no hardware result
+    // is specified. Diagnose that program before changing flags, counters or
+    // RAM, rather than manufacturing a parallel read/write ordering.
+    fn check_dma_bank(&self, instruction: u32) -> Result<(), ScuError> {
+        let Some(dma) = self.dma.as_ref().filter(|dma| dma.bank < 4) else {
+            return Ok(());
+        };
+        let mut banks = 0u8;
+        let mut select = |code: u8| banks |= 1 << (code & 3);
+        match instruction >> 30 {
+            0 => {
+                let xmode = instruction >> 23 & 7;
+                let ymode = instruction >> 17 & 7;
+                if xmode & 4 != 0 || xmode & 3 == 3 {
+                    select((instruction >> 20) as u8);
+                }
+                if ymode & 4 != 0 || ymode & 3 == 3 {
+                    select((instruction >> 14) as u8);
+                }
+                let dmode = instruction >> 12 & 3;
+                if dmode == 3 && instruction & 15 < 8 {
+                    select(instruction as u8);
+                }
+                if matches!(dmode, 1 | 3) {
+                    let destination = (instruction >> 8) as u8 & 15;
+                    if destination < 4 {
+                        select(destination);
+                    }
+                }
+            }
+            2 => {
+                let destination = instruction >> 26 & 15;
+                let taken = instruction & (1 << 25) == 0
+                    || self.condition(((instruction >> 19) as u8 & 63) | 0x40) == Some(true);
+                if destination < 4 && taken {
+                    select(destination as u8);
+                }
+            }
+            _ => (),
+        }
+        if banks & (1 << dma.bank) != 0 {
+            return Err(ScuError::DspDmaConflict {
+                pc: self.pc,
+                bank: dma.bank,
+            });
+        }
         Ok(())
     }
     fn condition(&self, code: u8) -> Option<bool> {
@@ -291,6 +343,7 @@ impl Dsp {
         if instruction >> 28 == 12 && self.dma.is_some() {
             return Ok(false);
         }
+        self.check_dma_bank(instruction)?;
         self.single_step = false;
         let old_branch = self.branch.take();
         let repeating = self.repeat == Some(pc);
@@ -421,6 +474,7 @@ impl Dsp {
                         address: address.wrapping_mul(4) & 0x07FF_FFFF,
                         add,
                         hold: instruction & 0x4000 != 0,
+                        program_address: 0,
                         halfword: None,
                         latch: None,
                     });
@@ -474,7 +528,7 @@ impl Dsp {
             let ct = if bank < 4 {
                 self.ct[bank] as usize
             } else {
-                self.load_address as usize
+                dma.program_address as usize
             };
             dma.latch = Some((ct, if dma.write { self.data[bank][ct] } else { 0 }));
         }
@@ -541,7 +595,7 @@ impl Dsp {
             };
             if bank == 4 {
                 self.program[ct] = value;
-                self.load_address = (ct as u8).wrapping_add(1);
+                dma.program_address = (ct as u8).wrapping_add(1);
             } else {
                 self.data[bank][ct] = value;
             }

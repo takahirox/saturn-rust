@@ -477,7 +477,12 @@ not human listening. Star Collector itself continues to have no soundtrack.
 DSP A-bus output DMA accepts both fixed and incrementing longword destinations,
 including HOLD. The original [DSP DMA guest](../tests/fixtures/build_dsp_dma.py)
 uses register-count transfers, fixed writes, postincremented counter operands
-and program-RAM DMA, then restarts and executes the transferred MVI/ENDI code
-through ordinary SCU MMIO. Native/Wasm records and source/data/count mutations
-cover these paths. Full DSP pipeline, PRAM boundaries and bus arbitration remain
+and program-RAM DMA. Nonzero-address bootstraps load PRAM from location zero
+through an independent DMA cursor; both SCU MMIO and executing DSP MVI PC enter
+the transferred code. A full 256-word transfer executes across PC FF→00.
+Native/Wasm records and source/data/count mutations cover these paths.
+Instructions may use other banks during DMA; an instruction touching the active
+DMA data bank fails with a bounded diagnostic under SOA #8 §4.1's programming
+restriction, before changing architectural state. This does not model a physical
+result for a prohibited access. Full DSP pipeline, physical RAM-port timing and bus arbitration remain
 required in the [conformance inventory](hardware-conformance.md).

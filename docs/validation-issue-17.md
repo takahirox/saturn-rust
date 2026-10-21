@@ -2757,3 +2757,66 @@ HLE CD/startup ABI, SMPC boundaries and comprehensive acceptance evidence remain
 required. These implemented fixes and passing subset checks do not authorize
 closing #17 or merging PR #18 as complete. No scope is waived or moved to a new
 tracker, and no human/firmware/live-site/external-workflow gate is introduced.
+
+## SCU DSP program-DMA origin and concurrent data-bank access (2026-10-22)
+
+Rechecked upstream `main` (`dbd981b030a46daa6923072ce240680dd2e58ebf`) and
+PR #18 (`ffb0d31a6f036819a738165821be7326a8c3dbff`). This work preserves the
+preceding internal-DMAC, sound data-phase, CD connection and compact-ISO fixes
+in `3195a53` and continues the same Draft PR and Issue.
+
+Primary Technical Bulletin SOA #8 §5.6 specifies PRG DMA destination location
+zero. The implementation incorrectly used the host program-upload cursor, and
+an earlier unit oracle repeated that assumption. A private zero-based cursor
+now drives program DMA without changing the host cursor or stopped PC. The
+replacement native vectors cover count forms, HOLD, low-eight-bit counts,
+CT wrap, full 256-word transfer and the untouched PRAM suffix. Existing retained
+prefetch, pause, LE, B-bus halves and DMA arbitration vectors remain enabled.
+
+The expanded original MIT DSPD guest runs bootstraps at 0x40/0xA0/0xC0, enters
+DMA-loaded code through both MMIO and executing DSP MVI PC, checks its branch
+delay slot, initializes all 256 source words using SH-2 stores and executes the
+last loaded word across FF→00. Native and production Wasm compare 13 authored
+records after cold reset. Source/count/delay-slot mutations produce separately
+authored results. SOA #8 §4.1's prohibited instruction access to a live DMA bank
+now gives an explicit diagnostic before changing state; other banks and
+non-memory register instructions keep executing. A guest bank mutation checks
+the diagnostic, absent result write, bounded sticky retries and repeated reset.
+No physical result is claimed for a prohibited program. Host-port and CT-register
+access policy is preserved. Exact implementation, tests, primary references and
+current fixture hashes are in the [conformance entry](hardware-conformance.md#scu-dsp-program-dma-origin-and-data-bank-restrictions).
+
+Validation actually performed:
+
+- Formatting, locked native build and native all-target Clippy with warnings
+  denied pass with Rust/Cargo 1.94.0. A pre-existing equivalent CD-connection
+  boolean expression was factored to satisfy that compiler's Clippy.
+- The complete optimized-debug `CARGO_PROFILE_TEST_OPT_LEVEL=1 cargo test --locked`
+  and `cargo test --locked --release` pass **558 tests each** (326 unit + 232
+  integration), zero failed/ignored. Debug assertions and overflow checks remain
+  enabled in the former. The final unoptimized 326-unit suite and expanded
+  three-test DSPD integration also pass.
+- The full ordinary `cargo test --locked` also passes 558 tests at the broader
+  revision. The subsequent CT-register policy refinement and expanded guest
+  vectors are covered by the final unoptimized unit/DSPD runs and both complete
+  final suites above.
+- `sh scripts/build-web.sh` and wasm32 Clippy with warnings denied pass using
+  installed stable Rust 1.99.0 and wasm-bindgen 0.2.129. The complete extended
+  `npm run test:browser` passes with the final Wasm and 13-word guest in Chromium
+  145.0.7632.6, Node 24.12.0, under `/saturn-rust/`, without required skips.
+  All prior guests, Star Collector, Prism Courier and Hardware Lab retain their
+  CPU/DSP, graphics, audio/WebAudio, control, restart, backup and privacy assertions.
+- All 60 CI guest/media reproducibility commands pass. The three demonstrations'
+  tracked sources/media are unchanged. JavaScript syntax, local Markdown file
+  targets and Git whitespace checks pass.
+- Restoring the old host-cursor DMA and bypassing the bank check are separately
+  rejected by their new unit tests. Exact source bytes are restored in `finally`,
+  and the 31 SCU tests plus three DSPD integration tests pass afterward.
+
+These are local validation results. Full Issue #17 completion remains unmet:
+the remaining SH-2/SH7604 and 68k sequencing, board arbitration/reset/services,
+SCU/DSP physical timing, video, SCSP/effects/CD-DA timing, runtime CD/HLE, SMPC
+and comprehensive acceptance inventory remain mandatory in this same PR. No
+umbrella checkbox is checked, no Issue is closed/replaced/reopened, and no human,
+proprietary-firmware, live-site or external-workflow approval gate is introduced.
+PR #18 remains Draft and must not be merged in this node.

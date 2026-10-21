@@ -268,16 +268,19 @@ fn program_dma_cannot_replace_the_prefetched_successor_and_le_refetches_it() {
 }
 
 #[test]
-fn program_dma_wraps_the_host_load_address_and_loaded_code_executes_across_ff_to_zero() {
+fn program_dma_starts_at_zero_and_full_count_wraps_without_changing_the_host_port() {
     use crate::bus::{Bus, HIGH_WRAM};
     let mut d = Dsp::default();
     let mut memory = Bus::default();
     d.set_data_address(0, SCU + 0x88).unwrap();
-    d.write_data(2, SCU + 0x8c).unwrap();
-    for (i, word) in [0x0000112a, 0xf8000000].into_iter().enumerate() {
-        memory
-            .write32(HIGH_WRAM + 0x1000 + i as u32 * 4, word)
-            .unwrap();
+    d.write_data(0, SCU + 0x8c).unwrap(); // Low eight bits zero means 256 words.
+    for i in 0..256 {
+        let word = match i {
+            0 => 0xf8000000,
+            255 => 0x0000112a,
+            _ => 0,
+        };
+        memory.write32(HIGH_WRAM + 0x1000 + i * 4, word).unwrap();
     }
     d.set_control(0x80fc);
     for word in [0x99800400, 0xc000a400, 0xf0000000] {
@@ -286,13 +289,16 @@ fn program_dma_wraps_the_host_load_address_and_loaded_code_executes_across_ff_to
     d.set_control(0x180fc);
     d.step().unwrap();
     d.step().unwrap();
-    // LE writes are ignored while EX=1. The host load address was set to FC
-    // when execution began; loading it to FF requires a stopped write below.
+    // SOA #8 §5.6: PRG DMA always starts at location zero. Neither the
+    // nonzero bootstrap nor a host port write can redirect that transfer.
     d.set_control(0);
-    d.set_control(0xff); // Change load port without changing stopped PC FE.
-    d.dma_beat(&mut memory).unwrap();
-    d.dma_beat(&mut memory).unwrap();
-    assert_eq!(d.load_address, 1);
+    d.set_control(0xff);
+    for i in 0..256 {
+        d.dma_beat(&mut memory).unwrap();
+        assert_eq!(d.load_address, 255);
+        assert_eq!(d.pc, 254);
+        assert_eq!(d.dma_pending(), i != 255);
+    }
     assert_eq!(d.program[255], 0x0000112a);
     assert_eq!(d.program[0], 0xf8000000);
     d.set_control(0x180ff);
@@ -301,4 +307,142 @@ fn program_dma_wraps_the_host_load_address_and_loaded_code_executes_across_ff_to
     assert_eq!(d.data[1][0], 42);
     assert!(d.step().unwrap());
     assert!(!d.running());
+}
+
+#[test]
+fn program_dma_count_forms_and_hold_use_a_private_zero_based_cursor() {
+    use crate::bus::{Bus, HIGH_WRAM};
+    // SOA #8 §5.6, ST-097 §4.5: low eight count bits, MCn count
+    // postincrement and DMAH preservation are independent of the PRG port.
+    for count in [1u32, 2, 63, 64, 65, 128, 255, 256] {
+        for count_source in [None, Some(3), Some(7)] {
+            for hold in [false, true] {
+                let mut d = Dsp::default();
+                let mut memory = Bus::default();
+                for i in 0..256 {
+                    memory.write32(HIGH_WRAM + i * 4, 0xA5000000 + i).unwrap();
+                }
+                d.program.fill(0xDEADBEEF);
+                d.data[3][63] = 0xCAFE0100 | (count & 255);
+                d.ct[3] = 63;
+                d.ra0 = HIGH_WRAM / 4;
+                let count_bits = count_source.map_or(count & 255, |code| 0x2000 | code);
+                d.program[0xE0] = 0xC0008400 | u32::from(hold) << 14 | count_bits;
+                d.set_control(0x180E0);
+                d.step().unwrap();
+                d.set_control(0); // Stop before changing the host upload address.
+                d.set_control(0x3D);
+                for i in 0..count {
+                    d.dma_beat(&mut memory).unwrap();
+                    assert_eq!(d.dma_pending(), i + 1 != count);
+                    assert_eq!(d.pc, 0xE1);
+                    assert_eq!(d.load_address, 0x3D);
+                }
+                for i in 0..256 {
+                    let expected = if i < count {
+                        0xA5000000 + i
+                    } else if i == 0xE0 {
+                        0xC0008400 | u32::from(hold) << 14 | count_bits
+                    } else {
+                        0xDEADBEEF
+                    };
+                    assert_eq!(d.program[i as usize], expected);
+                }
+                assert_eq!(d.ct[3], if count_source == Some(7) { 0 } else { 63 });
+                assert_eq!(d.ra0, HIGH_WRAM / 4 + if hold { 0 } else { count });
+            }
+        }
+    }
+}
+
+fn bank_operations(bank: u32) -> [u32; 10] {
+    [
+        0x02000000 | bank << 20, // M -> X
+        0x01C00000 | bank << 20, // MC -> P
+        0x00080000 | bank << 14, // M -> Y
+        0x00070000 | bank << 14, // MC -> A
+        0x00003400 | bank,       // M -> RX (D1 source)
+        0x00003504 | bank,       // MC -> P (D1 source)
+        0x00003009 | bank << 8,  // ALL -> MC (D1 destination)
+        0x00001001 | bank << 8,  // immediate -> MC
+        0x80000001 | bank << 26, // MVI -> MC
+        0x83400001 | bank << 26, // MVI -> MC,T0 (taken)
+    ]
+}
+
+#[test]
+fn dma_bank_conflicts_are_diagnosed_before_any_parallel_instruction_side_effect() {
+    // SOA #8 §4.1 explicitly excludes touching the DMA bank. It does not
+    // define a winner or automatic interlock for a violating program.
+    for bank in 0..4 {
+        for write in [false, true] {
+            let mut d = start(write, false, if write { 1 } else { 2 }, 2, 0x05A01000);
+            d.dma.as_mut().unwrap().bank = bank;
+            d.ct[bank as usize] = 17;
+            for instruction in bank_operations(u32::from(bank)) {
+                let mut trial = d.clone();
+                trial.prefetched = Some((trial.pc, instruction));
+                let before = trial.clone();
+                assert_eq!(
+                    trial.step(),
+                    Err(ScuError::DspDmaConflict { pc: 3, bank }),
+                    "{instruction:08X}"
+                );
+                assert_eq!(trial.pc, before.pc);
+                assert_eq!(trial.ct, before.ct);
+                assert_eq!(trial.data, before.data);
+                assert_eq!(trial.flags.get(), before.flags.get());
+                assert_eq!(
+                    (trial.rx, trial.ry, trial.p, trial.a),
+                    (before.rx, before.ry, before.p, before.a)
+                );
+                assert_eq!(trial.prefetched, before.prefetched);
+                assert_eq!(trial.dma.as_ref().unwrap().remaining, 2);
+            }
+            // Dormant X/Y/D1 fields, ALU-only work, register-only moves and
+            // a not-taken conditional store must not spuriously touch RAM0.
+            for instruction in [
+                0,
+                0x10040000,
+                0x00003409,
+                0x82400001 | u32::from(bank) << 26,
+            ] {
+                let mut trial = d.clone();
+                trial.prefetched = Some((trial.pc, instruction));
+                trial.step().unwrap();
+                assert_eq!(trial.pc, 4);
+                assert_eq!(trial.ct, d.ct);
+            }
+            for other in 0..4 {
+                if other == bank {
+                    continue;
+                }
+                for instruction in bank_operations(u32::from(other)) {
+                    let mut trial = d.clone();
+                    trial.prefetched = Some((trial.pc, instruction));
+                    trial.step().unwrap();
+                    assert_eq!(trial.pc, 4);
+                    assert_eq!(trial.ct[bank as usize], 17);
+                }
+            }
+            // CT register writes do not themselves read/write data RAM.
+            let mut trial = d.clone();
+            trial.prefetched = Some((trial.pc, 0x00001C07 | u32::from(bank) << 8));
+            trial.step().unwrap();
+            assert_eq!(trial.ct[bank as usize], 7);
+            assert_eq!(trial.data, d.data);
+            // The bank is available again after the actual last DMA cycle.
+            let mut port = Port::default();
+            for _ in 0..4 {
+                d.dma_beat(&mut port).unwrap();
+            }
+            assert!(!d.dma_pending());
+            for instruction in bank_operations(u32::from(bank)) {
+                let mut trial = d.clone();
+                trial.prefetched = Some((trial.pc, instruction));
+                trial.step().unwrap();
+                assert_eq!(trial.pc, 4);
+            }
+        }
+    }
 }

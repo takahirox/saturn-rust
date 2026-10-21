@@ -1051,9 +1051,9 @@ impl CdBlock {
             0x30 => {
                 // ST-162 §5.3 table5.1: a filter input has one source;
                 // true outputs alone permit multiple sources per partition.
-                if (selector >= SELECTORS && selector != 255)
-                    || (selector != 255
-                        && self.filters.iter().any(|f| usize::from(f.no) == selector))
+                if selector != 255
+                    && (selector >= SELECTORS
+                        || self.filters.iter().any(|f| usize::from(f.no) == selector))
                 {
                     return false;
                 }

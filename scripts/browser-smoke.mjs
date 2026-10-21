@@ -1219,7 +1219,9 @@ try {
   }
   const dspDmaVectors = (await readFile("tests/fixtures/dsp-dma.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v, 16));
   for (const [before, after, index, value] of [[0, 0, 0, 17],
-    [0x11, 0x35, 0, 0x35], [3, 2, 0, 0], [0x8400002A, 0x84000063, 5, 99]]) {
+    [0x11, 0x35, 0, 0x35], [3, 2, 0, 0], [0x8400002A, 0x84000063, 5, 99],
+    [0x8C000039, 0x8C00004D, 8, 77], [0x00001207, 0x0000120B, 7, 11],
+    [0x8C00006B, 0x8C00007D, 11, 125], [0xC000C400, 0xC000C401, 11, 0]]) {
     const changed = Buffer.from(dspDmaRom);
     if (before) {
       const needle = Buffer.alloc(4); needle.writeUInt32BE(before);
@@ -1231,8 +1233,8 @@ try {
     await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
     const runDspDma = () => page.evaluate(async () => {
       const { emulator } = await import("./app.js");
-      emulator.run_steps(4000);
-      return { trace: Array.from({length: 7}, (_, i) => emulator.read_long(0x0600E400 + i * 4)),
+      emulator.run_steps(10000);
+      return { trace: Array.from({length: 13}, (_, i) => emulator.read_long(0x0600E400 + i * 4)),
         exceptions: emulator.exception_count() };
     });
     const actual = await runDspDma();
@@ -1241,6 +1243,28 @@ try {
     await page.locator("#reset").click();
     assert.deepEqual(await runDspDma(), actual);
   }
+  // SOA #8 §4.1: touching the DMA bank is prohibited. Mutate the legal
+  // concurrent MC0 -> MC2 instruction into MC1 -> MC2 during M1 DMA.
+  const conflictedDsp = Buffer.from(dspDmaRom);
+  const conflictAt = conflictedDsp.indexOf(Buffer.from([0, 0, 0x32, 4]));
+  assert(conflictAt >= 0 && conflictedDsp.indexOf(Buffer.from([0, 0, 0x32, 4]), conflictAt + 1) < 0);
+  conflictedDsp.writeUInt32BE(0x00003205, conflictAt);
+  await page.locator("#bios").setInputFiles({name:"original-dsp-bank-conflict.bin", mimeType:"application/octet-stream", buffer:conflictedDsp});
+  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  await page.locator("#count").fill("4000");
+  await page.locator("#run").click();
+  assert.match(await value("error"), /SCU DSP at 02: data bank 1 is owned by DMA/);
+  assert.equal(await page.locator("#run").isDisabled(), true);
+  const conflictStopped = await machine();
+  await page.evaluate(async () => {
+    const {emulator} = await import("./app.js");
+    try { emulator.run_steps(4000); } catch { /* Sticky diagnostic. */ }
+    if (emulator.read_long(0x0600E400) !== 0) throw Error("Conflicting DSP fabricated a result");
+  });
+  assert.deepEqual(await machine(), conflictStopped);
+  await page.locator("#reset").click();
+  await page.locator("#run").click();
+  assert.match(await value("error"), /SCU DSP at 02: data bank 1 is owned by DMA/);
   // Original SH-2/DSP B-bus guest: all eight output strides, counter wrap,
   // sound RAM input, independent authored words and changed guest operands.
   const dspBusRom = Buffer.alloc(524288);
