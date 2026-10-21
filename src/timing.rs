@@ -101,6 +101,12 @@ impl Raster {
             HBLANK_CLOCK
         }
     }
+    /// Completed output dots in this line. Exclusive low-resolution modes
+    /// multiplex two source samples into one output dot (ST-058 §2.1).
+    pub(crate) fn visible_pixels(&self, width: usize) -> usize {
+        (u64::from(self.phase.min(self.hblank_clock())) * width as u64
+            / u64::from(self.hblank_clock())) as usize
+    }
     pub(crate) fn active_clocks(&self) -> u32 {
         u32::from(self.display_lines()) * self.line_clocks()
     }

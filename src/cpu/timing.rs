@@ -1,7 +1,7 @@
 //! SH-1/SH-2 Programming Manual §7.3/table7.2: EX-to-EX execution
 //! states without contention. SH-1-only instructions are excluded by execute.
-//! Fetch/operand waits belong to the CPU-local bus. Pipeline load-use,
-//! multiplier and IF/MA contention require separate scheduling.
+//! Fetch/operand waits belong to the CPU-local bus. Load WB/EX interlocks
+//! are tracked per CPU below; multiplier and IF/MA overlap remain separate.
 
 pub(super) fn execution_states(op: u16, t: bool) -> u32 {
     match op {
@@ -90,6 +90,113 @@ mod tests {
             0x4022,
         ] {
             assert_eq!(execution_states(op, false), 1, "{op:04X}");
+        }
+    }
+}
+
+/// Programming Manual §7.5/fig.7.9. WB follows the successor's EX stage.
+/// A conflicting successor splits the slot once; repeated loads and MAC use
+/// the documented MA forwarding path. The state belongs to each CPU.
+#[derive(Debug, Default)]
+pub(super) struct LoadPipeline {
+    destination: Option<u8>,
+}
+impl LoadPipeline {
+    pub fn issue(&mut self, opcode: u16) -> u32 {
+        let load = load_destination(opcode);
+        let hazard = self.destination.is_some_and(|register| {
+            load != Some(register)
+                && !matches!(opcode & 0xF00F, 0x000F | 0x400F)
+                && register_uses(opcode) & (1 << register) != 0
+        });
+        self.destination = load;
+        u32::from(hazard)
+    }
+}
+fn load_destination(op: u16) -> Option<u8> {
+    match op >> 12 {
+        0 if matches!(op & 15, 0xC..=0xE) => Some((op >> 8 & 15) as u8),
+        5 | 9 | 0xD => Some((op >> 8 & 15) as u8),
+        6 if matches!(op & 15, 0..=2 | 4..=6) => Some((op >> 8 & 15) as u8),
+        8 if matches!(op & 0xF00, 0x400 | 0x500) => Some(0),
+        0xC if matches!(op >> 8 & 15, 4..=6) => Some(0),
+        _ => None,
+    }
+}
+fn register_uses(op: u16) -> u16 {
+    let n = 1 << (op >> 8 & 15);
+    let m = 1 << (op >> 4 & 15);
+    match op >> 12 {
+        0 => match op & 0xFF {
+            0x02 | 0x12 | 0x22 | 0x0A | 0x1A | 0x2A | 0x29 | 0x03 | 0x23 => n,
+            _ if matches!(op & 15, 4..=6 | 0xC..=0xE) => n | m | 1,
+            _ if matches!(op & 15, 7 | 15) => n | m,
+            _ => 0,
+        },
+        1 | 2 | 3 | 5 | 6 => n | m,
+        4 | 7 | 9 | 0xD | 0xE => n,
+        8 => match op >> 8 & 15 {
+            0 | 1 | 4 | 5 => m | 1,
+            8 => 1,
+            _ => 0,
+        },
+        0xC => 1, // GBR displacements, MOVA and immediate R0 logic
+        _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod load_pipeline_tests {
+    use super::*;
+    #[test]
+    fn all_load_widths_and_registers_split_only_the_dependent_successor() {
+        // §7.5: same-destination repeated loads and MAC do not split.
+        for n in 0..16 {
+            for load in [
+                0x6000, 0x6001, 0x6002, 0x6004, 0x6005, 0x6006, 0x5000, 0x000C, 0x000D, 0x000E,
+                0x9000, 0xD000,
+            ] {
+                let load = load | n << 8;
+                for successor in [
+                    0x7001 | n << 8,
+                    0x6003 | n << 4,
+                    0x6003 | n << 8,
+                    0xE000 | n << 8,
+                    0x400B | n << 8,
+                    0x2012 | n << 8,
+                ] {
+                    let mut pipeline = LoadPipeline::default();
+                    assert_eq!(pipeline.issue(load), 0);
+                    assert_eq!(pipeline.issue(successor), 1, "{load:04X}->{successor:04X}");
+                    assert_eq!(pipeline.issue(successor), 0);
+                }
+                for successor in [0x0009, 0xA000, 0x6002 | n << 8, 0x400F | n << 8] {
+                    let mut pipeline = LoadPipeline::default();
+                    pipeline.issue(load);
+                    assert_eq!(pipeline.issue(successor), 0, "{load:04X}->{successor:04X}");
+                }
+                let mut pipeline = LoadPipeline::default();
+                pipeline.issue(load);
+                pipeline.issue(9);
+                assert_eq!(pipeline.issue(0x7001 | n << 8), 0);
+            }
+        }
+    }
+    #[test]
+    fn displacement_and_gbr_loads_target_r0_without_treating_displacements_as_registers() {
+        for load in [0x84FF, 0x85FF, 0xC4FF, 0xC5FF, 0xC6FF] {
+            for (next, expected) in [
+                (0x7001, 1),
+                (0x7101, 0),
+                (0xCA55, 1),
+                (0xC755, 1),
+                (0x8BFF, 0),
+                (0x4F2B, 0),
+            ] {
+                let mut pipeline = LoadPipeline::default();
+                pipeline.issue(load);
+                assert_eq!(pipeline.issue(next), expected, "{load:04X}->{next:04X}");
+            }
         }
     }
 }

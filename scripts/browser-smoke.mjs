@@ -9,6 +9,7 @@ import { join, resolve } from "node:path";
 import { chromium } from "playwright";
 import { rawMode1 } from "./raw-media-fixture.mjs";
 import { videoTransactions } from "./video-transactions.mjs";
+import { abusTiming } from "./abus.mjs";
 import { hardwareBoundaries } from "./hardware-boundaries.mjs";
 import { hlePlayer } from "./hle-player.mjs";
 
@@ -781,6 +782,7 @@ try {
   }
   assert.deepEqual(displayTraces.at(-1),{canvas:[704,480],edge:[0,255,0,255]});
   await videoTransactions(page);
+  await abusTiming(page);
   const shrinkRom=Buffer.alloc(524288);
   for(const line of (await readFile("tests/fixtures/sprite-shrink.hex","utf8")).split(/\r?\n/)) {
     if(!line||line.startsWith("#"))continue;
@@ -1195,7 +1197,7 @@ try {
     const runTiming=()=>page.evaluate(async()=>{
       const {emulator}=await import("./app.js");
       emulator.run_steps(10000);
-      return {words:[0x0600E600,0x0600E700].map(base=>Array.from({length:13},(_,i)=>emulator.read_long(base+i*4))),
+      return {words:[0x0600E600,0x0600E700].map(base=>Array.from({length:21},(_,i)=>emulator.read_long(base+i*4))),
         exceptions:[emulator.exception_count(),emulator.slave_exception_count()]};
     });
     const actual=await runTiming();
@@ -1435,14 +1437,25 @@ try {
       if(emulator.read_long(0x0600D900)!==0x600D)throw new Error("Raster guest did not complete");
       advanceFrame();
       const frame=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
-      const pixels=ys.map(y=>Array.from(frame.slice(y*320*4,y*320*4+4)));
-      const presented=ys.map(y=>Array.from(canvas.getImageData(0,y,1,1).data));
+      const pixels=ys.map(y=>Array.from(frame.slice((y*320+159)*4,(y*320+159)*4+4)));
+      const presented=ys.map(y=>Array.from(canvas.getImageData(159,y,1,1).data));
       advanceFrame();
-      return {pixels,presented,next:Array.from(canvas.getImageData(0,100,1,1).data),
+      return {pixels,presented,rows: [64,128,192].map(y => Array.from(frame.slice(y*320*4,(y+1)*320*4))),
+        next:Array.from(canvas.getImageData(0,100,1,1).data),
         finalVram:emulator.read_long(0x25E60000)>>>16};
     },rasterYs);
     const expected=rasterYs.map(y=>y<64?[255,0,0,255]:y<128?(mutated?[255,0,0,255]:[0,255,0,255]):y<192?[0,0,255,255]:[255,255,255,255]);
     assert.deepEqual(result.pixels,expected);assert.deepEqual(result.presented,expected);
+    for (const [index,y] of [64,128,192].entries()) {
+      const old = y===64 ? [255,0,0,255] : y===128 ? (mutated ? [255,0,0,255] : [0,255,0,255]) : [0,0,255,255];
+      const next = y===64 ? (mutated ? old : [0,255,0,255]) : y===128 ? [0,0,255,255] : [255,255,255,255];
+      const row = result.rows[index];
+      if (mutated && y===64) { assert.deepEqual(row,Array.from({length:320},()=>old).flat()); continue; }
+      let prefix=0;
+      while (prefix<320 && row.slice(prefix*4,prefix*4+4).every((v,c)=>v===old[c])) prefix++;
+      assert(prefix>0 && prefix<159, `line ${y}: ${prefix} previous-color dots`);
+      assert.deepEqual(row.slice(prefix*4),Array.from({length:320-prefix},()=>next).flat());
+    }
     assert.deepEqual(result.next,[31,0,0,255]);assert.equal(result.finalVram,0x8000);
   }
   // Original VDP1 polygons, rotated through A's Q9 sprite link. The guest

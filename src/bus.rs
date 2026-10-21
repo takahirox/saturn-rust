@@ -187,7 +187,7 @@ pub struct Bus {
     smpc: Smpc,
     pub(crate) scu: Scu,
     pub(crate) raster: Raster,
-    scu_dma_phase: u32,
+    scu_dma_remaining: u32,
     cpu_dma_remaining: [u32; 2],
     cpu_dma_errors: [bool; 2],
     cpu_bus_clocks: [Cell<u32>; 2],
@@ -212,7 +212,7 @@ impl Default for Bus {
             smpc: Smpc::default(),
             scu: Scu::default(),
             raster: Raster::default(),
-            scu_dma_phase: 0,
+            scu_dma_remaining: 8,
             cpu_dma_remaining: [8; 2],
             cpu_dma_errors: [false; 2],
             cpu_bus_clocks: [Cell::new(0), Cell::new(0)],
@@ -428,6 +428,13 @@ impl Bus {
         self.onchip[index].dma = dma;
         error
     }
+    fn flush_video(&mut self) {
+        if self.raster.line < self.raster.display_lines() {
+            let end = self.raster.visible_pixels(self.vdp2.dimensions().0);
+            self.vdp2
+                .scan_to(&self.vdp1, usize::from(self.raster.line), end);
+        }
+    }
     fn main_deadline(&self) -> u32 {
         self.onchip[0]
             .clocks_to_event()
@@ -442,7 +449,7 @@ impl Bus {
                 u32::MAX
             })
             .min(if self.scu.dma_pending() {
-                8 - self.scu_dma_phase
+                self.scu_dma_remaining.max(1)
             } else {
                 u32::MAX
             })
@@ -481,6 +488,9 @@ impl Bus {
                 self.onchip[1].advance_clocks(delta);
             }
             self.scu.advance_clocks(delta)?;
+            if self.onchip[0].take_refresh_output() {
+                self.scu.refresh_abus();
+            }
             if self.vdp1.advance(delta)? {
                 self.scu.signal(13);
             }
@@ -533,9 +543,10 @@ impl Bus {
             let (h, v) = self.raster.counters();
             self.vdp2.counters(h, v);
             self.vdp2.scan_field(self.raster.odd());
-            self.scu_dma_phase = (self.scu_dma_phase + delta) % 8;
-            if self.scu_dma_phase == 0 {
+            self.scu_dma_remaining = self.scu_dma_remaining.saturating_sub(delta);
+            if self.scu_dma_remaining == 0 {
                 self.advance_scu_dma()?;
+                self.scu_dma_remaining = 8u32.saturating_add(self.scu.take_bus_waits());
             }
             // On-chip DMA has its own hardware-clock deadline. It must not
             // transfer faster merely because a CPU runs single-state opcodes,
@@ -569,7 +580,7 @@ impl Bus {
         self.vdp2.pal = self.raster.pal;
         self.raster.configure(0);
         self.scu = Scu::default();
-        self.scu_dma_phase = 0;
+        self.scu_dma_remaining = 8;
         self.sound = Sound::default();
         self.set_slave_enabled(false);
     }
@@ -883,6 +894,11 @@ impl Bus {
 
     fn write<const N: usize>(&mut self, address: u32, bytes: [u8; N]) -> Result<(), BusError> {
         let address = Self::physical(address);
+        if (vdp1::FRAMEBUFFER..vdp1::REGISTERS + 0x18).contains(&address)
+            || (VRAM..VDP2 + 0x120).contains(&address)
+        {
+            self.flush_video();
+        }
         if !address.is_multiple_of(N as u32) {
             return Err(BusError::Unaligned { address, width: N });
         }
@@ -1168,6 +1184,11 @@ impl CpuBus<'_> {
                 last,
             );
             clocks.set(clocks.get().saturating_add(base));
+            self.bus.onchip[self.processor as usize].add_wait_clocks(self.bus.scu.abus_access(
+                address & 0x1FFF_FFFF,
+                width,
+                write,
+            ));
             let physical = Bus::physical(address);
             if (VRAM..VRAM + 0x80000).contains(&physical) {
                 let slots = self.bus.vdp2.cpu_access_slots(physical);
@@ -2009,6 +2030,139 @@ mod bsc_memory_tests {
             b.advance_clocks(100).unwrap();
             assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(0));
             assert_eq!(b.scu.read32(SCU + 0xA4).unwrap(), 0);
+        }
+    }
+}
+
+#[cfg(test)]
+mod raster_write_tests {
+    use super::*;
+    fn finish(bus: &mut Bus) -> Vec<u8> {
+        while !bus.vdp2.vblank {
+            bus.advance_clocks(bus.raster.clocks_to_event()).unwrap();
+        }
+        bus.vdp2.scanout(&bus.vdp1).unwrap()
+    }
+    #[test]
+    fn completed_dots_preserve_back_color_at_every_display_density() {
+        // ST-058 §§2.1/2.4/7.2. No instruction timing assumptions: the bus
+        // writes take place at literal main-clock boundaries.
+        for (mode, width, period) in [
+            (0x8000, 320, 1280),
+            (0x8002, 640, 1280),
+            (0x8004, 320, 640),
+            (0x8006, 640, 640),
+        ] {
+            for split in [1, 17, 63, 127] {
+                let mut b = Bus::default();
+                b.write16(VDP2, mode).unwrap();
+                b.write32(VDP2 + 0xAC, 0x00030000).unwrap();
+                b.write16(VRAM + 0x60000, 0x801F).unwrap();
+                b.advance_clocks(split * period / width).unwrap();
+                b.write16(VRAM + 0x60000, 0x83E0).unwrap();
+                let frame = finish(&mut b);
+                for x in 0..width {
+                    assert_eq!(
+                        &frame[x as usize * 4..][..4],
+                        if x < split {
+                            [255, 0, 0, 255]
+                        } else {
+                            [0, 255, 0, 255]
+                        },
+                        "mode={mode:X}, split={split}, x={x}"
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn palette_vram_and_color_offset_changes_cannot_repaint_the_scanned_prefix() {
+        // ST-058 §§3.4/4.2/13.1: independent live palette/RAM/offset changes.
+        let mut b = Bus::default();
+        for (offset, value) in [
+            (0, 0x8000),
+            (0x20, 0x101),
+            (0x28, 0x12),
+            (0x78, 1),
+            (0x7C, 1),
+            (0xF8, 1),
+        ] {
+            b.write16(VDP2 + offset, value).unwrap();
+        }
+        for x in 0..320 {
+            b.write8(VRAM + x, 1).unwrap();
+        }
+        b.write16(crate::vdp2::CRAM + 2, 0x801F).unwrap();
+        b.advance_clocks(256).unwrap(); // first 64 dots
+        b.write16(crate::vdp2::CRAM + 2, 0x83E0).unwrap();
+        b.advance_clocks(256).unwrap();
+        b.write16(VDP2 + 0x110, 1).unwrap();
+        b.write16(VDP2 + 0x118, 31).unwrap(); // +blue on NBG0
+        b.advance_clocks(256).unwrap();
+        for x in 192..320 {
+            b.write8(VRAM + x, 0).unwrap();
+        }
+        let frame = finish(&mut b);
+        for x in 0..320 {
+            let expected = match x {
+                0..64 => [255, 0, 0, 255],
+                64..128 => [0, 255, 0, 255],
+                128..192 => [0, 255, 31, 255],
+                _ => [0, 0, 31, 255],
+            };
+            assert_eq!(&frame[x * 4..][..4], expected, "x={x}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod abus_dma_tests {
+    use super::*;
+    #[test]
+    fn a_bus_waits_delay_scu_data_publication_and_reset_cancels_the_next_beat() {
+        // ST-097 §3.2: a CS0 long read crosses two 16-bit cycles, each
+        // adding NW3 main clocks. Against the existing functional
+        // eight-clock DMA grants, writes move from clocks24/40 to30/52 (including the initial
+        // channel-setup grant).
+        // The base eight-clock cadence is explicitly not electrical proof.
+        for chunk in [1, 3, 8, 17, 64] {
+            let mut b = Bus::default();
+            b.write32(SCU + 0xB0, 0x00300000).unwrap();
+            for (off, value) in [
+                (0, 0x02000000),
+                (4, HIGH_WRAM),
+                (8, 8),
+                (12, 0x102),
+                (20, 7),
+                (16, 0x101),
+            ] {
+                b.write32(SCU + off, value).unwrap();
+            }
+            let mut elapsed = 0;
+            for (deadline, first, second) in [
+                (29, 0, 0),
+                (30, u32::MAX, 0),
+                (51, u32::MAX, 0),
+                (52, u32::MAX, u32::MAX),
+            ] {
+                while elapsed < deadline {
+                    let n = (deadline - elapsed).min(chunk);
+                    b.advance_clocks(n).unwrap();
+                    elapsed += n;
+                }
+                assert_eq!(
+                    b.read32(HIGH_WRAM),
+                    Ok(first),
+                    "chunk={chunk},time={deadline}"
+                );
+                assert_eq!(b.read32(HIGH_WRAM + 4), Ok(second));
+            }
+            b.write32(SCU + 16, 0x101).unwrap();
+            b.advance_clocks(8).unwrap();
+            b.system_reset();
+            b.write32(HIGH_WRAM, 0x12345678).unwrap();
+            b.advance_clocks(100).unwrap();
+            assert_eq!(b.read32(HIGH_WRAM), Ok(0x12345678));
         }
     }
 }

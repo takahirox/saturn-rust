@@ -123,6 +123,7 @@ pub struct Cpu {
     /// Main-clock execution states for the last issued boundary, excluding
     /// external bus waits. Sleeping polls issue no instruction and report zero.
     last_clocks: u32,
+    load_pipeline: timing::LoadPipeline,
 }
 
 impl Cpu {
@@ -146,6 +147,7 @@ impl Cpu {
             interrupt_inhibited: false,
             address_error_inhibited: false,
             last_clocks: 0,
+            load_pipeline: timing::LoadPipeline::default(),
         }
     }
 
@@ -269,6 +271,7 @@ impl Cpu {
         // the three single-state memory operations are included here. The
         // bus supplies additional waits independently to the machine scheduler.
         self.last_clocks = 8;
+        self.load_pipeline = timing::LoadPipeline::default();
         let s = &mut self.state;
         let access = |source| CpuError::ExceptionEntry {
             pc: s.pc,
@@ -334,7 +337,8 @@ impl Cpu {
             return Ok(());
         }
         let opcode = bus.fetch16(pc).map_err(access)?;
-        self.last_clocks = timing::execution_states(opcode, self.state.sr & T != 0);
+        self.last_clocks = timing::execution_states(opcode, self.state.sr & T != 0)
+            + self.load_pipeline.issue(opcode);
         // H §6.3.2: a before-execution break requires a successfully fetched
         // instruction. A fetch failure or speculative fill cannot cause it.
         if bus.instruction_break(pc, false)

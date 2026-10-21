@@ -29,6 +29,7 @@ pub(super) struct Bsc {
     rows: Cell<[Option<u32>; 2]>,
     burst_words: Cell<u32>,
     refresh_remaining: Cell<u32>,
+    refresh_output: Cell<bool>,
 }
 impl Default for Bsc {
     fn default() -> Self {
@@ -41,6 +42,7 @@ impl Default for Bsc {
             rows: Cell::new([None; 2]),
             burst_words: Cell::new(0),
             refresh_remaining: Cell::new(0),
+            refresh_output: Cell::new(false),
         }
     }
 }
@@ -401,6 +403,9 @@ impl Bsc {
             .saturating_sub(self.phase)
             .max(1)
     }
+    pub fn take_refresh_output(&self) -> bool {
+        self.refresh_output.replace(false)
+    }
     pub fn advance(&mut self, clocks: u32) {
         let select = (self.registers[4] >> 3) as usize & 7;
         let divisor = [0, 4, 16, 64, 256, 1024, 2048, 4096][select];
@@ -429,6 +434,7 @@ impl Bsc {
                 self.registers[5] = 0;
                 self.registers[4] |= 0x80;
                 if !self.slave && self.registers[3] & 12 == 8 && self.registers[0] & 7 != 0 {
+                    self.refresh_output.set(true);
                     self.rows.set([None; 2]);
                     let busy = self.access.get().map_or(0, |a| a.busy);
                     // H §7.5.7: requests pending during the same external

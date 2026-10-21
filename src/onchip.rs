@@ -106,6 +106,9 @@ impl Default for OnChip {
 }
 
 impl OnChip {
+    pub(crate) fn take_refresh_output(&self) -> bool {
+        self.bsc.take_refresh_output()
+    }
     pub(crate) fn external_bus_width(&self, physical_address: u32) -> usize {
         self.bsc.bus_width(physical_address)
     }

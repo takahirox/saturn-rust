@@ -24,7 +24,7 @@ fn run(m: &mut Machine, image: &[u8]) -> [Vec<u32>; 2] {
         assert_eq!(cpu.exceptions, 0);
     }
     [0x0600E600, 0x0600E700].map(|base| {
-        (0..13)
+        (0..21)
             .map(|i| m.bus().read32(base + i * 4).unwrap())
             .collect()
     })
@@ -51,7 +51,7 @@ fn changed_guest_control_flow_changes_elapsed_time_and_computation() {
         .enumerate()
         .filter_map(|(i, b)| (b == [0x76, 1]).then_some(i))
         .collect();
-    assert_eq!(occurrences.len(), 56); // 32 arithmetic + 8×3 branch/slot adds
+    assert_eq!(occurrences.len(), 80); // 32 arithmetic + 8×3 branch/slot adds
     // Replace 16 of the 32 ADDs by eight BRA-to-successor/NOP pairs. This adds eight
     // real states and removes sixteen increments without a host result write.
     let start = occurrences[0];

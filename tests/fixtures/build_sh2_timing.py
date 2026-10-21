@@ -21,6 +21,12 @@ KERNELS = [
     ('untaken', ''.join(f'sett\nbf untaken{i}\nadd #1,r6\nuntaken{i}:\n' for i in range(8)), 24, 8),
     ('delayed', ''.join(f'sett\nbt/s delayed{i}\nadd #1,r6\ndelayed{i}:\n' for i in range(8)), 32, 8),
     ('stc', 'stc.l gbr,@-r12\n' * 8, 16, 0),
+    # §7.5 WB/EX interlock, independent successor, repeated-load bypass,
+    # and one intervening instruction. Expectations count explicit slots.
+    ('load_use', 'mov.l @r12,r6\nadd #1,r6\n' * 16, 48, 1),
+    ('load_independent', 'mov.l @r12,r6\nadd #1,r9\n' * 16, 32, 0),
+    ('load_repeat', 'mov.l @r12,r6\n' * 32, 32, 0),
+    ('load_separated', 'mov.l @r12,r6\nnop\nadd #1,r6\n' * 8, 24, 1),
 ]
 
 

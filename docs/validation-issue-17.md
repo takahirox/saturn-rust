@@ -2447,3 +2447,47 @@ all other outstanding CPU/peripheral/reset, SCU, video, sound, CD/HLE and SMPC
 requirements remain mandatory. **The full Issue #17 objective remains unmet.**
 No umbrella checkbox is checked, no tracker is replaced or reopened, and no merge
 or human/firmware/live-site/external-workflow/post-merge gate is introduced.
+
+## SH-2 load interlocks, SCU A-bus waits and raster history
+
+Related to #17. This revision implements the SH-2 load WB/EX interlock,
+SCU ASR0/ASR1/AREF timing effects, and preservation of already scanned VDP2
+dots before video-memory/register writes. The implementation and primary manual
+references are linked in the corresponding [conformance entries](hardware-conformance.md).
+
+The extended original TIMING BIOS measures dependent, independent, repeated and
+separated loads on both processors. The new original MIT ABUS BIOS measures
+normal/narrow/burst/precharge cycles with the FRT; changing a guest wait operand
+changes the measured ticks. A-bus wait units use the external/D0 clock from
+ST-097 p.79, separately from the DSP execution clock. Native vectors additionally
+check refresh settings, SCU DMA publication deadlines, clock-chunk invariance
+and reset cancellation. Raster vectors check literal dot boundaries in four
+monitor/density modes and independent palette, VRAM and color-offset changes.
+The existing raster guest now checks the previous-color prefix left by the time
+between counter polling and the actual write, in native and browser execution.
+
+Validation performed on 2026-10-22:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked` and native
+  all-target Clippy with `-D warnings` pass: **518 tests (291 unit + 227
+  integration)**, zero failed or ignored. Native Rust/Cargo is **1.94.0**.
+- `sh scripts/build-web.sh` and Wasm Clippy with `-D warnings` pass using the
+  documented rustup toolchain PATH, Rust **1.99.0** and wasm-bindgen **0.2.129**.
+- All **58** CI media/guest reproducibility builders pass. Star Collector,
+  Prism Courier and Hardware Lab media are unchanged.
+- The complete extended `npm run test:browser` passes in Chromium
+  **145.0.7632.6**, Node **24.12.0**, under `/saturn-rust/`. It includes the new
+  ABUS guest, expanded dual-CPU timing records, historical raster prefixes,
+  all three demos, Canvas/WebAudio, controllers/focus, backup and privacy.
+  No required browser assertion is skipped.
+- JavaScript syntax, local documentation links and staged Git whitespace checks
+  pass. Guest source, generated hexadecimal ROM and independently authored
+  vectors are covered by the existing fixture MIT license.
+
+These fixes address parts of review findings 1, 4 and 5. They do **not** complete
+Issue #17: shared CPU/DMA/refresh transaction ownership, remaining CPU and device
+sequencing, DSP/video/audio/CD/HLE/SMPC contracts and their complete independent
+coverage remain mandatory. The full umbrella acceptance checklist is still unmet;
+no Issue state, acceptance criterion, PR description or external workflow is
+changed by this revision. No human, proprietary-firmware or post-merge gate is
+introduced. No push or merge was performed.

@@ -25,6 +25,8 @@ pub struct Vdp2 {
     scan_size: (usize, usize),
     completed_size: (usize, usize),
     rotation_read: rotation::RotationRead,
+    scan_x: usize,
+    scan_history: [[u8; 3]; 2],
 }
 impl Default for Vdp2 {
     fn default() -> Self {
@@ -45,6 +47,8 @@ impl Default for Vdp2 {
             scan_size: (0, 0),
             completed_size: (0, 0),
             rotation_read: rotation::RotationRead::default(),
+            scan_x: 0,
+            scan_history: [[0; 3]; 2],
         }
     }
 }
@@ -172,6 +176,8 @@ impl Vdp2 {
             .unwrap_or_else(|| self.composite(sprites))
     }
     pub(crate) fn begin_scanline(&mut self, line: usize) {
+        self.scan_x = 0;
+        self.scan_history = [[0; 3]; 2];
         let y = if self.word(0) & 0xC0 == 0xC0 {
             line * 2 + usize::from(!self.odd)
         } else {
@@ -181,9 +187,17 @@ impl Vdp2 {
         self.rotation_read.line = None;
     }
     pub(crate) fn scanline(&mut self, sprites: &Vdp1, line: usize) {
+        self.scan_to(sprites, line, self.dimensions().0);
+    }
+    /// Sample only dots already passed by the beam. Bus writes flush this
+    /// prefix before changing VRAM/CRAM/registers; later pixels retain live
+    /// state. Horizontal gradation history survives successive flushes.
+    pub(crate) fn scan_to(&mut self, sprites: &Vdp1, line: usize, end: usize) {
         let size = self.dimensions();
         if size != self.scan_size {
             self.scan_size = size;
+            self.scan_x = 0;
+            self.scan_history = [[0; 3]; 2];
             self.scanning = vec![0; size.0 * size.1 * 4];
             for pixel in self.scanning.as_chunks_mut::<4>().0 {
                 pixel[3] = 255;
@@ -204,13 +218,20 @@ impl Vdp2 {
         if !self.rotation_line_ready(y) {
             self.read_rotation_line(y, line == 0);
         }
+        let first = self.scan_x;
+        let end = end.min(size.0);
+        if end <= first {
+            return;
+        }
         self.rotation_read.line = Some(y);
-        let pixels = self.render_lines(Some(sprites), y, y + 1);
+        let mut history = self.scan_history;
+        let pixels = self.render_region(Some(sprites), y, y + 1, first..end, &mut history);
+        self.scan_history = history;
+        self.scan_x = end;
         self.rotation_read.line = None;
         match pixels {
-            Ok(pixels) => {
-                self.scanning[y * size.0 * 4..(y + 1) * size.0 * 4].copy_from_slice(&pixels)
-            }
+            Ok(pixels) => self.scanning[(y * size.0 + first) * 4..(y * size.0 + end) * 4]
+                .copy_from_slice(&pixels),
             Err(error) => self.scan_error = Some(error),
         }
     }
@@ -708,9 +729,31 @@ impl Vdp2 {
         first: usize,
         end: usize,
     ) -> Result<Vec<u8>, String> {
-        let (width, height) = self.dimensions();
+        self.render_region(
+            sprites,
+            first,
+            end,
+            0..self.dimensions().0,
+            &mut [[0; 3]; 2],
+        )
+    }
+    fn render_region(
+        &self,
+        sprites: Option<&Vdp1>,
+        first: usize,
+        end: usize,
+        columns: std::ops::Range<usize>,
+        history: &mut [[u8; 3]; 2],
+    ) -> Result<Vec<u8>, String> {
+        let (_, height) = self.dimensions();
+        let width = columns.len();
         let mut pixels = vec![0; width * (end - first) * 4];
         if self.word(0) & 0x8000 == 0 && self.word(0) & 0x100 == 0 {
+            *history = if width == 1 {
+                [history[1], [0; 3]]
+            } else {
+                [[0; 3]; 2]
+            };
             for p in pixels.as_chunks_mut::<4>().0 {
                 p[3] = 255;
             }
@@ -722,7 +765,9 @@ impl Vdp2 {
             // The manuals do not define the two pre-display pipeline samples.
             // Use black at the left border, reset every scanline; never carry
             // pixels from the previous line or the previous rendered frame.
-            let mut history = [[0u8; 3]; 2];
+            if columns.start == 0 {
+                *history = [[0u8; 3]; 2];
+            }
             let back = self.vword(
                 ((self.long(0xAC) & 0x7FFFF) as usize
                     + if self.word(0xAC) & 0x8000 != 0 {
@@ -736,14 +781,10 @@ impl Vdp2 {
                     })
                     * 2,
             );
-            for x in 0..width {
+            for x in columns.clone() {
                 if self.word(0) & 0x8000 == 0 {
-                    pixels[((y - first) * width + x) * 4..][..4].copy_from_slice(&[
-                        rgb555(back)[0],
-                        rgb555(back)[1],
-                        rgb555(back)[2],
-                        255,
-                    ]);
+                    pixels[((y - first) * width + x - columns.start) * 4..][..4]
+                        .copy_from_slice(&[rgb555(back)[0], rgb555(back)[1], rgb555(back)[2], 255]);
                     continue;
                 }
                 let sprite_window = self.sprite_window(sprites, x, y);
@@ -793,7 +834,7 @@ impl Vdp2 {
                         second.ratio = top.ratio;
                     }
                 }
-                history = [history[1], gradation_rgb];
+                *history = [history[1], gradation_rgb];
                 let mut rgb = top.rgb;
                 // ST-058 §§7.1/11.3: LNCL is inserted immediately below
                 // an enabled top screen. It never appears by itself or takes
@@ -843,7 +884,7 @@ impl Vdp2 {
                         };
                     }
                 }
-                let p = &mut pixels[((y - first) * width + x) * 4..][..4];
+                let p = &mut pixels[((y - first) * width + x - columns.start) * 4..][..4];
                 // ST-058 §13.1: offset follows color calculation and uses
                 // the top screen's enable/select, never the lower screen's.
                 rgb = self.offset(rgb, top.id);

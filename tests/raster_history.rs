@@ -37,9 +37,22 @@ fn guest_scanline_writes_survive_later_vram_and_color_offset_changes() {
                 128..=191 => [0, 0, 255, 255],
                 _ => [255; 4],
             };
-            for x in [0, 159, 319] {
+            for x in [159, 319] {
                 assert_eq!(&frame[(y * 320 + x) * 4..][..4], rgb, "({x},{y})");
             }
+        }
+        // Counter polling and the following write take time. The first dots
+        // of a transition line retain the previous color; HBlank must not
+        // retroactively recolor them. Check each transition is a single prefix.
+        for (y, old, new) in [
+            (64, [255, 0, 0, 255], [0, 255, 0, 255]),
+            (128, [0, 255, 0, 255], [0, 0, 255, 255]),
+            (192, [0, 0, 255, 255], [255; 4]),
+        ] {
+            let row = &frame[y * 320 * 4..(y + 1) * 320 * 4];
+            let prefix = row.chunks_exact(4).take_while(|p| *p == old).count();
+            assert!((1..159).contains(&prefix), "line {y}: prefix {prefix}");
+            assert!(row[prefix * 4..].chunks_exact(4).all(|p| p == new));
         }
         // The frame remains unchanged during VBlank, then the next field
         // uses the new black back color plus its red offset.
