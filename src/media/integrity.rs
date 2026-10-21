@@ -95,6 +95,19 @@ fn edc_matches(sector: &[u8; RAW_SECTOR], mode: TrackMode) -> bool {
     sector[end..end + 4] == edc(&sector[start..end]).to_le_bytes()
 }
 pub(super) fn validate(sector: &mut [u8; RAW_SECTOR], mode: TrackMode) -> Result<(), DiscError> {
+    decode(sector, mode, 4, true)
+}
+
+/// One P/Q pair is one pass (ST-162 §8.2.1, CDC_CdInit). Runtime reads
+/// select zero through six passes; the independent strict media loader retains
+/// its bounded four-pass recovery policy. Failure leaves the received/corrected
+/// sector available to the CD block's explicitly selected error-output mode.
+pub(super) fn decode(
+    sector: &mut [u8; RAW_SECTOR],
+    mode: TrackMode,
+    passes: u8,
+    confirm_subheader: bool,
+) -> Result<(), DiscError> {
     if mode == TrackMode::Audio {
         return Ok(());
     }
@@ -112,18 +125,20 @@ pub(super) fn validate(sector: &mut [u8; RAW_SECTOR], mode: TrackMode) -> Result
         }
         // A clean EDC does not excuse corrupt parity: raw transfers must expose
         // corrected P/Q as well as corrected user bytes.
-        for _ in 0..4 {
+        for _ in 0..passes {
             if !correct(sector) {
                 break;
             }
         }
         let mut encoded = *sector;
-        encode(&mut encoded);
-        if encoded[2076..] != sector[2076..] {
-            return Err(invalid("Uncorrectable raw sector parity"));
+        if passes != 0 {
+            encode(&mut encoded);
         }
         if mode == TrackMode::Mode2 {
             sector[12..16].copy_from_slice(&header);
+        }
+        if passes != 0 && encoded[2076..] != sector[2076..] {
+            return Err(invalid("Uncorrectable raw sector parity"));
         }
     }
     let valid_bcd = sector[12..15]
@@ -135,7 +150,7 @@ pub(super) fn validate(sector: &mut [u8; RAW_SECTOR], mode: TrackMode) -> Result
         || sector[15] != if mode == TrackMode::Mode1 { 1 } else { 2 }
         || !edc_matches(sector, mode)
         || (mode == TrackMode::Mode1 && sector[2068..2076] != [0; 8])
-        || (mode == TrackMode::Mode2 && sector[16..20] != sector[20..24])
+        || (mode == TrackMode::Mode2 && confirm_subheader && sector[16..20] != sector[20..24])
     {
         return Err(invalid("Uncorrectable raw sector EDC/header"));
     }
@@ -145,6 +160,51 @@ pub(super) fn validate(sector: &mut [u8; RAW_SECTOR], mode: TrackMode) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn runtime_pass_budget_and_disabled_correction_preserve_received_bytes() {
+        let clean = crate::media::Media::iso(&vec![0x69; 2048])
+            .unwrap()
+            .raw_sector(150)
+            .unwrap();
+        let mut received = clean;
+        // Independently chosen parity graph: P0 joins Q0/Q2, P2 joins
+        // Q2/Q50. Both P rows have two errors on pass one; Q0/Q50 repair
+        // the leaves, then pass two can repair the remaining P symbols.
+        for index in [12, 98, 186, 14] {
+            received[index] ^= 0x5A;
+        }
+        let mut disabled = received;
+        assert!(decode(&mut disabled, TrackMode::Mode1, 0, true).is_err());
+        assert_eq!(disabled, received);
+        let mut once = received;
+        assert!(decode(&mut once, TrackMode::Mode1, 1, true).is_err());
+        for passes in 2..=6 {
+            let mut corrected = received;
+            decode(&mut corrected, TrackMode::Mode1, passes, true).unwrap();
+            assert_eq!(corrected, clean, "passes {passes}");
+        }
+    }
+    #[test]
+    fn failed_xa_decode_restores_header_and_optional_confirmation_does_not_rewrite_subheader() {
+        let mut xa = [0; RAW_SECTOR];
+        xa[1..11].fill(255);
+        xa[12..16].copy_from_slice(&[0, 2, 0, 2]);
+        xa[16..24].copy_from_slice(&[1, 2, 8, 0, 2, 2, 8, 0]);
+        let crc = edc(&xa[16..2072]);
+        xa[2072..2076].copy_from_slice(&crc.to_le_bytes());
+        let header = xa[12..16].to_vec();
+        xa[12..16].fill(0);
+        encode(&mut xa);
+        xa[12..16].copy_from_slice(&header);
+        let received = xa;
+        assert!(decode(&mut xa, TrackMode::Mode2, 1, true).is_err());
+        assert_eq!(xa, received);
+        decode(&mut xa, TrackMode::Mode2, 1, false).unwrap();
+        assert_eq!(xa[16..24], [1, 2, 8, 0, 2, 2, 8, 0]);
+        xa[24..2072].fill(0xA6);
+        assert!(decode(&mut xa, TrackMode::Mode2, 1, false).is_err());
+        assert_eq!(xa[12..16], header);
+    }
     // Independent polynomial multiplication, used to evaluate the parity-check
     // matrix in ECMA-130 annex A.3, rather than the encoder's recurrence.
     fn multiply(mut a: u16, mut b: u16) -> u8 {

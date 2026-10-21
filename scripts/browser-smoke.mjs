@@ -408,6 +408,47 @@ try {
     }, { rom: [...directoryRom], raw: [...raw] });
     assert.deepEqual(trace, damage === "uncorrectable" ? [0xFF00, 0xFF00, 0, 0x600D] : [0x0180, 0x0180, 2, 0x600D]);
   }
+  // The original guest configures runtime correction/retries, observes RETRY
+  // and ERROR, reads received/corrected bytes and cancels infinite retry. Host
+  // code supplies only original media/ROM bytes, never MMIO or result writes.
+  const decodeRom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/cd-decode.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [address, ...words] = line.trim().split(/\s+/).map((word) => parseInt(word, 16));
+    words.forEach((word, i) => decodeRom.writeUInt16BE(word, address + i * 2));
+  }
+  const decodeMedia = rawMode1(Buffer.alloc(4096, 0x69));
+  for (const [delta, offsets] of [[0x5A, [16]], [0xA6, [16]], [0x5A, [16, 102, 190, 18]]]) {
+    const raw = Buffer.from(decodeMedia);
+    for (const offset of offsets) raw[offset] ^= delta;
+    const traces = await page.evaluate(async ({ rom, raw }) => {
+      const { Emulator } = await import("./pkg/saturn_rust.js");
+      const emulator = new Emulator();
+      const traces = [];
+      try {
+        for (let reset = 0; reset < 2; reset++) {
+          emulator.reset_bios(Uint8Array.from(rom));
+          emulator.mount_cue('FILE "d" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00', "d", new Uint32Array([raw.length]), Uint8Array.from(raw));
+          for (let i = 0; i < 100; i++) emulator.run_steps(10000);
+          traces.push(Array.from({ length: 0x190 / 4 + 1 }, (_, i) => emulator.read_long(0x0600A000 + i * 4)));
+        }
+        return traces;
+      } finally { emulator.free(); }
+    }, { rom: [...decodeRom], raw: [...raw] });
+    assert.deepEqual(traces[0], traces[1]);
+    const read = (offset) => traces[0][offset / 4];
+    assert.equal(read(0x190), 0x600D);
+    assert.equal(read(0x30), 0x0980);
+    assert.equal(read(0x3C), 150);
+    assert.equal(read(0x4C), 0);
+    for (const offset of [0x7C, 0xCC, 0x13C]) assert.equal(read(offset), 1);
+    assert.equal(read(0x180), raw.readUInt32BE(16));
+    assert.equal(read(0x184), 0x69696969);
+    assert.equal(read(0x188), 0x69696969);
+    assert(read(0x18C) > 0);
+    assert.equal(read(0x110), 0x0880);
+    assert.equal(read(0x11C), 150);
+  }
   // Original SH7604 guest: signed division, actual DMA copy and IRQ, watchdog
   // IRQ/manual reset, SCI transmission, and bounded misaligned exception entry.
   const peripheralRom = Buffer.alloc(524288);

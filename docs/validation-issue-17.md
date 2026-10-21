@@ -1184,3 +1184,60 @@ requirements remain open in the conformance matrix. No Issue, PR state or
 acceptance criterion was closed or waived; no push, merge, proprietary firmware,
 human gate, model switch or allowance reset was used. PR #18 still requires
 implementation and review against the full umbrella scope.
+
+
+## 2026-10-21 CD decode configuration and guest-visible retries
+
+Upstream main was rechecked as `dbd981b030a46daa6923072ce240680dd2e58ebf`
+using `git ls-remote`. PR #18 remains the full Issue #17 implementation target.
+This revision preserves the preceding extent/integrity/PRE fixes and all existing
+hardware/demo work and implements runtime CD configuration instead of ignoring it.
+
+The CD block now executes guest-selected one-to-six ECC passes, disabled ECC,
+finite/infinite retries, error-sector output, XA Form2 retry and optional decode
+subheader confirmation. RETRY consumes drive deadlines and holds the FAD without
+publishing sectors; guest commands can cancel it. Initialization validates before
+mutation, honors independent no-change fields, and software reset aborts an
+unfinished transfer, restores host state and invalidates cached directories.
+The [conformance entry](hardware-conformance.md#guest-configured-cd-correction-retries-and-initialization)
+links primary specifications, implementation and independent evidence and states
+the remaining timing/media deviations.
+
+The new original MIT SH-2 diagnostic runs in native and real browser Wasm,
+observes RETRY/ERROR, reads erroneous and corrected bytes from the same medium,
+and recovers from infinite retry through an ordinary play command. It repeats
+reset traces and media mutations, including a parity graph needing two passes.
+No host writes guest results or device registers. The source, generated ROM,
+license and reproducible hash are linked in the conformance entry and CI verifies
+the builder. Existing demonstration media hashes remain unchanged.
+
+Checks actually completed for the combined worktree:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`: pass;
+  **323 native tests passed, zero failed/ignored** (169 unit, 154 integration),
+  Homebrew Rust/Cargo **1.94.0**. Native all-target Clippy with `-D warnings`: pass.
+- `sh scripts/build-web.sh`, wasm32 Clippy with `-D warnings`: pass using installed
+  Rustup stable **1.99.0** and task-local `wasm-bindgen-cli 0.2.129`.
+- All **26** CI reproducibility checks: pass, including `build_cd_decode.py`.
+- `npm ci --ignore-scripts`, Chromium installation, JS syntax and the complete
+  extended `npm run test:browser`: pass, Node **24.12.0**, Chromium
+  **145.0.7632.6**, project subpath `/saturn-rust/`. No required tests skipped.
+  Existing gameplay, synthetic BIOS, device guests, Canvas, WebAudio, input/focus,
+  local-file privacy and distribution assertions continue to pass.
+
+Initial new tests had an out-of-range guest conditional branch and incorrect
+filter/scope expectations; these were corrected before final passing checks.
+The initial web command lacked the matching CLI, which was installed in a task
+local temporary directory. An initial Wasm Clippy selected the Homebrew compiler;
+rerunning with the installed Rustup compiler/target passed. These were setup/test
+failures, not skipped requirements. No external CI/deployment result is claimed.
+
+**The full-resolution Run objective remains unmet.** Required CPU/peripheral,
+bus/scheduler/reset/backup services, SCU, video, SCSP envelopes/DSP/timing, remaining
+CD/subcode/media edges, BIOS/HLE ABI, SMPC and complete umbrella integration and
+coverage remain in the conformance inventory. SCSP envelope and DIVU overflow
+semantics were investigated against primary manuals but are not implemented by
+this revision. No criterion was waived, no new tracker was created, no historical
+Issue was reopened, and no human/firmware/live-site approval gate was introduced.
+Keep the same PR Draft with Closes #17 as its intended final outcome. Do not merge
+or mark ready based on these passing subset checks.

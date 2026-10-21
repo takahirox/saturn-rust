@@ -369,6 +369,34 @@ impl Media {
             .find(|t| (t.index0..t.end).contains(&fad))
     }
     pub fn raw_sector(&self, fad: u32) -> Result<[u8; RAW_SECTOR], DiscError> {
+        let mut sector = self.received_sector(fad)?;
+        let t = self.track(fad).unwrap();
+        if t.stride == RAW_SECTOR && self.has_stored_sector(t, fad) {
+            integrity::validate(&mut sector, t.mode)?;
+        }
+        Ok(sector)
+    }
+    /// Runtime CD decode differs from strict boot/parser reads: the guest
+    /// controls correction effort and may request even erroneous sector bytes.
+    pub(crate) fn decode_sector(
+        &self,
+        fad: u32,
+        passes: u8,
+        confirm_subheader: bool,
+    ) -> Result<([u8; RAW_SECTOR], bool), DiscError> {
+        let mut sector = self.received_sector(fad)?;
+        let t = self.track(fad).unwrap();
+        let valid = t.stride != RAW_SECTOR
+            || !self.has_stored_sector(t, fad)
+            || integrity::decode(&mut sector, t.mode, passes, confirm_subheader).is_ok();
+        Ok((sector, valid))
+    }
+    fn has_stored_sector(&self, track: &Track, fad: u32) -> bool {
+        fad >= track.stored_start
+            && track.offset + (fad - track.stored_start) as usize * track.stride + track.stride
+                <= track.byte_end
+    }
+    fn received_sector(&self, fad: u32) -> Result<[u8; RAW_SECTOR], DiscError> {
         let t = self
             .track(fad)
             .ok_or_else(|| invalid("Sector outside disc"))?;
@@ -386,7 +414,6 @@ impl Media {
         };
         if t.stride == RAW_SECTOR {
             sector.copy_from_slice(bytes);
-            integrity::validate(&mut sector, t.mode)?;
         } else {
             sector[1..11].fill(255);
             let bcd = |v: u32| (v / 10 * 16 + v % 10) as u8;

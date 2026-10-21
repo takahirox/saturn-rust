@@ -90,6 +90,10 @@ pub struct CdBlock {
     report_phase: u64,
     pause_clocks: u64,
     standby_seconds: u16,
+    init_flags: u8,
+    ecc: u8,
+    retry: u8,
+    retry_attempts: u8,
     // Scan speed is not specified by ST-162; advance ten frames per 75 Hz
     // drive tick. Preserve direction and whether scan began during playback.
     scan: Option<(bool, bool)>,
@@ -190,6 +194,10 @@ impl Default for CdBlock {
             report_phase: 0,
             pause_clocks: 0,
             standby_seconds: 180,
+            init_flags: 0,
+            ecc: 0,
+            retry: 0,
+            retry_attempts: 0,
             scan: None,
             buffer_paused: false,
             tray_open: false,
@@ -217,6 +225,7 @@ impl Default for CdBlock {
 }
 impl CdBlock {
     pub fn mount(&mut self, media: Media) {
+        self.retry_attempts = 0;
         self.tray_open = false;
         self.files.clear();
         self.directory = 0;
@@ -494,8 +503,27 @@ impl CdBlock {
             self.buffer_paused = false;
             self.status = 3;
         }
-        match media.raw_sector(self.fad) {
-            Ok(raw) => {
+        let passes = if self.ecc == 0x80 { 0 } else { self.ecc + 1 };
+        match media.decode_sector(self.fad, passes, self.init_flags & 4 == 0) {
+            Ok((raw, valid)) => {
+                // ST-162 §8.2.1, CDC_CdInit: Form 2 errors are delivered
+                // immediately unless Form 2 retry is enabled. Each failed read
+                // consumes one drive deadline, never an unbounded host loop.
+                let form2 = raw[15] == 2 && raw[18] & 0x20 != 0;
+                if !valid && (!form2 || self.init_flags & 8 != 0) {
+                    if self.retry & 0x80 != 0 || self.retry_attempts < self.retry & 15 {
+                        self.retry_attempts = self.retry_attempts.saturating_add(1);
+                        self.status = 8;
+                        return;
+                    }
+                    if self.retry & 0x40 == 0 {
+                        self.playing = false;
+                        self.status = 9;
+                        return;
+                    }
+                }
+                self.retry_attempts = 0;
+                self.status = 3;
                 self.route(Sector { fad: self.fad, raw });
                 self.raise(CSCT);
                 self.fad += 1;
@@ -690,7 +718,11 @@ impl CdBlock {
     fn execute(&mut self, c: [u16; 4]) -> bool {
         self.report(false);
         let command = (c[0] >> 8) as u8;
-        if self.transfer.borrow().is_some() && !matches!(command, 0x00 | 0x01 | 0x06) {
+        let software_reset = command == 4 && c[0] & 0x81 == 1;
+        if self.transfer.borrow().is_some()
+            && !matches!(command, 0x00 | 0x01 | 0x06)
+            && !software_reset
+        {
             return self.wait();
         }
         let field1 = (u32::from(c[0] & 255) << 16) | u32::from(c[1]);
@@ -729,7 +761,34 @@ impl CdBlock {
                 response(self, 0, (value >> 16) as u16, value as u16);
             }
             0x04 => {
-                if c[1] != 0xFFFF {
+                let flags = c[0] as u8;
+                let ecc = (c[3] >> 8) as u8;
+                let retry = c[3] as u8;
+                // Validate before any drive/selector/configuration mutation.
+                // A software reset ignores every other initialization argument.
+                if !software_reset
+                    && (!matches!(ecc, 0..=5 | 0x80 | 0xFF)
+                        || !matches!(retry, 0..=15 | 0x40..=0x4F | 0x80 | 0xFF))
+                {
+                    return false;
+                }
+                if software_reset {
+                    self.init_flags = 0;
+                    self.ecc = 0;
+                    self.retry = 0;
+                    self.standby_seconds = 180;
+                } else {
+                    if flags & 0x80 == 0 {
+                        self.init_flags = flags & 0x1E;
+                    }
+                    if ecc != 0xFF {
+                        self.ecc = ecc;
+                    }
+                    if retry != 0xFF {
+                        self.retry = retry;
+                    }
+                }
+                if !software_reset && c[1] != 0xFFFF {
                     self.standby_seconds = if c[1] == 0 { 180 } else { c[1] };
                 }
                 self.pause_clocks = 0;
@@ -741,8 +800,9 @@ impl CdBlock {
                 self.audio_index = 0;
                 self.deemphasis = crate::cd_audio::Deemphasis::default();
                 self.file_read = None;
-                self.speed = if c[0] & 0x10 != 0 { 1 } else { 2 };
-                if c[0] & 1 != 0 {
+                self.retry_attempts = 0;
+                self.speed = if self.init_flags & 0x10 != 0 { 1 } else { 2 };
+                if software_reset {
                     self.filters = std::array::from_fn(Filter::reset);
                     for p in &mut self.partitions {
                         p.clear();
@@ -751,14 +811,31 @@ impl CdBlock {
                     *self.transfer.get_mut() = None;
                     self.get_length = 2048;
                     self.put_length = 2048;
+                    self.actual_size = 0;
+                    self.search = [0; 3];
+                    self.copy_error = 0;
+                    self.last = 255;
+                    self.play_start = self.fad;
+                    self.end = self.media.as_ref().map_or(self.fad, |m| m.leadout);
+                    self.repeat = 0;
+                    self.repeats = 0;
+                    self.files.clear();
+                    self.directory = 0;
+                    self.volume_end = 0;
+                    self.hirq
+                        .set(self.hirq.get() & !(DRDY | CSCT | BFUL | PEND));
                 }
                 self.status = if self.media.is_some() { 1 } else { 7 };
                 self.report(false);
-                if c[0] & 1 != 0 {
+                if software_reset {
                     self.raise(ESEL | EHST | ECPY | EFLS | 0x800);
                 }
             }
             0x05 => {
+                self.retry_attempts = 0;
+                self.files.clear();
+                self.directory = 0;
+                self.volume_end = 0;
                 self.playing = false;
                 self.scan = None;
                 self.seeking = 0;
@@ -846,6 +923,7 @@ impl CdBlock {
                     self.repeats = 0;
                 }
                 self.playing = true;
+                self.retry_attempts = 0;
                 self.seeking = if field1 == 0xFF_FFFF { 0 } else { 26_875 };
                 self.status = if self.seeking == 0 { 3 } else { 4 };
                 self.repeat = ((c[2] >> 8) & 15) as u8;
@@ -858,6 +936,7 @@ impl CdBlock {
                     }
                     self.tray_open = false;
                     self.playing = false;
+                    self.retry_attempts = 0;
                     self.scan = None;
                     self.seeking = 0;
                     self.status = 2;
@@ -876,6 +955,7 @@ impl CdBlock {
                 self.pause_clocks = 0;
                 self.fad = fad;
                 self.playing = false;
+                self.retry_attempts = 0;
                 if field1 != 0xFF_FFFF {
                     self.audio_index = 0;
                     self.deemphasis = crate::cd_audio::Deemphasis::default();
@@ -1231,9 +1311,11 @@ impl CdBlock {
                 self.end = end;
                 self.play_start = start;
                 self.playing = true;
+                self.retry_attempts = 0;
                 self.status = 3;
             }
             0x75 => {
+                self.retry_attempts = 0;
                 self.file_read = None;
                 self.playing = false;
                 self.status = 1;

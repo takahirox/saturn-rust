@@ -519,9 +519,9 @@ no-op CPU/device implementations cannot satisfy those assertions.
 | Feature / manual | Current behavior / edge cases | Native | Browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- | --- |
 | Cooked ISO, [Disc Format][DISC] | Bounded IP/ISO9660 first-read startup; retained media and runtime sector/file reads; checked LBA/FAD/volume/record bounds and atomic directory changes | disc.rs, media.rs, cd.rs, CLAB | SC, CLAB/local ISO | General boot layouts/size, interleaved/XA filesystem records | Pending |
-| BIN/CUE/raw/mixed tracks, [DISC] / [CD] §§4/7.2.3 | Caller-resolved files, cooked/2352-byte Mode1/Mode2/audio, shared/separate files, INDEX00–99, gaps and TOC; subindices and PRE/DCP/4CH CONTROL metadata drive TOC/status/Q reporting; malformed/duplicate flags rejected; EDC validation, bounded P/Q correction for Mode1/XA Form1, Form2 EDC and PRE audio processing | [media vectors](../tests/media.rs), [parity-matrix/XA vectors](../src/media/integrity.rs), [directory guest](../tests/cd_drive.rs), CLAB | Directory guest on clean/correctable/uncorrectable raw media; CLAB multi-file CUE, INDEX02/99, malformed ordering, missing-reference/reset/privacy | Guest-configured ECC repetitions/retry/output-error policy and raw non-XA Mode2 remain; WAVE/compression absent | Pending |
+| BIN/CUE/raw/mixed tracks, [DISC] / [CD] §§4/7.2.3 | Caller-resolved files, cooked/2352-byte Mode1/Mode2/audio, shared/separate files, INDEX00–99, gaps and TOC; subindices and PRE/DCP/4CH CONTROL metadata drive TOC/status/Q reporting; malformed/duplicate flags rejected; EDC validation, bounded P/Q correction for Mode1/XA Form1, Form2 EDC and PRE audio processing | [media vectors](../tests/media.rs), [parity-matrix/XA vectors](../src/media/integrity.rs), [directory guest](../tests/cd_drive.rs), CLAB | Directory guest on clean/correctable/uncorrectable raw media; CLAB multi-file CUE, INDEX02/99, malformed ordering, missing-reference/reset/privacy | Raw non-XA Mode2 and complete decode/timing boundaries remain; WAVE/compression absent | Pending |
 | CD command/status/HIRQ, [CD] §§3.1–3.4 | Separate command/response latches; 1075-clock command completion, read-protected responses, CMOK/DRDY/CSCT/end flags, masks, clear-zero HIRQ and SCU A-bus IRQ | `tests/cd.rs`, CLAB | CLAB command/FIFO/DMA/IRQ | Full command-specific timing and register mirrors; BIN/CUE has no R–W stream, with empty FIFO WAIT now tested | Pending |
-| CD drive/TOC/session/track state, [CD] §§4/7/8.2 | TOC/session/Q, bounded seek, data play, CD-DA/repeat/end, media-dependent FAD/track/index reports; timed CDON/OFF, 60 Hz pause reports, programmed standby, scan directions/range/muting, tray/media retention and deterministic virtual close | `tests/cd.rs`, CLAB, CDDRV | CLAB, CDDRV | Retry/ECC, remaining initialization options and full drive/response lifecycle boundary evidence | Pending |
+| CD drive/TOC/session/track state, [CD] §§4/7/8.2 | TOC/session/Q, bounded seek, data play, CD-DA/repeat/end, media-dependent FAD/track/index reports; timed CDON/OFF, 60 Hz pause reports, programmed standby, scan directions/range/muting, tray/media retention and deterministic virtual close | `tests/cd.rs`, CLAB, CDDRV | CLAB, CDDRV | Remaining initialization/subcode options and full drive/response lifecycle boundary evidence | Pending |
 | CD buffers/transfers, [CD] §§3.4/5.3/5.4/8.2 | 200-sector pool, 24 partitions, get/delete/get-delete/put, short/over transfers, size/info/search, FIFO word/long and fixed-source SCU DMA | `tests/cd.rs`, CLAB | CLAB actual DMA/IRQ/checksum, sector mutation | Pool-full pause/resume at the blocked FAD has native data vectors; complete transfer overlap and timing/error inventory remain | Pending |
 | Filters/selectors/partitions, [CD] §§5.2/5.3/8.2.5 | FAD and masked subheader comparisons, reverse conditions, true/false routes, reset, copy/move through destination filter | `tests/cd.rs::selectors_fad_range_connections_copy_move_and_size`, Mode2 reverse vectors | CLAB default filter/partition route | Full connection constraints and all boundary/error vectors remain | Pending |
 | BIOS-less startup, [Boot ROM][BOOT] / [DISC] | Original first-read HLE plus licensed SH-2 reset trampoline, separate from ExternalBios; slave handoff executes guest instructions | disc.rs, game.rs, CLAB, src/hle/boot.s | SC, CLAB | General system/backup/CD service ABI and full startup/region/version contracts | Pending |
@@ -998,8 +998,8 @@ rejection and unrecoverable sectors. Browser tests generate original raw media
 using an [independent parity-matrix encoder](../scripts/raw-media-fixture.mjs),
 then execute the directory guest against clean, corrected and rejected sectors.
 The [Wasm CUE mount API](../src/wasm.rs) attaches caller-owned bytes to a running
-synthetic BIOS without resetting it or invoking HLE. Configurable hardware ECC
-repetitions, retry scheduling and error-output policies still require work.
+synthetic BIOS without resetting it or invoking HLE. Guest-configured ECC
+repetitions, retry scheduling and error-output policies are implemented below.
 
 [CD audio processing](../src/cd_audio.rs) applies IEC 60908's 50/15 µs response
 when the audio track's CONTROL/PRE bit is set, before SCSP routing and scan
@@ -1023,3 +1023,35 @@ Both new fixtures are covered by [the original fixture MIT license](../tests/fix
 
 These regressions do not establish completion of the other required hardware
 contracts or the umbrella acceptance criteria above.
+
+
+## Guest-configured CD correction, retries and initialization
+
+Related to #17; the full umbrella remains incomplete. Primary behavior follows
+[CD][CD] §8.2.1, `CDC_CdInit` parts 1–4, §4.2/table 4.3 and §5.5.
+Implementation: [`CdBlock::execute/drive_frame`](../src/cd.rs),
+[`Media::decode_sector`](../src/media.rs) and
+[`integrity::decode`](../src/media/integrity.rs).
+
+| Required behavior | Implementation and independent evidence | Remaining deviation |
+| --- | --- | --- |
+| ECC settings 00–05, 80 and FF | Runtime executes one through six P/Q pairs, disables correction or retains the prior setting. A source-authored parity graph joins P0 to Q0/Q2 and P2 to Q2/Q50: one pass fails, two through six restore the exact sector. Unit vectors and `tests/cd.rs` check received bytes and configuration atomicity. | Individual decoder-clock latency and physical reread timing are not modeled. Strict boot/parser reads retain their separate bounded four-pass policy. |
+| Finite retries 0–15, error output and infinite retry | Every failed attempt consumes a drive deadline. RETRY holds FAD and publishes no sector/CSCT; exhaustion yields ERROR or routes the erroneous sector according to bit6. Infinite retries remain interruptible by drive commands and bounded by machine execution. Register vectors assert each attempt, pool counts, FAD, bytes, cancellation and chunk invariance. | Immutable media reproduce the same defect on reread; stochastic optical recovery is not claimed. Retry deadlines use the selected 75/150 Hz virtual sector cadence. |
+| XA Form2 retry and confirmation flags | Form2 error data are delivered immediately unless Form2 retry is enabled; the ordinary retry/output policy then applies. Subheader confirmation can be disabled for decode while selector matching still uses the first subheader. Independent EDC golden vectors isolate the controls. Failed XA correction restores the received header. | Raw non-XA Mode2 and a complete subcode/error-boundary corpus remain required. |
+| Initialization retention/reset | Independent no-change fields; rejected settings are atomic. Software reset ignores other arguments, cancels unfinished transfer, resets host/selector/play information and invalidates file caches. Tray open invalidates file information; tests check observable DRDY/pool/FIFO/scope changes. | R–W stream decoding and remaining command-specific lifecycle/timing coverage remain required. |
+
+[Original MIT SH-2 source builder](../tests/fixtures/build_cd_decode.py),
+[generated guest ROM](../tests/fixtures/cd-decode.hex) and
+[native guest test](../tests/cd_decode.rs) execute the same MMIO commands in
+[native and browser Wasm](../scripts/browser-smoke.mjs). The guest observes
+RETRY/ERROR, reads received and corrected bytes, escapes infinite retry by reading
+a good sector, and writes all result mailboxes itself. Tests mutate only original
+media bytes, include a two-pass parity graph, and compare repeated-reset traces.
+The browser's raw encoder uses an independent parity-check matrix. There is no
+host result write, disc detection hook or canned sector replacement.
+
+Reproduce with `python3 tests/fixtures/build_cd_decode.py --check` (also in CI).
+Expanded 512 KiB ROM SHA-256:
+`416b0180eb6cde016b42be791a71357f01002530ee4dd80702623f3ccb4fc77c`.
+The [fixture MIT license](../tests/fixtures/LICENSE) covers source, ROM and original
+synthetic sector data. Existing demo discs remain byte-identical.

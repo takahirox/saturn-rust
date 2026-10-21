@@ -634,3 +634,195 @@ fn uncorrectable_runtime_sector_stops_drive_without_publishing_corrupt_data() {
     issue(&mut cd, [0x6100, 0, 0, 1]);
     assert_eq!(read(&cd, 2048), original[2048..]);
 }
+
+fn damaged_disc() -> (Media, Vec<u8>) {
+    let original = Media::iso(&vec![0x69; 4096]).unwrap();
+    let mut raw = original.raw_sector(150).unwrap().to_vec();
+    raw[16] ^= 0x5A;
+    raw.extend(original.raw_sector(151).unwrap());
+    let media = Media::cue(
+        "FILE \"d\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00",
+        &[("d", &raw)],
+    )
+    .unwrap();
+    (media, raw)
+}
+
+#[test]
+fn initialize_ecc_disable_no_change_reset_and_invalid_arguments_have_runtime_effects() {
+    // ST-162 §8.2.1 CDC_CdInit: 80=no ECC, FF=no change, 40=error output.
+    let (media, damaged) = damaged_disc();
+    let mut cd = CdBlock::default();
+    cd.mount(media);
+    issue(&mut cd, [0x0400, 1, 0, 0x8040]);
+    sectors(&mut cd, 1);
+    issue(&mut cd, [0x6300, 0, 0, 1]);
+    assert_eq!(read(&cd, 2048), damaged[16..2064]);
+    issue(&mut cd, [0x0600, 0, 0, 0]);
+    // No-change fields retain correction and output policy independently.
+    issue(&mut cd, [0x04FF, 0xFFFF, 0, 0xFFFF]);
+    // Invalid settings must reject before changing any of those fields.
+    assert_eq!(issue(&mut cd, [0x0400, 3, 0, 0x0640])[0], 0xFF00);
+    assert_eq!(issue(&mut cd, [0x0400, 3, 0, 0x0020])[0], 0xFF00);
+    sectors(&mut cd, 1);
+    issue(&mut cd, [0x6300, 0, 0, 1]);
+    assert_eq!(read(&cd, 2048), damaged[16..2064]);
+    issue(&mut cd, [0x0600, 0, 0, 0]);
+    // Reset ignores all other parameters, restores one P/Q pass and drops old
+    // selectors/transfer state. It must correct, not output the received byte.
+    assert_ne!(issue(&mut cd, [0x0401, 7, 0, 0x0620])[0], 0xFF00);
+    sectors(&mut cd, 1);
+    issue(&mut cd, [0x6100, 0, 0, 1]);
+    assert_eq!(read(&cd, 2048), vec![0x69; 2048]);
+}
+
+#[test]
+fn finite_retries_hold_fad_and_publish_only_after_the_configured_last_attempt() {
+    for retries in [0, 1, 2, 15] {
+        for output in [false, true] {
+            let (media, damaged) = damaged_disc();
+            let mut cd = CdBlock::default();
+            cd.mount(media);
+            issue(
+                &mut cd,
+                [
+                    0x0400,
+                    0,
+                    0,
+                    0x8000 | retries | if output { 0x40 } else { 0 },
+                ],
+            );
+            issue(&mut cd, [0x3000, 0, 0, 0]);
+            cd.write16(CD + 8, 0).unwrap();
+            issue(&mut cd, [0x1080, 150, 0x80, 1]);
+            for attempt in 0..=retries {
+                cd.advance(179_161); // One 150 Hz sector deadline.
+                let status = issue(&mut cd, [0, 0, 0, 0]);
+                if attempt < retries {
+                    assert_eq!(status[0] >> 8, 8);
+                    assert_eq!(status[3], 150);
+                    assert_eq!(cd.read16(CD + 8).unwrap() & 4, 0);
+                } else {
+                    assert_eq!(status[0] >> 8, if output { 1 } else { 9 });
+                    assert_eq!(status[3], if output { 151 } else { 150 });
+                }
+            }
+            assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], u16::from(output));
+            if output {
+                issue(&mut cd, [0x6100, 0, 0, 1]);
+                assert_eq!(read(&cd, 2048), damaged[16..2064]);
+            }
+        }
+    }
+}
+
+#[test]
+fn infinite_retry_is_chunk_invariant_and_drive_commands_cancel_it() {
+    for cancel in [0x0400, 0x0500, 0x11FF] {
+        let mut previous = None;
+        for chunk in [7, 1075, 200_000] {
+            let (media, _) = damaged_disc();
+            let mut cd = CdBlock::default();
+            cd.mount(media);
+            issue(&mut cd, [0x0400, 0, 0, 0x8080]);
+            issue(&mut cd, [0x3000, 0, 0, 0]);
+            issue(&mut cd, [0x1080, 150, 0x80, 1]);
+            let mut left = 2_000_000u32;
+            while left != 0 {
+                let clocks = left.min(chunk);
+                cd.advance(clocks);
+                left -= clocks;
+            }
+            let trace = issue(&mut cd, [0, 0, 0, 0]);
+            assert_eq!(trace[0] >> 8, 8);
+            assert_eq!(trace[3], 150);
+            assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 0);
+            if let Some(old) = previous {
+                assert_eq!(trace, old);
+            }
+            previous = Some(trace);
+            issue(&mut cd, [cancel, 0xFFFF, 0, 0]);
+            cd.advance(500_000);
+            assert_ne!(issue(&mut cd, [0, 0, 0, 0])[0] >> 8, 8);
+            // Reinitializing and seeking a good sector recovers without ejecting
+            // or replacing the original medium.
+            issue(&mut cd, [0x0400, 0, 0, 0]);
+            issue(&mut cd, [0x1080, 151, 0x80, 1]);
+            cd.advance(300_000);
+            assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 1);
+        }
+    }
+}
+
+#[test]
+fn xa_form_two_error_output_retry_flag_and_subheader_confirmation_are_independent_of_routing() {
+    let mut raw = [0x69; 2352];
+    raw[..12].copy_from_slice(&[0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0]);
+    raw[12..16].copy_from_slice(&[0, 2, 0, 2]);
+    raw[16..24].copy_from_slice(&[1, 2, 0x28, 0, 1, 2, 0x28, 0]);
+    // Source-authored EDC golden vector for the 2324-byte constant payload.
+    raw[2348..].copy_from_slice(&0xBD76_CE9Cu32.to_le_bytes());
+    raw[24] ^= 0x5A; // An EDC failure in Form 2 (no product code exists).
+    for (flags, retry, expected_status) in [(0, 0, 1), (8, 0, 9), (8, 0x40, 1), (8, 2, 8)] {
+        let mut cd = CdBlock::default();
+        cd.mount(
+            Media::cue(
+                "FILE \"d\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:00:00",
+                &[("d", &raw)],
+            )
+            .unwrap(),
+        );
+        issue(&mut cd, [0x0400 | flags, 0, 0, retry]);
+        issue(&mut cd, [0x3000, 0, 0, 0]);
+        issue(&mut cd, [0x1080, 150, 0x80, 1]);
+        cd.advance(180_000);
+        assert_eq!(issue(&mut cd, [0, 0, 0, 0])[0] >> 8, expected_status);
+        assert_eq!(
+            issue(&mut cd, [0x5100, 0, 0, 0])[3],
+            u16::from(expected_status == 1)
+        );
+        if expected_status == 1 {
+            issue(&mut cd, [0x6100, 0, 0, 1]);
+            assert_eq!(read(&cd, 2324), raw[24..2348]);
+        }
+    }
+    // Duplicated subheaders may be ignored for decode only; selector conditions
+    // still read the first copy. A valid EDC isolates confirmation from CRC.
+    raw[24] ^= 0x5A;
+    raw[20] = 2;
+    raw[2348..].copy_from_slice(&0x8B46_E16Bu32.to_le_bytes());
+    for flags in [8, 12] {
+        let mut cd = CdBlock::default();
+        cd.mount(
+            Media::cue(
+                "FILE \"d\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:00:00",
+                &[("d", &raw)],
+            )
+            .unwrap(),
+        );
+        issue(&mut cd, [0x0400 | flags, 0, 0, 0x8000]);
+        issue(&mut cd, [0x4202, 0, 1, 0]); // file1, channel2
+        issue(&mut cd, [0x4403, 0, 0, 0]); // filter checks file + channel
+        issue(&mut cd, [0x3000, 0, 0, 0]);
+        issue(&mut cd, [0x1080, 150, 0x80, 1]);
+        cd.advance(180_000);
+        assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], u16::from(flags == 12));
+    }
+}
+
+#[test]
+fn software_reset_aborts_an_incomplete_transfer_and_discards_cached_directory_information() {
+    let image = include_bytes!("../web/star-collector.iso");
+    let mut cd = CdBlock::default();
+    cd.mount(Media::iso(image).unwrap());
+    issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFF]);
+    assert_eq!(issue(&mut cd, [0x7200, 0, 0, 0])[1], 2);
+    sectors(&mut cd, 1);
+    issue(&mut cd, [0x6100, 0, 0, 1]);
+    assert_ne!(cd.read16(CD + 8).unwrap() & 2, 0);
+    issue(&mut cd, [0x0401, 0xFFFF, 0, 0xFFFF]);
+    assert_eq!(cd.read16(CD + 8).unwrap() & 14, 0);
+    assert_eq!(cd.read16(DATA).unwrap(), 0xFFFF);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 0);
+    assert_eq!(issue(&mut cd, [0x7200, 0, 0, 0])[1], 0);
+}
