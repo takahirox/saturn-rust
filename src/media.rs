@@ -14,6 +14,17 @@ pub enum TrackMode {
     Mode1,
     Mode2,
 }
+/// A CUE MODE2/2352 label does not distinguish ECMA-130 Mode 2 user
+/// data from CD-ROM XA. Auto recognizes the repeated XA subheader (including
+/// one damaged field). A caller with explicit format metadata can override
+/// this inherently ambiguous byte-level detection without rewriting sectors.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode2Format {
+    #[default]
+    Auto,
+    Data,
+    Xa,
+}
 #[derive(Clone)]
 pub struct Track {
     pub number: u8,
@@ -29,6 +40,7 @@ pub struct Track {
     byte_end: usize,
     stride: usize,
     stored_start: u32,
+    mode2_format: Mode2Format,
 }
 impl Track {
     pub fn control_adr(&self) -> u8 {
@@ -121,11 +133,19 @@ impl Media {
                 byte_end: bytes.len(),
                 stride: SECTOR,
                 stored_start: 150,
+                mode2_format: Mode2Format::Data,
             }],
             leadout: end,
         })
     }
     pub fn cue(cue: &str, files: &[(&str, &[u8])]) -> Result<Self, DiscError> {
+        Self::cue_with_mode2_format(cue, files, Mode2Format::Auto)
+    }
+    pub fn cue_with_mode2_format(
+        cue: &str,
+        files: &[(&str, &[u8])],
+        mode2_format: Mode2Format,
+    ) -> Result<Self, DiscError> {
         if cue.len() > 1024 * 1024
             || files.len() > 99
             || files
@@ -354,6 +374,24 @@ impl Media {
                 byte_end: end as usize * t.stride,
                 stride: t.stride,
                 stored_start,
+                mode2_format: if t.mode == TrackMode::Mode2 && mode2_format == Mode2Format::Auto {
+                    // Inspect at most one second of stored sectors. Use the
+                    // track's source layout, never the result of ECC recovery:
+                    // bad XA CRC/parity must not turn into unchecked data.
+                    let xa = data[index as usize * t.stride..end as usize * t.stride]
+                        .chunks_exact(t.stride)
+                        .take(75)
+                        .any(|s| {
+                            s[15] == 2 && (0..4).filter(|i| s[16 + i] == s[20 + i]).count() >= 3
+                        });
+                    if xa {
+                        Mode2Format::Xa
+                    } else {
+                        Mode2Format::Data
+                    }
+                } else {
+                    mode2_format
+                },
             });
             cursor = track_end;
         }
@@ -372,7 +410,11 @@ impl Media {
         let mut sector = self.received_sector(fad)?;
         let t = self.track(fad).unwrap();
         if t.stride == RAW_SECTOR && self.has_stored_sector(t, fad) {
-            integrity::validate(&mut sector, t.mode)?;
+            if t.mode == TrackMode::Mode2 && t.mode2_format == Mode2Format::Data {
+                integrity::mode2_data(&sector)?;
+            } else {
+                integrity::validate(&mut sector, t.mode)?;
+            }
         }
         Ok(sector)
     }
@@ -388,7 +430,11 @@ impl Media {
         let t = self.track(fad).unwrap();
         let valid = t.stride != RAW_SECTOR
             || !self.has_stored_sector(t, fad)
-            || integrity::decode(&mut sector, t.mode, passes, confirm_subheader).is_ok();
+            || if t.mode == TrackMode::Mode2 && t.mode2_format == Mode2Format::Data {
+                integrity::mode2_data(&sector).is_ok()
+            } else {
+                integrity::decode(&mut sector, t.mode, passes, confirm_subheader).is_ok()
+            };
         Ok((sector, valid))
     }
     fn has_stored_sector(&self, track: &Track, fad: u32) -> bool {
@@ -433,6 +479,11 @@ impl Media {
         match self.track(fad).unwrap().mode {
             TrackMode::Mode1 => Ok(raw[16..2064].to_vec()),
             TrackMode::Mode2 => {
+                if self.track(fad).unwrap().mode2_format == Mode2Format::Data {
+                    // ECMA-130 §14/fig.12: all 2336 bytes following the
+                    // header are user data, with no XA subheader or EDC/ECC.
+                    return Ok(raw[16..].to_vec());
+                }
                 if raw[16..20] != raw[20..24] {
                     return Err(invalid("Mismatched Mode2 subheaders"));
                 }
@@ -456,7 +507,11 @@ impl Media {
         for fad in t.start
             ..t.start + ((t.byte_end - t.offset) / t.stride) as u32 - (t.start - t.stored_start)
         {
-            image.extend(self.cooked_sector(fad)?);
+            let data = self.cooked_sector(fad)?;
+            if data.len() != SECTOR {
+                return Err(invalid("Bootstrap requires 2048-byte logical sectors"));
+            }
+            image.extend(data);
         }
         Ok(image)
     }

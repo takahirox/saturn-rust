@@ -84,7 +84,9 @@ CASES = [
 
 def install(image):
     import struct
-    words = [0x4E70]  # RESET drives real SCSP reset pins; setup follows return.
+    # RESET drives SCSP pins, including MEM4MB=0. Re-select the installed
+    # geometry before using the high-RAM stack or taking an exception.
+    words = [0x4E70, 0x33FC, 0x20F, 0x10, 0x400]
     for i, (_, code, _, _) in enumerate(CASES):
         words += [0x44FC,0] + code
         at = 0x5000 + i*8

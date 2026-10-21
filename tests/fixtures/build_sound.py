@@ -23,12 +23,15 @@ def sound_image(effects=False, synthesis=False, peripherals=False, envelope=Fals
     words = []
     def emit(*values): words.extend(values)
     def movw(value, address): emit(0x33FC, value & 65535, address >> 16, address & 65535)
+    if families:
+        movw(0x20F, 0x100400)  # Select 4-Mbit geometry before any stack access.
     # LEA $4000,A0; MOVEQ #16,D0. Create bipolar samples via 68k arithmetic.
     emit(0x41F9, 0, 0x4000, 0x7010, 0xE148, 0x30C0, 0x4440, 0x30C0,
          0xE348, 0x30C0, 0x4440, 0x30C0)
     if families:
         emit(0x4EB9,0,0x1000)
-    movw(0x20F, 0x100400)  # 4Mbit sound RAM, full master volume
+    else:
+        movw(0x20F, 0x100400)  # 4Mbit sound RAM, full master volume
     if synthesis or envelope:
         emit(0x4EB9, 0, 0xC00)  # JSR original slot-synthesis program
     else:

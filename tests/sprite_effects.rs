@@ -31,6 +31,7 @@ fn pixels(machine: &mut Machine, rom: &[u8]) -> Vec<u8> {
     machine.reset(Boot::ExternalBios(rom)).unwrap();
     machine.run_steps(3000).unwrap();
     machine.advance_frame().unwrap();
+    machine.advance_frame().unwrap(); // complete scanout after guest setup
     assert_eq!(machine.bus().read32(0x0600B000).unwrap(), 0x600D);
     machine.framebuffer().unwrap()[..32].to_vec()
 }

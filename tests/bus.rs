@@ -71,14 +71,7 @@ fn invalid_and_unaligned_accesses_fail_without_partial_writes() {
         ));
         assert_eq!(bus.read32(base), Ok(0x1234_5678));
     }
-    for address in [
-        LOW_WRAM - 4,
-        0x0040_0000,
-        HIGH_WRAM - 4,
-        0x0800_0000,
-        0x2000_0000,
-        0xFFFF_FFFC,
-    ] {
+    for address in [0x0800_0000, 0x2000_0000, 0xFFFF_FFFC] {
         assert!(matches!(bus.read8(address), Err(BusError::Unmapped { .. })));
         assert!(matches!(
             bus.read16(address),
@@ -105,6 +98,44 @@ fn invalid_and_unaligned_accesses_fail_without_partial_writes() {
         bus.read32(u32::MAX),
         Err(BusError::Unaligned { .. })
     ));
+}
+
+#[test]
+fn absent_board_selects_return_high_data_and_cpu_rom_writes_have_no_storage_effect() {
+    let mut bus = Bus::default();
+    let mut rom = vec![0; BIOS_SIZE];
+    rom[..4].copy_from_slice(&0x12345678u32.to_be_bytes());
+    bus.load_bios(&rom).unwrap();
+    for cpu in [Processor::Master, Processor::Slave] {
+        for alias in [0, 0x20000000] {
+            for base in [
+                0x00400000, 0x01000004, 0x01800004, 0x02000000, 0x04000000, 0x05000000, 0x05900000,
+            ] {
+                let address = base + alias;
+                let mut memory = bus.for_cpu(cpu);
+                memory.write32(address, 0x12345678).unwrap();
+                memory.write16(address, 0).unwrap();
+                memory.write8(address, 0).unwrap();
+                assert_eq!(memory.read32(address), Ok(u32::MAX));
+                assert_eq!(memory.read16(address + 2), Ok(u16::MAX));
+                assert_eq!(memory.read8(address + 3), Ok(u8::MAX));
+                assert!(matches!(
+                    memory.read16(address + 1),
+                    Err(BusError::Unaligned { .. })
+                ));
+                memory.write32(alias, 0).unwrap();
+                memory.write16(alias + 2, 0).unwrap();
+                memory.write8(alias, 0).unwrap();
+                assert_eq!(memory.read32(alias), Ok(0x12345678));
+            }
+        }
+    }
+    // An absent expansion must not become a permissive decoder for real chips.
+    assert!(matches!(
+        bus.read32(0x05FE00CC),
+        Err(BusError::UnsupportedDevice { .. })
+    ));
+    assert!(bus.read32(0x08000000).is_err()); // reserved SH7604 partition
 }
 
 #[test]

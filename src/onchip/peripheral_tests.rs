@@ -3,6 +3,64 @@ use super::*;
 use crate::bus::{Bus, Memory, Processor};
 
 #[test]
+fn divu_consecutive_read_interlock_follows_instructions_not_time_and_word_writes_are_not_reads() {
+    // SH7604 §10.4.1. Word-accessible registers have the same dependency;
+    // a NOP removes it, elapsed bus/peripheral time alone does not.
+    for slave in [false, true] {
+        for (write_address, word) in [
+            (DIVU, false),
+            (DIVU + 8, false),
+            (DIVU + 12, false),
+            (DIVU + 16, false),
+            (DIVU + 10, true),
+            (DIVU + 14, true),
+        ] {
+            for gap in [0, 1, 2] {
+                for clocks in [0, 1, 39, 100] {
+                    let mut chip = OnChip::default();
+                    chip.set_slave(slave);
+                    chip.instruction_break(0x200, false);
+                    if word {
+                        chip.write16(write_address, 2).unwrap();
+                    } else {
+                        chip.write32(write_address, 2).unwrap();
+                    }
+                    assert_eq!(chip.take_wait_clocks(), 0);
+                    chip.advance_clocks(clocks);
+                    for i in 0..=gap {
+                        chip.instruction_break(0x202 + i * 2, false);
+                    }
+                    chip.read32(DIVU).unwrap();
+                    assert_eq!(chip.take_wait_clocks(), u32::from(gap == 0));
+                    chip.read32(DIVU).unwrap();
+                    assert_eq!(chip.take_wait_clocks(), 0);
+                }
+            }
+        }
+        let mut chip = OnChip::default();
+        chip.set_slave(slave);
+        chip.write32(DIVU, 3).unwrap();
+        chip.instruction_break(0x200, false);
+        chip.write32(DIVU + 4, 100).unwrap();
+        chip.instruction_break(0x202, false);
+        assert_eq!(chip.read32(DIVU + 4), Ok(33));
+        assert_eq!(chip.take_wait_clocks(), 39); // busy subsumes one-cycle dependency
+        chip.instruction_break(0x204, false);
+        chip.write16(DIVU + 10, 2).unwrap();
+        chip.instruction_break(0x206, false);
+        chip.write16(DIVU + 14, 0x45).unwrap(); // write->write has no extra cycle
+        assert_eq!(chip.take_wait_clocks(), 0);
+        chip.instruction_break(0x208, false);
+        assert_eq!(chip.read16(DIVU + 14), Ok(0x45));
+        assert_eq!(chip.take_wait_clocks(), 1);
+        chip.reset_from_watchdog(ResetRequest::Manual);
+        chip.instruction_break(0x20A, false);
+        chip.read32(DIVU).unwrap();
+        assert_eq!(chip.take_wait_clocks(), 0);
+    }
+}
+
+#[test]
 fn division_signed_vectors_and_both_widths_match_truncation_towards_zero() {
     // Expected quotients/remainders are literals, not calls to a second copy of
     // the implementation. Includes negative dividends/divisors and 64-bit input.

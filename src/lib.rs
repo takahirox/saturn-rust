@@ -259,12 +259,12 @@ impl Machine {
     pub fn framebuffer(&self) -> Result<Vec<u8>, MachineError> {
         self.bus
             .vdp2
-            .composite(&self.bus.vdp1)
+            .scanout(&self.bus.vdp1)
             .map_err(MachineError::Video)
     }
 
     pub fn video_dimensions(&self) -> (usize, usize) {
-        self.bus.vdp2.dimensions()
+        self.bus.vdp2.output_dimensions()
     }
 
     /// Advance to the next raster field deadline. Peripherals and video events

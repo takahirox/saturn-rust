@@ -13,6 +13,7 @@ fn ready(m: &mut Machine) {
     for _ in 0..80 {
         frames(m, 1, 0);
         if state(m)[4] >= 2 {
+            frames(m, 2, 0); // allow completed scanout to include initialized VRAM
             return;
         }
     }
@@ -33,6 +34,7 @@ fn actual_disc_guest_moves_collects_completes_and_restarts() {
     let initial = m.framebuffer().unwrap();
     frames(&mut m, 8, 8);
     assert_eq!(&state(&m)[..4], &[64, 112, 1, 0]);
+    frames(&mut m, 2, 0); // scoreboard writes become visible at scanout
     let collected = m.framebuffer().unwrap();
     assert_ne!(initial, collected);
     assert_eq!(&collected[(27 * 320 + 45) * 4..][..4], &[255, 255, 0, 255]);
@@ -47,6 +49,7 @@ fn actual_disc_guest_moves_collects_completes_and_restarts() {
         }
     }
     assert_eq!(&state(&m)[..4], &[256, 112, 5, 1]);
+    frames(&mut m, 2, 0);
     let won = m.framebuffer().unwrap();
     assert_eq!(&won[(150 * 320 + 100) * 4..][..4], &[0, 255, 0, 255]);
     frames(&mut m, 4, 1);

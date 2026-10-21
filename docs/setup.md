@@ -94,6 +94,9 @@ python3 tests/fixtures/build_envelope.py --check
 python3 tests/fixtures/build_dack.py --check
 python3 tests/fixtures/build_cache.py --check
 python3 tests/fixtures/build_m68k_families.py --check
+python3 tests/fixtures/build_memory_contracts.py --check
+python3 tests/fixtures/build_mode2.py --check
+python3 tests/fixtures/build_raster_history.py --check
 python3 tests/fixtures/build_sound_io.py --check
 python3 tests/fixtures/build_cd_drive.py --check
 python3 tests/fixtures/build_cd_directory.py --check

@@ -9,6 +9,9 @@ use crate::bus::BusError;
 pub const BACKUP_RAM: u32 = 0x0018_0000;
 pub const BACKUP_SIZE: usize = 32 * 1024;
 pub const BACKUP_WINDOW: u32 = 64 * 1024;
+/// The CPU-board select spans 00180000–001FFFFF. Only A15–A1 reach
+/// the 32 KiB chip; the remaining addresses select the same byte lanes.
+pub const BACKUP_SELECT: u32 = 512 * 1024;
 
 pub struct BackupRam {
     bytes: Vec<u8>,
@@ -41,8 +44,8 @@ impl BackupRam {
     }
 
     fn offset(address: u32) -> Result<usize, BusError> {
-        if (BACKUP_RAM..BACKUP_RAM + BACKUP_WINDOW).contains(&address) {
-            Ok(((address - BACKUP_RAM) / 2) as usize)
+        if (BACKUP_RAM..BACKUP_RAM + BACKUP_SELECT).contains(&address) {
+            Ok((((address - BACKUP_RAM) & (BACKUP_WINDOW - 1)) / 2) as usize)
         } else {
             Err(BusError::UnsupportedDevice { address, width: 1 })
         }

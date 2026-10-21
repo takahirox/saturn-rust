@@ -155,9 +155,9 @@ fn cpu_local_frt_views_share_only_external_memory_and_capture_wires() {
     assert_eq!(bus.read8(FRT + 9).unwrap(), 0x34);
     assert_eq!(bus.for_cpu(Processor::Slave).read8(FRT + 1).unwrap(), 0);
     for address in [0x01000000, 0x01800000, 0x21000000, 0x21800000] {
-        assert!(bus.read16(address).is_err());
+        assert_eq!(bus.read16(address), Ok(0xFFFF)); // no read responder or strobe
         assert!(bus.write8(address, 0).is_err());
-        assert!(bus.write32(address, 0).is_err());
+        assert_eq!(bus.write32(address, 0), Ok(())); // word strobes in the four-byte select
         assert!(bus.write16(address + 1, 0).is_err());
     }
     // A held-reset slave ignores a strobe; it must not begin with a stale IRQ.
@@ -172,7 +172,7 @@ fn slave_fault_identifies_processor_and_stops_the_entire_machine_until_reset() {
     // a slave exception-entry bus error while preserving the master's CPU.
     let needle = 0x060FE000u32.to_be_bytes();
     let offset = image.windows(4).position(|w| w == needle).unwrap();
-    image[offset..offset + 4].copy_from_slice(&0x04000000u32.to_be_bytes());
+    image[offset..offset + 4].copy_from_slice(&0x08000010u32.to_be_bytes());
     let mut machine = Machine::new();
     machine.reset(Boot::ExternalBios(&image)).unwrap();
     let error = machine.run_steps(4000).unwrap_err();

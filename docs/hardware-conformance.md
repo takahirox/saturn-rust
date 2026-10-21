@@ -32,6 +32,11 @@ coverage or integrated validation remains missing, even when a subset passes.
 - **O**: [Saturn Overview][O], hardware configuration and memory map.
 - Device references link original manuals, not reference-emulator implementations. A reference on a missing row identifies required work, not an implemented or verified behavior.
 
+**MEMG**, **M2G** and **RASTG** below identify the additional original
+[memory](../tests/memory_contracts.rs), [plain Mode2](../tests/mode2.rs) and
+[raster-history](../tests/raster_history.rs) guests, all repeated in browser Wasm
+and covered by the [fixture MIT license](../tests/fixtures/LICENSE).
+
 Native test keys refer to [src/cpu/tests.rs](../src/cpu/tests.rs):
 
 | Key | Tests (exact names or shared name prefix) |
@@ -278,7 +283,7 @@ not turn those missing hardware paths into supported behavior.
 | Watchdog, H §§12.2–12.3, table 12.2 | Keyed byte-register/word-write protocol, eight divisors, interval IRQ, read-before-clear, watchdog reset selection/cause and 512-clock CPU hold | PERIPH; `Watchdog` | PERIPH | External WDTOVF pin routing and complete CPU reset-cycle ordering remain; reset assertion/512-clock hold now split advancement without discarding preceding FRT/DIVU clocks | Pending |
 | SCI, H §§13.2–13.3 | SMR/BRR/SCR/TDR/SSR/RDR, timed internal-clock transmission, external completed-character input, overrun/framing/parity flags, IRQs and DMA handshakes | PERIPH; `Serial` | PERIPH (transmit completion) | No external clock-edge adapter or physical serial pin waveform; multiprocessor and format combinations lack exhaustive integration coverage | Pending |
 | On-chip DMAC, H §§9.2–9.3 | Both channels; byte/word/long/16-byte transfers; fixed/increment/decrement addresses; auto/DREQ/SCI requests; fixed/round-robin selection, TE/AE/NMIF, vectors/IRQ; single-address DACK direction/polarity through explicit board pin adapters | PERIPH, DACK; `Dma`, `Bus::advance_dma`, pin-adapter vectors | PERIPH (copy/end IRQ/error 10/no cache snoop), DACK (armed wait/reset on standard board) | CPU/refresh arbitration, burst/cycle-steal timing and DMA wait states remain missing; no requesting DACK peripheral is connected on the standard board | Pending |
-| DIVU, H §§10.2–10.4/table 10.2 | Signed 32/32 and 64/32 quotient/remainder; six-clock overflow exposes three division steps, saturating only the quotient when OVFIE=0; 39-clock normal completion/interlock; word DVCR/VCRDIV, sticky overflow and IRQ | PERIPH, [DIVG](../tests/sh7604.rs), [independent boundary vectors](../src/onchip/peripheral_tests.rs); `Division::start/overflow_result` | DIVG on both CPUs, normal/overflow signs/zero, aliases, IRQ acknowledgement, repeat boots and changed dividend | One-clock immediately consecutive DIVU write/read hazard and full CPU bus scheduling remain | Pending |
+| DIVU, H §§10.2–10.4/table 10.2 | Signed 32/32 and 64/32 quotient/remainder; six-clock overflow exposes three division steps, saturating only the quotient when OVFIE=0; 39-clock normal completion/interlock; word DVCR/VCRDIV, sticky overflow and IRQ | PERIPH, [DIVG](../tests/sh7604.rs), [independent boundary vectors](../src/onchip/peripheral_tests.rs); `Division::start/overflow_result` | DIVG on both CPUs, normal/overflow signs/zero, aliases, IRQ acknowledgement, repeat boots and changed dividend | The one-clock read-after-write interlock is covered by MEMG below; full CPU bus scheduling remains | Pending |
 | BSC identification/interval timer, H §§7.1.4/7.2/7.5.7/7.11.1 | BCR1.MASTER per CPU, read-only word lanes, keyed long writes, RTCNT/RTCOR/RTCSR, all clock divisors, CMF read-before-clear, CMI vector/priority and manual-reset retention; ordinary software waits, intercycle turnaround, narrow transfers and CS2 endian conversion (BWAIT/IDLEG below) | [BSCG/BWAIT](../tests/bsc.rs), [register/reset vectors](../src/onchip/peripheral_tests.rs), [BSC vectors](../src/onchip/bsc.rs), [bus beats](../src/bus.rs) | BSCG, BWAIT, IDLEG | Memory/burst interfaces, WAIT input, board widths/lanes and refresh/CPU/DMA ownership remain; unsupported changes explicitly rejected | Pending |
 | Module stop/standby, H §§14.2/14.4, table 14.3 | SBYCR, SCI/FRT reset and gating, preserved INTC/UBC/BSC, retained DMA operands with control reset, WDT-selected NMI settling; `OnChip::enter_sleep/advance_clocks`, `Bus::advance_dma` | [standby/retention vectors](../src/onchip/peripheral_tests.rs), BSCG, PWRG | BSCG, PWRG | Electrical HIZ/pin states, initial five-cycle NMI guard, physical oscillator and clock-switch edges remain unverified; executing stopped MULT instructions is software-prohibited/undefined (H §2.5.2) | Pending |
 | UBC, H §6 | A/B registers, masked address/data/size/master matching, sequential conditions, match flags, before/after fetch breaks and deferred level-15 vector 12; CPU/cache/DMAC and external SCU observation; `Ubc::observe`, `Cpu::step/execute` | UBCG and bus vectors | UBCG | Three-clock propagation, independent successive-write deadlines and last-register read barrier are implemented in `Ubc::advance/read`; DIVG handles data breaks on both CPUs, including slave acknowledgement after exception acceptance. SH7000-compatible speculative overrun fetch breaks and instruction/bus cycle scheduling remain pending | Pending |
@@ -417,9 +422,9 @@ CPU/scheduler acceptance criteria.
 | --- | --- | --- | --- | --- | --- |
 | BIOS ROM, O map | Exact 512 KiB, big endian, read-only, reset vectors; synthetic guest exception handlers | bus.rs, boot.rs, AEROM | ROM, AEROM | Full synthetic boot/MMIO/service coverage missing; genuine BIOS compatibility optional and not independently confirmed | Pending |
 | Low/high WRAM, O map | Independent 1 MiB banks; aligned B/W/L; low-RAM and CS3 high-RAM mirrors; P1 aliases; BWAIT software waits and narrow CS3 beats | bus.rs, BWAIT | SC, ROM, BWAIT | Base CPU cycles, refresh and bus contention timing missing | Pending |
-| Base-system address decoding, O map | Only documented subset in architecture.md | bus.rs | SC | A-bus/cartridge decoding and full base map missing | Pending |
+| Base-system address decoding, O map | Only documented subset in architecture.md | bus.rs | SC | Absent CPU/A-bus selects return pulled-up data and ignore writes (MEMG); full device map/lanes and transaction timing remain | Pending |
 | MMIO widths/side effects, device manuals | Unsupported accesses return errors | devices.rs | SC | Full device routing/width rules missing | Pending |
-| Backup byte storage, SCU §1.2 figs.1.3/1.5; SMPC §2.3 SYSRES p.29 | 32 KiB, odd-byte storage; even lanes read FF and ignore writes; word/long strobes; P1 aliases; unformatted zero initialization | BK; `backup_byte_lanes_endpoints_and_cache_through_access_do_not_alias_work_ram` | BK | BUPG adds guest-executed filesystem/service integration; additional aliases and remaining reset domains pending | Pending |
+| Backup byte storage, SCU §1.2 figs.1.3/1.5; SMPC §2.3 SYSRES p.29 | 32 KiB, odd-byte storage; even lanes read FF and ignore writes; word/long strobes; P1 aliases; unformatted zero initialization | BK; `backup_byte_lanes_endpoints_and_cache_through_access_do_not_alias_work_ram` | BK | BUPG adds guest-executed filesystem/service integration; MEMG adds all eight 64 KiB aliases and invalid-import/reset checks; remaining reset domains pending | Pending |
 | Backup reset retention, SMPC §2.3 SYSRES p.29 | Bytes survive successful/rejected HLE, disc and ROM resets and guest SYSRES; new Machine starts empty | BK; `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot`, PWRG | BK, PWRG, reset/mode/read-race checks | SYSRES guest retention now covered by PWRG; remaining power/reset and service contracts pending | Pending |
 | Local backup import/export (host interface) | Exact 32768 packed bytes; atomic replacement; explicit local download; stale import cancellation; no network/storage | `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot` | Download byte comparison, offline import, invalid size/read errors, races, fresh-tab isolation | BUPG provides independent HLE backup calls; optional cartridge backup is absent; no automatic cross-session persistence | Pending |
 | Shared event scheduler, O clock domains | Deterministic CPU order, raster/SCU event deadlines and clock-driven DSP/DMA; field deadlines replace instruction budgets | TIME, SCUROM, game.rs, DUAL | SCUROM, SC, DUAL | CPU opcode/on-chip DMA cycles, contention, refresh and full cross-clock ordering missing; CD command/sector/sample deadlines now exercised by CLAB | Pending |
@@ -532,7 +537,7 @@ Implementation: [shared sound bus, PCM and clock domain](../src/sound.rs),
 
 | Feature / manual | Implemented behavior | Native / browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- |
-| Sound RAM / SCSP mapping, [SCSP] §§1.2/4.1 | 512 KiB RAM shared by SH-2 and independent 68k; big-endian byte/word/long cycles; SCSP byte lanes; SNDON/OFF reset vectors and RAM retention; RESET output resets SCSP controls | SNDV, SNDR / SNDR | Additional memory-size configuration, exact reset pulse/bus timing (sound RAM mirrors now tested in bus.rs) | Pending |
+| Sound RAM / SCSP mapping, [SCSP] §§1.2/4.1 | 512 KiB RAM shared by SH-2 and independent 68k; big-endian byte/word/long cycles; SCSP byte lanes; SNDON/OFF reset vectors and RAM retention; RESET output resets SCSP controls | SNDV, SNDR / SNDR | MEMG adds MEM4MB geometry for CPU/PCM/DMA/DSP and absent chip selection; exact reset pulse and bus timing remain | Pending |
 | 32 slots, PCM8/16, [SCSP] §4.2 table 4.14 | Guest key-on/off, signed PCM, source bit controls, all 32 slots, no/forward/reverse/alternative loops, Q16 OCT/FNS pitch, signed first-order PCM8/16 interpolation for all loop directions, sound stack | SNDV, SNDR (including guest half-pitch vectors) / SNDR (half-pitch vectors) | Exact hardware fractional boundary rounding and complete envelope-controlled playback | Pending |
 | Envelope, [SCSP] §4.2 pp.40–44 | Attack/decay1/decay2/release, zero-rate holds, EGHOLD, decay level, key scaling, loop-start transitions and release retrigger; EG multiplies waveform before TL/ALFO, modulation stack and DSP send | SNDV, ENV / ENV + operand mutations + WebAudio | Numeric slope/key-scaling/attenuation policy is functional, not corroborated chip timing; complete synthesis/pipeline conformance remains | Pending |
 | FM/modulation/LFO, [SCSP] §4.2 figs.4.18/4.31, tables4.16–4.24 | Executing recent/past sound-stack selection with five-slot pipeline, signed averaging/MDL, guard-waveform reads; per-slot AM/PM LFO waveforms, frequency/depth/reset; internal noise/zero source | SNDV, SYNTH / SYNTH operand mutations and WebAudio | Exact chip noise sequence is unspecified; physical sub-sample rounding, full FM overflow/loop boundaries and envelope integration remain | Pending |
@@ -557,7 +562,7 @@ no-op CPU/device implementations cannot satisfy those assertions.
 | Feature / manual | Current behavior / edge cases | Native | Browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- | --- |
 | Cooked ISO, [Disc Format][DISC] | Bounded IP/ISO9660 first-read startup; retained media and runtime sector/file reads; checked LBA/FAD/volume/record bounds and atomic directory changes | disc.rs, media.rs, cd.rs, CLAB | SC, CLAB/local ISO | General boot layouts/size, interleaved/XA filesystem records | Pending |
-| BIN/CUE/raw/mixed tracks, [DISC] / [CD] §§4/7.2.3 | Caller-resolved files, cooked/2352-byte Mode1/Mode2/audio, shared/separate files, INDEX00–99, gaps and TOC; subindices and PRE/DCP/4CH CONTROL metadata drive TOC/status/Q reporting; malformed/duplicate flags rejected; EDC validation, bounded P/Q correction for Mode1/XA Form1, Form2 EDC and PRE audio processing | [media vectors](../tests/media.rs), [parity-matrix/XA vectors](../src/media/integrity.rs), [directory guest](../tests/cd_drive.rs), CLAB | Directory guest on clean/correctable/uncorrectable raw media; CLAB multi-file CUE, INDEX02/99, malformed ordering, missing-reference/reset/privacy | Raw non-XA Mode2 and complete decode/timing boundaries remain; WAVE/compression absent | Pending |
+| BIN/CUE/raw/mixed tracks, [DISC] / [CD] §§4/7.2.3 | Caller-resolved files, cooked/2352-byte Mode1/Mode2/audio, shared/separate files, INDEX00–99, gaps and TOC; subindices and PRE/DCP/4CH CONTROL metadata drive TOC/status/Q reporting; malformed/duplicate flags rejected; EDC validation, bounded P/Q correction for Mode1/XA Form1, Form2 EDC and PRE audio processing | [media vectors](../tests/media.rs), [parity-matrix/XA vectors](../src/media/integrity.rs), [directory guest](../tests/cd_drive.rs), CLAB | Directory guest on clean/correctable/uncorrectable raw media; CLAB multi-file CUE, INDEX02/99, malformed ordering, missing-reference/reset/privacy | M2G adds plain 2336-byte Mode2 payloads; complete decode/timing boundaries remain; WAVE/compression absent | Pending |
 | CD command/status/HIRQ, [CD] §§3.1–3.4 | Separate command/response latches; 1075-clock command completion, read-protected responses, CMOK/DRDY/CSCT/end flags, masks, clear-zero HIRQ and SCU A-bus IRQ | `tests/cd.rs`, CLAB | CLAB command/FIFO/DMA/IRQ | Full command-specific timing and register mirrors; BIN/CUE has no R–W stream, with empty FIFO WAIT now tested | Pending |
 | CD drive/TOC/session/track state, [CD] §§4/7/8.2 | TOC/session/Q, bounded seek, data play, CD-DA/repeat/end, media-dependent FAD/track/index reports; timed CDON/OFF, 60 Hz pause reports, programmed standby, scan directions/range/muting, tray/media retention and deterministic virtual close | `tests/cd.rs`, CLAB, CDDRV | CLAB, CDDRV | Remaining initialization/subcode options and full drive/response lifecycle boundary evidence | Pending |
 | CD buffers/transfers, [CD] §§3.4/5.3/5.4/8.2 | 200-sector pool, 24 partitions, get/delete/get-delete/put, short/over transfers, size/info/search, FIFO word/long and fixed-source SCU DMA | `tests/cd.rs`, CLAB | CLAB actual DMA/IRQ/checksum, sector mutation | Pool-full pause/resume at the blocked FAD has native data vectors; complete transfer overlap and timing/error inventory remain | Pending |
@@ -577,13 +582,13 @@ no-op CPU/device implementations cannot satisfy those assertions.
 ## Concrete unresolved gaps and closure gates
 
 1. Remaining SH-2 semantic/exception edges, complete reset domains, BSC configuration and remaining UBC/standby timing,
-   DIVU write/read hazards, DMAC DACK/CPU arbitration, external IRQs and bus locking;
+   remaining DIVU/CPU timing boundaries, DMAC DACK/CPU arbitration, external IRQs and bus locking;
    cycle-based dual-CPU scheduling and arbitration. CPU opcode decoding alone
    does not satisfy the CPU or multiprocessor criterion.
 2. Complete MC68EC000 timing/prefetch edge conformance and sound bus arbitration;
    SCSP timed envelopes and complete modulation conformance remain required; FM/LFO/noise now have SYNTH subset evidence; effects DSP and CD-DA have CLAB subset evidence. Direct PCM,
    executing sound CPU, timers/DMA/FIFO subsets and WebAudio now have evidence.
-3. Full base memory map, remaining backup mirrors and BIOS filesystem/calls,
+3. Full base memory map, remaining backup reset/service boundaries and BIOS calls,
    plus hardware clock/event scheduling. Packed backup import/export and byte
    retention pass subset tests; other reset domains remain absent.
 4. Complete SCU A/B-bus wait-state/arbitration and device routes, DMA boundary/
@@ -799,8 +804,9 @@ browser tests check thirteen independent composition coordinates plus the blank
 boundary. Mutating My from 3 to 2 changes the rotated pixels in both paths; the
 browser asserts production Canvas presentation. Expanded ROM SHA-256:
 `c537273e864fd3410441d618bfe78e8642137838d869d154f002c3c33c3a77d5`.
-The renderer takes a frame snapshot, including these tables. This does not yet
-implement raster-time writes or parameter reload strobes. Coefficient line color
+The direct VDP2 debugger renderer samples current state; Machine presentation now
+uses scanline history (RASTG below). Mid-line fetches and parameter reload strobes
+remain required. Coefficient line color
 and CRAM coefficient sources are now implemented and tested by LINE below;
 enabled unsupported parameter reloads still fail explicitly.
 
@@ -972,8 +978,9 @@ quarter-turn blue/green grid over red. Changing only My in the original guest
 moves the grid and exercises B's transparent screen-over mode. Native vectors
 also cover independent A/B movement, all five cell color formats, both pattern
 name widths, priority, blending, window, coefficient MSB and color offsets.
-RBG1 still samples the existing frame snapshot; scanline reloads, cycle/bank
-arbitration and complete special-function/edge evidence remain required.
+RBG1 presentation now participates in scanline history (RASTG below); precise
+parameter reloads, cycle/bank arbitration and complete special-function/edge
+evidence remain required.
 This closes an implementation gap without satisfying the full video criterion.
 
 ## Line color, CRAM coefficients and special/extended composition
@@ -1077,7 +1084,7 @@ Implementation: [`CdBlock::execute/drive_frame`](../src/cd.rs),
 | --- | --- | --- |
 | ECC settings 00–05, 80 and FF | Runtime executes one through six P/Q pairs, disables correction or retains the prior setting. A source-authored parity graph joins P0 to Q0/Q2 and P2 to Q2/Q50: one pass fails, two through six restore the exact sector. Unit vectors and `tests/cd.rs` check received bytes and configuration atomicity. | Individual decoder-clock latency and physical reread timing are not modeled. Strict boot/parser reads retain their separate bounded four-pass policy. |
 | Finite retries 0–15, error output and infinite retry | Every failed attempt consumes a drive deadline. RETRY holds FAD and publishes no sector/CSCT; exhaustion yields ERROR or routes the erroneous sector according to bit6. Infinite retries remain interruptible by drive commands and bounded by machine execution. Register vectors assert each attempt, pool counts, FAD, bytes, cancellation and chunk invariance. | Immutable media reproduce the same defect on reread; stochastic optical recovery is not claimed. Retry deadlines use the selected 75/150 Hz virtual sector cadence. |
-| XA Form2 retry and confirmation flags | Form2 error data are delivered immediately unless Form2 retry is enabled; the ordinary retry/output policy then applies. Subheader confirmation can be disabled for decode while selector matching still uses the first subheader. Independent EDC golden vectors isolate the controls. Failed XA correction restores the received header. | Raw non-XA Mode2 and a complete subcode/error-boundary corpus remain required. |
+| XA Form2 retry and confirmation flags | Form2 error data are delivered immediately unless Form2 retry is enabled; the ordinary retry/output policy then applies. Subheader confirmation can be disabled for decode while selector matching still uses the first subheader. Independent EDC golden vectors isolate the controls. Failed XA correction restores the received header. | M2G below adds plain Mode2; a complete subcode/error-boundary corpus remains required. |
 | Initialization retention/reset | Independent no-change fields; rejected settings are atomic. Software reset ignores other arguments, cancels unfinished transfer, resets host/selector/play information and invalidates file caches. Tray open invalidates file information; tests check observable DRDY/pool/FIFO/scope changes. | R–W stream decoding and remaining command-specific lifecycle/timing coverage remain required. |
 
 [Original MIT SH-2 source builder](../tests/fixtures/build_cd_decode.py),
@@ -1110,7 +1117,7 @@ including PC-relative forms, and supplement SNDR/SIOG's decimal, extend, MOVEM
 and MOVEP evidence. Undefined CHK flags are deliberately excluded. Browser mutation
 of ADD.B to SUB.B changes only that computed result/CCR.
 Expanded 512 KiB ROM SHA-256:
-`a417f5d283e544d5f4a2683a811f7c190a48c6260fea6ac61b4a309c666ac03d`.
+`d3cfead4f1403ad9ae1a65628368302f9daf36e9b919ff6e14c9b7d249532785`.
 The adjacent MIT license covers source and generated ROM/TSV; no SDK or firmware.
 
 [`M68k::ea_clocks/execute/group0/group4/alu/shift/movem`](../src/m68k.rs)
@@ -1488,7 +1495,7 @@ ROM word100 is a guest-read TVMD operand, not a host write to emulated state.
 | Behavior | Implementation | Native / actual browser Wasm evidence | Remaining required behavior |
 | --- | --- | --- | --- |
 | Standard TV graphic dimensions and source rows | `Vdp2::dimensions/validate/render`, `Raster::configure/display_lines` | [display_modes.rs](../tests/display_modes.rs) and [browser-smoke.mjs](../scripts/browser-smoke.mjs) execute all 60 valid NTSC/PAL, A/B normal/high-resolution, line-count and density combinations; eight authored corner colors plus 511/512 wrap pixels; production Canvas 704×480 | Complete exclusive-monitor multiplexing, per-format bank restrictions and VRAM arbitration |
-| Field/status/counter transitions | `Raster::advance/counters/odd`, `Vdp2::scan_field/read16`, bus raster events | Same guest polls successive VBlank transitions and latches VCNT; literal PAL/ODD/double-density counter parity assertions; `tv_modes_have_independent_blank_field_and_counter_vectors` compares chunk-independent event timestamps | Half-line phase and blanking counter discontinuities; snapshot renderer does not establish raster-time table/window/reload latching |
+| Field/status/counter transitions | `Raster::advance/counters/odd`, `Vdp2::scan_field/read16`, bus raster events | Same guest polls successive VBlank transitions and latches VCNT; literal PAL/ODD/double-density counter parity assertions; `tv_modes_have_independent_blank_field_and_counter_vectors` compares chunk-independent event timestamps | Half-line phase and blanking counter discontinuities; RASTG adds historical scanline pixels; full table/window/reload latching remains |
 | INTBACK collection in every tested mode | `Smpc::vblank_out_after`, bus supplies PLL-converted active interval | Guest compares measured first collection and optimized second collection, both digital and ID15 packets; `optimized_intback_uses_selected_display_interval_and_reset_cancels_it` checks deadline−1/deadline/reset cancellation | Complete continue/break/clock/reset/latch boundary integration still required |
 | PAL fixed domains and reset | `SystemClock::set_pal/advance`, `Bus::advance_fixed_clocks/set_pal/reset_volatile/system_reset` | Rational-phase vectors and `pal_reference_ticks_without_main_edges_still_produce_every_audio_sample`; guest checks physical PAL retention on reset | Full transaction scheduling and reset-cycle evidence remain required |
 | Blank border and horizontal windows | `Vdp2::render/window` | `blank_border_uses_lowermost_back_color_and_hires_windows_keep_dot_precision`: opaque black/back-color selection and inclusive normal/hires window edges | Complete raster-time window evidence remains required |
@@ -1579,3 +1586,44 @@ CI verifies both builders with `--check`. No guest computation or result is
 substituted by host code. Existing demonstration media are unchanged. All unmet
 CPU/bus/scheduler/reset, SCU/DSP, video/audio, CD/media, SMPC, BIOS/HLE and
 complete inventory acceptance remains mandatory; these tests do not complete #17.
+
+## Memory geometry, non-XA data and historical scanline output
+
+| Contract / primary reference | Implementation | Independent native evidence | Wasm/browser evidence |
+| --- | --- | --- | --- |
+| SCSP MEM4MB, [SCSP] §4.2 table4.32/fig4.58 | `RamConfig`, `Sound::read_ram8/write_ram8`, `SoundBus`, slot fetch, SCSP DMA and DSP MRD/MWT use the same geometry. Chip0 is 128 KiB in 1-Mbit mode or 512 KiB in 4-Mbit mode; the second chip is absent. Configuration changes preserve stored bytes. | `memory_geometry_is_shared_by_main_and_sound_cpu_and_preserves_inaccessible_bytes`; `memory_configuration_controls_pcm_dma_and_executing_effects_memory_reads`; MEMG | MEMG's real 68k reads both configurations, verifies a discarded absent-chip write, programs DMA and DSP, and produces bipolar stereo. Changing its sample operands changes actual AudioWorklet peak by the authored ratio. |
+| Backup selects and absent CPU/A-bus devices, [O] map / [SCU] §1.2 | `BackupRam::offset`, `Bus::unconnected`, `CpuBus::external_write`: eight backup aliases with odd lanes; absent board selects return FF bytes and discard writes; ROM CPU writes complete without a write-enable effect. Host ROM loader remains checked/read-only. Real-chip unsupported ports still fail. | `all_eight_backup_select_aliases_share_lanes_and_atomic_import_across_reset`; `absent_board_selects_return_high_data_and_cpu_rom_writes_have_no_storage_effect`; MEMG | MEMG checks eight aliases, absent cartridge data, ROM retention, repeated boot and changed sample operands. Existing BUPG import/export and reset/service tests remain enabled. |
+| DIVU consecutive write/read, [H] §10.4.1 | `OnChip::instruction_break/read32/write16/write32` track instruction adjacency independently for each CPU. An immediately following read extends one cycle, subsumed by a longer active divide. Word writes preserve lanes without fabricating a read strobe. | `divu_consecutive_read_interlock_follows_instructions_not_time_and_word_writes_are_not_reads`: both CPU identities, word/long registers, 0–2 intervening instructions, 0/1/39/100 elapsed clocks, active divide and reset | Existing DIVG executes both CPU-local units and all arithmetic/IRQ records. Exhaustive guest cycle-order evidence still requires the transaction scheduler. |
+| Plain Mode2 data, [ECMA-130](https://www.ecma-international.org/wp-content/uploads/ECMA-130_2nd_edition_june_1996.pdf) §14 fig12 / §14.2; CD host view [CD] §5.4 | `Media::cue_with_mode2_format/raw_sector/decode_sector/cooked_sector`, `integrity::mode2_data`: validate sync/mode/BCD header and preserve all 2336 user bytes; no nonexistent XA EDC/ECC. Runtime 2336-byte FIFO uses the documented host layout. | `ecma_mode_two_data_preserves_all_2336_bytes_without_xa_parity_or_subheaders`: all byte fills, ambiguous subheaders, malformed header and rejected damaged XA; M2G compares every guest-copied word and sum | M2G mounts original mixed data/audio CUE, reads every byte through guest HIRQ/FIFO code, repeats reset and changes first/last payload bytes. |
+| Historical scanlines, [VDP2] §§2.5/7.2/13.1 | `Bus::advance_main_clocks`, `Vdp2::scanline/finish_field/scanout/output_dimensions`: capture visible rows at HBlank, publish at VBlank, retain alternate interlace rows and pair published dimensions with their pixels. | RASTG checks all 224 rows at three X positions, blanking retention, next-field offset and reset. Existing static/game pixel tests wait for completed scanout. | RASTG's beam-polled bands survive later VRAM/offset writes in Wasm and production Canvas; a guest-color mutation changes only its band. Existing game/restart and advanced video checks remain enabled. |
+
+CUE has no XA/plain sector-format bit. Auto detection inspects at most 75 stored
+sectors for repeated subheaders, tolerating one damaged field. Explicit
+`Mode2Format::Data/Xa` resolves ambiguous source bytes without rewriting them.
+Once classified as XA, decode failure never falls back to unchecked plain data.
+The bootstrap still requires 2048-byte logical sectors; raw lengths remain
+available to runtime commands. This is a documented format ambiguity, not evidence
+that damaged XA passed integrity checks.
+
+The FF absent-device value is a deterministic functional policy, not a measured
+floating-bus voltage or a claim that every real-chip hole is implemented.
+Instruction-specific CPU/bus arbitration, refresh/WAIT ownership, remaining
+memory/reset services, subscanline video fetch/cycle-pattern arbitration, exact
+parameter reload strobes and other previously listed hardware requirements
+remain mandatory. These changes do not complete the umbrella checklist.
+
+The new original builders are checked in CI. SHA-256 of committed artifacts:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `memory-contracts.hex` text | `10e2947b10ebd5ea149fb10acb954990bdea7c107e36b472fcb64ac662f84586` |
+| `mode2.hex` text | `453bcbdf06a829313244ce5df446535d135ff18e0c42ef243de3240a73d85b27` |
+| `mode2.bin` | `7503a70136dcd7c6aec44d6ac6a1bec849dd05ffb1d6a0dbd0edff751b065d9b` |
+| `mode2-audio.bin` | `dee42ec6e0e7fba4a02375f99b04499fd6d481127c26c51acb31c8e20d36372f` |
+| `mode2.cue` | `8832626090f6056d07589dd83e8f324db65f124863ef5fef5aaff0a259a831bf` |
+| `raster-history.hex` text | `82fab780e18dbd9ba0c16d399bb044557a9a1c48ea150673b850e2998b387409` |
+
+FAMG now selects MEM4MB before its first stack access and again after RESET.
+Its regenerated literal fault-frame records include the relocated code addresses;
+all 73 family/EA vectors and ten fault records remain checked. Star Collector,
+Prism Courier and Hardware Lab disc bytes are unchanged.

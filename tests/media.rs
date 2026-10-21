@@ -1,5 +1,38 @@
 //! Source-authored media and malformed-input vectors. No downloaded discs.
-use saturn_rust::media::{Media, RAW_SECTOR, TrackMode};
+use saturn_rust::media::{Media, Mode2Format, RAW_SECTOR, TrackMode};
+
+#[test]
+fn ecma_mode_two_data_preserves_all_2336_bytes_without_xa_parity_or_subheaders() {
+    // ECMA-130 §14 fig12 / §14.2. The trailer is ordinary data, not
+    // a corrupt XA EDC/ECC. Exercise every byte value in the payload.
+    let cue = "FILE \"data.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:00:00";
+    let mut raw = [0; RAW_SECTOR];
+    raw[1..11].fill(255);
+    raw[12..16].copy_from_slice(&[0, 2, 0, 2]);
+    for (i, byte) in raw[16..].iter_mut().enumerate() {
+        *byte = ((i * 73) ^ (i >> 3)) as u8;
+    }
+    let media = Media::cue(cue, &[("data.bin", &raw)]).unwrap();
+    assert_eq!(media.raw_sector(150).unwrap(), raw);
+    assert_eq!(media.cooked_sector(150).unwrap(), raw[16..]);
+    assert!(media.boot_iso().is_err()); // not a 2048-byte ISO logical sector
+    // An unformatted Mode2 payload may even look like a duplicated XA
+    // subheader. Explicit source metadata resolves that ambiguity, and
+    // rejected XA is never silently retried as unchecked Mode2 data.
+    for value in 0..=255 {
+        raw[16..].fill(value);
+        let data =
+            Media::cue_with_mode2_format(cue, &[("data.bin", &raw)], Mode2Format::Data).unwrap();
+        assert_eq!(data.cooked_sector(150).unwrap(), vec![value; 2336]);
+    }
+    raw[13] = 0x60;
+    let bad = Media::cue_with_mode2_format(cue, &[("data.bin", &raw)], Mode2Format::Data).unwrap();
+    assert!(bad.raw_sector(150).is_err());
+    raw[13] = 2;
+    raw[16..24].copy_from_slice(&[1, 2, 8, 0, 1, 2, 8, 0]);
+    let xa = Media::cue(cue, &[("data.bin", &raw)]).unwrap();
+    assert!(xa.raw_sector(150).is_err());
+}
 
 #[test]
 fn cue_subindices_translate_file_offsets_without_creating_new_tracks_or_sectors() {

@@ -27,6 +27,7 @@ fn guest_draws_scaled_distorted_flipped_sprites_with_both_source_parities() {
             .collect();
         assert_eq!(actual, expected);
         m.advance_frame().unwrap();
+        m.advance_frame().unwrap(); // show a full field after guest drawing/swap
         let f = m.framebuffer().unwrap();
         for (x, red) in [57, 41, 24, 8].into_iter().enumerate() {
             assert_eq!(&f[(20 * 320 + 10 + x) * 4..][..4], [red, 0, 0, 255]);

@@ -4,9 +4,10 @@ fn bios() -> Vec<u8> {
     let mut bytes = vec![0; BIOS_SIZE];
     bytes[0..4].copy_from_slice(&0x100_u32.to_be_bytes());
     bytes[4..8].copy_from_slice(&0x0610_0000_u32.to_be_bytes());
-    bytes[0x100..0x102].copy_from_slice(&0xE02A_u16.to_be_bytes());
-    // MOV.B R0,@R0: ROM writes remain bounded host diagnostics, distinct from
-    // architectural CPU address errors and guest illegal-instruction dispatch.
+    bytes[0x100..0x102].copy_from_slice(&0xD001_u16.to_be_bytes());
+    bytes[0x108..0x10C].copy_from_slice(&0x05FE00CC_u32.to_be_bytes());
+    // MOV.B R0,@R0 to a real unsupported SCU port, distinct from an absent
+    // device's normal undriven data and a ROM's missing write-enable pin.
     bytes[0x102..0x104].copy_from_slice(&0x2000_u16.to_be_bytes());
     bytes
 }
@@ -22,7 +23,7 @@ fn external_bios_uses_power_on_vectors_and_reset_registers() {
     assert_eq!((s.pr, s.gbr, s.mach, s.macl), (0, 0, 0, 0));
     assert_eq!(s.status, CpuStatus::Running);
     machine.step().unwrap();
-    assert_eq!(machine.cpu_state().r[0], 42);
+    assert_eq!(machine.cpu_state().r[0], 0x05FE00CC);
     assert_eq!(machine.bus().read32(LOW_WRAM), Ok(0));
     assert_eq!(machine.bus().read32(HIGH_WRAM), Ok(0));
 }

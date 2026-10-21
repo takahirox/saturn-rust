@@ -1,10 +1,10 @@
 //! Checked partial Saturn map; devices and cache-through aliases are documented separately.
-use crate::backup::{BACKUP_RAM, BACKUP_WINDOW, BackupRam};
+use crate::backup::{BACKUP_RAM, BACKUP_SELECT, BackupRam};
 use crate::cache::{CCR, Cache};
 use crate::devices::{SMPC, Smpc, VDP2, VRAM, Vdp2};
 use crate::onchip::OnChip;
 use crate::scu::{SCU, Scu, ScuError};
-use crate::sound::{SCSP, SOUND_RAM, SOUND_RAM_SIZE, Sound};
+use crate::sound::{SCSP, SOUND_RAM, Sound};
 use crate::timing::{Raster, RasterEvent, SystemClock};
 use crate::vdp1::{self, Vdp1};
 use std::cell::{Cell, RefCell};
@@ -410,10 +410,15 @@ impl Bus {
             }
             match self.raster.advance(delta) {
                 Some(RasterEvent::HBlankIn) => {
+                    if self.raster.line < self.raster.display_lines() {
+                        self.vdp2
+                            .scanline(&self.vdp1, usize::from(self.raster.line));
+                    }
                     self.vdp2.hblank = true;
                     self.scu.hblank_in();
                 }
                 Some(RasterEvent::VBlankIn) => {
+                    self.vdp2.finish_field();
                     self.vdp2.hblank = false;
                     self.vdp2.vblank = true;
                     self.smpc.vblank_in();
@@ -590,8 +595,6 @@ impl Bus {
             HIGH_WRAM | (address & 0x000F_FFFF)
         } else if (LOW_WRAM..0x0040_0000).contains(&address) {
             LOW_WRAM | (address & 0x000F_FFFF)
-        } else if (SOUND_RAM..SCSP).contains(&address) {
-            SOUND_RAM | (address & 0x0007_FFFF)
         } else if (vdp1::VRAM..vdp1::FRAMEBUFFER).contains(&address) {
             vdp1::VRAM | (address & 0x0007_FFFF)
         } else if (vdp1::FRAMEBUFFER..vdp1::REGISTERS).contains(&address) {
@@ -623,10 +626,28 @@ impl Bus {
         Err(BusError::Unmapped { address, width })
     }
 
+    /// Unpopulated CPU/A-bus selects on the standard console (ST-097 §1.2,
+    /// fig1.3). With no responding device, use pulled-up data pins. Writes
+    /// still occupy bus cycles but cannot change storage. This deterministic
+    /// policy is confined to absent devices; implemented-chip register holes
+    /// continue to report unsupported behavior instead of silently succeeding.
+    fn unconnected(address: u32) -> bool {
+        (0x0040_0000..0x0100_0000).contains(&address)
+            || (0x0100_0004..0x0180_0000).contains(&address)
+            || (0x0180_0004..0x0580_0000).contains(&address)
+            || (0x0590_0000..0x05A0_0000).contains(&address)
+    }
+
     fn read<const N: usize>(&self, address: u32) -> Result<[u8; N], BusError> {
         let address = Self::physical(address);
         if !address.is_multiple_of(N as u32) {
             return Err(BusError::Unaligned { address, width: N });
+        }
+        if Self::unconnected(address)
+            || (0x0100_0000..0x0100_0004).contains(&address)
+            || (0x0180_0000..0x0180_0004).contains(&address)
+        {
+            return Ok([255; N]);
         }
         if (crate::cd::REGISTERS..crate::cd::REGISTERS + 0x2C).contains(&address)
             || (crate::cd::DATA..crate::cd::DATA + 4).contains(&address)
@@ -640,10 +661,12 @@ impl Bus {
             }
             return Ok(bytes);
         }
-        if (SOUND_RAM..SOUND_RAM + SOUND_RAM_SIZE as u32).contains(&address) {
+        if (SOUND_RAM..SCSP).contains(&address) {
             let offset = (address - SOUND_RAM) as usize;
             let mut bytes = [0; N];
-            bytes.copy_from_slice(&self.sound.ram[offset..offset + N]);
+            for (i, byte) in bytes.iter_mut().enumerate() {
+                *byte = self.sound.read_ram8(offset + i);
+            }
             return Ok(bytes);
         }
         for (base, memory) in [
@@ -702,7 +725,7 @@ impl Bus {
             bytes.copy_from_slice(&self.scu.read32(address)?.to_be_bytes());
             return Ok(bytes);
         }
-        if (BACKUP_RAM..BACKUP_RAM + BACKUP_WINDOW).contains(&address) {
+        if (BACKUP_RAM..BACKUP_RAM + BACKUP_SELECT).contains(&address) {
             let mut bytes = [0; N];
             for (i, byte) in bytes.iter_mut().enumerate() {
                 *byte = self.backup.read8(address + i as u32)?;
@@ -751,6 +774,9 @@ impl Bus {
         if !address.is_multiple_of(N as u32) {
             return Err(BusError::Unaligned { address, width: N });
         }
+        if Self::unconnected(address) {
+            return Ok(());
+        }
         if (crate::cd::REGISTERS..crate::cd::REGISTERS + 0x2C).contains(&address)
             || (crate::cd::DATA..crate::cd::DATA + 4).contains(&address)
         {
@@ -764,19 +790,23 @@ impl Bus {
         }
         // ST-202 §1.2: word strobes signal slave at 21000000 and master
         // at 21800000. Both cacheable and cache-through aliases share the wire.
-        if matches!(address, 0x0100_0000 | 0x0180_0000) {
-            if N != 2 {
+        if (0x0100_0000..0x0100_0004).contains(&address)
+            || (0x0180_0000..0x0180_0004).contains(&address)
+        {
+            if N != 2 && N != 4 {
                 return Err(BusError::UnsupportedDevice { address, width: N });
             }
-            let target = usize::from(address == 0x0100_0000);
+            let target = usize::from(address < 0x0180_0000);
             if target == 0 || self.slave_enabled {
                 self.onchip[target].capture_strobe();
             }
             return Ok(());
         }
-        if (SOUND_RAM..SOUND_RAM + SOUND_RAM_SIZE as u32).contains(&address) {
+        if (SOUND_RAM..SCSP).contains(&address) {
             let offset = (address - SOUND_RAM) as usize;
-            self.sound.ram[offset..offset + N].copy_from_slice(&bytes);
+            for (i, byte) in bytes.into_iter().enumerate() {
+                self.sound.write_ram8(offset + i, byte);
+            }
             return Ok(());
         }
         if (vdp1::VRAM..vdp1::VRAM + vdp1::VRAM_SIZE as u32).contains(&address) {
@@ -829,7 +859,7 @@ impl Bus {
                 u32::from_be_bytes(bytes.as_slice().try_into().unwrap()),
             );
         }
-        if (BACKUP_RAM..BACKUP_RAM + BACKUP_WINDOW).contains(&address) {
+        if (BACKUP_RAM..BACKUP_RAM + BACKUP_SELECT).contains(&address) {
             for (i, byte) in bytes.into_iter().enumerate() {
                 self.backup.write8(address + i as u32, byte)?;
             }
@@ -961,12 +991,17 @@ impl CpuBus<'_> {
         }
         for (i, bytes) in bytes.chunks(width).enumerate() {
             let at = address + (i * width) as u32;
-            match width {
-                1 => self.bus.write(at, [bytes[0]])?,
-                2 => self.bus.write(at, [bytes[0], bytes[1]])?,
-                _ => self
-                    .bus
-                    .write(at, [bytes[0], bytes[1], bytes[2], bytes[3]])?,
+            let result = match width {
+                1 => self.bus.write(at, [bytes[0]]),
+                2 => self.bus.write(at, [bytes[0], bytes[1]]),
+                _ => self.bus.write(at, [bytes[0], bytes[1], bytes[2], bytes[3]]),
+            };
+            // The ROM has no write-enable pin. Keep the checked host loader's
+            // ReadOnly error, but a real CPU write completes without changing
+            // ROM or manufacturing an SH-2 bus exception.
+            match result {
+                Ok(()) | Err(BusError::ReadOnly { .. }) => (),
+                Err(error) => return Err(error),
             }
             let value = bytes.iter().fold(0u32, |v, b| v << 8 | u32::from(*b));
             self.observe_external(at, width, value, true);

@@ -202,9 +202,12 @@ the physical standard independently of SMPC area codes and survives resets.
 The PLL uses ST-169 table1.1's PAL 26.6875/28.4375 MHz frequencies; sound/CD/RTC
 keep their fixed clocks, including reference ticks without a main-clock edge.
 
-The renderer still samples a frame snapshot. Raster-time table/window/reload
-latching, complete VRAM-cycle/bank arbitration and half-line interlace phase
-remain required. Exclusive-monitor dimensions are decoded; exclusive-monitor scanout and special
+Machine presentation captures each visible scanline at HBlank and publishes it
+at VBlank. Later register/VRAM writes cannot repaint preceding lines. Double
+density updates alternate rows and retains the other field; published dimensions
+stay paired with their pixels. Before the first completed field, the debugger may
+inspect current state. Mid-line fetches, exact table/window/reload strobes, complete
+VRAM-cycle/bank arbitration and half-line interlace phase remain required. Exclusive-monitor dimensions are decoded; exclusive-monitor scanout and special
 high-resolution layer multiplexing remain unsupported. BDCLMD selects the back
 screen during display blanking (the lowermost line for a line back table), or
 opaque black. Reserved display encodings and 256-line mode on NTSC fail.
@@ -243,8 +246,8 @@ and deviations. These subsets do not establish full SMPC conformance.
 Internal backup RAM is independent of volatile resets. The SCU manual §1.2,
 figs. 1.3/1.5 (pp.4/6) places its 64 KiB window at 00180000; the SMPC manual's
 SYSRES command (§2.3 p.29) specifies retention of 256 Kbit battery RAM. Supported
-MOV.B accesses use odd addresses 00180001–0018FFFF and their P1 cache-through
-aliases. Even byte reads return FF and writes do not strobe storage; word/long accesses
+MOV.B accesses use odd addresses 00180001–0018FFFF, their seven further
+64 KiB select aliases through 001FFFFF, and their P1 cache-through aliases. Even byte reads return FF and writes do not strobe storage; word/long accesses
 strobe the odd lanes in address order. Complete board/open-bus conformance is
 still pending. New machines start with zeroed, unformatted bytes. HLE disc boot
 installs the original guest-executed BUP library with its separately identified
@@ -276,7 +279,12 @@ names, bounds and contiguous single-volume extents. Unsupported extended
 attributes, interleaving, multi-extent files and malformed/truncated data fail
 before loading. The first root child must be a regular file (Saturn first-read
 file identifier 2); its filename is not special. Retained BIN/CUE media may have
-cooked or raw Mode1/Mode2 data and BINARY audio tracks. The boot loader extracts
+cooked or raw Mode1/Mode2 data and BINARY audio tracks. Plain ECMA-130 Mode2
+retains all 2336 payload bytes without interpreting XA subheaders/parity. CUE does
+not encode the XA/plain distinction; bounded repeated-subheader detection is the
+default, with `Media::cue_with_mode2_format` for explicit source metadata. A failed
+XA decode is never retried as unchecked plain data. Bootstrap requires 2048-byte
+logical sectors; other lengths remain available through runtime CD transfers. The boot loader extracts
 its first data track through this same validated ISO contract; the runtime CD
 block retains the complete medium, including tracks, indices and gaps.
 Compressed images and large/general ISO boot layouts remain unsupported.

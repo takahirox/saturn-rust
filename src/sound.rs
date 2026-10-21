@@ -17,6 +17,37 @@ const REFERENCE_HZ: u64 = 26_874_100;
 const SOUND_CPU_HZ: u64 = 11_289_600;
 const BUFFER_FRAMES: usize = 8192;
 
+/// ST-077 §4.2, table 4.32 / fig.4.58: MEM4MB changes the DRAM
+/// geometry, including the chip-select bit. The standard board installs only
+/// the first chip. Unconnected expansion-chip data pins read high.
+#[derive(Clone, Copy)]
+struct RamConfig {
+    four_mbit: bool,
+}
+impl RamConfig {
+    fn offset(self, address: usize) -> Option<usize> {
+        let capacity = if self.four_mbit { 0x80000 } else { 0x20000 };
+        let pins = address & (capacity * 2 - 1);
+        (pins < capacity).then_some(pins)
+    }
+    fn read8(self, ram: &[u8], address: usize) -> u8 {
+        self.offset(address).map_or(255, |index| ram[index])
+    }
+    fn read16(self, ram: &[u8], address: usize) -> u16 {
+        u16::from_be_bytes([self.read8(ram, address), self.read8(ram, address + 1)])
+    }
+    fn write8(self, ram: &mut [u8], address: usize, value: u8) {
+        if let Some(index) = self.offset(address) {
+            ram[index] = value;
+        }
+    }
+    fn write16(self, ram: &mut [u8], address: usize, value: u16) {
+        let [high, low] = value.to_be_bytes();
+        self.write8(ram, address, high);
+        self.write8(ram, address + 1, low);
+    }
+}
+
 fn mix_sample(mix: &mut [i64; 2], sample: i16, send: u16, pan: u16) {
     const PAN: [i64; 16] = [
         32768, 23170, 16384, 11585, 8192, 5793, 4096, 2896, 2048, 1448, 1024, 724, 512, 362, 256, 0,
@@ -95,6 +126,11 @@ impl Default for Scsp {
     }
 }
 impl Scsp {
+    fn ram_config(&self) -> RamConfig {
+        RamConfig {
+            four_mbit: self.common[0] & 0x200 != 0,
+        }
+    }
     fn error(address: u32) -> BusError {
         BusError::UnsupportedDevice {
             address: SCSP + address,
@@ -311,8 +347,8 @@ impl Scsp {
             self.common[11] &= !0x1000;
             return Ok(());
         }
-        let address = ((usize::from(self.common[10] & 0xF000) << 4) | usize::from(self.common[9]))
-            & (SOUND_RAM_SIZE - 1);
+        let address = (usize::from(self.common[10] & 0xF000) << 4) | usize::from(self.common[9]);
+        let config = self.ram_config();
         let reg = u32::from(self.common[10] & 0xFFE);
         if (0x412..=0x416).contains(&reg) {
             return Err(Self::error(reg));
@@ -320,16 +356,12 @@ impl Scsp {
         let gate = self.common[11] & 0x4000 != 0;
         if self.common[11] & 0x2000 != 0 {
             let value = if gate { 0 } else { self.read16(reg)? };
-            ram[address..address + 2].copy_from_slice(&value.to_be_bytes());
+            config.write16(ram, address, value);
         } else {
-            let value = if gate {
-                0
-            } else {
-                u16::from_be_bytes([ram[address], ram[address + 1]])
-            };
+            let value = if gate { 0 } else { config.read16(ram, address) };
             self.write16(reg, value)?;
         }
-        let next = (address + 2) & (SOUND_RAM_SIZE - 1);
+        let next = (address + 2) & 0xF_FFFF;
         self.common[9] = next as u16;
         self.common[10] = ((next >> 4) as u16 & 0xF000) | ((reg as u16 + 2) & 0xFFE);
         self.dma_remaining -= 2;
@@ -343,6 +375,7 @@ impl Scsp {
     /// native and Wasm output identical. Direct mode bypasses envelope/TL/LFO.
     fn sample(&mut self, ram: &mut [u8]) -> Result<(), BusError> {
         self.dma(ram)?;
+        let config = self.ram_config();
         for timer in 0..3 {
             let index = 12 + timer;
             let prescale = 1 << ((self.common[index] >> 8) & 7);
@@ -469,12 +502,12 @@ impl Scsp {
                 index + 1
             };
             let decode = |index: i64| {
-                let offset = (start as i64 + index * if pcm8 { 1 } else { 2 })
-                    .rem_euclid(SOUND_RAM_SIZE as i64) as usize;
+                let offset = (start as i64 + index * if pcm8 { 1 } else { 2 }).rem_euclid(0x10_0000)
+                    as usize;
                 let mut value = if pcm8 {
-                    i16::from(ram[offset] as i8) << 8
+                    i16::from(config.read8(ram, offset) as i8) << 8
                 } else {
-                    i16::from_be_bytes([ram[offset & !1], ram[(offset & !1) + 1]])
+                    config.read16(ram, offset & !1) as i16
                 };
                 if regs[0] & 0x200 != 0 {
                     value ^= 0x7FFF;
@@ -533,7 +566,8 @@ impl Scsp {
             voice.phase += if voice.reverse { -step } else { step };
         }
         self.stack.end_frame();
-        self.dsp.sample(ram, self.common[1], self.external)?;
+        self.dsp
+            .sample(ram, config, self.common[1], self.external)?;
         for (channel, sample) in self.dsp.effects.into_iter().enumerate() {
             let routing = self.slots[channel][11];
             let send = (routing >> 5) & 7;
@@ -619,7 +653,7 @@ struct SoundBus<'a> {
 impl Memory for SoundBus<'_> {
     fn read8(&self, address: u32) -> Result<u8, BusError> {
         if address < SOUND_RAM_SIZE as u32 {
-            return Ok(self.ram[address as usize]);
+            return Ok(self.scsp.ram_config().read8(self.ram, address as usize));
         }
         if (0x100000..0x101000).contains(&address) {
             return self.scsp.read8(address - 0x100000);
@@ -640,7 +674,9 @@ impl Memory for SoundBus<'_> {
     }
     fn write8(&mut self, address: u32, value: u8) -> Result<(), BusError> {
         if address < SOUND_RAM_SIZE as u32 {
-            self.ram[address as usize] = value;
+            self.scsp
+                .ram_config()
+                .write8(self.ram, address as usize, value);
             return Ok(());
         }
         if (0x100000..0x101000).contains(&address) {
@@ -709,6 +745,13 @@ impl Scsp {
     }
 }
 impl Sound {
+    /// Main CPU/SCU and sound CPU use the same SCSP DRAM controller.
+    pub fn read_ram8(&self, address: usize) -> u8 {
+        self.scsp.ram_config().read8(&self.ram, address)
+    }
+    pub fn write_ram8(&mut self, address: usize, value: u8) {
+        self.scsp.ram_config().write8(&mut self.ram, address, value);
+    }
     pub(crate) fn clocks_to_sample(&self) -> u32 {
         (self.next_sample - self.time).min(u64::from(u32::MAX)) as u32
     }

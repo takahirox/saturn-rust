@@ -1,5 +1,75 @@
 //! Independent ST-077 §4.2/table 4.14, 4.27/28 and §4.2 timers/IRQ vectors.
 use super::*;
+
+#[test]
+fn memory_geometry_is_shared_by_main_and_sound_cpu_and_preserves_inaccessible_bytes() {
+    // ST-077 §4.2 table4.32/fig4.58. Address bit17 selects the absent
+    // second chip in 1-Mbit mode, bit19 in 4-Mbit mode. Higher unused
+    // address pins do not extend the selected DRAM chip.
+    let mut sound = Sound::default();
+    for (address, value) in [(0, 0x12), (0x1FFFF, 0x34), (0x20000, 0x56), (0x7FFFF, 0x78)] {
+        sound.ram[address] = value;
+    }
+    for (control, expected) in [
+        (0, [0x12, 0x34, 0xFF, 0xFF, 0x12, 0x12]),
+        (0x200, [0x12, 0x34, 0x56, 0x78, 0xFF, 0x12]),
+    ] {
+        sound.scsp.write16(0x400, control).unwrap();
+        for (address, value) in [0, 0x1FFFF, 0x20000, 0x7FFFF, 0x80000, 0x100000]
+            .into_iter()
+            .zip(expected)
+        {
+            assert_eq!(sound.read_ram8(address), value);
+            if address < SOUND_RAM_SIZE {
+                let bus = SoundBus {
+                    ram: &mut sound.ram,
+                    scsp: &mut sound.scsp,
+                };
+                assert_eq!(bus.read8(address as u32), Ok(value));
+            }
+        }
+        let before = sound.ram.clone();
+        sound.write_ram8(0xA0000, 0);
+        assert_eq!(sound.ram, before); // absent chip in both geometries
+    }
+    sound.scsp.write16(0x400, 0).unwrap();
+    sound.write_ram8(0x40000, 0x9A); // address pins wrap within chip0
+    assert_eq!(sound.ram[0], 0x9A);
+    assert_eq!(sound.ram[0x20000], 0x56);
+    sound.scsp.write16(0x400, 0x200).unwrap();
+    assert_eq!(sound.read_ram8(0x20000), 0x56);
+    assert_eq!(sound.read_ram8(0x7FFFF), 0x78);
+}
+
+#[test]
+fn memory_configuration_controls_pcm_dma_and_executing_effects_memory_reads() {
+    for (control, expected) in [(0xF, -1), (0x20F, 0x2345)] {
+        let mut scsp = Scsp::default();
+        let mut ram = vec![0; SOUND_RAM_SIZE];
+        ram[0x20000..0x20008].copy_from_slice(&[0x23, 0x45, 0x23, 0x45, 0x23, 0x45, 0x23, 0x45]);
+        direct(&mut scsp, 0, 0x20000, 1, false, 0);
+        scsp.write16(0x400, control).unwrap();
+        scsp.sample(&mut ram).unwrap();
+        assert_eq!(scsp.drain(1), [expected; 2]);
+        // DMA reads the same address through the controller into COEF0.
+        scsp.write16(0x412, 0).unwrap();
+        scsp.write16(0x414, 0x2700).unwrap();
+        scsp.write16(0x416, 0x1002).unwrap();
+        scsp.sample(&mut ram).unwrap();
+        assert_eq!(scsp.read16(0x700), Ok((expected as u16) & 0xFFF8));
+        // TABLE read at RBP=16, MADRS=0 -> byte address 0x20000.
+        // N+2 IWT -> MEMS0; DSP values are signed Q23.
+        scsp.write16(0x402, 16).unwrap();
+        scsp.write16(0x80C, 0xA002).unwrap();
+        scsp.write16(0x80E, 0x8000).unwrap();
+        scsp.write16(0x81A, 0x20).unwrap();
+        scsp.sample(&mut ram).unwrap();
+        assert_eq!(
+            u32::from(scsp.read16(0xE00).unwrap()) | (u32::from(scsp.read16(0xE02).unwrap()) << 8),
+            (i32::from(expected) * 256) as u32 & 0xFFFFFF
+        );
+    }
+}
 fn direct(scsp: &mut Scsp, slot: u32, address: u32, loop_mode: u16, pcm8: bool, pan: u16) {
     let base = slot * 32;
     for (offset, value) in [

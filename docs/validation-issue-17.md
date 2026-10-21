@@ -1900,3 +1900,67 @@ SYS_EXECDMP/CD-library and complete BIOS/HLE services, and comprehensive mandato
 acceptance coverage remain required. PR #18 stays Draft with `Closes #17` as its
 intended final outcome. No umbrella checkbox is marked complete and no human,
 proprietary firmware, live-site or external-workflow approval gate is introduced.
+
+## Memory geometry, absent devices, Mode2 and raster history
+
+Related to #17. Rechecked upstream `main` as
+`dbd981b030a46daa6923072ce240680dd2e58ebf`. Preserved PR #18's existing work,
+all three demonstration discs and their licenses. This revision implements
+SCSP MEM4MB addressing in the main/sound CPU, PCM, DMA and effects-DSP paths;
+eight backup select aliases; deterministic absent CPU/A-bus reads and ROM write
+strobes; the SH7604 consecutive DIVU read interlock; plain ECMA-130 Mode2 data;
+and historical VDP2 scanline presentation. The detailed primary references,
+implementation/test links, original fixture licenses/hashes and limits are in
+[the inventory](hardware-conformance.md#memory-geometry-non-xa-data-and-historical-scanline-output).
+
+Three original synthetic BIOS fixtures execute through normal guest instructions
+and MMIO. Memory Contracts checks backup aliases, 68k memory-size changes,
+discarded absent-chip writes, SCSP DMA/DSP reads, stereo PCM, absent cartridge
+reads and ROM retention. Its changed guest sample operands change the actual
+AudioWorklet peak. The Mode2 mixed disc is original data/audio: the guest copies
+all 2336 payload bytes through runtime HIRQ/FIFO transfers and computes a sum;
+reset and first/last-byte mutations are independently compared. Raster History
+polls beam counters, writes four color bands, then overwrites VRAM and color
+offset during VBlank. Native tests check all 224 historical rows; Wasm and
+production Canvas check band boundaries, a guest-color mutation, blanking
+retention and next-field output.
+
+Scanout exposed tests that had inspected new VRAM before the beam reached it.
+Their pixel assertions now wait for a completed field, retaining every original
+pixel/gameplay/restart assertion. Fault tests previously used absent cartridge
+addresses or ROM writes as host errors. They now use the reserved SH7604 region
+or a real unsupported SCU port; sticky errors, partial CPU state, reset and UI
+preservation remain checked. The 68k family guest now selects 4-Mbit geometry
+before stack access and reselects it after RESET. Its relocated fault frames and
+all 73 family/EA vectors are reproducible and pass. The redundant VDP2 display
+validation condition was simplified without changing accepted modes, addressing
+Rust 1.94's `nonminimal_bool` Clippy failure.
+
+Final local evidence (2026-10-22):
+
+- `cargo fmt --check`, `cargo build --locked` and full
+  `cargo test --locked --no-fail-fast`: **428 passed**, **229 unit + 199 integration**,
+  **0 failed/ignored**, using Rust/Cargo 1.94.0.
+- Native all-target Clippy with `-D warnings` passes with both Rust 1.94.0 and
+  rustup stable 1.99.0; wasm32 Clippy passes with stable 1.99.0.
+- `sh scripts/build-web.sh` passes with stable 1.99.0 and the existing matching
+  wasm-bindgen-cli 0.2.129. The initial shell lacked that CLI in PATH and its
+  Homebrew compiler had no Wasm target; the documented rustup PATH selects the
+  installed compiler/target and CLI. No model/provider/allowance change was used.
+- All **46** CI guest/media `--check` commands pass, including the three new
+  builders and regenerated 68k family/fault artifacts.
+- The complete extended `npm run test:browser` passes in Chromium
+  **145.0.7632.6** with the built Wasm under `/saturn-rust/`. The new guests and all
+  existing Canvas/WebAudio, three demos, input/focus, reset, local-file privacy
+  and packaging checks execute; none is skipped.
+- JavaScript syntax, Git whitespace and **321** local documentation link targets
+  pass. No proprietary firmware, third-party core or SDK routine is included.
+
+These results establish the changes above, not full Issue #17 completion. The
+review's coordinated transaction/opcode scheduler, remaining SH7604/BSC/cache
+contracts, instruction-specific 68k bus sequencing, SCU arbitration/DSP boundaries,
+remaining VDP1/VDP2 and SCSP behavior, CD lifecycle/services, SYS_EXECDMP/CD-library
+ABI, SMPC boundaries and exhaustive umbrella evidence remain required. No
+acceptance criterion is waived or marked complete; no replacement tracker,
+external-workflow investigation, human approval, proprietary firmware or live-site
+gate is introduced. Nothing was pushed or merged by this worktree operation.

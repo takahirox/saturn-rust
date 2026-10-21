@@ -195,7 +195,10 @@ try {
   bios.writeUInt32BE(0x100, 0);
   bios.writeUInt32BE(0x06100000, 4);
   bios.writeUInt16BE(0xE02A, 0x100); // MOV #42,R0
-  bios.writeUInt16BE(0x2000, 0x102); // MOV.B R0,@R0: explicit read-only ROM diagnostic
+  bios.writeUInt16BE(0x2000, 0x102); // ROM has no write-enable: completes without changing bytes
+  bios.writeUInt16BE(0xD101, 0x104); // MOV.L @(1,PC),R1 -> unsupported real SCU port
+  bios.writeUInt16BE(0x2100, 0x106); // MOV.B R0,@R1
+  bios.writeUInt32BE(0x05FE00CC, 0x10C);
   await page.locator("#bios").setInputFiles({ name: "original-test-vectors.bin", mimeType: "application/octet-stream", buffer: bios });
   await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
   assert.equal(await value("pc"), "0x00000100");
@@ -204,7 +207,14 @@ try {
   await page.locator("#step").click();
   assert.equal(await value("r0"), "0x0000002A");
   await page.locator("#step").click();
-  assert.match(await value("error"), /Memory access at PC 0x00000102: Read-only BIOS: 1-byte write at 0x0000002A/);
+  assert.equal(await value("error"), "");
+  assert.equal(await value("instructions"), "2");
+  assert.equal(await page.evaluate(async()=>{
+    const {emulator}=await import("./app.js");return emulator.read_long(0x28);
+  }),0);
+  await page.locator("#step").click();
+  await page.locator("#step").click();
+  assert.match(await value("error"), /Memory access at PC 0x00000106: Unsupported Saturn device\/register: 1-byte access at 0x05FE00CC/);
   assert.equal(await page.locator("#run").isDisabled(), true);
   const faulted = await machine();
   const faultText = await value("error");
@@ -315,7 +325,7 @@ try {
   const sleepingErrorRom = Buffer.alloc(524288);
   sleepingErrorRom.writeUInt32BE(0x100, 0);
   sleepingErrorRom.writeUInt32BE(0x06100000, 4);
-  [0xD101, 0x6F13, 0x002B, 0x001B, 0x0400, 0x0001].forEach((word, i) => sleepingErrorRom.writeUInt16BE(word, 0x100 + i * 2));
+  [0xD101, 0x6F13, 0x002B, 0x001B, 0x0800, 0x0011].forEach((word, i) => sleepingErrorRom.writeUInt16BE(word, 0x100 + i * 2));
   await page.locator("#bios").setInputFiles({ name: "original-sleeping-address-error.bin", mimeType: "application/octet-stream", buffer: sleepingErrorRom });
   await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000100");
   await page.locator("#count").fill("4");
@@ -1157,6 +1167,39 @@ try {
       assert.deepEqual(hleResult, { mode: "BIOS-less HLE disc", done: 0x600D, command: 13, sp: 0x060FF000 });
     }
   }
+  // Original ECMA Mode2 media: no XA subheaders/EDC/ECC are fabricated.
+  // Guest reads and sums every 2336-byte payload via HIRQ and the real FIFO.
+  const mode2Rom=Buffer.alloc(524288);
+  for(const line of (await readFile("tests/fixtures/mode2.hex","utf8")).split(/\r?\n/)) {
+    if(!line || line.startsWith("#"))continue;
+    const [at,...words]=line.trim().split(/\s+/).map(w=>parseInt(w,16));
+    words.forEach((w,i)=>mode2Rom.writeUInt16BE(w,at+i*2));
+  }
+  const mode2Cue=await readFile("tests/fixtures/mode2.cue","utf8");
+  const mode2Audio=await readFile("tests/fixtures/mode2-audio.bin");
+  for(const mutated of [false,true]) {
+    const raw=Buffer.from(await readFile("tests/fixtures/mode2.bin"));
+    if(mutated){raw[16]=0xAA;raw[2351]=0x55;}
+    const result=await page.evaluate(async ({rom,raw,audio,cue})=>{
+      const {Emulator}=await import("./pkg/saturn_rust.js");
+      const guest=new Emulator();
+      try {
+        const traces=[];
+        for(let reset=0;reset<2;reset++) {
+          guest.reset_bios(Uint8Array.from(rom));
+          guest.mount_cue(cue,"mode2.bin\0mode2-audio.bin",Uint32Array.from([raw.length,audio.length]),Uint8Array.from([...raw,...audio]));
+          for(let i=0;i<10;i++)guest.run_steps(10000);
+          traces.push({done:guest.read_long(0x0600D084),words:guest.read_long(0x0600D064),
+            count:guest.read_long(0x0600D07C),sum:guest.read_long(0x0600D080),
+            data:Array.from({length:584},(_,i)=>guest.read_long(0x06010000+i*4))});
+        }
+        return traces;
+      } finally {guest.free();}
+    },{rom:[...mode2Rom],raw:[...raw],audio:[...mode2Audio],cue:mode2Cue});
+    let sum=0;for(let at=16;at<raw.length;at+=2)sum+=raw.readUInt16BE(at);
+    const data=Array.from({length:584},(_,i)=>raw.readUInt32BE(16+i*4));
+    for(const trace of result)assert.deepEqual(trace,{done:0x600D,words:1168,count:0,sum,data});
+  }
   // Original CD guest issues every command and polls real HIRQ/CR registers.
   // ISO bytes are original zero-filled sectors; no browser writes to mailboxes.
   const driveRom=Buffer.alloc(524288);
@@ -1189,6 +1232,41 @@ try {
     if (previousDrive) assert.deepEqual(result,previousDrive);
     previousDrive=result;
   }
+  // Beam-polled guest changes back color on lines64/128/192, then changes
+  // VRAM/offset during blanking. Both Wasm and production Canvas must retain
+  // the historical bands rather than repainting them using the final state.
+  const rasterRom=Buffer.alloc(524288);
+  for(const line of (await readFile("tests/fixtures/raster-history.hex","utf8")).split(/\r?\n/)) {
+    if(!line || line.startsWith("#"))continue;
+    const [at,...words]=line.trim().split(/\s+/).map(w=>parseInt(w,16));
+    words.forEach((w,i)=>rasterRom.writeUInt16BE(w,at+i*2));
+  }
+  const rasterYs=[0,63,64,127,128,191,192,223];
+  for(const mutated of [false,true]) {
+    const image=Buffer.from(rasterRom);
+    if(mutated) {
+      const at=image.indexOf(Buffer.from([0,0,0x83,0xE0]));
+      assert(at>=0 && image.indexOf(Buffer.from([0,0,0x83,0xE0]),at+1)===-1);
+      image.writeUInt32BE(0x801F,at);
+    }
+    await page.locator("#bios").setInputFiles({name:"original-raster-history.bin",mimeType:"application/octet-stream",buffer:image});
+    await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
+    const result=await page.evaluate(async ys=>{
+      const {emulator,advanceFrame}=await import("./app.js");
+      for(let i=0;i<400 && emulator.read_long(0x0600D900)!==0x600D;i++)emulator.run_steps(500);
+      if(emulator.read_long(0x0600D900)!==0x600D)throw new Error("Raster guest did not complete");
+      advanceFrame();
+      const frame=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
+      const pixels=ys.map(y=>Array.from(frame.slice(y*320*4,y*320*4+4)));
+      const presented=ys.map(y=>Array.from(canvas.getImageData(0,y,1,1).data));
+      advanceFrame();
+      return {pixels,presented,next:Array.from(canvas.getImageData(0,100,1,1).data),
+        finalVram:emulator.read_long(0x25E60000)>>>16};
+    },rasterYs);
+    const expected=rasterYs.map(y=>y<64?[255,0,0,255]:y<128?(mutated?[255,0,0,255]:[0,255,0,255]):y<192?[0,0,255,255]:[255,255,255,255]);
+    assert.deepEqual(result.pixels,expected);assert.deepEqual(result.presented,expected);
+    assert.deepEqual(result.next,[31,0,0,255]);assert.equal(result.finalVram,0x8000);
+  }
   // Four normal tile backgrounds come exclusively from guest instruction/MMIO
   // writes. Mutate the guest palette literal and assert Wasm plus real Canvas.
   const tileRom = Buffer.alloc(524288);
@@ -1211,7 +1289,7 @@ try {
     assert.equal(await value("error"), "");
     const pixels = await page.evaluate(async () => {
       const { emulator, advanceFrame } = await import("./app.js");
-      advanceFrame(); // Present through the same production path used by Play.
+      advanceFrame(); advanceFrame(); // Present through the same production path used by Play.
       const frame = emulator.framebuffer();
       const canvas = document.getElementById("screen").getContext("2d");
       return { done: emulator.read_long(0x06009000),
@@ -1237,7 +1315,7 @@ try {
     await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
     return page.evaluate(async()=>{
       const {emulator,advanceFrame}=await import("./app.js");
-      emulator.run_steps(3000); advanceFrame();
+      emulator.run_steps(3000); advanceFrame(); advanceFrame();
       const wasm=Array.from(emulator.framebuffer().slice(0,32));
       const canvas=Array.from(document.getElementById("screen").getContext("2d").getImageData(0,0,8,1).data);
       return {done:emulator.read_long(0x0600B000),wasm,canvas};
@@ -1293,7 +1371,7 @@ try {
     const result = await page.evaluate(async (points) => {
       const { emulator, advanceFrame } = await import("./app.js");
       emulator.run_steps(10000);
-      advanceFrame();
+      advanceFrame(); advanceFrame();
       const frame = emulator.framebuffer();
       const canvas = document.getElementById("screen").getContext("2d");
       return {done:emulator.read_long(0x0600A000),matrix:emulator.read_long(0x25E70048),
@@ -1324,7 +1402,7 @@ try {
     await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
     const result=await page.evaluate(async()=>{
       const {emulator,advanceFrame}=await import("./app.js");
-      emulator.run_steps(10000); advanceFrame();
+      emulator.run_steps(10000); advanceFrame(); advanceFrame();
       const frame=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
       const points=[[0,0],[8,0],[0,8],[8,8],[16,0]];
       return {done:emulator.read_long(0x0600A100),
@@ -1366,7 +1444,7 @@ try {
       await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
       const result=await page.evaluate(async()=>{
         const {emulator,advanceFrame}=await import("./app.js");
-        emulator.run_steps(10000); advanceFrame();
+        emulator.run_steps(10000); advanceFrame(); advanceFrame();
         const frame=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
         const points=Array.from({length:8},(_,i)=>[i%4,Math.floor(i/4)]);
         return {done:emulator.read_long(0x0600A200),
@@ -1405,7 +1483,7 @@ try {
       await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
       const result=await page.evaluate(async()=>{
         const {emulator,advanceFrame}=await import("./app.js");
-        emulator.run_steps(10000); advanceFrame();
+        emulator.run_steps(10000); advanceFrame(); advanceFrame();
         const frame=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
         return {done:emulator.read_long(0x0600A400),
           wasm:[0,1].map(y=>Array.from(frame.slice((y*320+2)*4,(y*320+8)*4))),
@@ -1448,7 +1526,7 @@ try {
       await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
       const result=await page.evaluate(async()=>{
         const {emulator,advanceFrame}=await import("./app.js");
-        emulator.run_steps(10000); advanceFrame();
+        emulator.run_steps(10000); advanceFrame(); advanceFrame();
         const frame=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
         return {done:emulator.read_long(0x0600A300),wasm:Array.from(frame.slice(0,32)),
           canvas:Array.from(canvas.getImageData(0,0,8,1).data)};
@@ -1594,6 +1672,53 @@ try {
   await page.locator("#bios").setInputFiles({name:"original-reverse-fractional-sound.bin",mimeType:"application/octet-stream",buffer:reverseSoundRom});
   await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
   assert.deepEqual((await soundResult()).samples,[512,8192,0,0,-512,-8192,-384,-6144,-256,-4096,0,0,256,4096,384,6144]);
+  // Original CPU-board aliases and SCSP DRAM-geometry guest. The source ROM
+  // drives all writes, including DMA and effects-DSP read instructions.
+  const memoryRom=Buffer.alloc(524288);
+  for(const line of (await readFile("tests/fixtures/memory-contracts.hex","utf8")).split(/\r?\n/)) {
+    if(!line || line.startsWith("#")) continue;
+    const [at,...words]=line.trim().split(/\s+/).map(w=>parseInt(w,16));
+    words.forEach((w,i)=>memoryRom.writeUInt16BE(w,at+i*2));
+  }
+  for(const mutated of [false,true]) {
+    const image=Buffer.from(memoryRom);
+    if(mutated) {
+      let count=0;
+      for(let at=0;at<image.length-4;at+=2) if(image.readUInt32BE(at)===0x2345DCBB) {
+        image.writeUInt32BE(0x1234EDCC,at);count++;
+      }
+      assert.equal(count,2);
+    }
+    const result=await page.evaluate(async image=>{
+      const {Emulator}=await import("./pkg/saturn_rust.js");
+      const {AudioOutput}=await import("./audio.js");
+      const guest=new Emulator(),output=new AudioOutput();
+      try {
+        const traces=[];
+        for(let boot=0;boot<2;boot++) {
+          guest.reset_bios(Uint8Array.from(image));
+          for(let i=0;i<10;i++)guest.run_steps(10000);
+          traces.push(Array.from({length:16},(_,i)=>guest.read_long(0x0600F000+i*4)));
+        }
+        const pcm=guest.audio_samples(8192);
+        const samples=Array.from(pcm);
+        await output.enable();output.setPaused(false);output.deliver(pcm);
+        for(let i=0;i<200;i++) {
+          if(output.stats.rendered>128 && output.stats.peak>0 && output.stats.state==="underflow")break;
+          await new Promise(resolve=>setTimeout(resolve,25));
+        }
+        return {traces,positive:Math.max(...samples),negative:Math.min(...samples),
+          dsp:guest.read_long(0x05B00E00)&0xFFFF,stats:{...output.stats}};
+      } finally {guest.free();await output.context?.close();}
+    },[...image]);
+    const word=mutated?0x1234:0x2345;
+    result.traces.forEach((trace,i)=>assert.deepEqual(trace,
+      [...Array(8).fill(0xFF01+i),word,0xFFFF,word,word&0xFFF8,0x600D,0xFFFFFFFF,0x200,0x600D]));
+    assert.equal(result.dsp,word);
+    assert.equal(result.positive,word);assert.equal(result.negative,-word);
+    assert.equal(result.stats.state,"underflow");assert(result.stats.rendered>128);
+    assert(Math.abs(result.stats.peak-word/32768)<0.00001,JSON.stringify(result.stats));
+  }
   // Independent 68k family/fault vectors plus SCSP DMA and timed MIDI.
   const intcRom=Buffer.alloc(524288);
   for(const line of (await readFile("tests/fixtures/intc.hex","utf8")).split(/\r?\n/)) {
@@ -1968,7 +2093,7 @@ try {
   const badSlaveRom = Buffer.from(dualRom);
   const badStack = badSlaveRom.indexOf(Buffer.from([0x06, 0x0F, 0xE0, 0x00]));
   assert(badStack > 0);
-  badSlaveRom.writeUInt32BE(0x04000000, badStack);
+  badSlaveRom.writeUInt32BE(0x08000010, badStack);
   await page.locator("#bios").setInputFiles({ name: "original-faulting-slave.bin", mimeType: "application/octet-stream", buffer: badSlaveRom });
   await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
   await page.locator("#run").click();
@@ -2108,12 +2233,14 @@ try {
   const readyCollector = async () => {
     for (let i = 0; i < 80 && (await gameState()).state[4] < 2; i++) await stepFrames(1);
     assert((await gameState()).state[4] >= 2, "Guest must finish its own bitmap initialization");
+    await stepFrames(2); // complete scanout after guest VRAM initialization
   };
   await readyCollector();
   const initial = await gameState();
   assert.deepEqual(initial.state.slice(0,4), [32,112,0,0]);
   assert(initial.instructions > 100000);
   await hold("ArrowRight", 8);
+  await stepFrames(2); // the beam must reach the guest-updated scoreboard
   const collected = await gameState();
   assert.deepEqual(collected.state.slice(0,4), [64,112,1,0]);
   assert.notEqual(initial.hash, collected.hash);
@@ -2125,6 +2252,7 @@ try {
   await page.keyboard.down("ArrowRight");
   for (let i = 0; i < 80 && (await gameState()).state[3] !== 1; i++) await stepFrames(1);
   await page.keyboard.up("ArrowRight");
+  await stepFrames(2); // display the completed win banner field
   const won = await gameState();
   assert.deepEqual(won.state.slice(0,4), [256,112,5,1]);
   assert.deepEqual(won.banner, [0,255,0,255]);
@@ -2471,6 +2599,7 @@ try {
     if (mutatedCourier.state[4] > 2) break;
   }
   assert(mutatedCourier.state[4] > 2, "Changed guest must finish initialization");
+  mutatedCourier = await courierFrames(2); // publish the initialized texture's field
   assert.deepEqual(mutatedCourier.state.slice(0,4), [24,112,0,0]);
   assert.deepEqual(mutatedCourier.pixels[0], [0,0,255,255]);
   await courier.close();

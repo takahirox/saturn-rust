@@ -1,6 +1,7 @@
 //! Independent numeric vectors for ST-077 figs.4.5–4.7/5.1, tables4.26/4.29,
 //! and ST-228 Reference2's TEMP/sample and sound-memory delay model.
 use super::*;
+use crate::sound::SOUND_RAM_SIZE;
 
 #[test]
 fn coefficient_internal_ram_and_byte_lanes_obey_physical_widths() {
@@ -38,7 +39,8 @@ fn multiply_accumulate_uses_signed_13_bit_y_and_previous_accumulator_output() {
     dsp.program[1] = [0, 0xA000, 0x1001, 0]; // EF0=previous; ACC += half
     dsp.program[2] = [0, 0xA000, 0x1102, 0x0200]; // EF1=sum; ACC=-half
     dsp.program[3] = [0, 0, 0x1202, 0]; // EF2=-half
-    dsp.sample(&mut ram, 0, [0; 2]).unwrap();
+    dsp.sample(&mut ram, RamConfig { four_mbit: true }, 0, [0; 2])
+        .unwrap();
     assert_eq!(&dsp.effects[..3], &[2304, 4608, -2304]);
 }
 
@@ -54,7 +56,8 @@ fn temp_pointer_moves_once_per_sample_and_reads_precede_parallel_writes() {
     dsp.program[3] = [0x0100, 0x2000, 2, 0]; // previous sample's TEMP1 * .5
     dsp.program[4] = [0, 0, 0x1002, 0];
     for (input, output) in [(8000, 0), (-4000, 2000), (12000, -1000)] {
-        dsp.sample(&mut ram, 0, [input, 0]).unwrap();
+        dsp.sample(&mut ram, RamConfig { four_mbit: true }, 0, [input, 0])
+            .unwrap();
         assert_eq!(dsp.effects[0], output);
     }
     // A simultaneous TEMP read/write must multiply the old data.
@@ -62,7 +65,8 @@ fn temp_pointer_moves_once_per_sample_and_reads_precede_parallel_writes() {
     dsp.temp[0] = 0x100000;
     dsp.program[0] = [0x0080, 0x2000, 2, 0];
     dsp.program[1] = [0, 0, 0x1102, 0];
-    dsp.sample(&mut ram, 0, [0; 2]).unwrap();
+    dsp.sample(&mut ram, RamConfig { four_mbit: true }, 0, [0; 2])
+        .unwrap();
     assert_eq!(dsp.effects[1], 2048);
 }
 
@@ -75,7 +79,8 @@ fn shifter_clips_or_wraps_and_effect_writes_accumulate_with_sixteen_bit_width() 
         dsp.programmed = true;
         dsp.program[0] = [0, 0, 0, 0]; // ACC=TEMP0
         dsp.program[1] = [0, 0, 0x1000 | (shift << 4), 0];
-        dsp.sample(&mut ram, 0, [0; 2]).unwrap();
+        dsp.sample(&mut ram, RamConfig { four_mbit: true }, 0, [0; 2])
+            .unwrap();
         assert_eq!(dsp.effects[0], expected);
     }
     let mut dsp = Dsp::default();
@@ -84,7 +89,8 @@ fn shifter_clips_or_wraps_and_effect_writes_accumulate_with_sixteen_bit_width() 
     dsp.programmed = true;
     dsp.program[1] = [0, 0, 0x1000, 0];
     dsp.program[2] = [0, 0, 0x1000, 0];
-    dsp.sample(&mut ram, 0, [0; 2]).unwrap();
+    dsp.sample(&mut ram, RamConfig { four_mbit: true }, 0, [0; 2])
+        .unwrap();
     assert_eq!(dsp.effects[0], -16384); // 24576 + 24576 wraps.
 }
 
@@ -101,7 +107,8 @@ fn ring_table_linear_reads_use_two_step_latency_and_preserve_read_before_write()
     dsp.program[4] = [0, 0xA040, 2, 0]; // MEMS1 * .5
     dsp.program[5] = [0, 0, 0x1002, 0];
     dsp.coefficients[0] = 0x4000;
-    dsp.sample(&mut ram, 2, [0; 2]).unwrap(); // RBP2=0x4000 byte base
+    dsp.sample(&mut ram, RamConfig { four_mbit: true }, 2, [0; 2])
+        .unwrap(); // RBP2=0x4000 byte base
     assert_eq!(dsp.mems[0], 0);
     assert_eq!(dsp.mems[1], 0x123400);
     assert_eq!(dsp.effects[0], 2330);
@@ -111,7 +118,13 @@ fn ring_table_linear_reads_use_two_step_latency_and_preserve_read_before_write()
         dsp.addresses[0] = ((0x2000u32 << rbl) - 2) as u16;
         dsp.program[1] = [0, 0, 0x2002, 0x8001];
         ram[0x4000..0x4002].copy_from_slice(&0xA980u16.to_be_bytes());
-        dsp.sample(&mut ram, 2 | (rbl << 7), [0; 2]).unwrap();
+        dsp.sample(
+            &mut ram,
+            RamConfig { four_mbit: true },
+            2 | (rbl << 7),
+            [0; 2],
+        )
+        .unwrap();
         assert_eq!(dsp.mems[1], -22144 * 256);
     }
     // Simultaneous MRD/MWT returns the old RAM word and stores the shifter.
@@ -120,7 +133,8 @@ fn ring_table_linear_reads_use_two_step_latency_and_preserve_read_before_write()
     dsp.program[0] = [0, 0, 0, 0];
     dsp.program[1] = [0, 0, 0xE002, 0x8000];
     dsp.addresses[0] = 0;
-    dsp.sample(&mut ram, 2, [0; 2]).unwrap();
+    dsp.sample(&mut ram, RamConfig { four_mbit: true }, 2, [0; 2])
+        .unwrap();
     assert_eq!(&ram[0x4000..0x4002], &[0x25, 0]);
     assert_eq!(dsp.mems[1], -22144 * 256);
 }
@@ -150,7 +164,8 @@ fn floating_memory_format_has_independent_bit_patterns_and_bounded_error() {
     dsp.program[1] = [0, 0, 0xC002, 0]; // floating TABLE write
     dsp.program[3] = [0, 0, 0xA002, 0]; // floating TABLE read
     dsp.program[5] = [0, 0x20, 2, 0];
-    dsp.sample(&mut ram, 0, [0; 2]).unwrap();
+    dsp.sample(&mut ram, RamConfig { four_mbit: true }, 0, [0; 2])
+        .unwrap();
     assert_eq!(&ram[..2], &[8, 0]);
     assert_eq!(dsp.mems[0], 0x200000);
 }
@@ -164,7 +179,8 @@ fn y_fraction_and_address_latches_use_previous_step_values() {
     dsp.program[0] = [0, 0xC000, 10, 0]; // YRL; old Y=0
     dsp.program[1] = [0, 0xC000, 0x1002, 0]; // now Y=0x400
     dsp.program[2] = [0, 0, 0x1102, 0];
-    dsp.sample(&mut ram, 0, [0; 2]).unwrap();
+    dsp.sample(&mut ram, RamConfig { four_mbit: true }, 0, [0; 2])
+        .unwrap();
     assert_eq!(&dsp.effects[..2], &[0, 2048]);
     // FRCL loads the previous shifter result, consumed next instruction.
     dsp.decrement = 0;
@@ -173,7 +189,8 @@ fn y_fraction_and_address_latches_use_previous_step_values() {
     dsp.program[1] = [0, 0, 0x42, 0]; // FRCL=0x400
     dsp.program[2] = [0, 0x8000, 2, 0];
     dsp.program[3] = [0, 0, 0x1002, 0];
-    dsp.sample(&mut ram, 0, [0; 2]).unwrap();
+    dsp.sample(&mut ram, RamConfig { four_mbit: true }, 0, [0; 2])
+        .unwrap();
     assert_eq!(dsp.effects[0], 2048);
     dsp.program.fill([0; 4]);
     dsp.mems[0] = 0x020000; // integer address 2
@@ -181,7 +198,8 @@ fn y_fraction_and_address_latches_use_previous_step_values() {
     dsp.program[1] = [0, 0, 0xA002, 0x8002]; // ADREB, TABLE, linear
     dsp.program[3] = [0, 0x20, 2, 0];
     ram[4..6].copy_from_slice(&0x4321u16.to_be_bytes());
-    dsp.sample(&mut ram, 0, [0; 2]).unwrap();
+    dsp.sample(&mut ram, RamConfig { four_mbit: true }, 0, [0; 2])
+        .unwrap();
     assert_eq!(dsp.mems[0], 0x432100);
 }
 
@@ -236,6 +254,14 @@ fn illegal_memory_steps_and_reserved_ports_fail_without_faking_effects() {
             ..Dsp::default()
         };
         dsp.program[0] = words;
-        assert!(dsp.sample(&mut vec![0; SOUND_RAM_SIZE], 0, [0; 2]).is_err());
+        assert!(
+            dsp.sample(
+                &mut vec![0; SOUND_RAM_SIZE],
+                RamConfig { four_mbit: true },
+                0,
+                [0; 2]
+            )
+            .is_err()
+        );
     }
 }

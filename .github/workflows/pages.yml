@@ -45,6 +45,7 @@ jobs:
           python3 tests/fixtures/build_hle_backup.py --check
           python3 tests/fixtures/build_clock.py --check
           python3 tests/fixtures/build_display_modes.py --check
+          python3 tests/fixtures/build_raster_history.py --check
           python3 tests/fixtures/build_sprite_shrink.py --check
           python3 tests/fixtures/build_digital_timing.py --check
           python3 tests/fixtures/build_ubc.py --check
@@ -60,6 +61,7 @@ jobs:
           python3 tests/fixtures/build_cd_drive.py --check
           python3 tests/fixtures/build_cd_directory.py --check
           python3 tests/fixtures/build_cd_decode.py --check
+          python3 tests/fixtures/build_mode2.py --check
           python3 tests/fixtures/build_cdda.py --check
           python3 tests/fixtures/build_scu.py --check
           python3 tests/fixtures/build_sound.py --check
@@ -68,6 +70,7 @@ jobs:
           python3 tests/fixtures/build_dack.py --check
           python3 tests/fixtures/build_cache.py --check
           python3 tests/fixtures/build_m68k_families.py --check
+          python3 tests/fixtures/build_memory_contracts.py --check
           python3 tests/fixtures/build_sound_io.py --check
           python3 tests/fixtures/build_smpc.py --check
           python3 tests/fixtures/build_smpc_status.py --check

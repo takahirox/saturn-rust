@@ -178,6 +178,10 @@ fn disc_matrix_and_window_operands_change_independent_pixels() {
         m.reset_media(media(&iso, audio)).unwrap();
         run(&mut m);
         assert_results(&m);
+        // Scene creation may finish after its first visible scanlines. Wait
+        // for a complete field containing the new guest matrix/window data.
+        m.advance_frame().unwrap();
+        m.advance_frame().unwrap();
         let frame = m.framebuffer().unwrap();
         for (x, y, expected) in points {
             assert_eq!(

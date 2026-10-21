@@ -260,7 +260,7 @@ fn unaligned_exception_stacking_reaches_vector_nine_without_recursive_errors() {
 fn unavailable_exception_stack_remains_a_bounded_host_diagnostic() {
     let (mut cpu, mut bus) = setup(&[0x6212]);
     cpu.state.r[1] = HIGH_WRAM + 0x801;
-    cpu.state.r[15] = 0x04000001;
+    cpu.state.r[15] = 0x08000011;
     cpu.step(&mut bus).unwrap();
     let error = cpu.step(&mut bus).unwrap_err();
     assert!(matches!(
@@ -331,7 +331,7 @@ fn peripheral_width_pc_relative_and_tas_checks_precede_device_access() {
         }
     }
     // Correct-width ordinary accesses still diagnose missing implementations.
-    for (opcode, address) in [(0x6211, 0xFFFF_FF00), (0x6210, 0x0400_0000)] {
+    for (opcode, address) in [(0x6211, 0xFFFF_FF00), (0x6210, 0x0800_0000)] {
         let (mut cpu, mut bus) = setup(&[opcode]);
         cpu.state.r[1] = address;
         assert!(matches!(cpu.step(&mut bus), Err(CpuError::Bus { .. })));

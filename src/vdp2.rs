@@ -18,6 +18,11 @@ pub struct Vdp2 {
     odd: bool,
     latched_counters: Cell<(u16, u16)>,
     external_latched: Cell<bool>,
+    scanning: Vec<u8>,
+    completed: Option<Result<Vec<u8>, String>>,
+    scan_error: Option<String>,
+    scan_size: (usize, usize),
+    completed_size: (usize, usize),
 }
 impl Default for Vdp2 {
     fn default() -> Self {
@@ -32,6 +37,11 @@ impl Default for Vdp2 {
             odd: true,
             latched_counters: Cell::new((0, 0)),
             external_latched: Cell::new(false),
+            scanning: Vec::new(),
+            completed: None,
+            scan_error: None,
+            scan_size: (0, 0),
+            completed_size: (0, 0),
         }
     }
 }
@@ -144,6 +154,57 @@ impl Vdp2 {
         }
         self.render(Some(sprites))
     }
+    /// The debugger may inspect current VRAM before the first field completes.
+    /// Once scanout has produced a field, presentation uses its historical
+    /// pixels, never a retroactive render using later registers or VRAM.
+    pub fn scanout(&self, sprites: &Vdp1) -> Result<Vec<u8>, String> {
+        self.completed
+            .clone()
+            .unwrap_or_else(|| self.composite(sprites))
+    }
+    pub(crate) fn scanline(&mut self, sprites: &Vdp1, line: usize) {
+        let size = self.dimensions();
+        if size != self.scan_size {
+            self.scan_size = size;
+            self.scanning = vec![0; size.0 * size.1 * 4];
+            for pixel in self.scanning.as_chunks_mut::<4>().0 {
+                pixel[3] = 255;
+            }
+        }
+        let y = if self.word(0) & 0xC0 == 0xC0 {
+            line * 2 + usize::from(!self.odd)
+        } else {
+            line
+        };
+        if y >= size.1 {
+            return;
+        }
+        let pixels = if sprites.normal_scanout() {
+            self.render_lines(Some(sprites), y, y + 1)
+        } else {
+            Err("Unsupported VDP1 scanout mode in VDP2 compositor".into())
+        };
+        match pixels {
+            Ok(pixels) => {
+                self.scanning[y * size.0 * 4..(y + 1) * size.0 * 4].copy_from_slice(&pixels)
+            }
+            Err(error) => self.scan_error = Some(error),
+        }
+    }
+    pub(crate) fn finish_field(&mut self) {
+        self.completed_size = self.scan_size;
+        self.completed = Some(match self.scan_error.take() {
+            Some(error) => Err(error),
+            None => Ok(self.scanning.clone()),
+        });
+    }
+    pub fn output_dimensions(&self) -> (usize, usize) {
+        if self.completed.is_some() {
+            self.completed_size
+        } else {
+            self.dimensions()
+        }
+    }
     /// ST-058 §2.4 tables2.1: double density doubles source lines; single
     /// density repeats the same image in alternating fields.
     pub fn dimensions(&self) -> (usize, usize) {
@@ -162,7 +223,8 @@ impl Vdp2 {
             || mode & 0xC0 == 0x40
             // Exclusive monitors need their own scanout/layer multiplexing.
             || mode & 4 != 0
-            || (mode & 4 == 0 && (mode & 0x30 == 0x30 || (!self.pal && mode & 0x30 == 0x20)))
+            || mode & 0x30 == 0x30
+            || (!self.pal && mode & 0x30 == 0x20)
             || self.word(0x20) & !0x1F3F != 0
             || self.word(0xE)
                 & !(0xB000
@@ -588,8 +650,16 @@ impl Vdp2 {
         })
     }
     fn render(&self, sprites: Option<&Vdp1>) -> Result<Vec<u8>, String> {
+        self.render_lines(sprites, 0, self.dimensions().1)
+    }
+    fn render_lines(
+        &self,
+        sprites: Option<&Vdp1>,
+        first: usize,
+        end: usize,
+    ) -> Result<Vec<u8>, String> {
         let (width, height) = self.dimensions();
-        let mut pixels = vec![0; width * height * 4];
+        let mut pixels = vec![0; width * (end - first) * 4];
         if self.word(0) & 0x8000 == 0 && self.word(0) & 0x100 == 0 {
             for p in pixels.as_chunks_mut::<4>().0 {
                 p[3] = 255;
@@ -598,7 +668,7 @@ impl Vdp2 {
         }
         self.validate()?;
         let gradation = self.gradation_screen();
-        for y in 0..height {
+        for y in first..end {
             // The manuals do not define the two pre-display pipeline samples.
             // Use black at the left border, reset every scanline; never carry
             // pixels from the previous line or the previous rendered frame.
@@ -618,7 +688,7 @@ impl Vdp2 {
             );
             for x in 0..width {
                 if self.word(0) & 0x8000 == 0 {
-                    pixels[(y * width + x) * 4..][..4].copy_from_slice(&[
+                    pixels[((y - first) * width + x) * 4..][..4].copy_from_slice(&[
                         rgb555(back)[0],
                         rgb555(back)[1],
                         rgb555(back)[2],
@@ -723,7 +793,7 @@ impl Vdp2 {
                         };
                     }
                 }
-                let p = &mut pixels[(y * width + x) * 4..][..4];
+                let p = &mut pixels[((y - first) * width + x) * 4..][..4];
                 // ST-058 §13.1: offset follows color calculation and uses
                 // the top screen's enable/select, never the lower screen's.
                 rgb = self.offset(rgb, top.id);

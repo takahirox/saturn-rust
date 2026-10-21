@@ -37,6 +37,8 @@ pub struct OnChip {
     standby: bool,
     wake_remaining: Option<u32>,
     division: RefCell<Division>,
+    instruction_epoch: Cell<u64>,
+    division_write_epoch: Cell<Option<u64>>,
     pub(super) dma: Dma,
     serial: Serial,
     watchdog: Watchdog,
@@ -73,6 +75,8 @@ impl Default for OnChip {
             standby: false,
             wake_remaining: None,
             division: RefCell::new(Division::default()),
+            instruction_epoch: Cell::new(0),
+            division_write_epoch: Cell::new(None),
             dma: Dma::default(),
             serial: Serial::default(),
             watchdog: Watchdog::default(),
@@ -313,7 +317,19 @@ impl OnChip {
             address,
             0xFFFF_FF08 | 0xFFFF_FF0A | 0xFFFF_FF0C | 0xFFFF_FF0E
         ) {
-            let old = self.read32(address & !3)?;
+            // This is a write strobe, not an architectural read. In particular
+            // do not invent the §10.4.1 read-after-write interlock while
+            // preserving the other lane of a word-accessible register.
+            let old = {
+                let mut div = self.division.borrow_mut();
+                if self.module_stop & 4 != 0 {
+                    return Err(Self::unsupported(address, 2));
+                }
+                self.wait_clocks
+                    .set(self.wait_clocks.get().saturating_add(div.remaining()));
+                div.finish();
+                div.read((address & !3) - DIVU).unwrap()
+            };
             let new = if address & 2 == 0 {
                 (old & 0xFFFF) | (u32::from(value) << 16)
             } else {
@@ -498,8 +514,18 @@ impl OnChip {
             if self.module_stop & 4 != 0 && div.busy() {
                 return Err(Self::unsupported(address, 4));
             }
-            self.wait_clocks
-                .set(self.wait_clocks.get().saturating_add(div.remaining()));
+            // H §10.4.1: an immediately following read instruction extends
+            // one cycle after ANY DIVU register write. Independent instruction
+            // issue, rather than elapsed clocks, determines this dependency.
+            let consecutive = self
+                .division_write_epoch
+                .take()
+                .is_some_and(|epoch| epoch.wrapping_add(1) == self.instruction_epoch.get());
+            self.wait_clocks.set(
+                self.wait_clocks
+                    .get()
+                    .saturating_add(div.remaining().max(u32::from(consecutive))),
+            );
             div.finish();
             return div
                 .read(address - DIVU)
@@ -532,6 +558,8 @@ impl OnChip {
             self.wait_clocks
                 .set(self.wait_clocks.get().saturating_add(div.remaining()));
             if div.write(address - DIVU, value) {
+                self.division_write_epoch
+                    .set(Some(self.instruction_epoch.get()));
                 return Ok(());
             }
         }
@@ -676,6 +704,10 @@ impl OnChip {
     pub(crate) fn instruction_break(&self, pc: u32, after: bool) -> bool {
         if self.standby {
             return false;
+        }
+        if !after {
+            self.instruction_epoch
+                .set(self.instruction_epoch.get().wrapping_add(1));
         }
         let mut ubc = self.ubc.borrow_mut();
         ubc.observe(pc, 2, 0, false, ubc::Master::Cpu, Some(after));

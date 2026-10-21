@@ -2,7 +2,7 @@
 //! §5 fig.5.1 define the buses, RAM widths and circular addressing. ST-228
 //! Reference 1/2 describes multiply/add, delayed TEMP and sound-memory routing.
 //! This is a sample-clock functional interpreter, not a DRAM contention model.
-use super::{BusError, SOUND_RAM_SIZE, Scsp};
+use super::{BusError, RamConfig, Scsp};
 
 pub(super) struct Dsp {
     coefficients: [u16; 64],
@@ -136,6 +136,7 @@ impl Dsp {
     pub fn sample(
         &mut self,
         ram: &mut [u8],
+        config: RamConfig,
         control: u16,
         external: [i16; 2],
     ) -> Result<(), BusError> {
@@ -233,11 +234,9 @@ impl Dsp {
                     } else {
                         (0x2000 << ((control >> 7) & 3)) - 1
                     };
-                    let index = (((address & mask) + (u32::from(control & 127) << 12)) as usize
-                        * 2)
-                        & (SOUND_RAM_SIZE - 1);
+                    let index = ((address & mask) + (u32::from(control & 127) << 12)) as usize * 2;
                     if c & 0x2000 != 0 {
-                        let word = u16::from_be_bytes([ram[index], ram[index + 1]]);
+                        let word = config.read16(ram, index);
                         self.reads[step & 1] = Some(if d & 0x8000 != 0 {
                             i32::from(word as i16) << 8
                         } else {
@@ -250,7 +249,7 @@ impl Dsp {
                         } else {
                             pack(shifted)
                         };
-                        ram[index..index + 2].copy_from_slice(&word.to_be_bytes());
+                        config.write16(ram, index, word);
                     }
                 }
                 // Reads requested on odd step N are available to IWT at N+2.

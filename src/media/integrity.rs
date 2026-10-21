@@ -98,6 +98,20 @@ pub(super) fn validate(sector: &mut [u8; RAW_SECTOR], mode: TrackMode) -> Result
     decode(sector, mode, 4, true)
 }
 
+/// ECMA-130 §14/fig.12, §14.2: plain Mode 2 has 2336 unrestricted
+/// user bytes. There are no RSPC or EDC fields to validate or repair.
+pub(super) fn mode2_data(sector: &[u8; RAW_SECTOR]) -> Result<(), DiscError> {
+    if sector[..12] != [0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0]
+        || sector[15] != 2
+        || !sector[12..15].iter().all(|b| b & 15 < 10 && b >> 4 < 10)
+        || sector[13] >= 0x60
+        || sector[14] >= 0x75
+    {
+        return Err(invalid("Malformed Mode2 data header"));
+    }
+    Ok(())
+}
+
 /// One P/Q pair is one pass (ST-162 §8.2.1, CDC_CdInit). Runtime reads
 /// select zero through six passes; the independent strict media loader retains
 /// its bounded four-pass recovery policy. Failure leaves the received/corrected
