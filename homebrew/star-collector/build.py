@@ -64,6 +64,9 @@ def assemble(source, base=BASE):
             elif op == 'nop': word(0x0009)
             elif op == 'sleep': word(0x001B)
             elif op == 'rte': word(0x002B)
+            elif op == 'trapa':
+                assert 0 <= num(a[0]) <= 255
+                word(0xC300 | num(a[0]))
             elif op == 'ldc':
                 assert a[1] == 'sr'
                 word(0x400E | reg(a[0]) << 8)

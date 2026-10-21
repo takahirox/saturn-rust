@@ -145,6 +145,11 @@ impl Cpu {
         Ok(Self::start(bus.read32(0)?, bus.read32(4)?))
     }
 
+    /// SH7604 table 4.3: manual reset vectors are physical 8/12.
+    pub fn manual_reset(bus: &impl Memory) -> Result<Self, BusError> {
+        Ok(Self::start(bus.read32(8)?, bus.read32(12)?))
+    }
+
     /// Debugger stop, separate from the architectural SLEEP state.
     pub fn halt(&mut self) {
         self.state.status = CpuStatus::Halted;
@@ -162,6 +167,23 @@ impl Cpu {
             return Ok(false);
         }
         self.interrupt(bus, vector, level)
+    }
+
+    /// DMA address errors use vector 10 and cannot be masked by SR.I.
+    pub fn accept_dma_address_error(&mut self, bus: &mut impl Memory) -> Result<bool, CpuError> {
+        if !matches!(self.state.status, CpuStatus::Running | CpuStatus::Sleeping)
+            || self.state.delay_target.is_some()
+            || self.address_error_inhibited
+            || self.state.address_error_pending
+        {
+            return Ok(false);
+        }
+        let result = self.enter_exception(bus, 10, self.state.pc);
+        if let Err(error) = result {
+            self.state.status = CpuStatus::Faulted(error.clone());
+            return Err(error);
+        }
+        Ok(true)
     }
 
     /// NMI has vector 11 and raises the interrupt mask to 15.
@@ -228,11 +250,17 @@ impl Cpu {
         // Bus operations are ordered SR push, PC push, vector fetch (SH7604 §4.1.2).
         // A failed entry is a bounded diagnostic, not recursive host exception dispatch.
         let sp = s.r[15].wrapping_sub(8);
-        bus.write32(sp.wrapping_add(4), s.sr).map_err(access)?;
-        bus.write32(sp, saved_pc).map_err(access)?;
+        bus.exception_write32(sp.wrapping_add(4), s.sr)
+            .map_err(access)?;
+        bus.exception_write32(sp, saved_pc).map_err(access)?;
         let target = bus
             .read32(s.vbr.wrapping_add(vector as u32 * 4))
             .map_err(access)?;
+        // Accept the first stacking error after completing this exception.
+        // Vector 9 stacking must not recursively re-enter forever (§4.8.3).
+        if sp & 3 != 0 && vector != 9 {
+            s.address_error_pending = true;
+        }
         s.r[15] = sp;
         s.pc = target;
         s.delay_target = None;
@@ -277,7 +305,7 @@ impl Cpu {
             self.interrupt_inhibited = false;
             return Ok(());
         }
-        let opcode = bus.read16(pc).map_err(access)?;
+        let opcode = bus.fetch16(pc).map_err(access)?;
         let rewrites_pc = matches!(opcode & 0xF000, 0xA000 | 0xB000)
             || matches!(opcode & 0xFF00, 0x8900 | 0x8B00 | 0x8D00 | 0x8F00 | 0xC300)
             || matches!(opcode & 0xF0FF, 0x0003 | 0x0023 | 0x400B | 0x402B)

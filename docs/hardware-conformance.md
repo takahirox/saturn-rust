@@ -1,16 +1,16 @@
-# Hardware conformance for Issue #15
+# Hardware conformance for Issue #17
 
 **Status: incomplete; Issue #17 is the active continuation tracker.** Issues
 #11/#13/#15 remain administratively closed; do not reopen them. This checkpoint
-adds independent slave SH-2 execution, CPU-local FRT/INTC behavior and timed
-SMPC SSHON/SSHOFF/NMIREQ. It preserves the address-error fixtures, Star Collector,
+includes independent slave SH-2 execution, CPU-local FRT/WDT/SCI/DIVU/DMAC,
+internal interrupt arbitration, write-through caches and timed SMPC CPU control. It preserves the address-error fixtures, Star Collector,
 backup RAM and both direct digital pads. It does not complete the Saturn hardware
 or either required new demonstration. No umbrella acceptance checkbox is met.
 
 Inspected upstream main: `dbd981b030a46daa6923072ce240680dd2e58ebf` (2026-10-21),
 verified with `git ls-remote origin refs/heads/main`. The assigned readiness
-checkpoint is `850d3c1f9112d056281cfd967e3730320be4e1c8`; no technical diagnosis
-was supplied. See [current validation](validation-issue-17.md),
+review checkpoint is `1cd6385b801d7b5462a915794687a13df3eb9102`; its agent-fixable
+findings identify the full outstanding hardware scope. See [current validation](validation-issue-17.md),
 [historical address-error validation](validation-issue-15.md),
 [backup/pad validation](validation-issue-13.md) and the
 [historical SH-2 checkpoint](validation-issue-11.md). **Pending** means required
@@ -44,7 +44,7 @@ Native test keys refer to [src/cpu/tests.rs](../src/cpu/tests.rs):
 | sleep | `sleep_is_bounded_and_interrupt_entry_obeys_mask_vector_and_wakes_cpu` |
 | nop | `nop_only_advances_pc_and_instruction_count` |
 
-**AE** means [src/cpu/address_tests.rs](../src/cpu/address_tests.rs), whose nine
+**AE** means [src/cpu/address_tests.rs](../src/cpu/address_tests.rs), whose ten
 tests cover vector 9, misaligned operands across addressing modes, completed
 auto-updates, saved PC/SR, branch deferral, SLEEP wake, on-chip width/PC-relative/
 TAS restrictions and bounded entry failure. Implementation:
@@ -82,10 +82,22 @@ Collector guest execution in [tests/game.rs](../tests/game.rs) and browser smoke
 coverage: it checks all 65,536 encodings against an independent inventory of 142
 instruction forms (53,752 valid encodings, 11,784 illegal encodings).
 
+**PERIPH** means [the eleven independent peripheral tests](../src/onchip/peripheral_tests.rs)
+and [the original guest integration](../tests/sh7604.rs), executing
+[sh7604.s](../tests/fixtures/sh7604.s) as [sh7604.hex](../tests/fixtures/sh7604.hex)
+in native and browser Wasm. It computes signed division results, copies guest
+RAM using DMAC, acknowledges DMA/WDT interrupts, handles DMA address error 10
+at I=15, polls SCI transmission, performs a watchdog manual reset and recovers
+from misaligned exception stacking. **CACHE** means the four vectors in
+[tests/cache.rs](../tests/cache.rs) plus PERIPH's DMA/purge/reset guest checks.
+The fixture is MIT licensed and reproducible using
+[build_sh7604.py](../tests/fixtures/build_sh7604.py), which CI verifies. It is a
+CPU diagnostic ROM, not either required new demonstration disc.
+
 ## SH-2 instruction families
 
 All rows describe functional interpreter behavior. Common outstanding limitations:
-no instruction cycles, pipeline/bus contention or cache interactions.
+no instruction cycles or pipeline/bus contention; CPU-local cache semantics are tested separately.
 Address-error entry is implemented with the invalid-cycle limitations below.
 A valid opcode can still encounter a diagnostic
 when it accesses a missing device. Architectural valid-instruction decoding does
@@ -166,21 +178,21 @@ not turn those missing hardware paths into supported behavior.
 
 | Feature / reference | Implemented behavior and edges | Native | Browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- | --- |
-| Register/reset model, H §§2/4.2 | Independent machine-owned CPUs and power-on vectors, SR=F0, held-reset slave; SSHOFF clears slave CPU/FRT only | boot.rs, DUAL | DUAL | Manual reset, BSC/UBC preservation and BCR1 CPU identification absent | Pending |
+| Register/reset model, H §§2/4.2 | Independent CPUs; power-on 0/4 and watchdog manual-reset 8/12 vectors, SR=F0; 512-clock watchdog reset hold retains shared RAM/backup and clears CCR | boot.rs, DUAL, PERIPH | DUAL, PERIPH | External reset pin timing, BSC/UBC preservation and BCR1 CPU identification absent | Pending |
 | General/slot illegal, H §4.5 | Vectors 4/6, correct saved PC, no retirement | exception | ROM | No double-fault bus handling | Pending |
 | TRAPA/RTE, H §§4.5/4.7 | Guest stack layout and handler return | exception, sh2_system.rs | ROM | Non-FRT system IRQ sources absent | Pending |
-| CPU address errors, H §§4.3/4.6/4.7, Tables 4.6/4.10/4.11 | Vector 9; odd/peripheral fetches; operand alignment/width/space restrictions; next PC/SR stack; completed auto-update; errors outrank caller IRQ/NMI; reset clears latch | AE, AEROM | AEROM | Invalid-cycle data/bus signals deterministic rather than physical; misaligned exception stacking (H §4.8.3) remains a sticky diagnostic | Pending |
+| CPU address errors, H §§4.3/4.6/4.7/4.8.3, Tables 4.6/4.10/4.11 | Vector 9, operand/fetch checks, next-PC/SR, auto-update and deferral; misaligned stacking completes original exception then accepts address error without recursion | AE, AEROM, PERIPH | AEROM, PERIPH | Invalid data and unaligned stacking bytes are deterministic policies rather than physical bus signals; misaligned VBR unsupported | Pending |
 | Maskable IRQ/NMI, H §4.4 | Explicit caller-supplied level/vector, I mask, NMI vector 11, stack/wake | sleep, special | — | Missing device priority selection, assertion/acknowledgment, NMI signal latch | Pending |
 | Deferral, H §4.6 | IRQ/NMI defer through delayed successors and control/system successors; address errors defer only through delayed successors | special, AE | ROM, AEROM | No pipeline-cycle timing or device IRQ selection; unfetchable successor policy below | Pending |
-| Cache/address regions, H §2 and cache chapter | P1 external-bus alias only | bus.rs | SC | Cache lines, purge/associative access and coherency absent | Pending |
-| On-chip INTC, H §§5.3.2/5.3.6/5.3.7 | CPU-local FRT priority in IPRB, VCRC/VCRD; masked/deferred level-sensitive requests; guest flag acknowledgment | FRT, DUAL | DUAL | Other sources/IPRA/ICR/SCI priority and external IRQ arbitration missing | Pending |
+| Cache/address regions, H §8, tables 8.2–8.4, figs.8.10/8.11 | CPU-local 4 KiB/four-way cache, write-through, no snooping; ID/OD, pseudo-LRU, two-way RAM, P1 bypass, P2 purge, P3 address array, P6 data array; TAS external read | CACHE, PERIPH; `Cache` and `CpuBus` | PERIPH | Pipeline/fill-cycle/bus arbitration timing absent; RAM mirrors remain missing | Pending |
+| On-chip INTC, H §5.3, table 5.4 | IPRA/IPRB, VCRA–D/VCRWDT, DIVU/DMA vectors, source priorities/tie order and guest acknowledgement | FRT, DUAL, PERIPH | DUAL, PERIPH | External ICR/IRL arbitration, refresh and UBC sources missing | Pending |
 | FRT, H §§11.1–11.5, tables 11.2/11.3 | FRC, OCRA/B, capture, divisors, overflow/compare/clear, TIER/FTCSR, shared TEMP, output level state and IRQ; Saturn capture wires (ST-202 §1.2) | FRT, DUAL | FRT (compare), DUAL (capture) | Internal/external pin synchronization, WAIT, clock-switch edges and contention timing absent; no external clock source or output-pin routing | Pending |
-| Watchdog, H WDT chapter | None | — | — | Keyed registers, interval/reset modes missing | Pending |
-| SCI, H serial chapter | None | — | — | Serial registers, timing/status/IRQ missing | Pending |
-| On-chip DMAC, H DMA chapter | None | — | — | Channels, transfers, triggers/status/IRQ missing | Pending |
-| DIVU, H division-unit chapter | None (separate from DIV1 instructions) | — | — | Mapped 32/64-bit division unit missing | Pending |
+| Watchdog, H §§12.2–12.3, table 12.2 | Keyed byte-register/word-write protocol, eight divisors, interval IRQ, read-before-clear, watchdog reset selection/cause and 512-clock CPU hold | PERIPH; `Watchdog` | PERIPH | External WDTOVF pin routing and sub-turn event ordering missing | Pending |
+| SCI, H §§13.2–13.3 | SMR/BRR/SCR/TDR/SSR/RDR, timed internal-clock transmission, external completed-character input, overrun/framing/parity flags, IRQs and DMA handshakes | PERIPH; `Serial` | PERIPH (transmit completion) | No external clock-edge adapter or physical serial pin waveform; multiprocessor and format combinations lack exhaustive integration coverage | Pending |
+| On-chip DMAC, H §§9.2–9.3 | Both channels; byte/word/long/16-byte transfers; fixed/increment/decrement addresses; auto/DREQ/SCI requests; fixed/round-robin channel selection, TE/AE/NMIF acknowledgement, vectors/IRQ | PERIPH; `Dma` and `Bus::advance_dma` | PERIPH (copy/end IRQ/error 10/no cache snoop) | Single-address DACK mode rejected explicitly; CPU/refresh arbitration, burst/cycle-steal timing and wait states missing | Pending |
+| DIVU, H §§10.2–10.4 | Signed 32/32 and 64/32 quotient/remainder, 39/6-clock completion/interlock, DVCR/VCRDIV, sticky overflow and IRQ | PERIPH; `Division` | PERIPH (signed 32/64-bit normal division) | Six-cycle intermediate overflow state is not modeled: deterministic saturation and input-high preservation are used even with OVFIE=1; no full conformance claim | Pending |
 | BSC/UBC/standby, H bus/break/power chapters | None | — | — | Software-visible control/register behavior missing | Pending |
-| Slave SH-2, [Dual CPU User's Guide][DUALREF] §§1/3/4, [SMPC] table 1.1 | Independent interpreter/registers/stacks, shared bus, SSHON/SSHOFF reset/start, bidirectional capture IRQs | DUAL | DUAL | BCR1 identity, cache coherence, bus contention and hardware-time scheduling absent | Pending |
+| Slave SH-2, [Dual CPU User's Guide][DUALREF] §§1/3/4, [SMPC] table 1.1 | Independent interpreter/registers/stacks/peripherals/cache; shared bus, SSHON/SSHOFF, bidirectional capture IRQs | DUAL, CACHE, PERIPH | DUAL, PERIPH | BCR1 identity, bus contention and hardware-time scheduling absent | Pending |
 
 ## MC68EC000 instruction families
 
@@ -362,8 +374,8 @@ storing a register without effects will not count as implementation.
 
 ## Concrete unresolved gaps and closure gates
 
-1. SH-2 misaligned exception stacking, remaining semantic/exception edges, reset domains,
-   cache/coherency, remaining SH7604 peripherals, bus locking and non-FRT IRQs;
+1. Remaining SH-2 semantic/exception edges, complete reset domains, BSC/UBC/standby,
+   DIVU overflow intermediates, DMAC DACK/CPU arbitration, external IRQs and bus locking;
    cycle-based dual-CPU scheduling and arbitration. CPU opcode decoding alone
    does not satisfy the CPU or multiprocessor criterion.
 2. Every MC68EC000 instruction family above, sound bus, SCSP synthesis/timing/DSP,
@@ -405,8 +417,10 @@ GitWeave configuration. All hardware gaps above remain technical requirements.
 ## Dual-CPU/FRT scope and deterministic deviations
 
 `Machine::step` attempts a master boundary followed by a slave boundary (only
-when SSHON has completed), then advances both enabled FRTs and SMPC by eight
-reference clocks. Pending NMI precedes FRT selection; each CPU applies its own
+when SSHON has completed), performs bounded on-chip DMA quanta, then advances
+peripherals/SMPC by eight reference clocks plus DIVU interlock waits. DMA address
+errors are latched for vector 10 at the next eligible boundary. Pending NMI
+precedes selection among internal IRQs; each CPU applies its own
 SR mask, delayed-branch and control-transfer inhibition. An accepted interrupt
 consumes that CPU's turn without retiring an instruction. Timers/commands advance
 during SLEEP. FRT requests remain asserted until guest software reads/clears
@@ -425,8 +439,9 @@ SF clear writes and busy command overwrite are rejected; these invalid-software
 cases are diagnostics rather than a claim about physical firmware recovery.
 
 FRT byte accesses implement shared TEMP and observed-one/write-zero flags.
-The INTC subset accepts byte/word IPRB (FRT priority only), VCRC and VCRD. SCI
-priority writes fail. FRT words and unimplemented device accesses fail explicitly.
+The INTC accepts byte/word IPRA/IPRB, VCRA–D and VCRWDT. Internal sources
+compete by programmed level and manual table 5.4 tie order. FRT word accesses
+and unimplemented device accesses still fail explicitly.
 The external-clock selection does not increment without an external clock source,
 which is not yet connected. Capture strobes at 01000000/01800000 and their P1
 aliases are write-only words, targeting slave/master respectively (ST-202 §1.2).
@@ -453,9 +468,13 @@ control/system transfers do not defer address errors. Odd/peripheral fetches do
 not decode or retire. At an unfetchable delayed successor, the interpreter
 finishes the branch boundary without retiring that successor and accepts the
 latch at the next step. Pipeline fetch contents and invalid bus data are not
-modeled. H §4.8.3 misaligned exception stacking, its undefined writes and nested
-address-error inhibition are still unsupported: failed entry is sticky/bounded.
-No full SH7604 conformance is claimed.
+modeled. H §4.8.3 misaligned exception stacking completes its two writes, latches
+an address error after the original exception and inhibits recursive stacking
+errors in vector 9 entry. Physical stacked data are undefined; the functional
+model chooses big-endian bytes at the exact SP without rounding it. Tests cover
+all three SP misalignments and an original browser guest. Unavailable memory or
+vectors still cause sticky bounded diagnostics. Misaligned VBR handling and full
+SH7604 conformance remain pending.
 
 ## Provenance and manual discrepancies
 

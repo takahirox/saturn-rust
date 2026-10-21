@@ -1,7 +1,25 @@
-//! CPU-local SH7604 FRT and its INTC registers. Original implementation from
-//! SH7604 §§5.3.2/5.3.6/5.3.7 and §§11.1–11.5; no external emulator core.
+//! CPU-local SH7604 FRT, WDT, SCI, DIVU, DMAC and interrupt arbitration.
+//! Original implementation from SH7604 §§5/9–13; no external emulator core.
 use crate::bus::BusError;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+mod divu;
+mod dma;
+mod sci;
+mod wdt;
+use divu::Division;
+use dma::Dma;
+use sci::Serial;
+pub use wdt::ResetRequest;
+use wdt::Watchdog;
+
+pub const SCI: u32 = 0xFFFF_FE00;
+pub const WDT: u32 = 0xFFFF_FE80;
+pub const IPRA: u32 = 0xFFFF_FEE2;
+pub const VCRA: u32 = 0xFFFF_FE62;
+pub const VCRB: u32 = 0xFFFF_FE64;
+pub const VCRWDT: u32 = 0xFFFF_FEE4;
+pub const DIVU: u32 = 0xFFFF_FF00;
+pub const DMAC: u32 = 0xFFFF_FF80;
 
 pub const FRT: u32 = 0xFFFF_FE10;
 pub const IPRB: u32 = 0xFFFF_FE60;
@@ -9,6 +27,15 @@ pub const VCRC: u32 = 0xFFFF_FE66;
 pub const VCRD: u32 = 0xFFFF_FE68;
 
 pub struct OnChip {
+    division: RefCell<Division>,
+    pub(super) dma: Dma,
+    serial: Serial,
+    watchdog: Watchdog,
+    ipra: u16,
+    vcra: u16,
+    vcrb: u16,
+    vcrwdt: u16,
+    wait_clocks: Cell<u32>,
     tier: u8,
     status: u8,
     // Reads of FTCSR must precede a software flag clear (§11.2.5).
@@ -29,6 +56,15 @@ pub struct OnChip {
 impl Default for OnChip {
     fn default() -> Self {
         Self {
+            division: RefCell::new(Division::default()),
+            dma: Dma::default(),
+            serial: Serial::default(),
+            watchdog: Watchdog::default(),
+            ipra: 0,
+            vcra: 0,
+            vcrb: 0,
+            vcrwdt: 0,
+            wait_clocks: Cell::new(0),
             tier: 1,
             status: 0,
             observed: Cell::new(0),
@@ -49,7 +85,16 @@ impl Default for OnChip {
 
 impl OnChip {
     fn unsupported(address: u32, width: usize) -> BusError {
-        if (FRT..FRT + 10).contains(&address) || matches!(address & !1, IPRB | VCRC | VCRD) {
+        if (FRT..FRT + 10).contains(&address)
+            || (SCI..SCI + 6).contains(&address)
+            || (WDT..WDT + 4).contains(&address)
+            || (DIVU..DIVU + 0x18).contains(&address)
+            || (DMAC..DMAC + 0x34).contains(&address)
+            || matches!(
+                address & !1,
+                IPRA | IPRB | VCRA | VCRB | VCRC | VCRD | VCRWDT
+            )
+        {
             BusError::UnsupportedDevice { address, width }
         } else {
             BusError::Unmapped { address, width }
@@ -62,7 +107,11 @@ impl OnChip {
 
     fn intc(&self, address: u32) -> Option<(u16, u16)> {
         match address {
-            IPRB => Some((self.iprb, 0x0F00)), // SCI is still unsupported.
+            IPRA => Some((self.ipra, 0xFFF0)),
+            IPRB => Some((self.iprb, 0xFF00)),
+            VCRA => Some((self.vcra, 0x7F7F)),
+            VCRB => Some((self.vcrb, 0x7F7F)),
+            VCRWDT => Some((self.vcrwdt, 0x7F7F)),
             VCRC => Some((self.vcrc, 0x7F7F)),
             VCRD => Some((self.vcrd, 0x7F00)),
             _ => None,
@@ -70,6 +119,21 @@ impl OnChip {
     }
 
     pub fn read8(&self, address: u32) -> Result<u8, BusError> {
+        if (SCI..SCI + 6).contains(&address) {
+            return self
+                .serial
+                .read(address - SCI)
+                .ok_or(Self::unsupported(address, 1));
+        }
+        if (WDT..WDT + 4).contains(&address) {
+            return self
+                .watchdog
+                .read(address - WDT)
+                .ok_or(Self::unsupported(address, 1));
+        }
+        if matches!(address, 0xFFFF_FE71 | 0xFFFF_FE72) {
+            return Ok(self.dma.read_request((address - 0xFFFF_FE71) as usize));
+        }
         if let Some((word, _)) = self.intc(address & !1) {
             return Ok(if address & 1 == 0 {
                 (word >> 8) as u8
@@ -99,6 +163,18 @@ impl OnChip {
     }
 
     pub fn write8(&mut self, address: u32, value: u8) -> Result<(), BusError> {
+        if (SCI..SCI + 6).contains(&address) {
+            return if self.serial.write(address - SCI, value) {
+                Ok(())
+            } else {
+                Err(Self::unsupported(address, 1))
+            };
+        }
+        if matches!(address, 0xFFFF_FE71 | 0xFFFF_FE72) {
+            self.dma
+                .write_request((address - 0xFFFF_FE71) as usize, value);
+            return Ok(());
+        }
         if self.intc(address & !1).is_some() {
             let (old, _) = self.intc(address & !1).unwrap();
             let new = if address & 1 == 0 {
@@ -129,6 +205,17 @@ impl OnChip {
         if address & 1 != 0 {
             return Err(BusError::Unaligned { address, width: 2 });
         }
+        if matches!(
+            address,
+            0xFFFF_FF08 | 0xFFFF_FF0A | 0xFFFF_FF0C | 0xFFFF_FF0E
+        ) {
+            let value = self.read32(address & !3)?;
+            return Ok(if address & 2 == 0 {
+                (value >> 16) as u16
+            } else {
+                value as u16
+            });
+        }
         self.intc(address)
             .map(|(v, _)| v)
             .ok_or(Self::unsupported(address, 2))
@@ -138,15 +225,30 @@ impl OnChip {
         if address & 1 != 0 {
             return Err(BusError::Unaligned { address, width: 2 });
         }
-        let (_, mask) = self.intc(address).ok_or(Self::unsupported(address, 2))?;
-        // Reject SCI priority configuration instead of silently accepting a
-        // nonfunctional serial interrupt controller.
-        if address == IPRB && value & 0xF000 != 0 {
-            return Err(Self::unsupported(address, 2));
+        if matches!(address, WDT | 0xFFFF_FE82) {
+            self.watchdog.write(address - WDT, value);
+            return Ok(());
         }
+        if matches!(
+            address,
+            0xFFFF_FF08 | 0xFFFF_FF0A | 0xFFFF_FF0C | 0xFFFF_FF0E
+        ) {
+            let old = self.read32(address & !3)?;
+            let new = if address & 2 == 0 {
+                (old & 0xFFFF) | (u32::from(value) << 16)
+            } else {
+                (old & 0xFFFF_0000) | u32::from(value)
+            };
+            return self.write32(address & !3, new);
+        }
+        let (_, mask) = self.intc(address).ok_or(Self::unsupported(address, 2))?;
         let word = value & mask;
         match address {
+            IPRA => self.ipra = word,
             IPRB => self.iprb = word,
+            VCRA => self.vcra = word,
+            VCRB => self.vcrb = word,
+            VCRWDT => self.vcrwdt = word,
             VCRC => self.vcrc = word,
             VCRD => self.vcrd = word,
             _ => unreachable!(),
@@ -158,6 +260,13 @@ impl OnChip {
     /// Pin synchronization, access wait states and clock-switch glitches are
     /// outside this functional model (SH7604 §§11.4/11.7).
     pub fn advance_clocks(&mut self, clocks: u32) {
+        let held_reset = self.watchdog.reset_active();
+        self.watchdog.advance(clocks);
+        if held_reset || self.watchdog.reset_active() {
+            return;
+        }
+        self.division.get_mut().advance(clocks);
+        self.serial.advance(clocks);
         let divisor = match self.control & 3 {
             0 => 8,
             1 => 32,
@@ -207,23 +316,135 @@ impl OnChip {
     /// Level-sensitive until guest software reads/clears FTCSR. Exception
     /// acceptance itself does not acknowledge the peripheral flag (§11.5).
     pub fn interrupt(&self) -> Option<(u8, u8)> {
-        let level = ((self.iprb >> 8) & 15) as u8;
-        let pending = self.tier & self.status & 0x8E;
-        if level == 0 || pending == 0 {
-            return None;
-        }
-        let vector = if pending & 0x80 != 0 {
+        // H table 5.4: earlier source wins when programmed levels are equal.
+        let div = self.division.borrow();
+        let frt = self.tier & self.status & 0x8E;
+        let frt_vector = if frt & 0x80 != 0 {
             self.vcrc >> 8
-        } else if pending & 0x0C != 0 {
+        } else if frt & 0x0C != 0 {
             self.vcrc & 0x7F
         } else {
             self.vcrd >> 8
         };
-        Some((level, vector as u8))
+        let sci_vector = self.serial.irq().map(|source| match source {
+            0 => self.vcra >> 8,
+            1 => self.vcra & 0x7F,
+            2 => self.vcrb >> 8,
+            _ => self.vcrb & 0x7F,
+        });
+        let sources = [
+            (self.ipra >> 12, div.irq().then_some(div.vector as u16)),
+            ((self.ipra >> 8) & 15, self.dma.interrupt().map(u16::from)),
+            (
+                (self.ipra >> 4) & 15,
+                self.watchdog.irq().then_some(self.vcrwdt >> 8),
+            ),
+            (self.iprb >> 12, sci_vector),
+            ((self.iprb >> 8) & 15, (frt != 0).then_some(frt_vector)),
+        ];
+        let mut winner = None;
+        for (level, vector) in sources {
+            if level != 0
+                && let Some(vector) = vector
+                && winner.is_none_or(|(old, _)| level as u8 > old)
+            {
+                winner = Some((level as u8, vector as u8));
+            }
+        }
+        winner
+    }
+
+    pub fn read32(&self, address: u32) -> Result<u32, BusError> {
+        if address & 3 != 0 {
+            return Err(BusError::Unaligned { address, width: 4 });
+        }
+        if (DIVU..DIVU + 0x18).contains(&address) {
+            let mut div = self.division.borrow_mut();
+            self.wait_clocks
+                .set(self.wait_clocks.get().saturating_add(div.remaining()));
+            div.finish();
+            return div
+                .read(address - DIVU)
+                .ok_or(Self::unsupported(address, 4));
+        }
+        if (DMAC..DMAC + 0x34).contains(&address) {
+            return self
+                .dma
+                .read(address - DMAC)
+                .ok_or(Self::unsupported(address, 4));
+        }
+        Err(Self::unsupported(address, 4))
+    }
+
+    pub fn write32(&mut self, address: u32, value: u32) -> Result<(), BusError> {
+        if address & 3 != 0 {
+            return Err(BusError::Unaligned { address, width: 4 });
+        }
+        if (DIVU..DIVU + 0x18).contains(&address) {
+            let div = self.division.get_mut();
+            self.wait_clocks
+                .set(self.wait_clocks.get().saturating_add(div.remaining()));
+            if div.write(address - DIVU, value) {
+                return Ok(());
+            }
+        }
+        if (DMAC..DMAC + 0x34).contains(&address) && self.dma.write(address - DMAC, value) {
+            return Ok(());
+        }
+        Err(Self::unsupported(address, 4))
+    }
+
+    pub fn receive_serial(&mut self, byte: u8, errors: u8, multiprocessor: bool) {
+        self.serial.receive(byte, errors, multiprocessor);
+    }
+    pub fn take_serial_output(&mut self) -> Option<u8> {
+        self.serial.take_transmitted()
+    }
+    pub fn set_dma_request_pin(&mut self, channel: usize, level: bool) {
+        if channel < 2 {
+            self.dma.set_request_pin(channel, level);
+        }
+    }
+    pub(crate) fn serial_dma_requests(&self) -> [bool; 2] {
+        [self.serial.dma_request(1), self.serial.dma_request(2)]
+    }
+    pub(crate) fn acknowledge_serial_dma(&mut self, source: u8) {
+        self.serial.dma_acknowledge(source);
+    }
+    pub(crate) fn take_wait_clocks(&self) -> u32 {
+        self.wait_clocks.replace(0)
+    }
+    pub(crate) fn reset_active(&self) -> bool {
+        self.watchdog.reset_active()
+    }
+    pub(crate) fn take_reset_request(&mut self) -> Option<ResetRequest> {
+        self.watchdog.request.take()
+    }
+    pub(crate) fn signal_nmi(&mut self) {
+        self.dma.nmi();
+    }
+    pub(crate) fn reset_from_watchdog(&mut self) {
+        // DIVU operand/vector registers retain values (§10.2); RSTCSR retains
+        // the watchdog cause (§12.2.3). Other implemented registers reset.
+        let mut division = std::mem::take(self.division.get_mut());
+        division.reset();
+        let mut watchdog = std::mem::take(&mut self.watchdog);
+        watchdog.reset_preserving_cause();
+        *self = Self {
+            division: RefCell::new(division),
+            watchdog,
+            ..Self::default()
+        };
     }
 
     pub(crate) fn can_request_interrupt(&self) -> bool {
-        self.iprb & 0x0F00 != 0 && self.tier & 0x8E != 0
+        (self.iprb & 0x0F00 != 0 && self.tier & 0x8E != 0)
+            || (self.ipra & 0x00F0 != 0 && self.watchdog.enabled())
+            || self.watchdog.can_reset()
+            || (self.iprb & 0xF000 != 0 && self.serial.can_wake())
+            || self.division.borrow().busy()
+            || self.dma.active()
+            || self.interrupt().is_some()
     }
 }
 
@@ -265,7 +486,7 @@ mod tests {
         chip.write16(VCRD, 0xFFFF).unwrap();
         assert_eq!(chip.read16(VCRC).unwrap(), 0x7F7F);
         assert_eq!(chip.read16(VCRD).unwrap(), 0x7F00);
-        assert!(chip.write16(IPRB, 0xF000).is_err()); // Unsupported SCI priority.
+        chip.write16(IPRB, 0xF000).unwrap(); // SCI priority is implemented.
         chip.write8(IPRB, 0x0B).unwrap();
         assert_eq!(chip.read16(IPRB).unwrap(), 0x0B00);
         assert!(matches!(
@@ -411,3 +632,6 @@ mod tests {
         assert_eq!(chip.read8(FRT + 1).unwrap(), 0);
     }
 }
+
+#[cfg(test)]
+mod peripheral_tests;

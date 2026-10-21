@@ -123,6 +123,9 @@ impl Emulator {
         if let Some(error) = self.machine.fault() {
             return format!("Faulted: {error}");
         }
+        if self.machine.reset_in_progress() {
+            return "Resetting — internal watchdog reset".into();
+        }
         match &self.machine.cpu_state().status {
             CpuStatus::Reset => "Reset — waiting for valid boot input".into(),
             CpuStatus::Running => "Ready".into(),

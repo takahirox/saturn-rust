@@ -75,10 +75,12 @@ defer through a pending slot or the successor of any system/control-register
 transfer or untaken BT/S or BF/S. The caller must select the request/vector and
 retry if deferred. A
 successful entry saves the old SR/next PC, updates I, wakes SLEEP and jumps to the
-handler without retiring an instruction. Machine retries CPU-local FRT interrupt requests and SMPC master NMI at each
-processor boundary; acceptance consumes a turn without retiring an instruction.
-FRT requests stay asserted until the guest reads and clears FTCSR. Other device
-interrupt sources and full controller arbitration remain missing.
+handler without retiring an instruction. Machine retries CPU-local FRT/WDT/SCI/
+DIVU/DMAC requests and SMPC master NMI at each processor boundary. Internal IRQs
+use IPRA/IPRB levels and the manual table 5.4 tie order. Acceptance consumes a
+turn without retiring an instruction; device flags require guest acknowledgement.
+DMA address errors use vector 10 independently of SR.I. External IRL/ICR,
+refresh/UBC sources and full bus arbitration remain missing.
 
 CPU address errors dispatch vector 9 with next-PC/SR stacking, operand completion
 and delayed-branch deferral (SH7604 §§4.3/4.6/4.7). `src/cpu/memory.rs` checks
@@ -99,8 +101,10 @@ BCR1 hardware CPU identification remains missing. SMPC NMIREQ latches a master
 NMI and can wake SLEEP independently of SR.I. A fault on either CPU stops the
 entire machine until reset and identifies the slave when applicable.
 
-Manual reset variants, cache, remaining SH7604 peripherals and hardware cycle
-scheduling are outstanding. Missing bus/device implementations and exception-entry failures
+The watchdog implements power/manual reset selection, a 512-clock CPU hold,
+physical vector pairs 0/4 or 8/12, and retained RAM/backup/cause. CPU-local
+write-through caches implement software coherence and mapped arrays. BSC/UBC,
+standby, external reset signals and hardware cycle scheduling remain outstanding. Missing bus/device implementations and exception-entry failures
 remain explicit, sticky host diagnostics.
 Exception entry is bounded on a failing stack/vector access; successful writes
 before a later entry failure are not rolled back. This is not hardware double-
@@ -120,10 +124,21 @@ bus locking/arbitration between processors, or native Sega BIOS compatibility.
 | 05F80000–05F8011F | VDP2, only the listed register subset |
 | 06000000–060FFFFF | 1 MiB high work RAM |
 | FFFFFE10–FFFFFE19 | CPU-local FRT, byte accesses only |
-| FFFFFE60 / FFFFFE66 / FFFFFE68 | CPU-local FRT IPRB/VCRC/VCRD, byte/word |
+| FFFFFE00–FFFFFE05 | CPU-local SCI, byte access |
+| FFFFFE60–FFFFFE68 / FFFFFEE2–FFFFFEE5 | CPU-local INTC priorities/vectors, byte/word |
+| FFFFFE71–FFFFFE72 | DMAC SCI/DREQ selection, byte access |
+| FFFFFE80–FFFFFE83 | WDT keyed word writes and byte reads |
+| FFFFFE92 | CCR cache control, byte access |
+| FFFFFF00–FFFFFF14 | DIVU, long access; DVCR/VCRDIV also word access |
+| FFFFFF80–FFFFFFB3 | DMAC channels/control/vectors, long access |
 
 P1 cache-through addresses 20000000–3FFFFFFF map to the corresponding external
-physical address. No cache behavior or RAM mirrors are modeled. Words/longs
+physical address. `CpuBus` supplies independent 4 KiB caches, write-through
+stores, P1 bypass, P2 associative purge, P3 address arrays and P6 data arrays.
+`Memory::fetch16` selects instruction versus operand replacement controls;
+TAS reads bypass the cache. DMA does not snoop either cache. Debugger `Bus`
+reads inspect external memory; CPU cache arrays are accessed via `CpuBus`.
+RAM mirrors are not yet modeled. Words/longs
 require 2/4-byte alignment and full valid ranges. Failed multi-byte writes make
 no partial changes. External mode requires exactly 524288 bytes, reads initial
 PC at 0 and R15 at 4, sets VBR=0, SR=F0 and deterministic zero values for otherwise

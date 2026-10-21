@@ -1,8 +1,100 @@
-# Issue #17 dual-SH-2/FRT checkpoint validation
+# Issue #17 implementation validation
 
 **Result: partial implementation. Related to #17. No umbrella acceptance
 criterion is complete; #17 must remain open.** Issues #11/#13/#15 are historical,
 administratively closed trackers and must not be reopened.
+
+## PR #18 review fixes: SH7604 and cache (2026-10-21)
+
+Started from review checkpoint `1cd6385b801d7b5462a915794687a13df3eb9102`,
+which preserves PR head `a286e489f06c4044368b03a2e947f5bbef673bd7`.
+Upstream main remains `dbd981b030a46daa6923072ce240680dd2e58ebf`, verified with
+`git ls-remote origin refs/heads/main`. Changes are local; no push or merge.
+
+Implementation added in this revision:
+
+- Misaligned exception stacking now completes the original exception and reaches
+  vector 9, inhibiting recursive stacking errors as required by SH7604 §4.8.3.
+  Undefined stacking data use explicitly documented big-endian bytes at the exact
+  SP. Native vectors cover offsets 1/2/3; the shared guest repairs its stack.
+- CPU-local WDT interval/reset modes, keyed writes, divisors, observed-one/clear
+  protocol, IRQ vector/priority, reset-cause retention and 512-clock internal reset
+  hold (H §§12.2–12.3). Reset vectors use physical 8/12 for manual reset and
+  preserve shared RAM and battery backup. Browser Step/Run remain usable while
+  reset completion is pending.
+- CPU-local SCI registers, internal-clock transmit timing, status, receive errors,
+  external-character adapter, interrupt sources, and real RXI/TXI DMA handshakes
+  (H §§13.2–13.3). No implicit loopback or invented incoming data.
+- CPU-local signed 32/32 and 64/32 DIVU, dependent-access interlocks, completion
+  timing, DVCR/VCRDIV and overflow IRQ (H §§10.2–10.4). **The six-cycle overflow
+  intermediate is not implemented:** overflow output is deterministic saturation
+  plus input-high preservation, including OVFIE=1. This remains an explicit gap.
+- On-chip DMAC channels 0/1, transfer widths 1/2/4/16, counts/address updates,
+  auto/DREQ/SCI triggers, fixed/round-robin channel selection, end IRQs, flag
+  acknowledgement, NMI cancellation and CPU vector 10 for address errors
+  (H §§9.2–9.3). Single-address DACK mode is rejected explicitly. Burst/cycle-steal
+  CPU arbitration and bus-cycle timing are not implemented.
+- IPRA/IPRB and VCRA–D/VCRWDT internal source arbitration, using programmed
+  priority and the manual table 5.4 tie order. Peripheral flags remain guest
+  acknowledged. External ICR/IRL, refresh and UBC sources remain missing.
+- Independent 4 KiB write-through caches, CCR ID/OD/CE/CP/TW, pseudo-LRU,
+  associative purge, address/data arrays, two-way RAM and TAS external reads
+  (H §8, tables 8.2–8.4, figs.8.10/8.11). Slave/DMA writes do not snoop master
+  cache; the guest must purge it. Hardware fill timing/contention remain absent.
+
+The original MIT-licensed [sh7604.s](../tests/fixtures/sh7604.s), built by
+[build_sh7604.py](../tests/fixtures/build_sh7604.py), executes the same guest code
+natively and in Chromium Wasm. Its expanded 524288-byte synthetic BIOS SHA-256 is:
+
+```text
+a45486b44108ca2db9abd4df0d05fe030c75f01ba73fbc4e64ab64eae9964880
+```
+
+Guest instructions calculate signed quotient/remainder, initialize/copy four
+RAM words with DMA, acknowledge DMA/WDT interrupts, recover from a DMA address
+error at SR.I=15, transmit through SCI, prove stale-cache/purge behavior, trigger
+manual reset, observe CCR reset/cause retention, and reach the address-error
+handler after misaligned TRAPA stacking. The sixteen golden mailbox words at
+06003000 are independent test constants:
+
+```text
+FFFFFFF2 FFFFFFFE 55555555 00000001 00000001 00000001 FFFFFF84 00000001
+FFFFFFFF 00000001 0000600D 00000000 00000000 12345678 00000000 00000001
+```
+
+They encode q32/r32, q64/r64, DMA IRQ, WDT IRQ, SCI status, manual-reset count,
+reset cause, stacking-error handler, completion, pre-DMA cache value, stale value,
+purged value, reset CCR and DMA address-error handler. After reset there are two
+exceptions (TRAPA then address error), saved PC=00001C00, SP=060FF000 and no
+pending address error. The four DMA destination words are 12345678–1234567B.
+Cold reset repeats the result. This ROM is a peripheral diagnostic, **not** either
+required new demonstration disc.
+
+Checks performed on this revision:
+
+- Formatting, locked native build and all **100 native tests** pass; none ignored.
+- Native all-target Clippy and Wasm Clippy with warnings denied pass.
+- Star Collector, dual-SH-2 and new SH7604 fixture reproducibility checks pass.
+  CI now verifies the new fixture too; the existing ISO and dual guest are unchanged.
+- `sh scripts/build-web.sh` passes with the existing rustup stable toolchain and
+  wasm-bindgen-cli 0.2.129. An initial attempt selected Homebrew Rust without its
+  Wasm target; selecting the installed rustup toolchain fixed that environment
+  mismatch without source/dependency changes.
+- `npm ci --ignore-scripts`, `npx playwright install chromium`, and the complete
+  `npm run test:browser` pass in Chromium 145.0.7632.6 under `/saturn-rust/`.
+  The new guest assertions include repeat execution and usable controls during
+  watchdog reset, alongside all existing game/input/backup/privacy checks.
+- JavaScript syntax and Git whitespace checks pass.
+
+The full operator objective is **not achieved**. CPU/SH7604 edge cases, BSC/UBC/
+standby, full mapping/backup services and hardware-time scheduling remain pending,
+as do MC68EC000, SCU/DSP, VDP1/advanced VDP2, SCSP/DSP/CD-DA/WebAudio, runtime
+CD/BIN/CUE, complete BIOS/HLE and SMPC/analog behavior and both required new
+licensed demo discs. Passing these tests does not satisfy those missing criteria.
+No human-only gate, proprietary file, new Issue or historical Issue reopening is
+needed to continue implementation. See the [conformance matrix](hardware-conformance.md).
+
+## Earlier dual-SH-2/FRT validation (historical)
 
 Read live [Issue #17](https://github.com/takahirox/saturn-rust/issues/17) through
 the GitHub connector. `git ls-remote origin refs/heads/main` returned
@@ -130,12 +222,13 @@ is completed by this correction.
 
 ## Remaining scope and continuation
 
-This is a functional CPU-control/FRT checkpoint. The eight-reference-clock
-interleave and legacy visible/blank turn budgets do **not** satisfy hardware-time
+The earlier CPU-control/FRT revision used the eight-reference-clock
+interleave and legacy visible/blank turn budgets. They still do **not** satisfy hardware-time
 scheduling, contention, scanline timing or cycle accuracy. FRT pin synchronization,
 access waits, clock-switch edges, external clock wiring and output-pin routing
-remain missing. BCR1 CPU identity, cache/coherence, manual reset, other INTC sources
-and the other SH7604 peripherals remain missing. SMPC still lacks all other
+remain missing. The review-fix section above supersedes the earlier missing-cache,
+manual-reset and non-FRT peripheral statements. BCR1 identity, BSC/UBC/standby
+and complete hardware timing remain missing. SMPC still lacks all other
 commands, RTC, INTBACK, system/clock/sound controls and analog input.
 
 All broad CPU, bus/scheduler/backup, SCU/DSP, VDP1/advanced VDP2, MC68EC000/SCSP/

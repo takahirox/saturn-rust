@@ -1,6 +1,7 @@
 //! Browser-independent Saturn functional subset with independent SH-2 processors.
 pub mod backup;
 pub mod bus;
+pub mod cache;
 pub mod cpu;
 pub mod devices;
 pub mod disc;
@@ -79,6 +80,7 @@ pub struct Machine {
     frames: u64,
     clocks: u64,
     nmi_pending: bool,
+    dma_errors: [bool; 2],
     fault: Option<MachineError>,
 }
 
@@ -98,8 +100,11 @@ impl Machine {
     pub fn fault(&self) -> Option<&MachineError> {
         self.fault.as_ref()
     }
+    pub fn reset_in_progress(&self) -> bool {
+        self.bus.cpu_reset_active(Processor::Master)
+    }
     pub fn can_wake_master(&self) -> bool {
-        self.nmi_pending || self.bus.can_wake_master()
+        self.nmi_pending || self.dma_errors[0] || self.bus.can_wake_master()
     }
     pub fn mode(&self) -> Option<BootMode> {
         self.mode
@@ -115,6 +120,7 @@ impl Machine {
         self.frames = 0;
         self.clocks = 0;
         self.nmi_pending = false;
+        self.dma_errors = [false; 2];
         self.fault = None;
         self.cpu = Cpu::default();
         self.slave = Cpu::default();
@@ -203,40 +209,69 @@ impl Machine {
     fn step_inner(&mut self) -> Result<(), MachineError> {
         // Fixed ordering: master boundary, slave boundary, peripheral clocks,
         // then SMPC completion. Shared writes are visible to the next CPU turn.
-        let mut memory = self.bus.for_cpu(Processor::Master);
-        let nmi_accepted = self.nmi_pending && self.cpu.accept_nmi(&mut memory)?;
-        if nmi_accepted {
-            self.nmi_pending = false;
-        }
-        let irq = self.bus.interrupt(Processor::Master);
-        let mut memory = self.bus.for_cpu(Processor::Master);
-        let irq_accepted = !nmi_accepted
-            && if let Some((level, vector)) = irq {
-                self.cpu.accept_interrupt(&mut memory, level, vector)?
-            } else {
-                false
-            };
-        if !nmi_accepted && !irq_accepted {
-            self.cpu.step(&mut memory)?;
-        }
-        if self.bus.slave_enabled {
-            let irq = self.bus.interrupt(Processor::Slave);
-            let mut memory = self.bus.for_cpu(Processor::Slave);
-            let accepted = if let Some((level, vector)) = irq {
-                self.slave
-                    .accept_interrupt(&mut memory, level, vector)
-                    .map_err(MachineError::SlaveCpu)?
-            } else {
-                false
-            };
-            if !accepted {
-                self.slave
-                    .step(&mut memory)
-                    .map_err(MachineError::SlaveCpu)?;
+        if self.bus.cpu_reset_active(Processor::Master) {
+            self.cpu = Cpu::default();
+        } else {
+            let mut memory = self.bus.for_cpu(Processor::Master);
+            let dma_accepted =
+                self.dma_errors[0] && self.cpu.accept_dma_address_error(&mut memory)?;
+            if dma_accepted {
+                self.dma_errors[0] = false;
+            }
+            let nmi_accepted =
+                !dma_accepted && self.nmi_pending && self.cpu.accept_nmi(&mut memory)?;
+            if nmi_accepted {
+                self.nmi_pending = false;
+            }
+            let irq = self.bus.interrupt(Processor::Master);
+            let mut memory = self.bus.for_cpu(Processor::Master);
+            let irq_accepted = !dma_accepted
+                && !nmi_accepted
+                && if let Some((level, vector)) = irq {
+                    self.cpu.accept_interrupt(&mut memory, level, vector)?
+                } else {
+                    false
+                };
+            if !dma_accepted && !nmi_accepted && !irq_accepted {
+                self.cpu.step(&mut memory)?;
             }
         }
-        self.clocks += u64::from(CLOCKS_PER_STEP);
-        match self.bus.advance_clocks(CLOCKS_PER_STEP) {
+        if self.bus.slave_enabled {
+            if self.bus.cpu_reset_active(Processor::Slave) {
+                self.slave = Cpu::default();
+            } else {
+                let irq = self.bus.interrupt(Processor::Slave);
+                let mut memory = self.bus.for_cpu(Processor::Slave);
+                let dma_accepted = self.dma_errors[1]
+                    && self
+                        .slave
+                        .accept_dma_address_error(&mut memory)
+                        .map_err(MachineError::SlaveCpu)?;
+                if dma_accepted {
+                    self.dma_errors[1] = false;
+                }
+                let accepted = dma_accepted
+                    || if let Some((level, vector)) = irq {
+                        self.slave
+                            .accept_interrupt(&mut memory, level, vector)
+                            .map_err(MachineError::SlaveCpu)?
+                    } else {
+                        false
+                    };
+                if !accepted {
+                    self.slave
+                        .step(&mut memory)
+                        .map_err(MachineError::SlaveCpu)?;
+                }
+            }
+        }
+        self.dma_errors[0] |= self.bus.advance_dma(Processor::Master);
+        if self.bus.slave_enabled {
+            self.dma_errors[1] |= self.bus.advance_dma(Processor::Slave);
+        }
+        let elapsed = CLOCKS_PER_STEP.saturating_add(self.bus.take_wait_clocks());
+        self.clocks += u64::from(elapsed);
+        match self.bus.advance_clocks(elapsed) {
             Some(0x02) if !self.bus.slave_enabled => {
                 self.slave = Cpu::power_on(&self.bus)
                     .map_err(|source| MachineError::SlaveCpu(CpuError::Bus { pc: 0, source }))?;
@@ -246,8 +281,30 @@ impl Machine {
                 self.bus.set_slave_enabled(false);
                 self.slave = Cpu::default();
             }
-            Some(0x18) => self.nmi_pending = true,
+            Some(0x18) => {
+                self.nmi_pending = true;
+                self.bus.signal_nmi(Processor::Master);
+            }
             _ => (),
+        }
+        for processor in [Processor::Master, Processor::Slave] {
+            if processor == Processor::Slave && !self.bus.slave_enabled {
+                continue;
+            }
+            if let Some(reset) = self.bus.take_cpu_reset(processor) {
+                let cpu = match reset {
+                    onchip::ResetRequest::PowerOn => Cpu::power_on(&self.bus),
+                    onchip::ResetRequest::Manual => Cpu::manual_reset(&self.bus),
+                }?;
+                match processor {
+                    Processor::Master => {
+                        self.cpu = cpu;
+                        self.nmi_pending = false;
+                    }
+                    Processor::Slave => self.slave = cpu,
+                }
+                self.dma_errors[processor as usize] = false;
+            }
         }
         Ok(())
     }

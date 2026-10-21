@@ -47,7 +47,10 @@ impl<'a, B: Memory> Operands<'a, B> {
             return Ok(0);
         }
         match width {
-            1 => self.inner.read8(address).map(u32::from),
+            1 => match access {
+                Access::Tas => self.inner.tas_read8(address).map(u32::from),
+                _ => self.inner.read8(address).map(u32::from),
+            },
             2 => self.inner.read16(address).map(u32::from),
             _ => self.inner.read32(address),
         }

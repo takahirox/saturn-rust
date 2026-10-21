@@ -314,7 +314,7 @@ try {
   const sleepingErrorRom = Buffer.alloc(524288);
   sleepingErrorRom.writeUInt32BE(0x100, 0);
   sleepingErrorRom.writeUInt32BE(0x06100000, 4);
-  [0xD101, 0x6F13, 0x002B, 0x001B, 0x0600, 0x1001].forEach((word, i) => sleepingErrorRom.writeUInt16BE(word, 0x100 + i * 2));
+  [0xD101, 0x6F13, 0x002B, 0x001B, 0x0400, 0x0001].forEach((word, i) => sleepingErrorRom.writeUInt16BE(word, 0x100 + i * 2));
   await page.locator("#bios").setInputFiles({ name: "original-sleeping-address-error.bin", mimeType: "application/octet-stream", buffer: sleepingErrorRom });
   await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000100");
   await page.locator("#count").fill("4");
@@ -324,7 +324,7 @@ try {
   assert.equal(await page.locator("#step").isEnabled(), true);
   assert.equal(await page.locator("#run").isEnabled(), true);
   await page.locator("#step").click();
-  assert.match(await value("error"), /Exception vector 9 entry.*Unaligned/);
+  assert.match(await value("error"), /Exception vector 9 entry.*Unmapped/);
   assert.equal(await page.locator("#step").isDisabled(), true);
   await page.locator("#count").fill("6");
   // SH7604 figs. 11.7/11.11: the shared native guest must wake only after
@@ -358,6 +358,47 @@ try {
     assert.deepEqual(trace, { beforeEdge: [0x140, "0"], onEdge: [0x140, "0"],
       accepted: [0x200, "1", 0x140, 0], done: [0x142, "1", 9, 0x06100000] });
   }
+  // Original SH7604 guest: signed division, actual DMA copy and IRQ, watchdog
+  // IRQ/manual reset, SCI transmission, and bounded misaligned exception entry.
+  const peripheralRom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/sh7604.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [offset, ...words] = line.trim().split(/\s+/).map((word) => parseInt(word, 16));
+    words.forEach((word, i) => peripheralRom.writeUInt16BE(word, offset + i * 2));
+  }
+  await page.locator("#bios").setInputFiles({ name: "original-sh7604.bin", mimeType: "application/octet-stream", buffer: peripheralRom });
+  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  const resetSteps = await page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    for (let i = 1; i <= 10000; i++) {
+      emulator.step();
+      if (emulator.status().startsWith("Resetting")) return i;
+    }
+    throw new Error("SH7604 guest did not assert the watchdog reset");
+  });
+  await page.locator("#reset").click();
+  await page.locator("#count").fill(String(resetSteps));
+  await page.locator("#run").click();
+  assert.match(await value("status"), /Resetting/);
+  assert.equal(await page.locator("#step").isEnabled(), true);
+  assert.equal(await page.locator("#run").isEnabled(), true);
+  const peripherals = () => page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    emulator.run_steps(10000);
+    return { mailbox: Array.from({length: 16}, (_, i) => emulator.read_long(0x06003000 + i*4)),
+      copy: Array.from({length: 4}, (_, i) => emulator.read_long(0x06005000 + i*4)),
+      exceptions: emulator.exception_count(), last: emulator.last_exception(),
+      sp: emulator.registers()[15], pending: emulator.address_error_pending() };
+  });
+  const peripheralResult = await peripherals();
+  assert.deepEqual(peripheralResult.mailbox, [0xFFFFFFF2, 0xFFFFFFFE, 0x55555555, 1, 1, 1, 0xFFFFFF84, 1, 0xFFFFFFFF, 1, 0x600D, 0, 0, 0x12345678, 0, 1]);
+  assert.deepEqual(peripheralResult.copy, [0x12345678, 0x12345679, 0x1234567A, 0x1234567B]);
+  assert.equal(peripheralResult.exceptions, "2");
+  assert.match(peripheralResult.last, /Vector 9.*0x00001C00/);
+  assert.equal(peripheralResult.sp, 0x060FF000);
+  assert.equal(peripheralResult.pending, false);
+  await page.locator("#reset").click();
+  assert.deepEqual(await peripherals(), peripheralResult);
   // Independent processors execute this same original licensed guest natively
   // in tests/dual_sh2.rs. All shared RAM/IRQ/SMPC changes are guest MMIO writes.
   const dualRom = Buffer.alloc(524288);
@@ -832,7 +873,7 @@ try {
   await missingBuild.waitForFunction(() => document.getElementById("status").textContent === "Initialization failed");
   assert.match(await missingBuild.locator("#error").textContent(), /Build web\/pkg and serve/);
   assert.equal(await missingBuild.locator("#reset").isDisabled(), true);
-  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation.`);
+  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation.`);
 } finally {
   if (browser) await browser.close();
   if (server?.pid && server.exitCode === null) {

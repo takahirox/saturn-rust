@@ -62,7 +62,7 @@ function setText(id, text) {
 }
 
 function canExecute(status = emulator.status()) {
-  return status === "Ready" || (status.startsWith("Sleeping") && (emulator.address_error_pending() || emulator.hardware_wake_possible()));
+  return status === "Ready" || (status.startsWith("Resetting") && emulator.hardware_wake_possible()) || (status.startsWith("Sleeping") && (emulator.address_error_pending() || emulator.hardware_wake_possible()));
 }
 
 function render() {

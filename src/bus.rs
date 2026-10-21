@@ -1,7 +1,9 @@
 //! Checked partial Saturn map; devices and cache-through aliases are documented separately.
 use crate::backup::{BACKUP_RAM, BACKUP_WINDOW, BackupRam};
+use crate::cache::{CCR, Cache};
 use crate::devices::{SMPC, Smpc, VDP2, VRAM, Vdp2};
 use crate::onchip::OnChip;
+use std::cell::RefCell;
 use std::fmt;
 
 pub const BIOS_SIZE: usize = 512 * 1024;
@@ -19,6 +21,7 @@ pub enum Processor {
 pub struct CpuBus<'a> {
     bus: &'a mut Bus,
     processor: Processor,
+    cached: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,10 +68,29 @@ impl std::error::Error for BusError {}
 pub trait Memory {
     fn read8(&self, address: u32) -> Result<u8, BusError>;
     fn read16(&self, address: u32) -> Result<u16, BusError>;
+    fn fetch16(&self, address: u32) -> Result<u16, BusError> {
+        self.read16(address)
+    }
+    fn tas_read8(&self, address: u32) -> Result<u8, BusError> {
+        self.read8(address)
+    }
     fn read32(&self, address: u32) -> Result<u32, BusError>;
     fn write8(&mut self, address: u32, value: u8) -> Result<(), BusError>;
     fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError>;
     fn write32(&mut self, address: u32, value: u32) -> Result<(), BusError>;
+
+    /// SH7604 §4.8.3: exception stacking issues a bus cycle even with an
+    /// unaligned SP. The physical write data is undefined. This functional model
+    /// writes the big-endian bytes at the exact SP address, without rounding it.
+    fn exception_write32(&mut self, address: u32, value: u32) -> Result<(), BusError> {
+        if address & 3 == 0 {
+            return self.write32(address, value);
+        }
+        for (i, byte) in value.to_be_bytes().into_iter().enumerate() {
+            self.write8(address.wrapping_add(i as u32), byte)?;
+        }
+        Ok(())
+    }
 }
 
 pub struct Bus {
@@ -79,6 +101,7 @@ pub struct Bus {
     smpc: Smpc,
     pub(crate) backup: BackupRam,
     onchip: [OnChip; 2],
+    cache: [RefCell<Cache>; 2],
     pub(crate) slave_enabled: bool,
 }
 
@@ -92,6 +115,7 @@ impl Default for Bus {
             smpc: Smpc::default(),
             backup: BackupRam::default(),
             onchip: std::array::from_fn(|_| OnChip::default()),
+            cache: std::array::from_fn(|_| RefCell::new(Cache::default())),
             slave_enabled: false,
         }
     }
@@ -102,6 +126,7 @@ impl Bus {
         CpuBus {
             bus: self,
             processor,
+            cached: true,
         }
     }
 
@@ -116,10 +141,50 @@ impl Bus {
     pub(crate) fn set_slave_enabled(&mut self, enabled: bool) {
         if !enabled {
             self.onchip[1] = OnChip::default();
+            self.cache[1].get_mut().reset_control();
         }
         self.slave_enabled = enabled;
     }
 
+    pub(crate) fn take_wait_clocks(&self) -> u32 {
+        self.onchip.iter().map(OnChip::take_wait_clocks).sum()
+    }
+    pub(crate) fn cpu_reset_active(&self, processor: Processor) -> bool {
+        self.onchip[processor as usize].reset_active()
+    }
+    pub(crate) fn take_cpu_reset(
+        &mut self,
+        processor: Processor,
+    ) -> Option<crate::onchip::ResetRequest> {
+        let chip = &mut self.onchip[processor as usize];
+        let reset = chip.take_reset_request()?;
+        chip.reset_from_watchdog();
+        self.cache[processor as usize].get_mut().reset_control();
+        Some(reset)
+    }
+    pub(crate) fn signal_nmi(&mut self, processor: Processor) {
+        self.onchip[processor as usize].signal_nmi();
+    }
+    pub(crate) fn advance_dma(&mut self, processor: Processor) -> bool {
+        let index = processor as usize;
+        if self.onchip[index].reset_active() {
+            return false;
+        }
+        let requests = self.onchip[index].serial_dma_requests();
+        let mut dma = std::mem::take(&mut self.onchip[index].dma);
+        let mut memory = CpuBus {
+            bus: self,
+            processor,
+            cached: false,
+        };
+        let acknowledged = dma.transfer(&mut memory, requests);
+        if let Some(source) = acknowledged {
+            self.onchip[index].acknowledge_serial_dma(source);
+        }
+        let error = std::mem::take(&mut dma.address_error);
+        self.onchip[index].dma = dma;
+        error
+    }
     pub(crate) fn advance_clocks(&mut self, clocks: u32) -> Option<u8> {
         self.onchip[0].advance_clocks(clocks);
         if self.slave_enabled {
@@ -136,6 +201,20 @@ impl Bus {
         }
         self.bios = Some(bytes.to_vec());
         Ok(())
+    }
+
+    /// Completed character from an external SCI adapter. No implicit loopback.
+    pub fn supply_serial_character(
+        &mut self,
+        processor: Processor,
+        byte: u8,
+        errors: u8,
+        multiprocessor: bool,
+    ) {
+        self.onchip[processor as usize].receive_serial(byte, errors, multiprocessor);
+    }
+    pub fn take_serial_output(&mut self, processor: Processor) -> Option<u8> {
+        self.onchip[processor as usize].take_serial_output()
     }
 
     pub fn set_buttons(&mut self, buttons: u16) {
@@ -295,6 +374,9 @@ impl Bus {
 
 impl Memory for Bus {
     fn read8(&self, address: u32) -> Result<u8, BusError> {
+        if address == CCR {
+            return Ok(self.cache[0].borrow().control());
+        }
         if address >= 0xFFFF_FE00 {
             return self.onchip[0].read8(address);
         }
@@ -307,9 +389,16 @@ impl Memory for Bus {
         Ok(u16::from_be_bytes(self.read(address)?))
     }
     fn read32(&self, address: u32) -> Result<u32, BusError> {
+        if address >= 0xFFFF_FE00 {
+            return self.onchip[0].read32(address);
+        }
         Ok(u32::from_be_bytes(self.read(address)?))
     }
     fn write8(&mut self, address: u32, value: u8) -> Result<(), BusError> {
+        if address == CCR {
+            self.cache[0].get_mut().set_control(value);
+            return Ok(());
+        }
         if address >= 0xFFFF_FE00 {
             return self.onchip[0].write8(address, value);
         }
@@ -322,43 +411,100 @@ impl Memory for Bus {
         self.write(address, value.to_be_bytes())
     }
     fn write32(&mut self, address: u32, value: u32) -> Result<(), BusError> {
+        if address >= 0xFFFF_FE00 {
+            return self.onchip[0].write32(address, value);
+        }
         self.write(address, value.to_be_bytes())
     }
 }
 
+impl CpuBus<'_> {
+    fn read<const N: usize>(&self, address: u32, instruction: bool) -> Result<[u8; N], BusError> {
+        if !address.is_multiple_of(N as u32) {
+            return Err(BusError::Unaligned { address, width: N });
+        }
+        if self.cached {
+            let mut cache = self.bus.cache[self.processor as usize].borrow_mut();
+            if let Some(bytes) = cache.array_read(address)? {
+                return Ok(bytes);
+            }
+            if let Some(bytes) =
+                cache.read(address, instruction, |line| self.bus.read::<16>(line))?
+            {
+                return Ok(bytes);
+            }
+        }
+        self.bus.read(address)
+    }
+    fn write<const N: usize>(&mut self, address: u32, bytes: [u8; N]) -> Result<(), BusError> {
+        if !address.is_multiple_of(N as u32) {
+            return Err(BusError::Unaligned { address, width: N });
+        }
+        let index = self.processor as usize;
+        if self.cached
+            && self.bus.cache[index]
+                .get_mut()
+                .array_write(address, bytes)?
+        {
+            return Ok(());
+        }
+        self.bus.write(address, bytes)?;
+        if self.cached {
+            self.bus.cache[index].get_mut().written(address, bytes);
+        }
+        Ok(())
+    }
+}
 impl Memory for CpuBus<'_> {
     fn read8(&self, address: u32) -> Result<u8, BusError> {
-        if address >= 0xFFFF_FE00 {
-            self.bus.onchip[self.processor as usize].read8(address)
-        } else {
-            self.bus.read8(address)
+        if address == CCR {
+            return Ok(self.bus.cache[self.processor as usize].borrow().control());
         }
+        if address >= 0xFFFF_FE00 {
+            return self.bus.onchip[self.processor as usize].read8(address);
+        }
+        Ok(self.read::<1>(address, false)?[0])
     }
     fn read16(&self, address: u32) -> Result<u16, BusError> {
         if address >= 0xFFFF_FE00 {
-            self.bus.onchip[self.processor as usize].read16(address)
-        } else {
-            self.bus.read16(address)
+            return self.bus.onchip[self.processor as usize].read16(address);
         }
+        Ok(u16::from_be_bytes(self.read(address, false)?))
+    }
+    fn fetch16(&self, address: u32) -> Result<u16, BusError> {
+        Ok(u16::from_be_bytes(self.read(address, true)?))
+    }
+    fn tas_read8(&self, address: u32) -> Result<u8, BusError> {
+        Ok(self.bus.read::<1>(address)?[0])
     }
     fn read32(&self, address: u32) -> Result<u32, BusError> {
-        self.bus.read32(address)
+        if address >= 0xFFFF_FE00 {
+            return self.bus.onchip[self.processor as usize].read32(address);
+        }
+        Ok(u32::from_be_bytes(self.read(address, false)?))
     }
     fn write8(&mut self, address: u32, value: u8) -> Result<(), BusError> {
-        if address >= 0xFFFF_FE00 {
-            self.bus.onchip[self.processor as usize].write8(address, value)
-        } else {
-            self.bus.write8(address, value)
+        if address == CCR {
+            self.bus.cache[self.processor as usize]
+                .get_mut()
+                .set_control(value);
+            return Ok(());
         }
+        if address >= 0xFFFF_FE00 {
+            return self.bus.onchip[self.processor as usize].write8(address, value);
+        }
+        self.write(address, [value])
     }
     fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
         if address >= 0xFFFF_FE00 {
-            self.bus.onchip[self.processor as usize].write16(address, value)
-        } else {
-            self.bus.write16(address, value)
+            return self.bus.onchip[self.processor as usize].write16(address, value);
         }
+        self.write(address, value.to_be_bytes())
     }
     fn write32(&mut self, address: u32, value: u32) -> Result<(), BusError> {
-        self.bus.write32(address, value)
+        if address >= 0xFFFF_FE00 {
+            return self.bus.onchip[self.processor as usize].write32(address, value);
+        }
+        self.write(address, value.to_be_bytes())
     }
 }

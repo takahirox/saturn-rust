@@ -31,6 +31,7 @@ jobs:
         run: |
           python3 homebrew/star-collector/build.py --check
           python3 tests/fixtures/build_dual_sh2.py --check
+          python3 tests/fixtures/build_sh7604.py --check
       - name: Check Rust
         run: |
           cargo fmt --check

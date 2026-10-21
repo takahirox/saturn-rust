@@ -38,6 +38,10 @@ guest-written exception traces, RTE recovery and reset of a pending error.
 The original dual-SH-2 ROM additionally tests independent register/stack state,
 shared RAM, timed SSHON/SSHOFF, bidirectional FRT capture interrupts, SLEEP wake,
 slave restart and NMIREQ in both native and browser Wasm execution.
+An additional original SH7604 guest computes signed division, copies RAM through
+on-chip DMA, handles DMA/WDT IRQs and a DMA address error, polls serial completion,
+proves stale-cache/purge behavior, triggers watchdog manual reset and handles
+misaligned exception stacking. It executes in native and browser Wasm tests.
 No proprietary files are required. See [Issue #17 coverage](hardware-conformance.md),
 [current validation](validation-issue-17.md) and
 [earlier SH-2 validation](validation-issue-11.md). The committed sample can be rebuilt and
@@ -48,6 +52,7 @@ external cross compiler or SDK:
 python3 homebrew/star-collector/build.py
 python3 homebrew/star-collector/build.py --check
 python3 tests/fixtures/build_dual_sh2.py --check
+python3 tests/fixtures/build_sh7604.py --check
 ```
 
 ## Build and serve the browser client
