@@ -11,6 +11,8 @@ pub mod scu;
 pub mod smpc;
 pub mod sound;
 pub mod timing;
+pub mod vdp1;
+pub mod vdp2;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
@@ -203,7 +205,10 @@ impl Machine {
     }
 
     pub fn framebuffer(&self) -> Result<Vec<u8>, MachineError> {
-        self.bus.vdp2.framebuffer().map_err(MachineError::Video)
+        self.bus
+            .vdp2
+            .composite(&self.bus.vdp1)
+            .map_err(MachineError::Video)
     }
 
     /// Advance to the next raster field deadline. Peripherals and video events

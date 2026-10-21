@@ -53,6 +53,7 @@ external cross compiler or SDK:
 ```sh
 python3 homebrew/star-collector/build.py
 python3 homebrew/star-collector/build.py --check
+python3 homebrew/prism-courier/build.py --check
 python3 tests/fixtures/build_dual_sh2.py --check
 python3 tests/fixtures/build_sh7604.py --check
 python3 tests/fixtures/build_scu.py --check
@@ -242,6 +243,17 @@ browser suite enables the real AudioWorklet via a click and checks nonzero rende
 instrumentation, drain/underflow, mute and suspended-context feedback. Synthetic
 Gamepads exercise two independent ports and focus release. These fixtures are
 diagnostics and do not replace the two required original demonstration discs.
+
+**Play Prism Courier** starts the new original MIT-licensed VDP1+VDP2+SCSP disc.
+Steer the cyan prism through the red barrier's gap to the green dock; collision
+turns the banner red, delivery turns it green, and Enter/Start restarts. Enable
+audio for the separately executing 68k's computed stereo tone. The source,
+license, reproducible SHA-256 and guest contract are in its
+[README](../homebrew/prism-courier/README.md). The native and browser suites now
+test this disc's pixels, VDP1 IRQ, input, loss/win/restart, 68k computation and
+nonzero stereo; the browser also verifies real Canvas and AudioWorklet delivery.
+Mutating its original texture changes native and Wasm pixels. This is the first
+required new demonstration; the hardware exerciser disc remains required.
 
 When the display has focus, the first two connected Gamepads map standard buttons
 0/1/2/3/4/5/6/7/9 to A/B/C/X/Y/Z/L/R/Start and buttons 12–15 to directions.

@@ -1,8 +1,9 @@
 # Architecture and compatibility
 
-This original Rust implementation now executes **Star Collector**, a silent,
-original Saturn-targeted SH-2 homebrew disc, through a documented BIOS-less HLE
-bootstrap. This is one small hardware subset, not general Saturn or commercial
+This original Rust implementation executes **Star Collector** and **Prism Courier**,
+original Saturn-targeted homebrew discs, through a documented BIOS-less HLE
+bootstrap. Prism Courier uses VDP1+VDP2 and guest-computed stereo sound.
+This remains a hardware subset, not general Saturn or commercial
 game compatibility. External Sega BIOS boot remains incomplete. Acceptance uses
 automated local/CI checks; live Pages inspection is not a completion gate.
 
@@ -14,7 +15,9 @@ automated local/CI checks; live Pages inspection is not a completion gate.
 | src/bus.rs | Aligned big-endian byte/word/long accesses, RAM, ROM, VRAM and MMIO routing |
 | src/backup.rs | Packed internal battery RAM, checked import and odd-byte access |
 | src/disc.rs | Bounded cooked ISO9660 and Saturn IP validation, first-read executable selection |
-| src/devices.rs | VDP2 bitmap rasterization |
+| src/devices.rs | Shared device constants and compatibility exports |
+| src/vdp1.rs | Clock-driven command lists, primitive/texture drawing and framebuffers |
+| src/vdp2.rs | NBG0/1 bitmap sampling, palette and sprite/background composition |
 | src/m68k.rs | Original MC68EC000 integer interpreter, addressing and exceptions |
 | src/sound.rs | Shared sound RAM, direct PCM SCSP, independent 68k/sample clocks |
 | src/smpc.rs | SMPC commands, RTC/SMEM, digital/analog joystick levels and INTBACK |
@@ -26,6 +29,7 @@ automated local/CI checks; live Pages inspection is not a completion gate.
 | web/app.js | Local file handling, keyboard/Gamepad levels, animation scheduling and RGBA copy |
 | web/audio.js, web/audio-worklet.js | Bounded emulated PCM delivery and WebAudio consumer/status |
 | homebrew/star-collector | Buildable MIT-licensed SH-2 guest and reproducible ISO builder |
+| homebrew/prism-courier | Original playable SH-2/68k disc, graphics, audio, input and IRQ source |
 
 `Cpu::step(&mut impl Memory)` owns no bus pointers. `Machine::reset(Boot)` clears
 volatile RAM, devices, ROM, counters, delay state and faults before attempting the selected
@@ -44,7 +48,8 @@ limited to 60 updates per second; it does no catch-up loop. Actual speed depends
 on the browser. The guest waits for a VBLANK edge, so holding a key changes state
 once per guest update after initialization.
 
-The guest controls every pixel and game rule. Rust converts VDP2 VRAM into RGBA;
+The guest controls every pixel and game rule. Rust executes VDP1 commands and
+composes the resulting framebuffer with VDP2 VRAM into RGBA;
 JS only uses putImageData. Keyboard handlers set pad button levels, never guest
 RAM/registers. The emulator has no game-name/PC/opcode hook, game-loop replacement
 or game-state renderer. Read-only `read_long` is a debugger/test facility.
@@ -129,7 +134,11 @@ bus locking/arbitration between processors, or native Sega BIOS compatibility.
 | 01000000 / 01800000 | Write-only word capture strobes to slave/master FRT |
 | 05A00000–05A7FFFF | 512 KiB shared sound RAM; 68k map 000000–07FFFF |
 | 05B00000–05B00FFF | SCSP implemented slot/common/stack ports; 68k map 100000–100FFF |
+| 05C00000–05C7FFFF | VDP1 command/texture/LUT/Gouraud VRAM |
+| 05C80000–05CBFFFF | VDP1 draw framebuffer, byte/word/long access |
+| 05D00000–05D00017 | VDP1 control/status, word and checked paired-word accesses |
 | 05E00000–05E7FFFF | 512 KiB VDP2 VRAM |
+| 05F00000–05F00FFF | VDP2 CRAM, including mode-0 upper-half mirror |
 | 05F80000–05F8011F | VDP2, only the listed register subset |
 | 05FE0000–05FE00CF | SCU documented port subset; long accesses, prohibited/unsupported ports fail |
 | 06000000–060FFFFF | 1 MiB high work RAM |
@@ -157,18 +166,31 @@ undefined registers. It never loads an HLE game. Real BIOSes still commonly faul
 unimplemented devices or bus behavior; this mode is useful for reset-vector/debugging
 experiments, not a claim of Sega boot/game compatibility.
 
-VDP2 supports TVMD=8000 (320×224), BGON=0101 (NBG0 enabled, transparency
-disabled), CHCTLA=0032 (512×256 RGB555 bitmap), MPOFN=0, ZMXN0/ZMYN0=00010000
-and PRINA=1. Visible pixels come from the top-left 320×224 of a 512-pixel-pitch
-bitmap at VRAM bank 0. RGB word bits 0–4/5–9/10–14 become red/green/blue; bit15
-is ignored in this transparency-disabled subset. Five-bit channels expand by bit
-replication. Display/background disabled produces opaque black. Other enabled
-configurations produce actionable unsupported-mode errors. Writes to unimplemented
-registers fail rather than simulating success. CYCA0L/U are stored, but VRAM
-cycle arbitration is not modeled. Register readback for implemented write-only
-VDP2 controls is a debugger convenience, not hardware-accurate read behavior.
-No VDP1, CRAM palettes, tilemaps, other backgrounds, scrolling, scaling, blending,
-rotation, interlace or alternative resolutions are supported.
+VDP1 executes normal/scaled/distorted sprites, polygons, polylines and lines,
+system/user clipping, local coordinates, jump/skip/call/return and END. It uses
+guest VRAM textures in six bank/LUT/RGB formats, transparency/end codes, mesh,
+Gouraud and half-luminance/transparency/shadow calculations. PTMR starts work;
+one fetch or ruled raster row advances per 32 functional reference clocks. This
+quantum bounds host work and is not measured VDP1 pixel/bus timing. CEF/COPR and
+SCU source 13/DMA trigger 6 reflect actual command progress. Cyclic lists stay
+busy; malformed/prohibited commands produce bounded machine diagnostics.
+TVMR/FBCR/EWDR/EWLR/EWRR control buffer formats, field changes and erase rectangles.
+Erase is applied at the field boundary; physical erase bandwidth, subpixel edge
+rounding, high-speed shrink, interlaced/rotated/high-resolution scanout and exact
+transfer-over behavior remain incomplete. Non-normal scanout fails explicitly.
+
+VDP2 supports 320×224 noninterlaced NBG0/1 bitmaps, applicable packed/palette/
+RGB555/RGB888 formats, dimensions/bank/palette offsets, fixed-point scroll/zoom,
+mosaic, rectangular windows, back color tables, priorities, weighted/additive
+color calculation and signed color offsets. CRAM modes 0/1/2 select 1024/2048
+RGB555 or 1024 RGB888 colors. Sprite types 0/1 and mixed RGB select palette,
+priority and color calculation; normal VDP1 scanout composes with both backgrounds.
+Five-bit output channels expand by bit replication, preserving Star Collector.
+Display disabled produces opaque black. Unsupported enabled modes fail explicitly.
+Tilemaps, NBG2/3, rotation, line/cell tables, sprite/line windows, shadows, special
+color/priority effects, interlace and alternative resolutions remain required.
+CYCA0L/U are stored, but VRAM-cycle arbitration is not modeled. Register readback
+for implemented write-only VDP2 controls remains a debugger convenience.
 
 SMPC uses byte accesses: PDR1/PDR2 +75/+77, DDR1/DDR2 +79/+7B,
 IOSEL +7D, EXLE +7F (relative to
@@ -269,7 +291,7 @@ used as implementation code. Manual section/page references use printed pages.
 - [Disc Format Standards](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-040-R4-051795.pdf), §§3–4, especially pp.25–31 IP fields, master stack and first-read file; ISO9660 directory record/volume layout.
 - [Boot ROM User's Manual](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-079B-R3-011895.pdf), §§1–3 startup/services. Full BIOS services are not implemented.
 - [SCU User's Manual](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-097-R5-072694.pdf), §§2–4, corrected by [Final Specifications](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-210-110194.pdf) #1–27/30–36: interrupt, DMA, DSP and raster timer behavior. The original guest programs contain no SDK/manual sample code.
-- [VDP1 User's Manual](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-013-R3-061694.pdf) defines remaining VDP1 work; this device is still absent.
+- [VDP1 User's Manual](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-013-R3-061694.pdf), §§2–7: memory, system registers, command flow, primitive/texture geometry, clipping and color calculations. New rendering and test code is independently authored from these programming contracts.
 
 The [game redistribution audit](homebrew-provenance.md) records candidate decisions,
 original-game licensing and build provenance. Existing wasm-bindgen (MIT/Apache-2.0)
@@ -281,7 +303,7 @@ added. Manuals/firmware are not redistributed.
 Accurate CPU/bus cycles and contention, remaining SH7604 peripherals and
 SCU cross-device/arbitration/DSP edge conformance,
 remaining SMPC system/clock/analog-direct controls, additional VDP2
-modes, VDP1, runtime CD/BIN/CUE, BIOS services and full synthetic boot pathways
+modes, remaining VDP1 conformance, runtime CD/BIN/CUE, BIOS services and full synthetic boot pathways
 remain required work. The executing MC68EC000, direct SCSP PCM and browser audio
 are implemented; SCSP envelopes/FM/LFO/noise/effects DSP and CD-DA remain absent.
 Reference-emulator/physical-hardware comparison and performance measurements

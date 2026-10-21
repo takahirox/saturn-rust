@@ -68,8 +68,7 @@ def assemble(source, base=BASE):
                 assert 0 <= num(a[0]) <= 255
                 word(0xC300 | num(a[0]))
             elif op == 'ldc':
-                assert a[1] == 'sr'
-                word(0x400E | reg(a[0]) << 8)
+                word({'sr': 0x400E, 'gbr': 0x401E, 'vbr': 0x402E}[a[1]] | reg(a[0]) << 8)
             elif op == 'rts': word(0x000B)
             elif op == 'jmp': word(0x402B | reg(a[0][1:]) << 8)
             elif op in ('bra', 'bsr', 'bt', 'bf'):
@@ -87,9 +86,11 @@ def assemble(source, base=BASE):
             elif op in ('mov.b', 'mov.w', 'mov.l'):
                 width = {'mov.b': 0, 'mov.w': 1, 'mov.l': 2}[op]
                 if a[0].startswith('@'):
-                    word(0x6000 | width | reg(a[1]) << 8 | reg(a[0][1:]) << 4)
+                    post = a[0].endswith('+')
+                    word(0x6000 | (4 if post else 0) | width | reg(a[1]) << 8 | reg(a[0][1:-1] if post else a[0][1:]) << 4)
                 else:
-                    word(0x2000 | width | reg(a[1][1:]) << 8 | reg(a[0]) << 4)
+                    pre = a[1].startswith('@-')
+                    word(0x2000 | (4 if pre else 0) | width | reg(a[1][2:] if pre else a[1][1:]) << 8 | reg(a[0]) << 4)
             else:
                 raise ValueError('Unsupported assembly')
         except Exception as error:
@@ -108,27 +109,29 @@ def record(name, sector, size, directory=False):
             + both16(1) + bytes([len(name)]) + name + bytes(length - 33 - len(name)))
 
 
-def build():
-    game = assemble((HERE / 'game.s').read_text())
-    license_text = (HERE / 'LICENSE').read_bytes()
+def build(game=None, license_text=None, title='STAR COLLECTOR', product='STAR-001 V1.000'):
+    if game is None:
+        game = assemble((HERE / 'game.s').read_text())
+    if license_text is None:
+        license_text = (HERE / 'LICENSE').read_bytes()
     assert 0 < len(game) < 0xB000
     iso = bytearray(64 * 2048)
     def put(offset, data): iso[offset:offset + len(data)] = data
     def text(offset, size, value): put(offset, value.encode('ascii').ljust(size, b' '))
     text(0, 16, 'SEGA SEGASATURN')
     text(0x10, 16, 'ORIGINAL HOMEBREW')
-    text(0x20, 16, 'STAR-001 V1.000')
+    text(0x20, 16, product)
     text(0x30, 16, '20260101CD-1/1')
     text(0x40, 16, 'U')
     text(0x50, 16, 'J')
-    text(0x60, 112, 'STAR COLLECTOR')
+    text(0x60, 112, title)
     put(0xE0, struct.pack('>IIIIII', 0x1000, 0, 0x060FF000, 0, BASE, len(game)))
     # Original AIP: MOV.L @(1,PC),R0; JMP @R0; NOP; align; destination.
     put(0xE20, struct.pack('>HHHHI', 0xD001, 0x402B, 0x0009, 0x0009, BASE))
     pvd = 16 * 2048
     put(pvd, b'\x01CD001\x01\x00')
     text(pvd + 8, 32, 'SATURN RUST')
-    text(pvd + 40, 32, 'STAR COLLECTOR')
+    text(pvd + 40, 32, title)
     put(pvd + 80, both32(64))
     put(pvd + 120, both16(1) + both16(1) + both16(2048) + both32(10))
     put(pvd + 140, struct.pack('<I', 18))

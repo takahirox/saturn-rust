@@ -7,11 +7,13 @@ internal interrupt arbitration, write-through caches, timed SMPC CPU control,
 SCU interrupt/DMA/DSP execution, an independent MC68EC000 core, direct SCSP PCM,
 WebAudio delivery, SMPC RTC/SMEM/INTBACK and clock-based NTSC raster events. It preserves the address-error fixtures, Star Collector,
 backup RAM and both direct digital pads. It does not complete the Saturn hardware
-or either required new demonstration. No umbrella acceptance checkbox is met.
+or the required hardware exerciser demonstration. The original playable Prism
+Courier disc now runs with VDP1/VDP2 composition, 68k audio and guest IRQ/input
+in native and browser Wasm checks. No umbrella acceptance checkbox is met.
 
 Inspected upstream main: `dbd981b030a46daa6923072ce240680dd2e58ebf` (2026-10-21),
 verified with `git ls-remote origin refs/heads/main`. This revision starts from
-`91fb527ec48e6a7a8df4da1153daa04e56d4d790`, preserving the earlier
+`7285a713490ab20c2cb7b82af126a72d05c35a44`, preserving the earlier
 SCU/SH7604 work and review evidence. The full outstanding hardware scope remains mandatory. See [current validation](validation-issue-17.md),
 [historical address-error validation](validation-issue-15.md),
 [backup/pad validation](validation-issue-13.md) and the
@@ -359,30 +361,54 @@ invalid software parameters do not claim physical electrical behavior.
 
 ## VDP1 and VDP2
 
+**VIDEO** means [the independent video vectors](../tests/video.rs), covering
+literal texture/primitive/color/register/pixel results from [VDP1] §§2–7 and
+[VDP2] §§3–6,8–13. Implementations are
+[`Vdp1`](../src/vdp1.rs) and [`Vdp2`](../src/vdp2.rs), routed by
+[`Bus`](../src/bus.rs). **PRISM** means the original licensed
+[Prism Courier disc/source](../homebrew/prism-courier/README.md), executed by
+[the native integration](../tests/prism_courier.rs) and browser Wasm in
+[browser-smoke.mjs](../scripts/browser-smoke.mjs). PRISM proves normal RGB555
+sprites, solid polygons, sequential END/IRQ, NBG0 bitmap, composition and guest
+input/audio/gameplay. It does not establish every mode in VIDEO in the browser.
+**VIRQ** means `vdp1_end_interrupt_and_draw_end_dma_trigger_obey_clock_deadlines`
+in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
+
 | Feature / manual | Current behavior / edges | Native | Browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- | --- |
-| VDP1 VRAM/framebuffers/registers, [VDP1] | None | — | — | Entire map/access/state missing | Pending |
-| Command list/control flow, [VDP1] | None | — | — | End/jump/call/return and bounds handling | Pending |
-| Normal/scaled/distorted sprites, [VDP1] | None | — | — | Texture addressing, geometry and rasterization | Pending |
-| Polygons/lines/polylines, [VDP1] | None | — | — | Primitive rasterization | Pending |
-| Clip/local coordinates, [VDP1] | None | — | — | System/user clipping and coordinate state | Pending |
-| Sprite texture/color modes, [VDP1] | None | — | — | Packed/palette/direct color, transparency/end codes | Pending |
-| Shading/color calculation, [VDP1] | None | — | — | Gouraud, shadows, half luminance/transparency | Pending |
-| Draw/erase/swap/status/IRQ, [VDP1] | None | — | — | Framebuffer lifecycle and SCU drawing-end integration | Pending |
-| VDP2 VRAM, [VDP2] §3 | Bank-zero bitmap RAM | devices.rs | SC | VRAM banks/cycle-pattern arbitration; cycle words only stored | Pending |
-| VDP2 CRAM, [VDP2] color RAM | None | — | — | Palette modes and access rules | Pending |
-| TVMD/TVSTAT, [VDP2] §2.2 | 320×224 noninterlace, display enable, clocked HBLANK/VBLANK and SCU edges | devices.rs, TIME | SC, SCUROM | Other resolutions, PAL/interlace and full beam status/latches | Pending |
-| NBG0 bitmap, [VDP2] §§4–5 | RGB555 512-pixel pitch, bank 0, unity zoom | devices.rs | SC | Other formats, transparency, scroll/zoom | Pending |
-| NBG0–3 tile/character, [VDP2] scroll screens | None | — | — | Pattern names, maps/planes, character formats | Pending |
-| NBG1–3 bitmap/layer control, [VDP2] scroll screens | None | — | — | Applicable screen modes/VRAM/priority | Pending |
-| Rotation backgrounds, [VDP2] rotation screens | None | — | — | RBGs, parameters, coefficients, rotation/switching | Pending |
-| Line/vertical-cell scroll, [VDP2] scroll controls | None | — | — | Tables and per-line/cell effects | Pending |
-| Windows/line windows, [VDP2] windows | None | — | — | Screen/sprite windows and logical operations | Pending |
-| Mosaic, [VDP2] mosaic | None | — | — | Horizontal/vertical effects | Pending |
-| Priority/composition, [VDP2] priority | PRINA=1 for single NBG0 only | devices.rs | SC | Multiple backgrounds and VDP1 sprite priorities | Pending |
-| Color calculation/offset/shadow, [VDP2] color calculation | None | — | — | Ratios, blending, offset, shadow and special functions | Pending |
-| Back/line color, [VDP2] color screens | Display-disabled black only | devices.rs | SC | Guest back/line color tables | Pending |
-| Combined VDP1/VDP2 pipeline | None | — | — | Overlap, sprite priority, transparency and stable independent guest images | Pending |
+| VDP1 VRAM/framebuffers/registers, [VDP1] §§2,4 | 512 KiB VRAM, two draw/display buffers, byte/word/long memory; checked paired register writes; MODR | VIDEO | PRISM | All bus lanes/mirrors/waits; alternative scanout modes | Pending |
+| Command list/control flow, [VDP1] §6.1 | END, next/assign/call/return and skip variants, one return level, invalid links/prohibited commands, bounded cyclic lists | VIDEO | PRISM (sequential END) | Full guest control-flow corpus, precise fetch timing | Pending |
+| Normal/scaled/distorted sprites, [VDP1] §§6.2,7.4–7.6 | Width/height, flips, two-point and nine anchor scales, ruled quadrilateral scan conversion | VIDEO | PRISM (normal) | Physical edge/zoom rounding, high-speed shrink and preclip direction | Pending |
+| Polygons/lines/polylines, [VDP1] §§7.7–7.9 | Solid ruled quads and integer line segments | VIDEO | PRISM (polygons) | Full independent sloped-edge and repeated-pixel corpus | Pending |
+| Clip/local coordinates, [VDP1] §§7.1–7.3 | System/user inside/outside clips, local offsets | VIDEO | PRISM (system) | Full extreme-coordinate/clip boundary corpus | Pending |
+| Sprite texture/color modes, [VDP1] §§6.3–6.6 | Packed 4-bit bank/LUT, 64/128/256 bank and RGB555, transparent pixels, two end codes per raster row | VIDEO | PRISM (RGB555) | Scaling/end-code interaction, wrapping and all browser formats | Pending |
+| Shading/color calculation, [VDP1] §6.3 | Gouraud, mesh, MSB-only, shadow, half-luminance/transparency, combined Gouraud effects | VIDEO | PRISM (replace only) | Subpixel interpolation and duplicate-coverage edges; non-normal scanout | Pending |
+| Draw/erase/swap/status/IRQ, [VDP1] §4 | PTMR, forced stop, manual/auto change and display erase, persistent VBE, CEF/BEF/COPR/LOPR; SCU IRQ/DMA trigger | VIDEO, VIRQ, PRISM | PRISM (auto/IRQ) | Physical erase bandwidth/timing, transfer-over, interlace/rotation | Pending |
+| VDP2 VRAM, [VDP2] §3 | Bitmap RAM and bank offsets | VIDEO, SC | PRISM, SC | VRAM bank/cycle arbitration; CYCA0 words still only stored | Pending |
+| VDP2 CRAM, [VDP2] §3.4 | Modes 0/1 RGB555 and 2 RGB888; mode-0 upper-half mirror; palette offsets | VIDEO | — | Full lane/alias and guest/browser palette corpus | Pending |
+| TVMD/TVSTAT, [VDP2] §2.2 | 320×224 noninterlace, display enable, clocked blanking and SCU edges | VIDEO, TIME | PRISM, SC, SCUROM | Other resolutions, PAL/interlace, beam status/latches | Pending |
+| NBG0 bitmap, [VDP2] §§4–6 | 4/8/11-bit palette, RGB555/RGB888, bitmap dimensions/base, transparency, fixed-point scroll/zoom | VIDEO | PRISM, SC (RGB555, unit zoom) | Full format/dimension/zoom vectors and browser coverage | Pending |
+| NBG0–3 tile/character, [VDP2] §4 | None | — | — | Pattern names, maps/planes and character formats | Pending |
+| NBG1–3 bitmap/layer control, [VDP2] §§4–6 | NBG1 bitmap composition, formats applicable to NBG1, scroll/zoom/priority | VIDEO | — | NBG2/3 and complete layer restrictions/guest coverage | Pending |
+| Rotation backgrounds, [VDP2] §7 | None | — | — | RBGs, parameters, coefficients and switching | Pending |
+| Line/vertical-cell scroll, [VDP2] §5 | None | — | — | Per-line/cell effects/tables | Pending |
+| Windows/line windows, [VDP2] §8 | W0/W1 rectangles, inside/outside, AND/OR on bitmap/sprite/color calculation | VIDEO | — | Line and sprite windows; full guest corpus | Pending |
+| Mosaic, [VDP2] §5 | NBG0/1 horizontal/vertical grouping | VIDEO | — | All independent vertical/layer/guest vectors | Pending |
+| Priority/composition, [VDP2] §§9–10 | Two backgrounds and VDP1; sprite types 0/1 and mixed RGB; priority-0 disable/ties | VIDEO, PRISM | PRISM | All sprite types, layers and special priorities | Pending |
+| Color calculation/offset/shadow, [VDP2] §§11–13 | Ratio/additive blending, sprite conditions/ratios and signed offsets | VIDEO | PRISM (replace only) | VDP2 shadows, palette color-MSB condition, extended/special effects and complete guest corpus | Pending |
+| Back/line color, [VDP2] §§3–4 | Back-screen single/per-line VRAM table, signed offset | VIDEO | PRISM (back underneath bitmap) | Line-color screen and full per-line guest corpus | Pending |
+| Combined VDP1/VDP2 pipeline | Sprite/background overlap, priority, transparency, game result/restart, texture mutation changes actual pixels | VIDEO, PRISM | PRISM + Canvas assertions | Remaining modes/effects and timing above | Pending |
+
+VDP1 work advances one command fetch or ruled raster row per 32 reference clocks;
+this bounds each scheduler event but is a functional quantum, not measured draw
+cycles. Erase takes effect at a field boundary. Color calculations use integer
+interpolation; exact physical edge rounding/transfer-over remain required. Native
+vectors caught and corrected shadow MSB halving and automatic-start BEF handling.
+Cyclic lists remain busy without reporting END. Invalid lists stop the machine
+explicitly. Non-normal VDP1 scanout and enabled unimplemented VDP2 modes fail
+explicitly. Readback of VDP2 write-only controls remains a debugger convenience.
+No game-specific rendering, guest identity check, canned pixels or host result
+mailbox writes are used.
 
 ## Sound
 
@@ -452,15 +478,17 @@ no-op CPU/device implementations cannot satisfy those assertions.
 4. Complete SCU A/B-bus wait-state/arbitration and device routes, DMA boundary/
    trigger coverage, DSP conditional/pipeline/bank-conflict and program-DMA evidence.
    SCUROM now executes real DMA/DSP/timer/IRQ operations but is subset evidence.
-5. VDP1 and remaining VDP2 modes/effects/composition/timing, with independent
-   expected pixel outputs. Existing single bitmap mode is the only video evidence.
+5. Remaining VDP1 edge/scanout/timing conformance and VDP2 tile/rotation/line/
+   window/shadow/display modes, with complete independent guest and browser
+   coverage. VIDEO and PRISM provide actual subset pixel/composition evidence.
 6. Runtime CD block, BIN/CUE/mixed tracks, complete BIOS HLE ABI and full synthetic
    boot pathways; remaining SMPC system/reset/clock commands, analog direct mode
    and 3D-pad model. RTC/SMEM/INTBACK/IRQ and analog joystick subsets have evidence.
-7. Two additional original licensed demonstrations beyond Star Collector: the
-   VDP1+VDP2+audio playable game and the multiprocessor/SCU/runtime-CD/CD-DA/DSP/
-   advanced-video/backup showcase. Both remain absent. Current synthetic ROMs
-   and temporary backup/port-2 diagnostic ISO do not satisfy these requirements.
+7. The multiprocessor/SCU/runtime-CD/CD-DA/SCSP-DSP/advanced-video/backup
+   hardware exerciser disc remains absent. Prism Courier now supplies the
+   original playable VDP1+VDP2+audio guest demonstration, including guest input,
+   win/loss/restart and actual native/Wasm execution. The existing synthetic
+   ROMs do not replace the required hardware exerciser disc.
 8. Full original synthetic BIOS boot/MMIO/interrupt/service fixtures and separate
    HLE ABI tests. Genuine BIOS/retail compatibility is **not independently
    confirmed**, is optional, and never requires someone to supply firmware.

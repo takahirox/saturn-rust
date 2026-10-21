@@ -6,6 +6,7 @@ use crate::onchip::OnChip;
 use crate::scu::{SCU, Scu, ScuError};
 use crate::sound::{SCSP, SOUND_RAM, SOUND_RAM_SIZE, Sound};
 use crate::timing::{Raster, RasterEvent};
+use crate::vdp1::{self, Vdp1};
 use std::cell::RefCell;
 use std::fmt;
 
@@ -101,6 +102,7 @@ pub struct Bus {
     low: Vec<u8>,
     high: Vec<u8>,
     pub(crate) vdp2: Vdp2,
+    pub(crate) vdp1: Vdp1,
     pub sound: Sound,
     smpc: Smpc,
     pub(crate) scu: Scu,
@@ -119,6 +121,7 @@ impl Default for Bus {
             low: vec![0; WRAM_SIZE],
             high: vec![0; WRAM_SIZE],
             vdp2: Vdp2::default(),
+            vdp1: Vdp1::default(),
             sound: Sound::default(),
             smpc: Smpc::default(),
             scu: Scu::default(),
@@ -170,6 +173,7 @@ impl Bus {
     }
     pub(crate) fn can_wake_master(&self) -> bool {
         self.slave_enabled
+            || self.vdp1.busy()
             || self.sound.enabled
             || self.smpc.busy()
             || self.onchip[0].can_request_interrupt()
@@ -230,6 +234,7 @@ impl Bus {
             let delta = remaining
                 .min(self.raster.clocks_to_event())
                 .min(self.scu.clocks_to_event())
+                .min(self.vdp1.clocks_to_event())
                 .min(if self.scu.dma_pending() {
                     8 - self.scu_dma_phase
                 } else {
@@ -240,6 +245,9 @@ impl Bus {
                 self.onchip[1].advance_clocks(delta);
             }
             self.scu.advance_clocks(delta)?;
+            if self.vdp1.advance(delta)? {
+                self.scu.signal(13);
+            }
             self.sound.advance(delta)?;
             if self.sound.scsp.main_interrupt() {
                 self.scu.signal(6);
@@ -264,6 +272,7 @@ impl Bus {
                     self.vdp2.vblank = false;
                     self.scu.vblank_out();
                     self.smpc.vblank_out();
+                    self.vdp1.vblank_out();
                 }
                 Some(RasterEvent::LineStart) => self.vdp2.hblank = false,
                 None => (),
@@ -369,6 +378,37 @@ impl Bus {
             bytes.copy_from_slice(&self.sound.ram[offset..offset + N]);
             return Ok(bytes);
         }
+        for (base, memory) in [
+            (vdp1::VRAM, self.vdp1.vram.as_slice()),
+            (vdp1::FRAMEBUFFER, self.vdp1.draw_buffer()),
+        ] {
+            if let Some(offset) = address.checked_sub(base).map(|n| n as usize)
+                && offset < memory.len()
+                && N <= memory.len() - offset
+            {
+                let mut bytes = [0; N];
+                bytes.copy_from_slice(&memory[offset..offset + N]);
+                return Ok(bytes);
+            }
+        }
+        if (crate::vdp2::CRAM..crate::vdp2::CRAM + 0x1000).contains(&address) {
+            let offset = self
+                .vdp2
+                .cram_offset((address - crate::vdp2::CRAM) as usize);
+            let mut bytes = [0; N];
+            bytes.copy_from_slice(&self.vdp2.cram[offset..offset + N]);
+            return Ok(bytes);
+        }
+        if (vdp1::REGISTERS..vdp1::REGISTERS + 0x18).contains(&address) {
+            if N != 2 && N != 4 {
+                return Err(BusError::UnsupportedDevice { address, width: N });
+            }
+            let mut bytes = [0; N];
+            for (i, pair) in bytes.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+                pair.copy_from_slice(&self.vdp1.read16(address + i as u32 * 2)?.to_be_bytes());
+            }
+            return Ok(bytes);
+        }
         if (SCSP..SCSP + 0x1000).contains(&address) {
             let mut bytes = [0; N];
             if N == 1 {
@@ -455,6 +495,36 @@ impl Bus {
         if (SOUND_RAM..SOUND_RAM + SOUND_RAM_SIZE as u32).contains(&address) {
             let offset = (address - SOUND_RAM) as usize;
             self.sound.ram[offset..offset + N].copy_from_slice(&bytes);
+            return Ok(());
+        }
+        if (vdp1::VRAM..vdp1::VRAM + vdp1::VRAM_SIZE as u32).contains(&address) {
+            let offset = (address - vdp1::VRAM) as usize;
+            self.vdp1.vram[offset..offset + N].copy_from_slice(&bytes);
+            return Ok(());
+        }
+        if (crate::vdp2::CRAM..crate::vdp2::CRAM + 0x1000).contains(&address) {
+            let offset = self
+                .vdp2
+                .cram_offset((address - crate::vdp2::CRAM) as usize);
+            self.vdp2.cram[offset..offset + N].copy_from_slice(&bytes);
+            return Ok(());
+        }
+        if (vdp1::FRAMEBUFFER..vdp1::FRAMEBUFFER + vdp1::BUFFER_SIZE as u32).contains(&address) {
+            let offset = (address - vdp1::FRAMEBUFFER) as usize;
+            self.vdp1.draw_buffer_mut()[offset..offset + N].copy_from_slice(&bytes);
+            return Ok(());
+        }
+        if (vdp1::REGISTERS..vdp1::REGISTERS + 0x18).contains(&address) {
+            if N != 2 && N != 4 {
+                return Err(BusError::UnsupportedDevice { address, width: N });
+            }
+            for (i, pair) in bytes.as_chunks::<2>().0.iter().enumerate() {
+                Vdp1::validate_write(address + i as u32 * 2, u16::from_be_bytes(*pair))?;
+            }
+            for (i, pair) in bytes.as_chunks::<2>().0.iter().enumerate() {
+                self.vdp1
+                    .write16(address + i as u32 * 2, u16::from_be_bytes(*pair))?;
+            }
             return Ok(());
         }
         if (SCSP..SCSP + 0x1000).contains(&address) {
@@ -662,6 +732,49 @@ impl Memory for CpuBus<'_> {
 #[cfg(test)]
 mod scu_timing_tests {
     use super::*;
+    #[test]
+    fn vdp1_end_interrupt_and_draw_end_dma_trigger_obey_clock_deadlines() {
+        for chunk in [1, 3, 8, 17, 32] {
+            let mut b = Bus::default();
+            b.write32(HIGH_WRAM, 0x12345678).unwrap();
+            b.write16(vdp1::VRAM, 0x8000).unwrap();
+            for (off, value) in [
+                (0, HIGH_WRAM),
+                (4, VRAM),
+                (8, 4),
+                (12, 0x101),
+                (20, 6),
+                (16, 0x100),
+            ] {
+                b.write32(SCU + off, value).unwrap();
+            }
+            b.write32(SCU + 0xA0, 0x9FFF).unwrap();
+            b.write16(vdp1::REGISTERS + 4, 1).unwrap();
+            assert!(b.can_wake_master());
+            let mut elapsed = 0;
+            while elapsed < 31 {
+                let n = chunk.min(31 - elapsed);
+                b.advance_clocks(n).unwrap();
+                elapsed += n;
+            }
+            assert_eq!(b.interrupt(Processor::Master), None);
+            assert_eq!(b.read16(vdp1::REGISTERS + 0x10).unwrap(), 0);
+            b.advance_clocks(1).unwrap();
+            assert_eq!(b.interrupt(Processor::Master), Some((2, 0x4D)));
+            assert_eq!(b.read16(vdp1::REGISTERS + 0x10).unwrap(), 2);
+            b.advance_clocks(16).unwrap();
+            assert_eq!(b.read32(VRAM).unwrap(), 0x12340000);
+            b.advance_clocks(8).unwrap();
+            assert_eq!(b.read32(VRAM).unwrap(), 0x12345678);
+            b.acknowledge_interrupt(Processor::Master, (2, 0x4D));
+            assert_eq!(b.interrupt(Processor::Master), None);
+            b.reset_volatile();
+            assert_eq!(b.read32(vdp1::VRAM).unwrap(), 0);
+            assert_eq!(b.read32(vdp1::FRAMEBUFFER).unwrap(), 0);
+            assert_eq!(b.read16(vdp1::REGISTERS + 0x10).unwrap(), 0);
+            assert!(!b.can_wake_master());
+        }
+    }
     #[test]
     fn scu_dma_and_dsp_progress_by_hardware_clocks_independent_of_cpu_issue() {
         fn result(chunk: u32) -> (u32, u32, u64) {

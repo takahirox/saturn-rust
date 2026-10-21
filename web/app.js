@@ -133,6 +133,7 @@ function render() {
   $("restart").disabled = busy || $("mode").value !== "disc" || !discBytes;
   $("frame").disabled = !discReady || playing;
   $("play-homebrew").disabled = busy;
+  $("play-prism").disabled = busy;
   $("backup-export").disabled = busy;
   const state = loadingFile ? "Loading image…" : loadingBackup ? "Reading backup RAM…" : $("error").textContent ? "Stopped — see error below" :
     playing ? "Running" : discReady ? "Paused — Resume to play" : "Ready — Play Star Collector or open Debug";
@@ -318,7 +319,7 @@ try {
       render();
     }
   };
-  $("play-homebrew").addEventListener("click", async () => {
+  for (const [button, image] of [["play-homebrew", "star-collector.iso"], ["play-prism", "prism-courier.iso"]]) $(button).addEventListener("click", async () => {
     $("mode").value = "disc";
     $("mode").dispatchEvent(new Event("change"));
     const generation = ++fileGeneration;
@@ -327,7 +328,7 @@ try {
     $("error").textContent = "";
     render();
     try {
-      const response = await fetch("./star-collector.iso");
+      const response = await fetch(`./${image}`);
       if (!response.ok) throw new Error(`Sample ISO HTTP ${response.status}; rebuild or select the ISO locally.`);
       const bytes = new Uint8Array(await response.arrayBuffer());
       if (generation !== fileGeneration) return;

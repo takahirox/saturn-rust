@@ -4,6 +4,94 @@
 criterion is complete; #17 must remain open.** Issues #11/#13/#15 are historical,
 administratively closed trackers and must not be reopened.
 
+## PR #18 VDP1, bitmap composition and original playable disc (2026-10-21)
+
+The intended PR target remains **all of Issue #17**, with `Closes #17` retained
+as the intended final outcome. The implementation is still incomplete; the PR
+must remain Draft and must not be merged as umbrella completion. No mandatory
+criterion is waived. The full-resolution Run requirement has not been achieved.
+
+This revision preserves upstream checkpoint
+`7285a713490ab20c2cb7b82af126a72d05c35a44`, including its unpublished original
+68k/SCSP/WebAudio/SMPC work. Upstream main was rechecked and remains
+`dbd981b030a46daa6923072ce240680dd2e58ebf`. The existing PR #18 branch is the
+publication destination; no replacement PR/Issue, merge or Issue closure is used.
+
+Implemented and exercised:
+
+- Original clock-driven VDP1 command processor, command/texture VRAM and two
+  framebuffers; PTMR, status/address registers, forced stop, field changes and
+  erase windows; next/assign/call/return/skip/END, clipping/local coordinates,
+  normal/scaled/distorted textures, polygons/lines/polylines, six texture formats,
+  mesh, Gouraud and shadow/half-luminance/transparency calculations.
+- Drawing completion actually sets CEF and triggers SCU source 13 and DMA
+  factor 6. Independent clock vectors cover 1/3/8/17/32-clock advancement,
+  completion/transfer ordering, acknowledgment and reset. A cyclic command list
+  remains busy; prohibited commands produce explicit bounded faults.
+- VDP2 NBG0/1 bitmap sampling and composition, palette/RGB formats, CRAM modes
+  and mode-0 mirroring, bank/palette offsets, fixed-point scroll/zoom, mosaic,
+  normal windows, priorities, weighted/additive blending, back-screen tables
+  and signed color offsets. Color offset follows blending using the top screen's
+  selection (ST-058 §13.1). Unsupported enabled modes/effects fail explicitly.
+- Original MIT-licensed **Prism Courier** disc, assembly/asset/build source and
+  embedded/public license. Guest SH-2 logic programs VDP1 and VDP2, polls SMPC,
+  implements progress/collision/delivery/restart and handles VDP1 IRQ via its own
+  VBR table. An independent guest-uploaded 68k computes PCM, programs SCSP and
+  handles a timer interrupt. The browser has a packaged-disc play control.
+- Native and browser Wasm execute the same disc and compare independent pixels,
+  computed sound RAM, nonzero unequal stereo channels, guest IRQ counters, two
+  input sequences, loss/win/restart and reset. Mutating its original texture
+  changes native and Wasm output. The browser checks actual Canvas presentation
+  and delivery of this disc's PCM through the real AudioWorklet.
+
+The [conformance matrix](hardware-conformance.md#vdp1-and-vdp2) links primary
+manual sections, implementations, 13 independent video-vector tests and guest
+integration. Source: ST-013-R3 §§2–7; ST-058-R2 §§3–6,8–13. No emulator core,
+manual program, proprietary BIOS/SDK, recording or third-party asset is included.
+
+Prism Courier ISO SHA-256:
+`2fd953d65b931383518f28f81919f5c89c3ea8974b742546e1606333c2064bee`.
+The existing Star Collector disc and all five synthetic-ROM builder outputs remain
+byte-for-byte reproducible. See the [guest README](../homebrew/prism-courier/README.md).
+
+Validation on the final code in this revision:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`: pass;
+  **177 native tests, zero failures and zero ignored tests**.
+- `cargo clippy --locked --all-targets -- -D warnings` and
+  `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings`: pass.
+- `sh scripts/build-web.sh`: pass with the documented Rustup stable toolchain
+  and wasm-bindgen-cli 0.2.129, generating both original discs and licenses.
+- Star Collector, Prism Courier and all five synthetic-ROM builders' `--check`
+  commands: pass. CI now checks the new disc. License-copy comparison: pass.
+- Full `npm run test:browser`: pass in Chromium **145.0.7632.6**, with the same
+  packaged assets mounted under `/saturn-rust/`. Existing address-error, dual-CPU,
+  SCU, 68k/audio, SMPC, gameplay, backup/input/privacy, responsive and fullscreen
+  assertions remain active. The new Play control is covered at all three sizes.
+- JavaScript syntax and Git whitespace checks: pass.
+
+The first new video vectors exposed shadow-MSB halving and BEF/erase lifecycle
+errors; these were fixed against the manual. Review also corrected color-offset
+ordering and added a vector distinguishing top/second-screen offset selection.
+Two browser-test failures were test assumptions: view navigation does not redraw
+the Canvas, so the check now uses the actual Debug frame control; audio delivery
+must wait for AudioWorklet initialization after the enable gesture. Final checks
+pass without removing the pixel/audio assertions or skipping required tests.
+
+Remaining mandatory work includes complete SH-2/SH7604 and MC68EC000 edge
+conformance, full bus/reset/backup services and timing/arbitration, remaining
+SCU/DMA/DSP behavior, VDP1 edge/scanout/timing and VDP2 tile/rotation/line/shadow/
+display modes, full SCSP synthesis/effects DSP/CD-DA, runtime CD/mixed BIN/CUE,
+BIOS/HLE service ABI and full synthetic boot/service pathways, remaining SMPC
+system/clock/analog controls, the hardware exerciser disc, and complete linked
+native/Wasm/browser evidence. Prism Courier supplies the first required new
+demonstration; it does not replace the second or any hardware acceptance.
+
+No real BIOS, human testing/approval, live Pages inspection, external-workflow
+investigation or post-merge gate is required. Genuine BIOS/retail compatibility
+remains not independently confirmed. This validation does not claim remote CI
+or a production deployment passed. Required post-merge verification: **None**.
+
 ## PR #18 sound CPU, PCM and SMPC implementation (2026-10-21)
 
 Related to #17. This revision implements review findings in the existing PR; the

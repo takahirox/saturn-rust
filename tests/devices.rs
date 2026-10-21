@@ -119,7 +119,7 @@ fn rgb_bitmap_respects_pitch_and_configuration_and_has_no_game_state_dependency(
     assert_eq!(&pixels[320 * 4..320 * 4 + 4], &[255, 255, 255, 255]);
     vdp.vblank = true;
     assert_eq!(vdp.read16(VDP2 + 4), Ok(8));
-    vdp.write16(VDP2 + 0x28, 0x12).unwrap();
+    vdp.write16(VDP2 + 0x28, 0x72).unwrap();
     assert!(vdp.framebuffer().unwrap_err().contains("Unsupported VDP2"));
     assert_eq!(
         Machine::new().framebuffer().unwrap().len(),

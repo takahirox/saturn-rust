@@ -9,7 +9,7 @@ import { join, resolve } from "node:path";
 import { chromium } from "playwright";
 
 // Fail before upload if web/ includes anything beyond the public runtime assets.
-const assets = ["audio.js", "audio-worklet.js", "app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt"];
+const assets = ["audio.js", "audio-worklet.js", "app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt", "prism-courier.iso", "prism-courier-LICENSE.txt"];
 assert.deepEqual((await readdir("web", { recursive: true })).sort(), [...assets, "pkg"].sort());
 assert((await lstat("web/pkg")).isDirectory());
 for (const asset of assets) {
@@ -90,7 +90,7 @@ try {
       assert(Math.abs(layout.width / layout.height - 320 / 224) < 0.005);
       assert.deepEqual(layout.native, [320, 224]);
       assert.equal(layout.pixels, "pixelated");
-      const controls = isPlay ? ["view-debug", "play-homebrew", "pause", "restart", "fullscreen"] : ["view-play", "step", "run", "reset", "frame", "count"];
+      const controls = isPlay ? ["view-debug", "play-homebrew", "play-prism", "pause", "restart", "fullscreen"] : ["view-play", "step", "run", "reset", "frame", "count"];
       if (await page.locator("#mode").isVisible()) controls.push("mode");
       for (const id of ["disc", "bios"]) if (await page.locator(`#${id}`).isVisible()) controls.push(id);
       for (const id of controls) {
@@ -1016,6 +1016,93 @@ try {
   await anotherTab.waitForFunction(() => document.getElementById("status").textContent === "Ready");
   assert(await anotherTab.evaluate(async () => (await import("./app.js")).emulator.export_backup_ram().every((byte) => byte === 0)));
   await anotherTab.close();
+  // Original playable VDP1+VDP2+SCSP disc. UI loads the packaged image; only
+  // controller input enters the guest. Graphics, collision and state are SH-2
+  // computations and real command/texture writes; the 68k computes PCM.
+  const courier = await context.newPage();
+  courier.on("pageerror", (error) => pageErrors.push(error.message));
+  courier.on("request", (request) => requests.push({ url: request.url(), method: request.method(), body: request.postData() }));
+  await courier.goto(address + prefix);
+  await courier.waitForFunction(() => document.getElementById("status").textContent === "Ready");
+  await courier.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    window.courierState = () => [0,4,8,12,16].map((offset) => emulator.read_long(0x06018000+offset));
+  });
+  await courier.locator("#play-prism").click();
+  await courier.waitForFunction(() => window.courierState()[4] > 2, null, { timeout: 30000 });
+  await courier.locator("#pause").click();
+  const courierState = () => courier.evaluate(() => window.courierState());
+  assert.deepEqual((await courierState()).slice(0,4), [24,112,0,0]);
+  const courierFrames = async (n) => courier.evaluate(async (n) => {
+    const { emulator } = await import("./app.js");
+    let stereo = false;
+    for (let i=0; i<n; i++) {
+      emulator.advance_frame();
+      const pcm = emulator.audio_samples(8192);
+      for (let p=0; p<pcm.length; p+=2) stereo ||= pcm[p] !== 0 && pcm[p+1] !== 0 && pcm[p] !== pcm[p+1];
+    }
+    const pixels = emulator.framebuffer();
+    return { state: window.courierState(), stereo, pixels: [[27,115],[150,50],[285,110],[100,20]].map(([x,y]) => Array.from(pixels.slice((y*320+x)*4,(y*320+x)*4+4))),
+      count: emulator.sound_instruction_count(), waveform: emulator.read_long(0x05A04000), drawIrqs: emulator.read_long(0x06018014) };
+  },n);
+  const courierInitial = await courierFrames(3);
+  assert.deepEqual(courierInitial.pixels.slice(0,3), [[0,255,255,255],[255,0,0,255],[0,255,0,255]]);
+  assert(courierInitial.stereo);
+  assert(BigInt(courierInitial.count) >= 27n);
+  assert.equal(courierInitial.waveform, 0x1000F000);
+  assert(courierInitial.drawIrqs > 2);
+  await courier.locator("#screen").focus();
+  await courier.keyboard.down("ArrowUp");
+  await courierFrames(12);
+  await courier.keyboard.up("ArrowUp");
+  await courier.keyboard.down("ArrowRight");
+  const lostCourier = await courierFrames(32);
+  await courier.keyboard.up("ArrowRight");
+  assert.deepEqual(lostCourier.state.slice(0,4), [140,64,3,2]);
+  assert.deepEqual(lostCourier.pixels[3], [255,0,0,255]);
+  await courier.keyboard.down("Enter");
+  await courierFrames(2);
+  await courier.keyboard.up("Enter");
+  assert.deepEqual((await courierFrames(3)).state.slice(0,4), [24,112,0,0]);
+  await courier.keyboard.down("ArrowRight");
+  await courierFrames(64);
+  await courier.keyboard.up("ArrowRight");
+  const wonCourier = await courierFrames(2);
+  assert.deepEqual(wonCourier.state.slice(0,4), [280,112,7,1]);
+  assert.deepEqual(wonCourier.pixels[3], [0,255,0,255]);
+  // The Debug frame control uses the same Canvas presentation as Play.
+  await courier.locator("#view-debug").click();
+  await courier.locator("#frame").click();
+  assert.deepEqual(await courier.evaluate(() => Array.from(document.getElementById("screen").getContext("2d").getImageData(100,20,1,1).data)), [0,255,0,255]);
+  await courier.locator("#view-play").click();
+  await courier.locator("#screen").focus();
+  await courier.keyboard.down("Enter");
+  await courierFrames(2);
+  await courier.keyboard.up("Enter");
+  assert.deepEqual((await courierFrames(3)).pixels, courierInitial.pixels);
+  // The new disc's computed PCM also traverses the actual AudioWorklet.
+  await courier.locator("#audio-enable").click();
+  await courier.waitForFunction(() => document.getElementById("audio-status").textContent.includes("paused"));
+  await courier.evaluate(async () => {
+    const { emulator, audio } = await import("./app.js");
+    audio.setPaused(false);
+    emulator.advance_frame();
+    audio.deliver(emulator.audio_samples(8192));
+    window.courierAudioReady = () => audio.stats.rendered > 128 && audio.stats.peak > 0.1;
+  });
+  await courier.waitForFunction(() => window.courierAudioReady());
+  // Replacing the original texture in a local disc must change Wasm pixels.
+  const changedCourier = Buffer.from(await readFile("web/prism-courier.iso"));
+  for (let i=21*2048+0x2400; i<21*2048+0x2480; i+=2) {
+    if (changedCourier.readUInt16BE(i)) changedCourier.writeUInt16BE(0xFC00,i);
+  }
+  await courier.locator("#settings > summary").click();
+  await courier.locator("#disc").setInputFiles({ name:"original-changed-prism.iso",mimeType:"application/octet-stream",buffer:changedCourier });
+  await courier.waitForFunction(() => window.courierState()[4] === 0);
+  const mutatedCourier = await courierFrames(40);
+  assert.deepEqual(mutatedCourier.state.slice(0,4), [24,112,0,0]);
+  assert.deepEqual(mutatedCourier.pixels[0], [0,0,255,255]);
+  await courier.close();
   assert.deepEqual(pageErrors, []);
   assert(requests.length > 0);
   const staticPaths = new Set([prefix, ...assets.map((asset) => prefix + asset), prefix + "favicon.ico", "/favicon.ico"]);
@@ -1031,7 +1118,7 @@ try {
   await missingBuild.waitForFunction(() => document.getElementById("status").textContent === "Initialization failed");
   assert.match(await missingBuild.locator("#error").textContent(), /Build web\/pkg and serve/);
   assert.equal(await missingBuild.locator("#reset").isDisabled(), true);
-  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, SH-2-uploaded MC68EC000 PCM computation/SCSP timer IRQ/stereo samples and WebAudio worklet delivery/underflow/mute/blocked states, SMPC RTC/SMEM/INTBACK IRQs and synthetic digital+analog Gamepad/focus release, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation.`);
+  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, SH-2-uploaded MC68EC000 PCM computation/SCSP timer IRQ/stereo samples and WebAudio worklet delivery/underflow/mute/blocked states, SMPC RTC/SMEM/INTBACK IRQs and synthetic digital+analog Gamepad/focus release, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation; Prism Courier original disc, VDP1 sprite/polygons + VDP2 composition/Canvas, draw-end IRQ, 68k stereo + actual AudioWorklet, keyboard collision/win/restart, changed-disc texture mutation.`);
 } finally {
   if (browser) await browser.close();
   if (server?.pid && server.exitCode === null) {
