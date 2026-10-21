@@ -103,8 +103,15 @@ impl Vdp2 {
     }
     fn validate(&self) -> Result<(), String> {
         let unsupported = self.word(0) != 0x8000
-            || self.word(0x20) & !0x1F1F != 0
-            || self.word(0xE) & !0x3000 != 0
+            || self.word(0x20) & !0x1F3F != 0
+            || self.word(0xE)
+                & !(0x3000
+                    | if self.word(0x20) & 0x20 != 0 {
+                        0x200
+                    } else {
+                        0
+                    })
+                != 0
             || self.word(0xE) >> 12 == 3
             || self.word(0xEC) & !0x15F != 0
             || self.word(0xE0) & 0x10 != 0
@@ -116,7 +123,7 @@ impl Vdp2 {
             return Err("Unsupported VDP2 display, banking, layer or effects configuration".into());
         }
         for layer in 0..4 {
-            if self.word(0x20) & (1 << layer) == 0 {
+            if self.word(0x20) & 0x20 != 0 || self.word(0x20) & (1 << layer) == 0 {
                 continue;
             }
             let (ctl, format) = self.character_control(layer);
@@ -260,7 +267,7 @@ impl Vdp2 {
         format: u16,
         x: usize,
         y: usize,
-    ) -> (usize, usize, usize) {
+    ) -> Option<(usize, usize, usize)> {
         self.tile_map(layer, ctl, format, x, y, None, false)
     }
     #[allow(clippy::too_many_arguments)]
@@ -273,7 +280,7 @@ impl Vdp2 {
         y: usize,
         parameter: Option<usize>,
         over: bool,
-    ) -> (usize, usize, usize) {
+    ) -> Option<(usize, usize, usize)> {
         let size = if ctl & 1 == 0 { 8 } else { 16 };
         let pnc = self.word(0x30 + layer * 2);
         let one = pnc & 0x8000 != 0;
@@ -300,6 +307,12 @@ impl Vdp2 {
         let page = py / 512 * pages_x + px / 512;
         let name_index = (py % 512 / size) * columns + px % 512 / size;
         let at = base + page * page_bytes + name_index * name_bytes;
+        let rbg1 = layer == 0 && parameter == Some(1);
+        // ST-058 §6.2: RBG1 names are read from B1; its characters from B0.
+        // An address outside the selected bank cannot fetch display data.
+        if rbg1 && !over && (at & 0x60000) != 0x60000 {
+            return None;
+        }
         let name = if over {
             self.word(0xB8 + parameter.unwrap() * 2)
         } else {
@@ -338,14 +351,15 @@ impl Vdp2 {
         }
         let cell = (cy / 8) * 2 + cx / 8;
         let cell_bytes = [32, 64, 128, 128, 256][usize::from(format)];
-        (
-            (character * 32 + cell * cell_bytes) & 0x7FFFF,
-            (cy & 7) * 8 + (cx & 7),
-            palette,
-        )
+        let base = (character * 32 + cell * cell_bytes) & 0x7FFFF;
+        if rbg1 && (base & 0x60000) != 0x40000 {
+            return None;
+        }
+        Some((base, (cy & 7) * 8 + (cx & 7), palette))
     }
     fn background(&self, layer: usize, mut x: usize, mut y: usize) -> Option<Layer> {
-        if self.word(0x20) & (1 << layer) == 0
+        if self.word(0x20) & 0x20 != 0
+            || self.word(0x20) & (1 << layer) == 0
             || !self.window(self.word(0xD0 + (layer / 2) * 2) >> ((layer & 1) * 8), x, y)
         {
             return None;
@@ -378,7 +392,7 @@ impl Vdp2 {
                 usize::from(self.word(0x2C) >> (layer * 8) & 7) * 256,
             )
         } else {
-            self.tile(layer, ctl, format, sx, sy)
+            self.tile(layer, ctl, format, sx, sy)?
         };
         let opaque = self.word(0x20) & (0x100 << layer) != 0;
         let offset = usize::from(self.word(0xE4) >> (layer * 4) & 7) * 256;
@@ -518,6 +532,7 @@ impl Vdp2 {
                     self.background(2, x, y),
                     self.background(1, x, y),
                     self.background(0, x, y),
+                    self.rotation1(x, y),
                     self.rotation(x, y),
                     sprites.map(|s| self.sprite(s, x, y)).transpose()?.flatten(),
                 ]

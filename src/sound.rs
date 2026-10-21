@@ -1,8 +1,9 @@
 //! Shared SCSP/sound-CPU bus and independent audio clock domain.
 //! Primary references: ST-077 §§1.2, 3, 4.2; M68000PRM §§2–4.
-//! PCM direct mode and the effects processor are implemented here. Unsupported synthesis settings are
-//! diagnosed instead of being stored as inert, apparently implemented controls.
+//! PCM, slot modulation/LFO/noise and the effects processor execute here.
+//! Unimplemented envelope rates still fail explicitly rather than acting as no-ops.
 mod dsp;
+mod synthesis;
 use crate::bus::{BusError, Memory};
 use crate::m68k::M68k;
 use std::cell::{Cell, RefCell};
@@ -57,8 +58,8 @@ pub struct Scsp {
     midi_in: RefCell<VecDeque<u8>>,
     midi_overflow: Cell<bool>,
     midi_out: RefCell<VecDeque<u8>>,
-    stack: [i16; 64],
-    stack_index: usize,
+    stack: synthesis::Stack,
+    lfo: [synthesis::Lfo; 32],
     dma_remaining: u16,
     external: [i16; 2],
     pub generated: u64,
@@ -78,8 +79,8 @@ impl Default for Scsp {
             midi_in: RefCell::new(VecDeque::new()),
             midi_overflow: Cell::new(false),
             midi_out: RefCell::new(VecDeque::new()),
-            stack: [0; 64],
-            stack_index: 0,
+            stack: synthesis::Stack::default(),
+            lfo: std::array::from_fn(synthesis::Lfo::new),
             dma_remaining: 0,
             external: [0; 2],
             generated: 0,
@@ -133,7 +134,7 @@ impl Scsp {
             0x420 => Ok(self.pending.get()),
             0x42C => Ok(self.main_pending.get()),
             0x422 | 0x424 | 0x426 | 0x428 | 0x42E => Ok(0),
-            0x600..=0x67E => Ok(self.stack[((offset - 0x600) / 2) as usize] as u16),
+            0x600..=0x67E => Ok(self.stack.data[((offset - 0x600) / 2) as usize] as u16),
             0x700..=0xEDE => self.dsp.read(offset),
             _ => Err(Self::error(offset)),
         }
@@ -149,14 +150,17 @@ impl Scsp {
             0..=0x3FF if offset & 31 < 24 => {
                 let slot = (offset / 32) as usize;
                 let index = (offset as usize & 31) / 2;
-                // Reject envelope/LFO/FM until their behavior exists.
-                if (matches!(index, 4 | 5 | 7 | 9) && value != 0)
-                    || (index == 0 && value & 0x0180 != 0)
+                // Zero-rate attack and EGHOLD are defined; timed AR/D1R/D2R/
+                // RR/KRS/LPSLNK still require independent rate evidence.
+                if (index == 4 && value & !0x20 != 0)
+                    || (index == 5 && value != 0)
+                    || (index == 0 && (value >> 7) & 3 == 3)
                 {
                     return Err(Self::error(offset));
                 }
                 let mask = match index {
                     0 => 0x0FFF,
+                    5 => 0x7FFF,
                     6 => 0x03FF,
                     8 => 0x7BFF,
                     10 => 0x007F,
@@ -164,6 +168,9 @@ impl Scsp {
                     _ => u16::MAX,
                 };
                 self.slots[slot][index] = value & mask;
+                if index == 9 && value & 0x8000 != 0 {
+                    self.lfo[slot].reset();
+                }
                 if index == 0 && value & 0x1000 != 0 {
                     for i in 0..32 {
                         if self.slots[i][0] & 0x800 != 0 {
@@ -218,7 +225,7 @@ impl Scsp {
             0x422 => self.pending.set(self.pending.get() & !value),
             0x42E => self.main_pending.set(self.main_pending.get() & !value),
             0x424 | 0x426 | 0x428 => self.common[((offset - 0x400) / 2) as usize] = value & 255,
-            0x600..=0x67E => self.stack[((offset - 0x600) / 2) as usize] = value as i16,
+            0x600..=0x67E => self.stack.data[((offset - 0x600) / 2) as usize] = value as i16,
             0x700..=0xEDE => self.dsp.write(offset, value)?,
             _ => return Err(Self::error(offset)),
         }
@@ -320,13 +327,13 @@ impl Scsp {
         self.request(0x400);
         let mut mix = [0i64; 2];
         for i in 0..32 {
+            let regs = self.slots[i];
+            self.stack.begin_slot(i);
+            let lfo = self.lfo[i];
+            self.lfo[i].advance(regs[9]);
+            self.stack.write(i, 0, regs[6] & 0x200 != 0);
             if !self.voices[i].active {
                 continue;
-            }
-            let regs = self.slots[i];
-            // SDIR is required for implemented direct PCM, never fake an envelope.
-            if regs[6] & 0x100 == 0 {
-                return Err(Self::error(i as u32 * 32 + 12));
             }
             let voice = &mut self.voices[i];
             let start = (usize::from(regs[0] & 15) << 16) | usize::from(regs[1]);
@@ -385,36 +392,41 @@ impl Scsp {
             // ST-077 §§2.2/3.1, fig.4.30 OP4: first-order interpolation
             // follows waveform reads. Interpolate decoded signed samples, not
             // addresses or mixed output. Q16 arithmetic rounds towards -infinity.
-            let index = voice.phase.max(0) as usize >> 16;
+            let shift = self.stack.displacement(i, regs[7]);
+            let position = voice.phase + shift;
+            let index = position >> 16;
             // A reverse phase names the upper edge of its sample interval.
             // Measure interpolation distance from that edge toward the previous
             // sample, wrapping only reverse loops and holding ping-pong ends.
             let fraction = if voice.reverse {
-                0xFFFF - (voice.phase & 0xFFFF)
+                0xFFFF - (position & 0xFFFF)
             } else {
-                voice.phase & 0xFFFF
+                position & 0xFFFF
             };
-            let next = if voice.reverse {
-                if index <= usize::from(regs[2]) {
+            let next = if shift != 0 {
+                index + if voice.reverse { -1 } else { 1 }
+            } else if voice.reverse {
+                if index <= i64::from(regs[2]) {
                     if looping == 2 {
-                        usize::from(regs[3]) - 1
+                        i64::from(regs[3]) - 1
                     } else {
                         index
                     }
                 } else {
                     index - 1
                 }
-            } else if index + 1 >= regs[3] as usize {
+            } else if index + 1 >= i64::from(regs[3]) {
                 if looping == 1 {
-                    regs[2] as usize
+                    i64::from(regs[2])
                 } else {
                     index
                 }
             } else {
                 index + 1
             };
-            let decode = |index: usize| {
-                let offset = (start + index * if pcm8 { 1 } else { 2 }) & (SOUND_RAM_SIZE - 1);
+            let decode = |index: i64| {
+                let offset = (start as i64 + index * if pcm8 { 1 } else { 2 })
+                    .rem_euclid(SOUND_RAM_SIZE as i64) as usize;
                 let mut value = if pcm8 {
                     i16::from(ram[offset] as i8) << 8
                 } else {
@@ -428,11 +440,31 @@ impl Scsp {
                 }
                 i64::from(value)
             };
-            let a = decode(index);
-            let value = ((a * (65536 - fraction) + decode(next) * fraction) >> 16) as i16;
-            if regs[6] & 0x200 == 0 {
-                self.stack[(self.stack_index + i) & 63] = value;
+            let mut value = match (regs[0] >> 7) & 3 {
+                0 => {
+                    let a = decode(index);
+                    ((a * (65536 - fraction) + decode(next) * fraction) >> 16) as i16
+                }
+                source @ (1 | 2) => {
+                    let mut value = if source == 1 { lfo.noise() } else { 0 };
+                    if regs[0] & 0x200 != 0 {
+                        value ^= 0x7FFF;
+                    }
+                    if regs[0] & 0x400 != 0 {
+                        value ^= i16::MIN;
+                    }
+                    value
+                }
+                _ => unreachable!("reserved SSCTL is rejected on write"),
+            };
+            if regs[6] & 0x100 == 0 {
+                value = if regs[4] & 0x20 != 0 {
+                    synthesis::attenuate(value, regs[6] as u8, lfo.attenuation(regs[9]))
+                } else {
+                    0 // AR=0 never leaves the initial, fully attenuated attack.
+                };
             }
+            self.stack.write(i, value, regs[6] & 0x200 != 0);
             self.dsp.add_slot(regs[10], value);
             let send = (regs[11] >> 13) & 7;
             let pan = ((regs[11] >> 8) & 31) as usize;
@@ -456,9 +488,10 @@ impl Scsp {
             } else {
                 step >>= -oct;
             }
+            step = lfo.step(regs[9], step);
             voice.phase += if voice.reverse { -step } else { step };
         }
-        self.stack_index = (self.stack_index + 32) & 63;
+        self.stack.end_frame();
         self.dsp.sample(ram, self.common[1], self.external)?;
         for (channel, sample) in self.dsp.effects.into_iter().enumerate() {
             let routing = self.slots[channel][11];

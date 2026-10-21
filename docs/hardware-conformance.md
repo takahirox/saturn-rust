@@ -5,7 +5,7 @@
 includes independent slave SH-2 execution, CPU-local FRT/WDT/SCI/DIVU/DMAC,
 internal interrupt arbitration, executing UBC comparisons, software standby/NMI wake,
 write-through caches, timed SMPC CPU control and SYSRES,
-SCU interrupt/DMA/DSP execution, an independent MC68EC000 core, direct SCSP PCM,
+SCU interrupt/DMA/DSP execution, an independent MC68EC000 core, SCSP PCM/FM/LFO/noise,
 WebAudio delivery, SMPC RTC/SMEM/INTBACK and clock-based NTSC raster events. It preserves the address-error fixtures, Star Collector,
 backup RAM and both direct digital pads. It does not complete the Saturn hardware
 or the complete required hardware exerciser demonstration. Hardware Lab now
@@ -434,7 +434,7 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 | NBG0 bitmap, [VDP2] §§4–6 | 4/8/11-bit palette, RGB555/RGB888, bitmap dimensions/base, transparency, fixed-point scroll/zoom | VIDEO | PRISM, SC (RGB555, unit zoom) | Full format/dimension/zoom vectors and browser coverage | Pending |
 | NBG0–3 tile/character, [VDP2] §§4.4–4.8, figs.4.9/4.10, table4.8 | `Vdp2::character_control/tile/background`: one/two-word names, both supplement modes, 8×8/16×16 characters, 4/8/11-bit palette and RGB555/888 where applicable, flips, plane/page alignment/maps/wrap | [seven independent pixel/guest tests](../tests/video_tiles.rs) | TILE (four layers, names, palette/VRAM, window, mutation) | VRAM cycle arbitration, bandwidth/layer restrictions and exhaustive guest corpus remain | Pending |
 | NBG1–3 bitmap/layer control, [VDP2] §§4–6 | NBG1 bitmap composition, formats applicable to NBG1, scroll/zoom/priority | VIDEO | — | Complete layer restrictions and guest format corpus; NBG2/3 tile layers now exercised by TILE | Pending |
-| Rotation backgrounds, [VDP2] §6.1 p.147, §6.3 figs.6.2–6.4, §6.4 fig.6.7 | RBG0 fixed-point A/B matrices, viewpoint/center/Z/translation/scales, 16-plane tile or bitmap, four screen-over modes, 16/32-bit coefficient modes, per-dot/line coefficient indexing, transparent coefficients and parameter/window switching | EFFECTS | EFFECTS (quarter turn, A/B coefficient switch, mutation) | RBG1, scanline parameter latching/reloads, CRAM coefficients, coefficient line-color and cycle/bank arbitration remain required | Pending |
+| Rotation backgrounds, [VDP2] §6.1 p.147, §6.3 figs.6.2–6.4, §6.4 fig.6.7 | RBG0 fixed-point A/B matrices, viewpoint/center/Z/translation/scales, 16-plane tile or bitmap, four screen-over modes, 16/32-bit coefficient modes, per-dot/line coefficient indexing, transparent coefficients and parameter/window switching; RBG1 parameter B/cells/B0 characters/B1 names, NBG0 effects controls | EFFECTS, R1 | EFFECTS + R1 (quarter turn, A/B coefficient switch, matrix mutations/Canvas) | Complete RBG1 boundaries and bank contention; scanline parameter latching/reloads, CRAM coefficients, coefficient line-color and cycle/bank arbitration remain required | Pending |
 | Line/vertical-cell scroll, [VDP2] §5.3 figs.5.4–5.8 | Packed enabled X/Y/zoom fields, relative offsets and held line intervals, fractional coordinates, independent NBG0/1, interleaved vertical cell tables and mosaic precedence | EFFECTS | EFFECTS (line X) | Raster-time table reads, cycle/bandwidth arbitration and full guest field/interval corpus remain | Pending |
 | Windows/line windows, [VDP2] §8.1 figs.8.2–8.4 | W0/W1 rectangle or VRAM line tables, inside/outside, inclusive edges, empty/inverted ranges, AND/OR on normal/rotation/sprite/color calculation; rotation-parameter windows | VIDEO, EFFECTS | EFFECTS (line window and composition) | Sprite windows and full independent guest corpus remain | Pending |
 | Mosaic, [VDP2] §5 | NBG0–3 horizontal/vertical grouping | VIDEO | — | All independent vertical/layer/guest vectors | Pending |
@@ -469,9 +469,9 @@ Implementation: [shared sound bus, PCM and clock domain](../src/sound.rs),
 | --- | --- | --- | --- | --- |
 | Sound RAM / SCSP mapping, [SCSP] §§1.2/4.1 | 512 KiB RAM shared by SH-2 and independent 68k; big-endian byte/word/long cycles; SCSP byte lanes; SNDON/OFF reset vectors and RAM retention; RESET output resets SCSP controls | SNDV, SNDR / SNDR | Additional memory-size configuration, exact reset pulse/bus timing (sound RAM mirrors now tested in bus.rs) | Pending |
 | 32 slots, PCM8/16, [SCSP] §4.2 table 4.14 | Guest key-on/off, signed PCM, source bit controls, all 32 slots, no/forward/reverse/alternative loops, Q16 OCT/FNS pitch, signed first-order PCM8/16 interpolation for all loop directions, sound stack | SNDV, SNDR (including guest half-pitch vectors) / SNDR (half-pitch vectors) | Exact hardware fractional boundary rounding and complete envelope-controlled playback | Pending |
-| Envelope, [SCSP] §4.2 | Nonzero envelope settings rejected; direct mode requires SDIR | SNDV / explicit errors | Attack/decay/sustain/release/key scaling | Pending |
-| FM/modulation/LFO, [SCSP] §4.2 | Unsupported nonzero controls rejected | SNDV / explicit errors | Noise, modulation/LFO execution and routing | Pending |
-| Levels/pan/external inputs, [SCSP] §4.2 tables 4.27/28 | Direct send and fixed-point stereo pan, clipping, master output control; independently expected full-volume stereo buffers | SNDV, SNDR / SNDR | Intermediate master gain conformance and complete routing boundary corpus | Pending |
+| Envelope, [SCSP] §4.2 | Zero-rate attack remains silent; zero-rate EGHOLD holds unity gain; SDIR bypasses EG/TL/ALFO; other rates fail explicitly | SNDV, SYNTH / SYNTH | Timed attack/decay/release, decay level, key scaling and loop linking | Pending |
+| FM/modulation/LFO, [SCSP] §4.2 figs.4.18/4.31, tables4.16–4.24 | Executing recent/past sound-stack selection with five-slot pipeline, signed averaging/MDL, guard-waveform reads; per-slot AM/PM LFO waveforms, frequency/depth/reset; internal noise/zero source | SNDV, SYNTH / SYNTH operand mutations and WebAudio | Exact chip noise sequence is unspecified; physical sub-sample rounding, full FM overflow/loop boundaries and envelope integration remain | Pending |
+| Levels/pan/external inputs, [SCSP] §4.2 tables 4.27/28 | Binary total-level attenuation, direct send and fixed-point stereo pan, clipping, master output control; independently expected full-volume stereo buffers | SNDV, SNDR / SNDR | Intermediate master gain conformance and complete routing boundary corpus | Pending |
 | Timers/interrupts, [SCSP] §4.2 tables 4.33–38 | Three sample-clock prescaled counters; sound/main pending/enables/clear; programmed autovector levels, 68k IRQ/RTE, SCU source 6 | SNDV, SNDR / SNDR | Complete cross-device contention/timer reset edge evidence | Pending |
 | MIDI registers, [SCSP] §4.2 figs.4.59–61 | Four-byte input/output FIFOs, status/overflow, byte-lane read effects, empty transitions and IRQ requests | SNDV / not yet guest-tested | Serial bit pacing/external pin wiring and browser guest vectors | Pending |
 | SCSP DMA, [SCSP] §4.2 fig.4.66/table 4.39 | Word transfers in both directions, zero gate, count/address progress, DEXE completion and IRQ; DMA-register target rejected | SNDV / not yet guest-tested | Exact transfer timing/arbitration, full boundaries and guest evidence | Pending |
@@ -515,7 +515,7 @@ no-op CPU/device implementations cannot satisfy those assertions.
    cycle-based dual-CPU scheduling and arbitration. CPU opcode decoding alone
    does not satisfy the CPU or multiprocessor criterion.
 2. Complete MC68EC000 timing/prefetch edge conformance and sound bus arbitration;
-   SCSP envelope/FM/LFO/noise remain missing; effects DSP and CD-DA have CLAB subset evidence. Direct PCM,
+   SCSP timed envelopes and complete modulation conformance remain required; FM/LFO/noise now have SYNTH subset evidence; effects DSP and CD-DA have CLAB subset evidence. Direct PCM,
    executing sound CPU, timers/DMA/FIFO subsets and WebAudio now have evidence.
 3. Full base memory map, remaining backup mirrors and BIOS filesystem/calls,
    plus hardware clock/event scheduling. Packed backup import/export and byte
@@ -523,7 +523,7 @@ no-op CPU/device implementations cannot satisfy those assertions.
 4. Complete SCU A/B-bus wait-state/arbitration and device routes, DMA boundary/
    trigger coverage, DSP conditional/pipeline/bank-conflict and program-DMA evidence.
    SCUROM now executes real DMA/DSP/timer/IRQ operations but is subset evidence.
-5. Remaining VDP1 edge/scanout/timing conformance and VDP2 tile timing, RBG1,
+5. Remaining VDP1 edge/scanout/timing conformance and VDP2 tile timing, complete RBG1 edge coverage,
    parameter reloads/CRAM coefficients, sprite windows/shadow/display modes, with
    complete independent guest and browser coverage. VIDEO, EFFECTS and PRISM
    provide actual subset pixel/composition evidence.
@@ -790,7 +790,7 @@ in traversal order, with reverse wrapping and alternating endpoint holds.
 uses independently authored positive/negative half-pitch vectors. The browser
 patches only the original 68k sound guest's SCSP pitch/key-on immediate words and
 checks an exact reverse-loop stereo vector in Wasm. Exact hardware sub-sample
-rounding, envelope/FM/LFO/noise and full effects-DSP conformance remain mandatory work.
+rounding, timed envelopes, complete modulation conformance and full effects-DSP conformance remain mandatory work.
 
 
 ## Executing SCSP effects processor and guest evidence
@@ -836,3 +836,74 @@ Its audio/CUE, Star Collector and Prism Courier remain byte-identical. See the
 This implementation/evidence does not satisfy the full audio or umbrella criteria.
 
 [SCDSPASM]: https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-228-R1-030596.pdf
+
+
+## Executing SCSP slot modulation and independent guest evidence
+
+**SYNTH** is [the original reproducible fixture](../tests/fixtures/build_synthesis.py),
+[68k source builder](../tests/fixtures/build_sound.py), [native guest integration](../tests/synthesis.rs)
+and the same [browser Wasm suite](../scripts/browser-smoke.mjs). The fixture and
+all generated bytes use the adjacent MIT license. Expanded 512 KiB ROM SHA-256:
+`9a40992d946a7872b0418c2ac07eea1c3e8b1aad9a7e6fb94282f94f558d4ccd`.
+
+Implementation: [slot synthesis](../src/sound/synthesis.rs) and
+[SCSP sample path](../src/sound.rs). Independent native vectors are in
+[synthesis/tests.rs](../src/sound/synthesis/tests.rs) and [sound/tests.rs](../src/sound/tests.rs).
+References: ST-077 §4.2 figs.4.18/4.31 and tables4.16–4.24. The sound-stack table,
+including its recent/past selection columns, is applied after the documented
+five-slot producer-to-consumer delay. STWINH retains committed data; FM changes
+waveform reads without modifying the phase generator or CA. Source-bit controls
+also apply to internal noise/zero sources.
+
+The 68k writes two original guard ramps, starts a silent modulator and FM carrier,
+and runs a separate square-ALFO voice. The SH-2 observes the 68k timer-IRQ result.
+Native and browser assertions independently expect left samples
+`1024,1152,1280,1408,1536,1664,1792,1920` and right levels `1024/64`.
+Changing only the guest TL, MDL, PLFO or ALFO operands changes those samples;
+reset repeats the output. Separate guest source-control mutations exercise internal
+noise/zero output, signed noise, reset repetition and noise independence from LFORE. PLFO vectors use a separate mathematical cents oracle
+with a one-unit PCM rounding tolerance. Browser checks send these synthesized
+samples through the production AudioWorklet.
+
+Oscillator periods carry rational remainders using the published hundredth-Hz
+frequencies. Gain/pitch arithmetic uses fixed integer powers of two, identically
+in native and Wasm. The manual does not specify a noise seed/polynomial; the
+explicit functional policy uses independent maximal 16-bit LFSRs clocked per
+sample, unaffected by LFORE or LFOF. This policy is repeatable, not a claim about
+the chip's exact random bit sequence. Fine LFO frequency/phase/rounding and FM
+address-overflow boundaries still require corroboration. EGHOLD with AR=0 and
+silent AR=0 are implemented; other envelope rates, decay/release/key scaling and
+loop linking remain explicitly unsupported. This adds executing hardware and
+objective evidence without declaring the complete audio or umbrella acceptance
+criterion satisfied.
+
+
+## Original dual-rotation guest and RBG1 evidence
+
+**R1** is the original [builder](../tests/fixtures/build_rbg1.py),
+[SH-2 source](../tests/fixtures/rbg1.s), [native guest test](../tests/rbg1.rs),
+[independent pixel vectors](../tests/video_effects.rs) and the identical
+[browser Wasm/Canvas execution](../scripts/browser-smoke.mjs). All new source and
+ROM bytes use the adjacent MIT license; no SDK/firmware/external assets are used.
+Expanded ROM SHA-256:
+`e213231f49cb9f045ba47f7f141ef6b183eb0540fa80012fd45ee964d6778141`.
+
+Primary reference: ST-058-R2 §§4.1/6.2/6.4, table6.1, appendix RBG1.
+[Rotation sampling](../src/vdp2/rotation.rs) uses parameter B for RBG1 and
+[the cell reader/compositor](../src/vdp2.rs) reads names from VRAM-B1 and
+characters from VRAM-B0. RBG1 uses NBG0's cell formats, transparency, mosaic,
+window, priority, ratio and color-offset controls. Dual rotation disables the
+normal layers. RBG0 must be enabled, mode0 selected and VRAM-B split; invalid
+configurations fail explicitly. Coefficient B's MSB is ignored for RBG1.
+Outside-bank image reads produce transparent pixels under the functional model;
+the exact hardware invalid-bank output and contention are not claimed.
+
+The guest constructs B0/B1 cells, two matrices, a red RBG0 bitmap and an RBG1
+window. Native/Wasm pixels and the production Canvas independently match a
+quarter-turn blue/green grid over red. Changing only My in the original guest
+moves the grid and exercises B's transparent screen-over mode. Native vectors
+also cover independent A/B movement, all five cell color formats, both pattern
+name widths, priority, blending, window, coefficient MSB and color offsets.
+RBG1 still samples the existing frame snapshot; scanline reloads, cycle/bank
+arbitration, all special functions and complete edge evidence remain required.
+This closes an implementation gap without satisfying the full video criterion.

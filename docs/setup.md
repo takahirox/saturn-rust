@@ -64,9 +64,11 @@ python3 tests/fixtures/build_system_reset.py --check
 python3 tests/fixtures/build_standby.py --check
 python3 tests/fixtures/build_tiles.py --check
 python3 tests/fixtures/build_effects.py --check
+python3 tests/fixtures/build_rbg1.py --check
 python3 tests/fixtures/build_controller.py --check
 python3 tests/fixtures/build_scu.py --check
 python3 tests/fixtures/build_sound.py --check
+python3 tests/fixtures/build_synthesis.py --check
 python3 tests/fixtures/build_smpc.py --check
 ```
 
@@ -304,3 +306,14 @@ browser exercises the actual Canvas/AudioWorklet path and missing-file rejection
 Full SCSP synthesis/DSP conformance and the other mandatory Issue #17 criteria
 are still required. CI also verifies the original independent HLE
 slave reset trampoline; external BIOS mode never installs that trampoline.
+
+
+The original slot-synthesis and dual-rotation fixtures also run natively and in
+browser Wasm. The 68k programs FM, TL and amplitude/pitch LFO, with independent
+stereo expectations, guest-operand mutations, internal noise/zero sources and
+production AudioWorklet delivery. The SH-2 RBG1 guest writes VRAM-B0 characters,
+VRAM-B1 pattern names and both matrices; tests assert dual-layer pixels, changed
+parameter-B pixels and actual Canvas output. Both fixtures are original MIT
+content, reproducible using the builders listed above. Timed envelopes, full
+video timing and the other mandatory umbrella requirements remain pending in the
+[conformance inventory](hardware-conformance.md).

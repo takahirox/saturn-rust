@@ -119,3 +119,21 @@ Hardware Lab now includes an original 68k-uploaded SCSP effects program in
 eight literal instructions, original coefficient/data initialization and
 reproducible media have native and browser numeric/mutation evidence. Remaining
 hardware acceptance is still required.
+
+
+The original [slot-synthesis fixture](../tests/fixtures/build_synthesis.py) extends
+only the original dual-architecture diagnostic builder. Its SH-2 starts the
+independent 68k, which writes guard waveforms, configures FM and amplitude LFO,
+and handles a timer interrupt. No sound recording, firmware, SDK object, assembler
+or external synthesis core is incorporated. The source and generated
+[synthesis.hex](../tests/fixtures/synthesis.hex) use the adjacent MIT license.
+The [conformance record](hardware-conformance.md#executing-scsp-slot-modulation-and-independent-guest-evidence)
+records the reproducible ROM hash and native/browser mutation evidence.
+
+
+The original [RBG1 diagnostic](../tests/fixtures/build_rbg1.py) generates
+[guest SH-2 source](../tests/fixtures/rbg1.s), matrices, cell patterns, names and
+bitmap colors independently. Its source and ROM use the adjacent MIT license.
+Native and browser checks mutate only an original matrix literal and compare
+emulated output with authored pixel expectations. The reproducible hash and
+programming contract are in the [RBG1 conformance evidence](hardware-conformance.md#original-dual-rotation-guest-and-rbg1-evidence).

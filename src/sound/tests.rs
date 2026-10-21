@@ -42,7 +42,7 @@ fn guest_ram_pcm16_loop_pan_key_off_and_all_thirty_two_slots() {
     }
     scsp.sample(&mut ram).unwrap();
     assert_eq!(scsp.drain(1), [8192, 8192]);
-    assert_eq!(scsp.stack.iter().filter(|v| **v == 256).count(), 32);
+    assert_eq!(scsp.stack.data.iter().filter(|v| **v == 256).count(), 27);
 }
 #[test]
 fn pcm8_signed_source_bit_controls_pitch_and_no_loop_stop() {
@@ -83,7 +83,7 @@ fn fractional_pcm_interpolation_uses_signed_samples_and_forward_loop_endpoint() 
         .map(|p| p[0])
         .collect();
     assert_eq!(actual, [0, 2048, 4096, 0, -4096, 2048, 8192, 6144, 4096, 0]);
-    assert_eq!(scsp.stack[0], 4096); // stack also receives interpolated data
+    assert_eq!(scsp.stack.data[0], 4096); // stack also receives interpolated data
 }
 
 #[test]
@@ -204,7 +204,7 @@ fn sample_delivery_is_bounded_and_unsupported_synthesis_never_succeeds_silently(
     assert_eq!(scsp.dropped, 5);
     assert_eq!(scsp.drain(usize::MAX).len(), BUFFER_FRAMES * 2);
     assert!(scsp.drain(1).is_empty());
-    for (address, value) in [(8, 1), (10, 1), (14, 1), (18, 1)] {
+    for (address, value) in [(8, 1), (10, 1), (0, 0x180)] {
         assert!(scsp.write16(address, value).is_err());
     }
 }
@@ -367,4 +367,98 @@ fn fractional_reverse_and_alternating_loops_interpolate_in_traversal_direction()
             }
         }
     }
+}
+
+#[test]
+fn total_level_held_attack_amplitude_lfo_and_direct_bypass_affect_real_stereo() {
+    let mut scsp = Scsp::default();
+    let mut ram = vec![0; SOUND_RAM_SIZE];
+    for chunk in ram[0x100..0x108].chunks_exact_mut(2) {
+        chunk.copy_from_slice(&16384i16.to_be_bytes());
+    }
+    direct(&mut scsp, 0, 0x100, 1, false, 0);
+    scsp.write16(12, 16).unwrap(); // SDIR=0, TL16=1/2
+    scsp.sample(&mut ram).unwrap();
+    assert_eq!(scsp.drain(1), [0, 0]); // zero AR stays at full attenuation
+    scsp.write16(8, 0x20).unwrap(); // EGHOLD=1, AR=0: held unity attack
+    scsp.sample(&mut ram).unwrap();
+    assert_eq!(scsp.drain(1), [8192, 8192]);
+    // Square ALFO held at reset starts at 0dB, then reaches 24dB attenuation.
+    scsp.write16(18, 0x8000 | (31 << 10) | (1 << 3) | 7)
+        .unwrap();
+    scsp.sample(&mut ram).unwrap();
+    assert_eq!(scsp.drain(1), [8192, 8192]);
+    scsp.write16(18, (31 << 10) | (1 << 3) | 7).unwrap();
+    for _ in 0..130 {
+        scsp.sample(&mut ram).unwrap();
+    }
+    let audio = scsp.drain(130);
+    assert_eq!(&audio[..2], &[8192, 8192]);
+    // 255/256 of four binary octaves attenuation: about 517.6.
+    assert!((517..=519).contains(&audio[audio.len() - 2]));
+    assert_eq!(audio[audio.len() - 2], audio[audio.len() - 1]);
+    scsp.write16(12, 0x1FF).unwrap(); // direct bypasses TL255 and ALFO
+    scsp.sample(&mut ram).unwrap();
+    assert_eq!(scsp.drain(1), [16384, 16384]);
+}
+
+#[test]
+fn fm_carrier_reads_executing_muted_modulator_with_generation_and_inhibit_controls() {
+    let mut scsp = Scsp::default();
+    let mut ram = vec![0; SOUND_RAM_SIZE];
+    for chunk in ram[0x100..0x108].chunks_exact_mut(2) {
+        chunk.copy_from_slice(&8192i16.to_be_bytes());
+    }
+    for i in 0..64 {
+        ram[0x200 + i * 2..0x202 + i * 2].copy_from_slice(&((i as i16) * 256).to_be_bytes());
+    }
+    direct(&mut scsp, 0, 0x100, 1, false, 0);
+    scsp.write16(22, 0).unwrap(); // modulator is audible only through FM
+    direct(&mut scsp, 5, 0x200, 1, false, 0);
+    scsp.write16(5 * 32 + 6, 64).unwrap();
+    scsp.write16(5 * 32 + 14, 0x5000 | (0x3B << 6) | 0x3B)
+        .unwrap();
+    for _ in 0..3 {
+        scsp.sample(&mut ram).unwrap();
+    }
+    assert_eq!(scsp.drain(3), [2048, 2048, 2304, 2304, 2560, 2560]);
+    // 8192 -> -8192 shifts the carrier by -8 samples instead of +8.
+    for chunk in ram[0x100..0x108].chunks_exact_mut(2) {
+        chunk.copy_from_slice(&(-8192i16).to_be_bytes());
+    }
+    for _ in 0..6 {
+        scsp.sample(&mut ram).unwrap();
+    }
+    let audio = scsp.drain(6);
+    assert_eq!(&audio[audio.len() - 2..], &[0, 0]); // carrier phase8 minus8
+    scsp.write16(12, 0x300).unwrap(); // STWINH: preserve modulator stack data
+    for chunk in ram[0x100..0x108].chunks_exact_mut(2) {
+        chunk.copy_from_slice(&16384i16.to_be_bytes());
+    }
+    scsp.sample(&mut ram).unwrap();
+    assert_eq!(scsp.drain(1), [256, 256]); // preserved -8 shift, not new +16
+    assert_eq!(scsp.voices[5].phase, 10 << 16); // FM never changes the phase generator
+}
+
+#[test]
+fn internal_noise_and_zero_sources_execute_and_noise_ignores_lfo_reset_frequency() {
+    fn samples(control: u16, source: u16) -> Vec<i16> {
+        let mut scsp = Scsp::default();
+        let mut ram = vec![0; SOUND_RAM_SIZE];
+        direct(&mut scsp, 0, 0x100, 1, false, 0);
+        scsp.write16(18, control).unwrap();
+        scsp.write16(0, 0x1820 | (source << 7)).unwrap();
+        for _ in 0..16 {
+            scsp.sample(&mut ram).unwrap();
+        }
+        scsp.drain(16)
+    }
+    let noise = samples(0, 1);
+    assert_eq!(noise, samples(0xFC00, 1));
+    assert_eq!(
+        &noise[..8],
+        &[-21279, -21279, -7568, -7568, 28984, 28984, 14492, 14492]
+    );
+    assert_eq!(samples(0, 2), [0; 32]);
+    assert!(noise.chunks_exact(2).all(|s| s[0] == s[1]));
 }

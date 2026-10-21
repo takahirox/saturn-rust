@@ -937,3 +937,71 @@ raster effects, SCSP envelope/FM/LFO/noise and full DSP timing, remaining CD
 commands/errors, SMPC clock/system/latch controls, complete synthetic service
 fixtures and comprehensive umbrella evidence remain mandatory. Continue on
 this same PR and Issue; do not mark it ready until all are implemented/validated.
+
+
+## SCSP slot synthesis and RBG1 implementation (2026-10-21)
+
+Continued the full Issue #17 target on PR #18, preserving the incoming UBC,
+standby/NMI, SYSRES and CUE-index work. Upstream main is still
+`dbd981b030a46daa6923072ce240680dd2e58ebf`, checked with `git ls-remote` and
+`git fetch` before publication. The existing PR branch is an ancestor of this
+worktree, permitting a normal fast-forward update with no force push.
+
+Implemented real SCSP slot FM from recent/past sound-stack generations, the
+five-slot producer/consumer pipeline, signed averaging/MDL and waveform guard
+reads. Added deterministic per-slot ALFO/PLFO waveforms, published frequencies
+and sensitivities, LFORE behavior, internal noise/zero sources, binary TL gain,
+zero-rate silent attack and zero-rate EGHOLD. Timed envelope rates still reject
+explicitly; the manual does not specify a noise polynomial, so the repeatable
+LFSR policy is documented without claiming the physical chip's exact sequence.
+
+Implemented VDP2 RBG1 cell sampling using parameter B, B0 characters/B1 names,
+normal-layer exclusion, NBG0 format/window/priority/blending/offset controls and
+coefficient-MSB semantics. Independent native vectors cover five color formats,
+both name widths, separate matrices, screen-over, banks and composition. Invalid
+bank fetches yield transparency in the functional model; physical bank/cycle
+behavior and scanline reloads remain pending.
+
+New original MIT fixtures execute through actual SH-2/68k instructions/MMIO in
+native and browser Wasm. The synthesis fixture changes TL/MDL/ALFO/PLFO/source
+operands and asserts independently expected stereo or mathematical tolerances,
+repeatable reset, noise routing and actual AudioWorklet delivery. The RBG1 guest
+writes both matrices and original cell/bitmap data, then tests mutate only its B
+matrix literal and assert emulated and production Canvas pixels. See the
+[conformance evidence](hardware-conformance.md#executing-scsp-slot-modulation-and-independent-guest-evidence)
+and [RBG1 evidence](hardware-conformance.md#original-dual-rotation-guest-and-rbg1-evidence)
+for sources, manual sections and reproducible hashes.
+
+Final local checks:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`: pass;
+  **271 native tests, zero failures, zero ignored**.
+- `cargo clippy --locked --all-targets -- -D warnings`: pass.
+- `sh scripts/build-web.sh` and Wasm Clippy with `-D warnings`: pass.
+  Native Homebrew Rust/Cargo 1.94.0; Wasm rustup stable 1.99.0 with the installed
+  wasm32 target and matching wasm-bindgen-cli 0.2.129. Selecting the Homebrew
+  compiler initially failed because that compiler lacks the target; the documented
+  rustup PATH resolved it, without changing dependencies or requirements.
+- All **18** CI reproducibility builders: pass, including the two new fixtures.
+  Existing sample discs, audio and ROMs remain byte-identical.
+- `npm ci --ignore-scripts`, `npx playwright install chromium`, JavaScript syntax,
+  and the complete extended `npm run test:browser`: pass in Chromium
+  145.0.7632.6 under `/saturn-rust/`. No required browser checks are skipped.
+- Relative documentation file targets and Git whitespace: pass. Initial new
+  vector failures (arithmetic expectations, two-word map scaling and a fixture
+  duration) were corrected before the final passing runs.
+
+**The full-resolution Run objective is still unmet. PR #18 remains Draft.**
+No mandatory umbrella criterion has been waived or declared complete. Remaining
+work includes full SH-2/SH7604 and MC68EC000 edges/timing, bus/cache/reset and
+hardware-time arbitration, backup filesystem and HLE system/backup/CD ABI,
+SCU/DMA/DSP conformance, remaining VDP1/VDP2 effects/display/raster contracts,
+timed SCSP envelopes and complete modulation/effects conformance, remaining CD
+commands/timing/errors, SMPC system/clock/latch/controller contracts, and complete
+native/Wasm/guest evidence for the full inventory and both demonstrations.
+The [concrete unresolved gaps](hardware-conformance.md#concrete-unresolved-gaps-and-closure-gates)
+remain the implementation backlog on this same PR and Issue. Closes #17 remains
+its intended final outcome, not a statement that this validation completes it.
+No proprietary firmware, human approval/testing/listening, live Pages inspection,
+external-workflow investigation or post-merge approval gate is required. Nothing
+is merged; local validation does not claim remote CI or production deployment.
