@@ -381,6 +381,13 @@ literal texture/primitive/color/register/pixel results from [VDP1] §§2–7 and
 [browser-smoke.mjs](../scripts/browser-smoke.mjs). PRISM proves normal RGB555
 sprites, solid polygons, sequential END/IRQ, NBG0 bitmap, composition and guest
 input/audio/gameplay. It does not establish every mode in VIDEO in the browser.
+**EFFECTS** means [the independent pixel and guest vectors](../tests/video_effects.rs),
+[original SH-2 fixture](../tests/fixtures/effects.s), its
+[reproducible builder](../tests/fixtures/build_effects.py) and the same guest in the
+extended browser suite, including mutated matrix data and actual Canvas pixels.
+Rotation equations and coefficient sampling are in
+[rotation.rs](../src/vdp2/rotation.rs); normal line/cell coordinates and line windows
+are in `Vdp2::normal_coordinates/window`.
 **VIRQ** means `vdp1_end_interrupt_and_draw_end_dma_trigger_obey_clock_deadlines`
 in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 
@@ -400,11 +407,11 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 | NBG0 bitmap, [VDP2] §§4–6 | 4/8/11-bit palette, RGB555/RGB888, bitmap dimensions/base, transparency, fixed-point scroll/zoom | VIDEO | PRISM, SC (RGB555, unit zoom) | Full format/dimension/zoom vectors and browser coverage | Pending |
 | NBG0–3 tile/character, [VDP2] §§4.4–4.8, figs.4.9/4.10, table4.8 | `Vdp2::character_control/tile/background`: one/two-word names, both supplement modes, 8×8/16×16 characters, 4/8/11-bit palette and RGB555/888 where applicable, flips, plane/page alignment/maps/wrap | [seven independent pixel/guest tests](../tests/video_tiles.rs) | TILE (four layers, names, palette/VRAM, window, mutation) | VRAM cycle arbitration, bandwidth/layer restrictions and exhaustive guest corpus remain | Pending |
 | NBG1–3 bitmap/layer control, [VDP2] §§4–6 | NBG1 bitmap composition, formats applicable to NBG1, scroll/zoom/priority | VIDEO | — | Complete layer restrictions and guest format corpus; NBG2/3 tile layers now exercised by TILE | Pending |
-| Rotation backgrounds, [VDP2] §7 | None | — | — | RBGs, parameters, coefficients and switching | Pending |
-| Line/vertical-cell scroll, [VDP2] §5 | None | — | — | Per-line/cell effects/tables | Pending |
-| Windows/line windows, [VDP2] §8 | W0/W1 rectangles, inside/outside, AND/OR on normal tile/bitmap/sprite/color calculation | VIDEO | — | Line and sprite windows; full guest corpus | Pending |
+| Rotation backgrounds, [VDP2] §6.1 p.147, §6.3 figs.6.2–6.4, §6.4 fig.6.7 | RBG0 fixed-point A/B matrices, viewpoint/center/Z/translation/scales, 16-plane tile or bitmap, four screen-over modes, 16/32-bit coefficient modes, per-dot/line coefficient indexing, transparent coefficients and parameter/window switching | EFFECTS | EFFECTS (quarter turn, A/B coefficient switch, mutation) | RBG1, scanline parameter latching/reloads, CRAM coefficients, coefficient line-color and cycle/bank arbitration remain required | Pending |
+| Line/vertical-cell scroll, [VDP2] §5.3 figs.5.4–5.8 | Packed enabled X/Y/zoom fields, relative offsets and held line intervals, fractional coordinates, independent NBG0/1, interleaved vertical cell tables and mosaic precedence | EFFECTS | EFFECTS (line X) | Raster-time table reads, cycle/bandwidth arbitration and full guest field/interval corpus remain | Pending |
+| Windows/line windows, [VDP2] §8.1 figs.8.2–8.4 | W0/W1 rectangle or VRAM line tables, inside/outside, inclusive edges, empty/inverted ranges, AND/OR on normal/rotation/sprite/color calculation; rotation-parameter windows | VIDEO, EFFECTS | EFFECTS (line window and composition) | Sprite windows and full independent guest corpus remain | Pending |
 | Mosaic, [VDP2] §5 | NBG0–3 horizontal/vertical grouping | VIDEO | — | All independent vertical/layer/guest vectors | Pending |
-| Priority/composition, [VDP2] §§9–10 | Four normal backgrounds and VDP1; sprite types 0/1 and mixed RGB; priority-0 disable/ties | VIDEO, PRISM | PRISM | All sprite types, layers and special priorities | Pending |
+| Priority/composition, [VDP2] §§9–10 | Four normal backgrounds, RBG0 and VDP1; sprite types 0/1 and mixed RGB; priority-0 disable/ties | VIDEO, PRISM | PRISM | All sprite types, layers and special priorities | Pending |
 | Color calculation/offset/shadow, [VDP2] §§11–13 | Ratio/additive blending, sprite conditions/ratios and signed offsets | VIDEO | PRISM (replace only) | VDP2 shadows, palette color-MSB condition, extended/special effects and complete guest corpus | Pending |
 | Back/line color, [VDP2] §§3–4 | Back-screen single/per-line VRAM table, signed offset | VIDEO | PRISM (back underneath bitmap) | Line-color screen and full per-line guest corpus | Pending |
 | Combined VDP1/VDP2 pipeline | Sprite/background overlap, priority, transparency, game result/restart, texture mutation changes actual pixels | VIDEO, PRISM | PRISM + Canvas assertions | Remaining modes/effects and timing above | Pending |
@@ -470,7 +477,7 @@ no-op CPU/device implementations cannot satisfy those assertions.
 | SMPC reset/power/clock, [SMPC] table 1.1/§2.3 | SSHON/OFF, SNDON/OFF, NMIREQ; RESENAB/DISA control reset-button NMI edges and VBlank-latched RESB | DUAL, SNDV, SNDR, smpc/tests.rs | DUAL, SNDR | MSHON, CDON/OFF, SYSRES and clock switching | Pending |
 | RTC/region/system flags, [SMPC] §§2.4/2.5 | Deterministic Gregorian/BCD RTC, SETTIME, retained four-byte SETSMEM, status/region Japan, output control flags | smpc/tests.rs, tests/smpc.rs | SMPR | Full system-control/region configuration; remaining reset domains | Pending |
 | SMPC direct digital port 2, [SMPC] §1.2 pp.7–9, §3.4 table 3.36 p.97 | Independent PDR2/DDR2, IOSEL2/EXLE2; active-low nibble reports; host keyboard levels | BK; `both_digital_ports_have_independent_direction_selection_and_enable_bits` | BK; I/K/J/L keyboard input and release checks | Settling remains immediate; no timed INTBACK/peripheral packets or external latch IRQ | Pending |
-| Analog input, [SMPC] table 3.19; ST-151 | Standard analog joystick ID15 X/Y/Z and active-low button packets via timed INTBACK, synthetic Gamepad mapping and focus neutralization | smpc/tests.rs, tests/smpc.rs | SMPR | Direct analog handshake and six-byte 3D-pad ID16 model remain absent | Pending |
+| Analog input, [SMPC] tables 3.19/3.37; [STN43] Analog mode | ID15 X/Y/Z and ID16 X/Y/AR/AL, active-low buttons, trigger hysteresis (146 on / 85 off); timed INTBACK and direct TH/TR/TL handshake, transaction latching/abort, independent ports; standard Gamepad radial axes/triggers and focus neutralization | smpc/tests.rs, tests/smpc.rs; `Analog`, `Handshake` in [controller.rs](../src/smpc/controller.rs) | SMPR + PADR (both direct ports, changed axis, ID15/16 Gamepad/focus) | Full electrical timing, mode-switch calibration, direct digital settling, external latch and complete command/reset/clock integration remain | Pending |
 | Input focus safety | Both pads use host button levels, blur/view/tab/pause release, no guest-memory shortcuts | game.rs | SC | Additional controller types absent | Pending |
 
 ## Concrete unresolved gaps and closure gates
@@ -488,12 +495,14 @@ no-op CPU/device implementations cannot satisfy those assertions.
 4. Complete SCU A/B-bus wait-state/arbitration and device routes, DMA boundary/
    trigger coverage, DSP conditional/pipeline/bank-conflict and program-DMA evidence.
    SCUROM now executes real DMA/DSP/timer/IRQ operations but is subset evidence.
-5. Remaining VDP1 edge/scanout/timing conformance and VDP2 tile timing/rotation/line/
-   window/shadow/display modes, with complete independent guest and browser
-   coverage. VIDEO and PRISM provide actual subset pixel/composition evidence.
+5. Remaining VDP1 edge/scanout/timing conformance and VDP2 tile timing, RBG1,
+   parameter reloads/CRAM coefficients, sprite windows/shadow/display modes, with
+   complete independent guest and browser coverage. VIDEO, EFFECTS and PRISM
+   provide actual subset pixel/composition evidence.
 6. Runtime CD block, BIN/CUE/mixed tracks, complete BIOS HLE ABI and full synthetic
-   boot pathways; remaining SMPC system/reset/clock commands, analog direct mode
-   and 3D-pad model. RTC/SMEM/INTBACK/IRQ and analog joystick subsets have evidence.
+   boot pathways; remaining SMPC system/reset/clock commands, direct digital
+   settling and full external-latch behavior. RTC/SMEM/INTBACK/IRQ, analog
+   joystick/3D-pad packets and direct analog handshakes have subset evidence.
 7. The multiprocessor/SCU/runtime-CD/CD-DA/SCSP-DSP/advanced-video/backup
    hardware exerciser disc remains absent. Prism Courier now supplies the
    original playable VDP1+VDP2+audio guest demonstration, including guest input,
@@ -680,3 +689,34 @@ CI, and contain no firmware/SDK objects. They are diagnostics; the required
 hardware exerciser disc and the other umbrella criteria remain outstanding.
 
 [68UM]: https://www.nxp.com/docs/en/reference-manual/MC68000UM.pdf
+
+
+## Original advanced-video and controller fixtures
+
+**EFFECTS** is [effects.s](../tests/fixtures/effects.s), reproduced with
+[build_effects.py](../tests/fixtures/build_effects.py). Guest instructions generate
+all bitmap pixels, matrices and coefficient/line-scroll/window tables. Native and
+browser tests check thirteen independent composition coordinates plus the blank
+boundary. Mutating My from 3 to 2 changes the rotated pixels in both paths; the
+browser asserts production Canvas presentation. Expanded ROM SHA-256:
+`c537273e864fd3410441d618bfe78e8642137838d869d154f002c3c33c3a77d5`.
+The renderer takes a frame snapshot, including these tables. This does not yet
+implement raster-time writes or parameter reload strobes; enabled reload,
+coefficient-line-color and CRAM-coefficient modes still fail explicitly.
+
+**PADR** is [controller.s](../tests/fixtures/controller.s), reproduced with
+[build_controller.py](../tests/fixtures/build_controller.py). The guest configures
+both ports, drives TH/TR, polls actual TL acknowledgments, stores the received
+ID16 and ID15 nibbles and ends each transaction. Native and browser compare exact
+pin bytes, reset repetition and changed axis input. Unit vectors separately check
+53/54-clock response boundaries, latched input, abort and trigger hysteresis.
+Expanded ROM SHA-256:
+`add157309fb3badcbc05344bcba2d775bdbe44c11afb9e3e2cbf8c11077c0e57`.
+The 54-clock response is a deterministic 2-microsecond functional deadline in the
+fixed NTSC clock domain, not measured controller electrical timing.
+
+Both are wholly original, licensed by the adjacent MIT license and reproducible in
+CI. They are diagnostic ROMs and do not replace the required hardware exerciser
+disc. No mandatory umbrella criterion is declared complete by these fixtures.
+
+[STN43]: https://github.com/luckyseoul/saturn-docs/blob/main/files/ssddv25/segahtml/info/hon/stn43.htm

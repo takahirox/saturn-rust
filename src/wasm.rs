@@ -55,6 +55,10 @@ impl Emulator {
         self.machine
             .set_analog(port as usize, enabled.then_some([x, y, z]));
     }
+    pub fn set_3d_pad(&mut self, port: u8, enabled: bool, x: u8, y: u8, right: u8, left: u8) {
+        self.machine
+            .set_3d_pad(port as usize, enabled.then_some([x, y, right, left]));
+    }
     pub fn sound_halted(&self) -> bool {
         self.machine.sound_state().halted
     }

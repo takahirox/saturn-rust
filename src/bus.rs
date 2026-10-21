@@ -321,6 +321,9 @@ impl Bus {
     pub fn set_analog(&mut self, port: usize, axes: Option<[u8; 3]>) {
         self.smpc.set_analog(port, axes);
     }
+    pub fn set_3d_pad(&mut self, port: usize, axes: Option<[u8; 4]>) {
+        self.smpc.set_3d_pad(port, axes);
+    }
 
     pub fn set_buttons(&mut self, buttons: u16) {
         self.smpc.set_buttons(buttons);

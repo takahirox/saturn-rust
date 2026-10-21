@@ -3,6 +3,8 @@
 //! joystick inputs are electrical levels, never writes into guest game state.
 use crate::bus::BusError;
 use crate::devices::SMPC;
+mod controller;
+use controller::{Analog, Handshake};
 const REFERENCE_HZ: u64 = 26_874_100;
 
 #[derive(Clone)]
@@ -139,7 +141,8 @@ impl Battery {
 
 pub struct Smpc {
     buttons: [u16; 2],
-    analog: [Option<[u8; 3]>; 2],
+    analog: [Option<Analog>; 2],
+    handshake: [Handshake; 2],
     pdr: [u8; 2],
     ddr: [u8; 2],
     iosel: u8,
@@ -166,6 +169,7 @@ impl Default for Smpc {
         Self {
             buttons: [0; 2],
             analog: [None; 2],
+            handshake: std::array::from_fn(|_| Handshake::default()),
             pdr: [0; 2],
             ddr: [0; 2],
             iosel: 0,
@@ -228,6 +232,9 @@ impl Smpc {
         }
     }
     pub(crate) fn advance_clocks(&mut self, clocks: u32) -> Option<u8> {
+        for port in &mut self.handshake {
+            port.advance(clocks);
+        }
         let elapsed = self
             .pending
             .map_or(clocks, |(_, remaining)| remaining.min(clocks));
@@ -285,7 +292,19 @@ impl Smpc {
     /// ST-169 table 3.19: standard analog joystick, ID15, absolute X/Y/Z.
     pub fn set_analog(&mut self, port: usize, axes: Option<[u8; 3]>) {
         if port < 2 {
-            self.analog[port] = axes;
+            self.analog[port] = axes.map(Analog::Joystick);
+            if axes.is_none() {
+                self.handshake[port] = Handshake::default();
+            }
+        }
+    }
+    /// STN-43: analog 3D pad X/Y and independent right/left trigger levels.
+    pub fn set_3d_pad(&mut self, port: usize, axes: Option<[u8; 4]>) {
+        if port < 2 {
+            self.analog[port] = axes.map(|a| Analog::pad(self.analog[port], a));
+            if axes.is_none() {
+                self.handshake[port] = Handshake::default();
+            }
         }
     }
     fn peripherals(&mut self) {
@@ -298,20 +317,14 @@ impl Smpc {
                 self.output[offset - 1] = 0xF0;
                 continue;
             }
-            let b = self.buttons[port];
-            let data1 = !(((b & 15) << 4) | ((b >> 4) & 15)) as u8;
-            let data2 = !(((b >> 8) & 15) << 4 | ((b >> 9) & 8)) as u8;
-            // Host upper buttons Z,Y,X,R map directly into bits4..7, L into bit3.
-            self.output[offset] = if self.analog[port].is_some() {
-                0x15
+            if let Some(analog) = self.analog[port] {
+                let (bytes, count) = analog.report(self.buttons[port]);
+                self.output[offset..offset + count].copy_from_slice(&bytes[..count]);
+                offset += count;
             } else {
-                0x02
-            };
-            self.output[offset + 1] = data1;
-            self.output[offset + 2] = data2;
-            offset += 3;
-            if let Some(axes) = self.analog[port] {
-                self.output[offset..offset + 3].copy_from_slice(&axes);
+                self.output[offset] = 2;
+                self.output[offset + 1..offset + 3]
+                    .copy_from_slice(&controller::digital(self.buttons[port]));
                 offset += 3;
             }
         }
@@ -332,6 +345,9 @@ impl Smpc {
                 let bit = 1 << port;
                 if self.ddr[port] != 0x60 || self.iosel & bit == 0 || self.exle & bit != 0 {
                     return Err(Self::unsupported(address));
+                }
+                if self.analog[port].is_some() {
+                    return Ok((self.pdr[port] & 0x60) | self.handshake[port].pins());
                 }
                 let nibble = match self.pdr[port] & 0x60 {
                     0x60 => 0x04 | u8::from(self.buttons[port] & (1 << 12) == 0) << 3,
@@ -388,8 +404,17 @@ impl Smpc {
                     self.pending = Some((value, clocks));
                 }
             }
-            0x75 => self.pdr[0] = value & 0x7F,
-            0x77 => self.pdr[1] = value & 0x7F,
+            offset @ (0x75 | 0x77) => {
+                let port = ((offset - 0x75) / 2) as usize;
+                if let Some(analog) = self.analog[port]
+                    && self.ddr[port] == 0x60
+                    && self.iosel & (1 << port) != 0
+                    && self.exle & (1 << port) == 0
+                {
+                    self.handshake[port].write(self.pdr[port], value, analog, self.buttons[port]);
+                }
+                self.pdr[port] = value & 0x7F;
+            }
             0x79 => self.ddr[0] = value & 0x7F,
             0x7B => self.ddr[1] = value & 0x7F,
             0x7D => self.iosel = value & 3,

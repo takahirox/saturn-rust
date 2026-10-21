@@ -4,6 +4,98 @@
 criterion is complete; #17 must remain open.** Issues #11/#13/#15 are historical,
 administratively closed trackers and must not be reopened.
 
+## VDP2 rotation/line effects and timed analog protocols
+
+Related to #17. The complete Issue #17 target and all mandatory criteria remain
+in force. PR #18 remains Draft with `Closes #17` as its intended final outcome;
+this implementation does not resolve the umbrella Issue. The active worktree
+started at `cc1a22a1fa90e2afaf26240168a1210b32523a22`, preserving `cc50fdc` and
+all useful existing PR work. Rechecking upstream returned
+`dbd981b030a46daa6923072ce240680dd2e58ebf`; the existing remote PR head before
+publication was `bda7db4a42299b6658e90e9522bc3488ce269336`.
+
+Implemented behavior:
+
+- `Vdp2::normal_coordinates` reads packed enabled X/Y/zoom fields, relative
+  scroll values, programmed line intervals and fractional coordinates. Vertical
+  cell tables support NBG0/1 interleaving and mosaic precedence.
+- `Vdp2::window` reads W0/W1 horizontal line tables from VRAM, including
+  inclusive edges, reversed ranges, inverted windows and wrapped table addresses.
+- The independent fixed-point RBG0 renderer executes the ST-058-R2 §6.1 p.147
+  matrix/perspective equations using signed parameter widths from figs.6.2/6.3.
+  It handles A/B tables, viewpoint/center/Z and translation, scale, tile/bitmap
+  reads, sixteen-plane maps, screen-over controls, one/two-word coefficients,
+  all four coefficient modes, per-dot/line addresses, coefficient transparency,
+  coefficient/window A/B selection and priority/blending/offset composition.
+- `Analog` implements ID16 six-byte reports (digital/X/Y/AR/AL), alongside the
+  preserved ID15 joystick. STN-43's L/R diagram sets trigger-on at 146 and
+  trigger-off at 85, retaining state in between. `Handshake` implements direct
+  TH/TR/TL acquisition, a deterministic 54-clock response deadline, latched
+  transaction data, end/abort and independent ports. No wall-clock wait is used.
+- Standard-mapped browser Gamepads supply ID16 circular X/Y and independent
+  trigger levels; other mappings preserve ID15 X/Y/Z. Pause/focus loss releases
+  buttons, centers axes and clears both triggers while retaining device type.
+
+Independent evidence:
+
+- Fourteen [advanced video vectors](../tests/video_effects.rs) assert packed field
+  subsets on both layers, relative/fractional scroll, table intervals, vertical
+  cells/mosaic, line-window wrap/edges, identity/quarter-turn/negative transforms,
+  center/viewpoint/Z terms, both coefficient sizes/modes, A/B switching, sixteen
+  planes, screen-over behavior, priority/blending/offset, ignored bits and bounded
+  extreme values. Golden colors and coordinates are source-authored constants.
+- [SMPC unit vectors](../src/smpc/tests.rs) check 53/54-clock acknowledgment,
+  mid-transaction input changes, abort, port independence, ID16 layout and both
+  trigger thresholds/hysteresis. [Native guest integration](../tests/smpc.rs)
+  exercises ID16 INTBACK and both direct ports through actual SH-2 instructions.
+- Original MIT [effects.s](../tests/fixtures/effects.s) and
+  [controller.s](../tests/fixtures/controller.s), their builders and expanded ROM
+  hashes are recorded in the [matrix](hardware-conformance.md#original-advanced-video-and-controller-fixtures).
+  CI checks both. The same ROMs execute in the browser Wasm suite. The video guest
+  creates every texture and table through MMIO; changing My from 3 to 2 changes
+  independently expected Wasm and Canvas pixels. The controller guest drives
+  TH/TR, polls TL and stores received pin bytes; changed physical axis input
+  changes those bytes. JavaScript never writes a result mailbox.
+- Browser tests retain the ID15 synthetic Gamepad path and add standard-mapped
+  ID16 trigger/axis reports and focus neutralization, plus direct ID15/16 guest
+  transfers. All prior UI/input/privacy/Play/Debug, dual CPU, original ROM,
+  WebAudio and both game completion/restart checks remain active.
+
+Validation performed for this revision:
+
+- Rustup stable **rustc 1.99.0**: `cargo fmt --check`, `cargo build --locked`
+  and `cargo test --locked` pass: **214 native tests, zero failures and zero
+  ignored tests**. Homebrew Rust 1.94 also passed the implementation suites.
+- Native all-target and wasm32 Clippy with `-D warnings` pass. The first stable
+  Clippy run flagged a new test's constant-size `chunks_exact`; it now uses
+  `as_chunks`, and Clippy plus all fourteen affected tests pass again.
+- `sh scripts/build-web.sh` passes with the existing matching
+  wasm-bindgen-cli 0.2.129. Star Collector and Prism Courier ISO hashes are unchanged.
+- Both demonstration-disc builders and all nine diagnostic fixture builders pass
+  their `--check` reproducibility verification, including both new fixtures.
+- The complete extended `npm run test:browser` passes in **Chromium 145.0.7632.6**
+  at `/saturn-rust/`, with no required test skipped. It uses the production static
+  assets, UI/Wasm, Canvas, Gamepad and AudioWorklet paths; local files remain local.
+- JavaScript syntax, changed documentation relative-file links and Git whitespace
+  checks pass. No remote CI or production publication result is claimed.
+
+Limitations remain executable and explicit: this renderer uses frame snapshots,
+not raster-time table writes/rotation reloads. RBG1, coefficient line-color/CRAM
+sources, sprite windows, other display modes and cycle arbitration remain required.
+Enabled unsupported rotation reload/line-color controls fail instead of behaving
+as inert implemented features. The analog response deadline is a deterministic
+functional 2-microsecond policy; complete pin timing, direct digital settling,
+mode-switch calibration and external latches are not established.
+
+No umbrella acceptance checkbox is completed. Remaining mandatory work includes
+CPU/SH7604 and 68k conformance edges, complete mapping/cache/reset/backup services
+and bus scheduling, SCU/DMA/DSP edge and arbitration coverage, remaining video,
+SCSP synthesis and executing effects DSP, runtime CD/ISO/BIN/CUE/CD-DA, separate
+BIOS/HLE services and synthetic ABI acceptance, remaining SMPC system/clock
+commands, the complete original hardware exerciser disc and full linked evidence.
+No human, proprietary-firmware, live-site, external-workflow or post-merge approval
+gate is introduced. Nothing is merged or administratively closed.
+
 ## Review revisions: CPU bus effects, SH7604 controls and normal tile layers
 
 Related to #17. These changes address concrete parts of review findings 1, 2, 7

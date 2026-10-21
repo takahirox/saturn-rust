@@ -192,3 +192,98 @@ fn reset_button_nmi_is_edge_triggered_masked_by_resd_and_status_latches_at_vblan
     s.set_reset_button(false);
     assert!(!s.set_reset_button(true));
 }
+
+#[test]
+fn three_d_pad_packet_has_four_channels_and_documented_trigger_hysteresis() {
+    // STN-43, Analog mode and L/R button diagram: engage at 146, release at 85.
+    let mut s = Smpc::default();
+    s.set_buttons(0x15);
+    s.set_port2_buttons(0x80);
+    for (right, left, expected) in [
+        (145, 0, 0xFF),
+        (146, 145, 0x7F),
+        (100, 146, 0x77),
+        (85, 100, 0xF7),
+        (0, 85, 0xFF),
+    ] {
+        s.set_3d_pad(0, Some([17, 239, right, left]));
+        input(&mut s, &[0, 0xA, 0xF0]);
+        issue(&mut s, 0x10);
+        s.vblank_out();
+        s.advance_clocks(8600);
+        assert_eq!(
+            &output(&s, 12)[..8],
+            &[0xF1, 0x16, 0xAE, expected, 17, 239, right, left]
+        );
+        assert_eq!(&output(&s, 12)[8..], &[0xF1, 2, 0xF7, 0xFF]);
+        s.take_irq();
+    }
+    s.set_3d_pad(0, None);
+    input(&mut s, &[0, 0xA, 0xF0]);
+    issue(&mut s, 0x10);
+    s.vblank_out();
+    s.advance_clocks(8600);
+    assert_eq!(output(&s, 4), [0xF1, 2, 0xAE, 0xFF]);
+}
+#[test]
+fn direct_analog_handshake_has_timed_acknowledgement_snapshot_abort_and_independent_ports() {
+    // ST-169 §3.4, table3.37. Start TH↓, then toggle TR and wait for TL.
+    for pad in [false, true] {
+        let mut s = Smpc::default();
+        if pad {
+            s.set_3d_pad(0, Some([0x12, 0x34, 0xAB, 0xCD]));
+        } else {
+            s.set_analog(0, Some([0x12, 0x34, 0xAB]));
+        }
+        s.set_analog(1, Some([0xFE, 0xDC, 0xBA]));
+        s.set_buttons(1 | 16 | 4096);
+        s.set_port2_buttons(8 | 128 | 2048);
+        for (off, value) in [
+            (0x79, 0x60),
+            (0x7B, 0x60),
+            (0x7D, 3),
+            (0x75, 0x60),
+            (0x77, 0x60),
+        ] {
+            s.write(SMPC + off, value).unwrap();
+        }
+        assert_eq!(s.read(SMPC + 0x75).unwrap(), 0x71);
+        s.write(SMPC + 0x75, 0x20).unwrap();
+        s.advance_clocks(54);
+        // Buttons/axes change mid-transaction; the transferred packet must be latched.
+        s.set_buttons(0);
+        if pad {
+            s.set_3d_pad(0, Some([128, 128, 0, 0]));
+        } else {
+            s.set_analog(0, Some([128, 128, 0]));
+        }
+        let expected: &[u8] = if pad {
+            &[1, 6, 0xE, 0xE, 7, 7, 1, 2, 3, 4, 0xA, 0xB, 0xC, 0xD, 0, 1]
+        } else {
+            &[1, 5, 0xE, 0xE, 0xF, 7, 1, 2, 3, 4, 0xA, 0xB, 0, 1]
+        };
+        for (i, nibble) in expected.iter().enumerate() {
+            let pins = if i & 1 == 0 { 0 } else { 0x20 };
+            let before = s.read(SMPC + 0x75).unwrap() & 31;
+            s.write(SMPC + 0x75, pins).unwrap();
+            s.advance_clocks(53);
+            assert_eq!(s.read(SMPC + 0x75).unwrap() & 31, before);
+            s.advance_clocks(1);
+            assert_eq!(
+                s.read(SMPC + 0x75).unwrap(),
+                pins | if i & 1 == 0 { 0 } else { 16 } | nibble
+            );
+            assert_eq!(s.read(SMPC + 0x77).unwrap(), 0x71); // other port untouched
+        }
+        s.write(SMPC + 0x75, 0x60).unwrap();
+        assert_eq!(s.read(SMPC + 0x75).unwrap(), 0x71);
+        // Abort before the acknowledgement deadline discards the queued response.
+        s.write(SMPC + 0x75, 0x20).unwrap();
+        s.advance_clocks(54);
+        s.write(SMPC + 0x75, 0).unwrap();
+        s.advance_clocks(53);
+        s.write(SMPC + 0x75, 0x60).unwrap();
+        s.advance_clocks(1);
+        assert_eq!(s.read(SMPC + 0x75).unwrap(), 0x71);
+    }
+}

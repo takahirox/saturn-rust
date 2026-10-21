@@ -464,6 +464,43 @@ try {
     assert.deepEqual(pixels.wasm, expected);
     assert.deepEqual(pixels.canvas, expected);
   }
+  // Original SH-2 instructions create advanced VDP2 tables. Compare actual
+  // Wasm pixels with production Canvas presentation, then alter guest matrix data.
+  const effectsRom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/effects.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [offset, ...words] = line.trim().split(/\s+/).map((word) => parseInt(word,16));
+    words.forEach((word,i) => effectsRom.writeUInt16BE(word,offset+i*2));
+  }
+  const effectsPoints = [[0,0],[1,0],[2,0],[3,0],[0,1],[1,1],[2,1],
+    [8,0],[9,0],[8,1],[10,1],[13,1],[14,1],[0,8]];
+  for (const mutate of [false,true]) {
+    const image = Buffer.from(effectsRom);
+    if (mutate) {
+      const literal = Buffer.from([0,3,0,0]);
+      const at = image.indexOf(literal);
+      assert(at >= 0 && image.indexOf(literal,at+1) === -1);
+      image.writeUInt32BE(2<<16,at);
+    }
+    await page.locator("#bios").setInputFiles({name:"original-effects.bin",mimeType:"application/octet-stream",buffer:image});
+    await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+    const result = await page.evaluate(async (points) => {
+      const { emulator, advanceFrame } = await import("./app.js");
+      emulator.run_steps(10000);
+      advanceFrame();
+      const frame = emulator.framebuffer();
+      const canvas = document.getElementById("screen").getContext("2d");
+      return {done:emulator.read_long(0x0600A000),matrix:emulator.read_long(0x25E70048),
+        wasm:points.map(([x,y]) => Array.from(frame.slice((y*320+x)*4,(y*320+x)*4+4))),
+        canvas:points.map(([x,y]) => Array.from(canvas.getImageData(x,y,1,1).data))};
+    },effectsPoints);
+    const R=[255,0,0,255],G=[0,255,0,255],B=[0,0,255,255],W=[255,255,255,255],K=[0,0,0,255];
+    const expected=mutate ? [B,G,W,R,W,B,R,R,G,K,G,R,K,K] : [W,B,W,R,R,W,R,R,G,K,G,R,K,K];
+    assert.equal(result.done,0x600D);
+    assert.equal(result.matrix,(mutate ? 2 : 3)<<16);
+    assert.deepEqual(result.wasm,expected);
+    assert.deepEqual(result.canvas,expected);
+  }
   // SCU guest executes DSP arithmetic + external DMA, direct/indirect DMA,
   // and raster timer handlers through the actual Wasm machine and UI BIOS path.
   const scuRom = Buffer.alloc(524288);
@@ -628,7 +665,45 @@ try {
   await page.locator("#count").focus();
   const neutralSmpc = await smpcResult();
   assert.deepEqual(neutralSmpc.packet,[0xF1,2,255,255,0xF1,0x15,255,255,128,128,0,255,255,255,255,255]);
+  // Standard Gamepads map to the four-channel ID16 3D pad, with independent
+  // analog R/L values; retain the original ID15 adapter for other mappings.
+  await page.locator("#reset").click();
+  await page.locator("#screen").focus();
+  await page.evaluate(async () => {
+    navigator.getGamepads()[1].mapping="standard";
+    (await import("./app.js")).pollGamepads();
+  });
+  const pad3dSmpc=await smpcResult();
+  assert.deepEqual(pad3dSmpc.packet,[0xF1,2,0xEE,0xF7,0xF1,0x16,0x77,0x7F,0,128,255,0,255,255,255,255]);
+  await page.locator("#reset").click();
+  await page.locator("#screen").focus();
+  await page.evaluate(async () => (await import("./app.js")).pollGamepads());
+  await page.locator("#count").focus();
+  assert.deepEqual((await smpcResult()).packet,[0xF1,2,255,255,0xF1,0x16,255,255,128,128,0,0,255,255,255,255]);
   await page.evaluate(() => { delete navigator.getGamepads; });
+  const controllerRom=Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/controller.hex","utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [offset,...words]=line.trim().split(/\s+/).map((word)=>parseInt(word,16));
+    words.forEach((word,i)=>controllerRom.writeUInt16BE(word,offset+i*2));
+  }
+  await page.locator("#bios").setInputFiles({name:"original-controller.bin",mimeType:"application/octet-stream",buffer:controllerRom});
+  await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
+  for (const x of [0x12,0x56]) {
+    if (x===0x56) await page.locator("#reset").click();
+    const result=await page.evaluate(async (x)=>{
+      const {emulator}=await import("./app.js");
+      emulator.set_buttons(1|16|4096);emulator.set_port2_buttons(8|128|2048);
+      emulator.set_3d_pad(0,true,x,0x34,0xAB,0xCD);emulator.set_analog(1,true,0xFE,0xDC,0xBA);
+      emulator.run_steps(10000);
+      const bytes=(address,count)=>Array.from({length:Math.ceil(count/4)},(_,i)=>emulator.read_long(address+i*4))
+        .flatMap((n)=>[n>>>24,(n>>>16)&255,(n>>>8)&255,n&255]).slice(0,count);
+      return {done:emulator.read_long(0x0600B040),first:bytes(0x0600B000,16),second:bytes(0x0600B020,14)};
+    },x);
+    assert.equal(result.done,0x600D);
+    assert.deepEqual(result.first,[1,0x36,14,0x3E,7,0x37,x>>4,0x30|(x&15),3,0x34,10,0x3B,12,0x3D,0,0x31]);
+    assert.deepEqual(result.second,[1,0x35,7,0x37,7,0x3F,15,0x3E,13,0x3C,11,0x3A,0,0x31]);
+  }
   // Independent processors execute this same original licensed guest natively
   // in tests/dual_sh2.rs. All shared RAM/IRQ/SMPC changes are guest MMIO writes.
   const dualRom = Buffer.alloc(524288);
@@ -1193,7 +1268,7 @@ try {
   await missingBuild.waitForFunction(() => document.getElementById("status").textContent === "Initialization failed");
   assert.match(await missingBuild.locator("#error").textContent(), /Build web\/pkg and serve/);
   assert.equal(await missingBuild.locator("#reset").isDisabled(), true);
-  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, BCR1 processor identity/refresh IRQ/module stops/reset repeatability, four-layer VDP2 tile guest/palette mutation/Wasm and production Canvas presentation, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, SH-2-uploaded MC68EC000 PCM computation/SCSP timer IRQ/stereo samples and WebAudio worklet delivery/underflow/mute/blocked states, SMPC RTC/SMEM/INTBACK IRQs and synthetic digital+analog Gamepad/focus release, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation; Prism Courier original disc, VDP1 sprite/polygons + VDP2 composition/Canvas, draw-end IRQ, 68k stereo + actual AudioWorklet, keyboard collision/win/restart, changed-disc texture mutation.`);
+  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, BCR1 processor identity/refresh IRQ/module stops/reset repeatability, four-layer VDP2 tile guest/palette mutation/Wasm and production Canvas presentation, original rotation/coefficient/line-scroll/line-window guest and mutated matrix pixels, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, SH-2-uploaded MC68EC000 PCM computation/SCSP timer IRQ/stereo samples and WebAudio worklet delivery/underflow/mute/blocked states, SMPC RTC/SMEM/INTBACK IRQs and synthetic digital+ID15/ID16 analog Gamepad/focus release, timed both-port direct analog handshake guest, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation; Prism Courier original disc, VDP1 sprite/polygons + VDP2 composition/Canvas, draw-end IRQ, 68k stereo + actual AudioWorklet, keyboard collision/win/restart, changed-disc texture mutation.`);
 } finally {
   if (browser) await browser.close();
   if (server?.pid && server.exitCode === null) {

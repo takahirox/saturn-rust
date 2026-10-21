@@ -182,6 +182,9 @@ impl Machine {
     pub fn set_analog(&mut self, port: usize, axes: Option<[u8; 3]>) {
         self.bus.set_analog(port, axes);
     }
+    pub fn set_3d_pad(&mut self, port: usize, axes: Option<[u8; 4]>) {
+        self.bus.set_3d_pad(port, axes);
+    }
 
     pub fn set_buttons(&mut self, buttons: u16) {
         self.bus.set_buttons(buttons);

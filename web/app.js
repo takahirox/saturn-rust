@@ -9,6 +9,7 @@ let buttons = 0;
 let port2Buttons = 0;
 const gamepadMasks = [0, 0];
 const analogConnected = [false, false];
+const pad3d = [false, false];
 export function pollGamepads() {
   if (!emulator || document.hidden || !document.hasFocus() || document.activeElement !== $("screen")) return;
   const pads = Array.from(navigator.getGamepads?.() ?? []).filter((pad) => pad?.connected).slice(0, 2);
@@ -21,7 +22,14 @@ export function pollGamepads() {
     if (pad) for (const [index, bit] of mapping) if (pad.buttons[index]?.pressed || pad.buttons[index]?.value > 0.5) mask |= bit;
     gamepadMasks[port] = mask;
     analogConnected[port] = Boolean(pad && pad.axes.length >= 2);
-    emulator.set_analog(port, analogConnected[port], pad ? axis(pad.axes[0]) : 128, pad ? axis(pad.axes[1]) : 128, pad ? axis(pad.axes[2] ?? -1) : 0);
+    pad3d[port] = analogConnected[port] && pad.mapping === "standard";
+    if (pad3d[port]) {
+      const rawX = Number.isFinite(pad.axes[0]) ? pad.axes[0] : 0;
+      const rawY = Number.isFinite(pad.axes[1]) ? pad.axes[1] : 0;
+      const radius = Math.max(1, Math.hypot(rawX, rawY));
+      const trigger = (i) => Math.round(Math.max(0, Math.min(1, Number.isFinite(pad.buttons[i]?.value) ? pad.buttons[i].value : 0)) * 255);
+      emulator.set_3d_pad(port, true, axis(rawX / radius), axis(rawY / radius), trigger(7), trigger(6));
+    } else emulator.set_analog(port, analogConnected[port], pad ? axis(pad.axes[0]) : 128, pad ? axis(pad.axes[1]) : 128, pad ? axis(pad.axes[2] ?? -1) : 0);
   }
   emulator.set_buttons(buttons | gamepadMasks[0]);
   emulator.set_port2_buttons(port2Buttons | gamepadMasks[1]);
@@ -69,7 +77,10 @@ function releaseButtons() {
   port2Buttons = 0;
   emulator?.set_port2_buttons(0);
   gamepadMasks.fill(0);
-  for (let port = 0; port < 2; port++) emulator?.set_analog(port, analogConnected[port], 128, 128, 0);
+  for (let port = 0; port < 2; port++) {
+    if (pad3d[port]) emulator?.set_3d_pad(port, analogConnected[port], 128, 128, 0, 0);
+    else emulator?.set_analog(port, analogConnected[port], 128, 128, 0);
+  }
 }
 
 function pause() {

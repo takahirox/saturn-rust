@@ -58,6 +58,8 @@ python3 tests/fixtures/build_dual_sh2.py --check
 python3 tests/fixtures/build_sh7604.py --check
 python3 tests/fixtures/build_bsc.py --check
 python3 tests/fixtures/build_tiles.py --check
+python3 tests/fixtures/build_effects.py --check
+python3 tests/fixtures/build_controller.py --check
 python3 tests/fixtures/build_scu.py --check
 python3 tests/fixtures/build_sound.py --check
 python3 tests/fixtures/build_smpc.py --check
@@ -259,9 +261,12 @@ required new demonstration; the hardware exerciser disc remains required.
 
 When the display has focus, the first two connected Gamepads map standard buttons
 0/1/2/3/4/5/6/7/9 to A/B/C/X/Y/Z/L/R/Start and buttons 12–15 to directions.
-Gamepads with at least two axes expose the standard analog joystick X/Y/Z report;
-axes map from [-1,1] to [0,255], with missing Z at zero. Focus loss/pause releases
-buttons and centers X/Y, with Z zero. Keyboard controls remain independent.
+Standard-mapped Gamepads with at least two axes expose a 3D-pad ID16 report:
+X/Y are bounded to the circular stick range, and buttons 7/6 supply independent
+right/left analog trigger levels. The emulated controller applies the documented
+trigger hysteresis. Other mappings retain the ID15 X/Y/Z joystick report. Axis
+levels map from [-1,1] to [0,255]; missing Z is zero. Focus loss/pause releases
+buttons, centers X/Y and sets triggers/Z to zero. Keyboard controls remain independent.
 
 
 The original BSC and four-layer tile fixtures also execute in native and browser
@@ -269,3 +274,10 @@ Wasm checks. They cover BCR1 processor identification, refresh interval IRQ/RTE,
 module stops, NBG0–3 pattern names/characters and actual Canvas output. The
 builders above verify the committed source/hex; license and reproducible ROM
 hashes are recorded in the [conformance matrix](hardware-conformance.md#additional-original-review-fixtures).
+
+The original advanced-video and direct-controller fixtures also execute in native
+and browser Wasm checks. They cover guest-created RBG0 matrix/coefficient data,
+line scrolling, line-window composition and changed matrix pixels on the actual
+Canvas, plus both ports' clock-delayed analog handshake/ID/data and changed axis
+input. Their reproducibility commands are listed above; licenses, hashes,
+implementation and limitations are in the [conformance matrix](hardware-conformance.md#original-advanced-video-and-controller-fixtures).
