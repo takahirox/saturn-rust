@@ -119,12 +119,17 @@ impl OnChip {
         self.bsc.release_shared_bus();
     }
 
-    pub(crate) fn external_access(&self, physical_address: u32, write: bool) {
-        self.wait_clocks.set(
-            self.wait_clocks
-                .get()
-                .saturating_add(self.bsc.access_waits(physical_address, write)),
-        );
+    pub(crate) fn external_access(
+        &self,
+        physical_address: u32,
+        write: bool,
+        first: bool,
+        last: bool,
+    ) -> u32 {
+        let (base, waits) = self.bsc.access_timing(physical_address, write, first, last);
+        self.wait_clocks
+            .set(self.wait_clocks.get().saturating_add(waits));
+        base
     }
     pub(crate) fn add_wait_clocks(&self, clocks: u32) {
         self.wait_clocks
@@ -392,10 +397,10 @@ impl OnChip {
             }
             return;
         }
-        self.bsc.advance_bus(clocks);
         let held_reset = self.watchdog.reset_active();
         self.watchdog.advance(clocks);
         if held_reset {
+            self.bsc.advance_bus(clocks);
             return;
         }
         self.ubc.get_mut().advance(clocks);

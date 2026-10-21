@@ -25,6 +25,45 @@ pub(super) struct Channel {
     requested: bool,
     retrigger: bool,
     active: Option<Transfer>,
+    table: Option<Table>,
+}
+struct Table {
+    address: u32,
+    words: [u32; 3],
+    next: usize,
+}
+impl Table {
+    fn new(address: u32, channel: usize) -> Result<Self, ScuError> {
+        // ST-210 #25: all three longwords must fit in work RAM-H.
+        if address & 3 != 0 || !(0x0600_0000..=0x060F_FFF4).contains(&address) {
+            return Err(ScuError::DmaParameters { channel });
+        }
+        Ok(Self {
+            address,
+            words: [0; 3],
+            next: 0,
+        })
+    }
+    fn fetch(&mut self, memory: &impl Memory) -> Result<Option<Transfer>, ScuError> {
+        // Descriptor bus cycles participate in ordinary grant arbitration.
+        // Preserve each sampled word across preemption; do not re-read it.
+        self.words[self.next] = memory.read32(self.address + self.next as u32 * 4)?;
+        self.next += 1;
+        if self.next != 3 {
+            return Ok(None);
+        }
+        let count = self.words[0] & 0xF_FFFF;
+        let count = if count == 0 { 0x10_0000 } else { count };
+        Ok(Some(Transfer {
+            source: self.words[2] & 0x07FF_FFFF,
+            destination: self.words[1] & 0x07FF_FFFF,
+            unread: count,
+            unwritten: count,
+            table: self.address + 12,
+            last: self.words[2] & 0x8000_0000 != 0,
+            buffer: VecDeque::with_capacity(8),
+        }))
+    }
 }
 struct Transfer {
     source: u32,
@@ -47,6 +86,7 @@ impl Default for Channel {
             requested: false,
             retrigger: false,
             active: None,
+            table: None,
         }
     }
 }
@@ -82,7 +122,7 @@ impl Channel {
         (self.enabled && self.mode & 7 != 7) || self.pending()
     }
     pub(super) fn pending(&self) -> bool {
-        self.requested || self.active.is_some()
+        self.requested || self.active.is_some() || self.table.is_some()
     }
     pub(super) fn indirect(&self) -> bool {
         self.mode & (1 << 24) != 0
@@ -98,39 +138,30 @@ impl Channel {
     }
     pub(super) fn cancel(&mut self) {
         self.active = None;
+        self.table = None;
         self.requested = false;
         self.retrigger = false;
         self.enabled = false;
-    }
-    fn load_table(memory: &impl Memory, table: u32, index: usize) -> Result<Transfer, ScuError> {
-        // ST-210 #25: count, write, read; end marker in read bit 31.
-        if table & 3 != 0 || !(0x0600_0000..=0x060F_FFF4).contains(&table) {
-            return Err(ScuError::DmaParameters { channel: index });
-        }
-        let count = memory.read32(table)? & 0xF_FFFF;
-        let destination = memory.read32(table + 4)? & 0x07FF_FFFF;
-        let source = memory.read32(table + 8)?;
-        let count = if count == 0 { 0x10_0000 } else { count };
-        Ok(Transfer {
-            source: source & 0x07FF_FFFF,
-            destination,
-            unread: count,
-            unwritten: count,
-            table: table + 12,
-            last: source & 0x8000_0000 != 0,
-            buffer: VecDeque::with_capacity(8),
-        })
     }
     pub(super) fn beat(
         &mut self,
         memory: &mut impl Memory,
         index: usize,
     ) -> Result<bool, ScuError> {
+        if let Some(table) = self.table.as_mut() {
+            if let Some(transfer) = table.fetch(memory)? {
+                self.active = Some(transfer);
+                self.table = None;
+            }
+            return Ok(false);
+        }
         if self.active.is_none() {
             self.requested = false;
-            let transfer = if self.indirect() {
-                Self::load_table(memory, self.destination, index)?
-            } else {
+            if self.indirect() {
+                self.table = Some(Table::new(self.destination, index)?);
+                return Ok(false);
+            }
+            let transfer = {
                 let count = if self.count != 0 {
                     self.count
                 } else if index == 0 {
@@ -211,7 +242,7 @@ impl Channel {
         let t = self.active.take().unwrap();
         if self.indirect() {
             if !t.last {
-                self.active = Some(Self::load_table(memory, t.table, index)?);
+                self.table = Some(Table::new(t.table, index)?);
                 return Ok(false);
             }
             if self.mode & 0x100 != 0 {
@@ -237,5 +268,209 @@ fn width(address: u32, remaining: u32, maximum: usize) -> usize {
         2
     } else {
         1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+    #[derive(Default)]
+    struct Port {
+        words: BTreeMap<u32, u32>,
+        reads: RefCell<Vec<u32>>,
+        writes: Vec<(u32, u32)>,
+        fail: Option<u32>,
+    }
+    impl Memory for Port {
+        fn read8(&self, _: u32) -> Result<u8, BusError> {
+            panic!("expected a longword")
+        }
+        fn read16(&self, _: u32) -> Result<u16, BusError> {
+            panic!("expected a longword")
+        }
+        fn read32(&self, address: u32) -> Result<u32, BusError> {
+            self.reads.borrow_mut().push(address);
+            if self.fail == Some(address) {
+                return Err(BusError::Unmapped { address, width: 4 });
+            }
+            Ok(*self.words.get(&address).unwrap_or(&0))
+        }
+        fn write8(&mut self, _: u32, _: u8) -> Result<(), BusError> {
+            panic!("expected a longword")
+        }
+        fn write16(&mut self, _: u32, _: u16) -> Result<(), BusError> {
+            panic!("expected a longword")
+        }
+        fn write32(&mut self, address: u32, value: u32) -> Result<(), BusError> {
+            self.writes.push((address, value));
+            self.words.insert(address, value);
+            Ok(())
+        }
+    }
+    fn fixture(table: u32, index: usize, count: u32) -> (Channel, Port) {
+        let mut c = Channel::default();
+        let a = 0x05FE0000 + index as u32 * 32;
+        for (off, value) in [(4, table), (12, 0x102), (20, 0x01000107), (16, 0x101)] {
+            c.write(off, value, a + off).unwrap();
+        }
+        let p = Port {
+            words: [
+                (table, count),
+                (table + 4, 0x06002000),
+                (table + 8, 0x86001000),
+                (0x06001000, 0x12345678),
+            ]
+            .into_iter()
+            .collect(),
+            ..Port::default()
+        };
+        (c, p)
+    }
+    #[test]
+    fn indirect_descriptor_fetches_one_word_per_grant_and_never_resamples_completed_words() {
+        // ST-210 #25, ST-097 §3.2: count/write/read, followed by source
+        // and destination transactions. The initial request issues no read.
+        for index in 0..3 {
+            let (mut c, mut p) = fixture(0x06000000, index, 4);
+            assert!(!c.beat(&mut p, index).unwrap());
+            assert!(p.reads.borrow().is_empty());
+            for (n, at) in [0x06000000, 0x06000004, 0x06000008].into_iter().enumerate() {
+                assert!(!c.beat(&mut p, index).unwrap());
+                assert_eq!(p.reads.borrow().len(), n + 1);
+                assert_eq!(p.reads.borrow()[n], at);
+                assert!(p.writes.is_empty());
+                if n == 0 {
+                    p.words.insert(0x06000000, 8);
+                } // already sampled
+            }
+            assert!(!c.beat(&mut p, index).unwrap());
+            assert_eq!(
+                *p.reads.borrow(),
+                [0x06000000, 0x06000004, 0x06000008, 0x06001000]
+            );
+            assert!(p.writes.is_empty());
+            assert!(c.beat(&mut p, index).unwrap());
+            assert_eq!(p.writes, [(0x06002000, 0x12345678)]);
+            assert!(!c.pending());
+            assert_eq!(c.destination, 0x0600000C);
+        }
+    }
+    #[test]
+    fn indirect_table_alignment_and_whole_descriptor_bounds_fail_before_bus_access() {
+        for table in [
+            0x05FFFFFC, 0x06000001, 0x06000002, 0x06000003, 0x060FFFF8, 0x060FFFFC, 0x06100000,
+        ] {
+            for index in 0..3 {
+                let (mut c, mut p) = fixture(table, index, 4);
+                assert_eq!(
+                    c.beat(&mut p, index),
+                    Err(ScuError::DmaParameters { channel: index })
+                );
+                assert!(p.reads.borrow().is_empty());
+                assert!(p.writes.is_empty());
+            }
+        }
+        let (mut c, mut p) = fixture(0x060FFFF4, 0, 4);
+        for _ in 0..5 {
+            assert!(!c.beat(&mut p, 0).unwrap());
+        }
+        assert!(c.beat(&mut p, 0).unwrap());
+        assert_eq!(c.destination, 0x06100000); // legal end; no wrapped table fetch
+        assert_eq!(
+            &p.reads.borrow()[..3],
+            &[0x060FFFF4, 0x060FFFF8, 0x060FFFFC]
+        );
+    }
+    #[test]
+    fn partial_table_fault_and_cancel_never_publish_a_transfer_or_leak_latched_fields() {
+        for failed in 0..3 {
+            let (mut c, mut p) = fixture(0x06000000, 0, 4);
+            p.fail = Some(0x06000000 + failed * 4);
+            c.beat(&mut p, 0).unwrap();
+            for _ in 0..failed {
+                c.beat(&mut p, 0).unwrap();
+            }
+            assert!(matches!(c.beat(&mut p, 0), Err(ScuError::Bus(_))));
+            assert_eq!(p.reads.borrow().len(), failed as usize + 1);
+            assert!(c.active.is_none());
+            assert!(p.writes.is_empty());
+            c.cancel();
+            assert!(!c.pending());
+            assert!(c.table.is_none());
+        }
+    }
+    #[test]
+    fn every_indirect_channel_masks_twenty_bit_count_and_zero_means_one_megabyte() {
+        // ST-210 #25: descriptor count width is twenty bits, including
+        // channels whose direct count register is only twelve bits wide.
+        for index in 0..3 {
+            for (count, expected) in [
+                (0, 0x100000),
+                (1, 1),
+                (0xFFF, 0xFFF),
+                (0x1000, 0x1000),
+                (0xFFFFF, 0xFFFFF),
+                (0x100000, 0x100000),
+                (u32::MAX, 0xFFFFF),
+            ] {
+                let (mut c, mut p) = fixture(0x06000000, index, count);
+                for _ in 0..4 {
+                    c.beat(&mut p, index).unwrap();
+                }
+                let t = c.active.as_ref().unwrap();
+                assert_eq!((t.unread, t.unwritten), (expected, expected));
+                assert_eq!((t.source, t.destination), (0x06001000, 0x06002000));
+                assert!(t.last);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod arbitration_tests {
+    use super::*;
+    use crate::bus::{Bus, HIGH_WRAM};
+    use crate::scu::{SCU, Scu};
+    #[test]
+    fn higher_channel_preempts_a_partial_table_and_low_channel_retains_sampled_count() {
+        let mut s = Scu::default();
+        let mut b = Bus::default();
+        for (i, v) in [4, HIGH_WRAM + 0x200, 0x80000000 | (HIGH_WRAM + 0x100)]
+            .into_iter()
+            .enumerate()
+        {
+            b.write32(HIGH_WRAM + i as u32 * 4, v).unwrap();
+        }
+        b.write32(HIGH_WRAM + 0x100, 0x12345678).unwrap();
+        for (off, v) in [(4, HIGH_WRAM), (12, 0x102), (20, 0x01000107), (16, 0x101)] {
+            s.write32(SCU + off, v).unwrap();
+        }
+        s.advance_dma(&mut b).unwrap(); // request
+        s.advance_dma(&mut b).unwrap(); // count
+        b.write32(HIGH_WRAM, 8).unwrap(); // later writes cannot replace sampled count
+        for (off, v) in [
+            (0, HIGH_WRAM + 0x100),
+            (4, HIGH_WRAM + 0x300),
+            (8, 4),
+            (12, 0x102),
+            (20, 7),
+            (16, 0x101),
+        ] {
+            s.write32(SCU + 0x40 + off, v).unwrap();
+        }
+        for _ in 0..3 {
+            s.advance_dma(&mut b).unwrap();
+            assert_eq!(s.channels[0].table.as_ref().unwrap().next, 1);
+        }
+        assert_eq!(b.read32(HIGH_WRAM + 0x300), Ok(0x12345678));
+        assert_eq!(s.read32(SCU + 0xA4).unwrap(), 0x200);
+        for _ in 0..4 {
+            s.advance_dma(&mut b).unwrap();
+        }
+        assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(0x12345678));
+        assert_eq!(b.read32(HIGH_WRAM + 0x204), Ok(0));
+        assert_eq!(s.read32(SCU + 0xA4).unwrap(), 0xA00);
     }
 }

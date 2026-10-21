@@ -1066,6 +1066,14 @@ impl Memory for Bus {
 
 impl CpuBus<'_> {
     fn external_read<const N: usize>(&self, address: u32) -> Result<[u8; N], BusError> {
+        self.external_read_group(address, true, true)
+    }
+    fn external_read_group<const N: usize>(
+        &self,
+        address: u32,
+        first: bool,
+        last: bool,
+    ) -> Result<[u8; N], BusError> {
         let chip = &self.bus.onchip[self.processor as usize];
         let bus_width = chip.external_bus_width(Bus::physical(address));
         let little = chip.external_little_endian(Bus::physical(address));
@@ -1082,7 +1090,14 @@ impl CpuBus<'_> {
                 _ => bytes.copy_from_slice(&self.bus.read::<4>(at)?),
             }
             let value = bytes.iter().fold(0u32, |v, b| v << 8 | u32::from(*b));
-            self.observe_external(at, width, value, false);
+            self.observe_external(
+                at,
+                width,
+                value,
+                false,
+                first && i == 0,
+                last && (i + 1) * width == N,
+            );
         }
         if little {
             result.reverse();
@@ -1116,7 +1131,7 @@ impl CpuBus<'_> {
                 Err(error) => return Err(error),
             }
             let value = bytes.iter().fold(0u32, |v, b| v << 8 | u32::from(*b));
-            self.observe_external(at, width, value, true);
+            self.observe_external(at, width, value, true, i == 0, (i + 1) * width == N);
         }
         Ok(())
     }
@@ -1124,7 +1139,15 @@ impl CpuBus<'_> {
         let index = self.processor as usize;
         self.bus.onchip[index].observe_access(address, width, value, write, self.cached, false);
     }
-    fn observe_external(&self, address: u32, width: usize, value: u32, write: bool) {
+    fn observe_external(
+        &self,
+        address: u32,
+        width: usize,
+        value: u32,
+        write: bool,
+        first: bool,
+        last: bool,
+    ) {
         // Only actual external cycles (not cache hits) reach the other BSC.
         if address < 0x4000_0000 {
             let shared = self.bus.onchip[self.processor as usize]
@@ -1136,8 +1159,15 @@ impl CpuBus<'_> {
             // software waits. Keep those clocks separate from Tw and internal
             // execution states; cache hits and on-chip accesses do not enter.
             let clocks = &self.bus.cpu_bus_clocks[self.processor as usize];
-            clocks.set(clocks.get().saturating_add(2));
-            self.bus.onchip[self.processor as usize].external_access(Bus::physical(address), write);
+            let base = self.bus.onchip[self.processor as usize].external_access(
+                // Address decoding may mirror the RAM backing store, but
+                // BSC row/bank comparators see the actual A26-A0 pins.
+                address & 0x1FFF_FFFF,
+                write,
+                first,
+                last,
+            );
+            clocks.set(clocks.get().saturating_add(base));
             let physical = Bus::physical(address);
             if (VRAM..VRAM + 0x80000).contains(&physical) {
                 let slots = self.bus.vdp2.cpu_access_slots(physical);
@@ -1169,9 +1199,11 @@ impl CpuBus<'_> {
             if let Some(bytes) = cache.array_read(address)? {
                 return Ok(bytes);
             }
-            if let Some(bytes) =
-                cache.read(address, instruction, |beat| self.external_read::<4>(beat))?
-            {
+            let mut index = 0;
+            if let Some(bytes) = cache.read(address, instruction, |beat| {
+                index += 1;
+                self.external_read_group::<4>(beat, index == 1, index == 4)
+            })? {
                 return Ok(bytes);
             }
         }
@@ -1885,3 +1917,98 @@ mod pal_fixed_domain_tests {
 
 #[cfg(test)]
 mod vram_grant_tests;
+
+#[cfg(test)]
+mod bsc_memory_tests {
+    use super::*;
+    #[test]
+    fn cache_line_is_one_sdram_burst_and_hits_issue_no_external_cycles_on_either_cpu() {
+        // H §§7.5.3/7.5.4, fig8.4: four longword refill callbacks
+        // constitute one burst, not four single uncached reads.
+        for processor in [Processor::Master, Processor::Slave] {
+            for (mcr, expected) in [(0x40, 7), (0, 11)] {
+                let mut b = Bus::default();
+                let mut view = b.for_cpu(processor);
+                view.write32(0xFFFFFFE8, 0xA55A0000).unwrap();
+                view.write32(0xFFFFFFE0, 0xA55A0401).unwrap();
+                view.write32(0xFFFFFFEC, 0xA55A0000 | mcr).unwrap();
+                b.write32(HIGH_WRAM, 0x12345678).unwrap();
+                assert_eq!(
+                    b.for_cpu(processor).read32(HIGH_WRAM + 0x20000000),
+                    Ok(0x12345678)
+                );
+                assert_eq!(b.cpu_delay(processor, 1), expected);
+                b.for_cpu(processor).write8(CCR, 0x11).unwrap();
+                assert_eq!(b.for_cpu(processor).read32(HIGH_WRAM), Ok(0x12345678));
+                assert_eq!(b.cpu_delay(processor, 1), expected);
+                assert_eq!(b.for_cpu(processor).read32(HIGH_WRAM), Ok(0x12345678));
+                assert_eq!(b.cpu_delay(processor, 1), 1);
+            }
+        }
+    }
+    #[test]
+    fn sdram_bank_comparators_see_actual_pins_before_work_ram_mirror_decode() {
+        let mut b = Bus::default();
+        let p = Processor::Master;
+        let mut view = b.for_cpu(p);
+        view.write32(0xFFFFFFE8, 0xA55A0000).unwrap();
+        view.write32(0xFFFFFFE0, 0xA55A0401).unwrap();
+        view.write32(0xFFFFFFEC, 0xA55A0240).unwrap();
+        for (at, value, clocks) in [
+            (0x26000000, 0x11111111, 2),
+            (0x26000004, 0x22222222, 1),
+            (0x26200000, 0x33333333, 2),
+            (0x26000008, 0x44444444, 1),
+            (0x26000400, 0x55555555, 3),
+        ] {
+            b.for_cpu(p).write32(at, value).unwrap();
+            assert_eq!(b.cpu_delay(p, 1), clocks, "{at:X}");
+        }
+        assert_eq!(b.read32(HIGH_WRAM), Ok(0x33333333)); // same actual RAM chip
+        b.onchip[0].reset_from_watchdog(crate::onchip::ResetRequest::Manual);
+        assert_eq!(b.for_cpu(p).read32(0xFFFFFFEC), Ok(0x240));
+        b.for_cpu(p).write32(0x26000404, 0x66666666).unwrap();
+        assert_eq!(b.cpu_delay(p, 1), 2); // retained mode, closed row
+    }
+    #[test]
+    fn indirect_dma_table_reads_have_separate_deadlines_and_reset_cancels_a_partial_descriptor() {
+        // ST-210 #25 and ST-097 §3.2: descriptor count/write/read each
+        // owns a grant. No source/destination transaction precedes them.
+        for chunk in [1, 3, 8, 17] {
+            let mut b = Bus::default();
+            for (i, v) in [4, HIGH_WRAM + 0x200, 0x80000000 | (HIGH_WRAM + 0x100)]
+                .into_iter()
+                .enumerate()
+            {
+                b.write32(HIGH_WRAM + i as u32 * 4, v).unwrap();
+            }
+            b.write32(HIGH_WRAM + 0x100, 0x12345678).unwrap();
+            for (off, value) in [(4, HIGH_WRAM), (12, 0x102), (20, 0x01000107), (16, 0x101)] {
+                b.write32(SCU + off, value).unwrap();
+            }
+            let mut elapsed = 0;
+            for deadline in [8, 16, 24, 32, 40, 47, 48] {
+                while elapsed < deadline {
+                    let n = chunk.min(deadline - elapsed);
+                    b.advance_clocks(n).unwrap();
+                    elapsed += n;
+                }
+                assert_eq!(
+                    b.read32(HIGH_WRAM + 0x200).unwrap(),
+                    if deadline == 48 { 0x12345678 } else { 0 }
+                );
+                assert_eq!(
+                    b.scu.read32(SCU + 0xA4).unwrap() & 0x800,
+                    if deadline == 48 { 0x800 } else { 0 }
+                );
+            }
+            b.write32(SCU + 4, HIGH_WRAM).unwrap();
+            b.write32(SCU + 16, 0x101).unwrap();
+            b.advance_clocks(16).unwrap(); // one descriptor word latched
+            b.reset_volatile();
+            b.advance_clocks(100).unwrap();
+            assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(0));
+            assert_eq!(b.scu.read32(SCU + 0xA4).unwrap(), 0);
+        }
+    }
+}

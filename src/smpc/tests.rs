@@ -237,7 +237,7 @@ fn intback_digital_analog_and_port_modes_use_vblank_continue_and_break_handshake
     issue(&mut s, 0x10);
     s.vblank_out();
     s.advance_clocks(8600);
-    assert_eq!(output(&s, 5), [0xF1, 2, 0xEE, 0xF7, 0xF0]);
+    assert_eq!(output(&s, 5), [0xF1, 2, 0xEE, 0xF7, 0xFF]);
     assert_eq!(s.status, 0xCC);
     input(&mut s, &[1, 8, 0xF0]);
     issue(&mut s, 0x10);
@@ -508,5 +508,132 @@ fn optimized_intback_uses_selected_display_interval_and_reset_cancels_it() {
         assert_eq!(s.advance_clocks(active), None);
         assert!(!s.take_irq());
         assert!(!s.busy());
+    }
+}
+
+#[test]
+fn zero_byte_modes_pack_only_selected_ports_for_both_digital_and_analog_reports() {
+    // ST-169 fig3.11/table3.4 and fig3.13; STN-43 analog ID16.
+    for (mode, expected) in [
+        (
+            0,
+            vec![
+                0xF1, 2, 0xEE, 0xFF, 0xF1, 0x16, 0x77, 0xFF, 0x12, 0x34, 0x56, 0x78,
+            ],
+        ),
+        (0x30, vec![0xF1, 0x16, 0x77, 0xFF, 0x12, 0x34, 0x56, 0x78]),
+        (0xC0, vec![0xF1, 2, 0xEE, 0xFF]),
+        (0xF0, vec![]),
+    ] {
+        let mut s = Smpc::default();
+        s.set_buttons(0x11);
+        s.set_port2_buttons(0x88);
+        s.set_3d_pad(1, Some([0x12, 0x34, 0x56, 0x78]));
+        input(&mut s, &[0, mode | 0x0A, 0xF0]);
+        issue(&mut s, 0x10);
+        s.vblank_out();
+        s.advance_clocks(8599);
+        assert!(!s.take_irq());
+        s.advance_clocks(1);
+        let actual = output(&s, 16);
+        assert_eq!(&actual[..expected.len()], &expected);
+        assert!(actual[expected.len()..].iter().all(|v| *v == 0xFF));
+        assert_eq!(s.status, 0xC0 | (mode >> 4));
+        assert!(!s.sf);
+    }
+}
+
+#[test]
+fn intback_break_cancels_every_collection_phase_without_later_irq_or_stale_output() {
+    // ST-169 §3.2/table3.2: break can end a wait or collection.
+    for phase in 0..3 {
+        let mut s = Smpc::default();
+        input(&mut s, &[u8::from(phase == 0), 0x0A, 0xF0]);
+        issue(&mut s, 0x10);
+        if phase == 0 {
+            s.advance_clocks(8600);
+            assert!(s.take_irq());
+        }
+        if phase == 2 {
+            s.vblank_out();
+            s.advance_clocks(8599);
+        }
+        let before = s.output;
+        s.write(SMPC + 1, 0x40 | u8::from(phase == 0)).unwrap();
+        assert!(!s.sf);
+        assert!(!s.busy());
+        s.vblank_in();
+        s.vblank_out();
+        s.advance_clocks(100_000);
+        assert!(!s.take_irq());
+        assert_eq!(s.output, before);
+        input(&mut s, &[0, 0x0A, 0xF0]);
+        issue(&mut s, 0x10);
+        s.vblank_out();
+        s.advance_clocks(8600);
+        assert!(s.take_irq());
+        assert_eq!(output(&s, 4), [0xF1, 2, 0xFF, 0xFF]);
+    }
+}
+
+#[test]
+fn vblank_timeout_discards_incomplete_collection_and_remeasures_next_request() {
+    // ST-169 §§3.2/3.3: timeout terminates acquisition and disables reuse
+    // of its previous optimization; no collection output arrives next frame.
+    let mut s = Smpc::default();
+    input(&mut s, &[0, 8, 0xF0]);
+    issue(&mut s, 0x10);
+    s.vblank_out();
+    s.advance_clocks(8600);
+    assert!(s.take_irq());
+    assert!(s.measured_collection);
+    input(&mut s, &[0, 8, 0xF0]);
+    issue(&mut s, 0x10);
+    s.vblank_out_after(100_000);
+    s.advance_clocks(1000);
+    let before = s.output;
+    s.vblank_in();
+    assert!(!s.sf);
+    assert!(!s.busy());
+    assert!(!s.measured_collection);
+    s.advance_clocks(100_000);
+    assert!(!s.take_irq());
+    assert_eq!(s.output, before);
+    input(&mut s, &[0, 8, 0xF0]);
+    issue(&mut s, 0x10);
+    s.vblank_out_after(100_000);
+    s.advance_clocks(8599);
+    assert!(!s.take_irq());
+    s.advance_clocks(1);
+    assert!(s.take_irq());
+}
+
+#[test]
+fn direct_analog_route_changes_cancel_pending_edges_only_on_the_affected_port() {
+    for (offset, value) in [(0x79, 0), (0x7D, 2), (0x7F, 1)] {
+        let mut s = Smpc::default();
+        for port in 0..2 {
+            s.set_analog(port, Some([1, 2, 3]));
+        }
+        for (at, value) in [
+            (0x79, 0x60),
+            (0x7B, 0x60),
+            (0x7D, 3),
+            (0x75, 0x60),
+            (0x77, 0x60),
+        ] {
+            s.write(SMPC + at, value).unwrap();
+        }
+        for at in [0x75, 0x77] {
+            s.write(SMPC + at, 0x20).unwrap();
+            s.advance_clocks(54);
+            s.write(SMPC + at, 0).unwrap();
+        }
+        s.write(SMPC + offset, value).unwrap();
+        s.advance_clocks(54);
+        assert_eq!(s.handshake[0].pins(), 0x11);
+        assert_eq!(s.handshake[1].pins(), 1);
+        assert_eq!(s.handshake[0].clocks_to_event(), u32::MAX);
+        assert_eq!(s.handshake[1].clocks_to_event(), u32::MAX);
     }
 }

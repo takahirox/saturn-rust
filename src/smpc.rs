@@ -288,6 +288,13 @@ impl Smpc {
     }
     pub(crate) fn vblank_in(&mut self) {
         self.latched_reset_button = self.reset_button;
+        if self.peripheral_phase && self.pending.is_some_and(|(command, _)| command == 0x10) {
+            // ST-169 §3.2, termination condition 2: collection cannot spill
+            // past VBlank-in and later publish a stale packet. Re-measure
+            // collection next time after a timeout (§3.3).
+            self.end_peripherals();
+            self.measured_collection = false;
+        }
     }
     pub(crate) fn take_irq(&mut self) -> bool {
         std::mem::take(&mut self.irq)
@@ -411,16 +418,25 @@ impl Smpc {
             }
         }
     }
+    fn end_peripherals(&mut self) {
+        self.await_continue = false;
+        self.await_vblank = false;
+        self.peripheral_phase = false;
+        self.pending = None;
+        self.sf = false;
+        self.status &= !0x20;
+    }
     fn peripherals(&mut self) {
         self.output = [0xFF; 32];
         let mut offset = 0;
         for port in 0..2 {
-            self.output[offset] = 0xF1;
-            offset += 1;
             if (self.input[1] >> (4 + port * 2)) & 3 == 3 {
-                self.output[offset - 1] = 0xF0;
+                // ST-169 fig3.11/table3.4: zero-byte mode removes the
+                // entire port record; it does not report an unplugged port.
                 continue;
             }
+            self.output[offset] = 0xF1;
+            offset += 1;
             if let Some(analog) = self.analog[port] {
                 let (bytes, count) = analog.report(self.buttons[port]);
                 self.output[offset..offset + count].copy_from_slice(&bytes[..count]);
@@ -472,12 +488,16 @@ impl Smpc {
         match address - SMPC {
             offset @ 1..=0x0D if offset & 1 != 0 => {
                 let i = ((offset - 1) / 2) as usize;
-                if i == 0 && self.await_continue {
+                if i == 0
+                    && self.command == 0x10
+                    && self.busy()
+                    && (self.await_continue || self.peripheral_phase)
+                {
                     if value & 0x40 != 0 {
-                        self.await_continue = false;
-                        self.sf = false;
-                        self.status &= !0x20;
-                    } else if (value ^ self.input[0]) & 0x80 != 0 {
+                        // ST-169 §3.2/table3.2: BR ends acquisition also
+                        // while waiting for VBlank or collecting a packet.
+                        self.end_peripherals();
+                    } else if self.await_continue && (value ^ self.input[0]) & 0x80 != 0 {
                         self.await_continue = false;
                         self.await_vblank = true;
                         self.peripheral_phase = true;
@@ -533,6 +553,14 @@ impl Smpc {
         }
         for port in 0..2 {
             self.digital[port].select(self.port_select(port));
+            if self.ddr[port] != 0x60
+                || self.iosel & (1 << port) == 0
+                || self.exle & (1 << port) != 0
+            {
+                // Disconnecting the direct three-wire route cancels its
+                // pending electrical response, independently for each port.
+                self.handshake[port] = Handshake::default();
+            }
         }
         Ok(())
     }

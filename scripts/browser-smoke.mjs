@@ -9,6 +9,7 @@ import { join, resolve } from "node:path";
 import { chromium } from "playwright";
 import { rawMode1 } from "./raw-media-fixture.mjs";
 import { videoTransactions } from "./video-transactions.mjs";
+import { hardwareBoundaries } from "./hardware-boundaries.mjs";
 
 // Fail before upload if web/ includes anything beyond the public runtime assets.
 const assets = ["audio.js", "audio-worklet.js", "app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt", "prism-courier.iso", "prism-courier-LICENSE.txt", "hardware-lab.iso", "hardware-lab-audio.bin", "hardware-lab.cue", "hardware-lab-LICENSE.txt"];
@@ -1064,6 +1065,7 @@ try {
   // The same independent both-CPU wait diagnostic as native tests. FRT measures
   // real external read delays. Changing only WCR or the source data must change
   // the corresponding computed guest records, excluding canned timing/results.
+  await hardwareBoundaries(page);
   const waitsRom = Buffer.alloc(524288);
   for (const line of (await readFile("tests/fixtures/bsc-waits.hex", "utf8")).split(/\r?\n/)) {
     if (!line || line.startsWith("#")) continue;

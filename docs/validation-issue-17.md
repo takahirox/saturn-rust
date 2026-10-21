@@ -4,6 +4,72 @@
 criterion is complete; #17 must remain open.** Issues #11/#13/#15 are historical,
 administratively closed trackers and must not be reopened.
 
+## Review fixes: memory protocols, DMA descriptors and SMPC boundaries (2026-10-22)
+
+Related to #17. Starting review checkpoint: `1faef6622afa077741bc05c9f97a31ca76f2ba74`.
+Existing PR #18 is preserved. Upstream `main` was rechecked with `git ls-remote`
+as `dbd981b030a46daa6923072ce240680dd2e58ebf`. No push or merge was performed.
+
+- BCR1/MCR now select functional SDRAM, DRAM and pseudo-SRAM access protocols.
+  MCR SZ overrides ordinary bus widths in the selected areas. SDRAM cache fills
+  share one activation/CAS interval, and uncached reads still consume the empty
+  burst tail. CS3 bank-active state tracks both banks and actual address pins
+  before RAM mirror decoding; CS2 remains auto-precharged. DRAM page and
+  pseudo-SRAM static-column access use the documented group/row boundaries.
+- Refresh compare requests now occupy BSC bus states and invalidate open rows;
+  pending requests do not accumulate without bound. The slave never drives
+  refresh. Self-refresh suppresses timer requests and leaving it incurs the
+  documented recovery delay. Manual reset retains configuration but closes rows.
+- SCU indirect DMA samples count/write/read descriptor words on separate grants.
+  A higher-priority channel can preempt between words; already sampled fields
+  survive preemption. Partial faults and reset cancel the incomplete descriptor.
+  Boundary vectors cover all channels, twelve-byte table bounds/alignment,
+  twenty-bit indirect counts, zero=1MiB and the final end marker.
+- SMPC zero-byte mode omits the entire disabled port record. BREAK cancels the
+  status/continue wait, VBlank wait and active collection. VBlank-in discards a
+  timed-out collection and forces optimization to be measured again. Disconnecting
+  a direct analog route through DDR/IOSEL/EXLE cancels its pending response while
+  preserving the other port.
+
+The original MIT BCMEM and SMPB BIOSes are reproducible from their source builders.
+[The inventory](hardware-conformance.md#memory-interface-indirect-descriptor-and-smpc-boundary-execution)
+links exact primary manual sections, implementation functions, native vectors,
+identical browser Wasm execution, expanded ROM hashes and remaining limitations.
+Both CPUs measure twelve BCMEM configurations through their own FRTs. Mutating
+actual guest operands changes computed RAM records. SMPB compares authored
+INTBACK cancellation and digital/ID16 packet records; native tests repeat NTSC/PAL
+resets and the browser repeats a cold reset. Existing SCU/DSP/IRQ guests, all three
+demonstration discs, input/focus/privacy checks and browser audio remain enabled.
+
+Validation performed on the resulting source:
+
+- `cargo fmt --check`, `cargo build --locked` and `cargo test --locked`:
+  **501 tests passed (280 unit + 221 integration)**, zero failed or ignored.
+  The full 280-test unit suite passed again after strengthening the pending-refresh
+  vector; production behavior was unchanged.
+- Native all-target Clippy and wasm32 Clippy pass with `-D warnings`.
+- `sh scripts/build-web.sh` passes with rustup stable Rust **1.99.0** and matching
+  wasm-bindgen-cli **0.2.129**. Native Cargo/Rustc are Homebrew **1.94.0**.
+- All **56** CI guest/media reproducibility commands pass. Star Collector,
+  Prism Courier and Hardware Lab source/generated media are unchanged.
+- The complete extended `npm run test:browser` passes in Chromium
+  **145.0.7632.6**, Node **24.12.0**, under `/saturn-rust/`, including the added
+  guests. No required browser check is skipped. `npm ci --ignore-scripts`
+  installed the locked test dependency before the successful runs.
+- JavaScript syntax and Git whitespace checks pass. Initial development checks
+  corrected obsolete reserved-configuration expectations and fixture mutation
+  collisions by locating literals in the original ROM before applying changes.
+  Timer/payload expectations remain authored from the manual and guest source.
+
+This implements portions of review findings 1/3/4/11/12. It does **not** complete
+Issue #17 or resolve the other review findings. CPU effects still commit at
+instruction boundaries; full CPU/DMA/refresh/WAIT ownership, SDRAM mode-register
+commands, 68k instruction-specific sequencing, full SCU/DSP/video/audio/CD/HLE
+and remaining SMPC behavior and comprehensive evidence remain required. The SCU
+grant cadence remains a functional eight-main-clock interval. No checklist item
+is waived or marked complete, no tracker is replaced/reopened, and no human,
+proprietary-firmware, live-site or external-workflow dependency is introduced.
+
 ## Review fixes: clocked video progress, VRAM grants and monitor modes (2026-10-22)
 
 Related to #17. Starting review checkpoint: `048a4e356a630c31995f28cdd346ee0cf5a75a40`.
