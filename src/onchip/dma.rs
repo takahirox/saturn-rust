@@ -12,6 +12,7 @@ struct Channel {
     observed: Cell<bool>,
     external_level: bool,
     external_edge: bool,
+    burst: bool,
 }
 
 impl Default for Channel {
@@ -26,6 +27,7 @@ impl Default for Channel {
             observed: Cell::new(false),
             external_level: true,
             external_edge: false,
+            burst: false,
         }
     }
 }
@@ -36,6 +38,8 @@ pub(crate) struct Dma {
     observed: Cell<u32>,
     next: usize,
     pub address_error: bool,
+    selected: Option<usize>,
+    cycle_previous: bool,
 }
 impl Default for Dma {
     fn default() -> Self {
@@ -43,8 +47,12 @@ impl Default for Dma {
             channels: std::array::from_fn(|_| Channel::default()),
             operation: 0,
             observed: Cell::new(0),
+            // H §9.2.6 DMAOR PR description and fig9.5 specify channel 1
+            // first; the conflicting sentence in §9.3.3 says channel 0.
             next: 1,
             address_error: false,
+            selected: None,
+            cycle_previous: false,
         }
     }
 }
@@ -56,10 +64,14 @@ impl Dma {
             channel.control = 0;
             channel.observed.set(false);
             channel.external_edge = false;
+            channel.burst = false;
         }
         self.operation = 0;
         self.observed.set(0);
         self.address_error = false;
+        self.selected = None;
+        self.cycle_previous = false;
+        self.next = 1;
     }
     pub fn read(&self, offset: u32) -> Option<u32> {
         Some(match offset {
@@ -97,6 +109,9 @@ impl Dma {
                         let te = c.control & 2 & if c.observed.get() { value } else { u32::MAX };
                         c.control = (value & 0xFFFD) | te;
                         c.observed.set(false);
+                        if c.control & 3 != 1 {
+                            c.burst = false;
+                        }
                     }
                     _ => return false,
                 }
@@ -106,6 +121,12 @@ impl Dma {
             0x30 => {
                 let flags = self.operation & 6 & !(self.observed.get() & !value);
                 self.operation = (value & 9) | flags;
+                if value & 1 == 0 {
+                    self.cycle_previous = false;
+                    for channel in &mut self.channels {
+                        channel.burst = false;
+                    }
+                }
                 self.observed.set(0);
             }
             _ => return false,
@@ -140,7 +161,8 @@ impl Dma {
         self.operation & 7 == 1 && self.channels.iter().any(|c| c.control & 3 == 1)
     }
     fn requested(c: &Channel, serial: [bool; 2]) -> bool {
-        c.control & 0x200 != 0
+        c.burst
+            || c.control & 0x200 != 0
             || match c.request {
                 0 => {
                     if c.control & 0x40 != 0 {
@@ -154,29 +176,66 @@ impl Dma {
                 _ => false,
             }
     }
+    pub(crate) fn in_progress(&self) -> bool {
+        self.selected.is_some()
+    }
+    pub(crate) fn burst_requested(&self, serial: [bool; 2]) -> bool {
+        self.operation & 7 == 1
+            && self
+                .channels
+                .iter()
+                .any(|c| c.control & 0x13 == 0x11 && Self::requested(c, serial))
+    }
     /// Returns the SCI request acknowledged, if any. Errors abort DMA and latch
     /// AE; they are not propagated as a host CPU bus failure.
     pub fn transfer(&mut self, memory: &mut impl Memory, serial: [bool; 2]) -> Option<u8> {
-        if self.operation & 7 != 1 {
+        // H §9.3.8: finish the accepted unit on NMI, but DME=0 aborts
+        // at the current bus boundary. A negated DREQ cannot discard a read
+        // already accepted for this unit.
+        if self.operation & 7 != 1 && self.selected.is_none() {
+            self.selected = None;
             return None;
         }
-        let order = if self.operation & 8 == 0 {
+        let order = if self.operation & 8 == 0 && !self.cycle_previous {
             [0, 1]
         } else {
             [self.next, 1 - self.next]
         };
-        let selected = order.into_iter().find(|&i| {
-            let c = &self.channels[i];
-            c.control & 3 == 1 && Self::requested(c, serial)
+        let resuming = self.selected.is_some();
+        let selected = self.selected.or_else(|| {
+            order.into_iter().find(|&i| {
+                let c = &self.channels[i];
+                c.control & 3 == 1 && Self::requested(c, serial)
+            })
         })?;
+        self.selected = Some(selected);
         let c = &mut self.channels[selected];
+        if c.control & 3 != 1 && !resuming {
+            self.selected = None;
+            return None;
+        }
+        if !resuming {
+            // Consume only the accepted edge. A later edge must survive the
+            // current unit; a burst edge starts the entire block (H fig9.2).
+            c.external_edge = false;
+            c.burst = c.control & 0x50 == 0x50 && c.request == 0;
+        }
+        let can_continue = self.operation & 1 != 0 && c.control & 3 == 1;
         let size = match (c.control >> 10) & 3 {
             0 => 1,
             1 => 2,
             2 => 4,
             _ => 16,
         };
-        let count = if size == 16 { 4 } else { 1 };
+        // H §9.3.8 fig9.52: always four reads, but the final unit may
+        // write only one, two or three longwords. TCR=0 represents 16M.
+        let count = if size == 16 && c.count != 0 {
+            c.count.min(4)
+        } else if size == 16 {
+            4
+        } else {
+            1
+        };
         let width = size.min(4);
         let single = c.control & 8 != 0;
         let input = c.control & 0x100 != 0;
@@ -224,27 +283,36 @@ impl Dma {
             }
         } else {
             (|| {
-                for i in 0..count {
+                let mut values = [0u32; 4];
+                for i in 0..if size == 16 { 4 } else { 1 } {
                     let src = c.source.wrapping_add(i * width);
+                    values[i as usize] = match width {
+                        1 => u32::from(memory.read8(src)?),
+                        2 => u32::from(memory.read16(src)?),
+                        _ if size == 16 => memory.dma_read32(src, i == 0, i == 3)?,
+                        _ => memory.read32(src)?,
+                    };
+                }
+                for i in 0..count {
                     let dst = c.destination.wrapping_add(i * width);
+                    let value = values[i as usize];
                     match width {
-                        1 => {
-                            let value = memory.read8(src)?;
-                            memory.write8(dst, value)?;
-                        }
-                        2 => {
-                            let value = memory.read16(src)?;
-                            memory.write16(dst, value)?;
-                        }
-                        _ => {
-                            let value = memory.read32(src)?;
-                            memory.write32(dst, value)?;
-                        }
+                        1 => memory.write8(dst, value as u8)?,
+                        2 => memory.write16(dst, value as u16)?,
+                        _ => memory.write32(dst, value)?,
                     }
                 }
                 Ok(())
             })()
         };
+        if result == Err(BusError::Pending) {
+            if !can_continue {
+                self.selected = None;
+                c.burst = false;
+            }
+            return None;
+        }
+        self.selected = None;
         if result.is_err() {
             self.operation |= 4;
             self.address_error = true;
@@ -268,8 +336,9 @@ impl Dma {
         c.count = c.count.wrapping_sub(count) & 0xFF_FFFF;
         if c.count == 0 {
             c.control |= 2;
+            c.burst = false;
         }
-        c.external_edge = false;
+        self.cycle_previous = c.control & 0x10 == 0;
         self.next = 1 - selected;
         Some(if c.control & 0x200 != 0 { 0 } else { c.request })
     }

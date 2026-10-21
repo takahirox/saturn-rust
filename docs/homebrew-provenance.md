@@ -246,3 +246,17 @@ to a word load moves the terminal read into connected sound RAM and removes only
 that exception record; both native and browser Wasm verify the other records and
 repeat after reset. [The conformance entry](hardware-conformance.md#mc68ec000-movem-load-bus-sequence)
 records exact implementation/tests, primary manual references, hashes and limits.
+
+
+The original [dual-SH-2 DMAC bus diagnostic](../tests/fixtures/build_dmac_bus.py)
+reuses only this repository's original SH-2 assembler and Python's standard
+library. Its [hex ROM](../tests/fixtures/dmac-bus.hex) and
+[source-authored result words](../tests/fixtures/dmac-bus.tsv) use the adjacent
+[MIT license](../tests/fixtures/LICENSE). Both guest CPUs configure their own
+DMACs, handle five interrupts, execute all four transfer sizes and test overlapping
+short bursts and byte/word decrement. Tests change source operands and repeat
+cold boot in native and production browser Wasm. There is no bundled firmware,
+SDK routine, third-party core, external asset, host result writer or game-detection
+path. The three demonstration discs are preserved. Reproduce with
+`python3 tests/fixtures/build_dmac_bus.py --check`; hashes and primary references
+are recorded in [the conformance entry](hardware-conformance.md#on-chip-dmac-bus-transactions-dmabg).

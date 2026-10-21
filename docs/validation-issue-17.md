@@ -4,6 +4,88 @@
 criterion is complete; #17 must remain open.** Issues #11/#13/#15 are historical,
 administratively closed trackers and must not be reopened.
 
+## Deferred on-chip DMAC bus phases and original dual-CPU guest (2026-10-22)
+
+Continues the assigned checkpoint `09d8e4fd5a2642a586a5506a64c3c459cf853e38`
+and preserves its useful unpublished `277ae63` CPU/SCU data-phase, TAS,
+SDRAM-mode and PLL corrections. Upstream main remains
+`dbd981b030a46daa6923072ce240680dd2e58ebf`. PR #18 is the sole Draft PR;
+its full Issue #17 target and intended final `Closes #17` outcome are retained.
+This implementation does not complete that target.
+
+The production DMAC runner now has separate source/destination bus grants for
+both SH-2s, separate CPU/DMA replay journals, latched sampled data, actual BSC
+width/wait/turnaround phases, cycle-steal yielding, burst ownership and TAS
+exclusion. No source read or destination write occurs merely because a transfer
+is requested. Count/TE/IRQ update after the destination phase. Original sixteen-
+byte transfers read all four source words before any write and emit only the
+remaining final TCR words. Source bursts retain their first/last signals.
+
+Eleven new manual-derived native tests cover both CPUs, all bus widths and
+software waits, exact source/destination/IRQ boundaries, overlapping short units,
+TCR=0, cache hits, fixed/cycle-steal/round-robin priorities, accepted and later
+DREQ edges, burst edge latching, NMI/DME boundaries, reset cancellation and
+prohibited cache/DMAC/BSC/UBC accesses. The existing clock-chunk test now uses
+the reset BSC's actual 18-state first longword transfer rather than an immediate
+copy at eight clocks. The round-robin reset behavior follows DMAOR/fig9.5;
+the primary manual's conflicting sentence is explicitly recorded.
+
+The new original MIT [DMABG builder](../tests/fixtures/build_dmac_bus.py),
+[authored result table](../tests/fixtures/dmac-bus.tsv),
+[native guest test](../tests/dmac_bus.rs) and
+[production Wasm test](../scripts/dmac-bus.mjs) execute the same synthetic BIOS.
+Each SH-2 configures its own DMAC, transfers byte/word/long/16-byte data,
+handles five IRQs and waits for peer completion. Overlap and a preserved canary
+reject interleaved reads/writes and an incorrect four-write final unit. Changing
+two source literals changes guest-computed byte/word/long records. Repeated
+cold boots repeat the results. No host writes running guest results, draws
+hardware output or detects the fixture. The three demonstration discs and
+existing licensed synthetic BIOS/HLE fixtures are preserved. Hashes, primary
+manual sections and exact implementation/test links are in
+[the conformance entry](hardware-conformance.md#on-chip-dmac-bus-transactions-dmabg).
+
+Validation actually performed:
+
+- `cargo fmt --check`, `cargo build --locked`, native all-target Clippy and
+  wasm32 Clippy with warnings denied: pass. Native Rust/Cargo 1.94.0;
+  Wasm stable Rust 1.99.0 and wasm-bindgen-cli 0.2.129.
+- A full default `cargo test --locked` run passes **544 tests** at the broad
+  intermediate revision. Two additional native tests were then added; the final
+  full default unit suite passes **316 tests**. The final complete
+  `CARGO_PROFILE_TEST_OPT_LEVEL=1 cargo test --locked` (debug assertions/overflow
+  checks retained) and `cargo test --locked --release` each pass **546 tests**
+  (316 unit + 230 integration), zero failed/ignored.
+- `sh scripts/build-web.sh`: pass. A confirmation rebuild yields identical
+  production Wasm SHA-256
+  `85071f9b6ea1e997c307e9a4dcf75a0faac060ccdcd4361962e4c975d6655a3f`.
+- All **60** guest/media reproducibility commands in the Pages CI workflow:
+  pass. The new fixture is mandatory in that workflow.
+- Complete extended `npm run test:browser`: pass twice, including the confirmed
+  final Wasm, Chromium **145.0.7632.6**, Node **24.12.0**, `/saturn-rust/`, no
+  required skips. Includes DMABG and BUSG, all three demonstrations, actual
+  Canvas/WebAudio, guest mutations, input/focus, backup/reset and local-file privacy.
+- JavaScript syntax, edited-document local link targets and Git whitespace:
+  pass. Early development checks caught the old eight-clock oracle, a test
+  selecting SDRAM while expecting ordinary-memory timing, and a redundant
+  `u32` conversion rejected by Clippy. Their corrections preserve independent
+  literal timing/guest expectations.
+
+These are local native/Wasm/browser results, not claims about remote CI or
+production deployment. Genuine BIOS/retail compatibility remains optional and
+not independently confirmed. No proprietary firmware, SDK routine, third-party
+core, unauthorized asset or human-only gate is introduced.
+
+**The full-resolution Run objective remains unmet.** Mandatory remaining work
+includes the full CPU/pipeline/peripheral/reset contracts, exact DREQ/peripheral
+bus and refresh/display/sound ownership, all SCU DSP/data-bank boundaries,
+remaining video and sound behavior, CD lifecycle and full HLE CD/system ABI,
+SMPC timing/system boundaries and comprehensive acceptance evidence. The
+one-main-state internal-peripheral DMA phase is explicitly a current timing
+limit, not complete hardware conformance. All existing requirements remain on
+this same Draft PR and Issue; none is waived, checked complete, administratively
+closed or moved to a replacement tracker. There is no required human testing,
+firmware supply, live Pages inspection or external-workflow investigation.
+
 ## MC68EC000 operand cycles and original SYS_EXECDMP (2026-10-22)
 
 Continues PR #18 from the assigned checkpoint

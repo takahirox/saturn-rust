@@ -284,7 +284,7 @@ not turn those missing hardware paths into supported behavior.
 | FRT, H §§11.1–11.5, tables 11.2/11.3 | FRC, OCRA/B, capture, divisors, overflow/compare/clear, TIER/FTCSR, shared TEMP, output level state and IRQ; Saturn capture wires (ST-202 §1.2) | FRT, DUAL | FRT (compare), DUAL (capture) | Internal/external pin synchronization, WAIT, clock-switch edges and contention timing absent; no external clock source or output-pin routing | Pending |
 | Watchdog, H §§12.2–12.3, table 12.2 | Keyed byte-register/word-write protocol, eight divisors, interval IRQ, read-before-clear, watchdog reset selection/cause and 512-clock CPU hold | PERIPH; `Watchdog` | PERIPH | External WDTOVF pin routing and complete CPU reset-cycle ordering remain; reset assertion/512-clock hold now split advancement without discarding preceding FRT/DIVU clocks | Pending |
 | SCI, H §§13.2–13.3 | SMR/BRR/SCR/TDR/SSR/RDR, timed internal-clock transmission, external completed-character input, overrun/framing/parity flags, IRQs and DMA handshakes | PERIPH; `Serial` | PERIPH (transmit completion) | No external clock-edge adapter or physical serial pin waveform; multiprocessor and format combinations lack exhaustive integration coverage | Pending |
-| On-chip DMAC, H §§9.2–9.3 | Both channels; byte/word/long/16-byte transfers; fixed/increment/decrement addresses; auto/DREQ/SCI requests; fixed/round-robin selection, TE/AE/NMIF, vectors/IRQ; single-address DACK direction/polarity through explicit board pin adapters | PERIPH, DACK; `Dma`, `Bus::advance_dma`, pin-adapter vectors | PERIPH (copy/end IRQ/error 10/no cache snoop), DACK (armed wait/reset on standard board) | CPU/refresh arbitration, burst/cycle-steal timing and DMA wait states remain missing; no requesting DACK peripheral is connected on the standard board | Pending |
+| On-chip DMAC, H §§9.2–9.3 | Both channels; byte/word/long/16-byte transfers; fixed/increment/decrement addresses; auto/DREQ/SCI requests; fixed/round-robin selection, TE/AE/NMIF, vectors/IRQ; single-address DACK direction/polarity through explicit board pin adapters | PERIPH, DACK; `Dma`, `Bus::prepare_dmac`, [DMABG bus vectors](../src/bus/dmac_tests.rs), pin-adapter vectors | PERIPH, DACK and [DMABG native](../tests/dmac_bus.rs)/[Wasm](../scripts/dmac-bus.mjs): both CPUs, all widths, short overlapping bursts, IRQs and source mutations | DMABG adds deferred phases, CPU/SCU exclusion, cycle-steal/burst ownership and actual BSC waits; complete refresh/display/sound arbitration, DREQ synchronizer and peripheral-bus timing remain required; no requesting DACK peripheral is connected on the standard board | Pending |
 | DIVU, H §§10.2–10.4/table 10.2 | Signed 32/32 and 64/32 quotient/remainder; six-clock overflow exposes three division steps, saturating only the quotient when OVFIE=0; 39-clock normal completion/interlock; word DVCR/VCRDIV, sticky overflow and IRQ | PERIPH, [DIVG](../tests/sh7604.rs), [independent boundary vectors](../src/onchip/peripheral_tests.rs); `Division::start/overflow_result` | DIVG on both CPUs, normal/overflow signs/zero, aliases, IRQ acknowledgement, repeat boots and changed dividend | The one-clock read-after-write interlock is covered by MEMG below; full CPU bus scheduling remains | Pending |
 | BSC identification/memory/interval timer, H §§7.1.4/7.2/7.5–7.7/7.11.1 | BCR1.MASTER per CPU, read-only word lanes, keyed long writes, RTCNT/RTCOR/RTCSR, all clock divisors, CMF read-before-clear, CMI vector/priority and manual-reset retention; ordinary software waits, intercycle turnaround, narrow transfers, CS2 endian conversion, SDRAM/DRAM/pseudo-SRAM widths and timing, open rows and refresh recovery (BWAIT/IDLEG/BCMEM below) | [BSCG/BWAIT](../tests/bsc.rs), [register/reset vectors](../src/onchip/peripheral_tests.rs), [BSC vectors](../src/onchip/bsc.rs), [bus beats](../src/bus.rs) | BSCG, BWAIT, IDLEG, BCMEM | BUSG below adds all six SDRAM MRS encodings, precharge and command timing; external WAIT input, full board widths/lanes and complete refresh/DMAC ownership remain | Pending |
 | Module stop/standby, H §§14.2/14.4, table 14.3 | SBYCR, SCI/FRT reset and gating, preserved INTC/UBC/BSC, retained DMA operands with control reset, WDT-selected NMI settling; `OnChip::enter_sleep/advance_clocks`, `Bus::advance_dma` | [standby/retention vectors](../src/onchip/peripheral_tests.rs), BSCG, PWRG | BSCG, PWRG | Electrical HIZ/pin states, initial five-cycle NMI guard, physical oscillator and clock-switch edges remain unverified; executing stopped MULT instructions is software-prohibited/undefined (H §2.5.2) | Pending |
@@ -459,13 +459,13 @@ these ports and prohibited IST writes raise diagnostics rather than behaving as
 inert registers. SCU pending edges clear on accepted CPU interrupt acknowledgment.
 A-bus requests require AIACK to be armed again after its acknowledge cycle.
 
-The DSP executes every two reference clocks. External SCU DMA issues at most one
-beat per eight reference clocks, independent of CPU issue and DIVU wait length.
-SCU timer, DSP and raster deadlines split peripheral clock advancement. Native
+The DSP executes every two main clocks. BUSG/DMABG now grant external SCU and
+on-chip DMA data phases through the same transaction arbiter and charge
+BSC/A-bus/VRAM waits before publication, independently of CPU retirement.
+SCU timer, DSP, bus-completion and raster deadlines split peripheral advancement. Native
 vectors prove identical results for 1/3/8/17/100-clock chunks. Raster vectors prove
-identical event traces for 1/3/8/127/1708/10000-clock chunks. CPU issue/on-chip DMA
-still use the interpreter turn, so this is not complete Saturn bus arbitration or
-opcode cycle accounting. Three simultaneous DMA channels, bank conflicts and
+identical event traces for 1/3/8/127/1708/10000-clock chunks. Complete
+refresh/display/sound arbitration and pipeline overlap remain required. Three simultaneous DMA channels, bank conflicts and
 invalid software parameters do not claim physical electrical behavior.
 
 ## VDP1 and VDP2
@@ -648,9 +648,11 @@ bound the issuing CPU's next deadline, converted through the PLL. A slow master
 no longer charges its wait time to a ready slave. Only SLEEP/reset polling uses
 an eight-reference-clock bound. See [the timing inventory below](#independent-sh-2-issue-deadlines-and-clocked-on-chip-dma).
 
-On-chip DMA now advances on main-clock deadlines even without CPU issue. Its
-functional eight-main-clock beat plus inserted waits still needs full SH7604
-request/arbitration/locking conformance. DMA address errors latch for vector10
+On-chip DMA advances on separate source/destination completion deadlines even
+without CPU issue. [DMABG](#on-chip-dmac-bus-transactions-dmabg) replaces its
+eight-clock copy cadence with BSC-sized phases, cycle-steal/burst ownership and
+TAS exclusion. Exact request sampling, internal peripheral timing and complete
+refresh/display/sound ownership remain required. DMA address errors latch for vector10
 at the next eligible CPU boundary. NMI precedes internal IRQ selection; each CPU
 applies its own SR mask, delayed-branch and control-transfer inhibition. Accepted
 interrupts consume a boundary without retiring an instruction. FRT requests
@@ -1719,9 +1721,9 @@ in [browser-smoke.mjs](../scripts/browser-smoke.mjs). The primary references are
 | --- | --- | --- | --- |
 | Base instruction states | [cpu/timing.rs](../src/cpu/timing.rs) `execution_states`; `Cpu::last_clocks` | Literal register/ALU/memory/system vectors, every displacement and T polarity for four conditional branches, all non-single-state families | TIMING warms ten actual kernels on both CPUs. FRT ticks/results: ADD 4/32, LDC.L 12/0, taken BF 5/8, untaken BF 3/8, delayed BT 4/8, STC.L 2/0. Replacing 16 ADDs by eight BRA/NOP pairs gives 5/16. Native and Wasm repeat cold resets. These are no-contention states, not full pipeline conformance. |
 | Load WB/EX interlock, [P] §7.5/fig.7.9 | `LoadPipeline::issue`, `Cpu::execute/enter_exception` | All GPRs and byte/word/long, indexed, PC/GBR/displacement loads; source/destination conflicts, repeated loads, MAC forwarding exception, separated successors and exception flush | TIMING adds sixteen dependent load/ADD pairs (6 FRT ticks/result 1), independent pairs (4/0), repeated loads (4/0), and eight separated triples (3/1), on both CPUs in native/Wasm. Multiplier/IF/MA overlap remains required. |
-| Independent CPU deadlines | [Machine::step_inner](../src/lib.rs), `cpu_ready`, [Bus::cpu_delay](../src/bus.rs) | `different_opcode_deadlines_allow_the_other_cpu_to_issue_independently`: cached NOP and BRA/slot produce authored per-clock retirement trace; `one_cpu_external_waits_do_not_charge_the_other_cpus_deadline`: master operand waits while slave retires four NOPs | Both TIMING processors execute independently. BWAIT/IDLEG preserve independent wait and byte-lane goldens. Transactions still occur at issue boundaries; mid-instruction contention, TAS locking, multiplier hazards and prefetch remain required. |
+| Independent CPU deadlines | [Machine::step_inner](../src/lib.rs), `cpu_ready`, [Bus::cpu_delay](../src/bus.rs) | `different_opcode_deadlines_allow_the_other_cpu_to_issue_independently`: cached NOP and BRA/slot produce authored per-clock retirement trace; `one_cpu_external_waits_do_not_charge_the_other_cpus_deadline`: master operand waits while slave retires four NOPs | Both TIMING processors execute independently. BWAIT/IDLEG preserve independent wait and byte-lane goldens. BUSG/DMABG now defer external CPU/DMA data phases and retain TAS ownership. Multiplier/IF/MA hazards and prefetch remain required. |
 | External cycle occupancy and clocks | `CpuBus::observe_external`, `Bus::cpu_delay`, `SystemClock::deadline` | T1/T2 per physical beat; cache hits/arrays do not reserve external clocks; narrow/refill bus tests and original FRT guests; PLL vectors | BWAIT long/word/byte results above; IDLEG TAS minimum gap and mutations. CPU interval is max(base states, total external T1/T2 occupancy)+waits. This explicit functional serialization does not implement IF/MA pipeline overlap or all board protocols. |
-| Clocked on-chip DMA | `Bus::advance_main_clocks`, `cpu_dma_remaining/cpu_dma_errors` | `onchip_dma_progresses_on_clock_deadlines_without_cpu_issue_and_is_chunk_invariant`: no write before first deadline, actual transfer/count/TE, identical chunks 1/3/7/64 and no errors | Existing SH7604/DACK, DIVU and Hardware Lab guests still execute DMA and IRQ paths. Eight-main-clock beat plus waits is a functional cadence; full SH7604 request arbitration and bus ownership remain required. |
+| Clocked on-chip DMA | `Bus::prepare_dmac/grant_dmac/advance_bus_transaction`, `cpu_dma_errors` | `onchip_dma_progresses_on_clock_deadlines_without_cpu_issue_and_is_chunk_invariant`: no write before first deadline, actual transfer/count/TE, identical chunks 1/3/7/64 and no errors | Existing SH7604/DACK, DIVU and Hardware Lab guests retain DMA/IRQ assertions. DMABG adds both-CPU native/Wasm, actual BSC waits and unit/block ownership; complete request/refresh/display/sound arbitration remains required. |
 | Exception and reset boundaries | `Cpu::enter_exception`, `Machine::reset`, timed SMPC/WDT paths | H table5.9 acceptance interval; existing address-error, slot, FRT, standby, watchdog and reset guests, independent deadline reset test | Original Wasm fixtures preserved. Complete interrupt synchronizers, memory-cycle exception sequencing and remaining reset domains remain mandatory. |
 
 Clock-transition checks bound actual emulated time (two 100 ms transitions plus
@@ -1787,7 +1789,7 @@ use the adjacent [fixture license](../tests/fixtures/LICENSE). References:
 
 | Contract | Implementation | Independent evidence | Limits |
 | --- | --- | --- | --- |
-| Separate B-bus grants | `Dsp::dma_beat` retains an in-flight word across two external 16-bit cycles. Output samples DSP RAM once; input publishes RAM/count/address updates after the second successful cycle. | [Bus-spy vectors](../src/scu/dsp/tests.rs) check exactly one read/write per grant, eight output strides × HOLD, CT63→0 wrap, changed data between halves, partial faults and a second-half destination outside the allowed region. | The existing eight-main-clock SCU grant cadence is functional, not complete external wait-state/arbitration timing. |
+| Separate B-bus grants | `Dsp::dma_beat` retains an in-flight word across two external 16-bit cycles. Output samples DSP RAM once; input publishes RAM/count/address updates after the second successful cycle. | [Bus-spy vectors](../src/scu/dsp/tests.rs) check exactly one read/write per grant, eight output strides × HOLD, CT63→0 wrap, changed data between halves, partial faults and a second-half destination outside the allowed region. | BUSG now grants each SCU/DSP data phase with BSC/A-bus/VRAM waits. Full DSP bank-conflict/refresh/display/sound arbitration remains required. |
 | Hardware deadlines, preemption and reset | `Bus::advance_main_clocks` and `Scu::advance_dma` retain the partial DSP word while another DMA channel owns grants; reset cancels it. | `dsp_b_bus_halfwords_progress_on_separate_deadlines_and_reset_cancels_the_tail` in [bus.rs](../src/bus.rs): authored snapshots at clocks7/8/15/16, chunks1/3/8/17; `higher_dma_channel_can_preempt_between_dsp_b_bus_halves_without_losing_the_word` in [SCU tests](../src/scu/tests.rs): actual RAM copy/IRQ between halves. | CPU/DMA transaction ownership, BSC/VRAM waits and prohibited concurrent-start behavior remain required. |
 | Prefetched program versus PRAM DMA | `Dsp::step` latches the successor word. DMA writes update PRAM without changing that fetched word; LE and stopped host program writes invalidate the latch. Pause retains it. | `program_dma_cannot_replace_the_prefetched_successor_and_le_refetches_it`: actual PRAM DMA changes MOV7 to MOV9; the fetched instruction writes7, explicit LE writes9. A separate PRAM vector loads addressesFF/00 and executes the transferred MOV42/ENDI across wrap. Existing jump/BTM/LPS/step and executed-PRAM guests remain enabled. | This establishes a one-successor functional prefetch, not the complete undocumented pipeline/conflict behavior or physical RAM-port timing. |
 | Guest-visible B-bus routes | DSPBUS uses all eight output stride encodings into VDP1 RAM and real sound-RAM input, with CT wrap and polling of EX/T0. Both SH-2 and DSP execute ordinary guest instructions. | All **30** authored words agree in native and browser Wasm, repeated after cold reset. Changing eight guest data literals changes only authored data records; changing add1 to add0 overwrites the high half and leaves the next word's canary intact. | These are diagnostic fixtures, not substitutes for either required demonstration or complete SCU acceptance. |
@@ -1974,3 +1976,43 @@ RAM ownership, SCU DSP bank conflicts, full instruction-specific 68k sequencing,
 remaining video/sound/CD/SMPC contracts and complete HLE startup/CD ABI. The
 listed implementation and executable evidence do not waive those findings or
 establish full Issue #17 completion.
+
+## On-chip DMAC bus transactions (DMABG)
+
+Related to #17. Sources: [SH7604][H] §§7.3/7.5/7.11.2 and
+§§9.1.1/9.2.6/9.3.3–9.3.8, figs9.2/9.4/9.5/9.10/9.52.
+The production runner replaces the eight-clock immediate-copy cadence with
+separate bus-granted source and destination phases. Both SH-2s have independent
+DMA journals, separate from their CPU journals. Replay retains sampled data and
+completed MMIO without issuing them twice. All device work remains guest-driven.
+
+| Contract | Implementation | Independent native evidence | Guest / browser evidence |
+| --- | --- | --- | --- |
+| Data, TCR/TE and IRQ become visible at their actual completion boundaries | `Bus::prepare_dmac/grant_dmac/advance_bus_transaction`, `Dma::transfer` | `dmac_samples_reads_then_publishes_writes_count_and_irq_at_separate_deadlines`: both CPUs, source mutation before/after sampling, exact 2-state read + 3-state write, no early destination/count/IRQ | [Original builder](../tests/fixtures/build_dmac_bus.py), [ROM](../tests/fixtures/dmac-bus.hex), [authored vectors](../tests/fixtures/dmac-bus.tsv), [native](../tests/dmac_bus.rs) and [production Wasm](../scripts/dmac-bus.mjs): both CPUs independently execute five transfers and five IRQ handlers |
+| BSC width/waits apply to actual DMAC physical beats | `CpuBus::reserve_external/external_read_group/external_write`, separate DMA journal indices | `every_narrow_bus_and_software_wait_delays_actual_beats_and_the_final_irq`: both CPUs × 8/16/32-bit buses × four wait settings, literal `(2+Tw)*beats*2+1` deadlines; earlier clock-chunk test now expects the reset BSC's 18-state first longword unit | DMABG runs with guest-programmed waits and a real shared external bus, changing only its own MMIO/RAM |
+| A 16-byte unit performs four reads before any writes; final TCR=1/2/3 emits only that many writes | `Dma::transfer` samples four longwords; `Memory::dma_read32` preserves source-burst first/last signals; source advances 16 regardless of SM | `sixteen_byte_units_read_the_whole_source_before_writing_even_for_short_final_counts`: both CPUs, all four final counts, overlapping source/destination, no premature writes or lost canary; `zero_tcr_means_sixteen_million_longwords_and_standby_discards_burst_state` checks 24-bit TCR wrap | DMABG's TCR=3 overlaps by one longword and preserves the fourth destination canary. Interleaved reads/writes corrupt independently expected values and a four-write implementation destroys the canary |
+| Unit ownership, cycle-steal yielding, burst retention, channel priorities and TAS exclusion | `Transactions::dmac_owner/dmac_yield`, `Dma::cycle_previous/next` | `cycle_steal_yields_to_a_waiting_cpu_while_burst_retains_the_bus_and_cache_hits_proceed`, `fixed_cycle_steal_alternates_and_burst_priorities_follow_the_programmed_mode`, `tas_excludes_dmac_until_its_write_and_instruction_release` | DMABG executes independent CPUs, five width/address/burst cases and a final peer-completion handshake |
+| DREQ is accepted once per edge; a later edge survives the current unit; a burst edge activates the block | `Channel::external_edge/burst`, latched `Dma::selected` | `edge_requests_are_consumed_at_acceptance_and_burst_edges_start_the_whole_block`: unrequested wait, a second edge while a read is pending, cycle-steal stops after two units and burst completes three | Existing DACK native/Wasm guest still waits for real pins rather than receiving invented standard-board data |
+| NMI finishes the accepted unit; DME=0 stops at the current cycle; reset cancels queued/granted work | `Dma::transfer`, `Bus::cancel_dmac_transaction`, slave/watchdog/cold-reset paths | `nmi_completes_the_accepted_unit_but_dme_abort_never_issues_another_cycle`, `reset_cancels_both_pending_read_and_granted_write_without_late_dma_or_irq`: read/write boundaries, retained counts and suppressed tail/IRQ | DMABG repeats cold boot, guest handlers acknowledge TE before subsequent work, and both CPU results repeat |
+| DMA bypasses caches and cannot access cache/DMAC/BSC/UBC registers | uncached `CpuBus`, P4 exclusions, separate peripheral completion path | `dmac_cannot_access_its_own_bsc_ubc_or_cache_registers_or_change_them`, existing SCI/cache/UBC vectors | Existing PERIPH and cache guests remain required alongside DMABG |
+
+The manual contains conflicting round-robin reset wording. DMAOR's PR bit
+[H] §9.2.6 and fig9.5 specify channel1 first; a sentence in §9.3.3 says channel0.
+This implementation retains channel1 first to follow the register description
+and figure. Fixed priority starts channel0; fixed cycle-steal alternates when
+both channels remain requesting. Tests distinguish all three modes.
+
+Original source, generated ROM and authored results use the adjacent
+[fixture MIT license](../tests/fixtures/LICENSE). Reproduce with
+`python3 tests/fixtures/build_dmac_bus.py --check`, required in CI. Hashes:
+
+- Expanded 512 KiB ROM: `8af4bc51336fbb02434f1a5f50d3199d422e355a13fdb69b574faa2ddf7897cd`.
+- Hex container: `8a8dbc5876d4d6d8e230555a1f8cb60c3cb1a175188567d80325fb6216870288`.
+- Authored TSV: `71aa31c2dfa0ecb5e8e8b4e97d2bf5ec756714113e4f08b0f7762d99568c370a`.
+
+These contracts do not complete the DMA/hardware acceptance inventory. Required
+remaining work includes exact DREQ sampling/acknowledge-pin timing, complete
+refresh/display/sound ownership and preemption, peripheral-bus cycle timing
+(currently a bounded one-main-state phase), every manual-reset/partial-error
+boundary, and the other CPU, SCU/DSP, video, sound, CD/HLE, SMPC and integration
+requirements already recorded above. No umbrella criterion is waived or checked.

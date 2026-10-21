@@ -10,6 +10,7 @@ import { chromium } from "playwright";
 import { rawMode1 } from "./raw-media-fixture.mjs";
 import { videoTransactions } from "./video-transactions.mjs";
 import { busTransactions } from "./bus-transactions.mjs";
+import { dmacBus } from "./dmac-bus.mjs";
 import { abusTiming } from "./abus.mjs";
 import { hardwareBoundaries } from "./hardware-boundaries.mjs";
 import { hlePlayer } from "./hle-player.mjs";
@@ -785,6 +786,7 @@ try {
   await videoTransactions(page);
   await abusTiming(page);
   await busTransactions(page);
+  await dmacBus(page);
   const shrinkRom=Buffer.alloc(524288);
   for(const line of (await readFile("tests/fixtures/sprite-shrink.hex","utf8")).split(/\r?\n/)) {
     if(!line||line.startsWith("#"))continue;

@@ -45,9 +45,11 @@ VRAM and DIVU waits only to the issuing CPU. Sleeping polling is bounded at eigh
 reference clocks and retires no instruction. `run_steps(n)` accepts 1–10000
 scheduler boundaries. `advance_frame()` waits for a raster field with a bounded
 turn limit and aborts on the first fault. Raster, SCU timer/DSP and on-chip DMA
-deadlines split peripheral advancement. Both on-chip DMACs now progress without
-CPU issue. Pipeline hazards, speculative fetches and transaction-level CPU/DMA
-arbitration remain required. See the
+deadlines split peripheral advancement. Both on-chip DMACs progress without
+CPU issue through distinct source/destination bus grants, shared with CPU and
+SCU transactions. Cycle-steal yields after a unit; bursts retain ownership and
+TAS excludes DMA. Pipeline overlap, speculative fetches and complete refresh,
+display, sound and peripheral-bus ownership/timing remain required. See the
 [CPU timing evidence](hardware-conformance.md#independent-sh-2-issue-deadlines-and-clocked-on-chip-dma).
 The browser advances at most one frame per requestAnimationFrame callback,
 limited to 60 updates per second; it does no catch-up loop. Actual speed depends
@@ -399,10 +401,12 @@ register and test links and the remaining limitations.
 NTSC/PAL display interval and 320/352 PLL. Interlaced fields alternate ODD and
 double-density VCNT parity. Half-line phase remains required.
 `Bus::advance_clocks` splits device advancement at raster, SCU timer and DSP
-boundaries, with external DMA beats on eight-clock boundaries. `advance_frame`
+boundaries, with external DMA data phases retiring after their BSC/A-bus/VRAM
+waits. On-chip DMAC source and destination phases use separate journals from
+the CPU and preserve the four-read/four-write order of 16-byte units. `advance_frame`
 waits for a raster field boundary with a hard turn bound. It no longer assigns
 60000/20000 retired-instruction budgets to active/blank phases. Independent opcode deadlines replace the CPU issue quantum. Pipeline and
-on-chip DMA arbitration remain incomplete timing models; this change
+full refresh/display/sound DMA arbitration remain incomplete timing models; this change
 does not establish full hardware-time acceptance. Star Collector completion tests
 wait for the guest result within a bound rather than requiring the old budget.
 

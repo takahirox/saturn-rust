@@ -9,6 +9,8 @@ use crate::timing::{Raster, RasterEvent, SystemClock};
 use crate::vdp1::{self, Vdp1};
 use std::cell::{Cell, RefCell};
 use std::fmt;
+#[cfg(test)]
+mod dmac_tests;
 mod transactions;
 
 pub const BIOS_SIZE: usize = 512 * 1024;
@@ -182,6 +184,10 @@ pub trait Memory {
         self.read8(address)
     }
     fn read32(&self, address: u32) -> Result<u32, BusError>;
+    /// H §9.1.1: the four reads of a 16-byte DMAC unit form one burst.
+    fn dma_read32(&self, address: u32, _first: bool, _last: bool) -> Result<u32, BusError> {
+        self.read32(address)
+    }
     fn write8(&mut self, address: u32, value: u8) -> Result<(), BusError>;
     fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError>;
     fn write32(&mut self, address: u32, value: u32) -> Result<(), BusError>;
@@ -212,7 +218,6 @@ pub struct Bus {
     smpc: Smpc,
     pub(crate) scu: Scu,
     pub(crate) raster: Raster,
-    cpu_dma_remaining: [u32; 2],
     cpu_dma_errors: [bool; 2],
     cpu_bus_clocks: [Cell<u32>; 2],
     system_clock: SystemClock,
@@ -237,7 +242,6 @@ impl Default for Bus {
             smpc: Smpc::default(),
             scu: Scu::default(),
             raster: Raster::default(),
-            cpu_dma_remaining: [8; 2],
             cpu_dma_errors: [false; 2],
             cpu_bus_clocks: [Cell::new(0), Cell::new(0)],
             system_clock: SystemClock::default(),
@@ -277,7 +281,9 @@ mod cpu_dma_clock_tests {
                     .write32(crate::onchip::DMAC + offset, value)
                     .unwrap();
             }
-            bus.advance_clocks(7).unwrap();
+            // Reset BSC: eight-state 32-bit read/write plus two turnaround
+            // states (WCR IW3=2), for eighteen states per first unit.
+            bus.advance_clocks(17).unwrap();
             assert_eq!(bus.read32(HIGH_WRAM + 0x200), Ok(0));
             bus.advance_clocks(1).unwrap();
             assert_eq!(bus.read32(HIGH_WRAM + 0x200), Ok(0x12340000));
@@ -385,9 +391,9 @@ impl Bus {
     pub(crate) fn set_slave_enabled(&mut self, enabled: bool) {
         if !enabled {
             self.cancel_cpu_transaction(Processor::Slave);
+            self.cancel_dmac_transaction(Processor::Slave);
         }
         if enabled != self.slave_enabled {
-            self.cpu_dma_remaining[1] = 8;
             self.cpu_dma_errors[1] = false;
             self.cpu_bus_clocks[1].set(0);
         }
@@ -429,6 +435,7 @@ impl Bus {
         let reset = chip.take_reset_request()?;
         chip.reset_from_watchdog(reset);
         self.cancel_cpu_transaction(processor);
+        self.cancel_dmac_transaction(processor);
         self.cache[processor as usize].get_mut().reset_control();
         Some(reset)
     }
@@ -438,6 +445,7 @@ impl Bus {
     pub(crate) fn nmi_ready(&self, processor: Processor) -> bool {
         self.onchip[processor as usize].nmi_ready()
     }
+    #[cfg(test)]
     pub(crate) fn advance_dma(&mut self, processor: Processor) -> bool {
         let index = processor as usize;
         if self.onchip[index].reset_active() || self.onchip[index].dma_stopped() {
@@ -474,12 +482,6 @@ impl Bus {
             .min(self.raster.clocks_to_event())
             .min(self.scu.clocks_to_event())
             .min(self.vdp1.clocks_to_event())
-            .min(self.cpu_dma_remaining[0])
-            .min(if self.slave_enabled {
-                self.cpu_dma_remaining[1]
-            } else {
-                u32::MAX
-            })
     }
 
     fn advance_fixed_clocks(&mut self, clocks: u32) -> Result<Option<u8>, ScuError> {
@@ -573,27 +575,6 @@ impl Bus {
             self.vdp2.scan_field(self.raster.odd());
             // Complete the granted data phase before contenders at this edge.
             self.advance_bus_transaction(delta)?;
-            // On-chip DMA has its own hardware-clock deadline. It must not
-            // transfer faster merely because a CPU runs single-state opcodes,
-            // nor stop while both CPUs sleep. The eight-clock DMA beat is a
-            // functional bus cadence pending full SH7604 request arbitration.
-            for processor in [Processor::Master, Processor::Slave] {
-                let i = processor as usize;
-                if i == 1 && !self.slave_enabled {
-                    continue;
-                }
-                self.cpu_dma_remaining[i] -= delta;
-                if self.cpu_dma_remaining[i] == 0 {
-                    if self.bus_busy() {
-                        self.cpu_dma_remaining[i] = 1;
-                        continue;
-                    }
-                    self.cpu_dma_errors[i] |= self.advance_dma(processor);
-                    self.cpu_dma_remaining[i] =
-                        8u32.saturating_add(self.onchip[i].take_wait_clocks());
-                    self.cpu_bus_clocks[i].set(0);
-                }
-            }
             remaining -= delta;
         }
         Ok(command)
@@ -1320,12 +1301,17 @@ impl Memory for CpuBus<'_> {
         self.bus.onchip[self.processor as usize].acknowledge_break();
     }
     fn read8(&self, address: u32) -> Result<u8, BusError> {
-        if address == CCR {
+        if address == CCR && self.cached {
             return Ok(self.bus.cache[self.processor as usize].borrow().control());
         }
         if address >= 0xFFFF_FE00 {
-            if !self.cached && (0xFFFF_FF40..0xFFFF_FF7C).contains(&address) {
+            if !self.cached && address >= 0xFFFF_FF40 {
                 return Err(BusError::UnsupportedDevice { address, width: 1 });
+            }
+            if !self.cached && self.scheduled {
+                return self
+                    .scheduled_external(address, 1, None, true, true, false)
+                    .map(|v| v as u8);
             }
             let value = self.bus.onchip[self.processor as usize].read8(address)?;
             self.observe(address, 1, u32::from(value), false);
@@ -1337,8 +1323,13 @@ impl Memory for CpuBus<'_> {
     }
     fn read16(&self, address: u32) -> Result<u16, BusError> {
         if address >= 0xFFFF_FE00 {
-            if !self.cached && (0xFFFF_FF40..0xFFFF_FF7C).contains(&address) {
+            if !self.cached && address >= 0xFFFF_FF40 {
                 return Err(BusError::UnsupportedDevice { address, width: 2 });
+            }
+            if !self.cached && self.scheduled {
+                return self
+                    .scheduled_external(address, 2, None, true, true, false)
+                    .map(|v| v as u16);
             }
             let value = self.bus.onchip[self.processor as usize].read16(address)?;
             self.observe(address, 2, u32::from(value), false);
@@ -1358,8 +1349,11 @@ impl Memory for CpuBus<'_> {
     }
     fn read32(&self, address: u32) -> Result<u32, BusError> {
         if address >= 0xFFFF_FE00 {
-            if !self.cached && (0xFFFF_FF40..0xFFFF_FF7C).contains(&address) {
+            if !self.cached && address >= 0xFFFF_FF40 {
                 return Err(BusError::UnsupportedDevice { address, width: 4 });
+            }
+            if !self.cached && self.scheduled {
+                return self.scheduled_external(address, 4, None, true, true, false);
             }
             let value = self.bus.onchip[self.processor as usize].read32(address)?;
             self.observe(address, 4, value, false);
@@ -1369,16 +1363,29 @@ impl Memory for CpuBus<'_> {
         self.observe(address, 4, value, false);
         Ok(value)
     }
+    fn dma_read32(&self, address: u32, first: bool, last: bool) -> Result<u32, BusError> {
+        if address >= 0xFFFF_FE00 {
+            return self.read32(address);
+        }
+        let value = u32::from_be_bytes(self.external_read_group(address, first, last, false)?);
+        self.observe(address, 4, value, false);
+        Ok(value)
+    }
     fn write8(&mut self, address: u32, value: u8) -> Result<(), BusError> {
-        if address == CCR {
+        if address == CCR && self.cached {
             self.bus.cache[self.processor as usize]
                 .get_mut()
                 .set_control(value);
             return Ok(());
         }
         if address >= 0xFFFF_FE00 {
-            if !self.cached && (0xFFFF_FF40..0xFFFF_FF7C).contains(&address) {
+            if !self.cached && address >= 0xFFFF_FF40 {
                 return Err(BusError::UnsupportedDevice { address, width: 1 });
+            }
+            if !self.cached && self.scheduled {
+                return self
+                    .scheduled_external(address, 1, Some(u32::from(value)), true, true, false)
+                    .map(|_| ());
             }
             self.bus.onchip[self.processor as usize].write8(address, value)?;
             self.observe(address, 1, u32::from(value), true);
@@ -1403,8 +1410,13 @@ impl Memory for CpuBus<'_> {
             return Ok(());
         }
         if address >= 0xFFFF_FE00 {
-            if !self.cached && (0xFFFF_FF40..0xFFFF_FF7C).contains(&address) {
+            if !self.cached && address >= 0xFFFF_FF40 {
                 return Err(BusError::UnsupportedDevice { address, width: 2 });
+            }
+            if !self.cached && self.scheduled {
+                return self
+                    .scheduled_external(address, 2, Some(u32::from(value)), true, true, false)
+                    .map(|_| ());
             }
             self.bus.onchip[self.processor as usize].write16(address, value)?;
             self.observe(address, 2, u32::from(value), true);
@@ -1416,8 +1428,13 @@ impl Memory for CpuBus<'_> {
     }
     fn write32(&mut self, address: u32, value: u32) -> Result<(), BusError> {
         if address >= 0xFFFF_FE00 {
-            if !self.cached && (0xFFFF_FF40..0xFFFF_FF7C).contains(&address) {
+            if !self.cached && address >= 0xFFFF_FF40 {
                 return Err(BusError::UnsupportedDevice { address, width: 4 });
+            }
+            if !self.cached && self.scheduled {
+                return self
+                    .scheduled_external(address, 4, Some(value), true, true, false)
+                    .map(|_| ());
             }
             self.bus.onchip[self.processor as usize].write32(address, value)?;
             self.observe(address, 4, value, true);

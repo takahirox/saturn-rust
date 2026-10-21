@@ -7,6 +7,7 @@ use super::*;
 enum Operation {
     Read(u32, usize, bool, bool), // address, width, instruction, TAS
     Write(u32, usize, u32),
+    DmaRead(u32, bool, bool),
     Sleep,
     BreakPending,
     InstructionBreak(u32, bool),
@@ -33,6 +34,7 @@ pub(super) struct Journal {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Owner {
     Cpu(Processor),
+    Dmac(Processor),
     Scu,
 }
 struct Active {
@@ -42,7 +44,10 @@ struct Active {
 }
 #[derive(Default)]
 pub(super) struct Transactions {
-    journals: [RefCell<Journal>; 2],
+    journals: [RefCell<Journal>; 4],
+    dmac_owner: Option<Processor>,
+    dmac_yield: bool,
+    previous_dmac: Option<Processor>,
     active: Option<Active>,
     lock: Option<Processor>,
     previous: Option<Processor>,
@@ -52,7 +57,7 @@ pub(super) struct Transactions {
 struct ScheduledMemory<'a>(CpuBus<'a>);
 impl ScheduledMemory<'_> {
     fn operation(&mut self, op: Operation) -> Result<u32, BusError> {
-        let i = self.0.processor as usize;
+        let i = self.0.journal_index();
         {
             let mut journal = self.0.bus.transactions.journals[i].borrow_mut();
             let cursor = journal.cursor;
@@ -64,6 +69,7 @@ impl ScheduledMemory<'_> {
             journal.beat_cursor = 0;
         }
         let result = match op {
+            Operation::DmaRead(a, first, last) => self.0.dma_read32(a, first, last),
             Operation::Read(a, 1, _, true) => self.0.tas_read8(a).map(u32::from),
             Operation::Read(a, 1, _, _) => self.0.read8(a).map(u32::from),
             Operation::Read(a, 2, true, _) => self.0.fetch16(a).map(u32::from),
@@ -127,6 +133,11 @@ impl Memory for ReplayMemory<'_> {
             .borrow_mut()
             .operation(Operation::Read(a, 4, false, false))
     }
+    fn dma_read32(&self, a: u32, first: bool, last: bool) -> Result<u32, BusError> {
+        self.0
+            .borrow_mut()
+            .operation(Operation::DmaRead(a, first, last))
+    }
     fn write8(&mut self, a: u32, v: u8) -> Result<(), BusError> {
         self.0
             .get_mut()
@@ -170,6 +181,101 @@ impl Memory for ReplayMemory<'_> {
     }
 }
 impl Bus {
+    fn prepare_dmac(&mut self, processor: Processor) {
+        let i = processor as usize;
+        if (i == 1 && !self.slave_enabled)
+            || self.onchip[i].reset_active()
+            || self.onchip[i].dma_stopped()
+        {
+            return;
+        }
+        self.transactions.journals[i + 2].get_mut().cursor = 0;
+        let requests = self.onchip[i].serial_dma_requests();
+        let mut dma = std::mem::take(&mut self.onchip[i].dma);
+        let acknowledged = dma.transfer(
+            &mut ReplayMemory(RefCell::new(ScheduledMemory(CpuBus {
+                bus: self,
+                processor,
+                cached: false,
+                scheduled: true,
+            }))),
+            requests,
+        );
+        self.cpu_dma_errors[i] |= std::mem::take(&mut dma.address_error);
+        let in_progress = dma.in_progress();
+        let burst = dma.burst_requested(requests);
+        self.onchip[i].dma = dma;
+        if let Some(source) = acknowledged {
+            self.onchip[i].acknowledge_serial_dma(source);
+        }
+        if !in_progress {
+            *self.transactions.journals[i + 2].get_mut() = Journal::default();
+            if self.transactions.dmac_owner == Some(processor) && !burst {
+                self.transactions.dmac_owner = None;
+                self.transactions.dmac_yield = acknowledged.is_some();
+            }
+        }
+    }
+    pub(super) fn cancel_dmac_transaction(&mut self, processor: Processor) {
+        if self
+            .transactions
+            .active
+            .as_ref()
+            .is_some_and(|a| a.owner == Owner::Dmac(processor))
+        {
+            self.transactions.active = None;
+        }
+        *self.transactions.journals[processor as usize + 2].get_mut() = Journal::default();
+        if self.transactions.dmac_owner == Some(processor) {
+            self.transactions.dmac_owner = None;
+        }
+    }
+    fn grant_dmac(&mut self) -> bool {
+        let order = if let Some(p) = self.transactions.dmac_owner {
+            [p, p]
+        } else if self.transactions.previous_dmac == Some(Processor::Master) {
+            [Processor::Slave, Processor::Master]
+        } else {
+            [Processor::Master, Processor::Slave]
+        };
+        for processor in order {
+            self.prepare_dmac(processor);
+            let Some(transfer) = self.transactions.journals[processor as usize + 2]
+                .borrow()
+                .waiting
+            else {
+                continue;
+            };
+            self.transactions.dmac_owner = Some(processor);
+            self.transactions.previous_dmac = Some(processor);
+            self.grant_cpu_beat(processor, transfer, true);
+            return true;
+        }
+        false
+    }
+    fn grant_cpu_beat(&mut self, processor: Processor, transfer: Transfer, dmac: bool) {
+        self.for_cpu(processor).reserve_external(
+            transfer.address,
+            transfer.width,
+            transfer.write.is_some(),
+            transfer.first,
+            transfer.last,
+        );
+        let i = processor as usize;
+        let remaining = self.cpu_bus_clocks[i]
+            .replace(0)
+            .saturating_add(self.onchip[i].take_wait_clocks())
+            .max(1);
+        self.transactions.active = Some(Active {
+            owner: if dmac {
+                Owner::Dmac(processor)
+            } else {
+                Owner::Cpu(processor)
+            },
+            transfer,
+            remaining,
+        });
+    }
     pub(crate) fn replay_cpu(&mut self, processor: Processor) -> ReplayMemory<'_> {
         self.transactions.journals[processor as usize]
             .borrow_mut()
@@ -227,6 +333,12 @@ impl Bus {
             return;
         }
         if self.transactions.lock.is_none()
+            && self.transactions.dmac_owner.is_some()
+            && self.grant_dmac()
+        {
+            return;
+        }
+        if self.transactions.lock.is_none()
             && let Some(cycle) = self.scu.prepare_dma_cycle()
         {
             let mut remaining = 2;
@@ -265,6 +377,9 @@ impl Bus {
             });
             return;
         }
+        if self.transactions.lock.is_none() && !self.transactions.dmac_yield && self.grant_dmac() {
+            return;
+        }
         // Round-robin at beat boundaries; TAS is the only retained CPU lock.
         let order = if self.transactions.previous == Some(Processor::Master) {
             [Processor::Slave, Processor::Master]
@@ -288,26 +403,16 @@ impl Bus {
             if transfer.locked {
                 self.transactions.lock = Some(processor);
             }
-            let memory = self.for_cpu(processor);
-            memory.reserve_external(
-                transfer.address,
-                transfer.width,
-                transfer.write.is_some(),
-                transfer.first,
-                transfer.last,
-            );
-            let i = processor as usize;
-            let remaining = self.cpu_bus_clocks[i]
-                .replace(0)
-                .saturating_add(self.onchip[i].take_wait_clocks())
-                .max(1);
-            self.transactions.active = Some(Active {
-                owner: Owner::Cpu(processor),
-                transfer,
-                remaining,
-            });
+            self.grant_cpu_beat(processor, transfer, false);
+            self.transactions.dmac_yield = false;
             self.transactions.previous = Some(processor);
             return;
+        }
+        // Sleeping/cache-only CPUs need no external cycle. Cycle-steal must
+        // continue in that case, without introducing a fabricated CPU access.
+        if self.transactions.lock.is_none() {
+            self.transactions.dmac_yield = false;
+            self.grant_dmac();
         }
     }
     pub(crate) fn bus_transaction_deadline(&self) -> u32 {
@@ -322,9 +427,6 @@ impl Bus {
             .as_ref()
             .map_or(u32::MAX, |a| a.remaining)
     }
-    pub(super) fn bus_busy(&self) -> bool {
-        self.transactions.active.is_some() || self.transactions.lock.is_some()
-    }
     pub(super) fn advance_bus_transaction(&mut self, clocks: u32) -> Result<(), ScuError> {
         let Some(active) = &mut self.transactions.active else {
             return Ok(());
@@ -336,10 +438,26 @@ impl Bus {
         let active = self.transactions.active.take().unwrap();
         let t = active.transfer;
         let processor = match active.owner {
-            Owner::Cpu(p) => p,
+            Owner::Cpu(p) | Owner::Dmac(p) => p,
             Owner::Scu => Processor::Master,
         };
-        let result = if t.width == 0 {
+        let result = if matches!(active.owner, Owner::Dmac(_)) && t.address >= 0xFFFF_FE00 {
+            let chip = &mut self.onchip[processor as usize];
+            if let Some(value) = t.write {
+                match t.width {
+                    1 => chip.write8(t.address, value as u8),
+                    2 => chip.write16(t.address, value as u16),
+                    _ => chip.write32(t.address, value),
+                }
+                .map(|_| value)
+            } else {
+                match t.width {
+                    1 => chip.read8(t.address).map(u32::from),
+                    2 => chip.read16(t.address).map(u32::from),
+                    _ => chip.read32(t.address),
+                }
+            }
+        } else if t.width == 0 {
             Ok(0)
         } else if t.width == 2 && t.write.is_some() && (0xFFFF8000..0xFFFFC000).contains(&t.address)
         {
@@ -387,15 +505,27 @@ impl Bus {
                 let memory = self.for_cpu(processor);
                 memory.observe_external_data(t.address, t.width, value, t.write.is_some());
             }
-            let journal = self.transactions.journals[processor as usize].get_mut();
+            let index = processor as usize
+                + if matches!(active.owner, Owner::Dmac(_)) {
+                    2
+                } else {
+                    0
+                };
+            let journal = self.transactions.journals[index].get_mut();
             journal.beats.push((t, result));
             journal.waiting = None;
             journal.completed = true;
+            if matches!(active.owner, Owner::Dmac(_)) {
+                self.prepare_dmac(processor);
+            }
         }
         Ok(())
     }
 }
 impl CpuBus<'_> {
+    fn journal_index(&self) -> usize {
+        self.processor as usize + if self.cached { 0 } else { 2 }
+    }
     pub(super) fn scheduled_external(
         &self,
         address: u32,
@@ -413,7 +543,7 @@ impl CpuBus<'_> {
             last,
             locked,
         };
-        let mut journal = self.bus.transactions.journals[self.processor as usize].borrow_mut();
+        let mut journal = self.bus.transactions.journals[self.journal_index()].borrow_mut();
         let cursor = journal.beat_cursor;
         if let Some(&(recorded, result)) = journal.beats.get(cursor) {
             assert_eq!(
