@@ -206,9 +206,59 @@ fn sample_delivery_is_bounded_and_unsupported_synthesis_never_succeeds_silently(
     assert_eq!(scsp.dropped, 5);
     assert_eq!(scsp.drain(usize::MAX).len(), BUFFER_FRAMES * 2);
     assert!(scsp.drain(1).is_empty());
-    for (address, value) in [(8, 1), (10, 1), (0, 0x180)] {
-        assert!(scsp.write16(address, value).is_err());
+    assert!(scsp.write16(0, 0x180).is_err());
+}
+
+#[test]
+fn thirty_two_envelopes_release_retrigger_and_bypass_independently() {
+    let mut scsp = Scsp::default();
+    let mut ram = vec![0; SOUND_RAM_SIZE];
+    ram[0x100..0x108].copy_from_slice(&[2, 0, 2, 0, 2, 0, 2, 0]);
+    for slot in 0..32 {
+        direct(&mut scsp, slot, 0x100, 1, false, 0);
+        scsp.write16(slot * 32 + 8, 31).unwrap();
+        scsp.write16(slot * 32 + 10, 0x3C1F).unwrap();
+        scsp.write16(slot * 32 + 12, 0).unwrap();
     }
+    scsp.sample(&mut ram).unwrap();
+    assert_eq!(scsp.drain(1), [16384, 16384]);
+    // Registering KEY_OFF alone has no effect until a global KYONEX.
+    scsp.write16(0, 0x20).unwrap();
+    scsp.sample(&mut ram).unwrap();
+    assert_eq!(scsp.drain(1), [16384, 16384]);
+    scsp.write16(0, 0x1020).unwrap();
+    scsp.sample(&mut ram).unwrap();
+    let released = scsp.drain(1);
+    assert!(released[0] < 16384 && released[0] > 15872);
+    assert_eq!(released[0], released[1]);
+    scsp.write16(0, 0x1820).unwrap(); // KEY_ON during release restarts
+    scsp.sample(&mut ram).unwrap();
+    assert_eq!(scsp.drain(1), [16384, 16384]);
+    // Repeating KYONEX with KEY_ON unchanged must not restart another attack.
+    scsp.write16(8, 31 | 31 << 6).unwrap();
+    scsp.write16(10, 0x3FFF).unwrap(); // decay level31, KRS off, RR31
+    scsp.write16(0, 0x1820).unwrap();
+    scsp.sample(&mut ram).unwrap();
+    assert!(scsp.drain(1)[0] < 16384);
+    // Direct mode bypasses a running envelope as well as TL and ALFO.
+    scsp.write16(12, 0x1FF).unwrap();
+    scsp.write16(18, 0xFFFF).unwrap();
+    scsp.sample(&mut ram).unwrap();
+    assert_eq!(scsp.drain(1), [16384, 16384]);
+}
+
+#[test]
+fn reset_release_waits_forty_sound_clocks_before_first_instruction() {
+    let mut sound = Sound::default();
+    sound.ram[..8].copy_from_slice(&[0, 7, 0xFF, 0, 0, 0, 1, 0]);
+    sound.ram[0x100..0x104].copy_from_slice(&[0x70, 42, 0x4E, 0x71]);
+    sound.set_enabled(true).unwrap();
+    let deadline = (40 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ) as u32;
+    sound.advance(deadline - 1).unwrap();
+    assert_eq!(sound.cpu.state.instructions, 0);
+    sound.advance(1).unwrap();
+    assert_eq!(sound.cpu.state.instructions, 1);
+    assert_eq!(sound.cpu.state.d[0], 42);
 }
 #[test]
 fn sound_cpu_and_sample_clock_traces_do_not_depend_on_host_advance_chunks() {

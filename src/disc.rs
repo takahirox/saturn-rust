@@ -1,4 +1,4 @@
-//! Strict cooked ISO9660 + single-area Saturn IP loader, independently implemented.
+//! Cooked ISO9660 + single-area Saturn IP loader, independently implemented.
 //! ST-040-R4 §§3–4 (system area, IP header, first-read file identifier 2).
 use crate::bus::{HIGH_WRAM, WRAM_SIZE};
 use std::fmt;
@@ -51,13 +51,43 @@ pub struct DiscBoot<'a> {
     pub stack: u32,
 }
 
+/// ST-040 §3.2.1: scan the volume descriptor set, rather than assuming its
+/// terminator immediately follows the primary. Boot/supplementary/partition
+/// descriptors do not replace the primary ISO9660 namespace used at startup.
+fn primary_volume(image: &[u8]) -> Result<(&[u8], usize), DiscError> {
+    let mut primary: Option<&[u8]> = None;
+    for (index, descriptor) in image[16 * SECTOR..]
+        .as_chunks::<SECTOR>()
+        .0
+        .iter()
+        .enumerate()
+    {
+        if &descriptor[1..7] != b"CD001\x01" {
+            return Err(invalid(
+                "invalid ISO9660 volume descriptor identifier/version",
+            ));
+        }
+        match descriptor[0] {
+            0 | 2 | 3 => (),
+            1 if primary.is_none() => primary = Some(descriptor),
+            255 => {
+                return primary
+                    .map(|p| (p, index + 17))
+                    .ok_or_else(|| invalid("missing ISO9660 primary volume descriptor"));
+            }
+            _ => return Err(invalid("reserved or duplicate ISO9660 volume descriptor")),
+        }
+    }
+    Err(invalid("missing ISO9660 volume descriptor terminator"))
+}
+
 pub fn parse(image: &[u8]) -> Result<DiscBoot<'_>, DiscError> {
     if image.len() > MAX_DISC_SIZE
-        || image.len() < 22 * SECTOR
+        || image.len() < 18 * SECTOR
         || !image.len().is_multiple_of(SECTOR)
     {
         return Err(invalid(
-            "expected a complete 2048-byte-sector ISO (22 sectors to 16 MiB); raw BIN/CUE and compressed images are unsupported",
+            "expected a complete 2048-byte-sector ISO (18 sectors to 16 MiB)",
         ));
     }
     if &image[..16] != b"SEGA SEGASATURN " {
@@ -95,29 +125,36 @@ pub fn parse(image: &[u8]) -> Result<DiscBoot<'_>, DiscError> {
         ));
     }
     let load_address = be32(image, 0xF0);
-    if !load_address.is_multiple_of(4) || load_address < IP_ADDRESS + ip_size as u32 {
+    if load_address != 0
+        && (!load_address.is_multiple_of(4) || load_address < IP_ADDRESS + ip_size as u32)
+    {
         return Err(invalid(
             "HLE requires a first-read destination above the loaded IP in high work RAM",
         ));
     }
-    let pvd = &image[16 * SECTOR..17 * SECTOR];
-    if &pvd[..7] != b"\x01CD001\x01" || &image[17 * SECTOR..17 * SECTOR + 7] != b"\xFFCD001\x01" {
+    let (pvd, descriptors_end) = primary_volume(image)?;
+    let volume_size = dual32(pvd, 80)? as usize;
+    if volume_size < descriptors_end
+        || volume_size > image.len() / SECTOR
+        || pvd[128..132] != [0, 8, 8, 0]
+    {
         return Err(invalid(
-            "unsupported ISO9660 volume descriptors: need primary at sector 16 and terminator at 17",
+            "ISO volume size/block size exceeds the medium or excludes its descriptors",
         ));
     }
-    if dual32(pvd, 80)? as usize != image.len() / SECTOR || pvd[128..132] != [0, 8, 8, 0] {
-        return Err(invalid(
-            "ISO volume size/2048-byte logical block size does not match file",
-        ));
-    }
+    // Padding after a volume is legal, but directory/file extents must not use
+    // it to escape the declared logical volume, even when bytes are present.
+    let image = &image[..volume_size * SECTOR];
     let root = &pvd[156..190];
     if root[0] != 34 || root[1] != 0 || root[25] != 2 || root[32..34] != [1, 0] {
         return Err(invalid("invalid ISO9660 root directory record"));
     }
     let directory_sector = dual32(root, 2)?;
     let directory_size = dual32(root, 10)?;
-    if directory_sector < 18 || directory_size == 0 || directory_size > 64 * SECTOR as u32 {
+    if directory_sector < descriptors_end as u32
+        || directory_size == 0
+        || directory_size > 64 * SECTOR as u32
+    {
         return Err(invalid("unsupported root directory extent/size"));
     }
     let directory = extent(image, directory_sector, directory_size)?;
@@ -140,7 +177,7 @@ pub fn parse(image: &[u8]) -> Result<DiscBoot<'_>, DiscError> {
             || record[1] != 0
             || record[26..28] != [0, 0]
             || record[28..32] != [1, 0, 0, 1]
-            || record[25] & !2 != 0
+            || record[25] & !3 != 0
         {
             return Err(invalid(
                 "unsupported ISO record (extended attributes, flags, interleave or multi-volume)",
@@ -163,10 +200,10 @@ pub fn parse(image: &[u8]) -> Result<DiscBoot<'_>, DiscError> {
         } else if name == [0] || name == [1] {
             return Err(invalid("duplicate ISO root self/parent record"));
         }
-        if record_index == 2 {
+        if record_index == 2 && load_address != 0 {
             // The boot system loads file identifier 2: first root child, not a magic name.
             if record[25] & 2 != 0
-                || sector < 18
+                || sector < descriptors_end as u32
                 || (sector as u64 * SECTOR as u64)
                     < directory_sector as u64 * SECTOR as u64 + directory_size as u64
             {
@@ -178,6 +215,16 @@ pub fn parse(image: &[u8]) -> Result<DiscBoot<'_>, DiscError> {
         }
         record_index += 1;
         offset += length;
+    }
+    // ST-040 §4.3: a zero first-read address disables that transfer. The
+    // original guest AIP still executes; it can read its own files at runtime.
+    if load_address == 0 {
+        return Ok(DiscBoot {
+            ip,
+            executable: &[],
+            load_address,
+            stack,
+        });
     }
     let (sector, size) =
         first_file.ok_or_else(|| invalid("missing first-read executable in root directory"))?;

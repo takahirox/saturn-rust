@@ -82,6 +82,198 @@ fn run(cpu: &mut M68k, ram: &mut Ram, n: usize) {
         assert!(!cpu.state.halted);
     }
 }
+
+#[test]
+fn move_bus_clocks_match_primary_tables_for_every_source_and_destination_mode() {
+    // MC68000UM tables8-2/8-3, literal rows in destination order:
+    // Dn,An,(An),(An)+,-(An),d16(An),d8(An,Xn),abs.W,abs.L.
+    let rows = [
+        (
+            0x00,
+            vec![],
+            [4, 4, 8, 8, 8, 12, 14, 12, 16],
+            [4, 4, 12, 12, 12, 16, 18, 16, 20],
+        ),
+        (
+            0x08,
+            vec![],
+            [4, 4, 8, 8, 8, 12, 14, 12, 16],
+            [4, 4, 12, 12, 12, 16, 18, 16, 20],
+        ),
+        (
+            0x10,
+            vec![],
+            [8, 8, 12, 12, 12, 16, 18, 16, 20],
+            [12, 12, 20, 20, 20, 24, 26, 24, 28],
+        ),
+        (
+            0x18,
+            vec![],
+            [8, 8, 12, 12, 12, 16, 18, 16, 20],
+            [12, 12, 20, 20, 20, 24, 26, 24, 28],
+        ),
+        (
+            0x20,
+            vec![],
+            [10, 10, 14, 14, 14, 18, 20, 18, 22],
+            [14, 14, 22, 22, 22, 26, 28, 26, 30],
+        ),
+        (
+            0x28,
+            vec![4],
+            [12, 12, 16, 16, 16, 20, 22, 20, 24],
+            [16, 16, 24, 24, 24, 28, 30, 28, 32],
+        ),
+        (
+            0x30,
+            vec![0],
+            [14, 14, 18, 18, 18, 22, 24, 22, 26],
+            [18, 18, 26, 26, 26, 30, 32, 30, 34],
+        ),
+        (
+            0x38,
+            vec![0x2000],
+            [12, 12, 16, 16, 16, 20, 22, 20, 24],
+            [16, 16, 24, 24, 24, 28, 30, 28, 32],
+        ),
+        (
+            0x39,
+            vec![0, 0x2000],
+            [16, 16, 20, 20, 20, 24, 26, 24, 28],
+            [20, 20, 28, 28, 28, 32, 34, 32, 36],
+        ),
+        (
+            0x3A,
+            vec![16],
+            [12, 12, 16, 16, 16, 20, 22, 20, 24],
+            [16, 16, 24, 24, 24, 28, 30, 28, 32],
+        ),
+        (
+            0x3B,
+            vec![16],
+            [14, 14, 18, 18, 18, 22, 24, 22, 26],
+            [18, 18, 26, 26, 26, 30, 32, 30, 34],
+        ),
+        (
+            0x3C,
+            vec![0x1234],
+            [8, 8, 12, 12, 12, 16, 18, 16, 20],
+            [12, 12, 20, 20, 20, 24, 26, 24, 28],
+        ),
+    ];
+    let destinations = [
+        (0, vec![]),
+        (9, vec![]),
+        (0x11, vec![]),
+        (0x19, vec![]),
+        (0x21, vec![]),
+        (0x29, vec![4]),
+        (0x31, vec![0]),
+        (0x38, vec![0x3000]),
+        (0x39, vec![0, 0x3000]),
+    ];
+    for (src, extensions, word, long) in rows {
+        for (column, (dst, dest_extensions)) in destinations.iter().enumerate() {
+            for size in [1, 2, 3] {
+                if size == 1 && (src == 8 || *dst == 9) {
+                    continue;
+                }
+                let mut code = vec![(size << 12) | ((dst & 7) << 9) | ((dst & 0x38) << 3) | src];
+                code.extend(&extensions);
+                if src == 0x3C && size == 2 {
+                    code.push(0x5678);
+                }
+                code.extend(dest_extensions);
+                let (mut cpu, mut ram) = fixture(&code);
+                cpu.state.a[0] = 0x2000;
+                cpu.state.a[1] = 0x3000;
+                cpu.state.d[0] = 0x12345678;
+                assert_eq!(
+                    cpu.step(&mut ram),
+                    if size == 2 {
+                        long[column]
+                    } else {
+                        word[column]
+                    },
+                    "MOVE size{size} {src:02X}->{dst:02X}"
+                );
+                assert_eq!(cpu.state.exceptions, 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn opcode_branch_register_count_and_multiply_costs_use_primary_clock_vectors() {
+    // MC68000UM tables8-4–8-14; all values are 16-bit-bus clock periods.
+    for (words, ccr, d0, expected) in [
+        (vec![0x6602], 0, 0, 10),
+        (vec![0x6602], 4, 0, 8),
+        (vec![0x6600, 2], 4, 0, 12),
+        (vec![0x51C8, 0xFFFE], 0, 1, 10),
+        (vec![0x51C8, 0xFFFE], 0, 0, 14),
+        (vec![0x50C8, 0], 0, 0, 12),
+        (vec![0x57C0], 0, 0, 4),
+        (vec![0x57C0], 4, 0, 6),
+        (vec![0xD041], 0, 0, 4),
+        (vec![0xD081], 0, 0, 8),
+        (vec![0xD090], 0, 0, 14),
+        (vec![0xB081], 0, 0, 6),
+        (vec![0x4ED0], 0, 0, 8),
+        (vec![0x4EF8, 0x2000], 0, 0, 10),
+        (vec![0x4EF9, 0, 0x2000], 0, 0, 12),
+        (vec![0x4E90], 0, 0, 16),
+        (vec![0x41D0], 0, 0, 4),
+        (vec![0x41F0, 0], 0, 0, 12),
+        (vec![0x4879, 0, 0x2000], 0, 0, 20),
+        (vec![0x48D0, 3], 0, 0, 24),
+        (vec![0x4CD0, 3], 0, 0, 28),
+        (vec![0x48E0, 3], 0, 0, 24),
+        (vec![0x48E8, 3, 4], 0, 0, 28),
+        (vec![0xE388], 0, 0, 10),
+        (vec![0xE348], 0, 0, 8),
+        (vec![0xE3D0], 0, 0, 12),
+        (vec![0x4280], 0, 0, 6),
+        (vec![0x4290], 0, 0, 20),
+        (vec![0x4A90], 0, 0, 12),
+        (vec![0x40C0], 0, 0, 6),
+        (vec![0x46FC, 0x2700], 0, 0, 16),
+        (vec![0x0280, 0, 0], 0, 0, 14),
+        (vec![0x06A8, 0, 1, 4], 0, 0, 32),
+        (vec![0xC101], 0, 0, 6),
+        (vec![0xC109], 0, 0, 18),
+        (vec![0xD101], 0, 0, 4),
+        (vec![0xD189], 0, 0, 30),
+        (vec![0xB388], 0, 0, 20),
+        (vec![0x80C1], 0, 0, 38),
+        (vec![0x4190], 0, 1, 44),
+    ] {
+        let (mut cpu, mut ram) = fixture(&words);
+        cpu.state.sr = 0x2700 | ccr;
+        cpu.state.d[0] = d0;
+        cpu.state.a[0] = 0x2000;
+        cpu.state.a[1] = 0x3000;
+        assert_eq!(cpu.step(&mut ram), expected, "opcode {:04X}", words[0]);
+    }
+    for (source, unsigned, signed) in [
+        (0, 38, 38),
+        (1, 40, 42),
+        (0x8000, 40, 40),
+        (0xFFFF, 70, 40),
+        (0x5555, 54, 70),
+        (0xAAAA, 54, 68),
+    ] {
+        for (opcode, clocks) in [(0xC0C1, unsigned), (0xC1C1, signed)] {
+            let (mut cpu, mut ram) = fixture(&[opcode]);
+            cpu.state.d[1] = source;
+            assert_eq!(
+                cpu.step(&mut ram),
+                clocks,
+                "MUL {opcode:04X} source {source:04X}"
+            );
+        }
+    }
+}
 #[test]
 fn reset_move_movea_moveq_and_big_endian_word_aligned_longs() {
     let (mut c, mut m) = fixture(&[

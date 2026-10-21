@@ -104,6 +104,37 @@ enum Fault {
 type Result<T> = std::result::Result<T, Fault>;
 
 impl M68k {
+    /// MC68000UM table8-1, 16-bit bus. Includes extension fetch and operand
+    /// read cycles; callers add the instruction's documented base time.
+    fn ea_clocks(bits: u16, size: Size) -> u32 {
+        let long = u32::from(matches!(size, Size::Long)) * 4;
+        match (bits >> 3) & 7 {
+            0 | 1 => 0,
+            2 | 3 => 4 + long,
+            4 => 6 + long,
+            5 => 8 + long,
+            6 => 10 + long,
+            _ => match bits & 7 {
+                0 | 2 => 8 + long,
+                1 => 12 + long,
+                3 => 10 + long,
+                4 => 4 + long,
+                _ => 0,
+            },
+        }
+    }
+    fn jump_clocks(bits: u16) -> u32 {
+        // Table8-10: JMP base8; JSR adds eight clocks.
+        match bits & 0x3F {
+            0x10..=0x17 => 8,
+            0x28..=0x2F | 0x38 | 0x3A => 10,
+            0x39 => 12,
+            _ => 14,
+        }
+    }
+    fn lea_clocks(bits: u16) -> u32 {
+        Self::ea_clocks(bits, Size::Word) + u32::from(bits & 0x38 == 0x30 || bits == 0x3B) * 2
+    }
     pub fn reset(&mut self, memory: &impl Memory) -> std::result::Result<(), BusError> {
         *self = Self::default();
         self.state.a[7] = Self::reset_long(memory, 0)?;
@@ -459,7 +490,8 @@ impl M68k {
         Ok(())
     }
     /// Executes one architectural boundary, returning a bounded functional clock
-    /// budget. Effective-address/data-dependent bus timing is not yet modeled.
+    /// budget from MC68000UM §8. DIV and data-register bit modifications retain
+    /// the documented maximum time; bus wait/prefetch scheduling remains separate.
     /// Fatal double faults halt the core until reset; no host panic or silent NOP.
     pub fn step(&mut self, memory: &mut impl Memory) -> u32 {
         if self.state.halted {
@@ -525,7 +557,15 @@ impl M68k {
                 if self.exception(memory, vector, pc, None, access).is_err() {
                     self.state.halted = true;
                 }
-                if access.is_some() { 50 } else { 34 }
+                if access.is_some() {
+                    50
+                } else {
+                    match vector {
+                        5 => 38 + Self::ea_clocks(self.opcode & 63, Size::Word),
+                        6 => 40 + Self::ea_clocks(self.opcode & 63, Size::Word),
+                        _ => 34,
+                    }
+                }
             }
         }
     }
@@ -554,7 +594,8 @@ impl M68k {
                 if dst & 0x38 != 8 {
                     self.logic(value, size);
                 }
-                Ok(8)
+                Ok(4 + Self::ea_clocks(bits, size) + Self::ea_clocks(dst, size)
+                    - if dst & 0x38 == 0x20 { 2 } else { 0 })
             }
             0 => self.group0(memory, op),
             4 => self.group4(memory, op),
@@ -573,6 +614,7 @@ impl M68k {
                                 self.state.pc = base.wrapping_add(d);
                                 return Ok(10);
                             }
+                            return Ok(14);
                         }
                         return Ok(12);
                     }
@@ -584,7 +626,11 @@ impl M68k {
                         Size::Byte,
                         if self.condition(op >> 8) { 255 } else { 0 },
                     )?;
-                    return Ok(8);
+                    return Ok(if bits & 0x38 == 0 {
+                        if self.condition(op >> 8) { 6 } else { 4 }
+                    } else {
+                        8 + Self::ea_clocks(bits, Size::Byte)
+                    });
                 }
                 let size = Self::size(op)?;
                 let q = if r == 0 { 8 } else { r as u32 };
@@ -607,7 +653,13 @@ impl M68k {
                     self.arithmetic(a, q, size, op & 0x100 != 0, false, false)
                 };
                 self.put(memory, dst, size, result)?;
-                Ok(8)
+                Ok(if address {
+                    8
+                } else if bits & 0x38 == 0 {
+                    if matches!(size, Size::Long) { 8 } else { 4 }
+                } else {
+                    (if matches!(size, Size::Long) { 12 } else { 8 }) + Self::ea_clocks(bits, size)
+                })
             }
             6 => {
                 // Bcc / BRA / BSR; displacement base is extension-word address.
@@ -621,10 +673,19 @@ impl M68k {
                 if condition == 1 {
                     self.push(memory, Size::Long, self.state.pc)?;
                 }
-                if condition <= 1 || self.condition(condition) {
+                let taken = condition <= 1 || self.condition(condition);
+                if taken {
                     self.state.pc = base.wrapping_add(d as u32);
                 }
-                Ok(if condition == 1 { 18 } else { 10 })
+                Ok(if condition == 1 {
+                    18
+                } else if taken {
+                    10
+                } else if op & 255 == 0 {
+                    12
+                } else {
+                    8
+                })
             }
             7 => {
                 Self::require(op & 0x100 == 0)?;
@@ -698,7 +759,24 @@ impl M68k {
                     },
                 )?;
             }
-            return Ok(8);
+            let base = if bits & 0x38 == 0 {
+                match kind {
+                    0 => 6,
+                    2 => 10,
+                    _ => 8,
+                }
+            } else if kind == 0 {
+                4
+            } else {
+                8
+            };
+            return Ok(base
+                + if op & 0x100 == 0 { 4 } else { 0 }
+                + if bits & 0x38 == 0 {
+                    0
+                } else {
+                    Self::ea_clocks(bits, Size::Byte)
+                });
         }
         let kind = (op >> 8) & 15;
         Self::require(matches!(kind, 0 | 2 | 4 | 6 | 10 | 12))?;
@@ -733,7 +811,22 @@ impl M68k {
         if kind != 12 {
             self.put(memory, dst, size, result)?;
         }
-        Ok(12)
+        let long = matches!(size, Size::Long);
+        Ok(if bits & 0x38 == 0 {
+            if long {
+                if matches!(kind, 2 | 12) { 14 } else { 16 }
+            } else {
+                8
+            }
+        } else {
+            (if kind == 12 {
+                if long { 12 } else { 8 }
+            } else if long {
+                20
+            } else {
+                12
+            }) + Self::ea_clocks(bits, size)
+        })
     }
     fn group4(&mut self, memory: &mut impl Memory, op: u16) -> Result<u32> {
         let bits = op & 63;
@@ -813,7 +906,7 @@ impl M68k {
                 self.push(memory, Size::Long, self.state.pc)?;
             }
             self.state.pc = a;
-            return Ok(16);
+            return Ok(Self::jump_clocks(bits) + if op & 0x40 == 0 { 8 } else { 0 });
         }
         if op & 0xF1C0 == 0x41C0 {
             Self::require(Self::control(bits))?;
@@ -821,7 +914,7 @@ impl M68k {
                 unreachable!()
             };
             self.state.a[((op >> 9) & 7) as usize] = a;
-            return Ok(8);
+            return Ok(Self::lea_clocks(bits));
         }
         if op & 0xF1C0 == 0x4180 {
             // CHK.W signed
@@ -833,7 +926,7 @@ impl M68k {
                 self.flag(N, value < 0);
                 return Err(Fault::Vector(6, true));
             }
-            return Ok(10);
+            return Ok(10 + Self::ea_clocks(bits, Size::Word));
         }
         if op & 0xFFF8 == 0x4840 {
             self.state.d[r] = self.state.d[r].rotate_left(16);
@@ -846,7 +939,7 @@ impl M68k {
                 unreachable!()
             };
             self.push(memory, Size::Long, a)?;
-            return Ok(12);
+            return Ok(8 + Self::lea_clocks(bits));
         }
         if op & 0xFFF8 == 0x4880 || op & 0xFFF8 == 0x48C0 {
             // EXT
@@ -884,7 +977,15 @@ impl M68k {
                     self.sr(v);
                 }
             }
-            return Ok(12);
+            return Ok(if from {
+                if bits & 0x38 == 0 {
+                    6
+                } else {
+                    8 + Self::ea_clocks(bits, Size::Word)
+                }
+            } else {
+                12 + Self::ea_clocks(bits, Size::Word)
+            });
         }
         if op & 0xFFC0 == 0x4800 {
             // NBCD
@@ -893,7 +994,7 @@ impl M68k {
             let value = self.get(memory, ea, Size::Byte)?;
             let v = self.bcd(0, value, true);
             self.put(memory, ea, Size::Byte, v)?;
-            return Ok(8);
+            return Ok((if bits & 0x38 == 0 { 6 } else { 8 }) + Self::ea_clocks(bits, Size::Byte));
         }
         if op & 0xFFC0 == 0x4AC0 {
             // TAS
@@ -902,7 +1003,7 @@ impl M68k {
             let value = self.get(memory, ea, Size::Byte)?;
             self.logic(value, Size::Byte);
             self.put(memory, ea, Size::Byte, value | 0x80)?;
-            return Ok(14);
+            return Ok((if bits & 0x38 == 0 { 4 } else { 14 }) + Self::ea_clocks(bits, Size::Byte));
         }
         Self::require(matches!(
             op & 0xFF00,
@@ -927,11 +1028,17 @@ impl M68k {
             }
             _ => {
                 self.logic(value, size);
-                return Ok(4);
+                return Ok(4 + Self::ea_clocks(bits, size));
             }
         };
         self.put(memory, ea, size, result)?;
-        Ok(8)
+        Ok((if bits & 0x38 == 0 {
+            if matches!(size, Size::Long) { 6 } else { 4 }
+        } else if matches!(size, Size::Long) {
+            12
+        } else {
+            8
+        }) + Self::ea_clocks(bits, size))
     }
     fn movem(&mut self, memory: &mut impl Memory, op: u16) -> Result<u32> {
         let bits = op & 63;
@@ -1001,7 +1108,14 @@ impl M68k {
         if mode == 0x20 || mode == 0x18 {
             self.state.a[reg] = address;
         }
-        Ok(8 + mask.count_ones() * if matches!(size, Size::Long) { 8 } else { 4 })
+        let address_clocks = if mode == 0x20 {
+            0
+        } else {
+            Self::ea_clocks(bits, Size::Word) - 4
+        };
+        Ok((if load { 12 } else { 8 })
+            + address_clocks
+            + mask.count_ones() * if matches!(size, Size::Long) { 8 } else { 4 })
     }
     fn bcd(&mut self, dst: u32, src: u32, sub: bool) -> u32 {
         let x = i32::from(self.state.sr & X != 0);
@@ -1053,7 +1167,7 @@ impl M68k {
             let b = self.get(memory, src, Size::Byte)?;
             let v = self.bcd(a, b, group == 8);
             self.put(memory, dst, Size::Byte, v)?;
-            return Ok(18);
+            return Ok(if op & 8 == 0 { 6 } else { 18 });
         }
         if group == 12 && matches!(op & 0xF1F8, 0xC140 | 0xC148 | 0xC188) {
             match op & 0xF1F8 {
@@ -1077,7 +1191,13 @@ impl M68k {
             let b = self.get(memory, src, size)?;
             let v = self.arithmetic(a, b, size, group == 9, true, false);
             self.put(memory, dst, size, v)?;
-            return Ok(8);
+            return Ok(if op & 8 == 0 {
+                if matches!(size, Size::Long) { 8 } else { 4 }
+            } else if matches!(size, Size::Long) {
+                30
+            } else {
+                18
+            });
         }
         if group == 11 && op & 0x0138 == 0x0108 && mode != 7 && mode != 3 {
             // CMPM
@@ -1087,7 +1207,7 @@ impl M68k {
             let dst = self.ea(memory, 0x18 | r as u16, size)?;
             let a = self.get(memory, dst, size)?;
             self.arithmetic(a, b, size, true, false, true);
-            return Ok(12);
+            return Ok(if matches!(size, Size::Long) { 20 } else { 12 });
         }
         if mode == 3 || mode == 7 {
             if matches!(group, 9 | 11 | 13) {
@@ -1105,7 +1225,14 @@ impl M68k {
                         old.wrapping_add(v)
                     };
                 }
-                return Ok(8);
+                let base = if group == 11 {
+                    6
+                } else if matches!(size, Size::Word) || bits & 0x38 <= 8 || bits == 0x3C {
+                    8
+                } else {
+                    6
+                };
+                return Ok(base + Self::ea_clocks(bits, size));
             }
             Self::require(Self::data(bits, false))?;
             let ea = self.ea(memory, bits, Size::Word)?;
@@ -1120,7 +1247,15 @@ impl M68k {
                 };
                 self.state.d[r] = v;
                 self.logic(v, Size::Long);
-                return Ok(70);
+                // MC68000UM table8-4: MULU counts set source bits; MULS
+                // counts adjacent 01/10 pairs in the signed source with a zero
+                // appended at bit0. No operand is reread for timing.
+                let n = if mode == 3 {
+                    value.count_ones()
+                } else {
+                    ((value ^ (value << 1)) & 0xFFFF).count_ones()
+                };
+                return Ok(38 + 2 * n + Self::ea_clocks(bits, Size::Word));
             }
             if value == 0 {
                 return Err(Fault::Vector(5, true));
@@ -1143,7 +1278,9 @@ impl M68k {
                 self.state.d[r] = (rem << 16) | (q & 65535);
                 self.logic(q, Size::Word);
             }
-            return Ok(140);
+            // The primary timing table specifies a maximum, but not a
+            // data-dependent DIV microsequence. Preserve that explicit bound.
+            return Ok((if mode == 3 { 140 } else { 158 }) + Self::ea_clocks(bits, Size::Word));
         }
         let size = Self::size(op)?;
         let to_ea = mode & 4 != 0;
@@ -1176,7 +1313,25 @@ impl M68k {
         if group != 11 || to_ea {
             self.put(memory, if to_ea { ea } else { Ea::Data(r) }, size, v)?;
         }
-        Ok(8)
+        let long = matches!(size, Size::Long);
+        let base = if to_ea {
+            if bits & 0x38 == 0 {
+                if long { 8 } else { 4 }
+            } else if long {
+                12
+            } else {
+                8
+            }
+        } else if !long {
+            4
+        } else if group == 11 {
+            6
+        } else if bits & 0x38 <= 8 || bits == 0x3C {
+            8
+        } else {
+            6
+        };
+        Ok(base + Self::ea_clocks(bits, size))
     }
     fn shift(&mut self, memory: &mut impl Memory, op: u16) -> Result<u32> {
         let memory_form = op & 0xC0 == 0xC0;
@@ -1245,7 +1400,11 @@ impl M68k {
             self.flag(X, x);
         }
         self.put(memory, ea, size, v)?;
-        Ok(if memory_form { 12 } else { 6 + count * 2 })
+        Ok(if memory_form {
+            8 + Self::ea_clocks(op & 63, Size::Word)
+        } else {
+            (if matches!(size, Size::Long) { 8 } else { 6 }) + count * 2
+        })
     }
 }
 

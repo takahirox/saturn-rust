@@ -7,8 +7,11 @@ use saturn_rust::{
 };
 
 fn rom() -> Vec<u8> {
+    load(include_str!("fixtures/sh7604.hex"))
+}
+fn load(text: &str) -> Vec<u8> {
     let mut bytes = vec![0; BIOS_SIZE];
-    for line in include_str!("fixtures/sh7604.hex").lines() {
+    for line in text.lines() {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -21,6 +24,26 @@ fn rom() -> Vec<u8> {
         }
     }
     bytes
+}
+
+#[test]
+fn dack_guest_waits_for_real_external_requests_and_reset_aborts_armed_channels() {
+    let rom = load(include_str!("fixtures/dack.hex"));
+    let mut machine = Machine::new();
+    for _ in 0..2 {
+        machine.reset(Boot::ExternalBios(&rom)).unwrap();
+        assert_eq!(machine.bus().read32(0xFFFFFF8C), Ok(0));
+        machine.run_steps(1000).unwrap();
+        assert_eq!(machine.cpu_state().status, CpuStatus::Sleeping);
+        assert_eq!(machine.cpu_state().exceptions, 0);
+        for (i, value) in [3, 3, 1, 0x600D].into_iter().enumerate() {
+            assert_eq!(machine.bus().read32(0x06003000 + i as u32 * 4), Ok(value));
+        }
+        assert_eq!(machine.bus().read32(0x06002000), Ok(0));
+        machine.run_steps(1000).unwrap();
+        assert_eq!(machine.bus().read32(0xFFFFFF88), Ok(3));
+        assert_eq!(machine.bus().read32(0xFFFFFF98), Ok(3));
+    }
 }
 
 #[test]

@@ -368,9 +368,37 @@ try {
     words.forEach((word, i) => directoryRom.writeUInt16BE(word, address + i * 2));
   }
   const directoryIso = await readFile("web/star-collector.iso");
-  for (const offset of [null, 16 * 2048 + 158, 20 * 2048 + 70]) {
-    const image = Buffer.from(directoryIso);
-    if (offset !== null) image.fill(255, offset, offset + 8);
+  const dackRom=Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/dack.hex","utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [at,...words]=line.trim().split(/\s+/).map(w=>parseInt(w,16));
+    words.forEach((w,i)=>dackRom.writeUInt16BE(w,at+i*2));
+  }
+  const dack=await page.evaluate(async rom=>{
+    const {Emulator}=await import("./pkg/saturn_rust.js");
+    const guest=new Emulator();
+    try {
+      const trace=[];
+      for(let i=0;i<2;i++) {
+        guest.reset_bios(Uint8Array.from(rom));
+        trace.push(guest.read_long(0xFFFFFF8C));
+        guest.run_steps(2000);
+        trace.push(...[0,4,8,12].map(at=>guest.read_long(0x06003000+at)),guest.read_long(0x06002000));
+      }
+      return trace;
+    } finally {guest.free();}
+  },[...dackRom]);
+  assert.deepEqual(dack,[0,3,3,1,0x600D,0,0,3,3,1,0x600D,0]);
+  const descriptorIso=Buffer.from(directoryIso);
+  directoryIso.copy(descriptorIso,17*2048,16*2048,17*2048);
+  for (const [sector,type] of [[16,0],[18,2],[19,255]]) {
+    descriptorIso.fill(0,sector*2048,(sector+1)*2048);
+    Buffer.from([type,67,68,48,48,49,1]).copy(descriptorIso,sector*2048);
+  }
+  descriptorIso[20*2048+68+25]=1; // ISO hidden file, still file identifier2
+  for (const offset of [null, "descriptors", 16 * 2048 + 158, 20 * 2048 + 70]) {
+    const image = Buffer.from(offset === "descriptors" ? descriptorIso : directoryIso);
+    if (typeof offset === "number") image.fill(255, offset, offset + 8);
     const trace = await page.evaluate(async ({ rom, image }) => {
       const { Emulator } = await import("./pkg/saturn_rust.js");
       const emulator = new Emulator();
@@ -381,8 +409,27 @@ try {
         return [0, 0x10, 0x24, 0x30].map((offset) => emulator.read_long(0x06009000 + offset));
       } finally { emulator.free(); }
     }, { rom: [...directoryRom], image: [...image] });
-    assert.deepEqual(trace, offset === null ? [0x0180, 0x0180, 2, 0x600D] : [0xFF00, 0xFF00, 0, 0x600D]);
+    assert.deepEqual(trace, typeof offset !== "number" ? [0x0180, 0x0180, 2, 0x600D] : [0xFF00, 0xFF00, 0, 0x600D]);
   }
+  // Both startup paths below execute original AIP instructions in Wasm.
+  const startup=await page.evaluate(async images=>{
+    const {Emulator}=await import("./pkg/saturn_rust.js");
+    return images.map(image=>{
+      const emulator=new Emulator();
+      try {
+        emulator.reset_disc(Uint8Array.from(image));
+        emulator.run_steps(100);
+        return [emulator.read_long(0x06008000),emulator.read_long(0x06004000),Number(emulator.instruction_count())];
+      } finally {emulator.free();}
+    });
+  },[descriptorIso,(()=>{
+    const image=Buffer.from(directoryIso);
+    image.fill(0,0xF0,0xF4); image.fill(0,20*2048+68,21*2048);
+    [0xE02A,0xD101,0x2102,0x001B,0x0600,0x8000].forEach((w,i)=>image.writeUInt16BE(w,0xE20+i*2));
+    return image;
+  })()].map(b=>[...b]));
+  assert.equal(startup[0][1],directoryIso.readUInt32BE(21*2048));
+  assert.deepEqual(startup[1],[42,0,4]);
   const rawDirectory = rawMode1(directoryIso);
   for (const damage of ["none", "correctable", "uncorrectable"]) {
     const raw = Buffer.from(rawDirectory);
@@ -920,7 +967,7 @@ try {
   assert.deepEqual(soundFinished.mailbox, [1, 0x600D]);
   assert.deepEqual(soundFinished.waveform, [0x1000F000, 0xE0002000]);
   assert.deepEqual(soundFinished.samples, [256,4096,-256,-4096,-512,-8192,512,8192,256,4096,-256,-4096,-512,-8192,512,8192]);
-  assert(BigInt(soundFinished.count) > 30n);
+  assert.equal(BigInt(soundFinished.count),27n); // setup23 + IRQ3 + STOP1
   assert.equal(soundFinished.dropped, "0");
   await page.locator("#reset").click();
   assert.deepEqual(await soundResult(), soundFinished);
@@ -1031,6 +1078,46 @@ try {
   assert(dmaOperandAt>=0 && changedSoundIo.indexOf(dmaOperand,dmaOperandAt+1)===-1);
   changedSoundIo.writeUInt16BE(0x5AA5,dmaOperandAt+2);
   assert.equal((await soundIoResults(changedSoundIo)).words[4],0x5AA51234);
+  // Source-authored MC68000 family/EA/exception vectors, executed from sound
+  // RAM after SH-2 upload. The host reads results; it never writes CPU state.
+  const familyRom=Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/m68k-families.hex","utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [at,...words]=line.trim().split(/\s+/).map(w=>parseInt(w,16));
+    words.forEach((w,i)=>familyRom.writeUInt16BE(w,at+i*2));
+  }
+  const familyVectors=(await readFile("tests/fixtures/m68k-families.tsv","utf8")).trim().split(/\r?\n/).map(line=>{
+    const [name,value,flags]=line.split("\t");
+    return {name,value:parseInt(value,16),flags:flags==="-"?null:parseInt(flags,16)};
+  });
+  const familyResult=async rom=>page.evaluate(async ({rom,count})=>{
+    const {Emulator}=await import("./pkg/saturn_rust.js");
+    const guest=new Emulator();
+    try {
+      guest.reset_bios(Uint8Array.from(rom));
+      for(let i=0;i<10;i++) guest.run_steps(10000);
+      return {done:guest.read_long(0x06007004),faults:[guest.read_long(0x05A05800),guest.read_long(0x05A05804)],
+        words:Array.from({length:count*2},(_,i)=>guest.read_long(0x05A05000+i*4)),
+        audible:Array.from(guest.audio_samples(8192)).some(s=>s!==0)};
+    } finally {guest.free();}
+  },{rom:[...rom],count:familyVectors.length});
+  const family=await familyResult(familyRom);
+  assert.equal(family.done,0x600D);
+  assert.deepEqual(family.faults,[3,2]);
+  assert(family.audible);
+  familyVectors.forEach(({name,value,flags},i)=>{
+    assert.equal(family.words[i*2],value,`${name} result`);
+    if(flags!==null) assert.equal(family.words[i*2+1],flags,`${name} CCR`);
+  });
+  assert.deepEqual(await familyResult(familyRom),family);
+  const changedFamily=Buffer.from(familyRom);
+  const addVector=Buffer.from([0x70,0x7F,0x72,1,0xD0,1]);
+  const addAt=changedFamily.indexOf(addVector);
+  assert(addAt>=0 && changedFamily.indexOf(addVector,addAt+1)===-1);
+  changedFamily.writeUInt16BE(0x9001,addAt+4); // actual SUB.B replaces ADD.B
+  const changedFamilyResult=await familyResult(changedFamily);
+  assert.deepEqual(changedFamilyResult.words.slice(0,2),[0x7E,0]);
+  assert.deepEqual(changedFamilyResult.words.slice(2),family.words.slice(2));
   // Original slot-synthesis ROM: real SH-2 uploads and starts the 68k, which
   // writes guard waveforms and configures a silent modulator, FM carrier and ALFO.
   const synthesisRom=Buffer.alloc(524288);
@@ -1057,7 +1144,7 @@ try {
       const first=frames.findIndex(s=>s[1]!==0);
       return {mailbox:emulator.read_long(0x06007004),waveform:emulator.read_long(0x05A04300),
         first:frames.slice(first,first+16),right:[...new Set(frames.slice(first).map(s=>s[1]))].sort((a,b)=>a-b),
-        count:frames.length-first,dropped:emulator.audio_dropped()};
+        tail:frames.slice(-100),count:frames.length-first,dropped:emulator.audio_dropped()};
     });
   };
   const synthesis=await synthesisResult(synthesisRom);
@@ -1094,8 +1181,34 @@ try {
   assert.deepEqual(await synthesisResult(noiseSynthesis),noise);
   patchSynthesis(noiseSynthesis,0x1000D2,0x7C0F,0xFC0F);
   assert.deepEqual(await synthesisResult(noiseSynthesis),noise); // LFORE cannot reset noise
+  // Original timed-envelope guest: actual 68k timer IRQ keys off slot6. No
+  // host sound-register writes; mutated guest operands must change the signal.
+  const envelopeRom=Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/envelope.hex","utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [at,...words]=line.trim().split(/\s+/).map(w=>parseInt(w,16));
+    words.forEach((w,i)=>envelopeRom.writeUInt16BE(w,at+i*2));
+  }
+  const envelope=await synthesisResult(envelopeRom);
+  assert.equal(envelope.mailbox,0x600D);
+  envelope.first.forEach((s,i)=>{
+    const expected=Math.floor(1024*2**(-i*0.75/64));
+    assert(Math.abs(s[1]-expected)<=1,`EG decay ${i}: ${s[1]} vs ${expected}`);
+  });
+  assert(envelope.right.includes(255));
+  assert(envelope.tail.every(s=>s[1]===0));
+  assert.deepEqual(await synthesisResult(envelopeRom),envelope);
+  const heldEnvelope=Buffer.from(envelopeRom);
+  patchSynthesis(heldEnvelope,0x1000CA,0x3C9F,0x3C80);
+  assert((await synthesisResult(heldEnvelope)).tail.every(s=>s[1]===255));
+  const zeroAttack=Buffer.from(envelopeRom);
+  patchSynthesis(zeroAttack,0x1000C8,0x06DF,0x06C0);
+  assert.deepEqual((await synthesisResult(zeroAttack)).right,[0]);
+  const linkedEnvelope=Buffer.from(envelopeRom);
+  patchSynthesis(linkedEnvelope,0x1000CA,0x3C9F,0x7C9F);
+  assert.deepEqual((await synthesisResult(linkedEnvelope)).right,[0]);
   // Reload held PCM so the production worklet check below validates FM/ALFO.
-  await synthesisResult(heldSynthesis);
+  await synthesisResult(heldEnvelope);
   // Exercise this synthesized output through the production AudioWorklet too.
   await page.evaluate(async()=>{
     const {emulator,audio,pumpAudio}=await import("./app.js");
@@ -1923,7 +2036,7 @@ try {
   }
   await cddaPage.waitForFunction(() => window.cddaAudio.stats.rendered > 128 && window.cddaAudio.stats.peak > 0.1);
   await cddaPage.close();
-  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, BCR1 processor identity/refresh IRQ/module stops/reset repeatability, UBC before/after/slot/data/DMAC saved-PC vectors, software standby/timed NMI wake, SYSRES volatile/battery retention, four-layer VDP2 tile guest/palette mutation/Wasm and production Canvas presentation, original rotation/coefficient/line-scroll/line-window guest and mutated matrix pixels, original RBG0/RBG1 guest with B0/B1 data and changed parameter-B pixels/Canvas, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, original CD scan/reverse/pause/tray/TOC guest, malformed runtime ISO root/child rejection and bounded raw-sector correction/failure responses, CD-DA PRE reference stereo/sector continuity and AudioWorklet, sprite-window/shadow/palette-MSB guest and Canvas mutations, 68k BCD/MOVEM/MOVEP/arithmetic/partial-fault/trap guest plus timed MIDI/SCSP DMA and three interrupt levels; SH-2-uploaded MC68EC000 PCM computation/SCSP timer IRQ/stereo samples and WebAudio worklet delivery/underflow/mute/blocked states, SCSP FM recent/past stack pipeline, TL gain, ALFO/PLFO guest mutations and AudioWorklet; SMPC RTC/SMEM/INTBACK IRQs and synthetic digital+ID15/ID16 analog Gamepad/focus release, timed both-port direct analog handshake guest, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation; Prism Courier original disc, VDP1 sprite/polygons + VDP2 composition/Canvas, draw-end IRQ, 68k stereo + actual AudioWorklet, keyboard collision/win/restart, changed-disc texture mutation; Hardware Lab local CUE/mixed tracks, dual CPU, executing SCU DSP, CD FIFO-to-SCU DMA/IRQs/checksum, independent 68k-uploaded SCSP effects DSP, exact wet stereo/coefficient mutations, CD-DA through DSP and AudioWorklet, rotation Canvas, backup/restart, sector/audio mutations, CUE subindices and malformed ordering, missing local file rejection.`);
+  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, BCR1 processor identity/refresh IRQ/module stops/reset repeatability, UBC before/after/slot/data/DMAC saved-PC vectors, software standby/timed NMI wake, SYSRES volatile/battery retention, four-layer VDP2 tile guest/palette mutation/Wasm and production Canvas presentation, original rotation/coefficient/line-scroll/line-window guest and mutated matrix pixels, original RBG0/RBG1 guest with B0/B1 data and changed parameter-B pixels/Canvas, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, original CD scan/reverse/pause/tray/TOC guest, malformed runtime ISO root/child rejection and bounded raw-sector correction/failure responses, CD-DA PRE reference stereo/sector continuity and AudioWorklet, sprite-window/shadow/palette-MSB guest and Canvas mutations, 68k BCD/MOVEM/MOVEP/arithmetic/partial-fault/trap guest plus timed MIDI/SCSP DMA and three interrupt levels; SH-2-uploaded MC68EC000 PCM computation/SCSP timer IRQ/stereo samples and WebAudio worklet delivery/underflow/mute/blocked states, SCSP FM recent/past stack pipeline, TL gain, ALFO/PLFO and timed-envelope guest mutations and AudioWorklet; 71 original 68k family/EA/CCR/exception vectors and ADD-to-SUB mutation, DACK armed waiting/reset, descriptor-set runtime/startup and zero-first-read AIP; SMPC RTC/SMEM/INTBACK IRQs and synthetic digital+ID15/ID16 analog Gamepad/focus release, timed both-port direct analog handshake guest, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation; Prism Courier original disc, VDP1 sprite/polygons + VDP2 composition/Canvas, draw-end IRQ, 68k stereo + actual AudioWorklet, keyboard collision/win/restart, changed-disc texture mutation; Hardware Lab local CUE/mixed tracks, dual CPU, executing SCU DSP, CD FIFO-to-SCU DMA/IRQs/checksum, independent 68k-uploaded SCSP effects DSP, exact wet stereo/coefficient mutations, CD-DA through DSP and AudioWorklet, rotation Canvas, backup/restart, sector/audio mutations, CUE subindices and malformed ordering, missing local file rejection.`);
 } finally {
   if (browser) await browser.close();
   if (server?.pid && server.exitCode === null) {

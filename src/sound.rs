@@ -1,8 +1,8 @@
 //! Shared SCSP/sound-CPU bus and independent audio clock domain.
 //! Primary references: ST-077 §§1.2, 3, 4.2; M68000PRM §§2–4.
 //! PCM, slot modulation/LFO/noise and the effects processor execute here.
-//! Unimplemented envelope rates still fail explicitly rather than acting as no-ops.
 mod dsp;
+mod envelope;
 mod synthesis;
 use crate::bus::{BusError, Memory};
 use crate::m68k::M68k;
@@ -46,6 +46,7 @@ struct Voice {
     active: bool,
     phase: i64,
     reverse: bool,
+    envelope: envelope::Envelope,
 }
 pub struct Scsp {
     dsp: dsp::Dsp,
@@ -154,12 +155,7 @@ impl Scsp {
             0..=0x3FF if offset & 31 < 24 => {
                 let slot = (offset / 32) as usize;
                 let index = (offset as usize & 31) / 2;
-                // Zero-rate attack and EGHOLD are defined; timed AR/D1R/D2R/
-                // RR/KRS/LPSLNK still require independent rate evidence.
-                if (index == 4 && value & !0x20 != 0)
-                    || (index == 5 && value != 0)
-                    || (index == 0 && (value >> 7) & 3 == 3)
-                {
+                if index == 0 && (value >> 7) & 3 == 3 {
                     return Err(Self::error(offset));
                 }
                 let mask = match index {
@@ -178,15 +174,18 @@ impl Scsp {
                 if index == 0 && value & 0x1000 != 0 {
                     for i in 0..32 {
                         if self.slots[i][0] & 0x800 != 0 {
-                            if !self.voices[i].active {
+                            if !self.voices[i].active || self.voices[i].envelope.releasing() {
                                 self.voices[i] = Voice {
                                     active: true,
                                     phase: 0,
                                     reverse: false,
+                                    envelope: envelope::Envelope::default(),
                                 };
                             }
                         } else {
-                            self.voices[i].active = false;
+                            self.voices[i]
+                                .envelope
+                                .release(self.slots[i][4] & 0x20 != 0);
                         }
                     }
                 }
@@ -367,6 +366,16 @@ impl Scsp {
                 continue;
             }
             let voice = &mut self.voices[i];
+            let attenuation = voice.envelope.advance(
+                regs[4],
+                regs[5],
+                regs[8],
+                voice.phase >= (i64::from(regs[2]) << 16),
+            );
+            let Some(attenuation) = attenuation else {
+                voice.active = false;
+                continue;
+            };
             let start = (usize::from(regs[0] & 15) << 16) | usize::from(regs[1]);
             let lsa = i64::from(regs[2]) << 16;
             let lea = i64::from(regs[3]) << 16;
@@ -489,11 +498,8 @@ impl Scsp {
                 _ => unreachable!("reserved SSCTL is rejected on write"),
             };
             if regs[6] & 0x100 == 0 {
-                value = if regs[4] & 0x20 != 0 {
-                    synthesis::attenuate(value, regs[6] as u8, lfo.attenuation(regs[9]))
-                } else {
-                    0 // AR=0 never leaves the initial, fully attenuated attack.
-                };
+                value = synthesis::enveloped(value, attenuation);
+                value = synthesis::attenuate(value, regs[6] as u8, lfo.attenuation(regs[9]));
             }
             self.stack.write(i, value, regs[6] & 0x200 != 0);
             self.dsp.add_slot(regs[10], value);
@@ -709,9 +715,11 @@ impl Sound {
                 scsp: &mut self.scsp,
             };
             self.cpu.reset(&memory)?;
-            self.cpu_ticks = 0;
+            // MC68000UM table8-14: reset exception/vector/prefetch takes forty
+            // sound-CPU clocks before the first instruction can be issued.
+            self.cpu_ticks = 40;
             self.cpu_origin = self.time;
-            self.next_cpu = self.time;
+            self.next_cpu = self.time + (40 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
         } else if !enabled {
             self.cpu = M68k::default();
             self.next_cpu = u64::MAX;

@@ -143,7 +143,7 @@ impl File {
             || record[1] != 0
             || record[26] != 0
             || record[27] != 0
-            || record[25] & !2 != 0
+            || record[25] & !3 != 0
             || record[28..32] != [1, 0, 0, 1]
         {
             return None;
@@ -1330,12 +1330,34 @@ impl CdBlock {
             return false;
         };
         let (extent, volume_end) = if id == 0xFF_FFFF {
-            let Ok(pvd) = media.cooked_sector(166) else {
+            // ST-040 §3.2.1: runtime file services use the same primary
+            // namespace as bootstrap, including boot/supplementary descriptors.
+            let Some(track) = media.track(166) else {
                 return false;
             };
-            if pvd.len() != 2048
-                || &pvd[..7] != b"\x01CD001\x01"
-                || pvd[128..132] != [0, 8, 8, 0]
+            let mut primary = None;
+            let mut descriptors_end = None;
+            for fad in 166..track.end {
+                let Ok(descriptor) = media.cooked_sector(fad) else {
+                    return false;
+                };
+                if descriptor.len() != 2048 || &descriptor[1..7] != b"CD001\x01" {
+                    return false;
+                }
+                match descriptor[0] {
+                    0 | 2 | 3 => (),
+                    1 if primary.is_none() => primary = Some(descriptor),
+                    255 => {
+                        descriptors_end = Some(fad + 1);
+                        break;
+                    }
+                    _ => return false,
+                }
+            }
+            let (Some(pvd), Some(descriptors_end)) = (primary, descriptors_end) else {
+                return false;
+            };
+            if pvd[128..132] != [0, 8, 8, 0]
                 || pvd[156] != 34
                 || pvd[181] != 2
                 || pvd[188..190] != [1, 0]
@@ -1346,12 +1368,18 @@ impl CdBlock {
             if blocks != u32::from_be_bytes(pvd[84..88].try_into().unwrap()) {
                 return false;
             }
-            let Some(limit) = blocks.checked_add(150).filter(|&end| end <= media.leadout) else {
+            let Some(limit) = blocks
+                .checked_add(150)
+                .filter(|&end| end >= descriptors_end && end <= media.leadout)
+            else {
                 return false;
             };
             let Some(root) = File::from_record(&pvd[156..190], media, limit, 0) else {
                 return false;
             };
+            if root.fad < descriptors_end {
+                return false;
+            }
             ((root.fad, root.size), limit)
         } else {
             let Some(f) = self.files.iter().find(|f| f.id == id && f.flags & 2 != 0) else {

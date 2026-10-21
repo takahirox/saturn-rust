@@ -113,6 +113,32 @@ impl std::error::Error for BusError {}
 
 /// The interpreter fetches through this boundary; it owns no memory pointers.
 pub trait Memory {
+    /// SH7604 §9.3.4 single-address DMA selects a peripheral by its DACK pin,
+    /// not by SAR/DAR. A board adapter supplies these electrical data transfers.
+    /// Unconnected/unsupported endpoints never become a second memory access.
+    fn dack_read(
+        &mut self,
+        channel: usize,
+        width: usize,
+        _active_high: bool,
+    ) -> Result<u32, BusError> {
+        Err(BusError::UnsupportedDevice {
+            address: 0xFFFF_FF8C + channel as u32 * 16,
+            width,
+        })
+    }
+    fn dack_write(
+        &mut self,
+        channel: usize,
+        width: usize,
+        _active_high: bool,
+        _value: u32,
+    ) -> Result<(), BusError> {
+        Err(BusError::UnsupportedDevice {
+            address: 0xFFFF_FF8C + channel as u32 * 16,
+            width,
+        })
+    }
     fn enter_sleep(&mut self) {}
     /// SH7604 §6.3.2: only fetches of instructions that execute qualify.
     fn instruction_break(&self, _pc: u32, _after: bool) -> bool {

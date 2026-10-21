@@ -260,7 +260,7 @@ not turn those missing hardware paths into supported behavior.
 | FRT, H §§11.1–11.5, tables 11.2/11.3 | FRC, OCRA/B, capture, divisors, overflow/compare/clear, TIER/FTCSR, shared TEMP, output level state and IRQ; Saturn capture wires (ST-202 §1.2) | FRT, DUAL | FRT (compare), DUAL (capture) | Internal/external pin synchronization, WAIT, clock-switch edges and contention timing absent; no external clock source or output-pin routing | Pending |
 | Watchdog, H §§12.2–12.3, table 12.2 | Keyed byte-register/word-write protocol, eight divisors, interval IRQ, read-before-clear, watchdog reset selection/cause and 512-clock CPU hold | PERIPH; `Watchdog` | PERIPH | External WDTOVF pin routing and sub-turn event ordering missing | Pending |
 | SCI, H §§13.2–13.3 | SMR/BRR/SCR/TDR/SSR/RDR, timed internal-clock transmission, external completed-character input, overrun/framing/parity flags, IRQs and DMA handshakes | PERIPH; `Serial` | PERIPH (transmit completion) | No external clock-edge adapter or physical serial pin waveform; multiprocessor and format combinations lack exhaustive integration coverage | Pending |
-| On-chip DMAC, H §§9.2–9.3 | Both channels; byte/word/long/16-byte transfers; fixed/increment/decrement addresses; auto/DREQ/SCI requests; fixed/round-robin channel selection, TE/AE/NMIF acknowledgement, vectors/IRQ | PERIPH; `Dma` and `Bus::advance_dma` | PERIPH (copy/end IRQ/error 10/no cache snoop) | Single-address DACK mode rejected explicitly; CPU/refresh arbitration, burst/cycle-steal timing and wait states missing | Pending |
+| On-chip DMAC, H §§9.2–9.3 | Both channels; byte/word/long/16-byte transfers; fixed/increment/decrement addresses; auto/DREQ/SCI requests; fixed/round-robin selection, TE/AE/NMIF, vectors/IRQ; single-address DACK direction/polarity through explicit board pin adapters | PERIPH, DACK; `Dma`, `Bus::advance_dma`, pin-adapter vectors | PERIPH (copy/end IRQ/error 10/no cache snoop), DACK (armed wait/reset on standard board) | CPU/refresh arbitration, burst/cycle-steal timing and wait states remain missing; no requesting DACK peripheral is connected on the standard board | Pending |
 | DIVU, H §§10.2–10.4 | Signed 32/32 and 64/32 quotient/remainder, 39/6-clock completion/interlock, DVCR/VCRDIV, sticky overflow and IRQ | PERIPH; `Division` | PERIPH (signed 32/64-bit normal division) | Six-cycle intermediate overflow state is not modeled: deterministic saturation and input-high preservation are used even with OVFIE=1; no full conformance claim | Pending |
 | BSC identification/interval timer, H §§7.1.4/7.2/7.5.7/7.11.1 | BCR1.MASTER per CPU, read-only word lanes, keyed long writes, RTCNT/RTCOR/RTCSR, all clock divisors, CMF read-before-clear, CMI vector/priority and manual-reset retention; `Bsc::read/write/advance`, `OnChip::interrupt` | [BSCG](../tests/bsc.rs), [register/reset vectors](../src/onchip/peripheral_tests.rs), [BSC vectors](../src/onchip/bsc.rs) | BSCG | Changed external memory-interface settings explicitly rejected; refresh bus ownership/waits remain | Pending |
 | Module stop/standby, H §§14.2/14.4, table 14.3 | SBYCR, SCI/FRT reset and gating, preserved INTC/UBC/BSC, retained DMA operands with control reset, WDT-selected NMI settling; `OnChip::enter_sleep/advance_clocks`, `Bus::advance_dma` | [standby/retention vectors](../src/onchip/peripheral_tests.rs), BSCG, PWRG | BSCG, PWRG | Electrical HIZ/pin states, initial five-cycle NMI guard, physical oscillator and clock-switch edges remain unverified; executing stopped MULT instructions is software-prohibited/undefined (H §2.5.2) | Pending |
@@ -284,8 +284,12 @@ MOVEQ, ASL/LSL, NEG, ADDQ, Bcc, STOP, RTE, SR and IRQ entry; it does not exercis
 every family through Wasm.
 
 These are functional semantics, not complete timing conformance. Effective-address
-and data-dependent instruction cycle costs, bus contention, prefetch/pipeline
-fault PCs and physical RESET pulse duration remain unverified.
+and instruction cycle costs now follow MC68000UM tables 8-1–8-14; multiplication
+counts source bits/transitions, branches distinguish taken/untaken and DBcc
+expiry, and sound reset delays first issue by forty clocks. Native vectors include
+the complete MOVE source/destination timing tables. DIV and register bit
+modifications still use the documented maximum time. Bus contention,
+prefetch/pipeline fault PCs and physical RESET pulse duration remain unverified.
 Long predecrement/stack write order, failing word-cycle addresses and MOVEM
 partial transfer side effects now have independent native bus-spy vectors
 ([MC68000UM][68UM] §§2.4/5/6.3.9;
@@ -294,84 +298,84 @@ partial transfer side effects now have independent native bus-spy vectors
 `second_longword_cycle_fault_records_its_own_address_and_preserves_first_write`,
 `movem_and_exception_pushes_issue_predecrement_word_cycles_and_retain_progress`,
 `movem_postincrement_preserves_completed_loads_when_a_later_bus_cycle_faults`](../src/m68k/tests.rs)).
-These fault-cycle cases do not yet have browser guest evidence. The interpreter uses bounded functional clock budgets. The
+These fault-cycle cases do not yet have browser guest evidence. The
 complete CPU/scheduler acceptance criteria remain pending.
 
 | Family | Manual entry (68, MC68000 subset) | Implementation | Native / browser | Status |
 | --- | --- | --- | --- | --- |
 | ABCD | ABCD instruction description | `M68k::bcd / alu / group4` | m68k/tests.rs semantic vectors / SIOG native + browser | Functional vectors; timing pending |
-| ADD | ADD instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| ADDA | ADDA instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| ADDI | ADDI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| ADD | ADD instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| ADDA | ADDA instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| ADDI | ADDI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
 | ADDQ | ADDQ instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
 | ADDX | ADDX instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / SIOG native + browser | Functional vectors; timing pending |
-| AND | AND instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| ANDI | ANDI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| AND | AND instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| ANDI | ANDI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
 | ASL | ASL instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
-| ASR | ASR instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| ASR | ASR instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
 | Bcc | Bcc instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
-| BCHG | BCHG instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| BCLR | BCLR instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| BSET | BSET instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| BSR | BSR instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| BTST | BTST instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| CHK | CHK instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| CLR | CLR instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| CMP | CMP instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| CMPA | CMPA instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| CMPI | CMPI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| CMPM | CMPM instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| DBcc | DBcc instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| BCHG | BCHG instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| BCLR | BCLR instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| BSET | BSET instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| BSR | BSR instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| BTST | BTST instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| CHK | CHK instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| CLR | CLR instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| CMP | CMP instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| CMPA | CMPA instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| CMPI | CMPI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| CMPM | CMPM instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| DBcc | DBcc instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
 | DIVS | DIVS instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / SIOG native + browser | Functional vectors; timing pending |
-| DIVU | DIVU instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| EOR | EOR instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| EORI | EORI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| EXG | EXG instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| EXT | EXT instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| ILLEGAL | ILLEGAL instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| JMP | JMP instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| JSR | JSR instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| LEA | LEA instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| LINK | LINK instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| DIVU | DIVU instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| EOR | EOR instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| EORI | EORI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| EXG | EXG instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| EXT | EXT instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| ILLEGAL | ILLEGAL instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| JMP | JMP instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| JSR | JSR instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| LEA | LEA instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| LINK | LINK instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
 | LSL | LSL instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
-| LSR | LSR instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| LSR | LSR instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
 | MOVE (including CCR/SR/USP transfers) | MOVE instruction description | `M68k::execute / group4 / sr` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
 | MOVEA | MOVEA instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
 | MOVEM | MOVEM instruction description | `M68k::movem` | m68k/tests.rs semantic vectors / SIOG native + browser | Functional vectors; timing pending |
 | MOVEP | MOVEP instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / SIOG native + browser | Functional vectors; timing pending |
 | MOVEQ | MOVEQ instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
 | MULS | MULS instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / SIOG native + browser | Functional vectors; timing pending |
-| MULU | MULU instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| MULU | MULU instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
 | NBCD | NBCD instruction description | `M68k::bcd / alu / group4` | m68k/tests.rs semantic vectors / SIOG native + browser | Functional vectors; timing pending |
 | NEG | NEG instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
-| NEGX | NEGX instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| NOP | NOP instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| NOT | NOT instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| OR | OR instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| ORI | ORI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| PEA | PEA instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| RESET | RESET instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| ROL | ROL instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| ROR | ROR instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| ROXL | ROXL instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| ROXR | ROXR instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| NEGX | NEGX instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| NOP | NOP instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| NOT | NOT instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| OR | OR instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| ORI | ORI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| PEA | PEA instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| RESET | RESET instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| ROL | ROL instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| ROR | ROR instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| ROXL | ROXL instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| ROXR | ROXR instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
 | RTE | RTE instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
-| RTR | RTR instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| RTS | RTS instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| RTR | RTR instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| RTS | RTS instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
 | SBCD | SBCD instruction description | `M68k::bcd / alu / group4` | m68k/tests.rs semantic vectors / SIOG native + browser | Functional vectors; timing pending |
-| Scc | Scc instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| Scc | Scc instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
 | STOP | STOP instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
-| SUB | SUB instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| SUBA | SUBA instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| SUBI | SUBI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| SUBQ | SUBQ instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| SUB | SUB instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| SUBA | SUBA instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| SUBI | SUBI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| SUBQ | SUBQ instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
 | SUBX | SUBX instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / SIOG native + browser | Functional vectors; timing pending |
-| SWAP | SWAP instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| TAS | TAS instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| SWAP | SWAP instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| TAS | TAS instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
 | TRAP | TRAP instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / SIOG native + browser | Functional vectors; timing pending |
-| TRAPV | TRAPV instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| TST | TST instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| UNLK | UNLK instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| TRAPV | TRAPV instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| TST | TST instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| UNLK | UNLK instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
 
 ## Bus, timing and persistence
 
@@ -496,7 +500,7 @@ Implementation: [shared sound bus, PCM and clock domain](../src/sound.rs),
 | --- | --- | --- | --- | --- |
 | Sound RAM / SCSP mapping, [SCSP] §§1.2/4.1 | 512 KiB RAM shared by SH-2 and independent 68k; big-endian byte/word/long cycles; SCSP byte lanes; SNDON/OFF reset vectors and RAM retention; RESET output resets SCSP controls | SNDV, SNDR / SNDR | Additional memory-size configuration, exact reset pulse/bus timing (sound RAM mirrors now tested in bus.rs) | Pending |
 | 32 slots, PCM8/16, [SCSP] §4.2 table 4.14 | Guest key-on/off, signed PCM, source bit controls, all 32 slots, no/forward/reverse/alternative loops, Q16 OCT/FNS pitch, signed first-order PCM8/16 interpolation for all loop directions, sound stack | SNDV, SNDR (including guest half-pitch vectors) / SNDR (half-pitch vectors) | Exact hardware fractional boundary rounding and complete envelope-controlled playback | Pending |
-| Envelope, [SCSP] §4.2 | Zero-rate attack remains silent; zero-rate EGHOLD holds unity gain; SDIR bypasses EG/TL/ALFO; other rates fail explicitly | SNDV, SYNTH / SYNTH | Timed attack/decay/release, decay level, key scaling and loop linking | Pending |
+| Envelope, [SCSP] §4.2 pp.40–44 | Attack/decay1/decay2/release, zero-rate holds, EGHOLD, decay level, key scaling, loop-start transitions and release retrigger; EG multiplies waveform before TL/ALFO, modulation stack and DSP send | SNDV, ENV / ENV + operand mutations + WebAudio | Numeric slope/key-scaling/attenuation policy is functional, not corroborated chip timing; complete synthesis/pipeline conformance remains | Pending |
 | FM/modulation/LFO, [SCSP] §4.2 figs.4.18/4.31, tables4.16–4.24 | Executing recent/past sound-stack selection with five-slot pipeline, signed averaging/MDL, guard-waveform reads; per-slot AM/PM LFO waveforms, frequency/depth/reset; internal noise/zero source | SNDV, SYNTH / SYNTH operand mutations and WebAudio | Exact chip noise sequence is unspecified; physical sub-sample rounding, full FM overflow/loop boundaries and envelope integration remain | Pending |
 | Levels/pan/external inputs, [SCSP] §4.2 tables 4.27/28 | Binary total-level attenuation, direct send and fixed-point stereo pan, clipping, master output control; independently expected full-volume stereo buffers | SNDV, SNDR / SNDR | Intermediate master gain conformance and complete routing boundary corpus | Pending |
 | Timers/interrupts, [SCSP] §4.2 tables 4.33–38 | Three sample-clock prescaled counters; sound/main pending/enables/clear; programmed autovector levels, 68k IRQ/RTE, SCU source 6 | SNDV, SNDR / SNDR | Complete cross-device contention/timer reset edge evidence | Pending |
@@ -900,8 +904,7 @@ explicit functional policy uses independent maximal 16-bit LFSRs clocked per
 sample, unaffected by LFORE or LFOF. This policy is repeatable, not a claim about
 the chip's exact random bit sequence. Fine LFO frequency/phase/rounding and FM
 address-overflow boundaries still require corroboration. EGHOLD with AR=0 and
-silent AR=0 are implemented; other envelope rates, decay/release/key scaling and
-loop linking remain explicitly unsupported. This adds executing hardware and
+silent AR=0 are implemented. The additional ENV fixture below now exercises timed envelope stages, release, key scaling and loop linking; numeric rate/attenuation calibration remains an explicit functional approximation. This adds executing hardware and
 objective evidence without declaring the complete audio or umbrella acceptance
 criterion satisfied.
 
@@ -1055,3 +1058,74 @@ Expanded 512 KiB ROM SHA-256:
 `416b0180eb6cde016b42be791a71357f01002530ee4dd80702623f3ccb4fc77c`.
 The [fixture MIT license](../tests/fixtures/LICENSE) covers source, ROM and original
 synthetic sector data. Existing demo discs remain byte-identical.
+
+## Review evidence: instruction timing, DACK, envelopes and ISO startup
+
+Related to #17. This implementation does not satisfy the full umbrella checklist.
+
+**FAMG**: [71 source-authored MC68000 vectors](../tests/fixtures/m68k_families.py),
+[reproducible builder](../tests/fixtures/build_m68k_families.py),
+[native sound-bus execution](../tests/m68k_families.rs) and
+[browser Wasm](../scripts/browser-smoke.mjs). The master uploads actual 68k code;
+the sound CPU computes values/CCR, takes illegal/line-A/line-F/CHK/TRAPV exceptions
+and RTE, and returns to ordinary PCM/SCSP setup. Cases cover all base EA forms,
+including PC-relative forms, and supplement SNDR/SIOG's decimal, extend, MOVEM
+and MOVEP evidence. Undefined CHK flags are deliberately excluded. Browser mutation
+of ADD.B to SUB.B changes only that computed result/CCR.
+Expanded 512 KiB ROM SHA-256:
+`2e8c852227de5810f9af01d2e734da44b14d176d3f50ec589ff63689524da4a5`.
+The adjacent MIT license covers source and generated ROM/TSV; no SDK or firmware.
+
+[`M68k::ea_clocks/execute/group0/group4/alu/shift/movem`](../src/m68k.rs)
+uses [MC68000UM][68UM] tables8-1–8-14 for 16-bit-bus instruction costs.
+[Native timing tests](../src/m68k/tests.rs) execute every MOVE source/destination
+combination and authored branch/DBcc/Scc, register/memory, jump, MOVEM, shift,
+exception and multiply vectors. Sound reset first-issue latency has an independent
+[clock-boundary test](../src/sound/tests.rs). This improves sound-clock ordering;
+it does not replace the still-required SH-2/bus scheduler or model 68k prefetch.
+
+**DACK**: [DMA transfer engine](../src/onchip/dma.rs), explicit
+[`Memory::dack_read/dack_write`](../src/bus.rs), native pin-adapter vectors, and
+[original SH-2 source](../tests/fixtures/dack.s),
+[builder](../tests/fixtures/build_dack.py),
+[native guest/reset assertions](../tests/sh7604.rs) and browser Wasm.
+H §9.2.4/§9.3.4 table9.7 defines single-address operation. Both channels
+transfer byte/word/long data through DACK; AM selects direction and AL selects
+polarity. The DACK side's address and address mode are ignored, the memory side
+updates its address, and each consumed DREQ edge transfers one unit. Native
+vectors assert data, addresses, count/TE/IRQ and illegal SCI/auto/burst/on-chip
+modes. The standard board has no requesting DACK peripheral; its guest proves
+that armed channels wait without touching ignored addresses, and reset clears
+them. An unsupported board endpoint fails explicitly; it never becomes an inert
+success or a substituted memory-to-memory copy. Expanded ROM SHA-256:
+`81b1a7b1fc63a4958e38318d49f3a088f7315c061d1ce0518e929202cfdb4856`.
+Source and generated ROM use the adjacent MIT license. Physical arbitration
+and cycle-steal/burst bus ownership remain required.
+
+**ENV**: [envelope state machine](../src/sound/envelope.rs),
+[32-slot integration](../src/sound.rs),
+[original 68k builder](../tests/fixtures/build_sound.py),
+[reproducible ROM builder](../tests/fixtures/build_envelope.py),
+[native stereo/guest mutations](../tests/synthesis.rs) and browser Wasm/WebAudio.
+The 68k sets ordinary AR/D1R/D2R/DL/RR controls and keys off in its timer handler.
+Independent mathematical stereo vectors assert decay, sustained level and release;
+RR0 holds, AR0 stays silent, D2R changes sustain, and LPSLNK forces early decay.
+Native tests cover all decay levels/rates, key scaling, held-attack key-off,
+32 independent slots, release retrigger and SDIR bypass. The published SCSP
+register manual supplies stage transitions but no numeric rate table: dyadic
+Q16 slopes and the key-scaling/gain calibration are an explicit functional policy,
+not independent evidence of chip envelope times. No full audio acceptance claim.
+Expanded ROM SHA-256:
+`f086078191c69e137bf70c2c8acc5ceca09724505ca4dbdbc32abfcc291806fc`.
+Source/generated ROM use the adjacent MIT license.
+
+[ISO bootstrap](../src/disc.rs) and [runtime CD directory commands](../src/cd.rs)
+now scan descriptor sets (ST-040 §3.2.1), preserving the primary namespace across
+boot/supplementary descriptors. They accept hidden regular files and reject
+duplicate primaries, missing terminators and extents outside the declared volume.
+Physical padding is not part of that volume. A zero first-read address disables
+that transfer as specified by ST-040 §4.3; original AIP instructions still execute.
+[Native startup vectors](../tests/disc.rs),
+[original runtime guest](../tests/cd_drive.rs) and browser Wasm execute these cases.
+General HLE system/backup/CD ABI, multi-area startup and other required media
+contracts remain required; this change does not substitute for those services.

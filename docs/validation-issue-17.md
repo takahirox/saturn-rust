@@ -4,6 +4,81 @@
 criterion is complete; #17 must remain open.** Issues #11/#13/#15 are historical,
 administratively closed trackers and must not be reopened.
 
+## Review fixes: DMA, sound CPU timing, envelope execution and ISO startup (2026-10-21)
+
+Related to #17. This work starts at review checkpoint `4150e797024d8afb998be164c45a72b5c4d2ddfa`,
+preserves PR #18 and all three demo media, and rechecks upstream main as
+`dbd981b030a46daa6923072ce240680dd2e58ebf`. No push or merge was performed.
+
+Implemented behavior and independent evidence:
+
+- Single-address SH7604 DMA now dispatches explicit DACK pin endpoints, selecting
+  direction/polarity, ignoring the unused address, advancing the memory address,
+  consuming external requests, and reporting count/TE/IRQ/error behavior. Native
+  pin-adapter vectors cover both channels and byte/word/long widths. An original
+  SH-2 ROM checks armed-channel waiting and reset in native and Wasm execution;
+  no requesting DACK device is connected on the standard board.
+- MC68EC000 cycle costs use MC68000UM tables8-1–8-14 for EA, MOVE, arithmetic,
+  conditional branches, MOVEM, control, shift and exception paths. Multiplication
+  counts actual source bits/transitions, and reset first issue waits forty sound
+  clocks. Independent native timing vectors cover all MOVE source/destination
+  combinations, representative opcode/condition boundaries and source-dependent
+  multiplication. DIV and register bit modifications retain documented maximum
+  costs; prefetch/bus timing is still required.
+- An original 71-case 68k program adds family/EA/CCR and exception/RTE evidence
+  through actual SH-2 upload and sound-bus execution in native and browser Wasm.
+  The browser changes ADD.B to SUB.B and verifies changed guest results without
+  changing other cases. Existing PCM, effects DSP and CD-DA checks still pass.
+- SCSP envelope writes now execute attack, decay1, decay2 and release, with
+  EGHOLD, DL/KRS/LPSLNK, release retrigger and SDIR bypass. Native vectors cover
+  32 independent slots, all rates/levels and stage boundaries. An original 68k
+  timer handler keys off a voice; native/Wasm tests compare mathematical stereo
+  vectors and mutated AR/D2R/RR/LPSLNK operands, and production WebAudio renders
+  its output. Numeric rate/key-scaling/gain calibration is an explicit functional
+  approximation, not independent chip-timing conformance evidence.
+- Bootstrap and runtime CD directory parsing scan volume descriptor sets rather
+  than assuming primary/terminator at fixed sectors. Hidden files, physical
+  padding and logical-volume extent bounds are tested. A zero first-read address
+  disables loading while original guest AIP instructions still execute. Native
+  and Wasm guest checks cover both changes and malformed sets/extents.
+
+Sources, implementation/test links, original MIT fixture provenance and all three
+new reproducible ROM hashes are in the [conformance inventory](hardware-conformance.md#review-evidence-instruction-timing-dack-envelopes-and-iso-startup).
+
+Validation completed on this combined worktree:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`: pass;
+  **339 tests passed, zero failed/ignored** (180 unit, 159 integration),
+  Rustup stable **1.99.0**. Native all-target Clippy with `-D warnings`: pass.
+- `sh scripts/build-web.sh` and wasm32 Clippy with `-D warnings`: pass, using
+  the installed Rustup target and `wasm-bindgen-cli 0.2.129`.
+- All **29** CI reproducibility commands: pass, including the new envelope,
+  DACK and 68k-family fixtures. Existing Star Collector, Prism Courier and
+  Hardware Lab disc/audio/CUE bytes remain unchanged.
+- `npm ci --ignore-scripts`, JS syntax check and the complete extended
+  `npm run test:browser`: pass; Node **24.12.0**, Chromium **145.0.7632.6**,
+  project prefix `/saturn-rust/`. No required tests were skipped. Existing
+  Canvas/WebAudio, gameplay/results/restart, BIOS, input/focus and local-file
+  privacy assertions pass along with the new guests.
+- `git diff --check`: pass. No external CI, deployed Pages or proprietary BIOS
+  compatibility result is claimed.
+
+The first web invocation did not find the installed CLI on PATH; rerunning with
+its existing path passed without installing a different toolchain. Initial new
+fixture tests exposed an uncleared pre-existing timer request and incorrect
+expectations for DMA incremented data; the fixture/reference vectors were fixed.
+With documented 68k costs, the existing PCM guest accepts its pending timer IRQ
+before its first STOP: its exact retirement assertion is now 23 setup + 3 handler
++ 1 STOP = 27, replacing an instruction-count threshold based on the old costs.
+
+**The requested full Issue #17 resolution has not been achieved.** The remaining
+review findings still require implementation, including SH-2/DIVU/BSC/cache/bus
+contracts and hardware-time arbitration, backup filesystem and HLE service ABI,
+SCU/DSP arbitration and edge coverage, complete video/raster modes, calibrated
+SCSP/DSP timing, remaining CD/media contracts and SMPC system controls. No
+mandatory criterion is waived or closed by these passing checks. Continue in the
+same PR and Issue; no replacement tracker, historical reopening or human gate.
+
 ## Review fixes: UBC, power controls and CUE indices (2026-10-21)
 
 Related to #17. This revision starts at `f0665c3f4e94438b1d3132ee410f6111a61ab23c`

@@ -318,7 +318,13 @@ fn dma_module_requests_wait_for_pins_and_sci() {
     );
     chip.receive_serial(0x33, 0, false);
     assert_eq!(chip.serial_dma_requests(), [true, false]);
-    assert!(chip.write32(DMAC + 12, 0x4009).is_err()); // Unimplemented DACK mode is explicit.
+    chip.write32(DMAC + 12, 0x4009).unwrap(); // Legal TM bit; SCI is not a legal DACK source.
+    assert_eq!(
+        chip.dma.transfer(&mut memory, chip.serial_dma_requests()),
+        None
+    );
+    assert!(chip.dma.address_error);
+    assert_eq!(chip.read32(DMAC + 8).unwrap(), 1);
 }
 
 #[test]

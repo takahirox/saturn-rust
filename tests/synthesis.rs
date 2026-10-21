@@ -6,8 +6,11 @@ use saturn_rust::{
     sound::SOUND_RAM,
 };
 fn rom() -> Vec<u8> {
+    load(include_str!("fixtures/synthesis.hex"))
+}
+fn load(hex: &str) -> Vec<u8> {
     let mut bytes = vec![0; BIOS_SIZE];
-    for line in include_str!("fixtures/synthesis.hex").lines() {
+    for line in hex.lines() {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -20,6 +23,45 @@ fn rom() -> Vec<u8> {
         }
     }
     bytes
+}
+
+#[test]
+fn executing_68k_envelopes_decay_sustain_and_release_have_computed_stereo_and_mutations() {
+    let rom = load(include_str!("fixtures/envelope.hex"));
+    let mut m = Machine::new();
+    let audio = execute(&mut m, &rom);
+    assert_eq!(m.bus().read16(0x05B000C8).unwrap(), 0x06DF);
+    assert_eq!(m.bus().read16(0x05B000CA).unwrap(), 0x3C9F);
+    let samples = audible(&audio);
+    // Independently calculate the documented functional rate policy, with a
+    // floating-point attenuation oracle instead of the engine's integer exp2.
+    // D1R27, KRS disabled: 3/4 EG units/sample; 64 units halve the amplitude.
+    for (i, s) in samples[..100].iter().enumerate() {
+        let expected = (1024.0 * 2f64.powf(-(i as f64 * 0.75) / 64.0)).floor();
+        assert!(
+            (f64::from(s[1]) - expected).abs() <= 1.0,
+            "sample {i}: {s:?}"
+        );
+    }
+    assert!(samples.iter().any(|s| s[1] == 255)); // DL4, D2R0 sustain
+    assert!(samples.windows(100).any(|s| s.iter().all(|f| f[1] == 255)));
+    assert!(samples[samples.len() - 100..].iter().all(|s| s[1] == 0));
+    assert!(samples.iter().any(|s| s[0] > 0)); // independent executing FM voice
+    assert_eq!(execute(&mut m, &rom), audio);
+
+    let mut hold = rom.clone();
+    change(&mut hold, 0x1000CA, 0x3C9F, 0x3C80); // RR0 holds key-off level
+    let held = execute(&mut m, &hold);
+    assert!(held[held.len() - 100..].iter().all(|s| s[1] == 255));
+    let mut decay2 = rom.clone();
+    change(&mut decay2, 0x1000C8, 0x06DF, 0xDEDF); // D2R27 continues after DL
+    assert_ne!(execute(&mut m, &decay2), audio);
+    let mut zero_attack = rom.clone();
+    change(&mut zero_attack, 0x1000C8, 0x06DF, 0x06C0);
+    assert!(execute(&mut m, &zero_attack).iter().all(|s| s[1] == 0));
+    let mut linked = rom.clone();
+    change(&mut linked, 0x1000CA, 0x3C9F, 0x7C9F); // LSA0 forces early decay
+    assert!(execute(&mut m, &linked).iter().all(|s| s[1] == 0));
 }
 fn change(rom: &mut [u8], address: u32, old: u16, value: u16) {
     // Replace only an original MOVE.W immediate operand; actual 68k code must

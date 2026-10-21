@@ -34,6 +34,15 @@ pub(super) fn attenuate(sample: i16, tl: u8, alfo: u32) -> i16 {
     ((i64::from(sample) * exp2(exponent)) >> 30) as i16
 }
 
+/// Ten-bit EG attenuation spans sixteen binary octaves (96 dB); the terminal
+/// all-ones level is silent. Preserve Q16 fractions before TL/ALFO rounding.
+pub(super) fn enveloped(sample: i16, attenuation: u32) -> i16 {
+    if attenuation >= 1023 << 16 {
+        return 0;
+    }
+    ((i64::from(sample) * exp2(-((attenuation >> 6) as i32))) >> 30) as i16
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct Lfo {
     // Rational cycles: one cycle is 44100*100; frequencies in table 4.21

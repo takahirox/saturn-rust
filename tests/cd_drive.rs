@@ -77,19 +77,30 @@ fn guest_runtime_directory_commands_reject_malformed_extents_without_trapping() 
         }
     }
     let original = include_bytes!("../web/star-collector.iso");
-    for field in [None, Some(16 * 2048 + 158), Some(20 * 2048 + 70)] {
+    for field in [None, Some(0), Some(16 * 2048 + 158), Some(20 * 2048 + 70)] {
         let mut image = original.to_vec();
-        if let Some(offset) = field {
+        if field == Some(0) {
+            let primary = image[16 * 2048..17 * 2048].to_vec();
+            image[16 * 2048..17 * 2048].fill(0);
+            image[16 * 2048..16 * 2048 + 7].copy_from_slice(b"\0CD001\x01");
+            image[17 * 2048..18 * 2048].copy_from_slice(&primary);
+            image[18 * 2048..19 * 2048].fill(0);
+            image[18 * 2048..18 * 2048 + 7].copy_from_slice(b"\x02CD001\x01");
+            image[19 * 2048..20 * 2048].fill(0);
+            image[19 * 2048..19 * 2048 + 7].copy_from_slice(b"\xFFCD001\x01");
+            image[20 * 2048 + 68 + 25] = 1;
+        } else if let Some(offset) = field {
             image[offset..offset + 8].fill(255);
         }
+        let invalid = field.is_some_and(|offset| offset != 0);
         let mut machine = Machine::new();
         machine.reset(Boot::ExternalBios(&fixture)).unwrap();
         machine.mount_media(Media::iso(&image).unwrap());
         machine.run_steps(3000).unwrap();
         let read = |offset: u32| machine.bus().read32(0x06009000 + offset).unwrap();
         assert_eq!(read(0x30), 0x600D);
-        assert_eq!(read(0), if field.is_some() { 0xFF00 } else { 0x0180 });
-        assert_eq!(read(0x10), if field.is_some() { 0xFF00 } else { 0x0180 });
-        assert_eq!(read(0x24), if field.is_some() { 0 } else { 2 });
+        assert_eq!(read(0), if invalid { 0xFF00 } else { 0x0180 });
+        assert_eq!(read(0x10), if invalid { 0xFF00 } else { 0x0180 });
+        assert_eq!(read(0x24), if invalid { 0 } else { 2 });
     }
 }

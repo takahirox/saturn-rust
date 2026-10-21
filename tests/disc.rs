@@ -98,3 +98,73 @@ fn first_read_name_and_destination_are_metadata_not_game_specific_hooks() {
     );
     assert_eq!(m.bus().read16(0x06004000), Ok(0));
 }
+
+#[test]
+fn descriptor_sets_padding_and_hidden_first_read_preserve_guest_boot() {
+    // ST-040 §3.2.1: primary need not be the first/only descriptor, and
+    // supplementary namespaces must not replace its first-read file ID2.
+    let mut image = ISO.to_vec();
+    let primary = image[16 * SECTOR..17 * SECTOR].to_vec();
+    image[16 * SECTOR..17 * SECTOR].fill(0);
+    image[16 * SECTOR..16 * SECTOR + 7].copy_from_slice(b"\0CD001\x01");
+    image[17 * SECTOR..18 * SECTOR].copy_from_slice(&primary);
+    image[18 * SECTOR..19 * SECTOR].fill(0);
+    image[18 * SECTOR..18 * SECTOR + 7].copy_from_slice(b"\x02CD001\x01");
+    image[19 * SECTOR..20 * SECTOR].fill(0);
+    image[19 * SECTOR..19 * SECTOR + 7].copy_from_slice(b"\xFFCD001\x01");
+    image[20 * SECTOR + 68 + 25] = 1; // hidden regular file
+    image.resize(image.len() + SECTOR * 2, 0xA5); // outside logical volume
+    let mut m = Machine::new();
+    m.reset(Boot::HleDisc(&image)).unwrap();
+    m.run_steps(3).unwrap();
+    assert_eq!(m.cpu_state().pc, parse(ISO).unwrap().load_address);
+    assert_eq!(
+        m.bus().read32(0x06004000),
+        Ok(u32::from_be_bytes(
+            parse(ISO).unwrap().executable[..4].try_into().unwrap()
+        ))
+    );
+    // A duplicate primary, missing terminator, or an extent in physical padding
+    // must fail, even though the underlying bytes exist in the mounted medium.
+    let mut duplicate = image.clone();
+    duplicate[18 * SECTOR] = 1;
+    assert!(parse(&duplicate).is_err());
+    let mut missing = image.clone();
+    missing[19 * SECTOR] = 3;
+    assert!(parse(&missing).is_err());
+    let volume_end = ISO.len() / SECTOR;
+    for first in [2, 10] {
+        let mut escaped = image.clone();
+        let record = 20 * SECTOR + 68;
+        let n = if first == 2 {
+            volume_end as u32
+        } else {
+            (ISO.len() + 1) as u32
+        };
+        escaped[record + first..record + first + 4].copy_from_slice(&n.to_le_bytes());
+        escaped[record + first + 4..record + first + 8].copy_from_slice(&n.to_be_bytes());
+        assert!(parse(&escaped).is_err());
+    }
+}
+
+#[test]
+fn zero_first_read_address_executes_original_aip_without_loading_a_file() {
+    // ST-040 §4.3: original guest code, no Sega security/area object.
+    let mut image = ISO.to_vec();
+    image[0xF0..0xF4].fill(0);
+    image[20 * SECTOR + 68..21 * SECTOR].fill(0); // no first-read entry
+    for (i, word) in [0xE02Au16, 0xD101, 0x2102, 0x001B, 0x0600, 0x8000]
+        .into_iter()
+        .enumerate()
+    {
+        image[0xE20 + i * 2..0xE22 + i * 2].copy_from_slice(&word.to_be_bytes());
+    }
+    assert!(parse(&image).unwrap().executable.is_empty());
+    let mut m = Machine::new();
+    m.reset(Boot::HleDisc(&image)).unwrap();
+    m.run_steps(100).unwrap();
+    assert_eq!(m.cpu_state().status, CpuStatus::Sleeping);
+    assert_eq!(m.bus().read32(0x06008000), Ok(42));
+    assert_eq!(m.bus().read32(0x06004000), Ok(0));
+    assert_eq!(m.cpu_state().instructions, 4);
+}
