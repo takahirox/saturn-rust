@@ -138,7 +138,7 @@ fn watchdog_reset_selection_cause_retention_and_no_reset_mode() {
         assert_eq!(chip.take_reset_request(), expected);
         assert_eq!(chip.read8(WDT).unwrap(), 0x18);
         assert_eq!(chip.read8(WDT + 3).unwrap(), reset_control as u8 | 0x80);
-        chip.reset_from_watchdog();
+        chip.reset_from_watchdog(expected.unwrap_or(ResetRequest::Manual));
         chip.write16(WDT + 2, 0xA500).unwrap(); // Requires status read since reset.
         assert_eq!(chip.read8(WDT + 3).unwrap(), reset_control as u8 | 0x80);
         chip.write16(WDT + 2, 0xA500).unwrap();
@@ -362,4 +362,113 @@ fn sci_dma_requests_move_real_data_acknowledge_flags_and_bypass_warm_cpu_cache()
     bus.advance_clocks(1).unwrap();
     assert_eq!(bus.take_serial_output(Processor::Master), Some(0x35));
     assert_eq!(bus.read8(SCI + 4).unwrap() & 0x84, 0x84);
+}
+
+#[test]
+fn bsc_refresh_all_divisors_cpu_local_pins_arbitration_and_reset_domains() {
+    use crate::bus::{Bus, Memory, Processor};
+    let mut bus = Bus::default();
+    for (processor, expected) in [(Processor::Master, 0x03F0), (Processor::Slave, 0x83F0)] {
+        let mut memory = bus.for_cpu(processor);
+        assert_eq!(memory.read32(0xFFFF_FFE0).unwrap(), expected);
+        assert_eq!(memory.read16(0xFFFF_FFE2).unwrap(), expected as u16);
+        memory.write32(0xFFFF_FFE0, 0xA55A_83F0).unwrap();
+        assert_eq!(memory.read32(0xFFFF_FFE0).unwrap(), expected);
+        assert!(memory.write16(0xFFFF_FFE2, 0).is_err());
+    }
+    for (select, divisor) in [
+        (1, 4),
+        (2, 16),
+        (3, 64),
+        (4, 256),
+        (5, 1024),
+        (6, 2048),
+        (7, 4096),
+    ] {
+        let mut chip = OnChip::default();
+        chip.set_slave(true);
+        chip.write16(IPRA, 0x50).unwrap();
+        chip.write16(VCRWDT, 0x5150).unwrap();
+        chip.write32(0xFFFF_FFF8, 0xA55A_0003).unwrap();
+        chip.write32(0xFFFF_FFF0, 0xA55A_0040 | (select << 3))
+            .unwrap();
+        chip.advance_clocks(divisor * 3 - 1);
+        assert_eq!(chip.interrupt(), None);
+        chip.advance_clocks(1);
+        assert_eq!(chip.interrupt(), Some((5, 0x50)));
+        chip.reset_from_watchdog(ResetRequest::Manual);
+        assert_eq!(chip.read32(0xFFFF_FFF8).unwrap(), 3);
+        assert_eq!(chip.read32(0xFFFF_FFF0).unwrap(), 0xC0 | select << 3);
+        assert_eq!(chip.read32(0xFFFF_FFE0).unwrap(), 0x83F0);
+        // INTC resets independently of the retained BSC interrupt latch.
+        assert_eq!(chip.interrupt(), None);
+        chip.write16(IPRA, 0x50).unwrap();
+        chip.write16(VCRWDT, 0x5150).unwrap();
+        assert_eq!(chip.interrupt(), Some((5, 0x50)));
+        chip.write32(0xFFFF_FFF0, 0xA55A_0000).unwrap();
+        assert_eq!(chip.interrupt(), None);
+        chip.reset_from_watchdog(ResetRequest::PowerOn);
+        assert_eq!(chip.read32(0xFFFF_FFF8).unwrap(), 0);
+        assert_eq!(chip.read32(0xFFFF_FFE0).unwrap(), 0x83F0);
+    }
+}
+
+#[test]
+fn module_stops_reset_frt_sci_preserve_vectors_and_gate_count_and_external_capture() {
+    let mut chip = OnChip::default();
+    chip.write16(IPRB, 0xAB00).unwrap();
+    chip.write16(VCRC, 0x5253).unwrap();
+    chip.write16(VCRA, 0x5455).unwrap();
+    chip.advance_clocks(80);
+    chip.capture_strobe();
+    assert_eq!(chip.read8(FRT + 1).unwrap(), 0x80);
+    chip.write8(SCI + 1, 123).unwrap();
+    chip.write8(SBYCR, 3).unwrap();
+    assert_eq!(chip.read8(SBYCR).unwrap(), 3);
+    assert_eq!(chip.read8(SCI + 1).unwrap(), 0xFF);
+    assert_eq!(chip.read8(FRT + 1).unwrap(), 0);
+    chip.advance_clocks(800);
+    chip.capture_strobe();
+    assert_eq!(chip.read8(FRT + 1).unwrap(), 0);
+    assert_eq!(chip.read8(FRT + 2).unwrap(), 0);
+    assert_eq!(chip.read8(FRT + 3).unwrap(), 0);
+    assert_eq!(chip.read16(IPRB).unwrap(), 0xAB00);
+    assert_eq!(chip.read16(VCRC).unwrap(), 0x5253);
+    assert_eq!(chip.read16(VCRA).unwrap(), 0x5455);
+    chip.write8(SBYCR, 0).unwrap();
+    chip.advance_clocks(8);
+    assert_eq!(chip.read8(FRT + 2).unwrap(), 0);
+    assert_eq!(chip.read8(FRT + 3).unwrap(), 1);
+    // Unsupported oscillator standby must remain an explicit failure.
+    assert!(chip.write8(SBYCR, 0x80).is_err());
+    assert_eq!(chip.read8(SBYCR).unwrap(), 0);
+}
+
+#[test]
+fn stopped_dmac_preserves_pending_transfer_until_module_clock_resumes() {
+    use crate::bus::{Bus, HIGH_WRAM, Memory, Processor};
+    let mut b = Bus::default();
+    b.write32(HIGH_WRAM, 0x12345678).unwrap();
+    b.write8(SBYCR, 0x10).unwrap();
+    for (off, value) in [
+        (0, HIGH_WRAM),
+        (4, HIGH_WRAM + 0x100),
+        (8, 1),
+        (12, 0x5A01),
+        (0x30, 1),
+    ] {
+        b.for_cpu(Processor::Master)
+            .write32(DMAC + off, value)
+            .unwrap();
+    }
+    for _ in 0..20 {
+        assert!(!b.advance_dma(Processor::Master));
+    }
+    assert_eq!(b.read32(HIGH_WRAM + 0x100).unwrap(), 0);
+    assert_eq!(b.read32(DMAC + 8).unwrap(), 1);
+    b.write8(SBYCR, 0).unwrap();
+    assert!(!b.advance_dma(Processor::Master));
+    assert_eq!(b.read32(HIGH_WRAM + 0x100).unwrap(), 0x12345678);
+    assert_eq!(b.read32(DMAC + 8).unwrap(), 0);
+    assert_eq!(b.read32(DMAC + 12).unwrap() & 3, 3);
 }

@@ -754,3 +754,155 @@ fn word_movem_sign_extends_loads_and_movep_transfers_only_selected_byte_lanes() 
     assert_eq!(c.state.d[1], 0x8000);
     assert_eq!(c.state.sr & 31, X | Z);
 }
+
+// MC68000UM §§2.4, 5.1/5.4, 6.3.9. Original bus-cycle and fault vectors:
+// completed writes must remain visible and the frame identifies the failed cycle.
+struct CycleRam {
+    ram: Ram,
+    writes: Vec<(u32, u16)>,
+    fail_read: Option<u32>,
+    fail_write: Option<u32>,
+}
+impl Memory for CycleRam {
+    fn read8(&self, a: u32) -> std::result::Result<u8, BusError> {
+        self.ram.read8(a)
+    }
+    fn read16(&self, a: u32) -> std::result::Result<u16, BusError> {
+        if self.fail_read == Some(a) {
+            return Err(BusError::Unmapped {
+                address: a,
+                width: 2,
+            });
+        }
+        self.ram.read16(a)
+    }
+    fn read32(&self, _: u32) -> std::result::Result<u32, BusError> {
+        panic!("68k must issue word cycles")
+    }
+    fn write8(&mut self, a: u32, v: u8) -> std::result::Result<(), BusError> {
+        self.ram.write8(a, v)
+    }
+    fn write16(&mut self, a: u32, v: u16) -> std::result::Result<(), BusError> {
+        self.writes.push((a, v));
+        if self.fail_write == Some(a) {
+            return Err(BusError::Unmapped {
+                address: a,
+                width: 2,
+            });
+        }
+        self.ram.write16(a, v)
+    }
+    fn write32(&mut self, _: u32, _: u32) -> std::result::Result<(), BusError> {
+        panic!("68k must issue word cycles")
+    }
+}
+fn cycle_fixture(words: &[u16]) -> (M68k, CycleRam) {
+    let (cpu, ram) = fixture(words);
+    (
+        cpu,
+        CycleRam {
+            ram,
+            writes: Vec::new(),
+            fail_read: None,
+            fail_write: None,
+        },
+    )
+}
+#[test]
+fn long_predecrement_bus_order_and_partial_write_fault_frames() {
+    // MOVE.L D0,-(A0), successful and either word cycle failing.
+    for fail in [None, Some(0x2002), Some(0x2000)] {
+        let (mut c, mut m) = cycle_fixture(&[0x2100]);
+        c.state.d[0] = 0x1234ABCD;
+        c.state.a[0] = 0x2004;
+        m.fail_write = fail;
+        c.step(&mut m);
+        assert_eq!(c.state.a[0], 0x2000);
+        assert_eq!(m.writes[0], (0x2002, 0xABCD));
+        if fail != Some(0x2002) {
+            assert_eq!(m.writes[1], (0x2000, 0x1234));
+        }
+        assert_eq!(
+            m.ram.read16(0x2002).unwrap(),
+            if fail == Some(0x2002) { 0 } else { 0xABCD }
+        );
+        if let Some(address) = fail {
+            assert_eq!(c.state.last_vector, Some(2));
+            assert_eq!(m.ram.read32(c.state.a[7] + 2).unwrap(), address);
+            assert_eq!(m.ram.read16(c.state.a[7]).unwrap(), 0xD); // supervisor data write
+            assert_eq!(c.state.instructions, 0);
+        } else {
+            assert_eq!(m.ram.read32(0x2000).unwrap(), 0x1234ABCD);
+            assert_eq!(c.state.instructions, 1);
+        }
+    }
+}
+#[test]
+fn second_longword_cycle_fault_records_its_own_address_and_preserves_first_write() {
+    for write in [false, true] {
+        let (mut c, mut m) = cycle_fixture(&[if write { 0x2080 } else { 0x2010 }]);
+        c.state.a[0] = 0x2000;
+        c.state.d[0] = 0x1234ABCD;
+        if write {
+            m.fail_write = Some(0x2002);
+        } else {
+            m.fail_read = Some(0x2002);
+        }
+        c.step(&mut m);
+        assert_eq!(c.state.last_vector, Some(2));
+        assert_eq!(m.ram.read32(c.state.a[7] + 2).unwrap(), 0x2002);
+        assert_eq!(
+            m.ram.read16(c.state.a[7]).unwrap(),
+            if write { 0xD } else { 0x1D }
+        );
+        assert_eq!(c.state.d[0], 0x1234ABCD);
+        assert_eq!(
+            m.ram.read16(0x2000).unwrap(),
+            if write { 0x1234 } else { 0 }
+        );
+    }
+}
+#[test]
+fn movem_and_exception_pushes_issue_predecrement_word_cycles_and_retain_progress() {
+    let (mut c, mut m) = cycle_fixture(&[0x48E0, 0xC000]); // MOVEM.L D0-D1,-(A0)
+    c.state.a[0] = 0x3000;
+    c.state.d[0] = 0x12345678;
+    c.state.d[1] = 0x89ABCDEF;
+    m.fail_write = Some(0x2FF8);
+    c.step(&mut m);
+    assert_eq!(
+        &m.writes[..4],
+        &[
+            (0x2FFE, 0xCDEF),
+            (0x2FFC, 0x89AB),
+            (0x2FFA, 0x5678),
+            (0x2FF8, 0x1234)
+        ]
+    );
+    assert_eq!(c.state.a[0], 0x2FF8);
+    assert_eq!(m.ram.read32(c.state.a[7] + 2).unwrap(), 0x2FF8);
+    let (mut c, mut m) = cycle_fixture(&[0x4E40]); // TRAP #0
+    c.step(&mut m);
+    assert_eq!(
+        &m.writes[..3],
+        &[(0xEFFE, 0x0102), (0xEFFC, 0), (0xEFFA, 0x2700)]
+    );
+    assert_eq!(c.state.last_vector, Some(32));
+}
+
+#[test]
+fn movem_postincrement_preserves_completed_loads_when_a_later_bus_cycle_faults() {
+    let (mut c, mut m) = cycle_fixture(&[0x4CD8, 0x0003]); // MOVEM.L (A0)+,D0-D1
+    c.state.a[0] = 0x2000;
+    c.state.d[1] = 0xDEADBEEF;
+    m.ram.write32(0x2000, 0x12345678).unwrap();
+    m.ram.write32(0x2004, 0x89ABCDEF).unwrap();
+    m.fail_read = Some(0x2006);
+    c.step(&mut m);
+    assert_eq!(c.state.d[0], 0x12345678);
+    assert_eq!(c.state.d[1], 0xDEADBEEF);
+    assert_eq!(c.state.a[0], 0x2004);
+    assert_eq!(c.state.instructions, 0);
+    assert_eq!(c.state.last_vector, Some(2));
+    assert_eq!(m.ram.read32(c.state.a[7] + 2).unwrap(), 0x2006);
+}

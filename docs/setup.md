@@ -56,6 +56,8 @@ python3 homebrew/star-collector/build.py --check
 python3 homebrew/prism-courier/build.py --check
 python3 tests/fixtures/build_dual_sh2.py --check
 python3 tests/fixtures/build_sh7604.py --check
+python3 tests/fixtures/build_bsc.py --check
+python3 tests/fixtures/build_tiles.py --check
 python3 tests/fixtures/build_scu.py --check
 python3 tests/fixtures/build_sound.py --check
 python3 tests/fixtures/build_smpc.py --check
@@ -260,3 +262,10 @@ When the display has focus, the first two connected Gamepads map standard button
 Gamepads with at least two axes expose the standard analog joystick X/Y/Z report;
 axes map from [-1,1] to [0,255], with missing Z at zero. Focus loss/pause releases
 buttons and centers X/Y, with Z zero. Keyboard controls remain independent.
+
+
+The original BSC and four-layer tile fixtures also execute in native and browser
+Wasm checks. They cover BCR1 processor identification, refresh interval IRQ/RTE,
+module stops, NBG0–3 pattern names/characters and actual Canvas output. The
+builders above verify the committed source/hex; license and reproducible ROM
+hashes are recorded in the [conformance matrix](hardware-conformance.md#additional-original-review-fixtures).

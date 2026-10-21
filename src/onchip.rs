@@ -2,6 +2,7 @@
 //! Original implementation from SH7604 §§5/9–13; no external emulator core.
 use crate::bus::BusError;
 use std::cell::{Cell, RefCell};
+mod bsc;
 mod divu;
 mod dma;
 mod sci;
@@ -12,6 +13,7 @@ use sci::Serial;
 pub use wdt::ResetRequest;
 use wdt::Watchdog;
 
+pub const SBYCR: u32 = 0xFFFF_FE91;
 pub const SCI: u32 = 0xFFFF_FE00;
 pub const WDT: u32 = 0xFFFF_FE80;
 pub const IPRA: u32 = 0xFFFF_FEE2;
@@ -27,6 +29,8 @@ pub const VCRC: u32 = 0xFFFF_FE66;
 pub const VCRD: u32 = 0xFFFF_FE68;
 
 pub struct OnChip {
+    bsc: bsc::Bsc,
+    module_stop: u8,
     division: RefCell<Division>,
     pub(super) dma: Dma,
     serial: Serial,
@@ -56,6 +60,8 @@ pub struct OnChip {
 impl Default for OnChip {
     fn default() -> Self {
         Self {
+            bsc: bsc::Bsc::default(),
+            module_stop: 0,
             division: RefCell::new(Division::default()),
             dma: Dma::default(),
             serial: Serial::default(),
@@ -85,7 +91,8 @@ impl Default for OnChip {
 
 impl OnChip {
     fn unsupported(address: u32, width: usize) -> BusError {
-        if (FRT..FRT + 10).contains(&address)
+        if address == SBYCR
+            || (FRT..FRT + 10).contains(&address)
             || (SCI..SCI + 6).contains(&address)
             || (WDT..WDT + 4).contains(&address)
             || (DIVU..DIVU + 0x18).contains(&address)
@@ -119,6 +126,9 @@ impl OnChip {
     }
 
     pub fn read8(&self, address: u32) -> Result<u8, BusError> {
+        if address == SBYCR {
+            return Ok(self.module_stop);
+        }
         if (SCI..SCI + 6).contains(&address) {
             return self
                 .serial
@@ -163,6 +173,36 @@ impl OnChip {
     }
 
     pub fn write8(&mut self, address: u32, value: u8) -> Result<(), BusError> {
+        if address == SBYCR {
+            // §14.2.1: module stops are effects, not merely latched bits. Full
+            // standby and MULT stop require additional CPU/oscillator behavior.
+            if value & 0xC8 != 0 {
+                return Err(Self::unsupported(address, 1));
+            }
+            let rising = value & !self.module_stop;
+            if rising & 0x10 != 0 && self.dma.active() {
+                return Err(Self::unsupported(address, 1));
+            }
+            if rising & 1 != 0 {
+                self.serial = Serial::default();
+            }
+            if rising & 2 != 0 {
+                let initial = Self::default();
+                self.tier = initial.tier;
+                self.status = initial.status;
+                self.observed.set(0);
+                self.counter = initial.counter;
+                self.compare = initial.compare;
+                self.capture = initial.capture;
+                self.temp.set(0);
+                self.control = initial.control;
+                self.output_control = initial.output_control;
+                self.outputs = initial.outputs;
+                self.divider = 0;
+            }
+            self.module_stop = value & 0x17;
+            return Ok(());
+        }
         if (SCI..SCI + 6).contains(&address) {
             return if self.serial.write(address - SCI, value) {
                 Ok(())
@@ -204,6 +244,9 @@ impl OnChip {
     pub fn read16(&self, address: u32) -> Result<u16, BusError> {
         if address & 1 != 0 {
             return Err(BusError::Unaligned { address, width: 2 });
+        }
+        if address >= bsc::BSC {
+            return self.bsc.read(address, 2).map(|v| v as u16);
         }
         if matches!(
             address,
@@ -265,8 +308,16 @@ impl OnChip {
         if held_reset || self.watchdog.reset_active() {
             return;
         }
-        self.division.get_mut().advance(clocks);
-        self.serial.advance(clocks);
+        self.bsc.advance(clocks);
+        if self.module_stop & 4 == 0 {
+            self.division.get_mut().advance(clocks);
+        }
+        if self.module_stop & 1 == 0 {
+            self.serial.advance(clocks);
+        }
+        if self.module_stop & 2 != 0 {
+            return;
+        }
         let divisor = match self.control & 3 {
             0 => 8,
             1 => 32,
@@ -309,6 +360,9 @@ impl OnChip {
     /// Saturn's 16-bit communication strobe contains both edges, so either
     /// IEDG selection captures. The strobe data has no data-transfer meaning.
     pub(crate) fn capture_strobe(&mut self) {
+        if self.module_stop & 2 != 0 {
+            return;
+        }
         self.capture = self.counter;
         self.status |= 0x80;
     }
@@ -339,6 +393,10 @@ impl OnChip {
                 (self.ipra >> 4) & 15,
                 self.watchdog.irq().then_some(self.vcrwdt >> 8),
             ),
+            (
+                (self.ipra >> 4) & 15,
+                self.bsc.interrupt().then_some(self.vcrwdt & 0x7F),
+            ),
             (self.iprb >> 12, sci_vector),
             ((self.iprb >> 8) & 15, (frt != 0).then_some(frt_vector)),
         ];
@@ -358,8 +416,14 @@ impl OnChip {
         if address & 3 != 0 {
             return Err(BusError::Unaligned { address, width: 4 });
         }
+        if address >= bsc::BSC {
+            return self.bsc.read(address, 4);
+        }
         if (DIVU..DIVU + 0x18).contains(&address) {
             let mut div = self.division.borrow_mut();
+            if self.module_stop & 4 != 0 && div.busy() {
+                return Err(Self::unsupported(address, 4));
+            }
             self.wait_clocks
                 .set(self.wait_clocks.get().saturating_add(div.remaining()));
             div.finish();
@@ -380,7 +444,13 @@ impl OnChip {
         if address & 3 != 0 {
             return Err(BusError::Unaligned { address, width: 4 });
         }
+        if address >= bsc::BSC {
+            return self.bsc.write(address, value);
+        }
         if (DIVU..DIVU + 0x18).contains(&address) {
+            if self.module_stop & 4 != 0 {
+                return Err(Self::unsupported(address, 4));
+            }
             let div = self.division.get_mut();
             self.wait_clocks
                 .set(self.wait_clocks.get().saturating_add(div.remaining()));
@@ -395,7 +465,9 @@ impl OnChip {
     }
 
     pub fn receive_serial(&mut self, byte: u8, errors: u8, multiprocessor: bool) {
-        self.serial.receive(byte, errors, multiprocessor);
+        if self.module_stop & 1 == 0 {
+            self.serial.receive(byte, errors, multiprocessor);
+        }
     }
     pub fn take_serial_output(&mut self) -> Option<u8> {
         self.serial.take_transmitted()
@@ -404,6 +476,9 @@ impl OnChip {
         if channel < 2 {
             self.dma.set_request_pin(channel, level);
         }
+    }
+    pub(crate) fn dma_stopped(&self) -> bool {
+        self.module_stop & 0x10 != 0
     }
     pub(crate) fn serial_dma_requests(&self) -> [bool; 2] {
         [self.serial.dma_request(1), self.serial.dma_request(2)]
@@ -423,27 +498,38 @@ impl OnChip {
     pub(crate) fn signal_nmi(&mut self) {
         self.dma.nmi();
     }
-    pub(crate) fn reset_from_watchdog(&mut self) {
+    pub(crate) fn reset_from_watchdog(&mut self, reset: ResetRequest) {
         // DIVU operand/vector registers retain values (§10.2); RSTCSR retains
         // the watchdog cause (§12.2.3). Other implemented registers reset.
+        let slave = self.bsc.read(bsc::BSC, 4).unwrap() & 0x8000 != 0;
+        let mut bsc = std::mem::take(&mut self.bsc);
+        if reset == ResetRequest::PowerOn {
+            bsc = bsc::Bsc::default();
+        }
+        bsc.set_slave(slave);
         let mut division = std::mem::take(self.division.get_mut());
         division.reset();
         let mut watchdog = std::mem::take(&mut self.watchdog);
         watchdog.reset_preserving_cause();
         *self = Self {
+            bsc,
             division: RefCell::new(division),
             watchdog,
             ..Self::default()
         };
     }
 
+    pub(crate) fn set_slave(&mut self, slave: bool) {
+        self.bsc.set_slave(slave);
+    }
     pub(crate) fn can_request_interrupt(&self) -> bool {
-        (self.iprb & 0x0F00 != 0 && self.tier & 0x8E != 0)
+        (self.ipra & 0xF0 != 0 && self.bsc.can_request_interrupt())
+            || (self.iprb & 0x0F00 != 0 && self.tier & 0x8E != 0)
             || (self.ipra & 0x00F0 != 0 && self.watchdog.enabled())
             || self.watchdog.can_reset()
             || (self.iprb & 0xF000 != 0 && self.serial.can_wake())
-            || self.division.borrow().busy()
-            || self.dma.active()
+            || (self.module_stop & 4 == 0 && self.division.borrow().busy())
+            || (self.module_stop & 0x10 == 0 && self.dma.active())
             || self.interrupt().is_some()
     }
 }

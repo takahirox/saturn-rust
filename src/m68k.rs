@@ -88,6 +88,7 @@ enum Ea {
     Data(usize),
     Address(usize),
     Memory(u32),
+    Predecrement(u32),
     Immediate(u32),
 }
 #[derive(Debug)]
@@ -167,11 +168,14 @@ impl M68k {
             Size::Word => u32::from(memory.read16(a).map_err(fault)?),
             Size::Long => {
                 u32::from(memory.read16(a).map_err(fault)?) << 16
-                    | u32::from(
-                        memory
-                            .read16(a.wrapping_add(2) & 0xFF_FFFF)
-                            .map_err(fault)?,
-                    )
+                    | u32::from(memory.read16(a.wrapping_add(2) & 0xFF_FFFF).map_err(|e| {
+                        Fault::Access {
+                            address: address.wrapping_add(2),
+                            write: false,
+                            instruction,
+                            address_error: matches!(e, BusError::Unaligned { .. }),
+                        }
+                    })?)
             }
         })
     }
@@ -196,10 +200,34 @@ impl M68k {
                 memory.write16(a, (value >> 16) as u16).map_err(fault)?;
                 memory
                     .write16(a.wrapping_add(2) & 0xFF_FFFF, value as u16)
-                    .map_err(fault)?;
+                    .map_err(|e| Fault::Access {
+                        address: address.wrapping_add(2),
+                        write: true,
+                        instruction: false,
+                        address_error: matches!(e, BusError::Unaligned { .. }),
+                    })?;
             }
         }
         Ok(())
+    }
+    // MC68000 predecrement bus sequencing: long writes issue the low word
+    // first, then the high word. A fault preserves the completed bus cycle.
+    fn write_predecrement(
+        &self,
+        memory: &mut impl Memory,
+        address: u32,
+        size: Size,
+        value: u32,
+    ) -> Result<()> {
+        if matches!(size, Size::Long) {
+            if address & 1 != 0 {
+                return self.write(memory, address, size, value);
+            }
+            self.write(memory, address.wrapping_add(2), Size::Word, value)?;
+            self.write(memory, address, Size::Word, value >> 16)
+        } else {
+            self.write(memory, address, size, value)
+        }
     }
     fn next(&mut self, memory: &impl Memory) -> Result<u16> {
         let value = self.read(memory, self.state.pc, Size::Word, true)? as u16;
@@ -256,7 +284,7 @@ impl M68k {
             }
             4 => {
                 self.state.a[r] = self.state.a[r].wrapping_sub(delta);
-                Ea::Memory(self.state.a[r])
+                Ea::Predecrement(self.state.a[r])
             }
             5 => {
                 let d = self.next(memory)? as i16 as i32 as u32;
@@ -300,7 +328,7 @@ impl M68k {
         Ok(match ea {
             Ea::Data(r) => self.state.d[r],
             Ea::Address(r) => self.state.a[r],
-            Ea::Memory(a) => self.read(memory, a, size, false)?,
+            Ea::Memory(a) | Ea::Predecrement(a) => self.read(memory, a, size, false)?,
             Ea::Immediate(v) => v,
         } & size.mask())
     }
@@ -317,6 +345,7 @@ impl M68k {
                 }
             }
             Ea::Memory(a) => self.write(memory, a, size, value)?,
+            Ea::Predecrement(a) => self.write_predecrement(memory, a, size, value)?,
             Ea::Immediate(_) => return Err(Fault::Vector(4, false)),
         }
         Ok(())
@@ -395,7 +424,7 @@ impl M68k {
     }
     fn push(&mut self, memory: &mut impl Memory, size: Size, value: u32) -> Result<()> {
         self.state.a[7] = self.state.a[7].wrapping_sub(size.bytes());
-        self.write(memory, self.state.a[7], size, value)
+        self.write_predecrement(memory, self.state.a[7], size, value)
     }
     fn pop(&mut self, memory: &impl Memory, size: Size) -> Result<u32> {
         let v = self.read(memory, self.state.a[7], size, false)?;
@@ -928,6 +957,7 @@ impl M68k {
             };
             a
         };
+        let original_base = self.state.a[reg];
         // Predecrement mask is reversed; on 68000 a listed base register stores its original value.
         for bit in 0..16 {
             if mask & (1 << bit) == 0 {
@@ -936,6 +966,7 @@ impl M68k {
             let n = if mode == 0x20 { 15 - bit } else { bit };
             if mode == 0x20 {
                 address = address.wrapping_sub(size.bytes());
+                self.state.a[reg] = address;
             }
             if load {
                 let v = size.extend(self.read(memory, address, size, false)?);
@@ -948,12 +979,23 @@ impl M68k {
                 let v = if n < 8 {
                     self.state.d[n]
                 } else {
-                    self.state.a[n - 8]
+                    if mode == 0x20 && n - 8 == reg {
+                        original_base
+                    } else {
+                        self.state.a[n - 8]
+                    }
                 };
-                self.write(memory, address, size, v)?;
+                if mode == 0x20 {
+                    self.write_predecrement(memory, address, size, v)?;
+                } else {
+                    self.write(memory, address, size, v)?;
+                }
             }
             if mode != 0x20 {
                 address = address.wrapping_add(size.bytes());
+                if mode == 0x18 {
+                    self.state.a[reg] = address;
+                }
             }
         }
         if mode == 0x20 || mode == 0x18 {

@@ -128,7 +128,11 @@ impl Default for Bus {
             raster: Raster::default(),
             scu_dma_phase: 0,
             backup: BackupRam::default(),
-            onchip: std::array::from_fn(|_| OnChip::default()),
+            onchip: std::array::from_fn(|i| {
+                let mut chip = OnChip::default();
+                chip.set_slave(i == 1);
+                chip
+            }),
             cache: std::array::from_fn(|_| RefCell::new(Cache::default())),
             slave_enabled: false,
         }
@@ -183,6 +187,7 @@ impl Bus {
     pub(crate) fn set_slave_enabled(&mut self, enabled: bool) {
         if !enabled {
             self.onchip[1] = OnChip::default();
+            self.onchip[1].set_slave(true);
             self.cache[1].get_mut().reset_control();
         }
         self.slave_enabled = enabled;
@@ -200,7 +205,7 @@ impl Bus {
     ) -> Option<crate::onchip::ResetRequest> {
         let chip = &mut self.onchip[processor as usize];
         let reset = chip.take_reset_request()?;
-        chip.reset_from_watchdog();
+        chip.reset_from_watchdog(reset);
         self.cache[processor as usize].get_mut().reset_control();
         Some(reset)
     }
@@ -209,7 +214,7 @@ impl Bus {
     }
     pub(crate) fn advance_dma(&mut self, processor: Processor) -> bool {
         let index = processor as usize;
-        if self.onchip[index].reset_active() {
+        if self.onchip[index].reset_active() || self.onchip[index].dma_stopped() {
             return false;
         }
         let requests = self.onchip[index].serial_dma_requests();

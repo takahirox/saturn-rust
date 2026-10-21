@@ -1,5 +1,5 @@
 //! Original software-visible VDP2 renderer; Sega ST-058-R2 §§3–6,8–13.
-//! NBG0/1 bitmap sampling and VDP1 composition are independent of guest identity.
+//! Normal tile/bitmap sampling and VDP1 composition are independent of guest identity.
 use crate::{
     bus::BusError,
     devices::{HEIGHT, VDP2, WIDTH},
@@ -50,9 +50,9 @@ impl Vdp2 {
     }
     fn supported(offset: usize) -> bool {
         matches!(offset,
-            0 | 4 | 0xE | 0x10 | 0x12 | 0x20 | 0x22 | 0x28 | 0x2C | 0x3C |
-            0x70..=0x8E | 0xAC | 0xAE | 0xC0..=0xD0 | 0xD4 | 0xD6 | 0xE0 |
-            0xE4 | 0xE6 | 0xEC | 0xF0..=0xF8 | 0x100..=0x108 | 0x110..=0x11E
+            0 | 4 | 0xE | 0x10 | 0x12 | 0x20 | 0x22 | 0x28 | 0x2A | 0x2C | 0x30..=0x36 | 0x3A | 0x3C | 0x40..=0x4E |
+            0x70..=0x96 | 0xAC | 0xAE | 0xC0..=0xD2 | 0xD4 | 0xD6 | 0xE0 |
+            0xE4 | 0xE6 | 0xEC | 0xF0..=0xFA | 0x100..=0x10A | 0x110..=0x11E
         ) && offset & 1 == 0
     }
     fn word(&self, offset: usize) -> u16 {
@@ -94,28 +94,40 @@ impl Vdp2 {
     }
     fn validate(&self) -> Result<(), String> {
         let unsupported = self.word(0) != 0x8000
-            || self.word(0x20) & !0x303 != 0
+            || self.word(0x20) & !0xF0F != 0
             || self.word(0xE) & !0x3000 != 0
             || self.word(0xE) >> 12 == 3
-            || self.word(0xEC) & !0x143 != 0
+            || self.word(0xEC) & !0x14F != 0
             || self.word(0xE0) & 0x10 != 0
             || self.word(0xD0) & 0x2020 != 0
+            || self.word(0xD2) & 0x2020 != 0
             || self.word(0xD4) & 0x2020 != 0
             || self.word(0xD6) & 0x2020 != 0;
         if unsupported {
             return Err("Unsupported VDP2 display, banking, layer or effects configuration".into());
         }
-        for layer in 0..2 {
+        for layer in 0..4 {
             if self.word(0x20) & (1 << layer) == 0 {
                 continue;
             }
-            let ctl = self.word(0x28) >> (layer * 8);
-            let format = ctl >> 4 & if layer == 0 { 7 } else { 3 };
-            if ctl & 2 == 0 || format > 4 || ctl & 1 != 0 {
-                return Err("Unsupported VDP2 mode: NBG0/1 currently require bitmap format".into());
+            let (ctl, format) = self.character_control(layer);
+            if format
+                > if layer == 0 {
+                    4
+                } else if layer == 1 {
+                    3
+                } else {
+                    1
+                }
+            {
+                return Err("Unsupported VDP2 character color format".into());
             }
-            if self.word(0x2C) >> (layer * 8) & 0x30 != 0 {
-                return Err("Unsupported VDP2 bitmap special priority/color calculation".into());
+            if layer < 2 && ctl & 2 != 0 {
+                if self.word(0x2C) >> (layer * 8) & 0x30 != 0 {
+                    return Err("Unsupported VDP2 bitmap special priority/color calculation".into());
+                }
+            } else if self.word(0x3A) >> (layer * 2) & 3 == 2 {
+                return Err("Reserved VDP2 plane size".into());
             }
         }
         // Palette sprite types 0/1 and mixed RGB are currently implemented.
@@ -171,12 +183,94 @@ impl Vdp2 {
         }
         !any || result
     }
+    fn character_control(&self, layer: usize) -> (u16, u16) {
+        if layer < 2 {
+            let ctl = self.word(0x28) >> (layer * 8);
+            (ctl, ctl >> 4 & if layer == 0 { 7 } else { 3 })
+        } else {
+            let ctl = self.word(0x2A) >> ((layer - 2) * 4);
+            (ctl & 1, ctl >> 1 & 1)
+        }
+    }
+    /// ST-058 §§4.6–4.8, figs.4.9/4.10, table4.8. A page covers 512²
+    /// pixels regardless of character/name size. Plane selection precedes page,
+    /// then character and cell addressing; character storage is always 32-byte units.
+    fn tile(
+        &self,
+        layer: usize,
+        ctl: u16,
+        format: u16,
+        x: usize,
+        y: usize,
+    ) -> (usize, usize, usize) {
+        let size = if ctl & 1 == 0 { 8 } else { 16 };
+        let pnc = self.word(0x30 + layer * 2);
+        let one = pnc & 0x8000 != 0;
+        let name_bytes = if one { 2 } else { 4 };
+        let columns = 512 / size;
+        let page_bytes = columns * columns * name_bytes;
+        let plane_size = self.word(0x3A) >> (layer * 2) & 3;
+        let pages_x = if plane_size == 0 { 1 } else { 2 };
+        let pages_y = if plane_size == 3 { 2 } else { 1 };
+        let plane_x = 512 * pages_x;
+        let plane_y = 512 * pages_y;
+        let plane = ((x / plane_x) & 1) | (((y / plane_y) & 1) << 1);
+        let map = self.word(0x40 + layer * 4 + (plane / 2) * 2) >> ((plane & 1) * 8) & 63;
+        let bank = self.word(0x3C) >> (layer * 4) & 7;
+        let selection = usize::from((bank << 6) | map);
+        let base = ((selection * page_bytes) & 0x7FFFF) & !(page_bytes * pages_x * pages_y - 1);
+        let px = x % plane_x;
+        let py = y % plane_y;
+        let page = py / 512 * pages_x + px / 512;
+        let name_index = (py % 512 / size) * columns + px % 512 / size;
+        let at = base + page * page_bytes + name_index * name_bytes;
+        let name = self.vword(at);
+        let (character, palette, flip) = if one {
+            let aux = pnc & 0x4000 != 0;
+            let number = usize::from(name & if aux { 0xFFF } else { 0x3FF });
+            let character = if size == 8 {
+                number | (usize::from(pnc & if aux { 0x1C } else { 0x1F }) << 10)
+            } else {
+                number << 2
+                    | (usize::from(pnc & if aux { 0x10 } else { 0x1C }) << 10)
+                    | usize::from(pnc & 3)
+            };
+            let palette = if format == 0 {
+                (usize::from(name >> 12) * 16) | (usize::from(pnc & 0xE0) << 3)
+            } else {
+                usize::from(name & 0x7000) >> 4
+            };
+            (character, palette, if aux { 0 } else { name >> 10 & 3 })
+        } else {
+            (
+                usize::from(self.vword(at + 2) & 0x7FFF),
+                usize::from(name & 0x7F) * 16,
+                name >> 14 & 3,
+            )
+        };
+        let mut cx = x % size;
+        let mut cy = y % size;
+        if flip & 1 != 0 {
+            cx = size - 1 - cx;
+        }
+        if flip & 2 != 0 {
+            cy = size - 1 - cy;
+        }
+        let cell = (cy / 8) * 2 + cx / 8;
+        let cell_bytes = [32, 64, 128, 128, 256][usize::from(format)];
+        (
+            (character * 32 + cell * cell_bytes) & 0x7FFFF,
+            (cy & 7) * 8 + (cx & 7),
+            palette,
+        )
+    }
     fn background(&self, layer: usize, mut x: usize, mut y: usize) -> Option<Layer> {
-        if self.word(0x20) & (1 << layer) == 0 || !self.window(self.word(0xD0) >> (layer * 8), x, y)
+        if self.word(0x20) & (1 << layer) == 0
+            || !self.window(self.word(0xD0 + (layer / 2) * 2) >> ((layer & 1) * 8), x, y)
         {
             return None;
         }
-        let priority = self.word(0xF8) >> (layer * 8) & 7;
+        let priority = self.word(0xF8 + (layer / 2) * 2) >> ((layer & 1) * 8) & 7;
         if priority == 0 {
             return None;
         }
@@ -186,22 +280,34 @@ impl Vdp2 {
             x -= x % mx;
             y -= y % my;
         }
-        let ctl = self.word(0x28) >> (layer * 8);
-        let width = if ctl & 8 == 0 { 512 } else { 1024 };
-        let height = if ctl & 4 == 0 { 256 } else { 512 };
-        let scroll = 0x70 + layer * 0x10;
-        let sx = ((u64::from(self.long(scroll)) + x as u64 * u64::from(self.long(scroll + 8)))
-            >> 16) as usize
-            % width;
-        let sy = ((u64::from(self.long(scroll + 4)) + y as u64 * u64::from(self.long(scroll + 12)))
-            >> 16) as usize
-            % height;
-        let pixel = sy * width + sx;
-        let base = usize::from(self.word(0x3C) >> (layer * 4) & 7) * 0x20000;
-        let format = ctl >> 4 & if layer == 0 { 7 } else { 3 };
+        let (ctl, format) = self.character_control(layer);
+        let (sx, sy) = if layer < 2 {
+            let scroll = 0x70 + layer * 0x10;
+            (
+                ((u64::from(self.long(scroll)) + x as u64 * u64::from(self.long(scroll + 8))) >> 16)
+                    as usize,
+                ((u64::from(self.long(scroll + 4)) + y as u64 * u64::from(self.long(scroll + 12)))
+                    >> 16) as usize,
+            )
+        } else {
+            (
+                x + usize::from(self.word(0x90 + (layer - 2) * 4) & 0x7FF),
+                y + usize::from(self.word(0x92 + (layer - 2) * 4) & 0x7FF),
+            )
+        };
+        let (base, pixel, palette) = if layer < 2 && ctl & 2 != 0 {
+            let width = if ctl & 8 == 0 { 512 } else { 1024 };
+            let height = if ctl & 4 == 0 { 256 } else { 512 };
+            (
+                usize::from(self.word(0x3C) >> (layer * 4) & 7) * 0x20000,
+                (sy % height) * width + sx % width,
+                usize::from(self.word(0x2C) >> (layer * 8) & 7) * 256,
+            )
+        } else {
+            self.tile(layer, ctl, format, sx, sy)
+        };
         let opaque = self.word(0x20) & (0x100 << layer) != 0;
         let offset = usize::from(self.word(0xE4) >> (layer * 4) & 7) * 256;
-        let palette = usize::from(self.word(0x2C) >> (layer * 8) & 7) * 256;
         let rgb = match format {
             0 => {
                 let byte = self.vram[(base + pixel / 2) & 0x7FFFF];
@@ -216,7 +322,7 @@ impl Vdp2 {
                 if index == 0 && !opaque {
                     return None;
                 }
-                self.palette(offset + palette + index)
+                self.palette(offset + (palette & 0x700) + index)
             }
             2 => {
                 let index = usize::from(self.vword(base + pixel * 2) & 2047);
@@ -244,7 +350,7 @@ impl Vdp2 {
         Some(Layer {
             rgb,
             priority,
-            ratio: self.word(0x108) >> (layer * 8) & 31,
+            ratio: self.word(0x108 + (layer / 2) * 2) >> ((layer & 1) * 8) & 31,
             calculate: self.word(0xEC) & (1 << layer) != 0,
             id: layer,
         })
@@ -323,6 +429,8 @@ impl Vdp2 {
                 };
                 let mut second = top;
                 for layer in [
+                    self.background(3, x, y),
+                    self.background(2, x, y),
                     self.background(1, x, y),
                     self.background(0, x, y),
                     sprites.map(|s| self.sprite(s, x, y)).transpose()?.flatten(),

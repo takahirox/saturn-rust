@@ -4,6 +4,62 @@
 criterion is complete; #17 must remain open.** Issues #11/#13/#15 are historical,
 administratively closed trackers and must not be reopened.
 
+## Review revisions: CPU bus effects, SH7604 controls and normal tile layers
+
+Related to #17. These changes address concrete parts of review findings 1, 2, 7
+and 13. They do not complete those findings or the umbrella acceptance criteria.
+The repository's other mandatory implementation requirements remain in force;
+no Issue/PR was created, closed, pushed or merged by this revision.
+
+- SH7604 BCR1 processor identification now follows each CPU's mode pin and
+  survives CPU resets. The BSC interval timer implements all seven clock
+  divisors, RTCNT/RTCOR, keyed RTCSR writes, observed-one/write-zero CMF, CMI
+  vector/priority arbitration and manual-reset retention. Changed memory-interface
+  configurations remain explicit errors while bus timing is incomplete.
+- SBYCR FRT/SCI module stops reset and gate those devices while retaining INTC
+  vectors. DIVU and DMAC clock gates preserve their state; a pending DMA copy
+  executes only after the gate is released. Oscillator standby/HIZ/MULT stop
+  remain unsupported. Native register/reset/gate vectors and an original guest
+  exercise effects rather than inert register readback.
+- MC68EC000 long predecrement and stack writes issue low-word then high-word
+  cycles. Fault frames identify the actual failed word address; completed writes
+  and MOVEM loads/address updates survive a later failure. Four independently
+  authored bus-spy tests cover successful/partial transfers and exception writes.
+  Prefetch-related fault PCs and instruction timing remain incomplete.
+- VDP2 now samples all four normal tile layers, one/two-word names, supplement
+  modes, 8×8/16×16 characters, supported palette/direct color formats, flips,
+  maps/planes/pages/wrap, integer NBG2/3 scrolling and normal-layer windows,
+  mosaic, priorities and blending. Seven native tests cover independently
+  expected pixels, all normal color formats and plane sizes, supplementary names,
+  transparency, composition and guest ROM mutation. Rotation/line effects,
+  cycle-pattern arbitration and other previously documented modes remain required.
+- Two original MIT fixtures, `bsc.s` and generated `tiles.s`, execute through the
+  ordinary external-ROM path in native and browser Wasm tests. The first uses
+  BCR1 to select master/slave mailbox and stack, handles independent CMI IRQ/RTE,
+  and repeats identical traces after reset. The second computes all VRAM/register
+  writes from SH-2 instructions; changing its ROM palette literal changes
+  native/Wasm pixels and production Canvas presentation. Their source builders,
+  hashes and primary references are linked in the
+  [conformance matrix](hardware-conformance.md#additional-original-review-fixtures).
+  CI checks both builders. These diagnostic ROMs do not replace the still-required
+  hardware exerciser disc.
+
+Validation on Rust stable 1.99.0:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`: passed,
+  **197 native tests**, including Star Collector and Prism Courier regressions.
+- Native all-target and Wasm Clippy with `-D warnings`: passed.
+- `sh scripts/build-web.sh`: passed with the documented rustup stable PATH and
+  matching wasm-bindgen 0.2.129. The initial shell selected Homebrew Rust without
+  its Wasm target; selecting the already installed rustup toolchain resolved it.
+- Both existing discs, all existing fixture builders, and the two new builders:
+  reproducibility checks passed. The packaged disc hashes are unchanged.
+- Extended `npm run test:browser`: passed in Chromium 145.0.7632.6, including the
+  new BSC and tile/palette/Canvas assertions plus existing input/privacy/WebAudio,
+  guest programs, Play/Debug, subpath packaging and gameplay checks. An initial
+  new test incorrectly expected Debug Run to present a frame; it now invokes the
+  app's production `advanceFrame` path before checking Canvas.
+
 ## PR #18 VDP1, bitmap composition and original playable disc (2026-10-21)
 
 The intended PR target remains **all of Issue #17**, with `Closes #17` retained

@@ -195,21 +195,23 @@ not turn those missing hardware paths into supported behavior.
 
 | Feature / reference | Implemented behavior and edges | Native | Browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- | --- |
-| Register/reset model, H §§2/4.2 | Independent CPUs; power-on 0/4 and watchdog manual-reset 8/12 vectors, SR=F0; 512-clock watchdog reset hold retains shared RAM/backup and clears CCR | boot.rs, DUAL, PERIPH | DUAL, PERIPH | External reset pin timing, BSC/UBC preservation and BCR1 CPU identification absent | Pending |
+| Register/reset model, H §§2/4.2 | Independent CPUs; power-on 0/4 and watchdog manual-reset 8/12 vectors, SR=F0; 512-clock watchdog reset hold retains shared RAM/backup and clears CCR | boot.rs, DUAL, PERIPH | DUAL, PERIPH | External reset pin timing and UBC preservation remain; BSC retention/identity now covered by BSCG | Pending |
 | General/slot illegal, H §4.5 | Vectors 4/6, correct saved PC, no retirement | exception | ROM | No double-fault bus handling | Pending |
 | TRAPA/RTE, H §§4.5/4.7 | Guest stack layout and handler return | exception, sh2_system.rs | ROM | Non-FRT system IRQ sources absent | Pending |
 | CPU address errors, H §§4.3/4.6/4.7/4.8.3, Tables 4.6/4.10/4.11 | Vector 9, operand/fetch checks, next-PC/SR, auto-update and deferral; misaligned stacking completes original exception then accepts address error without recursion | AE, AEROM, PERIPH | AEROM, PERIPH | Invalid data and unaligned stacking bytes are deterministic policies rather than physical bus signals; misaligned VBR unsupported | Pending |
 | Maskable IRQ/NMI, H §4.4 | Explicit caller-supplied level/vector, I mask, NMI vector 11, stack/wake | sleep, special | — | Missing device priority selection, assertion/acknowledgment, NMI signal latch | Pending |
 | Deferral, H §4.6 | IRQ/NMI defer through delayed successors and control/system successors; address errors defer only through delayed successors | special, AE | ROM, AEROM | No pipeline-cycle timing or device IRQ selection; unfetchable successor policy below | Pending |
 | Cache/address regions, H §8, tables 8.2–8.4, figs.8.10/8.11 | CPU-local 4 KiB/four-way cache, write-through, no snooping; ID/OD, pseudo-LRU, two-way RAM, P1 bypass, P2 purge, P3 address array, P6 data array; TAS external read | CACHE, PERIPH; `Cache` and `CpuBus` | PERIPH | Pipeline/fill-cycle/bus arbitration timing absent; RAM mirrors remain missing | Pending |
-| On-chip INTC, H §5.3, table 5.4 | IPRA/IPRB, VCRA–D/VCRWDT, DIVU/DMA vectors, source priorities/tie order and guest acknowledgement | FRT, DUAL, PERIPH | DUAL, PERIPH | External ICR/IRL arbitration, refresh and UBC sources missing | Pending |
+| On-chip INTC, H §5.3, table 5.4 | IPRA/IPRB, VCRA–D/VCRWDT, DIVU/DMA vectors, source priorities/tie order and guest acknowledgement | FRT, DUAL, PERIPH | DUAL, PERIPH | External ICR/IRL arbitration and UBC sources missing; refresh interval CMI now arbitrates at WDT priority | Pending |
 | FRT, H §§11.1–11.5, tables 11.2/11.3 | FRC, OCRA/B, capture, divisors, overflow/compare/clear, TIER/FTCSR, shared TEMP, output level state and IRQ; Saturn capture wires (ST-202 §1.2) | FRT, DUAL | FRT (compare), DUAL (capture) | Internal/external pin synchronization, WAIT, clock-switch edges and contention timing absent; no external clock source or output-pin routing | Pending |
 | Watchdog, H §§12.2–12.3, table 12.2 | Keyed byte-register/word-write protocol, eight divisors, interval IRQ, read-before-clear, watchdog reset selection/cause and 512-clock CPU hold | PERIPH; `Watchdog` | PERIPH | External WDTOVF pin routing and sub-turn event ordering missing | Pending |
 | SCI, H §§13.2–13.3 | SMR/BRR/SCR/TDR/SSR/RDR, timed internal-clock transmission, external completed-character input, overrun/framing/parity flags, IRQs and DMA handshakes | PERIPH; `Serial` | PERIPH (transmit completion) | No external clock-edge adapter or physical serial pin waveform; multiprocessor and format combinations lack exhaustive integration coverage | Pending |
 | On-chip DMAC, H §§9.2–9.3 | Both channels; byte/word/long/16-byte transfers; fixed/increment/decrement addresses; auto/DREQ/SCI requests; fixed/round-robin channel selection, TE/AE/NMIF acknowledgement, vectors/IRQ | PERIPH; `Dma` and `Bus::advance_dma` | PERIPH (copy/end IRQ/error 10/no cache snoop) | Single-address DACK mode rejected explicitly; CPU/refresh arbitration, burst/cycle-steal timing and wait states missing | Pending |
 | DIVU, H §§10.2–10.4 | Signed 32/32 and 64/32 quotient/remainder, 39/6-clock completion/interlock, DVCR/VCRDIV, sticky overflow and IRQ | PERIPH; `Division` | PERIPH (signed 32/64-bit normal division) | Six-cycle intermediate overflow state is not modeled: deterministic saturation and input-high preservation are used even with OVFIE=1; no full conformance claim | Pending |
-| BSC/UBC/standby, H bus/break/power chapters | None | — | — | Software-visible control/register behavior missing | Pending |
-| Slave SH-2, [Dual CPU User's Guide][DUALREF] §§1/3/4, [SMPC] table 1.1 | Independent interpreter/registers/stacks/peripherals/cache; shared bus, SSHON/SSHOFF, bidirectional capture IRQs | DUAL, CACHE, PERIPH | DUAL, PERIPH | BCR1 identity, bus contention and full CPU clock accounting absent | Pending |
+| BSC identification/interval timer, H §§7.1.4/7.2/7.5.7/7.11.1 | BCR1.MASTER per CPU, read-only word lanes, keyed long writes, RTCNT/RTCOR/RTCSR, all clock divisors, CMF read-before-clear, CMI vector/priority and manual-reset retention; `Bsc::read/write/advance`, `OnChip::interrupt` | [BSCG](../tests/bsc.rs), [register/reset vectors](../src/onchip/peripheral_tests.rs), [BSC vectors](../src/onchip/bsc.rs) | BSCG | Changed external memory-interface settings explicitly rejected; refresh bus ownership/waits remain | Pending |
+| Module stop, H §14.2.1 | SBYCR SCI/FRT reset and clock gating, preserved INTC vectors, DIVU/DMAC gating; `OnChip::write8/advance_clocks`, `Bus::advance_dma` | [stop/resume and DMA vectors](../src/onchip/peripheral_tests.rs), BSCG | BSCG (FRT/SCI) | Oscillator standby, HIZ and MULT stop explicitly rejected; wake settling/clock switching remain | Pending |
+| UBC, H §6 | None | — | — | Break matching, bus observation and exception behavior missing | Pending |
+| Slave SH-2, [Dual CPU User's Guide][DUALREF] §§1/3/4, [SMPC] table 1.1 | Independent interpreter/registers/stacks/peripherals/cache; shared bus, SSHON/SSHOFF, bidirectional capture IRQs | DUAL, CACHE, PERIPH | DUAL, PERIPH | Bus contention and full CPU clock accounting absent; BCR1 identity covered by BSCG | Pending |
 
 ## MC68EC000 instruction families
 
@@ -229,8 +231,16 @@ every family through Wasm.
 
 These are functional semantics, not complete timing conformance. Effective-address
 and data-dependent instruction cycle costs, bus contention, prefetch/pipeline
-fault PCs, long predecrement bus-cycle ordering and physical RESET pulse duration
-remain unverified. The interpreter uses bounded functional clock budgets. The
+fault PCs and physical RESET pulse duration remain unverified.
+Long predecrement/stack write order, failing word-cycle addresses and MOVEM
+partial transfer side effects now have independent native bus-spy vectors
+([MC68000UM][68UM] §§2.4/5/6.3.9;
+[`M68k::write_predecrement/read/write/movem`](../src/m68k.rs),
+[`long_predecrement_bus_order_and_partial_write_fault_frames`,
+`second_longword_cycle_fault_records_its_own_address_and_preserves_first_write`,
+`movem_and_exception_pushes_issue_predecrement_word_cycles_and_retain_progress`,
+`movem_postincrement_preserves_completed_loads_when_a_later_bus_cycle_faults`](../src/m68k/tests.rs)).
+These fault-cycle cases do not yet have browser guest evidence. The interpreter uses bounded functional clock budgets. The
 complete CPU/scheduler acceptance criteria remain pending.
 
 | Family | Manual entry (68, MC68000 subset) | Implementation | Native / browser | Status |
@@ -388,13 +398,13 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 | VDP2 CRAM, [VDP2] §3.4 | Modes 0/1 RGB555 and 2 RGB888; mode-0 upper-half mirror; palette offsets | VIDEO | — | Full lane/alias and guest/browser palette corpus | Pending |
 | TVMD/TVSTAT, [VDP2] §2.2 | 320×224 noninterlace, display enable, clocked blanking and SCU edges | VIDEO, TIME | PRISM, SC, SCUROM | Other resolutions, PAL/interlace, beam status/latches | Pending |
 | NBG0 bitmap, [VDP2] §§4–6 | 4/8/11-bit palette, RGB555/RGB888, bitmap dimensions/base, transparency, fixed-point scroll/zoom | VIDEO | PRISM, SC (RGB555, unit zoom) | Full format/dimension/zoom vectors and browser coverage | Pending |
-| NBG0–3 tile/character, [VDP2] §4 | None | — | — | Pattern names, maps/planes and character formats | Pending |
-| NBG1–3 bitmap/layer control, [VDP2] §§4–6 | NBG1 bitmap composition, formats applicable to NBG1, scroll/zoom/priority | VIDEO | — | NBG2/3 and complete layer restrictions/guest coverage | Pending |
+| NBG0–3 tile/character, [VDP2] §§4.4–4.8, figs.4.9/4.10, table4.8 | `Vdp2::character_control/tile/background`: one/two-word names, both supplement modes, 8×8/16×16 characters, 4/8/11-bit palette and RGB555/888 where applicable, flips, plane/page alignment/maps/wrap | [seven independent pixel/guest tests](../tests/video_tiles.rs) | TILE (four layers, names, palette/VRAM, window, mutation) | VRAM cycle arbitration, bandwidth/layer restrictions and exhaustive guest corpus remain | Pending |
+| NBG1–3 bitmap/layer control, [VDP2] §§4–6 | NBG1 bitmap composition, formats applicable to NBG1, scroll/zoom/priority | VIDEO | — | Complete layer restrictions and guest format corpus; NBG2/3 tile layers now exercised by TILE | Pending |
 | Rotation backgrounds, [VDP2] §7 | None | — | — | RBGs, parameters, coefficients and switching | Pending |
 | Line/vertical-cell scroll, [VDP2] §5 | None | — | — | Per-line/cell effects/tables | Pending |
-| Windows/line windows, [VDP2] §8 | W0/W1 rectangles, inside/outside, AND/OR on bitmap/sprite/color calculation | VIDEO | — | Line and sprite windows; full guest corpus | Pending |
-| Mosaic, [VDP2] §5 | NBG0/1 horizontal/vertical grouping | VIDEO | — | All independent vertical/layer/guest vectors | Pending |
-| Priority/composition, [VDP2] §§9–10 | Two backgrounds and VDP1; sprite types 0/1 and mixed RGB; priority-0 disable/ties | VIDEO, PRISM | PRISM | All sprite types, layers and special priorities | Pending |
+| Windows/line windows, [VDP2] §8 | W0/W1 rectangles, inside/outside, AND/OR on normal tile/bitmap/sprite/color calculation | VIDEO | — | Line and sprite windows; full guest corpus | Pending |
+| Mosaic, [VDP2] §5 | NBG0–3 horizontal/vertical grouping | VIDEO | — | All independent vertical/layer/guest vectors | Pending |
+| Priority/composition, [VDP2] §§9–10 | Four normal backgrounds and VDP1; sprite types 0/1 and mixed RGB; priority-0 disable/ties | VIDEO, PRISM | PRISM | All sprite types, layers and special priorities | Pending |
 | Color calculation/offset/shadow, [VDP2] §§11–13 | Ratio/additive blending, sprite conditions/ratios and signed offsets | VIDEO | PRISM (replace only) | VDP2 shadows, palette color-MSB condition, extended/special effects and complete guest corpus | Pending |
 | Back/line color, [VDP2] §§3–4 | Back-screen single/per-line VRAM table, signed offset | VIDEO | PRISM (back underneath bitmap) | Line-color screen and full per-line guest corpus | Pending |
 | Combined VDP1/VDP2 pipeline | Sprite/background overlap, priority, transparency, game result/restart, texture mutation changes actual pixels | VIDEO, PRISM | PRISM + Canvas assertions | Remaining modes/effects and timing above | Pending |
@@ -478,7 +488,7 @@ no-op CPU/device implementations cannot satisfy those assertions.
 4. Complete SCU A/B-bus wait-state/arbitration and device routes, DMA boundary/
    trigger coverage, DSP conditional/pipeline/bank-conflict and program-DMA evidence.
    SCUROM now executes real DMA/DSP/timer/IRQ operations but is subset evidence.
-5. Remaining VDP1 edge/scanout/timing conformance and VDP2 tile/rotation/line/
+5. Remaining VDP1 edge/scanout/timing conformance and VDP2 tile timing/rotation/line/
    window/shadow/display modes, with complete independent guest and browser
    coverage. VIDEO and PRISM provide actual subset pixel/composition evidence.
 6. Runtime CD block, BIN/CUE/mixed tracks, complete BIOS HLE ABI and full synthetic
@@ -548,7 +558,8 @@ A full strobe is modeled as a capture for either selected edge; electrical pulse
 width and synchronization are not modeled. Captures while the slave is held in
 reset are ignored. Other address mirrors and subcycle contention remain pending.
 FTOA/B output state is computed but not connected to external devices.
-No BSC master/slave identification or retail BIOS boot is claimed.
+BCR1 master/slave identification is independently tested by BSCG. Retail BIOS
+boot remains unconfirmed.
 
 ## Address-error scope and deterministic deviations
 
@@ -643,3 +654,29 @@ schedules readiness one millisecond before VBlank-in. Firmware polling jitter,
 physical serial handshakes and other television/clock modes are not claimed.
 Battery RTC/SMEM survive volatile machine resets. This is additional implementation
 and executable evidence; all missing umbrella requirements above remain mandatory.
+
+
+## Additional original review fixtures
+
+**BSCG** is [bsc.s](../tests/fixtures/bsc.s), built and checked by
+[build_bsc.py](../tests/fixtures/build_bsc.py), with
+[native integration](../tests/bsc.rs) and the extended
+[browser suite](../scripts/browser-smoke.mjs). Both CPUs execute the same reset
+entry, select their own mailbox and stack from BCR1.MASTER, take separate refresh
+CMI exceptions and return with RTE. Reset repeats produce the same traces.
+Its expanded 512 KiB ROM SHA-256 is
+`edb24ebd073a9dcc7d9993df2d0229f75b63a5e1facc3b4da8c4af0321bdaa6b`.
+
+**TILE** is [tiles.s](../tests/fixtures/tiles.s), generated by
+[build_tiles.py](../tests/fixtures/build_tiles.py), with
+[native pixel/guest vectors](../tests/video_tiles.rs) and the extended browser
+suite. SH-2 instructions write all four normal layers' character RAM, names,
+palettes, priorities and a window. Changing only a ROM palette literal changes
+native/Wasm pixels; the browser presents through the app's production frame path
+and asserts Canvas pixels. Its expanded ROM SHA-256 is
+`7a68d198cee6cb7295cb013d80b2c030791d6140101d813807ff1ea89916df9d`.
+Both fixtures are original, covered by the adjacent MIT license, reproducible in
+CI, and contain no firmware/SDK objects. They are diagnostics; the required
+hardware exerciser disc and the other umbrella criteria remain outstanding.
+
+[68UM]: https://www.nxp.com/docs/en/reference-manual/MC68000UM.pdf

@@ -33,6 +33,8 @@ jobs:
           python3 homebrew/prism-courier/build.py --check
           python3 tests/fixtures/build_dual_sh2.py --check
           python3 tests/fixtures/build_sh7604.py --check
+          python3 tests/fixtures/build_bsc.py --check
+          python3 tests/fixtures/build_tiles.py --check
           python3 tests/fixtures/build_scu.py --check
           python3 tests/fixtures/build_sound.py --check
           python3 tests/fixtures/build_smpc.py --check

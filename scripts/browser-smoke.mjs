@@ -399,6 +399,71 @@ try {
   assert.equal(peripheralResult.pending, false);
   await page.locator("#reset").click();
   assert.deepEqual(await peripherals(), peripheralResult);
+  // Original BSC guest identifies both CPUs through BCR1.MASTER and executes
+  // independent refresh handlers and module-stop/resume through real Wasm MMIO.
+  const bscRom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/bsc.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [offset, ...words] = line.trim().split(/\s+/).map((word) => parseInt(word, 16));
+    words.forEach((word, i) => bscRom.writeUInt16BE(word, offset + i * 2));
+  }
+  await page.locator("#bios").setInputFiles({ name: "original-bsc.bin", mimeType: "application/octet-stream", buffer: bscRom });
+  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  const bscTrace = () => page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    emulator.run_steps(3000);
+    return { mailboxes: [0x06008000, 0x06008040].map((base) =>
+      Array.from({length: 8}, (_, i) => emulator.read_long(base + i * 4))),
+      exceptions: [emulator.exception_count(), emulator.slave_exception_count()],
+      stacks: [emulator.registers()[15], emulator.slave_registers()[15]],
+      clocks: emulator.peripheral_clocks() };
+  });
+  const bscFirst = await bscTrace();
+  for (const [i, id] of [0x3F0, 0x83F0].entries()) {
+    const box = bscFirst.mailboxes[i];
+    assert.deepEqual(box.slice(0, 6), [id, id, 0xD0, 1, 0, 0]);
+    assert(box[6] > 0);
+    assert.equal(box[7], 0x600D);
+  }
+  assert.deepEqual(bscFirst.exceptions, ["1", "1"]);
+  assert.deepEqual(bscFirst.stacks, [0x06100000, 0x060FE000]);
+  await page.locator("#reset").click();
+  assert.deepEqual(await bscTrace(), bscFirst);
+  // Four normal tile backgrounds come exclusively from guest instruction/MMIO
+  // writes. Mutate the guest palette literal and assert Wasm plus real Canvas.
+  const tileRom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/tiles.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [offset, ...words] = line.trim().split(/\s+/).map((word) => parseInt(word, 16));
+    words.forEach((word, i) => tileRom.writeUInt16BE(word, offset + i * 2));
+  }
+  for (const mutated of [false, true]) {
+    const image = Buffer.from(tileRom);
+    if (mutated) {
+      const at = image.indexOf(Buffer.from([0, 0, 0, 31]));
+      assert(at >= 0);
+      image.writeUInt32BE(0x3FF, at);
+    }
+    await page.locator("#bios").setInputFiles({ name: "original-tiles.bin", mimeType: "application/octet-stream", buffer: image });
+    await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+    await page.locator("#count").fill("3000");
+    await page.locator("#run").click();
+    assert.equal(await value("error"), "");
+    const pixels = await page.evaluate(async () => {
+      const { emulator, advanceFrame } = await import("./app.js");
+      advanceFrame(); // Present through the same production path used by Play.
+      const frame = emulator.framebuffer();
+      const canvas = document.getElementById("screen").getContext("2d");
+      return { done: emulator.read_long(0x06009000),
+        wasm: [0,8,16,24,32,36,40].map((x) => Array.from(frame.slice(x*4,x*4+4))),
+        canvas: [0,8,16,24,32,36,40].map((x) => Array.from(canvas.getImageData(x,0,1,1).data)) };
+    });
+    assert.equal(pixels.done, 0x600D);
+    const expected = [mutated ? [255,255,0,255] : [255,0,0,255], [0,255,0,255],
+      [0,0,255,255], [0,0,255,255], [255,255,255,255], [0,0,0,255], [0,0,0,255]];
+    assert.deepEqual(pixels.wasm, expected);
+    assert.deepEqual(pixels.canvas, expected);
+  }
   // SCU guest executes DSP arithmetic + external DMA, direct/indirect DMA,
   // and raster timer handlers through the actual Wasm machine and UI BIOS path.
   const scuRom = Buffer.alloc(524288);
@@ -1128,7 +1193,7 @@ try {
   await missingBuild.waitForFunction(() => document.getElementById("status").textContent === "Initialization failed");
   assert.match(await missingBuild.locator("#error").textContent(), /Build web\/pkg and serve/);
   assert.equal(await missingBuild.locator("#reset").isDisabled(), true);
-  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, SH-2-uploaded MC68EC000 PCM computation/SCSP timer IRQ/stereo samples and WebAudio worklet delivery/underflow/mute/blocked states, SMPC RTC/SMEM/INTBACK IRQs and synthetic digital+analog Gamepad/focus release, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation; Prism Courier original disc, VDP1 sprite/polygons + VDP2 composition/Canvas, draw-end IRQ, 68k stereo + actual AudioWorklet, keyboard collision/win/restart, changed-disc texture mutation.`);
+  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, BCR1 processor identity/refresh IRQ/module stops/reset repeatability, four-layer VDP2 tile guest/palette mutation/Wasm and production Canvas presentation, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, SH-2-uploaded MC68EC000 PCM computation/SCSP timer IRQ/stereo samples and WebAudio worklet delivery/underflow/mute/blocked states, SMPC RTC/SMEM/INTBACK IRQs and synthetic digital+analog Gamepad/focus release, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation; Prism Courier original disc, VDP1 sprite/polygons + VDP2 composition/Canvas, draw-end IRQ, 68k stereo + actual AudioWorklet, keyboard collision/win/restart, changed-disc texture mutation.`);
 } finally {
   if (browser) await browser.close();
   if (server?.pid && server.exitCode === null) {
