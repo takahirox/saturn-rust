@@ -126,3 +126,54 @@ fn guest_executes_division_dma_serial_timer_irq_manual_reset_and_stacking_error(
         );
     }
 }
+
+#[test]
+fn both_cpus_execute_overflow_intermediates_divu_irq_and_synchronized_ubc() {
+    // H §§10.2–10.4/table10.2. All observations are guest reads and stores;
+    // the host only loads the synthetic ROM and checks its independent table.
+    let original = load(include_str!("fixtures/divu.hex"));
+    let expected: Vec<u32> = include_str!("fixtures/divu.tsv")
+        .lines()
+        .map(|word| u32::from_str_radix(word, 16).unwrap())
+        .collect();
+    for changed in [false, true] {
+        let mut bios = original.clone();
+        if changed {
+            let mut count = 0;
+            for i in (0..bios.len() - 3).step_by(4) {
+                if bios[i..i + 4] == 0x9ABC_DEF0u32.to_be_bytes() {
+                    bios[i..i + 4].copy_from_slice(&0x9ABC_DEF1u32.to_be_bytes());
+                    count += 1;
+                }
+            }
+            assert!(count > 0);
+        }
+        let mut machine = Machine::new();
+        for _ in 0..2 {
+            machine.reset(Boot::ExternalBios(&bios)).unwrap();
+            machine.run_steps(10000).unwrap();
+            for base in [0x06012000, 0x06013000] {
+                for (i, &value) in expected.iter().enumerate() {
+                    // The changed zero-divisor dividend shifts left by three;
+                    // only the exposed partial quotient changes (OVFIE=1).
+                    let value = if changed && value == 0xD5E6_F787 {
+                        value + 8
+                    } else {
+                        value
+                    };
+                    assert_eq!(
+                        machine.bus().read32(base + i as u32 * 4),
+                        Ok(value),
+                        "CPU mailbox {base:08X}, word {i}, mutation {changed}"
+                    );
+                }
+            }
+            assert_eq!(machine.cpu_state().exceptions, 2);
+            assert_eq!(machine.slave_state().exceptions, 2);
+            assert_eq!(machine.cpu_state().status, CpuStatus::Sleeping);
+            assert_eq!(machine.slave_state().status, CpuStatus::Sleeping);
+            assert_eq!(machine.cpu_state().r[15], 0x060FF000);
+            assert_eq!(machine.slave_state().r[15], 0x060FE000);
+        }
+    }
+}

@@ -35,6 +35,7 @@ jobs:
           python3 homebrew/hardware-lab/build.py --check
           python3 tests/fixtures/build_dual_sh2.py --check
           python3 tests/fixtures/build_sh7604.py --check
+          python3 tests/fixtures/build_divu.py --check
           python3 tests/fixtures/build_bsc.py --check
           python3 tests/fixtures/build_bsc_waits.py --check
           python3 tests/fixtures/build_intc.py --check
@@ -64,6 +65,7 @@ jobs:
           python3 tests/fixtures/build_m68k_families.py --check
           python3 tests/fixtures/build_sound_io.py --check
           python3 tests/fixtures/build_smpc.py --check
+          python3 tests/fixtures/build_smpc_status.py --check
           python3 tests/fixtures/build_controller.py --check
       - name: Check Rust
         run: |

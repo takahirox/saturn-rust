@@ -1631,3 +1631,51 @@ the same PR Draft, preserve its intended Closes #17 outcome, leave #17 open and
 do not merge. No scope is waived, no replacement tracker is created, no
 historical Issue is reopened, and no human/proprietary-firmware/live-site or
 external-workflow gate is introduced.
+
+## Review correction: DIVU, UBC, peripheral deadlines and status
+
+Related to #17. Implemented DIVU overflow intermediate quotient/remainder states,
+OVFIE-dependent saturation, the UBC configuration delay/read barrier and slave
+UBC interrupt acknowledgement. Added CPU-local FRT/BSC/SCI/DIVU/WDT deadlines and
+fixed loss of clocks preceding watchdog reset assertion. SMPC now reports all
+eight documented board regions and independent CD/sound reset signals. SCSP
+DEXE=0 no longer clears an active DMA's busy flag early.
+
+Original MIT synthetic guests execute both CPUs' DIVU and UBC paths, with 164
+independent result words per CPU, repeated reset and changed-dividend checks.
+The original SMPC status guest executes real commands for every region and
+uploads an executing 68k STOP program. The existing original 68k DMA/MIDI guest
+now writes DEXE=0 before polling completion. Native and browser Wasm assertions
+exercise the resulting register, IRQ, stack and data effects. Primary sections,
+implementation/test links and reproducible hashes are recorded in the
+[conformance inventory](hardware-conformance.md#divu-ubc-peripheral-deadlines-and-smpc-status-corrections).
+
+Validation on Rustup stable Rust/Cargo **1.99.0**, Node **24.12.0**:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`: pass;
+  **395 native tests**, zero failed/ignored (**216 unit, 179 integration**).
+- Native all-target and Wasm Clippy with `-D warnings`: pass. Two UBC style
+  diagnostics found during validation were corrected before the passing runs.
+- `sh scripts/build-web.sh`: pass with wasm-bindgen-cli **0.2.129** from the
+  existing Rustup tool installation. Original Star Collector, Prism Courier and
+  Hardware Lab media bytes remain unchanged.
+- All **38** CI reproducibility commands, JavaScript syntax and Git whitespace
+  checks pass; **273** local documentation link targets exist.
+- Seven deliberate source regressions are rejected by the native tests:
+  saturated overflow despite OVFIE, immediate UBC comparison changes, wrong-CPU
+  UBC acknowledgement, discarded pre-reset clocks, fixed-Japan region status,
+  missing CD-reset status, and early-cleared SCSP DMA busy. All source mutations
+  were restored before final validation.
+- The complete extended `npm run test:browser` passes in Chromium
+  **145.0.7632.6** under `/saturn-rust/`, including both new guest fixtures,
+  all 64-bit divisor sign combinations, region/reset reports, the revised 68k
+  DMA guest, and all existing demos, Canvas, AudioWorklet, input/focus, packaging
+  and local-file privacy checks. No required browser test is skipped.
+
+The mandatory umbrella implementation and coverage remain incomplete. These
+corrections do not establish coordinated CPU/bus arbitration, complete 68k bus
+sequencing, full video/audio/CD/BIOS/HLE/backup services or the remaining SMPC
+contracts. The existing mandatory inventory stays in force. No Issue is closed,
+no scope is waived, and no human testing, personal firmware, live-site inspection
+or external-workflow approval gate is introduced. No remote CI or deployment
+result is claimed by these local checks.

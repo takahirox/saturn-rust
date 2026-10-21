@@ -126,6 +126,17 @@ impl Bsc {
     pub fn can_request_interrupt(&self) -> bool {
         self.registers[4] & 0x40 != 0 && self.registers[4] & 0x38 != 0
     }
+    pub fn clocks_to_event(&self) -> u32 {
+        let divisor =
+            [0, 4, 16, 64, 256, 1024, 2048, 4096][((self.registers[4] >> 3) & 7) as usize];
+        if divisor == 0 {
+            return u32::MAX;
+        }
+        let ticks = self.registers[6].wrapping_sub(self.registers[5]) & 255;
+        (u32::from(if ticks == 0 { 256 } else { ticks }) * divisor)
+            .saturating_sub(self.phase)
+            .max(1)
+    }
     pub fn advance(&mut self, clocks: u32) {
         let select = (self.registers[4] >> 3) as usize & 7;
         let divisor = [0, 4, 16, 64, 256, 1024, 2048, 4096][select];

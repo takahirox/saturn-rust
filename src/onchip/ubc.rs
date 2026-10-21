@@ -1,8 +1,20 @@
 //! SH7604 §§6.2–6.3, tables 6.1–6.4: user-break comparison logic.
 //! Comparisons observe architectural CPU/DMAC accesses, including cache hits.
 use crate::bus::BusError;
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 
 pub const BASE: u32 = 0xFFFF_FF40;
+
+#[derive(Clone, Copy, Default)]
+struct Conditions {
+    address: [u32; 2],
+    mask: [u32; 2],
+    cycle: [u16; 2],
+    data: u32,
+    data_mask: u32,
+    control: u16,
+}
 
 #[derive(Default)]
 pub(super) struct Ubc {
@@ -14,6 +26,9 @@ pub(super) struct Ubc {
     control: u16,
     sequence: bool,
     pending: bool,
+    active: Cell<Conditions>,
+    changes: RefCell<VecDeque<(u32, Conditions)>>,
+    last_write: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -28,7 +43,44 @@ impl Ubc {
         BusError::UnsupportedDevice { address, width }
     }
 
+    fn conditions(&self) -> Conditions {
+        Conditions {
+            address: self.address,
+            mask: self.mask,
+            cycle: self.cycle,
+            data: self.data,
+            data_mask: self.data_mask,
+            control: self.control,
+        }
+    }
+    pub fn advance(&self, clocks: u32) {
+        let mut changes = self.changes.borrow_mut();
+        for (remaining, _) in changes.iter_mut() {
+            *remaining = remaining.saturating_sub(clocks);
+        }
+        while changes
+            .front()
+            .is_some_and(|(remaining, _)| *remaining == 0)
+        {
+            self.active.set(changes.pop_front().unwrap().1);
+        }
+    }
+    pub fn clocks_to_event(&self) -> u32 {
+        self.changes.borrow().front().map_or(u32::MAX, |p| p.0)
+    }
     pub fn read(&self, address: u32, width: usize) -> Result<u32, BusError> {
+        let result = self.read_register(address, width);
+        // H §6.3.7(4): reading the register written last is the prescribed
+        // synchronization barrier, even before the three clocks have elapsed.
+        if result.is_ok()
+            && (address - BASE) & !3 == self.last_write
+            && let Some((_, conditions)) = self.changes.borrow_mut().drain(..).next_back()
+        {
+            self.active.set(conditions);
+        }
+        result
+    }
+    fn read_register(&self, address: u32, width: usize) -> Result<u32, BusError> {
         let offset = address - BASE;
         let long = match offset & !3 {
             0 => self.address[0],
@@ -64,6 +116,18 @@ impl Ubc {
     }
 
     pub fn write(&mut self, address: u32, width: usize, value: u32) -> Result<(), BusError> {
+        self.write_register(address, width, value)?;
+        self.last_write = (address - BASE) & !3;
+        let conditions = self.conditions();
+        let changes = self.changes.get_mut();
+        if let Some((3, previous)) = changes.back_mut() {
+            *previous = conditions;
+        } else {
+            changes.push_back((3, conditions));
+        }
+        Ok(())
+    }
+    fn write_register(&mut self, address: u32, width: usize, value: u32) -> Result<(), BusError> {
         let offset = address - BASE;
         let register = match offset & !3 {
             0 => &mut self.address[0],
@@ -114,13 +178,14 @@ impl Ubc {
         master: Master,
         instruction: Option<bool>,
     ) {
-        let native = self.control & 0x1000 != 0;
-        if master == Master::External && (!native || self.control & 0x2000 == 0) {
+        let conditions = self.active.get();
+        let native = conditions.control & 0x1000 != 0;
+        if master == Master::External && (!native || conditions.control & 0x2000 == 0) {
             return;
         }
         let previous_sequence = self.sequence;
         for channel in 0..if native { 2 } else { 1 } {
-            let bbr = self.cycle[channel];
+            let bbr = conditions.cycle[channel];
             let cpu = master == Master::Cpu;
             let fetch = instruction.is_some();
             if bbr & if cpu { 0x40 } else { 0x80 } == 0
@@ -130,7 +195,8 @@ impl Ubc {
                 continue;
             }
             if let Some(after) = instruction {
-                let select = native && self.control & if channel == 0 { 0x400 } else { 4 } != 0;
+                let select =
+                    native && conditions.control & if channel == 0 { 0x400 } else { 4 } != 0;
                 if after != select {
                     continue;
                 }
@@ -144,10 +210,11 @@ impl Ubc {
             } else {
                 0
             };
-            if (address ^ self.address[channel]) & !(self.mask[channel] | low_mask) != 0 {
+            if (address ^ conditions.address[channel]) & !(conditions.mask[channel] | low_mask) != 0
+            {
                 continue;
             }
-            if channel == 1 && self.control & 8 != 0 && !fetch && master != Master::External {
+            if channel == 1 && conditions.control & 8 != 0 && !fetch && master != Master::External {
                 let mask = match width {
                     1 => 0xFFFF,
                     2 => 0xFFFF,
@@ -158,7 +225,7 @@ impl Ubc {
                 } else {
                     value
                 };
-                if (data ^ self.data) & !self.data_mask & mask != 0 {
+                if (data ^ conditions.data) & !conditions.data_mask & mask != 0 {
                     continue;
                 }
             }
@@ -174,7 +241,7 @@ impl Ubc {
             if channel == 0 {
                 self.sequence = true;
             }
-            if !native || self.control & 0x10 == 0 || (channel == 1 && previous_sequence) {
+            if !native || conditions.control & 0x10 == 0 || (channel == 1 && previous_sequence) {
                 self.pending = true;
             }
         }
@@ -184,6 +251,67 @@ impl Ubc {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn later_writes_do_not_postpone_earlier_configuration_deadlines() {
+        let mut u = Ubc::default();
+        u.write(BASE, 4, 0x123456).unwrap();
+        u.write(BASE + 8, 2, 0x66).unwrap();
+        u.write(BASE + 0x38, 2, 0x1000).unwrap();
+        u.advance(3);
+        u.write(BASE, 4, 0x200000).unwrap();
+        u.advance(2);
+        u.write(BASE, 4, 0x300000).unwrap();
+        u.advance(1);
+        u.observe(0x200000, 2, 0, false, Master::Cpu, None);
+        assert!(u.pending());
+        u.acknowledge();
+        u.observe(0x300000, 2, 0, false, Master::Cpu, None);
+        assert!(!u.pending());
+        u.advance(2);
+        u.observe(0x200000, 2, 0, false, Master::Cpu, None);
+        assert!(!u.pending());
+        u.observe(0x300000, 2, 0, false, Master::Cpu, None);
+        assert!(u.pending());
+    }
+    #[test]
+    fn settings_settle_after_three_clocks_or_a_read_of_the_last_register() {
+        // H §6.3.7(4). Observations cannot stand in for elapsed clocks. The
+        // old comparison stays live while the new address/control propagates.
+        for barrier in [false, true] {
+            let mut u = Ubc::default();
+            u.write(BASE, 4, 0x123456).unwrap();
+            u.write(BASE + 8, 2, 0x66).unwrap();
+            u.write(BASE + 0x38, 2, 0x1000).unwrap();
+            for ticks in [0, 1, 1] {
+                u.advance(ticks);
+                u.observe(0x123456, 2, 0, false, Master::Cpu, None);
+                assert!(!u.pending());
+            }
+            // A different register read is not the prescribed barrier.
+            assert_eq!(u.read(BASE, 4), Ok(0x123456));
+            u.observe(0x123456, 2, 0, false, Master::Cpu, None);
+            assert!(!u.pending());
+            if barrier {
+                assert_eq!(u.read(BASE + 0x38, 2), Ok(0x1000));
+            } else {
+                u.advance(1);
+            }
+            u.observe(0x123456, 2, 0, false, Master::Cpu, None);
+            assert!(u.pending());
+            u.acknowledge();
+            u.write(BASE, 4, 0xABCDEF).unwrap();
+            u.observe(0xABCDEE, 2, 0, false, Master::Cpu, None);
+            assert!(!u.pending());
+            u.observe(0x123456, 2, 0, false, Master::Cpu, None);
+            assert!(u.pending()); // old setting is still active
+            u.acknowledge();
+            u.read(BASE + 2, 2).unwrap(); // low half of last long register
+            u.observe(0x123456, 2, 0, false, Master::Cpu, None);
+            assert!(!u.pending());
+            u.observe(0xABCDEE, 2, 0, false, Master::Cpu, None);
+            assert!(u.pending());
+        }
+    }
     #[test]
     fn manual_examples_mask_sizes_data_and_master_selection() {
         let mut u = Ubc::default();
@@ -197,6 +325,7 @@ mod tests {
         ] {
             u.write(BASE + offset, 4, value).unwrap();
         }
+        u.advance(3);
         for (address, width, value, write, master, matches) in [
             (0xABC00, 2, 0xA512, true, Master::Cpu, true),
             (0xABCFE, 2, 0xA512, true, Master::Cpu, true),
@@ -226,6 +355,7 @@ mod tests {
         ] {
             u.write(BASE + offset, 4, value).unwrap();
         }
+        u.advance(3);
         u.observe(0x3722E, 2, 0, false, Master::Cpu, Some(false));
         assert!(!u.pending());
         u.observe(0x37226, 2, 0, false, Master::Cpu, Some(false));
@@ -240,15 +370,18 @@ mod tests {
         let mut u = Ubc::default();
         u.write(BASE, 4, 0x123457).unwrap();
         u.write(BASE + 8, 2, 0xE4).unwrap();
+        u.advance(3);
         u.observe(0x123454, 4, 0, false, Master::Cpu, None);
         assert!(!u.pending()); // Compatibility mode compares every address bit.
         u.write(BASE + 0x38, 2, 0x1000).unwrap();
+        u.advance(3);
         u.observe(0x123454, 4, 0, false, Master::Cpu, None);
         assert!(u.pending());
         u.acknowledge();
         u.observe(0x123457, 1, 0, false, Master::External, None);
         assert!(!u.pending());
         u.write(BASE + 0x38, 2, 0x3000).unwrap();
+        u.advance(3);
         u.observe(0x123457, 1, 0, false, Master::External, None);
         assert!(u.pending());
         assert_eq!(u.read(BASE + 0x38, 2), Ok(0x7000));

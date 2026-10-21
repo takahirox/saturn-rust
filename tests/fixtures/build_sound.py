@@ -97,6 +97,8 @@ def sound_image(effects=False, synthesis=False, peripherals=False, envelope=Fals
         emit(0x4EB9,0,0x900) # Execute architectural family/fault vectors first.
         movw(0xA55A,0x4300);movw(0x1234,0x4302)
         movw(0x4300,0x100412);movw(0x3E2,0x100414);movw(0x1004,0x100416)
+        # ST-077 table4.40: DEXE=0 must not clear busy before the copy ends.
+        movw(4,0x100416)
         emit(0x3039,0x10,0x416,0x0240,0x1000,0x66F4) # poll DEXE
         for source,destination in [(0x1003E2,0x810),(0x1003E4,0x812)]:
             emit(0x33F9,source>>16,source&65535,0,destination)

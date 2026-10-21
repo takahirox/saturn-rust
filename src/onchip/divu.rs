@@ -52,20 +52,46 @@ impl Division {
                 || (q == i64::from(i32::MAX) && dividend < 0 && divisor < 0 && remainder != Some(0))
         });
         let negative = (dividend < 0) != (divisor < 0);
-        let q = if overflow {
-            if negative { 0x8000_0000 } else { 0x7FFF_FFFF }
+        let (q, r) = if overflow {
+            // H §10.3.3/table 10.2: three setup clocks followed by three
+            // division clocks. DVDNTH always exposes the partial remainder;
+            // only DVDNT(L) saturates, and only with overflow IRQs disabled.
+            let (partial_q, partial_r) = self.overflow_result();
+            let q = if self.control & 2 != 0 {
+                partial_q
+            } else if negative {
+                0x8000_0000
+            } else {
+                0x7FFF_FFFF
+            };
+            (q, partial_r)
         } else {
-            quotient.unwrap() as u32
-        };
-        // Deviation from H §10.3.3/table 10.2: the six-cycle intermediate
-        // overflow state is not modeled. Use deterministic saturation/remainder
-        // preservation, including when OVFIE=1; conformance remains pending.
-        let r = if overflow {
-            self.high
-        } else {
-            remainder.unwrap() as u32
+            (quotient.unwrap() as u32, remainder.unwrap() as u32)
         };
         self.pending = Some((if overflow { 6 } else { 39 }, q, r, overflow));
+    }
+    fn overflow_result(&self) -> (u32, u32) {
+        // Signed non-restoring steps (P §6.19). Keep the extra remainder
+        // sign in Q: narrowing an overflowing add/subtract before deciding
+        // the next operation would lose it. Append each resulting quotient
+        // bit directly; unlike ROTCL/DIV1, the hardware has no exposed T lag.
+        let mut low = self.low;
+        let mut high = self.high;
+        let m = self.divisor >> 31 != 0;
+        let mut q = high >> 31 != 0;
+        for _ in 0..3 {
+            let sign = high >> 31 != 0;
+            let shifted = (high << 1) | (low >> 31);
+            let (result, carry) = if q == m {
+                shifted.overflowing_sub(self.divisor)
+            } else {
+                shifted.overflowing_add(self.divisor)
+            };
+            q = sign ^ carry ^ m;
+            high = result;
+            low = (low << 1) | u32::from(q == m);
+        }
+        (low, high)
     }
     pub fn advance(&mut self, clocks: u32) {
         if let Some((remaining, q, r, overflow)) = self.pending {

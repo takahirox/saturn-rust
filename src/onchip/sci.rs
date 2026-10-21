@@ -87,6 +87,17 @@ impl Serial {
             * (1 << (2 * (self.mode & 3)))
             * (u32::from(self.rate) + 1)
     }
+    pub fn clocks_to_event(&self) -> u32 {
+        if self.control & 0x20 == 0 || self.control & 2 != 0 {
+            u32::MAX
+        } else if let Some((_, remaining)) = self.shift {
+            remaining
+        } else if self.status & 0x80 == 0 {
+            1 // TDR transfers to the idle shifter; TDRE can request DMA/IRQ.
+        } else {
+            u32::MAX
+        }
+    }
     pub fn advance(&mut self, mut clocks: u32) {
         if self.control & 0x20 == 0 || self.control & 2 != 0 {
             return;

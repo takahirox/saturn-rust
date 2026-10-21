@@ -89,6 +89,11 @@ impl Emulator {
     pub fn sound_instruction_count(&self) -> String {
         self.machine.sound_state().instructions.to_string()
     }
+    pub fn set_region(&mut self, code: u8) -> Result<(), JsValue> {
+        let region = crate::smpc::Region::try_from(code).map_err(JsValue::from_str)?;
+        self.machine.set_region(region);
+        Ok(())
+    }
     pub fn set_analog(&mut self, port: u8, enabled: bool, x: u8, y: u8, z: u8) {
         self.machine
             .set_analog(port as usize, enabled.then_some([x, y, z]));

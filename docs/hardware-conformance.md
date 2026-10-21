@@ -275,13 +275,13 @@ not turn those missing hardware paths into supported behavior.
 | Cache/address regions, H §8, tables 8.2–8.4, figs.8.10/8.11 | CPU-local 4 KiB/four-way cache, write-through, no snooping; ID/OD, pseudo-LRU, two-way RAM, P1 bypass, P2 purge, P3 address array, P6 data array; TAS external read; ordered four-longword refills and two-way RAM tag isolation | CACHE, PERIPH, CACHEG; `Cache` and `CpuBus` | PERIPH, CACHEG | Pipeline/fill-cycle/bus arbitration timing absent; RAM mirrors remain missing | Pending |
 | On-chip INTC, H §5.3, table 5.4 | IPRA/IPRB, VCRA–D/VCRWDT, DIVU/DMA vectors, source priorities/tie order and guest acknowledgement | FRT, DUAL, PERIPH | DUAL, PERIPH | UBC source 12 at level 15 covered by UBCG; ICR/IRL auto/external vectors and SCU acknowledgement covered by INTCG; pin synchronization remains; refresh CMI arbitrates at WDT priority | Pending |
 | FRT, H §§11.1–11.5, tables 11.2/11.3 | FRC, OCRA/B, capture, divisors, overflow/compare/clear, TIER/FTCSR, shared TEMP, output level state and IRQ; Saturn capture wires (ST-202 §1.2) | FRT, DUAL | FRT (compare), DUAL (capture) | Internal/external pin synchronization, WAIT, clock-switch edges and contention timing absent; no external clock source or output-pin routing | Pending |
-| Watchdog, H §§12.2–12.3, table 12.2 | Keyed byte-register/word-write protocol, eight divisors, interval IRQ, read-before-clear, watchdog reset selection/cause and 512-clock CPU hold | PERIPH; `Watchdog` | PERIPH | External WDTOVF pin routing and sub-turn event ordering missing | Pending |
+| Watchdog, H §§12.2–12.3, table 12.2 | Keyed byte-register/word-write protocol, eight divisors, interval IRQ, read-before-clear, watchdog reset selection/cause and 512-clock CPU hold | PERIPH; `Watchdog` | PERIPH | External WDTOVF pin routing and complete CPU reset-cycle ordering remain; reset assertion/512-clock hold now split advancement without discarding preceding FRT/DIVU clocks | Pending |
 | SCI, H §§13.2–13.3 | SMR/BRR/SCR/TDR/SSR/RDR, timed internal-clock transmission, external completed-character input, overrun/framing/parity flags, IRQs and DMA handshakes | PERIPH; `Serial` | PERIPH (transmit completion) | No external clock-edge adapter or physical serial pin waveform; multiprocessor and format combinations lack exhaustive integration coverage | Pending |
-| On-chip DMAC, H §§9.2–9.3 | Both channels; byte/word/long/16-byte transfers; fixed/increment/decrement addresses; auto/DREQ/SCI requests; fixed/round-robin selection, TE/AE/NMIF, vectors/IRQ; single-address DACK direction/polarity through explicit board pin adapters | PERIPH, DACK; `Dma`, `Bus::advance_dma`, pin-adapter vectors | PERIPH (copy/end IRQ/error 10/no cache snoop), DACK (armed wait/reset on standard board) | CPU/refresh arbitration, burst/cycle-steal timing and wait states remain missing; no requesting DACK peripheral is connected on the standard board | Pending |
-| DIVU, H §§10.2–10.4 | Signed 32/32 and 64/32 quotient/remainder, 39/6-clock completion/interlock, DVCR/VCRDIV, sticky overflow and IRQ | PERIPH; `Division` | PERIPH (signed 32/64-bit normal division) | Six-cycle intermediate overflow state is not modeled: deterministic saturation and input-high preservation are used even with OVFIE=1; no full conformance claim | Pending |
+| On-chip DMAC, H §§9.2–9.3 | Both channels; byte/word/long/16-byte transfers; fixed/increment/decrement addresses; auto/DREQ/SCI requests; fixed/round-robin selection, TE/AE/NMIF, vectors/IRQ; single-address DACK direction/polarity through explicit board pin adapters | PERIPH, DACK; `Dma`, `Bus::advance_dma`, pin-adapter vectors | PERIPH (copy/end IRQ/error 10/no cache snoop), DACK (armed wait/reset on standard board) | CPU/refresh arbitration, burst/cycle-steal timing and DMA wait states remain missing; no requesting DACK peripheral is connected on the standard board | Pending |
+| DIVU, H §§10.2–10.4/table 10.2 | Signed 32/32 and 64/32 quotient/remainder; six-clock overflow exposes three division steps, saturating only the quotient when OVFIE=0; 39-clock normal completion/interlock; word DVCR/VCRDIV, sticky overflow and IRQ | PERIPH, [DIVG](../tests/sh7604.rs), [independent boundary vectors](../src/onchip/peripheral_tests.rs); `Division::start/overflow_result` | DIVG on both CPUs, normal/overflow signs/zero, aliases, IRQ acknowledgement, repeat boots and changed dividend | One-clock immediately consecutive DIVU write/read hazard and full CPU bus scheduling remain | Pending |
 | BSC identification/interval timer, H §§7.1.4/7.2/7.5.7/7.11.1 | BCR1.MASTER per CPU, read-only word lanes, keyed long writes, RTCNT/RTCOR/RTCSR, all clock divisors, CMF read-before-clear, CMI vector/priority and manual-reset retention; ordinary software waits, narrow transfers and CS2 endian conversion (BWAIT below) | [BSCG/BWAIT](../tests/bsc.rs), [register/reset vectors](../src/onchip/peripheral_tests.rs), [BSC vectors](../src/onchip/bsc.rs), [bus beats](../src/bus.rs) | BSCG, BWAIT | Memory/burst interfaces, inter-cycle idle, WAIT input, board widths/lanes and refresh/CPU/DMA ownership remain; unsupported changes explicitly rejected | Pending |
 | Module stop/standby, H §§14.2/14.4, table 14.3 | SBYCR, SCI/FRT reset and gating, preserved INTC/UBC/BSC, retained DMA operands with control reset, WDT-selected NMI settling; `OnChip::enter_sleep/advance_clocks`, `Bus::advance_dma` | [standby/retention vectors](../src/onchip/peripheral_tests.rs), BSCG, PWRG | BSCG, PWRG | Electrical HIZ/pin states, initial five-cycle NMI guard, physical oscillator and clock-switch edges remain unverified; executing stopped MULT instructions is software-prohibited/undefined (H §2.5.2) | Pending |
-| UBC, H §6 | A/B registers, masked address/data/size/master matching, sequential conditions, match flags, before/after fetch breaks and deferred level-15 vector 12; CPU/cache/DMAC and external SCU observation; `Ubc::observe`, `Cpu::step/execute` | UBCG and bus vectors | UBCG | Three-cycle configuration pipeline and SH7000-compatible speculative overrun fetch breaks remain unmodeled; instruction/bus cycle scheduling remains pending | Pending |
+| UBC, H §6 | A/B registers, masked address/data/size/master matching, sequential conditions, match flags, before/after fetch breaks and deferred level-15 vector 12; CPU/cache/DMAC and external SCU observation; `Ubc::observe`, `Cpu::step/execute` | UBCG and bus vectors | UBCG | Three-clock propagation, independent successive-write deadlines and last-register read barrier are implemented in `Ubc::advance/read`; DIVG handles data breaks on both CPUs, including slave acknowledgement after exception acceptance. SH7000-compatible speculative overrun fetch breaks and instruction/bus cycle scheduling remain pending | Pending |
 | Slave SH-2, [Dual CPU User's Guide][DUALREF] §§1/3/4, [SMPC] table 1.1 | Independent interpreter/registers/stacks/peripherals/cache; shared bus, SSHON/SSHOFF, bidirectional capture IRQs | DUAL, CACHE, PERIPH | DUAL, PERIPH | Bus contention and full CPU clock accounting absent; BCR1 identity covered by BSCG | Pending |
 
 ## MC68EC000 instruction families
@@ -539,7 +539,7 @@ Implementation: [shared sound bus, PCM and clock domain](../src/sound.rs),
 | Levels/pan/external inputs, [SCSP] §4.2 tables 4.27/28 | Binary total-level attenuation, direct send and fixed-point stereo pan, clipping, master output control; independently expected full-volume stereo buffers | SNDV, SNDR / SNDR | Intermediate master gain conformance and complete routing boundary corpus | Pending |
 | Timers/interrupts, [SCSP] §4.2 tables 4.33–38 | Three sample-clock prescaled counters; sound/main pending/enables/clear; programmed autovector levels, 68k IRQ/RTE, SCU source 6 | SNDV, SNDR / SNDR | Complete cross-device contention/timer reset edge evidence | Pending |
 | MIDI registers, [SCSP] §4.2 figs.4.59–61 | Four-byte input/output FIFOs, status/overflow, byte lanes, serial-paced 8-N-1 output, independent main/sound empty IRQs and reset cancellation | SNDV, SIOG / SIOG | Serial bit-level input/external wiring; the standard console has no MIDI connector (fig.4.59) | Pending |
-| SCSP DMA, [SCSP] §4.2 fig.4.66/table 4.39 | Word transfers in both directions, zero gate, count/address progress, DEXE completion and IRQ; DMA-register target rejected | SNDV, SIOG / SIOG (68k register DMA, completion IRQ and source mutation) | Exact transfer timing/arbitration and full boundary/route evidence | Pending |
+| SCSP DMA, [SCSP] §4.2 fig.4.66/table 4.39 | Word transfers in both directions, zero gate, count/address progress, DEXE=0 preserves busy until completion and IRQ; DMA-register target rejected | SNDV, SIOG / SIOG (68k register DMA, completion IRQ and source mutation) | Exact transfer timing/arbitration and full boundary/route evidence | Pending |
 | SCSP effects DSP, [SCSP] §§4.1/4.3/5; [ST-228][SCDSPASM] Reference 1/2 | Executing multiply/add pipeline; COEF/MADRS/MPRO/TEMP/MEMS/MIXS/EFREG, slot and EXTS inputs, ring/table RAM reads/writes, linear/float conversion, stereo effect routing | DSPV, CLAB / CLAB coefficient mutation, exact stereo, WebAudio | Full field/pipeline boundary corpus, RAM-access contention and independently corroborated converter/timing edges | Pending |
 | Browser audio output | Bounded 8192-frame producer/ring, stereo sample-rate adaptation, explicit gesture enable, pause/mute/blocked/underflow/drop states; worklet renders nonzero guest PCM | SNDV / SNDR WebAudio instrumentation | Full synthesis/DSP/CD-DA validation depends on missing hardware | Pending |
 | CD-DA, [CD] §§3/4/8 / [SCSP] table 4.31 | Guest play/repeat, signed stereo BINARY tracks; PRE 50/15 µs de-emphasis with continuous sector history; unchanged-start pause/resume retains the sample/filter state; EXTS0/1 EFSDL/EFPAN, mixed with 68k PCM at sample deadlines | [CD-DA vectors](../tests/cd.rs), [original CD-DA guest](../tests/cdda.rs), CLAB / CD-DA guest reference buffers + AudioWorklet, CLAB changed audio track | Full effects pipeline/subcode and complete synthesis remain; scan attenuation/muting has native vectors | Pending |
@@ -568,7 +568,7 @@ no-op CPU/device implementations cannot satisfy those assertions.
 | SMPC direct digital port 1, [SMPC] §3 | Active-low nibble selection; per-bit PDR/DDR input/output merging; TH input visible with EXLE | devices.rs, INTCG | SC, INTCG | DIGG settling and CLKG clock/reset vectors below; full system timing remains required | Pending |
 | SMPC commands/status/timing, [SMPC] §§1.2/2.3/2.4/3.2 | SF/IREG/OREG/SR, CPU commands, INTBACK status/peripheral phases, continue/break, VBlank collection and optimization; SCU source 7 | smpc/tests.rs, tests/smpc.rs, DUAL | SMPR, DUAL | Remaining system commands, firmware jitter and PAL/interlace clock modes | Pending |
 | SMPC reset/power/clock, [SMPC] table 1.1/§2.3 | MSHON, SSHON/OFF, SNDON/OFF, CDON/OFF, NMIREQ, SYSRES (volatile reset, installed-ROM or HLE-disc restart and battery retention); RESENAB/DISA control reset-button NMI edges and VBlank-latched RESB | DUAL, SNDV, SNDR, PWRG, smpc/tests.rs | DUAL, SNDR, PWRG | Clock switching, full status/power domains | Pending |
-| RTC/region/system flags, [SMPC] §§2.4/2.5 | Deterministic Gregorian/BCD RTC, SETTIME, retained four-byte SETSMEM, status/region Japan, output control flags | smpc/tests.rs, tests/smpc.rs | SMPR | Full system-control/region configuration; remaining reset domains | Pending |
+| RTC/region/system flags, [SMPC] §§2.4/2.5 | Deterministic Gregorian/BCD RTC, SETTIME, retained four-byte SETSMEM, all eight documented board regions, independent CD/sound reset status, output control flags | smpc/tests.rs, tests/smpc.rs | SMPR, original status guest | Full system-control and remaining reset domains; PAL timing is separate from area reporting | Pending |
 | SMPC direct digital port 2, [SMPC] §1.2 pp.7–9, §3.4 table 3.36 p.97 | Independent PDR2/DDR2, IOSEL2/EXLE2; active-low nibble reports; host keyboard levels | BK; `both_digital_ports_have_independent_direction_selection_and_enable_bits` | BK; I/K/J/L keyboard input and release checks | DIGG implements both-port settling; complete clock/reset packet timing remains | Pending |
 | External latch/PAD IRQ, [SMPC] §1.2/table1.5, [VDP2] §2.5/tables2.3–2.4 | Both TH input falling edges gated by EXLE/DDR; independent SCU PAD IRQ and VDP2 EXLTEN; software/read latches, held HCNT/VCNT, EXLTFG read-clear, non-interlaced ODD; `Smpc::set_th`, `Bus::set_peripheral_th`, `Vdp2::read16/external_latch` | INTCG, bus.rs::smpc_input_edges_latch_raster_counters_and_raise_pad_irqs_with_independent_enables | INTCG (both ports, repeated edges and control mutation) | Pin synchronization, blanking-counter discontinuities and other display modes | Pending |
 | Analog input, [SMPC] tables 3.19/3.37; [STN43] Analog mode | ID15 X/Y/Z and ID16 X/Y/AR/AL, active-low buttons, trigger hysteresis (146 on / 85 off); timed INTBACK and direct TH/TR/TL handshake, transaction latching/abort, independent ports; standard Gamepad radial axes/triggers and focus neutralization | smpc/tests.rs, tests/smpc.rs; `Analog`, `Handshake` in [controller.rs](../src/smpc/controller.rs) | SMPR + PADR (both direct ports, changed axis, ID15/16 Gamepad/focus) | Full electrical timing, mode-switch calibration, external-latch synchronizers and complete command/reset/clock integration remain | Pending |
@@ -577,7 +577,7 @@ no-op CPU/device implementations cannot satisfy those assertions.
 ## Concrete unresolved gaps and closure gates
 
 1. Remaining SH-2 semantic/exception edges, complete reset domains, BSC configuration and remaining UBC/standby timing,
-   DIVU overflow intermediates, DMAC DACK/CPU arbitration, external IRQs and bus locking;
+   DIVU write/read hazards, DMAC DACK/CPU arbitration, external IRQs and bus locking;
    cycle-based dual-CPU scheduling and arbitration. CPU opcode decoding alone
    does not satisfy the CPU or multiprocessor criterion.
 2. Complete MC68EC000 timing/prefetch edge conformance and sound bus arbitration;
@@ -1357,7 +1357,78 @@ Canvas, WebAudio, privacy, input/focus and all three demonstrations.
 | `bsc-endian.tsv` | `95de3de1f2d74e5da6a0cea05fea79e455a169c1d1f5c5b4ee1f2ff803b9bf24` |
 
 All remaining umbrella hardware implementation and validation criteria stay
-mandatory. In particular, DIVU still has its documented overflow-intermediate
-substitution; 68k bus sequencing, full coordinated CPU/DMA ownership, backup
+mandatory. DIVU overflow intermediates are implemented below; 68k bus
+sequencing, full coordinated CPU/DMA ownership, backup
 filesystem/HLE/CD services, SCU/DSP, video/audio/media/SMPC and comprehensive
 integration evidence remain incomplete. No umbrella checkbox is marked complete.
+
+
+## DIVU, UBC, peripheral deadlines and SMPC status corrections
+
+The original [DIVG builder](../tests/fixtures/build_divu.py) and adjacent
+[MIT license](../tests/fixtures/LICENSE) produce a synthetic external BIOS;
+[its literal table](../tests/fixtures/divu.tsv) is authored independently of
+execution. [SH7604][H] §§10.2–10.4/table10.2 specify three setup clocks and
+three division clocks on overflow, intermediate DVDNTH in both OVFIE modes,
+and saturation of DVDNT(L) only with interrupts disabled. The implementation
+uses signed non-restoring division steps (programming manual [P] §6.19),
+retaining the carry/sign state between steps. Normal division retains its
+39-clock quotient/remainder behavior. Both CPU-local units execute all normal
+sign combinations and overflow cases, including zero divisor, MIN/-1, the
+negative/negative maximum-quotient-with-remainder boundary and 64-bit input.
+The guest observes both quotient aliases, remainder, DVCR, DVSR and VCRDIV,
+acknowledges a real overflow IRQ, and verifies an independent UBC data break.
+Native and browser checks compare all 164 words from each CPU and repeat reset.
+A changed 64-bit dividend changes only its two partial-quotient records.
+
+H §6.3.7(4)'s three-clock UBC configuration delay preserves the previous
+comparison until the deadline. Successive writes have separate deadlines;
+reading the register written last is the specified synchronization barrier.
+[Component vectors](../src/onchip/ubc.rs) check clocks 0/1/2/3, old/new addresses,
+non-barrier reads and word/long barriers. [Bus vectors](../src/bus.rs) retain
+cache-hit, refill-order and CPU/DMAC/external-master distinctions. The slave
+now acknowledges an accepted UBC request just as the master does, preventing
+re-entry on RTE. DIVG exercises that fix on both actual guest processors.
+Speculative fetch/pipeline behavior and full instruction timing remain required.
+
+`OnChip::clocks_to_event` exposes DIVU, UBC, FRT compare/overflow, BSC refresh,
+SCI shifter and WDT overflow/reset-hold deadlines to `Bus::advance_clocks`.
+[Native vectors](../src/onchip/peripheral_tests.rs) assert authored transitions
+at clocks 1/8/16/39/320 and verify that 14 clocks before watchdog reset are
+counted before its 512-clock hold. Six advance chunk sizes and both CPU
+identities yield the same retained FRT/DIVU state. This improves peripheral
+ordering; CPU/DMA readiness, contention and opcode cycle accounting still
+require the coordinated transaction scheduler identified in review.
+
+[SMPC][SMPC] §2.4.2's OREG9 table is implemented as typed board region straps
+for all eight documented codes. Reserved/prohibited codes reject through the
+Wasm adapter before mutation; media does not select the region. Region straps
+survive volatile and system resets. This is area reporting, not PAL timing
+implementation. OREG11 bit6 now reports CD reset independently of OREG10's
+sound-reset bit, at the command completion deadline. The original MIT
+[status guest](../tests/fixtures/build_smpc_status.py), [native integration](../tests/smpc.rs)
+and browser Wasm checks execute CDOFF/SNDON/CDON/SNDOFF and INTBACK for every
+region and repeat reset. The 68k STOP program is uploaded and executed through
+the real sound bus; no host test writes guest result memory.
+
+[SCSP][SCSP] §4.2/table4.40 says writing DEXE=0 does not stop execution.
+`Scsp::write16` now keeps busy asserted until the last DMA word completes.
+[Component vectors](../src/sound/tests.rs) check intermediate busy/count/data
+and end IRQ; the original [68k DMA/MIDI guest](../tests/fixtures/build_sound.py)
+now writes zero before polling, so an early-cleared busy bit exposes uncopied
+register data in both [native](../tests/sound_io.rs) and browser Wasm checks.
+The existing source-operand mutation, MIDI, interrupt, stereo and AudioWorklet
+assertions are retained. Full SCSP transfer timing/arbitration remains required.
+
+| Reproducible artifact (original MIT content) | SHA-256 |
+| --- | --- |
+| `divu.hex` text | `506e848ffbce8b0b066513af7f8c687dfe9710d3615277c362ac9b9ffb74fde4` |
+| `divu.tsv` | `4fffc7d4e5cae2a024aee440e964d329093bb93203e8e9af54ee43f24b47433c` |
+| `smpc-status.hex` text | `ebc72a7f0deb1a2bdbef2fb5e9e368e707015f5a702b880233fd9a9e921946dd` |
+| Expanded `sound-io.hex` BIOS | `33181c5909939af23a2aa50fb8892e2dae53cb81fa49be5cd44203f07e6a5b3c` |
+
+Seven deliberate implementation regressions are rejected by the corresponding
+native tests: suppressed partial quotient, immediate UBC comparison changes,
+wrong-CPU UBC acknowledgement, discarded pre-reset clocks, fixed-Japan status,
+missing CD-reset status and early SCSP DMA busy clearing. These are executable
+regression checks; they do not establish the remaining umbrella acceptance.

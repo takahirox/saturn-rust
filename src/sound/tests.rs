@@ -560,3 +560,30 @@ fn midi_serial_deadlines_irq_and_reset_are_independent_of_host_consumption() {
         assert_eq!(sound.scsp.interrupt_level(), 0);
     }
 }
+
+#[test]
+fn scsp_dma_zero_execute_write_preserves_busy_and_completion_interrupt() {
+    // ST-077 §4.2 DEXE/table4.40: a zero write cannot clear busy early.
+    let mut scsp = Scsp::default();
+    let mut ram = vec![0; SOUND_RAM_SIZE];
+    ram[0x100..0x108].copy_from_slice(&[0, 0xAA, 0, 0x33, 0, 0x77, 0x11, 0x22]);
+    scsp.write16(0x412, 0x100).unwrap();
+    scsp.write16(0x414, 0x10).unwrap();
+    scsp.write16(0x416, 0x1008).unwrap();
+    scsp.write16(0x42A, 16).unwrap();
+    scsp.sample(&mut ram).unwrap();
+    for n in 1..=3 {
+        scsp.write16(0x416, 8).unwrap();
+        assert_eq!(scsp.read16(0x416).unwrap() & 0x1000, 0x1000);
+        assert!(!scsp.main_interrupt());
+        assert_eq!(scsp.read16(0x420).unwrap() & 16, 0);
+        assert_eq!(scsp.dma_remaining, 8 - n * 2);
+        scsp.sample(&mut ram).unwrap();
+    }
+    assert_eq!(scsp.read16(0x416).unwrap() & 0x1000, 0);
+    assert!(scsp.main_interrupt());
+    assert_eq!(scsp.read16(0x420).unwrap() & 16, 16);
+    for (at, value) in [(0x10, 0xAA), (0x12, 0x33), (0x14, 0x77), (0x16, 0x1122)] {
+        assert_eq!(scsp.read16(at), Ok(value));
+    }
+}

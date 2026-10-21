@@ -210,8 +210,12 @@ impl Scsp {
             0x412 => self.common[9] = value & 0xFFFE,
             0x414 => self.common[10] = value & 0xFFFE,
             0x416 => {
-                self.common[11] = value & 0x7FFE;
+                // ST-077 §4.2, table4.40: writing DEXE=0 has no effect
+                // on execution. Only completion clears a running transfer.
+                let executing = self.common[11] & 0x1000;
+                self.common[11] = (value & 0x6FFE) | executing;
                 if value & 0x1000 != 0 {
+                    self.common[11] |= 0x1000;
                     self.dma_remaining = value & 0xFFE;
                 }
             }

@@ -65,6 +65,7 @@ python3 src/hle/build.py --check
 python3 homebrew/hardware-lab/build.py --check
 python3 tests/fixtures/build_dual_sh2.py --check
 python3 tests/fixtures/build_sh7604.py --check
+python3 tests/fixtures/build_divu.py --check
 python3 tests/fixtures/build_bsc.py --check
 python3 tests/fixtures/build_bsc_waits.py --check
 python3 tests/fixtures/build_intc.py --check
@@ -95,6 +96,7 @@ python3 tests/fixtures/build_cd_decode.py --check
 python3 tests/fixtures/build_cdda.py --check
 python3 tests/fixtures/build_sprite_effects.py --check
 python3 tests/fixtures/build_smpc.py --check
+python3 tests/fixtures/build_smpc_status.py --check
 ```
 
 ## Build and serve the browser client

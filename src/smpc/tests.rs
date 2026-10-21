@@ -419,3 +419,65 @@ fn direct_analog_handshake_has_timed_acknowledgement_snapshot_abort_and_independ
         assert_eq!(s.read(SMPC + 0x75).unwrap(), 0x71);
     }
 }
+
+#[test]
+fn all_documented_regions_survive_resets_and_reserved_codes_are_rejected() {
+    // ST-169 §2.4.2, OREG9 table (physical area straps, not disc metadata).
+    for code in 0..=255 {
+        if ![1, 2, 4, 5, 6, 10, 12, 13].contains(&code) {
+            assert!(Region::try_from(code).is_err());
+            continue;
+        }
+        let mut s = Smpc::default();
+        s.set_region(Region::try_from(code).unwrap());
+        for reset in [0, 1, 2] {
+            match reset {
+                1 => s.system_reset(),
+                2 => s.reset_volatile(),
+                _ => (),
+            }
+            input(&mut s, &[1, 0, 0xF0]);
+            issue(&mut s, 0x10);
+            assert_eq!(s.advance_clocks(Smpc::STATUS_CLOCKS - 1), None);
+            assert_eq!(s.advance_clocks(1), Some(0x10));
+            assert_eq!(s.read(SMPC + 0x33), Ok(code));
+            assert!(s.take_irq());
+        }
+    }
+}
+
+#[test]
+fn intback_reports_cd_reset_independently_of_sound_reset_at_command_deadlines() {
+    // ST-169 §2.3.6/7 (40µs), §2.4.2 OREG10/11 control-signal status.
+    for chunk in [1, 8, 1074] {
+        let mut s = Smpc::default();
+        for (command, sound, cd, deadline) in [
+            (9, false, false, 1075),
+            (6, true, false, 807),
+            (8, true, true, 1075),
+            (7, false, true, 807),
+        ] {
+            let old_cd = s.cd_enabled;
+            let old_sound = s.sound_enabled;
+            issue(&mut s, command);
+            let mut remaining = deadline - 1;
+            while remaining != 0 {
+                let n = remaining.min(chunk);
+                assert_eq!(s.advance_clocks(n), None);
+                remaining -= n;
+            }
+            assert_eq!(s.cd_enabled, old_cd);
+            assert_eq!(s.sound_enabled, old_sound);
+            assert_eq!(s.advance_clocks(1), Some(command));
+            assert_eq!(s.cd_enabled, cd);
+            assert_eq!(s.sound_enabled, sound);
+            assert!(!s.take_irq());
+            input(&mut s, &[1, 0, 0xF0]);
+            issue(&mut s, 0x10);
+            s.advance_clocks(Smpc::STATUS_CLOCKS);
+            assert_eq!(s.read(SMPC + 0x35), Ok(if sound { 0x34 } else { 0x35 }));
+            assert_eq!(s.read(SMPC + 0x37), Ok(if cd { 0 } else { 0x40 }));
+            assert!(s.take_irq());
+        }
+    }
+}

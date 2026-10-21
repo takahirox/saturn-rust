@@ -52,7 +52,7 @@ fn division_signed_vectors_and_both_widths_match_truncation_towards_zero() {
 }
 
 #[test]
-fn division_overflow_latency_saturation_sticky_flag_and_interrupt_mask() {
+fn division_overflow_latency_sticky_flag_and_interrupt_mask() {
     for (high, low, divisor, expected) in [
         (0, 1, 0, 0x7FFF_FFFF),
         (0xFFFF_FFFF, 0xFFFF_FFFF, 0, 0x8000_0000),
@@ -77,6 +77,96 @@ fn division_overflow_latency_saturation_sticky_flag_and_interrupt_mask() {
         assert_eq!(chip.interrupt(), None);
         chip.write32(DIVU + 8, 0).unwrap();
         assert_eq!(chip.read32(DIVU + 8).unwrap(), 0);
+    }
+}
+
+#[test]
+fn division_overflow_partial_results_both_widths_controls_and_interlocks() {
+    // H §10.3.3/table10.2, three signed division steps after setup.
+    // Zero divisor shifts the dividend left three and appends 111 for positive
+    // or 000 for negative. 2:0 / 1 leaves partial remainders 3,5,9.
+    // MIN/-1 leaves 0,-1,-1 with quotient bits 0,1,1.
+    for (wide, high, low, divisor, partial, remainder, saturated) in [
+        (false, 0, 0, 0, 7, 0, 0x7FFF_FFFF),
+        (false, 0, 1, 0, 15, 0, 0x7FFF_FFFF),
+        (
+            false,
+            u32::MAX,
+            u32::MAX,
+            0,
+            0xFFFF_FFF8,
+            u32::MAX,
+            0x8000_0000,
+        ),
+        (
+            false,
+            u32::MAX,
+            0x8000_0000,
+            u32::MAX,
+            3,
+            u32::MAX,
+            0x7FFF_FFFF,
+        ),
+        (true, 2, 0, 1, 7, 9, 0x7FFF_FFFF),
+        (true, u32::MAX, 0, 1, 0, u32::MAX, 0x8000_0000),
+        (true, 1, 0, u32::MAX, 0, 1, 0x8000_0000),
+        (true, u32::MAX, 1, 0xFFFF_FFFE, 11, 0xFFFF_FFFE, 0x7FFF_FFFF),
+        (
+            true,
+            0x1234_5678,
+            0x9ABC_DEF0,
+            0,
+            0xD5E6_F787,
+            0x91A2_B3C4,
+            0x7FFF_FFFF,
+        ),
+    ] {
+        for enabled in [false, true] {
+            for interlock in [false, true] {
+                let mut chip = OnChip::default();
+                chip.write16(IPRA, 0xA000).unwrap();
+                chip.write16(DIVU + 0xE, 0x45).unwrap();
+                chip.write16(DIVU + 0xA, if enabled { 2 } else { 0 })
+                    .unwrap();
+                chip.write32(DIVU, divisor).unwrap();
+                if wide {
+                    chip.write32(DIVU + 0x10, high).unwrap();
+                }
+                chip.write32(DIVU + if wide { 0x14 } else { 4 }, low)
+                    .unwrap();
+                chip.advance_clocks(5);
+                assert!(chip.division.borrow().busy());
+                assert_eq!(chip.interrupt(), None);
+                if !interlock {
+                    chip.advance_clocks(1);
+                    assert!(!chip.division.borrow().busy());
+                }
+                assert_eq!(
+                    chip.read32(DIVU + 4),
+                    Ok(if enabled { partial } else { saturated })
+                );
+                assert_eq!(chip.take_wait_clocks(), u32::from(interlock));
+                assert_eq!(chip.read32(DIVU + 0x10), Ok(remainder));
+                assert_eq!(
+                    chip.read32(DIVU + 0x14),
+                    Ok(if enabled { partial } else { saturated })
+                );
+                assert_eq!(chip.read32(DIVU), Ok(divisor));
+                assert_eq!(chip.read16(DIVU + 0xE), Ok(0x45));
+                assert_eq!(chip.read32(DIVU + 8), Ok(if enabled { 3 } else { 1 }));
+                assert_eq!(chip.interrupt(), enabled.then_some((10, 0x45)));
+                chip.write16(DIVU + 0xA, 0).unwrap();
+                assert_eq!(chip.interrupt(), None);
+                // A later successful divide does not clear a previous OVF.
+                chip.write32(DIVU + 8, 1).unwrap();
+                chip.write32(DIVU, 3).unwrap();
+                chip.write32(DIVU + 4, 100).unwrap();
+                assert_eq!(chip.read32(DIVU + 4), Ok(33));
+                assert_eq!(chip.take_wait_clocks(), 39);
+                assert_eq!(chip.read32(DIVU + 0x10), Ok(1));
+                assert_eq!(chip.read32(DIVU + 8), Ok(1));
+            }
+        }
     }
 }
 
@@ -574,4 +664,81 @@ fn interrupt_control_pin_status_word_byte_lanes_vectors_and_nmi_edges() {
     assert_eq!(c.read16(ICR), Ok(0)); // reset cannot change the external pin
     assert!(!c.set_nmi_pin(true));
     assert_eq!(c.read32(DMAC + 0x30), Ok(0));
+}
+
+#[test]
+fn peripheral_deadlines_order_serial_refresh_frt_and_division_at_exact_clocks() {
+    // H §§7.5.7/10.3/11.4/13.3: independently selected deadlines are
+    // 1 (TDR->TSR), 8 (RTCOR=2 at /4), 16 (FRC leaves OCRA=1),
+    // 39 (normal division), and 320 (8N1 SCI at BRR=0).
+    for slave in [false, true] {
+        let mut chip = OnChip::default();
+        chip.set_slave(slave);
+        chip.write32(bsc::BSC + 0x18, 0xA55A_0002).unwrap();
+        chip.write32(bsc::BSC + 0x10, 0xA55A_0008).unwrap();
+        chip.write8(FRT + 4, 0).unwrap();
+        chip.write8(FRT + 5, 1).unwrap();
+        chip.write32(DIVU, 7).unwrap();
+        chip.write32(DIVU + 4, 100).unwrap();
+        chip.write8(SCI + 1, 0).unwrap();
+        chip.write8(SCI + 2, 0x24).unwrap();
+        chip.write8(SCI + 3, 0xA5).unwrap();
+        chip.read8(SCI + 4).unwrap();
+        chip.write8(SCI + 4, 0).unwrap();
+        assert_eq!(chip.clocks_to_event(), 1);
+        chip.advance_clocks(1);
+        assert_eq!(chip.clocks_to_event(), 7);
+        chip.advance_clocks(6);
+        assert_eq!(chip.clocks_to_event(), 1);
+        assert_eq!(chip.read32(bsc::BSC + 0x10), Ok(8));
+        chip.advance_clocks(1);
+        assert_eq!(chip.read32(bsc::BSC + 0x10), Ok(0x88));
+        assert_eq!(chip.clocks_to_event(), 8);
+        chip.advance_clocks(7);
+        assert_eq!(chip.read8(FRT + 1).unwrap() & 8, 0);
+        assert_eq!(chip.clocks_to_event(), 1);
+        chip.advance_clocks(1);
+        assert_eq!(chip.read8(FRT + 1).unwrap() & 8, 8);
+        chip.write32(bsc::BSC + 0x10, 0xA55A_0000).unwrap();
+        assert_eq!(chip.clocks_to_event(), 23);
+        chip.advance_clocks(22);
+        assert!(chip.division.borrow().busy());
+        assert_eq!(chip.clocks_to_event(), 1);
+        chip.advance_clocks(1);
+        assert!(!chip.division.borrow().busy());
+        assert_eq!(chip.read32(DIVU + 4), Ok(14));
+        assert_eq!(chip.take_wait_clocks(), 0);
+        assert_eq!(chip.clocks_to_event(), 281);
+        chip.advance_clocks(280);
+        assert_eq!(chip.take_serial_output(), None);
+        chip.advance_clocks(1);
+        assert_eq!(chip.take_serial_output(), Some(0xA5));
+    }
+}
+
+#[test]
+fn watchdog_assertion_preserves_preceding_clocks_and_freezes_only_the_reset_hold() {
+    // H §12.3.1: seven /2 ticks to overflow from 249, then 512 reset
+    // clocks. FRT gets the edge at t=8, and DIVU gets exactly 14 clocks.
+    for slave in [false, true] {
+        for chunk in [1, 3, 8, 14, 17, 526] {
+            let mut chip = OnChip::default();
+            chip.set_slave(slave);
+            chip.write32(DIVU, 7).unwrap();
+            chip.write32(DIVU + 4, 100).unwrap();
+            chip.write16(WDT + 2, 0x5A7F).unwrap();
+            chip.write16(WDT, 0xA578).unwrap();
+            chip.write16(WDT, 0x5AF9).unwrap();
+            let mut elapsed = 0;
+            while elapsed < 526 {
+                let n = chunk.min(526 - elapsed);
+                chip.advance_clocks(n);
+                elapsed += n;
+            }
+            assert_eq!(chip.counter, 1, "slave={slave}, chunk={chunk}");
+            assert_eq!(chip.division.borrow().remaining(), 25);
+            assert!(!chip.reset_active());
+            assert_eq!(chip.take_reset_request(), Some(ResetRequest::Manual));
+        }
+    }
 }

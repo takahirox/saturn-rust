@@ -478,6 +478,9 @@ impl Bus {
     pub fn set_reset_button(&mut self, pressed: bool) -> bool {
         self.smpc.set_reset_button(pressed)
     }
+    pub fn set_region(&mut self, region: crate::smpc::Region) {
+        self.smpc.set_region(region);
+    }
     pub fn set_analog(&mut self, port: usize, axes: Option<[u8; 3]>) {
         self.smpc.set_analog(port, axes);
     }
@@ -1179,6 +1182,7 @@ mod scu_timing_tests {
                 chip.write16(0xFFFF_FF48, 0xA4).unwrap();
                 chip.write16(0xFFFF_FF68, 0xA4).unwrap();
                 chip.write16(0xFFFF_FF78, 0x3010).unwrap();
+                chip.read16(0xFFFF_FF78).unwrap();
                 b.for_cpu(Processor::Master)
                     .read32(HIGH_WRAM | 0x20000000)
                     .unwrap();
@@ -1277,12 +1281,14 @@ mod scu_timing_tests {
         observer.write16(0xFFFF_FF48, 0xA4).unwrap();
         observer.write16(0xFFFF_FF68, 0xA4).unwrap();
         observer.write16(0xFFFF_FF78, 0x3010).unwrap();
+        observer.read16(0xFFFF_FF78).unwrap(); // UBC configuration barrier
         bus.for_cpu(Processor::Master).write8(CCR, 0x11).unwrap();
         assert_eq!(bus.for_cpu(Processor::Master).read32(HIGH_WRAM + 8), Ok(12));
         assert_eq!(bus.onchip[1].interrupt(), Some((15, 12)));
         assert_eq!(bus.onchip[1].read16(0xFFFF_FF78), Ok(0x7050));
         bus.onchip[1].acknowledge_break();
         bus.onchip[1].write16(0xFFFF_FF78, 0x3010).unwrap();
+        bus.onchip[1].read16(0xFFFF_FF78).unwrap();
         bus.for_cpu(Processor::Master)
             .read32(HIGH_WRAM + 8)
             .unwrap();
@@ -1298,6 +1304,7 @@ mod scu_timing_tests {
                 .write16(0xFFFF_FF48, if index == 0 { 0x67 } else { 0xA5 })
                 .unwrap();
             bus.onchip[index].write16(0xFFFF_FF78, 0x3000).unwrap();
+            bus.onchip[index].read16(0xFFFF_FF78).unwrap();
         }
         bus.write32(HIGH_WRAM, 0x12345678).unwrap();
         bus.for_cpu(Processor::Master).write8(CCR, 1).unwrap();
@@ -1330,6 +1337,7 @@ mod scu_timing_tests {
             chip.write32(0xFFFF_FF60, HIGH_WRAM + 0x100).unwrap();
             chip.write16(0xFFFF_FF68, 0xA8).unwrap(); // peripheral/data/write
             chip.write16(0xFFFF_FF78, 0x3000).unwrap();
+            chip.read16(0xFFFF_FF78).unwrap();
         }
         bus.write32(HIGH_WRAM, 0x12345678).unwrap();
         for (offset, value) in [

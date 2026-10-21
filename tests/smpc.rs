@@ -113,3 +113,41 @@ fn three_d_pad_reports_and_both_direct_analog_handshakes_run_as_guest_instructio
         assert_eq!(m.cpu_state().r[15], 0x06100000);
     }
 }
+
+#[test]
+fn region_and_independent_sound_cd_reset_status_execute_as_guest_commands() {
+    use saturn_rust::smpc::Region;
+    let mut bios = vec![0; saturn_rust::bus::BIOS_SIZE];
+    for line in include_str!("fixtures/smpc-status.hex").lines() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut words = line.split_whitespace();
+        let at = usize::from_str_radix(words.next().unwrap(), 16).unwrap();
+        for (i, word) in words.enumerate() {
+            bios[at + i * 2..at + i * 2 + 2]
+                .copy_from_slice(&u16::from_str_radix(word, 16).unwrap().to_be_bytes());
+        }
+    }
+    for code in [1, 2, 4, 5, 6, 10, 12, 13] {
+        let mut m = Machine::new();
+        m.set_region(Region::try_from(code).unwrap());
+        for _ in 0..2 {
+            m.reset(Boot::ExternalBios(&bios)).unwrap();
+            m.run_steps(10000).unwrap();
+            let mut expected = Vec::new();
+            for (sound, cd) in [(0x35, 0x40), (0x34, 0x40), (0x34, 0), (0x35, 0)] {
+                expected.extend([u32::from(code), sound, cd, 0, 0]);
+            }
+            expected.push(0x600D);
+            for (i, value) in expected.into_iter().enumerate() {
+                assert_eq!(
+                    m.bus().read32(0x06017000 + i as u32 * 4),
+                    Ok(value),
+                    "area {code}, word {i}"
+                );
+            }
+            assert_eq!(m.cpu_state().exceptions, 0);
+        }
+    }
+}

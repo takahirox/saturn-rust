@@ -7,6 +7,39 @@ mod controller;
 use controller::{Analog, DigitalMux, Handshake};
 const REFERENCE_HZ: u64 = 26_874_100;
 
+/// SMPC ST-169 §2.4.2 OREG9: physical console area straps. Region is
+/// independent of mounted media and survives CPU/system resets. Television
+/// timing is a separate board property, not inferred from the disc region.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Region {
+    #[default]
+    Japan = 1,
+    AsiaNtsc = 2,
+    NorthAmerica = 4,
+    CentralSouthAmericaNtsc = 5,
+    Korea = 6,
+    AsiaPal = 10,
+    EuropePal = 12,
+    CentralSouthAmericaPal = 13,
+}
+impl TryFrom<u8> for Region {
+    type Error = &'static str;
+    fn try_from(code: u8) -> Result<Self, Self::Error> {
+        Ok(match code {
+            1 => Self::Japan,
+            2 => Self::AsiaNtsc,
+            4 => Self::NorthAmerica,
+            5 => Self::CentralSouthAmericaNtsc,
+            6 => Self::Korea,
+            10 => Self::AsiaPal,
+            12 => Self::EuropePal,
+            13 => Self::CentralSouthAmericaPal,
+            _ => return Err("Reserved or prohibited SMPC area code"),
+        })
+    }
+}
+
 #[derive(Clone)]
 struct Battery {
     // Binary calendar internally; the interface uses the manual's BCD layout.
@@ -160,6 +193,8 @@ pub struct Smpc {
     reset_button: bool,
     latched_reset_button: bool,
     sound_enabled: bool,
+    cd_enabled: bool,
+    region: Region,
     await_continue: bool,
     await_vblank: bool,
     peripheral_phase: bool,
@@ -190,6 +225,8 @@ impl Default for Smpc {
             reset_button: false,
             latched_reset_button: false,
             sound_enabled: false,
+            cd_enabled: true,
+            region: Region::default(),
             await_continue: false,
             await_vblank: false,
             peripheral_phase: false,
@@ -216,12 +253,17 @@ impl Smpc {
             .chain(self.handshake.iter().map(Handshake::clocks_to_event))
             .fold(self.pending.map_or(u32::MAX, |(_, n)| n), u32::min)
     }
+    pub fn set_region(&mut self, region: Region) {
+        self.region = region;
+    }
     pub(crate) fn system_reset(&mut self) {
+        let region = self.region;
         let battery = self.battery.clone();
         let buttons = self.buttons;
         let analog = self.analog;
         let th = self.th;
         *self = Self {
+            region,
             battery,
             buttons,
             analog,
@@ -231,8 +273,10 @@ impl Smpc {
         self.output[31] = 0x0D;
     }
     pub(crate) fn reset_volatile(&mut self) {
+        let region = self.region;
         let battery = self.battery.clone();
         *self = Self {
+            region,
             battery,
             ..Self::default()
         };
@@ -287,6 +331,8 @@ impl Smpc {
         match command {
             6 => self.sound_enabled = true,
             7 => self.sound_enabled = false,
+            8 => self.cd_enabled = true,
+            9 => self.cd_enabled = false,
             0x0E | 0x0F => {
                 self.clock_352 = command == 0x0E;
                 self.sound_enabled = false;
@@ -311,9 +357,10 @@ impl Smpc {
                     self.output[0] =
                         u8::from(self.battery.set) << 7 | u8::from(self.reset_disabled) << 6;
                     self.output[1..8].copy_from_slice(&self.battery.packet());
-                    self.output[9] = 1; // Japan region, no cartridge.
+                    self.output[9] = self.region as u8;
                     self.output[10] =
                         0x34 | u8::from(self.clock_352) << 6 | u8::from(!self.sound_enabled);
+                    self.output[11] = u8::from(!self.cd_enabled) << 6;
                     self.output[12..16].copy_from_slice(&self.battery.memory);
                     self.await_continue = self.input[1] & 8 != 0;
                     self.sf = self.await_continue;

@@ -337,7 +337,17 @@ impl OnChip {
     /// Counts CPU phi clocks even while the CPU is in SLEEP.
     /// Pin synchronization, access wait states and clock-switch glitches are
     /// outside this functional model (SH7604 §§11.4/11.7).
-    pub fn advance_clocks(&mut self, clocks: u32) {
+    pub fn advance_clocks(&mut self, mut clocks: u32) {
+        // Split before a reset or peripheral transition can suppress clocks
+        // that preceded it. The same deadlines are exported to the board's
+        // cross-clock scheduler, including while either processor sleeps.
+        while clocks != 0 {
+            let n = clocks.min(self.clocks_to_event());
+            self.advance_segment(n);
+            clocks -= n;
+        }
+    }
+    fn advance_segment(&mut self, clocks: u32) {
         if self.standby {
             if let Some(remaining) = self.wake_remaining {
                 if clocks < remaining {
@@ -352,9 +362,10 @@ impl OnChip {
         }
         let held_reset = self.watchdog.reset_active();
         self.watchdog.advance(clocks);
-        if held_reset || self.watchdog.reset_active() {
+        if held_reset {
             return;
         }
+        self.ubc.get_mut().advance(clocks);
         self.bsc.advance(clocks);
         if self.module_stop & 4 == 0 {
             self.division.get_mut().advance(clocks);
@@ -589,7 +600,30 @@ impl OnChip {
         !self.standby
     }
     pub(crate) fn clocks_to_event(&self) -> u32 {
-        self.wake_remaining.unwrap_or(u32::MAX)
+        if self.standby {
+            return self.wake_remaining.unwrap_or(u32::MAX);
+        }
+        let watchdog = self.watchdog.clocks_to_event();
+        if self.watchdog.reset_active() {
+            return watchdog;
+        }
+        let mut next = watchdog
+            .min(self.ubc.borrow().clocks_to_event())
+            .min(self.bsc.clocks_to_event());
+        if self.module_stop & 4 == 0 && self.division.borrow().busy() {
+            next = next.min(self.division.borrow().remaining());
+        }
+        if self.module_stop & 1 == 0 {
+            next = next.min(self.serial.clocks_to_event());
+        }
+        if self.module_stop & 2 == 0 && self.control & 3 != 3 {
+            let divisor = [8, 32, 128][(self.control & 3) as usize];
+            for target in [self.compare[0], self.compare[1], 0xFFFF] {
+                let ticks = u32::from(target.wrapping_sub(self.counter)) + 1;
+                next = next.min((ticks * divisor).saturating_sub(self.divider).max(1));
+            }
+        }
+        next
     }
     pub(crate) fn enter_sleep(&mut self) {
         if self.module_stop & 0x80 == 0 {

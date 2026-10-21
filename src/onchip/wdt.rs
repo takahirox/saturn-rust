@@ -79,6 +79,18 @@ impl Watchdog {
             _ => (), // Wrong key is ignored by hardware, not a new register write.
         }
     }
+    pub fn clocks_to_event(&self) -> u32 {
+        if let Some((remaining, _)) = self.reset_hold {
+            remaining
+        } else if self.control & 0x20 != 0 {
+            let divisor = [2, 64, 128, 256, 512, 1024, 4096, 8192][(self.control & 7) as usize];
+            ((256 - u32::from(self.counter)) * divisor)
+                .saturating_sub(self.divider)
+                .max(1)
+        } else {
+            u32::MAX
+        }
+    }
     pub fn advance(&mut self, clocks: u32) {
         if let Some((remaining, request)) = self.reset_hold {
             if clocks < remaining {

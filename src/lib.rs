@@ -218,6 +218,9 @@ impl Machine {
             self.bus.signal_nmi(Processor::Master);
         }
     }
+    pub fn set_region(&mut self, region: smpc::Region) {
+        self.bus.set_region(region);
+    }
     pub fn set_analog(&mut self, port: usize, axes: Option<[u8; 3]>) {
         self.bus.set_analog(port, axes);
     }
@@ -350,6 +353,9 @@ impl Machine {
                     self.slave
                         .step(&mut memory)
                         .map_err(MachineError::SlaveCpu)?;
+                } else if !dma_accepted {
+                    self.bus
+                        .acknowledge_interrupt(Processor::Slave, irq.unwrap());
                 }
             }
         }
