@@ -352,19 +352,43 @@ impl Scsp {
                 }
             }
             let pcm8 = regs[0] & 16 != 0;
-            let offset = (start + (voice.phase.max(0) as usize >> 16) * if pcm8 { 1 } else { 2 })
-                & (SOUND_RAM_SIZE - 1);
-            let mut value = if pcm8 {
-                i16::from(ram[offset] as i8) << 8
+            // ST-077 §§2.2/3.1, fig.4.30 OP4: first-order interpolation
+            // follows waveform reads. Interpolate decoded signed samples, not
+            // addresses or mixed output. Q16 arithmetic rounds towards -infinity.
+            let index = voice.phase.max(0) as usize >> 16;
+            let fraction = voice.phase & 0xFFFF;
+            let next = if index + 1 >= regs[3] as usize {
+                if looping == 1 {
+                    regs[2] as usize
+                } else {
+                    index
+                }
             } else {
-                i16::from_be_bytes([ram[offset & !1], ram[(offset & !1) + 1]])
+                index + 1
             };
-            if regs[0] & 0x200 != 0 {
-                value ^= 0x7FFF;
-            }
-            if regs[0] & 0x400 != 0 {
-                value ^= i16::MIN;
-            }
+            let decode = |index: usize| {
+                let offset = (start + index * if pcm8 { 1 } else { 2 }) & (SOUND_RAM_SIZE - 1);
+                let mut value = if pcm8 {
+                    i16::from(ram[offset] as i8) << 8
+                } else {
+                    i16::from_be_bytes([ram[offset & !1], ram[(offset & !1) + 1]])
+                };
+                if regs[0] & 0x200 != 0 {
+                    value ^= 0x7FFF;
+                }
+                if regs[0] & 0x400 != 0 {
+                    value ^= i16::MIN;
+                }
+                i64::from(value)
+            };
+            let a = decode(index);
+            // Reverse/alternating traversal retains its established sample-point
+            // behavior until its fractional edge vectors are independently derived.
+            let value = if looping <= 1 {
+                ((a * (65536 - fraction) + decode(next) * fraction) >> 16) as i16
+            } else {
+                a as i16
+            };
             if regs[6] & 0x200 == 0 {
                 self.stack[(self.stack_index + i) & 63] = value;
             }

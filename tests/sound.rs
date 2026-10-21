@@ -68,3 +68,33 @@ fn changing_guest_arithmetic_changes_emulated_samples_without_host_game_detectio
     let first = audio.iter().position(|v| *v != 0).unwrap();
     assert_eq!(&audio[first..first + 4], &[128, 2048, -128, -2048]);
 }
+
+#[test]
+fn sound_guest_programs_half_sample_pitch_and_generates_interpolated_stereo() {
+    let mut rom = rom();
+    // Literal guest MOVE.W #0,$100010 programs OCT/FNS. Change its operand
+    // to OCT=-1; the actual 68k executes the write. No host SCSP write is used.
+    let instruction = [0x33, 0xFC, 0, 0, 0, 0x10, 0, 0x10];
+    let offsets: Vec<_> = rom
+        .windows(instruction.len())
+        .enumerate()
+        .filter_map(|(at, bytes)| (bytes == instruction).then_some(at))
+        .collect();
+    assert_eq!(offsets.len(), 1);
+    rom[offsets[0] + 2..offsets[0] + 4].copy_from_slice(&0x7800u16.to_be_bytes());
+    let mut m = Machine::new();
+    m.reset(Boot::ExternalBios(&rom)).unwrap();
+    for _ in 0..10 {
+        m.run_steps(10000).unwrap();
+    }
+    assert_eq!(m.bus().read16(SCSP + 0x10).unwrap(), 0x7800);
+    assert_eq!(m.bus().read32(SOUND_RAM + 0x4000).unwrap(), 0x1000F000);
+    let audio = m.drain_audio(8192);
+    let first = audio.iter().position(|v| *v != 0).unwrap();
+    assert_eq!(
+        &audio[first..first + 16],
+        &[
+            256, 4096, 0, 0, -256, -4096, -384, -6144, -512, -8192, 0, 0, 512, 8192, 384, 6144
+        ]
+    );
+}

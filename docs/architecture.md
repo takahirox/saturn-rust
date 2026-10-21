@@ -349,6 +349,11 @@ SDIR direct mode is synthesized; unsupported envelope/FM/LFO/DSP settings fail.
 The original dual-architecture fixture computes its waveform on the 68k,
 programs SCSP, handles a timer IRQ and returns through RTE. Changing its arithmetic
 changes both shared RAM and exact output samples natively and through Wasm.
+No-loop and forward-loop PCM8/16 now use signed Q16 first-order interpolation
+before stack writes and mixing (ST-077 §§2.2/3.1, fig.4.30 OP4). A guest-programmed
+half-sample pitch produces independently expected intermediate stereo values in
+native and browser Wasm. Reverse/alternating traversal still uses sample-point
+output; its fractional interpolation and precise boundary behavior remain pending.
 
 Audio frames advance at 44.1 kHz independently of the 11.2896 MHz sound CPU.
 Both domains use integer deadlines relative to fixed NTSC 320 reference time;

@@ -515,6 +515,16 @@ try {
   const changedSound = await soundResult();
   assert.deepEqual(changedSound.waveform, [0x0800F800, 0xF0001000]);
   assert.deepEqual(changedSound.samples.slice(0,4), [128,2048,-128,-2048]);
+  const fractionalSoundRom = Buffer.from(soundRom);
+  const pitchInstruction = Buffer.from([0x33,0xFC,0,0,0,0x10,0,0x10]);
+  const pitchAt = fractionalSoundRom.indexOf(pitchInstruction);
+  assert(pitchAt >= 0 && fractionalSoundRom.indexOf(pitchInstruction,pitchAt+1) === -1);
+  fractionalSoundRom.writeUInt16BE(0x7800,pitchAt+2);
+  await page.locator("#bios").setInputFiles({ name:"original-fractional-sound.bin",mimeType:"application/octet-stream",buffer:fractionalSoundRom });
+  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  const fractionalSound = await soundResult();
+  assert.deepEqual(fractionalSound.waveform, [0x1000F000,0xE0002000]);
+  assert.deepEqual(fractionalSound.samples,[256,4096,0,0,-256,-4096,-384,-6144,-512,-8192,0,0,512,8192,384,6144]);
   // Real Gamepad API input adaptation feeds only emulated SMPC levels. The
   // original SH-2 guest sets RTC/SMEM, handles IRQs and copies INTBACK packets.
   const smpcRom = Buffer.alloc(524288);

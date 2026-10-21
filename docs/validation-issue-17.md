@@ -43,6 +43,13 @@ Implemented and exercised:
   input sequences, loss/win/restart and reset. Mutating its original texture
   changes native and Wasm output. The browser checks actual Canvas presentation
   and delivery of this disc's PCM through the real AudioWorklet.
+- Continued sound implementation with no-loop/forward-loop signed PCM8/16
+  first-order interpolation, before stack writes/mixing. Two independent native
+  vectors cover fractional pitch and loop/end neighbors. The original sound
+  guest also programs half-sample pitch in native and browser Wasm, producing
+  stereo values `[256,4096],[0,0],[-256,-4096],[-384,-6144],[-512,-8192],
+  [0,0],[512,8192],[384,6144]`. Its RAM waveform is unchanged. Reverse/alternating
+  fractional interpolation and the executing effects DSP remain required.
 
 The [conformance matrix](hardware-conformance.md#vdp1-and-vdp2) links primary
 manual sections, implementations, 13 independent video-vector tests and guest
@@ -57,7 +64,7 @@ byte-for-byte reproducible. See the [guest README](../homebrew/prism-courier/REA
 Validation on the final code in this revision:
 
 - `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`: pass;
-  **177 native tests, zero failures and zero ignored tests**.
+  **180 native tests, zero failures and zero ignored tests**.
 - `cargo clippy --locked --all-targets -- -D warnings` and
   `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings`: pass.
 - `sh scripts/build-web.sh`: pass with the documented Rustup stable toolchain

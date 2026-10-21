@@ -61,6 +61,56 @@ fn pcm8_signed_source_bit_controls_pitch_and_no_loop_stop() {
     scsp.sample(&mut ram).unwrap();
     assert_eq!(scsp.drain(1), [32767, 32767]);
 }
+
+#[test]
+fn fractional_pcm_interpolation_uses_signed_samples_and_forward_loop_endpoint() {
+    // ST-077 §2.2/§3.1: 44.1 kHz first-order interpolation; waveform [0,4096,
+    // -4096,8192], half-sample pitch. Expected values are authored arithmetic.
+    let mut scsp = Scsp::default();
+    let mut ram = vec![0; SOUND_RAM_SIZE];
+    ram[0x100..0x108].copy_from_slice(&[0, 0, 0x10, 0, 0xF0, 0, 0x20, 0]);
+    direct(&mut scsp, 0, 0x100, 1, false, 0);
+    scsp.write16(16, 0x7800).unwrap(); // OCT=-1: phase increment = 1/2
+    scsp.write16(4, 1).unwrap(); // loop starts at sample 1
+    for _ in 0..10 {
+        scsp.sample(&mut ram).unwrap();
+    }
+    let actual: Vec<_> = scsp
+        .drain(10)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|p| p[0])
+        .collect();
+    assert_eq!(actual, [0, 2048, 4096, 0, -4096, 2048, 8192, 6144, 4096, 0]);
+    assert_eq!(scsp.stack[0], 4096); // stack also receives interpolated data
+}
+
+#[test]
+fn fractional_pcm8_no_loop_and_forward_loop_have_independent_end_vectors() {
+    for (mode, expected) in [
+        (0, vec![10, 15, 20, 25, 30, 35, 40, 40, 0]),
+        (1, vec![10, 15, 20, 25, 30, 35, 40, 30, 20]),
+    ] {
+        let mut scsp = Scsp::default();
+        let mut ram = vec![0; SOUND_RAM_SIZE];
+        ram[0x100..0x104].copy_from_slice(&[10, 20, 30, 40]);
+        direct(&mut scsp, 0, 0x100, mode, true, 0);
+        scsp.write16(16, 0x7800).unwrap();
+        scsp.write16(4, 1).unwrap();
+        for _ in 0..9 {
+            scsp.sample(&mut ram).unwrap();
+        }
+        let actual: Vec<_> = scsp
+            .drain(9)
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|p| p[0] / 256)
+            .collect();
+        assert_eq!(actual, expected, "mode {mode}");
+    }
+}
 #[test]
 fn byte_lanes_do_not_read_write_only_registers_or_pop_midi() {
     let mut scsp = Scsp::default();
