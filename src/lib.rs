@@ -5,8 +5,11 @@ pub mod cache;
 pub mod cpu;
 pub mod devices;
 pub mod disc;
+pub mod m68k;
 pub mod onchip;
 pub mod scu;
+pub mod smpc;
+pub mod sound;
 pub mod timing;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
@@ -155,6 +158,29 @@ impl Machine {
         Ok(())
     }
 
+    pub fn sound_state(&self) -> &m68k::State {
+        &self.bus.sound.cpu.state
+    }
+    pub fn drain_audio(&mut self, frames: usize) -> Vec<i16> {
+        self.bus.sound.scsp.drain(frames)
+    }
+    pub fn audio_generated(&self) -> u64 {
+        self.bus.sound.scsp.generated
+    }
+    pub fn audio_dropped(&self) -> u64 {
+        self.bus.sound.scsp.dropped
+    }
+
+    pub fn set_reset_button(&mut self, pressed: bool) {
+        if self.bus.set_reset_button(pressed) {
+            self.nmi_pending = true;
+            self.bus.signal_nmi(Processor::Master);
+        }
+    }
+    pub fn set_analog(&mut self, port: usize, axes: Option<[u8; 3]>) {
+        self.bus.set_analog(port, axes);
+    }
+
     pub fn set_buttons(&mut self, buttons: u16) {
         self.bus.set_buttons(buttons);
     }
@@ -289,6 +315,8 @@ impl Machine {
                 self.bus.set_slave_enabled(false);
                 self.slave = Cpu::default();
             }
+            Some(0x06) => self.bus.sound.set_enabled(true)?,
+            Some(0x07) => self.bus.sound.set_enabled(false)?,
             Some(0x18) => {
                 self.nmi_pending = true;
                 self.bus.signal_nmi(Processor::Master);

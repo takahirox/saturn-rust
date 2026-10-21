@@ -4,14 +4,15 @@
 #11/#13/#15 remain administratively closed; do not reopen them. This checkpoint
 includes independent slave SH-2 execution, CPU-local FRT/WDT/SCI/DIVU/DMAC,
 internal interrupt arbitration, write-through caches, timed SMPC CPU control,
-SCU interrupt/DMA/DSP execution and clock-based NTSC raster events. It preserves the address-error fixtures, Star Collector,
+SCU interrupt/DMA/DSP execution, an independent MC68EC000 core, direct SCSP PCM,
+WebAudio delivery, SMPC RTC/SMEM/INTBACK and clock-based NTSC raster events. It preserves the address-error fixtures, Star Collector,
 backup RAM and both direct digital pads. It does not complete the Saturn hardware
 or either required new demonstration. No umbrella acceptance checkbox is met.
 
 Inspected upstream main: `dbd981b030a46daa6923072ce240680dd2e58ebf` (2026-10-21),
 verified with `git ls-remote origin refs/heads/main`. This revision starts from
-`6e0a446e225db835f1fec7b1c47db5b13b150c98`, preserving the earlier review and
-SH7604 fixes. The full outstanding hardware scope remains mandatory. See [current validation](validation-issue-17.md),
+`91fb527ec48e6a7a8df4da1153daa04e56d4d790`, preserving the earlier
+SCU/SH7604 work and review evidence. The full outstanding hardware scope remains mandatory. See [current validation](validation-issue-17.md),
 [historical address-error validation](validation-issue-15.md),
 [backup/pad validation](validation-issue-13.md) and the
 [historical SH-2 checkpoint](validation-issue-11.md). **Pending** means required
@@ -210,86 +211,101 @@ not turn those missing hardware paths into supported behavior.
 
 ## MC68EC000 instruction families
 
-**Every row is missing**, with no native or browser conformance test. The core,
-all effective-address modes, CCR/SR flags, user/supervisor stacks, exception/IRQ
-entry, bus width/address rules, reset and sound-bus integration are absent. A
-manual entry in this table is an outstanding requirement, never a checked box.
+The original [interpreter](../src/m68k.rs) implements the MC68000/MC68EC000
+integer instruction families below, all base effective-address modes, 24-bit address
+pins, word-aligned long bus cycles, SR/CCR/USP/SSP, reset, normal/seven-word
+bus/address exception frames, privilege/illegal/line-A/line-F/trap/trace exceptions,
+autovectored IRQ levels and STOP wake-up. No later-model instruction is enabled.
+[Native semantic vectors](../src/m68k/tests.rs) include 12,000 deterministic
+arithmetic property vectors and a bounded all-encoding safety check; the latter
+is not semantic evidence by itself. Sound RAM and SCSP accesses are real shared
+bus cycles. **SNDR** means the original [sound guest](../tests/fixtures/build_sound.py)
+executed by [native integration](../tests/sound.rs) and the
+[browser Wasm suite](../scripts/browser-smoke.mjs). SNDR exercises MOVE/MOVEA,
+MOVEQ, ASL/LSL, NEG, ADDQ, Bcc, STOP, RTE, SR and IRQ entry; it does not exercise
+every family through Wasm.
+
+These are functional semantics, not complete timing conformance. Effective-address
+and data-dependent instruction cycle costs, bus contention, prefetch/pipeline
+fault PCs, long predecrement bus-cycle ordering and physical RESET pulse duration
+remain unverified. The interpreter uses bounded functional clock budgets. The
+complete CPU/scheduler acceptance criteria remain pending.
 
 | Family | Manual entry (68, MC68000 subset) | Implementation | Native / browser | Status |
 | --- | --- | --- | --- | --- |
-| ABCD | ABCD instruction description | Missing | — / — | Pending |
-| ADD | ADD instruction description | Missing | — / — | Pending |
-| ADDA | ADDA instruction description | Missing | — / — | Pending |
-| ADDI | ADDI instruction description | Missing | — / — | Pending |
-| ADDQ | ADDQ instruction description | Missing | — / — | Pending |
-| ADDX | ADDX instruction description | Missing | — / — | Pending |
-| AND | AND instruction description | Missing | — / — | Pending |
-| ANDI | ANDI instruction description | Missing | — / — | Pending |
-| ASL | ASL instruction description | Missing | — / — | Pending |
-| ASR | ASR instruction description | Missing | — / — | Pending |
-| Bcc | Bcc instruction description | Missing | — / — | Pending |
-| BCHG | BCHG instruction description | Missing | — / — | Pending |
-| BCLR | BCLR instruction description | Missing | — / — | Pending |
-| BSET | BSET instruction description | Missing | — / — | Pending |
-| BSR | BSR instruction description | Missing | — / — | Pending |
-| BTST | BTST instruction description | Missing | — / — | Pending |
-| CHK | CHK instruction description | Missing | — / — | Pending |
-| CLR | CLR instruction description | Missing | — / — | Pending |
-| CMP | CMP instruction description | Missing | — / — | Pending |
-| CMPA | CMPA instruction description | Missing | — / — | Pending |
-| CMPI | CMPI instruction description | Missing | — / — | Pending |
-| CMPM | CMPM instruction description | Missing | — / — | Pending |
-| DBcc | DBcc instruction description | Missing | — / — | Pending |
-| DIVS | DIVS instruction description | Missing | — / — | Pending |
-| DIVU | DIVU instruction description | Missing | — / — | Pending |
-| EOR | EOR instruction description | Missing | — / — | Pending |
-| EORI | EORI instruction description | Missing | — / — | Pending |
-| EXG | EXG instruction description | Missing | — / — | Pending |
-| EXT | EXT instruction description | Missing | — / — | Pending |
-| ILLEGAL | ILLEGAL instruction description | Missing | — / — | Pending |
-| JMP | JMP instruction description | Missing | — / — | Pending |
-| JSR | JSR instruction description | Missing | — / — | Pending |
-| LEA | LEA instruction description | Missing | — / — | Pending |
-| LINK | LINK instruction description | Missing | — / — | Pending |
-| LSL | LSL instruction description | Missing | — / — | Pending |
-| LSR | LSR instruction description | Missing | — / — | Pending |
-| MOVE (including CCR/SR/USP transfers) | MOVE instruction description | Missing | — / — | Pending |
-| MOVEA | MOVEA instruction description | Missing | — / — | Pending |
-| MOVEM | MOVEM instruction description | Missing | — / — | Pending |
-| MOVEP | MOVEP instruction description | Missing | — / — | Pending |
-| MOVEQ | MOVEQ instruction description | Missing | — / — | Pending |
-| MULS | MULS instruction description | Missing | — / — | Pending |
-| MULU | MULU instruction description | Missing | — / — | Pending |
-| NBCD | NBCD instruction description | Missing | — / — | Pending |
-| NEG | NEG instruction description | Missing | — / — | Pending |
-| NEGX | NEGX instruction description | Missing | — / — | Pending |
-| NOP | NOP instruction description | Missing | — / — | Pending |
-| NOT | NOT instruction description | Missing | — / — | Pending |
-| OR | OR instruction description | Missing | — / — | Pending |
-| ORI | ORI instruction description | Missing | — / — | Pending |
-| PEA | PEA instruction description | Missing | — / — | Pending |
-| RESET | RESET instruction description | Missing | — / — | Pending |
-| ROL | ROL instruction description | Missing | — / — | Pending |
-| ROR | ROR instruction description | Missing | — / — | Pending |
-| ROXL | ROXL instruction description | Missing | — / — | Pending |
-| ROXR | ROXR instruction description | Missing | — / — | Pending |
-| RTE | RTE instruction description | Missing | — / — | Pending |
-| RTR | RTR instruction description | Missing | — / — | Pending |
-| RTS | RTS instruction description | Missing | — / — | Pending |
-| SBCD | SBCD instruction description | Missing | — / — | Pending |
-| Scc | Scc instruction description | Missing | — / — | Pending |
-| STOP | STOP instruction description | Missing | — / — | Pending |
-| SUB | SUB instruction description | Missing | — / — | Pending |
-| SUBA | SUBA instruction description | Missing | — / — | Pending |
-| SUBI | SUBI instruction description | Missing | — / — | Pending |
-| SUBQ | SUBQ instruction description | Missing | — / — | Pending |
-| SUBX | SUBX instruction description | Missing | — / — | Pending |
-| SWAP | SWAP instruction description | Missing | — / — | Pending |
-| TAS | TAS instruction description | Missing | — / — | Pending |
-| TRAP | TRAP instruction description | Missing | — / — | Pending |
-| TRAPV | TRAPV instruction description | Missing | — / — | Pending |
-| TST | TST instruction description | Missing | — / — | Pending |
-| UNLK | UNLK instruction description | Missing | — / — | Pending |
+| ABCD | ABCD instruction description | `M68k::bcd / alu / group4` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| ADD | ADD instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| ADDA | ADDA instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| ADDI | ADDI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| ADDQ | ADDQ instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
+| ADDX | ADDX instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| AND | AND instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| ANDI | ANDI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| ASL | ASL instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
+| ASR | ASR instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| Bcc | Bcc instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
+| BCHG | BCHG instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| BCLR | BCLR instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| BSET | BSET instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| BSR | BSR instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| BTST | BTST instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| CHK | CHK instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| CLR | CLR instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| CMP | CMP instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| CMPA | CMPA instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| CMPI | CMPI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| CMPM | CMPM instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| DBcc | DBcc instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| DIVS | DIVS instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| DIVU | DIVU instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| EOR | EOR instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| EORI | EORI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| EXG | EXG instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| EXT | EXT instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| ILLEGAL | ILLEGAL instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| JMP | JMP instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| JSR | JSR instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| LEA | LEA instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| LINK | LINK instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| LSL | LSL instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
+| LSR | LSR instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| MOVE (including CCR/SR/USP transfers) | MOVE instruction description | `M68k::execute / group4 / sr` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
+| MOVEA | MOVEA instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
+| MOVEM | MOVEM instruction description | `M68k::movem` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| MOVEP | MOVEP instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| MOVEQ | MOVEQ instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
+| MULS | MULS instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| MULU | MULU instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| NBCD | NBCD instruction description | `M68k::bcd / alu / group4` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| NEG | NEG instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
+| NEGX | NEGX instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| NOP | NOP instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| NOT | NOT instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| OR | OR instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| ORI | ORI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| PEA | PEA instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| RESET | RESET instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| ROL | ROL instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| ROR | ROR instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| ROXL | ROXL instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| ROXR | ROXR instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| RTE | RTE instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
+| RTR | RTR instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| RTS | RTS instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| SBCD | SBCD instruction description | `M68k::bcd / alu / group4` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| Scc | Scc instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| STOP | STOP instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
+| SUB | SUB instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| SUBA | SUBA instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| SUBI | SUBI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| SUBQ | SUBQ instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| SUBX | SUBX instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| SWAP | SWAP instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| TAS | TAS instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| TRAP | TRAP instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| TRAPV | TRAPV instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| TST | TST instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| UNLK | UNLK instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
 
 ## Bus, timing and persistence
 
@@ -302,9 +318,9 @@ manual entry in this table is an outstanding requirement, never a checked box.
 | Backup byte storage, SCU §1.2 figs.1.3/1.5; SMPC §2.3 SYSRES p.29 | 32 KiB, odd byte addresses in 00180000–0018FFFF; P1 aliases; unformatted zero initialization | BK; `backup_byte_lanes_endpoints_and_cache_through_access_do_not_alias_work_ram` | BK | Even lanes/open bus, word/long semantics, additional mirrors and hardware lane confirmation pending | Pending |
 | Backup reset retention, SMPC §2.3 SYSRES p.29 | Bytes survive successful/rejected HLE, disc and ROM resets; new Machine starts empty | BK; `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot` | BK, reset/mode/read-race checks | Guest SYSRES and other power/reset domains missing | Pending |
 | Local backup import/export (host interface) | Exact 32768 packed bytes; atomic replacement; explicit local download; stale import cancellation; no network/storage | `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot` | Download byte comparison, offline import, invalid size/read errors, races, fresh-tab isolation | BIOS backup filesystem/calls and cartridge backup absent; no automatic cross-session persistence | Pending |
-| Shared event scheduler, O clock domains | Deterministic CPU order, raster/SCU event deadlines and clock-driven DSP/DMA; field deadlines replace instruction budgets | TIME, SCUROM, game.rs, DUAL | SCUROM, SC, DUAL | CPU opcode/on-chip DMA cycles, all remaining clock domains and bus contention missing | Pending |
+| Shared event scheduler, O clock domains | Deterministic CPU order, raster/SCU event deadlines and clock-driven DSP/DMA; field deadlines replace instruction budgets | TIME, SCUROM, game.rs, DUAL | SCUROM, SC, DUAL | CPU opcode/on-chip DMA cycles, remaining CD/device clock domains and bus contention missing | Pending |
 | Video timing, VDP2 display registers | Clock-based 263-line/224-visible NTSC raster, HBLANK/VBLANK bits and SCU edges; bounded field advancement | TIME, SCUROM, game.rs | SCUROM, SC | Other resolutions, PAL/interlace/clock modes and exact beam phase remain missing | Pending |
-| Audio timing, SCSP/CD | None | — | — | Sample clocks, bounded stereo stream, underflow/muting missing | Pending |
+| Audio timing, SCSP/CD | Independent 68k/sample deadlines, bounded stereo output and worklet; underflow/mute/blocked instrumentation | SNDV, SNDR | SNDR | Exact CPU/bus timing, effects DSP and CD-DA | Pending |
 | Power/reset domains, SMPC / H | Cold reset clears both CPUs/devices and retains backup; SSHOFF resets slave CPU/FRT while retaining shared state; SLEEP distinct | boot.rs, sh2_system.rs, DUAL | ROM/reset, DUAL | Manual/system reset and remaining power/clock controls missing | Pending |
 
 ## SCU and DSP
@@ -315,11 +331,11 @@ edge/transfer coverage are still required. Unsupported registers fail explicitly
 
 | Feature / manual | Implemented behavior | Native / browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- |
-| SCU interrupt registers, [SCU] table 2.1/§3.5, [SCUFINAL] #7/10 | IMS/IST, fixed priorities/vectors, master delivery/acknowledgment, A-bus acknowledgment gate | SCUV, SCUROM / SCUROM | Sound, CD and VDP1 producers missing; complete external interrupt pin behavior unverified | Pending |
+| SCU interrupt registers, [SCU] table 2.1/§3.5, [SCUFINAL] #7/10 | IMS/IST, fixed priorities/vectors, master delivery/acknowledgment, A-bus acknowledgment gate | SCUV, SCUROM / SCUROM | CD and VDP1 producers missing; sound/SMPC routed, complete external interrupt pin behavior unverified | Pending |
 | A/B-bus coordination, [SCU] §3.6, [SCUFINAL] #8–12 | Prohibited DMA source/destination checks and bounded error handling | SCUV / SCUROM (valid transfers) | ASR/refresh wait-state and CPU/bus contention behavior missing | Pending |
 | DMA channels 0–2 direct, [SCU] §§2.1/3.2, [SCUFINAL] #15–24 | Counts, address save/update, unaligned heads/tails, B-bus halfword strides, all seven edge triggers/GO, end/illegal IRQ and priority preemption; one queued retrigger | SCUV, SCUROM / SCUROM (channels 0/1) | Exhaustive trigger/device/boundary tests, actual bus latencies and prohibited three-channel behavior pending | Pending |
 | DMA indirect, [SCUFINAL] #24/25 | Final-spec count/write/read layout, source bit-31 end marker, table walking, write-address continuation | SCUV, SCUROM / SCUROM | Entire table alignment/overflow/error contract and all count limits need further vectors | Pending |
-| DMA device interactions, [SCU] §2.1 | High-RAM to VDP2 VRAM and executing DSP external RAM transfers, real IRQ handlers | SCUV, SCUROM / SCUROM | VDP1/sound/CD hardware paths and arbitration missing | Pending |
+| DMA device interactions, [SCU] §2.1 | High-RAM to VDP2 VRAM and executing DSP external RAM transfers, real IRQ handlers | SCUV, SCUROM / SCUROM | VDP1/CD paths and full sound cross-device arbitration/guest evidence missing | Pending |
 | SCU DSP execution/registers, [SCU] §4.5 pp.91–131/141–158 | ALU logical/arithmetic/shift/rotate, signed multiply, parallel X/Y/D1 moves, immediates, delayed jumps/subroutine control, BTM/LPS, END/ENDI, pause/step and read-cleared E/V | SCUV, SCUROM / SCUROM (product/sum/loop/ENDI) | Full conditional/DMA timing, conflicting bank access and ALU overflow/pipeline edge inventory pending | Pending |
 | SCU DSP memory/transfers, [SCU] §§3.3/4.1/4.5 pp.132–140, [SCUFINAL] #16/18/19/26/27 | Four 64-word banks, host ports, address counters, bounded asynchronous input/output DMA and HOLD, END permits DMA continuation | SCUV, SCUROM / SCUROM (immediate-count RAM DMA) | Register-count/program-RAM DMA, cross-device routes and data-bank conflicts lack complete evidence | Pending |
 | SCU timers, [SCU] §§2.2/3.4, [SCUFINAL] #30/31 | Raster-driven timer0 clear/compare and timer1 dot countdown, zero=512, no reload while active, compare-line selection | SCUV, TIME, SCUROM / SCUROM | Full television modes and beam-phase conformance pending | Pending |
@@ -370,19 +386,35 @@ invalid software parameters do not claim physical electrical behavior.
 
 ## Sound
 
+**SNDV**: [native SCSP vectors](../src/sound/tests.rs).
+**SNDR**: [original SH-2 + 68k sound ROM](../tests/fixtures/build_sound.py),
+[native guest assertions](../tests/sound.rs) and
+[browser guest/WebAudio assertions](../scripts/browser-smoke.mjs).
+Implementation: [shared sound bus, PCM and clock domain](../src/sound.rs),
+[68k interpreter](../src/m68k.rs), [producer](../web/audio.js) and
+[bounded worklet consumer](../web/audio-worklet.js).
+
 | Feature / manual | Implemented behavior | Native / browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- |
-| Sound RAM / SCSP mapping, [SCSP] | None | — / — | Sound CPU/bus access and RAM/register behavior | Pending |
-| 32 slots, PCM8/16, [SCSP] slot registers | None | — / — | Sample decoding, loop/pitch and key on/off | Pending |
-| Envelope, [SCSP] slot registers | None | — / — | Attack/decay/sustain/release and timing | Pending |
-| FM/modulation/LFO, [SCSP] modulation | None | — / — | Routing, pitch/amplitude modulation and noise | Pending |
-| Levels/pan/external inputs, [SCSP] mixer | None | — / — | Stereo mixing including CD-DA | Pending |
-| Timers/interrupts, [SCSP] common registers | None | — / — | Counters, enables/pending/clear, 68k/SH-2 delivery | Pending |
-| MIDI registers, [SCSP] MIDI | None | — / — | FIFOs/status/IRQ behavior | Pending |
-| SCSP DMA, [SCSP] common registers | None | — / — | Transfer register effects/completion/IRQ | Pending |
-| SCSP effects DSP, [SCSP] DSP programming model | None | — / — | Instruction execution, registers, ring buffers and routing | Pending |
-| Browser audio output | None | — / — | Bounded stereo buffering, gesture enable/mute and underflow | Pending |
-| CD-DA, [CD] / [SCSP] external audio | None | — / — | Track samples, pacing, playback status and mix path | Pending |
+| Sound RAM / SCSP mapping, [SCSP] §§1.2/4.1 | 512 KiB RAM shared by SH-2 and independent 68k; big-endian byte/word/long cycles; SCSP byte lanes; SNDON/OFF reset vectors and RAM retention; RESET output resets SCSP controls | SNDV, SNDR / SNDR | Additional memory-size configuration/mirrors, exact reset pulse/bus timing | Pending |
+| 32 slots, PCM8/16, [SCSP] §4.2 table 4.14 | Guest key-on/off, signed PCM, source bit controls, all 32 slots, no/forward/reverse/alternative loops, Q16 OCT/FNS pitch, sound stack | SNDV, SNDR / SNDR | Fractional sample interpolation and complete envelope-controlled playback | Pending |
+| Envelope, [SCSP] §4.2 | Nonzero envelope settings rejected; direct mode requires SDIR | SNDV / explicit errors | Attack/decay/sustain/release/key scaling | Pending |
+| FM/modulation/LFO, [SCSP] §4.2 | Unsupported nonzero controls rejected | SNDV / explicit errors | Noise, modulation/LFO execution and routing | Pending |
+| Levels/pan/external inputs, [SCSP] §4.2 tables 4.27/28 | Direct send and fixed-point stereo pan, clipping, master output control; independently expected full-volume stereo buffers | SNDV, SNDR / SNDR | Intermediate master gain conformance, effect/external inputs/CD-DA | Pending |
+| Timers/interrupts, [SCSP] §4.2 tables 4.33–38 | Three sample-clock prescaled counters; sound/main pending/enables/clear; programmed autovector levels, 68k IRQ/RTE, SCU source 6 | SNDV, SNDR / SNDR | Complete cross-device contention/timer reset edge evidence | Pending |
+| MIDI registers, [SCSP] §4.2 figs.4.59–61 | Four-byte input/output FIFOs, status/overflow, byte-lane read effects, empty transitions and IRQ requests | SNDV / not yet guest-tested | Serial bit pacing/external pin wiring and browser guest vectors | Pending |
+| SCSP DMA, [SCSP] §4.2 fig.4.66/table 4.39 | Word transfers in both directions, zero gate, count/address progress, DEXE completion and IRQ; DMA-register target rejected | SNDV / not yet guest-tested | Exact transfer timing/arbitration, full boundaries and guest evidence | Pending |
+| SCSP effects DSP, [SCSP] DSP model | Not implemented; DSP ports reject accesses | SNDV / explicit errors | Interpreter, program/register/ring-buffer routing | Pending |
+| Browser audio output | Bounded 8192-frame producer/ring, stereo sample-rate adaptation, explicit gesture enable, pause/mute/blocked/underflow/drop states; worklet renders nonzero guest PCM | SNDV / SNDR WebAudio instrumentation | Full synthesis/DSP/CD-DA validation depends on missing hardware | Pending |
+| CD-DA, [CD] / [SCSP] | None | — / — | Runtime audio tracks and external sound mix path | Pending |
+
+The sound CPU has an independent 11.2896 MHz domain and SCSP has a 44.1 kHz
+sample domain relative to the fixed 26.8741 MHz reference. Native traces match
+across 1/3/8/17/611/10000-clock advancement chunks. These deadlines do not make
+the approximate 68k opcode budgets or one-word-per-sample SCSP DMA electrically
+accurate. Unsupported synthesis/DSP paths fail explicitly. Original guest arithmetic
+changes alter both RAM waveform and exact native/Wasm PCM; canned buffers and
+no-op CPU/device implementations cannot satisfy those assertions.
 
 ## CD, boot and SMPC
 
@@ -398,11 +430,11 @@ invalid software parameters do not claim physical electrical behavior.
 | BIOS services, [BOOT] | None | — | — | System/backup/CD calls and per-call ABI/side effects | Pending |
 | External BIOS execution, [BOOT] | Genuine reset vectors, original synthetic ROM handlers | boot.rs, sh2_system.rs | ROM | Genuine BIOS initialization/menu/boot **unverified**; no lawful local BIOS supplied | Pending |
 | SMPC direct digital port 1, [SMPC] §3 | Active-low nibble selection and button levels | devices.rs | SC | Full I/O mode behavior and timing | Pending |
-| SMPC commands/status/timing, [SMPC] §1.2/§2.3 pp.23/24/32 | SF set/busy/clear; OREG31 at command start; 807 reference clocks (30 µs minimum) for 02/03/18; rejects unsupported commands and busy overwrite | smpc_command_tests, DUAL | DUAL | All other commands, SR, INTBACK, command jitter and SCU interrupt missing | Pending |
-| SMPC reset/power/clock, [SMPC] table 1.1/§2.3 | SSHON/SSHOFF slave reset domain; NMIREQ latches master NMI until accepted | DUAL | DUAL | Master/sound/CD power commands, SYSRES, clock change and reset-button enable missing | Pending |
-| RTC/region/system flags, [SMPC] | None | — | — | RTC registers/commands, deterministic clock input, flags | Pending |
+| SMPC commands/status/timing, [SMPC] §§1.2/2.3/2.4/3.2 | SF/IREG/OREG/SR, CPU commands, INTBACK status/peripheral phases, continue/break, VBlank collection and optimization; SCU source 7 | smpc/tests.rs, tests/smpc.rs, DUAL | SMPR, DUAL | Remaining system commands, firmware jitter and all clock modes | Pending |
+| SMPC reset/power/clock, [SMPC] table 1.1/§2.3 | SSHON/OFF, SNDON/OFF, NMIREQ; RESENAB/DISA control reset-button NMI edges and VBlank-latched RESB | DUAL, SNDV, SNDR, smpc/tests.rs | DUAL, SNDR | MSHON, CDON/OFF, SYSRES and clock switching | Pending |
+| RTC/region/system flags, [SMPC] §§2.4/2.5 | Deterministic Gregorian/BCD RTC, SETTIME, retained four-byte SETSMEM, status/region Japan, output control flags | smpc/tests.rs, tests/smpc.rs | SMPR | Full system-control/region configuration; remaining reset domains | Pending |
 | SMPC direct digital port 2, [SMPC] §1.2 pp.7–9, §3.4 table 3.36 p.97 | Independent PDR2/DDR2, IOSEL2/EXLE2; active-low nibble reports; host keyboard levels | BK; `both_digital_ports_have_independent_direction_selection_and_enable_bits` | BK; I/K/J/L keyboard input and release checks | Settling remains immediate; no timed INTBACK/peripheral packets or external latch IRQ | Pending |
-| Analog pad, [SMPC] peripheral data; ST-151 peripheral standards | None | — | — | Analog axes/buttons, packet/command timing, browser mapping | Pending |
+| Analog input, [SMPC] table 3.19; ST-151 | Standard analog joystick ID15 X/Y/Z and active-low button packets via timed INTBACK, synthetic Gamepad mapping and focus neutralization | smpc/tests.rs, tests/smpc.rs | SMPR | Direct analog handshake and six-byte 3D-pad ID16 model remain absent | Pending |
 | Input focus safety | Both pads use host button levels, blur/view/tab/pause release, no guest-memory shortcuts | game.rs | SC | Additional controller types absent | Pending |
 
 ## Concrete unresolved gaps and closure gates
@@ -411,8 +443,9 @@ invalid software parameters do not claim physical electrical behavior.
    DIVU overflow intermediates, DMAC DACK/CPU arbitration, external IRQs and bus locking;
    cycle-based dual-CPU scheduling and arbitration. CPU opcode decoding alone
    does not satisfy the CPU or multiprocessor criterion.
-2. Every MC68EC000 instruction family above, sound bus, SCSP synthesis/timing/DSP,
-   CD-DA mixing and real browser audio. The current build remains silent.
+2. Complete MC68EC000 timing/prefetch edge conformance and sound bus arbitration;
+   SCSP envelope/FM/LFO/noise/effects DSP and CD-DA remain missing. Direct PCM,
+   executing sound CPU, timers/DMA/FIFO subsets and WebAudio now have evidence.
 3. Full base memory map, backup bus lanes/widths/mirrors and BIOS filesystem/calls,
    plus hardware clock/event scheduling. Packed backup import/export and byte
    retention pass subset tests; other reset domains remain absent.
@@ -421,8 +454,9 @@ invalid software parameters do not claim physical electrical behavior.
    SCUROM now executes real DMA/DSP/timer/IRQ operations but is subset evidence.
 5. VDP1 and remaining VDP2 modes/effects/composition/timing, with independent
    expected pixel outputs. Existing single bitmap mode is the only video evidence.
-6. Runtime CD block, BIN/CUE/mixed tracks, complete BIOS HLE ABI, full native BIOS
-   startup, SMPC commands/RTC/INTBACK/analog input and system controls.
+6. Runtime CD block, BIN/CUE/mixed tracks, complete BIOS HLE ABI and full synthetic
+   boot pathways; remaining SMPC system/reset/clock commands, analog direct mode
+   and 3D-pad model. RTC/SMEM/INTBACK/IRQ and analog joystick subsets have evidence.
 7. Two additional original licensed demonstrations beyond Star Collector: the
    VDP1+VDP2+audio playable game and the multiprocessor/SCU/runtime-CD/CD-DA/DSP/
    advanced-video/backup showcase. Both remain absent. Current synthetic ROMs
@@ -562,3 +596,22 @@ observations were used in this checkpoint.
 [DUALREF]: https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-202-R1-120994.pdf
 
 [SCUFINAL]: https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-210-110194.pdf
+
+## SMPC status/peripheral guest evidence
+
+**SMPR** is the original [SMPC guest builder](../tests/fixtures/build_smpc.py),
+[native execution](../tests/smpc.rs) and [browser Wasm execution](../scripts/browser-smoke.mjs).
+The guest sets BCD time and four-byte battery memory, enables SCU SMPC IRQ,
+reads status, toggles continue, waits for VBlank collection, and reads both ports.
+Native calendar vectors cover leap years, 2100, year/day boundaries, malformed
+BCD atomicity, retention and advancement chunks. Browser synthetic Gamepad levels
+produce the same active-low digital and X/Y/Z packets; focus loss produces released
+buttons and neutral axes. No JavaScript writes guest result mailboxes.
+
+The clock remains fixed NTSC 320. Status collection uses 8600 reference clocks;
+SETTIME/SETSMEM use 1882/1075 clocks. Peripheral collection uses the same bounded
+8600-clock functional duration; after initial measurement, enabled optimization
+schedules readiness one millisecond before VBlank-in. Firmware polling jitter,
+physical serial handshakes and other television/clock modes are not claimed.
+Battery RTC/SMEM survive volatile machine resets. This is additional implementation
+and executable evidence; all missing umbrella requirements above remain mandatory.

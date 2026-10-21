@@ -4,6 +4,7 @@ use crate::cache::{CCR, Cache};
 use crate::devices::{SMPC, Smpc, VDP2, VRAM, Vdp2};
 use crate::onchip::OnChip;
 use crate::scu::{SCU, Scu, ScuError};
+use crate::sound::{SCSP, SOUND_RAM, SOUND_RAM_SIZE, Sound};
 use crate::timing::{Raster, RasterEvent};
 use std::cell::RefCell;
 use std::fmt;
@@ -100,6 +101,7 @@ pub struct Bus {
     low: Vec<u8>,
     high: Vec<u8>,
     pub(crate) vdp2: Vdp2,
+    pub sound: Sound,
     smpc: Smpc,
     pub(crate) scu: Scu,
     pub(crate) raster: Raster,
@@ -117,6 +119,7 @@ impl Default for Bus {
             low: vec![0; WRAM_SIZE],
             high: vec![0; WRAM_SIZE],
             vdp2: Vdp2::default(),
+            sound: Sound::default(),
             smpc: Smpc::default(),
             scu: Scu::default(),
             raster: Raster::default(),
@@ -167,6 +170,7 @@ impl Bus {
     }
     pub(crate) fn can_wake_master(&self) -> bool {
         self.slave_enabled
+            || self.sound.enabled
             || self.smpc.busy()
             || self.onchip[0].can_request_interrupt()
             || self.scu.can_wake()
@@ -236,7 +240,14 @@ impl Bus {
                 self.onchip[1].advance_clocks(delta);
             }
             self.scu.advance_clocks(delta)?;
+            self.sound.advance(delta)?;
+            if self.sound.scsp.main_interrupt() {
+                self.scu.signal(6);
+            }
             command = self.smpc.advance_clocks(delta).or(command);
+            if self.smpc.take_irq() {
+                self.scu.signal(7);
+            }
             match self.raster.advance(delta) {
                 Some(RasterEvent::HBlankIn) => {
                     self.vdp2.hblank = true;
@@ -245,12 +256,14 @@ impl Bus {
                 Some(RasterEvent::VBlankIn) => {
                     self.vdp2.hblank = false;
                     self.vdp2.vblank = true;
+                    self.smpc.vblank_in();
                     self.scu.signal(0);
                 }
                 Some(RasterEvent::VBlankOut) => {
                     self.vdp2.hblank = false;
                     self.vdp2.vblank = false;
                     self.scu.vblank_out();
+                    self.smpc.vblank_out();
                 }
                 Some(RasterEvent::LineStart) => self.vdp2.hblank = false,
                 None => (),
@@ -288,6 +301,13 @@ impl Bus {
         self.onchip[processor as usize].take_serial_output()
     }
 
+    pub fn set_reset_button(&mut self, pressed: bool) -> bool {
+        self.smpc.set_reset_button(pressed)
+    }
+    pub fn set_analog(&mut self, port: usize, axes: Option<[u8; 3]>) {
+        self.smpc.set_analog(port, axes);
+    }
+
     pub fn set_buttons(&mut self, buttons: u16) {
         self.smpc.set_buttons(buttons);
     }
@@ -300,8 +320,11 @@ impl Bus {
     /// when a subsequent boot image is rejected.
     pub(crate) fn reset_volatile(&mut self) {
         let backup = std::mem::take(&mut self.backup);
+        let mut smpc = std::mem::take(&mut self.smpc);
+        smpc.reset_volatile();
         *self = Self {
             backup,
+            smpc,
             ..Self::default()
         };
     }
@@ -339,6 +362,29 @@ impl Bus {
         let address = Self::physical(address);
         if !address.is_multiple_of(N as u32) {
             return Err(BusError::Unaligned { address, width: N });
+        }
+        if (SOUND_RAM..SOUND_RAM + SOUND_RAM_SIZE as u32).contains(&address) {
+            let offset = (address - SOUND_RAM) as usize;
+            let mut bytes = [0; N];
+            bytes.copy_from_slice(&self.sound.ram[offset..offset + N]);
+            return Ok(bytes);
+        }
+        if (SCSP..SCSP + 0x1000).contains(&address) {
+            let mut bytes = [0; N];
+            if N == 1 {
+                bytes[0] = self.sound.scsp.read8(address - SCSP)?;
+            } else {
+                for (i, pair) in bytes.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+                    pair.copy_from_slice(
+                        &self
+                            .sound
+                            .scsp
+                            .read16(address - SCSP + i as u32 * 2)?
+                            .to_be_bytes(),
+                    );
+                }
+            }
+            return Ok(bytes);
         }
         if (SCU..SCU + 0xD0).contains(&address) {
             if N != 4 {
@@ -403,6 +449,22 @@ impl Bus {
             let target = usize::from(address == 0x0100_0000);
             if target == 0 || self.slave_enabled {
                 self.onchip[target].capture_strobe();
+            }
+            return Ok(());
+        }
+        if (SOUND_RAM..SOUND_RAM + SOUND_RAM_SIZE as u32).contains(&address) {
+            let offset = (address - SOUND_RAM) as usize;
+            self.sound.ram[offset..offset + N].copy_from_slice(&bytes);
+            return Ok(());
+        }
+        if (SCSP..SCSP + 0x1000).contains(&address) {
+            if N == 1 {
+                return self.sound.scsp.write8(address - SCSP, bytes[0]);
+            }
+            for (i, pair) in bytes.as_chunks::<2>().0.iter().enumerate() {
+                self.sound
+                    .scsp
+                    .write16(address - SCSP + i as u32 * 2, u16::from_be_bytes(*pair))?;
             }
             return Ok(());
         }

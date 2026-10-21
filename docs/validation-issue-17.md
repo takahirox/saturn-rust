@@ -4,6 +4,104 @@
 criterion is complete; #17 must remain open.** Issues #11/#13/#15 are historical,
 administratively closed trackers and must not be reopened.
 
+## PR #18 sound CPU, PCM and SMPC implementation (2026-10-21)
+
+Related to #17. This revision implements review findings in the existing PR; the
+operator's full-resolution objective **is not achieved**. Required missing systems
+remain mandatory and are not waived or replaced with a continuation tracker.
+No push, merge, Issue closure or external approval action is performed.
+
+Started at review checkpoint `91fb527ec48e6a7a8df4da1153daa04e56d4d790`;
+GitHub PR #18 head remains `0de971dee24036439472e4a9925c16f8459755d8` because this
+node only commits locally. Upstream `main` was rechecked with `git ls-remote`
+and remains `dbd981b030a46daa6923072ce240680dd2e58ebf`.
+
+Executable additions:
+
+- Original MC68EC000 integer interpreter with base effective-address modes,
+  CCR/SR, USP/SSP, 24-bit pins, word-aligned long transfers, normal and seven-word
+  bus/address exception frames, privilege/illegal/trap/line-A/line-F/trace,
+  autovectored IRQ levels, STOP wake and RESET output. Native semantic vectors
+  cover every applicable family, including 12,000 wide-arithmetic property
+  vectors; the separate all-encoding safety test is not semantic proof.
+- Shared 512 KiB sound RAM and SCSP byte/word buses. SMPC SNDON starts from the
+  sound guest's own vectors; SNDOFF resets the sound CPU while retaining RAM and
+  SCSP operation. The independent sound CPU and sample domains have repeatable
+  integer deadlines across different advancement chunk sizes.
+- SCSP 32-slot direct signed PCM8/16, key/loop/pitch/source-bit controls, stereo
+  send/pan, clipping, stack, timers/IRQ, MIDI FIFO/status/overflow/byte lanes and
+  a word DMA subset. Unsupported envelope/FM/LFO/effects-DSP settings produce
+  errors. Exact opcode/bus timing, fractional PCM interpolation, complete
+  synthesis, effects DSP and CD-DA remain unimplemented or unverified.
+- Bounded native PCM queue and browser producer/AudioWorklet ring, explicit
+  gesture enable, sample-rate adaptation, pause/mute, suspended-context blocking,
+  underflow and drop counters. Chromium renders nonzero guest-produced audio;
+  no human listening or proprietary firmware is used.
+- SMPC IREG/OREG/SR/SF, deterministic BCD/Gregorian RTC, SETTIME/SETSMEM battery
+  retention, timed INTBACK status/peripheral phases, continue/break, VBlank
+  collection/optimization, SCU source-7 IRQ, reset-button mask/edge/status,
+  and standard ID15 analog joystick reports. Synthetic browser Gamepads exercise
+  both ports and focus release. Remaining system/clock commands, analog direct
+  handshake and six-byte 3D-pad support remain required.
+
+Primary sources: M68000PRM §§1–4, supervisor instruction entries and appendix B;
+ST-077 §§1.2/4.1/4.2, tables 4.14/4.27/4.28/4.33–4.39 and figures 4.59–4.66;
+ST-169 §§1.2/2.3–2.5/3.2/3.3, tables 3.18/3.19. Links and implementation/test
+inventory are in the [conformance matrix](hardware-conformance.md). No emulator
+source, CPU core, Sega SDK object, proprietary BIOS or manual example program is
+included. Source-authored fixtures use the adjacent MIT license.
+
+Original fixture SHA-256 values, after expansion to a zero-filled 524288-byte ROM:
+
+| Fixture/source | SHA-256 |
+| --- | --- |
+| [sound](../tests/fixtures/build_sound.py) | `a6b824df82cba35aa7fa362e967474dc1b89ed6baa3e9ed00652cd20ba613f7c` |
+| [SMPC](../tests/fixtures/build_smpc.py) | `9e4a267d6b225f07245b490667af26cd71f9e83ee95b659d59438263ccceafc2` |
+
+The sound SH-2 guest uploads and starts an independently executing 68k program.
+That program computes `[4096,-4096,-8192,8192]`, programs SCSP direct PCM with
+pan 8, handles a timer IRQ and returns through RTE. Native and Wasm assert
+stereo pairs `[256,4096],[-256,-4096],[-512,-8192],[512,8192]` and restart
+repeatability. Mutating the guest's MOVEQ immediate halves both its computed
+RAM waveform and actual stereo samples. This rejects canned audio and no-op cores.
+The real browser producer/worklet then renders the resulting nonzero samples;
+its instrumentation proves render/drain/underflow, mute and blocked states.
+
+The SMPC guest sets time/SMEM, enables SCU SMPC IRQ, collects status, toggles
+continue and waits for VBlank peripheral completion. It records both ports and
+two IRQs in guest-written mailboxes. Native and Wasm compare independently
+expected active-low button/X/Y/Z bytes. Browser focus loss produces released
+buttons, centered X/Y and zero Z while retaining analog device identity.
+These are diagnostic ROMs, **not either required demonstration disc**.
+
+Validation performed on this revision:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`: pass;
+  **161 native tests**, zero failures/ignored tests. Star Collector completion
+  and restart, both pads, backup atomicity/retention and existing CPU/SCU guests pass.
+- Native all-target and wasm32 Clippy with `-D warnings`: pass.
+- `sh scripts/build-web.sh`: pass with Rustup stable and matching
+  wasm-bindgen-cli 0.2.129. The first attempt selected the host Homebrew compiler
+  without Wasm libraries; selecting the repository-documented Rustup PATH fixed
+  that toolchain mismatch. No source workaround or test skip was used.
+- All six reproducibility checks pass: Star Collector plus dual-SH-2, SH7604,
+  SCU, sound and SMPC fixtures. CI now checks both new fixtures.
+- `npm ci --ignore-scripts` and the full `npm run test:browser`: pass in
+  Chromium **145.0.7632.6** at `/saturn-rust/`, including actual ISO gameplay,
+  responsive/fullscreen/input/privacy assertions and all old/new Wasm diagnostics.
+  An initial WebAudio wait read empty diagnostic counters. The wait now executes
+  in the producer's main-world context and asserts the real consumer's nonzero
+  rendering and drain states.
+- `git diff --check`: pass. Generated bindings and manual extracts are not committed.
+
+Unmet acceptance remains: SH7604/SH-2 edges and peripheral groups, full bus/reset/
+backup filesystem and arbitration, remaining SCU/DSP/device interactions, VDP1,
+advanced VDP2/composition, complete SCSP synthesis/effects DSP/CD-DA, runtime CD
+and mixed media, BIOS/HLE service ABI/full original boot pathways, remaining SMPC
+controls and analog model, both licensed demonstration discs and their complete
+native/Wasm/browser coverage. Existing green checks do not satisfy those missing
+features. Issue #17 must remain open and PR #18 is not ready to merge as its resolution.
+
 ## PR #18 SCU execution and raster timing (2026-10-21)
 
 The full Issue #17 objective remains mandatory and **is not achieved**. PR #18

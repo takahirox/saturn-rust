@@ -1,3 +1,4 @@
+import { AudioOutput } from "./audio.js";
 const $ = (id) => document.getElementById(id);
 const hex = (value) => `0x${value.toString(16).toUpperCase().padStart(8, "0")}`;
 export let emulator;
@@ -6,6 +7,25 @@ let playing = false;
 let playAfterLoad = false;
 let buttons = 0;
 let port2Buttons = 0;
+const gamepadMasks = [0, 0];
+const analogConnected = [false, false];
+export function pollGamepads() {
+  if (!emulator || document.hidden || !document.hasFocus() || document.activeElement !== $("screen")) return;
+  const pads = Array.from(navigator.getGamepads?.() ?? []).filter((pad) => pad?.connected).slice(0, 2);
+  // Standard Gamepad buttons -> Saturn A/B/C/X/Y/Z/L/R/Start and four directions.
+  const mapping = [[0,64],[1,16],[2,32],[3,1024],[4,512],[5,256],[6,4096],[7,2048],[9,128],[12,1],[13,2],[14,4],[15,8]];
+  const axis = (value) => Math.round((Math.max(-1, Math.min(1, Number.isFinite(value) ? value : 0)) + 1) * 127.5);
+  for (let port = 0; port < 2; port++) {
+    const pad = pads[port];
+    let mask = 0;
+    if (pad) for (const [index, bit] of mapping) if (pad.buttons[index]?.pressed || pad.buttons[index]?.value > 0.5) mask |= bit;
+    gamepadMasks[port] = mask;
+    analogConnected[port] = Boolean(pad && pad.axes.length >= 2);
+    emulator.set_analog(port, analogConnected[port], pad ? axis(pad.axes[0]) : 128, pad ? axis(pad.axes[1]) : 128, pad ? axis(pad.axes[2] ?? -1) : 0);
+  }
+  emulator.set_buttons(buttons | gamepadMasks[0]);
+  emulator.set_port2_buttons(port2Buttons | gamepadMasks[1]);
+}
 let lastFrame = 0;
 const context = $("screen").getContext("2d");
 let biosBytes = null;
@@ -14,6 +34,20 @@ let loadingFile = false;
 let backupGeneration = 0;
 let loadingBackup = false;
 let view = "play";
+
+export const audio = new AudioOutput((stats) => {
+  $("audio-status").textContent = `Audio: ${stats.state} · ${stats.rendered} frames · ${stats.underflow} underflow · ${stats.dropped} dropped`;
+});
+$("audio-enable").addEventListener("click", async () => {
+  try {
+    if (!audio.node || audio.context.state !== "running") {
+      await audio.enable();
+      audio.setPaused(!playing);
+    } else audio.setMuted(!audio.muted);
+    $("audio-enable").textContent = audio.muted ? "Unmute audio" : "Mute audio";
+  } catch (error) { $("audio-status").textContent = `Audio: blocked · ${error}`; }
+});
+export function pumpAudio() { audio.deliver(emulator.audio_samples(8192)); }
 
 function rows(target, names, values) {
   target.replaceChildren(...names.map((name, i) => {
@@ -34,16 +68,22 @@ function releaseButtons() {
   emulator?.set_buttons(0);
   port2Buttons = 0;
   emulator?.set_port2_buttons(0);
+  gamepadMasks.fill(0);
+  for (let port = 0; port < 2; port++) emulator?.set_analog(port, analogConnected[port], 128, 128, 0);
 }
 
 function pause() {
   playing = false;
+  audio.setPaused(true);
   playAfterLoad = false;
   releaseButtons();
 }
 
 export function advanceFrame() {
+  pollGamepads();
   emulator.advance_frame();
+  audio.setPaused(!playing);
+  pumpAudio();
   const pixels = new Uint8ClampedArray(emulator.framebuffer());
   context.putImageData(new ImageData(pixels, 320, 224), 0, 0);
 }
@@ -343,8 +383,8 @@ try {
       event.preventDefault();
       if (eventName === "keydown") { buttons |= mask ?? 0; port2Buttons |= port2Mask ?? 0; }
       else { buttons &= ~(mask ?? 0); port2Buttons &= ~(port2Mask ?? 0); }
-      emulator.set_buttons(buttons);
-      emulator.set_port2_buttons(port2Buttons);
+      emulator.set_buttons(buttons | gamepadMasks[0]);
+      emulator.set_port2_buttons(port2Buttons | gamepadMasks[1]);
     });
   }
   $("screen").addEventListener("blur", releaseButtons);

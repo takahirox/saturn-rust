@@ -7,90 +7,7 @@ pub const SMPC: u32 = 0x0010_0000;
 pub const WIDTH: usize = 320;
 pub const HEIGHT: usize = 224;
 
-/// Host button mask: up, down, left, right, B, C, A, Start, Z, Y, X, R, L.
-/// Only electrical input levels cross this boundary; no guest memory is written.
-#[derive(Default)]
-pub struct Smpc {
-    buttons: [u16; 2],
-    pdr: [u8; 2],
-    ddr: [u8; 2],
-    iosel: u8,
-    exle: u8,
-    sf: bool,
-    command: u8,
-    pending: Option<(u8, u32)>,
-}
-
-impl Smpc {
-    // ST-169 §2.3 pp.23/24/32: minimum 30 µs at the fixed NTSC 320
-    // reference clock (26.8741 MHz). Internal firmware/task jitter is absent.
-    pub const CPU_COMMAND_CLOCKS: u32 = 807;
-
-    pub(crate) fn busy(&self) -> bool {
-        self.pending.is_some()
-    }
-
-    pub(crate) fn advance_clocks(&mut self, clocks: u32) -> Option<u8> {
-        let (command, remaining) = self.pending?;
-        if clocks < remaining {
-            self.pending = Some((command, remaining - clocks));
-            return None;
-        }
-        self.pending = None;
-        self.sf = false;
-        Some(command)
-    }
-
-    pub fn set_buttons(&mut self, buttons: u16) {
-        self.buttons[0] = buttons & 0x1FFF;
-    }
-
-    pub fn set_port2_buttons(&mut self, buttons: u16) {
-        self.buttons[1] = buttons & 0x1FFF;
-    }
-
-    // ST-169, §1.2 pp.7–8 and §3.4 table 3.36 p.97. Standard digital pad only.
-    pub fn read(&self, address: u32) -> Result<u8, BusError> {
-        match address - SMPC {
-            0x5F => Ok(self.command),
-            0x63 => Ok(u8::from(self.sf)),
-            offset @ (0x75 | 0x77) => {
-                let port = ((offset - 0x75) / 2) as usize;
-                let bit = 1 << port;
-                if self.ddr[port] != 0x60 || self.iosel & bit == 0 || self.exle & bit != 0 {
-                    return Err(BusError::UnsupportedDevice { address, width: 1 });
-                }
-                let nibble = match self.pdr[port] & 0x60 {
-                    0x60 => 0x04 | u8::from(self.buttons[port] & (1 << 12) == 0) << 3,
-                    0x20 => !self.buttons[port] as u8 & 15,
-                    0x40 => !(self.buttons[port] >> 4) as u8 & 15,
-                    _ => !(self.buttons[port] >> 8) as u8 & 15,
-                };
-                Ok((self.pdr[port] & 0x60) | 0x10 | nibble)
-            }
-            // DDR/IOSEL/EXLE are write-only in hardware. Do not invent readback.
-            _ => Err(BusError::UnsupportedDevice { address, width: 1 }),
-        }
-    }
-
-    pub fn write(&mut self, address: u32, value: u8) -> Result<(), BusError> {
-        match address - SMPC {
-            0x63 if value == 1 => self.sf = true,
-            0x1F if matches!(value, 0x02 | 0x03 | 0x18) && self.sf && self.pending.is_none() => {
-                self.command = value;
-                self.pending = Some((value, Self::CPU_COMMAND_CLOCKS));
-            }
-            0x75 => self.pdr[0] = value & 0x7F,
-            0x77 => self.pdr[1] = value & 0x7F,
-            0x79 => self.ddr[0] = value & 0x7F,
-            0x7B => self.ddr[1] = value & 0x7F,
-            0x7D => self.iosel = value & 3,
-            0x7F => self.exle = value & 3,
-            _ => return Err(BusError::UnsupportedDevice { address, width: 1 }),
-        }
-        Ok(())
-    }
-}
+pub use crate::smpc::Smpc;
 
 pub struct Vdp2 {
     registers: [u8; 0x120],
@@ -208,7 +125,7 @@ mod smpc_command_tests {
     fn unsupported_commands_and_register_width_contract_are_explicit() {
         let mut smpc = Smpc::default();
         smpc.write(SMPC + 0x63, 1).unwrap();
-        for command in [0, 6, 7, 8, 9, 0x0D, 0x0E, 0x0F, 0x10, 0x19, 0x1A, 0xFF] {
+        for command in [0, 8, 9, 0x0D, 0x0E, 0x0F, 0xFF] {
             assert!(smpc.write(SMPC + 0x1F, command).is_err());
             assert_eq!(smpc.read(SMPC + 0x5F).unwrap(), 0);
             assert_eq!(smpc.read(SMPC + 0x63).unwrap(), 1);

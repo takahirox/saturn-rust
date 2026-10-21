@@ -14,13 +14,17 @@ automated local/CI checks; live Pages inspection is not a completion gate.
 | src/bus.rs | Aligned big-endian byte/word/long accesses, RAM, ROM, VRAM and MMIO routing |
 | src/backup.rs | Packed internal battery RAM, checked import and odd-byte access |
 | src/disc.rs | Bounded cooked ISO9660 and Saturn IP validation, first-read executable selection |
-| src/devices.rs | VDP2 bitmap rasterization and SMPC digital-pad electrical inputs |
+| src/devices.rs | VDP2 bitmap rasterization |
+| src/m68k.rs | Original MC68EC000 integer interpreter, addressing and exceptions |
+| src/sound.rs | Shared sound RAM, direct PCM SCSP, independent 68k/sample clocks |
+| src/smpc.rs | SMPC commands, RTC/SMEM, digital/analog joystick levels and INTBACK |
 | src/lib.rs | Explicit cold-boot modes, independent master/slave ownership, bounded functional interleaving |
 | src/onchip.rs | CPU-local FRT/WDT/SCI/DIVU/DMAC and internal INTC |
 | src/scu.rs, src/scu/ | SCU interrupt controller, three DMA channels and original DSP interpreter |
 | src/timing.rs | Clock-based NTSC raster deadlines |
 | src/wasm.rs | Thin Wasm adapter; no gameplay or browser APIs |
-| web/app.js | Local file handling, keyboard levels, animation scheduling and RGBA framebuffer copy to Canvas |
+| web/app.js | Local file handling, keyboard/Gamepad levels, animation scheduling and RGBA copy |
+| web/audio.js, web/audio-worklet.js | Bounded emulated PCM delivery and WebAudio consumer/status |
 | homebrew/star-collector | Buildable MIT-licensed SH-2 guest and reproducible ISO builder |
 
 `Cpu::step(&mut impl Memory)` owns no bus pointers. `Machine::reset(Boot)` clears
@@ -119,10 +123,12 @@ bus locking/arbitration between processors, or native Sega BIOS compatibility.
 | Physical range | Behavior |
 | --- | --- |
 | 00000000–0007FFFF | Optional read-only 512 KiB external BIOS |
-| 00100000–0010007F | SMPC direct ports plus SF/COMREG/OREG31 for SSHON/SSHOFF/NMIREQ |
+| 00100000–0010007F | SMPC direct ports, IREG/OREG/SR/SF, implemented command subset |
 | 00180000–0018FFFF | 32 KiB backup RAM on odd byte addresses; other lanes/widths explicitly unsupported |
 | 00200000–002FFFFF | 1 MiB low work RAM |
 | 01000000 / 01800000 | Write-only word capture strobes to slave/master FRT |
+| 05A00000–05A7FFFF | 512 KiB shared sound RAM; 68k map 000000–07FFFF |
+| 05B00000–05B00FFF | SCSP implemented slot/common/stack ports; 68k map 100000–100FFF |
 | 05E00000–05E7FFFF | 512 KiB VDP2 VRAM |
 | 05F80000–05F8011F | VDP2, only the listed register subset |
 | 05FE0000–05FE00CF | SCU documented port subset; long accesses, prohibited/unsupported ports fail |
@@ -143,8 +149,9 @@ stores, P1 bypass, P2 associative purge, P3 address arrays and P6 data arrays.
 TAS reads bypass the cache. DMA does not snoop either cache. Debugger `Bus`
 reads inspect external memory; CPU cache arrays are accessed via `CpuBus`.
 RAM mirrors are not yet modeled. Words/longs
-require 2/4-byte alignment and full valid ranges. Failed multi-byte writes make
-no partial changes. External mode requires exactly 524288 bytes, reads initial
+require 2/4-byte alignment and full valid ranges. RAM access validation prevents partial writes. MMIO long transfers on the
+16-bit sound bus issue two ordered word cycles; a later unsupported cycle can
+fail after an earlier cycle has taken effect. External mode requires exactly 524288 bytes, reads initial
 PC at 0 and R15 at 4, sets VBR=0, SR=F0 and deterministic zero values for otherwise
 undefined registers. It never loads an HLE game. Real BIOSes still commonly fault on
 unimplemented devices or bus behavior; this mode is useful for reset-vector/debugging
@@ -180,8 +187,15 @@ and view navigation. COMREG supports SSHON=02, SSHOFF=03 and NMIREQ=18. Guest so
 to one before issuing a command; OREG31 reports it immediately and SF clears at
 completion, after at least 807 reference clocks (minimum 30 µs at 26.8741 MHz,
 rounded to a turn). Busy command overwrite and unsupported commands fail.
-No INTBACK, other SMPC commands/RTC/system reset, multitaps or analog mode
-is implemented. Two digital ports do not establish full SMPC conformance.
+INTBACK now implements status, continue/break, VBlank-timed peripheral collection
+and SCU SMPC IRQ. SETTIME/SETSMEM provide deterministic BCD Gregorian time and
+four-byte battery storage, retained across volatile resets. SNDON/OFF control the
+independent sound CPU; RESENAB/DISA gate reset-button NMI edges, with RESB sampled
+at VBlank-in. Standard analog joystick ID15 reports buttons and unsigned X/Y/Z;
+browser Gamepad input/focus release has native and Wasm guest evidence. SYSRES,
+MSHON/CD controls, clock changes, multitaps, analog direct handshakes and the
+six-byte 3D pad remain absent. See the conformance matrix for per-command timing
+and deviations. These subsets do not establish full SMPC conformance.
 
 Internal backup RAM is independent of volatile resets. The SCU manual §1.2,
 figs. 1.3/1.5 (pp.4/6) places its 64 KiB window at 00180000; the SMPC manual's
@@ -266,12 +280,12 @@ added. Manuals/firmware are not redistributed.
 
 Accurate CPU/bus cycles and contention, remaining SH7604 peripherals and
 SCU cross-device/arbitration/DSP edge conformance,
-remaining SMPC commands/INTBACK, additional VDP2
-modes, VDP1, CD-block runtime reads, BIOS services and native BIOS startup remain
-future compatibility work. Audio (68EC000/SCSP) is absent; this build is silent.
-Reference-emulator/hardware comparison, Gamepad API and performance
-measurements have not been performed. Sound is required by Issue #17 and remains
-missing. No dynarec, workers,
+remaining SMPC system/clock/analog-direct controls, additional VDP2
+modes, VDP1, runtime CD/BIN/CUE, BIOS services and full synthetic boot pathways
+remain required work. The executing MC68EC000, direct SCSP PCM and browser audio
+are implemented; SCSP envelopes/FM/LFO/noise/effects DSP and CD-DA remain absent.
+Reference-emulator/physical-hardware comparison and performance measurements
+have not been performed. Synthetic Gamepad input is automatically tested. No dynarec, workers,
 server backend or general-game compatibility is introduced.
 
 Issue #17 continues all unmet hardware criteria; #11/#13/#15 remain closed.
@@ -294,3 +308,31 @@ waits for a raster field boundary with a hard turn bound. It no longer assigns
 quantum and on-chip DMA arbitration remain incomplete timing models; this change
 does not establish full hardware-time acceptance. Star Collector completion tests
 wait for the guest result within a bound rather than requiring the old budget.
+
+## Sound CPU and browser audio
+
+`m68k::M68k` independently decodes the MC68EC000 integer instruction families.
+It uses a separate 24-bit, big-endian sound bus; long accesses split into two
+word cycles and need only word alignment. User/supervisor stacks, SR/CCR, normal
+and seven-word address/bus frames, traps, privilege/illegal/trace, autovectored
+IRQs, STOP wake and RESET output are exercised by original vectors. It excludes
+later 68k model instructions. Opcode budgets are functional approximations;
+prefetch, bus contention and exact exception fault PCs remain pending.
+
+The SH-2 uploads sound programs and samples into shared 512 KiB sound RAM and
+starts the 68k with SMPC SNDON. SCSP implements 32 direct PCM slots, signed 8/16-bit
+samples, key/loop/pitch/source-bit controls, direct pan/mix, three timers,
+interrupt routing, bounded MIDI FIFOs and a word-at-a-time DMA subset. Only
+SDIR direct mode is synthesized; unsupported envelope/FM/LFO/DSP settings fail.
+The original dual-architecture fixture computes its waveform on the 68k,
+programs SCSP, handles a timer IRQ and returns through RTE. Changing its arithmetic
+changes both shared RAM and exact output samples natively and through Wasm.
+
+Audio frames advance at 44.1 kHz independently of the 11.2896 MHz sound CPU.
+Both domains use integer deadlines relative to fixed NTSC 320 reference time;
+chunk-invariance tests verify repeatable ordering. The Rust stereo queue,
+JavaScript producer backlog and AudioWorklet consumer each have fixed bounds.
+An explicit user gesture enables WebAudio; disabled, blocked, paused, muted,
+underflow and drop states are observable. The consumer resamples for a different
+host sample rate. Browser instrumentation verifies actual nonzero worklet output,
+not human listening. Star Collector itself continues to have no soundtrack.

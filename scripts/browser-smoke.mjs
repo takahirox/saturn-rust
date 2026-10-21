@@ -9,7 +9,7 @@ import { join, resolve } from "node:path";
 import { chromium } from "playwright";
 
 // Fail before upload if web/ includes anything beyond the public runtime assets.
-const assets = ["app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt"];
+const assets = ["audio.js", "audio-worklet.js", "app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt"];
 assert.deepEqual((await readdir("web", { recursive: true })).sort(), [...assets, "pkg"].sort());
 assert((await lstat("web/pkg")).isDirectory());
 for (const asset of assets) {
@@ -442,6 +442,118 @@ try {
     try { emulator.run_steps(10); } catch { /* Sticky hardware fault. */ }
   });
   assert.deepEqual(await machine(), scuStopped);
+  // Original SH-2 uploads a separately executing 68k sound program. Expected
+  // PCM derives from the program's shifts/negation and SCSP pan, never canned audio.
+  const soundRom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/sound.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [offset, ...words] = line.trim().split(/\s+/).map((word) => parseInt(word, 16));
+    words.forEach((word, i) => soundRom.writeUInt16BE(word, offset + i * 2));
+  }
+  await page.locator("#bios").setInputFiles({ name: "original-sound.bin", mimeType: "application/octet-stream", buffer: soundRom });
+  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  const soundResult = () => page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    for (let i = 0; i < 10; i++) emulator.run_steps(10000);
+    const audio = Array.from(emulator.audio_samples(8192));
+    const first = audio.findIndex((v) => v !== 0);
+    return { mailbox: [emulator.read_long(0x06007000), emulator.read_long(0x06007004)],
+      waveform: [emulator.read_long(0x05A04000), emulator.read_long(0x05A04004)],
+      samples: audio.slice(first, first + 16), generated: emulator.audio_generated(),
+      dropped: emulator.audio_dropped(), count: emulator.sound_instruction_count() };
+  });
+  const soundFinished = await soundResult();
+  assert.deepEqual(soundFinished.mailbox, [1, 0x600D]);
+  assert.deepEqual(soundFinished.waveform, [0x1000F000, 0xE0002000]);
+  assert.deepEqual(soundFinished.samples, [256,4096,-256,-4096,-512,-8192,512,8192,256,4096,-256,-4096,-512,-8192,512,8192]);
+  assert(BigInt(soundFinished.count) > 30n);
+  assert.equal(soundFinished.dropped, "0");
+  await page.locator("#reset").click();
+  assert.deepEqual(await soundResult(), soundFinished);
+  // A real user gesture enables AudioWorklet. Instrument the same producer path
+  // used by frame playback, and assert the consumer actually renders nonzero PCM.
+  await page.locator("#audio-enable").click();
+  await page.waitForFunction(() => document.getElementById("audio-status").textContent.includes("paused"));
+  await page.evaluate(async () => {
+    const { emulator, audio, pumpAudio } = await import("./app.js");
+    audio.setPaused(false);
+    for (let i = 0; i < 4; i++) emulator.run_steps(10000);
+    pumpAudio();
+  });
+  await page.evaluate(async () => {
+    const { audio } = await import("./app.js");
+    for (let i = 0; i < 200; i++) {
+      if (audio.stats.rendered > 128 && audio.stats.peak > 0.1 && audio.stats.state === "underflow") return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error(`Audio consumer did not render and drain guest PCM: ${JSON.stringify(audio.stats)}`);
+  });
+  const audioPath = await page.evaluate(async () => {
+    const { audio } = await import("./app.js");
+    const before = { ...audio.stats };
+    audio.setMuted(true);
+    const muted = audio.stats.state;
+    audio.setPaused(true);
+    const paused = audio.stats.state;
+    await audio.context.suspend();
+    audio.setPaused(false);
+    const blocked = audio.stats.state;
+    await audio.context.resume();
+    audio.setPaused(true);
+    return { before, muted, paused, blocked, sampleRate: audio.context.sampleRate };
+  });
+  assert(audioPath.before.received > 0 && audioPath.before.underflow > 0, JSON.stringify(audioPath));
+  assert(audioPath.before.queued <= 8192);
+  assert.equal(audioPath.muted, "muted");
+  assert.equal(audioPath.paused, "paused");
+  assert.equal(audioPath.blocked, "blocked");
+  // Mutating original guest arithmetic changes both memory and audio in Wasm.
+  const changedSoundRom = Buffer.from(soundRom);
+  changedSoundRom[0x2107] = 8;
+  await page.locator("#bios").setInputFiles({ name: "original-changed-sound.bin", mimeType: "application/octet-stream", buffer: changedSoundRom });
+  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  const changedSound = await soundResult();
+  assert.deepEqual(changedSound.waveform, [0x0800F800, 0xF0001000]);
+  assert.deepEqual(changedSound.samples.slice(0,4), [128,2048,-128,-2048]);
+  // Real Gamepad API input adaptation feeds only emulated SMPC levels. The
+  // original SH-2 guest sets RTC/SMEM, handles IRQs and copies INTBACK packets.
+  const smpcRom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/smpc.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [offset, ...words] = line.trim().split(/\s+/).map((word) => parseInt(word, 16));
+    words.forEach((word, i) => smpcRom.writeUInt16BE(word, offset + i * 2));
+  }
+  await page.locator("#bios").setInputFiles({ name: "original-smpc.bin", mimeType: "application/octet-stream", buffer: smpcRom });
+  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  await page.locator("#screen").focus();
+  const smpcResult = () => page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    for (let i = 0; i < 10; i++) emulator.run_steps(10000);
+    // Read-only debugger longwords; mailbox contents came entirely from guest.
+    const bytes = (address) => Array.from({length:4}, (_,i) => emulator.read_long(address+i*4))
+      .flatMap((word) => [word>>>24,(word>>>16)&255,(word>>>8)&255,word&255]);
+    return { status: bytes(0x06008000), packet: bytes(0x06008020), irq: emulator.read_long(0x06008040), done: emulator.read_long(0x06008044) };
+  });
+  await page.evaluate(async () => {
+    const pads = [
+      { connected:true, axes:[], buttons:Array.from({length:16}, (_,i) => ({pressed:[1,6,12].includes(i),value:[1,6,12].includes(i)?1:0})) },
+      { connected:true, axes:[-1,0,1], buttons:Array.from({length:16}, (_,i) => ({pressed:[7,9,15].includes(i),value:[7,9,15].includes(i)?1:0})) },
+    ];
+    Object.defineProperty(navigator,"getGamepads",{configurable:true,value:()=>pads});
+    const { pollGamepads } = await import("./app.js"); pollGamepads();
+  });
+  const smpcFinished = await smpcResult();
+  assert.deepEqual(smpcFinished.status,[0xC0,0x20,0x24,0x32,0x29,0x12,0x34,0x56,0,1,0x35,0,0x12,0x34,0x56,0x78]);
+  assert.deepEqual(smpcFinished.packet,[0xF1,2,0xEE,0xF7,0xF1,0x15,0x77,0x7F,0,128,255,255,255,255,255,255]);
+  assert.equal(smpcFinished.irq,2); assert.equal(smpcFinished.done,0x600D);
+  // Blur neutralizes axes/buttons without pretending a connected pad vanished.
+  await page.locator("#reset").click();
+  await page.locator("#screen").focus();
+  await page.evaluate(async () => (await import("./app.js")).pollGamepads());
+  await page.locator("#count").focus();
+  const neutralSmpc = await smpcResult();
+  assert.deepEqual(neutralSmpc.packet,[0xF1,2,255,255,0xF1,0x15,255,255,128,128,0,255,255,255,255,255]);
+  await page.evaluate(() => { delete navigator.getGamepads; });
   // Independent processors execute this same original licensed guest natively
   // in tests/dual_sh2.rs. All shared RAM/IRQ/SMPC changes are guest MMIO writes.
   const dualRom = Buffer.alloc(524288);
@@ -919,7 +1031,7 @@ try {
   await missingBuild.waitForFunction(() => document.getElementById("status").textContent === "Initialization failed");
   assert.match(await missingBuild.locator("#error").textContent(), /Build web\/pkg and serve/);
   assert.equal(await missingBuild.locator("#reset").isDisabled(), true);
-  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation.`);
+  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, SH-2-uploaded MC68EC000 PCM computation/SCSP timer IRQ/stereo samples and WebAudio worklet delivery/underflow/mute/blocked states, SMPC RTC/SMEM/INTBACK IRQs and synthetic digital+analog Gamepad/focus release, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation.`);
 } finally {
   if (browser) await browser.close();
   if (server?.pid && server.exitCode === null) {

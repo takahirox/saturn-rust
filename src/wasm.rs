@@ -33,6 +33,31 @@ impl Emulator {
     pub fn framebuffer(&self) -> Result<Vec<u8>, JsValue> {
         self.machine.framebuffer().map_err(js_error)
     }
+    pub fn audio_samples(&mut self, frames: u32) -> Vec<i16> {
+        self.machine.drain_audio(frames as usize)
+    }
+    pub fn audio_generated(&self) -> String {
+        self.machine.audio_generated().to_string()
+    }
+    pub fn audio_dropped(&self) -> String {
+        self.machine.audio_dropped().to_string()
+    }
+    pub fn sound_registers(&self) -> Vec<u32> {
+        self.machine.sound_state().d.to_vec()
+    }
+    pub fn sound_pc(&self) -> u32 {
+        self.machine.sound_state().pc
+    }
+    pub fn sound_instruction_count(&self) -> String {
+        self.machine.sound_state().instructions.to_string()
+    }
+    pub fn set_analog(&mut self, port: u8, enabled: bool, x: u8, y: u8, z: u8) {
+        self.machine
+            .set_analog(port as usize, enabled.then_some([x, y, z]));
+    }
+    pub fn sound_halted(&self) -> bool {
+        self.machine.sound_state().halted
+    }
     pub fn set_buttons(&mut self, buttons: u16) {
         self.machine.set_buttons(buttons);
     }

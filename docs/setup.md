@@ -56,6 +56,8 @@ python3 homebrew/star-collector/build.py --check
 python3 tests/fixtures/build_dual_sh2.py --check
 python3 tests/fixtures/build_sh7604.py --check
 python3 tests/fixtures/build_scu.py --check
+python3 tests/fixtures/build_sound.py --check
+python3 tests/fixtures/build_smpc.py --check
 ```
 
 ## Build and serve the browser client
@@ -81,7 +83,9 @@ Rust or guest source. Opening `index.html` as a `file:` URL will not work. The c
    clearing takes a few frames. Click the screen for keyboard focus; arrows move
    the cyan player, yellow stars are collected one at a time. Five gold blocks and a green banner
    mean success. Press **Enter / Start** to restart inside the guest, including
-   after completion. This is a silent build.
+   after completion. Star Collector has no soundtrack. **Enable audio** starts
+   WebAudio for guests using the supported direct PCM path; its status reports
+   blocked, muted, paused and underflow states explicitly.
 2. Use the adjacent **Pause/Resume**, **Restart** and **Fullscreen** controls.
    Restart cold-boots the selected disc and starts playback when settings are
    closed. Fullscreen targets the player shell; exit with its button or the
@@ -223,7 +227,24 @@ Local results do not prove a production deployment succeeded. This implementatio
 run does not push, publish or verify a new live revision.
 
 The hosted build supports Star Collector and the documented synthetic diagnostic
-subsets, including SCU DSP/DMA/interrupts and NTSC raster timing. It remains silent. External BIOS mode retains local/private reset-vector stepping but does
+subsets, including SCU DSP/DMA/interrupts, MC68EC000/direct SCSP PCM, SMPC
+RTC/INTBACK and NTSC raster timing. The original game has no soundtrack; a
+bounded AudioWorklet path plays emulated PCM when explicitly enabled. External BIOS mode retains local/private reset-vector stepping but does
 not promise a Sega BIOS splash screen or game boot. No proprietary BIOS/security
 code or commercial disc is distributed. See [architecture](architecture.md) and
 [game license/provenance](homebrew-provenance.md).
+
+The original sound and SMPC fixture builders use the existing original SH-2
+assembler plus literal independently authored 68k encodings, with the adjacent
+MIT license. Their native/browser tests assert computed stereo samples, 68k timer
+IRQ/RTE, RTC/SMEM status, timed INTBACK/SCU IRQ and digital/analog packets. The
+browser suite enables the real AudioWorklet via a click and checks nonzero render
+instrumentation, drain/underflow, mute and suspended-context feedback. Synthetic
+Gamepads exercise two independent ports and focus release. These fixtures are
+diagnostics and do not replace the two required original demonstration discs.
+
+When the display has focus, the first two connected Gamepads map standard buttons
+0/1/2/3/4/5/6/7/9 to A/B/C/X/Y/Z/L/R/Start and buttons 12–15 to directions.
+Gamepads with at least two axes expose the standard analog joystick X/Y/Z report;
+axes map from [-1,1] to [0,255], with missing Z at zero. Focus loss/pause releases
+buttons and centers X/Y, with Z zero. Keyboard controls remain independent.
