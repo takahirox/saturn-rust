@@ -102,6 +102,21 @@ impl Default for OnChip {
 }
 
 impl OnChip {
+    pub(crate) fn external_bus_width(&self, physical_address: u32) -> usize {
+        self.bsc.bus_width(physical_address)
+    }
+    pub(crate) fn external_little_endian(&self, physical_address: u32) -> bool {
+        self.bsc.little_endian(physical_address)
+    }
+
+    pub(crate) fn external_access(&self, physical_address: u32) {
+        self.wait_clocks.set(
+            self.wait_clocks
+                .get()
+                .saturating_add(self.bsc.software_waits(physical_address)),
+        );
+    }
+
     fn unsupported(address: u32, width: usize) -> BusError {
         if address == SBYCR
             || (FRT..FRT + 10).contains(&address)

@@ -57,9 +57,21 @@ impl Bsc {
         let i = (offset / 4) as usize;
         let mask = [0x1FF7, 0x00FC, 0xFFFF, 0xFEFC, 0x00F8, 0x00FF, 0x00FF][i];
         let mut word = value as u16 & mask;
-        // External memory-interface programming needs bus-cycle support. Do not
-        // accept changed configurations as inert register storage. MASTER is RO.
-        if i < 4 && word != self.registers[i] {
+        // Ordinary-space software waits have real external-access effects.
+        // Keep other interface changes explicit until their bus protocols exist:
+        // BCR1 memory/arbitration, WCR inter-cycle idle, MCR.
+        let implemented = [0x13F0, 0x00FC, 0x00FF, 0][i.min(3)];
+        if i < 4 && (word ^ self.registers[i]) & !implemented != 0 {
+            return Err(BusError::UnsupportedDevice { address, width: 4 });
+        }
+        if i == 1 && [2, 4, 6].iter().any(|shift| word >> shift & 3 == 0) {
+            // H §7.2.2: 00 is reserved, not an alternate bus width.
+            return Err(BusError::UnsupportedDevice { address, width: 4 });
+        }
+        let bcr1 = if i == 0 { word } else { self.registers[0] };
+        let bcr2 = if i == 1 { word } else { self.registers[1] };
+        if i <= 1 && bcr1 & 0x1000 != 0 && bcr2 >> 4 & 3 == 1 {
+            // H §7.3.2: little-endian mode does not support an 8-bit bus.
             return Err(BusError::UnsupportedDevice { address, width: 4 });
         }
         if i == 4 {
@@ -75,6 +87,38 @@ impl Bsc {
         }
         self.registers[i] = word;
         Ok(())
+    }
+    /// H §§7.2.1/7.2.3/7.4.2, fig.7.11: inserted Tw clocks per
+    /// ordinary-space bus transaction, independently for CS0-CS3. These are
+    /// additional waits, not a claim about instruction/pipeline base cycles.
+    pub fn software_waits(&self, address: u32) -> u32 {
+        if address >= 0x0800_0000 {
+            return 0;
+        }
+        let area = address >> 25;
+        let select = (self.registers[2] >> (area * 2)) & 3;
+        if select != 3 {
+            u32::from(select)
+        } else {
+            let shift = match area {
+                0 => 4,
+                1 => 6,
+                _ => 8,
+            };
+            3 + u32::from((self.registers[0] >> shift) & 3)
+        }
+    }
+    /// H §§7.2.2/7.3.1: ordinary CS1-CS3 narrow buses divide larger
+    /// operand/refill requests into separate external byte/word transactions.
+    /// CS0 retains this board model's existing 32-bit external adapter.
+    pub fn bus_width(&self, address: u32) -> usize {
+        match address >> 25 {
+            area @ 1..=3 => 1 << (((self.registers[1] >> (area * 2)) & 3) - 1),
+            _ => 4,
+        }
+    }
+    pub fn little_endian(&self, address: u32) -> bool {
+        address >> 25 == 2 && self.registers[0] & 0x1000 != 0
     }
     pub fn interrupt(&self) -> bool {
         self.registers[4] & 0xC0 == 0xC0
@@ -126,6 +170,97 @@ mod tests {
             assert_eq!(b.read(BSC, 4), Ok(0x3F0 | if slave { 0x8000 } else { 0 }));
             assert!(b.write(BSC, 0xA55A_FFFF).is_err());
         }
+    }
+    #[test]
+    fn ordinary_software_waits_decode_every_area_and_long_wait_selection() {
+        // H §7.2.3: W=00/01/10 -> 0/1/2 Tw; W=11 selects
+        // 3/4/5/6 Tw in the appropriate BCR1 AnLW field.
+        for area in 0..4 {
+            let mut b = Bsc::default();
+            let address = area << 25;
+            assert_eq!(b.software_waits(address), 6);
+            for select in 0..3 {
+                b.write(BSC + 8, 0xA55A_AA00 | select << (area * 2))
+                    .unwrap();
+                assert_eq!(b.software_waits(address), select);
+                for other in 0..4 {
+                    if other != area {
+                        assert_eq!(b.software_waits(other << 25), 0);
+                    }
+                }
+            }
+            b.write(BSC + 8, 0xA55A_AAFF).unwrap();
+            let shift = [4, 6, 8, 8][area as usize];
+            for long in 0..4 {
+                let word = (0x3F0 & !(3 << shift)) | long << shift;
+                b.write(BSC, 0xA55A_0000 | word).unwrap();
+                assert_eq!(b.software_waits(address), 3 + long);
+                // Areas 2 and 3 share AHLW, unlike their WCR fields.
+                if area >= 2 {
+                    assert_eq!(b.software_waits((5 - area) << 25), 3 + long);
+                }
+            }
+            assert_eq!(b.software_waits(0x0800_0000), 0);
+        }
+    }
+    #[test]
+    fn unsupported_interface_changes_and_wrong_keys_are_atomic() {
+        let mut b = Bsc::default();
+        b.write(BSC, 0xA55A_0120).unwrap();
+        b.write(BSC + 8, 0xA55A_AA39).unwrap();
+        b.write(BSC, 0x1234_03F0).unwrap();
+        b.write(BSC + 8, 0x1234_AAFF).unwrap();
+        assert_eq!(b.read(BSC, 4), Ok(0x120));
+        assert_eq!(b.read(BSC + 8, 4), Ok(0xAA39));
+        for (address, value) in [
+            (BSC, 0xA55A_0920),      // burst ROM
+            (BSC, 0xA55A_0121),      // SDRAM
+            (BSC + 4, 0xA55A_00F0),  // reserved bus width
+            (BSC + 8, 0xA55A_0039),  // idle cycles
+            (BSC + 12, 0xA55A_8000), // memory-interface timing
+        ] {
+            assert!(b.write(address, value).is_err());
+        }
+        assert_eq!(b.read(BSC, 4), Ok(0x120));
+        assert_eq!(b.read(BSC + 8, 4), Ok(0xAA39));
+    }
+    #[test]
+    fn ordinary_bus_widths_are_independent_and_reserved_selections_do_not_publish() {
+        let mut b = Bsc::default();
+        for area in 1..=3 {
+            for (select, width) in [(1, 1), (2, 2), (3, 4)] {
+                b.write(
+                    BSC + 4,
+                    0xA55A_0000 | (0xFC & !(3 << (area * 2))) | select << (area * 2),
+                )
+                .unwrap();
+                assert_eq!(b.bus_width(area << 25), width);
+                for other in 1..=3 {
+                    if area != other {
+                        assert_eq!(b.bus_width(other << 25), 4);
+                    }
+                }
+            }
+            assert!(
+                b.write(BSC + 4, 0xA55A_0000 | (0xFC & !(3 << (area * 2))))
+                    .is_err()
+            );
+            assert_eq!(b.read(BSC + 4, 4), Ok(0xFC));
+        }
+    }
+    #[test]
+    fn endian_is_cs2_only_and_byte_bus_combinations_are_rejected_in_either_order() {
+        let mut b = Bsc::default();
+        b.write(BSC, 0xA55A_13F0).unwrap();
+        for area in 0..4 {
+            assert_eq!(b.little_endian(area << 25), area == 2);
+        }
+        assert!(b.write(BSC + 4, 0xA55A_00DC).is_err());
+        assert_eq!(b.read(BSC + 4, 4), Ok(0xFC));
+        b.write(BSC, 0xA55A_03F0).unwrap();
+        b.write(BSC + 4, 0xA55A_00DC).unwrap();
+        assert!(b.write(BSC, 0xA55A_13F0).is_err());
+        assert_eq!(b.read(BSC, 4), Ok(0x3F0));
     }
     #[test]
     fn refresh_compare_interrupt_and_read_before_clear_across_split_clocks() {

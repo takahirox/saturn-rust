@@ -346,7 +346,10 @@ try {
       for (let i = 0; i < 100 && pc() !== 0x13C; i++) emulator.step();
       if (pc() !== 0x13C) throw new Error("Guest did not reach timer start");
       const state = () => [pc(), emulator.exception_count()];
-      emulator.run_steps(16 * (compare + 1) - 1);
+      const deadline = Number(emulator.peripheral_clocks()) + 128 * (compare + 1);
+      emulator.step(); // Start timer: ordinary ROM fetch includes BSC waits.
+      emulator.step(); // SLEEP fetch includes its waits; sleeping turns do not.
+      while (Number(emulator.peripheral_clocks()) + 8 < deadline) emulator.step();
       const beforeEdge = state();
       emulator.step();
       const onEdge = state();
@@ -722,6 +725,53 @@ try {
   assert.deepEqual(bscFirst.stacks, [0x06100000, 0x060FE000]);
   await page.locator("#reset").click();
   assert.deepEqual(await bscTrace(), bscFirst);
+  // The same independent both-CPU wait diagnostic as native tests. FRT measures
+  // real external read delays. Changing only WCR or the source data must change
+  // the corresponding computed guest records, excluding canned timing/results.
+  const waitsRom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/bsc-waits.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [offset, ...words] = line.trim().split(/\s+/).map((word) => parseInt(word, 16));
+    words.forEach((word, i) => waitsRom.writeUInt16BE(word, offset + i * 2));
+  }
+  const waitVectors = (await readFile("tests/fixtures/bsc-waits.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v, 16));
+  const endianVectors = (await readFile("tests/fixtures/bsc-endian.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v, 16));
+  for (const [before, after, width, little] of [[0, 0, 4, true], [0xA55AAA40, 0xA55AAA80, 4, true],
+    [0x13579BDF, 0x2468ACE0, 4, true], [0xA55A00FC, 0xA55A00AC, 2, true],
+    [0xA55A00FC, 0xA55A005C, 1, false], [0, 0, 4, false]]) {
+    const changed = Buffer.from(waitsRom);
+    if (before) {
+      const needle = Buffer.alloc(4); needle.writeUInt32BE(before);
+      const at = changed.indexOf(needle);
+      assert(at >= 0 && changed.indexOf(needle, at + 1) < 0);
+      changed.writeUInt32BE(after, at);
+    }
+    if (!little) {
+      const needle = Buffer.from([0, 0, 0x10, 0]);
+      const at = changed.indexOf(needle);
+      assert(at >= 0 && changed.indexOf(needle, at + 1) < 0);
+      changed.writeUInt32BE(0, at);
+    }
+    await page.locator("#bios").setInputFiles({ name: "original-bsc-waits.bin", mimeType: "application/octet-stream", buffer: changed });
+    await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+    const run = () => page.evaluate(async () => {
+      const { emulator } = await import("./app.js");
+      emulator.run_steps(3000);
+      return { traces: [0x0600E000, 0x0600E100].map(base => Array.from({length: 24}, (_, i) => emulator.read_long(base + i * 4))),
+        exceptions: [emulator.exception_count(), emulator.slave_exception_count()] };
+    });
+    const actual = await run();
+    assert.deepEqual(actual.exceptions, ["0", "0"]);
+    for (const [cpu, trace] of actual.traces.entries()) {
+      const expected = [cpu ? 0x83F0 : 0x3F0, 0xAAFF];
+      waitVectors.forEach((ticks, i) => expected.push(before === 0xA55AAA40 && i === 1 ? 14 : 12 + (ticks - 12) * 4 / width,
+        before === 0x13579BDF ? after : 0x13579BDF));
+      expected.push(...(little ? endianVectors : [0x11223344,0x1122,0x3344,0x11,0xA1B2C3D4,0x1234C3D4,0x5634C3D4]), 0x600D);
+      assert.deepEqual(trace, expected);
+    }
+    await page.locator("#reset").click();
+    assert.deepEqual(await run(), actual);
+  }
   // Original UBC fixture: real SH-2 and DMA accesses, saved exception frames,
   // before/after fetches and delay-slot deferral, repeated after a cold reset.
   const ubcRom = Buffer.alloc(524288);
@@ -1738,7 +1788,11 @@ try {
     await stepFrames(n);
     await page.keyboard.up(key);
   };
-  await stepFrames(20);
+  const readyCollector = async () => {
+    for (let i = 0; i < 80 && (await gameState()).state[4] < 2; i++) await stepFrames(1);
+    assert((await gameState()).state[4] >= 2, "Guest must finish its own bitmap initialization");
+  };
+  await readyCollector();
   const initial = await gameState();
   assert.deepEqual(initial.state.slice(0,4), [32,112,0,0]);
   assert(initial.instructions > 100000);
@@ -1758,7 +1812,7 @@ try {
   assert.deepEqual(won.state.slice(0,4), [256,112,5,1]);
   assert.deepEqual(won.banner, [0,255,0,255]);
   assert.notEqual(won.hash, collected.hash);
-  await hold("Enter", 20);
+  await hold("Enter", 40); // Guest VRAM clearing includes ordinary bus waits.
   await stepFrames(2);
   assert.deepEqual((await gameState()).state.slice(0,4), [32,112,0,0]);
   assert.equal((await gameState()).hash, initial.hash);
@@ -1861,7 +1915,7 @@ try {
   await settings.click();
   assert.equal(await page.locator("#disc").evaluate((input) => input.files[0].name), "authorized-homebrew.iso");
   await page.locator("#reset").click();
-  await stepFrames(20);
+  await readyCollector();
   assert.deepEqual((await gameState()).state.slice(0,4), [32,112,0,0]);
   await page.locator("#disc").setInputFiles({name:"bad.iso", mimeType:"application/octet-stream", buffer:Buffer.alloc(disc.length)});
   // setInputFiles does not await the async file read; wait for the parser result.
@@ -2094,7 +2148,12 @@ try {
   await courier.locator("#settings > summary").click();
   await courier.locator("#disc").setInputFiles({ name:"original-changed-prism.iso",mimeType:"application/octet-stream",buffer:changedCourier });
   await courier.waitForFunction(() => window.courierState()[4] === 0);
-  const mutatedCourier = await courierFrames(40);
+  let mutatedCourier;
+  for (let i = 0; i < 100; i++) {
+    mutatedCourier = await courierFrames(1);
+    if (mutatedCourier.state[4] > 2) break;
+  }
+  assert(mutatedCourier.state[4] > 2, "Changed guest must finish initialization");
   assert.deepEqual(mutatedCourier.state.slice(0,4), [24,112,0,0]);
   assert.deepEqual(mutatedCourier.pixels[0], [0,0,255,255]);
   await courier.close();

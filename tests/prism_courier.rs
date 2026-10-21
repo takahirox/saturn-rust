@@ -21,15 +21,22 @@ fn frames(m: &mut Machine, count: usize, buttons: u16) -> bool {
 fn pixel(m: &Machine, x: usize, y: usize) -> Vec<u8> {
     m.framebuffer().unwrap()[(y * 320 + x) * 4..][..4].to_vec()
 }
+fn ready(m: &mut Machine) -> bool {
+    let mut stereo = false;
+    for _ in 0..100 {
+        stereo |= frames(m, 1, 0);
+        if state(m)[4] > 12 {
+            return stereo;
+        }
+    }
+    panic!("Guest did not finish its own video/sound initialization");
+}
 
 #[test]
 fn original_disc_runs_guest_vdp1_vdp2_sound_input_loss_win_and_restart() {
     let mut m = Machine::new();
     m.reset(Boot::HleDisc(ISO)).unwrap();
-    assert!(
-        frames(&mut m, 40, 0),
-        "Guest 68k must compute nonzero stereo"
-    );
+    assert!(ready(&mut m), "Guest 68k must compute nonzero stereo");
     assert_eq!(&state(&m)[..4], &[24, 112, 0, 0]);
     assert!(m.sound_state().instructions >= 27);
     assert_eq!(m.sound_state().last_vector, Some(28));
@@ -60,7 +67,7 @@ fn original_disc_runs_guest_vdp1_vdp2_sound_input_loss_win_and_restart() {
     assert_eq!(&state(&m)[..4], &[24, 112, 0, 0]);
     assert_eq!(m.framebuffer().unwrap(), initial);
     m.reset(Boot::HleDisc(ISO)).unwrap();
-    frames(&mut m, 40, 0);
+    ready(&mut m);
     assert_eq!(m.framebuffer().unwrap(), initial);
 }
 
@@ -77,7 +84,7 @@ fn modified_guest_texture_changes_pixels_without_host_game_detection() {
     }
     let mut m = Machine::new();
     m.reset(Boot::HleDisc(&disc)).unwrap();
-    frames(&mut m, 40, 0);
+    ready(&mut m);
     assert_eq!(&state(&m)[..4], &[24, 112, 0, 0]);
     assert_eq!(pixel(&m, 27, 115), [0, 0, 255, 255]);
 }

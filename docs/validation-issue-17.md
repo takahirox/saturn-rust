@@ -1573,3 +1573,61 @@ remaining BIOS/HLE services, complete SMPC/latch timing and comprehensive guest
 acceptance evidence. Fixed CPU issue turns are unchanged by the PLL conversion.
 No mandatory scope is waived, no tracker is closed/replaced, and no human,
 proprietary firmware or post-merge approval condition is introduced.
+
+## Ordinary BSC memory-interface execution (2026-10-21)
+
+Related to #17. Rechecked upstream `main`: it remains
+`dbd981b030a46daa6923072ce240680dd2e58ebf`. All inherited PR #18 work,
+including the SMPC clock/digital-input revision, is preserved.
+
+Implemented per-CPU WCR software waits/BCR1 long waits, BCR2 byte/word/long
+external transfers and BCR1 CS2 endian conversion. Cache refills and larger
+operands issue separate real narrow bus transactions; each adds its programmed
+Tw clocks. TAS, write-through and cache-through accesses reach the external
+bus; cache hits/arrays add no external waits. Reserved and unsupported register
+configurations fail atomically rather than being accepted without an effect.
+
+The original MIT BWAIT BIOS executes both SH-2s, initializes width/endian once
+before non-CS0 access, measures seven wait configurations using independent FRTs,
+computes endian read/write records and reconstructs physical bytes with guest
+byte reads. Native and actual Wasm tests compare source-authored timer/data
+vectors, repeat resets and mutate guest width, endian, wait and data operands.
+Independent native vectors check cache-refill beat counts, opposite-CPU UBC
+observations, physical byte strobes and all ordinary area wait/width selections.
+Primary manual sections, implementation/test links, provenance and reproducible
+hashes are in [BWAIT conformance](hardware-conformance.md#ordinary-bsc-software-waits-narrow-transfers-and-cs2-endian-conversion).
+
+Checks completed for this combined revision:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`: pass with
+  explicitly selected Rustup stable Rust/Cargo **1.99.0**; **385 native tests**
+  pass, zero failed/ignored (**208 unit, 177 integration**).
+- Native all-target and Wasm Clippy with `-D warnings`: pass.
+- `sh scripts/build-web.sh`: pass using wasm-bindgen-cli **0.2.129**.
+- All **36** CI reproducibility commands pass, including BWAIT. Existing
+  Star Collector, Prism Courier and Hardware Lab media bytes are unchanged.
+- `npm ci --ignore-scripts`, Chromium installation, JavaScript syntax check and
+  the complete extended `npm run test:browser`: pass with Node **24.12.0** and
+  Chromium **145.0.7632.6** under `/saturn-rust/`, without skipping required
+  tests. Includes every new BWAIT boot/mutation/reset trace and all existing
+  hardware, games, Canvas, WebAudio, input/focus, packaging and privacy checks.
+- All **330** local link targets in the changed development documents exist;
+  Git whitespace checks pass, including the new fixture files.
+
+Initial development runs exposed test assumptions equating all instruction
+turns to eight clocks and fixed VRAM-clear startup budgets. FRT tests now locate
+the same hardware deadline by elapsed clocks; game tests allow bounded guest
+initialization and preserve their gameplay/pixel/restart checks. The build first
+needed the already-installed matching wasm-bindgen CLI added to PATH, and the
+browser run needed `npm ci`; both final runs passed. No remote CI, deployment or
+genuine commercial BIOS compatibility result is claimed.
+
+**The full Issue #17/Run objective remains unmet.** These changes add software
+waits to the existing issue quantum; they do not implement full CPU bus-cycle
+scheduling/arbitration. BSC idle/WAIT/memory protocols/board lanes, DIVU overflow
+intermediates, 68k sequencing, backup filesystem/HLE/CD services and the other
+mandatory chip/guest conformance requirements remain implementation work. Keep
+the same PR Draft, preserve its intended Closes #17 outcome, leave #17 open and
+do not merge. No scope is waived, no replacement tracker is created, no
+historical Issue is reopened, and no human/proprietary-firmware/live-site or
+external-workflow gate is introduced.

@@ -879,6 +879,56 @@ impl Memory for Bus {
 }
 
 impl CpuBus<'_> {
+    fn external_read<const N: usize>(&self, address: u32) -> Result<[u8; N], BusError> {
+        let chip = &self.bus.onchip[self.processor as usize];
+        let bus_width = chip.external_bus_width(Bus::physical(address));
+        let little = chip.external_little_endian(Bus::physical(address));
+        // H §7.3.2 figs.7.5/7.6: addresses/byte strobes do not change.
+        // Reverse bytes within the operand; a longword on a word-wide bus
+        // transfers its low word first. Byte operands are unchanged.
+        let width = bus_width.min(N);
+        let mut result = [0; N];
+        for (i, bytes) in result.chunks_mut(width).enumerate() {
+            let at = address + (i * width) as u32;
+            match width {
+                1 => bytes.copy_from_slice(&self.bus.read::<1>(at)?),
+                2 => bytes.copy_from_slice(&self.bus.read::<2>(at)?),
+                _ => bytes.copy_from_slice(&self.bus.read::<4>(at)?),
+            }
+            let value = bytes.iter().fold(0u32, |v, b| v << 8 | u32::from(*b));
+            self.observe_external(at, width, value, false);
+        }
+        if little {
+            result.reverse();
+        }
+        Ok(result)
+    }
+    fn external_write<const N: usize>(
+        &mut self,
+        address: u32,
+        mut bytes: [u8; N],
+    ) -> Result<(), BusError> {
+        let chip = &self.bus.onchip[self.processor as usize];
+        let bus_width = chip.external_bus_width(Bus::physical(address));
+        let little = chip.external_little_endian(Bus::physical(address));
+        let width = bus_width.min(N);
+        if little {
+            bytes.reverse();
+        }
+        for (i, bytes) in bytes.chunks(width).enumerate() {
+            let at = address + (i * width) as u32;
+            match width {
+                1 => self.bus.write(at, [bytes[0]])?,
+                2 => self.bus.write(at, [bytes[0], bytes[1]])?,
+                _ => self
+                    .bus
+                    .write(at, [bytes[0], bytes[1], bytes[2], bytes[3]])?,
+            }
+            let value = bytes.iter().fold(0u32, |v, b| v << 8 | u32::from(*b));
+            self.observe_external(at, width, value, true);
+        }
+        Ok(())
+    }
     fn observe(&self, address: u32, width: usize, value: u32, write: bool) {
         let index = self.processor as usize;
         self.bus.onchip[index].observe_access(address, width, value, write, self.cached, false);
@@ -886,6 +936,7 @@ impl CpuBus<'_> {
     fn observe_external(&self, address: u32, width: usize, value: u32, write: bool) {
         // Only actual external cycles (not cache hits) reach the other BSC.
         if address < 0x4000_0000 {
+            self.bus.onchip[self.processor as usize].external_access(Bus::physical(address));
             self.bus.onchip[1 - self.processor as usize].observe_access(
                 Bus::physical(address),
                 width,
@@ -905,20 +956,13 @@ impl CpuBus<'_> {
             if let Some(bytes) = cache.array_read(address)? {
                 return Ok(bytes);
             }
-            if let Some(bytes) = cache.read(address, instruction, |beat| {
-                let bytes = self.bus.read::<4>(beat)?;
-                self.observe_external(beat, 4, u32::from_be_bytes(bytes), false);
-                Ok(bytes)
-            })? {
+            if let Some(bytes) =
+                cache.read(address, instruction, |beat| self.external_read::<4>(beat))?
+            {
                 return Ok(bytes);
             }
         }
-        let bytes = self.bus.read::<N>(address)?;
-        let value = bytes
-            .iter()
-            .fold(0u32, |v, byte| (v << 8) | u32::from(*byte));
-        self.observe_external(address, N, value, false);
-        Ok(bytes)
+        self.external_read::<N>(address)
     }
     fn write<const N: usize>(&mut self, address: u32, bytes: [u8; N]) -> Result<(), BusError> {
         if !address.is_multiple_of(N as u32) {
@@ -932,11 +976,7 @@ impl CpuBus<'_> {
         {
             return Ok(());
         }
-        self.bus.write(address, bytes)?;
-        let value = bytes
-            .iter()
-            .fold(0u32, |v, byte| (v << 8) | u32::from(*byte));
-        self.observe_external(address, N, value, true);
+        self.external_write(address, bytes)?;
         if self.cached {
             self.bus.cache[index].get_mut().written(address, bytes);
         }
@@ -989,7 +1029,7 @@ impl Memory for CpuBus<'_> {
         Ok(u16::from_be_bytes(self.read(address, true)?))
     }
     fn tas_read8(&self, address: u32) -> Result<u8, BusError> {
-        let value = self.bus.read::<1>(address)?[0];
+        let value = self.external_read::<1>(address)?[0];
         self.observe(address, 1, u32::from(value), false);
         Ok(value)
     }
@@ -1056,6 +1096,132 @@ impl Memory for CpuBus<'_> {
 #[cfg(test)]
 mod scu_timing_tests {
     use super::*;
+    #[test]
+    fn cs2_endian_follows_manual_data_pins_and_byte_strobes_at_both_bus_widths() {
+        // H figs.7.5/7.6. Expected physical bytes and operands are literals;
+        // a roundtrip alone would miss a symmetric wrong-lane implementation.
+        for select in [2, 3] {
+            let mut b = Bus::default();
+            b.write32(SOUND_RAM, 0x11223344).unwrap();
+            b.for_cpu(Processor::Master)
+                .write32(0xFFFF_FFE4, 0xA55A_00CC | select << 4)
+                .unwrap();
+            b.for_cpu(Processor::Master)
+                .write32(0xFFFF_FFE0, 0xA55A_13F0)
+                .unwrap();
+            let address = SOUND_RAM | 0x20000000;
+            assert_eq!(b.for_cpu(Processor::Master).read32(address), Ok(0x44332211));
+            assert_eq!(b.for_cpu(Processor::Master).read16(address), Ok(0x2211));
+            assert_eq!(b.for_cpu(Processor::Master).read16(address + 2), Ok(0x4433));
+            for (i, byte) in [0x11, 0x22, 0x33, 0x44].into_iter().enumerate() {
+                assert_eq!(
+                    b.for_cpu(Processor::Master).read8(address + i as u32),
+                    Ok(byte)
+                );
+            }
+            b.for_cpu(Processor::Master)
+                .write32(address, 0xA1B2C3D4)
+                .unwrap();
+            assert_eq!(b.read32(SOUND_RAM), Ok(0xD4C3B2A1));
+            b.for_cpu(Processor::Master)
+                .write16(address, 0x1234)
+                .unwrap();
+            assert_eq!(b.read32(SOUND_RAM), Ok(0x3412B2A1));
+            b.for_cpu(Processor::Master).write8(address, 0x56).unwrap();
+            assert_eq!(b.read32(SOUND_RAM), Ok(0x5612B2A1));
+            // Per-CPU selection does not reconfigure the other CPU or SCSP RAM.
+            assert_eq!(b.for_cpu(Processor::Slave).read32(address), Ok(0x5612B2A1));
+            b.write32(HIGH_WRAM, 0x11223344).unwrap();
+            assert_eq!(
+                b.for_cpu(Processor::Master).read32(HIGH_WRAM | 0x20000000),
+                Ok(0x11223344)
+            );
+        }
+    }
+    #[test]
+    fn narrow_bsc_buses_split_data_refills_and_writes_into_actual_ordered_external_beats() {
+        for (select, width, waits, refill_waits) in [(1, 1, 24, 96), (2, 2, 12, 48), (3, 4, 6, 24)]
+        {
+            let mut b = Bus::default();
+            b.write32(HIGH_WRAM, 0x12345678).unwrap();
+            b.for_cpu(Processor::Master)
+                .write32(0xFFFF_FFE4, 0xA55A_003C | select << 6)
+                .unwrap();
+            assert_eq!(
+                b.for_cpu(Processor::Master).read32(HIGH_WRAM | 0x20000000),
+                Ok(0x12345678)
+            );
+            assert_eq!(b.take_wait_clocks(), waits);
+            b.for_cpu(Processor::Master)
+                .write32(HIGH_WRAM, 0xABCDEF12)
+                .unwrap();
+            assert_eq!(b.read32(HIGH_WRAM), Ok(0xABCDEF12));
+            assert_eq!(b.take_wait_clocks(), waits);
+            b.for_cpu(Processor::Master).write8(CCR, 0x11).unwrap();
+            b.for_cpu(Processor::Master).read32(HIGH_WRAM).unwrap();
+            assert_eq!(b.take_wait_clocks(), refill_waits);
+            b.for_cpu(Processor::Master).read32(HIGH_WRAM).unwrap();
+            assert_eq!(b.take_wait_clocks(), 0);
+            b.for_cpu(Processor::Master)
+                .read16(HIGH_WRAM | 0x20000000)
+                .unwrap();
+            assert_eq!(b.take_wait_clocks(), if width == 1 { 12 } else { 6 });
+            b.for_cpu(Processor::Master)
+                .read8(HIGH_WRAM | 0x20000000)
+                .unwrap();
+            assert_eq!(b.take_wait_clocks(), 6);
+            // A sequential external break at byte/word 0 then the next beat
+            // proves splitting reaches the other CPU's physical bus monitor.
+            if width < 4 {
+                let chip = &mut b.onchip[1];
+                chip.write32(0xFFFF_FF40, HIGH_WRAM).unwrap();
+                chip.write32(0xFFFF_FF60, HIGH_WRAM + width).unwrap();
+                chip.write16(0xFFFF_FF48, 0xA4).unwrap();
+                chip.write16(0xFFFF_FF68, 0xA4).unwrap();
+                chip.write16(0xFFFF_FF78, 0x3010).unwrap();
+                b.for_cpu(Processor::Master)
+                    .read32(HIGH_WRAM | 0x20000000)
+                    .unwrap();
+                assert_eq!(b.onchip[1].interrupt(), Some((15, 12)));
+            }
+        }
+    }
+    #[test]
+    fn bsc_waits_apply_to_external_beats_and_tas_but_never_cache_hits_or_arrays() {
+        let mut b = Bus::default();
+        b.write32(HIGH_WRAM, 0x12345678).unwrap();
+        b.for_cpu(Processor::Master).write8(CCR, 0x11).unwrap();
+        assert_eq!(
+            b.for_cpu(Processor::Master).read32(HIGH_WRAM),
+            Ok(0x12345678)
+        );
+        assert_eq!(b.take_wait_clocks(), 24); // Four refill beats, six Tw each.
+        b.for_cpu(Processor::Master).read32(HIGH_WRAM).unwrap();
+        b.for_cpu(Processor::Master).read32(0xC000_0000).unwrap();
+        assert_eq!(b.take_wait_clocks(), 0);
+        b.for_cpu(Processor::Master).tas_read8(HIGH_WRAM).unwrap();
+        assert_eq!(b.take_wait_clocks(), 6);
+        b.for_cpu(Processor::Master)
+            .read32(HIGH_WRAM | 0x20000000)
+            .unwrap();
+        assert_eq!(b.take_wait_clocks(), 6);
+        b.for_cpu(Processor::Master).write32(HIGH_WRAM, 0).unwrap();
+        assert_eq!(b.take_wait_clocks(), 6); // Write-through hit is still external.
+        b.for_cpu(Processor::Master)
+            .write32(0xFFFF_FFE8, 0xA55A_AA40)
+            .unwrap();
+        b.for_cpu(Processor::Master)
+            .read32(HIGH_WRAM | 0x20000000)
+            .unwrap();
+        assert_eq!(b.take_wait_clocks(), 1);
+        b.for_cpu(Processor::Slave)
+            .read32(HIGH_WRAM | 0x20000000)
+            .unwrap();
+        assert_eq!(b.take_wait_clocks(), 6); // Independent slave configuration.
+        b.reset_volatile();
+        b.for_cpu(Processor::Master).read32(HIGH_WRAM).unwrap();
+        assert_eq!(b.take_wait_clocks(), 6);
+    }
     #[test]
     fn smpc_input_edges_latch_raster_counters_and_raise_pad_irqs_with_independent_enables() {
         // ST-169 §1.2/table1.5; ST-058 §2.5/tables2.3–2.4; SCU table2.1.

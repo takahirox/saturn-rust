@@ -279,7 +279,7 @@ not turn those missing hardware paths into supported behavior.
 | SCI, H §§13.2–13.3 | SMR/BRR/SCR/TDR/SSR/RDR, timed internal-clock transmission, external completed-character input, overrun/framing/parity flags, IRQs and DMA handshakes | PERIPH; `Serial` | PERIPH (transmit completion) | No external clock-edge adapter or physical serial pin waveform; multiprocessor and format combinations lack exhaustive integration coverage | Pending |
 | On-chip DMAC, H §§9.2–9.3 | Both channels; byte/word/long/16-byte transfers; fixed/increment/decrement addresses; auto/DREQ/SCI requests; fixed/round-robin selection, TE/AE/NMIF, vectors/IRQ; single-address DACK direction/polarity through explicit board pin adapters | PERIPH, DACK; `Dma`, `Bus::advance_dma`, pin-adapter vectors | PERIPH (copy/end IRQ/error 10/no cache snoop), DACK (armed wait/reset on standard board) | CPU/refresh arbitration, burst/cycle-steal timing and wait states remain missing; no requesting DACK peripheral is connected on the standard board | Pending |
 | DIVU, H §§10.2–10.4 | Signed 32/32 and 64/32 quotient/remainder, 39/6-clock completion/interlock, DVCR/VCRDIV, sticky overflow and IRQ | PERIPH; `Division` | PERIPH (signed 32/64-bit normal division) | Six-cycle intermediate overflow state is not modeled: deterministic saturation and input-high preservation are used even with OVFIE=1; no full conformance claim | Pending |
-| BSC identification/interval timer, H §§7.1.4/7.2/7.5.7/7.11.1 | BCR1.MASTER per CPU, read-only word lanes, keyed long writes, RTCNT/RTCOR/RTCSR, all clock divisors, CMF read-before-clear, CMI vector/priority and manual-reset retention; `Bsc::read/write/advance`, `OnChip::interrupt` | [BSCG](../tests/bsc.rs), [register/reset vectors](../src/onchip/peripheral_tests.rs), [BSC vectors](../src/onchip/bsc.rs) | BSCG | Changed external memory-interface settings explicitly rejected; refresh bus ownership/waits remain | Pending |
+| BSC identification/interval timer, H §§7.1.4/7.2/7.5.7/7.11.1 | BCR1.MASTER per CPU, read-only word lanes, keyed long writes, RTCNT/RTCOR/RTCSR, all clock divisors, CMF read-before-clear, CMI vector/priority and manual-reset retention; ordinary software waits, narrow transfers and CS2 endian conversion (BWAIT below) | [BSCG/BWAIT](../tests/bsc.rs), [register/reset vectors](../src/onchip/peripheral_tests.rs), [BSC vectors](../src/onchip/bsc.rs), [bus beats](../src/bus.rs) | BSCG, BWAIT | Memory/burst interfaces, inter-cycle idle, WAIT input, board widths/lanes and refresh/CPU/DMA ownership remain; unsupported changes explicitly rejected | Pending |
 | Module stop/standby, H §§14.2/14.4, table 14.3 | SBYCR, SCI/FRT reset and gating, preserved INTC/UBC/BSC, retained DMA operands with control reset, WDT-selected NMI settling; `OnChip::enter_sleep/advance_clocks`, `Bus::advance_dma` | [standby/retention vectors](../src/onchip/peripheral_tests.rs), BSCG, PWRG | BSCG, PWRG | Electrical HIZ/pin states, initial five-cycle NMI guard, physical oscillator and clock-switch edges remain unverified; executing stopped MULT instructions is software-prohibited/undefined (H §2.5.2) | Pending |
 | UBC, H §6 | A/B registers, masked address/data/size/master matching, sequential conditions, match flags, before/after fetch breaks and deferred level-15 vector 12; CPU/cache/DMAC and external SCU observation; `Ubc::observe`, `Cpu::step/execute` | UBCG and bus vectors | UBCG | Three-cycle configuration pipeline and SH7000-compatible speculative overrun fetch breaks remain unmodeled; instruction/bus cycle scheduling remains pending | Pending |
 | Slave SH-2, [Dual CPU User's Guide][DUALREF] §§1/3/4, [SMPC] table 1.1 | Independent interpreter/registers/stacks/peripherals/cache; shared bus, SSHON/SSHOFF, bidirectional capture IRQs | DUAL, CACHE, PERIPH | DUAL, PERIPH | Bus contention and full CPU clock accounting absent; BCR1 identity covered by BSCG | Pending |
@@ -416,7 +416,7 @@ CPU/scheduler acceptance criteria.
 | Feature / reference | Current behavior / edge cases | Native | Browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- | --- |
 | BIOS ROM, O map | Exact 512 KiB, big endian, read-only, reset vectors; synthetic guest exception handlers | bus.rs, boot.rs, AEROM | ROM, AEROM | Full synthetic boot/MMIO/service coverage missing; genuine BIOS compatibility optional and not independently confirmed | Pending |
-| Low/high WRAM, O map | Independent 1 MiB banks; aligned B/W/L; low-RAM and CS3 high-RAM mirrors; P1 aliases | bus.rs | SC, ROM | CPU waits, refresh and bus contention timing missing | Pending |
+| Low/high WRAM, O map | Independent 1 MiB banks; aligned B/W/L; low-RAM and CS3 high-RAM mirrors; P1 aliases; BWAIT software waits and narrow CS3 beats | bus.rs, BWAIT | SC, ROM, BWAIT | Base CPU cycles, refresh and bus contention timing missing | Pending |
 | Base-system address decoding, O map | Only documented subset in architecture.md | bus.rs | SC | A-bus/cartridge decoding and full base map missing | Pending |
 | MMIO widths/side effects, device manuals | Unsupported accesses return errors | devices.rs | SC | Full device routing/width rules missing | Pending |
 | Backup byte storage, SCU §1.2 figs.1.3/1.5; SMPC §2.3 SYSRES p.29 | 32 KiB, odd-byte storage; even lanes read FF and ignore writes; word/long strobes; P1 aliases; unformatted zero initialization | BK; `backup_byte_lanes_endpoints_and_cache_through_access_do_not_alias_work_ram` | BK | Additional backup aliases, filesystem/service integration and remaining reset domains pending | Pending |
@@ -632,7 +632,8 @@ All hardware gaps above remain technical requirements.
 
 `Machine::step` attempts a master boundary followed by a slave boundary (only
 when SSHON has completed), performs bounded on-chip DMA quanta, then advances
-peripherals/SMPC by eight reference clocks plus DIVU interlock waits. DMA address
+peripherals/SMPC by eight reference clocks plus inserted BSC software waits and
+DIVU interlock waits, converting main clocks through the PLL. DMA address
 errors are latched for vector 10 at the next eligible boundary. Pending NMI
 precedes selection among internal IRQs; each CPU applies its own
 SR mask, delayed-branch and control-transfer inhibition. An accepted interrupt
@@ -1308,3 +1309,55 @@ The remaining review findings and every unmet umbrella acceptance criterion
 remain mandatory in the existing Issue #17. These changes do not establish full
 SH7604/68k, bus/scheduler/backup, SCU/DSP, video/audio, CD/media or BIOS/HLE
 conformance, and no completion checkbox is changed.
+
+## Ordinary BSC software waits, narrow transfers and CS2 endian conversion
+
+Related to #17. **BWAIT** is the original MIT
+[guest builder](../tests/fixtures/build_bsc_waits.py),
+[synthetic BIOS](../tests/fixtures/bsc-waits.hex),
+[authored timer vectors](../tests/fixtures/bsc-waits.tsv),
+[authored endian vectors](../tests/fixtures/bsc-endian.tsv),
+[native integration](../tests/bsc.rs) and identical actual browser Wasm execution
+in [browser-smoke.mjs](../scripts/browser-smoke.mjs). Primary references are
+[SH7604][H] §§7.1.4, 7.2.1–3, 7.3.1–2 (figs.7.5/7.6) and 7.4.2 (fig.7.11).
+The [fixture MIT license](../tests/fixtures/LICENSE) covers source and generated
+ROM/vectors. No Sega firmware, SDK routine, external core or host-written running
+guest result is involved.
+
+| Software-visible contract | Implementation and objective evidence | Remaining limits |
+| --- | --- | --- |
+| WCR software waits and BCR1 AnLW | `Bsc::software_waits` decodes zero/one/two Tw or long waits of three through six, independently for CS0–3; CS2/3 share AHLW. Register vectors cover every area/selection, keys and atomic rejection. BWAIT measures eight uncached CS3 reads with each CPU's own FRT, comparing seven literal expected deltas | Tw clocks are added to the existing issue quantum; base T1/T2 overlap, inter-cycle idle, external WAIT and full bus arbitration remain required |
+| BCR2 byte/word/long interfaces | `CpuBus::external_read/external_write` split larger operands and cache-refill requests into ordered physical beats. Bus vectors check exact per-beat wait sums, data, write-through/cache hits and actual sequential external UBC observations | CS0 retains the existing 32-bit board adapter; complete standard-board lane/bridge behavior, burst/DRAM/SDRAM protocols and arbitration remain required |
+| BCR1 CS2 endian | `Bsc::little_endian` selects per-CPU CS2 conversion. Actual transfers reverse operand bytes, leave byte addresses/strobes unchanged and transfer low words first on word-wide buses. Literal native vectors assert physical bytes, both word offsets, all byte lanes, writes and the other CPU's independent view | Cache-through use follows §7.3.2; this does not establish all cache/MMIO/board-width combinations |
+| Register programming rules | Wrong keys do not change registers; reserved bus widths and unsupported little-endian byte buses are rejected atomically. Changed memory/burst/partial-share/idle configurations still raise explicit errors | These remaining valid configurations must be implemented; error reporting does not satisfy their acceptance |
+| Cache/TAS and reset | Waits apply to actual refill beats, cache-through accesses, TAS external reads and write-through hits. Cache hits/arrays incur none; cold reset restores six software waits | CPU/DMA contention, TAS bus locks, refresh ownership and complete reset-cycle timing remain required |
+
+The guest initializes width/endian once after reset **before** accessing outside
+CS0, preserving those initial choices while changing the permitted long-wait
+fields. Each independently executing CPU identifies itself through BCR1.MASTER,
+uses its own stack/FRT and writes its own 24-word mailbox. Separate cold boots
+change original width/endian operands: long/word/byte interfaces yield different
+FRT deltas; endian changes alter computed reads and guest-reconstructed physical
+bytes. Additional single-operand wait/data mutations alter only the corresponding
+records. Reset repeats the same traces. All versions execute SH-2 instructions
+and actual memory/MMIO accesses in native and browser Wasm.
+
+FRT compare/SLEEP tests now use elapsed clocks including ROM fetch waits, retaining
+the before-edge, edge and next-boundary IRQ/stack assertions. Star Collector and
+Prism Courier tests wait within a bound for guest initialization; their original
+media bytes, input, pixel, completion/loss and restart assertions are preserved.
+The whole extended browser suite still runs under `/saturn-rust/`, including
+Canvas, WebAudio, privacy, input/focus and all three demonstrations.
+
+| Reproducible artifact | SHA-256 |
+| --- | --- |
+| `bsc-waits.hex` text | `a5b1d66b880c6581f548541d83107b76f96f4ba95e7eedf54ea842cdcba37efc` |
+| Expanded 512 KiB original BIOS | `f4f7e6379a45b45a86604b613257a97afbe831a65088dffc18b6972c711a78ed` |
+| `bsc-waits.tsv` | `5ecd8afbc26eb0962062539e8e575d36014368addf7e9baf1ec628214bbbfab3` |
+| `bsc-endian.tsv` | `95de3de1f2d74e5da6a0cea05fea79e455a169c1d1f5c5b4ee1f2ff803b9bf24` |
+
+All remaining umbrella hardware implementation and validation criteria stay
+mandatory. In particular, DIVU still has its documented overflow-intermediate
+substitution; 68k bus sequencing, full coordinated CPU/DMA ownership, backup
+filesystem/HLE/CD services, SCU/DSP, video/audio/media/SMPC and comprehensive
+integration evidence remain incomplete. No umbrella checkbox is marked complete.

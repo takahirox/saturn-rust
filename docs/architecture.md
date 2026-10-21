@@ -38,7 +38,8 @@ automated local/CI checks; live Pages inspection is not a completion gate.
 volatile RAM, devices, ROM, counters, delay state and faults before attempting the selected
 boot. Invalid input leaves that mode selected and CPU in Reset, with no stale
 media or fallback. Battery-backed bytes are retained. `step()` makes one bounded master turn and,
-when enabled, one slave turn, then advances peripherals by eight reference clocks;
+when enabled, one slave turn, then advances peripherals by eight reference clocks
+plus inserted BSC software waits and DIVU interlocks (converted from main clocks);
 exception entry or a sleeping turn can retire no instructions. `run_steps(n)` accepts 1–10000 steps.
 `advance_frame()` waits for the next NTSC raster field deadline with a bounded
 turn limit and aborts on its first fault. Raster, SCU timer and DSP deadlines split
@@ -118,8 +119,10 @@ entire machine until reset and identifies the slave when applicable.
 
 The watchdog implements power/manual reset selection, a 512-clock CPU hold,
 physical vector pairs 0/4 or 8/12, and retained RAM/backup/cause. CPU-local
-write-through caches implement software coherence and mapped arrays. BSC/UBC,
-standby, external reset signals and hardware cycle scheduling remain outstanding. Missing bus/device implementations and exception-entry failures
+write-through caches implement software coherence and mapped arrays. BSC ordinary
+software waits, narrow CS1-CS3 transfers and CS2 endian conversion have guest
+evidence. Full BSC memory/idle/arbitration, UBC/standby timing, external reset
+signals and hardware cycle scheduling remain outstanding. Missing bus/device implementations and exception-entry failures
 remain explicit, sticky host diagnostics.
 Exception entry is bounded on a failing stack/vector access; successful writes
 before a later entry failure are not rolled back. This is not hardware double-
@@ -346,6 +349,25 @@ waits for a raster field boundary with a hard turn bound. It no longer assigns
 quantum and on-chip DMA arbitration remain incomplete timing models; this change
 does not establish full hardware-time acceptance. Star Collector completion tests
 wait for the guest result within a bound rather than requiring the old budget.
+
+The ordinary BSC interface implements WCR software waits and BCR1 long-wait
+selection per external beat, including cache-refill, TAS and write-through
+transactions. BCR2 selects byte/word/long external transfers in CS1-CS3; larger
+operands split in address order. CS2 ENDIAN reverses operand bytes while leaving
+byte addresses/strobes unchanged (SH7604 figs.7.5/7.6), including low-word-first
+long transfers on a word bus. Each CPU has its own settings; raw device memory
+and the other CPU do not change endian. Cache hits/arrays incur no external
+waits. The original [BSC guest](../tests/fixtures/build_bsc_waits.py) initializes
+width/endian once before accesses outside CS0 and uses its FRT to measure actual
+delays in native/Wasm, with width/endian/data/wait operand changes.
+
+This still adds Tw clocks to the functional CPU issue quantum. It does not
+implement T1/T2 pipeline overlap, inter-cycle idle, external WAIT sampling,
+refresh/CPU/DMA bus ownership, burst memories or all board lanes. CS0 retains
+the existing 32-bit external adapter. Unsupported changed BSC configurations
+raise errors, including reserved bus widths and little-endian byte buses.
+The game media are unchanged; startup/restart tests allow their executed VRAM
+clears to take the additional bus time and still assert gameplay and pixels.
 
 ## Sound CPU and browser audio
 

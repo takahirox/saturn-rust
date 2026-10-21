@@ -32,7 +32,7 @@ fn parse_rom(source: &str) -> Vec<u8> {
 #[test]
 fn guest_compare_irq_waits_for_the_edge_leaving_ocra_and_wakes_sleep() {
     // SH7604 §§11.4.3/11.4.6, figs. 11.7/11.11. Each phi/128 count
-    // edge takes 16 functional machine turns (not instruction-cycle timing).
+    // edge takes 128 clocks, including BSC waits during guest setup/SLEEP.
     for compare in [0, 3] {
         let mut image = parse_rom(include_str!("fixtures/frt-compare.hex"));
         image[0x114..0x116].copy_from_slice(&(0xE000u16 | compare).to_be_bytes());
@@ -45,9 +45,12 @@ fn guest_compare_irq_waits_for_the_edge_leaving_ocra_and_wakes_sleep() {
             machine.step().unwrap();
         }
         assert_eq!(machine.cpu_state().pc, 0x13C);
-        machine
-            .run_steps(16 * (u32::from(compare) + 1) - 1)
-            .unwrap();
+        let deadline = machine.clocks() + 128 * (u64::from(compare) + 1);
+        machine.step().unwrap(); // Start timer, including this ROM fetch's Tw.
+        machine.step().unwrap(); // Execute SLEEP, also fetched from ROM.
+        while machine.clocks() + u64::from(CLOCKS_PER_STEP) < deadline {
+            machine.step().unwrap();
+        }
         assert_eq!(machine.cpu_state().status, CpuStatus::Sleeping);
         assert_eq!(machine.cpu_state().exceptions, 0);
         assert_eq!(machine.bus().read8(FRT + 1).unwrap(), 1);
@@ -188,7 +191,8 @@ fn slave_fault_identifies_processor_and_stops_the_entire_machine_until_reset() {
     assert!(matches!(slave.status, CpuStatus::Faulted(_)));
     machine.reset(Boot::HlePrototype).unwrap();
     machine.step().unwrap();
-    assert_eq!(machine.clocks(), u64::from(CLOCKS_PER_STEP));
+    // The first uncached CS3 fetch inserts six reset-state BSC Tw clocks.
+    assert_eq!(machine.clocks(), u64::from(CLOCKS_PER_STEP) + 6);
     assert_eq!(machine.slave_state(), &CpuState::default());
     assert_eq!(machine.fault(), None);
     assert!(matches!(
