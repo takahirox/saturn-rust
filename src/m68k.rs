@@ -145,8 +145,23 @@ impl M68k {
     fn lea_clocks(bits: u16) -> u32 {
         Self::ea_clocks(bits, Size::Word) + u32::from(bits & 0x38 == 0x30 || bits == 0x3B) * 2
     }
+    /// MC68000UM §§5.5/6.3.1: reset changes S/T/I and reloads SSP/PC;
+    /// it does not clear D0-D7, A0-A6 or the user stack. Clear internal work
+    /// (including a stale prefetch/IRQ) without inventing register writes.
+    pub(crate) fn assert_reset(&mut self) {
+        let old = std::mem::take(self);
+        self.state.d = old.state.d;
+        self.state.a = old.state.a;
+        self.state.usp = if old.state.sr & S == 0 {
+            old.state.a[7]
+        } else {
+            old.state.usp
+        };
+        self.state.ssp = old.state.ssp;
+        self.state.sr = (old.state.sr & 31) | 0x2700;
+    }
     pub fn reset(&mut self, memory: &impl Memory) -> std::result::Result<(), BusError> {
-        *self = Self::default();
+        self.assert_reset();
         let vectors = (|| {
             self.state.a[7] = Self::reset_long(memory, 0)?;
             self.state.ssp = self.state.a[7];

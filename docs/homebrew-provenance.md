@@ -283,3 +283,18 @@ the slave's cached instructions read SCI/FRT through its internal bus. Guest
 BRCR and SCI operand mutations demonstrate the UBC monitor's timing effect and
 computed sums in native and browser Wasm, with repeated cold resets. No
 third-party code or content is included.
+
+The original [SCSP slot-monitor builder](../tests/fixtures/build_scsp_monitor.py)
+and [sound-CPU reset builder](../tests/fixtures/build_m68k_reset.py) use only the
+original SH-2 assembler, independent literal MC68EC000 instructions and Python's
+standard library. Their generated ROMs, authored TSV vectors and reset SH-2 source
+use the adjacent [MIT fixture license](../tests/fixtures/LICENSE). The 68k
+programs every monitored PCM slot and computes all monitor records through MMIO;
+the reset guest records registers across guest-issued SNDON/SNDOFF and a changed
+reset vector. Native and production Wasm checks repeat cold boots and mutate
+loop, waveform, key-on and pre-reset instruction operands. The real AudioWorklet
+consumes the monitor guest's emulated samples, including the silent negative case.
+No firmware, SDK routine, third-party core or asset, host-written running result
+or game-specific detection is used. Both `--check` build commands are required in
+CI; [the conformance entry](hardware-conformance.md#scsp-slot-monitor-and-mc68ec000-reset-retention-scmon--sreset)
+records primary specifications, exact implementation/tests, ROM hashes and limits.

@@ -3008,3 +3008,90 @@ mandatory in this same PR. No umbrella checkbox is checked. PR #18 must remain
 Draft, with Closes #17 retained as the intended completed outcome. No merge,
 Issue closure/replacement/reopening, human testing/approval, personal firmware,
 live Pages inspection or external-workflow gate is introduced.
+
+## SCSP current-address monitor and 68k reset register retention (2026-10-22)
+
+Related to #17. Upstream `main` was rechecked and remains
+`dbd981b030a46daa6923072ce240680dd2e58ebf`. The worktree preserves the existing
+PR work, including FETCHG, Star Collector, Prism Courier, Hardware Lab, backup
+RAM and both controller ports.
+
+The SCSP's monitor previously returned CA in bits3:0 and read the phase for the
+next sample. ST-077 fig.4.3 places CA in bits10:7, and p.89 describes the current
+output waveform address in 4096-sample units. Each voice now retains the address
+actually used for its output, after loop normalization and FM displacement and
+before the next phase increment. Native vectors cover all 32 MSLC selectors,
+sixteen CA values, both PCM widths, byte lanes and latch preservation, current
+versus next pointer, all loop directions, FM displacement, retrigger and reset.
+
+The original MIT SCMON guest uses SH-2 upload and independent 68k execution to
+program 32 actual PCM voices, poll 600 sample-IRQ flags and record 64 monitor
+words. Native and production Wasm compare independently authored word/byte
+records, repeat cold resets and change guest LSA/LEA and waveform operands.
+The changes alter the corresponding monitor records and/or exact stereo tail.
+Omitting KYONEX instead yields zero monitors and silence while the same guest
+instructions complete. The actual production AudioWorklet consumes newly
+generated PCM in all cases, with corresponding peaks, bounded buffering and
+observable underflow; the silent negative case is not reported as audible.
+
+External MC68EC000 reset previously cleared its general register file, as did
+SNDOFF. MC68000UM §§5.5/6.3.1 specifies reset-control changes and SSP/PC reload,
+without those extra general-register writes. `assert_reset` now preserves
+D0–D7, A0–A6 and USP while clearing stale internal work, prefetch, stopped/halted
+state and pending IRQ context. `reset` reads four vector words in documented
+order and reloads SSP/A7/PC. Cold-machine initial values remain deterministic.
+Independent native vectors cover user/supervisor origins, all CCR values, no
+exception-frame write, vector order and stale-state removal. The original MIT
+SRESET guest initializes registers in its first 68k entry; SH-2 then executes
+SNDOFF, changes the actual vectors and executes SNDON. Its second 68k entry
+records the retained registers and new stack/control state before changing them.
+Changing its pre-reset D3 immediate changes precisely the expected post-reset
+record. Native and production Wasm repeat both variants after cold reset.
+
+The [SCMON/SRESET conformance entry](hardware-conformance.md#scsp-slot-monitor-and-mc68ec000-reset-retention-scmon--sreset)
+links primary sections/figures, implementation, native tests, production browser
+checks, reproducible original ROMs/vectors and hashes. CI now requires both new
+builders. No bundled firmware, SDK routines, third-party core, game detection,
+host-written running result or canned graphics/audio output was introduced.
+
+Validation on the final production implementation:
+
+- `cargo fmt --check`, `cargo build --locked`, native all-target Clippy and
+  wasm32 Clippy with warnings denied: pass, stable Rust/Cargo 1.99.0.
+- `CARGO_PROFILE_TEST_OPT_LEVEL=1 cargo test --locked`: **598 tests pass**
+  (356 unit + 242 integration), zero failures/ignored, with debug assertions
+  and overflow checks enabled. The complete ordinary unoptimized
+  `cargo test --locked` also passes the same **598 tests**, zero failures/ignored.
+- `sh scripts/build-web.sh` and the complete extended `npm run test:browser`:
+  pass with final production Wasm, wasm-bindgen 0.2.129, Chromium 145.0.7632.6
+  and Node 24.12.0 under `/saturn-rust/`, with no required skips. Both new
+  guests/mutations/reset repetitions and the monitor's production WebAudio
+  path pass. All prior guest suites, all three licensed demonstrations,
+  actual Canvas/WebAudio, keyboard/Gamepad/focus, backup/reset, separate
+  BIOS/HLE startup and local-file privacy retain their assertions.
+- All **64** CI guest/media reproducibility commands pass, including the two
+  new builders. The three demonstration media are unchanged by SCMON/SRESET. JavaScript
+  syntax, local documentation file targets and Git whitespace checks pass.
+- Four deliberate regressions are independently rejected by the native tests:
+  CA wired to bits3:0, CA derived from the next phase, reset clearing D0–D7,
+  and SNDOFF discarding the CPU register file. Production source was restored
+  exactly in `finally`; the final suites above use the restored implementation.
+- An initial new FM boundary vector incorrectly assumed a displacement larger
+  than the existing documented 1K-sample FM overflow range. It was corrected to
+  a sixteen-sample displacement crossing the 4K monitor boundary. The final
+  test now verifies that real displacement without changing the phase generator.
+  An initial Clippy run rejected constant-sized chunk iteration; the new tests
+  now use the installed `as_chunks` convention.
+
+These are local validation results, not remote CI or deployment results.
+Genuine proprietary-BIOS/retail compatibility remains optional and not
+independently confirmed.
+
+The full-resolution objective remains unmet. These changes fix specific SCSP and
+reset defects; all remaining CPU sequencing, board ownership/reset/services,
+SCU/DSP, video, synthesis/EG/DMA/effects timing, runtime CD/HLE, SMPC and complete
+per-feature/demo acceptance remain required in this same PR and Issue. No
+mandatory checkbox is checked. PR #18 stays Draft, with Closes #17 retained as
+its intended completed outcome. No merge, Issue closure/replacement/reopening,
+personal firmware, human testing/approval, live-site inspection or external
+workflow gate is introduced.

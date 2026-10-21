@@ -456,6 +456,7 @@ fn sound_off_on_reloads_vectors_without_discarding_shared_ram_or_running_scsp() 
     sound.set_enabled(true).unwrap();
     sound.advance(10000).unwrap();
     assert!(sound.cpu.state.d[0] > 0);
+    let retained = sound.cpu.state.d[0];
     sound.set_enabled(false).unwrap();
     let n = sound.scsp.generated;
     sound.advance(10000).unwrap();
@@ -464,7 +465,7 @@ fn sound_off_on_reloads_vectors_without_discarding_shared_ram_or_running_scsp() 
     assert_eq!(sound.ram[0x100], 0x52);
     sound.set_enabled(true).unwrap();
     assert_eq!(sound.cpu.state.pc, 0x100);
-    assert_eq!(sound.cpu.state.d[0], 0);
+    assert_eq!(sound.cpu.state.d[0], retained);
 }
 
 #[test]
@@ -745,4 +746,86 @@ fn scsp_dma_zero_execute_write_preserves_busy_and_completion_interrupt() {
     for (at, value) in [(0x10, 0xAA), (0x12, 0x33), (0x14, 0x77), (0x16, 0x1122)] {
         assert_eq!(scsp.read16(at), Ok(value));
     }
+}
+
+#[test]
+fn slot_monitor_uses_documented_ca_bits_all_selectors_and_independent_byte_lanes() {
+    // ST-077 §4.1 fig.4.3 / §4.2 p.89. CA occupies bits10:7;
+    // write-only MSLC is bits15:11. One CA unit is 4096 samples,
+    // independent of PCM width, SA, pitch and the other slot selectors.
+    for pcm8 in [false, true] {
+        let mut scsp = Scsp::default();
+        let mut ram = vec![0; SOUND_RAM_SIZE];
+        for slot in 0..32 {
+            direct(&mut scsp, slot, 0x1234, 1, pcm8, 0);
+            scsp.write16(slot * 32 + 6, 65535).unwrap();
+            scsp.voices[slot as usize].phase = i64::from(slot % 16 * 4096 + 123) << 16;
+        }
+        scsp.sample(&mut ram).unwrap();
+        for slot in 0..32 {
+            let expected = ((slot % 16) << 7) as u16;
+            scsp.write16(0x408, (slot << 11) as u16).unwrap();
+            assert_eq!(scsp.read16(0x408), Ok(expected));
+            assert_eq!(scsp.read8(0x408), Ok((expected >> 8) as u8));
+            assert_eq!(scsp.read8(0x409), Ok(expected as u8));
+            // A low-byte write must preserve the latched MSLC, rather than
+            // copying CA's read value back into the write-only selector.
+            scsp.write8(0x409, 0).unwrap();
+            assert_eq!(scsp.read16(0x408), Ok(expected));
+            assert_eq!(scsp.common[4], (slot << 11) as u16);
+            scsp.write8(0x408, (((31 - slot) << 3) & 255) as u8)
+                .unwrap();
+            assert_eq!(scsp.read16(0x408), Ok((((31 - slot) % 16) << 7) as u16));
+        }
+    }
+}
+
+#[test]
+fn slot_monitor_retains_the_current_output_address_across_pitch_and_loop_boundaries() {
+    // Read before/after output at the 4K boundary. Looking at the phase
+    // after its increment reports CA too early. Forward/reverse/alternate
+    // loops must report the address actually used after loop normalization.
+    for pcm8 in [false, true] {
+        for (mode, samples, expected) in [
+            (0, 4, [0, 0x80, 0x80, 0x80]),
+            (1, 4, [0, 0x80, 0, 0x80]),
+            (2, 4, [0x80, 0, 0x80, 0]),
+            (3, 4, [0, 0x80, 0x80, 0]),
+        ] {
+            let mut scsp = Scsp::default();
+            let mut ram = vec![0; SOUND_RAM_SIZE];
+            direct(&mut scsp, 0, 0x1234, mode, pcm8, 0);
+            scsp.write16(4, 4095).unwrap();
+            scsp.write16(6, 4097).unwrap();
+            scsp.voices[0].phase = 4095 << 16;
+            for value in expected.into_iter().take(samples) {
+                scsp.sample(&mut ram).unwrap();
+                assert_eq!(scsp.read16(0x408), Ok(value), "PCM8={pcm8}, loop={mode}");
+                assert_eq!(scsp.read16(0x408), Ok(value)); // no read side effect
+            }
+            // A restarted key begins at SA rather than retaining the prior
+            // voice's monitored address. Power/LSI reset also clears it.
+            scsp.write16(0, 0x1000).unwrap();
+            scsp.write16(0, 0x1820 | if pcm8 { 16 } else { 0 }).unwrap();
+            assert_eq!(scsp.read16(0x408), Ok(0));
+            assert_eq!(Scsp::default().read16(0x408), Ok(0));
+        }
+    }
+}
+
+#[test]
+fn slot_monitor_follows_the_fm_waveform_address_without_moving_the_phase_generator() {
+    // ST-077 table4.17: MDL5 with a half-scale past-slot source displaces
+    // the waveform by sixteen samples, crossing the 4K monitor boundary.
+    let mut scsp = Scsp::default();
+    let mut ram = vec![0; SOUND_RAM_SIZE];
+    direct(&mut scsp, 5, 0, 1, false, 0);
+    scsp.write16(5 * 32 + 6, 8192).unwrap();
+    scsp.write16(5 * 32 + 14, 0x5000).unwrap();
+    scsp.voices[5].phase = 4095 << 16;
+    scsp.stack.data.fill(16384);
+    scsp.sample(&mut ram).unwrap();
+    scsp.write16(0x408, 5 << 11).unwrap();
+    assert_eq!(scsp.read16(0x408), Ok(0x80));
+    assert_eq!(scsp.voices[5].phase, 4096 << 16);
 }

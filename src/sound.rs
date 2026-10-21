@@ -77,6 +77,9 @@ fn mix_sample(mix: &mut [i64; 2], sample: i16, send: u16, pan: u16) {
 struct Voice {
     active: bool,
     phase: i64,
+    /// ST-077 fig.4.3 / §4.2 p.89: current output address, in 4K samples
+    /// relative to SA. Keep the sampled address, not the next phase accumulator.
+    call_address: u16,
     reverse: bool,
     envelope: envelope::Envelope,
 }
@@ -164,7 +167,7 @@ impl Scsp {
             0x406 => Ok(0), // MIDI output is write-only.
             0x408 => {
                 let slot = ((self.common[4] >> 11) & 31) as usize;
-                Ok((self.voices[slot].phase.max(0) as u64 >> 28) as u16 & 15)
+                Ok(self.voices[slot].call_address << 7)
             }
             0x412..=0x416 => Ok(if offset == 0x416 {
                 self.common[11] & 0x7000
@@ -215,6 +218,7 @@ impl Scsp {
                                 self.voices[i] = Voice {
                                     active: true,
                                     phase: 0,
+                                    call_address: 0,
                                     reverse: false,
                                     envelope: envelope::Envelope::default(),
                                 };
@@ -473,6 +477,10 @@ impl Scsp {
             let shift = self.stack.displacement(i, regs[7]);
             let position = voice.phase + shift;
             let index = position >> 16;
+            // CA counts samples for both PCM widths. The first interpolation
+            // address is the current output position, including FM displacement;
+            // neither SA nor the pitch step for the next sample is part of CA.
+            voice.call_address = (index as u16 >> 12) & 15;
             // A reverse phase names the upper edge of its sample interval.
             // Measure interpolation distance from that edge toward the previous
             // sample, wrapping only reverse loops and holding ping-pong ends.
@@ -773,7 +781,7 @@ impl Sound {
             self.cpu_origin = self.time;
             self.next_cpu = self.time + (40 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
         } else if !enabled {
-            self.cpu = M68k::default();
+            self.cpu.assert_reset();
             self.transactions = transactions::Transactions::default();
             self.next_cpu = u64::MAX;
         }

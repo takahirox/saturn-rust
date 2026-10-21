@@ -15,6 +15,8 @@ import { abusTiming } from "./abus.mjs";
 import { hardwareBoundaries } from "./hardware-boundaries.mjs";
 import { refreshArbitration } from "./refresh.mjs";
 import { hlePlayer } from "./hle-player.mjs";
+import { scspMonitor } from "./scsp-monitor.mjs";
+import { m68kReset } from "./m68k-reset.mjs";
 
 // Fail before upload if web/ includes anything beyond the public runtime assets.
 const assets = ["audio.js", "audio-worklet.js", "app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt", "prism-courier.iso", "prism-courier-LICENSE.txt", "hardware-lab.iso", "hardware-lab-audio.bin", "hardware-lab.cue", "hardware-lab-LICENSE.txt"];
@@ -2108,6 +2110,8 @@ try {
   assert(dmaOperandAt>=0 && changedSoundIo.indexOf(dmaOperand,dmaOperandAt+1)===-1);
   changedSoundIo.writeUInt16BE(0x5AA5,dmaOperandAt+2);
   assert.equal((await soundIoResults(changedSoundIo)).words[4],0x5AA51234);
+  await scspMonitor(page);
+  await m68kReset(page);
   // Source-authored MC68000 family/EA/exception vectors, executed from sound
   // RAM after SH-2 upload. The host reads results; it never writes CPU state.
   const familyRom=Buffer.alloc(524288);

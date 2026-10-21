@@ -545,6 +545,7 @@ Implementation: [shared sound bus, PCM and clock domain](../src/sound.rs),
 | --- | --- | --- | --- | --- |
 | Sound RAM / SCSP mapping, [SCSP] §§1.2/4.1 | 512 KiB RAM shared by SH-2 and independent 68k; big-endian byte/word/long cycles; SCSP byte lanes; SNDON/OFF reset vectors and RAM retention; RESET output resets SCSP controls | SNDV, SNDR / SNDR | MEMG adds MEM4MB geometry for CPU/PCM/DMA/DSP and absent chip selection; exact reset pulse and bus timing remain | Pending |
 | 32 slots, PCM8/16, [SCSP] §4.2 table 4.14 | Guest key-on/off, signed PCM, source bit controls, all 32 slots, no/forward/reverse/alternative loops, Q16 OCT/FNS pitch, signed first-order PCM8/16 interpolation for all loop directions, sound stack | SNDV, SNDR (including guest half-pitch vectors) / SNDR (half-pitch vectors) | Exact hardware fractional boundary rounding and complete envelope-controlled playback | Pending |
+| Slot monitor, [SCSP] fig.4.3 / §4.2 p.89 | MSLC selects all 32 voices; CA[10:7] reports the current output address in 4K samples; byte lanes and loop normalization | SCMON (below) native / SCMON Wasm + AudioWorklet and mutations | Inactive/noise-source values and within-sample read phases remain uncorroborated; complete sound timing is required | Pending |
 | Envelope, [SCSP] §4.2 pp.40–44 | Attack/decay1/decay2/release, zero-rate holds, EGHOLD, decay level, key scaling, loop-start transitions and release retrigger; EG multiplies waveform before TL/ALFO, modulation stack and DSP send | SNDV, ENV / ENV + operand mutations + WebAudio | Numeric slope/key-scaling/attenuation policy is functional, not corroborated chip timing; complete synthesis/pipeline conformance remains | Pending |
 | FM/modulation/LFO, [SCSP] §4.2 figs.4.18/4.31, tables4.16–4.24 | Executing recent/past sound-stack selection with five-slot pipeline, signed averaging/MDL, guard-waveform reads; per-slot AM/PM LFO waveforms, frequency/depth/reset; internal noise/zero source | SNDV, SYNTH / SYNTH operand mutations and WebAudio | Exact chip noise sequence is unspecified; physical sub-sample rounding, full FM overflow/loop boundaries and envelope integration remain | Pending |
 | Levels/pan/external inputs, [SCSP] §4.2 tables 4.27/28 | Binary total-level attenuation, direct send and fixed-point stereo pan, clipping, master output control; independently expected full-volume stereo buffers | SNDV, SNDR / SNDR | Intermediate master gain conformance and complete routing boundary corpus | Pending |
@@ -2183,3 +2184,37 @@ are not bus/beam evidence. Per-word fetch phases and retention, coefficient/cell
 port timing, half-line transitions and the other pending hardware contracts
 remain required; these results do not establish complete VDP2 or Issue #17
 conformance.
+
+## SCSP slot monitor and MC68EC000 reset retention (SCMON / SRESET)
+
+Related to #17. [SCSP] §4.1 fig.4.3 and §4.2 p.89 define the
+write-only MSLC selector in bits15:11 and read-only CA in bits10:7.
+One CA unit represents 4096 waveform **samples**, for either PCM width.
+[MC68000UM][68UM] §§5.5/6.3.1 and fig.5-30 define the separate external
+reset sequence; RESET the instruction instead pulses external devices.
+
+| Contract | Implementation | Independent native evidence | Guest / browser evidence |
+| --- | --- | --- | --- |
+| Correct CA field and slot selection | `Scsp::read16(0x408)`, `Voice::call_address` in [sound.rs](../src/sound.rs) | `slot_monitor_uses_documented_ca_bits_all_selectors_and_independent_byte_lanes` in [sound/tests.rs](../src/sound/tests.rs) checks all 32 selectors and sixteen field values for PCM8/16, both byte lanes, zero write-only/reserved read bits and a low-byte write preserving MSLC | [Original SCMON builder](../tests/fixtures/build_scsp_monitor.py), [native integration](../tests/scsp_monitor.rs) and [production Wasm](../scripts/scsp-monitor.mjs): 68k programs all 32 actual PCM slots, polls 600 sample-IRQ flags, then records word/high-byte/low-byte/post-byte-write monitor reads |
+| Current output pointer rather than next phase | `Scsp::sample` retains the first interpolation address after loop normalization and FM displacement, relative to SA, before incrementing phase | `slot_monitor_retains_the_current_output_address_across_pitch_and_loop_boundaries` checks the 4095→4096 boundary, no/forward/reverse/alternate loops, repeated reads, retrigger/reset and both sample widths; `slot_monitor_follows_the_fm_waveform_address_without_moving_the_phase_generator` checks a modulated boundary | SCMON uses independently authored one-sample loops in all fifteen nonzero CA blocks. A guest LSA/LEA mutation changes only slot31's monitor records and right-channel samples; a source-waveform mutation changes the left channel while preserving all monitor records |
+| No canned monitor/audio results | Ordinary 68k instructions, sound RAM/MMIO and live PCM synthesis | Omitting the guest KYONEX write leaves all 64 records and generated audio zero; baseline and mutations repeat cold resets | Production AudioWorklet consumes newly generated guest PCM for the baseline and each mutation, checks the corresponding peak and observes eventual underflow. The unkeyed negative case renders zero samples with peak0; it is not claimed audible |
+| External reset preserves unaffected architectural registers | `M68k::assert_reset/reset` in [m68k.rs](../src/m68k.rs) clears internal work/prefetch/IRQ, sets S/I and clears T, retains D0–D7/A0–A6/USP, reads SSP-high/low then PC-high/low, and reloads A7/SSP/PC | `external_reset_preserves_general_registers_and_usp_but_reloads_vectors_and_control_state` in [bus_tests.rs](../src/m68k/bus_tests.rs) checks user/supervisor origins, all CCR values, exact four-word trace, no exception-frame write, stopped/halted recovery and stale prefetch/IRQ removal | [Original SRESET builder](../tests/fixtures/build_m68k_reset.py), [native integration](../tests/m68k_reset.rs) and [production Wasm](../scripts/m68k-reset.mjs): one 68k entry initializes registers and stops; SH-2 executes actual SNDOFF, changes reset vectors and executes SNDON; the second entry records the retained registers and new stack before changing them |
+| Sound reset domains and operand dependence | `Sound::set_enabled(false)` preserves the register file while canceling its transaction journal; SNDON reloads vectors; fresh machine/LSI initialization retains its deterministic zero-initialized policy | Existing word-cancellation/RAM/SCSP retention vectors remain enabled; the off/on vector now expects the preceding computed D0 rather than an invented reset zero | SRESET's changed pre-reset D3 immediate changes precisely its post-reset record. Both original and changed guests repeat cold resets, without host-written running CPU registers or result RAM |
+
+The source and generated media are original works under the adjacent
+[MIT fixture license](../tests/fixtures/LICENSE), using only the project's original
+SH-2 assembler, authored 68k encodings and Python's standard library. CI requires
+both new builders with `--check`. Expanded 512 KiB ROM SHA-256 values:
+
+- SCMON: `25fdfdcd3110fda8dba5a1fa35ca9ccc28e8e2c40961501ff620e07f359e50ad`.
+- SRESET: `e2ed71e78c7df51583e963e644d2e6d54058911e8107b84d15479cb941c39432`.
+
+These fix concrete sound-register and CPU reset defects; they do not establish
+complete audio/CPU or umbrella acceptance. The monitor currently retains its last
+output address after a voice becomes inactive; inactive/noise-source values and
+within-sample register sampling are not independently corroborated physical-chip
+claims. Cold-power register contents remain a deterministic policy. Remaining
+68k reset bus-cycle placement/arbitration, prefetch/instruction sequencing,
+SCSP memory ownership/DMA/EG/effects timing, and every other outstanding Issue #17
+requirement remain mandatory in the same Draft PR. No acceptance checkbox is
+checked and no tracker is closed, replaced or reopened.

@@ -113,6 +113,8 @@ python3 tests/fixtures/build_memory_contracts.py --check
 python3 tests/fixtures/build_mode2.py --check
 python3 tests/fixtures/build_raster_history.py --check
 python3 tests/fixtures/build_sound_io.py --check
+python3 tests/fixtures/build_scsp_monitor.py --check
+python3 tests/fixtures/build_m68k_reset.py --check
 python3 tests/fixtures/build_cd_drive.py --check
 python3 tests/fixtures/build_cd_directory.py --check
 python3 tests/fixtures/build_cd_filesystem.py --check

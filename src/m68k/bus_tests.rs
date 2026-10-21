@@ -442,3 +442,50 @@ fn extended_memory_arithmetic_aliases_every_address_register_including_a7_byte_s
         }
     }
 }
+
+#[test]
+fn external_reset_preserves_general_registers_and_usp_but_reloads_vectors_and_control_state() {
+    // MC68000UM §§5.5/6.3.1, fig.5-30. Reset has no exception frame;
+    // the four word reads must be SSP-high/low, PC-high/low, in that order.
+    for supervisor in [false, true] {
+        for ccr in 0..32 {
+            let (mut c, mut m) = fixture(0x4E71);
+            c.step(&mut m); // create prefetch which must not survive reset
+            c.state.d = std::array::from_fn(|i| 0x89AB_CDE0 + i as u32);
+            c.state.a = std::array::from_fn(|i| 0x1357_9B00 + i as u32);
+            c.state.sr = T | if supervisor { S } else { 0 } | ccr;
+            c.state.usp = 0xABCD0124;
+            c.state.ssp = 0xDEAD8764;
+            c.state.stopped = true;
+            c.state.halted = true;
+            c.set_interrupt(7);
+            let old = c.state.clone();
+            m.ram.write32(0, 0x00008102).unwrap(); // word-aligned SSP
+            m.ram.write32(4, 0x00000200).unwrap();
+            m.cycles.borrow_mut().clear();
+            c.reset(&m).unwrap();
+            assert_eq!(
+                *m.cycles.borrow(),
+                [
+                    Cycle::Read(0, 2),
+                    Cycle::Read(2, 2),
+                    Cycle::Read(4, 2),
+                    Cycle::Read(6, 2)
+                ]
+            );
+            assert_eq!(c.state.d, old.d);
+            assert_eq!(&c.state.a[..7], &old.a[..7]);
+            assert_eq!(c.state.a[7], 0x8102);
+            assert_eq!(c.state.ssp, 0x8102);
+            assert_eq!(c.state.usp, if supervisor { old.usp } else { old.a[7] });
+            assert_eq!(c.state.pc, 0x200);
+            assert_eq!(c.state.sr, 0x2700 | ccr);
+            assert!(!c.state.stopped && !c.state.halted);
+            assert!(c.prefetch.is_empty());
+            assert!(!c.level7_edge);
+            assert_eq!(c.irq, 0);
+            assert_eq!(c.state.instructions, 0);
+            assert_eq!(c.state.exceptions, 0);
+        }
+    }
+}
