@@ -64,11 +64,15 @@ impl Cache {
             .position(|(mask, value)| lru & mask == value)
             .unwrap_or(3)
     }
+    fn first_cache_way(&self) -> usize {
+        // H §8.5.4: ways 0/1 are RAM in TW mode, never tag matches.
+        if self.control & 8 != 0 { 2 } else { 0 }
+    }
     pub fn read<const N: usize>(
         &mut self,
         address: u32,
         instruction: bool,
-        mut fetch: impl FnMut(u32) -> Result<[u8; 16], BusError>,
+        mut fetch: impl FnMut(u32) -> Result<[u8; 4], BusError>,
     ) -> Result<Option<[u8; N]>, BusError> {
         if address >= 0x2000_0000 || self.control & 1 == 0 {
             return Ok(None);
@@ -76,7 +80,9 @@ impl Cache {
         let (set, tag, offset) = Self::parts(address);
         let way = if let Some(way) = self.lines[set]
             .iter()
-            .position(|line| line.valid && line.tag == tag)
+            .enumerate()
+            .skip(self.first_cache_way())
+            .find_map(|(way, line)| (line.valid && line.tag == tag).then_some(way))
         {
             way
         } else {
@@ -84,7 +90,15 @@ impl Cache {
             if self.control & disable != 0 {
                 return Ok(None);
             }
-            let data = fetch(address & !15)?;
+            // H §8.4.1/fig.8.4: four individual longword bus cycles, starting
+            // after the requested longword and wrapping within the line. The
+            // requested longword arrives last. Commit the line only after
+            // all reads succeed; external MMIO effects keep their bus order.
+            let mut data = [0; 16];
+            for beat in 1..=4 {
+                let at = ((address & 12) + beat * 4) & 15;
+                data[at as usize..at as usize + 4].copy_from_slice(&fetch((address & !15) | at)?);
+            }
             let way = self.victim(set);
             self.lines[set][way] = Line {
                 tag,
@@ -103,7 +117,7 @@ impl Cache {
             return;
         }
         let (set, tag, offset) = Self::parts(address);
-        for way in 0..4 {
+        for way in self.first_cache_way()..4 {
             if self.lines[set][way].valid && self.lines[set][way].tag == tag {
                 self.lines[set][way].data[offset..offset + N].copy_from_slice(&bytes);
                 self.touch(set, way);
@@ -166,5 +180,80 @@ impl Cache {
             _ => return Ok(false),
         }
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn refill_bus_beats_wrap_and_requested_longword_is_last_for_every_offset() {
+        // H §8.4.1 fig.8.4; expected beat orders are independently authored.
+        for (offset, order) in [
+            (0, [4, 8, 12, 0]),
+            (4, [8, 12, 0, 4]),
+            (8, [12, 0, 4, 8]),
+            (12, [0, 4, 8, 12]),
+        ] {
+            let mut c = Cache::default();
+            c.set_control(0x11);
+            let mut trace = Vec::new();
+            assert_eq!(
+                c.read::<4>(0x06001000 + offset, false, |a| {
+                    trace.push(a - 0x06001000);
+                    Ok(a.to_be_bytes())
+                })
+                .unwrap(),
+                Some((0x06001000 + offset).to_be_bytes())
+            );
+            assert_eq!(trace, order);
+            for i in 0..4 {
+                assert_eq!(
+                    c.read::<4>(0x06001000 + i * 4, true, |_| panic!(
+                        "cache hit must not fetch"
+                    ))
+                    .unwrap(),
+                    Some((0x06001000 + i * 4).to_be_bytes())
+                );
+            }
+        }
+    }
+    #[test]
+    fn failed_refill_preserves_the_victim_and_stops_external_reads_at_the_error() {
+        let mut c = Cache::default();
+        c.set_control(0x11);
+        for i in 0..4 {
+            c.read::<4>(0x06001000 + i * 1024, false, |_| Ok([i as u8 + 1; 4]))
+                .unwrap();
+        }
+        // All ways hold valid lines; replacement would evict way3. A later
+        // failure must preserve that victim and must not publish any of
+        // the partial data or its tag/valid/LRU state.
+        let before = c.lru;
+        let mut trace = Vec::new();
+        let fail = BusError::Unmapped {
+            address: 0x06002008,
+            width: 4,
+        };
+        assert_eq!(
+            c.read::<4>(0x06002000, false, |a| {
+                trace.push(a);
+                if a == 0x06002008 {
+                    Err(fail)
+                } else {
+                    Ok([5; 4])
+                }
+            }),
+            Err(fail)
+        );
+        assert_eq!(trace, [0x06002004, 0x06002008]);
+        assert_eq!(c.lru, before);
+        assert!(c.lines[0][3].valid);
+        assert_eq!(c.lines[0][3].tag, 0x06001000);
+        assert_eq!(
+            c.read::<4>(0x06001000, false, |_| panic!("lost old line"))
+                .unwrap(),
+            Some([1; 4])
+        );
     }
 }

@@ -1316,3 +1316,71 @@ this revision. No criterion was waived, no new tracker was created, no historica
 Issue was reopened, and no human/firmware/live-site approval gate was introduced.
 Keep the same PR Draft with Closes #17 as its intended final outcome. Do not merge
 or mark ready based on these passing subset checks.
+
+## 2026-10-21 VDP2 gradation and SH7604 cache continuation
+
+Related to #17. Upstream main remains
+`dbd981b030a46daa6923072ce240680dd2e58ebf`, rechecked with `git ls-remote`.
+PR #18 retains the complete Issue #17 target and intended Closes #17 outcome.
+The inherited DMA/DACK, MC68000 timing/family, SCSP envelope and ISO startup
+changes are preserved, including their original guest/native/browser evidence.
+
+VDP2 now executes BOKEN/BOKN gradation controls instead of rejecting them. It
+collects the selected screen's horizontal colors, calculates the specified
+1:1:2 filter and replaces the second image only when the selected screen is top
+or second. Top-screen enable/ratio/offset/window behavior remains active;
+line-color insertion and extended calculation are excluded while BOKEN is set.
+Independent native vectors exercise all seven screen selections, priority and
+hidden-source history. The new original SH-2 guest sets bitmap/palette/MMIO data,
+repeats resets, and changes CCCTL operands; actual Wasm and production Canvas
+pixels match authored RGBA values. The first two pre-display history samples,
+transparent boundaries, expanded color precision and raster snapshots remain
+explicit functional policies, not claims of independent physical conformance.
+
+Cache ways0/1 now remain RAM in two-way mode even when their address-array tags
+are valid. Reads and write-through updates exclude those ways. Refills now
+perform the documented four individual longword transactions in wrapped order,
+with the requested longword last. Independent vectors check every longword
+offset and a failed refill with an occupied victim. A second test observes the
+actual refill sequence through the other CPU's external sequential UBC and IRQ.
+The new original P1 SH-2 guest proves RAM isolation, write-through, changed source
+operands and repeated reset in native and browser Wasm execution. Ordered bus
+transactions do not establish cycle-based arbitration or full cache conformance.
+
+The [conformance entries](hardware-conformance.md#gradation-and-cache-refillram-implementation)
+link primary specifications, implementation, native/browser checks, original
+sources, MIT license and both reproducible ROM hashes. CI includes both builders.
+Existing Star Collector, Prism Courier and Hardware Lab media remain byte-identical.
+
+Checks actually completed for this combined revision:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked` and native
+  all-target Clippy with `-D warnings`: pass using explicitly selected Rustup
+  stable Rust/Cargo **1.99.0**. **348 native tests pass, zero failed/ignored**
+  (183 unit and 165 integration). Homebrew 1.94.0 checks also passed during
+  development; the final recorded full suite uses the managed toolchain.
+- `sh scripts/build-web.sh` and wasm32 Clippy with `-D warnings`: pass using
+  Rustup stable **1.99.0** and matching **wasm-bindgen-cli 0.2.129**.
+- All **31** CI reproducibility checks pass, including the two new original MIT
+  fixtures. The three existing demonstration media remain unchanged.
+- `npm ci --ignore-scripts`, JavaScript syntax and the complete extended
+  `npm run test:browser`: pass with Node **24.12.0**, Chromium
+  **145.0.7632.6** and `/saturn-rust/` asset paths. No required browser test is
+  skipped. Both new guests and operand mutations execute; gradation pixels reach
+  the real Canvas. Existing gameplay, hardware, WebAudio, input/focus, local-file
+  privacy and distribution assertions pass.
+- Changed documentation local targets and Git whitespace checks pass.
+
+Development-time vector/window assumptions, a temporary-borrow test compile error
+and a copy-value lint were corrected before the final passing checks. The final
+suite includes every new native case. No external CI/deployment result is claimed.
+
+**Issue #17 and the full-resolution Run objective remain incomplete.** Required
+CPU/peripheral, bus/scheduler/reset/backup services, SCU, video timing/modes,
+SCSP calibration/DSP/timing, CD/SMPC and BIOS/HLE service/integration criteria
+remain in the conformance inventory. DIVU overflow intermediates remain pending;
+no unspecified arithmetic algorithm is presented as independently confirmed.
+PR #18 stays Draft with Closes #17 as its intended final outcome. No criterion
+is waived, no tracker is replaced or administratively closed, no historical Issue
+is reopened, and no human/firmware/live-site/external-workflow gate is introduced.
+This node updates the existing PR only; it does not merge or mark it ready.

@@ -841,11 +841,9 @@ impl CpuBus<'_> {
             if let Some(bytes) = cache.array_read(address)? {
                 return Ok(bytes);
             }
-            if let Some(bytes) = cache.read(address, instruction, |line| {
-                let bytes = self.bus.read::<16>(line)?;
-                for (i, word) in bytes.as_chunks::<4>().0.iter().enumerate() {
-                    self.observe_external(line + i as u32 * 4, 4, u32::from_be_bytes(*word), false);
-                }
+            if let Some(bytes) = cache.read(address, instruction, |beat| {
+                let bytes = self.bus.read::<4>(beat)?;
+                self.observe_external(beat, 4, u32::from_be_bytes(bytes), false);
                 Ok(bytes)
             })? {
                 return Ok(bytes);
@@ -994,6 +992,32 @@ impl Memory for CpuBus<'_> {
 #[cfg(test)]
 mod scu_timing_tests {
     use super::*;
+    #[test]
+    fn cache_refill_wrap_order_is_observable_by_the_other_cpus_sequential_ubc() {
+        // H §8.4.1 fig.8.4 + §6.3: a read of offset8 refills C,0,4,8.
+        // An external A=C then B=0 sequential break must fire. Ascending
+        // line reads would observe B before A and fail to request the break.
+        let mut bus = Bus::default();
+        for i in 0..4 {
+            bus.write32(HIGH_WRAM + i * 4, i + 10).unwrap();
+        }
+        let observer = &mut bus.onchip[1];
+        observer.write32(0xFFFF_FF40, HIGH_WRAM + 12).unwrap();
+        observer.write32(0xFFFF_FF60, HIGH_WRAM).unwrap();
+        observer.write16(0xFFFF_FF48, 0xA4).unwrap();
+        observer.write16(0xFFFF_FF68, 0xA4).unwrap();
+        observer.write16(0xFFFF_FF78, 0x3010).unwrap();
+        bus.for_cpu(Processor::Master).write8(CCR, 0x11).unwrap();
+        assert_eq!(bus.for_cpu(Processor::Master).read32(HIGH_WRAM + 8), Ok(12));
+        assert_eq!(bus.onchip[1].interrupt(), Some((15, 12)));
+        assert_eq!(bus.onchip[1].read16(0xFFFF_FF78), Ok(0x7050));
+        bus.onchip[1].acknowledge_break();
+        bus.onchip[1].write16(0xFFFF_FF78, 0x3010).unwrap();
+        bus.for_cpu(Processor::Master)
+            .read32(HIGH_WRAM + 8)
+            .unwrap();
+        assert_eq!(bus.onchip[1].interrupt(), None); // hit: no external beats
+    }
     #[test]
     fn user_breaks_distinguish_cached_cpu_accesses_from_external_bus_transactions() {
         let mut bus = Bus::default();

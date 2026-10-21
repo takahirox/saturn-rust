@@ -111,3 +111,44 @@ fn instruction_and_operand_replacement_controls_and_tas_bypass_are_distinct() {
     view.write32(0x26001000, 0x55663344).unwrap();
     assert_eq!(view.read16(0x06001000).unwrap(), 0x1122); // Fetch did allocate.
 }
+
+#[test]
+fn original_guest_excludes_ram_ways_from_tag_hits_and_write_through_updates() {
+    use saturn_rust::{Boot, Machine, cpu::CpuStatus};
+    let mut rom = vec![0; 524288];
+    for line in include_str!("fixtures/cache.hex").lines() {
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        let mut words = line.split_whitespace();
+        let at = usize::from_str_radix(words.next().unwrap(), 16).unwrap();
+        for (i, w) in words.enumerate() {
+            rom[at + i * 2..at + i * 2 + 2]
+                .copy_from_slice(&u16::from_str_radix(w, 16).unwrap().to_be_bytes());
+        }
+    }
+    for (old, value) in [(0x12345678u32, 0x12345678u32), (0x12345678, 0x76543210)] {
+        let mut image = rom.clone();
+        let at = image
+            .windows(4)
+            .position(|w| w == old.to_be_bytes())
+            .unwrap();
+        assert!(image[at + 4..].windows(4).all(|w| w != old.to_be_bytes()));
+        image[at..at + 4].copy_from_slice(&value.to_be_bytes());
+        let mut m = Machine::new();
+        for _ in 0..2 {
+            m.reset(Boot::ExternalBios(&image)).unwrap();
+            m.run_steps(1000).unwrap();
+            assert_eq!(m.cpu_state().status, CpuStatus::Sleeping);
+            assert_eq!(m.cpu_state().exceptions, 0);
+            for (i, expected) in [
+                value, 0xABCDEF01, 0xBAD0BAD0, 0xC0DEC0DE, 0xABCDEF01, 0x600D,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                assert_eq!(m.bus().read32(0x0600A500 + i as u32 * 4), Ok(expected));
+            }
+        }
+    }
+}

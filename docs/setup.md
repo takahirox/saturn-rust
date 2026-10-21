@@ -67,12 +67,14 @@ python3 tests/fixtures/build_effects.py --check
 python3 tests/fixtures/build_rbg1.py --check
 python3 tests/fixtures/build_line_color.py --check
 python3 tests/fixtures/build_special_video.py --check
+python3 tests/fixtures/build_gradation.py --check
 python3 tests/fixtures/build_controller.py --check
 python3 tests/fixtures/build_scu.py --check
 python3 tests/fixtures/build_sound.py --check
 python3 tests/fixtures/build_synthesis.py --check
 python3 tests/fixtures/build_envelope.py --check
 python3 tests/fixtures/build_dack.py --check
+python3 tests/fixtures/build_cache.py --check
 python3 tests/fixtures/build_m68k_families.py --check
 python3 tests/fixtures/build_sound_io.py --check
 python3 tests/fixtures/build_cd_drive.py --check
@@ -249,8 +251,8 @@ Issue #17 requires no human post-merge verification. Mandatory checks run before
 merge using native/Wasm tests and the headless browser against the same static
 assets under `/saturn-rust/`. An optional automated deployed-site smoke check may
 report publication defects after merge; it is not an approval/closure gate.
-Local results do not prove a production deployment succeeded. This implementation
-run does not push, publish or verify a new live revision.
+Local results do not prove a production deployment succeeded. Updating a draft
+implementation PR does not publish or verify a new live revision.
 
 The hosted build supports Star Collector and the documented synthetic diagnostic
 subsets, including SCU DSP/DMA/interrupts, MC68EC000/direct SCSP PCM, SMPC
@@ -328,3 +330,12 @@ parameter-B pixels and actual Canvas output. Both fixtures are original MIT
 content, reproducible using the builders listed above. Timed envelopes, full
 video timing and the other mandatory umbrella requirements remain pending in the
 [conformance inventory](hardware-conformance.md).
+
+The original gradation and two-way-cache fixtures run in native and browser Wasm
+checks. The gradation guest writes both bitmaps, palettes and CCCTL through MMIO;
+tests compare top/second-screen filtering, changed controls, repeated reset and
+actual Canvas pixels. The cache guest executes from P1, verifies RAM ways0/1
+cannot satisfy cache tags or receive cache-hit writes, and mutates guest source
+operands. The builders listed above reproduce both original MIT-licensed ROMs;
+[the conformance entries](hardware-conformance.md#gradation-and-cache-refillram-implementation)
+record primary specifications, hashes, evidence and remaining deviations.

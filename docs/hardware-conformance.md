@@ -255,7 +255,7 @@ not turn those missing hardware paths into supported behavior.
 | CPU address errors, H §§4.3/4.6/4.7/4.8.3, Tables 4.6/4.10/4.11 | Vector 9, operand/fetch checks, next-PC/SR, auto-update and deferral; misaligned stacking completes original exception then accepts address error without recursion | AE, AEROM, PERIPH | AEROM, PERIPH | Invalid data and unaligned stacking bytes are deterministic policies rather than physical bus signals; misaligned VBR unsupported | Pending |
 | Maskable IRQ/NMI, H §4.4 | Explicit caller-supplied level/vector, I mask, NMI vector 11, stack/wake | sleep, special | — | Missing device priority selection, assertion/acknowledgment, NMI signal latch | Pending |
 | Deferral, H §4.6 | IRQ/NMI defer through delayed successors and control/system successors; address errors defer only through delayed successors | special, AE | ROM, AEROM | No pipeline-cycle timing or device IRQ selection; unfetchable successor policy below | Pending |
-| Cache/address regions, H §8, tables 8.2–8.4, figs.8.10/8.11 | CPU-local 4 KiB/four-way cache, write-through, no snooping; ID/OD, pseudo-LRU, two-way RAM, P1 bypass, P2 purge, P3 address array, P6 data array; TAS external read | CACHE, PERIPH; `Cache` and `CpuBus` | PERIPH | Pipeline/fill-cycle/bus arbitration timing absent; RAM mirrors remain missing | Pending |
+| Cache/address regions, H §8, tables 8.2–8.4, figs.8.10/8.11 | CPU-local 4 KiB/four-way cache, write-through, no snooping; ID/OD, pseudo-LRU, two-way RAM, P1 bypass, P2 purge, P3 address array, P6 data array; TAS external read; ordered four-longword refills and two-way RAM tag isolation | CACHE, PERIPH, CACHEG; `Cache` and `CpuBus` | PERIPH, CACHEG | Pipeline/fill-cycle/bus arbitration timing absent; RAM mirrors remain missing | Pending |
 | On-chip INTC, H §5.3, table 5.4 | IPRA/IPRB, VCRA–D/VCRWDT, DIVU/DMA vectors, source priorities/tie order and guest acknowledgement | FRT, DUAL, PERIPH | DUAL, PERIPH | UBC source 12 at level 15 covered by UBCG; external ICR/IRL arbitration remains; refresh CMI arbitrates at WDT priority | Pending |
 | FRT, H §§11.1–11.5, tables 11.2/11.3 | FRC, OCRA/B, capture, divisors, overflow/compare/clear, TIER/FTCSR, shared TEMP, output level state and IRQ; Saturn capture wires (ST-202 §1.2) | FRT, DUAL | FRT (compare), DUAL (capture) | Internal/external pin synchronization, WAIT, clock-switch edges and contention timing absent; no external clock source or output-pin routing | Pending |
 | Watchdog, H §§12.2–12.3, table 12.2 | Keyed byte-register/word-write protocol, eight divisors, interval IRQ, read-before-clear, watchdog reset selection/cause and 512-clock CPU hold | PERIPH; `Watchdog` | PERIPH | External WDTOVF pin routing and sub-turn event ordering missing | Pending |
@@ -470,7 +470,7 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 | Windows/line windows, [VDP2] §8.1 figs.8.2–8.4 | W0/W1 rectangle or VRAM line tables and SD-bit sprite windows, inside/outside, inclusive edges, empty/inverted ranges, AND/OR on normal/rotation/sprite/color calculation; rotation-parameter windows | VIDEO, EFFECTS, SPRX | EFFECTS, SPRX (Wasm/Canvas and changed guest controls) | Full raster-window update timing and complete independent guest corpus remain | Pending |
 | Mosaic, [VDP2] §5 | NBG0–3 horizontal/vertical grouping | VIDEO | — | All independent vertical/layer/guest vectors | Pending |
 | Priority/composition, [VDP2] §§9–11 | Four normal backgrounds, RBG0/RBG1 and VDP1; all sixteen palette sprite types (including shared bits) and mixed RGB; priority-0 disable/ties; SFPRMD character/dot priority from names, supplement or bitmap flags and SFCODE/SFSEL | VIDEO, PRISM, SPRX, SPECIAL | PRISM, SPRX, SPECIAL (guest flag/code mutations and Canvas) | Full display/layer/raster restrictions and complete special-priority boundary corpus | Pending |
-| Color calculation/offset/shadow, [VDP2] §§11–14 | Top/second-image ratio selection, additive and three/four-image extended blending; SFCCMD character/dot/palette-MSB conditions; signed offsets, normal/MSB/transparent shadows after blend/offset | VIDEO, SPRX, LINE, SPECIAL | SPRX, PRISM, LINE, SPECIAL | Gradation, full guest format/extended-composition corpus and raster timing remain | Pending |
+| Color calculation/offset/shadow, [VDP2] §§11–14 | Top/second-image ratio selection, gradation horizontal filtering and priority, additive and three/four-image extended blending; SFCCMD character/dot/palette-MSB conditions; signed offsets, normal/MSB/transparent shadows after blend/offset | VIDEO, SPRX, LINE, SPECIAL, GRAD | SPRX, PRISM, LINE, SPECIAL, GRAD | Gradation border/timing conformance, full guest format/extended-composition corpus and raster timing remain | Pending |
 | Back/line color, [VDP2] §§7.1/11.3 | Back-screen single/per-line VRAM table, signed offset; LNCLEN top-only insertion, single/per-line LCTA palette data and coefficient-derived low seven address bits; CCRLB line/back ratios | VIDEO, LINE | PRISM (back), LINE (two line colors, coefficient mutations, extended calculation, Canvas) | Interlace/display-mode line rules, raster-time fetches and complete guest format corpus remain | Pending |
 | Combined VDP1/VDP2 pipeline | Sprite/background overlap, priority, transparency, game result/restart, texture mutation changes actual pixels | VIDEO, PRISM | PRISM + Canvas assertions | Remaining modes/effects and timing above | Pending |
 
@@ -555,7 +555,7 @@ no-op CPU/device implementations cannot satisfy those assertions.
    trigger coverage, DSP conditional/pipeline/bank-conflict and program-DMA evidence.
    SCUROM now executes real DMA/DSP/timer/IRQ operations but is subset evidence.
 5. Remaining VDP1 edge/scanout/timing conformance and VDP2 tile timing, complete RBG1 edge coverage,
-   parameter reloads, gradation and remaining display modes, with
+   parameter reloads, gradation border/timing conformance and remaining display modes, with
    complete independent guest and browser coverage. VIDEO, EFFECTS and PRISM
    provide actual subset pixel/composition evidence.
 6. Complete remaining CD drive/command/timing/error behavior (see CD inventory),
@@ -1129,3 +1129,43 @@ that transfer as specified by ST-040 §4.3; original AIP instructions still exec
 [original runtime guest](../tests/cd_drive.rs) and browser Wasm execute these cases.
 General HLE system/backup/CD ABI, multi-area startup and other required media
 contracts remain required; this change does not substitute for those services.
+
+## Gradation and cache refill/RAM implementation
+
+Related to #17. All mandatory umbrella scope remains required; these additions
+alone do not complete any umbrella checkbox.
+
+**GRAD**: [independent pixel/guest tests](../tests/video_gradation.rs),
+[original SH-2 source](../tests/fixtures/gradation.s),
+[builder](../tests/fixtures/build_gradation.py),
+[generated ROM](../tests/fixtures/gradation.hex) and
+[browser Wasm/production Canvas checks](../scripts/browser-smoke.mjs).
+Behavior derives from [VDP2] §12.2/figure12.4 and
+[the 1997 manual's blur description](https://github.com/luckyseoul/saturn-docs/blob/main/files/ssddv25/segahtml/hard/vdp2/hon/p12_13.htm)
+and [CCCTL table](https://github.com/luckyseoul/saturn-docs/blob/main/files/ssddv25/segahtml/hard/vdp2/hon/p12_14.htm).
+
+| Required group | Implementation | Native evidence | Wasm/guest evidence | Remaining deviations |
+| --- | --- | --- | --- | --- |
+| CCCTL BOKEN/BOKN | `Vdp2::gradation_screen/validate/render` selects sprite, RBG0, NBG0/RBG1, NBG1, NBG2 or NBG3; prohibited selectors and non-mode0 CRAM fail explicitly | All seven screen selections use actual VRAM/framebuffer/palette samples; disabled selector bits and prohibited settings | GRAD executes guest writes to enable NBG0 gradation; disabling BOKEN changes pixels | Remaining display modes and bank/cycle timing are still required |
+| Horizontal 1:1:2 calculation and priority | Selected raw colors enter a two-dot pipeline even while occluded; filtered second image replaces second only when the selected screen is top or second | Golden interior RGB vectors, four normal layers, both rotation layers and sprite; third-image exclusion, concealed history, scanline reset and repeated inspection | GRAD has top/second priority regions, two scanlines, repeated boots and independently expected RGBA/Canvas values | Manuals do not define pre-display history: first two pixels use black pipeline seeds. Transparent boundaries are prohibited by the manual; absent samples use black. Frame snapshots and expanded eight-bit component arithmetic remain functional policies |
+| Calculation enable/ratio/offset/window, LNCLEN/EXCCEN exclusion | Top controls remain authoritative; selected top supplies the forced second ratio; line-color insertion and extended calculation are disabled with BOKEN | Top enable, post-blend offset, color window and hidden/visible cases | Guest enables LNCLEN while BOKEN is active; changed EXCCEN cannot change filtered pixels, while disabled BOKEN restores normal line-color composition | Complete raster-time and hardware border/precision evidence remain required |
+
+**CACHEG**: [original SH-2 source](../tests/fixtures/cache.s),
+[builder](../tests/fixtures/build_cache.py),
+[ROM](../tests/fixtures/cache.hex), [native execution](../tests/cache.rs)
+and the same guest in [browser Wasm](../scripts/browser-smoke.mjs).
+Primary behavior is [H] §8.4.1/figure8.4 and §8.5.4.
+
+| Required group | Implementation | Native evidence | Wasm/guest evidence | Remaining deviations |
+| --- | --- | --- | --- | --- |
+| Two-way cache/RAM isolation | `Cache::first_cache_way/read/written` excludes RAM ways0/1 from cache tag reads and write-through updates | CACHEG creates matching valid tags in both RAM ways, reads external data and verifies RAM survives a hit write; existing array/LRU/width/coherence tests remain | CACHEG executes from P1, computes six result words, repeats boots and changes source operands; browser checks exact changed results | Full physical bus ownership, timing and reset-domain corpus remain required |
+| Refill bus ordering | `Cache::read` and `CpuBus::read` perform four longword transactions starting after the requested longword, wrapping within the line and delivering the requested longword last | `refill_bus_beats_wrap_and_requested_longword_is_last_for_every_offset`; failure vectors verify bounded reads and no published partial line/tag/LRU state; `cache_refill_wrap_order_is_observable_by_the_other_cpus_sequential_ubc` verifies actual bus ordering via the other CPU's sequential break/IRQ | Existing native/Wasm cache guests execute through the new refill path | Transactions are ordered functional accesses, not cycle-delimited physical arbitration; full bus/MMIO failure and contention contracts remain required |
+
+Both fixtures use [the original MIT fixture license](../tests/fixtures/LICENSE),
+covering source and generated ROM. CI verifies both builders. No SDK object,
+firmware, copied emulator implementation or host-generated guest result is used.
+
+| Builder | Expanded 512 KiB ROM SHA-256 |
+| --- | --- |
+| `python3 tests/fixtures/build_gradation.py --check` | `358df4380f519123fe4096d53b4703ff8cca7d1add4b5eb2212cad975b967009` |
+| `python3 tests/fixtures/build_cache.py --check` | `22534b689efcce1ace6cb36b4798c9e20abaf24e8c0585d6b2462739bd2d4791` |

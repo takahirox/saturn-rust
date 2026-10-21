@@ -122,9 +122,14 @@ impl Vdp2 {
                 != 0
             || self.word(0xE) >> 12 & 3 == 3
             || (self.word(0xE) & 0x8000 != 0 && self.word(0xE) & 0x3000 != 0x1000)
-            || self.word(0xEC) & !0x77F != 0;
+            || self.word(0xEC) & !0xF77F != 0;
         if unsupported {
             return Err("Unsupported VDP2 display, banking, layer or effects configuration".into());
+        }
+        if self.word(0xEC) & 0x8000 != 0
+            && (self.word(0xE) & 0x3000 != 0 || self.gradation_screen().is_none())
+        {
+            return Err("Reserved VDP2 gradation screen or color RAM mode".into());
         }
         for layer in 0..4 {
             if self.word(0x20) & 0x20 != 0 || self.word(0x20) & (1 << layer) == 0 {
@@ -538,7 +543,12 @@ impl Vdp2 {
             return Ok(pixels);
         }
         self.validate()?;
+        let gradation = self.gradation_screen();
         for y in 0..HEIGHT {
+            // The manuals do not define the two pre-display pipeline samples.
+            // Use black at the left border, reset every scanline; never carry
+            // pixels from the previous line or the previous rendered frame.
+            let mut history = [[0u8; 3]; 2];
             let back = self.vword(
                 ((self.long(0xAC) & 0x7FFFF) as usize
                     + if self.word(0xAC) & 0x8000 != 0 { y } else { 0 })
@@ -554,6 +564,7 @@ impl Vdp2 {
                     ..Layer::default()
                 };
                 let mut images = [back; 4];
+                let mut gradation_rgb = [0; 3];
                 for mut layer in [
                     self.background(3, x, y, sprite_window),
                     self.background(2, x, y, sprite_window),
@@ -566,6 +577,9 @@ impl Vdp2 {
                 .into_iter()
                 .flatten()
                 {
+                    if Some(layer.id) == gradation {
+                        gradation_rgb = layer.rgb;
+                    }
                     for image in &mut images {
                         if layer.priority >= image.priority {
                             std::mem::swap(image, &mut layer);
@@ -573,13 +587,30 @@ impl Vdp2 {
                     }
                 }
                 let [top, mut second, mut third, mut fourth] = images;
+                // ST-058 §12.2/fig.12.4: the selected screen's horizontal
+                // samples are collected even when it is hidden by other
+                // screens. Only a top/second selected image replaces second;
+                // top, its enable, ratio and offset selection remain intact.
+                if gradation.is_some_and(|id| top.id == id || second.id == id) {
+                    second.rgb = std::array::from_fn(|ch| {
+                        ((u16::from(history[0][ch])
+                            + u16::from(history[1][ch])
+                            + 2 * u16::from(gradation_rgb[ch]))
+                            >> 2) as u8
+                    });
+                    if Some(top.id) == gradation {
+                        second.ratio = top.ratio;
+                    }
+                }
+                history = [history[1], gradation_rgb];
                 let mut rgb = top.rgb;
                 // ST-058 §§7.1/11.3: LNCL is inserted immediately below
                 // an enabled top screen. It never appears by itself or takes
                 // part in priority selection. Sprite enable uses bit 5, while
                 // the compositor reserves id 5 for the back screen.
                 let line_bit = if top.id == 6 { 5 } else { top.id };
-                let inserted = top.id != 5 && self.word(0xE8) & (1 << line_bit) != 0;
+                let inserted =
+                    gradation.is_none() && top.id != 5 && self.word(0xE8) & (1 << line_bit) != 0;
                 if inserted {
                     let address = ((self.long(0xA8) & 0x7FFFF) as usize
                         + if self.word(0xA8) & 0x8000 != 0 { y } else { 0 })
@@ -599,7 +630,7 @@ impl Vdp2 {
                     };
                 }
                 if top.calculate && self.window(self.word(0xD6) >> 8, x, y, sprite_window) {
-                    if self.word(0xEC) & 0x400 != 0 {
+                    if gradation.is_none() && self.word(0xEC) & 0x400 != 0 {
                         second.rgb = self.extended_color(second, third, fourth, inserted);
                     }
                     // §12.1: CCRTMD chooses the ratio of the second image;
@@ -636,6 +667,22 @@ impl Vdp2 {
             }
         }
         Ok(pixels)
+    }
+
+    /// ST-058 §12.2 CCCTL BOKEN/BOKN; RBG1 shares NBG0's screen ID.
+    fn gradation_screen(&self) -> Option<usize> {
+        if self.word(0xEC) & 0x8000 == 0 {
+            return None;
+        }
+        match self.word(0xEC) >> 12 & 7 {
+            0 => Some(6), // VDP1 sprite screen
+            1 => Some(4), // RBG0
+            2 => Some(0), // NBG0 / RBG1
+            4 => Some(1), // NBG1 / EXBG
+            5 => Some(2), // NBG2
+            6 => Some(3), // NBG3
+            _ => None,
+        }
     }
 
     /// ST-058 §12.1 fig.12.3/table12.2: lower-screen enables are the

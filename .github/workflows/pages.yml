@@ -44,6 +44,7 @@ jobs:
           python3 tests/fixtures/build_rbg1.py --check
           python3 tests/fixtures/build_line_color.py --check
           python3 tests/fixtures/build_special_video.py --check
+          python3 tests/fixtures/build_gradation.py --check
           python3 tests/fixtures/build_sprite_effects.py --check
           python3 tests/fixtures/build_cd_drive.py --check
           python3 tests/fixtures/build_cd_directory.py --check
@@ -54,6 +55,7 @@ jobs:
           python3 tests/fixtures/build_synthesis.py --check
           python3 tests/fixtures/build_envelope.py --check
           python3 tests/fixtures/build_dack.py --check
+          python3 tests/fixtures/build_cache.py --check
           python3 tests/fixtures/build_m68k_families.py --check
           python3 tests/fixtures/build_sound_io.py --check
           python3 tests/fixtures/build_smpc.py --check
