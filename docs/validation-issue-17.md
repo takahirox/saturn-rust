@@ -150,11 +150,11 @@ Validation performed for this revision:
 - JavaScript syntax, changed documentation relative-file links and Git whitespace
   checks pass. No remote CI or production publication result is claimed.
 
-Limitations remain executable and explicit: this renderer uses frame snapshots,
-not raster-time table writes/rotation reloads. RBG1, coefficient line-color/CRAM
-sources, sprite windows, other display modes and cycle arbitration remain required.
-Enabled unsupported rotation reload/line-color controls fail instead of behaving
-as inert implemented features. The analog response deadline is a deterministic
+At that checkpoint the renderer used frame snapshots, and RBG1, coefficient
+line-color/CRAM sources and sprite windows were pending; subsequent sections
+record their implementation and executable evidence. Raster-time table writes,
+rotation reloads, other display modes and cycle arbitration remain required.
+Enabled unsupported parameter reloads still fail explicitly. The analog response deadline is a deterministic
 functional 2-microsecond policy; complete pin timing, direct digital settling,
 mode-switch calibration and external latches are not established.
 
@@ -1068,3 +1068,72 @@ remaining CD/ECC/services and SMPC controls. The full source Issue remains the
 completion target; no criterion has been waived, replaced with documentation or
 converted to a human approval requirement. No push, merge or remote CI run was
 performed by this fix node.
+
+## VDP2 line, coefficient, special and extended color implementation
+
+Related to #17; the full Issue remains the target of Draft PR #18. Upstream main
+was rechecked as `dbd981b030a46daa6923072ce240680dd2e58ebf` on 2026-10-21.
+This work preserves every prior CPU/device implementation, guest fixture and
+demonstration disc. It adds hardware behavior rather than waiving acceptance.
+
+Implemented in [VDP2](../src/vdp2.rs), [rotation sampling](../src/vdp2/rotation.rs)
+and [sprite composition metadata](../src/vdp2/sprite.rs):
+
+- Single/per-line LNCL palette tables, top-screen insertion enables, independent
+  sprite enable, line/back ratios and top/second-image ratio selection.
+- Rotation coefficients in upper CRAM, both sizes, signed scaling, ignored
+  address offset, local wrap and coefficient line-color data with documented
+  A/B/window/mode2/RBG1 selection.
+- Character/dot special priority and special color calculation, bitmap/name/
+  supplementary flags, code A/B masks, palette-MSB conditions and RGB restrictions.
+- Three/four-image extended color calculation with raw lower-screen enables,
+  CRAM/format restrictions and deterministic channel arithmetic. The 1997 Sega
+  primary HTML table confirms the four-screen 2:1:1 ratio; the older PDF prints
+  2:1:0. See the [traceable evidence](hardware-conformance.md#line-color-cram-coefficients-and-specialextended-composition).
+
+The two original MIT-licensed SH-2 sources and ROMs reproduce using
+`python3 tests/fixtures/build_line_color.py --check` and
+`python3 tests/fixtures/build_special_video.py --check`. Expanded 512 KiB hashes:
+
+| Fixture | SHA-256 |
+| --- | --- |
+| LINE | `e611e93e15b673ba915291bab6e9886af2f8700ccca7b19187fcbdaa0d4b9c1f` |
+| SPECIAL | `118254a4eec38b8a2f4c0d10fcf47ebe9a251a61deeae361fc1395ff0d185923` |
+
+[Native line/composition vectors](../tests/video_line_color.rs),
+[special-function vectors](../tests/video_special.rs) and additional
+[RBG0/RBG1 vectors](../tests/video_effects.rs) assert independent pixel values.
+The guests write every image, matrix, coefficient, palette and control through
+SH-2 instructions. Native and browser tests alter only ROM literal operands to
+change coefficient scale, coefficient line-color bits, extended-calculation
+enable, special code selection and bitmap flags. The real Wasm and production
+Canvas must match the independently expected changed pixels; resets repeat.
+No host result writes, game detection, firmware or external core is used.
+
+Actual combined checks:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`: **304 passed,
+  zero failed/ignored** (164 unit, 140 integration), native Rust/Cargo 1.94.0.
+- Native all-target and Wasm Clippy with `-D warnings`: pass. Wasm and additional
+  native all-target Clippy use rustup stable Rust 1.99.0.
+- All **23** CI reproducibility builders pass. Existing Star Collector, Prism
+  Courier, Hardware Lab and prior diagnostic hashes remain unchanged.
+- `sh scripts/build-web.sh` passes with Rust 1.99.0 and wasm-bindgen 0.2.129.
+- `npm ci --ignore-scripts`, `npx playwright install chromium`, JS syntax and the
+  complete extended `npm run test:browser` pass in Chromium **145.0.7632.6** under
+  `/saturn-rust/`. No required test is skipped; both new guests/mutations, Canvas,
+  all existing games and hardware guests, WebAudio, input/focus and privacy pass.
+
+Initial test failures exposed obsolete unsupported-mode expectations and fixture
+mutation assumptions; those tests were corrected before the final passing runs.
+The renderer still samples frame snapshots. Gradation, display modes/interlace,
+raster reloads and VRAM arbitration remain mandatory video work. SCSP timed
+envelopes and DIVU overflow intermediates were investigated against primary
+manuals but are **not implemented by these changes**. All other unresolved
+CPU/bus/reset/backup/HLE/SCU/audio/CD/SMPC and comprehensive coverage requirements
+remain in the conformance inventory. No umbrella criterion is marked complete.
+
+PR #18 remains Draft with Closes #17 as the intended final outcome. The full
+resolution objective is still unmet. No new tracker, reopened historical Issue,
+human/firmware/live-site/external-workflow gate or waiver is introduced. This
+node does not merge; local passing checks do not claim remote CI or deployment.

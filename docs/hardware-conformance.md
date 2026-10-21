@@ -461,13 +461,13 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 | NBG0 bitmap, [VDP2] §§4–6 | 4/8/11-bit palette, RGB555/RGB888, bitmap dimensions/base, transparency, fixed-point scroll/zoom | VIDEO | PRISM, SC (RGB555, unit zoom) | Full format/dimension/zoom vectors and browser coverage | Pending |
 | NBG0–3 tile/character, [VDP2] §§4.4–4.8, figs.4.9/4.10, table4.8 | `Vdp2::character_control/tile/background`: one/two-word names, both supplement modes, 8×8/16×16 characters, 4/8/11-bit palette and RGB555/888 where applicable, flips, plane/page alignment/maps/wrap | [seven independent pixel/guest tests](../tests/video_tiles.rs) | TILE (four layers, names, palette/VRAM, window, mutation) | VRAM cycle arbitration, bandwidth/layer restrictions and exhaustive guest corpus remain | Pending |
 | NBG1–3 bitmap/layer control, [VDP2] §§4–6 | NBG1 bitmap composition, formats applicable to NBG1, scroll/zoom/priority | VIDEO | — | Complete layer restrictions and guest format corpus; NBG2/3 tile layers now exercised by TILE | Pending |
-| Rotation backgrounds, [VDP2] §6.1 p.147, §6.3 figs.6.2–6.4, §6.4 fig.6.7 | RBG0 fixed-point A/B matrices, viewpoint/center/Z/translation/scales, 16-plane tile or bitmap, four screen-over modes, 16/32-bit coefficient modes, per-dot/line coefficient indexing, transparent coefficients and parameter/window switching; RBG1 parameter B/cells/B0 characters/B1 names, NBG0 effects controls | EFFECTS, R1 | EFFECTS + R1 (quarter turn, A/B coefficient switch, matrix mutations/Canvas) | Complete RBG1 boundaries and bank contention; scanline parameter latching/reloads, CRAM coefficients, coefficient line-color and cycle/bank arbitration remain required | Pending |
+| Rotation backgrounds, [VDP2] §6.1 p.147, §6.3 figs.6.2–6.4, §6.4 fig.6.7 | RBG0 fixed-point A/B matrices, viewpoint/center/Z/translation/scales, 16-plane tile or bitmap, four screen-over modes, 16/32-bit coefficient modes in VRAM or upper CRAM, coefficient line-color data, per-dot/line indexing, transparency and parameter/window switching; RBG1 parameter B/cells/B0 characters/B1 names, NBG0 effects controls | EFFECTS, R1, LINE | EFFECTS + R1 + LINE (matrix/coefficient/color mutations and Canvas) | Complete RBG1 boundaries and bank contention; scanline parameter latching/reloads and cycle/bank arbitration remain required | Pending |
 | Line/vertical-cell scroll, [VDP2] §5.3 figs.5.4–5.8 | Packed enabled X/Y/zoom fields, relative offsets and held line intervals, fractional coordinates, independent NBG0/1, interleaved vertical cell tables and mosaic precedence | EFFECTS | EFFECTS (line X) | Raster-time table reads, cycle/bandwidth arbitration and full guest field/interval corpus remain | Pending |
 | Windows/line windows, [VDP2] §8.1 figs.8.2–8.4 | W0/W1 rectangle or VRAM line tables and SD-bit sprite windows, inside/outside, inclusive edges, empty/inverted ranges, AND/OR on normal/rotation/sprite/color calculation; rotation-parameter windows | VIDEO, EFFECTS, SPRX | EFFECTS, SPRX (Wasm/Canvas and changed guest controls) | Full raster-window update timing and complete independent guest corpus remain | Pending |
 | Mosaic, [VDP2] §5 | NBG0–3 horizontal/vertical grouping | VIDEO | — | All independent vertical/layer/guest vectors | Pending |
-| Priority/composition, [VDP2] §§9–10 | Four normal backgrounds, RBG0 and VDP1; all sixteen palette sprite types (including shared bits) and mixed RGB; priority-0 disable/ties | VIDEO, PRISM, SPRX | PRISM, SPRX | Full display/layer and special-priority boundaries | Pending |
-| Color calculation/offset/shadow, [VDP2] §§11–13 | Ratio/additive blending, palette color-MSB conditions/ratios, signed offsets, normal/MSB/transparent shadows after blend/offset | VIDEO, SPRX | SPRX, PRISM | Extended/special effects and complete guest/raster corpus | Pending |
-| Back/line color, [VDP2] §§3–4 | Back-screen single/per-line VRAM table, signed offset | VIDEO | PRISM (back underneath bitmap) | Line-color screen and full per-line guest corpus | Pending |
+| Priority/composition, [VDP2] §§9–11 | Four normal backgrounds, RBG0/RBG1 and VDP1; all sixteen palette sprite types (including shared bits) and mixed RGB; priority-0 disable/ties; SFPRMD character/dot priority from names, supplement or bitmap flags and SFCODE/SFSEL | VIDEO, PRISM, SPRX, SPECIAL | PRISM, SPRX, SPECIAL (guest flag/code mutations and Canvas) | Full display/layer/raster restrictions and complete special-priority boundary corpus | Pending |
+| Color calculation/offset/shadow, [VDP2] §§11–14 | Top/second-image ratio selection, additive and three/four-image extended blending; SFCCMD character/dot/palette-MSB conditions; signed offsets, normal/MSB/transparent shadows after blend/offset | VIDEO, SPRX, LINE, SPECIAL | SPRX, PRISM, LINE, SPECIAL | Gradation, full guest format/extended-composition corpus and raster timing remain | Pending |
+| Back/line color, [VDP2] §§7.1/11.3 | Back-screen single/per-line VRAM table, signed offset; LNCLEN top-only insertion, single/per-line LCTA palette data and coefficient-derived low seven address bits; CCRLB line/back ratios | VIDEO, LINE | PRISM (back), LINE (two line colors, coefficient mutations, extended calculation, Canvas) | Interlace/display-mode line rules, raster-time fetches and complete guest format corpus remain | Pending |
 | Combined VDP1/VDP2 pipeline | Sprite/background overlap, priority, transparency, game result/restart, texture mutation changes actual pixels | VIDEO, PRISM | PRISM + Canvas assertions | Remaining modes/effects and timing above | Pending |
 
 VDP1 work advances one command fetch or ruled raster row per 32 reference clocks;
@@ -551,7 +551,7 @@ no-op CPU/device implementations cannot satisfy those assertions.
    trigger coverage, DSP conditional/pipeline/bank-conflict and program-DMA evidence.
    SCUROM now executes real DMA/DSP/timer/IRQ operations but is subset evidence.
 5. Remaining VDP1 edge/scanout/timing conformance and VDP2 tile timing, complete RBG1 edge coverage,
-   parameter reloads/CRAM coefficients and remaining display modes, with
+   parameter reloads, gradation and remaining display modes, with
    complete independent guest and browser coverage. VIDEO, EFFECTS and PRISM
    provide actual subset pixel/composition evidence.
 6. Complete remaining CD drive/command/timing/error behavior (see CD inventory),
@@ -759,8 +759,9 @@ boundary. Mutating My from 3 to 2 changes the rotated pixels in both paths; the
 browser asserts production Canvas presentation. Expanded ROM SHA-256:
 `c537273e864fd3410441d618bfe78e8642137838d869d154f002c3c33c3a77d5`.
 The renderer takes a frame snapshot, including these tables. This does not yet
-implement raster-time writes or parameter reload strobes; enabled reload,
-coefficient-line-color and CRAM-coefficient modes still fail explicitly.
+implement raster-time writes or parameter reload strobes. Coefficient line color
+and CRAM coefficient sources are now implemented and tested by LINE below;
+enabled unsupported parameter reloads still fail explicitly.
 
 **PADR** is [controller.s](../tests/fixtures/controller.s), reproduced with
 [build_controller.py](../tests/fixtures/build_controller.py). The guest configures
@@ -932,5 +933,41 @@ moves the grid and exercises B's transparent screen-over mode. Native vectors
 also cover independent A/B movement, all five cell color formats, both pattern
 name widths, priority, blending, window, coefficient MSB and color offsets.
 RBG1 still samples the existing frame snapshot; scanline reloads, cycle/bank
-arbitration, all special functions and complete edge evidence remain required.
+arbitration and complete special-function/edge evidence remain required.
 This closes an implementation gap without satisfying the full video criterion.
+
+## Line color, CRAM coefficients and special/extended composition
+
+**LINE** is the original [SH-2 source](../tests/fixtures/line-color.s),
+[reproducible builder](../tests/fixtures/build_line_color.py),
+[native register/pixel/guest tests](../tests/video_line_color.rs) and identical
+[browser Wasm/Canvas execution](../scripts/browser-smoke.mjs).
+**SPECIAL** is [special-video.s](../tests/fixtures/special-video.s), its
+[builder](../tests/fixtures/build_special_video.py),
+[native vectors/guest](../tests/video_special.rs) and the same browser suite.
+Both sources and generated ROMs use the [original MIT fixture license](../tests/fixtures/LICENSE).
+No third-party firmware, core, SDK routine or sampled reference output is used.
+
+| Programming group / primary reference | Implementation | Independent native evidence | Wasm/guest evidence |
+| --- | --- | --- | --- |
+| LCTA/LCCLMD/LNCLEN, VDP2 §§7.1/11.3 | `Vdp2::render`: insert palette line only below enabled top; single/per-line table, word-address wrap, separate sprite enable | LINE: normal/sprite top, all CRAM modes, window/offset ordering, ignored bits, wrap, no visible line without top calculation | LINE: guest creates both line words, palettes and image, exact eight pixels and Canvas |
+| RAMCTL.CRKTE, KTCTL/KTAOF, VDP2 §6.4 pp.163–169 | `Vdp2::coefficient`: 16/32-bit upper-CRAM or VRAM reads, signed coefficient widths, ignored offset, bank-local wrapping | LINE: both widths, signed scaling, wrap, source isolation; invalid CRAM mode rejection | LINE: actual CRAM writes, changed coefficient scale changes image sampling |
+| KTCTL.RxKLCE, VDP2 §6.4 fig.6.6 | `rotation_screen`: line address low seven bits from 32-bit coefficient; correct A/B selection for modes0–3 and RBG1; short form ignores line enable | LINE and EFFECTS: A/B, mode2 A data with B image, window-selected B, dual-rotation A data, short form | LINE: changed coefficient line index changes palette color, not image |
+| SFSEL/SFCODE/SFPRMD, VDP2 §§10.3/11.2 | `scroll_layer`, `tile_map`: per-character/dot priority LSB; original dot code before palette offsets; bitmap, one/two-word names, RBG0/RBG1 | SPECIAL and EFFECTS: all normal screens/name widths, zero priority raised to1, code A/B and RGB mode restrictions | SPECIAL: changed guest SFSEL/bitmap priority flag changes real overlap pixels |
+| SFCCMD, VDP2 §12.3 | `color`, `scroll_layer`: per-screen/character/dot/palette-MSB; RGB mode3 always permits calculation | SPECIAL: bitmap/name flags, raw codes, RGB555/888, color-address offsets, transparency, reserved RGB mode2 | SPECIAL: changed guest color flag removes blending while preserving priority |
+| CCRTMD/CCRLB/EXCCEN, VDP2 §12.1 fig.12.3/table12.2 | `render`, `extended_color`: second-image ratios, four ordered images, raw lower-screen enables, palette-format restrictions | LINE: top/second/line/back ratios, additive mode, three/four-image colors and CRAM-mode restrictions; top-only special conditions do not gate lower images | LINE: changed guest CCCTL enables extended calculation and changes exact eight-pixel output |
+
+The [1997 Sega HTML manual §12.1/table12.2](https://github.com/luckyseoul/saturn-docs/blob/main/files/ssddv25/segahtml/hard/vdp2/hon/p12_12.htm)
+explicitly gives **2:1:1** for the mode0 four-image case, correcting **2:1:0**
+in the older ST-058-R2 PDF. The implementation follows that later primary table
+and fig.12.3. Integer channel arithmetic is deterministic in native and Wasm;
+physical fractional precision remains subject to the existing video limitations.
+
+Expanded 512 KiB ROM SHA-256: LINE
+`e611e93e15b673ba915291bab6e9886af2f8700ccca7b19187fcbdaa0d4b9c1f`;
+SPECIAL `118254a4eec38b8a2f4c0d10fcf47ebe9a251a61deeae361fc1395ff0d185923`.
+CI checks both builders. Native/browser tests repeat resets and mutate only guest
+literal operands, rejecting canned output and inert MMIO. All existing demo media
+remain byte-identical. Gradation, display modes/interlace, raster parameter reloads,
+VRAM cycle arbitration and comprehensive remaining hardware acceptance are still
+required. No umbrella checkbox is declared complete by these additions.

@@ -4,6 +4,14 @@
 //! remain separate work; unsupported enabled controls are rejected explicitly.
 use super::{Layer, Vdp2};
 
+#[derive(Clone, Copy)]
+struct Coefficient {
+    transparent: bool,
+    value: i64,
+    mode: u16,
+    line_color: Option<u16>,
+}
+
 fn signed(value: u32, bits: u32) -> i64 {
     i64::from((value << (32 - bits)) as i32 >> (32 - bits))
 }
@@ -22,22 +30,19 @@ impl Vdp2 {
         if rbg1
             && (self.word(0xB0) & 3 != 0
                 || self.word(0xE) & 0x200 == 0
-                || (self.word(0x28) >> 4) & 7 > 4
-                || self.word(0x30) & 0x300 != 0)
+                || (self.word(0x28) >> 4) & 7 > 4)
         {
             return Err(
-                "VDP2 RBG1 requires mode 0, split B banks and a supported cell/special format"
-                    .into(),
+                "VDP2 RBG1 requires mode 0, split B banks and a supported cell format".into(),
             );
         }
         let ctl = self.word(0x2A) >> 8;
-        if ctl >> 4 & 7 > 4
-            || self.word(0x2E) & 0x30 != 0
-            || self.word(0xB2) != 0
-            || self.word(0xB4) & 0x1010 != 0
-            || self.word(0xE) & 0x8000 != 0
-        {
-            return Err("Unsupported VDP2 rotation reload, line-color, CRAM coefficient or special bitmap control".into());
+        if ctl >> 4 & 7 > 4 || self.word(0xB2) != 0 {
+            return Err("Unsupported VDP2 rotation reload or color format".into());
+        }
+        self.validate_special(4, ctl >> 4 & 7)?;
+        if rbg1 {
+            self.validate_special(0, self.word(0x28) >> 4 & 7)?;
         }
         for parameter in 0..2 {
             let size = self.word(0x3A) >> (8 + parameter * 4) & 3;
@@ -56,7 +61,7 @@ impl Vdp2 {
         // RPTA bit 6 is fixed to 0/1 for A/B, not part of the base.
         (self.table_address(0xBC) & !0x80) | (parameter * 0x80)
     }
-    fn coefficient(&self, parameter: usize, x: usize, y: usize) -> Option<(bool, i64, u16)> {
+    fn coefficient(&self, parameter: usize, x: usize, y: usize) -> Option<Coefficient> {
         let control = self.word(0xB4) >> (parameter * 8);
         if control & 1 == 0 {
             return None;
@@ -72,21 +77,39 @@ impl Vdp2 {
         let address = (bank * 0x10000)
             .wrapping_add(index as usize)
             .wrapping_mul(if short { 2 } else { 4 });
-        let (transparent, value) = if short {
-            let raw = self.vword(address);
+        // ST-058 §6.4 pp.163/167: CRKTE uses the latter 2 KiB of CRAM,
+        // ignoring KTAOF and all but ten word-address bits. Both word sizes
+        // wrap within that half; parameter and image tables still use VRAM.
+        let read = |address| {
+            if self.word(0xE) & 0x8000 != 0 {
+                let at = 0x800 | (address & 0x7FE);
+                u16::from_be_bytes([self.cram[at], self.cram[at + 1]])
+            } else {
+                self.vword(address)
+            }
+        };
+        let (transparent, value, line_color) = if short {
+            let raw = read(address);
             // Scale: signed Q4.10 -> Q16; Xp: signed Q12.2 -> Q16.
             (
                 raw & 0x8000 != 0,
                 signed(u32::from(raw), 15) << if mode == 3 { 14 } else { 6 },
+                None,
             )
         } else {
-            let raw = self.vlong(address);
+            let raw = u32::from(read(address)) << 16 | u32::from(read(address.wrapping_add(2)));
             (
                 raw & 0x80000000 != 0,
                 signed(raw, 24) << if mode == 3 { 8 } else { 0 },
+                (control & 0x10 != 0).then_some((raw >> 24) as u16 & 0x7F),
             )
         };
-        Some((transparent, value, mode))
+        Some(Coefficient {
+            transparent,
+            value,
+            mode,
+            line_color,
+        })
     }
     /// Compute map coordinates in Q16 throughout; discard fractional bits only
     /// after matrix/perspective/translation operations. No host floating point.
@@ -95,7 +118,7 @@ impl Vdp2 {
         parameter: usize,
         x: usize,
         y: usize,
-        coefficient: Option<(bool, i64, u16)>,
+        coefficient: Option<Coefficient>,
     ) -> (i64, i64) {
         let at = self.rotation_table(parameter);
         let start = |offset| signed(self.vlong(at + offset) & 0x1FFFFFC0, 29);
@@ -124,7 +147,7 @@ impl Vdp2 {
             multiply(d, px - cx) + multiply(e, py - cy) + multiply(f, pz - cz) + cy + shift(0x48);
         let mut kx = signed(self.vlong(at + 0x4C), 24);
         let mut ky = signed(self.vlong(at + 0x50), 24);
-        if let Some((_, value, mode)) = coefficient {
+        if let Some(Coefficient { value, mode, .. }) = coefficient {
             match mode {
                 0 => {
                     kx = value;
@@ -164,10 +187,6 @@ impl Vdp2 {
         {
             return None;
         }
-        let priority = self.word(if rbg1 { 0xF8 } else { 0xFC }) & 7;
-        if priority == 0 {
-            return None;
-        }
         if self.word(0x22) & (1 << id) != 0 {
             x -= x % (usize::from(self.word(0x22) >> 8 & 15) + 1);
         }
@@ -179,7 +198,7 @@ impl Vdp2 {
             match mode {
                 0 => 0,
                 1 => 1,
-                2 => usize::from(ca.is_some_and(|c| c.0)),
+                2 => usize::from(ca.is_some_and(|c| c.transparent)),
                 _ => usize::from(!self.window(self.word(0xD6), x, y, sprite_window)),
             }
         };
@@ -189,7 +208,7 @@ impl Vdp2 {
             self.coefficient(1, x, y)
         };
         // ST-058 §6.4 p.166: the coefficient MSB is ignored for RBG1.
-        if !rbg1 && coefficient.is_some_and(|c| c.0) && !(mode == 2 && parameter == 0) {
+        if !rbg1 && coefficient.is_some_and(|c| c.transparent) && !(mode == 2 && parameter == 0) {
             return None;
         }
         let (sx, sy) = self.rotation_coordinates(parameter, x, y, coefficient);
@@ -225,11 +244,12 @@ impl Vdp2 {
         }
         let sx = sx.rem_euclid(width) as usize;
         let sy = sy.rem_euclid(height) as usize;
-        let (base, pixel, palette) = if bitmap {
+        let (base, pixel, palette, special) = if bitmap {
             (
                 usize::from(self.word(0x3E) >> (parameter * 4) & 7) * 0x20000,
                 sy * 512 + sx,
                 usize::from(self.word(0x2E) & 7) * 256,
+                self.word(0x2E) >> 4 & 3,
             )
         } else {
             self.tile_map(
@@ -242,7 +262,7 @@ impl Vdp2 {
                 outside && over == 1,
             )?
         };
-        let rgb = self.color(
+        let pixel = self.color(
             format,
             base,
             pixel,
@@ -250,12 +270,15 @@ impl Vdp2 {
             palette,
             self.word(0x20) & (0x100 << id) != 0,
         )?;
-        Some(Layer {
-            rgb,
-            priority,
-            ratio: self.word(if rbg1 { 0x108 } else { 0x10C }) & 31,
-            calculate: self.word(0xEC) & (1 << id) != 0,
-            id,
-        })
+        let mut layer = self.scroll_layer(id, format, pixel, special)?;
+        // §6.4 fig.6.6: mode 2 and dual rotation use A's line data
+        // even when the displayed image uses parameter B.
+        layer.coefficient_color = if mode == 2 || self.word(0x20) & 0x20 != 0 {
+            ca
+        } else {
+            coefficient
+        }
+        .and_then(|c| c.line_color);
+        Some(layer)
     }
 }

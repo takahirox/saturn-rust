@@ -45,7 +45,7 @@ impl Vdp2 {
             && (2..=7).contains(&(self.word(0xE0) & 15))
             && sprites.is_some_and(|s| s.display_pixel(x, y) & 0x8000 != 0)
     }
-    fn palette_msb(&self, index: usize) -> bool {
+    pub(super) fn palette_msb(&self, index: usize) -> bool {
         let mode = self.word(0xE) >> 12 & 3;
         let at = if mode == 2 {
             (index & 1023) * 4
@@ -109,6 +109,8 @@ impl Vdp2 {
                 ratio: self.word(0x100 + ratio / 2 * 2) >> (ratio % 2 * 8) & 31,
                 calculate: calculate && self.word(0xEC) & 0x40 != 0,
                 id: 6,
+                coefficient_color: None,
+                palette: !rgb_mode,
             }),
             shade_sprite: msb_shadow,
             shadow_priority: None,

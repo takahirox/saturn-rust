@@ -35,6 +35,13 @@ struct Layer {
     ratio: u16,
     calculate: bool,
     id: usize,
+    coefficient_color: Option<u16>,
+    palette: bool,
+}
+struct Pixel {
+    rgb: [u8; 3],
+    code: u16,
+    color_msb: bool,
 }
 fn rgb555(color: u16) -> [u8; 3] {
     std::array::from_fn(|channel| {
@@ -53,9 +60,9 @@ impl Vdp2 {
     }
     fn supported(offset: usize) -> bool {
         matches!(offset,
-            0 | 4 | 0xE | 0x10 | 0x12 | 0x20 | 0x22 | 0x28 | 0x2A | 0x2C | 0x2E | 0x30..=0x6E |
-            0x70..=0x96 | 0x9A..=0xA6 | 0xAC..=0xBE | 0xC0..=0xDE | 0xE0 | 0xE2 |
-            0xE4 | 0xE6 | 0xEC | 0xF0..=0xFC | 0x100..=0x10C | 0x110..=0x11E
+            0 | 4 | 0xE | 0x10 | 0x12 | 0x20..=0x2E | 0x30..=0x6E |
+            0x70..=0x96 | 0x9A..=0xBE | 0xC0..=0xDE | 0xE0 | 0xE2 |
+            0xE4..=0xFC | 0x100..=0x11E
         ) && offset & 1 == 0
     }
     fn word(&self, offset: usize) -> u16 {
@@ -106,15 +113,16 @@ impl Vdp2 {
         let unsupported = self.word(0) != 0x8000
             || self.word(0x20) & !0x1F3F != 0
             || self.word(0xE)
-                & !(0x3000
+                & !(0xB000
                     | if self.word(0x20) & 0x20 != 0 {
                         0x200
                     } else {
                         0
                     })
                 != 0
-            || self.word(0xE) >> 12 == 3
-            || self.word(0xEC) & !0x15F != 0;
+            || self.word(0xE) >> 12 & 3 == 3
+            || (self.word(0xE) & 0x8000 != 0 && self.word(0xE) & 0x3000 != 0x1000)
+            || self.word(0xEC) & !0x77F != 0;
         if unsupported {
             return Err("Unsupported VDP2 display, banking, layer or effects configuration".into());
         }
@@ -134,16 +142,56 @@ impl Vdp2 {
             {
                 return Err("Unsupported VDP2 character color format".into());
             }
-            if layer < 2 && ctl & 2 != 0 {
-                if self.word(0x2C) >> (layer * 8) & 0x30 != 0 {
-                    return Err("Unsupported VDP2 bitmap special priority/color calculation".into());
-                }
-            } else if self.word(0x3A) >> (layer * 2) & 3 == 2 {
+            self.validate_special(layer, format)?;
+            if !(layer < 2 && ctl & 2 != 0) && self.word(0x3A) >> (layer * 2) & 3 == 2 {
                 return Err("Reserved VDP2 plane size".into());
             }
         }
         self.validate_rotation()?;
         Ok(())
+    }
+    fn validate_special(&self, id: usize, format: u16) -> Result<(), String> {
+        let priority = self.word(0xEA) >> (id * 2) & 3;
+        let calculate = self.word(0xEE) >> (id * 2) & 3;
+        if priority == 3 || (format >= 3 && (priority == 2 || calculate == 2)) {
+            return Err(
+                "Reserved VDP2 special priority/color calculation mode for this format".into(),
+            );
+        }
+        Ok(())
+    }
+    /// ST-058 §§10.3/11.2/12.3: special flags are properties of the sampled
+    /// character/bitmap. Dot codes use waveform low bits before palette offsets.
+    fn scroll_layer(&self, id: usize, format: u16, pixel: Pixel, flags: u16) -> Option<Layer> {
+        let priority_register = if id == 4 { 0xFC } else { 0xF8 + id / 2 * 2 };
+        let ratio_register = if id == 4 { 0x10C } else { 0x108 + id / 2 * 2 };
+        let shift = if id == 4 { 0 } else { id % 2 * 8 };
+        let mut priority = self.word(priority_register) >> shift & 7;
+        let code_select = usize::from(self.word(0x24) & (1 << id) != 0) * 8;
+        let dot = self.word(0x26) >> code_select & (1 << ((pixel.code & 15) >> 1)) != 0;
+        match self.word(0xEA) >> (id * 2) & 3 {
+            1 => priority = (priority & !1) | ((flags >> 1) & 1),
+            2 => priority = (priority & !1) | u16::from(flags & 2 != 0 && dot),
+            _ => (),
+        }
+        if priority == 0 {
+            return None;
+        }
+        let special = match self.word(0xEE) >> (id * 2) & 3 {
+            1 => flags & 1 != 0,
+            2 => flags & 1 != 0 && dot,
+            3 => format >= 3 || pixel.color_msb,
+            _ => true,
+        };
+        Some(Layer {
+            rgb: pixel.rgb,
+            priority,
+            ratio: self.word(ratio_register) >> shift & 31,
+            calculate: self.word(0xEC) & (1 << id) != 0 && special,
+            id,
+            coefficient_color: None,
+            palette: format < 3,
+        })
     }
     fn palette(&self, index: usize) -> [u8; 3] {
         let mode = self.word(0xE) >> 12 & 3;
@@ -268,7 +316,7 @@ impl Vdp2 {
         format: u16,
         x: usize,
         y: usize,
-    ) -> Option<(usize, usize, usize)> {
+    ) -> Option<(usize, usize, usize, u16)> {
         self.tile_map(layer, ctl, format, x, y, None, false)
     }
     #[allow(clippy::too_many_arguments)]
@@ -281,7 +329,7 @@ impl Vdp2 {
         y: usize,
         parameter: Option<usize>,
         over: bool,
-    ) -> Option<(usize, usize, usize)> {
+    ) -> Option<(usize, usize, usize, u16)> {
         let size = if ctl & 1 == 0 { 8 } else { 16 };
         let pnc = self.word(0x30 + layer * 2);
         let one = pnc & 0x8000 != 0;
@@ -356,7 +404,12 @@ impl Vdp2 {
         if rbg1 && (base & 0x60000) != 0x40000 {
             return None;
         }
-        Some((base, (cy & 7) * 8 + (cx & 7), palette))
+        let special = if one || over {
+            pnc >> 8 & 3
+        } else {
+            name >> 12 & 3
+        };
+        Some((base, (cy & 7) * 8 + (cx & 7), palette, special))
     }
     fn background(
         &self,
@@ -376,10 +429,6 @@ impl Vdp2 {
         {
             return None;
         }
-        let priority = self.word(0xF8 + (layer / 2) * 2) >> ((layer & 1) * 8) & 7;
-        if priority == 0 {
-            return None;
-        }
         if self.word(0x22) & (1 << layer) != 0 {
             let mx = usize::from(self.word(0x22) >> 8 & 15) + 1;
             let my = usize::from(self.word(0x22) >> 12) + 1;
@@ -395,27 +444,22 @@ impl Vdp2 {
                 y + usize::from(self.word(0x92 + (layer - 2) * 4) & 0x7FF),
             )
         };
-        let (base, pixel, palette) = if layer < 2 && ctl & 2 != 0 {
+        let (base, pixel, palette, special) = if layer < 2 && ctl & 2 != 0 {
             let width = if ctl & 8 == 0 { 512 } else { 1024 };
             let height = if ctl & 4 == 0 { 256 } else { 512 };
             (
                 usize::from(self.word(0x3C) >> (layer * 4) & 7) * 0x20000,
                 (sy % height) * width + sx % width,
                 usize::from(self.word(0x2C) >> (layer * 8) & 7) * 256,
+                self.word(0x2C) >> (layer * 8 + 4) & 3,
             )
         } else {
             self.tile(layer, ctl, format, sx, sy)?
         };
         let opaque = self.word(0x20) & (0x100 << layer) != 0;
         let offset = usize::from(self.word(0xE4) >> (layer * 4) & 7) * 256;
-        let rgb = self.color(format, base, pixel, offset, palette, opaque)?;
-        Some(Layer {
-            rgb,
-            priority,
-            ratio: self.word(0x108 + (layer / 2) * 2) >> ((layer & 1) * 8) & 31,
-            calculate: self.word(0xEC) & (1 << layer) != 0,
-            id: layer,
-        })
+        let pixel = self.color(format, base, pixel, offset, palette, opaque)?;
+        self.scroll_layer(layer, format, pixel, special)
     }
     fn color(
         &self,
@@ -425,36 +469,50 @@ impl Vdp2 {
         offset: usize,
         palette: usize,
         opaque: bool,
-    ) -> Option<[u8; 3]> {
-        Some(match format {
+    ) -> Option<Pixel> {
+        let (rgb, code, color_msb) = match format {
             0 => {
                 let byte = self.vram[(base + pixel / 2) & 0x7FFFF];
                 let index = usize::from(if pixel & 1 == 0 { byte >> 4 } else { byte & 15 });
                 if index == 0 && !opaque {
                     return None;
                 }
-                self.palette(offset + palette + index)
+                let address = offset + palette + index;
+                (
+                    self.palette(address),
+                    index as u16,
+                    self.palette_msb(address),
+                )
             }
             1 => {
                 let index = usize::from(self.vram[(base + pixel) & 0x7FFFF]);
                 if index == 0 && !opaque {
                     return None;
                 }
-                self.palette(offset + (palette & 0x700) + index)
+                let address = offset + (palette & 0x700) + index;
+                (
+                    self.palette(address),
+                    index as u16,
+                    self.palette_msb(address),
+                )
             }
             2 => {
                 let index = usize::from(self.vword(base + pixel * 2) & 2047);
                 if index == 0 && !opaque {
                     return None;
                 }
-                self.palette(offset + index)
+                (
+                    self.palette(offset + index),
+                    index as u16,
+                    self.palette_msb(offset + index),
+                )
             }
             3 => {
                 let color = self.vword(base + pixel * 2);
                 if color & 0x8000 == 0 && !opaque {
                     return None;
                 }
-                rgb555(color)
+                (rgb555(color), 0, true)
             }
             _ => {
                 let a = self.vword(base + pixel * 4);
@@ -462,8 +520,13 @@ impl Vdp2 {
                 if a & 0x8000 == 0 && !opaque {
                     return None;
                 }
-                [b as u8, (b >> 8) as u8, a as u8]
+                ([b as u8, (b >> 8) as u8, a as u8], 0, true)
             }
+        };
+        Some(Pixel {
+            rgb,
+            code,
+            color_msb,
         })
     }
     fn render(&self, sprites: Option<&Vdp1>) -> Result<Vec<u8>, String> {
@@ -484,13 +547,14 @@ impl Vdp2 {
             for x in 0..WIDTH {
                 let sprite_window = self.sprite_window(sprites, x, y);
                 let sprite = sprites.map(|s| self.sprite(s, x, y)).unwrap_or_default();
-                let mut top = Layer {
+                let back = Layer {
                     rgb: rgb555(back),
                     id: 5,
+                    ratio: self.word(0x10E) >> 8 & 31,
                     ..Layer::default()
                 };
-                let mut second = top;
-                for layer in [
+                let mut images = [back; 4];
+                for mut layer in [
                     self.background(3, x, y, sprite_window),
                     self.background(2, x, y, sprite_window),
                     self.background(1, x, y, sprite_window),
@@ -502,23 +566,57 @@ impl Vdp2 {
                 .into_iter()
                 .flatten()
                 {
-                    if layer.priority >= top.priority {
-                        second = top;
-                        top = layer;
-                    } else if layer.priority >= second.priority {
-                        second = layer;
+                    for image in &mut images {
+                        if layer.priority >= image.priority {
+                            std::mem::swap(image, &mut layer);
+                        }
                     }
                 }
+                let [top, mut second, mut third, mut fourth] = images;
                 let mut rgb = top.rgb;
+                // ST-058 §§7.1/11.3: LNCL is inserted immediately below
+                // an enabled top screen. It never appears by itself or takes
+                // part in priority selection. Sprite enable uses bit 5, while
+                // the compositor reserves id 5 for the back screen.
+                let line_bit = if top.id == 6 { 5 } else { top.id };
+                let inserted = top.id != 5 && self.word(0xE8) & (1 << line_bit) != 0;
+                if inserted {
+                    let address = ((self.long(0xA8) & 0x7FFFF) as usize
+                        + if self.word(0xA8) & 0x8000 != 0 { y } else { 0 })
+                        * 2;
+                    let mut index = self.vword(address) & 0x7FF;
+                    if let Some(low) = top.coefficient_color {
+                        index = (index & 0x780) | low;
+                    }
+                    fourth = third;
+                    third = second;
+                    second = Layer {
+                        rgb: self.palette(usize::from(index)),
+                        ratio: self.word(0x10E) & 31,
+                        id: 7,
+                        palette: true,
+                        ..Layer::default()
+                    };
+                }
                 if top.calculate && self.window(self.word(0xD6) >> 8, x, y, sprite_window) {
+                    if self.word(0xEC) & 0x400 != 0 {
+                        second.rgb = self.extended_color(second, third, fourth, inserted);
+                    }
+                    // §12.1: CCRTMD chooses the ratio of the second image;
+                    // calculation enable always belongs to the top image.
+                    let ratio = if self.word(0xEC) & 0x200 != 0 {
+                        second.ratio
+                    } else {
+                        top.ratio
+                    };
                     for (ch, value) in rgb.iter_mut().enumerate() {
                         *value = if self.word(0xEC) & 0x100 != 0 {
                             u16::from(*value)
                                 .saturating_add(u16::from(second.rgb[ch]))
                                 .min(255) as u8
                         } else {
-                            ((u16::from(*value) * (31 - top.ratio)
-                                + u16::from(second.rgb[ch]) * (top.ratio + 1))
+                            ((u16::from(*value) * (31 - ratio)
+                                + u16::from(second.rgb[ch]) * (ratio + 1))
                                 >> 5) as u8
                         };
                     }
@@ -538,5 +636,35 @@ impl Vdp2 {
             }
         }
         Ok(pixels)
+    }
+
+    /// ST-058 §12.1 fig.12.3/table12.2: lower-screen enables are the
+    /// unqualified CCCTL bits; SFCCMD conditions apply only to the top image.
+    fn extended_color(
+        &self,
+        second: Layer,
+        third: Layer,
+        fourth: Layer,
+        inserted: bool,
+    ) -> [u8; 3] {
+        let enabled = |layer: Layer| {
+            layer.id != 5 && self.word(0xEC) & (1 << if layer.id == 7 { 5 } else { layer.id }) != 0
+        };
+        let mode0 = self.word(0xE) & 0x3000 == 0;
+        let weights = if !enabled(second) || (!mode0 && third.palette) {
+            [4, 0, 0]
+        } else if inserted && enabled(third) && (mode0 || !fourth.palette) {
+            [2, 1, 1]
+        } else {
+            [2, 2, 0]
+        };
+        // The 1997 Sega HTML §12.1/table12.2 corrects the older PDF's mode0
+        // 2:1:0 entry to 2:1:1, also agreeing with fig.12.3's fourth input.
+        std::array::from_fn(|ch| {
+            ((u16::from(second.rgb[ch]) * weights[0]
+                + u16::from(third.rgb[ch]) * weights[1]
+                + u16::from(fourth.rgb[ch]) * weights[2])
+                >> 2) as u8
+        })
     }
 }

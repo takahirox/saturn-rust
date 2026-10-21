@@ -65,6 +65,8 @@ python3 tests/fixtures/build_standby.py --check
 python3 tests/fixtures/build_tiles.py --check
 python3 tests/fixtures/build_effects.py --check
 python3 tests/fixtures/build_rbg1.py --check
+python3 tests/fixtures/build_line_color.py --check
+python3 tests/fixtures/build_special_video.py --check
 python3 tests/fixtures/build_controller.py --check
 python3 tests/fixtures/build_scu.py --check
 python3 tests/fixtures/build_sound.py --check

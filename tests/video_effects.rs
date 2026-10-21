@@ -301,8 +301,8 @@ fn rotation_tile_sixteen_plane_map_pattern_names_palette_and_screen_over_charact
     assert_eq!(pixel(&v.framebuffer().unwrap(), 0, 0), GREEN);
 }
 #[test]
-fn unimplemented_rotation_reload_and_line_color_modes_are_not_inert_latches() {
-    for (offset, value) in [(0xB2, 1), (0xB4, 0x11), (0x2E, 0x20)] {
+fn unimplemented_rotation_reload_and_reserved_special_modes_are_not_inert_latches() {
+    for (offset, value) in [(0xB2, 1), (0xEA, 0x300), (0xEE, 0x200)] {
         let mut v = rotation();
         reg(&mut v, offset, value);
         assert!(v.framebuffer().is_err());
@@ -489,6 +489,51 @@ fn rbg1_coefficients_ignore_msb_and_priority_blending_offsets_use_nbg0_selectors
         reg(&mut v, address, value);
         assert!(v.framebuffer().is_err());
     }
+}
+
+#[test]
+fn both_rotation_screens_apply_special_flags_with_their_own_register_selectors() {
+    let mut v = rotation();
+    reg(&mut v, 0xEC, 0);
+    reg(&mut v, 0xFC, 0);
+    reg(&mut v, 0xEA, 0x100); // RBG0 per bitmap priority; priority0 can become1.
+    reg(&mut v, 0x2E, 0x20);
+    assert_eq!(pixel(&v.framebuffer().unwrap(), 0, 0), RED);
+    reg(&mut v, 0x2E, 0);
+    assert_eq!(pixel(&v.framebuffer().unwrap(), 0, 0), BLACK);
+    let mut v = dual_rotation();
+    reg(&mut v, 0xEE, 1);
+    reg(&mut v, 0xEC, 1);
+    reg(&mut v, 0x108, 15);
+    reg(&mut v, 0x30, 0x8108); // RBG1 uses NBG0 supplementary color flag.
+    assert_eq!(pixel(&v.framebuffer().unwrap(), 0, 0), [127, 0, 127, 255]);
+    reg(&mut v, 0x30, 0x8008);
+    assert_eq!(pixel(&v.framebuffer().unwrap(), 0, 0), BLUE);
+    reg(&mut v, 0xEE, 2);
+    reg(&mut v, 0x30, 0x8108);
+    reg(&mut v, 0x26, 1);
+    assert_eq!(pixel(&v.framebuffer().unwrap(), 0, 0), [127, 0, 127, 255]);
+    reg(&mut v, 0x26, 2);
+    assert_eq!(pixel(&v.framebuffer().unwrap(), 0, 0), BLUE);
+}
+
+#[test]
+fn dual_rotation_line_color_uses_coefficient_a_even_when_rbg1_displays_parameter_b() {
+    let mut v = dual_rotation();
+    reg(&mut v, 0xEC, 1);
+    reg(&mut v, 0x108, 15);
+    reg(&mut v, 0xE8, 1);
+    reg(&mut v, 0xB4, 0x1111);
+    long_reg(&mut v, 0xA8, 0x34000);
+    word(&mut v, 0x68000, 0x180);
+    long(&mut v, 0x20054, 0x20000000);
+    long(&mut v, 0x200D4, 0x20010000);
+    long(&mut v, 0x8000, 0x01010000);
+    long(&mut v, 0x8004, 0x02010000);
+    v.cram[0x302..0x306].copy_from_slice(&[0, 0x1F, 3, 0xE0]);
+    assert_eq!(pixel(&v.framebuffer().unwrap(), 0, 0), [127, 0, 127, 255]);
+    long(&mut v, 0x8000, 0x02010000);
+    assert_eq!(pixel(&v.framebuffer().unwrap(), 0, 0), [0, 127, 127, 255]);
 }
 
 #[test]

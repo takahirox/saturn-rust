@@ -137,3 +137,14 @@ bitmap colors independently. Its source and ROM use the adjacent MIT license.
 Native and browser checks mutate only an original matrix literal and compare
 emulated output with authored pixel expectations. The reproducible hash and
 programming contract are in the [RBG1 conformance evidence](hardware-conformance.md#original-dual-rotation-guest-and-rbg1-evidence).
+
+The original [line-color/CRAM-coefficient builder](../tests/fixtures/build_line_color.py)
+and [special priority/color builder](../tests/fixtures/build_special_video.py)
+generate readable SH-2 sources and synthetic ROMs under the adjacent
+[MIT fixture license](../tests/fixtures/LICENSE). Guest instructions populate all
+images, palettes, matrices, coefficients, code masks and controls; no external
+assets, firmware, SDK routines or device cores are included. Their
+[conformance evidence and hashes](hardware-conformance.md#line-color-cram-coefficients-and-specialextended-composition)
+include native and browser guest-literal mutations, repeatable resets and
+production Canvas comparisons. CI requires both `--check` builders. Existing
+demonstration discs remain unchanged; the full Issue #17 scope remains required.

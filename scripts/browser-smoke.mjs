@@ -677,6 +677,91 @@ try {
     assert.deepEqual(result.wasm,expected);
     assert.deepEqual(result.canvas,expected);
   }
+  // Original SH-2 guest writes CRAM coefficients, line colors and all matrices.
+  // Mutating only guest literals must change Wasm pixels and actual Canvas.
+  const lineColorRom=Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/line-color.hex","utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [at,...words]=line.trim().split(/\s+/).map(w=>parseInt(w,16));
+    words.forEach((w,i)=>lineColorRom.writeUInt16BE(w,at+i*2));
+  }
+  const M=[127,0,127,255],Y=[127,127,0,255],C=[0,127,127,255],K=[0,0,0,255];
+  for (const [old,value,expected] of [
+    [0,0,[M,Y,C,K,Y,C,M,K]],
+    [0x02010000,0x02020000,[M,M,C,K,Y,[0,0,255,255],M,K]],
+    [0x01010000,0x03010000,[Y,Y,C,K,[255,0,0,255],C,M,K]],
+    [0x00000210,0x00000630,[[127,0,63,255],[63,127,0,255],[0,63,127,255],K,
+      [127,63,0,255],[0,127,63,255],[63,0,127,255],K]],
+  ]) {
+    const image=Buffer.from(lineColorRom);
+    if(old!==0) {
+      const literal=Buffer.alloc(4); literal.writeUInt32BE(old);
+      const at=image.indexOf(literal);
+      assert(at>=0 && image.indexOf(literal,at+1)===-1);
+      image.writeUInt32BE(value,at);
+    }
+    let previous;
+    for(let repetition=0;repetition<2;repetition++) {
+      await page.locator("#bios").setInputFiles({name:"original-line-color.bin",mimeType:"application/octet-stream",buffer:image});
+      await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
+      const result=await page.evaluate(async()=>{
+        const {emulator,advanceFrame}=await import("./app.js");
+        emulator.run_steps(10000); advanceFrame();
+        const frame=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
+        const points=Array.from({length:8},(_,i)=>[i%4,Math.floor(i/4)]);
+        return {done:emulator.read_long(0x0600A200),
+          wasm:points.map(([x,y])=>Array.from(frame.slice((y*320+x)*4,(y*320+x)*4+4))),
+          canvas:points.map(([x,y])=>Array.from(canvas.getImageData(x,y,1,1).data))};
+      });
+      assert.equal(result.done,0x600D);
+      assert.deepEqual(result.wasm,expected);
+      assert.deepEqual(result.canvas,expected);
+      if(previous) assert.deepEqual(result,previous);
+      previous=result;
+    }
+  }
+  const specialVideoRom=Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/special-video.hex","utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [at,...words]=line.trim().split(/\s+/).map(w=>parseInt(w,16));
+    words.forEach((w,i)=>specialVideoRom.writeUInt16BE(w,at+i*2));
+  }
+  const specialBlue=[0,0,255,255],specialRed=[255,0,0,255];
+  for(const [address,old,value,expected] of [
+    [0,0,0,[specialBlue,M,M,specialBlue]],
+    [0x25F80024,0,1,[M,specialBlue,specialBlue,specialBlue]],
+    [0x25F8002C,0x30,0x20,[specialBlue,specialRed,specialRed,specialBlue]],
+    [0x25F8002C,0x30,0x10,[specialBlue,specialBlue,specialBlue,specialBlue]],
+  ]) {
+    const image=Buffer.from(specialVideoRom);
+    if(address!==0) {
+      const hits=[];
+      for(let at=0x200;at<0x10000;at+=2) {
+        const op=image.readUInt16BE(at+4);
+        if(image.readUInt32BE(at)!==address || (op&0xFF00)!==0xD000) continue;
+        const literal=((at+4)&~3)+4+(op&255)*4;
+        if(image.readUInt32BE(literal)===old && image.readUInt16BE(literal+4)===0x2101) hits.push(literal);
+      }
+      assert.equal(hits.length,1); image.writeUInt32BE(value,hits[0]);
+    }
+    let previous;
+    for(let repetition=0;repetition<2;repetition++) {
+      await page.locator("#bios").setInputFiles({name:"original-special-video.bin",mimeType:"application/octet-stream",buffer:image});
+      await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
+      const result=await page.evaluate(async()=>{
+        const {emulator,advanceFrame}=await import("./app.js");
+        emulator.run_steps(10000); advanceFrame();
+        const frame=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
+        return {done:emulator.read_long(0x0600A300),wasm:Array.from(frame.slice(0,32)),
+          canvas:Array.from(canvas.getImageData(0,0,8,1).data)};
+      });
+      assert.equal(result.done,0x600D);
+      assert.deepEqual(result.wasm,[...expected,...expected].flat());
+      assert.deepEqual(result.canvas,result.wasm);
+      if(previous) assert.deepEqual(result,previous);
+      previous=result;
+    }
+  }
   // SCU guest executes DSP arithmetic + external DMA, direct/indirect DMA,
   // and raster timer handlers through the actual Wasm machine and UI BIOS path.
   const scuRom = Buffer.alloc(524288);
