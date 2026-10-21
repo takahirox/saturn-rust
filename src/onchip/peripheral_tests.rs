@@ -538,3 +538,40 @@ fn software_standby_resets_selected_modules_freezes_clocks_and_waits_for_nmi_set
     chip.enter_sleep();
     assert!(chip.nmi_ready());
 }
+
+#[test]
+fn interrupt_control_pin_status_word_byte_lanes_vectors_and_nmi_edges() {
+    // H §5.3.8, table5.4: all 15 levels, both vector modes, read-only NMIL.
+    let mut c = OnChip::default();
+    assert_eq!(c.read16(ICR), Ok(0x8000));
+    assert_eq!(c.read8(ICR), Ok(0x80));
+    assert_eq!(c.read8(ICR + 1), Ok(0));
+    for level in 1..=15 {
+        assert_eq!(c.external_vector(level, 0x7F), 64 + level / 2);
+    }
+    c.write16(ICR, 0xFFFF).unwrap();
+    assert_eq!(c.read16(ICR), Ok(0x8101));
+    for level in 1..=15 {
+        assert_eq!(c.external_vector(level, 0xFF), 0x7F);
+    }
+    c.write8(ICR + 1, 0).unwrap();
+    assert_eq!(c.read16(ICR), Ok(0x8100));
+    assert!(!c.set_nmi_pin(false)); // falling edge with NMIE=1
+    assert_eq!(c.read16(ICR), Ok(0x100));
+    assert!(!c.set_nmi_pin(false));
+    assert!(c.set_nmi_pin(true));
+    assert!(!c.set_nmi_pin(true));
+    assert_eq!(c.read32(DMAC + 0x30), Ok(2)); // NMIF latched on selected edge
+    c.write32(DMAC + 0x30, 0).unwrap();
+    c.write8(ICR, 0).unwrap();
+    assert_eq!(c.read16(ICR), Ok(0x8000));
+    assert!(c.set_nmi_pin(false));
+    assert!(!c.set_nmi_pin(true));
+    c.reset_from_watchdog(ResetRequest::Manual);
+    assert_eq!(c.read16(ICR), Ok(0x8000));
+    assert!(c.set_nmi_pin(false));
+    c.reset_from_watchdog(ResetRequest::Manual);
+    assert_eq!(c.read16(ICR), Ok(0)); // reset cannot change the external pin
+    assert!(!c.set_nmi_pin(true));
+    assert_eq!(c.read32(DMAC + 0x30), Ok(0));
+}

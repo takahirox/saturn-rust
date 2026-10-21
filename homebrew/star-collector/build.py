@@ -73,8 +73,8 @@ def assemble(source, base=BASE):
             elif op in ('jmp','jsr'): word((0x402B if op=='jmp' else 0x400B) | reg(a[0][1:]) << 8)
             elif op in ('bra', 'bsr', 'bt', 'bf'):
                 word({'bra': 0xA000, 'bsr': 0xB000, 'bt': 0x8900, 'bf': 0x8B00}[op] | branch(pc, a[0], 12 if op in ('bra', 'bsr') else 8))
-            elif op in ('shll', 'shll2', 'shll8', 'dt'):
-                word({'shll': 0x4000, 'shll2': 0x4008, 'shll8': 0x4018, 'dt': 0x4010}[op] | reg(a[0]) << 8)
+            elif op in ('shll', 'shll2', 'shll8', 'dt', 'rotcl'):
+                word({'shll': 0x4000, 'shll2': 0x4008, 'shll8': 0x4018, 'dt': 0x4010, 'rotcl': 0x4024}[op] | reg(a[0]) << 8)
             elif op == 'extu.w':
                 word(0x600D | reg(a[1]) << 8 | reg(a[0]) << 4)
             elif op == 'tst':
@@ -86,8 +86,10 @@ def assemble(source, base=BASE):
             elif op in ('mov', 'add') and a[0].startswith('#'):
                 assert -128 <= num(a[0]) <= 127
                 word((0xE000 if op == 'mov' else 0x7000) | reg(a[1]) << 8 | num(a[0]) & 255)
-            elif op in ('mov', 'add', 'sub', 'cmp/eq', 'cmp/hs'):
-                word({'mov': 0x6003, 'add': 0x300C, 'sub': 0x3008, 'cmp/eq': 0x3000, 'cmp/hs': 0x3002}[op] | reg(a[1]) << 8 | reg(a[0]) << 4)
+            elif op == 'sts':
+                word({'mach':0x000A,'macl':0x001A,'pr':0x002A}[a[0]] | reg(a[1]) << 8)
+            elif op in ('mov', 'add', 'sub', 'cmp/eq', 'cmp/hs', 'subc', 'addc', 'xor', 'div0s', 'div1', 'mul.l'):
+                word({'mov': 0x6003, 'add': 0x300C, 'sub': 0x3008, 'cmp/eq': 0x3000, 'cmp/hs': 0x3002, 'subc':0x300A, 'addc':0x300E, 'xor':0x200A, 'div0s':0x2007, 'div1':0x3004, 'mul.l':0x0007}[op] | reg(a[1]) << 8 | reg(a[0]) << 4)
             elif op in ('mov.b', 'mov.w', 'mov.l'):
                 width = {'mov.b': 0, 'mov.w': 1, 'mov.l': 2}[op]
                 if a[0].startswith('@'):

@@ -147,6 +147,7 @@ pub struct Smpc {
     ddr: [u8; 2],
     iosel: u8,
     exle: u8,
+    th: [bool; 2],
     sf: bool,
     command: u8,
     pending: Option<(u8, u32)>,
@@ -174,6 +175,7 @@ impl Default for Smpc {
             ddr: [0; 2],
             iosel: 0,
             exle: 0,
+            th: [true; 2],
             sf: false,
             command: 0,
             pending: None,
@@ -210,10 +212,12 @@ impl Smpc {
         let battery = self.battery.clone();
         let buttons = self.buttons;
         let analog = self.analog;
+        let th = self.th;
         *self = Self {
             battery,
             buttons,
             analog,
+            th,
             ..Self::default()
         };
         self.output[31] = 0x0D;
@@ -301,6 +305,15 @@ impl Smpc {
         self.battery.advance(clocks - elapsed);
         Some(command)
     }
+    /// External peripheral TH pin (port bit6). ST-169 §1.2/table1.5 routes
+    /// a falling input edge to the PAD IRQ and VDP2 latch only with EXLE=1.
+    pub(crate) fn set_th(&mut self, port: usize, high: bool) -> bool {
+        if port >= 2 {
+            return false;
+        }
+        let previous = std::mem::replace(&mut self.th[port], high);
+        previous && !high && self.exle & (1 << port) != 0 && self.ddr[port] & 0x40 == 0
+    }
     pub fn set_buttons(&mut self, buttons: u16) {
         self.buttons[0] = buttons & 0x1FFF;
     }
@@ -361,19 +374,25 @@ impl Smpc {
             offset @ (0x75 | 0x77) => {
                 let port = ((offset - 0x75) / 2) as usize;
                 let bit = 1 << port;
-                if self.ddr[port] != 0x60 || self.iosel & bit == 0 || self.exle & bit != 0 {
+                if self.iosel & bit == 0 {
                     return Err(Self::unsupported(address));
                 }
-                if self.analog[port].is_some() {
-                    return Ok((self.pdr[port] & 0x60) | self.handshake[port].pins());
-                }
-                let nibble = match self.pdr[port] & 0x60 {
-                    0x60 => 0x04 | u8::from(self.buttons[port] & (1 << 12) == 0) << 3,
-                    0x20 => !self.buttons[port] as u8 & 15,
-                    0x40 => !(self.buttons[port] >> 4) as u8 & 15,
-                    _ => !(self.buttons[port] >> 8) as u8 & 15,
+                // ST-169 §1.2: input pins and output latches share PDR; DDR
+                // controls each bit independently, including TH used by EXLE.
+                let select = (self.pdr[port] & self.ddr[port])
+                    | (!self.ddr[port] & 0x7F & !(0x40 * u8::from(!self.th[port])));
+                let pins = if self.analog[port].is_some() {
+                    (select & 0x60) | self.handshake[port].pins()
+                } else {
+                    let nibble = match select & 0x60 {
+                        0x60 => 0x04 | u8::from(self.buttons[port] & (1 << 12) == 0) << 3,
+                        0x20 => !self.buttons[port] as u8 & 15,
+                        0x40 => !(self.buttons[port] >> 4) as u8 & 15,
+                        _ => !(self.buttons[port] >> 8) as u8 & 15,
+                    };
+                    (select & 0x60) | 0x10 | nibble
                 };
-                Ok((self.pdr[port] & 0x60) | 0x10 | nibble)
+                Ok((self.pdr[port] & self.ddr[port]) | (pins & !self.ddr[port]))
             }
             _ => Err(Self::unsupported(address)),
         }

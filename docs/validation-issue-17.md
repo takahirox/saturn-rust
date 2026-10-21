@@ -4,6 +4,58 @@
 criterion is complete; #17 must remain open.** Issues #11/#13/#15 are historical,
 administratively closed trackers and must not be reopened.
 
+## Review fixes: CPU faults, interrupt vectors and peripheral latches (2026-10-21)
+
+This work starts from review checkpoint `e7721083d3f14c76b89d8b307580a25f88d559e6`
+and preserves existing PR #18. Upstream main was rechecked as
+`dbd981b030a46daa6923072ce240680dd2e58ebf`. No push or merge was performed.
+
+- MC68EC000 instruction lookahead survives writes, while branches, exceptions
+  and reset refill or discard it. Fault frames capture internal fetch PC, IR,
+  saved SR, function code and processing activity independently. Vector reads
+  use supervisor data; group1/2 entry faults dispatch bus/address error; faults
+  during reset/group0 halt. A traced trap precedes its trace exception.
+  [Native vectors](../src/m68k/tests.rs) cover vector/handler failures, reset
+  words, IRQ state, trace ordering and completed word transfers. Ten additional
+  [original sound-bus guest cases](../tests/fixtures/m68k_faults.py) compare full
+  frames, D0/D1/A0 and retained RAM in [native](../tests/m68k_families.rs) and
+  [browser Wasm](../scripts/browser-smoke.mjs). Two new family cases distinguish
+  a retained next opcode from a newly fetched extension. SIOG also records its
+  actual PC/SR and repairs its frame using an explicit guest recovery label.
+- SH7604 ICR now implements read-only NMIL, selected NMI edges and auto/external
+  IRL vectors. SCU acknowledgement retains the actual source when SH-2 takes an
+  auto-vector. The independent HLE initialization and original SCU/SMPC ROMs
+  explicitly select external vectors; external BIOS retains the reset default.
+- SMPC EXLE/DDR gates TH falling inputs into PAD IRQ and VDP2 external latching.
+  PDR merges input pins and output bits per DDR. VDP2 exposes software/edge
+  latches, held HCNT/VCNT and clear-on-read EXLTFG; non-interlaced ODD is set.
+  MMIO write validation no longer reads side-effecting registers.
+- The original [INTCG guest](../tests/fixtures/build_intc.py) exercises both
+  vector modes, DMA IRQ acknowledgement, both latch ports and thirteen signed
+  DIV1 quotient/remainder cases. Native semantic tests add 262 wider-arithmetic
+  comparisons. Native and browser mutation of ICR's operand prevents the second
+  stage from completing. Repeated resets and repeated TH levels are tested.
+
+Validation: `cargo fmt --check`, locked build/test, native all-target and Wasm
+Clippy with `-D warnings`, web build, all **32** CI reproducibility commands,
+`npm ci --ignore-scripts`, JS syntax check and the complete extended
+`npm run test:browser` passed. **362 native tests passed, zero failed/ignored**
+(195 unit, 167 integration); Node 24.12.0 and Chromium 145.0.7632.6. Native and Wasm checks
+used Rustup stable 1.99.0 and wasm-bindgen 0.2.129. All three existing demo media remain byte-identical.
+The [conformance inventory](hardware-conformance.md) links primary manual sections,
+implementation, guest cases, expected vectors and reproducible hashes. The first
+new tests exposed old expectations that equated data accesses with I/N=1 and
+injected handler instructions after they had already been prefetched; those
+fixtures now prepare their code before execution and use the manual's frames.
+
+This does **not** satisfy the requested complete Issue #17 resolution. Remaining
+review findings include SH7604 overflow/peripheral behavior, instruction-specific
+68k bus microsequences, full bus/CPU/DMA scheduling and reset contracts,
+SCU/DSP arbitration, video modes/raster effects, SCSP/DSP conformance, remaining
+CD/media behavior, HLE service/backup ABI and remaining SMPC clock/system controls.
+No umbrella criterion is checked off, waived, or made dependent on human input.
+The existing issue and PR remain the implementation boundary.
+
 ## Review fixes: DMA, sound CPU timing, envelope execution and ISO startup (2026-10-21)
 
 Related to #17. This work starts at review checkpoint `4150e797024d8afb998be164c45a72b5c4d2ddfa`,

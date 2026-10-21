@@ -605,6 +605,7 @@ fn shifts_rotates_zero_counts_carry_overflow_and_extend() {
 #[test]
 fn trap_privilege_user_supervisor_stacks_rte_stop_and_irq() {
     let (mut c, mut m) = fixture(&[0x4E40, 0x4E71]);
+    m.write16(0x900, 0x4E73).unwrap(); // TRAP handler must exist before vector prefetch
     c.state.usp = 0xD000;
     c.sr(0);
     c.step(&mut m);
@@ -612,10 +613,9 @@ fn trap_privilege_user_supervisor_stacks_rte_stop_and_irq() {
     assert_eq!(c.state.a[7], 0xEFFA);
     assert_eq!(c.state.usp, 0xD000);
     assert_eq!(m.read16(0xEFFA).unwrap(), 0);
-    m.write16(c.state.pc, 0x4E73).unwrap();
+    m.write16(0x102, 0x4E72).unwrap(); // set before RTE refills the target stream
     c.step(&mut m);
     assert_eq!((c.state.pc, c.state.a[7], c.state.sr), (0x102, 0xD000, 0));
-    m.write16(0x102, 0x4E72).unwrap();
     c.step(&mut m);
     assert_eq!(c.state.last_vector, Some(8));
     // STOP with mask zero wakes on interrupt, including from a user SR.
@@ -644,7 +644,7 @@ fn address_error_bus_error_seven_word_frames_trace_and_double_fault_halt() {
     c.step(&mut m);
     assert_eq!(c.state.last_vector, Some(3));
     assert_eq!(c.state.a[7], 0xEFF2);
-    assert_eq!(m.read16(0xEFF2).unwrap(), 0x1D); // read, data, supervisor data FC=5
+    assert_eq!(m.read16(0xEFF2).unwrap(), 0x15); // read, processing instruction, supervisor data FC=5
     assert_eq!(m.read16(0xEFF6).unwrap(), 0x2001);
     assert_eq!(m.read16(0xEFF8).unwrap(), 0x3010);
     assert_eq!(m.read16(0xEFFA).unwrap(), 0x2700);
@@ -1021,7 +1021,7 @@ fn long_predecrement_bus_order_and_partial_write_fault_frames() {
         if let Some(address) = fail {
             assert_eq!(c.state.last_vector, Some(2));
             assert_eq!(m.ram.read32(c.state.a[7] + 2).unwrap(), address);
-            assert_eq!(m.ram.read16(c.state.a[7]).unwrap(), 0xD); // supervisor data write
+            assert_eq!(m.ram.read16(c.state.a[7]).unwrap(), 5); // processing instruction, supervisor data write
             assert_eq!(c.state.instructions, 0);
         } else {
             assert_eq!(m.ram.read32(0x2000).unwrap(), 0x1234ABCD);
@@ -1045,7 +1045,7 @@ fn second_longword_cycle_fault_records_its_own_address_and_preserves_first_write
         assert_eq!(m.ram.read32(c.state.a[7] + 2).unwrap(), 0x2002);
         assert_eq!(
             m.ram.read16(c.state.a[7]).unwrap(),
-            if write { 0xD } else { 0x1D }
+            if write { 5 } else { 0x15 }
         );
         assert_eq!(c.state.d[0], 0x1234ABCD);
         assert_eq!(
@@ -1097,4 +1097,204 @@ fn movem_postincrement_preserves_completed_loads_when_a_later_bus_cycle_faults()
     assert_eq!(c.state.instructions, 0);
     assert_eq!(c.state.last_vector, Some(2));
     assert_eq!(m.ram.read32(c.state.a[7] + 2).unwrap(), 0x2006);
+}
+
+#[test]
+fn prefetch_retains_next_opcode_but_not_unfetched_extension_and_branch_flushes_it() {
+    // UM §§5.1/6.3.9.1: executing IR and lookahead IRC are independent of
+    // subsequent RAM writes. A branch, even to the sequential address, refills.
+    let (mut c, mut m) = fixture(&[0x30BC, 0x7009, 0x7003, 0x4E71]);
+    c.state.a[0] = 0x104;
+    c.step(&mut m); // MOVE.W #$7009,(A0) overwrites the prefetched MOVEQ #3.
+    assert_eq!(m.read16(0x104), Ok(0x7009));
+    c.step(&mut m);
+    assert_eq!(c.state.d[0], 3);
+    let (mut c, mut m) = fixture(&[0x30BC, 9, 0x303C, 3]);
+    c.state.a[0] = 0x106;
+    c.step(&mut m); // next opcode is prefetched, its extension is not yet fetched.
+    c.step(&mut m);
+    assert_eq!(c.state.d[0], 9);
+    let (mut c, mut m) = fixture(&[0x4ED0, 0x7003, 0x4E71]);
+    c.state.a[0] = 0x102;
+    // A fresh target word replaces an already fetched one at the same address.
+    c.next_word(&m, true).unwrap();
+    m.write16(0x102, 0x7009).unwrap();
+    c.execute(&mut m, 0x4ED0).unwrap();
+    c.step(&mut m);
+    assert_eq!(c.state.d[0], 9);
+}
+
+#[test]
+fn fault_frames_save_internal_prefetch_pc_sr_ir_and_access_context() {
+    // Literal source-authored expectations, UM fig.6-7, §§5.4.1/6.3.9.1.
+    for (code, fail, saved_pc, ir, address, ssw) in [
+        (vec![0x2010], 0x2002, 0x104, 0x2010, 0x2002, 0x15),
+        (vec![0x2039, 0, 0x2000], 0x2002, 0x108, 0x2039, 0x2002, 0x15),
+        (vec![0x7003], 0x102, 0x104, 0x7003, 0x102, 0x16),
+        (vec![0x4EF9, 0, 0x2000], 0x2000, 0x108, 0x4EF9, 0x2000, 0x16),
+    ] {
+        let (mut c, mut m) = cycle_fixture(&code);
+        c.state.a[0] = 0x2000;
+        c.state.sr = 0x271B;
+        m.fail_read = Some(fail);
+        c.step(&mut m);
+        assert_eq!(c.state.last_vector, Some(2));
+        let sp = c.state.a[7];
+        assert_eq!(m.ram.read16(sp), Ok(ssw));
+        assert_eq!(m.ram.read32(sp + 2), Ok(address));
+        assert_eq!(m.ram.read16(sp + 6), Ok(ir));
+        assert_eq!(m.ram.read16(sp + 8), Ok(0x271B));
+        assert_eq!(m.ram.read16(sp + 10), Ok((saved_pc >> 16) as u16));
+        assert_eq!(m.ram.read16(sp + 12), Ok(saved_pc as u16));
+        assert_eq!(c.state.instructions, 0);
+        assert_eq!(c.state.d[0], 0);
+        assert!(!c.state.halted);
+    }
+}
+
+#[test]
+fn reset_and_irq_discard_prefetched_words_and_restore_program_function_code() {
+    let (mut c, mut m) = fixture(&[0x4E71, 0x7003, 0x4E71]);
+    c.step(&mut m);
+    m.write16(0x102, 0x7009).unwrap();
+    c.reset(&m).unwrap();
+    c.step(&mut m);
+    c.step(&mut m);
+    assert_eq!(c.state.d[0], 9);
+    c.state.sr = 0x2000;
+    let handler = m.read32(27 * 4).unwrap();
+    m.write16(handler, 0x700B).unwrap();
+    c.set_interrupt(3);
+    c.step(&mut m);
+    c.set_interrupt(0);
+    c.step(&mut m);
+    assert_eq!(c.state.d[0], 11);
+    assert_eq!(c.state.exceptions, 1);
+}
+
+#[test]
+fn group_one_and_two_vector_faults_dispatch_bus_error_with_processor_activity_context() {
+    // UM §§6.1/6.3.9.1: vector cycles use supervisor data, not program FC.
+    // Group1 IRQ has I/N=1; group2 TRAP still processes an instruction (I/N=0).
+    for irq in [false, true] {
+        let (mut c, mut m) = cycle_fixture(&[0x4E40]);
+        c.state.sr = 0x2000;
+        let vector_address = if irq { 27 * 4 } else { 32 * 4 };
+        m.fail_read = Some(vector_address);
+        if irq {
+            c.set_interrupt(3);
+        }
+        c.step(&mut m);
+        assert!(!c.state.halted);
+        assert_eq!(c.state.last_vector, Some(2));
+        let sp = c.state.a[7];
+        assert_eq!(m.ram.read16(sp), Ok(if irq { 0x1D } else { 0x15 }));
+        assert_eq!(m.ram.read16(sp + 2), Ok(0));
+        assert_eq!(m.ram.read16(sp + 4), Ok(vector_address as u16));
+        assert_eq!(m.ram.read16(sp + 8), Ok(if irq { 0x2300 } else { 0x2000 }));
+        assert_eq!(m.ram.read16(sp + 10), Ok(0));
+        assert_eq!(m.ram.read16(sp + 12), Ok(vector_address as u16));
+        assert_eq!(sp, 0xEFEC); // failed exception's six bytes + access frame
+    }
+}
+
+#[test]
+fn handler_prefetch_failure_records_vector_pc_and_double_bus_error_halts_until_reset() {
+    // UM §6.3.9.1 also covers handler fetch failure in the final exception phase.
+    let (mut c, mut m) = cycle_fixture(&[0x4E40]);
+    m.fail_read = Some(0x900); // TRAP0 handler's first prefetched word
+    c.step(&mut m);
+    assert!(!c.state.halted);
+    assert_eq!(c.state.last_vector, Some(2));
+    let sp = c.state.a[7];
+    assert_eq!(m.ram.read16(sp), Ok(0x16)); // supervisor program, still group2
+    assert_eq!(m.ram.read16(sp + 2), Ok(0));
+    assert_eq!(m.ram.read16(sp + 4), Ok(0x900));
+    assert_eq!(m.ram.read16(sp + 12), Ok(0x80)); // TRAP vector's address
+    let (mut c, mut m) = cycle_fixture(&[0x2010]);
+    c.state.a[0] = 0x2001; // address error, then bus error fetching its vector
+    m.fail_read = Some(3 * 4);
+    c.step(&mut m);
+    assert!(c.state.halted);
+    let frozen = c.state.clone();
+    assert_eq!(c.step(&mut m), 4);
+    assert_eq!(c.state, frozen);
+    m.fail_read = None;
+    c.reset(&m).unwrap();
+    assert!(!c.state.halted);
+    assert_eq!(c.state.pc, 0x100);
+    assert_eq!(c.state.a[7], 0xF000);
+    assert!(c.prefetch.is_empty());
+}
+
+#[test]
+fn bus_error_in_any_reset_vector_word_halts_without_an_exception_stack() {
+    for address in [0, 2, 4, 6] {
+        let (mut c, mut m) = cycle_fixture(&[0x4E71]);
+        m.fail_read = Some(address);
+        assert!(c.reset(&m).is_err());
+        assert!(c.state.halted);
+        assert_eq!(c.state.exceptions, 0);
+        assert!(m.writes.is_empty());
+        assert_eq!(c.step(&mut m), 4);
+        m.fail_read = None;
+        c.reset(&m).unwrap();
+        assert!(!c.state.halted);
+        assert_eq!(c.state.pc, 0x100);
+        assert_eq!(c.state.a[7], 0xF000);
+    }
+}
+
+#[test]
+fn traced_trap_stacks_the_trap_before_trace_and_preserves_both_return_contexts() {
+    // MC68000UM §6.3.8's explicit TRAP/trace ordering, six-byte frames fig.6-5.
+    let (mut c, mut m) = fixture(&[0x4E40, 0x4E71]);
+    c.state.sr = 0xA000;
+    assert_eq!(c.step(&mut m), 68);
+    assert_eq!(c.state.instructions, 1);
+    assert_eq!(c.state.exceptions, 2);
+    assert_eq!(c.state.last_vector, Some(9));
+    assert_eq!(c.state.pc, 0x848);
+    assert_eq!(c.state.a[7], 0xEFF4);
+    assert_eq!(m.read16(0xEFFA), Ok(0xA000)); // original TRAP SR
+    assert_eq!(m.read16(0xEFFE), Ok(0x102)); // original successor
+    assert_eq!(m.read16(0xEFF4), Ok(0x2000)); // trace starts in supervisor, T clear
+    assert_eq!(m.read16(0xEFF8), Ok(0x900)); // trace returns to the TRAP handler
+}
+
+#[test]
+fn illegal_privilege_trace_and_line_emulator_entry_faults_use_group_one_activity() {
+    // UM table6-3 and §6.3.9.1: these are not the group2 instruction traps.
+    for (op, sr, vector) in [
+        (0x4AFC, 0x2700, 4u8),
+        (0x4E70, 0, 8),
+        (0x4E71, 0xA700, 9),
+        (0xA000, 0x2700, 10),
+        (0xF000, 0x2700, 11),
+    ] {
+        let (mut c, mut m) = cycle_fixture(&[op]);
+        c.sr(sr);
+        m.fail_read = Some(u32::from(vector) * 4);
+        c.step(&mut m);
+        assert!(!c.state.halted);
+        assert_eq!(c.state.last_vector, Some(2));
+        let sp = c.state.a[7];
+        assert_eq!(m.ram.read16(sp), Ok(0x1D)); // supervisor data + read + I/N
+        assert_eq!(m.ram.read16(sp + 12), Ok(u16::from(vector) * 4));
+    }
+}
+
+#[test]
+fn five_word_move_fault_keeps_internal_pc_at_final_extension_boundary() {
+    // MOVE.L #$12345678,$2000, maximum MC68000 length; UM §§6.3.9.1/8.2.
+    let (mut c, mut m) = cycle_fixture(&[0x23FC, 0x1234, 0x5678, 0, 0x2000]);
+    m.fail_write = Some(0x2002);
+    c.step(&mut m);
+    assert_eq!(c.state.last_vector, Some(2));
+    let sp = c.state.a[7];
+    assert_eq!(m.ram.read16(sp), Ok(5));
+    assert_eq!(m.ram.read32(sp + 2), Ok(0x2002));
+    assert_eq!(m.ram.read16(sp + 6), Ok(0x23FC));
+    assert_eq!(m.ram.read16(sp + 12), Ok(0x10A));
+    assert_eq!(m.ram.read16(0x2000), Ok(0x1234));
 }

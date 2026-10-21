@@ -15,7 +15,9 @@ if __name__ == '__main__':
     text, digest = build(families=True)
     text = text.replace('build_sound.py from sound.s','build_m68k_families.py / m68k_families.py from sound.s')
     expected = ''.join(f'{name}\t{value:08X}\t{flags:02X}\n' if flags is not None else f'{name}\t{value:08X}\t-\n' for name,_,value,flags in CASES)
-    for name, data in [('m68k-families.hex',text),('m68k-families.tsv',expected)]:
+    from m68k_families import install
+    fault_vectors = install(bytearray(0x4400))
+    for name, data in [('m68k-families.hex',text),('m68k-families.tsv',expected),('m68k-faults.tsv',fault_vectors)]:
         path = Path(__file__).with_name(name)
         if args.check:
             assert path.read_text() == data, f'Rebuild {name}'

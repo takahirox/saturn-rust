@@ -39,6 +39,8 @@ CASES = [
     ('MULU', [0x203C,0,0xFFFF,0x7202,0xC0C1], 0x1FFFE, 0),
     ('NEG', [0x7001,0x4400], 0xFF, 0x19),
     ('NEGX', [0x7000,0x44FC,0x14,0x4000], 0xFF, 0x19),
+    ('prefetch opcode', [0x41FA,6,0x30BC,0x7009,0x7003], 3, 0),
+    ('prefetch extension', [0x41FA,8,0x30BC,9,0x303C,3], 9, 0),
     ('NOP', [0x702A,0x4E71], 42, 0),
     ('NOT', [0x70FF,0x4680], 0, 4),
     ('OR', [0x7050,0x720F,0x8041], 0x5F, 0),
@@ -87,6 +89,8 @@ def install(image):
         words += [0x44FC,0] + code
         at = 0x5000 + i*8
         words += [0x40C2,0x23C0,0,at,0x0282,0,31,0x23C2,0,at+4]
+    from m68k_faults import install as install_faults
+    fault_vectors = install_faults(image, words)
     words += [0x4E75]
     assert 0x1000 + len(words)*2 < 0x3800
     struct.pack_into('>'+'H'*len(words), image, 0x1000, *words)
@@ -100,3 +104,4 @@ def install(image):
     traps=[0x52B9,0,0x5804,0x4E73]
     struct.pack_into('>'+'H'*len(faults), image, 0x3800, *faults)
     struct.pack_into('>'+'H'*len(traps), image, 0x3820, *traps)
+    return fault_vectors

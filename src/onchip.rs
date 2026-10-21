@@ -17,6 +17,7 @@ use wdt::Watchdog;
 pub const SBYCR: u32 = 0xFFFF_FE91;
 pub const SCI: u32 = 0xFFFF_FE00;
 pub const WDT: u32 = 0xFFFF_FE80;
+pub const ICR: u32 = 0xFFFF_FEE0;
 pub const IPRA: u32 = 0xFFFF_FEE2;
 pub const VCRA: u32 = 0xFFFF_FE62;
 pub const VCRB: u32 = 0xFFFF_FE64;
@@ -39,6 +40,8 @@ pub struct OnChip {
     pub(super) dma: Dma,
     serial: Serial,
     watchdog: Watchdog,
+    icr: u16,
+    nmi_high: bool,
     ipra: u16,
     vcra: u16,
     vcrb: u16,
@@ -73,6 +76,8 @@ impl Default for OnChip {
             dma: Dma::default(),
             serial: Serial::default(),
             watchdog: Watchdog::default(),
+            icr: 0,
+            nmi_high: true,
             ipra: 0,
             vcra: 0,
             vcrb: 0,
@@ -106,7 +111,7 @@ impl OnChip {
             || (DMAC..DMAC + 0x34).contains(&address)
             || matches!(
                 address & !1,
-                IPRA | IPRB | VCRA | VCRB | VCRC | VCRD | VCRWDT
+                ICR | IPRA | IPRB | VCRA | VCRB | VCRC | VCRD | VCRWDT
             )
         {
             BusError::UnsupportedDevice { address, width }
@@ -121,6 +126,7 @@ impl OnChip {
 
     fn intc(&self, address: u32) -> Option<(u16, u16)> {
         match address {
+            ICR => Some((self.icr | u16::from(self.nmi_high) << 15, 0x0101)),
             IPRA => Some((self.ipra, 0xFFF0)),
             IPRB => Some((self.iprb, 0xFF00)),
             VCRA => Some((self.vcra, 0x7F7F)),
@@ -300,6 +306,7 @@ impl OnChip {
         let (_, mask) = self.intc(address).ok_or(Self::unsupported(address, 2))?;
         let word = value & mask;
         match address {
+            ICR => self.icr = word,
             IPRA => self.ipra = word,
             IPRB => self.iprb = word,
             VCRA => self.vcra = word,
@@ -532,7 +539,32 @@ impl OnChip {
     pub(crate) fn take_reset_request(&mut self) -> Option<ResetRequest> {
         self.watchdog.request.take()
     }
+    /// H §5.3.8: IRL auto-vector shares one vector for each pair of levels;
+    /// VECMD=1 samples the board-supplied D7–D0 vector (only seven bits valid).
+    pub(crate) fn external_vector(&self, level: u8, vector: u8) -> u8 {
+        if self.icr & 1 == 0 {
+            64 + level / 2
+        } else {
+            vector & 0x7F
+        }
+    }
+    /// Board NMI electrical input. Repeated levels do not create new edges;
+    /// NMIL is read-only and NMIE selects the edge independently of SR.I.
+    pub fn set_nmi_pin(&mut self, high: bool) -> bool {
+        let previous = std::mem::replace(&mut self.nmi_high, high);
+        let request = previous != high && high == (self.icr & 0x100 != 0);
+        if request {
+            self.nmi_edge();
+        }
+        request
+    }
     pub(crate) fn signal_nmi(&mut self) {
+        // SMPC supplies a complete active-low pulse. Either NMIE selection
+        // detects exactly one of its two edges, leaving the pin deasserted.
+        self.set_nmi_pin(false);
+        self.set_nmi_pin(true);
+    }
+    fn nmi_edge(&mut self) {
         if self.standby && self.wake_remaining.is_none() {
             self.wake_remaining = Some(self.watchdog.settling_clocks());
         }
@@ -574,6 +606,7 @@ impl OnChip {
         watchdog.reset_preserving_cause();
         *self = Self {
             bsc,
+            nmi_high: self.nmi_high,
             division: RefCell::new(division),
             watchdog,
             ..Self::default()

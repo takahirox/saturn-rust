@@ -24,7 +24,7 @@ def idle(label):
 
 
 def program():
-    s = 'mov #0,r0\nldc r0,sr\nload 0x05fe00a0,r1\nload 0xbf7f,r0\nmov.l r0,@r1\n'
+    s = 'load 0xfffffee0,r1\nmov #1,r0\nmov.w r0,@r1\nmov #0,r0\nldc r0,sr\nload 0x05fe00a0,r1\nload 0xbf7f,r0\nmov.l r0,@r1\n'
     for i, value in enumerate([0x20,0x24,0x32,0x29,0x12,0x34,0x56]): s += byte(0x100001+i*2, value)
     s += issue(0x16) + idle('time_done')
     for i, value in enumerate([0x12,0x34,0x56,0x78]): s += byte(0x100001+i*2,value)

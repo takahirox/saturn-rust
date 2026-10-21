@@ -53,6 +53,17 @@ fn sound_cpu_executes_independent_architectural_families_and_effective_addresses
                 );
             }
         }
+        for (i, line) in include_str!("fixtures/m68k-faults.tsv").lines().enumerate() {
+            let fields: Vec<_> = line.split('\t').collect();
+            for (j, word) in fields[1..].iter().enumerate() {
+                assert_eq!(
+                    m.bus().read32(SOUND_RAM + 0x5900 + (i * 32 + j * 4) as u32),
+                    Ok(u32::from_str_radix(word, 16).unwrap()),
+                    "{} field {j}",
+                    fields[0]
+                );
+            }
+        }
         assert!(m.drain_audio(8192).iter().any(|s| *s != 0));
     }
 }

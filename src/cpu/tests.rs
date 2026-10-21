@@ -1227,3 +1227,48 @@ impl Memory for FlatMemory {
         Ok(())
     }
 }
+
+#[test]
+fn signed_division_sequences_cover_signs_extrema_and_truncate_towards_zero() {
+    // P §6.19 example4 uses sign extension, one's-complement correction, then
+    // 32 ROTCL/DIV1 pairs. Golden math uses a wider signed host quotient, not
+    // the core's bit recurrence; zero and overflowing quotients are prohibited.
+    let mut code = vec![0x6323, 0x4324, 0x311A, 0x233A, 0x323A, 0x2107];
+    for _ in 0..32 {
+        code.extend([0x4224, 0x3104]);
+    }
+    code.extend([0x4224, 0x323E]);
+    for dividend in [
+        i32::MIN,
+        i32::MIN + 1,
+        -65536,
+        -100,
+        -7,
+        -1,
+        0,
+        1,
+        7,
+        100,
+        65536,
+        i32::MAX,
+    ] {
+        for divisor in [i32::MIN, -65536, -7, -3, -1, 1, 2, 3, 7, 65536, i32::MAX] {
+            let q = i64::from(dividend) / i64::from(divisor);
+            if q > i64::from(i32::MAX) {
+                continue;
+            }
+            for t in [0, 1] {
+                let (mut c, mut b) = setup(&code);
+                c.state.r[2] = dividend as u32;
+                c.state.r[0] = divisor as u32;
+                c.state.r[1] = 0x12345678;
+                c.state.sr = 0xF2 | t;
+                for _ in &code {
+                    c.step(&mut b).unwrap();
+                }
+                assert_eq!(c.state.r[2], q as u32, "{dividend}/{divisor}, T={t}");
+                assert_eq!(c.state.sr & 0xF2, 0xF2); // S and I survive the full sequence
+            }
+        }
+    }
+}

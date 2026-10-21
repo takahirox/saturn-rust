@@ -50,6 +50,11 @@ pub struct M68k {
     irq: u8,
     level7_edge: bool,
     pub reset_output: bool,
+    // Instruction register plus a prefetched word. Writes to the sound bus do
+    // not invalidate either; only a control-flow change flushes the queue.
+    prefetch: std::collections::VecDeque<(u32, u16)>,
+    bus_pc: u32,
+    exception_activity: bool,
 }
 #[derive(Clone, Copy)]
 enum Size {
@@ -99,6 +104,8 @@ enum Fault {
         write: bool,
         instruction: bool,
         address_error: bool,
+        pc: u32,
+        not_instruction: bool,
     },
 }
 type Result<T> = std::result::Result<T, Fault>;
@@ -137,10 +144,15 @@ impl M68k {
     }
     pub fn reset(&mut self, memory: &impl Memory) -> std::result::Result<(), BusError> {
         *self = Self::default();
-        self.state.a[7] = Self::reset_long(memory, 0)?;
-        self.state.ssp = self.state.a[7];
-        self.state.pc = Self::reset_long(memory, 4)?;
-        Ok(())
+        let vectors = (|| {
+            self.state.a[7] = Self::reset_long(memory, 0)?;
+            self.state.ssp = self.state.a[7];
+            self.state.pc = Self::reset_long(memory, 4)?;
+            Ok(())
+        })();
+        // UM §6.3.9.1: reset-vector BERR halts; it cannot recursively dispatch.
+        self.state.halted = vectors.is_err();
+        vectors
     }
     fn reset_long(memory: &impl Memory, address: u32) -> std::result::Result<u32, BusError> {
         Ok(u32::from(memory.read16(address)?) << 16 | u32::from(memory.read16(address + 2)?))
@@ -186,6 +198,8 @@ impl M68k {
             write: false,
             instruction,
             address_error: matches!(e, BusError::Unaligned { .. }),
+            pc: self.bus_pc,
+            not_instruction: self.exception_activity,
         };
         let a = address & 0xFF_FFFF;
         if size.bytes() > 1 && a & 1 != 0 {
@@ -205,6 +219,8 @@ impl M68k {
                             write: false,
                             instruction,
                             address_error: matches!(e, BusError::Unaligned { .. }),
+                            pc: self.bus_pc,
+                            not_instruction: self.exception_activity,
                         }
                     })?)
             }
@@ -216,6 +232,8 @@ impl M68k {
             write: true,
             instruction: false,
             address_error: matches!(e, BusError::Unaligned { .. }),
+            pc: self.bus_pc,
+            not_instruction: self.exception_activity,
         };
         let a = address & 0xFF_FFFF;
         if size.bytes() > 1 && a & 1 != 0 {
@@ -236,6 +254,8 @@ impl M68k {
                         write: true,
                         instruction: false,
                         address_error: matches!(e, BusError::Unaligned { .. }),
+                        pc: self.bus_pc,
+                        not_instruction: self.exception_activity,
                     })?;
             }
         }
@@ -260,10 +280,58 @@ impl M68k {
             self.write(memory, address, size, value)
         }
     }
-    fn next(&mut self, memory: &impl Memory) -> Result<u16> {
-        let value = self.read(memory, self.state.pc, Size::Word, true)? as u16;
+    fn refill(&mut self, memory: &impl Memory, count: usize, redirect: bool) -> Result<()> {
+        let old_pc = self.bus_pc;
+        while self.prefetch.len() < count {
+            let address = self
+                .prefetch
+                .back()
+                .map_or(self.state.pc, |(a, _)| a.wrapping_add(2));
+            // UM §6.3.9.1: an aborted sequential prefetch saves the internal
+            // fetch PC; a failed branch-target fetch retains the branch context.
+            self.bus_pc = if redirect {
+                old_pc
+            } else {
+                address.wrapping_add(2)
+            };
+            let word = self.read(memory, address, Size::Word, true)? as u16;
+            self.prefetch.push_back((address, word));
+        }
+        self.bus_pc = self
+            .prefetch
+            .back()
+            .map_or(self.bus_pc, |(a, _)| a.wrapping_add(2));
+        Ok(())
+    }
+    fn next_word(&mut self, memory: &impl Memory, opcode: bool) -> Result<u16> {
+        if self
+            .prefetch
+            .front()
+            .is_some_and(|(a, _)| *a != self.state.pc)
+        {
+            self.prefetch.clear();
+        }
+        self.refill(memory, 1, false)?;
+        let (_, value) = self.prefetch.pop_front().unwrap();
         self.state.pc = self.state.pc.wrapping_add(2);
+        if opcode {
+            self.opcode = value;
+        }
+        // A five-word instruction has used the final EA extension. Do not
+        // eagerly issue a sixth word before its operand cycle: UM §6.3.9.1
+        // bounds the saved internal PC at ten bytes beyond the instruction.
+        if self.state.pc.wrapping_sub(self.start_pc) != 10 {
+            self.refill(memory, 1, false)?;
+        }
         Ok(value)
+    }
+    fn next(&mut self, memory: &impl Memory) -> Result<u16> {
+        self.next_word(memory, false)
+    }
+    fn redirect(&mut self, memory: &impl Memory, pc: u32) -> Result<()> {
+        self.state.pc = pc;
+        self.prefetch.clear();
+        self.refill(memory, 2, true)
     }
     fn immediate(&mut self, memory: &impl Memory, size: Size) -> Result<u32> {
         let value = u32::from(self.next(memory)?);
@@ -471,6 +539,12 @@ impl M68k {
         access: Option<(u32, u16)>,
     ) -> Result<()> {
         let old_sr = self.state.sr;
+        // UM §§6.3.9.1/6.3.10: I/N describes processor activity, not the
+        // function-code pins. Group 0/1 exception cycles assert I/N.
+        // UM table6-3: only TRAP/TRAPV/CHK/zero-divide are group2.
+        // Illegal/privilege/trace (including line-A/F emulation) are group1.
+        self.exception_activity = !matches!(vector, 5..=7 | 32..=47);
+        self.prefetch.clear();
         self.sr((old_sr | S) & !T);
         self.state.stopped = false;
         if let Some(l) = level {
@@ -484,14 +558,69 @@ impl M68k {
             self.push(memory, Size::Long, address)?;
             self.push(memory, Size::Word, u32::from(ssw))?;
         }
-        self.state.pc = self.read(memory, u32::from(vector) * 4, Size::Long, true)?;
+        // UM §6.1: vector lookup uses supervisor data space. A failure in this
+        // final phase reports the vector address in the saved internal PC.
+        self.bus_pc = u32::from(vector) * 4;
+        self.state.pc = self.read(memory, self.bus_pc, Size::Long, false)?;
+        self.refill(memory, 2, true)?;
         self.state.exceptions += 1;
         self.state.last_vector = Some(vector);
+        self.exception_activity = false;
         Ok(())
+    }
+    fn fault_context(&mut self, fault: Fault) -> (u8, u32, Option<(u32, u16)>) {
+        match fault {
+            Fault::Vector(v, next) => {
+                self.state.instructions += u64::from(next);
+                (v, if next { self.state.pc } else { self.start_pc }, None)
+            }
+            Fault::Access {
+                address,
+                write,
+                instruction,
+                address_error,
+                pc,
+                not_instruction,
+            } => {
+                let fc =
+                    if self.state.sr & S != 0 { 4 } else { 0 } | if instruction { 2 } else { 1 };
+                (
+                    if address_error { 3 } else { 2 },
+                    pc,
+                    Some((
+                        address,
+                        fc | if write { 0 } else { 16 } | if not_instruction { 8 } else { 0 },
+                    )),
+                )
+            }
+        }
+    }
+    fn deliver_exception(
+        &mut self,
+        memory: &mut impl Memory,
+        vector: u8,
+        pc: u32,
+        level: Option<u8>,
+        access: Option<(u32, u16)>,
+    ) -> u32 {
+        if let Err(fault) = self.exception(memory, vector, pc, level, access) {
+            // UM §6.3.9.1: a fault during group1/2 processing enters group0.
+            // Only a fault while handling bus/address error (or reset) halts.
+            if access.is_some() {
+                self.state.halted = true;
+                return 0;
+            }
+            let (v, pc, frame) = self.fault_context(fault);
+            if self.exception(memory, v, pc, None, frame).is_err() {
+                self.state.halted = true;
+            }
+            return 50;
+        }
+        0
     }
     /// Executes one architectural boundary, returning a bounded functional clock
     /// budget from MC68000UM §8. DIV and data-register bit modifications retain
-    /// the documented maximum time; bus wait/prefetch scheduling remains separate.
+    /// the documented maximum time; per-cycle bus arbitration remains separate.
     /// Fatal double faults halt the core until reset; no host panic or silent NOP.
     pub fn step(&mut self, memory: &mut impl Memory) -> u32 {
         if self.state.halted {
@@ -501,71 +630,47 @@ impl M68k {
         if self.level7_edge || (self.irq != 0 && self.irq > mask) {
             let level = if self.level7_edge { 7 } else { self.irq };
             self.level7_edge = false;
-            if self
-                .exception(memory, 24 + level, self.state.pc, Some(level), None)
-                .is_err()
-            {
-                self.state.halted = true;
-            }
-            return 44;
+            return 44
+                + self.deliver_exception(memory, 24 + level, self.state.pc, Some(level), None);
         }
         if self.state.stopped {
             return 4;
         }
         self.start_pc = self.state.pc;
+        self.exception_activity = false;
         let trace = self.state.sr & T != 0;
-        let result = self.next(memory).and_then(|op| {
-            self.opcode = op;
-            self.execute(memory, op)
-        });
+        let result = self
+            .next_word(memory, true)
+            .and_then(|op| self.execute(memory, op));
         match result {
             Ok(clocks) => {
                 self.state.instructions += 1;
-                if trace
-                    && self
-                        .exception(memory, 9, self.state.pc, None, None)
-                        .is_err()
-                {
-                    self.state.halted = true;
-                }
-                clocks + if trace { 34 } else { 0 }
+                let exception_clocks = if trace {
+                    34 + self.deliver_exception(memory, 9, self.state.pc, None, None)
+                } else {
+                    0
+                };
+                clocks + exception_clocks
             }
             Err(fault) => {
-                let (vector, pc, access) = match fault {
-                    Fault::Vector(v, next) => {
-                        self.state.instructions += u64::from(next);
-                        (v, if next { self.state.pc } else { self.start_pc }, None)
-                    }
-                    Fault::Access {
-                        address,
-                        write,
-                        instruction,
-                        address_error,
-                    } => {
-                        let fc = if self.state.sr & S != 0 { 4 } else { 0 }
-                            | if instruction { 2 } else { 1 };
-                        (
-                            if address_error { 3 } else { 2 },
-                            self.state.pc,
-                            Some((
-                                address,
-                                fc | if write { 0 } else { 16 } | if instruction { 0 } else { 8 },
-                            )),
-                        )
-                    }
-                };
-                if self.exception(memory, vector, pc, None, access).is_err() {
-                    self.state.halted = true;
+                // UM §6.3.8: a traced TRAP/CHK/divide exception precedes the
+                // pending trace; group0 faults abort the instruction instead.
+                let trace_after = trace && matches!(fault, Fault::Vector(_, true));
+                let (vector, pc, access) = self.fault_context(fault);
+                let mut extra = self.deliver_exception(memory, vector, pc, None, access);
+                if trace_after && extra == 0 && !self.state.halted {
+                    extra += 34 + self.deliver_exception(memory, 9, self.state.pc, None, None);
                 }
-                if access.is_some() {
-                    50
-                } else {
-                    match vector {
-                        5 => 38 + Self::ea_clocks(self.opcode & 63, Size::Word),
-                        6 => 40 + Self::ea_clocks(self.opcode & 63, Size::Word),
-                        _ => 34,
+                extra
+                    + if access.is_some() {
+                        50
+                    } else {
+                        match vector {
+                            5 => 38 + Self::ea_clocks(self.opcode & 63, Size::Word),
+                            6 => 40 + Self::ea_clocks(self.opcode & 63, Size::Word),
+                            _ => 34,
+                        }
                     }
-                }
             }
         }
     }
@@ -611,7 +716,7 @@ impl M68k {
                             self.state.d[reg] =
                                 (self.state.d[reg] & 0xFFFF_0000) | u32::from(count);
                             if count != 0xFFFF {
-                                self.state.pc = base.wrapping_add(d);
+                                self.redirect(memory, base.wrapping_add(d))?;
                                 return Ok(10);
                             }
                             return Ok(14);
@@ -675,7 +780,7 @@ impl M68k {
                 }
                 let taken = condition <= 1 || self.condition(condition);
                 if taken {
-                    self.state.pc = base.wrapping_add(d as u32);
+                    self.redirect(memory, base.wrapping_add(d as u32))?;
                 }
                 Ok(if condition == 1 {
                     18
@@ -850,11 +955,12 @@ impl M68k {
                 let sr = self.pop(memory, Size::Word)? as u16;
                 let pc = self.pop(memory, Size::Long)?;
                 self.sr(sr);
-                self.state.pc = pc;
+                self.redirect(memory, pc)?;
                 return Ok(20);
             }
             0x4E75 => {
-                self.state.pc = self.pop(memory, Size::Long)?;
+                let pc = self.pop(memory, Size::Long)?;
+                self.redirect(memory, pc)?;
                 return Ok(16);
             }
             0x4E76 => {
@@ -866,7 +972,8 @@ impl M68k {
             0x4E77 => {
                 let ccr = self.pop(memory, Size::Word)? as u16;
                 self.state.sr = (self.state.sr & !31) | (ccr & 31);
-                self.state.pc = self.pop(memory, Size::Long)?;
+                let pc = self.pop(memory, Size::Long)?;
+                self.redirect(memory, pc)?;
                 return Ok(20);
             }
             _ => (),
@@ -905,7 +1012,7 @@ impl M68k {
             if op & 0x40 == 0 {
                 self.push(memory, Size::Long, self.state.pc)?;
             }
-            self.state.pc = a;
+            self.redirect(memory, a)?;
             return Ok(Self::jump_clocks(bits) + if op & 0x40 == 0 { 8 } else { 0 });
         }
         if op & 0xF1C0 == 0x41C0 {

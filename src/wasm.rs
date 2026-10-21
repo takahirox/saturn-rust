@@ -100,6 +100,9 @@ impl Emulator {
     pub fn sound_halted(&self) -> bool {
         self.machine.sound_state().halted
     }
+    pub fn set_peripheral_th(&mut self, port: u8, high: bool) {
+        self.machine.set_peripheral_th(port as usize, high);
+    }
     pub fn set_buttons(&mut self, buttons: u16) {
         self.machine.set_buttons(buttons);
     }

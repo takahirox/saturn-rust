@@ -148,3 +148,13 @@ assets, firmware, SDK routines or device cores are included. Their
 include native and browser guest-literal mutations, repeatable resets and
 production Canvas comparisons. CI requires both `--check` builders. Existing
 demonstration discs remain unchanged; the full Issue #17 scope remains required.
+
+
+The original Issue #17 interrupt/latch and sound-fault diagnostics are covered by
+[the fixture MIT license](../tests/fixtures/LICENSE). This includes
+[build_intc.py](../tests/fixtures/build_intc.py), its generated ROM and signed
+quotient/remainder TSV, [m68k_faults.py](../tests/fixtures/m68k_faults.py), and the
+resulting family ROM/fault-frame TSV. Fixtures use only the project's original
+assembler and Python standard library. Register, frame and arithmetic expectations
+are source-authored; no outputs are sampled from an emulator, Sega firmware or SDK.
+These are diagnostic programs; the three existing demo media retain their hashes.

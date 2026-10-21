@@ -231,7 +231,9 @@ impl Bus {
     pub(crate) fn interrupt(&self, processor: Processor) -> Option<(u8, u8)> {
         let internal = self.onchip[processor as usize].interrupt();
         let external = if processor == Processor::Master {
-            self.scu.interrupt()
+            self.scu
+                .interrupt()
+                .map(|(level, vector)| (level, self.onchip[0].external_vector(level, vector)))
         } else {
             None
         };
@@ -248,8 +250,12 @@ impl Bus {
             self.onchip[processor as usize].acknowledge_break();
             return;
         }
-        if processor == Processor::Master && self.scu.interrupt() == Some(irq) {
-            self.scu.acknowledge(irq.1);
+        if processor == Processor::Master
+            && let Some((level, vector)) = self.scu.interrupt()
+            && irq == (level, self.onchip[0].external_vector(level, vector))
+        {
+            // Acknowledge the actual SCU source, even in SH-2 auto-vector mode.
+            self.scu.acknowledge(vector);
         }
     }
     pub(crate) fn advance_scu_dma(&mut self) -> Result<(), ScuError> {
@@ -381,6 +387,8 @@ impl Bus {
                 Some(RasterEvent::LineStart) => self.vdp2.hblank = false,
                 None => (),
             }
+            let (h, v) = self.raster.counters();
+            self.vdp2.counters(h, v);
             self.scu_dma_phase = (self.scu_dma_phase + delta) % 8;
             if self.scu_dma_phase == 0 {
                 self.advance_scu_dma()?;
@@ -424,6 +432,12 @@ impl Bus {
         self.smpc.set_3d_pad(port, axes);
     }
 
+    pub(crate) fn set_peripheral_th(&mut self, port: usize, high: bool) {
+        if self.smpc.set_th(port, high) {
+            self.vdp2.external_latch();
+            self.scu.signal(8);
+        }
+    }
     pub fn set_buttons(&mut self, buttons: u16) {
         self.smpc.set_buttons(buttons);
     }
@@ -742,10 +756,7 @@ impl Bus {
             // Validate the entire access before mutating either halfword.
             for i in (0..N).step_by(2) {
                 let target = address + i as u32;
-                if target == VDP2 + 4 {
-                    return Err(BusError::UnsupportedDevice { address, width: N });
-                }
-                self.vdp2.read16(target)?;
+                Vdp2::validate_write(target)?;
             }
             for (i, pair) in bytes.as_chunks::<2>().0.iter().enumerate() {
                 self.vdp2.write16(
@@ -993,6 +1004,46 @@ impl Memory for CpuBus<'_> {
 mod scu_timing_tests {
     use super::*;
     #[test]
+    fn smpc_input_edges_latch_raster_counters_and_raise_pad_irqs_with_independent_enables() {
+        // ST-169 §1.2/table1.5; ST-058 §2.5/tables2.3–2.4; SCU table2.1.
+        let mut b = Bus::default();
+        b.advance_clocks(1708 + 40).unwrap();
+        assert_eq!(b.read16(VDP2 + 2), Ok(0)); // software latch
+        assert_eq!(b.read32(VDP2 + 8), Ok(0x00140002));
+        b.advance_clocks(80).unwrap();
+        assert_eq!(b.read32(VDP2 + 8), Ok(0x00140002)); // held until another latch
+        b.read16(VDP2 + 2).unwrap();
+        assert_eq!(b.read32(VDP2 + 8), Ok(0x003C0002));
+        b.write16(VDP2 + 2, 0x200).unwrap();
+        b.write8(SMPC + 0x7D, 3).unwrap();
+        b.write8(SMPC + 0x7F, 3).unwrap();
+        b.advance_clocks(40).unwrap();
+        b.set_peripheral_th(0, false);
+        assert_eq!(b.read32(VDP2 + 8), Ok(0x00500002));
+        assert_eq!(b.read16(VDP2 + 4), Ok(0x202));
+        assert_eq!(b.read16(VDP2 + 4), Ok(2)); // read clears EXLTFG only
+        assert_eq!(b.read32(SCU + 0xA4).unwrap() & 0x100, 0x100);
+        b.scu.acknowledge(0x48);
+        b.advance_clocks(40).unwrap();
+        b.set_peripheral_th(0, false); // no second edge
+        assert_eq!(b.read32(SCU + 0xA4).unwrap() & 0x100, 0);
+        assert_eq!(b.read32(VDP2 + 8), Ok(0x00500002));
+        b.write8(SMPC + 0x7B, 0x40).unwrap();
+        b.set_peripheral_th(1, false); // output TH is not a latch input
+        assert_eq!(b.read32(SCU + 0xA4).unwrap() & 0x100, 0);
+        b.set_peripheral_th(1, true);
+        b.write8(SMPC + 0x7B, 0).unwrap();
+        b.write16(VDP2 + 2, 0).unwrap();
+        b.set_peripheral_th(1, false); // PAD IRQ does not require VDP2 EXLTEN
+        assert_eq!(b.read32(SCU + 0xA4).unwrap() & 0x100, 0x100);
+        assert_eq!(b.read16(VDP2 + 4), Ok(2));
+        // The physical TH input is visible on PDR even with all bits input.
+        assert_eq!(b.read8(SMPC + 0x77).unwrap() & 0x40, 0);
+        b.reset_volatile();
+        assert_eq!(b.read32(VDP2 + 8), Ok(0));
+        assert_eq!(b.read16(VDP2 + 4), Ok(2));
+    }
+    #[test]
     fn cache_refill_wrap_order_is_observable_by_the_other_cpus_sequential_ubc() {
         // H §8.4.1 fig.8.4 + §6.3: a read of offset8 refills C,0,4,8.
         // An external A=C then B=0 sequential break must fire. Ascending
@@ -1051,7 +1102,7 @@ mod scu_timing_tests {
         bus.scu.signal(0); // VBlank-in asserts external level 15.
         assert_eq!(bus.interrupt(Processor::Master), Some((15, 12)));
         bus.acknowledge_interrupt(Processor::Master, (15, 12));
-        assert_eq!(bus.interrupt(Processor::Master), Some((15, 0x40)));
+        assert_eq!(bus.interrupt(Processor::Master), Some((15, 71)));
     }
     #[test]
     fn external_scu_bus_and_local_dmac_have_separate_user_break_sources() {
@@ -1116,13 +1167,13 @@ mod scu_timing_tests {
             assert_eq!(b.interrupt(Processor::Master), None);
             assert_eq!(b.read16(vdp1::REGISTERS + 0x10).unwrap(), 0);
             b.advance_clocks(1).unwrap();
-            assert_eq!(b.interrupt(Processor::Master), Some((2, 0x4D)));
+            assert_eq!(b.interrupt(Processor::Master), Some((2, 65)));
             assert_eq!(b.read16(vdp1::REGISTERS + 0x10).unwrap(), 2);
             b.advance_clocks(16).unwrap();
             assert_eq!(b.read32(VRAM).unwrap(), 0x12340000);
             b.advance_clocks(8).unwrap();
             assert_eq!(b.read32(VRAM).unwrap(), 0x12345678);
-            b.acknowledge_interrupt(Processor::Master, (2, 0x4D));
+            b.acknowledge_interrupt(Processor::Master, (2, 65));
             assert_eq!(b.interrupt(Processor::Master), None);
             b.reset_volatile();
             assert_eq!(b.read32(vdp1::VRAM).unwrap(), 0);

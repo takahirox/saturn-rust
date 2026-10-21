@@ -1,6 +1,10 @@
 ; Original independent HLE reset trampoline. MIT: adjacent LICENSE.
 ; Slave application entry is the work-RAM handoff pointer at 06000250.
 ; Both processors execute real reset instructions and separate BCR1 views.
+; Select external SCU interrupt vectors after the architectural reset.
+load 0xfffffee0,r1
+mov #1,r0
+mov.w r0,@r1
 load 0xffffffe0,r1
 mov.l @r1,r0
 load 0x8000,r1

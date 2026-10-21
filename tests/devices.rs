@@ -66,15 +66,16 @@ fn both_digital_ports_have_independent_direction_selection_and_enable_bits() {
     bus.write8(SMPC + 0x7D, 3).unwrap();
     for latch in [1, 2] {
         bus.write8(SMPC + 0x7F, latch).unwrap();
-        assert_eq!(bus.read8(SMPC + 0x75).is_ok(), latch == 2);
-        assert_eq!(bus.read8(SMPC + 0x77).is_ok(), latch == 1);
+        // EXLE does not disable data reads. Output-configured TH cannot latch.
+        assert!(bus.read8(SMPC + 0x75).is_ok());
+        assert!(bus.read8(SMPC + 0x77).is_ok());
     }
     bus.write8(SMPC + 0x7F, 0).unwrap();
     bus.write8(SMPC + 0x7B, 0).unwrap();
-    assert!(bus.read8(SMPC + 0x77).is_err());
+    assert!(bus.read8(SMPC + 0x77).is_ok());
     assert!(bus.read8(SMPC + 0x75).is_ok());
     assert!(bus.read8(SMPC + 0x7B).is_err()); // Write-only DDR2.
-    assert!(bus.read16(SMPC + 0x76).is_err());
+    assert_eq!(bus.read16(SMPC + 0x76), Ok(0xFF7C)); // odd input lane, even pull-up
 }
 
 #[test]
@@ -87,10 +88,12 @@ fn vram_aliases_endianness_alignment_register_boundaries_and_read_only_status() 
     assert_eq!(bus.read8(VRAM + 512 * 1024 - 1), Ok(0));
     assert!(bus.write32(VRAM + 1, 0).is_err());
     assert_eq!(bus.read8(VRAM + 512 * 1024), bus.read8(VRAM));
-    assert_eq!(bus.read16(VDP2 + 4), Ok(0));
+    assert_eq!(bus.read16(VDP2 + 4), Ok(2));
     assert!(bus.write16(VDP2 + 4, 8).is_err());
-    assert!(bus.write32(VDP2, 0x80000000).is_err());
-    assert_eq!(bus.read16(VDP2), Ok(0)); // no partial longword write
+    bus.write32(VDP2, 0x80000000).unwrap(); // TVMD and EXTEN are both writable.
+    assert_eq!(bus.read16(VDP2), Ok(0x8000));
+    assert!(bus.write32(VDP2 + 8, 0xFFFFFFFF).is_err()); // HCNT/VCNT are read-only.
+    assert_eq!(bus.read32(VDP2 + 8), Ok(0));
     bus.write16(VDP2 + 0x2A, 1).unwrap();
     assert_eq!(bus.read16(VDP2 + 0x2A), Ok(1));
     assert!(bus.write16(VDP2 + 0x16, 1).is_err());
@@ -120,7 +123,7 @@ fn rgb_bitmap_respects_pitch_and_configuration_and_has_no_game_state_dependency(
     );
     assert_eq!(&pixels[320 * 4..320 * 4 + 4], &[255, 255, 255, 255]);
     vdp.vblank = true;
-    assert_eq!(vdp.read16(VDP2 + 4), Ok(8));
+    assert_eq!(vdp.read16(VDP2 + 4), Ok(10));
     vdp.write16(VDP2 + 0x28, 0x72).unwrap();
     assert!(vdp.framebuffer().unwrap_err().contains("Unsupported VDP2"));
     assert_eq!(

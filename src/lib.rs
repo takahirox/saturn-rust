@@ -174,6 +174,9 @@ impl Machine {
         let code = include_bytes!("hle/boot.bin");
         rom[0x100..0x100 + code.len()].copy_from_slice(code);
         self.bus.load_bios(&rom)?;
+        // Independent HLE system initialization selects the SCU-supplied vector
+        // path. External BIOS mode retains the SH7604 reset value (auto-vector).
+        self.bus.write16(onchip::ICR, 1)?;
         self.cpu = Cpu::start(disc::AIP_ENTRY, boot.stack);
         self.bus
             .cd
@@ -229,6 +232,10 @@ impl Machine {
         self.bus.set_3d_pad(port, axes);
     }
 
+    /// Peripheral port electrical TH input; it never writes guest RAM or CPU state.
+    pub fn set_peripheral_th(&mut self, port: usize, high: bool) {
+        self.bus.set_peripheral_th(port, high);
+    }
     pub fn set_buttons(&mut self, buttons: u16) {
         self.bus.set_buttons(buttons);
     }

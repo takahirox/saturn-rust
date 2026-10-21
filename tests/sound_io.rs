@@ -52,6 +52,7 @@ fn sound_guest_polls_dma_and_paced_midi_then_acknowledges_three_interrupt_levels
             (0x890, 0xFFFFFFFD),
             (0x894, 0),
             (0x898, 0xFF),
+            (0x89C, 0x9D2),
         ] {
             assert_eq!(
                 m.bus().read32(SOUND_RAM + offset).unwrap(),
@@ -59,8 +60,9 @@ fn sound_guest_polls_dma_and_paced_midi_then_acknowledges_three_interrupt_levels
                 "mailbox {offset:X}"
             );
         }
-        assert_eq!(m.bus().read16(SOUND_RAM + 0x860).unwrap(), 0x1D);
+        assert_eq!(m.bus().read16(SOUND_RAM + 0x860).unwrap(), 0x15);
         assert_eq!(m.bus().read16(SOUND_RAM + 0x868).unwrap(), 0x4CD8);
+        assert_eq!(m.bus().read16(SOUND_RAM + 0x8A0).unwrap(), 0x2718);
         assert_eq!(
             (0..4)
                 .filter_map(|_| m.bus().sound.scsp.take_midi_output())

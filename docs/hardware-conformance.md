@@ -45,7 +45,7 @@ Native test keys refer to [src/cpu/tests.rs](../src/cpu/tests.rs):
 | shift | `shifts_and_rotates_cover_sign_carry_and_preservation` |
 | multiply | `multiply_width_signedness_and_full_64_bit_accumulation` |
 | mac | `mac_signed_products_saturation_and_same_register_postincrements` |
-| divide | `div0s_initializes_q_m_t_for_every_sign_pair`, `unsigned_division_guest_sequences_produce_host_quotients`, `div1_signed_mode_vectors_cover_add_subtract_carry_and_borrow`, `div1_same_register_reads_the_shifted_divisor_for_all_q_m_t_combinations` |
+| divide | `div0s_initializes_q_m_t_for_every_sign_pair`, `unsigned_division_guest_sequences_produce_host_quotients`, `div1_signed_mode_vectors_cover_add_subtract_carry_and_borrow`, `div1_same_register_reads_the_shifted_divisor_for_all_q_m_t_combinations`, `signed_division_sequences_cover_signs_extrema_and_truncate_towards_zero` |
 | branch | `bra_latches_signed_pc_plus_four_target_and_executes_one_slot`, `calls_jumps_and_pc_relative_literals_use_architectural_pc`, `far_branches_latch_register_targets_and_call_return_addresses`, `conditional_branches_have_no_slot_and_use_signed_pc_plus_four`, `delayed_conditional_branch_latches_t_and_untaken_branch_has_no_slot`, `rts_returns_to_pr_after_one_slot_and_preserves_pr` |
 | special | `control_and_system_register_transfers_cover_every_register_and_form`, `interrupts_wait_for_slots_and_successors_of_all_special_transfers`, `delayed_conditional_branches_defer_irq_and_nmi_for_both_conditions` |
 | exception | `trapa_rte_round_trip_restores_masked_sr_before_the_delay_slot`, `illegal_and_all_pc_writing_slot_instructions_dispatch_without_retiring`, `illegal_slots_dispatch_vector_six_and_save_the_branch_destination`, `unavailable_exception_vector_is_a_sticky_bounded_bus_diagnostic` |
@@ -101,6 +101,23 @@ from misaligned exception stacking. **CACHE** means the four vectors in
 The fixture is MIT licensed and reproducible using
 [build_sh7604.py](../tests/fixtures/build_sh7604.py), which CI verifies. It is a
 CPU diagnostic ROM, not either required new demonstration disc.
+
+**INTCG** means the original [interrupt/latch/signed-division builder](../tests/fixtures/build_intc.py),
+[ROM](../tests/fixtures/intc.hex), [source-authored quotient/remainder vectors](../tests/fixtures/signed-divisions.tsv),
+[native integration](../tests/intc.rs) and identical Wasm guest in
+[browser-smoke.mjs](../scripts/browser-smoke.mjs). H §5.3.8/table5.4 defines ICR
+and IRL auto/external vector selection; P §6.19 example4 defines signed DIV1
+sequences. SMPC table1.5 and VDP2 §2.5/tables2.3–2.4 define the TH latch route.
+Guest DMA interrupts use auto-vector 66 then external vector 0x4B; changing the
+ICR operand prevents stage completion. Thirteen signed divide/remainder cases
+include extrema and both signs; 262 native wide-arithmetic comparisons extend
+this corpus. Falling TH inputs on both ports cause guest PAD IRQ handlers to
+record held H/V counters and clear-on-read EXLTFG. DDR/output/EXLE/EXLTEN gating,
+software latching, repeated levels, reset and independent PAD IRQ routing have
+native bus vectors. Normal active-line counter encodings are tested; complete
+blanking counter discontinuities, other display modes and pin synchronizers are
+still required. Source and generated artifacts use [the adjacent MIT license](../tests/fixtures/LICENSE).
+Expanded ROM SHA-256: `4cda5f2cd7fe9504ab7db13ad11e9fcaa7fef9ceb6de25b4136da0b38a46571e`.
 
 **SCUROM** means [tests/scu.rs](../tests/scu.rs) and the identical original
 [SCU fixture](../tests/fixtures/build_scu.py), generated as
@@ -191,9 +208,9 @@ not turn those missing hardware paths into supported behavior.
 | CLRMAC | 6.14 | Clear MACH and MACL | multiply | — | Common limits | Pending |
 | CLRT | 6.15 | Clear T only | logic | — | Common limits | Pending |
 | CMP/cond | 6.16 | EQ reg/imm, HS/HI, GE/GT, PL/PZ, STR byte matches | compare | SC (EQ/HS) | Common limits | Pending |
-| DIV0S | 6.17 | All operand-sign combinations of Q/M/T | divide | — | Common limits | Pending |
+| DIV0S | 6.17 | All operand-sign combinations of Q/M/T | divide | INTCG | Common limits | Pending |
 | DIV0U | 6.18 | Clear Q/M/T, preserve other flags | divide | — | Common limits | Pending |
-| DIV1 | 6.19 | Non-restoring add/subtract, Q/M/T, same-register read after shift, 32-step guest unsigned division | divide | — | No exhaustive signed-division sequence corpus | Pending |
+| DIV1 | 6.19 | Non-restoring add/subtract, Q/M/T, aliased operands, full unsigned and signed division sequences with one’s-complement correction | divide, INTCG | INTCG | Cycle/pipeline boundaries remain | Pending |
 | DMULS.L | 6.20 | Signed 32×32 to MACH:MACL | multiply | — | Common limits | Pending |
 | DMULU.L | 6.21 | Unsigned 32×32 to MACH:MACL | multiply | — | Common limits | Pending |
 | DT | 6.22 | Wrapping decrement, zero sets T | arithmetic | SC | Common limits | Pending |
@@ -253,10 +270,10 @@ not turn those missing hardware paths into supported behavior.
 | General/slot illegal, H §4.5 | Vectors 4/6, correct saved PC, no retirement | exception | ROM | No double-fault bus handling | Pending |
 | TRAPA/RTE, H §§4.5/4.7 | Guest stack layout and handler return | exception, sh2_system.rs | ROM | Non-FRT system IRQ sources absent | Pending |
 | CPU address errors, H §§4.3/4.6/4.7/4.8.3, Tables 4.6/4.10/4.11 | Vector 9, operand/fetch checks, next-PC/SR, auto-update and deferral; misaligned stacking completes original exception then accepts address error without recursion | AE, AEROM, PERIPH | AEROM, PERIPH | Invalid data and unaligned stacking bytes are deterministic policies rather than physical bus signals; misaligned VBR unsupported | Pending |
-| Maskable IRQ/NMI, H §4.4 | Explicit caller-supplied level/vector, I mask, NMI vector 11, stack/wake | sleep, special | — | Missing device priority selection, assertion/acknowledgment, NMI signal latch | Pending |
+| Maskable IRQ/NMI, H §4.4 | Device priority selection, I mask, NMI vector11, stack/wake; ICR auto/external vector modes, NMIL/NMIE and selected-edge NMIF/standby wake | sleep, special, PERIPH, INTCG | INTCG, DUAL | Pin synchronization and complete cross-clock assertion boundaries remain | Pending |
 | Deferral, H §4.6 | IRQ/NMI defer through delayed successors and control/system successors; address errors defer only through delayed successors | special, AE | ROM, AEROM | No pipeline-cycle timing or device IRQ selection; unfetchable successor policy below | Pending |
 | Cache/address regions, H §8, tables 8.2–8.4, figs.8.10/8.11 | CPU-local 4 KiB/four-way cache, write-through, no snooping; ID/OD, pseudo-LRU, two-way RAM, P1 bypass, P2 purge, P3 address array, P6 data array; TAS external read; ordered four-longword refills and two-way RAM tag isolation | CACHE, PERIPH, CACHEG; `Cache` and `CpuBus` | PERIPH, CACHEG | Pipeline/fill-cycle/bus arbitration timing absent; RAM mirrors remain missing | Pending |
-| On-chip INTC, H §5.3, table 5.4 | IPRA/IPRB, VCRA–D/VCRWDT, DIVU/DMA vectors, source priorities/tie order and guest acknowledgement | FRT, DUAL, PERIPH | DUAL, PERIPH | UBC source 12 at level 15 covered by UBCG; external ICR/IRL arbitration remains; refresh CMI arbitrates at WDT priority | Pending |
+| On-chip INTC, H §5.3, table 5.4 | IPRA/IPRB, VCRA–D/VCRWDT, DIVU/DMA vectors, source priorities/tie order and guest acknowledgement | FRT, DUAL, PERIPH | DUAL, PERIPH | UBC source 12 at level 15 covered by UBCG; ICR/IRL auto/external vectors and SCU acknowledgement covered by INTCG; pin synchronization remains; refresh CMI arbitrates at WDT priority | Pending |
 | FRT, H §§11.1–11.5, tables 11.2/11.3 | FRC, OCRA/B, capture, divisors, overflow/compare/clear, TIER/FTCSR, shared TEMP, output level state and IRQ; Saturn capture wires (ST-202 §1.2) | FRT, DUAL | FRT (compare), DUAL (capture) | Internal/external pin synchronization, WAIT, clock-switch edges and contention timing absent; no external clock source or output-pin routing | Pending |
 | Watchdog, H §§12.2–12.3, table 12.2 | Keyed byte-register/word-write protocol, eight divisors, interval IRQ, read-before-clear, watchdog reset selection/cause and 512-clock CPU hold | PERIPH; `Watchdog` | PERIPH | External WDTOVF pin routing and sub-turn event ordering missing | Pending |
 | SCI, H §§13.2–13.3 | SMR/BRR/SCR/TDR/SSR/RDR, timed internal-clock transmission, external completed-character input, overrun/framing/parity flags, IRQs and DMA handshakes | PERIPH; `Serial` | PERIPH (transmit completion) | No external clock-edge adapter or physical serial pin waveform; multiprocessor and format combinations lack exhaustive integration coverage | Pending |
@@ -289,7 +306,7 @@ counts source bits/transitions, branches distinguish taken/untaken and DBcc
 expiry, and sound reset delays first issue by forty clocks. Native vectors include
 the complete MOVE source/destination timing tables. DIV and register bit
 modifications still use the documented maximum time. Bus contention,
-prefetch/pipeline fault PCs and physical RESET pulse duration remain unverified.
+complete instruction-specific bus microsequences and physical RESET pulse duration remain unverified.
 Long predecrement/stack write order, failing word-cycle addresses and MOVEM
 partial transfer side effects now have independent native bus-spy vectors
 ([MC68000UM][68UM] §§2.4/5/6.3.9;
@@ -298,8 +315,25 @@ partial transfer side effects now have independent native bus-spy vectors
 `second_longword_cycle_fault_records_its_own_address_and_preserves_first_write`,
 `movem_and_exception_pushes_issue_predecrement_word_cycles_and_retain_progress`,
 `movem_postincrement_preserves_completed_loads_when_a_later_bus_cycle_faults`](../src/m68k/tests.rs)).
-These fault-cycle cases do not yet have browser guest evidence. The
-complete CPU/scheduler acceptance criteria remain pending.
+`M68k::next_word/refill/redirect` now retains prefetched instruction words across
+RAM writes and flushes them on branches, exceptions and reset. Faults capture the
+internal fetch PC, activity I/N and function code separately; exception-vector
+reads use supervisor data. Group1/2 entry faults dispatch group0, while errors
+during reset/group0 halt. Traced traps enter the instruction exception before
+trace. Independent native vectors check saved PC/SR/IR, word-cycle failures,
+handler/vector fetches, both stacks, IRQ reset and trace ordering (68UM
+§§5.4.1/6.1/6.3.8–6.3.9.1, fig.6-7).
+
+Ten original [sound-bus fault programs](../tests/fixtures/m68k_faults.py) run in
+FAMG native and browser Wasm, comparing [source-authored complete frames](../tests/fixtures/m68k-faults.tsv),
+D0/D1/A0 and completed RAM words. They cover second-word read/write faults,
+predecrement low-word-first and five-word immediate MOVE failures, two MOVEM partial-transfer boundaries,
+address/user faults and sequential/branch prefetch faults. Two additional FAMG
+cases distinguish a retained opcode from a fresh extension. SIOG records actual
+fault PC/SR and writes an explicit guest recovery label before RTE.
+Instruction-specific prefetch placement and full bus arbitration still need
+validation; these word-boundary semantics do not establish the complete
+CPU/scheduler acceptance criteria.
 
 | Family | Manual entry (68, MC68000 subset) | Implementation | Native / browser | Status |
 | --- | --- | --- | --- | --- |
@@ -531,12 +565,13 @@ no-op CPU/device implementations cannot satisfy those assertions.
 | BIOS-less startup, [Boot ROM][BOOT] / [DISC] | Original first-read HLE plus licensed SH-2 reset trampoline, separate from ExternalBios; slave handoff executes guest instructions | disc.rs, game.rs, CLAB, src/hle/boot.s | SC, CLAB | General system/backup/CD service ABI and full startup/region/version contracts | Pending |
 | BIOS services, [BOOT] | None | — | — | System/backup/CD calls and per-call ABI/side effects | Pending |
 | External BIOS execution, [BOOT] | Genuine reset vectors, original synthetic ROM handlers | boot.rs, sh2_system.rs | ROM | Genuine BIOS initialization/menu/boot **unverified**; no lawful local BIOS supplied | Pending |
-| SMPC direct digital port 1, [SMPC] §3 | Active-low nibble selection and button levels | devices.rs | SC | Full I/O mode behavior and timing | Pending |
+| SMPC direct digital port 1, [SMPC] §3 | Active-low nibble selection; per-bit PDR/DDR input/output merging; TH input visible with EXLE | devices.rs, INTCG | SC, INTCG | Direct digital settling and full clock/reset timing | Pending |
 | SMPC commands/status/timing, [SMPC] §§1.2/2.3/2.4/3.2 | SF/IREG/OREG/SR, CPU commands, INTBACK status/peripheral phases, continue/break, VBlank collection and optimization; SCU source 7 | smpc/tests.rs, tests/smpc.rs, DUAL | SMPR, DUAL | Remaining system commands, firmware jitter and all clock modes | Pending |
 | SMPC reset/power/clock, [SMPC] table 1.1/§2.3 | MSHON, SSHON/OFF, SNDON/OFF, CDON/OFF, NMIREQ, SYSRES (volatile reset, installed-ROM or HLE-disc restart and battery retention); RESENAB/DISA control reset-button NMI edges and VBlank-latched RESB | DUAL, SNDV, SNDR, PWRG, smpc/tests.rs | DUAL, SNDR, PWRG | Clock switching, full status/power domains | Pending |
 | RTC/region/system flags, [SMPC] §§2.4/2.5 | Deterministic Gregorian/BCD RTC, SETTIME, retained four-byte SETSMEM, status/region Japan, output control flags | smpc/tests.rs, tests/smpc.rs | SMPR | Full system-control/region configuration; remaining reset domains | Pending |
-| SMPC direct digital port 2, [SMPC] §1.2 pp.7–9, §3.4 table 3.36 p.97 | Independent PDR2/DDR2, IOSEL2/EXLE2; active-low nibble reports; host keyboard levels | BK; `both_digital_ports_have_independent_direction_selection_and_enable_bits` | BK; I/K/J/L keyboard input and release checks | Settling remains immediate; no timed INTBACK/peripheral packets or external latch IRQ | Pending |
-| Analog input, [SMPC] tables 3.19/3.37; [STN43] Analog mode | ID15 X/Y/Z and ID16 X/Y/AR/AL, active-low buttons, trigger hysteresis (146 on / 85 off); timed INTBACK and direct TH/TR/TL handshake, transaction latching/abort, independent ports; standard Gamepad radial axes/triggers and focus neutralization | smpc/tests.rs, tests/smpc.rs; `Analog`, `Handshake` in [controller.rs](../src/smpc/controller.rs) | SMPR + PADR (both direct ports, changed axis, ID15/16 Gamepad/focus) | Full electrical timing, mode-switch calibration, direct digital settling, external latch and complete command/reset/clock integration remain | Pending |
+| SMPC direct digital port 2, [SMPC] §1.2 pp.7–9, §3.4 table 3.36 p.97 | Independent PDR2/DDR2, IOSEL2/EXLE2; active-low nibble reports; host keyboard levels | BK; `both_digital_ports_have_independent_direction_selection_and_enable_bits` | BK; I/K/J/L keyboard input and release checks | Settling remains immediate; complete clock/reset packet timing remains | Pending |
+| External latch/PAD IRQ, [SMPC] §1.2/table1.5, [VDP2] §2.5/tables2.3–2.4 | Both TH input falling edges gated by EXLE/DDR; independent SCU PAD IRQ and VDP2 EXLTEN; software/read latches, held HCNT/VCNT, EXLTFG read-clear, non-interlaced ODD; `Smpc::set_th`, `Bus::set_peripheral_th`, `Vdp2::read16/external_latch` | INTCG, bus.rs::smpc_input_edges_latch_raster_counters_and_raise_pad_irqs_with_independent_enables | INTCG (both ports, repeated edges and control mutation) | Pin synchronization, blanking-counter discontinuities and other display modes | Pending |
+| Analog input, [SMPC] tables 3.19/3.37; [STN43] Analog mode | ID15 X/Y/Z and ID16 X/Y/AR/AL, active-low buttons, trigger hysteresis (146 on / 85 off); timed INTBACK and direct TH/TR/TL handshake, transaction latching/abort, independent ports; standard Gamepad radial axes/triggers and focus neutralization | smpc/tests.rs, tests/smpc.rs; `Analog`, `Handshake` in [controller.rs](../src/smpc/controller.rs) | SMPR + PADR (both direct ports, changed axis, ID15/16 Gamepad/focus) | Full electrical timing, mode-switch calibration, direct digital settling, external-latch synchronizers and complete command/reset/clock integration remain | Pending |
 | Input focus safety | Both pads use host button levels, blur/view/tab/pause release, no guest-memory shortcuts | game.rs | SC | Additional controller types absent | Pending |
 
 ## Concrete unresolved gaps and closure gates
@@ -1063,7 +1098,7 @@ synthetic sector data. Existing demo discs remain byte-identical.
 
 Related to #17. This implementation does not satisfy the full umbrella checklist.
 
-**FAMG**: [71 source-authored MC68000 vectors](../tests/fixtures/m68k_families.py),
+**FAMG**: [73 source-authored MC68000 vectors](../tests/fixtures/m68k_families.py),
 [reproducible builder](../tests/fixtures/build_m68k_families.py),
 [native sound-bus execution](../tests/m68k_families.rs) and
 [browser Wasm](../scripts/browser-smoke.mjs). The master uploads actual 68k code;
@@ -1073,7 +1108,7 @@ including PC-relative forms, and supplement SNDR/SIOG's decimal, extend, MOVEM
 and MOVEP evidence. Undefined CHK flags are deliberately excluded. Browser mutation
 of ADD.B to SUB.B changes only that computed result/CCR.
 Expanded 512 KiB ROM SHA-256:
-`2e8c852227de5810f9af01d2e734da44b14d176d3f50ec589ff63689524da4a5`.
+`a417f5d283e544d5f4a2683a811f7c190a48c6260fea6ac61b4a309c666ac03d`.
 The adjacent MIT license covers source and generated ROM/TSV; no SDK or firmware.
 
 [`M68k::ea_clocks/execute/group0/group4/alu/shift/movem`](../src/m68k.rs)
@@ -1082,7 +1117,7 @@ uses [MC68000UM][68UM] tables8-1–8-14 for 16-bit-bus instruction costs.
 combination and authored branch/DBcc/Scc, register/memory, jump, MOVEM, shift,
 exception and multiply vectors. Sound reset first-issue latency has an independent
 [clock-boundary test](../src/sound/tests.rs). This improves sound-clock ordering;
-it does not replace the still-required SH-2/bus scheduler or model 68k prefetch.
+the new word-boundary prefetch/fault evidence above does not replace the still-required SH-2/bus scheduler.
 
 **DACK**: [DMA transfer engine](../src/onchip/dma.rs), explicit
 [`Memory::dack_read/dack_write`](../src/bus.rs), native pin-adapter vectors, and

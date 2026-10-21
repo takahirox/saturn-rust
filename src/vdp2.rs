@@ -5,6 +5,7 @@ use crate::{
     devices::{HEIGHT, VDP2, WIDTH},
     vdp1::Vdp1,
 };
+use std::cell::Cell;
 
 mod rotation;
 mod sprite;
@@ -16,6 +17,9 @@ pub struct Vdp2 {
     pub cram: Vec<u8>,
     pub vblank: bool,
     pub hblank: bool,
+    live_counters: (u16, u16),
+    latched_counters: Cell<(u16, u16)>,
+    external_latched: Cell<bool>,
 }
 impl Default for Vdp2 {
     fn default() -> Self {
@@ -25,6 +29,9 @@ impl Default for Vdp2 {
             cram: vec![0; 0x1000],
             vblank: false,
             hblank: false,
+            live_counters: (0, 0),
+            latched_counters: Cell::new((0, 0)),
+            external_latched: Cell::new(false),
         }
     }
 }
@@ -60,7 +67,7 @@ impl Vdp2 {
     }
     fn supported(offset: usize) -> bool {
         matches!(offset,
-            0 | 4 | 0xE | 0x10 | 0x12 | 0x20..=0x2E | 0x30..=0x6E |
+            0 | 2 | 4 | 8 | 0xA | 0xE | 0x10 | 0x12 | 0x20..=0x2E | 0x30..=0x6E |
             0x70..=0x96 | 0x9A..=0xBE | 0xC0..=0xDE | 0xE0 | 0xE2 |
             0xE4..=0xFC | 0x100..=0x11E
         ) && offset & 1 == 0
@@ -85,18 +92,42 @@ impl Vdp2 {
     pub fn read16(&self, address: u32) -> Result<u16, BusError> {
         let offset = (address - VDP2) as usize;
         if offset == 4 {
-            return Ok(u16::from(self.vblank) << 3 | u16::from(self.hblank) << 2);
+            // ST-058 §2.5: non-interlaced fields always report ODD=1.
+            return Ok(u16::from(self.external_latched.replace(false)) << 9
+                | u16::from(self.vblank) << 3
+                | u16::from(self.hblank) << 2
+                | 2);
+        }
+        match offset {
+            2 if self.word(2) & 0x200 == 0 => self.latched_counters.set(self.live_counters),
+            8 => return Ok(self.latched_counters.get().0),
+            0xA => return Ok(self.latched_counters.get().1),
+            _ => (),
         }
         if !Self::supported(offset) {
             return Err(BusError::UnsupportedDevice { address, width: 2 });
         }
         Ok(self.word(offset))
     }
-    pub fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
+    pub(crate) fn counters(&mut self, horizontal: u16, vertical: u16) {
+        self.live_counters = (horizontal & 0x3FF, vertical & 0x3FF);
+    }
+    pub(crate) fn external_latch(&self) {
+        if self.word(2) & 0x200 != 0 {
+            self.latched_counters.set(self.live_counters);
+            self.external_latched.set(true);
+        }
+    }
+    pub(crate) fn validate_write(address: u32) -> Result<(), BusError> {
         let offset = (address - VDP2) as usize;
-        if offset == 4 || !Self::supported(offset) {
+        if matches!(offset, 4 | 8 | 0xA) || !Self::supported(offset) {
             return Err(BusError::UnsupportedDevice { address, width: 2 });
         }
+        Ok(())
+    }
+    pub fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
+        Self::validate_write(address)?;
+        let offset = (address - VDP2) as usize;
         self.registers[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
         Ok(())
     }

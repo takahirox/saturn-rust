@@ -78,6 +78,7 @@ def sound_image(effects=False, synthesis=False, peripherals=False, envelope=Fals
         # sound-bus region. The handler records the actual seven-word fault frame.
         movw(0xCAFE,0x7FFFC);movw(0xBABE,0x7FFFE)
         emit(0x41F9,0x0007,0xFFFC,0x223C,0xDEAD,0xBEEF,0x4CD8,3)
+        resume = 0x900 + len(words)*2
         result(0,0x850);result(1,0x854);result(8,0x858)
         emit(0x4E40,0x4E75) # TRAP #0/RTE then RTS to the I/O routine
         assert 0x900+len(words)*2<0xC00
@@ -86,7 +87,9 @@ def sound_image(effects=False, synthesis=False, peripherals=False, envelope=Fals
         struct.pack_into('>I',image,32*4,0x820)
         # MOVE.W (SP),$860; MOVE.L 2(SP),$864; MOVE.W 6(SP),$868;
         # LEA 8(SP),SP drops the extended fault prefix before normal RTE.
-        fault=[0x33D7,0,0x860,0x23EF,2,0,0x864,0x33EF,6,0,0x868,0x4FEF,8,0x4E73]
+        fault=[0x33D7,0,0x860,0x23EF,2,0,0x864,0x33EF,6,0,0x868,
+               0x23EF,10,0,0x89C,0x33EF,8,0,0x8A0,
+               0x2F7C,0,resume,10,0x4FEF,8,0x4E73]
         struct.pack_into('>'+'H'*len(fault),image,0x700,*fault)
         trap=[0x52B9,0,0x884,0x4E73]
         struct.pack_into('>'+'H'*len(trap),image,0x820,*trap)

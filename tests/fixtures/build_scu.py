@@ -33,7 +33,7 @@ def store(address, value):
 
 
 def program():
-    s = 'mov #0,r0\nldc r0,sr\n'
+    s = 'load 0xfffffee0,r1\nmov #1,r0\nmov.w r0,@r1\nmov #0,r0\nldc r0,sr\n'
     # Enable only DSP, DMA0/1 and timer0/1 interrupts; blanking remains masked.
     s += store(0x25FE00A0, 0xBFFF & ~0xC38)
     for address, value in [(0x06005000, 7), (0x06005004, 11), (0x06005008, 13), (0x0600500C, 17)]:

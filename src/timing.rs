@@ -20,6 +20,10 @@ pub struct Raster {
     phase: u32,
 }
 impl Raster {
+    // ST-058 §2.5 tables2.3/2.4: normal-mode counters leave bit0 invalid.
+    pub(crate) fn counters(&self) -> (u16, u16) {
+        ((self.phase / 4) as u16 * 2, self.line * 2)
+    }
     pub fn clocks_to_event(&self) -> u32 {
         if self.phase < HBLANK_CLOCK {
             HBLANK_CLOCK - self.phase
