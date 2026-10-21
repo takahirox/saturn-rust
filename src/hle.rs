@@ -37,6 +37,7 @@ pub(crate) fn install(bus: &mut Bus) -> Result<(), BusError> {
         (0x304, 0x4300), // SYS_GETUINT
         (0x310, 0x4000), // SYS_SETSINT
         (0x314, 0x4100), // SYS_GETSINT
+        (0x320, 0x4D00), // SYS_CHGSYSCK
         (0x330, 0x4600), // SYS_TASSEM
         (0x334, 0x4700), // SYS_CLRSEM
         (0x340, 0x4400), // SYS_SETSCUIM
@@ -46,6 +47,7 @@ pub(crate) fn install(bus: &mut Bus) -> Result<(), BusError> {
         bus.write32(0x0600_0000 + pointer, target)?;
     }
     bus.write32(0x0600_0348, 0xBFFF)?; // SYS_GETSCUIM is data, not a call.
+    bus.write32(0x0600_0324, 0)?; // SYS_GETSYSCK is data, not a call.
     for (cause, &level) in crate::scu::INTERRUPT_LEVELS.iter().enumerate() {
         let mut mask = 0xBFFF_u16;
         for (other, &priority) in crate::scu::INTERRUPT_LEVELS.iter().enumerate() {

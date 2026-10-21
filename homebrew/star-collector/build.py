@@ -81,8 +81,8 @@ def assemble(source, base=BASE):
                 word({'bra': 0xA000, 'bsr': 0xB000, 'bt': 0x8900, 'bf': 0x8B00}[op] | branch(pc, a[0], 12 if op in ('bra', 'bsr') else 8))
             elif op in ('shll', 'shll2', 'shll8', 'shlr', 'shlr16', 'dt', 'rotcl'):
                 word({'shll': 0x4000, 'shll2': 0x4008, 'shll8': 0x4018, 'shlr': 0x4001, 'shlr16': 0x4029, 'dt': 0x4010, 'rotcl': 0x4024}[op] | reg(a[0]) << 8)
-            elif op == 'extu.w':
-                word(0x600D | reg(a[1]) << 8 | reg(a[0]) << 4)
+            elif op in ('extu.b', 'extu.w'):
+                word((0x600C if op == 'extu.b' else 0x600D) | reg(a[1]) << 8 | reg(a[0]) << 4)
             elif op == 'tst':
                 if a[0].startswith('#'):
                     assert a[1] == 'r0' and 0 <= num(a[0]) <= 255

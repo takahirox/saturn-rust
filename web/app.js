@@ -97,7 +97,14 @@ export function advanceFrame() {
   audio.setPaused(!playing);
   pumpAudio();
   const pixels = new Uint8ClampedArray(emulator.framebuffer());
-  context.putImageData(new ImageData(pixels, 320, 224), 0, 0);
+  const width = emulator.video_width(), height = emulator.video_height();
+  const canvas = $("screen");
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+    canvas.style.aspectRatio = `${width} / ${height}`;
+  }
+  context.putImageData(new ImageData(pixels, width, height), 0, 0);
 }
 
 function animate(now) {
@@ -207,7 +214,8 @@ function reset() {
   backupGeneration++;
   loadingBackup = false;
   pause();
-  context.clearRect(0, 0, 320, 224);
+  const canvas = $("screen");
+  context.clearRect(0, 0, canvas.width, canvas.height);
   act(() => {
     if ($("mode").value === "disc") {
       if (cueMedia) emulator.reset_cue(cueMedia.cue, cueMedia.names, cueMedia.lengths, cueMedia.bytes);
@@ -216,6 +224,9 @@ function reset() {
     else if ($("mode").value === "hle") emulator.reset_hle();
     else emulator.reset_bios(biosBytes ?? new Uint8Array());
   });
+  canvas.width = emulator.video_width();
+  canvas.height = emulator.video_height();
+  canvas.style.aspectRatio = `${canvas.width} / ${canvas.height}`;
 }
 
 try {

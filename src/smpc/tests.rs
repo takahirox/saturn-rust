@@ -15,6 +15,89 @@ fn output(s: &Smpc, count: usize) -> Vec<u8> {
         .collect()
 }
 #[test]
+fn digital_selection_settles_after_two_microseconds_independently_on_both_ports() {
+    // ST-169 §3.4, table3.36; no assumed success from immediate readback.
+    for chunk in [1, 3, 8, 53] {
+        let mut s = Smpc::default();
+        s.write(SMPC + 0x7D, 3).unwrap();
+        s.write(SMPC + 0x79, 0x60).unwrap();
+        s.write(SMPC + 0x7B, 0x60).unwrap();
+        s.write(SMPC + 0x75, 0x60).unwrap();
+        s.write(SMPC + 0x77, 0x60).unwrap();
+        s.set_buttons(0x842);
+        s.set_port2_buttons(0x184);
+        // Nibbles: port1 2/4/8 pressed in the three banks, port2 4/8/1.
+        let mut old = [0xC, 0xC];
+        for (select, pins) in [
+            (0x20, [0xD, 0xB]),
+            (0x40, [0xB, 7]),
+            (0, [7, 0xE]),
+            (0x60, [0xC, 0xC]),
+        ] {
+            s.write(SMPC + 0x75, select).unwrap();
+            let mut left = 53;
+            while left != 0 {
+                let n = left.min(chunk);
+                s.advance_clocks(n);
+                left -= n;
+            }
+            assert_eq!(s.read(SMPC + 0x75).unwrap() & 15, old[0]);
+            assert_eq!(s.read(SMPC + 0x77).unwrap() & 15, old[1]);
+            // Port 2 starts one clock before port 1's deadline.
+            s.write(SMPC + 0x77, select).unwrap();
+            s.advance_clocks(1);
+            assert_eq!(s.read(SMPC + 0x75).unwrap() & 15, pins[0]);
+            assert_eq!(s.read(SMPC + 0x77).unwrap() & 15, old[1]);
+            // Rewriting the same electrical selection cannot restart settling.
+            s.write(SMPC + 0x77, select).unwrap();
+            s.advance_clocks(52);
+            assert_eq!(s.read(SMPC + 0x77).unwrap() & 15, old[1]);
+            s.advance_clocks(1);
+            assert_eq!(s.read(SMPC + 0x77).unwrap() & 15, pins[1]);
+            old = pins;
+        }
+        s.write(SMPC + 0x75, 0x20).unwrap();
+        s.advance_clocks(53);
+        s.reset_volatile();
+        s.advance_clocks(1);
+        s.write(SMPC + 0x7D, 1).unwrap();
+        assert_eq!(s.read(SMPC + 0x75), Ok(0x7C));
+    }
+}
+#[test]
+fn clock_commands_latch_dotsel_at_the_deadline_and_reset_sound_without_an_irq() {
+    // ST-169 §§2.3.9/10, §2.4.2 OREG10 bit6/bit0.
+    for chunk in [1, 8, 607, Smpc::SYSTEM_RESET_CLOCKS] {
+        let mut s = Smpc::default();
+        for (command, expected) in [(0x0E, 0x75), (0x0F, 0x35), (0x0E, 0x75)] {
+            issue(&mut s, 6);
+            s.advance_clocks(Smpc::CPU_COMMAND_CLOCKS);
+            assert!(s.sound_enabled);
+            let before = s.clock_352;
+            issue(&mut s, command);
+            let mut left = Smpc::SYSTEM_RESET_CLOCKS - 1;
+            while left != 0 {
+                let n = left.min(chunk);
+                assert_eq!(s.advance_clocks(n), None);
+                left -= n;
+            }
+            assert_eq!(s.clock_352, before);
+            assert_eq!(s.read(SMPC + 0x63), Ok(1));
+            assert_eq!(s.advance_clocks(1), Some(command));
+            assert_eq!(s.read(SMPC + 0x63), Ok(0));
+            assert!(!s.take_irq());
+            assert!(!s.sound_enabled);
+            input(&mut s, &[1, 0, 0xF0]);
+            issue(&mut s, 0x10);
+            s.advance_clocks(Smpc::STATUS_CLOCKS);
+            assert_eq!(s.output[10], expected);
+            assert!(s.take_irq());
+        }
+        s.system_reset();
+        assert!(!s.clock_352);
+    }
+}
+#[test]
 fn sysres_has_a_hardware_deadline_and_retains_battery_calendar_memory_and_input() {
     // ST-169 §2.3.8: no IRQ, power-on controls, 256 Kbit backup is external.
     for chunk in [1, 8, 1024, Smpc::SYSTEM_RESET_CLOCKS] {
@@ -203,6 +286,24 @@ fn optimized_collection_has_a_measured_first_frame_and_a_late_second_frame() {
     assert!(!s.take_irq());
     s.advance_clocks(224 * 1708 - 26875 - 8600);
     assert!(s.take_irq());
+}
+
+#[test]
+fn fast_clock_optimized_intback_uses_its_own_raster_deadline() {
+    let mut s = Smpc::default();
+    issue(&mut s, 0x0E);
+    s.advance_clocks(Smpc::SYSTEM_RESET_CLOCKS);
+    for cycle in 0..2 {
+        input(&mut s, &[0, 8, 0xF0]);
+        issue(&mut s, 0x10);
+        s.vblank_out();
+        let clocks = if cycle == 0 { 8600 } else { 355717 };
+        assert_eq!(s.clocks_to_event(), clocks);
+        assert_eq!(s.advance_clocks(clocks - 1), None);
+        assert!(!s.take_irq());
+        assert_eq!(s.advance_clocks(1), Some(0x10));
+        assert!(s.take_irq());
+    }
 }
 
 #[test]

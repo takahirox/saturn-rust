@@ -149,6 +149,41 @@ mask_done:
 ldc r3,sr
 rts
 nop
+.section 0x4d00
+; SYS_CHGSYSCK: master-only ABI, ST-162-R1 §2.2 services 4.1/4.2.
+; Exclude IRQs while the hardware returns its LSIs to power-on state. The
+; caller's stack, general registers and service code are retained by CKCHG.
+stc sr,r3
+load 0xf0,r0
+or r3,r0
+ldc r0,sr
+load 0x20100063,r1
+clock_wait_idle:
+mov.b @r1,r0
+tst #1,r0
+bf clock_wait_idle
+mov #1,r0
+mov.b r0,@r1
+mov #15,r0
+tst r4,r4
+bt clock_issue
+mov #14,r0
+clock_issue:
+load 0x2010001f,r2
+mov.b r0,@r2
+clock_wait_done:
+mov.b @r1,r0
+tst #1,r0
+bf clock_wait_done
+load 0x06000324,r1
+mov.l r4,@r1
+; IMS is reset by the hardware clock transition; synchronize its ABI shadow.
+load 0x06000348,r1
+load 0xbfff,r0
+mov.l r0,@r1
+ldc r3,sr
+rts
+nop
 .section 0x9000
 ; The per-vector entry has saved R0 and put the cause index in R0.
 ; A C callback may destroy R0-R7, MACH, MACL and PR. Preserve them all,

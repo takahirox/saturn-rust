@@ -423,7 +423,7 @@ CPU/scheduler acceptance criteria.
 | Backup reset retention, SMPC §2.3 SYSRES p.29 | Bytes survive successful/rejected HLE, disc and ROM resets and guest SYSRES; new Machine starts empty | BK; `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot`, PWRG | BK, PWRG, reset/mode/read-race checks | SYSRES guest retention now covered by PWRG; remaining power/reset and service contracts pending | Pending |
 | Local backup import/export (host interface) | Exact 32768 packed bytes; atomic replacement; explicit local download; stale import cancellation; no network/storage | `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot` | Download byte comparison, offline import, invalid size/read errors, races, fresh-tab isolation | BIOS backup filesystem/calls and cartridge backup absent; no automatic cross-session persistence | Pending |
 | Shared event scheduler, O clock domains | Deterministic CPU order, raster/SCU event deadlines and clock-driven DSP/DMA; field deadlines replace instruction budgets | TIME, SCUROM, game.rs, DUAL | SCUROM, SC, DUAL | CPU opcode/on-chip DMA cycles, contention, refresh and full cross-clock ordering missing; CD command/sector/sample deadlines now exercised by CLAB | Pending |
-| Video timing, VDP2 display registers | Clock-based 263-line/224-visible NTSC raster, HBLANK/VBLANK bits and SCU edges; bounded field advancement | TIME, SCUROM, game.rs | SCUROM, SC | Other resolutions, PAL/interlace/clock modes and exact beam phase remain missing | Pending |
+| Video timing, VDP2 display registers | Clock-based 263-line/224-visible NTSC raster, HBLANK/VBLANK bits and SCU edges; bounded field advancement | TIME, SCUROM, game.rs | SCUROM, SC | 320/352 normal NTSC clocks now have CLKG evidence below; other resolutions, PAL/interlace and exact beam phase remain missing | Pending |
 | Audio timing, SCSP/CD | Independent 68k/sample deadlines, bounded stereo output and worklet; underflow/mute/blocked instrumentation | SNDV, SNDR | SNDR | Exact CPU/bus timing and effects DSP | Pending |
 | Power/reset domains, SMPC / H | Cold reset clears both CPUs/devices and retains backup; SSHOFF resets slave CPU/FRT while retaining shared state; SLEEP distinct | boot.rs, sh2_system.rs, DUAL | ROM/reset, DUAL | Manual/system reset and remaining power/clock controls missing | Pending |
 
@@ -565,13 +565,13 @@ no-op CPU/device implementations cannot satisfy those assertions.
 | BIOS-less startup, [Boot ROM][BOOT] / [DISC] | Original first-read HLE plus licensed SH-2 master/slave reset trampoline and system-service initialization, separate from ExternalBios | disc.rs, game.rs, CLAB, src/hle/boot.s, HLESYS | SC, CLAB, HLESYS | Remaining clock/multiplayer, backup/CD services and full startup/region/version contracts | Pending |
 | BIOS services, [BOOT], ST-162-R1 System Program §2.2 | Original guest-executed vector/callback registration, SCU mask/shadow, shared semaphores, copied priorities and power-clear bytes; see HLESYS below | tests/hle_system.rs | HLESYS, including nested IRQs, mutations and reset | Clock/multiplayer, backup/CD calls and complete per-call ABI/side effects remain | Pending |
 | External BIOS execution, [BOOT] | Genuine reset vectors, original synthetic ROM handlers | boot.rs, sh2_system.rs | ROM | Genuine BIOS initialization/menu/boot **unverified**; no lawful local BIOS supplied | Pending |
-| SMPC direct digital port 1, [SMPC] §3 | Active-low nibble selection; per-bit PDR/DDR input/output merging; TH input visible with EXLE | devices.rs, INTCG | SC, INTCG | Direct digital settling and full clock/reset timing | Pending |
-| SMPC commands/status/timing, [SMPC] §§1.2/2.3/2.4/3.2 | SF/IREG/OREG/SR, CPU commands, INTBACK status/peripheral phases, continue/break, VBlank collection and optimization; SCU source 7 | smpc/tests.rs, tests/smpc.rs, DUAL | SMPR, DUAL | Remaining system commands, firmware jitter and all clock modes | Pending |
+| SMPC direct digital port 1, [SMPC] §3 | Active-low nibble selection; per-bit PDR/DDR input/output merging; TH input visible with EXLE | devices.rs, INTCG | SC, INTCG | DIGG settling and CLKG clock/reset vectors below; full system timing remains required | Pending |
+| SMPC commands/status/timing, [SMPC] §§1.2/2.3/2.4/3.2 | SF/IREG/OREG/SR, CPU commands, INTBACK status/peripheral phases, continue/break, VBlank collection and optimization; SCU source 7 | smpc/tests.rs, tests/smpc.rs, DUAL | SMPR, DUAL | Remaining system commands, firmware jitter and PAL/interlace clock modes | Pending |
 | SMPC reset/power/clock, [SMPC] table 1.1/§2.3 | MSHON, SSHON/OFF, SNDON/OFF, CDON/OFF, NMIREQ, SYSRES (volatile reset, installed-ROM or HLE-disc restart and battery retention); RESENAB/DISA control reset-button NMI edges and VBlank-latched RESB | DUAL, SNDV, SNDR, PWRG, smpc/tests.rs | DUAL, SNDR, PWRG | Clock switching, full status/power domains | Pending |
 | RTC/region/system flags, [SMPC] §§2.4/2.5 | Deterministic Gregorian/BCD RTC, SETTIME, retained four-byte SETSMEM, status/region Japan, output control flags | smpc/tests.rs, tests/smpc.rs | SMPR | Full system-control/region configuration; remaining reset domains | Pending |
-| SMPC direct digital port 2, [SMPC] §1.2 pp.7–9, §3.4 table 3.36 p.97 | Independent PDR2/DDR2, IOSEL2/EXLE2; active-low nibble reports; host keyboard levels | BK; `both_digital_ports_have_independent_direction_selection_and_enable_bits` | BK; I/K/J/L keyboard input and release checks | Settling remains immediate; complete clock/reset packet timing remains | Pending |
+| SMPC direct digital port 2, [SMPC] §1.2 pp.7–9, §3.4 table 3.36 p.97 | Independent PDR2/DDR2, IOSEL2/EXLE2; active-low nibble reports; host keyboard levels | BK; `both_digital_ports_have_independent_direction_selection_and_enable_bits` | BK; I/K/J/L keyboard input and release checks | DIGG implements both-port settling; complete clock/reset packet timing remains | Pending |
 | External latch/PAD IRQ, [SMPC] §1.2/table1.5, [VDP2] §2.5/tables2.3–2.4 | Both TH input falling edges gated by EXLE/DDR; independent SCU PAD IRQ and VDP2 EXLTEN; software/read latches, held HCNT/VCNT, EXLTFG read-clear, non-interlaced ODD; `Smpc::set_th`, `Bus::set_peripheral_th`, `Vdp2::read16/external_latch` | INTCG, bus.rs::smpc_input_edges_latch_raster_counters_and_raise_pad_irqs_with_independent_enables | INTCG (both ports, repeated edges and control mutation) | Pin synchronization, blanking-counter discontinuities and other display modes | Pending |
-| Analog input, [SMPC] tables 3.19/3.37; [STN43] Analog mode | ID15 X/Y/Z and ID16 X/Y/AR/AL, active-low buttons, trigger hysteresis (146 on / 85 off); timed INTBACK and direct TH/TR/TL handshake, transaction latching/abort, independent ports; standard Gamepad radial axes/triggers and focus neutralization | smpc/tests.rs, tests/smpc.rs; `Analog`, `Handshake` in [controller.rs](../src/smpc/controller.rs) | SMPR + PADR (both direct ports, changed axis, ID15/16 Gamepad/focus) | Full electrical timing, mode-switch calibration, direct digital settling, external-latch synchronizers and complete command/reset/clock integration remain | Pending |
+| Analog input, [SMPC] tables 3.19/3.37; [STN43] Analog mode | ID15 X/Y/Z and ID16 X/Y/AR/AL, active-low buttons, trigger hysteresis (146 on / 85 off); timed INTBACK and direct TH/TR/TL handshake, transaction latching/abort, independent ports; standard Gamepad radial axes/triggers and focus neutralization | smpc/tests.rs, tests/smpc.rs; `Analog`, `Handshake` in [controller.rs](../src/smpc/controller.rs) | SMPR + PADR (both direct ports, changed axis, ID15/16 Gamepad/focus) | Full electrical timing, mode-switch calibration, external-latch synchronizers and complete command/reset/clock integration remain | Pending |
 | Input focus safety | Both pads use host button levels, blur/view/tab/pause release, no guest-memory shortcuts | game.rs | SC | Additional controller types absent | Pending |
 
 ## Concrete unresolved gaps and closure gates
@@ -595,8 +595,8 @@ no-op CPU/device implementations cannot satisfy those assertions.
    provide actual subset pixel/composition evidence.
 6. Complete remaining CD drive/command/timing/error behavior (see CD inventory),
    BIOS HLE ABI and full synthetic
-   boot pathways; remaining SMPC system/reset/clock commands, direct digital
-   settling and full external-latch behavior. RTC/SMEM/INTBACK/IRQ, analog
+   boot pathways; complete SMPC system/reset/clock timing and full external-latch
+   behavior. CLKG/DIGG below add clock transitions and direct digital settling. RTC/SMEM/INTBACK/IRQ, analog
    joystick/3D-pad packets and direct analog handshakes have subset evidence.
 7. The multiprocessor/SCU/runtime-CD/CD-DA/SCSP-DSP/advanced-video/backup
    hardware exerciser now has the original Hardware Lab disc (CLAB), covering
@@ -753,11 +753,12 @@ BCD atomicity, retention and advancement chunks. Browser synthetic Gamepad level
 produce the same active-low digital and X/Y/Z packets; focus loss produces released
 buttons and neutral axes. No JavaScript writes guest result mailboxes.
 
-The clock remains fixed NTSC 320. Status collection uses 8600 reference clocks;
+The clock initially uses NTSC 320; CLKG below adds the 352 PLL and its reset
+domains. Status collection uses 8600 reference clocks;
 SETTIME/SETSMEM use 1882/1075 clocks. Peripheral collection uses the same bounded
 8600-clock functional duration; after initial measurement, enabled optimization
 schedules readiness one millisecond before VBlank-in. Firmware polling jitter,
-physical serial handshakes and other television/clock modes are not claimed.
+physical serial handshakes and other television/interlace modes are not claimed.
 Battery RTC/SMEM survive volatile machine resets. This is additional implementation
 and executable evidence; all missing umbrella requirements above remain mandatory.
 
@@ -1244,12 +1245,66 @@ Existing Star Collector, Prism Courier and Hardware Lab media are unchanged.
 
 | Reproducible artifact | SHA-256 |
 | --- | --- |
-| `python3 src/hle/build.py --check`: `system.bin` | `20bdeed8c27a35fba5c0baa61c334383ac7812378a2774ee6f2e7bb26eaad745` |
+| `python3 src/hle/build.py --check`: `system.bin` | `b93d3a0e8ff1242c7ad5fa411f2009fb3a177755138f079263190fe51b124e1a` |
 | `python3 tests/fixtures/build_hle_system.py --check`: `hle-system.iso` | `20087f76e82f3aaafb049a7c1fbad46c9ea032e6b9638b3118cb0b30e472b0fa` |
 
-SYS_CHGSYSCK, SYS_GETSYSCK, SYS_EXECDMP, backup-library/filesystem and CD-library
-ABIs remain mandatory and unimplemented. Full synthetic BIOS/service acceptance
+SYS_CHGSYSCK/SYS_GETSYSCK now have CLKG evidence below. SYS_EXECDMP,
+backup-library/filesystem and CD-library ABIs remain mandatory and unimplemented. Full synthetic BIOS/service acceptance
 and the other required CPU/peripheral, bus/reset/scheduler, SCU/DSP, video/audio,
 CD/SMPC and demonstration evidence remain incomplete. HLESYS is a diagnostic
 disc, not a replacement for either required demonstration. No umbrella checkbox
 is marked complete by these service implementations.
+
+
+## SMPC PLL changes, guest clock ABI and digital input settling
+
+**CLKG** is the original [clock builder](../tests/fixtures/build_clock.py),
+[synthetic BIOS](../tests/fixtures/clock.hex),
+[HLE disc](../tests/fixtures/clock.iso),
+[authored records](../tests/fixtures/clock.tsv) and
+[native assertions](../tests/clock.rs), repeated through actual browser Wasm
+and the production Canvas in [browser-smoke.mjs](../scripts/browser-smoke.mjs).
+References: [SMPC][SMPC] §§1.1, 2.3.9–10, 2.4.2 and [VDP2][VDP2] §2.4;
+[System Program §2.2 services 4.1/4.2](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-162-R1-092994.pdf).
+
+| Contract | Implementation | Independent evidence | Remaining scope |
+| --- | --- | --- | --- |
+| CKCHG320/352 commands | `Smpc::write/advance_clocks` accepts 0F/0E, retains SF until 100 ms of reference time, clears sound enable and reports DOTSEL in OREG10 | SMPC unit vectors at deadline−1/deadline across chunks; CLKG issues both commands and INTBACK, compares 35/75 status | Oscillator settling uses the same deterministic 100 ms policy as SYSRES; no analog oscillator accuracy claimed |
+| Reset domains at clock completion | `Bus::change_system_clock` resets VDP1, VDP2, SCU and sound, clears slave state/control, retains master state/cache/on-chip state, work RAM, CD and backup | Native bus vectors cancel/mask SCU IRQs, retain master FRC/cache/CD media and mask, clear slave/video/sound; both guests start an independent slave computation, verify it stops with retained results, return through retained code/stack and compare written sentinel values | Full CPU/access timing and arbitration remain required |
+| Main/reference clock relationship | `SystemClock` carries fractional phase, converts deadlines, and advances FRT/SCU/VDP/raster at 26.8741/28.6364 MHz while sound/CD/SMPC keep reference time | Rational arithmetic/deadline inequalities over varied chunks; FRT counts 33592/35795 in 10 ms, both produce 441 stereo sample frames; first fast HBlank at reference tick1322 | CPU issue still uses fixed turns; this does not resolve the hardware-time CPU/DMA ownership finding |
+| Normal graphic B display | `Vdp2::dimensions/render` accepts TVMD=8001 and emits 352×224 pixels; Wasm exposes dimensions and Canvas resizes/reset clears correctly | CLKG guest writes a green back screen; native/Wasm compare all pixel bytes, production Canvas checks the last visible pixel | Other required resolutions/interlace, raster latching and cycle-pattern arbitration remain pending |
+| SYS_CHGSYSCK/GETSYSCK | Original SH-2 service at ROM4D00, installed through RAM320, issues SMPC MMIO and publishes data at RAM324; masks/restores SR and synchronizes reset IMS shadow | Same independent HLE disc and separate synthetic BIOS have matching reset-domain records; changing only MOV #0,R4 to MOV #1,R4 changes public value and DOTSEL | SYS_EXECDMP, backup/CD libraries and full startup/service ABI acceptance remain required |
+
+**DIGG** is the original [digital timing builder](../tests/fixtures/build_digital_timing.py),
+[synthetic BIOS](../tests/fixtures/digital-timing.hex),
+[authored records](../tests/fixtures/digital-timing.tsv) and
+[native guest](../tests/digital_timing.rs), also executed in browser Wasm.
+[SMPC §3.4/table3.36][SMPC] requires reading after 2 µs following TH/TR
+selection. `DigitalMux` in [controller.rs](../src/smpc/controller.rs) implements
+54 reference clocks of settling independently on both ports. Early reads retain
+the preceding bank as an explicit deterministic policy for otherwise premature
+software accesses; they do not establish physical pre-settle pin values.
+
+SMPC unit vectors check clocks53/54, staggered ports, repeated same-selection
+writes, reset cancellation and all digital banks. Bus vectors wait for the
+specified interval. The SH-2 guest samples before/after its own delay using actual
+MMIO, with independent port buttons; native and Wasm tests change those buttons
+and compare changed reports. Existing Gamepad/keyboard/focus and both games'
+settling loops remain exercised by the extended suite. Analog TH/TR/TL deadlines
+now participate in event splitting alongside direct digital deadlines.
+
+Both new diagnostic builders/outputs are covered by the
+[fixture MIT license](../tests/fixtures/LICENSE); the clock disc includes its
+LICENSE.TXT. Neither is proprietary firmware or a substitute for the two required
+demonstrations. CI checks both builders in addition to existing media.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `clock.iso` | `462e605c6d5adb46876f69d2b575ee167c20f01ea09f558fb265262f3417b907` |
+| `clock.hex` (text) | `8d3f59725b520f55e313c4082f377ee6524654ae48f8780b09f206c3b9204ff1` |
+| `digital-timing.hex` (text) | `8d6476f8aa89357aff6abcf99c0e56fcd486512644bc902cc138d531f2e6d476` |
+
+The remaining review findings and every unmet umbrella acceptance criterion
+remain mandatory in the existing Issue #17. These changes do not establish full
+SH7604/68k, bus/scheduler/backup, SCU/DSP, video/audio, CD/media or BIOS/HLE
+conformance, and no completion checkbox is changed.

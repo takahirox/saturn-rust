@@ -257,6 +257,10 @@ impl Machine {
             .map_err(MachineError::Video)
     }
 
+    pub fn video_dimensions(&self) -> (usize, usize) {
+        self.bus.vdp2.dimensions()
+    }
+
     /// Advance to the next raster field deadline. Peripherals and video events
     /// progress during SLEEP and DIVU stalls; execution stays bounded for the UI.
     /// CPU issue still uses a fixed quantum; this does not claim opcode/bus timing.
@@ -407,6 +411,10 @@ impl Machine {
                 }
                 self.nmi_pending = false;
                 self.dma_errors = [false; 2];
+            }
+            Some(0x0E | 0x0F) => {
+                self.slave = Cpu::default();
+                self.dma_errors[1] = false;
             }
             Some(0x18) => {
                 self.nmi_pending = true;

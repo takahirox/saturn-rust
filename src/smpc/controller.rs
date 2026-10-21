@@ -41,6 +41,54 @@ pub(super) fn digital(buttons: u16) -> [u8; 2] {
     ]
 }
 
+/// ST-169 §3.4, table 3.36: the pad multiplexes its input lines after TH/TR
+/// selection settles. Preserve the previous bank until the 2 µs deadline.
+pub(super) struct DigitalMux {
+    select: u8,
+    pending: Option<(u8, u32)>,
+}
+impl Default for DigitalMux {
+    fn default() -> Self {
+        Self {
+            select: 0x60,
+            pending: None,
+        }
+    }
+}
+impl DigitalMux {
+    pub fn select(&mut self, select: u8) {
+        let select = select & 0x60;
+        if self.pending.map_or(self.select, |(s, _)| s) != select {
+            self.pending = if select == self.select {
+                None
+            } else {
+                Some((select, 54))
+            };
+        }
+    }
+    pub fn clocks_to_event(&self) -> u32 {
+        self.pending.map_or(u32::MAX, |(_, clocks)| clocks)
+    }
+    pub fn advance(&mut self, clocks: u32) {
+        if let Some((select, remaining)) = self.pending {
+            if clocks >= remaining {
+                self.select = select;
+                self.pending = None;
+            } else {
+                self.pending = Some((select, remaining - clocks));
+            }
+        }
+    }
+    pub fn nibble(&self, buttons: u16) -> u8 {
+        match self.select {
+            0x60 => 0x04 | u8::from(buttons & (1 << 12) == 0) << 3,
+            0x20 => !buttons as u8 & 15,
+            0x40 => !(buttons >> 4) as u8 & 15,
+            _ => !(buttons >> 8) as u8 & 15,
+        }
+    }
+}
+
 pub(super) struct Handshake {
     data: [u8; 16],
     length: usize,
@@ -64,6 +112,9 @@ impl Default for Handshake {
     }
 }
 impl Handshake {
+    pub fn clocks_to_event(&self) -> u32 {
+        self.pending.map_or(u32::MAX, |(_, _, clocks)| clocks)
+    }
     // 2 µs, rounded up at the NTSC reference clock. This models an emulated
     // device response deadline, without a wall-clock wait or host-injected data.
     pub(super) const RESPONSE_CLOCKS: u32 = 54;

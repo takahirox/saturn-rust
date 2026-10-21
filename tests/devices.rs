@@ -16,6 +16,7 @@ fn digital_pad_direct_port_obeys_direction_selection_and_active_low_buttons() {
     bus.write8(SMPC + 0x7F, 0).unwrap();
     for (select, bits) in [(0x20, 0), (0x40, 4), (0, 8)] {
         bus.write8(SMPC + 0x75, select).unwrap();
+        bus.advance_clocks(54).unwrap();
         bus.set_buttons(0);
         assert_eq!(bus.read8(SMPC + 0x75).unwrap() & 15, 15);
         for bit in 0..4 {
@@ -24,6 +25,7 @@ fn digital_pad_direct_port_obeys_direction_selection_and_active_low_buttons() {
         }
     }
     bus.write8(SMPC + 0x75, 0x60).unwrap();
+    bus.advance_clocks(54).unwrap();
     bus.set_buttons(0);
     assert_eq!(bus.read8(SMPC + 0x75).unwrap(), 0x7C);
     bus.set_buttons(1 << 12);
@@ -43,6 +45,7 @@ fn both_digital_ports_have_independent_direction_selection_and_enable_bits() {
     for (select, shift) in [(0x20, 0), (0x40, 4), (0, 8)] {
         bus.write8(SMPC + 0x75, select).unwrap();
         bus.write8(SMPC + 0x77, select).unwrap();
+        bus.advance_clocks(54).unwrap();
         for bit in 0..4 {
             bus.set_buttons(1 << (shift + bit));
             bus.set_port2_buttons(1 << (shift + ((bit + 1) % 4)));
@@ -54,6 +57,7 @@ fn both_digital_ports_have_independent_direction_selection_and_enable_bits() {
         }
     }
     bus.write8(SMPC + 0x77, 0x60).unwrap();
+    bus.advance_clocks(54).unwrap();
     bus.set_port2_buttons(0xFFFF);
     assert_eq!(bus.read8(SMPC + 0x77), Ok(0x74));
     bus.set_port2_buttons(0);
@@ -75,6 +79,7 @@ fn both_digital_ports_have_independent_direction_selection_and_enable_bits() {
     assert!(bus.read8(SMPC + 0x77).is_ok());
     assert!(bus.read8(SMPC + 0x75).is_ok());
     assert!(bus.read8(SMPC + 0x7B).is_err()); // Write-only DDR2.
+    bus.advance_clocks(54).unwrap();
     assert_eq!(bus.read16(SMPC + 0x76), Ok(0xFF7C)); // odd input lane, even pull-up
 }
 

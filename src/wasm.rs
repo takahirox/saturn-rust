@@ -147,6 +147,12 @@ impl Emulator {
     pub fn run_steps(&mut self, count: u32) -> Result<(), JsValue> {
         self.machine.run_steps(count).map_err(js_error)
     }
+    pub fn video_width(&self) -> u32 {
+        self.machine.video_dimensions().0 as u32
+    }
+    pub fn video_height(&self) -> u32 {
+        self.machine.video_dimensions().1 as u32
+    }
     pub fn registers(&self) -> Vec<u32> {
         self.machine.cpu_state().r.to_vec()
     }

@@ -16,6 +16,7 @@ Arguments use R4–R7, results R0, and callbacks obey the SHC callee-save conven
 | `06000300`, `06000304` | SYS_SETUINT / SYS_GETUINT | Register/retrieve C callbacks independently of architectural vector overrides |
 | `06000340`, `06000344`, `06000348` | SYS_SETSCUIM / SYS_CHGSCUIM / SYS_GETSCUIM | Write-only hardware mask plus RAM shadow; read/modify/publish excludes maskable interrupts; last address contains data |
 | `06000330`, `06000334` | SYS_TASSEM / SYS_CLRSEM | All 256 shared bytes, real SH-2 TAS, uncached accesses on either CPU |
+| `06000320`, `06000324` | SYS_CHGSYSCK / SYS_GETSYSCK | Guest-issued timed CKCHG320/352; return with caller SR and work RAM retained; public clock value is data |
 | `06000280` | SYS_CHGUIPR | Copy all 32 priority words; later caller writes cannot alter the active table |
 | `06000210` | SYS_PCLRMEM | Pointer to eight bytes; zero on cold boot, retained across NMI and SYSRES |
 
@@ -52,6 +53,13 @@ and [browser Wasm assertions](../../scripts/browser-smoke.mjs) compare authored
 register records, nested callbacks, both CPU views, changed data/priority
 operands and reset traces. The fixture is diagnostic media, not another game.
 
-This implementation does not provide SYS_CHGSYSCK, SYS_GETSYSCK, SYS_EXECDMP,
+Clock calls mask interrupts during SMPC completion and update the public clock
+value and reset SCU mask shadow before restoring the caller SR. The original
+[clock disc and synthetic BIOS](../../tests/fixtures/build_clock.py) exercise
+clock and reset domains in [native execution](../../tests/clock.rs) and browser
+Wasm, including a changed caller argument. The clock disc carries the fixture
+MIT license; the synthetic BIOS has no HLE installation.
+
+This implementation does not provide SYS_EXECDMP,
 backup-library or CD-library services. Their required implementations and full
 system/boot conformance remain tracked by [Issue #17](https://github.com/takahirox/saturn-rust/issues/17).

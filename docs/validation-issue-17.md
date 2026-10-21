@@ -1517,3 +1517,59 @@ acceptance criterion is waived or marked complete; this validation is not a
 successful completion of the umbrella Run. Keep the same PR Draft, do not merge,
 do not close or replace the tracker, and do not reopen #11/#13/#15. No human,
 proprietary-firmware, live-site or external-workflow gate is introduced.
+
+## SMPC clock transitions and digital selection timing (2026-10-21)
+
+Related to #17. Rechecked upstream `main` with `git ls-remote`: it remains
+`dbd981b030a46daa6923072ce240680dd2e58ebf`. Existing PR #18 work is retained;
+this revision does not complete the umbrella requirements or resolve all review
+findings.
+
+Implemented CKCHG320/352 command deadlines and DOTSEL status, the documented
+video/SCU/sound/slave reset domains, rational main/reference clock conversion,
+normal 352-dot rendering and Canvas dimensions. Original guest SH-2 code supplies
+SYS_CHGSYSCK and the SYS_GETSYSCK data interface. Both the original synthetic
+BIOS and separate HLE disc start a real slave computation, perform clock changes,
+observe retained work RAM/CD/backup and cleared device state, and verify the
+slave stops with its shared result retained. Changed guest arguments change the
+clock ABI value and status. Direct digital TH/TR selection now settles over
+54 reference clocks independently on both ports; the original guest compares
+early/settled reports and changed input levels. Both fixtures and their generated
+media are MIT licensed. Primary references, implementation links, authored
+register/pixel expectations and hashes are in the
+[CLKG/DIGG conformance entries](hardware-conformance.md#smpc-pll-changes-guest-clock-abi-and-digital-input-settling).
+
+Checks completed:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`: pass,
+  **375 native tests, zero failed/ignored** (201 unit, 174 integration).
+  The strengthened slave-execution clock fixture also passes its targeted rerun.
+- Native all-target and Wasm Clippy with `-D warnings`: pass. Rustup stable
+  Rust/Cargo 1.99.0 was explicitly selected for the full final native run and
+  Wasm checks. The new clock tests also pass with the installed native 1.94 toolchain.
+- `sh scripts/build-web.sh`: pass with wasm-bindgen-cli 0.2.129. Existing Star
+  Collector, Prism Courier and Hardware Lab hashes remain unchanged.
+- All **35** CI reproducibility commands pass; both new fixture builders are
+  included in CI. The strengthened clock fixture passes `--check` again.
+- `npm ci --ignore-scripts`, JavaScript syntax checks and the complete extended
+  `npm run test:browser`: pass with Node 24.12.0 and Chromium 145.0.7632.6,
+  under `/saturn-rust/`. The final browser run includes the executing-slave clock
+  fixture, argument mutation, 352-dot Canvas edge pixel and both-port digital
+  timing/input mutation checks. Existing game, sound, input/focus, privacy and
+  local-file/package checks remain enabled and pass.
+- Changed documentation's local link targets and Git whitespace checks pass.
+
+Development checks initially selected the Homebrew compiler for a Wasm build;
+using the documented Rustup compiler fixed the missing-target error. A new
+Rustup Clippy lint required array chunks in one test; it was corrected and the
+native lint/test checks passed. No remote CI, production deployment or genuine
+commercial BIOS compatibility result is claimed.
+
+**The full Run objective remains unmet.** The remaining review findings still
+require SH7604 overflow/BSC/peripheral effects, 68k bus sequencing, coordinated
+CPU/DMA ownership, bus/backup filesystem services, SCU coordination/DSP coverage,
+VDP1 and remaining VDP2 timing/modes, SCSP conformance, runtime CD/media behavior,
+remaining BIOS/HLE services, complete SMPC/latch timing and comprehensive guest
+acceptance evidence. Fixed CPU issue turns are unchanged by the PLL conversion.
+No mandatory scope is waived, no tracker is closed/replaced, and no human,
+proprietary firmware or post-merge approval condition is introduced.

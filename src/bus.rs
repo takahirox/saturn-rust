@@ -5,7 +5,7 @@ use crate::devices::{SMPC, Smpc, VDP2, VRAM, Vdp2};
 use crate::onchip::OnChip;
 use crate::scu::{SCU, Scu, ScuError};
 use crate::sound::{SCSP, SOUND_RAM, SOUND_RAM_SIZE, Sound};
-use crate::timing::{Raster, RasterEvent};
+use crate::timing::{Raster, RasterEvent, SystemClock};
 use crate::vdp1::{self, Vdp1};
 use std::cell::RefCell;
 use std::fmt;
@@ -187,6 +187,7 @@ pub struct Bus {
     pub(crate) scu: Scu,
     pub(crate) raster: Raster,
     scu_dma_phase: u32,
+    system_clock: SystemClock,
     pub(crate) backup: BackupRam,
     onchip: [OnChip; 2],
     cache: [RefCell<Cache>; 2],
@@ -207,6 +208,7 @@ impl Default for Bus {
             scu: Scu::default(),
             raster: Raster::default(),
             scu_dma_phase: 0,
+            system_clock: SystemClock::default(),
             backup: BackupRam::default(),
             onchip: std::array::from_fn(|i| {
                 let mut chip = OnChip::default();
@@ -287,7 +289,12 @@ impl Bus {
     }
 
     pub(crate) fn take_wait_clocks(&self) -> u32 {
-        self.onchip.iter().map(OnChip::take_wait_clocks).sum()
+        let clocks = self.onchip.iter().map(OnChip::take_wait_clocks).sum();
+        if clocks == 0 {
+            0
+        } else {
+            self.system_clock.deadline(clocks)
+        }
     }
     pub(crate) fn cpu_reset_active(&self, processor: Processor) -> bool {
         self.onchip[processor as usize].reset_active()
@@ -328,24 +335,29 @@ impl Bus {
         self.onchip[index].dma = dma;
         error
     }
-    pub(crate) fn advance_clocks(&mut self, clocks: u32) -> Result<Option<u8>, ScuError> {
-        let mut remaining = clocks;
+    fn main_deadline(&self) -> u32 {
+        self.onchip[0]
+            .clocks_to_event()
+            .min(self.onchip[1].clocks_to_event())
+            .min(self.raster.clocks_to_event())
+            .min(self.scu.clocks_to_event())
+            .min(self.vdp1.clocks_to_event())
+            .min(if self.scu.dma_pending() {
+                8 - self.scu_dma_phase
+            } else {
+                u32::MAX
+            })
+    }
+
+    fn advance_main_clocks(
+        &mut self,
+        mut remaining: u32,
+        reference_clocks: u32,
+    ) -> Result<Option<u8>, ScuError> {
+        let mut reference_clocks = Some(reference_clocks);
         let mut command = None;
         while remaining != 0 {
-            let delta = remaining
-                .min(self.onchip[0].clocks_to_event())
-                .min(self.onchip[1].clocks_to_event())
-                .min(self.raster.clocks_to_event())
-                .min(self.scu.clocks_to_event())
-                .min(self.vdp1.clocks_to_event())
-                .min(self.cd.clocks_to_event())
-                .min(self.smpc.clocks_to_event())
-                .min(self.sound.clocks_to_sample())
-                .min(if self.scu.dma_pending() {
-                    8 - self.scu_dma_phase
-                } else {
-                    u32::MAX
-                });
+            let delta = remaining.min(self.main_deadline());
             self.onchip[0].advance_clocks(delta);
             if self.slave_enabled {
                 self.onchip[1].advance_clocks(delta);
@@ -354,17 +366,22 @@ impl Bus {
             if self.vdp1.advance(delta)? {
                 self.scu.signal(13);
             }
-            self.cd.advance(delta);
-            if self.cd.interrupt() {
-                self.scu.signal(16);
-            }
-            self.sound.advance_with_cd(delta, &mut self.cd)?;
-            if self.sound.scsp.main_interrupt() {
-                self.scu.signal(6);
-            }
-            command = self.smpc.advance_clocks(delta).or(command);
-            if self.smpc.take_irq() {
-                self.scu.signal(7);
+            // Keep the established boundary order: main peripherals, fixed
+            // domains, blanking edges, DMA. A PLL conversion can deliver two
+            // main ticks at one reference boundary; fixed time advances once.
+            if let Some(clocks) = reference_clocks.take() {
+                self.cd.advance(clocks);
+                if self.cd.interrupt() {
+                    self.scu.signal(16);
+                }
+                self.sound.advance_with_cd(clocks, &mut self.cd)?;
+                if self.sound.scsp.main_interrupt() {
+                    self.scu.signal(6);
+                }
+                command = self.smpc.advance_clocks(clocks);
+                if self.smpc.take_irq() {
+                    self.scu.signal(7);
+                }
             }
             match self.raster.advance(delta) {
                 Some(RasterEvent::HBlankIn) => {
@@ -392,6 +409,42 @@ impl Bus {
             self.scu_dma_phase = (self.scu_dma_phase + delta) % 8;
             if self.scu_dma_phase == 0 {
                 self.advance_scu_dma()?;
+            }
+            remaining -= delta;
+        }
+        Ok(command)
+    }
+
+    /// SMPC §§2.3.9–10: PLL change resets the listed LSIs, not work RAM,
+    /// the master architectural state, CD block or battery-backed storage.
+    fn change_system_clock(&mut self, fast: bool) {
+        self.system_clock.select(fast);
+        self.raster.select_clock(fast);
+        self.vdp1 = Vdp1::default();
+        self.vdp2 = Vdp2::default();
+        self.scu = Scu::default();
+        self.scu_dma_phase = 0;
+        self.sound = Sound::default();
+        self.set_slave_enabled(false);
+    }
+
+    /// Advance attached hardware in reference clocks without issuing CPU
+    /// instructions. Machine coordinates command completions with CPU state.
+    pub fn advance_clocks(&mut self, clocks: u32) -> Result<Option<u8>, ScuError> {
+        let mut remaining = clocks;
+        let mut command = None;
+        while remaining != 0 {
+            let delta = remaining
+                .min(self.system_clock.deadline(self.main_deadline()).max(1))
+                .min(self.cd.clocks_to_event())
+                .min(self.smpc.clocks_to_event())
+                .min(self.sound.clocks_to_sample());
+            let main_clocks = self.system_clock.advance(delta);
+            if let Some(completed) = self.advance_main_clocks(main_clocks, delta)? {
+                if matches!(completed, 0x0E | 0x0F) {
+                    self.change_system_clock(completed == 0x0E);
+                }
+                command = Some(completed);
             }
             remaining -= delta;
         }
@@ -1237,5 +1290,86 @@ mod scu_timing_tests {
         assert_eq!(b.raster.fields, 0);
         assert!(!b.vdp2.hblank);
         assert!(!b.vdp2.vblank);
+    }
+}
+
+#[cfg(test)]
+mod system_clock_tests {
+    use super::*;
+
+    #[test]
+    fn changed_pll_clocks_frt_and_raster_but_not_the_sample_rate() {
+        for fast in [false, true] {
+            for chunk in [3, 8, 607, 268741] {
+                let mut bus = Bus::default();
+                bus.change_system_clock(fast);
+                let mut left = 268741; // 10 ms in the independent reference domain
+                while left != 0 {
+                    let n = chunk.min(left);
+                    bus.advance_clocks(n).unwrap();
+                    left -= n;
+                }
+                let counter = u16::from_be_bytes([
+                    bus.read8(0xFFFF_FE12).unwrap(),
+                    bus.read8(0xFFFF_FE13).unwrap(),
+                ]);
+                assert_eq!(counter, if fast { 35795 } else { 33592 });
+                assert_eq!(bus.sound.scsp.generated, 441);
+                assert_eq!(bus.raster.line, 157);
+            }
+        }
+    }
+
+    #[test]
+    fn clock_reset_cancels_scu_work_and_slave_without_discarding_master_or_cd_domains() {
+        let mut bus = Bus::default();
+        bus.set_slave_enabled(true);
+        bus.write8(CCR, 1).unwrap();
+        bus.onchip[0].write8(0xFFFF_FE12, 0x34).unwrap();
+        bus.onchip[0].write8(0xFFFF_FE13, 0x56).unwrap();
+        bus.scu.write32(SCU + 0xA0, 0).unwrap();
+        bus.scu.signal(11);
+        assert!(bus.interrupt(Processor::Master).is_some());
+        bus.write16(crate::cd::REGISTERS + 12, 0x56).unwrap();
+        bus.cd
+            .mount(crate::media::Media::iso(&vec![0x69; 2048]).unwrap());
+        bus.write32(HIGH_WRAM, 0x12345678).unwrap();
+        bus.write32(LOW_WRAM, 0x2468ACE0).unwrap();
+        bus.write8(BACKUP_RAM + 1, 0xA5).unwrap();
+        bus.vdp2.vram[0] = 0x69;
+        bus.vdp1.vram[0] = 0x42;
+        bus.sound.ram[0] = 0x53;
+        bus.advance_clocks(crate::timing::CLOCKS_PER_FIELD as u32)
+            .unwrap();
+        let fields = bus.raster.fields;
+        bus.change_system_clock(true);
+        assert_eq!(bus.read8(CCR), Ok(1));
+        assert_eq!(bus.read8(0xFFFF_FE12), Ok(0x0F)); // FRC retained and clocked
+        assert_eq!(bus.read32(HIGH_WRAM), Ok(0x12345678));
+        assert_eq!(bus.read32(LOW_WRAM), Ok(0x2468ACE0));
+        assert_eq!(bus.read8(BACKUP_RAM + 1), Ok(0xA5));
+        assert_eq!(bus.read16(crate::cd::REGISTERS + 12), Ok(0x56));
+        assert_eq!(
+            bus.cd.media().unwrap().cooked_sector(150).unwrap(),
+            [0x69; 2048]
+        );
+        assert!(!bus.slave_enabled);
+        assert_eq!(bus.cache[1].borrow().control(), 0);
+        bus.scu.signal(11);
+        assert_eq!(bus.scu.interrupt(), None); // reset masks DMA IRQ
+        bus.scu.write32(SCU + 0xA0, 0).unwrap();
+        assert_eq!(bus.scu.interrupt(), Some((5, 0x4B)));
+        bus.scu.acknowledge(0x4B);
+        assert_eq!(bus.vdp1.vram[0], 0);
+        assert_eq!(bus.vdp2.vram[0], 0);
+        assert_eq!(bus.sound.ram[0], 0);
+        assert_eq!(bus.raster.fields, fields);
+        assert_eq!(bus.raster.line, 0);
+        assert_eq!(bus.raster.clocks_to_event(), 1408);
+        assert_eq!(bus.interrupt(Processor::Master), None);
+        bus.advance_clocks(1321).unwrap();
+        assert!(!bus.vdp2.hblank);
+        bus.advance_clocks(1).unwrap();
+        assert!(bus.vdp2.hblank);
     }
 }

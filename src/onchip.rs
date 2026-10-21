@@ -319,7 +319,7 @@ impl OnChip {
         Ok(())
     }
 
-    /// Counts peripheral reference clocks even while the CPU is in SLEEP.
+    /// Counts CPU phi clocks even while the CPU is in SLEEP.
     /// Pin synchronization, access wait states and clock-switch glitches are
     /// outside this functional model (SH7604 §§11.4/11.7).
     pub fn advance_clocks(&mut self, clocks: u32) {

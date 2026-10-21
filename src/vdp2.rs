@@ -1,10 +1,6 @@
 //! Original software-visible VDP2 renderer; Sega ST-058-R2 §§3–6,8–13.
 //! Normal tile/bitmap sampling and VDP1 composition are independent of guest identity.
-use crate::{
-    bus::BusError,
-    devices::{HEIGHT, VDP2, WIDTH},
-    vdp1::Vdp1,
-};
+use crate::{bus::BusError, devices::VDP2, vdp1::Vdp1};
 use std::cell::Cell;
 
 mod rotation;
@@ -140,8 +136,12 @@ impl Vdp2 {
         }
         self.render(Some(sprites))
     }
+    /// ST-058 §2.4: normal graphic A/B select 320/352 visible dots.
+    pub fn dimensions(&self) -> (usize, usize) {
+        (if self.word(0) & 1 == 0 { 320 } else { 352 }, 224)
+    }
     fn validate(&self) -> Result<(), String> {
-        let unsupported = self.word(0) != 0x8000
+        let unsupported = self.word(0) & !1 != 0x8000
             || self.word(0x20) & !0x1F3F != 0
             || self.word(0xE)
                 & !(0xB000
@@ -566,7 +566,8 @@ impl Vdp2 {
         })
     }
     fn render(&self, sprites: Option<&Vdp1>) -> Result<Vec<u8>, String> {
-        let mut pixels = vec![0; WIDTH * HEIGHT * 4];
+        let (width, height) = self.dimensions();
+        let mut pixels = vec![0; width * height * 4];
         if self.word(0) & 0x8000 == 0 {
             for p in pixels.as_chunks_mut::<4>().0 {
                 p[3] = 255;
@@ -575,7 +576,7 @@ impl Vdp2 {
         }
         self.validate()?;
         let gradation = self.gradation_screen();
-        for y in 0..HEIGHT {
+        for y in 0..height {
             // The manuals do not define the two pre-display pipeline samples.
             // Use black at the left border, reset every scanline; never carry
             // pixels from the previous line or the previous rendered frame.
@@ -585,7 +586,7 @@ impl Vdp2 {
                     + if self.word(0xAC) & 0x8000 != 0 { y } else { 0 })
                     * 2,
             );
-            for x in 0..WIDTH {
+            for x in 0..width {
                 let sprite_window = self.sprite_window(sprites, x, y);
                 let sprite = sprites.map(|s| self.sprite(s, x, y)).unwrap_or_default();
                 let back = Layer {
@@ -683,7 +684,7 @@ impl Vdp2 {
                         };
                     }
                 }
-                let p = &mut pixels[(y * WIDTH + x) * 4..][..4];
+                let p = &mut pixels[(y * width + x) * 4..][..4];
                 // ST-058 §13.1: offset follows color calculation and uses
                 // the top screen's enable/select, never the lower screen's.
                 rgb = self.offset(rgb, top.id);

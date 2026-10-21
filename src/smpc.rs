@@ -4,7 +4,7 @@
 use crate::bus::BusError;
 use crate::devices::SMPC;
 mod controller;
-use controller::{Analog, Handshake};
+use controller::{Analog, DigitalMux, Handshake};
 const REFERENCE_HZ: u64 = 26_874_100;
 
 #[derive(Clone)]
@@ -143,6 +143,7 @@ pub struct Smpc {
     buttons: [u16; 2],
     analog: [Option<Analog>; 2],
     handshake: [Handshake; 2],
+    digital: [DigitalMux; 2],
     pdr: [u8; 2],
     ddr: [u8; 2],
     iosel: u8,
@@ -164,6 +165,7 @@ pub struct Smpc {
     peripheral_phase: bool,
     irq: bool,
     measured_collection: bool,
+    clock_352: bool,
 }
 impl Default for Smpc {
     fn default() -> Self {
@@ -171,6 +173,7 @@ impl Default for Smpc {
             buttons: [0; 2],
             analog: [None; 2],
             handshake: std::array::from_fn(|_| Handshake::default()),
+            digital: std::array::from_fn(|_| DigitalMux::default()),
             pdr: [0; 2],
             ddr: [0; 2],
             iosel: 0,
@@ -192,6 +195,7 @@ impl Default for Smpc {
             peripheral_phase: false,
             irq: false,
             measured_collection: false,
+            clock_352: false,
         }
     }
 }
@@ -206,7 +210,11 @@ impl Smpc {
         self.pending.is_some() || self.await_continue || self.await_vblank
     }
     pub(crate) fn clocks_to_event(&self) -> u32 {
-        self.pending.map_or(u32::MAX, |(_, n)| n)
+        self.digital
+            .iter()
+            .map(DigitalMux::clocks_to_event)
+            .chain(self.handshake.iter().map(Handshake::clocks_to_event))
+            .fold(self.pending.map_or(u32::MAX, |(_, n)| n), u32::min)
     }
     pub(crate) fn system_reset(&mut self) {
         let battery = self.battery.clone();
@@ -244,9 +252,14 @@ impl Smpc {
         if self.await_vblank {
             self.await_vblank = false;
             // ST-169 §3.2: first measure collection; optimization then places
-            // readiness one millisecond before VBlank-in in NTSC 320 mode.
+            // readiness one millisecond before VBlank-in in NTSC 320/352 modes.
             let clocks = if self.measured_collection && self.input[1] & 2 == 0 {
-                224 * crate::timing::CLOCKS_PER_LINE - 26_875
+                let active_clocks = if self.clock_352 {
+                    (224u64 * 1820 * REFERENCE_HZ).div_ceil(28_636_400) as u32
+                } else {
+                    224 * crate::timing::CLOCKS_PER_LINE
+                };
+                active_clocks - 26_875
             } else {
                 Self::STATUS_CLOCKS
             };
@@ -254,6 +267,9 @@ impl Smpc {
         }
     }
     pub(crate) fn advance_clocks(&mut self, clocks: u32) -> Option<u8> {
+        for port in &mut self.digital {
+            port.advance(clocks);
+        }
         for port in &mut self.handshake {
             port.advance(clocks);
         }
@@ -271,6 +287,10 @@ impl Smpc {
         match command {
             6 => self.sound_enabled = true,
             7 => self.sound_enabled = false,
+            0x0E | 0x0F => {
+                self.clock_352 = command == 0x0E;
+                self.sound_enabled = false;
+            }
             0x19 => self.reset_disabled = false,
             0x1A => self.reset_disabled = true,
             0x16 => {
@@ -292,7 +312,8 @@ impl Smpc {
                         u8::from(self.battery.set) << 7 | u8::from(self.reset_disabled) << 6;
                     self.output[1..8].copy_from_slice(&self.battery.packet());
                     self.output[9] = 1; // Japan region, no cartridge.
-                    self.output[10] = 0x34 | u8::from(!self.sound_enabled);
+                    self.output[10] =
+                        0x34 | u8::from(self.clock_352) << 6 | u8::from(!self.sound_enabled);
                     self.output[12..16].copy_from_slice(&self.battery.memory);
                     self.await_continue = self.input[1] & 8 != 0;
                     self.sf = self.await_continue;
@@ -312,6 +333,7 @@ impl Smpc {
             return false;
         }
         let previous = std::mem::replace(&mut self.th[port], high);
+        self.digital[port].select(self.port_select(port));
         previous && !high && self.exle & (1 << port) != 0 && self.ddr[port] & 0x40 == 0
     }
     pub fn set_buttons(&mut self, buttons: u16) {
@@ -364,6 +386,10 @@ impl Smpc {
     fn unsupported(address: u32) -> BusError {
         BusError::UnsupportedDevice { address, width: 1 }
     }
+    fn port_select(&self, port: usize) -> u8 {
+        (self.pdr[port] & self.ddr[port])
+            | (!self.ddr[port] & 0x7F & !(0x40 * u8::from(!self.th[port])))
+    }
     pub fn read(&self, address: u32) -> Result<u8, BusError> {
         match address - SMPC {
             offset @ 0x21..=0x5F if offset & 1 != 0 => {
@@ -379,17 +405,11 @@ impl Smpc {
                 }
                 // ST-169 §1.2: input pins and output latches share PDR; DDR
                 // controls each bit independently, including TH used by EXLE.
-                let select = (self.pdr[port] & self.ddr[port])
-                    | (!self.ddr[port] & 0x7F & !(0x40 * u8::from(!self.th[port])));
+                let select = self.port_select(port);
                 let pins = if self.analog[port].is_some() {
                     (select & 0x60) | self.handshake[port].pins()
                 } else {
-                    let nibble = match select & 0x60 {
-                        0x60 => 0x04 | u8::from(self.buttons[port] & (1 << 12) == 0) << 3,
-                        0x20 => !self.buttons[port] as u8 & 15,
-                        0x40 => !(self.buttons[port] >> 4) as u8 & 15,
-                        _ => !(self.buttons[port] >> 8) as u8 & 15,
-                    };
+                    let nibble = self.digital[port].nibble(self.buttons[port]);
                     (select & 0x60) | 0x10 | nibble
                 };
                 Ok((self.pdr[port] & self.ddr[port]) | (pins & !self.ddr[port]))
@@ -421,7 +441,7 @@ impl Smpc {
                 let clocks = match value {
                     0 | 2 | 3 | 6 | 7 | 0x18 | 0x19 | 0x1A => Self::CPU_COMMAND_CLOCKS,
                     8 | 9 => 1075, // ST-169 §§2.3.6/2.3.7: 40 microseconds.
-                    0x0D => Self::SYSTEM_RESET_CLOCKS,
+                    0x0D..=0x0F => Self::SYSTEM_RESET_CLOCKS,
                     0x16 if Battery::parse(self.input).is_some() => 1882,
                     0x17 => 1075,
                     0x10 if matches!(self.input[0], 0 | 1)
@@ -459,6 +479,9 @@ impl Smpc {
             0x7D => self.iosel = value & 3,
             0x7F => self.exle = value & 3,
             _ => return Err(Self::unsupported(address)),
+        }
+        for port in 0..2 {
+            self.digital[port].select(self.port_select(port));
         }
         Ok(())
     }
