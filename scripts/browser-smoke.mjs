@@ -1232,6 +1232,48 @@ try {
     await page.locator("#reset").click();
     assert.deepEqual(await runDspDma(), actual);
   }
+  // Original SH-2/DSP B-bus guest: all eight output strides, counter wrap,
+  // sound RAM input, independent authored words and changed guest operands.
+  const dspBusRom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/dsp-bus.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [offset, ...words] = line.trim().split(/\s+/).map(word => parseInt(word, 16));
+    words.forEach((word, i) => dspBusRom.writeUInt16BE(word, offset + i * 2));
+  }
+  const dspBusVectors = (await readFile("tests/fixtures/dsp-bus.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v, 16));
+  for (const mutation of ["baseline", "data", "stride"]) {
+    const changed = Buffer.from(dspBusRom);
+    const expected = [...dspBusVectors];
+    if (mutation === "data") {
+      const needle = Buffer.from([0x11, 0x22, 0x33, 0x44]);
+      let count = 0;
+      for (let at = changed.indexOf(needle); at >= 0; at = changed.indexOf(needle, at + 4)) {
+        changed.writeUInt32BE(0x55667788, at); count++;
+      }
+      assert.equal(count, 8);
+      expected[1] = 0x55667788;
+      for (const i of [3, 7, 11, 15, 19, 23]) {
+        expected[i] = 0x5566EEEE; expected[i + 1] = 0x7788EEEE;
+      }
+    } else if (mutation === "stride") {
+      const needle = Buffer.from([0xC0, 0, 0x90, 2]);
+      const at = changed.indexOf(needle);
+      assert(at >= 0 && changed.indexOf(needle, at + 1) < 0);
+      changed.writeUInt32BE(0xC0001002, at);
+      expected[1] = 0xCCDDEEEE; expected[2] = 0xEEEEEEEE;
+    }
+    await page.locator("#bios").setInputFiles({name:"original-dsp-bus.bin", mimeType:"application/octet-stream", buffer:changed});
+    await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+    const runDspBus = () => page.evaluate(async count => {
+      const {emulator} = await import("./app.js");
+      emulator.run_steps(10000);
+      return {trace:Array.from({length:count}, (_, i) => emulator.read_long(0x0600E800 + i * 4)),
+        exceptions:emulator.exception_count()};
+    }, dspBusVectors.length);
+    assert.deepEqual(await runDspBus(), {trace:expected, exceptions:"0"});
+    await page.locator("#reset").click();
+    assert.deepEqual(await runDspBus(), {trace:expected, exceptions:"0"});
+  }
   // Original UBC fixture: real SH-2 and DMA accesses, saved exception frames,
   // before/after fetches and delay-slot deferral, repeated after a cold reset.
   const ubcRom = Buffer.alloc(524288);

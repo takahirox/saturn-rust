@@ -447,8 +447,8 @@ edge/transfer coverage are still required. Unsupported registers fail explicitly
 | DMA channels 0–2 direct, [SCU] §§2.1/3.2, [SCUFINAL] #15–24 | Counts, address save/update, unaligned heads/tails, B-bus halfword strides, all seven edge triggers/GO, end/illegal IRQ and priority preemption; one queued retrigger | SCUV, SCUROM / SCUROM (channels 0/1) | Exhaustive trigger/device/boundary tests, actual bus latencies and prohibited three-channel behavior pending | Pending |
 | DMA indirect, [SCUFINAL] #24/25 | Final-spec count/write/read layout, source bit-31 end marker, table walking, write-address continuation | SCUV, SCUROM / SCUROM | Entire table alignment/overflow/error contract and all count limits need further vectors | Pending |
 | DMA device interactions, [SCU] §2.1 | High-RAM to VDP2 VRAM and executing DSP external RAM transfers, real IRQ handlers | SCUV, SCUROM / SCUROM | CLAB adds CD FIFO to high-RAM fixed-source DMA/IRQ; VDP1 routes and full cross-device arbitration remain | Pending |
-| SCU DSP execution/registers, [SCU] §4.5 pp.91–131/141–158 | ALU logical/arithmetic/shift/rotate, signed multiply, parallel X/Y/D1 moves, immediates, delayed jumps/subroutine control, BTM/LPS, END/ENDI, pause/step and read-cleared E/V | SCUV, SCUROM / SCUROM (product/sum/loop/ENDI) | Full conditional/DMA timing, conflicting bank access and ALU overflow/pipeline edge inventory pending | Pending |
-| SCU DSP memory/transfers, [SCU] §§3.3/4.1/4.5 pp.132–140, [SCUFINAL] #16/18/19/26/27 | Four 64-word banks, host ports, address counters, bounded asynchronous input/output DMA and HOLD, fixed/incrementing A-bus writes, END permits DMA continuation | SCUV, SCUROM, DSPD / SCUROM + DSPD (register-count and executed program-RAM DMA) | Complete count/PRAM boundaries, cross-device routes and data-bank conflicts lack complete evidence | Pending |
+| SCU DSP execution/registers, [SCU] §4.5 pp.91–131/141–158 | ALU logical/arithmetic/shift/rotate, signed multiply, parallel X/Y/D1 moves, immediates, delayed jumps/subroutine control, BTM/LPS, END/ENDI, pause/step and read-cleared E/V | SCUV, SCUROM / SCUROM (product/sum/loop/ENDI) | One-successor PRAM-DMA prefetch has DSPBUS native vectors below; full conditional/DMA timing, conflicting bank access and ALU overflow/pipeline edge inventory pending | Pending |
+| SCU DSP memory/transfers, [SCU] §§3.3/4.1/4.5 pp.132–140, [SCUFINAL] #16/18/19/26/27 | Four 64-word banks, host ports, address counters, bounded asynchronous input/output DMA and HOLD, fixed/incrementing A-bus writes, separately granted B-bus halfwords, retained transfer data, END permits DMA continuation | SCUV, SCUROM, DSPD, DSPBUS / SCUROM + DSPD + DSPBUS (register-count, executed PRAM, VDP1/sound RAM routes) | Complete count/PRAM boundaries, cross-device arbitration/waits and data-bank conflicts lack complete evidence | Pending |
 | SCU timers, [SCU] §§2.2/3.4, [SCUFINAL] #30/31 | Raster-driven timer0 clear/compare and timer1 dot countdown, zero=512, no reload while active, compare-line selection | SCUV, TIME, SCUROM / SCUROM | Full television modes and beam-phase conformance pending | Pending |
 
 Implementation: [SCU ports/interrupts/timers](../src/scu.rs),
@@ -1773,3 +1773,29 @@ arbitration/locking, CPU/peripheral/pipeline/reset, SCU/DSP, video, SCSP/DSP,
 CD timing/connection/lifecycle, SYS_EXECDMP/CD-library or SMPC requirements.
 All original Issue #17 acceptance criteria remain mandatory; no umbrella
 criterion is marked complete by these fixtures.
+
+## SCU DSP B-bus cycles and program prefetch
+
+**DSPBUS** is the original MIT [guest builder](../tests/fixtures/build_dsp_bus.py),
+[synthetic BIOS](../tests/fixtures/dsp-bus.hex), [authored word vectors](../tests/fixtures/dsp-bus.tsv),
+[native integration](../tests/dsp_bus.rs) and identical guest in the extended
+[browser Wasm suite](../scripts/browser-smoke.mjs). Sources and generated media
+use the adjacent [fixture license](../tests/fixtures/LICENSE). References:
+[SCU] §4.1 (bus/RAM widths), §4.3/fig.4.2 (prefetched successors),
+§4.5 pp.134/136/138/140 (16-bit B-bus writes) and [SCUFINAL] #27 (B-bus input add2).
+
+| Contract | Implementation | Independent evidence | Limits |
+| --- | --- | --- | --- |
+| Separate B-bus grants | `Dsp::dma_beat` retains an in-flight word across two external 16-bit cycles. Output samples DSP RAM once; input publishes RAM/count/address updates after the second successful cycle. | [Bus-spy vectors](../src/scu/dsp/tests.rs) check exactly one read/write per grant, eight output strides × HOLD, CT63→0 wrap, changed data between halves, partial faults and a second-half destination outside the allowed region. | The existing eight-main-clock SCU grant cadence is functional, not complete external wait-state/arbitration timing. |
+| Hardware deadlines, preemption and reset | `Bus::advance_main_clocks` and `Scu::advance_dma` retain the partial DSP word while another DMA channel owns grants; reset cancels it. | `dsp_b_bus_halfwords_progress_on_separate_deadlines_and_reset_cancels_the_tail` in [bus.rs](../src/bus.rs): authored snapshots at clocks7/8/15/16, chunks1/3/8/17; `higher_dma_channel_can_preempt_between_dsp_b_bus_halves_without_losing_the_word` in [SCU tests](../src/scu/tests.rs): actual RAM copy/IRQ between halves. | CPU/DMA transaction ownership, BSC/VRAM waits and prohibited concurrent-start behavior remain required. |
+| Prefetched program versus PRAM DMA | `Dsp::step` latches the successor word. DMA writes update PRAM without changing that fetched word; LE and stopped host program writes invalidate the latch. Pause retains it. | `program_dma_cannot_replace_the_prefetched_successor_and_le_refetches_it`: actual PRAM DMA changes MOV7 to MOV9; the fetched instruction writes7, explicit LE writes9. A separate PRAM vector loads addressesFF/00 and executes the transferred MOV42/ENDI across wrap. Existing jump/BTM/LPS/step and executed-PRAM guests remain enabled. | This establishes a one-successor functional prefetch, not the complete undocumented pipeline/conflict behavior or physical RAM-port timing. |
+| Guest-visible B-bus routes | DSPBUS uses all eight output stride encodings into VDP1 RAM and real sound-RAM input, with CT wrap and polling of EX/T0. Both SH-2 and DSP execute ordinary guest instructions. | All **30** authored words agree in native and browser Wasm, repeated after cold reset. Changing eight guest data literals changes only authored data records; changing add1 to add0 overwrites the high half and leaves the next word's canary intact. | These are diagnostic fixtures, not substitutes for either required demonstration or complete SCU acceptance. |
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `dsp-bus.hex` | `a0036769763632ffa83e7595df7e7fa956da923e70f6c55aacd809fd5c95ec7c` |
+| `dsp-bus.tsv` | `b9e7e5a52a3ef8c11b89e57a62f093af6f9650b9725d42847d4d8ff61c0014a0` |
+
+Star Collector, Prism Courier and Hardware Lab retain their existing source and
+media. The remaining CPU/peripheral/bus/reset, SCU/DSP, video, sound, CD/HLE,
+SMPC and comprehensive acceptance requirements of #17 remain mandatory.

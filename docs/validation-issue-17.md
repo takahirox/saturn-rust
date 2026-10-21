@@ -2232,3 +2232,75 @@ transaction arbitration/reset, 68k sequencing, SCU/DSP, VDP1/VDP2, SCSP/DSP,
 CD timing/connections/lifecycle, SYS_EXECDMP/CD-library and SMPC work. No umbrella
 criterion is marked complete. There is no human, firmware, live-site, external
 workflow or post-merge gate, and no replacement tracker or historical Issue reopening.
+
+## SCU DSP B-bus transactions and retained program prefetch (2026-10-22)
+
+Continues the existing implementation at `aa9f1dc1d762593edcac311e63efaa39e0e448d4`,
+including the preceding BSC/ISO/XA/bootstrap changes in `d7ae2e3259592eb01d91474de47e965792335299`.
+Rechecked upstream `main` and the existing PR branch using `git ls-remote`:
+`dbd981b030a46daa6923072ce240680dd2e58ebf` and
+`5902a61899c20e20600959e7489af28a358e0d3c`, respectively. No existing demo source
+or media is changed. PR #18 remains the sole Draft implementation PR for #17.
+
+`Dsp::dma_beat` previously delivered both halves of a B-bus output longword in
+one scheduler invocation and read B-bus input as one longword. It now issues one
+16-bit cycle per grant and retains the partial word. Output samples DSP RAM once;
+input updates RAM only after its second read. Counters, remaining count and
+RA0/WA0 completion follow the successful second cycle. A second-half failure
+retains the already completed cycle and leaves the transfer incomplete. The
+second output address is validated independently before it can enter a prohibited
+region. Higher-priority SCU DMA can preempt between halves; reset cancels the tail.
+
+The DSP now retains its fetched successor word. PRAM DMA can change instruction
+memory without replacing that fetched word. Explicit LE and stopped host program
+writes invalidate the latch; pause retains it. Independent tests execute MOV7
+from the latch, then MOV9 from changed PRAM after LE, and load/execute instructions
+at FF/00. Primary references and exact implementation/native/Wasm links are in
+[the DSPBUS conformance entry](hardware-conformance.md#scu-dsp-b-bus-cycles-and-program-prefetch).
+
+The new original MIT [builder](../tests/fixtures/build_dsp_bus.py) produces the
+same synthetic BIOS for [native](../tests/dsp_bus.rs) and browser Wasm execution.
+SH-2 uploads actual DSP programs, writes inputs through MMIO, polls EX/T0 and
+records VDP1/sound-RAM results. All 30 word expectations are authored from the
+manual/data contract. Both paths repeat cold resets and compare changed data
+and DMA stride operands against separately authored expected records. Native
+bus spies assert every individual cycle, CT63/0 wrap, all eight output stride
+encodings × HOLD, retained sampled data, partial faults and bounds. Hardware-clock
+tests compare clocks7/8/15/16 with chunks1/3/8/17 and a preempting real RAM copy/IRQ.
+
+Validation actually performed:
+
+- `cargo fmt --check`, `cargo build --locked` and complete `cargo test --locked`
+  pass: **480 tests (262 unit + 218 integration)**, zero failed/ignored,
+  Rust/Cargo **1.94.0**. Test-only precedence clarification and a stronger reset
+  assertion were followed by the complete 22 SCU unit tests and both B-bus
+  scheduler tests again; production source was unchanged.
+- Native all-target Clippy and wasm32 Clippy pass with `-D warnings`. The initial
+  native Clippy check identified two ambiguous test expressions; both were
+  parenthesized, without suppression.
+- `sh scripts/build-web.sh` passes using the installed rustup stable **1.99.0**
+  Wasm target and matching wasm-bindgen-cli **0.2.129**.
+- All **54** CI guest/media reproducibility commands pass, including the new
+  DSPBUS builder. Star Collector, Prism Courier and Hardware Lab media remain
+  byte-identical to reviewed PR head `5902a61899c20e20600959e7489af28a358e0d3c`.
+- The complete extended `npm run test:browser` passes in Chromium
+  **145.0.7632.6**, Node **24.12.0**, under `/saturn-rust/`. The new DSPBUS guest
+  runs alongside the prior BSC/XA/boot guests, all three demonstrations,
+  Canvas/AudioWorklet, restart, controller/focus, backup and local-file privacy
+  assertions. No required browser test is skipped.
+- Two deliberate source regressions are rejected by their specific new tests:
+  discarding the prefetched instruction, and issuing both output halves during
+  the first grant. Exact original source bytes are restored in a `finally`
+  block; the SCU and B-bus scheduler checks pass afterward.
+- JavaScript syntax, local Markdown file targets and Git whitespace checks pass.
+  Early development tests corrected a signed 25-bit MVI expectation and the
+  mutation fixture's assumption about shared literals; neither expectation was
+  sampled from emulator output.
+
+These are local checks, not remote CI/deployment or complete conformance claims.
+The grant cadence remains the existing functional eight-main-clock model;
+CPU/DMA ownership/waits, complete DSP conflicts/count/pipeline boundaries and
+all other outstanding CPU/peripheral/reset, SCU, video, sound, CD/HLE and SMPC
+requirements remain mandatory. **The full Issue #17 objective remains unmet.**
+No umbrella checkbox is checked, no tracker is replaced or reopened, and no merge
+or human/firmware/live-site/external-workflow/post-merge gate is introduced.

@@ -4,6 +4,9 @@ use super::{ScuError, next_data_address};
 use crate::bus::{BusError, Memory};
 use std::cell::Cell;
 
+#[cfg(test)]
+mod tests;
+
 const MASK48: u64 = 0xFFFF_FFFF_FFFF;
 const SIGN: u32 = 1 << 22;
 const ZERO: u32 = 1 << 21;
@@ -31,6 +34,7 @@ pub(super) struct Dsp {
     ra0: u32,
     wa0: u32,
     branch: Option<u8>,
+    prefetched: Option<(u8, u32)>,
     repeat: Option<u8>,
     dma: Option<Dma>,
 }
@@ -41,6 +45,10 @@ struct Dma {
     address: u32,
     add: u32,
     hold: bool,
+    // ST-097 §4.5: B-bus transfers use two external 16-bit cycles.
+    // Retain the sampled longword between grants; a DSP RAM write between
+    // its halves must not replace the low half of the in-flight word.
+    halfword: Option<u32>,
 }
 impl Default for Dsp {
     fn default() -> Self {
@@ -64,6 +72,7 @@ impl Default for Dsp {
             ra0: 0,
             wa0: 0,
             branch: None,
+            prefetched: None,
             repeat: None,
             dma: None,
         }
@@ -100,6 +109,7 @@ impl Dsp {
             if value & 0x8000 != 0 {
                 self.pc = value as u8;
                 self.branch = None;
+                self.prefetched = None;
                 self.repeat = None;
             }
             if value & 0x20000 != 0 {
@@ -123,6 +133,7 @@ impl Dsp {
             return Err(BusError::UnsupportedDevice { address, width: 4 });
         }
         self.program[self.load_address as usize] = value;
+        self.prefetched = None;
         self.load_address = self.load_address.wrapping_add(1);
         // The host port and stopped program counter share the visible P register.
         self.pc = self.load_address;
@@ -263,7 +274,13 @@ impl Dsp {
             return Ok(false);
         }
         let pc = self.pc;
-        let instruction = self.program[pc as usize];
+        // ST-097 §4.3/fig.4.2: a successor is already fetched when the
+        // preceding operation executes. Program-RAM DMA must not replace
+        // that instruction between execution clocks.
+        let instruction = self
+            .prefetched
+            .filter(|(address, _)| *address == pc)
+            .map_or(self.program[pc as usize], |(_, word)| word);
         let illegal = || ScuError::IllegalDsp { pc, instruction };
         // A second DMA instruction waits rather than discarding the running transfer.
         if instruction >> 28 == 12 && self.dma.is_some() {
@@ -399,6 +416,7 @@ impl Dsp {
                         address: address.wrapping_mul(4) & 0x07FF_FFFF,
                         add,
                         hold: instruction & 0x4000 != 0,
+                        halfword: None,
                     });
                 }
                 1 => {
@@ -439,6 +457,7 @@ impl Dsp {
         if let Some(target) = old_branch {
             self.pc = target;
         }
+        self.prefetched = Some((self.pc, self.program[self.pc as usize]));
         Ok(interrupt)
     }
     pub(super) fn dma_beat(&mut self, memory: &mut impl Memory) -> Result<(), ScuError> {
@@ -456,10 +475,22 @@ impl Dsp {
             if !super::dma::valid_destination(address) {
                 return Err(ScuError::DmaParameters { channel: 3 });
             }
-            let value = self.data[bank][ct];
             if super::dma::b_bus(address) {
-                memory.write16(address, (value >> 16) as u16)?;
-                memory.write16(address + dma.add * 2, value as u16)?;
+                if let Some(value) = dma.halfword {
+                    let low_address = address + dma.add * 2;
+                    if !super::dma::valid_destination(low_address)
+                        || !super::dma::valid_destination(low_address + 1)
+                    {
+                        return Err(ScuError::DmaParameters { channel: 3 });
+                    }
+                    memory.write16(low_address, value as u16)?;
+                    dma.halfword = None;
+                } else {
+                    let value = self.data[bank][ct];
+                    memory.write16(address, (value >> 16) as u16)?;
+                    dma.halfword = Some(value);
+                    return Ok(());
+                }
                 dma.address = address.wrapping_add(dma.add * 4);
             } else {
                 // ST-097 §4.5 pp.134/136/138/140: A-bus writes permit
@@ -467,7 +498,7 @@ impl Dsp {
                 if dma.add > 1 {
                     return Err(ScuError::DmaParameters { channel: 3 });
                 }
-                memory.write32(address, value)?;
+                memory.write32(address, self.data[bank][ct])?;
                 dma.address = address.wrapping_add(dma.add * 4);
             }
         } else {
@@ -477,7 +508,21 @@ impl Dsp {
             if super::dma::b_bus(address) && dma.add != 2 {
                 return Err(ScuError::DmaParameters { channel: 3 });
             }
-            let value = memory.read32(address)?;
+            let value = if super::dma::b_bus(address) {
+                if let Some(high) = dma.halfword {
+                    if !super::dma::valid_source(address + 3) {
+                        return Err(ScuError::DmaParameters { channel: 3 });
+                    }
+                    let value = high | u32::from(memory.read16(address + 2)?);
+                    dma.halfword = None;
+                    value
+                } else {
+                    dma.halfword = Some(u32::from(memory.read16(address)?) << 16);
+                    return Ok(());
+                }
+            } else {
+                memory.read32(address)?
+            };
             if bank == 4 {
                 self.program[ct] = value;
                 self.load_address = self.load_address.wrapping_add(1);

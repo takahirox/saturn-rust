@@ -209,3 +209,13 @@ a file. CI verifies their reproducible bytes. Native and browser Wasm execute th
 same original guests; the [conformance inventory](hardware-conformance.md#bsc-sharing-and-isoxa-bootstrap-and-runtime-files)
 records behavior, checks, hashes and limits. These diagnostics supplement the
 preserved Star Collector, Prism Courier and Hardware Lab discs.
+
+The original [DSP B-bus diagnostic](../tests/fixtures/build_dsp_bus.py), its
+synthetic BIOS and 30 authored word vectors are MIT-licensed under the adjacent
+[fixture license](../tests/fixtures/LICENSE). The builder uses only Python's
+standard library and the project's original SH-2 assembler; it authors DSP
+instructions and input data directly from SCU manual interface facts. Native
+and browser Wasm execute identical SH-2/DSP programs, including changed data
+and stride operands. No third-party firmware, SDK, emulator output or assets
+are included. [Conformance evidence](hardware-conformance.md#scu-dsp-b-bus-cycles-and-program-prefetch)
+records hashes and limits; all three existing demo media remain unchanged.

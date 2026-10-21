@@ -566,3 +566,30 @@ fn parallel_ram_sources_observe_one_old_address_and_increment_each_bank_once() {
         assert_eq!(d.read_data(SCU + 0x8C).unwrap(), expected);
     }
 }
+
+#[test]
+fn higher_dma_channel_can_preempt_between_dsp_b_bus_halves_without_losing_the_word() {
+    let mut s = Scu::default();
+    let mut b = Bus::default();
+    s.write32(SCU + 0x88, 0).unwrap();
+    s.write32(SCU + 0x8c, 0x11223344).unwrap();
+    for word in [0x9d700400, 0xc0009001, 0xf8000000] {
+        s.write32(SCU + 0x84, word).unwrap();
+    }
+    s.write32(SCU + 0x80, 0x18000).unwrap();
+    s.advance_clocks(6).unwrap(); // WA0=05C01000/4, DMA1 M0,D0,1, ENDI.
+    s.advance_dma(&mut b).unwrap();
+    assert_eq!(b.read32(crate::vdp1::VRAM + 0x1000).unwrap(), 0x11220000);
+    b.write32(HIGH_WRAM, 0x55667788).unwrap();
+    set_dma(&mut s, 0, HIGH_WRAM, HIGH_WRAM + 0x100, 4, 0x102, 7);
+    for _ in 0..3 {
+        s.advance_dma(&mut b).unwrap();
+        assert_eq!(b.read32(crate::vdp1::VRAM + 0x1000).unwrap(), 0x11220000);
+        assert!(s.dsp.dma_pending());
+    }
+    assert_eq!(b.read32(HIGH_WRAM + 0x100).unwrap(), 0x55667788);
+    assert_eq!(s.status & 0x820, 0x820); // ENDI occurred before DMA0 completion.
+    s.advance_dma(&mut b).unwrap();
+    assert_eq!(b.read32(crate::vdp1::VRAM + 0x1000).unwrap(), 0x11223344);
+    assert!(!s.dsp.dma_pending());
+}

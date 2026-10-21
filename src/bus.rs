@@ -1721,6 +1721,44 @@ mod scu_timing_tests {
         }
     }
     #[test]
+    fn dsp_b_bus_halfwords_progress_on_separate_deadlines_and_reset_cancels_the_tail() {
+        for chunk in [1, 3, 8, 17] {
+            let mut b = Bus::default();
+            b.write32(SCU + 0x88, 0).unwrap();
+            b.write32(SCU + 0x8c, 0x11223344).unwrap();
+            for word in [0x9d700400, 0xc0009001, 0xf8000000] {
+                b.write32(SCU + 0x84, word).unwrap();
+            }
+            b.write32(SCU + 0x80, 0x18000).unwrap();
+            let mut elapsed = 0;
+            for (deadline, value, pending) in [
+                (7, 0, true),
+                (8, 0x11220000, true),
+                (15, 0x11220000, true),
+                (16, 0x11223344, false),
+            ] {
+                while elapsed < deadline {
+                    let clocks = chunk.min(deadline - elapsed);
+                    b.advance_clocks(clocks).unwrap();
+                    elapsed += clocks;
+                }
+                assert_eq!(b.read32(vdp1::VRAM + 0x1000).unwrap(), value);
+                assert_eq!(b.read32(SCU + 0x80).unwrap() & 0x800000 != 0, pending);
+            }
+            // Start again, reset after the first half, and prove the old low
+            // half is not delivered into freshly reset video memory.
+            b.write32(SCU + 0x88, 1).unwrap();
+            b.write32(SCU + 0x8c, 0xdeadbeef).unwrap();
+            b.write32(SCU + 0x80, 0x18000).unwrap();
+            b.advance_clocks(8).unwrap();
+            assert_eq!(b.read32(vdp1::VRAM + 0x1000).unwrap(), 0xdead3344);
+            b.reset_volatile();
+            b.advance_clocks(32).unwrap();
+            assert_eq!(b.read32(vdp1::VRAM + 0x1000).unwrap(), 0);
+            assert_eq!(b.read32(SCU + 0x80).unwrap() & 0x810000, 0);
+        }
+    }
+    #[test]
     fn sleeping_master_can_wait_for_future_scu_timer_and_blanking_interrupts() {
         let mut b = Bus::default();
         assert!(!b.can_wake_master());
