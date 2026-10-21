@@ -190,7 +190,9 @@ complete CPU/chip conformance or new acceptance gates.
 ## SH-2 instruction families
 
 All rows describe functional interpreter behavior. Common outstanding limitations:
-no instruction cycles or pipeline/bus contention; CPU-local cache semantics are tested separately.
+table7.2 base execution states are scheduled independently for both CPUs; pipeline
+hazards and transaction-level bus contention remain required. CPU-local cache
+semantics are tested separately.
 Address-error entry is implemented with the invalid-cycle limitations below.
 A valid opcode can still encounter a diagnostic
 when it accesses a missing device. Architectural valid-instruction decoding does
@@ -639,29 +641,31 @@ All hardware gaps above remain technical requirements.
 
 ## Dual-CPU/FRT scope and deterministic deviations
 
-`Machine::step` attempts a master boundary followed by a slave boundary (only
-when SSHON has completed), performs bounded on-chip DMA quanta, then advances
-peripherals/SMPC by eight reference clocks plus inserted BSC software waits and
-DIVU interlock waits, converting main clocks through the PLL. DMA address
-errors are latched for vector 10 at the next eligible boundary. Pending NMI
-precedes selection among internal IRQs; each CPU applies its own
-SR mask, delayed-branch and control-transfer inhibition. An accepted interrupt
-consumes that CPU's turn without retiring an instruction. Timers/commands advance
-during SLEEP. FRT requests remain asserted until guest software reads/clears
-FTCSR; exception acceptance does not clear a device flag. Slave reset discards
-its FRT and interrupt state while retaining shared memory and master state.
-A failure on either CPU stops subsequent machine turns until reset; successful
-earlier accesses within a failing turn are not rolled back.
+`Machine::step` issues the master and slave only when each CPU's own opcode/wait
+deadline has arrived. Equal deadlines use master first. Base SH-2 states follow
+P table7.2; CPU-local ordinary T1/T2 occupancy, BSC/VRAM waits and DIVU interlocks
+bound the issuing CPU's next deadline, converted through the PLL. A slow master
+no longer charges its wait time to a ready slave. Only SLEEP/reset polling uses
+an eight-reference-clock bound. See [the timing inventory below](#independent-sh-2-issue-deadlines-and-clocked-on-chip-dma).
 
-The eight-clock CPU quantum remains a **functional interleave**, not SH-2 opcode
-cycle accounting. `advance_frame` now advances to a clock-based raster field
-deadline instead of 60000/20000 instruction budgets. Scanline/HBlank/VBlank and
-SCU timer/DSP/DMA events are clock-driven; CPU/on-chip-DMA and full bus
-arbitration remain incomplete. The 807-clock SMPC delay rounds the documented minimum 30 µs at
-26.8741 MHz upward; firmware jitter is absent. The guest sees completion at a
-turn boundary. Unsupported commands still fail explicitly. SF=0 command issue,
-SF clear writes and busy command overwrite are rejected; these invalid-software
-cases are diagnostics rather than a claim about physical firmware recovery.
+On-chip DMA now advances on main-clock deadlines even without CPU issue. Its
+functional eight-main-clock beat plus inserted waits still needs full SH7604
+request/arbitration/locking conformance. DMA address errors latch for vector10
+at the next eligible CPU boundary. NMI precedes internal IRQ selection; each CPU
+applies its own SR mask, delayed-branch and control-transfer inhibition. Accepted
+interrupts consume a boundary without retiring an instruction. FRT requests
+remain asserted until guest software reads/clears FTCSR. Slave reset discards
+its FRT/IRQ/DMA deadline state while retaining shared memory and master state.
+Successful earlier accesses within a failing boundary are not rolled back.
+
+`advance_frame` advances to a clock-based raster field deadline. Raster,
+on-chip timers/DMA, SCU timer/DSP/DMA, sound and SMPC continue during SLEEP.
+Instruction-specific minimum states do not implement a complete SH-2 pipeline:
+load-use/multiplier hazards, IF/MA overlap, speculative prefetch, CPU/DMA
+transaction arbitration and complete reset/bus behavior remain mandatory.
+The SMPC command minimum rounds 30 µs at 26.8741 MHz upward to 807 clocks;
+completion is delivered at a scheduler boundary. Unsupported commands still fail
+explicitly. Invalid SF/busy writes remain diagnostics, not physical recovery claims.
 
 FRT byte accesses implement shared TEMP and observed-one/write-zero flags.
 The INTC accepts byte/word IPRA/IPRB, VCRA–D and VCRWDT. Internal sources
@@ -1337,7 +1341,7 @@ guest result is involved.
 
 | Software-visible contract | Implementation and objective evidence | Remaining limits |
 | --- | --- | --- |
-| WCR software waits and BCR1 AnLW | `Bsc::software_waits` decodes zero/one/two Tw or long waits of three through six, independently for CS0–3; CS2/3 share AHLW. Register vectors cover every area/selection, keys and atomic rejection. BWAIT measures eight uncached CS3 reads with each CPU's own FRT, comparing seven literal expected deltas | Tw clocks are added to the existing issue quantum; base T1/T2 overlap, external WAIT and full bus arbitration remain required; IDLEG below adds intercycle turnaround |
+| WCR software waits and BCR1 AnLW | `Bsc::software_waits` decodes zero/one/two Tw or long waits of three through six, independently for CS0–3; CS2/3 share AHLW. Register vectors cover every area/selection, keys and atomic rejection. BWAIT measures eight uncached CS3 reads with each CPU's own FRT, comparing seven literal expected deltas | Tw clocks delay the issuing CPU’s independent opcode deadline; base T1/T2 overlap, external WAIT and full bus arbitration remain required; IDLEG below adds intercycle turnaround |
 | BCR2 byte/word/long interfaces | `CpuBus::external_read/external_write` split larger operands and cache-refill requests into ordered physical beats. Bus vectors check exact per-beat wait sums, data, write-through/cache hits and actual sequential external UBC observations | CS0 retains the existing 32-bit board adapter; complete standard-board lane/bridge behavior, burst/DRAM/SDRAM protocols and arbitration remain required |
 | BCR1 CS2 endian | `Bsc::little_endian` selects per-CPU CS2 conversion. Actual transfers reverse operand bytes, leave byte addresses/strobes unchanged and transfer low words first on word-wide buses. Literal native vectors assert physical bytes, both word offsets, all byte lanes, writes and the other CPU's independent view | Cache-through use follows §7.3.2; this does not establish all cache/MMIO/board-width combinations |
 | Register programming rules | Wrong keys do not change registers; reserved bus widths and unsupported little-endian byte buses are rejected atomically. Reserved IWn=11 is rejected atomically; valid IWn=0/1/2 have transaction effects (IDLEG below). Changed memory/burst/partial-share configurations still raise explicit errors | These remaining valid configurations must be implemented; error reporting does not satisfy their acceptance |
@@ -1362,9 +1366,9 @@ Canvas, WebAudio, privacy, input/focus and all three demonstrations.
 
 | Reproducible artifact | SHA-256 |
 | --- | --- |
-| `bsc-waits.hex` text | `a5b1d66b880c6581f548541d83107b76f96f4ba95e7eedf54ea842cdcba37efc` |
-| Expanded 512 KiB original BIOS | `f4f7e6379a45b45a86604b613257a97afbe831a65088dffc18b6972c711a78ed` |
-| `bsc-waits.tsv` | `1e4c4ca08d933e3a72795d1f3ac4990d65309333ea316b3597116b2f178e497b` |
+| `bsc-waits.hex` text | `8c8788632f87a5269a72b9056c33d572dcd61ea9f83c459d10534af5aa390fc6` |
+| Expanded 512 KiB original BIOS | `823017e8691072b0b81d519c3234f660cbebcff04fe82a392ecb5c82fce65251` |
+| `bsc-waits.tsv` | `ae280b88c22094c979a19ad56587e15b7d92701169757230922e852dccc59b6d` |
 | `bsc-endian.tsv` | `95de3de1f2d74e5da6a0cea05fea79e455a169c1d1f5c5b4ee1f2ff803b9bf24` |
 
 All remaining umbrella hardware implementation and validation criteria stay
@@ -1561,15 +1565,17 @@ tables4.6/4.7 and pp.89/134/135/136/138/140; [SCU final corrections][SCUFINAL]
 | Required behavior | Implementation | Independent evidence | Remaining limits |
 | --- | --- | --- | --- |
 | WCR intercycle IW0–3 | `Bsc::access_waits` remembers the preceding physical read's CS area/direction, applies that area's IWn, and enforces the minimum one-cycle read/write gap even with IWn=0 | `turnaround_uses_prior_read_area_minimum_write_gap_and_existing_empty_cycles` checks every source/destination CS, direction, legal IW setting and 0–4 empty clocks; reserved IWn=11 rejects without publishing | Full ordinary/DRAM/SDRAM/burst/board and WAIT protocols remain required |
-| Already empty bus time | `Bsc::advance_bus` first consumes queued T1/T2/Tw/turnaround occupancy; only the remainder satisfies the next turnaround | Clock-chunk vectors and real bus tests distinguish occupied time from 0/1/2 empty clocks | Base opcode issue still uses eight reference clocks plus inserted waits; this occupancy bookkeeping does not implement subcycle CPU/DMA scheduling |
+| Already empty bus time | `Bsc::advance_bus` first consumes queued T1/T2/Tw/turnaround occupancy; only the remainder satisfies the next turnaround | Clock-chunk vectors and real bus tests distinguish occupied time from 0/1/2 empty clocks | Base opcode states and T1/T2 occupancy now bound independent CPU deadlines (TIMING below); subcycle CPU/DMA scheduling remains required |
 | Cache and bus ownership | Only `CpuBus` physical beats enter history; cache hits/arrays leave it untouched; write-through hits and narrow beats participate. CPU/SCU ownership changes, reset and standby end old history | `bsc_turnaround_tracks_physical_cpu_beats_cache_hits_and_empty_bus_clocks`, refill/width vectors, cold-reset IDLEG | Actual arbitration latency, TAS locks and interleaving a stalled transaction with other CPUs remain required |
-| Both CPUs' guest timing | IDLEG warms each CPU's instruction cache, executes sixteen TAS pairs through P1 and reads its own FRT | Authored deltas **21/21/23** for IW3=0/1/2, final TAS byte A5 and completion; native/Wasm compare both mailboxes and cold resets. Changed IW3=2→1 gives 21, changed guest byte 25→3C gives BC | This is a synthetic BIOS diagnostic, not full CPU timing or either required demonstration |
+| Both CPUs' guest timing | IDLEG warms each CPU's instruction cache, executes sixteen TAS pairs through P1 and reads its own FRT | Authored deltas **10/10/12** for IW3=0/1/2, final TAS byte A5 and completion; native/Wasm compare both mailboxes and cold resets. Changed IW3=2→1 gives 10, changed guest byte 25→3C gives BC | This is a synthetic BIOS diagnostic, not full CPU timing or either required demonstration |
 
-BWAIT's original ROM bytes are unchanged. Its authored FRT expectations now
-include the newly implemented area-switch gaps: **14+w** for a long/word bus
-and **16+4w** for a byte bus. In the latter, four data beats fill the issue
-quantum and require the return-to-CS0 gap as well. Existing endian, data, width,
-wait mutations and independent CPU traces remain enabled.
+BWAIT and IDLEG now reset FRC/divider using documented FRT module stop before
+each interval, so independent opcode deadlines cannot introduce a fractional
+FRT phase into the goldens. BWAIT's eight CS3 reads yield **9+w**, **11+2w**,
+**15+4w** for long, word and byte buses. IDLEG's warmed cached TAS sequences
+yield **10/10/12** for IW3=0/1/2. Both builders derive these from authored state,
+T1/T2 and turnaround counts. Endian/data/width/wait mutations and both independent
+CPU traces remain enabled, including reset and browser execution.
 
 **DSPD** links [builder and DSP sources](../tests/fixtures/build_dsp_dma.py),
 [BIOS](../tests/fixtures/dsp-dma.hex), [golden records](../tests/fixtures/dsp-dma.tsv),
@@ -1583,8 +1589,8 @@ wait mutations and independent CPU traces remain enabled.
 
 | Reproducible artifact | SHA-256 |
 | --- | --- |
-| `bsc-idle.hex` text | `574d8033a55c8b4075b65f476ccb9abcdae230fb6898bb187ef12bd0cebde1c8` |
-| `bsc-idle.tsv` | `c4301b6362a2d3773d75dcf38cd18c83bc75dc2862d4f992d24903fd073ac1f2` |
+| `bsc-idle.hex` text | `520d1c5c7ecbf193e2026b84b9a02ebde9bae333008a5cb5b02cdd29581abce7` |
+| `bsc-idle.tsv` | `963682704345a648e959033139e0174fbf422b0d5947a577da2015965e283c53` |
 | `dsp-dma.hex` text | `ad520b55fa4c4d1fe9eba4649c18732722bd4b5bd8365a6f4f4308aaf477765c` |
 | `dsp-dma.tsv` | `2bbdcd58aa2ac660fbb1fa4f8389c7be3fdeb93a020f925d3b15f9a565aa1a99` |
 
@@ -1697,3 +1703,39 @@ These implementations address portions of the video and bus findings. They do no
 establish complete Issue #17 acceptance. The outstanding CPU, scheduler, BSC,
 68k microsequence, SCU/DSP, sound/DSP, CD/media, HLE and SMPC findings remain;
 no umbrella criterion is checked off by this evidence.
+
+
+## Independent SH-2 issue deadlines and clocked on-chip DMA
+
+**TIMING** is the original MIT [builder](../tests/fixtures/build_sh2_timing.py),
+[synthetic BIOS](../tests/fixtures/sh2-timing.hex), [golden states/results](../tests/fixtures/sh2-timing.tsv),
+[native integration](../tests/sh2_timing.rs) and identical real browser Wasm guest
+in [browser-smoke.mjs](../scripts/browser-smoke.mjs). The primary references are
+[P] §§7.3–7.7/table7.2 and [H] §5.5/table5.9, §7.4 fig7.7, §7.9 fig7.47,
+§14.3/table14.3. Source/ROM/vectors are covered by the [fixture MIT license](../tests/fixtures/LICENSE).
+
+| Required behavior | Implementation | Independent native evidence | Wasm/guest evidence and limits |
+| --- | --- | --- | --- |
+| Base instruction states | [cpu/timing.rs](../src/cpu/timing.rs) `execution_states`; `Cpu::last_clocks` | Literal register/ALU/memory/system vectors, every displacement and T polarity for four conditional branches, all non-single-state families | TIMING warms six actual kernels on both CPUs. FRT ticks/results: ADD 4/32, LDC.L 12/0, taken BF 5/8, untaken BF 3/8, delayed BT 4/8, STC.L 2/0. Replacing 16 ADDs by eight BRA/NOP pairs gives 5/16. Native and Wasm repeat cold resets. These are no-contention states, not full pipeline conformance. |
+| Independent CPU deadlines | [Machine::step_inner](../src/lib.rs), `cpu_ready`, [Bus::cpu_delay](../src/bus.rs) | `different_opcode_deadlines_allow_the_other_cpu_to_issue_independently`: cached NOP and BRA/slot produce authored per-clock retirement trace; `one_cpu_external_waits_do_not_charge_the_other_cpus_deadline`: master operand waits while slave retires four NOPs | Both TIMING processors execute independently. BWAIT/IDLEG preserve independent wait and byte-lane goldens. Transactions still occur at issue boundaries; mid-instruction contention, TAS locking, load-use/multiply hazards and prefetch remain required. |
+| External cycle occupancy and clocks | `CpuBus::observe_external`, `Bus::cpu_delay`, `SystemClock::deadline` | T1/T2 per physical beat; cache hits/arrays do not reserve external clocks; narrow/refill bus tests and original FRT guests; PLL vectors | BWAIT long/word/byte results above; IDLEG TAS minimum gap and mutations. CPU interval is max(base states, total external T1/T2 occupancy)+waits. This explicit functional serialization does not implement IF/MA pipeline overlap or all board protocols. |
+| Clocked on-chip DMA | `Bus::advance_main_clocks`, `cpu_dma_remaining/cpu_dma_errors` | `onchip_dma_progresses_on_clock_deadlines_without_cpu_issue_and_is_chunk_invariant`: no write before first deadline, actual transfer/count/TE, identical chunks 1/3/7/64 and no errors | Existing SH7604/DACK, DIVU and Hardware Lab guests still execute DMA and IRQ paths. Eight-main-clock beat plus waits is a functional cadence; full SH7604 request arbitration and bus ownership remain required. |
+| Exception and reset boundaries | `Cpu::enter_exception`, `Machine::reset`, timed SMPC/WDT paths | H table5.9 acceptance interval; existing address-error, slot, FRT, standby, watchdog and reset guests, independent deadline reset test | Original Wasm fixtures preserved. Complete interrupt synchronizers, memory-cycle exception sequencing and remaining reset domains remain mandatory. |
+
+Clock-transition checks bound actual emulated time (two 100 ms transitions plus
+setup), then scan complete fields before inspecting historical video. The sound
+fixture's new cross-clock phase separates its power-on pending timer from the
+programmed FE→FF edge: it executes two three-instruction IRQ handlers before
+STOP (30 retired instructions), with separate guest IRQ counter=2 and unchanged
+master first-result=1, waveform and exact stereo samples. No media/demo source
+or generated demo bytes are changed by this scheduler revision.
+
+| Reproducible artifact | SHA-256 |
+| --- | --- |
+| `sh2-timing.hex` | `a12a83efb6165b0769834f1056a1e9085595c48591e2eefb8ee2ce20ed4dcbdb` |
+| Expanded 512 KiB TIMING BIOS | `264debfcdfb518021b00c514a1b96736b21a0599195ccf276e2a5ba0236afac4` |
+| `sh2-timing.tsv` | `187ae8a72c418a59ad254a480b8e70fcda5433cddff2c18885fb03a59b57c0c8` |
+
+The new evidence removes fixed CPU issue turns; it does not resolve the remaining
+pipeline/bus, CPU/peripheral/reset, SCU/DSP, video, SCSP, CD/media, HLE and SMPC
+requirements or comprehensive umbrella acceptance. All remain mandatory in #17.

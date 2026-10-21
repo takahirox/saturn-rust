@@ -620,11 +620,12 @@ try {
     try {
       for(const hle of [false,true]) for(let repeat=0;repeat<2;repeat++) {
         if(hle)m.reset_disc(Uint8Array.from(iso));else m.reset_bios(Uint8Array.from(rom));
-        for(let i=0;i<70;i++)m.run_steps(10000);
+        while(Number(m.peripheral_clocks())<6000000)m.run_steps(10000);
         const slaveResult=m.read_long(0x0600D100);
         if(slaveResult===0 || m.slave_instruction_count()!=="0")throw new Error("Clock transition must stop and reset the executing slave");
         m.run_steps(1000);
         if(m.read_long(0x0600D100)!==slaveResult)throw new Error("Stopped slave must retain its last shared computation");
+        m.advance_frame();m.advance_frame();
         const pixels=m.framebuffer();
         traces.push({words:Array.from({length:count},(_,i)=>m.read_long(0x0600E000+i*4)),
           dimensions:[m.video_width(),m.video_height()],length:pixels.length,
@@ -635,7 +636,7 @@ try {
       for(let i=21*2048;i<changed.length-1;i++)if(changed[i]===0xE4 && changed[i+1]===0)positions.push(i);
       if(positions.length!==1)throw new Error("Expected a unique original clock-call argument");
       changed[positions[0]+1]=1;m.reset_disc(changed);
-      for(let i=0;i<70;i++)m.run_steps(10000);
+      while(Number(m.peripheral_clocks())<6000000)m.run_steps(10000);
       const changedWords=Array.from({length:count},(_,i)=>m.read_long(0x0600E000+i*4));
       if(changedWords[0]!==1 || changedWords[9]!==0x75 || changedWords[count-1]!==0x600D) {
         throw new Error("Changed guest clock argument must change the clock ABI and DOTSEL");
@@ -643,7 +644,7 @@ try {
       // Production draw path must use the emulated dimensions on Canvas.
       const {emulator,advanceFrame}=await import("./app.js");
       emulator.reset_disc(Uint8Array.from(iso));
-      for(let i=0;i<70;i++)emulator.run_steps(10000);
+      while(Number(emulator.peripheral_clocks())<6000000)emulator.run_steps(10000);
       advanceFrame();
       const canvas=document.getElementById("screen");
       traces.push({canvas:[canvas.width,canvas.height],
@@ -1031,7 +1032,7 @@ try {
     assert.deepEqual(actual.exceptions, ["0", "0"]);
     for (const [cpu, trace] of actual.traces.entries()) {
       const expected = [cpu ? 0x83F0 : 0x3F0, 0xAAFF];
-      waitVectors.forEach((ticks, i) => expected.push(before === 0xA55AAA40 && i === 1 ? 16 : (width === 1 ? 16 : 14) + (ticks - 14) * 4 / width,
+      waitVectors.forEach((ticks, i) => expected.push(before === 0xA55AAA40 && i === 1 ? 11 : 9 + 2 * (4 / width - 1) + (ticks - 9) * 4 / width,
         before === 0x13579BDF ? after : 0x13579BDF));
       expected.push(...(little ? endianVectors : [0x11223344,0x1122,0x3344,0x11,0xA1B2C3D4,0x1234C3D4,0x5634C3D4]), 0x600D);
       assert.deepEqual(trace, expected);
@@ -1049,7 +1050,7 @@ try {
   }
   const idleVectors = (await readFile("tests/fixtures/bsc-idle.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v, 16));
   for (const [before, after, index, value] of [[0, 0, 0, 0xAAFF],
-    [0xA55A8000, 0xA55A4000, 3, 21], [0x25, 0x3C, 4, 0xBC]]) {
+    [0xA55A8000, 0xA55A4000, 3, 10], [0x25, 0x3C, 4, 0xBC]]) {
     const changed = Buffer.from(idleRom);
     if (before) {
       const needle = Buffer.alloc(4); needle.writeUInt32BE(before);
@@ -1071,6 +1072,37 @@ try {
     for (const trace of actual.traces) assert.deepEqual(trace, expected);
     await page.locator("#reset").click();
     assert.deepEqual(await runIdle(), actual);
+  }
+  // Original cached instruction-state kernels run independently on both
+  // SH-2s. Each resets its FRT divider and measures table7.2 states. Changing
+  // only guest ADDs to real BRA/NOP pairs changes time and computed results.
+  const timingRom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/sh2-timing.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [at, ...words] = line.trim().split(/\s+/).map(v => parseInt(v,16));
+    words.forEach((word,i) => timingRom.writeUInt16BE(word,at+i*2));
+  }
+  const timingVectors = (await readFile("tests/fixtures/sh2-timing.tsv","utf8")).trim().split(/\r?\n/).map(v=>parseInt(v,16));
+  for (const mutation of [false,true]) {
+    const image=Buffer.from(timingRom),expected=[...timingVectors];
+    if(mutation) {
+      const at=image.indexOf(Buffer.from([0x76,1,0x76,1]));
+      assert(at>=0);
+      for(let i=0;i<8;i++)image.set([0xA0,0,0,9],at+i*4);
+      expected[0]=5;expected[1]=16;
+    }
+    await page.locator("#bios").setInputFiles({name:"original-sh2-timing.bin",mimeType:"application/octet-stream",buffer:image});
+    await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
+    const runTiming=()=>page.evaluate(async()=>{
+      const {emulator}=await import("./app.js");
+      emulator.run_steps(10000);
+      return {words:[0x0600E600,0x0600E700].map(base=>Array.from({length:13},(_,i)=>emulator.read_long(base+i*4))),
+        exceptions:[emulator.exception_count(),emulator.slave_exception_count()]};
+    });
+    const actual=await runTiming();
+    assert.deepEqual(actual,{words:[expected,expected],exceptions:["0","0"]});
+    await page.locator("#reset").click();
+    assert.deepEqual(await runTiming(),actual);
   }
   // Original register-count/fixed-output DSP DMA and actual execution of a
   // second DSP program transferred from guest work RAM into program RAM.
@@ -1672,13 +1704,14 @@ try {
     return { mailbox: [emulator.read_long(0x06007000), emulator.read_long(0x06007004)],
       waveform: [emulator.read_long(0x05A04000), emulator.read_long(0x05A04004)],
       samples: audio.slice(first, first + 16), generated: emulator.audio_generated(),
-      dropped: emulator.audio_dropped(), count: emulator.sound_instruction_count() };
+      dropped: emulator.audio_dropped(), count: emulator.sound_instruction_count(), irqs:emulator.read_long(0x05A00804) };
   });
   const soundFinished = await soundResult();
   assert.deepEqual(soundFinished.mailbox, [1, 0x600D]);
   assert.deepEqual(soundFinished.waveform, [0x1000F000, 0xE0002000]);
   assert.deepEqual(soundFinished.samples, [256,4096,-256,-4096,-512,-8192,512,8192,256,4096,-256,-4096,-512,-8192,512,8192]);
-  assert.equal(BigInt(soundFinished.count),27n); // setup23 + IRQ3 + STOP1
+  assert.equal(soundFinished.irqs,2);
+  assert.equal(BigInt(soundFinished.count),30n); // setup23 + two IRQ3 handlers + STOP1
   assert.equal(soundFinished.dropped, "0");
   await page.locator("#reset").click();
   assert.deepEqual(await soundResult(), soundFinished);

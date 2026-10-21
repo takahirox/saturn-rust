@@ -3,6 +3,7 @@ use crate::bus::{BusError, Memory};
 use std::fmt;
 
 mod memory;
+mod timing;
 use memory::Operands;
 
 const T: u32 = 1;
@@ -119,11 +120,18 @@ pub struct Cpu {
     interrupt_inhibited: bool,
     /// Unlike control transfers, delayed branches also defer address errors.
     address_error_inhibited: bool,
+    /// Main-clock execution states for the last issued boundary, excluding
+    /// external bus waits. Sleeping polls issue no instruction and report zero.
+    last_clocks: u32,
 }
 
 impl Cpu {
     pub fn state(&self) -> &CpuState {
         &self.state
+    }
+
+    pub fn last_clocks(&self) -> u32 {
+        self.last_clocks
     }
 
     pub fn start(pc: u32, sp: u32) -> Self {
@@ -137,6 +145,7 @@ impl Cpu {
             state,
             interrupt_inhibited: false,
             address_error_inhibited: false,
+            last_clocks: 0,
         }
     }
 
@@ -217,6 +226,7 @@ impl Cpu {
     /// Bounded: sleeping calls return without fetching or retiring an instruction.
     /// Faults caused by unavailable host bus/device behavior stay sticky until reset.
     pub fn step(&mut self, bus: &mut impl Memory) -> Result<(), CpuError> {
+        self.last_clocks = 0;
         let pc = self.state.pc;
         if matches!(self.state.status, CpuStatus::Running | CpuStatus::Sleeping)
             && !self.state.address_error_pending
@@ -255,6 +265,10 @@ impl Cpu {
         vector: u8,
         saved_pc: u32,
     ) -> Result<(), CpuError> {
+        // H §5.5 table5.9: acceptance to handler fetch is 5+m1+m2+m3;
+        // the three single-state memory operations are included here. The
+        // bus supplies additional waits independently to the machine scheduler.
+        self.last_clocks = 8;
         let s = &mut self.state;
         let access = |source| CpuError::ExceptionEntry {
             pc: s.pc,
@@ -320,6 +334,7 @@ impl Cpu {
             return Ok(());
         }
         let opcode = bus.fetch16(pc).map_err(access)?;
+        self.last_clocks = timing::execution_states(opcode, self.state.sr & T != 0);
         // H §6.3.2: a before-execution break requires a successfully fetched
         // instruction. A fetch failure or speculative fill cannot cause it.
         if bus.instruction_break(pc, false)

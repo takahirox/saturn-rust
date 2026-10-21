@@ -188,6 +188,9 @@ pub struct Bus {
     pub(crate) scu: Scu,
     pub(crate) raster: Raster,
     scu_dma_phase: u32,
+    cpu_dma_remaining: [u32; 2],
+    cpu_dma_errors: [bool; 2],
+    cpu_bus_clocks: [Cell<u32>; 2],
     system_clock: SystemClock,
     pub(crate) backup: BackupRam,
     onchip: [OnChip; 2],
@@ -210,6 +213,9 @@ impl Default for Bus {
             scu: Scu::default(),
             raster: Raster::default(),
             scu_dma_phase: 0,
+            cpu_dma_remaining: [8; 2],
+            cpu_dma_errors: [false; 2],
+            cpu_bus_clocks: [Cell::new(0), Cell::new(0)],
             system_clock: SystemClock::default(),
             backup: BackupRam::default(),
             onchip: std::array::from_fn(|i| {
@@ -220,6 +226,60 @@ impl Default for Bus {
             cache: std::array::from_fn(|_| RefCell::new(Cache::default())),
             external_owner: Cell::new(None),
             slave_enabled: false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod cpu_dma_clock_tests {
+    use super::*;
+    #[test]
+    fn onchip_dma_progresses_on_clock_deadlines_without_cpu_issue_and_is_chunk_invariant() {
+        let mut reference = None;
+        for chunk in [1, 3, 7, 64] {
+            let mut bus = Bus::default();
+            for i in 0..3 {
+                bus.write32(HIGH_WRAM + 0x100 + i * 4, 0x12340000 + i)
+                    .unwrap();
+            }
+            for (offset, value) in [
+                (0, HIGH_WRAM + 0x100),
+                (4, HIGH_WRAM + 0x200),
+                (8, 3),
+                (12, 0x5A05),
+                (0x30, 1),
+            ] {
+                bus.onchip[0]
+                    .write32(crate::onchip::DMAC + offset, value)
+                    .unwrap();
+            }
+            bus.advance_clocks(7).unwrap();
+            assert_eq!(bus.read32(HIGH_WRAM + 0x200), Ok(0));
+            bus.advance_clocks(1).unwrap();
+            assert_eq!(bus.read32(HIGH_WRAM + 0x200), Ok(0x12340000));
+            assert_eq!(bus.onchip[0].read32(crate::onchip::DMAC + 8), Ok(2));
+            let mut remaining = 128;
+            while remaining != 0 {
+                let delta = remaining.min(chunk);
+                bus.advance_clocks(delta).unwrap();
+                remaining -= delta;
+            }
+            let trace = (
+                (0..3)
+                    .map(|i| bus.read32(HIGH_WRAM + 0x200 + i * 4).unwrap())
+                    .collect::<Vec<_>>(),
+                bus.onchip[0].read32(crate::onchip::DMAC + 8).unwrap(),
+                bus.onchip[0].read32(crate::onchip::DMAC + 12).unwrap(),
+                bus.take_dma_errors(),
+            );
+            assert_eq!(trace.0, [0x12340000, 0x12340001, 0x12340002]);
+            assert_eq!(trace.1, 0);
+            assert_ne!(trace.2 & 2, 0);
+            assert_eq!(trace.3, [false; 2]);
+            if let Some(ref previous) = reference {
+                assert_eq!(&trace, previous);
+            }
+            reference = Some(trace);
         }
     }
 }
@@ -297,6 +357,11 @@ impl Bus {
     }
 
     pub(crate) fn set_slave_enabled(&mut self, enabled: bool) {
+        if enabled != self.slave_enabled {
+            self.cpu_dma_remaining[1] = 8;
+            self.cpu_dma_errors[1] = false;
+            self.cpu_bus_clocks[1].set(0);
+        }
         if !enabled {
             self.onchip[1] = OnChip::default();
             self.onchip[1].set_slave(true);
@@ -305,6 +370,7 @@ impl Bus {
         self.slave_enabled = enabled;
     }
 
+    #[cfg(test)]
     pub(crate) fn take_wait_clocks(&self) -> u32 {
         let clocks = self.onchip.iter().map(OnChip::take_wait_clocks).sum();
         if clocks == 0 {
@@ -312,6 +378,16 @@ impl Bus {
         } else {
             self.system_clock.deadline(clocks)
         }
+    }
+    pub(crate) fn cpu_delay(&self, processor: Processor, states: u32) -> u32 {
+        let waits = self.onchip[processor as usize].take_wait_clocks();
+        let external = self.cpu_bus_clocks[processor as usize].replace(0);
+        self.system_clock
+            .deadline(states.max(external).saturating_add(waits))
+            .max(1)
+    }
+    pub(crate) fn take_dma_errors(&mut self) -> [bool; 2] {
+        std::mem::take(&mut self.cpu_dma_errors)
     }
     pub(crate) fn cpu_reset_active(&self, processor: Processor) -> bool {
         self.onchip[processor as usize].reset_active()
@@ -359,6 +435,12 @@ impl Bus {
             .min(self.raster.clocks_to_event())
             .min(self.scu.clocks_to_event())
             .min(self.vdp1.clocks_to_event())
+            .min(self.cpu_dma_remaining[0])
+            .min(if self.slave_enabled {
+                self.cpu_dma_remaining[1]
+            } else {
+                u32::MAX
+            })
             .min(if self.scu.dma_pending() {
                 8 - self.scu_dma_phase
             } else {
@@ -454,6 +536,23 @@ impl Bus {
             self.scu_dma_phase = (self.scu_dma_phase + delta) % 8;
             if self.scu_dma_phase == 0 {
                 self.advance_scu_dma()?;
+            }
+            // On-chip DMA has its own hardware-clock deadline. It must not
+            // transfer faster merely because a CPU runs single-state opcodes,
+            // nor stop while both CPUs sleep. The eight-clock DMA beat is a
+            // functional bus cadence pending full SH7604 request arbitration.
+            for processor in [Processor::Master, Processor::Slave] {
+                let i = processor as usize;
+                if i == 1 && !self.slave_enabled {
+                    continue;
+                }
+                self.cpu_dma_remaining[i] -= delta;
+                if self.cpu_dma_remaining[i] == 0 {
+                    self.cpu_dma_errors[i] |= self.advance_dma(processor);
+                    self.cpu_dma_remaining[i] =
+                        8u32.saturating_add(self.onchip[i].take_wait_clocks());
+                    self.cpu_bus_clocks[i].set(0);
+                }
             }
             remaining -= delta;
         }
@@ -1029,6 +1128,11 @@ impl CpuBus<'_> {
         // Only actual external cycles (not cache hits) reach the other BSC.
         if address < 0x4000_0000 {
             self.bus.claim_external_bus(self.processor);
+            // H fig.7.7: ordinary external beats occupy T1/T2 even with no
+            // software waits. Keep those clocks separate from Tw and internal
+            // execution states; cache hits and on-chip accesses do not enter.
+            let clocks = &self.bus.cpu_bus_clocks[self.processor as usize];
+            clocks.set(clocks.get().saturating_add(2));
             self.bus.onchip[self.processor as usize].external_access(Bus::physical(address), write);
             let physical = Bus::physical(address);
             if (VRAM..VRAM + 0x80000).contains(&physical) {

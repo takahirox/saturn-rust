@@ -37,9 +37,13 @@ fn master_uploads_starts_sound_cpu_and_observes_scsp_irq_guest_computation_and_s
         assert_eq!(m.sound_state().a[7], 0x7FF00);
         assert!(m.sound_state().stopped);
         assert!(!m.sound_state().halted);
-        // With table8 bus costs the timer is pending when SR unmasks it:
-        // 23 setup instructions, three in its handler, then one STOP.
-        assert_eq!(m.sound_state().instructions, 27);
+        // The power-on timer request is already pending when SR unmasks it.
+        // With independent SH-2 issue timing the programmed FE->FF edge follows
+        // the first handler's clear: two three-instruction handlers, setup23,
+        // then STOP1. The master separately latched the first guest result.
+        assert_eq!(m.bus().read32(SOUND_RAM + 0x804), Ok(2));
+        assert_eq!(m.sound_state().exceptions, 2);
+        assert_eq!(m.sound_state().instructions, 30);
         assert_eq!(m.bus().read16(SCSP + 0x420).unwrap() & 0x40, 0);
         let audio = m.drain_audio(8192);
         let nonzero = audio.iter().position(|v| *v != 0).unwrap();

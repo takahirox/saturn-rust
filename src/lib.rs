@@ -25,8 +25,8 @@ use cpu::{Cpu, CpuError, CpuState};
 use std::fmt;
 
 pub const MAX_RUN_STEPS: u32 = 10_000;
-/// Fixed peripheral-clock quantum per interpreter turn. This is a deterministic
-/// functional interleave, NOT measured SH-2 instruction timing or bus arbitration.
+/// Maximum idle polling interval. Issued SH-2 instructions use their own
+/// execution states and CPU-local bus waits, never this interval.
 pub const CLOCKS_PER_STEP: u32 = 8;
 pub const FIXTURE_PC: u32 = HIGH_WRAM;
 // Original homebrew: MOV #5,R0; ADD #-1,R0; MOV R0,R1; BRA +1;
@@ -40,6 +40,103 @@ pub enum BootMode {
     HlePrototype,
     ExternalBios,
     HleDisc,
+}
+
+#[cfg(test)]
+mod scheduling_tests {
+    use super::*;
+
+    fn cached_pair(master: &[u16], slave: &[u16]) -> Machine {
+        let mut m = Machine::new();
+        for (base, words) in [(HIGH_WRAM, master), (HIGH_WRAM + 0x100, slave)] {
+            for (i, word) in words.iter().enumerate() {
+                m.bus.write16(base + i as u32 * 2, *word).unwrap();
+            }
+        }
+        m.bus.set_slave_enabled(true);
+        for (processor, address) in [
+            (Processor::Master, HIGH_WRAM),
+            (Processor::Slave, HIGH_WRAM + 0x100),
+        ] {
+            let mut memory = m.bus.for_cpu(processor);
+            memory.write32(0xFFFFFFE8, 0xA55A0000).unwrap();
+            memory.write8(cache::CCR, 0x11).unwrap();
+            memory.fetch16(address).unwrap();
+            m.bus.cpu_delay(processor, 0);
+        }
+        m.bus.advance_clocks(32).unwrap();
+        m.clocks = 32;
+        m.cpu_ready = [32; 2];
+        m.cpu = Cpu::start(HIGH_WRAM, HIGH_WRAM + 0x1000);
+        m.slave = Cpu::start(HIGH_WRAM + 0x100, HIGH_WRAM + 0x2000);
+        m
+    }
+
+    #[test]
+    fn different_opcode_deadlines_allow_the_other_cpu_to_issue_independently() {
+        // P table7.2: NOP=1, BRA=2 with one NOP slot=1.
+        let mut m = cached_pair(&[9; 8], &[0xAFFE, 9]);
+        m.step().unwrap();
+        assert_eq!(
+            (
+                m.clocks(),
+                m.cpu.state().instructions,
+                m.slave.state().instructions
+            ),
+            (33, 1, 1)
+        );
+        m.step().unwrap();
+        assert_eq!(
+            (
+                m.clocks(),
+                m.cpu.state().instructions,
+                m.slave.state().instructions
+            ),
+            (34, 2, 1)
+        );
+        m.step().unwrap();
+        assert_eq!(
+            (
+                m.clocks(),
+                m.cpu.state().instructions,
+                m.slave.state().instructions
+            ),
+            (35, 3, 2)
+        );
+        assert_eq!(m.slave.state().pc, HIGH_WRAM + 0x100);
+    }
+
+    #[test]
+    fn one_cpu_external_waits_do_not_charge_the_other_cpus_deadline() {
+        let mut m = cached_pair(&[0x60F2, 9, 9], &[9; 8]); // MOV.L @R15,R0
+        m.cpu = Cpu::start(HIGH_WRAM, (HIGH_WRAM + 0x2000) | 0x20000000);
+        m.bus
+            .for_cpu(Processor::Master)
+            .write32(0xFFFFFFE8, 0xA55A0080)
+            .unwrap();
+        m.step().unwrap();
+        assert_eq!(m.cpu_ready, [36, 33]); // two bus states + two Tw, versus NOP1
+        for _ in 0..3 {
+            m.step().unwrap();
+        }
+        assert_eq!(
+            (
+                m.clocks(),
+                m.cpu.state().instructions,
+                m.slave.state().instructions
+            ),
+            (36, 1, 4)
+        );
+        m.step().unwrap();
+        assert_eq!(
+            (m.cpu.state().instructions, m.slave.state().instructions),
+            (2, 5)
+        );
+        m.reset(Boot::HlePrototype).unwrap();
+        assert_eq!(m.cpu_ready, [0; 2]);
+        m.step().unwrap();
+        assert_eq!((m.clocks(), m.cpu.state().instructions), (8, 1));
+    }
 }
 
 pub enum Boot<'a> {
@@ -93,6 +190,7 @@ pub struct Machine {
     clocks: u64,
     nmi_pending: bool,
     dma_errors: [bool; 2],
+    cpu_ready: [u64; 2],
     fault: Option<MachineError>,
 }
 
@@ -132,6 +230,7 @@ impl Machine {
         self.clocks = 0;
         self.nmi_pending = false;
         self.dma_errors = [false; 2];
+        self.cpu_ready = [0; 2];
         self.fault = None;
         self.cpu = Cpu::default();
         self.slave = Cpu::default();
@@ -269,16 +368,17 @@ impl Machine {
 
     /// Advance to the next raster field deadline. Peripherals and video events
     /// progress during SLEEP and DIVU stalls; execution stays bounded for the UI.
-    /// CPU issue still uses a fixed quantum; this does not claim opcode/bus timing.
+    /// CPU issue follows independent opcode/wait deadlines. Detailed pipeline
+    /// hazards and transaction-level contention remain separate from this bound.
     pub fn advance_frame(&mut self) -> Result<(), MachineError> {
         let target = self.frames() + 1;
-        for _ in 0..100_000 {
+        for _ in 0..1_000_000 {
             self.step()?;
             if self.frames() >= target {
                 return Ok(());
             }
         }
-        Err(MachineError::StepLimit(100_000))
+        Err(MachineError::StepLimit(1_000_000))
     }
 
     pub fn step(&mut self) -> Result<(), MachineError> {
@@ -293,11 +393,12 @@ impl Machine {
     }
 
     fn step_inner(&mut self) -> Result<(), MachineError> {
-        // Fixed ordering: master boundary, slave boundary, peripheral clocks,
-        // then SMPC completion. Shared writes are visible to the next CPU turn.
+        // Equal deadlines use master then slave. Each CPU independently waits
+        // for its own instruction's EX interval and external bus waits.
         if self.bus.cpu_reset_active(Processor::Master) {
             self.cpu = Cpu::default();
-        } else {
+            self.cpu_ready[0] = self.clocks + u64::from(CLOCKS_PER_STEP);
+        } else if self.cpu_ready[0] <= self.clocks {
             let nmi_ready = self.bus.nmi_ready(Processor::Master);
             let mut memory = self.bus.for_cpu(Processor::Master);
             let dma_accepted =
@@ -329,11 +430,19 @@ impl Machine {
             if !dma_accepted && !nmi_accepted && !irq_accepted {
                 self.cpu.step(&mut memory)?;
             }
+            let states = self.cpu.last_clocks();
+            self.cpu_ready[0] = self.clocks
+                + u64::from(if states == 0 {
+                    CLOCKS_PER_STEP
+                } else {
+                    self.bus.cpu_delay(Processor::Master, states)
+                });
         }
         if self.bus.slave_enabled {
             if self.bus.cpu_reset_active(Processor::Slave) {
                 self.slave = Cpu::default();
-            } else {
+                self.cpu_ready[1] = self.clocks + u64::from(CLOCKS_PER_STEP);
+            } else if self.cpu_ready[1] <= self.clocks {
                 let irq = self.bus.interrupt(Processor::Slave);
                 let mut memory = self.bus.for_cpu(Processor::Slave);
                 let dma_accepted = self.dma_errors[1]
@@ -360,13 +469,21 @@ impl Machine {
                     self.bus
                         .acknowledge_interrupt(Processor::Slave, irq.unwrap());
                 }
+                let states = self.slave.last_clocks();
+                self.cpu_ready[1] = self.clocks
+                    + u64::from(if states == 0 {
+                        CLOCKS_PER_STEP
+                    } else {
+                        self.bus.cpu_delay(Processor::Slave, states)
+                    });
             }
         }
-        self.dma_errors[0] |= self.bus.advance_dma(Processor::Master);
-        if self.bus.slave_enabled {
-            self.dma_errors[1] |= self.bus.advance_dma(Processor::Slave);
-        }
-        let elapsed = CLOCKS_PER_STEP.saturating_add(self.bus.take_wait_clocks());
+        let next = if self.bus.slave_enabled {
+            self.cpu_ready[0].min(self.cpu_ready[1])
+        } else {
+            self.cpu_ready[0]
+        };
+        let elapsed = next.saturating_sub(self.clocks).max(1) as u32;
         self.clocks += u64::from(elapsed);
         match self
             .bus
@@ -377,6 +494,7 @@ impl Machine {
                 self.slave = Cpu::power_on(&self.bus)
                     .map_err(|source| MachineError::SlaveCpu(CpuError::Bus { pc: 0, source }))?;
                 self.bus.set_slave_enabled(true);
+                self.cpu_ready[1] = self.clocks;
             }
             Some(0x03) => {
                 self.bus.set_slave_enabled(false);
@@ -420,16 +538,22 @@ impl Machine {
                 }
                 self.nmi_pending = false;
                 self.dma_errors = [false; 2];
+                self.cpu_ready = [self.clocks; 2];
             }
             Some(0x0E | 0x0F) => {
                 self.slave = Cpu::default();
                 self.dma_errors[1] = false;
+                self.cpu_ready = [self.clocks; 2];
             }
             Some(0x18) => {
                 self.nmi_pending = true;
                 self.bus.signal_nmi(Processor::Master);
             }
             _ => (),
+        }
+        let errors = self.bus.take_dma_errors();
+        for (pending, error) in self.dma_errors.iter_mut().zip(errors) {
+            *pending |= error;
         }
         for processor in [Processor::Master, Processor::Slave] {
             if processor == Processor::Slave && !self.bus.slave_enabled {
@@ -448,6 +572,7 @@ impl Machine {
                     Processor::Slave => self.slave = cpu,
                 }
                 self.dma_errors[processor as usize] = false;
+                self.cpu_ready[processor as usize] = self.clocks;
             }
         }
         Ok(())

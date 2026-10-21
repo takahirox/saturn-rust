@@ -34,7 +34,8 @@ def build():
     s += 'load 0x600d,r0\n' + record()
     s += 'load 0x8000,r2\ntst r2,r9\nbf finished\n' + smpc(2)
     s += 'finished:\nsleep\nbra finished\nnop\n'
-    timed = ('mov.b @r1,r0\nmov.b @r2,r5\nextu.b r5,r5\n'
+    timed = ('load 0xfffffe91,r7\nmov #2,r0\nmov.b r0,@r7\n'
+             'mov #0,r0\nmov.b r0,@r7\nmov.b @r1,r0\nmov.b @r2,r5\nextu.b r5,r5\n'
              + 'tas.b @r4\n' * 16
              + 'mov.b @r1,r0\nmov.b @r2,r0\nextu.b r0,r0\n'
                'sub r5,r0\nextu.b r0,r0\nrts\nnop\n')
@@ -47,10 +48,12 @@ def build():
     for at in range(0, len(rom), 16):
         if any(rom[at:at+16]):
             lines.append(f'{at:04X} '+' '.join(f'{w:04X}' for w in struct.unpack('>8H', rom[at:at+16])))
-    # Between FRC high-byte latches: 19 issue turns + 16 read/write gaps.
-    # (19*8 + 16*max(1,IW3))/8 = 21/21/23 FRT ticks. Source-authored.
+    # Module-stop resets the timer/divider before each warmed-cache interval.
+    # Resume, high/low latch and EXTU each cost one cached state: phase=4.
+    # Each TAS costs max(table7.2=4, two T1/T2 beats=4)+max(1,IW3).
+    # Second high latch at 4+16*(4+max(1,IW3)): 84/84/100 -> 10/10/12.
     return {'bsc-idle.hex': ('\n'.join(lines)+'\n').encode(),
-            'bsc-idle.tsv': b'0000AAFF\n00000015\n00000015\n00000017\n000000A5\n0000600D\n'}
+            'bsc-idle.tsv': b'0000AAFF\n0000000A\n0000000A\n0000000C\n000000A5\n0000600D\n'}
 
 
 if __name__ == '__main__':

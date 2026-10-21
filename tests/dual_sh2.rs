@@ -192,7 +192,7 @@ fn slave_fault_identifies_processor_and_stops_the_entire_machine_until_reset() {
     machine.reset(Boot::HlePrototype).unwrap();
     machine.step().unwrap();
     // The first uncached CS3 fetch inserts six reset-state BSC Tw clocks.
-    assert_eq!(machine.clocks(), u64::from(CLOCKS_PER_STEP) + 6);
+    assert_eq!(machine.clocks(), 2 + 6);
     assert_eq!(machine.slave_state(), &CpuState::default());
     assert_eq!(machine.fault(), None);
     assert!(matches!(

@@ -21,6 +21,18 @@ fn bios() -> Vec<u8> {
     }
     rom
 }
+fn finish_clock_commands(m: &mut Machine) {
+    // Two hardware 100 ms transitions plus guest setup. Bound emulated time,
+    // independently of instruction mix or the number of competing CPUs.
+    while m.clocks() < 6_000_000 {
+        m.run_steps(10000).unwrap();
+    }
+    assert_eq!(m.bus().read32(0x0600E050), Ok(0x600D));
+    // The completed field is historical. Let both the partial and following
+    // full field scan the guest's final green back screen before inspecting it.
+    m.advance_frame().unwrap();
+    m.advance_frame().unwrap();
+}
 #[test]
 fn synthetic_bios_and_hle_clock_calls_return_through_retained_code_and_memory() {
     let expected: Vec<_> = include_str!("fixtures/clock.tsv")
@@ -37,9 +49,7 @@ fn synthetic_bios_and_hle_clock_calls_return_through_retained_code_and_memory() 
                 Boot::ExternalBios(&rom)
             })
             .unwrap();
-            for _ in 0..70 {
-                m.run_steps(10000).unwrap();
-            }
+            finish_clock_commands(&mut m);
             let actual: Vec<_> = (0..expected.len())
                 .map(|i| m.bus().read32(0x0600E000 + i as u32 * 4).unwrap())
                 .collect();
@@ -82,9 +92,7 @@ fn changed_hle_clock_argument_changes_dotsel_and_the_public_clock_value() {
     image[positions[0] + 1] = 1;
     let mut m = Machine::new();
     m.reset(Boot::HleDisc(&image)).unwrap();
-    for _ in 0..70 {
-        m.run_steps(10000).unwrap();
-    }
+    finish_clock_commands(&mut m);
     let mut expected: Vec<_> = include_str!("fixtures/clock.tsv")
         .lines()
         .map(|l| u32::from_str_radix(l, 16).unwrap())

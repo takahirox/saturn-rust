@@ -2098,3 +2098,75 @@ mandatory acceptance evidence remain required. Existing remaining scope is not
 waived or replaced by this evidence. PR #18 remains Draft with `Closes #17` as its
 intended full-resolution outcome; Issue #17 remains open. No human, proprietary
 firmware, live-site, external-workflow or post-merge approval gate is added.
+
+## Independent SH-2 instruction deadlines and clocked on-chip DMA
+
+Related to #17. Upstream `main` remains
+`dbd981b030a46daa6923072ce240680dd2e58ebf`, rechecked using `git ls-remote`.
+This revision preserves the existing PR #18 work, including the inherited
+clocked VDP1/VDP2 transaction changes, all three original demo discs, backup RAM
+and both pads. It replaces the fixed CPU issue quantum with separate master and
+slave opcode/wait deadlines. SH-2 minimum execution states follow the Programming
+Manual table7.2; actual T1/T2 occupancy, ordinary bus/VRAM waits and DIVU
+interlocks bound the issuing CPU's interval. The other CPU can continue during
+that interval. On-chip DMA now progresses on main-clock deadlines without
+requiring CPU instruction issue. Reset clears pending CPU/DMA deadlines.
+
+The original MIT TIMING synthetic BIOS warms six kernels on both CPUs and
+measures states with each CPU's own FRT. Native and real browser Wasm compare
+source-authored tick/result vectors for ADD, LDC.L, STC.L, taken/untaken BF and
+delayed BT. Changing sixteen guest ADDs into eight BRA/NOP pairs changes elapsed
+FRT ticks from 4 to 5 and the computed value from 32 to 16. Both cold resets and
+both CPU mailboxes are checked. The existing BWAIT/IDLEG guests now initialize
+their FRT divider using documented module stop before each interval. Their exact
+goldens derive from authored instruction/bus counts, removing the previous
+fixed-eight-clock assumption and fractional timer phase. All original data,
+endian, width, wait and reset mutations remain asserted.
+
+Native per-clock tests independently show cached NOP versus BRA/slot progress,
+a slave retiring four instructions during a master's external wait, cold reset
+of deadlines, and actual on-chip DMA data/count/TE progress without CPU issue.
+DMA clock chunks 1/3/7/64 yield the same transfer trace. The clock-transition
+fixtures now bound emulated time for two 100 ms commands and wait for completed
+historical video fields. The sound fixture's changed cross-clock phase permits
+two timer IRQ handlers before STOP: its separate guest counter, two exceptions,
+30 retired instructions, unchanged first master result, waveform and exact stereo
+samples are all checked. No running guest result is written by the host.
+
+Final local validation (2026-10-22):
+
+- `cargo fmt --check`, `cargo build --locked` and complete
+  `cargo test --locked --no-fail-fast`: **460 passed**, **250 unit + 210 integration**,
+  **zero failed/ignored**, Rust/Cargo 1.94.0.
+- Native all-target and wasm32 Clippy with `-D warnings` pass. Wasm uses installed
+  rustup stable 1.99.0; `sh scripts/build-web.sh` passes with matching
+  wasm-bindgen-cli 0.2.129.
+- All **50** CI guest/media reproducibility commands pass, including the new
+  original timing builder. Existing demo media remain byte-identical.
+- The complete extended `npm run test:browser` passes with actual Wasm in
+  Chromium **145.0.7632.6**, Node **24.12.0**, under `/saturn-rust/`. TIMING and
+  BWAIT/IDLEG run alongside all original diagnostics, three demos and restarts,
+  production Canvas, AudioWorklet, input/focus, backup, local-file privacy,
+  responsive UI and packaging checks. No required test is skipped.
+- JavaScript syntax, Git whitespace and **511** local documentation targets pass.
+- Three deliberate source regressions are rejected: fixed eight-state issue,
+  coupling both CPUs to the slower deadline, and disabling clocked on-chip DMA.
+  Exact original source bytes were restored; baseline timing/scheduler/DMA checks
+  pass afterward. These mutations ran only after the full native run completed.
+- Initial development runs rejected old fixed-quantum timing goldens, clock
+  tests bounded by instruction count, historical-field inspection before scanout
+  and the old sound instruction total. Defined timer phases, elapsed-clock
+  bounds, completed-field waits and separately checked sound IRQ evidence correct
+  those assumptions. The final complete suites pass on the restored final code.
+
+Primary references, exact implementation/test links, hashes and limits are in
+[the timing inventory](hardware-conformance.md#independent-sh-2-issue-deadlines-and-clocked-on-chip-dma).
+Instruction states and independent deadlines do not establish full hardware
+completion. Load-use/multiplier/prefetch/IF–MA pipeline behavior and actual
+CPU/DMA transaction arbitration/locking remain required, as do the remaining
+SH7604/BSC/cache/reset, 68k sequencing, SCU/DSP, video, SCSP/CD/media, HLE and SMPC
+contracts and comprehensive umbrella evidence. The complete original Issue #17
+scope remains mandatory. PR #18 stays Draft with `Closes #17` as its intended
+full-resolution outcome; no umbrella criterion is waived or marked complete.
+No human, proprietary-firmware, live-site, external-workflow or post-merge gate
+is introduced, no replacement Issue is created, and no Issue is reopened or merged.

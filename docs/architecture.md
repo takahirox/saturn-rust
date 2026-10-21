@@ -37,16 +37,18 @@ automated local/CI checks; live Pages inspection is not a completion gate.
 `Cpu::step(&mut impl Memory)` owns no bus pointers. `Machine::reset(Boot)` clears
 volatile RAM, devices, ROM, counters, delay state and faults before attempting the selected
 boot. Invalid input leaves that mode selected and CPU in Reset, with no stale
-media or fallback. Battery-backed bytes are retained. `step()` makes one bounded master turn and,
-when enabled, one slave turn, then advances peripherals by eight reference clocks
-plus inserted BSC software waits and DIVU interlocks (converted from main clocks);
-exception entry or a sleeping turn can retire no instructions. `run_steps(n)` accepts 1–10000 steps.
-`advance_frame()` waits for the next selected raster field deadline with a bounded
-turn limit and aborts on its first fault. Raster, SCU timer and DSP deadlines split
-peripheral advancement; SCU external DMA advances on eight-clock boundaries.
-CPU issue remains a deterministic functional interleave without SH-2 opcode cycle
-accounting or full bus arbitration. See the
-[dual-CPU/FRT timing limits](hardware-conformance.md#dual-cpufrt-scope-and-deterministic-deviations).
+media or fallback. Battery-backed bytes are retained. `step()` issues only CPUs
+whose independent opcode/wait deadlines have arrived (master first on ties),
+then advances to the next CPU deadline. SH-2 base execution states follow the
+Programming Manual table7.2; actual external beats occupy T1/T2 and add BSC,
+VRAM and DIVU waits only to the issuing CPU. Sleeping polling is bounded at eight
+reference clocks and retires no instruction. `run_steps(n)` accepts 1–10000
+scheduler boundaries. `advance_frame()` waits for a raster field with a bounded
+turn limit and aborts on the first fault. Raster, SCU timer/DSP and on-chip DMA
+deadlines split peripheral advancement. Both on-chip DMACs now progress without
+CPU issue. Pipeline hazards, speculative fetches and transaction-level CPU/DMA
+arbitration remain required. See the
+[CPU timing evidence](hardware-conformance.md#independent-sh-2-issue-deadlines-and-clocked-on-chip-dma).
 The browser advances at most one frame per requestAnimationFrame callback,
 limited to 60 updates per second; it does no catch-up loop. Actual speed depends
 on the browser. The guest waits for a VBLANK edge, so holding a key changes state
@@ -392,8 +394,8 @@ double-density VCNT parity. Half-line phase remains required.
 `Bus::advance_clocks` splits device advancement at raster, SCU timer and DSP
 boundaries, with external DMA beats on eight-clock boundaries. `advance_frame`
 waits for a raster field boundary with a hard turn bound. It no longer assigns
-60000/20000 retired-instruction budgets to active/blank phases. The CPU issue
-quantum and on-chip DMA arbitration remain incomplete timing models; this change
+60000/20000 retired-instruction budgets to active/blank phases. Independent opcode deadlines replace the CPU issue quantum. Pipeline and
+on-chip DMA arbitration remain incomplete timing models; this change
 does not establish full hardware-time acceptance. Star Collector completion tests
 wait for the guest result within a bound rather than requiring the old budget.
 
@@ -416,9 +418,9 @@ CPU/SCU ownership changes, reset and standby terminate the old history. The
 original [cached TAS guest](../tests/fixtures/build_bsc_idle.py) measures both
 CPUs' IW3=0/1/2 through their FRTs in native and Wasm execution.
 
-This still adds Tw/turnaround clocks to the functional CPU issue quantum. It does not
-implement T1/T2 pipeline overlap, external WAIT sampling,
-refresh/CPU/DMA bus ownership, burst memories or all board lanes. CS0 retains
+Tw/turnaround clocks now delay only the CPU that issued the access. External
+T1/T2 occupancy bounds that CPU’s instruction interval; pipeline overlap, external WAIT sampling,
+refresh/CPU/DMA bus ownership, burst memories and all board lanes remain required. CS0 retains
 the existing 32-bit external adapter. Unsupported changed BSC configurations
 raise errors, including reserved bus widths and little-endian byte buses.
 The game media are unchanged; startup/restart tests allow their executed VRAM

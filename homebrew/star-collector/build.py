@@ -62,6 +62,7 @@ def assemble(source, base=BASE):
                 word(0xA000 | branch(pc + 2, a[0], 12))
                 word(0x0009)
             elif op == 'nop': word(0x0009)
+            elif op in ('clrt', 'sett'): word(0x0008 if op == 'clrt' else 0x0018)
             elif op == 'sleep': word(0x001B)
             elif op == 'rte': word(0x002B)
             elif op == 'trapa':
@@ -69,6 +70,12 @@ def assemble(source, base=BASE):
                 word(0xC300 | num(a[0]))
             elif op == 'ldc':
                 word({'sr': 0x400E, 'gbr': 0x401E, 'vbr': 0x402E}[a[1]] | reg(a[0]) << 8)
+            elif op == 'ldc.l':
+                assert a[0].startswith('@') and a[0].endswith('+')
+                word({'sr':0x4007, 'gbr':0x4017, 'vbr':0x4027}[a[1]] | reg(a[0][1:-1]) << 8)
+            elif op == 'stc.l':
+                assert a[1].startswith('@-')
+                word({'sr':0x4003, 'gbr':0x4013, 'vbr':0x4023}[a[0]] | reg(a[1][2:]) << 8)
             elif op == 'stc':
                 word({'sr': 0x0002, 'gbr': 0x0012, 'vbr': 0x0022}[a[0]] | reg(a[1]) << 8)
             elif op == 'lds':
@@ -77,8 +84,8 @@ def assemble(source, base=BASE):
                 word((0x401B | reg(a[0][1:]) << 8) if op == 'tas.b' else (0x0029 | reg(a[0]) << 8))
             elif op == 'rts': word(0x000B)
             elif op in ('jmp','jsr'): word((0x402B if op=='jmp' else 0x400B) | reg(a[0][1:]) << 8)
-            elif op in ('bra', 'bsr', 'bt', 'bf'):
-                word({'bra': 0xA000, 'bsr': 0xB000, 'bt': 0x8900, 'bf': 0x8B00}[op] | branch(pc, a[0], 12 if op in ('bra', 'bsr') else 8))
+            elif op in ('bra', 'bsr', 'bt', 'bf', 'bt/s', 'bf/s'):
+                word({'bra': 0xA000, 'bsr': 0xB000, 'bt': 0x8900, 'bf': 0x8B00, 'bt/s':0x8D00, 'bf/s':0x8F00}[op] | branch(pc, a[0], 12 if op in ('bra', 'bsr') else 8))
             elif op in ('shll', 'shll2', 'shll8', 'shlr', 'shlr16', 'dt', 'rotcl'):
                 word({'shll': 0x4000, 'shll2': 0x4008, 'shll8': 0x4018, 'shlr': 0x4001, 'shlr16': 0x4029, 'dt': 0x4010, 'rotcl': 0x4024}[op] | reg(a[0]) << 8)
             elif op in ('extu.b', 'extu.w'):

@@ -47,6 +47,8 @@ def build():
         s += control(0xA55A0000 | bcr)
         s += store(0xFFFFFFE8, 0xA55A0000 | wcr)
         s += ('load 0xfffffe12,r1\nload 0xfffffe13,r2\nload 0x2600d000,r4\n'
+              'load 0xfffffe91,r7\nmov #2,r0\nmov.b r0,@r7\n'
+              'mov #0,r0\nmov.b r0,@r7\n'
               'mov.b @r1,r0\nmov.b @r2,r5\nextu.b r5,r5\n')
         s += 'mov.l @r4,r0\n' * 8
         s += ('mov r0,r6\nmov.b @r1,r0\nmov.b @r2,r0\nextu.b r0,r0\n'
@@ -69,12 +71,13 @@ def build():
     for at in range(0, len(rom), 16):
         if any(rom[at:at+16]):
             lines.append(f'{at:04X} '+' '.join(f'{w:04X}' for w in struct.unpack('>8H',rom[at:at+16])))
-    # The first FRC latch precedes twelve issue turns plus eight Tw groups:
-    # 12*8+8*(IW0=2+wait) clocks -> 14+wait FRT ticks. Each CS0 fetch
-    # precedes a CS3 read; H §7.9 requires two turnaround cycles. The gap
-    # after each data read satisfies IW3 before the next fetch.
-    # Source-authored, no emulator run.
-    expected = [14+w for w in range(7)]
+    # Module-stop initialization resets FRC and its divider before each
+    # interval. Resuming takes two ROM-fetch clocks; the first latch sees 0.
+    # High/low/EXTU take 6 clocks; first CS3 read takes 2(fetch)+2(data)
+    # +IW0(2)+Tw, next seven also need IW3(2). MOV R0,R6 costs 2+IW3.
+    # Second latch: 2+6+(6+Tw)+7*(8+Tw)+4 = 74+8*Tw -> 9+Tw ticks.
+    # Narrow buses add two clocks and Tw per extra data beat (H figs7.5/7.6).
+    expected = [9+w for w in range(7)]
     return {'bsc-waits.hex': ('\n'.join(lines)+'\n').encode(),
             'bsc-waits.tsv': ''.join(f'{v:08X}\n' for v in expected).encode(),
             'bsc-endian.tsv': ''.join(f'{v:08X}\n' for v in

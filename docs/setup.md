@@ -69,6 +69,7 @@ python3 tests/fixtures/build_divu.py --check
 python3 tests/fixtures/build_bsc.py --check
 python3 tests/fixtures/build_bsc_waits.py --check
 python3 tests/fixtures/build_bsc_idle.py --check
+python3 tests/fixtures/build_sh2_timing.py --check
 python3 tests/fixtures/build_dsp_dma.py --check
 python3 tests/fixtures/build_intc.py --check
 python3 tests/fixtures/build_hle_system.py --check
