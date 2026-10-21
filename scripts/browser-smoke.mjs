@@ -644,6 +644,98 @@ try {
     green:true,exceptions:"0",r8:0x0600E054};
   assert.deepEqual(clockTraces,[clockTrace,clockTrace,clockTrace,clockTrace,
     {canvas:[352,224],edge:[0,255,0,255]}]);
+  // Original TV-mode BIOS, same guest bytes as tests/display_modes.rs. The
+  // host changes only its ROM operand and physical TV/controller input pins.
+  const displayRom=Buffer.alloc(524288);
+  for(const line of (await readFile("tests/fixtures/display-modes.hex","utf8")).split(/\r?\n/)) {
+    if(!line||line.startsWith("#"))continue;
+    const [address,...words]=line.split(/\s+/);let at=parseInt(address,16);
+    for(const word of words){displayRom.writeUInt16BE(parseInt(word,16),at);at+=2;}
+  }
+  const displayTraces=await page.evaluate(async rom=>{
+    const {Emulator}=await import("./pkg/saturn_rust.js");
+    const {emulator,advanceFrame}=await import("./app.js");
+    const m=new Emulator(),traces=[];
+    try {
+      for(const pal of [false,true])for(const [vbits,lines] of [[0,224],[16,240],[32,256]]) {
+        if(!pal&&lines===256)continue;
+        for(const [hbits,width] of [[0,320],[1,352],[2,640],[3,704]])for(const interlace of [0,0x80,0xC0]) {
+          const mode=0x8000|vbits|hbits|interlace;
+          const bytes=Uint8Array.from(rom);bytes[0x100]=mode>>8;bytes[0x101]=mode&255;
+          m.set_pal(pal);m.reset_bios(bytes);
+          m.set_buttons((1<<0)|(1<<4)|(1<<12));m.set_port2_buttons((1<<3)|(1<<7)|(1<<11));
+          m.set_analog(1,true,0,128,255);
+          for(let n=0;n<60 && m.read_long(0x0600E088)!==0x600D;n++)m.run_steps(10000);
+          const r=Array.from({length:35},(_,i)=>m.read_long(0x0600E000+i*4));
+          const f=m.framebuffer(),height=lines*(interlace===0xC0?2:1);
+          const points=[];
+          for(const y of [0,height-1])for(const x of [0,1,2,3])points.push(Array.from(f.slice((y*width+x)*4,(y*width+x)*4+4)));
+          if(width>=640)for(const x of [511,512])points.push(Array.from(f.slice(x*4,x*4+4)));
+          traces.push({mode,pal,lines,width,height,r,points,dimensions:[m.video_width(),m.video_height()],length:f.length});
+        }
+      }
+      // Production Canvas follows guest-selected high-resolution dimensions.
+      const bytes=Uint8Array.from(rom);bytes[0x100]=0x80;bytes[0x101]=0xD3;
+      emulator.set_pal(false);emulator.reset_bios(bytes);
+      for(let n=0;n<60 && emulator.read_long(0x0600E088)!==0x600D;n++)emulator.run_steps(10000);
+      advanceFrame();
+      const canvas=document.getElementById("screen");
+      traces.push({canvas:[canvas.width,canvas.height],edge:Array.from(canvas.getContext("2d").getImageData(1,479,1,1).data)});
+      emulator.set_pal(false);
+      return traces;
+    }finally{m.free();}
+  },[...displayRom]);
+  assert.equal(displayTraces.length,61);
+  for(const {mode,pal,lines,width,height,r,points,dimensions,length} of displayTraces.slice(0,-1)) {
+    assert.equal(r[34],0x600D,`TV mode ${mode.toString(16)}, PAL=${pal}`);
+    assert(r[1]<24);
+    assert(Math.floor(r[15]/2)>=lines-18 && Math.floor(r[15]/2)<lines-12);
+    for(const base of [0,14]) {
+      assert.equal(r[base+2],0xC0);
+      assert.deepEqual(r.slice(base+3,base+14),[0xF1,2,0xEE,0xF7,0xF1,0x15,0x77,0x7F,0,128,255]);
+    }
+    for(const base of [28,31]){assert.equal(r[base]&9,8|Number(pal));assert.equal(Math.floor(r[base+2]/2),lines);}
+    assert.equal((r[28]&2)===(r[31]&2),(mode&0xC0)===0);
+    assert.equal((r[30]&1)===(r[33]&1),(mode&0xC0)!==0xC0);
+    assert.deepEqual(dimensions,[width,height]);assert.equal(length,width*height*4);
+    const row=[[255,0,0,255],[0,255,0,255],[0,0,255,255],[255,255,255,255]];
+    assert.deepEqual(points,[...row,...row,...(width>=640?[[255,0,255,255],[255,0,0,255]]:[])]);
+  }
+  assert.deepEqual(displayTraces.at(-1),{canvas:[704,480],edge:[0,255,0,255]});
+  const shrinkRom=Buffer.alloc(524288);
+  for(const line of (await readFile("tests/fixtures/sprite-shrink.hex","utf8")).split(/\r?\n/)) {
+    if(!line||line.startsWith("#"))continue;
+    const [address,...words]=line.split(/\s+/);let at=parseInt(address,16);
+    for(const word of words){shrinkRom.writeUInt16BE(parseInt(word,16),at);at+=2;}
+  }
+  const shrinkExpected=(await readFile("tests/fixtures/sprite-shrink.tsv","utf8")).trim().split(/\r?\n/).map(v=>parseInt(v,16));
+  const shrinkTraces=await page.evaluate(async ({rom,count})=>{
+    const {emulator,advanceFrame}=await import("./app.js");
+    const traces=[];
+    for(let repeat=0;repeat<2;repeat++) {
+      emulator.reset_bios(Uint8Array.from(rom));emulator.run_steps(10000);emulator.advance_frame();
+      advanceFrame();
+      const f=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
+      traces.push({words:Array.from({length:count},(_,i)=>emulator.read_long(0x0600D000+i*4)),
+        pixels:Array.from(f.slice((20*320+10)*4,(20*320+15)*4)),
+        canvas:Array.from(canvas.getImageData(10,20,5,1).data)});
+    }
+    // Only the six guest HSS mode-word operands change. The same guest
+    // commands still draw; EOS alone must have no effect when HSS is clear.
+    const changed=Uint8Array.from(rom);let patches=0;
+    for(let i=0x200;i<changed.length-4;i+=4) {
+      if(changed[i]===0&&changed[i+1]===0&&changed[i+2]===0x10&&changed[i+3]===0x68){changed[i+2]=0;patches++;}
+    }
+    if(patches!==6)throw new Error(`HSS operand count ${patches}`);
+    emulator.reset_bios(changed);emulator.run_steps(10000);
+    traces.push({changed:Array.from({length:count},(_,i)=>emulator.read_long(0x0600D000+i*4))});
+    return traces;
+  },{rom:[...shrinkRom],count:shrinkExpected.length});
+  const shrinkPixels=[57,0,0,255,41,0,0,255,24,0,0,255,8,0,0,255,0,0,0,255];
+  const shrinkTrace={words:shrinkExpected,pixels:shrinkPixels,canvas:shrinkPixels};
+  const ordinaryShrink=[0,2,4,7].map(x=>0x8000+x),flippedShrink=[7,5,3,0].map(x=>0x8000+x);
+  assert.deepEqual(shrinkTraces,[shrinkTrace,shrinkTrace,{changed:[...ordinaryShrink,...ordinaryShrink,
+    ...ordinaryShrink,...ordinaryShrink,...ordinaryShrink,...flippedShrink,...flippedShrink,0x1090,0x600D]}]);
   const digitalRom=Buffer.alloc(524288);
   for(const line of (await readFile("tests/fixtures/digital-timing.hex","utf8")).split(/\r?\n/)) {
     if(!line || line.startsWith("#"))continue;
@@ -2351,7 +2443,16 @@ try {
   ];
   const labRequests = [];
   lab.on("request", request => labRequests.push({url:request.url(),method:request.method(),body:request.postData()}));
-  const labTrace = () => lab.evaluate(async () => {
+  // ST-058-R2 §§6.1/6.4/8.1, independently authored rotation/window pixels.
+  const labPoints = [[0,0],[1,0],[2,0],[3,0],[0,1],[1,1],[2,1],
+    [8,0],[9,0],[8,1],[10,1],[13,1],[14,1],[0,8]];
+  const labPixels = [
+    [255,255,255,255],[0,0,255,255],[255,255,255,255],[255,0,0,255],
+    [255,0,0,255],[255,255,255,255],[255,0,0,255],[255,0,0,255],
+    [0,255,0,255],[0,0,0,255],[0,255,0,255],[255,0,0,255],
+    [0,0,0,255],[0,0,0,255],
+  ];
+  const labTrace = (points = labPoints) => lab.evaluate(async points => {
     const {emulator,advanceFrame} = await import("./app.js");
     for(let i=0;i<40 && emulator.read_long(0x06010020)!==0x600D;i++) emulator.run_steps(10000);
     emulator.advance_frame();
@@ -2362,23 +2463,49 @@ try {
     return {results:Array.from({length:11},(_,i)=>emulator.read_long(0x06010000+i*4)),
       slave:Number(emulator.slave_instruction_count()),sound:Number(emulator.sound_instruction_count()),
       pcmNonzero:samples.some(v=>v!==0),stereo:samples.some((v,i)=>i%2===0&&v!==samples[i+1]),
-      wasm:Array.from(frame.slice(0,4)),canvas:Array.from(canvas.getImageData(0,0,1,1).data),
+      wasm:points.map(([x,y])=>Array.from(frame.slice((y*320+x)*4,(y*320+x)*4+4))),
+      canvas:points.map(([x,y])=>Array.from(canvas.getImageData(x,y,1,1).data)),
       backup:emulator.export_backup_ram()[0]};
-  });
+  }, points);
+  const assertLab = result => {
+    assert.deepEqual(result.results.slice(0,6),[1,1,84,35,42,393984]);
+    assert(result.results[6]>=1);
+    assert.deepEqual(result.results.slice(7,9),[1,0x600D]);
+    assert.equal(result.results[9]&255,result.backup);
+    assert.equal(result.results[10],0x900);
+    assert(result.slave>5 && result.sound>20 && result.pcmNonzero && result.stereo, JSON.stringify(result));
+    assert.deepEqual(result.canvas,result.wasm);
+  };
   await lab.locator("#disc").setInputFiles(labFiles());
   await lab.waitForFunction(()=>document.getElementById("status").textContent==="Ready");
   const labResult=await labTrace();
-  assert.deepEqual(labResult.results.slice(0,6),[1,1,84,35,42,393984]);
-  assert(labResult.results[6]>=1);
-  assert.deepEqual(labResult.results.slice(7,9),[1,0x600D]);
-  assert.equal(labResult.results[10],0x900);
+  assertLab(labResult);
   assert.equal(labResult.backup,1);
-  assert(labResult.slave>5 && labResult.sound>20 && labResult.pcmNonzero && labResult.stereo, JSON.stringify(labResult));
-  assert.deepEqual(labResult.wasm,[255,255,255,255]);
-  assert.deepEqual(labResult.canvas,labResult.wasm);
+  assert.deepEqual(labResult.wasm,labPixels);
   // Restart uses controller pins, not a host write to the result table.
   await lab.evaluate(async()=>{const {emulator}=await import("./app.js");emulator.set_buttons(1<<7);emulator.run_steps(50);emulator.set_buttons(0);});
-  assert.equal((await labTrace()).backup,2);
+  const labRestart=await labTrace();
+  assertLab(labRestart);
+  assert.equal(labRestart.backup,2);
+  assert.deepEqual(labRestart.wasm,labPixels);
+  // Mutate only guest LOAD literals in the original disc's video routine.
+  for (const [address,before,after,points,expected] of [
+    [0x25E70048,3<<16,2<<16,[[0,0],[1,0],[2,0]],[[0,0,255,255],[0,255,0,255],[255,255,255,255]]],
+    [0x25E69000,(16<<16)|30,(20<<16)|30,[[8,0],[9,0],[10,0],[15,0]],[[0,0,0,255],[0,0,0,255],[255,0,0,255],[0,255,0,255]]],
+  ]) {
+    const changed=Buffer.from(labIso);
+    const addresses=[];
+    for(let i=21*2048+0x2200;i<21*2048+0x6000;i++) if(changed.readUInt32BE(i)===address) addresses.push(i);
+    assert.equal(addresses.length,1);
+    const at=addresses[0]+12;
+    assert.equal(changed.readUInt32BE(at),before);
+    changed.writeUInt32BE(after,at);
+    await lab.locator("#disc").setInputFiles(labFiles(changed));
+    await lab.waitForFunction(()=>document.getElementById("status").textContent==="Ready");
+    const result=await labTrace(points);
+    assertLab(result);
+    assert.deepEqual(result.wasm,expected);
+  }
   await lab.locator("#audio-enable").click();
   await lab.waitForFunction(()=>document.getElementById("audio-status").textContent.includes("paused"));
   await lab.evaluate(async()=>{
@@ -2505,7 +2632,7 @@ try {
   }
   await cddaPage.waitForFunction(() => window.cddaAudio.stats.rendered > 128 && window.cddaAudio.stats.peak > 0.1);
   await cddaPage.close();
-  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-CPU DIVU overflow intermediates/UBC acknowledgement and dividend mutations, all eight SMPC area codes and independent CD/sound reset reports, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, BCR1 processor identity/refresh IRQ/module stops/reset repeatability, UBC before/after/slot/data/DMAC saved-PC vectors, software standby/timed NMI wake, SYSRES volatile/battery retention, four-layer VDP2 tile guest/palette mutation/Wasm and production Canvas presentation, original rotation/coefficient/line-scroll/line-window guest and mutated matrix pixels, original RBG0/RBG1 guest with B0/B1 data and changed parameter-B pixels/Canvas, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, original CD scan/reverse/pause/tray/TOC guest, malformed runtime ISO root/child rejection and bounded raw-sector correction/failure responses, CD-DA PRE reference stereo/sector continuity and AudioWorklet, sprite-window/shadow/palette-MSB guest and Canvas mutations, 68k BCD/MOVEM/MOVEP/arithmetic/partial-fault/trap guest plus timed MIDI/SCSP DMA and three interrupt levels; SH-2-uploaded MC68EC000 PCM computation/SCSP timer IRQ/stereo samples and WebAudio worklet delivery/underflow/mute/blocked states, SCSP FM recent/past stack pipeline, TL gain, ALFO/PLFO and timed-envelope guest mutations and AudioWorklet; 73 original 68k family/EA/CCR/exception vectors, ten guest access-frame/partial-transfer/prefetch records and ADD-to-SUB mutation; ICR auto/external vectors, signed DIV1 sequences and both-port SMPC-to-SCU/VDP2 latching with control mutation, DACK armed waiting/reset, two-way cache RAM isolation and operand mutation, gradation top/second filtering and changed controls/Wasm/Canvas, descriptor-set runtime/startup and zero-first-read AIP; guest-executed HLE backup library expansion/relocation, 158 ABI records, full-capacity allocation, prefixes/compaction, Gregorian dates, corruption and persistent raw import/export, changed guest XOR operand; BIOS/HLE PLL transitions and reset domains, rational FRT/raster clocks, 352-dot Canvas output, two-port digital settling/operand mutations; SMPC RTC/SMEM/INTBACK IRQs and synthetic digital+ID15/ID16 analog Gamepad/focus release, timed both-port direct analog handshake guest, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation; Prism Courier original disc, VDP1 sprite/polygons + VDP2 composition/Canvas, draw-end IRQ, 68k stereo + actual AudioWorklet, keyboard collision/win/restart, changed-disc texture mutation; Hardware Lab local CUE/mixed tracks, dual CPU, executing SCU DSP, CD FIFO-to-SCU DMA/IRQs/checksum, independent 68k-uploaded SCSP effects DSP, exact wet stereo/coefficient mutations, CD-DA through DSP and AudioWorklet, rotation Canvas, backup/restart, sector/audio mutations, CUE subindices and malformed ordering, missing local file rejection.`);
+  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-CPU DIVU overflow intermediates/UBC acknowledgement and dividend mutations, all eight SMPC area codes and independent CD/sound reset reports, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, BCR1 processor identity/refresh IRQ/module stops/reset repeatability, UBC before/after/slot/data/DMAC saved-PC vectors, software standby/timed NMI wake, SYSRES volatile/battery retention, four-layer VDP2 tile guest/palette mutation/Wasm and production Canvas presentation, original rotation/coefficient/line-scroll/line-window guest and mutated matrix pixels, original RBG0/RBG1 guest with B0/B1 data and changed parameter-B pixels/Canvas, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, original CD scan/reverse/pause/tray/TOC guest, malformed runtime ISO root/child rejection and bounded raw-sector correction/failure responses, CD-DA PRE reference stereo/sector continuity and AudioWorklet, sprite-window/shadow/palette-MSB guest and Canvas mutations, 68k BCD/MOVEM/MOVEP/arithmetic/partial-fault/trap guest plus timed MIDI/SCSP DMA and three interrupt levels; SH-2-uploaded MC68EC000 PCM computation/SCSP timer IRQ/stereo samples and WebAudio worklet delivery/underflow/mute/blocked states, SCSP FM recent/past stack pipeline, TL gain, ALFO/PLFO and timed-envelope guest mutations and AudioWorklet; 73 original 68k family/EA/CCR/exception vectors, ten guest access-frame/partial-transfer/prefetch records and ADD-to-SUB mutation; ICR auto/external vectors, signed DIV1 sequences and both-port SMPC-to-SCU/VDP2 latching with control mutation, DACK armed waiting/reset, two-way cache RAM isolation and operand mutation, gradation top/second filtering and changed controls/Wasm/Canvas, descriptor-set runtime/startup and zero-first-read AIP; guest-executed HLE backup library expansion/relocation, 158 ABI records, full-capacity allocation, prefixes/compaction, Gregorian dates, corruption and persistent raw import/export, changed guest XOR operand; BIOS/HLE PLL transitions and reset domains, rational FRT/raster clocks, 352-dot Canvas output, 60 standard TV-mode/PAL/interlace guests with INTBACK/field/counter/pixel vectors and 704x480 Canvas, VDP1 HSS/EOS scaled/distorted/flipped guest pixels and changed HSS operands, two-port digital settling/operand mutations; SMPC RTC/SMEM/INTBACK IRQs and synthetic digital+ID15/ID16 analog Gamepad/focus release, timed both-port direct analog handshake guest, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation; Prism Courier original disc, VDP1 sprite/polygons + VDP2 composition/Canvas, draw-end IRQ, 68k stereo + actual AudioWorklet, keyboard collision/win/restart, changed-disc texture mutation; Hardware Lab local CUE/mixed tracks, dual CPU, executing SCU DSP, CD FIFO-to-SCU DMA/IRQs/checksum, independent 68k-uploaded SCSP effects DSP, exact wet stereo/coefficient mutations, CD-DA through DSP and AudioWorklet, fourteen rotation/window Canvas pixels, disc matrix/window mutations, full diagnostic/pixel restart checks, backup, sector/audio mutations, CUE subindices and malformed ordering, missing local file rejection.`);
 } finally {
   if (browser) await browser.close();
   if (server?.pid && server.exitCode === null) {

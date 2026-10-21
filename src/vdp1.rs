@@ -133,7 +133,7 @@ impl Vdp1 {
         let valid = match address - REGISTERS {
             // Explicitly reject scanout/interlace modes not yet integrated.
             0 => value & !0xF == 0 && matches!(value & 7, 0..=3),
-            2 => value & !3 == 0,
+            2 => value & !0x13 == 0,
             4 => value <= 2,
             6 | 8 | 10 => true,
             12 => value == 0,
@@ -298,10 +298,10 @@ impl Vdp1 {
     }
     fn draw_command(&mut self, c: &[u16; 16]) -> Result<(), BusError> {
         let mode = c[2];
-        if mode & 7 == 5 || mode >> 3 & 7 > 5 || mode & 0x1000 != 0 {
+        let kind = c[0] & 15;
+        if mode & 7 == 5 || mode >> 3 & 7 > 5 || (mode & 0x1000 != 0 && !matches!(kind, 1 | 2)) {
             return self.invalid();
         }
-        let kind = c[0] & 15;
         let textured = kind <= 2;
         let width = i32::from(c[5] >> 8 & 63) * 8;
         let height = i32::from(c[5] & 255);
@@ -425,6 +425,14 @@ impl Vdp1 {
                 if c[0] & 0x20 != 0 {
                     v = h - 1 - v;
                 }
+                // ST-013 §6.3/fig.6.5: HSS samples only the selected
+                // original X parity on reduced raster lines. Expansion retains
+                // ordinary sampling. EOS refers to source coordinates even
+                // when the command flips horizontally.
+                let high_speed = c[2] & 0x1000 != 0;
+                if high_speed && steps < (uv1.0 - uv0.0).abs() {
+                    u = (u & !1) | usize::from(self.fbcr & 0x10 != 0);
+                }
                 let pixel = v * w + u;
                 let base = usize::from(c[4]) * 8;
                 let mode = c[2] >> 3 & 7;
@@ -439,7 +447,8 @@ impl Vdp1 {
                     2..=4 => (u16::from(self.vram[(base + pixel) & (VRAM_SIZE - 1)]), 255),
                     _ => (self.word(base + pixel * 2), 0x7FFF),
                 };
-                if raw == end && c[2] & 0x80 == 0 {
+                // HSS ignores end codes at every magnification (§6.3).
+                if raw == end && c[2] & 0x80 == 0 && !high_speed {
                     end_codes += 1;
                     if end_codes == 2 {
                         break;

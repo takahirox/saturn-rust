@@ -1749,3 +1749,77 @@ mandatory implementation work. All original criteria remain in force on the
 same Issue and Draft PR, with Closes #17 as the intended completed outcome.
 No Issue is closed/replaced, no historical Issue is reopened, and no human,
 proprietary-firmware, live-site or external-workflow gate is introduced.
+
+## TV-mode, VDP1 shrink and diagnostic-restart revision (2026-10-21)
+
+Related to #17. Upstream main remains `dbd981b030a46daa6923072ce240680dd2e58ebf`
+(`git ls-remote origin refs/heads/main`). The existing published PR #18 head is
+`6e72f31969505beef61171068c1b024561a1c6f6`; this revision changes the assigned
+worktree only, without pushing, merging or changing Issue state.
+
+Implemented standard TV display dimensions (320/352/640/704 dots, 224/240 lines
+and PAL-only 256 lines), single/double-density image sizes, alternating field
+status and double-density VCNT parity. PAL selects the separate physical video
+strap and documented 26.6875/28.4375 MHz PLLs, retained across resets. CD, sound,
+SMPC and RTC still advance when a PAL reference tick has no main-clock edge.
+INTBACK now receives the selected active-display interval from the raster/PLL
+rather than assuming a 224-line NTSC display. Border-color blanking and
+normal/high-resolution horizontal window coordinates have independent vectors.
+
+The original MIT TVG BIOS reads its TVMD operand from its own ROM, selects the
+PLL through SMPC, creates a real bitmap, collects both controllers twice,
+measures optimized INTBACK collection and polls/latches two VBlank transitions.
+Native and browser Wasm execute all **60** valid standard-TV combinations and
+compare authored corner/edge/wrap pixels, packet bytes, PAL/ODD/VCNT records and
+reset retention. Production Canvas additionally renders the 704×480 result.
+Exclusive-monitor scanout remains unsupported; dimensions alone are not counted
+as acceptance evidence for it. Half-line phase, blanking counter discontinuities,
+raster-time table/window/reload behavior and VRAM-cycle arbitration remain required.
+
+VDP1 HSS/EOS now samples the selected original X parity on reduced scaled and
+distorted sprite rows, after flip, while unchanged/enlarged rows retain ordinary
+sampling. HSS ignores end codes at every magnification. Independent pixel vectors
+cover these cases, plus MODR and invalid controls. The original MIT HSSG BIOS
+executes seven real draws and polls CEF, then records 28 framebuffer words and
+MODR. Native/Wasm/Canvas assert exact results and restart; clearing only its six
+HSS operands changes actual source samples. This does not establish physical
+VDP1 draw speed, progressive erase, transfer-over or remaining scanout conformance.
+
+Hardware Lab now compares **14** independently authored advanced-video pixels,
+including both rotation parameters and line-window edges. Disc-only matrix and
+window operand mutations change expected native/Wasm/Canvas pixels. Every
+computed diagnostic and these pixels are checked again after guest Start restart.
+That stronger assertion exposed an actual guest bug: the previous Get operation
+left the sector buffered, allowing restart to finish without a new CD IRQ. The
+guest now uses Get-and-Delete and consumes a fresh diagnostic sector each run.
+The conformance matrix and adjacent README record the rebuilt disc hash; PCM/CUE
+assets, licenses, Star Collector and Prism Courier are preserved.
+
+Checks completed with Rust/Cargo **1.99.0**, Node **24.12.0** and matching
+wasm-bindgen-cli **0.2.129**:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`: pass;
+  **411 tests**, zero failed/ignored (**222 unit, 189 integration**).
+- Native all-target and Wasm Clippy with `-D warnings`: pass. The newly added
+  test's constant-chunk loop was updated for the stable toolchain lint.
+- `sh scripts/build-web.sh`: pass; all **41** CI media reproducibility commands
+  and the browser script's JavaScript syntax check pass.
+- The complete extended `npm run test:browser` passes in Chromium
+  **145.0.7632.6** under `/saturn-rust/`, including all new TVG/HSSG and Hardware
+  Lab assertions and all existing gameplay, audio, input, file-privacy and asset
+  packaging checks. No required browser test was skipped.
+- Three deliberate implementation regressions fail the corresponding independent
+  tests: disabled HSS parity, disabled line windows and a fixed 224-line interval.
+  Original sources were restored before the final passing checks.
+
+Architecture and affected inventory rows now describe previously implemented
+backup bus/library, SMPC, cache/mirror, video and synthesis behavior accurately.
+The revision fully addresses the specific Hardware Lab acceptance-assertion
+finding and implements parts of the VDP1, VDP2 and SMPC findings. **The requested
+full Issue #17 completion is still unmet.** The coordinated CPU/bus transaction
+scheduler, remaining SH7604/BSC/cache semantics, instruction-specific 68k bus/fault
+timing, full board/open-bus/reset contract, SCU/DMA/DSP gaps, remaining video and
+SCSP conformance, runtime CD/media gaps, SYS_EXECDMP/CD-library services and the
+complete mandatory coverage inventory still require implementation and evidence.
+No criterion is waived, no substitute tracker is created and no human or external
+approval gate is introduced. These passing checks do not authorize Issue closure.

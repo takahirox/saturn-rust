@@ -292,18 +292,22 @@ impl Smpc {
     pub(crate) fn take_irq(&mut self) -> bool {
         std::mem::take(&mut self.irq)
     }
+    #[cfg(test)]
     pub(crate) fn vblank_out(&mut self) {
+        let active = if self.clock_352 {
+            (224u64 * 1820 * REFERENCE_HZ).div_ceil(28_636_400) as u32
+        } else {
+            224 * crate::timing::CLOCKS_PER_LINE
+        };
+        self.vblank_out_after(active);
+    }
+    pub(crate) fn vblank_out_after(&mut self, active_clocks: u32) {
         if self.await_vblank {
             self.await_vblank = false;
             // ST-169 §3.2: first measure collection; optimization then places
-            // readiness one millisecond before VBlank-in in NTSC 320/352 modes.
+            // readiness one millisecond before the selected VBlank-in deadline.
             let clocks = if self.measured_collection && self.input[1] & 2 == 0 {
-                let active_clocks = if self.clock_352 {
-                    (224u64 * 1820 * REFERENCE_HZ).div_ceil(28_636_400) as u32
-                } else {
-                    224 * crate::timing::CLOCKS_PER_LINE
-                };
-                active_clocks - 26_875
+                active_clocks.saturating_sub(26_875)
             } else {
                 Self::STATUS_CLOCKS
             };

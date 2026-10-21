@@ -57,7 +57,7 @@ def main_source():
     # Runtime read of source-authored sector 210 (LBA60), independent of boot.
     s+=call(0x1080,210,0x80,1)
     s+='sector_wait:\n'+call(0x5100)+'mov #1,r2\ncmp/eq r2,r0\nbf sector_wait\n'
-    s+=call(0x6100,0,0,1)
+    s+=call(0x6300,0,0,1) # Get and delete: restart must read a fresh sector.
     # SCU DMA consumes the CD FIFO with fixed A-bus source.
     for off,val in [(0,0x05818000),(4,0x06011000),(8,2048),(12,2),(20,7),(16,0x101)]:s+=store(0x25FE0000+off,val)
     s+='load 0x06010004,r1\ndma_wait:\nmov.l @r1,r0\ntst r0,r0\nbt dma_wait\n'

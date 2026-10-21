@@ -204,7 +204,7 @@ nop
 mov #1,r2
 cmp/eq r2,r0
 bf sector_wait
-load 0x6100,r4
+load 0x6300,r4
 load 0x0,r5
 load 0x0,r6
 load 0x1,r7

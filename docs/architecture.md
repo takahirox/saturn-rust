@@ -1,7 +1,7 @@
 # Architecture and compatibility
 
 This original Rust implementation executes **Star Collector** and **Prism Courier**,
-original Saturn-targeted homebrew discs, through a documented BIOS-less HLE
+original Saturn-targeted homebrew discs, and the Hardware Lab diagnostic through a documented BIOS-less HLE
 bootstrap. Prism Courier uses VDP1+VDP2 and guest-computed stereo sound.
 This remains a hardware subset, not general Saturn or commercial
 game compatibility. External Sega BIOS boot remains incomplete. Acceptance uses
@@ -15,19 +15,19 @@ automated local/CI checks; live Pages inspection is not a completion gate.
 | src/bus.rs | Aligned big-endian byte/word/long accesses, RAM, ROM, VRAM and MMIO routing |
 | src/backup.rs | Packed battery RAM, atomic import and odd-byte storage with word/long bus lanes |
 | src/disc.rs | Bounded ISO9660 and Saturn IP validation, first-read executable selection |
-| src/hle.rs, src/hle/ | HLE boot tables and original guest-executed vector, callback, mask, semaphore and priority services |
+| src/hle.rs, src/hle/ | HLE boot tables and original guest-executed vector, callback, mask, semaphore, priority, clock and backup-library services |
 | src/media.rs | Retained cooked/raw/BIN/CUE data/audio media and track indices/gaps |
 | src/cd.rs | Timed runtime CD commands, selector/sector pool, FIFO and CD-DA |
 | src/devices.rs | Shared device constants and compatibility exports |
 | src/vdp1.rs | Clock-driven command lists, primitive/texture drawing and framebuffers |
-| src/vdp2.rs | NBG0/1 bitmap sampling, palette and sprite/background composition |
+| src/vdp2.rs | NBG0–3 tile/bitmap, RBG0/RBG1, line/window/effect tables and sprite/background composition |
 | src/m68k.rs | Original MC68EC000 integer interpreter, addressing and exceptions |
 | src/sound.rs | Shared sound RAM, direct PCM SCSP, independent 68k/sample clocks |
 | src/smpc.rs | SMPC commands, RTC/SMEM, digital/analog joystick levels and INTBACK |
 | src/lib.rs | Explicit cold-boot modes, independent master/slave ownership, bounded functional interleaving |
 | src/onchip.rs | CPU-local FRT/WDT/SCI/DIVU/DMAC and internal INTC |
 | src/scu.rs, src/scu/ | SCU interrupt controller, three DMA channels and original DSP interpreter |
-| src/timing.rs | Clock-based NTSC raster deadlines |
+| src/timing.rs | NTSC/PAL PLLs, selectable display intervals and field/counter deadlines |
 | src/wasm.rs | Thin Wasm adapter; no gameplay or browser APIs |
 | web/app.js | Local file handling, keyboard/Gamepad levels, animation scheduling and RGBA copy |
 | web/audio.js, web/audio-worklet.js | Bounded emulated PCM delivery and WebAudio consumer/status |
@@ -41,7 +41,7 @@ media or fallback. Battery-backed bytes are retained. `step()` makes one bounded
 when enabled, one slave turn, then advances peripherals by eight reference clocks
 plus inserted BSC software waits and DIVU interlocks (converted from main clocks);
 exception entry or a sleeping turn can retire no instructions. `run_steps(n)` accepts 1–10000 steps.
-`advance_frame()` waits for the next NTSC raster field deadline with a bounded
+`advance_frame()` waits for the next selected raster field deadline with a bounded
 turn limit and aborts on its first fault. Raster, SCU timer and DSP deadlines split
 peripheral advancement; SCU external DMA advances on eight-clock boundaries.
 CPU issue remains a deterministic functional interleave without SH-2 opcode cycle
@@ -96,7 +96,7 @@ DIVU/DMAC requests and SMPC master NMI at each processor boundary. Internal IRQs
 use IPRA/IPRB levels and the manual table 5.4 tie order. Acceptance consumes a
 turn without retiring an instruction; device flags require guest acknowledgement.
 DMA address errors use vector 10 independently of SR.I. External IRL/ICR,
-refresh/UBC sources and full bus arbitration remain missing.
+refresh and UBC sources are implemented; full bus arbitration remains missing.
 
 CPU address errors dispatch vector 9 with next-PC/SR stacking, operand completion
 and delayed-branch deferral (SH7604 §§4.3/4.6/4.7). `src/cpu/memory.rs` checks
@@ -113,7 +113,7 @@ from the shared BIOS and SSHOFF resets only the slave CPU/FRT, preserving shared
 RAM and master state. Both CPUs execute the same original interpreter with
 independent registers, stacks, delay/fault state and on-chip registers. The
 original diagnostic guest uses a guest-written shared flag to select setup;
-BCR1 hardware CPU identification remains missing. SMPC NMIREQ latches a master
+BCR1 identifies each physical processor. SMPC NMIREQ latches a master
 NMI and can wake SLEEP independently of SR.I. A fault on either CPU stops the
 entire machine until reset and identifies the slave when applicable.
 
@@ -164,7 +164,7 @@ stores, P1 bypass, P2 associative purge, P3 address arrays and P6 data arrays.
 `Memory::fetch16` selects instruction versus operand replacement controls;
 TAS reads bypass the cache. DMA does not snoop either cache. Debugger `Bus`
 reads inspect external memory; CPU cache arrays are accessed via `CpuBus`.
-RAM mirrors are not yet modeled. Words/longs
+ROM, work RAM, sound RAM and video RAM mirrors are decoded as listed above. Words/longs
 require 2/4-byte alignment and full valid ranges. RAM access validation prevents partial writes. MMIO long transfers on the
 16-bit sound bus issue two ordered word cycles; a later unsupported cycle can
 fail after an earlier cycle has taken effect. External mode requires exactly 524288 bytes, reads initial
@@ -183,21 +183,33 @@ SCU source 13/DMA trigger 6 reflect actual command progress. Cyclic lists stay
 busy; malformed/prohibited commands produce bounded machine diagnostics.
 TVMR/FBCR/EWDR/EWLR/EWRR control buffer formats, field changes and erase rectangles.
 Erase is applied at the field boundary; physical erase bandwidth, subpixel edge
-rounding, high-speed shrink, interlaced/rotated/high-resolution scanout and exact
-transfer-over behavior remain incomplete. Non-normal scanout fails explicitly.
+rounding, interlaced/rotated/high-resolution scanout and exact
+transfer-over behavior remain incomplete. Non-normal scanout fails explicitly. HSS/EOS selects the source X parity on
+reduced scaled/distorted sprite rows, retains normal sampling on expansion and
+disables end codes at all magnifications. Native and browser guest vectors cover
+both parities, flips, draw polling, MODR and actual Canvas pixels.
 
-VDP2 supports 320×224 noninterlaced NBG0/1 bitmaps, applicable packed/palette/
-RGB555/RGB888 formats, dimensions/bank/palette offsets, fixed-point scroll/zoom,
-mosaic, rectangular windows, back color tables, priorities, weighted/additive
-color calculation and signed color offsets. CRAM modes 0/1/2 select 1024/2048
-RGB555 or 1024 RGB888 colors. Sprite types 0/1 and mixed RGB select palette,
-priority and color calculation; normal VDP1 scanout composes with both backgrounds.
-Five-bit output channels expand by bit replication, preserving Star Collector.
-Display disabled produces opaque black. Unsupported enabled modes fail explicitly.
-Tilemaps, NBG2/3, rotation, line/cell tables, sprite/line windows, shadows, special
-color/priority effects, interlace and alternative resolutions remain required.
-CYCA0L/U are stored, but VRAM-cycle arbitration is not modeled. Register readback
-for implemented write-only VDP2 controls remains a debugger convenience.
+VDP2 supports NBG0–3 tile/bitmap formats, RBG0/RBG1 rotation/coefficient
+parameters, packed/palette/RGB555/RGB888 colors, fixed-point scroll/zoom,
+line/cell scroll, mosaic, rectangular/line/sprite windows, back/line color,
+priorities, weighted/additive color calculation, gradation, shadows and color
+offsets. All sixteen sprite selector layouts are decoded. Standard TV graphics
+select 320/352/640/704 dots, 224/240 lines (256 on PAL), and noninterlaced,
+single-density or double-density images. Double density exposes both image
+fields in a full-height framebuffer. TVSTAT reports the separate physical PAL
+strap and current odd/even field; EXLTFG still clears on read. `set_pal` configures
+the physical standard independently of SMPC area codes and survives resets.
+The PLL uses ST-169 table1.1's PAL 26.6875/28.4375 MHz frequencies; sound/CD/RTC
+keep their fixed clocks, including reference ticks without a main-clock edge.
+
+The renderer still samples a frame snapshot. Raster-time table/window/reload
+latching, complete VRAM-cycle/bank arbitration and half-line interlace phase
+remain required. Exclusive-monitor dimensions are decoded; exclusive-monitor scanout and special
+high-resolution layer multiplexing remain unsupported. BDCLMD selects the back
+screen during display blanking (the lowermost line for a line back table), or
+opaque black. Reserved display encodings and 256-line mode on NTSC fail.
+Unsupported enabled effects still fail explicitly. Register readback for
+implemented write-only VDP2 controls remains a debugger convenience.
 
 SMPC uses byte accesses: PDR1/PDR2 +75/+77, DDR1/DDR2 +79/+7B,
 IOSEL +7D, EXLE +7F (relative to
@@ -205,8 +217,9 @@ IOSEL +7D, EXLE +7F (relative to
 standard digital pad direct access. PDR1 TH/TR=11 returns pad identification/L;
 01 returns Right/Left/Down/Up; 10 returns Start/A/C/B; 00 returns R/X/Y/Z.
 TL is high and button bits are active-low. Unsupported direction/control modes
-fail explicitly. Settling is immediate in the emulator; the guest includes a
-32-iteration delay after selecting a nibble to satisfy the hardware's 2 µs wait.
+fail explicitly. The selected nibble retains its previous electrical value during the modeled
+2 µs settling interval; independent native/Wasm guests sample both sides of
+this deadline.
 Host masks are up/down/left/right/B/C/A/Start/Z/Y/X/R/L at bits 0–12. The browser
 maps arrows, Z (A) and Enter (Start), releases on blur and pauses on tab hiding.
 Port 2 uses the same direct protocol with independent button, PDR and DDR state,
@@ -221,18 +234,21 @@ and SCU SMPC IRQ. SETTIME/SETSMEM provide deterministic BCD Gregorian time and
 four-byte battery storage, retained across volatile resets. SNDON/OFF control the
 independent sound CPU; RESENAB/DISA gate reset-button NMI edges, with RESB sampled
 at VBlank-in. Standard analog joystick ID15 reports buttons and unsigned X/Y/Z;
-browser Gamepad input/focus release has native and Wasm guest evidence. SYSRES,
-MSHON/CD controls, clock changes, multitaps, analog direct handshakes and the
-six-byte 3D pad remain absent. See the conformance matrix for per-command timing
+browser Gamepad input/focus release has native and Wasm guest evidence. SYSRES, MSHON/CD controls, clock changes, timed direct analog handshakes,
+multitaps and six-byte 3D-pad reports are implemented in the device model.
+Optimized INTBACK derives its collection deadline from the selected display
+interval and PLL rather than a hardcoded 224-line NTSC field. See the conformance matrix for per-command timing
 and deviations. These subsets do not establish full SMPC conformance.
 
 Internal backup RAM is independent of volatile resets. The SCU manual §1.2,
 figs. 1.3/1.5 (pp.4/6) places its 64 KiB window at 00180000; the SMPC manual's
 SYSRES command (§2.3 p.29) specifies retention of 256 Kbit battery RAM. Supported
 MOV.B accesses use odd addresses 00180001–0018FFFF and their P1 cache-through
-aliases. Even byte lanes, word/long accesses and further mirrors remain explicit
-unsupported/unmapped accesses; bus-lane/open-bus conformance is pending. New
-machines start with zeroed, unformatted bytes; no BIOS filesystem is synthesized.
+aliases. Even byte reads return FF and writes do not strobe storage; word/long accesses
+strobe the odd lanes in address order. Complete board/open-bus conformance is
+still pending. New machines start with zeroed, unformatted bytes. HLE disc boot
+installs the original guest-executed BUP library with its separately identified
+SRBUP001 filesystem; unknown imported bytes remain untouched until guest Format.
 Cold resets, successful boot-mode changes and rejected boot images retain these
 bytes while discarding volatile RAM/CPU/device state.
 
@@ -243,8 +259,8 @@ Export downloads a raw copy. Reset/mode changes cancel pending imports; a newer
 selection supersedes an older read. File errors and invalid lengths preserve all
 bytes. There is no automatic browser storage or network transfer. Reloading or
 closing loses the in-memory copy; users must explicitly export/import to retain
-it across sessions. These operations do not implement BIOS backup-library calls,
-cartridge RAM, save states or battery/RTC behavior. The original shared
+it across sessions. Raw import/export is separate from the guest BUP ABI and does not implement
+cartridge RAM or save states. The original shared
 [diagnostic guest](../tests/fixtures/backup-pad.hex) and [tests](../tests/backup.rs)
 exercise real SH-2 loads/stores and port-2 reads natively and in Chromium/Wasm.
 
@@ -270,8 +286,9 @@ F0 destination, initializes the master stack from E8 (zero means 06002000), then
 executes the original AIP at 06002E20 for a single 20-hex-byte area block. The
 original bootstrap jumps to the loaded executable. The IP includes no Sega
 security/area executable; HLE deliberately skips those proprietary boot stages.
-No arbitrary bytes are treated as a disc. General BIOS services are not yet
-intercepted. An original licensed SH-2 reset trampoline provides a slave handoff
+No arbitrary bytes are treated as a disc. System/vector/clock and backup services execute original SH-2 instructions,
+without instruction interception. SYS_EXECDMP and CD-library services remain
+required. An original licensed SH-2 reset trampoline provides a slave handoff
 through the work-RAM entry pointer; external BIOS selection never installs it.
 The runtime CD block, SCU DMA/IRQ and SCSP external input operate on the actual
 retained medium, including the Hardware Lab mixed-disc guest.
@@ -315,11 +332,12 @@ added. Manuals/firmware are not redistributed.
 
 Accurate CPU/bus cycles and contention, remaining SH7604 peripherals and
 SCU cross-device/arbitration/DSP edge conformance,
-remaining SMPC system/clock/analog-direct controls, additional VDP2
-modes, remaining VDP1 conformance, full CD drive/command/error behavior, BIOS services and full synthetic boot pathways
+remaining SMPC command/clock/reset boundaries, raster-time VDP2
+behavior, remaining VDP1 conformance, full CD drive/command/error behavior, BIOS services and full synthetic boot pathways
 remain required work. The executing MC68EC000, direct SCSP PCM and browser audio
 and the sample-clock SCSP effects interpreter are implemented; SCSP
-envelopes/FM/LFO/noise remain absent. The DSP owns COEF/MADRS/MPRO,
+envelopes/FM/LFO/noise have functional coverage with remaining rate/pipeline
+conformance gaps. The DSP owns COEF/MADRS/MPRO,
 TEMP/MEMS/MIXS/EFREG and sound-RAM ring/table addressing. Slots and external
 CD-DA feed real instructions; EFREG outputs use the SCSP effect sends. Hardware
 Lab's independent 68k uploads an original effects program, and native/browser
@@ -341,7 +359,9 @@ master SH-2. Native and browser tests use the same original synthetic guest ROM.
 See [the conformance matrix](hardware-conformance.md#scu-and-dsp) for operation,
 register and test links and the remaining limitations.
 
-`timing::Raster` emits clock-based NTSC 320-dot scanline/HBlank/VBlank deadlines.
+`timing::Raster` emits scanline/HBlank/VBlank deadlines for the selected
+NTSC/PAL display interval and 320/352 PLL. Interlaced fields alternate ODD and
+double-density VCNT parity. Half-line phase remains required.
 `Bus::advance_clocks` splits device advancement at raster, SCU timer and DSP
 boundaries, with external DMA beats on eight-clock boundaries. `advance_frame`
 waits for a raster field boundary with a hard turn bound. It no longer assigns
@@ -377,21 +397,24 @@ word cycles and need only word alignment. User/supervisor stacks, SR/CCR, normal
 and seven-word address/bus frames, traps, privilege/illegal/trace, autovectored
 IRQs, STOP wake and RESET output are exercised by original vectors. It excludes
 later 68k model instructions. Opcode budgets are functional approximations;
-prefetch, bus contention and exact exception fault PCs remain pending.
+generic two-word prefetch, access-frame records and partial transfers have
+independent tests. Instruction-specific prefetch placement, operand-dependent
+DIV timing and complete sound-bus arbitration remain pending.
 
 The SH-2 uploads sound programs and samples into shared 512 KiB sound RAM and
 starts the 68k with SMPC SNDON. SCSP implements 32 direct PCM slots, signed 8/16-bit
 samples, key/loop/pitch/source-bit controls, direct pan/mix, three timers,
-interrupt routing, bounded MIDI FIFOs and a word-at-a-time DMA subset. Only
-SDIR direct mode is synthesized; unsupported envelope/FM/LFO/DSP settings fail.
+interrupt routing, bounded MIDI FIFOs and a word-at-a-time DMA subset. PCM envelope stages, FM stack modulation, tonal/noise LFO and an executing
+effects DSP also produce real samples. Published numeric envelope-rate and
+converter/pipeline boundary conformance and DMA arbitration remain required.
 The original dual-architecture fixture computes its waveform on the 68k,
 programs SCSP, handles a timer IRQ and returns through RTE. Changing its arithmetic
 changes both shared RAM and exact output samples natively and through Wasm.
 No-loop and forward-loop PCM8/16 now use signed Q16 first-order interpolation
 before stack writes and mixing (ST-077 §§2.2/3.1, fig.4.30 OP4). A guest-programmed
 half-sample pitch produces independently expected intermediate stereo values in
-native and browser Wasm. Reverse/alternating traversal still uses sample-point
-output; its fractional interpolation and precise boundary behavior remain pending.
+native and browser Wasm. Reverse/alternating traversal also interpolates in its traversal direction;
+independent vectors exercise its attack/loop boundaries.
 
 Audio frames advance at 44.1 kHz independently of the 11.2896 MHz sound CPU.
 Both domains use integer deadlines relative to fixed NTSC 320 reference time;

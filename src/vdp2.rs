@@ -14,6 +14,8 @@ pub struct Vdp2 {
     pub vblank: bool,
     pub hblank: bool,
     live_counters: (u16, u16),
+    pub(crate) pal: bool,
+    odd: bool,
     latched_counters: Cell<(u16, u16)>,
     external_latched: Cell<bool>,
 }
@@ -26,6 +28,8 @@ impl Default for Vdp2 {
             vblank: false,
             hblank: false,
             live_counters: (0, 0),
+            pal: false,
+            odd: true,
             latched_counters: Cell::new((0, 0)),
             external_latched: Cell::new(false),
         }
@@ -88,11 +92,12 @@ impl Vdp2 {
     pub fn read16(&self, address: u32) -> Result<u16, BusError> {
         let offset = (address - VDP2) as usize;
         if offset == 4 {
-            // ST-058 §2.5: non-interlaced fields always report ODD=1.
+            // ST-058 §2.5: board TV standard and current scan field.
             return Ok(u16::from(self.external_latched.replace(false)) << 9
                 | u16::from(self.vblank) << 3
                 | u16::from(self.hblank) << 2
-                | 2);
+                | u16::from(self.odd || self.word(0) & 0xC0 == 0) << 1
+                | u16::from(self.pal));
         }
         match offset {
             2 if self.word(2) & 0x200 == 0 => self.latched_counters.set(self.live_counters),
@@ -104,6 +109,9 @@ impl Vdp2 {
             return Err(BusError::UnsupportedDevice { address, width: 2 });
         }
         Ok(self.word(offset))
+    }
+    pub(crate) fn scan_field(&mut self, odd: bool) {
+        self.odd = odd;
     }
     pub(crate) fn counters(&mut self, horizontal: u16, vertical: u16) {
         self.live_counters = (horizontal & 0x3FF, vertical & 0x3FF);
@@ -136,12 +144,25 @@ impl Vdp2 {
         }
         self.render(Some(sprites))
     }
-    /// ST-058 §2.4: normal graphic A/B select 320/352 visible dots.
+    /// ST-058 §2.4 tables2.1: double density doubles source lines; single
+    /// density repeats the same image in alternating fields.
     pub fn dimensions(&self) -> (usize, usize) {
-        (if self.word(0) & 1 == 0 { 320 } else { 352 }, 224)
+        let mode = self.word(0);
+        let width = [320, 352, 640, 704][(mode & 3) as usize];
+        let height = if mode & 4 != 0 {
+            480
+        } else {
+            [224, 240, 256, 256][(mode >> 4 & 3) as usize] * if mode & 0xC0 == 0xC0 { 2 } else { 1 }
+        };
+        (width, height)
     }
     fn validate(&self) -> Result<(), String> {
-        let unsupported = self.word(0) & !1 != 0x8000
+        let mode = self.word(0);
+        let unsupported = mode & !0x81F7 != 0
+            || mode & 0xC0 == 0x40
+            // Exclusive monitors need their own scanout/layer multiplexing.
+            || mode & 4 != 0
+            || (mode & 4 == 0 && (mode & 0x30 == 0x30 || (!self.pal && mode & 0x30 == 0x20)))
             || self.word(0x20) & !0x1F3F != 0
             || self.word(0xE)
                 & !(0xB000
@@ -269,8 +290,9 @@ impl Vdp2 {
             } else {
                 (self.word(base), self.word(base + 4))
             };
-            let inside = x >= usize::from((left & 0x3FF) >> 1)
-                && x <= usize::from((right & 0x3FF) >> 1)
+            let shift = u32::from(self.word(0) & 2 == 0);
+            let inside = x >= usize::from((left & 0x3FF) >> shift)
+                && x <= usize::from((right & 0x3FF) >> shift)
                 && y >= usize::from(self.word(base + 2))
                 && y <= usize::from(self.word(base + 6));
             let valid = inside != (control & (1 << (i * 2)) != 0);
@@ -568,7 +590,7 @@ impl Vdp2 {
     fn render(&self, sprites: Option<&Vdp1>) -> Result<Vec<u8>, String> {
         let (width, height) = self.dimensions();
         let mut pixels = vec![0; width * height * 4];
-        if self.word(0) & 0x8000 == 0 {
+        if self.word(0) & 0x8000 == 0 && self.word(0) & 0x100 == 0 {
             for p in pixels.as_chunks_mut::<4>().0 {
                 p[3] = 255;
             }
@@ -583,10 +605,27 @@ impl Vdp2 {
             let mut history = [[0u8; 3]; 2];
             let back = self.vword(
                 ((self.long(0xAC) & 0x7FFFF) as usize
-                    + if self.word(0xAC) & 0x8000 != 0 { y } else { 0 })
+                    + if self.word(0xAC) & 0x8000 != 0 {
+                        if self.word(0) & 0x8000 == 0 {
+                            height - 1
+                        } else {
+                            y
+                        }
+                    } else {
+                        0
+                    })
                     * 2,
             );
             for x in 0..width {
+                if self.word(0) & 0x8000 == 0 {
+                    pixels[(y * width + x) * 4..][..4].copy_from_slice(&[
+                        rgb555(back)[0],
+                        rgb555(back)[1],
+                        rgb555(back)[2],
+                        255,
+                    ]);
+                    continue;
+                }
                 let sprite_window = self.sprite_window(sprites, x, y);
                 let sprite = sprites.map(|s| self.sprite(s, x, y)).unwrap_or_default();
                 let back = Layer {
@@ -745,5 +784,69 @@ impl Vdp2 {
                 + u16::from(fourth.rgb[ch]) * weights[2])
                 >> 2) as u8
         })
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+    #[test]
+    fn display_validation_covers_standard_tv_reserved_and_monitor_encodings() {
+        let mut v = Vdp2::default();
+        for (mode, pal, valid) in [
+            (0x8000, false, true),
+            (0x8012, false, true),
+            (0x8023, true, true),
+            (0x80A2, true, true),
+            (0x80E3, true, true),
+            (0x8004, false, false),
+            (0x8007, false, false),
+            (0x8020, false, false),
+            (0x8030, true, false),
+            (0x8040, false, false),
+            (0x8084, false, false),
+            (0x8200, false, false),
+        ] {
+            v.pal = pal;
+            v.write16(VDP2, mode).unwrap();
+            assert_eq!(v.framebuffer().is_ok(), valid, "{mode:X},pal={pal}");
+        }
+    }
+    #[test]
+    fn blank_border_uses_lowermost_back_color_and_hires_windows_keep_dot_precision() {
+        let mut v = Vdp2::default();
+        v.write16(VDP2 + 0xAC, 0x8003).unwrap();
+        v.vram[0x60000..0x60002].copy_from_slice(&0x801fu16.to_be_bytes());
+        v.vram[0x601BE..0x601C0].copy_from_slice(&0xfc00u16.to_be_bytes()); // line223
+        v.write16(VDP2, 0x8100).unwrap();
+        assert_eq!(&v.framebuffer().unwrap()[..4], [255, 0, 0, 255]);
+        v.write16(VDP2, 0x100).unwrap();
+        assert!(
+            v.framebuffer()
+                .unwrap()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|p| *p == [0, 0, 255, 255])
+        );
+        v.write16(VDP2, 0).unwrap();
+        assert!(
+            v.framebuffer()
+                .unwrap()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|p| *p == [0, 0, 0, 255])
+        );
+        for (mode, left, right) in [(0x8000, 2, 4), (0x8002, 4, 8)] {
+            v.write16(VDP2, mode).unwrap();
+            v.write16(VDP2 + 0xC0, 4).unwrap();
+            v.write16(VDP2 + 0xC4, 8).unwrap();
+            v.write16(VDP2 + 0xC6, 223).unwrap();
+            assert!(!v.window(2, left - 1, 0, false));
+            assert!(v.window(2, left, 0, false));
+            assert!(v.window(2, right, 0, false));
+            assert!(!v.window(2, right + 1, 0, false));
+        }
     }
 }

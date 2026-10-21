@@ -22,6 +22,46 @@ fn run(m: &mut Machine) {
             .collect::<Vec<_>>()
     );
 }
+// ST-058-R2 §§6.1/6.4/8.1. A rotates (x,y)->(y,3-x),
+// B translates (x,y)->(x+1,y). Coefficients choose A for x<2.
+// NBG0's line window includes x=8..15 on even lines and x=10..13
+// on odd lines; these authored expectations cover both edges and the lower layer.
+const VIDEO_POINTS: [(usize, usize, [u8; 4]); 14] = [
+    (0, 0, [255, 255, 255, 255]),
+    (1, 0, [0, 0, 255, 255]),
+    (2, 0, [255, 255, 255, 255]),
+    (3, 0, [255, 0, 0, 255]),
+    (0, 1, [255, 0, 0, 255]),
+    (1, 1, [255, 255, 255, 255]),
+    (2, 1, [255, 0, 0, 255]),
+    (8, 0, [255, 0, 0, 255]),
+    (9, 0, [0, 255, 0, 255]),
+    (8, 1, [0, 0, 0, 255]),
+    (10, 1, [0, 255, 0, 255]),
+    (13, 1, [255, 0, 0, 255]),
+    (14, 1, [0, 0, 0, 255]),
+    (0, 8, [0, 0, 0, 255]),
+];
+fn assert_results(m: &Machine) {
+    let r: Vec<_> = (0..11)
+        .map(|i| m.bus().read32(0x06010000 + i * 4).unwrap())
+        .collect();
+    assert_eq!(r[0..6], [1, 1, 84, 35, 42, 393984]);
+    assert!(r[6] >= 1);
+    assert_eq!(r[7..9], [1, 0x600D]);
+    assert_eq!(r[9] & 255, u32::from(m.backup_ram()[0]));
+    assert_eq!(r[10], 0x900);
+    assert_eq!(m.bus().read32(0x06011000), Ok(3));
+    assert_eq!(m.bus().read32(0x060117FC), Ok(1536));
+    assert!(m.slave_state().instructions > 5);
+    assert!(m.sound_state().instructions > 20);
+}
+fn assert_video(m: &Machine) {
+    let frame = m.framebuffer().unwrap();
+    for (x, y, expected) in VIDEO_POINTS {
+        assert_eq!(&frame[(y * 320 + x) * 4..][..4], expected, "({x},{y})");
+    }
+}
 #[test]
 fn mixed_disc_guest_computes_slave_dsp_dma_cd_sound_backup_and_video_results() {
     let iso = include_bytes!("../web/hardware-lab.iso");
@@ -29,20 +69,9 @@ fn mixed_disc_guest_computes_slave_dsp_dma_cd_sound_backup_and_video_results() {
     let mut m = Machine::new();
     m.reset_media(media(iso, audio)).unwrap();
     run(&mut m);
-    let r: Vec<_> = (0..10)
-        .map(|i| m.bus().read32(0x06010000 + i * 4).unwrap())
-        .collect();
-    assert_eq!(r[0..6], [1, 1, 84, 35, 42, 393984]);
-    assert!(r[6] >= 1);
-    assert_eq!(r[7], 1);
-    assert_eq!(r[8], 0x600D);
-    assert_eq!(r[9] & 255, 1);
-    assert_eq!(m.bus().read32(0x06010028), Ok(0x900));
-    assert_eq!(m.bus().read32(0x06011000), Ok(3));
-    assert_eq!(m.bus().read32(0x060117FC), Ok(1536));
-    assert!(m.slave_state().instructions > 5);
+    assert_results(&m);
+    assert_eq!(m.bus().read32(0x06010024).unwrap() & 255, 1);
     assert_eq!(m.sound_state().d[0] & 65535, 0x2000);
-    assert!(m.sound_state().instructions > 20);
     for _ in 0..3 {
         m.advance_frame().unwrap();
     }
@@ -52,14 +81,14 @@ fn mixed_disc_guest_computes_slave_dsp_dma_cd_sound_backup_and_video_results() {
             .chunks(2)
             .any(|p| p[0] != 0 && p[1] != 0 && p[0] != p[1])
     );
-    let pixels = m.framebuffer().unwrap();
-    assert_eq!(&pixels[0..4], &[255, 255, 255, 255]);
+    assert_video(&m);
     m.set_buttons(1 << 7);
     m.run_steps(50).unwrap();
     m.set_buttons(0);
     run(&mut m);
     assert_eq!(m.backup_ram()[0], 2);
-    assert_eq!(m.bus().read32(0x06010028), Ok(0x900));
+    assert_results(&m);
+    assert_video(&m);
     m.reset(Boot::HlePrototype).unwrap();
     assert_eq!(m.backup_ram()[0], 2);
 }
@@ -105,5 +134,57 @@ fn runtime_sector_mutation_changes_guest_sum_and_media_reset_repeats() {
         m.reset_media(media(&iso, audio)).unwrap();
         run(&mut m);
         assert_eq!(m.bus().read32(0x06010014), Ok(393990));
+    }
+}
+
+#[test]
+fn disc_matrix_and_window_operands_change_independent_pixels() {
+    let original = include_bytes!("../web/hardware-lab.iso");
+    let audio = include_bytes!("../web/hardware-lab-audio.bin");
+    for (address, before, after, points) in [
+        (
+            0x25E70048u32,
+            3u32 << 16,
+            2u32 << 16,
+            vec![
+                (0, 0, [0, 0, 255, 255]),
+                (1, 0, [0, 255, 0, 255]),
+                (2, 0, [255, 255, 255, 255]),
+            ],
+        ),
+        (
+            0x25E69000,
+            16 << 16 | 30,
+            20 << 16 | 30,
+            vec![
+                (8, 0, [0, 0, 0, 255]),
+                (9, 0, [0, 0, 0, 255]),
+                (10, 0, [255, 0, 0, 255]),
+                (15, 0, [0, 255, 0, 255]),
+            ],
+        ),
+    ] {
+        let mut iso = original.to_vec();
+        // Only the guest's literal after LOAD <address>,R1; LOAD <value>,R0.
+        // Search inside the video routine, excluding runtime sector data.
+        let matches: Vec<_> = (21 * 2048 + 0x2200..21 * 2048 + 0x6000)
+            .filter(|&i| iso[i..i + 4] == address.to_be_bytes())
+            .collect();
+        assert_eq!(matches.len(), 1);
+        let at = matches[0] + 12;
+        assert_eq!(&iso[at..at + 4], before.to_be_bytes());
+        iso[at..at + 4].copy_from_slice(&after.to_be_bytes());
+        let mut m = Machine::new();
+        m.reset_media(media(&iso, audio)).unwrap();
+        run(&mut m);
+        assert_results(&m);
+        let frame = m.framebuffer().unwrap();
+        for (x, y, expected) in points {
+            assert_eq!(
+                &frame[(y * 320 + x) * 4..][..4],
+                expected,
+                "operand={address:X},({x},{y})"
+            );
+        }
     }
 }

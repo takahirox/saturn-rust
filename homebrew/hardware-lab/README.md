@@ -48,7 +48,8 @@ Guest results at `0x06010000`, in longwords:
 The first data track contains 64 sectors. LBA60/FAD210 contains 512 original
 big-endian words, `3*(i+1)`; these bytes are not the boot executable. The guest
 reads that sector with the CD command/FIFO protocol and fixed-source SCU DMA,
-then sums the actual transferred words. Track 2 starts at FAD214 and contains
+then sums the actual transferred words. Get-and-Delete consumes that sector
+after transfer, so every Start restart waits for a fresh read and CD interrupt. Track 2 starts at FAD214 and contains
 eight original stereo sectors. Guest MMIO routes its two channels through SCSP
 EXTS0/1 into an effects program while the independent 68k programs a PCM voice,
 timer IRQ, two coefficients and eight actual DSP instructions. The DSP routes
@@ -75,3 +76,10 @@ delivery and a changed CD track changes the actual mixed sample buffer.
 This adds the required executing effects-DSP scene. Complete hardware semantics,
 remaining independent DSP/pipeline/bus-contention vectors and the full Issue #17
 acceptance inventory are still required. No umbrella completion is claimed.
+
+The video checks compare fourteen authored rotation/coefficient/window pixels,
+including both line-window edges, in native execution, Wasm and Canvas. Separate
+matrix-translation and line-window-start mutations in the actual disc change
+independently expected pixels; complete diagnostic records and video are checked
+again after Start restart. Current data-disc SHA-256:
+`6eef0cafaf4dc14575ce692a8892937cc140b9e10502de1b6ed6d03d6cd7c6d6`.

@@ -481,3 +481,32 @@ fn intback_reports_cd_reset_independently_of_sound_reset_at_command_deadlines() 
         }
     }
 }
+
+#[test]
+fn optimized_intback_uses_selected_display_interval_and_reset_cancels_it() {
+    // ST-169 §3.2: measured first packet, subsequent packet one millisecond
+    // before VBlank-in. The bus supplies the selected TV/PLL interval.
+    for active in [224 * 1708, 240 * 1708, 256 * 1820, 240 * 1820] {
+        let mut s = Smpc::default();
+        input(&mut s, &[0, 8, 0xF0]);
+        issue(&mut s, 0x10);
+        s.vblank_out_after(active);
+        assert_eq!(s.advance_clocks(8600), Some(0x10));
+        assert!(s.take_irq());
+        input(&mut s, &[0, 8, 0xF0]);
+        issue(&mut s, 0x10);
+        s.vblank_out_after(active);
+        assert_eq!(s.clocks_to_event(), active - 26875);
+        assert_eq!(s.advance_clocks(active - 26876), None);
+        assert!(!s.take_irq());
+        assert_eq!(s.advance_clocks(1), Some(0x10));
+        assert!(s.take_irq());
+        input(&mut s, &[0, 8, 0xF0]);
+        issue(&mut s, 0x10);
+        s.vblank_out_after(active);
+        s.reset_volatile();
+        assert_eq!(s.advance_clocks(active), None);
+        assert!(!s.take_irq());
+        assert!(!s.busy());
+    }
+}

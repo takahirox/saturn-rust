@@ -48,7 +48,7 @@ fn vdp1_bus_widths_aliases_and_atomic_register_writes() {
     }
     assert!(b.read16(REGISTERS).is_err());
     assert!(b.write16(REGISTERS + 0x10, 1).is_err());
-    assert!(b.write32(REGISTERS, 0x00000010).is_err());
+    assert!(b.write32(REGISTERS, 0x00000008).is_err());
     assert_eq!(b.read16(REGISTERS + 0x16).unwrap(), 0x1000);
     b.write16(CRAM, 0x801F).unwrap();
     assert_eq!(b.read16(CRAM + 0x800).unwrap(), 0x801F); // mode-0 mirrors
@@ -606,4 +606,90 @@ fn palette_msb_calculation_uses_cram_metadata_in_both_color_formats() {
         v.cram[at] |= 0x80;
         assert_eq!(&v.composite(&s).unwrap()[..3], &[127, 127, 0]);
     }
+}
+
+#[test]
+fn high_speed_shrink_selects_original_x_parity_and_ignores_end_codes() {
+    // ST-013 §6.3/fig.6.5, §4.2 EOS. Four reduced destination pixels
+    // sample literal source coordinates; flip occurs before parity selection.
+    for kind in [1, 2] {
+        for (hss, eos, flip, indices) in [
+            (false, false, false, [0, 2, 4, 7]),
+            (true, false, false, [0, 2, 4, 6]),
+            (true, true, false, [1, 3, 5, 7]),
+            (true, false, true, [6, 4, 2, 0]),
+            (true, true, true, [7, 5, 3, 1]),
+        ] {
+            let mut v = setup();
+            v.write16(REGISTERS + 2, 2 | if eos { 16 } else { 0 })
+                .unwrap();
+            command(
+                &mut v,
+                32,
+                &[
+                    (0, kind | if flip { 16 } else { 0 }),
+                    (4, 0x68 | if hss { 0x1000 } else { 0 }),
+                    (8, 0x100),
+                    (10, 0x101),
+                    (12, 10),
+                    (14, 20),
+                    (16, 13),
+                    (18, 20),
+                    (20, 13),
+                    (22, 20),
+                    (24, 10),
+                    (26, 20),
+                ],
+            );
+            for i in 0..8 {
+                v.vram[0x800 + i * 2..0x802 + i * 2]
+                    .copy_from_slice(&(0x8000 + i as u16).to_be_bytes());
+            }
+            draw(&mut v);
+            for (x, source) in indices.into_iter().enumerate() {
+                assert_eq!(
+                    pixel(&v, 10 + x, 20),
+                    0x8000 + source,
+                    "kind={kind},HSS={hss},EOS={eos},flip={flip}"
+                );
+            }
+        }
+    }
+    // HSS disables end codes for unchanged size and expansion too, while
+    // preserving ordinary coordinates (including odd ones) on these lines.
+    for end_x in [17, 19] {
+        let mut v = setup();
+        command(
+            &mut v,
+            32,
+            &[
+                (0, 1),
+                (4, 0x1068),
+                (8, 0x100),
+                (10, 0x101),
+                (12, 10),
+                (14, 20),
+                (20, end_x),
+                (22, 20),
+            ],
+        );
+        for i in 0..8 {
+            let color = if i == 1 || i == 2 {
+                0x7fff
+            } else {
+                0x8000 + i as u16
+            };
+            v.vram[0x800 + i * 2..0x802 + i * 2].copy_from_slice(&color.to_be_bytes());
+        }
+        draw(&mut v);
+        assert_eq!(pixel(&v, 10, 20), 0x8000);
+        assert_eq!(pixel(&v, end_x as usize, 20), 0x8007);
+        assert!((10..=end_x as usize).any(|x| pixel(&v, x, 20) == 0x7fff));
+    }
+    // EOS is a real readable MODR field and remains distinct from the
+    // still-unimplemented double-interlace draw controls.
+    let mut v = setup();
+    v.write16(REGISTERS + 2, 0x12).unwrap();
+    assert_eq!(v.read16(REGISTERS + 0x16).unwrap() & 0x80, 0x80);
+    assert!(v.write16(REGISTERS + 2, 0x1c).is_err());
 }

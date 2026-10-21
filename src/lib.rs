@@ -218,6 +218,9 @@ impl Machine {
             self.bus.signal_nmi(Processor::Master);
         }
     }
+    pub fn set_pal(&mut self, pal: bool) {
+        self.bus.set_pal(pal);
+    }
     pub fn set_region(&mut self, region: smpc::Region) {
         self.bus.set_region(region);
     }

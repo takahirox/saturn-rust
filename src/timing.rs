@@ -1,7 +1,7 @@
-//! Deterministic NTSC 320/352-dot, noninterlaced raster clock domain.
+//! Deterministic TV raster clock domain (VDP2 ST-058-R2 §§2.1–2.5).
 //! ST-210 #30/31 defines 263 lines, 224 effective lines and timer dot counts.
-//! This functional model uses 427/455 dots × 4 main clocks per line. Other
-//! television/interlace modes and bus-cycle contention remain unsupported.
+//! This functional model uses 427/455 dots × 4 main clocks per line.
+//! Bus-cycle contention and half-line interlace phase remain incomplete.
 pub const CLOCKS_PER_LINE: u32 = 427 * 4;
 pub const CLOCKS_PER_FIELD: u64 = CLOCKS_PER_LINE as u64 * 263;
 const HBLANK_CLOCK: u32 = 320 * 4;
@@ -12,16 +12,22 @@ const HBLANK_CLOCK: u32 = 320 * 4;
 #[derive(Default)]
 pub(crate) struct SystemClock {
     fast: bool,
+    pal: bool,
     phase: u64,
 }
 impl SystemClock {
     const REFERENCE: u64 = 26_874_100;
     fn frequency(&self) -> u64 {
-        if self.fast {
-            28_636_400
-        } else {
-            Self::REFERENCE
+        match (self.pal, self.fast) {
+            (false, false) => Self::REFERENCE,
+            (false, true) => 28_636_400,
+            (true, false) => 26_687_500,
+            (true, true) => 28_437_500,
         }
+    }
+    pub fn set_pal(&mut self, pal: bool) {
+        self.pal = pal;
+        self.phase = 0;
     }
     pub fn select(&mut self, fast: bool) {
         self.fast = fast;
@@ -53,6 +59,8 @@ pub struct Raster {
     pub fields: u64,
     phase: u32,
     fast: bool,
+    pub(crate) pal: bool,
+    mode: u16,
 }
 impl Raster {
     pub(crate) fn select_clock(&mut self, fast: bool) {
@@ -60,15 +68,37 @@ impl Raster {
         self.phase = 0;
         self.line = 0;
     }
+    pub(crate) fn configure(&mut self, mode: u16) {
+        self.mode = mode;
+    }
+    pub(crate) fn odd(&self) -> bool {
+        self.mode & 0xC0 == 0 || self.fields.is_multiple_of(2)
+    }
+    pub(crate) fn display_lines(&self) -> u16 {
+        [224, 240, 256, 256][(self.mode >> 4 & 3) as usize]
+    }
+    fn field_lines(&self) -> u16 {
+        let base = if self.pal { 313 } else { 263 };
+        base - u16::from(self.mode & 0xC0 != 0 && !self.odd())
+    }
     fn hblank_clock(&self) -> u32 {
         if self.fast { 352 * 4 } else { HBLANK_CLOCK }
+    }
+    pub(crate) fn active_clocks(&self) -> u32 {
+        u32::from(self.display_lines()) * self.line_clocks()
     }
     fn line_clocks(&self) -> u32 {
         if self.fast { 455 * 4 } else { CLOCKS_PER_LINE }
     }
     // ST-058 §2.5 tables2.3/2.4: normal-mode counters leave bit0 invalid.
     pub(crate) fn counters(&self) -> (u16, u16) {
-        ((self.phase / 4) as u16 * 2, self.line * 2)
+        let horizontal = if self.mode & 2 != 0 {
+            self.phase / 2
+        } else {
+            self.phase / 4 * 2
+        };
+        let vertical = self.line * 2 + u16::from(self.mode & 0xC0 == 0xC0 && !self.odd());
+        (horizontal as u16, vertical)
     }
     pub fn clocks_to_event(&self) -> u32 {
         if self.phase < self.hblank_clock() {
@@ -89,14 +119,14 @@ impl Raster {
         }
         self.phase = 0;
         self.line += 1;
-        match self.line {
-            224 => Some(RasterEvent::VBlankIn),
-            263 => {
-                self.line = 0;
-                self.fields += 1;
-                Some(RasterEvent::VBlankOut)
-            }
-            _ => Some(RasterEvent::LineStart),
+        if self.line == self.display_lines() {
+            Some(RasterEvent::VBlankIn)
+        } else if self.line >= self.field_lines() {
+            self.line = 0;
+            self.fields += 1;
+            Some(RasterEvent::VBlankOut)
+        } else {
+            Some(RasterEvent::LineStart)
         }
     }
 }
@@ -104,6 +134,70 @@ impl Raster {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tv_modes_have_independent_blank_field_and_counter_vectors() {
+        // ST-058 tables2.1/2.3/2.4; compare event times in main clocks.
+        for (mode, pal, active, total, width_clock) in [
+            (0x8010, false, 240, 263, 1708),
+            (0x8021, true, 256, 313, 1820),
+            (0x80D2, false, 240, 263, 1708),
+            (0x80E3, true, 256, 313, 1820),
+        ] {
+            for chunk in [1, 7, 127, 10000] {
+                let mut r = Raster::default();
+                r.select_clock(mode & 1 != 0);
+                r.pal = pal;
+                r.configure(mode);
+                let mut clock = 0;
+                let mut blanks = Vec::new();
+                while r.fields < 2 {
+                    let n = chunk.min(r.clocks_to_event());
+                    clock += n;
+                    if let Some(event) = r.advance(n)
+                        && matches!(event, RasterEvent::VBlankIn | RasterEvent::VBlankOut)
+                    {
+                        blanks.push((clock, event, r.counters().1, r.odd()));
+                    }
+                }
+                let even_length = total - u32::from(mode & 0xC0 != 0);
+                assert_eq!(
+                    blanks[0],
+                    (
+                        active * width_clock,
+                        RasterEvent::VBlankIn,
+                        active as u16 * 2,
+                        true
+                    )
+                );
+                assert_eq!(blanks[1].0, total * width_clock);
+                assert_eq!(blanks[2].0, (total + active) * width_clock);
+                assert_eq!(blanks[3].0, (total + even_length) * width_clock);
+                if mode & 0xC0 == 0xC0 {
+                    assert_eq!(blanks[2].2, active as u16 * 2 + 1);
+                }
+                assert_eq!(blanks[1].3, mode & 0xC0 == 0);
+            }
+        }
+    }
+    #[test]
+    fn pal_pll_keeps_fixed_domains_and_carries_fractional_main_clocks() {
+        for fast in [false, true] {
+            for chunk in [1, 3, 73, 1708, 10000] {
+                let mut c = SystemClock::default();
+                c.set_pal(true);
+                c.select(fast);
+                let frequency = if fast { 28_437_500 } else { 26_687_500 };
+                let mut reference = 0;
+                let mut main = 0u64;
+                while reference < 100_000 {
+                    let n = chunk.min(100_000 - reference);
+                    reference += n;
+                    main += u64::from(c.advance(n));
+                    assert_eq!(main, u64::from(reference) * frequency / 26_874_100);
+                }
+            }
+        }
+    }
     #[test]
     fn pll_rational_phase_and_deadlines_do_not_drift_or_depend_on_chunks() {
         // SMPC NTSC clock frequencies, not output sampled from the model.

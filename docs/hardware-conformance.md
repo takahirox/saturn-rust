@@ -6,7 +6,7 @@ includes independent slave SH-2 execution, CPU-local FRT/WDT/SCI/DIVU/DMAC,
 internal interrupt arbitration, executing UBC comparisons, software standby/NMI wake,
 write-through caches, timed SMPC CPU control and SYSRES,
 SCU interrupt/DMA/DSP execution, an independent MC68EC000 core, SCSP PCM/FM/LFO/noise,
-WebAudio delivery, SMPC RTC/SMEM/INTBACK and clock-based NTSC raster events. It preserves the address-error fixtures, Star Collector,
+WebAudio delivery, SMPC RTC/SMEM/INTBACK and NTSC/PAL raster events and selectable standard-TV graphics. It preserves the address-error fixtures, Star Collector,
 backup RAM and both direct digital pads. It does not complete the Saturn hardware
 or the complete required hardware exerciser demonstration. Hardware Lab now
 executes runtime CD/DMA/IRQ, dual CPU, SCU DSP, PCM/CD-DA, advanced video and backup
@@ -249,7 +249,7 @@ not turn those missing hardware paths into supported behavior.
 | SHLLn | 6.56 | Shift 2/8/16, preserve T | shift | SC, ROM | Common limits | Pending |
 | SHLR | 6.57 | Logical right, outgoing LSB to T | shift | — | Common limits | Pending |
 | SHLRn | 6.58 | Shift 2/8/16, preserve T | shift | — | Common limits | Pending |
-| SLEEP | 6.59 | Retire once, bounded waiting, accepted CPU IRQ wakes | sleep | ROM (waiting) | Standby control and integrated wake sources missing | Pending |
+| SLEEP | 6.59 | Retire once, bounded waiting, accepted CPU IRQ wakes; software standby/NMI | sleep, PWRG | ROM, PWRG | Complete interrupt/clock boundary evidence remains | Pending |
 | STC | 6.60 | SR/GBR/VBR, register/predecrement, IRQ inhibition | special | — | Common limits | Pending |
 | STS | 6.61 | MACH/MACL/PR, register/predecrement, IRQ inhibition | special | — | Common limits | Pending |
 | SUB | 6.62 | Wrapping subtraction, preserve SR | arithmetic | SC | Common limits | Pending |
@@ -272,7 +272,7 @@ not turn those missing hardware paths into supported behavior.
 | CPU address errors, H §§4.3/4.6/4.7/4.8.3, Tables 4.6/4.10/4.11 | Vector 9, operand/fetch checks, next-PC/SR, auto-update and deferral; misaligned stacking completes original exception then accepts address error without recursion | AE, AEROM, PERIPH | AEROM, PERIPH | Invalid data and unaligned stacking bytes are deterministic policies rather than physical bus signals; misaligned VBR unsupported | Pending |
 | Maskable IRQ/NMI, H §4.4 | Device priority selection, I mask, NMI vector11, stack/wake; ICR auto/external vector modes, NMIL/NMIE and selected-edge NMIF/standby wake | sleep, special, PERIPH, INTCG | INTCG, DUAL | Pin synchronization and complete cross-clock assertion boundaries remain | Pending |
 | Deferral, H §4.6 | IRQ/NMI defer through delayed successors and control/system successors; address errors defer only through delayed successors | special, AE | ROM, AEROM | No pipeline-cycle timing or device IRQ selection; unfetchable successor policy below | Pending |
-| Cache/address regions, H §8, tables 8.2–8.4, figs.8.10/8.11 | CPU-local 4 KiB/four-way cache, write-through, no snooping; ID/OD, pseudo-LRU, two-way RAM, P1 bypass, P2 purge, P3 address array, P6 data array; TAS external read; ordered four-longword refills and two-way RAM tag isolation | CACHE, PERIPH, CACHEG; `Cache` and `CpuBus` | PERIPH, CACHEG | Pipeline/fill-cycle/bus arbitration timing absent; RAM mirrors remain missing | Pending |
+| Cache/address regions, H §8, tables 8.2–8.4, figs.8.10/8.11 | CPU-local 4 KiB/four-way cache, write-through, no snooping; ID/OD, pseudo-LRU, two-way RAM, P1 bypass, P2 purge, P3 address array, P6 data array; TAS external read; ordered four-longword refills and two-way RAM tag isolation | CACHE, PERIPH, CACHEG; `Cache` and `CpuBus` | PERIPH, CACHEG | Pipeline/fill-cycle/bus arbitration timing remains required; work-RAM mirrors are decoded | Pending |
 | On-chip INTC, H §5.3, table 5.4 | IPRA/IPRB, VCRA–D/VCRWDT, DIVU/DMA vectors, source priorities/tie order and guest acknowledgement | FRT, DUAL, PERIPH | DUAL, PERIPH | UBC source 12 at level 15 covered by UBCG; ICR/IRL auto/external vectors and SCU acknowledgement covered by INTCG; pin synchronization remains; refresh CMI arbitrates at WDT priority | Pending |
 | FRT, H §§11.1–11.5, tables 11.2/11.3 | FRC, OCRA/B, capture, divisors, overflow/compare/clear, TIER/FTCSR, shared TEMP, output level state and IRQ; Saturn capture wires (ST-202 §1.2) | FRT, DUAL | FRT (compare), DUAL (capture) | Internal/external pin synchronization, WAIT, clock-switch edges and contention timing absent; no external clock source or output-pin routing | Pending |
 | Watchdog, H §§12.2–12.3, table 12.2 | Keyed byte-register/word-write protocol, eight divisors, interval IRQ, read-before-clear, watchdog reset selection/cause and 512-clock CPU hold | PERIPH; `Watchdog` | PERIPH | External WDTOVF pin routing and complete CPU reset-cycle ordering remain; reset assertion/512-clock hold now split advancement without discarding preceding FRT/DIVU clocks | Pending |
@@ -423,9 +423,9 @@ CPU/scheduler acceptance criteria.
 | Backup reset retention, SMPC §2.3 SYSRES p.29 | Bytes survive successful/rejected HLE, disc and ROM resets and guest SYSRES; new Machine starts empty | BK; `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot`, PWRG | BK, PWRG, reset/mode/read-race checks | SYSRES guest retention now covered by PWRG; remaining power/reset and service contracts pending | Pending |
 | Local backup import/export (host interface) | Exact 32768 packed bytes; atomic replacement; explicit local download; stale import cancellation; no network/storage | `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot` | Download byte comparison, offline import, invalid size/read errors, races, fresh-tab isolation | BUPG provides independent HLE backup calls; optional cartridge backup is absent; no automatic cross-session persistence | Pending |
 | Shared event scheduler, O clock domains | Deterministic CPU order, raster/SCU event deadlines and clock-driven DSP/DMA; field deadlines replace instruction budgets | TIME, SCUROM, game.rs, DUAL | SCUROM, SC, DUAL | CPU opcode/on-chip DMA cycles, contention, refresh and full cross-clock ordering missing; CD command/sector/sample deadlines now exercised by CLAB | Pending |
-| Video timing, VDP2 display registers | Clock-based 263-line/224-visible NTSC raster, HBLANK/VBLANK bits and SCU edges; bounded field advancement | TIME, SCUROM, game.rs | SCUROM, SC | 320/352 normal NTSC clocks now have CLKG evidence below; other resolutions, PAL/interlace and exact beam phase remain missing | Pending |
+| Video timing, VDP2 display registers | Selectable NTSC/PAL 224/240/256-visible raster, interlace field/counter flags, HBLANK/VBLANK and SCU edges; bounded field advancement | TIME, SCUROM, game.rs | SCUROM, SC | CLKG and TVG below cover PLL/display intervals; half-line beam phase, counter discontinuities and bus arbitration remain required | Pending |
 | Audio timing, SCSP/CD | Independent 68k/sample deadlines, bounded stereo output and worklet; underflow/mute/blocked instrumentation | SNDV, SNDR | SNDR | Exact CPU/bus timing and effects DSP | Pending |
-| Power/reset domains, SMPC / H | Cold reset clears both CPUs/devices and retains backup; SSHOFF resets slave CPU/FRT while retaining shared state; SLEEP distinct | boot.rs, sh2_system.rs, DUAL | ROM/reset, DUAL | Manual/system reset and remaining power/clock controls missing | Pending |
+| Power/reset domains, SMPC / H | Cold reset clears both CPUs/devices and retains backup; SSHOFF resets slave CPU/FRT while retaining shared state; SLEEP distinct | boot.rs, sh2_system.rs, DUAL | ROM/reset, DUAL | PWRG and CLKG implement manual/system/clock reset domains; complete reset-cycle and bus-boundary evidence remains | Pending |
 
 ## SCU and DSP
 
@@ -487,7 +487,7 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 | --- | --- | --- | --- | --- | --- |
 | VDP1 VRAM/framebuffers/registers, [VDP1] §§2,4 | 512 KiB VRAM, two draw/display buffers, byte/word/long memory; checked paired register writes; MODR | VIDEO | PRISM | All bus lanes/mirrors/waits; alternative scanout modes | Pending |
 | Command list/control flow, [VDP1] §6.1 | END, next/assign/call/return and skip variants, one return level, invalid links/prohibited commands, bounded cyclic lists | VIDEO | PRISM (sequential END) | Full guest control-flow corpus, precise fetch timing | Pending |
-| Normal/scaled/distorted sprites, [VDP1] §§6.2,7.4–7.6 | Width/height, flips, two-point and nine anchor scales, ruled quadrilateral scan conversion | VIDEO | PRISM (normal) | Physical edge/zoom rounding, high-speed shrink and preclip direction | Pending |
+| Normal/scaled/distorted sprites, [VDP1] §§6.2,7.4–7.6 | Width/height, flips, two-point and nine anchor scales, ruled quadrilateral scan conversion, HSS/EOS source selection | VIDEO, HSSG | PRISM (normal), HSSG | Physical edge/zoom rounding, preclip direction and draw bandwidth | Pending |
 | Polygons/lines/polylines, [VDP1] §§7.7–7.9 | Solid ruled quads and integer line segments | VIDEO | PRISM (polygons) | Full independent sloped-edge and repeated-pixel corpus | Pending |
 | Clip/local coordinates, [VDP1] §§7.1–7.3 | System/user inside/outside clips, local offsets | VIDEO | PRISM (system) | Full extreme-coordinate/clip boundary corpus | Pending |
 | Sprite texture/color modes, [VDP1] §§6.3–6.6 | Packed 4-bit bank/LUT, 64/128/256 bank and RGB555, transparent pixels, two end codes per raster row | VIDEO | PRISM (RGB555) | Scaling/end-code interaction, wrapping and all browser formats | Pending |
@@ -495,7 +495,7 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 | Draw/erase/swap/status/IRQ, [VDP1] §4 | PTMR, forced stop, manual/auto change and display erase, persistent VBE, CEF/BEF/COPR/LOPR; SCU IRQ/DMA trigger | VIDEO, VIRQ, PRISM | PRISM (auto/IRQ) | Physical erase bandwidth/timing, transfer-over, interlace/rotation | Pending |
 | VDP2 VRAM, [VDP2] §3 | Bitmap RAM and bank offsets | VIDEO, SC | PRISM, SC | VRAM bank/cycle arbitration; CYCA0 words still only stored | Pending |
 | VDP2 CRAM, [VDP2] §3.4 | Modes 0/1 RGB555 and 2 RGB888; mode-0 upper-half mirror; palette offsets | VIDEO | — | Full lane/alias and guest/browser palette corpus | Pending |
-| TVMD/TVSTAT, [VDP2] §2.2 | 320×224 noninterlace, display enable, clocked blanking and SCU edges | VIDEO, TIME | PRISM, SC, SCUROM | Other resolutions, PAL/interlace, beam status/latches | Pending |
+| TVMD/TVSTAT, [VDP2] §2.2 | 320/352/640/704 dots, 224/240/PAL256 lines, noninterlace/single/double density, border/display enable, PAL/ODD and blanking flags | VIDEO, TIME, TVG | PRISM, SC, SCUROM, TVG | Raster-time latches, half-line phase and exclusive-monitor high-resolution multiplexing | Pending |
 | NBG0 bitmap, [VDP2] §§4–6 | 4/8/11-bit palette, RGB555/RGB888, bitmap dimensions/base, transparency, fixed-point scroll/zoom | VIDEO | PRISM, SC (RGB555, unit zoom) | Full format/dimension/zoom vectors and browser coverage | Pending |
 | NBG0–3 tile/character, [VDP2] §§4.4–4.8, figs.4.9/4.10, table4.8 | `Vdp2::character_control/tile/background`: one/two-word names, both supplement modes, 8×8/16×16 characters, 4/8/11-bit palette and RGB555/888 where applicable, flips, plane/page alignment/maps/wrap | [seven independent pixel/guest tests](../tests/video_tiles.rs) | TILE (four layers, names, palette/VRAM, window, mutation) | VRAM cycle arbitration, bandwidth/layer restrictions and exhaustive guest corpus remain | Pending |
 | NBG1–3 bitmap/layer control, [VDP2] §§4–6 | NBG1 bitmap composition, formats applicable to NBG1, scroll/zoom/priority | VIDEO | — | Complete layer restrictions and guest format corpus; NBG2/3 tile layers now exercised by TILE | Pending |
@@ -514,7 +514,7 @@ cycles. Erase takes effect at a field boundary. Color calculations use integer
 interpolation; exact physical edge rounding/transfer-over remain required. Native
 vectors caught and corrected shadow MSB halving and automatic-start BEF handling.
 Cyclic lists remain busy without reporting END. Invalid lists stop the machine
-explicitly. Rotated VDP1 scanout and enabled unimplemented VDP2 display modes fail
+explicitly. Rotated VDP1 scanout and unsupported enabled VDP2 effect configurations fail
 explicitly. Readback of VDP2 write-only controls remains a debugger convenience.
 No game-specific rendering, guest identity check, canned pixels or host result
 mailbox writes are used.
@@ -566,7 +566,7 @@ no-op CPU/device implementations cannot satisfy those assertions.
 | BIOS services, [BOOT], ST-162-R1 System Program §2.2 | Original guest-executed vector/callback registration, SCU mask/shadow, shared semaphores, copied priorities and power-clear bytes; see HLESYS below | tests/hle_system.rs | HLESYS, including nested IRQs, mutations and reset | Clock and BUPG backup calls have dedicated evidence below; multiplayer/CD calls and complete per-call ABI/side effects remain | Pending |
 | External BIOS execution, [BOOT] | Genuine reset vectors, original synthetic ROM handlers | boot.rs, sh2_system.rs | ROM | Genuine BIOS initialization/menu/boot **unverified**; no lawful local BIOS supplied | Pending |
 | SMPC direct digital port 1, [SMPC] §3 | Active-low nibble selection; per-bit PDR/DDR input/output merging; TH input visible with EXLE | devices.rs, INTCG | SC, INTCG | DIGG settling and CLKG clock/reset vectors below; full system timing remains required | Pending |
-| SMPC commands/status/timing, [SMPC] §§1.2/2.3/2.4/3.2 | SF/IREG/OREG/SR, CPU commands, INTBACK status/peripheral phases, continue/break, VBlank collection and optimization; SCU source 7 | smpc/tests.rs, tests/smpc.rs, DUAL | SMPR, DUAL | Remaining system commands, firmware jitter and PAL/interlace clock modes | Pending |
+| SMPC commands/status/timing, [SMPC] §§1.2/2.3/2.4/3.2 | SF/IREG/OREG/SR, CPU commands, INTBACK status/peripheral phases, continue/break, VBlank collection and optimization; SCU source 7 | smpc/tests.rs, tests/smpc.rs, DUAL | SMPR, DUAL | TVG covers selected standard-TV clocks and collection intervals; complete command/latch/reset boundaries remain | Pending |
 | SMPC reset/power/clock, [SMPC] table 1.1/§2.3 | MSHON, SSHON/OFF, SNDON/OFF, CDON/OFF, NMIREQ, SYSRES (volatile reset, installed-ROM or HLE-disc restart and battery retention); RESENAB/DISA control reset-button NMI edges and VBlank-latched RESB | DUAL, SNDV, SNDR, PWRG, smpc/tests.rs | DUAL, SNDR, PWRG | Clock switching, full status/power domains | Pending |
 | RTC/region/system flags, [SMPC] §§2.4/2.5 | Deterministic Gregorian/BCD RTC, SETTIME, retained four-byte SETSMEM, all eight documented board regions, independent CD/sound reset status, output control flags | smpc/tests.rs, tests/smpc.rs | SMPR, original status guest | Full system-control and remaining reset domains; PAL timing is separate from area reporting | Pending |
 | SMPC direct digital port 2, [SMPC] §1.2 pp.7–9, §3.4 table 3.36 p.97 | Independent PDR2/DDR2, IOSEL2/EXLE2; active-low nibble reports; host keyboard levels | BK; `both_digital_ports_have_independent_direction_selection_and_enable_bits` | BK; I/K/J/L keyboard input and release checks | DIGG implements both-port settling; complete clock/reset packet timing remains | Pending |
@@ -1273,7 +1273,7 @@ References: [SMPC][SMPC] §§1.1, 2.3.9–10, 2.4.2 and [VDP2][VDP2] §2.4;
 | CKCHG320/352 commands | `Smpc::write/advance_clocks` accepts 0F/0E, retains SF until 100 ms of reference time, clears sound enable and reports DOTSEL in OREG10 | SMPC unit vectors at deadline−1/deadline across chunks; CLKG issues both commands and INTBACK, compares 35/75 status | Oscillator settling uses the same deterministic 100 ms policy as SYSRES; no analog oscillator accuracy claimed |
 | Reset domains at clock completion | `Bus::change_system_clock` resets VDP1, VDP2, SCU and sound, clears slave state/control, retains master state/cache/on-chip state, work RAM, CD and backup | Native bus vectors cancel/mask SCU IRQs, retain master FRC/cache/CD media and mask, clear slave/video/sound; both guests start an independent slave computation, verify it stops with retained results, return through retained code/stack and compare written sentinel values | Full CPU/access timing and arbitration remain required |
 | Main/reference clock relationship | `SystemClock` carries fractional phase, converts deadlines, and advances FRT/SCU/VDP/raster at 26.8741/28.6364 MHz while sound/CD/SMPC keep reference time | Rational arithmetic/deadline inequalities over varied chunks; FRT counts 33592/35795 in 10 ms, both produce 441 stereo sample frames; first fast HBlank at reference tick1322 | CPU issue still uses fixed turns; this does not resolve the hardware-time CPU/DMA ownership finding |
-| Normal graphic B display | `Vdp2::dimensions/render` accepts TVMD=8001 and emits 352×224 pixels; Wasm exposes dimensions and Canvas resizes/reset clears correctly | CLKG guest writes a green back screen; native/Wasm compare all pixel bytes, production Canvas checks the last visible pixel | Other required resolutions/interlace, raster latching and cycle-pattern arbitration remain pending |
+| Normal graphic B display | `Vdp2::dimensions/render` accepts TVMD=8001 and emits 352×224 pixels; Wasm exposes dimensions and Canvas resizes/reset clears correctly | CLKG guest writes a green back screen; native/Wasm compare all pixel bytes, production Canvas checks the last visible pixel | TVG below adds standard TV resolutions/interlace; raster latching and cycle-pattern arbitration remain pending |
 | SYS_CHGSYSCK/GETSYSCK | Original SH-2 service at ROM4D00, installed through RAM320, issues SMPC MMIO and publishes data at RAM324; masks/restores SR and synchronizes reset IMS shadow | Same independent HLE disc and separate synthetic BIOS have matching reset-domain records; changing only MOV #0,R4 to MOV #1,R4 changes public value and DOTSEL | SYS_EXECDMP, backup/CD libraries and full startup/service ABI acceptance remain required |
 
 **DIGG** is the original [digital timing builder](../tests/fixtures/build_digital_timing.py),
@@ -1403,8 +1403,8 @@ require the coordinated transaction scheduler identified in review.
 [SMPC][SMPC] §2.4.2's OREG9 table is implemented as typed board region straps
 for all eight documented codes. Reserved/prohibited codes reject through the
 Wasm adapter before mutation; media does not select the region. Region straps
-survive volatile and system resets. This is area reporting, not PAL timing
-implementation. OREG11 bit6 now reports CD reset independently of OREG10's
+survive volatile and system resets. TVG below adds independently configured PAL
+timing; area reporting never selects the TV standard. OREG11 bit6 now reports CD reset independently of OREG10's
 sound-reset bit, at the command completion deadline. The original MIT
 [status guest](../tests/fixtures/build_smpc_status.py), [native integration](../tests/smpc.rs)
 and browser Wasm checks execute CDOFF/SNDON/CDON/SNDOFF and INTBACK for every
@@ -1473,3 +1473,60 @@ The original boot ROM fragment and all three existing demonstration media remain
 byte-identical. BUPG is diagnostic media, not a replacement demonstration.
 No mandatory Issue #17 umbrella checkbox is completed by this addition. All
 remaining CPU/bus/scheduler/chip/service/demonstration evidence remains required.
+
+
+## Standard TV graphics and dynamic INTBACK (TVG)
+
+Primary references: [VDP2] §§2.1–2.5, tables2.1/2.3/2.4 and §8.1;
+[SMPC] table1.1 (including PAL PLL frequencies) and §3.2 collection optimization.
+The original MIT [builder](../tests/fixtures/build_display_modes.py),
+[guest source](../tests/fixtures/display-modes.s) and
+[ROM](../tests/fixtures/display-modes.hex) have expanded SHA-256
+`59d477a20ca27b0f38b5d261247033843d4ec71b52e5bacc2057b4c1b8696184`.
+ROM word100 is a guest-read TVMD operand, not a host write to emulated state.
+
+| Behavior | Implementation | Native / actual browser Wasm evidence | Remaining required behavior |
+| --- | --- | --- | --- |
+| Standard TV graphic dimensions and source rows | `Vdp2::dimensions/validate/render`, `Raster::configure/display_lines` | [display_modes.rs](../tests/display_modes.rs) and [browser-smoke.mjs](../scripts/browser-smoke.mjs) execute all 60 valid NTSC/PAL, A/B normal/high-resolution, line-count and density combinations; eight authored corner colors plus 511/512 wrap pixels; production Canvas 704×480 | Complete exclusive-monitor multiplexing, per-format bank restrictions and VRAM arbitration |
+| Field/status/counter transitions | `Raster::advance/counters/odd`, `Vdp2::scan_field/read16`, bus raster events | Same guest polls successive VBlank transitions and latches VCNT; literal PAL/ODD/double-density counter parity assertions; `tv_modes_have_independent_blank_field_and_counter_vectors` compares chunk-independent event timestamps | Half-line phase and blanking counter discontinuities; snapshot renderer does not establish raster-time table/window/reload latching |
+| INTBACK collection in every tested mode | `Smpc::vblank_out_after`, bus supplies PLL-converted active interval | Guest compares measured first collection and optimized second collection, both digital and ID15 packets; `optimized_intback_uses_selected_display_interval_and_reset_cancels_it` checks deadline−1/deadline/reset cancellation | Complete continue/break/clock/reset/latch boundary integration still required |
+| PAL fixed domains and reset | `SystemClock::set_pal/advance`, `Bus::advance_fixed_clocks/set_pal/reset_volatile/system_reset` | Rational-phase vectors and `pal_reference_ticks_without_main_edges_still_produce_every_audio_sample`; guest checks physical PAL retention on reset | Full transaction scheduling and reset-cycle evidence remain required |
+| Blank border and horizontal windows | `Vdp2::render/window` | `blank_border_uses_lowermost_back_color_and_hires_windows_keep_dot_precision`: opaque black/back-color selection and inclusive normal/hires window edges | Complete raster-time window evidence remains required |
+
+Hardware Lab's advanced-video acceptance now compares fourteen independently
+specified pixels in native/Wasm and production Canvas. Mutating only the disc's
+A-table My literal changes the quarter-turn pixels; mutating only its first
+line-window start clips two previously visible pixels. Diagnostic results and
+all pixels are reasserted after guest Start restart. The guest now uses CD
+Get-and-Delete, so restart consumes a fresh sector and receives a fresh CD IRQ
+instead of reusing buffered data. Updated original disc SHA-256:
+`6eef0cafaf4dc14575ce692a8892937cc140b9e10502de1b6ed6d03d6cd7c6d6`.
+Audio/CUE hashes and licenses are unchanged. No umbrella completion is claimed;
+all other mandatory review findings and Issue #17 criteria remain in force.
+
+
+## VDP1 high-speed shrink and EOS (HSSG)
+
+[VDP1] §6.3/fig.6.5 and §4.2 define HSS and EOS. `Vdp1::line` now
+selects even/odd original X coordinates on reduced scaled/distorted sprite
+raster rows, after horizontal flip; unchanged-size and enlarged rows retain
+ordinary sampling. HSS ignores end codes at every magnification. EOS is accepted
+in FBCR and reported in MODR; prohibited HSS command kinds remain rejected.
+
+[Native pixel vectors](../tests/video.rs) independently expect four samples
+from an eight-dot texture for ordinary, even/odd and both flipped cases;
+additional unchanged-size/enlarged vectors include real end-code texels.
+The original MIT [builder](../tests/fixtures/build_sprite_shrink.py),
+[source](../tests/fixtures/sprite-shrink.s) and
+[ROM](../tests/fixtures/sprite-shrink.hex) execute seven scaled/distorted/flipped
+draws, poll CEF, read twenty-eight actual framebuffer words and MODR.
+[Native integration](../tests/sprite_shrink.rs) and
+[browser Wasm/Canvas](../scripts/browser-smoke.mjs) compare authored records,
+pixels and restart. Clearing only six HSS operands in the guest changes the
+sample coordinates while EOS alone becomes ineffective. Expanded ROM SHA-256:
+`c39bd97bde799c27021d656aa679bfcbc3924a87220034c8d08e17a198a751ee`.
+
+This implements the shrink sampling/end-code controls, not measured VDP1 bus or
+raster execution speed. Transfer-over, progressive erase timing, complete edge
+rules and remaining interlaced/rotated scanout are still required. The original
+Issue #17 acceptance criteria remain unchanged and incomplete.

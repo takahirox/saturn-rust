@@ -349,11 +349,30 @@ impl Bus {
             })
     }
 
+    fn advance_fixed_clocks(&mut self, clocks: u32) -> Result<Option<u8>, ScuError> {
+        self.cd.advance(clocks);
+        if self.cd.interrupt() {
+            self.scu.signal(16);
+        }
+        self.sound.advance_with_cd(clocks, &mut self.cd)?;
+        if self.sound.scsp.main_interrupt() {
+            self.scu.signal(6);
+        }
+        let command = self.smpc.advance_clocks(clocks);
+        if self.smpc.take_irq() {
+            self.scu.signal(7);
+        }
+        Ok(command)
+    }
+
     fn advance_main_clocks(
         &mut self,
         mut remaining: u32,
         reference_clocks: u32,
     ) -> Result<Option<u8>, ScuError> {
+        if remaining == 0 {
+            return self.advance_fixed_clocks(reference_clocks);
+        }
         let mut reference_clocks = Some(reference_clocks);
         let mut command = None;
         while remaining != 0 {
@@ -370,18 +389,7 @@ impl Bus {
             // domains, blanking edges, DMA. A PLL conversion can deliver two
             // main ticks at one reference boundary; fixed time advances once.
             if let Some(clocks) = reference_clocks.take() {
-                self.cd.advance(clocks);
-                if self.cd.interrupt() {
-                    self.scu.signal(16);
-                }
-                self.sound.advance_with_cd(clocks, &mut self.cd)?;
-                if self.sound.scsp.main_interrupt() {
-                    self.scu.signal(6);
-                }
-                command = self.smpc.advance_clocks(clocks);
-                if self.smpc.take_irq() {
-                    self.scu.signal(7);
-                }
+                command = self.advance_fixed_clocks(clocks)?;
             }
             match self.raster.advance(delta) {
                 Some(RasterEvent::HBlankIn) => {
@@ -398,7 +406,8 @@ impl Bus {
                     self.vdp2.hblank = false;
                     self.vdp2.vblank = false;
                     self.scu.vblank_out();
-                    self.smpc.vblank_out();
+                    let active = self.system_clock.deadline(self.raster.active_clocks());
+                    self.smpc.vblank_out_after(active);
                     self.vdp1.vblank_out();
                 }
                 Some(RasterEvent::LineStart) => self.vdp2.hblank = false,
@@ -406,6 +415,7 @@ impl Bus {
             }
             let (h, v) = self.raster.counters();
             self.vdp2.counters(h, v);
+            self.vdp2.scan_field(self.raster.odd());
             self.scu_dma_phase = (self.scu_dma_phase + delta) % 8;
             if self.scu_dma_phase == 0 {
                 self.advance_scu_dma()?;
@@ -422,6 +432,8 @@ impl Bus {
         self.raster.select_clock(fast);
         self.vdp1 = Vdp1::default();
         self.vdp2 = Vdp2::default();
+        self.vdp2.pal = self.raster.pal;
+        self.raster.configure(0);
         self.scu = Scu::default();
         self.scu_dma_phase = 0;
         self.sound = Sound::default();
@@ -478,6 +490,12 @@ impl Bus {
     pub fn set_reset_button(&mut self, pressed: bool) -> bool {
         self.smpc.set_reset_button(pressed)
     }
+    /// Physical video standard strap, independent of software region flags.
+    pub fn set_pal(&mut self, pal: bool) {
+        self.raster.pal = pal;
+        self.vdp2.pal = pal;
+        self.system_clock.set_pal(pal);
+    }
     pub fn set_region(&mut self, region: crate::smpc::Region) {
         self.smpc.set_region(region);
     }
@@ -505,6 +523,7 @@ impl Bus {
     /// Reset volatile hardware while retaining battery-backed bytes, including
     /// when a subsequent boot image is rejected.
     pub(crate) fn reset_volatile(&mut self) {
+        let pal = self.raster.pal;
         let backup = std::mem::take(&mut self.backup);
         let mut smpc = std::mem::take(&mut self.smpc);
         smpc.reset_volatile();
@@ -513,6 +532,7 @@ impl Bus {
             smpc,
             ..Self::default()
         };
+        self.set_pal(pal);
     }
 
     /// ST-169 §2.3.8: SYSRES restarts the installed ROM, clears volatile
@@ -520,6 +540,7 @@ impl Bus {
     pub(crate) fn system_reset(&mut self) {
         let bios = self.bios.take();
         let media = self.cd.media().cloned();
+        let pal = self.raster.pal;
         let backup = std::mem::take(&mut self.backup);
         let mut smpc = std::mem::take(&mut self.smpc);
         smpc.system_reset();
@@ -529,6 +550,7 @@ impl Bus {
             smpc,
             ..Self::default()
         };
+        self.set_pal(pal);
         if let Some(media) = media {
             self.cd.mount(media);
         }
@@ -815,10 +837,12 @@ impl Bus {
                 Vdp2::validate_write(target)?;
             }
             for (i, pair) in bytes.as_chunks::<2>().0.iter().enumerate() {
-                self.vdp2.write16(
-                    address + i as u32 * 2,
-                    u16::from_be_bytes([pair[0], pair[1]]),
-                )?;
+                let target = address + i as u32 * 2;
+                let value = u16::from_be_bytes([pair[0], pair[1]]);
+                self.vdp2.write16(target, value)?;
+                if target == VDP2 {
+                    self.raster.configure(value);
+                }
             }
             return Ok(());
         }
@@ -1545,5 +1569,30 @@ mod system_clock_tests {
         assert!(!bus.vdp2.hblank);
         bus.advance_clocks(1).unwrap();
         assert!(bus.vdp2.hblank);
+    }
+}
+
+#[cfg(test)]
+mod pal_fixed_domain_tests {
+    use super::*;
+    #[test]
+    fn pal_reference_ticks_without_main_edges_still_produce_every_audio_sample() {
+        for chunk in [1, 3, 73, 1708, 10000] {
+            let mut b = Bus::default();
+            b.set_pal(true);
+            let mut reference = 0u64;
+            while reference < 100_000 {
+                let n = chunk.min((100_000 - reference) as u32);
+                b.advance_clocks(n).unwrap();
+                reference += u64::from(n);
+                assert_eq!(b.sound.scsp.generated, reference * 44_100 / 26_874_100);
+            }
+            b.reset_volatile();
+            assert!(b.raster.pal);
+            assert_eq!(b.read16(VDP2 + 4).unwrap() & 1, 1);
+            b.system_reset();
+            assert!(b.raster.pal);
+            assert_eq!(b.read16(VDP2 + 4).unwrap() & 1, 1);
+        }
     }
 }

@@ -16,6 +16,9 @@ impl Emulator {
             machine: Machine::new(),
         }
     }
+    pub fn set_pal(&mut self, pal: bool) {
+        self.machine.set_pal(pal);
+    }
     pub fn reset_hle(&mut self) -> Result<(), JsValue> {
         self.machine.reset(Boot::HlePrototype).map_err(js_error)
     }
