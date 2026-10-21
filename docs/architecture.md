@@ -177,13 +177,17 @@ VDP1 executes normal/scaled/distorted sprites, polygons, polylines and lines,
 system/user clipping, local coordinates, jump/skip/call/return and END. It uses
 guest VRAM textures in six bank/LUT/RGB formats, transparency/end codes, mesh,
 Gouraud and half-luminance/transparency/shadow calculations. PTMR starts work;
-one fetch or ruled raster row advances per 32 functional reference clocks. This
-quantum bounds host work and is not measured VDP1 pixel/bus timing. CEF/COPR and
+command fetches retain a 32-main-clock functional deadline, while raster traversal
+advances one dot per main clock and retains texture/end-code/shading state between
+dots. ENDR stops within thirty clocks without synthesizing END or its IRQ. CEF/COPR and
 SCU source 13/DMA trigger 6 reflect actual command progress. Cyclic lists stay
 busy; malformed/prohibited commands produce bounded machine diagnostics.
 TVMR/FBCR/EWDR/EWLR/EWRR control buffer formats, field changes and erase rectangles.
-Erase is applied at the field boundary; physical erase bandwidth, subpixel edge
-rounding and exact transfer-over behavior remain incomplete. Standard-TV normal,
+Normal erase follows each displayed scanline; VBlank erase executes word writes
+with the manual's 200-clock per-raster overhead, stops at the field boundary, and
+retains unfinished pixels. Manual drawing retains its cursor across a buffer change;
+BEF/LOPR capture unfinished work. Full CPU/VRAM arbitration, subpixel edge rounding
+and command/effect-specific fetch costs remain incomplete. Standard-TV normal,
 high-resolution and rotated 16/8-bit framebuffer readout are composed by VDP2.
 Rotation uses parameter A start/deltas quantized to the sprite link's signed Q9
 widths, without its matrix/coefficients or framebuffer wrapping. Double-density
@@ -214,8 +218,16 @@ inspect current state. Xst/Yst/KAst have independent A/B RPRCTL reloads at line
 start, otherwise accumulating the current vertical delta. Active-line writes
 cannot replace that line's latched origins. Mid-line fetches, other table/window
 strobes, complete VRAM-cycle/bank arbitration and half-line interlace phase remain
-required. Exclusive-monitor dimensions are decoded; exclusive-monitor scanout and special
-high-resolution layer multiplexing remain unsupported. BDCLMD selects the back
+required. Exclusive monitors select 480 active lines, 525/562-line fields and
+852/848-clock rasters. Exclusive high resolution multiplexes NBG0/NBG1 even/odd
+pixels, following the guest's paired scroll/zoom setup. Monitor window and counter
+bit layouts differ from standard TV. Color-depth resource sharing disables the
+specified companion normal layers. All eight cycle-pattern words drive the CPU
+VRAM grant mask, including split-bank matching, idle lead/linked grants, disabled
+screen release, rotation-bank ownership and high-resolution slot limits. Denied CPU
+requests accumulate waits until a grant or HBlank; cache hits issue no request.
+These waits still join the fixed CPU turn: transaction retirement, SCU DMA grants,
+and display-fetch bandwidth are not a complete arbitration model. BDCLMD selects the back
 screen during display blanking (the lowermost line for a line back table), or
 opaque black. Reserved display encodings and 256-line mode on NTSC fail.
 Unsupported enabled effects still fail explicitly. Register readback for

@@ -3,6 +3,7 @@
 use crate::{bus::BusError, devices::VDP2, vdp1::Vdp1};
 use std::cell::Cell;
 
+mod access;
 mod rotation;
 mod sprite;
 
@@ -79,7 +80,7 @@ impl Vdp2 {
     }
     fn supported(offset: usize) -> bool {
         matches!(offset,
-            0 | 2 | 4 | 8 | 0xA | 0xE | 0x10 | 0x12 | 0x20..=0x2E | 0x30..=0x6E |
+            0 | 2 | 4 | 8 | 0xA | 0xE | 0x10..=0x1E | 0x20..=0x2E | 0x30..=0x6E |
             0x70..=0x96 | 0x9A..=0xBE | 0xC0..=0xDE | 0xE0 | 0xE2 |
             0xE4..=0xFC | 0x100..=0x11E
         ) && offset & 1 == 0
@@ -141,8 +142,17 @@ impl Vdp2 {
         }
         Ok(())
     }
-    pub fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
+    pub(crate) fn validate_value(address: u32, value: u16) -> Result<(), BusError> {
         Self::validate_write(address)?;
+        if (VDP2 + 0x10..=VDP2 + 0x1E).contains(&address)
+            && (0..4).any(|n| (8..12).contains(&(value >> (n * 4) & 15)))
+        {
+            return Err(BusError::UnsupportedDevice { address, width: 2 });
+        }
+        Ok(())
+    }
+    pub fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
+        Self::validate_value(address, value)?;
         let offset = (address - VDP2) as usize;
         self.registers[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
         Ok(())
@@ -234,19 +244,11 @@ impl Vdp2 {
         let mode = self.word(0);
         let unsupported = mode & !0x81F7 != 0
             || mode & 0xC0 == 0x40
-            // Exclusive monitors need their own scanout/layer multiplexing.
-            || mode & 4 != 0
-            || mode & 0x30 == 0x30
-            || (!self.pal && mode & 0x30 == 0x20)
+            || (mode & 4 != 0 && mode & 0xC0 != 0)
+            || (mode & 4 == 0 && mode & 0x30 == 0x30)
+            || (mode & 4 == 0 && !self.pal && mode & 0x30 == 0x20)
             || self.word(0x20) & !0x1F3F != 0
-            || self.word(0xE)
-                & !(0xB000
-                    | if self.word(0x20) & 0x20 != 0 {
-                        0x200
-                    } else {
-                        0
-                    })
-                != 0
+            || self.word(0xE) & !0xB3FF != 0
             || self.word(0xE) >> 12 & 3 == 3
             || (self.word(0xE) & 0x8000 != 0 && self.word(0xE) & 0x3000 != 0x1000)
             || self.word(0xEC) & !0xF77F != 0;
@@ -263,6 +265,9 @@ impl Vdp2 {
                 continue;
             }
             let (ctl, format) = self.character_control(layer);
+            if mode & 6 != 0 && layer == 0 && format == 4 {
+                return Err("VDP2 RGB888 NBG0 requires normal display mode".into());
+            }
             if format
                 > if layer == 0 {
                     4
@@ -365,9 +370,18 @@ impl Vdp2 {
             } else {
                 (self.word(base), self.word(base + 4))
             };
-            let shift = u32::from(self.word(0) & 2 == 0);
-            let inside = x >= usize::from((left & 0x3FF) >> shift)
-                && x <= usize::from((right & 0x3FF) >> shift)
+            // ST-058 table8.1: exclusive normal coordinates use H8..H0;
+            // exclusive high resolution omits H0 and measures pairs of dots.
+            let exclusive = self.word(0) & 4 != 0;
+            let mask = if exclusive { 0x1FF } else { 0x3FF };
+            let shift = u32::from(!exclusive && self.word(0) & 2 == 0);
+            let window_x = if exclusive && self.word(0) & 2 != 0 {
+                x / 2
+            } else {
+                x
+            };
+            let inside = window_x >= usize::from((left & mask) >> shift)
+                && window_x <= usize::from((right & mask) >> shift)
                 && y >= usize::from(self.word(base + 2))
                 && y <= usize::from(self.word(base + 6));
             let valid = inside != (control & (1 << (i * 2)) != 0);
@@ -553,6 +567,7 @@ impl Vdp2 {
     ) -> Option<Layer> {
         if self.word(0x20) & 0x20 != 0
             || self.word(0x20) & (1 << layer) == 0
+            || !self.normal_layer_available(layer)
             || !self.window(
                 self.word(0xD0 + (layer / 2) * 2) >> ((layer & 1) * 8),
                 x,
@@ -561,6 +576,15 @@ impl Vdp2 {
             )
         {
             return None;
+        }
+        // ST-058 §2.1 p.13: exclusive high resolution alternates the two
+        // normal screens. Guest increments of two and NBG1's +1 scroll
+        // produce adjacent source dots, not two full-width overlaid layers.
+        if self.word(0) & 6 == 6 {
+            if layer != x & 1 {
+                return None;
+            }
+            x /= 2;
         }
         if self.word(0x22) & (1 << layer) != 0 {
             let mx = usize::from(self.word(0x22) >> 8 & 15) + 1;
@@ -593,6 +617,19 @@ impl Vdp2 {
         let offset = usize::from(self.word(0xE4) >> (layer * 4) & 7) * 256;
         let pixel = self.color(format, base, pixel, offset, palette, opaque)?;
         self.scroll_layer(layer, format, pixel, special)
+    }
+    /// ST-058 §4.5 p.60: the color decoder shares resources across layers.
+    /// Raising NBG0/1's color depth disables the documented companion layer,
+    /// regardless of its priority or whether that first layer is transparent.
+    fn normal_layer_available(&self, layer: usize) -> bool {
+        let n0 = self.character_control(0).1;
+        let n1 = self.character_control(1).1;
+        match layer {
+            1 => n0 != 4,
+            2 => n0 < 2,
+            3 => n0 != 4 && n1 < 2,
+            _ => true,
+        }
     }
     fn color(
         &self,
@@ -882,8 +919,8 @@ mod display_tests {
             (0x8023, true, true),
             (0x80A2, true, true),
             (0x80E3, true, true),
-            (0x8004, false, false),
-            (0x8007, false, false),
+            (0x8004, false, true),
+            (0x8007, false, true),
             (0x8020, false, false),
             (0x8030, true, false),
             (0x8040, false, false),
@@ -921,7 +958,14 @@ mod display_tests {
                 .iter()
                 .all(|p| *p == [0, 0, 0, 255])
         );
-        for (mode, left, right) in [(0x8000, 2, 4), (0x8002, 4, 8)] {
+        for (mode, left, right) in [
+            (0x8000, 2, 4),
+            (0x8002, 4, 8),
+            (0x8004, 4, 8),
+            (0x8005, 4, 8),
+            (0x8006, 8, 17),
+            (0x8007, 8, 17),
+        ] {
             v.write16(VDP2, mode).unwrap();
             v.write16(VDP2 + 0xC0, 4).unwrap();
             v.write16(VDP2 + 0xC4, 8).unwrap();

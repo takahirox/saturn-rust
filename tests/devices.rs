@@ -101,7 +101,11 @@ fn vram_aliases_endianness_alignment_register_boundaries_and_read_only_status() 
     assert_eq!(bus.read32(VDP2 + 8), Ok(0));
     bus.write16(VDP2 + 0x2A, 1).unwrap();
     assert_eq!(bus.read16(VDP2 + 0x2A), Ok(1));
-    assert!(bus.write16(VDP2 + 0x16, 1).is_err());
+    bus.write16(VDP2 + 0x16, 1).unwrap(); // CYCA1U is a real cycle-pattern word.
+    assert_eq!(bus.read16(VDP2 + 0x16), Ok(1));
+    assert!(bus.write16(VDP2 + 0x16, 0x8000).is_err()); // reserved command 8
+    assert!(bus.write32(VDP2 + 0x14, 0xEEEE8888).is_err());
+    assert_eq!(bus.read32(VDP2 + 0x14), Ok(1)); // atomic rejection of both words
     assert!(bus.read8(VDP2).is_err());
 }
 

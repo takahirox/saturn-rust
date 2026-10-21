@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium } from "playwright";
 import { rawMode1 } from "./raw-media-fixture.mjs";
+import { videoTransactions } from "./video-transactions.mjs";
 
 // Fail before upload if web/ includes anything beyond the public runtime assets.
 const assets = ["audio.js", "audio-worklet.js", "app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt", "prism-courier.iso", "prism-courier-LICENSE.txt", "hardware-lab.iso", "hardware-lab-audio.bin", "hardware-lab.cue", "hardware-lab-LICENSE.txt"];
@@ -712,6 +713,7 @@ try {
     assert.deepEqual(points,[...row,...row,...(width>=640?[[255,0,255,255],[255,0,0,255]]:[])]);
   }
   assert.deepEqual(displayTraces.at(-1),{canvas:[704,480],edge:[0,255,0,255]});
+  await videoTransactions(page);
   const shrinkRom=Buffer.alloc(524288);
   for(const line of (await readFile("tests/fixtures/sprite-shrink.hex","utf8")).split(/\r?\n/)) {
     if(!line||line.startsWith("#"))continue;

@@ -497,10 +497,10 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 | Clip/local coordinates, [VDP1] §§7.1–7.3 | System/user inside/outside clips, local offsets | VIDEO | PRISM (system) | Full extreme-coordinate/clip boundary corpus | Pending |
 | Sprite texture/color modes, [VDP1] §§6.3–6.6 | Packed 4-bit bank/LUT, 64/128/256 bank and RGB555, transparent pixels, two end codes per raster row | VIDEO | PRISM (RGB555) | Scaling/end-code interaction, wrapping and all browser formats | Pending |
 | Shading/color calculation, [VDP1] §6.3 | Gouraud, mesh, MSB-only, shadow, half-luminance/transparency, combined Gouraud effects | VIDEO | PRISM (replace only) | Subpixel interpolation and duplicate-coverage edges; complete readout/effects corpus | Pending |
-| Draw/erase/swap/status/IRQ, [VDP1] §4 | PTMR, forced stop, manual/auto change and display erase, persistent VBE, CEF/BEF/COPR/LOPR; SCU IRQ/DMA trigger | VIDEO, VIRQ, PRISM | PRISM (auto/IRQ) | Physical erase bandwidth/timing, transfer-over, half-line phase | Pending |
-| VDP2 VRAM, [VDP2] §3 | Bitmap RAM and bank offsets | VIDEO, SC | PRISM, SC | VRAM bank/cycle arbitration; CYCA0 words still only stored | Pending |
+| Draw/erase/swap/status/IRQ, [VDP1] §4 | PTMR; bounded 30-clock ENDR; per-dot draw cursor, manual transfer-over; scanline display erase and word-clock VBlank erase with 200-clock/raster overhead; manual/auto change, persistent VBE, CEF/BEF/COPR/LOPR; SCU IRQ/DMA trigger | VIDEO, VIRQ, PRISM, VTX | PRISM, VTX | CPU/VRAM arbitration, complete command/effect costs, mid-blank enable phase and half-line phase | Pending |
+| VDP2 VRAM, [VDP2] §3 | Bitmap RAM/bank offsets; all eight cycle words select CPU grants, split-bank matching and idle/linked timing, unused-screen release, rotation ownership and high-resolution slot limits | VIDEO, SC, VTX; `access.rs`, `vram_grant_tests.rs` | PRISM, SC, VTX | Full display-fetch bandwidth, transaction retirement and SCU/DMA arbitration remain | Pending |
 | VDP2 CRAM, [VDP2] §3.4 | Modes 0/1 RGB555 and 2 RGB888; mode-0 upper-half mirror; palette offsets | VIDEO | — | Full lane/alias and guest/browser palette corpus | Pending |
-| TVMD/TVSTAT, [VDP2] §2.2 | 320/352/640/704 dots, 224/240/PAL256 lines, noninterlace/single/double density, border/display enable, PAL/ODD and blanking flags | VIDEO, TIME, TVG | PRISM, SC, SCUROM, TVG | Raster-time latches, half-line phase and exclusive-monitor high-resolution multiplexing | Pending |
+| TVMD/TVSTAT, [VDP2] §2.2 | 320/352/640/704 dots, 224/240/PAL256 lines, noninterlace/single/double density; 480-line exclusive monitors and NBG0/NBG1 pixel multiplexing; border/display enable, PAL/ODD and blanking flags | VIDEO, TIME, TVG, VTX | PRISM, SC, SCUROM, TVG, VTX | Complete raster-time latches, half-line phase and switching transients remain | Pending |
 | NBG0 bitmap, [VDP2] §§4–6 | 4/8/11-bit palette, RGB555/RGB888, bitmap dimensions/base, transparency, fixed-point scroll/zoom | VIDEO | PRISM, SC (RGB555, unit zoom) | Full format/dimension/zoom vectors and browser coverage | Pending |
 | NBG0–3 tile/character, [VDP2] §§4.4–4.8, figs.4.9/4.10, table4.8 | `Vdp2::character_control/tile/background`: one/two-word names, both supplement modes, 8×8/16×16 characters, 4/8/11-bit palette and RGB555/888 where applicable, flips, plane/page alignment/maps/wrap | [seven independent pixel/guest tests](../tests/video_tiles.rs) | TILE (four layers, names, palette/VRAM, window, mutation) | VRAM cycle arbitration, bandwidth/layer restrictions and exhaustive guest corpus remain | Pending |
 | NBG1–3 bitmap/layer control, [VDP2] §§4–6 | NBG1 bitmap composition, formats applicable to NBG1, scroll/zoom/priority | VIDEO | — | Complete layer restrictions and guest format corpus; NBG2/3 tile layers now exercised by TILE | Pending |
@@ -513,10 +513,13 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 | Back/line color, [VDP2] §§7.1/11.3 | Back-screen single/per-line VRAM table, signed offset; LNCLEN top-only insertion, single/per-line LCTA palette data and coefficient-derived low seven address bits; CCRLB line/back ratios | VIDEO, LINE | PRISM (back), LINE (two line colors, coefficient mutations, extended calculation, Canvas) | Interlace/display-mode line rules, raster-time fetches and complete guest format corpus remain | Pending |
 | Combined VDP1/VDP2 pipeline | Sprite/background overlap, priority, transparency, game result/restart, texture mutation changes actual pixels | VIDEO, PRISM | PRISM + Canvas assertions | Remaining modes/effects and timing above | Pending |
 
-VDP1 work advances one command fetch or ruled raster row per 32 reference clocks;
-this bounds each scheduler event but is a functional quantum, not measured draw
-cycles. Erase takes effect at a field boundary. Color calculations use integer
-interpolation; exact physical edge rounding/transfer-over remain required. Native
+VDP1 command fetch retains its 32-main-clock functional deadline, while drawing
+advances a retained cursor one dot at a time. ENDR has a bounded thirty-clock stop.
+Normal erase follows scanline readout; VBlank erase has clocked word writes and
+per-raster overhead, and leaves unfinished pixels at VBlank-OUT. VTX independently
+checks the manual's 58,812-word NTSC budget and manual transfer-over status.
+Color calculations use integer interpolation; full physical edge rounding,
+CPU/VRAM arbitration and command/effect-specific access costs remain required. Native
 vectors caught and corrected shadow MSB halving and automatic-start BEF handling.
 Cyclic lists remain busy without reporting END. Invalid lists stop the machine
 explicitly. RSCG below adds rotated/interlaced sprite readout and independent
@@ -1666,3 +1669,31 @@ No umbrella criterion is marked complete by RSCG.
 | `sprite-rotation8.tsv` | `946db30774561bdcea9ddd6c93766c7dafd21cfc8b9542e459efd49c77e94b25` |
 | `sprite-interlace.hex` | `8d6d795024a9c28ef2a9c7539e5aa29a0682f7991934b40d3d0720734a8642ec` |
 | `sprite-interlace.tsv` | `65e193f1c8a01ce19c412c614f3de652cc12a7f8fa2eebb2e87f3ebce1184b00` |
+
+
+## Clocked video transactions and exclusive monitors
+
+**VTX**: [original MIT diagnostic builder/source](../tests/fixtures/build_video_transactions.py),
+[native guest assertions](../tests/video_transactions.rs), and the same synthetic
+BIOS guests in [browser Wasm/Canvas](../scripts/video-transactions.mjs), invoked by
+the extended browser suite. CI verifies the three reproducible ROM fragments.
+References: [VDP1] §2 (VRAM wrap and pixel clocks), §§4.2/4.4–4.8 (field change,
+erase, ENDR and status); [VDP2] §2.1 p.13, tables2.1/2.3/2.4, §3.3 figs.3.2/3.6/3.7
+and table3.5, §4.5 p.60 and table8.1. Expanded synthetic BIOS SHA-256:
+
+- VDP1 progress: `de2d252298ed6dfb5a198eac3ad9f0787c3e785ecb48f67680948456a32694c6`.
+- Exclusive monitor: `65f0df1a183eb1dfea1ba024f0cd2f1d30d87247aaae50370126e5bd5efc7730`.
+- VRAM grants: `4e984c634b4f5e600f003aad552676769921dd0a2e8081be4ae54d9c23679ea4`.
+
+| Contract | Implementation | Independent native evidence | Guest/Wasm evidence and remaining limits |
+| --- | --- | --- | --- |
+| Dot progression, transparent/clipped dots, texture reads and stop | `Vdp1::raster_line/draw_dot/advance` | [progress tests](../src/vdp1/progress_tests.rs): partial pixels, texture changed between dots, 29/30-clock stop boundary, END/status/IRQ ordering, command wrap, reset cancellation | VTX observes a clipped 4096-dot line before it completes, forces stop, and compares computed status/IRQ/LOPR; guest color mutation changes only its pixel record. Full texture/edge/effect bus costs remain. |
+| Erase and transfer-over | `erase_display_line/advance_erase/vblank_in/vblank_out` | Literal one/two-pixel word writes, 200-clock overhead, 58,812-word capacity, unchanged first unfinished word, field stop, both depths, scanline progression, manual cursor retention, reset/backup retention | VTX publishes authored framebuffer words, executes VBE/change, checks last erased/first untouched words, and repeats with a changed guest erase color. Subscanline display erase and late-enable timing remain. |
+| Cycle words and CPU grants | `Vdp2::cpu_access_slots`, `Raster::vram_wait_clocks`, `CpuBus::observe_external` | [bank masks](../src/vdp2/access.rs), [both CPUs/cache/P1/reset](../src/bus/vram_grant_tests.rs), queued-refill waits, raster deadlines, reserved/atomic write vectors | VTX uses FRT to distinguish granted/blocked A/B ports, matching/mismatched split banks and ignored T4–T7 high-resolution slots; disabling screens releases the port. Waits still accumulate after atomic CPU execution; display-fetch bandwidth and SCU/DMA ownership remain unresolved. |
+| Exclusive 320/352/640/704×480 | `Raster`, `Vdp2::background/window`, rotation display gating | Main-clock event vectors for 525/562-line fields and 852/848-clock rasters; counter/window layouts; native pixels at lines 0/479 and NBG1 scroll mutation | VTX verifies all four guest-selected modes, counters, buffer dimensions, exact adjacent RGB pixels, repeat reset and production Canvas. Full mode/effect/bus combinations and switching transient timing remain. |
+| Normal-layer color-depth sharing | `normal_layer_available` | Eleven literal pixel vectors isolate NBG0/NBG1 color depth from priority/transparency and check the affected companion layers | Native decoder-boundary evidence; complete guest/Wasm boundary corpus remains required. |
+
+These implementations address portions of the video and bus findings. They do not
+establish complete Issue #17 acceptance. The outstanding CPU, scheduler, BSC,
+68k microsequence, SCU/DSP, sound/DSP, CD/media, HLE and SMPC findings remain;
+no umbrella criterion is checked off by this evidence.

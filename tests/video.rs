@@ -287,6 +287,12 @@ fn command_deadlines_forced_stop_and_cyclic_lists_are_bounded() {
     }
     assert_eq!(v.read16(REGISTERS + 0x10).unwrap(), 0);
     v.write16(REGISTERS + 12, 0).unwrap();
+    assert_eq!(v.clocks_to_event(), 30);
+    assert!(v.busy());
+    assert!(!v.advance(29).unwrap());
+    assert!(v.busy());
+    assert!(!v.advance(1).unwrap());
+    assert!(!v.busy());
     assert_eq!(v.clocks_to_event(), u32::MAX);
     assert!(!v.advance(1000).unwrap());
     command(&mut v, 32, &[(0, 7)]);
@@ -308,8 +314,9 @@ fn framebuffer_change_and_erase_window_are_separate_from_draw_trigger() {
         v.write16(REGISTERS + off, val).unwrap();
     }
     v.vblank_out();
-    assert_eq!(v.display_pixel(16, 3), 0x801F);
-    assert_eq!(v.display_pixel(23, 4), 0x801F);
+    // Erase follows scanout; the field-change edge cannot erase all rows.
+    assert_eq!(v.display_pixel(16, 3), 0xFFFF);
+    assert_eq!(v.display_pixel(23, 4), 0xFFFF);
     assert_eq!(pixel(&v, 15, 3), 0xFFFF);
     assert_eq!(pixel(&v, 24, 4), 0xFFFF);
     assert_eq!(pixel(&v, 16, 3), 0xFFFF);
@@ -330,11 +337,11 @@ fn automatic_start_preserves_previous_end_status_and_persistent_vblank_erase() {
         v.write16(REGISTERS + o, n).unwrap();
     }
     v.vblank_out();
-    assert_eq!(pixel(&v, 0, 0), 0x801F); // old display is now draw
+    assert_eq!(pixel(&v, 0, 0), 0); // erase waits for VBlank, never runs at swap
     v.draw_buffer_mut()[..2].copy_from_slice(&0xFC00u16.to_be_bytes());
     v.vblank_out();
     assert_eq!(pixel(&v, 0, 0), 0xFC00); // no repeated manual change
-    assert_eq!(v.display_pixel(0, 0), 0x801F); // VBE erases display every field
+    assert_eq!(v.display_pixel(0, 0), 0); // standalone swap does not advance erase
 }
 
 #[test]

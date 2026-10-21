@@ -413,11 +413,16 @@ impl Bus {
                     if self.raster.line < self.raster.display_lines() {
                         self.vdp2
                             .scanline(&self.vdp1, usize::from(self.raster.line));
+                        self.vdp1.erase_display_line(
+                            usize::from(self.raster.line),
+                            self.vdp2.dimensions().0,
+                        );
                     }
                     self.vdp2.hblank = true;
                     self.scu.hblank_in();
                 }
                 Some(RasterEvent::VBlankIn) => {
+                    self.vdp1.vblank_in(self.raster.line_clocks());
                     self.vdp2.finish_field();
                     self.vdp2.hblank = false;
                     self.vdp2.vblank = true;
@@ -435,6 +440,7 @@ impl Bus {
                     self.vdp2.begin_scanline(0);
                 }
                 Some(RasterEvent::LineStart) => {
+                    self.vdp1.blank_line_start();
                     self.vdp2.hblank = false;
                     if self.raster.line < self.raster.display_lines() {
                         self.vdp2.begin_scanline(usize::from(self.raster.line));
@@ -886,9 +892,9 @@ impl Bus {
                 return Err(BusError::UnsupportedDevice { address, width: N });
             }
             // Validate the entire access before mutating either halfword.
-            for i in (0..N).step_by(2) {
-                let target = address + i as u32;
-                Vdp2::validate_write(target)?;
+            for (i, pair) in bytes.as_chunks::<2>().0.iter().enumerate() {
+                let target = address + i as u32 * 2;
+                Vdp2::validate_value(target, u16::from_be_bytes(*pair))?;
             }
             for (i, pair) in bytes.as_chunks::<2>().0.iter().enumerate() {
                 let target = address + i as u32 * 2;
@@ -1024,6 +1030,16 @@ impl CpuBus<'_> {
         if address < 0x4000_0000 {
             self.bus.claim_external_bus(self.processor);
             self.bus.onchip[self.processor as usize].external_access(Bus::physical(address), write);
+            let physical = Bus::physical(address);
+            if (VRAM..VRAM + 0x80000).contains(&physical) {
+                let slots = self.bus.vdp2.cpu_access_slots(physical);
+                self.bus.onchip[self.processor as usize].add_wait_clocks(
+                    self.bus.raster.vram_wait_clocks(
+                        slots,
+                        self.bus.onchip[self.processor as usize].pending_wait_clocks(),
+                    ),
+                );
+            }
             self.bus.onchip[1 - self.processor as usize].observe_access(
                 Bus::physical(address),
                 width,
@@ -1718,3 +1734,6 @@ mod pal_fixed_domain_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod vram_grant_tests;

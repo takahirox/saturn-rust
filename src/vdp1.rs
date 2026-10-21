@@ -1,7 +1,8 @@
 //! Original VDP1 command processor. Behavioral source: Sega ST-013-R3 §§2–7.
 //! Commands advance on emulated clocks, never on framebuffer inspection. Pixel
-//! coverage uses integer ruled quadrilaterals; subpixel hardware edge rounding
-//! and physical draw/erase bandwidth remain separate work.
+//! coverage uses integer ruled quadrilaterals. Raster traversal retains its
+//! position between clocks so CPU accesses, stops and frame changes can observe
+//! partial drawing rather than an atomically completed raster row.
 use crate::bus::BusError;
 
 pub const VRAM: u32 = 0x05C0_0000;
@@ -37,6 +38,38 @@ struct Drawing {
     shade: [[i32; 3]; 4],
     row: i32,
     rows: i32,
+    line: Option<RasterLine>,
+}
+
+struct RasterLine {
+    a: Point,
+    b: Point,
+    uv0: (i32, i32),
+    uv1: (i32, i32),
+    shade0: [i32; 3],
+    shade1: [i32; 3],
+    textured: bool,
+    dot: i32,
+    end_codes: u8,
+}
+
+#[derive(Clone, Copy)]
+struct EraseArea {
+    buffer: usize,
+    width: usize,
+    bytes: usize,
+    color: u16,
+    left: usize,
+    right: usize,
+    top: usize,
+    bottom: usize,
+}
+struct Erasing {
+    area: EraseArea,
+    x: usize,
+    y: usize,
+    overhead: u32,
+    budget: u32,
 }
 
 pub struct Vdp1 {
@@ -56,6 +89,12 @@ pub struct Vdp1 {
     return_address: Option<usize>,
     running: bool,
     phase: u32,
+    stop_remaining: Option<u32>,
+    vblank: bool,
+    blank_erase_started: bool,
+    blank_line_clocks: u32,
+    erasing: Option<Erasing>,
+    display_erase: Option<EraseArea>,
     drawing: Option<Drawing>,
     local: Point,
     system: Point,
@@ -80,6 +119,12 @@ impl Default for Vdp1 {
             return_address: None,
             running: false,
             phase: 0,
+            stop_remaining: None,
+            vblank: false,
+            blank_erase_started: false,
+            blank_line_clocks: 1708,
+            erasing: None,
+            display_erase: None,
             drawing: None,
             local: Point::default(),
             system: Point::default(),
@@ -163,10 +208,17 @@ impl Vdp1 {
             }
             offset @ (6 | 8 | 10) => self.erase[(offset as usize - 6) / 2] = value,
             12 => {
-                self.running = false;
-                self.drawing = None;
+                // ST-013 §4.5: ENDR terminates within about 30 clocks.
+                // It neither fetches END nor raises the draw-end interrupt.
+                if self.running {
+                    self.stop_remaining = Some(30);
+                }
             }
             _ => unreachable!(),
+        }
+        // Software is allowed to enable VBE just after VBlank-IN (§4.2).
+        if self.vblank && self.tvmr & 8 != 0 && !self.blank_erase_started {
+            self.start_blank_erase();
         }
         Ok(())
     }
@@ -182,9 +234,14 @@ impl Vdp1 {
         self.return_address = None;
         self.running = true;
         self.phase = 0;
+        self.stop_remaining = None;
     }
     /// Field-change latch; CPU sees only the buffer currently being drawn.
     pub fn vblank_out(&mut self) {
+        // §4.2: erase is interrupted at VBlank-OUT, even if unfinished.
+        self.vblank = false;
+        self.blank_erase_started = false;
+        self.erasing = None;
         let change = self.fbcr & 2 == 0 || self.fb_request && self.fbcr & 1 != 0;
         if change {
             self.draw ^= 1;
@@ -194,60 +251,172 @@ impl Vdp1 {
             self.lopr = self.copr;
             self.edsr = (self.edsr >> 1) & 1;
         }
-        if self.fbcr & 2 == 0 || self.tvmr & 8 != 0 || self.fb_request && self.fbcr & 1 == 0 {
-            self.erase_buffer(if change { self.draw } else { self.draw ^ 1 });
-        }
+        self.display_erase = if self.tvmr & 0xA == 0
+            && (self.fbcr & 2 == 0 || self.fb_request && self.fbcr & 1 == 0)
+        {
+            Some(self.erase_area(self.draw ^ 1))
+        } else {
+            None
+        };
         self.fb_request = false;
         if change && self.ptmr == 2 {
             self.start(false);
         }
     }
-    fn erase_buffer(&mut self, buffer: usize) {
+    fn erase_area(&self, buffer: usize) -> EraseArea {
         let (width, height, bytes) = self.geometry();
         let [color, left, right] = self.erase;
         let x1 = usize::from(left >> 9 & 63) * 16 / bytes;
         let x2 = (usize::from(right >> 9 & 127) * 16 / bytes).min(width);
         let y1 = usize::from(left & 511).min(height);
         let y2 = (usize::from(right & 511) + 1).min(height);
-        for y in y1..y2 {
-            for x in x1..x2 {
-                let at = (y * width + x) * bytes;
-                if bytes == 2 {
-                    self.buffers[buffer][at..at + 2].copy_from_slice(&color.to_be_bytes());
-                } else {
-                    self.buffers[buffer][at] = color.to_be_bytes()[x & 1];
-                }
+        EraseArea {
+            buffer,
+            width,
+            bytes,
+            color,
+            left: x1,
+            right: x2,
+            top: y1,
+            bottom: y2,
+        }
+    }
+    fn erase_dot(&mut self, area: EraseArea, x: usize, y: usize) {
+        let at = (y * area.width + x) * area.bytes;
+        if area.bytes == 2 {
+            self.buffers[area.buffer][at..at + 2].copy_from_slice(&area.color.to_be_bytes());
+        } else {
+            self.buffers[area.buffer][at] = area.color.to_be_bytes()[x & 1];
+        }
+    }
+    /// §4.4: display erase follows readout; it must not erase future lines.
+    pub(crate) fn erase_display_line(&mut self, line: usize, display_width: usize) {
+        if let Some(area) = self.display_erase
+            && (area.top..area.bottom).contains(&line)
+        {
+            let trailing = if area.bytes == 2 { 4 } else { 8 };
+            for x in area.left..area.right.min(display_width + trailing) {
+                self.erase_dot(area, x, line);
             }
         }
     }
-    pub fn clocks_to_event(&self) -> u32 {
-        if self.running {
-            COMMAND_CLOCKS - self.phase
-        } else {
-            u32::MAX
+    pub(crate) fn vblank_in(&mut self, line_clocks: u32) {
+        self.vblank = true;
+        self.blank_erase_started = false;
+        self.display_erase = None;
+        self.blank_line_clocks = line_clocks;
+        if self.tvmr & 0xA != 0 {
+            self.start_blank_erase();
         }
     }
-    /// One command fetch or raster row per functional deadline. Cyclic command lists remain busy;
-    /// they never turn into unbounded host loops or falsely set CEF.
+    fn start_blank_erase(&mut self) {
+        self.blank_erase_started = true;
+        let area = self.erase_area(self.draw ^ 1);
+        if area.left < area.right && area.top < area.bottom {
+            self.erasing = Some(Erasing {
+                area,
+                x: area.left,
+                y: area.top,
+                overhead: 200,
+                budget: self.blank_line_clocks.saturating_sub(200),
+            });
+        }
+    }
+    pub(crate) fn blank_line_start(&mut self) {
+        if let Some(erase) = &mut self.erasing {
+            erase.overhead = 200;
+            erase.budget = self.blank_line_clocks.saturating_sub(200);
+        }
+    }
+    fn erase_deadline(&self) -> u32 {
+        self.erasing.as_ref().map_or(u32::MAX, |erase| {
+            if erase.overhead != 0 {
+                erase.overhead
+            } else if erase.budget != 0 {
+                1
+            } else {
+                u32::MAX
+            }
+        })
+    }
+    fn advance_erase(&mut self, clocks: u32) {
+        let Some(mut erase) = self.erasing.take() else {
+            return;
+        };
+        if erase.overhead != 0 {
+            erase.overhead -= clocks;
+        } else if erase.budget != 0 && clocks != 0 {
+            // §4.4: a 16-bit write erases one RGB pixel or two 8-bit pixels.
+            for _ in 0..2 / erase.area.bytes {
+                self.erase_dot(erase.area, erase.x, erase.y);
+                erase.x += 1;
+                if erase.x == erase.area.right {
+                    erase.x = erase.area.left;
+                    erase.y += 1;
+                    if erase.y == erase.area.bottom {
+                        return;
+                    }
+                }
+            }
+            erase.budget -= 1;
+        }
+        self.erasing = Some(erase);
+    }
+    pub fn clocks_to_event(&self) -> u32 {
+        let draw = if self.running {
+            let draw = if self.drawing.is_some() {
+                1
+            } else {
+                COMMAND_CLOCKS - self.phase
+            };
+            draw.min(self.stop_remaining.unwrap_or(u32::MAX))
+        } else {
+            u32::MAX
+        };
+        draw.min(self.erase_deadline())
+    }
+    /// ST-013 §2: one raster pixel per main clock. Command table fetches
+    /// occupy a separate deadline. Cyclic command lists remain busy and bounded.
     /// The caller splits advancement at `clocks_to_event`, as the Bus scheduler does.
     pub fn advance(&mut self, clocks: u32) -> Result<bool, BusError> {
+        assert!(clocks <= self.clocks_to_event());
+        self.advance_erase(clocks);
         if !self.running {
             return Ok(false);
         }
-        assert!(clocks <= self.clocks_to_event());
-        self.phase += clocks;
-        if self.phase < COMMAND_CLOCKS {
-            return Ok(false);
+        if let Some(left) = self.stop_remaining {
+            if clocks == left {
+                self.running = false;
+                self.drawing = None;
+                self.stop_remaining = None;
+                return Ok(false);
+            }
+            self.stop_remaining = Some(left - clocks);
         }
-        self.phase -= COMMAND_CLOCKS;
         if let Some(mut draw) = self.drawing.take() {
-            self.draw_row(&draw);
-            draw.row += 1;
+            if clocks == 0 {
+                self.drawing = Some(draw);
+                return Ok(false);
+            }
+            if draw.line.is_none() {
+                draw.line = Some(Self::raster_line(&draw));
+            }
+            let line = draw.line.as_mut().unwrap();
+            let done = self.draw_dot(&draw.command, line);
+            if done {
+                draw.line = None;
+                draw.row += 1;
+            }
             if draw.row <= draw.rows {
                 self.drawing = Some(draw);
             }
             return Ok(false);
         }
+        self.phase += clocks;
+        if self.phase < COMMAND_CLOCKS {
+            return Ok(false);
+        }
+        self.phase -= COMMAND_CLOCKS;
         self.command()
     }
     fn word(&self, offset: usize) -> u16 {
@@ -274,7 +443,8 @@ impl Vdp1 {
                 _ => return self.invalid(),
             }
         }
-        let next = self.pc + 32;
+        // ST-013 §2: command-table reads wrap at the end of VRAM.
+        let next = (self.pc + 32) & (VRAM_SIZE - 1);
         self.pc = match c[0] >> 12 & 3 {
             0 => next,
             1 => usize::from(c[1]) * 8,
@@ -366,57 +536,64 @@ impl Vdp1 {
             shade,
             row: 0,
             rows,
+            line: None,
         });
         Ok(())
     }
-    fn draw_row(&mut self, draw: &Drawing) {
+    fn raster_line(draw: &Drawing) -> RasterLine {
         let Drawing {
             command: c,
             points: p,
             shade,
             row,
             rows,
+            ..
         } = draw;
         let kind = c[0] & 15;
-        if kind == 6 {
-            self.line(c, p[0], p[1], (0, 0), (0, 0), shade[0], shade[1], false);
+        let (a, b, uv0, uv1, shade0, shade1) = if kind == 6 {
+            (p[0], p[1], (0, 0), (0, 0), shade[0], shade[1])
         } else if kind == 5 {
             let a = *row as usize;
             let b = (a + 1) % 4;
-            self.line(c, p[a], p[b], (0, 0), (0, 0), shade[a], shade[b], false);
+            (p[a], p[b], (0, 0), (0, 0), shade[a], shade[b])
         } else {
             let a = p[0].lerp(p[3], *row, *rows);
             let b = p[1].lerp(p[2], *row, *rows);
             let sa = std::array::from_fn(|ch| lerp(shade[0][ch], shade[3][ch], *row, *rows));
             let sb = std::array::from_fn(|ch| lerp(shade[1][ch], shade[2][ch], *row, *rows));
             let v = lerp(0, i32::from(c[5] & 255) - 1, *row, *rows);
-            self.line(
-                c,
-                a,
-                b,
-                (0, v),
-                (i32::from(c[5] >> 8 & 63) * 8 - 1, v),
-                sa,
-                sb,
-                kind <= 2,
-            );
+            (a, b, (0, v), (i32::from(c[5] >> 8 & 63) * 8 - 1, v), sa, sb)
+        };
+        RasterLine {
+            a,
+            b,
+            uv0,
+            uv1,
+            shade0,
+            shade1,
+            textured: kind <= 2,
+            dot: 0,
+            end_codes: 0,
         }
     }
-    #[allow(clippy::too_many_arguments)]
-    fn line(
-        &mut self,
-        c: &[u16; 16],
-        a: Point,
-        b: Point,
-        uv0: (i32, i32),
-        uv1: (i32, i32),
-        shade0: [i32; 3],
-        shade1: [i32; 3],
-        textured: bool,
-    ) {
+    fn draw_dot(&mut self, c: &[u16; 16], line: &mut RasterLine) -> bool {
+        let RasterLine {
+            a,
+            b,
+            uv0,
+            uv1,
+            shade0,
+            shade1,
+            textured,
+            ..
+        } = *line;
         let steps = a.distance(b);
-        let mut end_codes = 0;
-        for n in 0..=steps {
+        let n = line.dot;
+        line.dot += 1;
+        // The cursor advances even for transparent, clipped or mesh pixels.
+        // Texture data is fetched when this dot executes, never for a whole
+        // future row at once.
+        (|| {
             let point = a.lerp(b, n, steps);
             let mut color = c[3];
             if textured {
@@ -454,11 +631,11 @@ impl Vdp1 {
                 };
                 // HSS ignores end codes at every magnification (§6.3).
                 if raw == end && c[2] & 0x80 == 0 && !high_speed {
-                    end_codes += 1;
-                    if end_codes == 2 {
-                        break;
+                    line.end_codes += 1;
+                    if line.end_codes == 2 {
+                        line.dot = steps + 1;
                     }
-                    continue;
+                    return;
                 }
                 let raw = if (2..=4).contains(&mode) {
                     raw & ((1 << (mode + 4)) - 1)
@@ -466,7 +643,7 @@ impl Vdp1 {
                     raw
                 };
                 if raw == 0 && c[2] & 0x40 == 0 {
-                    continue;
+                    return;
                 }
                 color = match mode {
                     0 => c[3] & !15 | raw,
@@ -477,7 +654,8 @@ impl Vdp1 {
             }
             let shade = std::array::from_fn(|ch| lerp(shade0[ch], shade1[ch], n, steps));
             self.plot(point, color, c[2], shade);
-        }
+        })();
+        line.dot > steps
     }
     fn plot(&mut self, p: Point, color: u16, mode: u16, shade: [i32; 3]) {
         let (width, height, bytes) = self.geometry();
@@ -544,3 +722,6 @@ impl Vdp1 {
         self.buffers[self.draw][at..at + 2].copy_from_slice(&out.to_be_bytes());
     }
 }
+
+#[cfg(test)]
+mod progress_tests;

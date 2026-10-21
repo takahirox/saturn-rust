@@ -4,6 +4,72 @@
 criterion is complete; #17 must remain open.** Issues #11/#13/#15 are historical,
 administratively closed trackers and must not be reopened.
 
+## Review fixes: clocked video progress, VRAM grants and monitor modes (2026-10-22)
+
+Related to #17. Starting review checkpoint: `048a4e356a630c31995f28cdd346ee0cf5a75a40`.
+PR #18's useful prior implementation is retained. Upstream `main` was rechecked
+with `git ls-remote` as `dbd981b030a46daa6923072ce240680dd2e58ebf`.
+No push, merge, Issue-state change, proprietary firmware or human test was used.
+
+- VDP1 raster traversal now advances a retained pixel cursor instead of completing
+  an entire row per functional quantum. Texture changes affect future dots;
+  ENDR stops within thirty main clocks without manufacturing END/status/IRQ.
+  Sequential commands wrap at VRAM end. Manual drawing survives a field/buffer
+  change with its cursor and transfer-over status intact.
+- Normal erase follows displayed scanlines. VBlank erase issues word writes,
+  applies the manual's 200-clock per-raster overhead, stops at VBlank-OUT, and
+  retains the first unfinished word. Independent vectors cover both pixel depths,
+  reset cancellation and retained backup bytes. The NTSC 320×224 vector checks
+  exactly `(1708-200)×(263-224) = 58,812` word writes.
+- All eight VDP2 cycle-pattern words affect CPU access grants. Split halves must
+  agree, linked CPU slots need an idle lead, unused screens release slots, rotation
+  banks retain ownership, and high resolution ignores T4–T7. Reads denied every
+  slot wait until HBlank. Cache hits avoid external requests, P1 still requests
+  the port, and queued refill waits carry forward rather than repeatedly waiting
+  for the same blanking edge. Reserved cycle commands and paired-write failure
+  atomicity have explicit checks.
+- Four exclusive-monitor modes now produce 320/352/640/704×480 output, distinct
+  raster/counter/window layouts and NBG0/NBG1 even/odd pixel multiplexing.
+  Color-depth decoder sharing disables the documented companion normal layers.
+- Three original MIT synthetic BIOS guests are built by
+  [build_video_transactions.py](../tests/fixtures/build_video_transactions.py).
+  [Native execution](../tests/video_transactions.rs) and
+  [production Wasm/Canvas execution](../scripts/video-transactions.mjs) compare
+  authored pixels/registers and independent FRT bounds. Changed guest color,
+  erase-color, NBG1-scroll and screen-enable operands change the appropriate
+  outputs. Repeated reset runs are checked. The fixture source, ROM hashes,
+  primary manual sections, implementation links and precise limitations are in
+  [the conformance inventory](hardware-conformance.md#clocked-video-transactions-and-exclusive-monitors).
+
+Final validation passed:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`:
+  **453** tests passed (**245** unit / **208** integration),
+  zero failed or ignored. Native Cargo/Rustc: Homebrew 1.94.0.
+- Native all-target Clippy and Wasm Clippy with `-D warnings`.
+- `sh scripts/build-web.sh` using Rustup stable 1.99.0 and wasm-bindgen 0.2.129.
+- All **49** media reproducibility commands in `.github/workflows/pages.yml`,
+  including the three new synthetic BIOS fixtures. Existing Star Collector,
+  Prism Courier and Hardware Lab media remain byte-identical.
+- `npm ci --ignore-scripts`, JS syntax checks and the complete extended
+  `npm run test:browser`: Node 24.12.0 / Chromium 145.0.7632.6. Existing guest
+  gameplay/restart, dual-CPU diagnostics, sound/DSP/CD-DA/WebAudio, input/focus,
+  local-file privacy and `/saturn-rust/` packaging checks all pass.
+
+Early checks exposed obsolete register-rejection expectations and an incorrectly
+initialized back-screen vector; the tests now exercise valid cycle words and an
+independent black back screen. Refill vectors additionally caught repeated
+active-line waits, now corrected by carrying the queued wait position forward.
+
+This is implementation and executable evidence for portions of the video and bus
+findings, **not complete resolution of the operator's requested Issue #17 scope**.
+The fixed CPU interleave, full transaction/arbitration model, BSC interfaces,
+68k bus/prefetch/reset sequencing, SCU DMA/DSP conformance, remaining video fetch/
+edge/effect timing, SCSP synthesis/DSP/RAM interactions, CD/media commands,
+SYS_EXECDMP/CD HLE services, SMPC boundaries and complete umbrella evidence still
+require implementation. No acceptance criterion is waived or checked off, and no
+new tracker or human-only gate is introduced.
+
 ## Review fixes: CPU faults, interrupt vectors and peripheral latches (2026-10-21)
 
 This work starts from review checkpoint `e7721083d3f14c76b89d8b307580a25f88d559e6`

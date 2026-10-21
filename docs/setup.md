@@ -78,6 +78,7 @@ python3 tests/fixtures/build_display_modes.py --check
 python3 tests/fixtures/build_sprite_shrink.py --check
 python3 tests/fixtures/build_sprite_rotation.py --check
 python3 tests/fixtures/build_sprite_interlace.py --check
+python3 tests/fixtures/build_video_transactions.py --check
 python3 tests/fixtures/build_digital_timing.py --check
 python3 tests/fixtures/build_ubc.py --check
 python3 tests/fixtures/build_system_reset.py --check

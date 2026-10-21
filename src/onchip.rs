@@ -123,6 +123,13 @@ impl OnChip {
                 .saturating_add(self.bsc.access_waits(physical_address, write)),
         );
     }
+    pub(crate) fn add_wait_clocks(&self, clocks: u32) {
+        self.wait_clocks
+            .set(self.wait_clocks.get().saturating_add(clocks));
+    }
+    pub(crate) fn pending_wait_clocks(&self) -> u32 {
+        self.wait_clocks.get()
+    }
 
     fn unsupported(address: u32, width: usize) -> BusError {
         if address == SBYCR

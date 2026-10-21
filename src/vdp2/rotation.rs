@@ -281,7 +281,8 @@ impl Vdp2 {
         sprite_window: bool,
     ) -> Option<Layer> {
         let id = if rbg1 { 0 } else { 4 };
-        if self.word(0x20) & if rbg1 { 0x20 } else { 0x10 } == 0
+        if self.word(0) & 4 != 0
+            || self.word(0x20) & if rbg1 { 0x20 } else { 0x10 } == 0
             || !self.window(
                 self.word(if rbg1 { 0xD0 } else { 0xD4 }),
                 x,

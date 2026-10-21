@@ -70,34 +70,61 @@ impl Raster {
     }
     pub(crate) fn configure(&mut self, mode: u16) {
         self.mode = mode;
+        // TVMD can shorten the raster period. Normalize the running beam
+        // before publishing another deadline, including mid-line writes.
+        self.phase %= self.line_clocks();
+        self.line %= self.field_lines();
     }
     pub(crate) fn odd(&self) -> bool {
         self.mode & 0xC0 == 0 || self.fields.is_multiple_of(2)
     }
     pub(crate) fn display_lines(&self) -> u16 {
-        [224, 240, 256, 256][(self.mode >> 4 & 3) as usize]
+        if self.mode & 4 != 0 {
+            480
+        } else {
+            [224, 240, 256, 256][(self.mode >> 4 & 3) as usize]
+        }
     }
     fn field_lines(&self) -> u16 {
+        if self.mode & 4 != 0 {
+            return if self.mode & 1 == 0 { 525 } else { 562 };
+        }
         let base = if self.pal { 313 } else { 263 };
         base - u16::from(self.mode & 0xC0 != 0 && !self.odd())
     }
     fn hblank_clock(&self) -> u32 {
-        if self.fast { 352 * 4 } else { HBLANK_CLOCK }
+        if self.mode & 4 != 0 {
+            if self.mode & 1 == 0 { 640 } else { 704 }
+        } else if self.fast {
+            352 * 4
+        } else {
+            HBLANK_CLOCK
+        }
     }
     pub(crate) fn active_clocks(&self) -> u32 {
         u32::from(self.display_lines()) * self.line_clocks()
     }
-    fn line_clocks(&self) -> u32 {
-        if self.fast { 455 * 4 } else { CLOCKS_PER_LINE }
+    pub(crate) fn line_clocks(&self) -> u32 {
+        if self.mode & 4 != 0 {
+            if self.mode & 1 == 0 { 852 } else { 848 }
+        } else if self.fast {
+            455 * 4
+        } else {
+            CLOCKS_PER_LINE
+        }
     }
     // ST-058 §2.5 tables2.3/2.4: normal-mode counters leave bit0 invalid.
     pub(crate) fn counters(&self) -> (u16, u16) {
-        let horizontal = if self.mode & 2 != 0 {
+        let horizontal = if self.mode & 4 != 0 || self.mode & 2 != 0 {
             self.phase / 2
         } else {
             self.phase / 4 * 2
         };
-        let vertical = self.line * 2 + u16::from(self.mode & 0xC0 == 0xC0 && !self.odd());
+        let vertical = if self.mode & 4 != 0 {
+            self.line
+        } else {
+            self.line * 2 + u16::from(self.mode & 0xC0 == 0xC0 && !self.odd())
+        };
         (horizontal as u16, vertical)
     }
     pub fn clocks_to_event(&self) -> u32 {
@@ -106,6 +133,31 @@ impl Raster {
         } else {
             self.line_clocks() - self.phase
         }
+    }
+    /// Wait until a CPU VRAM grant, or horizontal blank if the display owns
+    /// every slot. Normal/hi-res cycles use main-clock groups of four;
+    /// exclusive monitor cycles run at twice that rate (ST-058 §3.3).
+    pub(crate) fn vram_wait_clocks(&self, slots: u8, queued: u32) -> u32 {
+        let position = u64::from(self.phase) + u64::from(queued);
+        let phase = (position % u64::from(self.line_clocks())) as u32;
+        let line = (u64::from(self.line) + position / u64::from(self.line_clocks()))
+            % u64::from(self.field_lines());
+        if line >= u64::from(self.display_lines()) || phase >= self.hblank_clock() {
+            return 0;
+        }
+        let count = if self.mode & 6 == 0 { 8 } else { 4 };
+        let clocks = if self.mode & 4 == 0 { 4 } else { 2 };
+        let slot = (phase / clocks) % count;
+        if slots & (1 << slot) != 0 {
+            return 0;
+        }
+        let blank = self.hblank_clock() - phase;
+        for distance in 1..=count {
+            if slots & (1 << ((slot + distance) % count)) != 0 {
+                return blank.min(distance * clocks - phase % clocks);
+            }
+        }
+        blank
     }
     /// The scheduler splits device advancement at each event boundary.
     pub fn advance(&mut self, clocks: u32) -> Option<RasterEvent> {
@@ -134,6 +186,61 @@ impl Raster {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn exclusive_monitors_have_480_active_lines_and_distinct_counter_bit_layouts() {
+        // ST-058 tables2.1/2.3/2.4; ST-013 tables4.4/4.5.
+        for (mode, line_clocks, total, hblank) in [
+            (0x8004, 852, 525, 640),
+            (0x8005, 848, 562, 704),
+            (0x8006, 852, 525, 640),
+            (0x8007, 848, 562, 704),
+        ] {
+            for chunk in [1, 3, 17, 10000] {
+                let mut r = Raster::default();
+                r.configure(mode);
+                let mut time = 0;
+                let mut events = Vec::new();
+                while r.fields == 0 {
+                    let n = chunk.min(r.clocks_to_event());
+                    time += n;
+                    if let Some(event) = r.advance(n) {
+                        if time == hblank {
+                            assert_eq!(r.counters(), (hblank as u16 / 2, 0));
+                        }
+                        if matches!(event, RasterEvent::VBlankIn | RasterEvent::VBlankOut) {
+                            events.push((time, event, r.counters().1));
+                        }
+                    }
+                }
+                assert_eq!(
+                    events,
+                    [
+                        (480 * line_clocks, RasterEvent::VBlankIn, 480),
+                        (total * line_clocks, RasterEvent::VBlankOut, 0)
+                    ]
+                );
+            }
+        }
+    }
+    #[test]
+    fn vram_grant_waits_use_live_slot_phase_and_release_at_horizontal_blank() {
+        let mut r = Raster::default();
+        assert_eq!(r.vram_wait_clocks(1, 0), 0);
+        assert_eq!(r.vram_wait_clocks(1 << 3, 0), 12);
+        assert_eq!(r.vram_wait_clocks(0, 0), 1280);
+        r.advance(7);
+        assert_eq!(r.vram_wait_clocks(1 << 3, 0), 5);
+        assert_eq!(r.vram_wait_clocks(1, 0), 25);
+        r.advance(1270);
+        assert_eq!(r.vram_wait_clocks(1, 0), 3); // blank beats the next cycle
+        r.advance(3);
+        assert_eq!(r.vram_wait_clocks(0, 0), 0);
+        r = Raster::default();
+        r.configure(0x8006);
+        r.advance(3);
+        assert_eq!(r.vram_wait_clocks(1 << 3, 0), 3);
+        assert_eq!(r.vram_wait_clocks(0, 0), 637);
+    }
     #[test]
     fn tv_modes_have_independent_blank_field_and_counter_vectors() {
         // ST-058 tables2.1/2.3/2.4; compare event times in main clocks.
