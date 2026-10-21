@@ -18,6 +18,8 @@ pub(crate) fn install(bus: &mut Bus) -> Result<(), BusError> {
     rom[0x100..0x100 + reset.len()].copy_from_slice(reset);
     let system = include_bytes!("hle/system.bin");
     rom[0x4000..0x4000 + system.len()].copy_from_slice(system);
+    let backup = include_bytes!("hle/backup.bin");
+    rom[0x10000..0x10000 + backup.len()].copy_from_slice(backup);
     bus.load_bios(&rom)?;
     for vector in 0..128 {
         let scu = (0x40..0x60).contains(&vector) && !matches!(vector, 0x4E | 0x4F);
@@ -42,6 +44,7 @@ pub(crate) fn install(bus: &mut Bus) -> Result<(), BusError> {
         (0x334, 0x4700), // SYS_CLRSEM
         (0x340, 0x4400), // SYS_SETSCUIM
         (0x344, 0x4500), // SYS_CHGSCUIM
+        (0x358, 0x5000), // BUP_Init
         (0x210, POWER_CLEAR),
     ] {
         bus.write32(0x0600_0000 + pointer, target)?;

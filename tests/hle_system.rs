@@ -112,7 +112,7 @@ fn hle_services_are_separate_from_external_bios_and_do_not_initialize_backup() {
     m.reset(Boot::ExternalBios(&bios)).unwrap();
     assert_eq!(m.mode(), Some(BootMode::ExternalBios));
     assert_eq!(m.cpu_state().vbr, 0);
-    for pointer in [0x210, 0x280, 0x300, 0x310, 0x330, 0x340, 0x348] {
+    for pointer in [0x210, 0x280, 0x300, 0x310, 0x330, 0x340, 0x348, 0x358] {
         assert_eq!(m.bus().read32(0x06000000 + pointer), Ok(0));
     }
     assert_eq!(m.bus().read32(0x4000), Ok(0));

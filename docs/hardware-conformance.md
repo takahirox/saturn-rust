@@ -419,9 +419,9 @@ CPU/scheduler acceptance criteria.
 | Low/high WRAM, O map | Independent 1 MiB banks; aligned B/W/L; low-RAM and CS3 high-RAM mirrors; P1 aliases; BWAIT software waits and narrow CS3 beats | bus.rs, BWAIT | SC, ROM, BWAIT | Base CPU cycles, refresh and bus contention timing missing | Pending |
 | Base-system address decoding, O map | Only documented subset in architecture.md | bus.rs | SC | A-bus/cartridge decoding and full base map missing | Pending |
 | MMIO widths/side effects, device manuals | Unsupported accesses return errors | devices.rs | SC | Full device routing/width rules missing | Pending |
-| Backup byte storage, SCU §1.2 figs.1.3/1.5; SMPC §2.3 SYSRES p.29 | 32 KiB, odd-byte storage; even lanes read FF and ignore writes; word/long strobes; P1 aliases; unformatted zero initialization | BK; `backup_byte_lanes_endpoints_and_cache_through_access_do_not_alias_work_ram` | BK | Additional backup aliases, filesystem/service integration and remaining reset domains pending | Pending |
+| Backup byte storage, SCU §1.2 figs.1.3/1.5; SMPC §2.3 SYSRES p.29 | 32 KiB, odd-byte storage; even lanes read FF and ignore writes; word/long strobes; P1 aliases; unformatted zero initialization | BK; `backup_byte_lanes_endpoints_and_cache_through_access_do_not_alias_work_ram` | BK | BUPG adds guest-executed filesystem/service integration; additional aliases and remaining reset domains pending | Pending |
 | Backup reset retention, SMPC §2.3 SYSRES p.29 | Bytes survive successful/rejected HLE, disc and ROM resets and guest SYSRES; new Machine starts empty | BK; `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot`, PWRG | BK, PWRG, reset/mode/read-race checks | SYSRES guest retention now covered by PWRG; remaining power/reset and service contracts pending | Pending |
-| Local backup import/export (host interface) | Exact 32768 packed bytes; atomic replacement; explicit local download; stale import cancellation; no network/storage | `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot` | Download byte comparison, offline import, invalid size/read errors, races, fresh-tab isolation | BIOS backup filesystem/calls and cartridge backup absent; no automatic cross-session persistence | Pending |
+| Local backup import/export (host interface) | Exact 32768 packed bytes; atomic replacement; explicit local download; stale import cancellation; no network/storage | `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot` | Download byte comparison, offline import, invalid size/read errors, races, fresh-tab isolation | BUPG provides independent HLE backup calls; optional cartridge backup is absent; no automatic cross-session persistence | Pending |
 | Shared event scheduler, O clock domains | Deterministic CPU order, raster/SCU event deadlines and clock-driven DSP/DMA; field deadlines replace instruction budgets | TIME, SCUROM, game.rs, DUAL | SCUROM, SC, DUAL | CPU opcode/on-chip DMA cycles, contention, refresh and full cross-clock ordering missing; CD command/sector/sample deadlines now exercised by CLAB | Pending |
 | Video timing, VDP2 display registers | Clock-based 263-line/224-visible NTSC raster, HBLANK/VBLANK bits and SCU edges; bounded field advancement | TIME, SCUROM, game.rs | SCUROM, SC | 320/352 normal NTSC clocks now have CLKG evidence below; other resolutions, PAL/interlace and exact beam phase remain missing | Pending |
 | Audio timing, SCSP/CD | Independent 68k/sample deadlines, bounded stereo output and worklet; underflow/mute/blocked instrumentation | SNDV, SNDR | SNDR | Exact CPU/bus timing and effects DSP | Pending |
@@ -563,7 +563,7 @@ no-op CPU/device implementations cannot satisfy those assertions.
 | CD buffers/transfers, [CD] §§3.4/5.3/5.4/8.2 | 200-sector pool, 24 partitions, get/delete/get-delete/put, short/over transfers, size/info/search, FIFO word/long and fixed-source SCU DMA | `tests/cd.rs`, CLAB | CLAB actual DMA/IRQ/checksum, sector mutation | Pool-full pause/resume at the blocked FAD has native data vectors; complete transfer overlap and timing/error inventory remain | Pending |
 | Filters/selectors/partitions, [CD] §§5.2/5.3/8.2.5 | FAD and masked subheader comparisons, reverse conditions, true/false routes, reset, copy/move through destination filter | `tests/cd.rs::selectors_fad_range_connections_copy_move_and_size`, Mode2 reverse vectors | CLAB default filter/partition route | Full connection constraints and all boundary/error vectors remain | Pending |
 | BIOS-less startup, [Boot ROM][BOOT] / [DISC] | Original first-read HLE plus licensed SH-2 master/slave reset trampoline and system-service initialization, separate from ExternalBios | disc.rs, game.rs, CLAB, src/hle/boot.s, HLESYS | SC, CLAB, HLESYS | Remaining clock/multiplayer, backup/CD services and full startup/region/version contracts | Pending |
-| BIOS services, [BOOT], ST-162-R1 System Program §2.2 | Original guest-executed vector/callback registration, SCU mask/shadow, shared semaphores, copied priorities and power-clear bytes; see HLESYS below | tests/hle_system.rs | HLESYS, including nested IRQs, mutations and reset | Clock/multiplayer, backup/CD calls and complete per-call ABI/side effects remain | Pending |
+| BIOS services, [BOOT], ST-162-R1 System Program §2.2 | Original guest-executed vector/callback registration, SCU mask/shadow, shared semaphores, copied priorities and power-clear bytes; see HLESYS below | tests/hle_system.rs | HLESYS, including nested IRQs, mutations and reset | Clock and BUPG backup calls have dedicated evidence below; multiplayer/CD calls and complete per-call ABI/side effects remain | Pending |
 | External BIOS execution, [BOOT] | Genuine reset vectors, original synthetic ROM handlers | boot.rs, sh2_system.rs | ROM | Genuine BIOS initialization/menu/boot **unverified**; no lawful local BIOS supplied | Pending |
 | SMPC direct digital port 1, [SMPC] §3 | Active-low nibble selection; per-bit PDR/DDR input/output merging; TH input visible with EXLE | devices.rs, INTCG | SC, INTCG | DIGG settling and CLKG clock/reset vectors below; full system timing remains required | Pending |
 | SMPC commands/status/timing, [SMPC] §§1.2/2.3/2.4/3.2 | SF/IREG/OREG/SR, CPU commands, INTBACK status/peripheral phases, continue/break, VBlank collection and optimization; SCU source 7 | smpc/tests.rs, tests/smpc.rs, DUAL | SMPR, DUAL | Remaining system commands, firmware jitter and PAL/interlace clock modes | Pending |
@@ -1249,8 +1249,8 @@ Existing Star Collector, Prism Courier and Hardware Lab media are unchanged.
 | `python3 src/hle/build.py --check`: `system.bin` | `b93d3a0e8ff1242c7ad5fa411f2009fb3a177755138f079263190fe51b124e1a` |
 | `python3 tests/fixtures/build_hle_system.py --check`: `hle-system.iso` | `20087f76e82f3aaafb049a7c1fbad46c9ea032e6b9638b3118cb0b30e472b0fa` |
 
-SYS_CHGSYSCK/SYS_GETSYSCK now have CLKG evidence below. SYS_EXECDMP,
-backup-library/filesystem and CD-library ABIs remain mandatory and unimplemented. Full synthetic BIOS/service acceptance
+SYS_CHGSYSCK/SYS_GETSYSCK now have CLKG evidence below. BUPG below adds the independent backup-library/filesystem ABI. SYS_EXECDMP
+and CD-library ABIs remain mandatory and unimplemented. Full synthetic BIOS/service acceptance
 and the other required CPU/peripheral, bus/reset/scheduler, SCU/DSP, video/audio,
 CD/SMPC and demonstration evidence remain incomplete. HLESYS is a diagnostic
 disc, not a replacement for either required demonstration. No umbrella checkbox
@@ -1432,3 +1432,44 @@ native tests: suppressed partial quotient, immediate UBC comparison changes,
 wrong-CPU UBC acknowledgement, discarded pre-reset clocks, fixed-Japan status,
 missing CD-reset status and early SCSP DMA busy clearing. These are executable
 regression checks; they do not establish the remaining umbrella acceptance.
+
+
+## Guest-executed HLE backup library (BUPG)
+
+Primary specifications: [ST-162-R1](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-162-R1-092994.pdf), Backup Library chapter, data
+specifications 1–4 and function specifications 1–11; Sega's original
+[public ABI declarations](https://github.com/johannes-fetz/joengine/blob/master/Compiler/COMMON/SGL_302j/INC/SEGA_BUP.H)
+provide numeric statuses and vector offsets. No SDK routines/objects or firmware
+were copied. The [original source and storage contract](../src/hle/README.md#independent-backup-library)
+explain the deliberately separate SRBUP001 HLE format. Raw backup bus behavior
+is unchanged; external BIOS mode never installs these routines or converts RAM.
+A genuine BIOS/private filesystem compatibility result is not claimed or required.
+
+BUPG means [the original MIT diagnostic builder](../tests/fixtures/build_hle_backup.py),
+[ISO](../tests/fixtures/hle-backup.iso), [158 independent ABI records](../tests/fixtures/hle-backup.tsv),
+[six native tests](../tests/hle_backup.rs) and identical actual Wasm execution in
+[browser-smoke.mjs](../scripts/browser-smoke.mjs). Guest code computes, reads and
+verifies payloads through the emulated odd-byte bus; the host does not intercept
+calls or fill running guest results. Media contain the adjacent fixture MIT license.
+
+| Documented interface | Implementation | Native and browser evidence | Deviations / remaining coverage |
+| --- | --- | --- | --- |
+| Init, function 1; BupConfig | [ROM5000 copy/relocation/publication](../src/hle/system.s), [ROM10000 library](../src/hle/backup.s), [HLE-only installation](../src/hle.rs) | Actual 16 KiB expansion to two different caller addresses, RAM354 vector table/slots4–40, device0 unit1/partition1, absent devices1/2, unchanged backup on Init | Helpers execute in the original guest ROM; optional backup peripherals absent |
+| SelPart/Format, functions 2/3 | `bup_selpart`, `bup_format` | Partition0, invalid partition, absent device; explicit format, unknown raw import remains untouched | Internal device is writable; no optional cartridge write protection |
+| Stat, function 4; BupStat | `bup_stat`, `scan_next` | All six fields at empty/partial/full/freed capacity; 0/257-byte data counts and maximum size; 510 real allocated blocks | Capacity policy and metadata overhead belong to documented SRBUP001 format |
+| Write, function 5 | `bup_write`, `write_allocate` | Empty/257/65/32600-byte files, duplicate-name mode, shrinking overwrite, full device, size overflow and failed-write retention | Original HLE format; interrupted writes need not be transactional (manual reset-disable warning) |
+| Read/Verify, functions 6/9 | `bup_read`, `bup_verify`, `checksum_byte` | Three computed byte endpoints; exact data/mismatch/not-found/broken statuses; changed XOR operand changes guest and persisted data; full-size verification | Sum checksum detects ordinary byte corruption, not all same-sum changes |
+| Delete/Dir, functions 7/8; BupDir | `bup_delete`, `compact_copy`, `bup_dir` | First/middle/last/full deletion, moved-file retention, prefix matches, zero-size files, negative insufficient-table count, 36-byte structure stride and untouched output guard | Unused raw bytes after directory terminator are ignored |
+| GetDate/SetDate, functions 10/11; BupDate | `bup_getdate`, `bup_setdate`, month/division helpers | Eight independent Gregorian/minute/weekday vectors, 1980 leap day, 1999 year-end, 2000 leap day, 2100/2200 non-leap centuries and 2235 upper year; SHC callee-save records | Valid documented BupDate fields, years1980–2235; invalid dates have no specified status in the void ABI |
+| Persisted/corrupt media | Existing `BackupRam` plus guest validation/copy code | Cold reopen/export/import, repeated read-only probes and byte-for-byte retention; bounded corrupt marker/count/length/name/comment/language/redundant-count/checksum probes; native malformed-size/count extrema | Existing BK/PWRG reset-domain/import-atomicity tests remain; this row does not establish the full bus/reset umbrella |
+
+Reproduce with `python3 src/hle/build.py --check` and
+`python3 tests/fixtures/build_hle_backup.py --check` (both in CI).
+The disc SHA-256 is
+`aed258ed218fd4bcee94890e6582ee59185341842b70cf60aa1f6644c7b372db`;
+the backup library image is
+`992e935cf3a0bd64435ee7ec7c35afad05b3c8fcf8d7e2767914ca902bdc52b2`.
+The original boot ROM fragment and all three existing demonstration media remain
+byte-identical. BUPG is diagnostic media, not a replacement demonstration.
+No mandatory Issue #17 umbrella checkbox is completed by this addition. All
+remaining CPU/bus/scheduler/chip/service/demonstration evidence remains required.

@@ -515,6 +515,85 @@ try {
   },[...hleResetImage]);
   const hleResetExpected={cold:[0,0],words:[0x12345678,0x12345679,0xBFFF,0x4B10,1,0x600D],exceptions:"0"};
   assert.deepEqual(hleResetTrace,[hleResetExpected,hleResetExpected]);
+  // BUP_Init expands original SH-2 code and publishes the documented vector
+  // table. All allocation/calendar/copy/checksum work executes in Wasm's CPU.
+  const backupIso=await readFile("tests/fixtures/hle-backup.iso");
+  const backupExpected=(await readFile("tests/fixtures/hle-backup.tsv","utf8")).trim()
+    .split(/\r?\n/).map(line=>parseInt(line.split("\t")[1],16));
+  const backupRun=async image=>page.evaluate(async ({image,count})=>{
+    const {Emulator}=await import("./pkg/saturn_rust.js");
+    const m=new Emulator();
+    const finish=(machine,last)=>{
+      for(let i=0;i<300;i++) {
+        machine.run_steps(10000);
+        if(machine.read_long(last)===0x600D) {
+          if(machine.exception_count()!=="0")throw new Error("Backup guest took an exception");
+          return;
+        }
+      }
+      throw new Error("Backup guest exceeded its bounded instruction budget");
+    };
+    const probeImage=Uint8Array.from(image);
+    new DataView(probeImage.buffer).setUint32(0xE28,0x0600E000);
+    const probe=machine=>{
+      machine.reset_disc(probeImage);finish(machine,0x0602400C);
+      return Array.from({length:4},(_,i)=>machine.read_long(0x06024000+i*4));
+    };
+    try {
+      m.reset_disc(Uint8Array.from(image));finish(m,0x06024000+(count-1)*4);
+      const main=Array.from({length:count},(_,i)=>m.read_long(0x06024000+i*4));
+      const vector=m.read_long(0x06000354),entry=m.read_long(vector+16);
+      const packed=m.export_backup_ram();
+      const persisted=[probe(m),probe(m)];
+      assertBytes(m.export_backup_ram(),packed);
+      const fresh=new Emulator();
+      let imported;
+      try {
+        fresh.import_backup_ram(packed);imported=probe(fresh);
+        assertBytes(fresh.export_backup_ram(),packed);
+      } finally {fresh.free();}
+      const broken=[];
+      for(const [offset,bytes] of [[129,[0,0]],[129,[2,0]],[160,[0,0,1,25]],
+                                  [128,[0x7F]],[168,[0x33]],[143,[1]],
+                                  [154,[1]],[155,[6]],[164,[0,4]]]) {
+        const damaged=Uint8Array.from(packed);damaged.set(bytes,offset);
+        m.import_backup_ram(damaged);broken.push(probe(m));
+        assertBytes(m.export_backup_ram(),damaged);
+      }
+      const unknown=new Uint8Array(32768).fill(0xA5);
+      m.import_backup_ram(unknown);const unformatted=probe(m);
+      assertBytes(m.export_backup_ram(),unknown);
+      return {main,vector,entry,persisted,imported,broken,unformatted,
+        header:Array.from(packed.slice(0,8)),data:[packed[168],packed[169],packed[424]]};
+    } finally {m.free();}
+    function assertBytes(actual,expected) {
+      if(actual.length!==expected.length || actual.some((v,i)=>v!==expected[i]))
+        throw new Error("Read-only backup probe changed persistent RAM");
+    }
+  },{image:[...image],count:backupExpected.length});
+  const backupTrace={main:backupExpected,vector:0x06030000,entry:0x06030600,
+    persisted:[[0,0,7,0x600D],[0,0,7,0x600D]],imported:[0,0,7,0x600D],
+    broken:[[8,8,8,0x600D],[8,8,8,0x600D],[8,8,8,0x600D],[8,8,8,0x600D],[0,8,8,0x600D],
+      [8,8,8,0x600D],[8,8,8,0x600D],[8,8,8,0x600D],[8,8,8,0x600D]],
+    unformatted:[2,2,2,0x600D],header:[83,82,66,85,80,48,48,49],data:[90,91,90]};
+  assert.deepEqual(await backupRun(backupIso),backupTrace);
+  const relocatedBackup=Buffer.from(backupIso);let backupRelocations=0;
+  for(let at=21*2048;at+4<=relocatedBackup.length;at+=4) {
+    if(relocatedBackup.readUInt32BE(at)===0x06030000) {
+      relocatedBackup.writeUInt32BE(0x06050000,at);backupRelocations++;
+    }
+  }
+  assert.equal(backupRelocations,2);
+  assert.deepEqual(await backupRun(relocatedBackup),{...backupTrace,vector:0x06050000,entry:0x06050600});
+  const changedBackup=Buffer.from(backupIso),backupXor=Buffer.from([0xE4,90]);
+  const backupXorAt=changedBackup.indexOf(backupXor,21*2048);
+  assert(backupXorAt>=21*2048 && changedBackup.indexOf(backupXor,backupXorAt+1)===-1);
+  changedBackup[backupXorAt+1]=91;
+  const changedBackupExpected=structuredClone(backupTrace);
+  (await readFile("tests/fixtures/hle-backup.tsv","utf8")).trim().split(/\r?\n/)
+    .forEach((line,i)=>{if(line.startsWith("A byte "))changedBackupExpected.main[i]^=1;});
+  changedBackupExpected.data=[90,90,91];
+  assert.deepEqual(await backupRun(changedBackup),changedBackupExpected);
   // Real PLL command deadlines/reset domains, through original BIOS and HLE.
   const clockIso=await readFile("tests/fixtures/clock.iso");
   const clockRom=Buffer.alloc(524288);
@@ -2426,7 +2505,7 @@ try {
   }
   await cddaPage.waitForFunction(() => window.cddaAudio.stats.rendered > 128 && window.cddaAudio.stats.peak > 0.1);
   await cddaPage.close();
-  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-CPU DIVU overflow intermediates/UBC acknowledgement and dividend mutations, all eight SMPC area codes and independent CD/sound reset reports, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, BCR1 processor identity/refresh IRQ/module stops/reset repeatability, UBC before/after/slot/data/DMAC saved-PC vectors, software standby/timed NMI wake, SYSRES volatile/battery retention, four-layer VDP2 tile guest/palette mutation/Wasm and production Canvas presentation, original rotation/coefficient/line-scroll/line-window guest and mutated matrix pixels, original RBG0/RBG1 guest with B0/B1 data and changed parameter-B pixels/Canvas, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, original CD scan/reverse/pause/tray/TOC guest, malformed runtime ISO root/child rejection and bounded raw-sector correction/failure responses, CD-DA PRE reference stereo/sector continuity and AudioWorklet, sprite-window/shadow/palette-MSB guest and Canvas mutations, 68k BCD/MOVEM/MOVEP/arithmetic/partial-fault/trap guest plus timed MIDI/SCSP DMA and three interrupt levels; SH-2-uploaded MC68EC000 PCM computation/SCSP timer IRQ/stereo samples and WebAudio worklet delivery/underflow/mute/blocked states, SCSP FM recent/past stack pipeline, TL gain, ALFO/PLFO and timed-envelope guest mutations and AudioWorklet; 73 original 68k family/EA/CCR/exception vectors, ten guest access-frame/partial-transfer/prefetch records and ADD-to-SUB mutation; ICR auto/external vectors, signed DIV1 sequences and both-port SMPC-to-SCU/VDP2 latching with control mutation, DACK armed waiting/reset, two-way cache RAM isolation and operand mutation, gradation top/second filtering and changed controls/Wasm/Canvas, descriptor-set runtime/startup and zero-first-read AIP; BIOS/HLE PLL transitions and reset domains, rational FRT/raster clocks, 352-dot Canvas output, two-port digital settling/operand mutations; SMPC RTC/SMEM/INTBACK IRQs and synthetic digital+ID15/ID16 analog Gamepad/focus release, timed both-port direct analog handshake guest, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation; Prism Courier original disc, VDP1 sprite/polygons + VDP2 composition/Canvas, draw-end IRQ, 68k stereo + actual AudioWorklet, keyboard collision/win/restart, changed-disc texture mutation; Hardware Lab local CUE/mixed tracks, dual CPU, executing SCU DSP, CD FIFO-to-SCU DMA/IRQs/checksum, independent 68k-uploaded SCSP effects DSP, exact wet stereo/coefficient mutations, CD-DA through DSP and AudioWorklet, rotation Canvas, backup/restart, sector/audio mutations, CUE subindices and malformed ordering, missing local file rejection.`);
+  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-CPU DIVU overflow intermediates/UBC acknowledgement and dividend mutations, all eight SMPC area codes and independent CD/sound reset reports, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, BCR1 processor identity/refresh IRQ/module stops/reset repeatability, UBC before/after/slot/data/DMAC saved-PC vectors, software standby/timed NMI wake, SYSRES volatile/battery retention, four-layer VDP2 tile guest/palette mutation/Wasm and production Canvas presentation, original rotation/coefficient/line-scroll/line-window guest and mutated matrix pixels, original RBG0/RBG1 guest with B0/B1 data and changed parameter-B pixels/Canvas, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, original CD scan/reverse/pause/tray/TOC guest, malformed runtime ISO root/child rejection and bounded raw-sector correction/failure responses, CD-DA PRE reference stereo/sector continuity and AudioWorklet, sprite-window/shadow/palette-MSB guest and Canvas mutations, 68k BCD/MOVEM/MOVEP/arithmetic/partial-fault/trap guest plus timed MIDI/SCSP DMA and three interrupt levels; SH-2-uploaded MC68EC000 PCM computation/SCSP timer IRQ/stereo samples and WebAudio worklet delivery/underflow/mute/blocked states, SCSP FM recent/past stack pipeline, TL gain, ALFO/PLFO and timed-envelope guest mutations and AudioWorklet; 73 original 68k family/EA/CCR/exception vectors, ten guest access-frame/partial-transfer/prefetch records and ADD-to-SUB mutation; ICR auto/external vectors, signed DIV1 sequences and both-port SMPC-to-SCU/VDP2 latching with control mutation, DACK armed waiting/reset, two-way cache RAM isolation and operand mutation, gradation top/second filtering and changed controls/Wasm/Canvas, descriptor-set runtime/startup and zero-first-read AIP; guest-executed HLE backup library expansion/relocation, 158 ABI records, full-capacity allocation, prefixes/compaction, Gregorian dates, corruption and persistent raw import/export, changed guest XOR operand; BIOS/HLE PLL transitions and reset domains, rational FRT/raster clocks, 352-dot Canvas output, two-port digital settling/operand mutations; SMPC RTC/SMEM/INTBACK IRQs and synthetic digital+ID15/ID16 analog Gamepad/focus release, timed both-port direct analog handshake guest, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation; Prism Courier original disc, VDP1 sprite/polygons + VDP2 composition/Canvas, draw-end IRQ, 68k stereo + actual AudioWorklet, keyboard collision/win/restart, changed-disc texture mutation; Hardware Lab local CUE/mixed tracks, dual CPU, executing SCU DSP, CD FIFO-to-SCU DMA/IRQs/checksum, independent 68k-uploaded SCSP effects DSP, exact wet stereo/coefficient mutations, CD-DA through DSP and AudioWorklet, rotation Canvas, backup/restart, sector/audio mutations, CUE subindices and malformed ordering, missing local file rejection.`);
 } finally {
   if (browser) await browser.close();
   if (server?.pid && server.exitCode === null) {

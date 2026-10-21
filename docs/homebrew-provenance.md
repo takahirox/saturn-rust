@@ -160,3 +160,17 @@ resulting family ROM/fault-frame TSV. Fixtures use only the project's original
 assembler and Python standard library. Register, frame and arithmetic expectations
 are source-authored; no outputs are sampled from an emulator, Sega firmware or SDK.
 These are diagnostic programs; the three existing demo media retain their hashes.
+
+
+The original HLE backup-library diagnostic is built by
+[build_hle_backup.py](../tests/fixtures/build_hle_backup.py) using only the existing
+original SH-2 assembler and Python standard library. Its
+[ISO](../tests/fixtures/hle-backup.iso) embeds the [fixture MIT license](../tests/fixtures/LICENSE).
+All guest logic/data and the separately built original
+[backup-library source](../src/hle/backup.s) are authored for this project.
+Sega manual/interface declarations provide behavioral facts only; no SDK routine,
+object, BIOS or third-party filesystem/core code was reused. The independent
+[HLE storage contract](../src/hle/README.md#independent-backup-library) documents
+SRBUP001, and the [conformance entry](hardware-conformance.md#guest-executed-hle-backup-library-bupg)
+records hashes and native/Wasm evidence. This is diagnostic media, not either of
+the required new demonstrations, and it does not change their bytes or licenses.

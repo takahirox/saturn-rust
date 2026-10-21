@@ -1679,3 +1679,73 @@ contracts. The existing mandatory inventory stays in force. No Issue is closed,
 no scope is waived, and no human testing, personal firmware, live-site inspection
 or external-workflow approval gate is introduced. No remote CI or deployment
 result is claimed by these local checks.
+
+## Original guest-executed HLE backup library (2026-10-21)
+
+Related to #17. Rechecked upstream `main` and PR #18: main remains
+`dbd981b030a46daa6923072ce240680dd2e58ebf`; the published head before this
+update was `59c9722136bfa2ff53a54039034daa73da428a7b`. This revision preserves
+all inherited work, including the subsequent DIVU/UBC/peripheral/status fixes.
+
+Implemented BUP_Init and all ten expanded-library entry points as original SH-2
+instructions. Init copies/relocates the 16 KiB library, publishes the documented
+RAM354 vector table and returns three device configurations. The guest performs
+partition/format/status, allocation/overwrite/read/delete/prefix-directory/
+verification and Gregorian date conversions. All stored bytes go through the
+existing backup bus. Primary specifications, exact API/status definitions,
+private storage layout and limitations are linked from
+[the BUPG inventory](hardware-conformance.md#guest-executed-hle-backup-library-bupg)
+and [the HLE contract](../src/hle/README.md#independent-backup-library).
+
+The independently identified SRBUP001 HLE filesystem does not claim compatibility
+with Sega firmware's opaque storage layout. Unknown raw data remains untouched
+and reports unformatted until an explicit guest Format call. External BIOS mode
+does not install any HLE service. No SDK routine/object, emulator core, firmware
+or third-party asset was copied. This is additional diagnostic media, not a
+replacement for either required demonstration or any mandatory hardware scope.
+
+The original MIT disc carries its license and executes the copied routines via
+the public vector table. Native and actual browser Wasm compare **158** authored
+ABI records, including full 510-block allocation, capacity/overwrite failures,
+retained original data on rejected writes, empty files, three-file compaction,
+prefix-directory short-table sign/guard/stride, all callee-save registers and
+eight independent date/weekday vectors including the 2100/2200 non-leap years.
+Changed guest XOR operands change computed/stored bytes; relocating the library
+changes actual executed entry addresses with unchanged ABI results. Read-only
+probes reopen cold-retained/exported/imported bytes, detect nine metadata/payload
+corruptions and preserve every packed byte. Native probes add ten malformed
+count/size boundary cases and remain bounded.
+
+Checks completed on Rustup stable Rust/Cargo **1.99.0**, Node **24.12.0**:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`: pass;
+  **401 native tests**, zero failed/ignored (**216 unit, 185 integration**).
+- Native all-target and Wasm Clippy with `-D warnings`: pass. A new constant-chunk
+  lint in the relocation test was corrected before the final passing run.
+- `sh scripts/build-web.sh`: pass with matching wasm-bindgen-cli **0.2.129**.
+  Existing Star Collector, Prism Courier and Hardware Lab media remain unchanged.
+- All **39** CI reproducibility commands and JavaScript syntax checks pass.
+- The complete extended `npm run test:browser` passes in Chromium
+  **145.0.7632.6** under `/saturn-rust/`, including baseline, relocated and
+  changed-operand backup discs, repeated persistence/corruption probes, and all
+  existing hardware/demos/Canvas/AudioWorklet/input/privacy/packaging checks.
+  No required browser test was skipped.
+- Five deliberate guest-library source regressions are rejected: duplicate-write
+  success without writing, positive short-directory counts, wrong century leap
+  handling, lost R14 and ignored payload checksums. Original source/binaries were
+  restored, reproduced, and all six backup integration tests passed again.
+
+Development checks corrected the initial interface mapping against Sega's
+published declaration facts before final validation. The full-capacity guest
+required more than one million instructions; its runner now allows up to three
+million in ordinary bounded 10,000-step calls, while preserving all expected
+records. No source or expected result was weakened to accept a failing behavior.
+No remote CI, deployment or genuine BIOS compatibility result is claimed.
+
+**The full Issue #17/Run objective remains unmet.** Full CPU/bus scheduling,
+68k bus sequencing, remaining SCU/DSP/video/audio/CD/SMPC behavior, SYS_EXECDMP,
+CD-library/remaining boot services and comprehensive acceptance evidence remain
+mandatory implementation work. All original criteria remain in force on the
+same Issue and Draft PR, with Closes #17 as the intended completed outcome.
+No Issue is closed/replaced, no historical Issue is reopened, and no human,
+proprietary-firmware, live-site or external-workflow gate is introduced.

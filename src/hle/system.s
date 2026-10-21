@@ -184,6 +184,46 @@ mov.l r0,@r1
 ldc r3,sr
 rts
 nop
+.section 0x5000
+; Original BUP_Init, ST-162-R1 backup library function 1.
+; Copy 16 KiB of original guest code to the application's expansion buffer.
+; Helpers remain ordinary guest ROM subroutines. No host service interception.
+mov r4,r2
+load 0x10000,r1
+load 4096,r3
+bup_copy_library:
+mov.l @r1+,r0
+mov.l r0,@r2
+add #4,r2
+dt r3
+bf bup_copy_library
+; Relocate the ten public entry pointers to the copied instruction addresses.
+; Public BUP_VECTOR_ADDRESS is RAM354; function slots start at offset four.
+mov.l r5,@r4
+load 0x06000354,r1
+mov.l r4,@r1
+load 0x10000,r0
+mov r4,r3
+sub r0,r3
+mov r4,r2
+add #4,r2
+mov #10,r1
+bup_relocate:
+mov.l @r2,r0
+add r3,r0
+mov.l r0,@r2
+add #4,r2
+dt r1
+bf bup_relocate
+load 0x00010001,r0
+mov.l r0,@r6
+mov #0,r0
+add #4,r6
+mov.l r0,@r6
+add #4,r6
+mov.l r0,@r6
+rts
+nop
 .section 0x9000
 ; The per-vector entry has saved R0 and put the cause index in R0.
 ; A C callback may destroy R0-R7, MACH, MACL and PR. Preserve them all,

@@ -35,9 +35,31 @@ def system():
         end = address + len(code)
     return bytes(image)
 
+
+def backup():
+    sections = {}
+    for line in (HERE/'backup.s').read_text().splitlines():
+        if line.startswith('.section '):
+            address = int(line.split()[1], 0)
+            sections[address] = []
+        elif sections:
+            sections[address].append(line)
+    image = bytearray(0x4000)
+    entries = [0x10100,0x10200,0x10400,0x10600,0x10A00,
+               0x10C00,0x10E00,0x11100,0x11300,0x11600]
+    for i, entry in enumerate(entries):
+        image[(i+1)*4:(i+2)*4] = entry.to_bytes(4,'big')
+    end = 0x1002C
+    for address, lines in sorted(sections.items()):
+        code = a.assemble('\n'.join(lines), base=address)
+        assert address >= end and address+len(code) <= 0x14000, hex(address)
+        image[address-0x10000:address-0x10000+len(code)] = code
+        end = address+len(code)
+    return bytes(image)
+
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--check',action='store_true');args=p.parse_args()
-    for name,data in [('boot',build()),('system',system())]:
+    for name,data in [('boot',build()),('system',system()),('backup',backup())]:
         target=HERE/f'{name}.bin'
         if args.check: assert target.read_bytes()==data,f'Rebuild HLE {name}'
         else: target.write_bytes(data)
