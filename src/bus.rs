@@ -104,6 +104,7 @@ pub struct Bus {
     pub(crate) vdp2: Vdp2,
     pub(crate) vdp1: Vdp1,
     pub sound: Sound,
+    pub cd: crate::cd::CdBlock,
     smpc: Smpc,
     pub(crate) scu: Scu,
     pub(crate) raster: Raster,
@@ -123,6 +124,7 @@ impl Default for Bus {
             vdp2: Vdp2::default(),
             vdp1: Vdp1::default(),
             sound: Sound::default(),
+            cd: crate::cd::CdBlock::default(),
             smpc: Smpc::default(),
             scu: Scu::default(),
             raster: Raster::default(),
@@ -179,6 +181,7 @@ impl Bus {
         self.slave_enabled
             || self.vdp1.busy()
             || self.sound.enabled
+            || self.cd.active()
             || self.smpc.busy()
             || self.onchip[0].can_request_interrupt()
             || self.scu.can_wake()
@@ -240,6 +243,8 @@ impl Bus {
                 .min(self.raster.clocks_to_event())
                 .min(self.scu.clocks_to_event())
                 .min(self.vdp1.clocks_to_event())
+                .min(self.cd.clocks_to_event())
+                .min(self.sound.clocks_to_sample())
                 .min(if self.scu.dma_pending() {
                     8 - self.scu_dma_phase
                 } else {
@@ -253,7 +258,11 @@ impl Bus {
             if self.vdp1.advance(delta)? {
                 self.scu.signal(13);
             }
-            self.sound.advance(delta)?;
+            self.cd.advance(delta);
+            if self.cd.interrupt() {
+                self.scu.signal(16);
+            }
+            self.sound.advance_with_cd(delta, &mut self.cd)?;
             if self.sound.scsp.main_interrupt() {
                 self.scu.signal(6);
             }
@@ -348,8 +357,29 @@ impl Bus {
 
     // SH7604 §2.3: P1 cache-through accesses share the external physical bus.
     fn physical(address: u32) -> u32 {
-        if (0x2000_0000..0x4000_0000).contains(&address) {
+        let address = if (0x2000_0000..0x4000_0000).contains(&address) {
             address - 0x2000_0000
+        } else {
+            address
+        };
+        // The high RAM chip decodes A19–A0 throughout CS3; A24–A20
+        // do not select additional storage (Overview memory map / SCU §1.2).
+        if address < 0x0010_0000 {
+            address & 0x0007_FFFF
+        } else if (SMPC..SMPC + 0x80000).contains(&address) {
+            SMPC | (address & 0x7F)
+        } else if (HIGH_WRAM..0x0800_0000).contains(&address) {
+            HIGH_WRAM | (address & 0x000F_FFFF)
+        } else if (LOW_WRAM..0x0040_0000).contains(&address) {
+            LOW_WRAM | (address & 0x000F_FFFF)
+        } else if (SOUND_RAM..SCSP).contains(&address) {
+            SOUND_RAM | (address & 0x0007_FFFF)
+        } else if (vdp1::VRAM..vdp1::FRAMEBUFFER).contains(&address) {
+            vdp1::VRAM | (address & 0x0007_FFFF)
+        } else if (vdp1::FRAMEBUFFER..vdp1::REGISTERS).contains(&address) {
+            vdp1::FRAMEBUFFER | (address & 0x0003_FFFF)
+        } else if (VRAM..crate::vdp2::CRAM).contains(&address) {
+            VRAM | (address & 0x0007_FFFF)
         } else {
             address
         }
@@ -379,6 +409,18 @@ impl Bus {
         let address = Self::physical(address);
         if !address.is_multiple_of(N as u32) {
             return Err(BusError::Unaligned { address, width: N });
+        }
+        if (crate::cd::REGISTERS..crate::cd::REGISTERS + 0x2C).contains(&address)
+            || (crate::cd::DATA..crate::cd::DATA + 4).contains(&address)
+        {
+            if N != 2 && !(N == 4 && address == crate::cd::DATA) {
+                return Err(BusError::UnsupportedDevice { address, width: N });
+            }
+            let mut bytes = [0; N];
+            for pair in bytes.as_chunks_mut::<2>().0 {
+                pair.copy_from_slice(&self.cd.read16(address)?.to_be_bytes());
+            }
+            return Ok(bytes);
         }
         if (SOUND_RAM..SOUND_RAM + SOUND_RAM_SIZE as u32).contains(&address) {
             let offset = (address - SOUND_RAM) as usize;
@@ -443,19 +485,22 @@ impl Bus {
             return Ok(bytes);
         }
         if (BACKUP_RAM..BACKUP_RAM + BACKUP_WINDOW).contains(&address) {
-            if N != 1 {
-                return Err(BusError::UnsupportedDevice { address, width: N });
-            }
             let mut bytes = [0; N];
-            bytes[0] = self.backup.read8(address)?;
+            for (i, byte) in bytes.iter_mut().enumerate() {
+                *byte = self.backup.read8(address + i as u32)?;
+            }
             return Ok(bytes);
         }
         if (SMPC..SMPC + 0x80).contains(&address) {
-            if N != 1 {
-                return Err(BusError::UnsupportedDevice { address, width: N });
-            }
             let mut bytes = [0; N];
-            bytes[0] = self.smpc.read(address)?;
+            for (i, byte) in bytes.iter_mut().enumerate() {
+                let lane = address + i as u32;
+                *byte = if lane & 1 == 0 {
+                    255
+                } else {
+                    self.smpc.read(lane)?
+                };
+            }
             return Ok(bytes);
         }
         if (VDP2..VDP2 + 0x120).contains(&address) {
@@ -487,6 +532,17 @@ impl Bus {
         let address = Self::physical(address);
         if !address.is_multiple_of(N as u32) {
             return Err(BusError::Unaligned { address, width: N });
+        }
+        if (crate::cd::REGISTERS..crate::cd::REGISTERS + 0x2C).contains(&address)
+            || (crate::cd::DATA..crate::cd::DATA + 4).contains(&address)
+        {
+            if N != 2 && !(N == 4 && address == crate::cd::DATA) {
+                return Err(BusError::UnsupportedDevice { address, width: N });
+            }
+            for pair in bytes.as_chunks::<2>().0 {
+                self.cd.write16(address, u16::from_be_bytes(*pair))?;
+            }
+            return Ok(());
         }
         // ST-202 §1.2: word strobes signal slave at 21000000 and master
         // at 21800000. Both cacheable and cache-through aliases share the wire.
@@ -556,16 +612,19 @@ impl Bus {
             );
         }
         if (BACKUP_RAM..BACKUP_RAM + BACKUP_WINDOW).contains(&address) {
-            if N != 1 {
-                return Err(BusError::UnsupportedDevice { address, width: N });
+            for (i, byte) in bytes.into_iter().enumerate() {
+                self.backup.write8(address + i as u32, byte)?;
             }
-            return self.backup.write8(address, bytes[0]);
+            return Ok(());
         }
         if (SMPC..SMPC + 0x80).contains(&address) {
-            if N != 1 {
-                return Err(BusError::UnsupportedDevice { address, width: N });
+            for (i, byte) in bytes.into_iter().enumerate() {
+                let lane = address + i as u32;
+                if lane & 1 != 0 {
+                    self.smpc.write(lane, byte)?;
+                }
             }
-            return self.smpc.write(address, bytes[0]);
+            return Ok(());
         }
         if (VDP2..VDP2 + 0x120).contains(&address) {
             if N != 2 && N != 4 {

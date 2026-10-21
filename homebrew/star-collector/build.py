@@ -70,7 +70,7 @@ def assemble(source, base=BASE):
             elif op == 'ldc':
                 word({'sr': 0x400E, 'gbr': 0x401E, 'vbr': 0x402E}[a[1]] | reg(a[0]) << 8)
             elif op == 'rts': word(0x000B)
-            elif op == 'jmp': word(0x402B | reg(a[0][1:]) << 8)
+            elif op in ('jmp','jsr'): word((0x402B if op=='jmp' else 0x400B) | reg(a[0][1:]) << 8)
             elif op in ('bra', 'bsr', 'bt', 'bf'):
                 word({'bra': 0xA000, 'bsr': 0xB000, 'bt': 0x8900, 'bf': 0x8B00}[op] | branch(pc, a[0], 12 if op in ('bra', 'bsr') else 8))
             elif op in ('shll', 'shll2', 'shll8', 'dt'):

@@ -7,7 +7,9 @@ internal interrupt arbitration, write-through caches, timed SMPC CPU control,
 SCU interrupt/DMA/DSP execution, an independent MC68EC000 core, direct SCSP PCM,
 WebAudio delivery, SMPC RTC/SMEM/INTBACK and clock-based NTSC raster events. It preserves the address-error fixtures, Star Collector,
 backup RAM and both direct digital pads. It does not complete the Saturn hardware
-or the required hardware exerciser demonstration. The original playable Prism
+or the complete required hardware exerciser demonstration. Hardware Lab now
+executes runtime CD/DMA/IRQ, dual CPU, SCU DSP, PCM/CD-DA, advanced video and backup
+but still requires SCSP effects-DSP implementation and a corresponding scene. The original playable Prism
 Courier disc now runs with VDP1/VDP2 composition, 68k audio and guest IRQ/input
 in native and browser Wasm checks. No umbrella acceptance checkbox is met.
 
@@ -324,15 +326,15 @@ complete CPU/scheduler acceptance criteria remain pending.
 | Feature / reference | Current behavior / edge cases | Native | Browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- | --- |
 | BIOS ROM, O map | Exact 512 KiB, big endian, read-only, reset vectors; synthetic guest exception handlers | bus.rs, boot.rs, AEROM | ROM, AEROM | Full synthetic boot/MMIO/service coverage missing; genuine BIOS compatibility optional and not independently confirmed | Pending |
-| Low/high WRAM, O map | Independent 1 MiB banks; aligned B/W/L; P1 aliases | bus.rs | SC, ROM | Work RAM mirrors and timing missing | Pending |
+| Low/high WRAM, O map | Independent 1 MiB banks; aligned B/W/L; low-RAM and CS3 high-RAM mirrors; P1 aliases | bus.rs | SC, ROM | CPU waits, refresh and bus contention timing missing | Pending |
 | Base-system address decoding, O map | Only documented subset in architecture.md | bus.rs | SC | A-bus/cartridge decoding and full base map missing | Pending |
 | MMIO widths/side effects, device manuals | Unsupported accesses return errors | devices.rs | SC | Full device routing/width rules missing | Pending |
-| Backup byte storage, SCU §1.2 figs.1.3/1.5; SMPC §2.3 SYSRES p.29 | 32 KiB, odd byte addresses in 00180000–0018FFFF; P1 aliases; unformatted zero initialization | BK; `backup_byte_lanes_endpoints_and_cache_through_access_do_not_alias_work_ram` | BK | Even lanes/open bus, word/long semantics, additional mirrors and hardware lane confirmation pending | Pending |
+| Backup byte storage, SCU §1.2 figs.1.3/1.5; SMPC §2.3 SYSRES p.29 | 32 KiB, odd-byte storage; even lanes read FF and ignore writes; word/long strobes; P1 aliases; unformatted zero initialization | BK; `backup_byte_lanes_endpoints_and_cache_through_access_do_not_alias_work_ram` | BK | Additional backup aliases, filesystem/service integration and remaining reset domains pending | Pending |
 | Backup reset retention, SMPC §2.3 SYSRES p.29 | Bytes survive successful/rejected HLE, disc and ROM resets; new Machine starts empty | BK; `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot` | BK, reset/mode/read-race checks | Guest SYSRES and other power/reset domains missing | Pending |
 | Local backup import/export (host interface) | Exact 32768 packed bytes; atomic replacement; explicit local download; stale import cancellation; no network/storage | `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot` | Download byte comparison, offline import, invalid size/read errors, races, fresh-tab isolation | BIOS backup filesystem/calls and cartridge backup absent; no automatic cross-session persistence | Pending |
-| Shared event scheduler, O clock domains | Deterministic CPU order, raster/SCU event deadlines and clock-driven DSP/DMA; field deadlines replace instruction budgets | TIME, SCUROM, game.rs, DUAL | SCUROM, SC, DUAL | CPU opcode/on-chip DMA cycles, remaining CD/device clock domains and bus contention missing | Pending |
+| Shared event scheduler, O clock domains | Deterministic CPU order, raster/SCU event deadlines and clock-driven DSP/DMA; field deadlines replace instruction budgets | TIME, SCUROM, game.rs, DUAL | SCUROM, SC, DUAL | CPU opcode/on-chip DMA cycles, contention, refresh and full cross-clock ordering missing; CD command/sector/sample deadlines now exercised by CLAB | Pending |
 | Video timing, VDP2 display registers | Clock-based 263-line/224-visible NTSC raster, HBLANK/VBLANK bits and SCU edges; bounded field advancement | TIME, SCUROM, game.rs | SCUROM, SC | Other resolutions, PAL/interlace/clock modes and exact beam phase remain missing | Pending |
-| Audio timing, SCSP/CD | Independent 68k/sample deadlines, bounded stereo output and worklet; underflow/mute/blocked instrumentation | SNDV, SNDR | SNDR | Exact CPU/bus timing, effects DSP and CD-DA | Pending |
+| Audio timing, SCSP/CD | Independent 68k/sample deadlines, bounded stereo output and worklet; underflow/mute/blocked instrumentation | SNDV, SNDR | SNDR | Exact CPU/bus timing and effects DSP | Pending |
 | Power/reset domains, SMPC / H | Cold reset clears both CPUs/devices and retains backup; SSHOFF resets slave CPU/FRT while retaining shared state; SLEEP distinct | boot.rs, sh2_system.rs, DUAL | ROM/reset, DUAL | Manual/system reset and remaining power/clock controls missing | Pending |
 
 ## SCU and DSP
@@ -343,11 +345,11 @@ edge/transfer coverage are still required. Unsupported registers fail explicitly
 
 | Feature / manual | Implemented behavior | Native / browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- |
-| SCU interrupt registers, [SCU] table 2.1/§3.5, [SCUFINAL] #7/10 | IMS/IST, fixed priorities/vectors, master delivery/acknowledgment, A-bus acknowledgment gate | SCUV, SCUROM / SCUROM | CD and VDP1 producers missing; sound/SMPC routed, complete external interrupt pin behavior unverified | Pending |
+| SCU interrupt registers, [SCU] table 2.1/§3.5, [SCUFINAL] #7/10 | IMS/IST, fixed priorities/vectors, master delivery/acknowledgment, A-bus acknowledgment gate | SCUV, SCUROM / SCUROM | VDP1 source 13 and CD A-bus source 16 now execute guest handlers (CLAB); complete external pin/arbitration behavior unverified | Pending |
 | A/B-bus coordination, [SCU] §3.6, [SCUFINAL] #8–12 | Prohibited DMA source/destination checks and bounded error handling | SCUV / SCUROM (valid transfers) | ASR/refresh wait-state and CPU/bus contention behavior missing | Pending |
 | DMA channels 0–2 direct, [SCU] §§2.1/3.2, [SCUFINAL] #15–24 | Counts, address save/update, unaligned heads/tails, B-bus halfword strides, all seven edge triggers/GO, end/illegal IRQ and priority preemption; one queued retrigger | SCUV, SCUROM / SCUROM (channels 0/1) | Exhaustive trigger/device/boundary tests, actual bus latencies and prohibited three-channel behavior pending | Pending |
 | DMA indirect, [SCUFINAL] #24/25 | Final-spec count/write/read layout, source bit-31 end marker, table walking, write-address continuation | SCUV, SCUROM / SCUROM | Entire table alignment/overflow/error contract and all count limits need further vectors | Pending |
-| DMA device interactions, [SCU] §2.1 | High-RAM to VDP2 VRAM and executing DSP external RAM transfers, real IRQ handlers | SCUV, SCUROM / SCUROM | VDP1/CD paths and full sound cross-device arbitration/guest evidence missing | Pending |
+| DMA device interactions, [SCU] §2.1 | High-RAM to VDP2 VRAM and executing DSP external RAM transfers, real IRQ handlers | SCUV, SCUROM / SCUROM | CLAB adds CD FIFO to high-RAM fixed-source DMA/IRQ; VDP1 routes and full cross-device arbitration remain | Pending |
 | SCU DSP execution/registers, [SCU] §4.5 pp.91–131/141–158 | ALU logical/arithmetic/shift/rotate, signed multiply, parallel X/Y/D1 moves, immediates, delayed jumps/subroutine control, BTM/LPS, END/ENDI, pause/step and read-cleared E/V | SCUV, SCUROM / SCUROM (product/sum/loop/ENDI) | Full conditional/DMA timing, conflicting bank access and ALU overflow/pipeline edge inventory pending | Pending |
 | SCU DSP memory/transfers, [SCU] §§3.3/4.1/4.5 pp.132–140, [SCUFINAL] #16/18/19/26/27 | Four 64-word banks, host ports, address counters, bounded asynchronous input/output DMA and HOLD, END permits DMA continuation | SCUV, SCUROM / SCUROM (immediate-count RAM DMA) | Register-count/program-RAM DMA, cross-device routes and data-bank conflicts lack complete evidence | Pending |
 | SCU timers, [SCU] §§2.2/3.4, [SCUFINAL] #30/31 | Raster-driven timer0 clear/compare and timer1 dot countdown, zero=512, no reload while active, compare-line selection | SCUV, TIME, SCUROM / SCUROM | Full television modes and beam-phase conformance pending | Pending |
@@ -439,8 +441,8 @@ Implementation: [shared sound bus, PCM and clock domain](../src/sound.rs),
 
 | Feature / manual | Implemented behavior | Native / browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- |
-| Sound RAM / SCSP mapping, [SCSP] §§1.2/4.1 | 512 KiB RAM shared by SH-2 and independent 68k; big-endian byte/word/long cycles; SCSP byte lanes; SNDON/OFF reset vectors and RAM retention; RESET output resets SCSP controls | SNDV, SNDR / SNDR | Additional memory-size configuration/mirrors, exact reset pulse/bus timing | Pending |
-| 32 slots, PCM8/16, [SCSP] §4.2 table 4.14 | Guest key-on/off, signed PCM, source bit controls, all 32 slots, no/forward/reverse/alternative loops, Q16 OCT/FNS pitch, signed first-order PCM8/16 interpolation for no/forward loop, sound stack | SNDV, SNDR (including guest half-pitch vectors) / SNDR (half-pitch vectors) | Reverse/alternating fractional interpolation, exact boundary rounding and complete envelope-controlled playback | Pending |
+| Sound RAM / SCSP mapping, [SCSP] §§1.2/4.1 | 512 KiB RAM shared by SH-2 and independent 68k; big-endian byte/word/long cycles; SCSP byte lanes; SNDON/OFF reset vectors and RAM retention; RESET output resets SCSP controls | SNDV, SNDR / SNDR | Additional memory-size configuration, exact reset pulse/bus timing (sound RAM mirrors now tested in bus.rs) | Pending |
+| 32 slots, PCM8/16, [SCSP] §4.2 table 4.14 | Guest key-on/off, signed PCM, source bit controls, all 32 slots, no/forward/reverse/alternative loops, Q16 OCT/FNS pitch, signed first-order PCM8/16 interpolation for all loop directions, sound stack | SNDV, SNDR (including guest half-pitch vectors) / SNDR (half-pitch vectors) | Exact hardware fractional boundary rounding and complete envelope-controlled playback | Pending |
 | Envelope, [SCSP] §4.2 | Nonzero envelope settings rejected; direct mode requires SDIR | SNDV / explicit errors | Attack/decay/sustain/release/key scaling | Pending |
 | FM/modulation/LFO, [SCSP] §4.2 | Unsupported nonzero controls rejected | SNDV / explicit errors | Noise, modulation/LFO execution and routing | Pending |
 | Levels/pan/external inputs, [SCSP] §4.2 tables 4.27/28 | Direct send and fixed-point stereo pan, clipping, master output control; independently expected full-volume stereo buffers | SNDV, SNDR / SNDR | Intermediate master gain conformance, effect/external inputs/CD-DA | Pending |
@@ -449,7 +451,7 @@ Implementation: [shared sound bus, PCM and clock domain](../src/sound.rs),
 | SCSP DMA, [SCSP] §4.2 fig.4.66/table 4.39 | Word transfers in both directions, zero gate, count/address progress, DEXE completion and IRQ; DMA-register target rejected | SNDV / not yet guest-tested | Exact transfer timing/arbitration, full boundaries and guest evidence | Pending |
 | SCSP effects DSP, [SCSP] DSP model | Not implemented; DSP ports reject accesses | SNDV / explicit errors | Interpreter, program/register/ring-buffer routing | Pending |
 | Browser audio output | Bounded 8192-frame producer/ring, stereo sample-rate adaptation, explicit gesture enable, pause/mute/blocked/underflow/drop states; worklet renders nonzero guest PCM | SNDV / SNDR WebAudio instrumentation | Full synthesis/DSP/CD-DA validation depends on missing hardware | Pending |
-| CD-DA, [CD] / [SCSP] | None | — / — | Runtime audio tracks and external sound mix path | Pending |
+| CD-DA, [CD] §§3/4/8 / [SCSP] table 4.31 | Guest play/repeat, signed stereo BINARY tracks; EXTS0/1 EFSDL/EFPAN, mixed with 68k PCM at sample deadlines | `tests/cd.rs::cdda_stereo_external_scsp_route_has_exact_samples_and_muting`, CLAB / CLAB WebAudio + changed audio track | Effects DSP route, scan/de-emphasis/subcode and complete synthesis remain | Pending |
 
 The sound CPU has an independent 11.2896 MHz domain and SCSP has a 44.1 kHz
 sample domain relative to the fixed 26.8741 MHz reference. Native traces match
@@ -463,18 +465,18 @@ no-op CPU/device implementations cannot satisfy those assertions.
 
 | Feature / manual | Current behavior / edge cases | Native | Browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- | --- |
-| Cooked ISO, [Disc Format][DISC] | Bounded single-area IP + simple ISO9660, first-read file | disc.rs | SC/local ISO | General layouts/size, runtime sectors | Pending |
-| BIN/CUE/raw/mixed tracks, [DISC] / [CD] | None | — | — | CUE references, pregaps, raw sectors, TOC/audio and UI selection | Pending |
-| CD command/status/HIRQ, [CD] | None | — | — | Command protocol, response timing/IRQ/acknowledgment | Pending |
-| CD drive/TOC/session/track state, [CD] | None | — | — | Seek/spin/read/play/status transitions | Pending |
-| CD buffers/transfers, [CD] | None | — | — | Sector pool, counts, transfer endpoints/IRQ | Pending |
-| Filters/selectors/partitions, [CD] | None | — | — | Connection/filtering/partition data and commands | Pending |
-| BIOS-less startup, [Boot ROM][BOOT] / [DISC] | Narrow original first-read HLE boot | disc.rs, game.rs | SC | General startup and region/version contracts | Pending |
+| Cooked ISO, [Disc Format][DISC] | Bounded IP/ISO9660 first-read startup; retained media and runtime sector/file reads | disc.rs, media.rs, cd.rs, CLAB | SC, CLAB/local ISO | General boot layouts/size, interleaved/XA filesystem records | Pending |
+| BIN/CUE/raw/mixed tracks, [DISC] / [CD] §§4/7.2.3 | Caller-resolved files, cooked/2352-byte Mode1/Mode2/audio, shared/separate files, INDEX00/01, gaps and TOC | `tests/media.rs`, CLAB | CLAB local multi-file CUE, missing-reference/reset/privacy checks | WAVE/compression, additional indices/flags and full corrupt-sector ECC handling | Pending |
+| CD command/status/HIRQ, [CD] §§3.1–3.4 | Separate command/response latches; 1075-clock command completion, read-protected responses, CMOK/DRDY/CSCT/end flags, masks, clear-zero HIRQ and SCU A-bus IRQ | `tests/cd.rs`, CLAB | CLAB command/FIFO/DMA/IRQ | Full command-specific timing and register mirrors, scan and subcode R–W remain | Pending |
+| CD drive/TOC/session/track state, [CD] §§4/7/8.2 | TOC/session/Q, bounded seek, data play, CD-DA/repeat/end, media-dependent FAD/track/index reports; timed CDON/OFF retains disc and clears CD buffers | `tests/cd.rs`, CLAB | CLAB track playback | Standby, scan, retry/ECC, complete initialize options/periodic response phase and tray lifecycle remain | Pending |
+| CD buffers/transfers, [CD] §§3.4/5.3/5.4/8.2 | 200-sector pool, 24 partitions, get/delete/get-delete/put, short/over transfers, size/info/search, FIFO word/long and fixed-source SCU DMA | `tests/cd.rs`, CLAB | CLAB actual DMA/IRQ/checksum, sector mutation | Complete pool-full flow control/transfer overlap and timing/error inventory remain | Pending |
+| Filters/selectors/partitions, [CD] §§5.2/5.3/8.2.5 | FAD and masked subheader comparisons, reverse conditions, true/false routes, reset, copy/move through destination filter | `tests/cd.rs::selectors_fad_range_connections_copy_move_and_size`, Mode2 reverse vectors | CLAB default filter/partition route | Full connection constraints and all boundary/error vectors remain | Pending |
+| BIOS-less startup, [Boot ROM][BOOT] / [DISC] | Original first-read HLE plus licensed SH-2 reset trampoline, separate from ExternalBios; slave handoff executes guest instructions | disc.rs, game.rs, CLAB, src/hle/boot.s | SC, CLAB | General system/backup/CD service ABI and full startup/region/version contracts | Pending |
 | BIOS services, [BOOT] | None | — | — | System/backup/CD calls and per-call ABI/side effects | Pending |
 | External BIOS execution, [BOOT] | Genuine reset vectors, original synthetic ROM handlers | boot.rs, sh2_system.rs | ROM | Genuine BIOS initialization/menu/boot **unverified**; no lawful local BIOS supplied | Pending |
 | SMPC direct digital port 1, [SMPC] §3 | Active-low nibble selection and button levels | devices.rs | SC | Full I/O mode behavior and timing | Pending |
 | SMPC commands/status/timing, [SMPC] §§1.2/2.3/2.4/3.2 | SF/IREG/OREG/SR, CPU commands, INTBACK status/peripheral phases, continue/break, VBlank collection and optimization; SCU source 7 | smpc/tests.rs, tests/smpc.rs, DUAL | SMPR, DUAL | Remaining system commands, firmware jitter and all clock modes | Pending |
-| SMPC reset/power/clock, [SMPC] table 1.1/§2.3 | SSHON/OFF, SNDON/OFF, NMIREQ; RESENAB/DISA control reset-button NMI edges and VBlank-latched RESB | DUAL, SNDV, SNDR, smpc/tests.rs | DUAL, SNDR | MSHON, CDON/OFF, SYSRES and clock switching | Pending |
+| SMPC reset/power/clock, [SMPC] table 1.1/§2.3 | MSHON, SSHON/OFF, SNDON/OFF, CDON/OFF, NMIREQ; RESENAB/DISA control reset-button NMI edges and VBlank-latched RESB | DUAL, SNDV, SNDR, smpc/tests.rs | DUAL, SNDR | SYSRES, clock switching, full status/power domains | Pending |
 | RTC/region/system flags, [SMPC] §§2.4/2.5 | Deterministic Gregorian/BCD RTC, SETTIME, retained four-byte SETSMEM, status/region Japan, output control flags | smpc/tests.rs, tests/smpc.rs | SMPR | Full system-control/region configuration; remaining reset domains | Pending |
 | SMPC direct digital port 2, [SMPC] §1.2 pp.7–9, §3.4 table 3.36 p.97 | Independent PDR2/DDR2, IOSEL2/EXLE2; active-low nibble reports; host keyboard levels | BK; `both_digital_ports_have_independent_direction_selection_and_enable_bits` | BK; I/K/J/L keyboard input and release checks | Settling remains immediate; no timed INTBACK/peripheral packets or external latch IRQ | Pending |
 | Analog input, [SMPC] tables 3.19/3.37; [STN43] Analog mode | ID15 X/Y/Z and ID16 X/Y/AR/AL, active-low buttons, trigger hysteresis (146 on / 85 off); timed INTBACK and direct TH/TR/TL handshake, transaction latching/abort, independent ports; standard Gamepad radial axes/triggers and focus neutralization | smpc/tests.rs, tests/smpc.rs; `Analog`, `Handshake` in [controller.rs](../src/smpc/controller.rs) | SMPR + PADR (both direct ports, changed axis, ID15/16 Gamepad/focus) | Full electrical timing, mode-switch calibration, direct digital settling, external latch and complete command/reset/clock integration remain | Pending |
@@ -487,9 +489,9 @@ no-op CPU/device implementations cannot satisfy those assertions.
    cycle-based dual-CPU scheduling and arbitration. CPU opcode decoding alone
    does not satisfy the CPU or multiprocessor criterion.
 2. Complete MC68EC000 timing/prefetch edge conformance and sound bus arbitration;
-   SCSP envelope/FM/LFO/noise/effects DSP and CD-DA remain missing. Direct PCM,
+   SCSP envelope/FM/LFO/noise/effects DSP remain missing; CD-DA now has CLAB evidence. Direct PCM,
    executing sound CPU, timers/DMA/FIFO subsets and WebAudio now have evidence.
-3. Full base memory map, backup bus lanes/widths/mirrors and BIOS filesystem/calls,
+3. Full base memory map, remaining backup mirrors and BIOS filesystem/calls,
    plus hardware clock/event scheduling. Packed backup import/export and byte
    retention pass subset tests; other reset domains remain absent.
 4. Complete SCU A/B-bus wait-state/arbitration and device routes, DMA boundary/
@@ -499,15 +501,18 @@ no-op CPU/device implementations cannot satisfy those assertions.
    parameter reloads/CRAM coefficients, sprite windows/shadow/display modes, with
    complete independent guest and browser coverage. VIDEO, EFFECTS and PRISM
    provide actual subset pixel/composition evidence.
-6. Runtime CD block, BIN/CUE/mixed tracks, complete BIOS HLE ABI and full synthetic
+6. Complete remaining CD drive/command/timing/error behavior (see CD inventory),
+   BIOS HLE ABI and full synthetic
    boot pathways; remaining SMPC system/reset/clock commands, direct digital
    settling and full external-latch behavior. RTC/SMEM/INTBACK/IRQ, analog
    joystick/3D-pad packets and direct analog handshakes have subset evidence.
 7. The multiprocessor/SCU/runtime-CD/CD-DA/SCSP-DSP/advanced-video/backup
-   hardware exerciser disc remains absent. Prism Courier now supplies the
+   hardware exerciser now has the original Hardware Lab disc (CLAB), covering
+   the listed paths except SCSP effects DSP. Its required effects-DSP scene and
+   full remaining chip behavior are still mandatory. Prism Courier supplies the
    original playable VDP1+VDP2+audio guest demonstration, including guest input,
    win/loss/restart and actual native/Wasm execution. The existing synthetic
-   ROMs do not replace the required hardware exerciser disc.
+   ROMs remain supporting fixtures; CLAB does not yet satisfy the entire exerciser criterion.
 8. Full original synthetic BIOS boot/MMIO/interrupt/service fixtures and separate
    HLE ABI tests. Genuine BIOS/retail compatibility is **not independently
    confirmed**, is optional, and never requires someone to supply firmware.
@@ -637,7 +642,7 @@ observations were used in this checkpoint.
 [VDP2]: https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-058-R2-060194.pdf
 [SCSP]: https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-077-R2-052594.pdf
 [SMPC]: https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-169-R1-072694.pdf
-[CD]: https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-162-R1-092994.pdf
+[CD]: https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-162-062094.pdf
 [BOOT]: https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-079B-R3-011895.pdf
 [DISC]: https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-040-R4-051795.pdf
 
@@ -720,3 +725,43 @@ CI. They are diagnostic ROMs and do not replace the required hardware exerciser
 disc. No mandatory umbrella criterion is declared complete by these fixtures.
 
 [STN43]: https://github.com/luckyseoul/saturn-docs/blob/main/files/ssddv25/segahtml/info/hon/stn43.htm
+
+
+## Runtime CD and mixed-disc guest evidence
+
+**CLAB** is the original [Hardware Lab source and guest contract](../homebrew/hardware-lab/README.md),
+[reproducible builder](../homebrew/hardware-lab/build.py),
+[native integration](../tests/hardware_lab.rs) and [browser suite](../scripts/browser-smoke.mjs).
+Implementation is [owned media](../src/media.rs), [CD registers/drive/filter/FIFO](../src/cd.rs),
+[bus/event/SCU wiring](../src/bus.rs), [SCSP external-input/sample route](../src/sound.rs),
+and [independent HLE reset trampoline](../src/hle/boot.s).
+
+The CD reference link above is corrected to **ST-162-062094**, which contains
+CD Communication Interface §§3–8; ST-162-R1 is the system/SMPC/backup library
+volume. Register word encodings are cross-checked against the independent
+[CD protocol register tables](https://wiki.yabause.org/index.php5?title=CDCommands).
+No emulator source, firmware or SDK routines were copied or transliterated.
+
+`tests/cd.rs` supplies authored response/FIFO/sector/filter/directory/audio vectors;
+`tests/media.rs` supplies raw/cooked equivalence, TOC, gaps/indices, missing/ambiguous
+files, truncation and deterministic malformed-text mutations. The guest's LBA60
+payload is not part of first-read code. Its checksum comes from runtime CD play,
+selector storage, FIFO consumption by SCU DMA, IRQ delivery and guest summation.
+Changing only that sector changes the checksum. Changing only the audio track
+changes Wasm's mixed stereo buffer, rejecting a disconnected CD-DA route. The
+browser also asserts actual production Canvas and AudioWorklet delivery.
+
+Every new guest/asset/trampoline has original source and adjacent MIT licensing.
+CI checks all generated media and both new reproducibility builders. Hardware Lab
+includes no SCSP effects-DSP program: that missing interpreter and guest scene,
+all other mandatory unresolved features, and comprehensive conformance evidence
+remain required for #17. No umbrella checkbox is satisfied by this evidence alone.
+
+
+Reverse and alternating fractional PCM now interpolate decoded signed PCM8/16
+in traversal order, with reverse wrapping and alternating endpoint holds.
+`src/sound/tests.rs::fractional_reverse_and_alternating_loops_interpolate_in_traversal_direction`
+uses independently authored positive/negative half-pitch vectors. The browser
+patches only the original 68k sound guest's SCSP pitch/key-on immediate words and
+checks an exact reverse-loop stereo vector in Wasm. Exact hardware sub-sample
+rounding, envelope/FM/LFO/noise and the effects DSP remain mandatory work.

@@ -27,6 +27,57 @@ impl Emulator {
     pub fn reset_disc(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
         self.machine.reset(Boot::HleDisc(bytes)).map_err(js_error)
     }
+    /// A NUL-separated name table, lengths and concatenated local file bytes
+    /// marshal a complete CUE selection in one call. No path is opened here.
+    pub fn reset_cue(
+        &mut self,
+        cue: &str,
+        names: &str,
+        lengths: &[u32],
+        bytes: &[u8],
+    ) -> Result<(), JsValue> {
+        let result = (|| {
+            let names: Vec<_> = names.split('\0').collect();
+            if names.len() != lengths.len() || lengths.len() > 99 || bytes.len() > 134_217_728 {
+                return Err(crate::disc::DiscError(
+                    "Invalid local CUE file table".into(),
+                ));
+            }
+            let mut files = Vec::new();
+            let mut offset = 0usize;
+            for (name, length) in names.into_iter().zip(lengths) {
+                let end = offset
+                    .checked_add(*length as usize)
+                    .ok_or_else(|| crate::disc::DiscError("CUE file length overflow".into()))?;
+                files.push((
+                    name,
+                    bytes
+                        .get(offset..end)
+                        .ok_or_else(|| crate::disc::DiscError("Truncated CUE file table".into()))?,
+                ));
+                offset = end;
+            }
+            if offset != bytes.len() {
+                return Err(crate::disc::DiscError(
+                    "Unexpected bytes after CUE file table".into(),
+                ));
+            }
+            crate::media::Media::cue(cue, &files)
+        })();
+        match result {
+            Ok(media) => self.machine.reset_media(media).map_err(js_error),
+            Err(error) => {
+                let _ = self.machine.reset(Boot::HleDisc(&[]));
+                Err(JsValue::from_str(&error.to_string()))
+            }
+        }
+    }
+    pub fn mount_disc(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+        let media =
+            crate::media::Media::iso(bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        self.machine.mount_media(media);
+        Ok(())
+    }
     pub fn advance_frame(&mut self) -> Result<(), JsValue> {
         self.machine.advance_frame().map_err(js_error)
     }

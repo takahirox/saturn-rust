@@ -54,6 +54,8 @@ external cross compiler or SDK:
 python3 homebrew/star-collector/build.py
 python3 homebrew/star-collector/build.py --check
 python3 homebrew/prism-courier/build.py --check
+python3 src/hle/build.py --check
+python3 homebrew/hardware-lab/build.py --check
 python3 tests/fixtures/build_dual_sh2.py --check
 python3 tests/fixtures/build_sh7604.py --check
 python3 tests/fixtures/build_bsc.py --check
@@ -110,9 +112,12 @@ Rust or guest source. Opening `index.html` as a `file:` URL will not work. The c
    or return from Debug, playback stays paused. Choose **BIOS-less HLE disc** and
    a local authorized ISO to use the same loader without fetching the sample.
    Local images load paused; close settings and use Resume to play.
-   Only the documented single-area Saturn IP + ISO9660 cooked 2048-byte-sector
-   format and device subset are supported, up to 16 MiB. BIN/CUE, compressed images
-   and generic game compatibility are future work. Malformed or unsupported media
+   Startup uses the documented single-area Saturn IP + ISO9660 first-read
+   contract, up to 16 MiB. Select a cooked ISO alone, or select one CUE and all its
+   BINARY data/audio track files together (up to 128 MiB). Cooked and raw Mode1,
+   raw Mode2, audio, shared/separate files and track gaps/indices are supported.
+   Runtime CD commands retain and read the actual medium; CD-DA passes through
+   SCSP. Compressed images and generic game compatibility remain unsupported. Malformed or unsupported media
    produce errors and stop the old machine.
 5. To inspect the preserved debugger fixture, select **HLE bootstrap prototype**
    in settings and choose **Debug**. Click Step to see `R0=5`, then
@@ -281,3 +286,16 @@ line scrolling, line-window composition and changed matrix pixels on the actual
 Canvas, plus both ports' clock-delayed analog handshake/ID/data and changed axis
 input. Their reproducibility commands are listed above; licenses, hashes,
 implementation and limitations are in the [conformance matrix](hardware-conformance.md#original-advanced-video-and-controller-fixtures).
+
+
+Hardware Lab is the original mixed-track diagnostic in
+[homebrew/hardware-lab](../homebrew/hardware-lab/README.md). Select the three
+`web/hardware-lab` CUE/ISO/audio files together in local disc settings. It computes
+slave SH-2, SCU DSP and runtime CD/FIFO/DMA/IRQ results, starts the independent
+68k sound guest, mixes CD-DA through SCSP, displays the advanced VDP2 scene and
+increments backup RAM on controller-driven restart. Native and browser checks
+assert those results, changed-sector checksums and changed-audio buffers; the
+browser exercises the actual Canvas/AudioWorklet path and missing-file rejection.
+The remaining SCSP effects-DSP interpreter/scene and the other mandatory Issue
+#17 criteria are still required. CI also verifies the original independent HLE
+slave reset trampoline; external BIOS mode never installs that trampoline.

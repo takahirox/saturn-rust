@@ -45,34 +45,23 @@ fn backup_byte_lanes_endpoints_and_cache_through_access_do_not_alias_work_ram() 
     assert_eq!(bus.read32(0x0600_0000), Ok(0));
     assert!(matches!(
         bus.read8(BACKUP_RAM - 1),
-        Err(BusError::Unmapped { .. })
+        Err(BusError::UnsupportedDevice { .. }) // mirrored SMPC EXLE, write-only
     ));
     assert!(matches!(
         bus.read8(BACKUP_RAM + BACKUP_WINDOW),
         Err(BusError::Unmapped { .. })
     ));
-    // Unsupported lanes/widths must not silently succeed or corrupt valid bytes.
-    let before = bus.read8(BACKUP_RAM + 1);
-    for result in [
-        bus.write8(BACKUP_RAM, 42),
-        bus.write16(BACKUP_RAM, 42),
-        bus.write32(BACKUP_RAM, 42),
-    ] {
-        assert!(matches!(result, Err(BusError::UnsupportedDevice { .. })));
-    }
-    assert!(matches!(
-        bus.read8(BACKUP_RAM),
-        Err(BusError::UnsupportedDevice { .. })
-    ));
-    assert!(matches!(
-        bus.read16(BACKUP_RAM),
-        Err(BusError::UnsupportedDevice { .. })
-    ));
-    assert!(matches!(
-        bus.read32(BACKUP_RAM),
-        Err(BusError::UnsupportedDevice { .. })
-    ));
-    assert_eq!(bus.read8(BACKUP_RAM + 1), before);
+    // Even lanes are unconnected; wider bus cycles strobe only odd bytes.
+    let before = bus.read8(BACKUP_RAM + 1).unwrap();
+    bus.write8(BACKUP_RAM, 42).unwrap();
+    assert_eq!(bus.read8(BACKUP_RAM), Ok(255));
+    assert_eq!(bus.read16(BACKUP_RAM), Ok(0xFF00 | u16::from(before)));
+    bus.write16(BACKUP_RAM, 0x1267).unwrap();
+    assert_eq!(bus.read16(BACKUP_RAM), Ok(0xFF67));
+    bus.write32(BACKUP_RAM, 0x12345678).unwrap();
+    assert_eq!(bus.read32(BACKUP_RAM), Ok(0xFF34FF78));
+    assert_eq!(bus.read8(BACKUP_RAM + 1), Ok(0x34));
+    assert_eq!(bus.read8(BACKUP_RAM + 3), Ok(0x78));
 }
 
 #[test]

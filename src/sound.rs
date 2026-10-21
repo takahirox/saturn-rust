@@ -34,6 +34,7 @@ pub struct Scsp {
     stack: [i16; 64],
     stack_index: usize,
     dma_remaining: u16,
+    external: [i16; 2],
     pub generated: u64,
     pub dropped: u64,
     output: VecDeque<i16>,
@@ -53,6 +54,7 @@ impl Default for Scsp {
             stack: [0; 64],
             stack_index: 0,
             dma_remaining: 0,
+            external: [0; 2],
             generated: 0,
             dropped: 0,
             output: VecDeque::with_capacity(BUFFER_FRAMES * 2),
@@ -121,7 +123,7 @@ impl Scsp {
                 let index = (offset as usize & 31) / 2;
                 // Reject envelope/LFO/FM/effects input until their behavior exists.
                 if (matches!(index, 4 | 5 | 7 | 9 | 10) && value != 0)
-                    || (index == 11 && value & 255 != 0)
+                    || (index == 11 && value & 255 != 0 && !matches!(slot, 16 | 17))
                     || (index == 0 && value & 0x0180 != 0)
                 {
                     return Err(Self::error(offset));
@@ -130,6 +132,7 @@ impl Scsp {
                     0 => 0x0FFF,
                     6 => 0x03FF,
                     8 => 0x7BFF,
+                    11 if matches!(slot, 16 | 17) => 0xFFFF,
                     11 => 0xFF00,
                     _ => u16::MAX,
                 };
@@ -356,8 +359,25 @@ impl Scsp {
             // follows waveform reads. Interpolate decoded signed samples, not
             // addresses or mixed output. Q16 arithmetic rounds towards -infinity.
             let index = voice.phase.max(0) as usize >> 16;
-            let fraction = voice.phase & 0xFFFF;
-            let next = if index + 1 >= regs[3] as usize {
+            // A reverse phase names the upper edge of its sample interval.
+            // Measure interpolation distance from that edge toward the previous
+            // sample, wrapping only reverse loops and holding ping-pong ends.
+            let fraction = if voice.reverse {
+                0xFFFF - (voice.phase & 0xFFFF)
+            } else {
+                voice.phase & 0xFFFF
+            };
+            let next = if voice.reverse {
+                if index <= usize::from(regs[2]) {
+                    if looping == 2 {
+                        usize::from(regs[3]) - 1
+                    } else {
+                        index
+                    }
+                } else {
+                    index - 1
+                }
+            } else if index + 1 >= regs[3] as usize {
                 if looping == 1 {
                     regs[2] as usize
                 } else {
@@ -382,13 +402,7 @@ impl Scsp {
                 i64::from(value)
             };
             let a = decode(index);
-            // Reverse/alternating traversal retains its established sample-point
-            // behavior until its fractional edge vectors are independently derived.
-            let value = if looping <= 1 {
-                ((a * (65536 - fraction) + decode(next) * fraction) >> 16) as i16
-            } else {
-                a as i16
-            };
+            let value = ((a * (65536 - fraction) + decode(next) * fraction) >> 16) as i16;
             if regs[6] & 0x200 == 0 {
                 self.stack[(self.stack_index + i) & 63] = value;
             }
@@ -417,6 +431,29 @@ impl Scsp {
             voice.phase += if voice.reverse { -step } else { step };
         }
         self.stack_index = (self.stack_index + 32) & 63;
+        // ST-077 table 4.31: EXTS0/1 use slot 16/17 EFSDL/EFPAN.
+        for (channel, sample) in self.external.into_iter().enumerate() {
+            let routing = self.slots[16 + channel][11];
+            let send = (routing >> 5) & 7;
+            let pan = routing & 31;
+            let level = if send == 0 {
+                0
+            } else {
+                i64::from(sample) << (send - 1)
+            } / 64;
+            const PAN: [i64; 16] = [
+                32768, 23170, 16384, 11585, 8192, 5793, 4096, 2896, 2048, 1448, 1024, 724, 512,
+                362, 256, 0,
+            ];
+            mix[0] += level * if pan < 16 { PAN[pan as usize] } else { 32768 } / 32768;
+            mix[1] += level
+                * if pan >= 16 {
+                    PAN[(pan - 16) as usize]
+                } else {
+                    32768
+                }
+                / 32768;
+        }
         if self.output.len() >= BUFFER_FRAMES * 2 {
             self.output.pop_front();
             self.output.pop_front();
@@ -561,6 +598,9 @@ impl Scsp {
     }
 }
 impl Sound {
+    pub(crate) fn clocks_to_sample(&self) -> u32 {
+        (self.next_sample - self.time).min(u64::from(u32::MAX)) as u32
+    }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<(), BusError> {
         if enabled && !self.enabled {
             let memory = SoundBus {
@@ -579,6 +619,20 @@ impl Sound {
         Ok(())
     }
     pub fn advance(&mut self, clocks: u32) -> Result<(), BusError> {
+        self.advance_domain(clocks, None)
+    }
+    pub fn advance_with_cd(
+        &mut self,
+        clocks: u32,
+        cd: &mut crate::cd::CdBlock,
+    ) -> Result<(), BusError> {
+        self.advance_domain(clocks, Some(cd))
+    }
+    fn advance_domain(
+        &mut self,
+        clocks: u32,
+        mut cd: Option<&mut crate::cd::CdBlock>,
+    ) -> Result<(), BusError> {
         let target = self.time + u64::from(clocks);
         while self.next_cpu.min(self.next_sample) <= target {
             if self.next_cpu <= self.next_sample {
@@ -601,6 +655,7 @@ impl Sound {
                 self.next_cpu =
                     self.cpu_origin + (self.cpu_ticks * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
             } else {
+                self.scsp.external = cd.as_mut().map_or([0; 2], |cd| cd.audio_sample());
                 self.scsp.sample(&mut self.ram)?;
                 self.next_sample = ((self.scsp.generated + 1) * REFERENCE_HZ).div_ceil(SAMPLE_RATE);
             }

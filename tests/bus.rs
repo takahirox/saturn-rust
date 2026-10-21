@@ -43,10 +43,9 @@ fn bios_is_exactly_512_kib_big_endian_and_read_only_at_all_widths() {
         assert!(matches!(result, Err(BusError::ReadOnly { .. })));
     }
     assert_eq!(bus.read32(0), Ok(0x1234_5678));
-    assert!(matches!(
-        bus.read8(BIOS_SIZE as u32),
-        Err(BusError::Unmapped { .. })
-    ));
+    assert_eq!(bus.read32(BIOS_SIZE as u32), Ok(0x12345678));
+    assert_eq!(bus.read32(0x20080000), Ok(0x12345678));
+    assert!(bus.write32(0x80000, 0).is_err());
 }
 
 #[test]
@@ -74,9 +73,9 @@ fn invalid_and_unaligned_accesses_fail_without_partial_writes() {
     }
     for address in [
         LOW_WRAM - 4,
-        LOW_WRAM + WRAM_SIZE as u32,
+        0x0040_0000,
         HIGH_WRAM - 4,
-        HIGH_WRAM + WRAM_SIZE as u32,
+        0x0800_0000,
         0x2000_0000,
         0xFFFF_FFFC,
     ] {
@@ -106,4 +105,44 @@ fn invalid_and_unaligned_accesses_fail_without_partial_writes() {
         bus.read32(u32::MAX),
         Err(BusError::Unaligned { .. })
     ));
+}
+
+#[test]
+fn ram_cs_mirrors_share_physical_bytes_on_both_cache_through_aliases() {
+    let mut b = Bus::default();
+    for high in [false, true] {
+        let base = if high { HIGH_WRAM } else { LOW_WRAM };
+        let mirrors = if high { 32 } else { 2 };
+        for n in 0..mirrors {
+            b.write32(base + n * 0x100000 + 0x80, n + 0x12340000)
+                .unwrap();
+            for m in 0..mirrors {
+                assert_eq!(b.read32(base + m * 0x100000 + 0x80), Ok(n + 0x12340000));
+                assert_eq!(
+                    b.read32(base + m * 0x100000 + 0x20000080),
+                    Ok(n + 0x12340000)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn sound_video_and_smpc_chip_select_mirrors_and_lanes() {
+    let mut b = Bus::default();
+    for (base, mirror) in [
+        (0x05A00000, 0x05A80000),
+        (0x05C80000, 0x05CC0000),
+        (0x05E00000, 0x05E80000),
+    ] {
+        b.write32(base + 0x10, 0x12345678).unwrap();
+        assert_eq!(b.read32(mirror + 0x10), Ok(0x12345678));
+        b.write16(mirror + 0x12, 0xCAFE).unwrap();
+        assert_eq!(b.read32(base + 0x10), Ok(0x1234CAFE));
+    }
+    b.write8(0x00100162, 0).unwrap(); // no connected even SMPC lane
+    b.write16(0x00100162, 1).unwrap();
+    assert_eq!(b.read16(0x00100062), Ok(0xFF01));
+    b.write16(0x0010011E, 0).unwrap(); // MSHON through mirrored word bus
+    assert_eq!(b.read16(0x0010005E), Ok(0xFF00));
 }

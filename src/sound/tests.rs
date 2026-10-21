@@ -316,3 +316,54 @@ fn reset_instruction_pulses_external_scsp_without_erasing_sound_ram_or_cpu_state
     assert_eq!(sound.scsp.common[0], 0);
     assert!(sound.scsp.generated > 10);
 }
+
+#[test]
+fn fractional_reverse_and_alternating_loops_interpolate_in_traversal_direction() {
+    // ST-077 §2.2/§3.1, figure 4.10: attack then reverse/alternative address
+    // sequences, followed by first-order interpolation. Half pitch with LSA=1,
+    // LEA=4. A reverse wrap joins sample 1 to sample 3; ping-pong holds endpoints.
+    // Test both encodings, including negative signed samples; all values are
+    // authored arithmetic means of the source samples, independent of the core.
+    for (mode, expected) in [
+        (
+            2,
+            [
+                10, 15, 40, 35, 30, 25, 20, 30, 40, 35, 30, 25, 20, 30, 40, 35,
+            ],
+        ),
+        (
+            3,
+            [
+                10, 15, 20, 25, 30, 35, 40, 40, 40, 35, 30, 25, 20, 20, 20, 25,
+            ],
+        ),
+    ] {
+        for pcm8 in [false, true] {
+            for sign in [-1i16, 1] {
+                let mut s = Scsp::default();
+                let mut ram = vec![0; SOUND_RAM_SIZE];
+                for (i, value) in [10, 20, 30, 40].into_iter().enumerate() {
+                    if pcm8 {
+                        ram[0x100 + i] = (value * sign) as i8 as u8;
+                    } else {
+                        ram[0x100 + i * 2..0x102 + i * 2]
+                            .copy_from_slice(&(value * sign * 256).to_be_bytes());
+                    }
+                }
+                direct(&mut s, 0, 0x100, mode, pcm8, 0);
+                s.write16(4, 1).unwrap();
+                s.write16(16, 0x7800).unwrap();
+                for _ in 0..expected.len() {
+                    s.sample(&mut ram).unwrap();
+                }
+                let actual: Vec<_> = s
+                    .drain(expected.len())
+                    .chunks_exact(2)
+                    .map(|p| p[0])
+                    .collect();
+                let expected: Vec<_> = expected.into_iter().map(|v| v * sign * 256).collect();
+                assert_eq!(actual, expected, "mode={mode}, pcm8={pcm8}, sign={sign}");
+            }
+        }
+    }
+}

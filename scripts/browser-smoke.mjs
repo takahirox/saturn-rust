@@ -9,7 +9,7 @@ import { join, resolve } from "node:path";
 import { chromium } from "playwright";
 
 // Fail before upload if web/ includes anything beyond the public runtime assets.
-const assets = ["audio.js", "audio-worklet.js", "app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt", "prism-courier.iso", "prism-courier-LICENSE.txt"];
+const assets = ["audio.js", "audio-worklet.js", "app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt", "prism-courier.iso", "prism-courier-LICENSE.txt", "hardware-lab.iso", "hardware-lab-audio.bin", "hardware-lab.cue", "hardware-lab-LICENSE.txt"];
 assert.deepEqual((await readdir("web", { recursive: true })).sort(), [...assets, "pkg"].sort());
 assert((await lstat("web/pkg")).isDirectory());
 for (const asset of assets) {
@@ -627,6 +627,14 @@ try {
   const fractionalSound = await soundResult();
   assert.deepEqual(fractionalSound.waveform, [0x1000F000,0xE0002000]);
   assert.deepEqual(fractionalSound.samples,[256,4096,0,0,-256,-4096,-384,-6144,-512,-8192,0,0,512,8192,384,6144]);
+  const reverseSoundRom=Buffer.from(fractionalSoundRom);
+  const keyInstruction=Buffer.from([0x33,0xFC,0x18,0x20,0,0x10,0,0]);
+  const keyAt=reverseSoundRom.indexOf(keyInstruction);
+  assert(keyAt>=0 && reverseSoundRom.indexOf(keyInstruction,keyAt+1)===-1);
+  reverseSoundRom.writeUInt16BE(0x1840,keyAt+2);
+  await page.locator("#bios").setInputFiles({name:"original-reverse-fractional-sound.bin",mimeType:"application/octet-stream",buffer:reverseSoundRom});
+  await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
+  assert.deepEqual((await soundResult()).samples,[512,8192,0,0,-512,-8192,-384,-6144,-256,-4096,0,0,256,4096,384,6144]);
   // Real Gamepad API input adaptation feeds only emulated SMPC levels. The
   // original SH-2 guest sets RTC/SMEM, handles IRQs and copies INTBACK packets.
   const smpcRom = Buffer.alloc(524288);
@@ -1268,7 +1276,87 @@ try {
   await missingBuild.waitForFunction(() => document.getElementById("status").textContent === "Initialization failed");
   assert.match(await missingBuild.locator("#error").textContent(), /Build web\/pkg and serve/);
   assert.equal(await missingBuild.locator("#reset").isDisabled(), true);
-  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, BCR1 processor identity/refresh IRQ/module stops/reset repeatability, four-layer VDP2 tile guest/palette mutation/Wasm and production Canvas presentation, original rotation/coefficient/line-scroll/line-window guest and mutated matrix pixels, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, SH-2-uploaded MC68EC000 PCM computation/SCSP timer IRQ/stereo samples and WebAudio worklet delivery/underflow/mute/blocked states, SMPC RTC/SMEM/INTBACK IRQs and synthetic digital+ID15/ID16 analog Gamepad/focus release, timed both-port direct analog handshake guest, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation; Prism Courier original disc, VDP1 sprite/polygons + VDP2 composition/Canvas, draw-end IRQ, 68k stereo + actual AudioWorklet, keyboard collision/win/restart, changed-disc texture mutation.`);
+  // Mixed-track diagnostic boots through the real local-file UI and Wasm. All
+  // result writes are guest instructions. Offline CUE references resolve only to
+  // the selected bytes, and every CD sample travels through the SCSP route.
+  const lab = await context.newPage();
+  await lab.goto(address + prefix);
+  await lab.waitForFunction(() => document.getElementById("status").textContent === "Ready");
+  await lab.locator("#view-debug").click();
+  await lab.locator("#settings > summary").click();
+  await lab.selectOption("#mode", "disc");
+  const labIso = await readFile("web/hardware-lab.iso");
+  const labAudio = await readFile("web/hardware-lab-audio.bin");
+  const labCue = await readFile("web/hardware-lab.cue");
+  const labFiles = (iso = labIso, audio = labAudio) => [
+    {name:"hardware-lab.cue",mimeType:"text/plain",buffer:labCue},
+    {name:"hardware-lab.iso",mimeType:"application/octet-stream",buffer:iso},
+    {name:"hardware-lab-audio.bin",mimeType:"application/octet-stream",buffer:audio},
+  ];
+  const labRequests = [];
+  lab.on("request", request => labRequests.push({url:request.url(),method:request.method(),body:request.postData()}));
+  const labTrace = () => lab.evaluate(async () => {
+    const {emulator,advanceFrame} = await import("./app.js");
+    for(let i=0;i<40 && emulator.read_long(0x06010020)!==0x600D;i++) emulator.run_steps(10000);
+    emulator.advance_frame();
+    const samples=Array.from(emulator.audio_samples(8192));
+    advanceFrame();
+    const frame=emulator.framebuffer();
+    const canvas=document.getElementById("screen").getContext("2d");
+    return {results:Array.from({length:10},(_,i)=>emulator.read_long(0x06010000+i*4)),
+      slave:Number(emulator.slave_instruction_count()),sound:Number(emulator.sound_instruction_count()),
+      pcmNonzero:samples.some(v=>v!==0),stereo:samples.some((v,i)=>i%2===0&&v!==samples[i+1]),
+      wasm:Array.from(frame.slice(0,4)),canvas:Array.from(canvas.getImageData(0,0,1,1).data),
+      backup:emulator.export_backup_ram()[0]};
+  });
+  await lab.locator("#disc").setInputFiles(labFiles());
+  await lab.waitForFunction(()=>document.getElementById("status").textContent==="Ready");
+  const labResult=await labTrace();
+  assert.deepEqual(labResult.results.slice(0,6),[1,1,84,35,42,393984]);
+  assert(labResult.results[6]>=1);
+  assert.deepEqual(labResult.results.slice(7,9),[1,0x600D]);
+  assert.equal(labResult.backup,1);
+  assert(labResult.slave>5 && labResult.sound>20 && labResult.pcmNonzero && labResult.stereo, JSON.stringify(labResult));
+  assert.deepEqual(labResult.wasm,[255,255,255,255]);
+  assert.deepEqual(labResult.canvas,labResult.wasm);
+  // Restart uses controller pins, not a host write to the result table.
+  await lab.evaluate(async()=>{const {emulator}=await import("./app.js");emulator.set_buttons(1<<7);emulator.run_steps(50);emulator.set_buttons(0);});
+  assert.equal((await labTrace()).backup,2);
+  await lab.locator("#audio-enable").click();
+  await lab.waitForFunction(()=>document.getElementById("audio-status").textContent.includes("paused"));
+  await lab.evaluate(async()=>{
+    const {emulator,audio}=await import("./app.js");audio.setPaused(false);
+    for(let i=0;i<4;i++)emulator.advance_frame();
+    audio.deliver(emulator.audio_samples(8192));
+    window.labAudioReady=()=>audio.stats.rendered>128&&audio.stats.peak>0.05;
+  });
+  await lab.waitForFunction(()=>window.labAudioReady());
+  // A zeroed CD-DA track changes the actual mixed buffer. This rejects an audio
+  // route which is merely nonzero because the independent 68k voice is running.
+  const labBuffers=[];
+  for(const zeroAudio of [false,true]) {
+    await lab.locator("#disc").setInputFiles(labFiles(labIso,zeroAudio?Buffer.alloc(labAudio.length):labAudio));
+    await lab.waitForFunction(()=>document.getElementById("status").textContent==="Ready");
+    labBuffers.push(await lab.evaluate(async()=>{
+      const {emulator}=await import("./app.js");
+      for(let i=0;i<40&&emulator.read_long(0x06010020)!==0x600D;i++)emulator.run_steps(10000);
+      emulator.audio_samples(8192);emulator.advance_frame();
+      return Array.from(emulator.audio_samples(8192));
+    }));
+  }
+  assert.equal(labBuffers[0].length,labBuffers[1].length);
+  assert.notDeepEqual(labBuffers[0],labBuffers[1]);
+  const changedLab=Buffer.from(labIso);changedLab[60*2048+3]=9;
+  await lab.locator("#disc").setInputFiles(labFiles(changedLab));
+  await lab.waitForFunction(()=>document.getElementById("status").textContent==="Ready");
+  assert.equal((await labTrace()).results[5],393990);
+  await lab.locator("#disc").setInputFiles(labFiles().slice(0,2));
+  await lab.waitForFunction(()=>document.getElementById("error").textContent.includes("Missing or ambiguous CUE file reference"));
+  const rejected=await lab.evaluate(async()=>{const {emulator}=await import("./app.js");return {state:emulator.status(),retired:emulator.instruction_count()};});
+  assert.match(rejected.state,/Reset/);assert.equal(rejected.retired,"0");
+  assert(labRequests.every(r=>r.method==="GET"&&!r.body&&r.url.startsWith(address+prefix)));
+  await lab.close();
+  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, BCR1 processor identity/refresh IRQ/module stops/reset repeatability, four-layer VDP2 tile guest/palette mutation/Wasm and production Canvas presentation, original rotation/coefficient/line-scroll/line-window guest and mutated matrix pixels, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, SH-2-uploaded MC68EC000 PCM computation/SCSP timer IRQ/stereo samples and WebAudio worklet delivery/underflow/mute/blocked states, SMPC RTC/SMEM/INTBACK IRQs and synthetic digital+ID15/ID16 analog Gamepad/focus release, timed both-port direct analog handshake guest, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation; Prism Courier original disc, VDP1 sprite/polygons + VDP2 composition/Canvas, draw-end IRQ, 68k stereo + actual AudioWorklet, keyboard collision/win/restart, changed-disc texture mutation; Hardware Lab local CUE/mixed tracks, dual CPU, executing SCU DSP, CD FIFO-to-SCU DMA/IRQs/checksum, independent 68k/CD-DA stereo and AudioWorklet, rotation Canvas, backup/restart, sector/audio mutations, missing local file rejection.`);
 } finally {
   if (browser) await browser.close();
   if (server?.pid && server.exitCode === null) {

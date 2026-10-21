@@ -64,9 +64,9 @@
                 <option value="bios">User-provided BIOS</option>
               </select>
               <div id="disc-controls" hidden>
-                <label for="disc">Local Saturn homebrew ISO (2048-byte sectors, up to 16 MiB)</label>
-                <input id="disc" type="file" accept=".iso">
-                <p>Working HLE homebrew uses a narrow single-area Saturn IP / ISO9660 cooked ISO contract. Other hardware, BIN/CUE, compressed discs and runtime BIOS/CD services are unsupported.</p>
+                <label for="disc">Local homebrew ISO or CUE with its track files</label>
+                <input id="disc" type="file" accept=".iso,.cue,.bin" multiple>
+                <p>Select one cooked ISO (up to 16 MiB), or select a CUE and all its BINARY data/audio files together (up to 128 MiB). Boot uses the first data track’s Saturn IP / ISO9660 executable. Runtime CD reads and CD-DA use the emulated CD block; compressed discs remain unsupported.</p>
               </div>
               <div id="bios-controls" hidden>
                 <label for="bios">Local raw BIOS (512 KiB / 524288 bytes)</label>

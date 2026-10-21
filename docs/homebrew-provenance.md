@@ -102,3 +102,16 @@ executing SH-2 instructions; no art, audio, firmware, SDK object or external cor
 is included. Their [reproducible hashes and native/browser evidence](hardware-conformance.md#original-advanced-video-and-controller-fixtures)
 are recorded separately from the demonstration discs. They do not replace the
 still-required comprehensive hardware exerciser disc.
+
+
+Hardware Lab adds the original MIT [mixed-track hardware diagnostic](../homebrew/hardware-lab/README.md).
+Its Python builder uses the repository's original assembler/ISO writer, original
+SH-2 diagnostic, original SCU DSP program, original 68k waveform generator and
+original rotation scene. The CD-DA PCM is new integer-generated stereo data.
+The generated ISO, CUE, audio track and source are licensed together; all hashes
+are printed by `python3 homebrew/hardware-lab/build.py --check` and recorded in
+[Issue #17 validation](validation-issue-17.md). The native and browser suites
+execute the actual guest and assert changed-media results. No third-party code,
+recordings, firmware or SDK objects are introduced. The independent HLE reset
+trampoline also has [original source and MIT license](../src/hle/boot.s).
+The effects-DSP scene and other remaining hardware acceptance are still required.

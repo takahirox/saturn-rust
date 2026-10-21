@@ -382,7 +382,8 @@ impl Smpc {
             0x63 if value == 1 => self.sf = true,
             0x1F if self.sf && !self.busy() => {
                 let clocks = match value {
-                    2 | 3 | 6 | 7 | 0x18 | 0x19 | 0x1A => Self::CPU_COMMAND_CLOCKS,
+                    0 | 2 | 3 | 6 | 7 | 0x18 | 0x19 | 0x1A => Self::CPU_COMMAND_CLOCKS,
+                    8 | 9 => 1075, // ST-169 §§2.3.6/2.3.7: 40 microseconds.
                     0x16 if Battery::parse(self.input).is_some() => 1882,
                     0x17 => 1075,
                     0x10 if matches!(self.input[0], 0 | 1)

@@ -675,3 +675,100 @@ demo criteria remain open. This diagnostic ROM is neither required new demo and
 does not substitute for them. The [conformance matrix](hardware-conformance.md)
 records implementation/test links and deviations. Continue under #17 without
 closing keywords, reopening old trackers or imposing human-only gates.
+
+
+## Runtime CD, mixed-disc guest and bus/audio review fixes (2026-10-21)
+
+Related to #17. This revision preserves PR #18's existing CPU/device/demo work
+and adds executable hardware behavior for the CD/media/audio/bus/demo findings.
+It does **not** resolve every finding or satisfy the umbrella acceptance checklist.
+Issue #17 must remain open; no continuation issue, historical issue reopening,
+human confirmation or external workflow investigation is needed.
+
+Implementation and objective evidence:
+
+- `src/media.rs` retains cooked ISO or caller-resolved CUE/BINARY media, including
+  cooked/raw Mode1, raw Mode2, shared/separate files, audio, INDEX00/01 and gaps.
+  It performs bounded parsing with missing/ambiguous references and truncation
+  errors. `tests/media.rs` includes original raw/cooked, TOC/gap and deterministic
+  malformed-input mutation vectors. No filesystem or network resolver is called.
+- `src/cd.rs` provides separate command/response latches, timed completion,
+  HIRQ/masks/clear-zero, read-protected responses, FAD/track/index/TOC/session/Q,
+  seek/read/play/repeat, a 200-sector pool/24 partitions, filtering/connection,
+  transfers, copy/move, size/search, and simple ISO directory/file commands.
+  The bus routes the CD FIFO to fixed-source SCU DMA; CD IRQ reaches source 16
+  through the A-bus acknowledgement gate. Nine independent register/audio/media
+  tests in `tests/cd.rs` cover the implemented contracts, including CDON/OFF.
+- CD-DA is decoded from the actual selected track and mixed through SCSP EXTS0/1
+  routing alongside the independently executing 68k PCM voice. Device/sample
+  boundaries are included in the event scheduler. Exact stereo golden buffers
+  test level/pan/muting. Changing only the CD audio track changes the mixed Wasm
+  buffer; an already audible 68k voice cannot hide a disconnected CD route.
+- Original Hardware Lab source and mixed media execute slave SH-2 computation,
+  SCU DSP product/sum and IRQ, runtime CD-sector reads through actual SCU DMA and
+  IRQ, guest checksum, 68k synthesis/timer IRQ, CD-DA, advanced VDP2 composition,
+  backup words, SMPC controls and controller-driven restart. Its native and
+  browser assertions reject a changed runtime sector via the computed checksum.
+  The browser checks actual Canvas and AudioWorklet output and missing local
+  CUE-file rejection. The guest writes all result mailboxes; JS only supplies
+  local media/controller levels, reads diagnostics and presents pixels/audio.
+- HLE disc boot installs an original MIT-licensed SH-2 reset trampoline so the
+  slave handoff runs real reset instructions. External BIOS mode never installs
+  this trampoline or redirects to HLE. General BIOS service ABI is still absent.
+- BIOS/SMPC, low/high RAM, sound RAM, VDP1 framebuffer and VDP2 VRAM mirrors now
+  decode to physical storage. Backup and SMPC wider cycles strobe odd lanes;
+  disconnected even lanes return FF and ignore writes. Native boundary/lane
+  tests and the guest word-backup path preserve atomic packed import/export.
+- Reverse/alternating fractional PCM no longer falls back to sample points.
+  Signed PCM8/16 half-pitch vectors independently test reverse wrap, alternating
+  endpoint holds and traversal interpolation. The browser changes original 68k
+  pitch/key-on immediate words and asserts an exact reverse stereo vector.
+
+Reproducible original artifacts (MIT licenses adjacent to guest/trampoline source
+and copied beside distributed media):
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Hardware Lab ISO | `e19437a750e10b24c5c6be7617f2879928bd68ba4cee139e15980a09318e6ed0` |
+| Hardware Lab BINARY audio | `1c86e2d495e7d745dbfe1e4369afa104fb75eae9f042abb61e8fe56d8c67fd1d` |
+| Hardware Lab CUE | `398e70e871f8b3ed6db6033bb9c34f08c9cd62dd59f87195cdb81e4ec3433f7e` |
+| Independent HLE reset trampoline | `6df97e2390adac398df2cb58c05434034d998223ba41c31a36e7d32022d5a63d` |
+
+Star Collector and Prism Courier images remain byte-identical to their existing
+source builds. CI checks all thirteen reproducibility builders, including the
+new Hardware Lab and HLE trampoline builders; the web asset allowlist includes
+only their intended public files/licenses.
+
+Validation performed:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`: pass;
+  233 native tests, no ignored tests.
+- `cargo clippy --locked --all-targets -- -D warnings`: pass.
+- `sh scripts/build-web.sh` and Wasm Clippy with `-D warnings`: pass, using the
+  installed Rustup stable 1.99.0 toolchain and wasm-bindgen-cli 0.2.129.
+  Native checks use Homebrew Rust 1.94.0. The initial web build selected a PATH
+  without the existing matching CLI; selecting the documented installed tools
+  resolved it without changing dependencies or skipping checks.
+- All thirteen workflow reproducibility commands: pass.
+- `npm ci --ignore-scripts`, `npx playwright install chromium`, and the complete
+  extended `npm run test:browser`: pass in Chromium 145.0.7632.6 under
+  `/saturn-rust/`. Existing Star Collector/Prism Courier, CPU fixtures, UI/input,
+  backup and privacy checks remain enabled. New CUE guest and exact reverse-loop
+  audio checks run in the same suite. Early test failures exposed response-latch,
+  guest DSP restart acknowledgement and test audio-drain/readiness mistakes;
+  these were corrected before the successful full run.
+- `node --check web/app.js`, `node --check scripts/browser-smoke.mjs` and
+  `git diff --check`: pass.
+
+Remaining mandatory implementation is still the complete scope in the
+[conformance inventory](hardware-conformance.md): SH7604/UBC/standby/BSC/DIVU/DACK
+and CPU arbitration/locking, full MC68EC000 prefetch/fault sequencing, remaining
+map/open-bus/reset/backup filesystem and HLE service contracts, CPU/bus hardware
+time contention, complete SCU modes/DSP evidence, VDP1/VDP2 modes/raster effects,
+SCSP envelope/FM/LFO/noise and executing effects DSP, remaining CD drive/command/
+error/initialization/scan/subcode/timing behavior, SMPC system/clock/latch controls,
+the effects-DSP exerciser scene, full synthetic boot/service fixtures and complete
+umbrella coverage. New passing tests establish implemented behavior only. No
+proprietary BIOS, human listening/approval, physical console, live Pages or
+post-merge check is required or claimed. Genuine BIOS/retail compatibility is
+not independently confirmed. No push, merge or Issue closure was performed.

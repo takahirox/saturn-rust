@@ -86,7 +86,7 @@ fn vram_aliases_endianness_alignment_register_boundaries_and_read_only_status() 
     bus.write16(VRAM + 512 * 1024 - 2, 0xFC00).unwrap();
     assert_eq!(bus.read8(VRAM + 512 * 1024 - 1), Ok(0));
     assert!(bus.write32(VRAM + 1, 0).is_err());
-    assert!(bus.read8(VRAM + 512 * 1024).is_err());
+    assert_eq!(bus.read8(VRAM + 512 * 1024), bus.read8(VRAM));
     assert_eq!(bus.read16(VDP2 + 4), Ok(0));
     assert!(bus.write16(VDP2 + 4, 8).is_err());
     assert!(bus.write32(VDP2, 0x80000000).is_err());

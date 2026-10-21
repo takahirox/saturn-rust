@@ -18,7 +18,7 @@ fn boot_uses_saturn_metadata_iso_first_file_and_original_aip_instructions() {
     assert_eq!(m.cpu_state().pc, AIP_ENTRY);
     assert_eq!(m.cpu_state().r[15], parsed.stack);
     assert_eq!(m.bus().read32(IP_ADDRESS), Ok(0x53454741));
-    assert!(m.bus().read32(0).is_err());
+    assert_eq!(m.bus().read32(0), Ok(0x100)); // original independent HLE reset trampoline
     m.run_steps(3).unwrap();
     assert_eq!(m.cpu_state().pc, parsed.load_address);
     assert_eq!(m.cpu_state().instructions, 3);

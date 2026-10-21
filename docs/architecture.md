@@ -13,8 +13,10 @@ automated local/CI checks; live Pages inspection is not a completion gate.
 | --- | --- |
 | src/cpu.rs | Independent SH-2 interpreter, architectural registers, delayed branches and sticky faults |
 | src/bus.rs | Aligned big-endian byte/word/long accesses, RAM, ROM, VRAM and MMIO routing |
-| src/backup.rs | Packed internal battery RAM, checked import and odd-byte access |
-| src/disc.rs | Bounded cooked ISO9660 and Saturn IP validation, first-read executable selection |
+| src/backup.rs | Packed battery RAM, atomic import and odd-byte storage with word/long bus lanes |
+| src/disc.rs | Bounded ISO9660 and Saturn IP validation, first-read executable selection |
+| src/media.rs | Retained cooked/raw/BIN/CUE data/audio media and track indices/gaps |
+| src/cd.rs | Timed runtime CD commands, selector/sector pool, FIFO and CD-DA |
 | src/devices.rs | Shared device constants and compatibility exports |
 | src/vdp1.rs | Clock-driven command lists, primitive/texture drawing and framebuffers |
 | src/vdp2.rs | NBG0/1 bitmap sampling, palette and sprite/background composition |
@@ -127,21 +129,22 @@ bus locking/arbitration between processors, or native Sega BIOS compatibility.
 
 | Physical range | Behavior |
 | --- | --- |
-| 00000000–0007FFFF | Optional read-only 512 KiB external BIOS |
-| 00100000–0010007F | SMPC direct ports, IREG/OREG/SR/SF, implemented command subset |
-| 00180000–0018FFFF | 32 KiB backup RAM on odd byte addresses; other lanes/widths explicitly unsupported |
-| 00200000–002FFFFF | 1 MiB low work RAM |
+| 00000000–0007FFFF | Read-only 512 KiB external BIOS, mirrored to 000FFFFF; HLE disc installs an original reset trampoline |
+| 00100000–0010007F | SMPC direct ports, IREG/OREG/SR/SF, implemented commands, odd lanes and mirrors to 0017FFFF |
+| 00180000–0018FFFF | 32 KiB backup RAM on odd lanes; even lanes FF/ignored writes; word/long cycles strobe odd bytes |
+| 00200000–002FFFFF | 1 MiB low work RAM, mirrored through 003FFFFF |
 | 01000000 / 01800000 | Write-only word capture strobes to slave/master FRT |
-| 05A00000–05A7FFFF | 512 KiB shared sound RAM; 68k map 000000–07FFFF |
+| 05818000 / 05890000 | CD FIFO and command/HIRQ ports, 16-bit registers and FIFO long transfers |
+| 05A00000–05AFFFFF | 512 KiB shared sound RAM with mirror; 68k map 000000–07FFFF |
 | 05B00000–05B00FFF | SCSP implemented slot/common/stack ports; 68k map 100000–100FFF |
 | 05C00000–05C7FFFF | VDP1 command/texture/LUT/Gouraud VRAM |
-| 05C80000–05CBFFFF | VDP1 draw framebuffer, byte/word/long access |
+| 05C80000–05CFFFFF | 256 KiB VDP1 draw framebuffer with mirror, byte/word/long access |
 | 05D00000–05D00017 | VDP1 control/status, word and checked paired-word accesses |
-| 05E00000–05E7FFFF | 512 KiB VDP2 VRAM |
+| 05E00000–05EFFFFF | 512 KiB VDP2 VRAM with mirror |
 | 05F00000–05F00FFF | VDP2 CRAM, including mode-0 upper-half mirror |
 | 05F80000–05F8011F | VDP2, only the listed register subset |
 | 05FE0000–05FE00CF | SCU documented port subset; long accesses, prohibited/unsupported ports fail |
-| 06000000–060FFFFF | 1 MiB high work RAM |
+| 06000000–060FFFFF | 1 MiB high work RAM, mirrored throughout CS3 through 07FFFFFF |
 | FFFFFE10–FFFFFE19 | CPU-local FRT, byte accesses only |
 | FFFFFE00–FFFFFE05 | CPU-local SCI, byte access |
 | FFFFFE60–FFFFFE68 / FFFFFEE2–FFFFFEE5 | CPU-local INTC priorities/vectors, byte/word |
@@ -252,16 +255,22 @@ little/big-endian volume/extent values, 2048-byte blocks, root directory records
 names, bounds and contiguous single-volume extents. Unsupported extended
 attributes, interleaving, multi-extent files and malformed/truncated data fail
 before loading. The first root child must be a regular file (Saturn first-read
-file identifier 2); its filename is not special. BIN/CUE, raw 2352-byte sectors,
-compressed images, large/general ISO layouts and runtime CD access are unsupported.
+file identifier 2); its filename is not special. Retained BIN/CUE media may have
+cooked or raw Mode1/Mode2 data and BINARY audio tracks. The boot loader extracts
+its first data track through this same validated ISO contract; the runtime CD
+block retains the complete medium, including tracks, indices and gaps.
+Compressed images and large/general ISO boot layouts remain unsupported.
 
 HLE copies the IP system area to 06002000, loads the first-read file at the header's
 F0 destination, initializes the master stack from E8 (zero means 06002000), then
 executes the original AIP at 06002E20 for a single 20-hex-byte area block. The
 original bootstrap jumps to the loaded executable. The IP includes no Sega
 security/area executable; HLE deliberately skips those proprietary boot stages.
-No arbitrary bytes are treated as a disc, no BIOS services are intercepted, and
-no CD-block or SCU implementation is needed for this self-contained first target.
+No arbitrary bytes are treated as a disc. General BIOS services are not yet
+intercepted. An original licensed SH-2 reset trampoline provides a slave handoff
+through the work-RAM entry pointer; external BIOS selection never installs it.
+The runtime CD block, SCU DMA/IRQ and SCSP external input operate on the actual
+retained medium, including the Hardware Lab mixed-disc guest.
 The Saturn header's first-read size is ignored for CD boot; the ISO file size is
 used, as specified by the manual. This narrow contract does not promise that
 arbitrary homebrew or stock-console authenticated discs will boot.
@@ -303,9 +312,9 @@ added. Manuals/firmware are not redistributed.
 Accurate CPU/bus cycles and contention, remaining SH7604 peripherals and
 SCU cross-device/arbitration/DSP edge conformance,
 remaining SMPC system/clock/analog-direct controls, additional VDP2
-modes, remaining VDP1 conformance, runtime CD/BIN/CUE, BIOS services and full synthetic boot pathways
+modes, remaining VDP1 conformance, full CD drive/command/error behavior, BIOS services and full synthetic boot pathways
 remain required work. The executing MC68EC000, direct SCSP PCM and browser audio
-are implemented; SCSP envelopes/FM/LFO/noise/effects DSP and CD-DA remain absent.
+are implemented; SCSP envelopes/FM/LFO/noise/effects DSP remain absent; CD-DA now mixes through EXTS0/1 and has native/browser evidence.
 Reference-emulator/physical-hardware comparison and performance measurements
 have not been performed. Synthetic Gamepad input is automatically tested. No dynarec, workers,
 server backend or general-game compatibility is introduced.

@@ -2,10 +2,12 @@
 pub mod backup;
 pub mod bus;
 pub mod cache;
+pub mod cd;
 pub mod cpu;
 pub mod devices;
 pub mod disc;
 pub mod m68k;
+pub mod media;
 pub mod onchip;
 pub mod scu;
 pub mod smpc;
@@ -147,7 +149,18 @@ impl Machine {
                 for (i, byte) in boot.executable.iter().enumerate() {
                     self.bus.write8(boot.load_address + i as u32, *byte)?;
                 }
+                // Independent HLE reset code; never installed in ExternalBios.
+                // It provides the slave work-RAM handoff through instructions,
+                // so SSHON uses exactly the same reset path as external ROMs.
+                let mut rom = vec![0; bus::BIOS_SIZE];
+                rom[..16].copy_from_slice(&[0, 0, 1, 0, 6, 15, 224, 0, 0, 0, 1, 0, 6, 15, 224, 0]);
+                let code = include_bytes!("hle/boot.bin");
+                rom[0x100..0x100 + code.len()].copy_from_slice(code);
+                self.bus.load_bios(&rom)?;
                 self.cpu = Cpu::start(disc::AIP_ENTRY, boot.stack);
+                self.bus
+                    .cd
+                    .mount(media::Media::iso(image).map_err(MachineError::Disc)?);
             }
             Boot::HlePrototype => {
                 self.mode = Some(BootMode::HlePrototype);
@@ -158,6 +171,28 @@ impl Machine {
             }
         }
         Ok(())
+    }
+
+    /// Boot caller-resolved ISO/BIN/CUE media through the same independent HLE.
+    /// No file reference is opened by the emulator. Invalid input stops the old
+    /// machine while preserving battery RAM, as with the single-file loader.
+    pub fn reset_media(&mut self, media: media::Media) -> Result<(), MachineError> {
+        let image = match media.boot_iso() {
+            Ok(image) => image,
+            Err(error) => {
+                let _ = self.reset(Boot::HleDisc(&[]));
+                return Err(MachineError::Disc(error));
+            }
+        };
+        self.reset(Boot::HleDisc(&image))?;
+        self.bus.cd.mount(media);
+        Ok(())
+    }
+
+    /// Attach local media to an external BIOS without replacing its CPU/reset
+    /// state or invoking HLE. Also useful for synthetic boot ROM acceptance.
+    pub fn mount_media(&mut self, media: media::Media) {
+        self.bus.cd.mount(media);
     }
 
     pub fn sound_state(&self) -> &m68k::State {
@@ -325,6 +360,8 @@ impl Machine {
             }
             Some(0x06) => self.bus.sound.set_enabled(true)?,
             Some(0x07) => self.bus.sound.set_enabled(false)?,
+            Some(0x08) => self.bus.cd.set_enabled(true),
+            Some(0x09) => self.bus.cd.set_enabled(false),
             Some(0x18) => {
                 self.nmi_pending = true;
                 self.bus.signal_nmi(Processor::Master);

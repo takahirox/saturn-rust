@@ -3,6 +3,7 @@ const $ = (id) => document.getElementById(id);
 const hex = (value) => `0x${value.toString(16).toUpperCase().padStart(8, "0")}`;
 export let emulator;
 let discBytes = null;
+let cueMedia = null;
 let playing = false;
 let playAfterLoad = false;
 let buttons = 0;
@@ -141,7 +142,7 @@ function render() {
   const discReady = ready && $("mode").value === "disc";
   $("pause").disabled = !discReady;
   $("pause").textContent = playing ? "Pause" : "Resume";
-  $("restart").disabled = busy || $("mode").value !== "disc" || !discBytes;
+  $("restart").disabled = busy || $("mode").value !== "disc" || !(discBytes || cueMedia);
   $("frame").disabled = !discReady || playing;
   $("play-homebrew").disabled = busy;
   $("play-prism").disabled = busy;
@@ -208,7 +209,10 @@ function reset() {
   pause();
   context.clearRect(0, 0, 320, 224);
   act(() => {
-    if ($("mode").value === "disc") emulator.reset_disc(discBytes ?? new Uint8Array());
+    if ($("mode").value === "disc") {
+      if (cueMedia) emulator.reset_cue(cueMedia.cue, cueMedia.names, cueMedia.lengths, cueMedia.bytes);
+      else emulator.reset_disc(discBytes ?? new Uint8Array());
+    }
     else if ($("mode").value === "hle") emulator.reset_hle();
     else emulator.reset_bios(biosBytes ?? new Uint8Array());
   });
@@ -286,6 +290,7 @@ try {
     fileGeneration++;
     biosBytes = null;
     discBytes = null;
+    cueMedia = null;
     $("disc").value = "";
     loadingFile = false;
     $("bios").value = "";
@@ -354,13 +359,19 @@ try {
   });
   $("disc").addEventListener("change", async () => {
     const generation = ++fileGeneration;
-    const file = $("disc").files[0];
+    const files = [...$("disc").files];
     discBytes = null;
+    cueMedia = null;
     loadingFile = false;
     reset();
-    if (!file) return;
-    if (file.size < 45056 || file.size > 16777216 || file.size % 2048 !== 0) {
-      $("error").textContent = "Select a complete 2048-byte-sector ISO (22 sectors to 16 MiB). BIN/CUE and compressed images are unsupported.";
+    if (!files.length) return;
+    const cueFiles = files.filter((file) => /\.cue$/i.test(file.name));
+    const cue = cueFiles.length === 1 ? cueFiles[0] : null;
+    const file = files[0];
+    if ((!cue && (files.length !== 1 || file.size < 45056 || file.size > 16777216 || file.size % 2048 !== 0)) ||
+        cueFiles.length > 1 || files.reduce((total, file) => total + file.size, 0) > 134217728 ||
+        (cue && (cue.size > 1048576 || files.length < 2 || files.length > 100))) {
+      $("error").textContent = "Select one complete 2048-byte-sector ISO (22 sectors to 16 MiB), or one CUE and all its BINARY track files together (up to 128 MiB).";
       render();
       return;
     }
@@ -368,9 +379,20 @@ try {
     $("error").textContent = "";
     render();
     try {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      if (generation !== fileGeneration) return;
-      discBytes = bytes;
+      if (cue) {
+        const tracks = files.filter((file) => file !== cue);
+        const buffers = await Promise.all(tracks.map(async (file) => new Uint8Array(await file.arrayBuffer())));
+        const cueText = new TextDecoder("utf-8", { fatal: true }).decode(await cue.arrayBuffer());
+        if (generation !== fileGeneration) return;
+        const bytes = new Uint8Array(buffers.reduce((total, buffer) => total + buffer.length, 0));
+        let offset = 0;
+        for (const buffer of buffers) { bytes.set(buffer, offset); offset += buffer.length; }
+        cueMedia = { cue: cueText, names: tracks.map((file) => file.name).join("\0"), lengths: new Uint32Array(buffers.map((buffer) => buffer.length)), bytes };
+      } else {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        if (generation !== fileGeneration) return;
+        discBytes = bytes;
+      }
       loadingFile = false;
       beginDisc();
     } catch (error) {
