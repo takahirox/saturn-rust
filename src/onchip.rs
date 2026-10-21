@@ -108,12 +108,15 @@ impl OnChip {
     pub(crate) fn external_little_endian(&self, physical_address: u32) -> bool {
         self.bsc.little_endian(physical_address)
     }
+    pub(crate) fn release_external_bus(&self) {
+        self.bsc.reset_bus();
+    }
 
-    pub(crate) fn external_access(&self, physical_address: u32) {
+    pub(crate) fn external_access(&self, physical_address: u32, write: bool) {
         self.wait_clocks.set(
             self.wait_clocks
                 .get()
-                .saturating_add(self.bsc.software_waits(physical_address)),
+                .saturating_add(self.bsc.access_waits(physical_address, write)),
         );
     }
 
@@ -349,6 +352,9 @@ impl OnChip {
     }
     fn advance_segment(&mut self, clocks: u32) {
         if self.standby {
+            // The bus is released throughout standby/wake, independent of
+            // stopped peripheral clocks (H §14.3).
+            self.bsc.reset_bus();
             if let Some(remaining) = self.wake_remaining {
                 if clocks < remaining {
                     self.wake_remaining = Some(remaining - clocks);
@@ -360,6 +366,7 @@ impl OnChip {
             }
             return;
         }
+        self.bsc.advance_bus(clocks);
         let held_reset = self.watchdog.reset_active();
         self.watchdog.advance(clocks);
         if held_reset {
@@ -649,6 +656,7 @@ impl OnChip {
             bsc = bsc::Bsc::default();
         }
         bsc.set_slave(slave);
+        bsc.reset_bus();
         let mut division = std::mem::take(self.division.get_mut());
         division.reset();
         let mut watchdog = std::mem::take(&mut self.watchdog);

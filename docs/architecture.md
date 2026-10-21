@@ -121,7 +121,7 @@ The watchdog implements power/manual reset selection, a 512-clock CPU hold,
 physical vector pairs 0/4 or 8/12, and retained RAM/backup/cause. CPU-local
 write-through caches implement software coherence and mapped arrays. BSC ordinary
 software waits, narrow CS1-CS3 transfers and CS2 endian conversion have guest
-evidence. Full BSC memory/idle/arbitration, UBC/standby timing, external reset
+evidence. Full BSC memory/arbitration, UBC/standby timing, external reset
 signals and hardware cycle scheduling remain outstanding. Missing bus/device implementations and exception-entry failures
 remain explicit, sticky host diagnostics.
 Exception entry is bounded on a failing stack/vector access; successful writes
@@ -381,8 +381,16 @@ waits. The original [BSC guest](../tests/fixtures/build_bsc_waits.py) initialize
 width/endian once before accesses outside CS0 and uses its FRT to measure actual
 delays in native/Wasm, with width/endian/data/wait operand changes.
 
-This still adds Tw clocks to the functional CPU issue quantum. It does not
-implement T1/T2 pipeline overlap, inter-cycle idle, external WAIT sampling,
+The intercycle state machine also implements IW0–3 using the preceding read's
+area/direction, a minimum one-cycle read/write gap and subtraction of already
+empty clocks (SH7604 §7.9, fig.7.47). Occupancy includes T1/T2 and Tw so busy
+clocks cannot satisfy a gap. Actual cache hits/arrays leave this history alone;
+CPU/SCU ownership changes, reset and standby terminate the old history. The
+original [cached TAS guest](../tests/fixtures/build_bsc_idle.py) measures both
+CPUs' IW3=0/1/2 through their FRTs in native and Wasm execution.
+
+This still adds Tw/turnaround clocks to the functional CPU issue quantum. It does not
+implement T1/T2 pipeline overlap, external WAIT sampling,
 refresh/CPU/DMA bus ownership, burst memories or all board lanes. CS0 retains
 the existing 32-bit external adapter. Unsupported changed BSC configurations
 raise errors, including reserved bus widths and little-endian byte buses.
@@ -424,3 +432,12 @@ An explicit user gesture enables WebAudio; disabled, blocked, paused, muted,
 underflow and drop states are observable. The consumer resamples for a different
 host sample rate. Browser instrumentation verifies actual nonzero worklet output,
 not human listening. Star Collector itself continues to have no soundtrack.
+
+
+DSP A-bus output DMA accepts both fixed and incrementing longword destinations,
+including HOLD. The original [DSP DMA guest](../tests/fixtures/build_dsp_dma.py)
+uses register-count transfers, fixed writes, postincremented counter operands
+and program-RAM DMA, then restarts and executes the transferred MVI/ENDI code
+through ordinary SCU MMIO. Native/Wasm records and source/data/count mutations
+cover these paths. Full DSP pipeline, PRAM boundaries and bus arbitration remain
+required in the [conformance inventory](hardware-conformance.md).

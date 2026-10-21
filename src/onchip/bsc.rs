@@ -4,11 +4,19 @@ use crate::bus::BusError;
 use std::cell::Cell;
 
 pub const BSC: u32 = 0xFFFF_FFE0;
+#[derive(Clone, Copy)]
+struct Access {
+    area: u32,
+    read: bool,
+    busy: u32,
+    gap: u32,
+}
 pub(super) struct Bsc {
     registers: [u16; 7],
     slave: bool,
     observed: Cell<bool>,
     phase: u32,
+    access: Cell<Option<Access>>,
 }
 impl Default for Bsc {
     fn default() -> Self {
@@ -17,6 +25,7 @@ impl Default for Bsc {
             slave: false,
             observed: Cell::new(false),
             phase: 0,
+            access: Cell::new(None),
         }
     }
 }
@@ -59,13 +68,17 @@ impl Bsc {
         let mut word = value as u16 & mask;
         // Ordinary-space software waits have real external-access effects.
         // Keep other interface changes explicit until their bus protocols exist:
-        // BCR1 memory/arbitration, WCR inter-cycle idle, MCR.
-        let implemented = [0x13F0, 0x00FC, 0x00FF, 0][i.min(3)];
+        // BCR1 memory/arbitration and MCR remain separate bus protocols.
+        let implemented = [0x13F0, 0x00FC, 0xFFFF, 0][i.min(3)];
         if i < 4 && (word ^ self.registers[i]) & !implemented != 0 {
             return Err(BusError::UnsupportedDevice { address, width: 4 });
         }
         if i == 1 && [2, 4, 6].iter().any(|shift| word >> shift & 3 == 0) {
             // H §7.2.2: 00 is reserved, not an alternate bus width.
+            return Err(BusError::UnsupportedDevice { address, width: 4 });
+        }
+        if i == 2 && [8, 10, 12, 14].iter().any(|shift| word >> shift & 3 == 3) {
+            // H §7.2.3: IWn=11 is reserved, not three idle cycles.
             return Err(BusError::UnsupportedDevice { address, width: 4 });
         }
         let bcr1 = if i == 0 { word } else { self.registers[0] };
@@ -107,6 +120,47 @@ impl Bsc {
             };
             3 + u32::from((self.registers[0] >> shift) & 3)
         }
+    }
+    /// H §7.9, fig.7.47: the preceding READ's area selects IWn.
+    /// Writes never require turnaround on their own. An immediate read/write
+    /// pair needs at least one cycle even with IWn=0. Existing empty bus cycles
+    /// satisfy the requirement. Only actual external beats enter this history.
+    pub fn access_waits(&self, address: u32, write: bool) -> u32 {
+        if address >= 0x0800_0000 {
+            return 0;
+        }
+        let area = address >> 25;
+        let prior = self.access.get();
+        let idle = prior.map_or(0, |last| {
+            if last.read && (last.area != area || write) {
+                let specified = u32::from(self.registers[2] >> (8 + last.area * 2) & 3);
+                specified.max(u32::from(write)).saturating_sub(last.gap)
+            } else {
+                0
+            }
+        });
+        let waits = self.software_waits(address) + idle;
+        self.access.set(Some(Access {
+            area,
+            read: !write,
+            // H fig.7.7: ordinary beats occupy T1/T2 plus waits. The
+            // interpreter accounts for base cycles separately; keep their bus
+            // occupancy here so time spent transferring is never empty time.
+            busy: prior.map_or(0, |last| last.busy).saturating_add(2 + waits),
+            gap: 0,
+        }));
+        waits
+    }
+    pub fn advance_bus(&self, clocks: u32) {
+        if let Some(mut last) = self.access.get() {
+            let empty = clocks.saturating_sub(last.busy);
+            last.busy = last.busy.saturating_sub(clocks);
+            last.gap = last.gap.saturating_add(empty).min(2);
+            self.access.set(Some(last));
+        }
+    }
+    pub fn reset_bus(&self) {
+        self.access.set(None);
     }
     /// H §§7.2.2/7.3.1: ordinary CS1-CS3 narrow buses divide larger
     /// operand/refill requests into separate external byte/word transactions.
@@ -227,13 +281,67 @@ mod tests {
             (BSC, 0xA55A_0920),      // burst ROM
             (BSC, 0xA55A_0121),      // SDRAM
             (BSC + 4, 0xA55A_00F0),  // reserved bus width
-            (BSC + 8, 0xA55A_0039),  // idle cycles
+            (BSC + 8, 0xA55A_AB39),  // reserved idle encoding
             (BSC + 12, 0xA55A_8000), // memory-interface timing
         ] {
             assert!(b.write(address, value).is_err());
         }
         assert_eq!(b.read(BSC, 4), Ok(0x120));
         assert_eq!(b.read(BSC + 8, 4), Ok(0xAA39));
+    }
+    #[test]
+    fn turnaround_uses_prior_read_area_minimum_write_gap_and_existing_empty_cycles() {
+        // H §§7.2.3/7.9, fig.7.47: independent direction/CS/IW/gap
+        // cross-product, with zero software waits to isolate turnaround.
+        for prior_area in 0..4 {
+            for next_area in 0..4 {
+                for prior_write in [false, true] {
+                    for next_write in [false, true] {
+                        for idle in 0u32..=2 {
+                            for empty in 0u32..=4 {
+                                let mut b = Bsc::default();
+                                let wcr = (0xAA00 & !(3 << (8 + prior_area * 2)))
+                                    | idle << (8 + prior_area * 2);
+                                b.write(BSC + 8, 0xA55A_0000 | wcr).unwrap();
+                                assert_eq!(b.access_waits(prior_area << 25, prior_write), 0);
+                                b.advance_bus(2 + empty); // T1/T2, then empty cycles.
+                                let required =
+                                    if !prior_write && (prior_area != next_area || next_write) {
+                                        idle.max(u32::from(next_write))
+                                    } else {
+                                        0
+                                    };
+                                assert_eq!(
+                                    b.access_waits(next_area << 25, next_write),
+                                    required.saturating_sub(empty),
+                                    "CS{prior_area} write={prior_write} -> CS{next_area} write={next_write}, IW={idle}, empty={empty}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn software_waits_and_prior_beat_occupancy_are_not_empty_time_and_reset_drops_history() {
+        for chunk in [1, 2, 3, 8] {
+            let b = Bsc::default();
+            assert_eq!(b.access_waits(0, false), 6);
+            let mut clocks = 8; // T1/T2 plus six Tw; still no empty cycle.
+            while clocks != 0 {
+                let n = clocks.min(chunk);
+                b.advance_bus(n);
+                clocks -= n;
+            }
+            assert_eq!(b.access_waits(0x0600_0000, false), 8);
+            // Two back-to-back beats queue their full occupancy.
+            assert_eq!(b.access_waits(0x0600_0004, true), 8);
+            b.advance_bus(19); // 10+10 clocks queued; one busy clock remains.
+            assert_eq!(b.access_waits(0, false), 6); // write->read, no idle
+            b.reset_bus();
+            assert_eq!(b.access_waits(0x0600_0000, true), 6);
+        }
     }
     #[test]
     fn ordinary_bus_widths_are_independent_and_reserved_selections_do_not_publish() {

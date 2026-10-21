@@ -279,7 +279,7 @@ not turn those missing hardware paths into supported behavior.
 | SCI, H §§13.2–13.3 | SMR/BRR/SCR/TDR/SSR/RDR, timed internal-clock transmission, external completed-character input, overrun/framing/parity flags, IRQs and DMA handshakes | PERIPH; `Serial` | PERIPH (transmit completion) | No external clock-edge adapter or physical serial pin waveform; multiprocessor and format combinations lack exhaustive integration coverage | Pending |
 | On-chip DMAC, H §§9.2–9.3 | Both channels; byte/word/long/16-byte transfers; fixed/increment/decrement addresses; auto/DREQ/SCI requests; fixed/round-robin selection, TE/AE/NMIF, vectors/IRQ; single-address DACK direction/polarity through explicit board pin adapters | PERIPH, DACK; `Dma`, `Bus::advance_dma`, pin-adapter vectors | PERIPH (copy/end IRQ/error 10/no cache snoop), DACK (armed wait/reset on standard board) | CPU/refresh arbitration, burst/cycle-steal timing and DMA wait states remain missing; no requesting DACK peripheral is connected on the standard board | Pending |
 | DIVU, H §§10.2–10.4/table 10.2 | Signed 32/32 and 64/32 quotient/remainder; six-clock overflow exposes three division steps, saturating only the quotient when OVFIE=0; 39-clock normal completion/interlock; word DVCR/VCRDIV, sticky overflow and IRQ | PERIPH, [DIVG](../tests/sh7604.rs), [independent boundary vectors](../src/onchip/peripheral_tests.rs); `Division::start/overflow_result` | DIVG on both CPUs, normal/overflow signs/zero, aliases, IRQ acknowledgement, repeat boots and changed dividend | One-clock immediately consecutive DIVU write/read hazard and full CPU bus scheduling remain | Pending |
-| BSC identification/interval timer, H §§7.1.4/7.2/7.5.7/7.11.1 | BCR1.MASTER per CPU, read-only word lanes, keyed long writes, RTCNT/RTCOR/RTCSR, all clock divisors, CMF read-before-clear, CMI vector/priority and manual-reset retention; ordinary software waits, narrow transfers and CS2 endian conversion (BWAIT below) | [BSCG/BWAIT](../tests/bsc.rs), [register/reset vectors](../src/onchip/peripheral_tests.rs), [BSC vectors](../src/onchip/bsc.rs), [bus beats](../src/bus.rs) | BSCG, BWAIT | Memory/burst interfaces, inter-cycle idle, WAIT input, board widths/lanes and refresh/CPU/DMA ownership remain; unsupported changes explicitly rejected | Pending |
+| BSC identification/interval timer, H §§7.1.4/7.2/7.5.7/7.11.1 | BCR1.MASTER per CPU, read-only word lanes, keyed long writes, RTCNT/RTCOR/RTCSR, all clock divisors, CMF read-before-clear, CMI vector/priority and manual-reset retention; ordinary software waits, intercycle turnaround, narrow transfers and CS2 endian conversion (BWAIT/IDLEG below) | [BSCG/BWAIT](../tests/bsc.rs), [register/reset vectors](../src/onchip/peripheral_tests.rs), [BSC vectors](../src/onchip/bsc.rs), [bus beats](../src/bus.rs) | BSCG, BWAIT, IDLEG | Memory/burst interfaces, WAIT input, board widths/lanes and refresh/CPU/DMA ownership remain; unsupported changes explicitly rejected | Pending |
 | Module stop/standby, H §§14.2/14.4, table 14.3 | SBYCR, SCI/FRT reset and gating, preserved INTC/UBC/BSC, retained DMA operands with control reset, WDT-selected NMI settling; `OnChip::enter_sleep/advance_clocks`, `Bus::advance_dma` | [standby/retention vectors](../src/onchip/peripheral_tests.rs), BSCG, PWRG | BSCG, PWRG | Electrical HIZ/pin states, initial five-cycle NMI guard, physical oscillator and clock-switch edges remain unverified; executing stopped MULT instructions is software-prohibited/undefined (H §2.5.2) | Pending |
 | UBC, H §6 | A/B registers, masked address/data/size/master matching, sequential conditions, match flags, before/after fetch breaks and deferred level-15 vector 12; CPU/cache/DMAC and external SCU observation; `Ubc::observe`, `Cpu::step/execute` | UBCG and bus vectors | UBCG | Three-clock propagation, independent successive-write deadlines and last-register read barrier are implemented in `Ubc::advance/read`; DIVG handles data breaks on both CPUs, including slave acknowledgement after exception acceptance. SH7000-compatible speculative overrun fetch breaks and instruction/bus cycle scheduling remain pending | Pending |
 | Slave SH-2, [Dual CPU User's Guide][DUALREF] §§1/3/4, [SMPC] table 1.1 | Independent interpreter/registers/stacks/peripherals/cache; shared bus, SSHON/SSHOFF, bidirectional capture IRQs | DUAL, CACHE, PERIPH | DUAL, PERIPH | Bus contention and full CPU clock accounting absent; BCR1 identity covered by BSCG | Pending |
@@ -441,7 +441,7 @@ edge/transfer coverage are still required. Unsupported registers fail explicitly
 | DMA indirect, [SCUFINAL] #24/25 | Final-spec count/write/read layout, source bit-31 end marker, table walking, write-address continuation | SCUV, SCUROM / SCUROM | Entire table alignment/overflow/error contract and all count limits need further vectors | Pending |
 | DMA device interactions, [SCU] §2.1 | High-RAM to VDP2 VRAM and executing DSP external RAM transfers, real IRQ handlers | SCUV, SCUROM / SCUROM | CLAB adds CD FIFO to high-RAM fixed-source DMA/IRQ; VDP1 routes and full cross-device arbitration remain | Pending |
 | SCU DSP execution/registers, [SCU] §4.5 pp.91–131/141–158 | ALU logical/arithmetic/shift/rotate, signed multiply, parallel X/Y/D1 moves, immediates, delayed jumps/subroutine control, BTM/LPS, END/ENDI, pause/step and read-cleared E/V | SCUV, SCUROM / SCUROM (product/sum/loop/ENDI) | Full conditional/DMA timing, conflicting bank access and ALU overflow/pipeline edge inventory pending | Pending |
-| SCU DSP memory/transfers, [SCU] §§3.3/4.1/4.5 pp.132–140, [SCUFINAL] #16/18/19/26/27 | Four 64-word banks, host ports, address counters, bounded asynchronous input/output DMA and HOLD, END permits DMA continuation | SCUV, SCUROM / SCUROM (immediate-count RAM DMA) | Register-count/program-RAM DMA, cross-device routes and data-bank conflicts lack complete evidence | Pending |
+| SCU DSP memory/transfers, [SCU] §§3.3/4.1/4.5 pp.132–140, [SCUFINAL] #16/18/19/26/27 | Four 64-word banks, host ports, address counters, bounded asynchronous input/output DMA and HOLD, fixed/incrementing A-bus writes, END permits DMA continuation | SCUV, SCUROM, DSPD / SCUROM + DSPD (register-count and executed program-RAM DMA) | Complete count/PRAM boundaries, cross-device routes and data-bank conflicts lack complete evidence | Pending |
 | SCU timers, [SCU] §§2.2/3.4, [SCUFINAL] #30/31 | Raster-driven timer0 clear/compare and timer1 dot countdown, zero=512, no reload while active, compare-line selection | SCUV, TIME, SCUROM / SCUROM | Full television modes and beam-phase conformance pending | Pending |
 
 Implementation: [SCU ports/interrupts/timers](../src/scu.rs),
@@ -1326,10 +1326,10 @@ guest result is involved.
 
 | Software-visible contract | Implementation and objective evidence | Remaining limits |
 | --- | --- | --- |
-| WCR software waits and BCR1 AnLW | `Bsc::software_waits` decodes zero/one/two Tw or long waits of three through six, independently for CS0–3; CS2/3 share AHLW. Register vectors cover every area/selection, keys and atomic rejection. BWAIT measures eight uncached CS3 reads with each CPU's own FRT, comparing seven literal expected deltas | Tw clocks are added to the existing issue quantum; base T1/T2 overlap, inter-cycle idle, external WAIT and full bus arbitration remain required |
+| WCR software waits and BCR1 AnLW | `Bsc::software_waits` decodes zero/one/two Tw or long waits of three through six, independently for CS0–3; CS2/3 share AHLW. Register vectors cover every area/selection, keys and atomic rejection. BWAIT measures eight uncached CS3 reads with each CPU's own FRT, comparing seven literal expected deltas | Tw clocks are added to the existing issue quantum; base T1/T2 overlap, external WAIT and full bus arbitration remain required; IDLEG below adds intercycle turnaround |
 | BCR2 byte/word/long interfaces | `CpuBus::external_read/external_write` split larger operands and cache-refill requests into ordered physical beats. Bus vectors check exact per-beat wait sums, data, write-through/cache hits and actual sequential external UBC observations | CS0 retains the existing 32-bit board adapter; complete standard-board lane/bridge behavior, burst/DRAM/SDRAM protocols and arbitration remain required |
 | BCR1 CS2 endian | `Bsc::little_endian` selects per-CPU CS2 conversion. Actual transfers reverse operand bytes, leave byte addresses/strobes unchanged and transfer low words first on word-wide buses. Literal native vectors assert physical bytes, both word offsets, all byte lanes, writes and the other CPU's independent view | Cache-through use follows §7.3.2; this does not establish all cache/MMIO/board-width combinations |
-| Register programming rules | Wrong keys do not change registers; reserved bus widths and unsupported little-endian byte buses are rejected atomically. Changed memory/burst/partial-share/idle configurations still raise explicit errors | These remaining valid configurations must be implemented; error reporting does not satisfy their acceptance |
+| Register programming rules | Wrong keys do not change registers; reserved bus widths and unsupported little-endian byte buses are rejected atomically. Reserved IWn=11 is rejected atomically; valid IWn=0/1/2 have transaction effects (IDLEG below). Changed memory/burst/partial-share configurations still raise explicit errors | These remaining valid configurations must be implemented; error reporting does not satisfy their acceptance |
 | Cache/TAS and reset | Waits apply to actual refill beats, cache-through accesses, TAS external reads and write-through hits. Cache hits/arrays incur none; cold reset restores six software waits | CPU/DMA contention, TAS bus locks, refresh ownership and complete reset-cycle timing remain required |
 
 The guest initializes width/endian once after reset **before** accessing outside
@@ -1353,7 +1353,7 @@ Canvas, WebAudio, privacy, input/focus and all three demonstrations.
 | --- | --- |
 | `bsc-waits.hex` text | `a5b1d66b880c6581f548541d83107b76f96f4ba95e7eedf54ea842cdcba37efc` |
 | Expanded 512 KiB original BIOS | `f4f7e6379a45b45a86604b613257a97afbe831a65088dffc18b6972c711a78ed` |
-| `bsc-waits.tsv` | `5ecd8afbc26eb0962062539e8e575d36014368addf7e9baf1ec628214bbbfab3` |
+| `bsc-waits.tsv` | `1e4c4ca08d933e3a72795d1f3ac4990d65309333ea316b3597116b2f178e497b` |
 | `bsc-endian.tsv` | `95de3de1f2d74e5da6a0cea05fea79e455a169c1d1f5c5b4ee1f2ff803b9bf24` |
 
 All remaining umbrella hardware implementation and validation criteria stay
@@ -1530,3 +1530,52 @@ This implements the shrink sampling/end-code controls, not measured VDP1 bus or
 raster execution speed. Transfer-over, progressive erase timing, complete edge
 rules and remaining interlaced/rotated scanout are still required. The original
 Issue #17 acceptance criteria remain unchanged and incomplete.
+
+
+## BSC intercycle turnaround and SCU DSP DMA execution
+
+Related to #17. The full umbrella remains incomplete. Primary references:
+[SH7604][H] §§7.2.3/7.4.1/7.9, figs.7.7/7.47; [SCU][SCU] §§4.3–4.5,
+tables4.6/4.7 and pp.89/134/135/136/138/140; [SCU final corrections][SCUFINAL]
+#27. Both new diagnostics are original sources and generated media covered by
+[the fixture MIT license](../tests/fixtures/LICENSE).
+
+**IDLEG** links [builder](../tests/fixtures/build_bsc_idle.py),
+[BIOS](../tests/fixtures/bsc-idle.hex), [golden timer/data records](../tests/fixtures/bsc-idle.tsv),
+[native guests](../tests/bsc.rs) and actual Wasm execution in
+[browser-smoke.mjs](../scripts/browser-smoke.mjs).
+
+| Required behavior | Implementation | Independent evidence | Remaining limits |
+| --- | --- | --- | --- |
+| WCR intercycle IW0–3 | `Bsc::access_waits` remembers the preceding physical read's CS area/direction, applies that area's IWn, and enforces the minimum one-cycle read/write gap even with IWn=0 | `turnaround_uses_prior_read_area_minimum_write_gap_and_existing_empty_cycles` checks every source/destination CS, direction, legal IW setting and 0–4 empty clocks; reserved IWn=11 rejects without publishing | Full ordinary/DRAM/SDRAM/burst/board and WAIT protocols remain required |
+| Already empty bus time | `Bsc::advance_bus` first consumes queued T1/T2/Tw/turnaround occupancy; only the remainder satisfies the next turnaround | Clock-chunk vectors and real bus tests distinguish occupied time from 0/1/2 empty clocks | Base opcode issue still uses eight reference clocks plus inserted waits; this occupancy bookkeeping does not implement subcycle CPU/DMA scheduling |
+| Cache and bus ownership | Only `CpuBus` physical beats enter history; cache hits/arrays leave it untouched; write-through hits and narrow beats participate. CPU/SCU ownership changes, reset and standby end old history | `bsc_turnaround_tracks_physical_cpu_beats_cache_hits_and_empty_bus_clocks`, refill/width vectors, cold-reset IDLEG | Actual arbitration latency, TAS locks and interleaving a stalled transaction with other CPUs remain required |
+| Both CPUs' guest timing | IDLEG warms each CPU's instruction cache, executes sixteen TAS pairs through P1 and reads its own FRT | Authored deltas **21/21/23** for IW3=0/1/2, final TAS byte A5 and completion; native/Wasm compare both mailboxes and cold resets. Changed IW3=2→1 gives 21, changed guest byte 25→3C gives BC | This is a synthetic BIOS diagnostic, not full CPU timing or either required demonstration |
+
+BWAIT's original ROM bytes are unchanged. Its authored FRT expectations now
+include the newly implemented area-switch gaps: **14+w** for a long/word bus
+and **16+4w** for a byte bus. In the latter, four data beats fill the issue
+quantum and require the return-to-CS0 gap as well. Existing endian, data, width,
+wait mutations and independent CPU traces remain enabled.
+
+**DSPD** links [builder and DSP sources](../tests/fixtures/build_dsp_dma.py),
+[BIOS](../tests/fixtures/dsp-dma.hex), [golden records](../tests/fixtures/dsp-dma.tsv),
+[native integration](../tests/dsp_dma.rs) and identical browser Wasm execution.
+
+| Required behavior | Implementation | Independent evidence | Remaining limits |
+| --- | --- | --- | --- |
+| A-bus fixed-address DSP output | `Dsp::dma_beat` now accepts add0 and add1; add0 repeatedly writes the same longword and retains WA0 | `dsp_a_bus_output_fixed_increment_hold_and_register_counts_have_real_address_effects` checks add0/add1 × HOLD × immediate/M0/MC0 counts and follows with another transfer without rewriting WA0. DSPD inputs 7/11/17 then writes all three to one real RAM word, leaving its neighbor's canary intact | Full DMA arbitration/waits/device-boundary corpus remains |
+| Register-count transfers | Actual DSP instructions read the counter from MC0, increment CT0, transfer work RAM into M1, and move the next M0 word into M2 | DSPD observes last fixed write=17, neighbor=ABCDDCBA and postincrement source=1234. Changing count 3→2 yields last word=0, changing data 17→53 yields 53 | Complete zero-count/counter-wrap/pipeline conflict vectors remain |
+| Executed program-RAM DMA | DSP bootstrap uses register-count DMAH into PRAM and END; guest SH-2 polls EX/T0 and restarts the transferred code through SCU MMIO. The transferred MVI/ENDI writes actual data RAM | DSPD resets CT0 before its program transfer and observes stopped bootstrap PC=4, loaded-program PC=2 and loaded-code result=42; changing only the loaded MVI yields 99. Native/Wasm repeat after reset. A deliberate no-op PRAM transfer is rejected | Complete PRAM address/wrap and overlapping-execution conformance remain |
+
+| Reproducible artifact | SHA-256 |
+| --- | --- |
+| `bsc-idle.hex` text | `574d8033a55c8b4075b65f476ccb9abcdae230fb6898bb187ef12bd0cebde1c8` |
+| `bsc-idle.tsv` | `c4301b6362a2d3773d75dcf38cd18c83bc75dc2862d4f992d24903fd073ac1f2` |
+| `dsp-dma.hex` text | `ad520b55fa4c4d1fe9eba4649c18732722bd4b5bd8365a6f4f4308aaf477765c` |
+| `dsp-dma.tsv` | `2bbdcd58aa2ac660fbb1fa4f8389c7be3fdeb93a020f925d3b15f9a565aa1a99` |
+
+CI verifies both builders with `--check`. No guest computation or result is
+substituted by host code. Existing demonstration media are unchanged. All unmet
+CPU/bus/scheduler/reset, SCU/DSP, video/audio, CD/media, SMPC, BIOS/HLE and
+complete inventory acceptance remains mandatory; these tests do not complete #17.

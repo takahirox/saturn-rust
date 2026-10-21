@@ -462,11 +462,13 @@ impl Dsp {
                 memory.write16(address + dma.add * 2, value as u16)?;
                 dma.address = address.wrapping_add(dma.add * 4);
             } else {
-                if dma.add != 1 {
+                // ST-097 §4.5 pp.134/136/138/140: A-bus writes permit
+                // both fixed address (0) and longword increment (1).
+                if dma.add > 1 {
                     return Err(ScuError::DmaParameters { channel: 3 });
                 }
                 memory.write32(address, value)?;
-                dma.address = address.wrapping_add(4);
+                dma.address = address.wrapping_add(dma.add * 4);
             }
         } else {
             if !super::dma::valid_source(address) {

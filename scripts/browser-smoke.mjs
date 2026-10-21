@@ -1016,13 +1016,78 @@ try {
     assert.deepEqual(actual.exceptions, ["0", "0"]);
     for (const [cpu, trace] of actual.traces.entries()) {
       const expected = [cpu ? 0x83F0 : 0x3F0, 0xAAFF];
-      waitVectors.forEach((ticks, i) => expected.push(before === 0xA55AAA40 && i === 1 ? 14 : 12 + (ticks - 12) * 4 / width,
+      waitVectors.forEach((ticks, i) => expected.push(before === 0xA55AAA40 && i === 1 ? 16 : (width === 1 ? 16 : 14) + (ticks - 14) * 4 / width,
         before === 0x13579BDF ? after : 0x13579BDF));
       expected.push(...(little ? endianVectors : [0x11223344,0x1122,0x3344,0x11,0xA1B2C3D4,0x1234C3D4,0x5634C3D4]), 0x600D);
       assert.deepEqual(trace, expected);
     }
     await page.locator("#reset").click();
     assert.deepEqual(await run(), actual);
+  }
+  // Both SH-2s warm their instruction cache and execute real TAS read/write
+  // pairs. FRT must reflect IW3=0/1's mandatory one cycle and IW3=2's two.
+  const idleRom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/bsc-idle.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [offset, ...words] = line.trim().split(/\s+/).map(word => parseInt(word, 16));
+    words.forEach((word, i) => idleRom.writeUInt16BE(word, offset + i * 2));
+  }
+  const idleVectors = (await readFile("tests/fixtures/bsc-idle.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v, 16));
+  for (const [before, after, index, value] of [[0, 0, 0, 0xAAFF],
+    [0xA55A8000, 0xA55A4000, 3, 21], [0x25, 0x3C, 4, 0xBC]]) {
+    const changed = Buffer.from(idleRom);
+    if (before) {
+      const needle = Buffer.alloc(4); needle.writeUInt32BE(before);
+      const at = changed.indexOf(needle);
+      assert(at >= 0 && changed.indexOf(needle, at + 1) < 0);
+      changed.writeUInt32BE(after, at);
+    }
+    await page.locator("#bios").setInputFiles({ name: "original-bsc-idle.bin", mimeType: "application/octet-stream", buffer: changed });
+    await page.waitForFunction(() => document.getElementById("pc").textContent === "0x20000200");
+    const runIdle = () => page.evaluate(async () => {
+      const { emulator } = await import("./app.js");
+      emulator.run_steps(3000);
+      return { traces: [0x0600E200, 0x0600E300].map(base => Array.from({length: 6}, (_, i) => emulator.read_long(base + i * 4))),
+        exceptions: [emulator.exception_count(), emulator.slave_exception_count()] };
+    });
+    const actual = await runIdle();
+    assert.deepEqual(actual.exceptions, ["0", "0"]);
+    const expected = [...idleVectors]; expected[index] = value;
+    for (const trace of actual.traces) assert.deepEqual(trace, expected);
+    await page.locator("#reset").click();
+    assert.deepEqual(await runIdle(), actual);
+  }
+  // Original register-count/fixed-output DSP DMA and actual execution of a
+  // second DSP program transferred from guest work RAM into program RAM.
+  const dspDmaRom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/dsp-dma.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [offset, ...words] = line.trim().split(/\s+/).map(word => parseInt(word, 16));
+    words.forEach((word, i) => dspDmaRom.writeUInt16BE(word, offset + i * 2));
+  }
+  const dspDmaVectors = (await readFile("tests/fixtures/dsp-dma.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v, 16));
+  for (const [before, after, index, value] of [[0, 0, 0, 17],
+    [0x11, 0x35, 0, 0x35], [3, 2, 0, 0], [0x8400002A, 0x84000063, 5, 99]]) {
+    const changed = Buffer.from(dspDmaRom);
+    if (before) {
+      const needle = Buffer.alloc(4); needle.writeUInt32BE(before);
+      const at = changed.indexOf(needle);
+      assert(at >= 0 && changed.indexOf(needle, at + 1) < 0);
+      changed.writeUInt32BE(after, at);
+    }
+    await page.locator("#bios").setInputFiles({ name: "original-dsp-dma.bin", mimeType: "application/octet-stream", buffer: changed });
+    await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+    const runDspDma = () => page.evaluate(async () => {
+      const { emulator } = await import("./app.js");
+      emulator.run_steps(4000);
+      return { trace: Array.from({length: 7}, (_, i) => emulator.read_long(0x0600E400 + i * 4)),
+        exceptions: emulator.exception_count() };
+    });
+    const actual = await runDspDma();
+    const expected = [...dspDmaVectors]; expected[index] = value;
+    assert.deepEqual(actual, { trace: expected, exceptions: "0" });
+    await page.locator("#reset").click();
+    assert.deepEqual(await runDspDma(), actual);
   }
   // Original UBC fixture: real SH-2 and DMA accesses, saved exception frames,
   // before/after fetches and delay-slot deferral, repeated after a cold reset.

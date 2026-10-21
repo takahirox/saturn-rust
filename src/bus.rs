@@ -7,7 +7,7 @@ use crate::scu::{SCU, Scu, ScuError};
 use crate::sound::{SCSP, SOUND_RAM, SOUND_RAM_SIZE, Sound};
 use crate::timing::{Raster, RasterEvent, SystemClock};
 use crate::vdp1::{self, Vdp1};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 
 pub const BIOS_SIZE: usize = 512 * 1024;
@@ -33,6 +33,7 @@ pub struct CpuBus<'a> {
 struct ExternalBus<'a>(&'a mut Bus);
 impl ExternalBus<'_> {
     fn observe(&self, address: u32, width: usize, value: u32, write: bool) {
+        self.0.release_external_bus();
         for chip in &self.0.onchip {
             chip.observe_access(Bus::physical(address), width, value, write, false, true);
         }
@@ -191,6 +192,7 @@ pub struct Bus {
     pub(crate) backup: BackupRam,
     onchip: [OnChip; 2],
     cache: [RefCell<Cache>; 2],
+    external_owner: Cell<Option<Processor>>,
     pub(crate) slave_enabled: bool,
 }
 
@@ -216,12 +218,27 @@ impl Default for Bus {
                 chip
             }),
             cache: std::array::from_fn(|_| RefCell::new(Cache::default())),
+            external_owner: Cell::new(None),
             slave_enabled: false,
         }
     }
 }
 
 impl Bus {
+    fn release_external_bus(&self) {
+        self.external_owner.set(None);
+        for chip in &self.onchip {
+            chip.release_external_bus();
+        }
+    }
+    fn claim_external_bus(&self, processor: Processor) {
+        if self.external_owner.get() != Some(processor) {
+            // H §7.9: arbitration supplies the empty cycle; an old owner's
+            // read must not create a second turnaround on reacquisition.
+            self.release_external_bus();
+            self.external_owner.set(Some(processor));
+        }
+    }
     pub fn for_cpu(&mut self, processor: Processor) -> CpuBus<'_> {
         CpuBus {
             bus: self,
@@ -963,7 +980,8 @@ impl CpuBus<'_> {
     fn observe_external(&self, address: u32, width: usize, value: u32, write: bool) {
         // Only actual external cycles (not cache hits) reach the other BSC.
         if address < 0x4000_0000 {
-            self.bus.onchip[self.processor as usize].external_access(Bus::physical(address));
+            self.bus.claim_external_bus(self.processor);
+            self.bus.onchip[self.processor as usize].external_access(Bus::physical(address), write);
             self.bus.onchip[1 - self.processor as usize].observe_access(
                 Bus::physical(address),
                 width,
@@ -1183,7 +1201,7 @@ mod scu_timing_tests {
                 .write32(HIGH_WRAM, 0xABCDEF12)
                 .unwrap();
             assert_eq!(b.read32(HIGH_WRAM), Ok(0xABCDEF12));
-            assert_eq!(b.take_wait_clocks(), waits);
+            assert_eq!(b.take_wait_clocks(), waits + 2); // Read->write turnaround.
             b.for_cpu(Processor::Master).write8(CCR, 0x11).unwrap();
             b.for_cpu(Processor::Master).read32(HIGH_WRAM).unwrap();
             assert_eq!(b.take_wait_clocks(), refill_waits);
@@ -1234,7 +1252,7 @@ mod scu_timing_tests {
             .unwrap();
         assert_eq!(b.take_wait_clocks(), 6);
         b.for_cpu(Processor::Master).write32(HIGH_WRAM, 0).unwrap();
-        assert_eq!(b.take_wait_clocks(), 6); // Write-through hit is still external.
+        assert_eq!(b.take_wait_clocks(), 8); // External write + read->write turnaround.
         b.for_cpu(Processor::Master)
             .write32(0xFFFF_FFE8, 0xA55A_AA40)
             .unwrap();
@@ -1249,6 +1267,68 @@ mod scu_timing_tests {
         b.reset_volatile();
         b.for_cpu(Processor::Master).read32(HIGH_WRAM).unwrap();
         assert_eq!(b.take_wait_clocks(), 6);
+    }
+    #[test]
+    fn bsc_turnaround_tracks_physical_cpu_beats_cache_hits_and_empty_bus_clocks() {
+        let mut b = Bus::default();
+        b.for_cpu(Processor::Master)
+            .write32(0xFFFF_FFE8, 0xA55A_2100)
+            .unwrap();
+        b.for_cpu(Processor::Slave)
+            .write32(0xFFFF_FFE8, 0xA55A_0000)
+            .unwrap();
+        // Master CS2 read -> CS3 read uses IW2=2, not destination IW3=0.
+        b.for_cpu(Processor::Master)
+            .read16(SOUND_RAM | 0x20000000)
+            .unwrap();
+        b.for_cpu(Processor::Master)
+            .read32(HIGH_WRAM | 0x20000000)
+            .unwrap();
+        assert_eq!(b.take_wait_clocks(), 2);
+        // An immediate read->write still takes one idle even with IW3=0.
+        b.for_cpu(Processor::Master)
+            .write32(HIGH_WRAM | 0x20000000, 0x12345678)
+            .unwrap();
+        assert_eq!(b.take_wait_clocks(), 1);
+        b.for_cpu(Processor::Master)
+            .read16(SOUND_RAM | 0x20000000)
+            .unwrap();
+        // The other CPU's first read has no preceding transaction, and the
+        // ownership change ends the master's prior read (H §7.9 arbitration).
+        b.for_cpu(Processor::Slave)
+            .read16(SOUND_RAM | 0x20000000)
+            .unwrap();
+        assert_eq!(b.take_wait_clocks(), 0);
+        b.for_cpu(Processor::Master)
+            .write32(HIGH_WRAM, 0x12345678)
+            .unwrap();
+        assert_eq!(b.take_wait_clocks(), 0);
+        b.advance_clocks(100).unwrap();
+        b.for_cpu(Processor::Master).write8(CCR, 0x11).unwrap();
+        b.for_cpu(Processor::Master).read32(HIGH_WRAM).unwrap(); // Refill.
+        assert_eq!(b.take_wait_clocks(), 0);
+        b.advance_clocks(100).unwrap();
+        b.for_cpu(Processor::Master)
+            .read16(SOUND_RAM | 0x20000000)
+            .unwrap();
+        b.for_cpu(Processor::Master).read32(HIGH_WRAM).unwrap(); // Cache hit.
+        b.for_cpu(Processor::Master).read32(0xC0000000).unwrap(); // Cache array.
+        // Neither hit changes the preceding CS2 read. Its IW2 still applies
+        // to the actual write-through transaction, even on a cache hit.
+        b.for_cpu(Processor::Master)
+            .write32(HIGH_WRAM, 0xABCDEF12)
+            .unwrap();
+        assert_eq!(b.take_wait_clocks(), 2);
+        assert_eq!(b.read32(HIGH_WRAM), Ok(0xABCDEF12));
+        b.advance_clocks(100).unwrap();
+        b.for_cpu(Processor::Master)
+            .read16(SOUND_RAM | 0x20000000)
+            .unwrap();
+        b.advance_clocks(3).unwrap(); // T1/T2 plus one empty clock.
+        b.for_cpu(Processor::Master)
+            .read32(HIGH_WRAM | 0x20000000)
+            .unwrap();
+        assert_eq!(b.take_wait_clocks(), 1);
     }
     #[test]
     fn smpc_input_edges_latch_raster_counters_and_raise_pad_irqs_with_independent_enables() {

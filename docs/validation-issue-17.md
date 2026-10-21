@@ -1823,3 +1823,80 @@ SCSP conformance, runtime CD/media gaps, SYS_EXECDMP/CD-library services and the
 complete mandatory coverage inventory still require implementation and evidence.
 No criterion is waived, no substitute tracker is created and no human or external
 approval gate is introduced. These passing checks do not authorize Issue closure.
+
+## BSC intercycle turnaround and executing SCU DSP DMA evidence
+
+Related to #17. Upstream `main` was rechecked as
+`dbd981b030a46daa6923072ce240680dd2e58ebf`; the existing PR #18 head was
+`6e72f31969505beef61171068c1b024561a1c6f6`. The inherited TV/INTBACK/sprite-shrink
+and Hardware Lab work is preserved. This revision implements additional required
+hardware behavior; **it does not complete the umbrella acceptance criteria**.
+
+SH7604 §§7.2.3/7.4.1/7.9, figs.7.7/7.47 define turnaround after a physical read.
+The BSC now remembers the preceding read's area/direction, uses that area's IWn,
+requires at least one empty cycle before a write even with IWn=0, and subtracts
+already empty clocks. Queued T1/T2/Tw/turnaround occupancy is consumed first.
+Cache hits/arrays do not change the preceding external transaction; actual
+refills, narrow transfers, TAS and write-through hits do. CPU/SCU ownership
+changes, reset and standby end the old transaction history. Reserved IWn=11
+writes reject without publishing the invalid value.
+
+The independent native cross-product covers all four source/destination CS
+areas, both directions, every legal IW selection and 0–4 empty clocks. Split-clock
+vectors separate occupied transfer time from empty cycles. Bus-level vectors
+exercise cache hits, arrays, write-through, partial gaps and ownership changes.
+The new original MIT `bsc-idle` synthetic BIOS runs each CPU independently,
+warms its instruction cache, executes sixteen real P1 TAS pairs and measures its
+own FRT. Authored deltas are **21/21/23** for IW3=0/1/2. Both native and browser
+Wasm compare both six-word traces, changed idle/data operands and cold resets.
+BWAIT's original ROM is unchanged; its timer vectors now account for newly
+implemented area-switch gaps, including the byte-bus return-to-CS0 gap.
+
+SCU ST-097 §4.5 pp.134/136/138/140 permits A-bus DSP DMA writes with address
+increments 0 and 1. The old implementation rejected 0. It now repeatedly writes
+the fixed destination and retains WA0 as documented. Native vectors cover
+add0/add1 × HOLD × immediate/M0/MC0 counts, then execute another transfer without
+rewriting WA0. The new original MIT `dsp-dma` BIOS performs register-count DMA,
+checks MC0 postincrement using a distinct next word, writes three computed DSP
+RAM values to one real work-RAM word and checks its neighbor's canary. A second
+DSP bootstrap DMA-loads a MVI/ENDI program from work RAM into PRAM, ends, and is
+restarted by guest SH-2 SCU MMIO to execute the transferred code. Review caught
+and corrected an inherited CT0 value in the new fixture: the bootstrap now resets
+CT0 before reading its count, ensuring the intended two-word transfer. Native and actual
+browser Wasm compare seven records, including bootstrap PC=4 and loaded-program
+PC=2, and repeat after reset. Mutating data,
+count or the loaded DSP instruction changes the corresponding guest result.
+
+Local checks use Rust/Cargo **1.99.0**, Node **24.12.0** and matching
+wasm-bindgen-cli **0.2.129**:
+
+- Formatting, locked native build and full native tests pass: **419 tests**,
+  **226 unit + 193 integration**, zero failed/ignored.
+- Native all-target and wasm32 Clippy with `-D warnings` pass.
+- `sh scripts/build-web.sh`, all **43** CI reproducibility commands,
+  JavaScript syntax and Git whitespace checks pass. **351** local documentation
+  link targets were checked.
+- The complete extended `npm run test:browser` passes in Chromium
+  **145.0.7632.6** under `/saturn-rust/`. No required checks were skipped. Existing
+  Canvas/WebAudio, games/restart, input/focus, local-file privacy and packaging
+  assertions remain enabled. Both new guests run through actual Wasm.
+- Six deliberate source regressions were rejected: ignored turnaround,
+  destination-area IW selection, ignored empty clocks, lost minimum read/write
+  gap, rejected fixed DSP output and no-op PRAM DMA. All original source bytes
+  were restored. One full native run overlapped these deliberate mutations and
+  picked up an altered build; that run failed and was discarded. The full suite
+  was then rerun successfully on restored sources without concurrent mutations.
+
+The [inventory](hardware-conformance.md#bsc-intercycle-turnaround-and-scu-dsp-dma-execution)
+links the implementation/tests, primary manuals, hashes and original MIT sources.
+No external firmware/core, SDK routine, host-computed guest result or per-game
+bypass was introduced. These diagnostics do not replace either required demo.
+All existing game media are unchanged by this revision.
+
+The fixed CPU issue quantum, full coordinated CPU/DMA bus scheduler, remaining
+BSC/cache/reset/board protocols, instruction-specific 68k timing, SCU/DSP pipeline
+and boundary coverage, remaining video/SCSP/CD/media/SMPC behavior,
+SYS_EXECDMP/CD-library and complete BIOS/HLE services, and comprehensive mandatory
+acceptance coverage remain required. PR #18 stays Draft with `Closes #17` as its
+intended final outcome. No umbrella checkbox is marked complete and no human,
+proprietary firmware, live-site or external-workflow approval gate is introduced.

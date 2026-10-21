@@ -80,7 +80,7 @@ fn wait_and_data_operand_mutations_change_guest_timer_and_transfer_results() {
         for (cpu, actual) in waits_run(&changed).iter().enumerate() {
             let mut expected = original[cpu].clone();
             if before == 0xA55AAA40 {
-                expected[4] = 14; // One Tw becomes two, over eight actual reads.
+                expected[4] = 16; // One Tw becomes two, over eight actual reads.
             } else {
                 for i in 0..7 {
                     expected[3 + i * 2] = after;
@@ -114,7 +114,9 @@ fn reset_time_bus_width_and_endian_operands_change_actual_guest_transfers() {
         for (cpu, actual) in waits_run(&changed).iter().enumerate() {
             let mut expected = baseline[cpu].clone();
             for w in 0..7 {
-                expected[2 + w * 2] = 12 + w as u32 * (4 / width);
+                // Four byte beats fill the issue quantum: the return to CS0
+                // also needs IW3=2. Word/long buses have enough empty clocks.
+                expected[2 + w * 2] = if width == 1 { 16 } else { 14 } + w as u32 * (4 / width);
             }
             if !little {
                 expected[16..23].copy_from_slice(&[
@@ -122,6 +124,52 @@ fn reset_time_bus_width_and_endian_operands_change_actual_guest_transfers() {
                 ]);
             }
             assert_eq!(*actual, expected);
+        }
+    }
+}
+
+fn idle_run(rom: &[u8], machine: &mut Machine) -> [Vec<u32>; 2] {
+    machine.reset(Boot::ExternalBios(rom)).unwrap();
+    machine.run_steps(3000).unwrap();
+    assert_eq!(machine.cpu_state().exceptions, 0);
+    assert_eq!(machine.slave_state().exceptions, 0);
+    for cpu in [machine.cpu_state(), machine.slave_state()] {
+        assert_eq!(cpu.status, saturn_rust::cpu::CpuStatus::Sleeping);
+    }
+    [0x0600E200, 0x0600E300].map(|base| {
+        (0..6)
+            .map(|i| machine.bus().read32(base + i * 4).unwrap())
+            .collect()
+    })
+}
+
+#[test]
+fn both_cached_guests_measure_tas_turnaround_and_reset_clears_bus_history() {
+    let rom = load(include_str!("fixtures/bsc-idle.hex"));
+    let expected: Vec<_> = include_str!("fixtures/bsc-idle.tsv")
+        .lines()
+        .map(|s| u32::from_str_radix(s, 16).unwrap())
+        .collect();
+    let mut machine = Machine::new();
+    for _ in 0..2 {
+        for trace in idle_run(&rom, &mut machine) {
+            assert_eq!(trace, expected);
+        }
+    }
+}
+
+#[test]
+fn changed_idle_and_tas_data_operands_change_actual_guest_timing_and_memory() {
+    let rom = load(include_str!("fixtures/bsc-idle.hex"));
+    let mut machine = Machine::new();
+    let baseline = idle_run(&rom, &mut machine);
+    for (before, after, index, value) in [(0xA55A8000, 0xA55A4000, 3, 21), (0x25, 0x3C, 4, 0xBC)] {
+        let mut changed = rom.clone();
+        replace_literal(&mut changed, before, after);
+        for (cpu, trace) in idle_run(&changed, &mut machine).iter().enumerate() {
+            let mut expected = baseline[cpu].clone();
+            expected[index] = value;
+            assert_eq!(*trace, expected);
         }
     }
 }

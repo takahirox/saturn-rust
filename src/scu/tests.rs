@@ -442,6 +442,65 @@ fn dsp_dma_input_output_hold_and_end_continuation_use_real_bus_memory() {
 }
 
 #[test]
+fn dsp_a_bus_output_fixed_increment_hold_and_register_counts_have_real_address_effects() {
+    // ST-097 §4.5 pp.134/136/138/140: add0/add1 are both legal;
+    // DMAH retains WA0, while ordinary DMA updates it by the selected add.
+    for add in [0u32, 1] {
+        for hold in [false, true] {
+            for counter in [3, 0x2000, 0x2004] {
+                // immediate, M0, MC0
+                let mut d = dsp::Dsp::default();
+                let mut b = Bus::default();
+                d.set_data_address(0, SCU + 0x88).unwrap();
+                d.write_data(3, SCU + 0x8C).unwrap();
+                d.set_data_address(64, SCU + 0x88).unwrap();
+                for value in [7, 11, 17] {
+                    d.write_data(value, SCU + 0x8C).unwrap();
+                }
+                let command = 0xC0001100 | add << 15 | u32::from(hold) << 14 | counter;
+                for word in [0x9D800400, command, 0xF8000000] {
+                    // WA0=06001000/4
+                    d.write_program(word, SCU + 0x84).unwrap();
+                }
+                d.set_control(0x18000);
+                let mut irq = 0;
+                for _ in 0..20 {
+                    irq += u32::from(d.step().unwrap());
+                    d.dma_beat(&mut b).unwrap();
+                }
+                assert_eq!(irq, 1);
+                assert!(!d.running());
+                assert_eq!(
+                    b.read32(HIGH_WRAM + 0x1000).unwrap(),
+                    if add == 0 { 17 } else { 7 }
+                );
+                assert_eq!(
+                    b.read32(HIGH_WRAM + 0x1004).unwrap(),
+                    if add == 0 { 0 } else { 11 }
+                );
+                assert_eq!(
+                    b.read32(HIGH_WRAM + 0x1008).unwrap(),
+                    if add == 0 { 0 } else { 17 }
+                );
+                // Continue using WA0 without rewriting it. Reset CT1 and copy
+                // one word with add1. HOLD and add0 both retain original WA0.
+                d.set_control(0x8000);
+                for word in [0x00001D00, 0xC0009101, 0xF0000000] {
+                    d.write_program(word, SCU + 0x84).unwrap();
+                }
+                d.set_control(0x18000);
+                for _ in 0..10 {
+                    d.step().unwrap();
+                    d.dma_beat(&mut b).unwrap();
+                }
+                let destination = HIGH_WRAM + 0x1000 + if hold { 0 } else { 12 * add };
+                assert_eq!(b.read32(destination).unwrap(), 7);
+            }
+        }
+    }
+}
+
+#[test]
 fn every_dsp_condition_selects_immediate_and_delayed_jump_from_golden_flags() {
     // ST-097 §4.5 pp.122–131/143–152: polarity bit 24 for JMP and bit 24
     // for conditional MVI, with independent condition fields below. Page 123

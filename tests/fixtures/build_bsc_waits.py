@@ -70,8 +70,11 @@ def build():
         if any(rom[at:at+16]):
             lines.append(f'{at:04X} '+' '.join(f'{w:04X}' for w in struct.unpack('>8H',rom[at:at+16])))
     # The first FRC latch precedes twelve issue turns plus eight Tw groups:
-    # 12*8+8*wait clocks -> 12+wait FRT ticks. Source-authored, no emulator run.
-    expected = [12+w for w in range(7)]
+    # 12*8+8*(IW0=2+wait) clocks -> 14+wait FRT ticks. Each CS0 fetch
+    # precedes a CS3 read; H §7.9 requires two turnaround cycles. The gap
+    # after each data read satisfies IW3 before the next fetch.
+    # Source-authored, no emulator run.
+    expected = [14+w for w in range(7)]
     return {'bsc-waits.hex': ('\n'.join(lines)+'\n').encode(),
             'bsc-waits.tsv': ''.join(f'{v:08X}\n' for v in expected).encode(),
             'bsc-endian.tsv': ''.join(f'{v:08X}\n' for v in

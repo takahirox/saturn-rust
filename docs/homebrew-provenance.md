@@ -174,3 +174,14 @@ object, BIOS or third-party filesystem/core code was reused. The independent
 SRBUP001, and the [conformance entry](hardware-conformance.md#guest-executed-hle-backup-library-bupg)
 records hashes and native/Wasm evidence. This is diagnostic media, not either of
 the required new demonstrations, and it does not change their bytes or licenses.
+
+
+The original MIT [BSC turnaround](../tests/fixtures/build_bsc_idle.py) and
+[SCU DSP DMA](../tests/fixtures/build_dsp_dma.py) builders use only Python's
+standard library and this project's original SH-2 assembler. Their generated
+BIOS/TSV files are covered by the adjacent [fixture license](../tests/fixtures/LICENSE).
+They contain authored SH-2/DSP instructions and arithmetic/register expectations;
+no Sega BIOS, SDK, third-party core, captured emulator output or external assets
+are included. The [conformance inventory](hardware-conformance.md#bsc-intercycle-turnaround-and-scu-dsp-dma-execution)
+records the hashes and native/browser evidence. They are diagnostics and do not
+replace either required demo. All three existing demonstration media are unchanged.
