@@ -1308,7 +1308,7 @@ impl Memory for CpuBus<'_> {
             if !self.cached && address >= 0xFFFF_FF40 {
                 return Err(BusError::UnsupportedDevice { address, width: 1 });
             }
-            if !self.cached && self.scheduled {
+            if self.scheduled {
                 return self
                     .scheduled_external(address, 1, None, true, true, false)
                     .map(|v| v as u8);
@@ -1326,7 +1326,7 @@ impl Memory for CpuBus<'_> {
             if !self.cached && address >= 0xFFFF_FF40 {
                 return Err(BusError::UnsupportedDevice { address, width: 2 });
             }
-            if !self.cached && self.scheduled {
+            if self.scheduled {
                 return self
                     .scheduled_external(address, 2, None, true, true, false)
                     .map(|v| v as u16);
@@ -1352,7 +1352,7 @@ impl Memory for CpuBus<'_> {
             if !self.cached && address >= 0xFFFF_FF40 {
                 return Err(BusError::UnsupportedDevice { address, width: 4 });
             }
-            if !self.cached && self.scheduled {
+            if self.scheduled {
                 return self.scheduled_external(address, 4, None, true, true, false);
             }
             let value = self.bus.onchip[self.processor as usize].read32(address)?;
@@ -1382,7 +1382,7 @@ impl Memory for CpuBus<'_> {
             if !self.cached && address >= 0xFFFF_FF40 {
                 return Err(BusError::UnsupportedDevice { address, width: 1 });
             }
-            if !self.cached && self.scheduled {
+            if self.scheduled {
                 return self
                     .scheduled_external(address, 1, Some(u32::from(value)), true, true, false)
                     .map(|_| ());
@@ -1413,7 +1413,7 @@ impl Memory for CpuBus<'_> {
             if !self.cached && address >= 0xFFFF_FF40 {
                 return Err(BusError::UnsupportedDevice { address, width: 2 });
             }
-            if !self.cached && self.scheduled {
+            if self.scheduled {
                 return self
                     .scheduled_external(address, 2, Some(u32::from(value)), true, true, false)
                     .map(|_| ());
@@ -1431,7 +1431,7 @@ impl Memory for CpuBus<'_> {
             if !self.cached && address >= 0xFFFF_FF40 {
                 return Err(BusError::UnsupportedDevice { address, width: 4 });
             }
-            if !self.cached && self.scheduled {
+            if self.scheduled {
                 return self
                     .scheduled_external(address, 4, Some(value), true, true, false)
                     .map(|_| ());

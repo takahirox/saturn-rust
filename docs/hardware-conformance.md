@@ -1609,7 +1609,7 @@ complete inventory acceptance remains mandatory; these tests do not complete #17
 | --- | --- | --- | --- |
 | SCSP MEM4MB, [SCSP] §4.2 table4.32/fig4.58 | `RamConfig`, `Sound::read_ram8/write_ram8`, `SoundBus`, slot fetch, SCSP DMA and DSP MRD/MWT use the same geometry. Chip0 is 128 KiB in 1-Mbit mode or 512 KiB in 4-Mbit mode; the second chip is absent. Configuration changes preserve stored bytes. | `memory_geometry_is_shared_by_main_and_sound_cpu_and_preserves_inaccessible_bytes`; `memory_configuration_controls_pcm_dma_and_executing_effects_memory_reads`; MEMG | MEMG's real 68k reads both configurations, verifies a discarded absent-chip write, programs DMA and DSP, and produces bipolar stereo. Changing its sample operands changes actual AudioWorklet peak by the authored ratio. |
 | Backup selects and absent CPU/A-bus devices, [O] map / [SCU] §1.2 | `BackupRam::offset`, `Bus::unconnected`, `CpuBus::external_write`: eight backup aliases with odd lanes; absent board selects return FF bytes and discard writes; ROM CPU writes complete without a write-enable effect. Host ROM loader remains checked/read-only. Real-chip unsupported ports still fail. | `all_eight_backup_select_aliases_share_lanes_and_atomic_import_across_reset`; `absent_board_selects_return_high_data_and_cpu_rom_writes_have_no_storage_effect`; MEMG | MEMG checks eight aliases, absent cartridge data, ROM retention, repeated boot and changed sample operands. Existing BUPG import/export and reset/service tests remain enabled. |
-| DIVU consecutive write/read, [H] §10.4.1 | `OnChip::instruction_break/read32/write16/write32` track instruction adjacency independently for each CPU. An immediately following read extends one cycle, subsumed by a longer active divide. Word writes preserve lanes without fabricating a read strobe. | `divu_consecutive_read_interlock_follows_instructions_not_time_and_word_writes_are_not_reads`: both CPU identities, word/long registers, 0–2 intervening instructions, 0/1/39/100 elapsed clocks, active divide and reset | Existing DIVG executes both CPU-local units and all arithmetic/IRQ records. Exhaustive guest cycle-order evidence still requires the transaction scheduler. |
+| DIVU consecutive write/read, [H] §10.4.1 | `OnChip::instruction_break/read32/write16/write32` track instruction adjacency independently for each CPU. An immediately following read extends one cycle, subsumed by a longer active divide. Word writes preserve lanes without fabricating a read strobe. | `divu_consecutive_read_interlock_follows_instructions_not_time_and_word_writes_are_not_reads`: both CPU identities, word/long registers, 0–2 intervening instructions, 0/1/39/100 elapsed clocks, active divide and reset | Existing DIVG executes both CPU-local units and all arithmetic/IRQ records. CPUIO below adds scheduled CPU waits, real DIVU completion/IRQ boundaries and both-CPU peripheral timing guests; exhaustive instruction/pipeline evidence remains required. |
 | Plain Mode2 data, [ECMA-130](https://www.ecma-international.org/wp-content/uploads/ECMA-130_2nd_edition_june_1996.pdf) §14 fig12 / §14.2; CD host view [CD] §5.4 | `Media::cue_with_mode2_format/raw_sector/decode_sector/cooked_sector`, `integrity::mode2_data`: validate sync/mode/BCD header and preserve all 2336 user bytes; no nonexistent XA EDC/ECC. Runtime 2336-byte FIFO uses the documented host layout. | `ecma_mode_two_data_preserves_all_2336_bytes_without_xa_parity_or_subheaders`: all byte fills, ambiguous subheaders, malformed header and rejected damaged XA; M2G compares every guest-copied word and sum | M2G mounts original mixed data/audio CUE, reads every byte through guest HIRQ/FIFO code, repeats reset and changes first/last payload bytes. |
 | Historical scanlines, [VDP2] §§2.5/7.2/13.1 | `Bus::advance_main_clocks`, `Vdp2::scanline/finish_field/scanout/output_dimensions`: capture passed dots before video bus writes, finish rows at HBlank, publish at VBlank, retain alternate interlace rows and pair published dimensions with their pixels. | RASTG checks all 224 rows, transition-line old-color prefixes, blanking retention, next-field offset and reset. `bus::raster_write_tests` checks exact dot boundaries in normal/hires/exclusive monitors and palette/VRAM/color-offset changes. Existing static/game pixel tests wait for completed scanout. | RASTG's beam-polled bands survive later VRAM/offset writes in Wasm and production Canvas; a guest-color mutation changes only its band. Existing game/restart and advanced video checks remain enabled. |
 
@@ -2035,7 +2035,8 @@ function specifications 4.1/5.7–5.8; [DISC] §4.3.
 The four-clock sound bus phases preserve the existing interpreter's access order;
 they do not establish every instruction-specific prefetch sequence, RESET pin
 timing, SCSP RAM arbitration or sub-sample DSP/DMA scheduling. Internal DMA
-timing does not establish CPU/internal-bus arbitration or full write buffering.
+timing alone does not establish CPU/internal-bus arbitration or full write buffering;
+CPUIO below adds CPU/internal-bus serialization and DIVU completion ordering.
 Other mandatory inventory entries above remain pending with their original scope.
 
 ## SCU DSP program-DMA origin and data-bank restrictions
@@ -2069,3 +2070,38 @@ Current hashes are recorded in the DSPD table above. The three licensed
 demonstration discs are unchanged.
 
 [SOA8]: https://github.com/luckyseoul/saturn-docs/blob/main/files/Sattechs.pdf
+
+## SH7604 CPU/internal-bus completion and DIVU ordering (CPUIO)
+
+Sources: [H] §§7.11.2–7.11.3, 9.3.3–9.3.5 and 10.4. CPU peripheral
+accesses now use the same per-processor internal/peripheral bus as on-chip DMA.
+Previously the CPU performed those MMIO operations immediately while DMA used
+scheduled phases. This also allowed a CPU result read to finish DIVU and assert
+its overflow interrupt before hardware time reached the division deadline.
+
+| Contract | Implementation | Independent native evidence | Native / Wasm guest evidence |
+| --- | --- | --- | --- |
+| CPU byte/word/long MMIO publishes or samples at completion; reads include the extra determine state | `CpuBus::read8/read16/read32/write8/write16/write32`, `Bus::grant_cpu_internal/complete_bus_transaction` in [bus.rs](../src/bus.rs) and [transactions.rs](../src/bus/transactions.rs) | `cpu_peripheral_byte_word_and_long_writes_have_one_completion_and_reads_have_two_states` in [dmac_tests.rs](../src/bus/dmac_tests.rs): SCI, INTC and UBC registers on both CPUs; late sampling and stable replay in `cpu_peripheral_reads_sample_at_completion_and_share_only_the_local_dma_bus` | Expanded [TIMING builder](../tests/fixtures/build_sh2_timing.py) executes 32 SCI reads and 32 writes on each CPU; independent FRT results are 8 and 4 ticks. [Native](../tests/sh2_timing.rs) and [browser Wasm](../scripts/browser-smoke.mjs) compare all 25 words, cold-reset repetitions, changed arithmetic/control flow and a changed SCI write operand (FF→5A) |
+| DMA priority and retained transfer/burst ownership serialize the local internal bus; the other processor's peripheral bus remains independent | `Bus::grant_bus_transaction/grant_cpu_internal` | `local_external_read_holds_internal_bus_until_completion_but_not_the_other_cpu_bus`, `external_dma_unit_and_burst_retain_local_internal_bus_while_peer_peripherals_run`; explicit completion/count/IRQ boundaries, including simultaneous pending CPU/DMA requests | Existing [DMABG](../tests/dmac_bus.rs) and [production Wasm](../scripts/dmac-bus.mjs) execute SCI↔RAM and DIVU→RAM, all transfer widths, burst/cycle-steal and eight IRQs on each CPU. TIMING independently exercises both CPU peripheral paths |
+| Reset/cancellation cannot publish a canceled CPU phase or cancel another owner's phase | Owner checks in `Bus::cancel_cpu_transaction/cancel_dmac_transaction` | `cpu_internal_transactions_do_not_acquire_external_bus_and_cancel_by_owner` checks pending/granted writes, DMA-only cancellation, external TAS retention and subsequent bus release on both CPUs; existing reset-domain vectors remain enabled | TIMING and DMABG repeat cold resets; existing SYSRES/standby/slave-reset guests retain their native and browser assertions |
+| DIVU wait consumes actual hardware time, retains its completion/IRQ deadline and does not charge the CPU twice | `OnChip::cpu_peripheral_wait`, `Bus::grant_cpu_internal` | `cpu_divu_interlock_keeps_irq_and_other_devices_on_real_clock_boundaries`: both processors, three clock chunk sizes, no early overflow/IRQ, six-clock completion and later read completion, zero residual wait charge | Existing [DIVG/PERIPH](../tests/sh7604.rs), [memory contracts](../tests/memory_contracts.rs), TIMING and their browser equivalents remain enabled |
+
+FRT oracles in BWAIT/IDLEG/BCMEM/ABUS now include CPU peripheral determine/read
+states and the resume write's completion boundary. The source builders document
+the state arithmetic; affected native/browser mutation expectations use the same
+new intervals. Hardware/device operands and computed data expectations remain
+independent of measured output. Existing CI reproducibility commands cover all
+changed generated fixtures; no new proprietary data or host result injection is
+used. Sources and generated fixtures retain the adjacent [MIT license](../tests/fixtures/LICENSE).
+
+Current TIMING hashes:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `sh2-timing.hex` | `734cf7e542e51bcad864e2725bbeac2e26b571b59ac6d20610d7fead9658c18e` |
+| `sh2-timing.tsv` | `a61acc6a88475b77f549d33efdfd4111caa85fc04ef05dd64807e19898de4b74` |
+
+This entry supersedes earlier immediate CPU-peripheral and deferred DIVU-wait
+behavior. It establishes these internal-bus boundaries, not complete SH-2
+IF/MA/multiplier overlap, speculative instruction fetch, BSC write buffering,
+refresh/display/sound ownership, or the other pending mandatory #17 contracts.

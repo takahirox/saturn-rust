@@ -27,13 +27,18 @@ KERNELS = [
     ('load_independent', 'mov.l @r12,r6\nadd #1,r9\n' * 16, 32, 0),
     ('load_repeat', 'mov.l @r12,r6\n' * 32, 32, 0),
     ('load_separated', 'mov.l @r12,r6\nnop\nadd #1,r6\n' * 8, 24, 1),
+    # H §7.11.2: determine-cycle state plus internal peripheral read.
+    ('peripheral_read', 'mov.b @r10,r6\n' * 32, 64, 0xffffffff),
+    ('peripheral_write', 'mov.b r6,@r10\n' * 32, 32, 0),
 ]
 
 
 def kernel(body):
     # The caller preloads FRC high/low into R4/R5 and SBYCR into R7.
-    # Resume(1), high latch(1), low read(1), body(N). Second latch sees
-    # floor((3+N)/8). All N are multiples of eight, so this is exactly N/8.
+    # The resume write completes while the FRT is stopped, starting phase zero.
+    # High latch(2), low read(2), body(N), final latch(2): H §7.11.2
+    # gives floor((6+N)/8) at the final high-byte read. All N are multiples
+    # of eight, so this is exactly N/8.
     return ('mov #2,r0\nmov.b r0,@r7\nmov #0,r0\nmov.b r0,@r7\n'
             'mov.b @r4,r0\nmov.b @r5,r0\n' + body +
             'mov.b @r4,r0\nmov.b @r5,r0\nextu.b r0,r0\nrts\nnop\n')
@@ -46,11 +51,13 @@ def build():
     s += store(0xFFFFFFE8, 0xA55A0000)
     # Two-way cache reserves ways0/1 for the STC.L kernel's data array.
     s += ('load 0xfffffe92,r1\nmov #25,r0\nmov.b r0,@r1\n'
-          'load 0xfffffe12,r4\nload 0xfffffe13,r5\nload 0xfffffe91,r7\n')
+          'load 0xfffffe12,r4\nload 0xfffffe13,r5\nload 0xfffffe91,r7\n'
+          'load 0xfffffe01,r10\n')
     for i, (name, _, _, _) in enumerate(KERNELS):
         address = 0x4000 + i * 0x400
         # Two identical calls; only the second warmed-cache result is recorded.
         for _ in range(2):
+            s += 'mov #-1,r0\nmov.b r0,@r10\n'
             s += (f'load {address:#x},r3\nmov #0,r6\n'
                   f'load {0xC0000400 if name == "stc" else 0x7000:#x},r12\n'
                   'jsr @r3\nnop\n')
@@ -63,7 +70,7 @@ def build():
     struct.pack_into('>IIII', rom, 0, 0x200, 0x060FF000, 0x200, 0x060FE000)
     for address, source in sections.items():
         code = assembler.assemble(source, base=address)
-        assert len(code) < 0x400
+        assert len(code) < (0x3E00 if address == 0x200 else 0x400)
         rom[address:address+len(code)] = code
     # LDC.L consumes original zero words at 7000..707C. STC.L uses cache RAM.
     lines = ['# Original SH-2 execution-state BIOS; MIT: adjacent LICENSE.']

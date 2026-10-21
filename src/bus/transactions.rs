@@ -220,7 +220,12 @@ impl Bus {
         }
     }
     pub(super) fn cancel_dmac_transaction(&mut self, processor: Processor) {
-        self.transactions.internal[processor as usize] = None;
+        if self.transactions.internal[processor as usize]
+            .as_ref()
+            .is_some_and(|a| a.owner == Owner::Dmac(processor))
+        {
+            self.transactions.internal[processor as usize] = None;
+        }
         if self
             .transactions
             .active
@@ -321,6 +326,12 @@ impl Bus {
         self.transactions.scu = None;
     }
     pub(crate) fn cancel_cpu_transaction(&mut self, processor: Processor) {
+        if self.transactions.internal[processor as usize]
+            .as_ref()
+            .is_some_and(|a| a.owner == Owner::Cpu(processor))
+        {
+            self.transactions.internal[processor as usize] = None;
+        }
         if self
             .transactions
             .active
@@ -338,15 +349,45 @@ impl Bus {
                 .completed,
         )
     }
+    fn grant_cpu_internal(&mut self) {
+        // H §§7.11.2–7.11.3/9.3: CPU and DMAC share this
+        // processor's peripheral bus; the DMAC wins a simultaneous request.
+        // Neither processor's internal access needs the external bus, and
+        // an already granted access cannot be displaced by a later request.
+        for processor in [Processor::Master, Processor::Slave] {
+            let i = processor as usize;
+            if self.transactions.internal[i].is_some()
+                || self.transactions.dmac_owner == Some(processor)
+                || self.transactions.active.as_ref().is_some_and(
+                    |a| matches!(a.owner, Owner::Cpu(p) | Owner::Dmac(p) if p == processor),
+                )
+            {
+                continue;
+            }
+            let waiting = self.transactions.journals[i].borrow().waiting;
+            if let Some(transfer) = waiting.filter(|t| t.address >= 0xFFFF_FE00) {
+                self.transactions.internal[i] = Some(Active {
+                    owner: Owner::Cpu(processor),
+                    transfer,
+                    // CPU reads first determine the cycle on the cache bus;
+                    // writes and DMAC cycles need no such extra state.
+                    remaining: (if transfer.write.is_some() { 1 } else { 2 })
+                        + self.onchip[i].cpu_peripheral_wait(
+                            transfer.address,
+                            transfer.width,
+                            transfer.write.is_some(),
+                        ),
+                });
+            }
+        }
+    }
     pub(crate) fn grant_bus_transaction(&mut self) {
         for processor in [Processor::Master, Processor::Slave] {
             let i = processor as usize;
             if self.transactions.internal[i].is_some()
-                || self
-                    .transactions
-                    .active
-                    .as_ref()
-                    .is_some_and(|a| a.owner == Owner::Dmac(processor))
+                || self.transactions.active.as_ref().is_some_and(
+                    |a| matches!(a.owner, Owner::Cpu(p) | Owner::Dmac(p) if p == processor),
+                )
             {
                 continue;
             }
@@ -377,12 +418,14 @@ impl Bus {
             }
         }
         if self.transactions.active.is_some() {
+            self.grant_cpu_internal();
             return;
         }
         if self.transactions.lock.is_none()
             && self.transactions.dmac_owner.is_some()
             && self.grant_dmac()
         {
+            self.grant_cpu_internal();
             return;
         }
         if self.transactions.lock.is_none()
@@ -422,11 +465,14 @@ impl Bus {
                 },
                 remaining,
             });
+            self.grant_cpu_internal();
             return;
         }
         if self.transactions.lock.is_none() && !self.transactions.dmac_yield && self.grant_dmac() {
+            self.grant_cpu_internal();
             return;
         }
+        self.grant_cpu_internal();
         // Round-robin at beat boundaries; TAS is the only retained CPU lock.
         let order = if self.transactions.previous == Some(Processor::Master) {
             [Processor::Slave, Processor::Master]
@@ -434,6 +480,9 @@ impl Bus {
             [Processor::Master, Processor::Slave]
         };
         for processor in order {
+            if self.transactions.internal[processor as usize].is_some() {
+                continue;
+            }
             if self
                 .transactions
                 .lock
@@ -447,6 +496,9 @@ impl Bus {
             else {
                 continue;
             };
+            if transfer.address >= 0xFFFF_FE00 {
+                continue;
+            }
             if transfer.locked {
                 self.transactions.lock = Some(processor);
             }
@@ -512,7 +564,23 @@ impl Bus {
             Owner::Cpu(p) | Owner::Dmac(p) => p,
             Owner::Scu => Processor::Master,
         };
-        let result = if matches!(active.owner, Owner::Dmac(_)) && t.address >= 0xFFFF_FE00 {
+        let result = if matches!(active.owner, Owner::Cpu(_)) && t.address >= 0xFFFF_FE00 {
+            let mut memory = self.for_cpu(processor);
+            if let Some(value) = t.write {
+                match t.width {
+                    1 => memory.write8(t.address, value as u8),
+                    2 => memory.write16(t.address, value as u16),
+                    _ => memory.write32(t.address, value),
+                }
+                .map(|_| value)
+            } else {
+                match t.width {
+                    1 => memory.read8(t.address).map(u32::from),
+                    2 => memory.read16(t.address).map(u32::from),
+                    _ => memory.read32(t.address),
+                }
+            }
+        } else if matches!(active.owner, Owner::Dmac(_)) && t.address >= 0xFFFF_FE00 {
             let chip = &mut self.onchip[processor as usize];
             if let Some(value) = t.write {
                 match t.width {

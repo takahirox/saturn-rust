@@ -15,13 +15,15 @@ from build_hle_system import record
 from build_sh2_timing import kernel
 
 HERE = Path(__file__).resolve().parent
-# ASR0, read instruction, main states, FRT ticks, sampled data
+# ASR0, read instruction, main states, FRT ticks.
+# The shared kernel latches FRT after six internal states (H §7.11.2),
+# so a 52-state body records floor((6+52)/8)=7, not six ticks.
 CASES = [
     (0, 'mov.w @r12,r6\n', 32, 4),
     (0x00300000, 'mov.w @r12,r6\n', 80, 10),
     (0x00510000, 'mov.w @r12,r6\n', 192, 24),
     (0x01540000, 'mov.w @r12+,r6\n', 80, 10),
-    (0x015C0000, 'mov.w @r12+,r6\n', 52, 6),
+    (0x015C0000, 'mov.w @r12+,r6\n', 52, 7),
     (0x20000000, 'mov.w @r12,r6\n', 47, 6),
 ]
 

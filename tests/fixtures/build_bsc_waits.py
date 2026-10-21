@@ -75,9 +75,11 @@ def build():
     # interval. Resuming takes two ROM-fetch clocks; the first latch sees 0.
     # High/low/EXTU take 6 clocks; first CS3 read takes 2(fetch)+2(data)
     # +IW0(2)+Tw, next seven also need IW3(2). MOV R0,R6 costs 2+IW3.
-    # Second latch: 2+6+(6+Tw)+7*(8+Tw)+4 = 74+8*Tw -> 9+Tw ticks.
+    # H §7.11.2: each CPU peripheral read additionally consumes its
+    # determine/read states, and the resume write publishes at completion.
+    # The interval gains six states: 80+8*Tw -> 10+Tw ticks.
     # Narrow buses add two clocks and Tw per extra data beat (H figs7.5/7.6).
-    expected = [9+w for w in range(7)]
+    expected = [10+w for w in range(7)]
     return {'bsc-waits.hex': ('\n'.join(lines)+'\n').encode(),
             'bsc-waits.tsv': ''.join(f'{v:08X}\n' for v in expected).encode(),
             'bsc-endian.tsv': ''.join(f'{v:08X}\n' for v in

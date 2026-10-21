@@ -49,11 +49,13 @@ def build():
         if any(rom[at:at+16]):
             lines.append(f'{at:04X} '+' '.join(f'{w:04X}' for w in struct.unpack('>8H', rom[at:at+16])))
     # Module-stop resets the timer/divider before each warmed-cache interval.
-    # Resume, high/low latch and EXTU each cost one cached state: phase=4.
+    # After resume completes, high/low reads cost two states each; EXTU
+    # includes the load-use interlock (two states), giving phase six.
     # Each TAS costs max(table7.2=4, two T1/T2 beats=4)+max(1,IW3).
-    # Second high latch at 4+16*(4+max(1,IW3)): 84/84/100 -> 10/10/12.
+    # H §7.11.2: the second high read completes two states after the body:
+    # 8+16*(4+max(1,IW3)) = 88/88/104 -> 11/11/13 ticks.
     return {'bsc-idle.hex': ('\n'.join(lines)+'\n').encode(),
-            'bsc-idle.tsv': b'0000AAFF\n0000000A\n0000000A\n0000000C\n000000A5\n0000600D\n'}
+            'bsc-idle.tsv': b'0000AAFF\n0000000B\n0000000B\n0000000D\n000000A5\n0000600D\n'}
 
 
 if __name__ == '__main__':

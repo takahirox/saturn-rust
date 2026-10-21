@@ -1109,7 +1109,7 @@ try {
     assert.deepEqual(actual.exceptions, ["0", "0"]);
     for (const [cpu, trace] of actual.traces.entries()) {
       const expected = [cpu ? 0x83F0 : 0x3F0, 0xAAFF];
-      waitVectors.forEach((ticks, i) => expected.push(before === 0xA55AAA40 && i === 1 ? 11 : 9 + 2 * (4 / width - 1) + (ticks - 9) * 4 / width,
+      waitVectors.forEach((ticks, i) => expected.push(before === 0xA55AAA40 && i === 1 ? 12 : 10 + 2 * (4 / width - 1) + (ticks - 10) * 4 / width,
         before === 0x13579BDF ? after : 0x13579BDF));
       expected.push(...(little ? endianVectors : [0x11223344,0x1122,0x3344,0x11,0xA1B2C3D4,0x1234C3D4,0x5634C3D4]), 0x600D);
       assert.deepEqual(trace, expected);
@@ -1155,7 +1155,7 @@ try {
   }
   const idleVectors = (await readFile("tests/fixtures/bsc-idle.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v, 16));
   for (const [before, after, index, value] of [[0, 0, 0, 0xAAFF],
-    [0xA55A8000, 0xA55A4000, 3, 10], [0x25, 0x3C, 4, 0xBC]]) {
+    [0xA55A8000, 0xA55A4000, 3, 11], [0x25, 0x3C, 4, 0xBC]]) {
     const changed = Buffer.from(idleRom);
     if (before) {
       const needle = Buffer.alloc(4); needle.writeUInt32BE(before);
@@ -1188,9 +1188,16 @@ try {
     words.forEach((word,i) => timingRom.writeUInt16BE(word,at+i*2));
   }
   const timingVectors = (await readFile("tests/fixtures/sh2-timing.tsv","utf8")).trim().split(/\r?\n/).map(v=>parseInt(v,16));
-  for (const mutation of [false,true]) {
+  for (const mutation of [false,true,"peripheral"]) {
     const image=Buffer.from(timingRom),expected=[...timingVectors];
-    if(mutation) {
+    if(mutation === "peripheral") {
+      let changes=0;
+      for(let at=0;at<image.length-4;at+=2) {
+        if(image.readUInt32BE(at)===0xE0FF2A00) {image[at+1]=0x5A;changes++;}
+      }
+      assert.equal(changes,24);
+      expected[21]=0x5A;
+    } else if(mutation) {
       const at=image.indexOf(Buffer.from([0x76,1,0x76,1]));
       assert(at>=0);
       for(let i=0;i<8;i++)image.set([0xA0,0,0,9],at+i*4);
@@ -1198,12 +1205,12 @@ try {
     }
     await page.locator("#bios").setInputFiles({name:"original-sh2-timing.bin",mimeType:"application/octet-stream",buffer:image});
     await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
-    const runTiming=()=>page.evaluate(async()=>{
+    const runTiming=()=>page.evaluate(async(count)=>{
       const {emulator}=await import("./app.js");
       emulator.run_steps(10000);
-      return {words:[0x0600E600,0x0600E700].map(base=>Array.from({length:21},(_,i)=>emulator.read_long(base+i*4))),
+      return {words:[0x0600E600,0x0600E700].map(base=>Array.from({length:count},(_,i)=>emulator.read_long(base+i*4))),
         exceptions:[emulator.exception_count(),emulator.slave_exception_count()]};
-    });
+    },timingVectors.length);
     const actual=await runTiming();
     assert.deepEqual(actual,{words:[expected,expected],exceptions:["0","0"]});
     await page.locator("#reset").click();

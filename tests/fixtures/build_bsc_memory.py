@@ -14,7 +14,9 @@ from build_hle_system import record, smpc
 
 HERE = Path(__file__).resolve().parent
 # name, BCR1, MCR, WCR, read ticks, write ticks. All kernels have cached
-# instructions, FRC starts at phase four, and execute eight operand accesses.
+# instructions and execute eight operand accesses. H §7.11.2 deferred
+# writes/read determination move the latch overhead from four to eight.
+# Each literal interval below therefore gains one phi/8 tick.
 # SDRAM: 32-bit burst/CL1=7; CL2=7; CL3=8; CL4=9. Word bus=11.
 # DRAM/pseudo normal: Tp overlaps previous closed-row Tc2 -> 3.
 # BE joins the two word-bus halves; RASD holds a row across operands.
@@ -73,7 +75,7 @@ def build():
             lines.append(f'{at:04X} '+' '.join(f'{w:04X}' for w in struct.unpack('>8H',rom[at:at+16])))
     vectors = ['# name BCR1 MCR WCR read-ticks read-data write-ticks write-data final-data marker']
     for name,bcr,mcr,wcr,reads,writes in CONFIGS:
-        values = [bcr,mcr,wcr,reads,0x13579BDF,writes,0x12345608,0x12345608,0x600D]
+        values = [bcr,mcr,wcr,reads+1,0x13579BDF,writes+1,0x12345608,0x12345608,0x600D]
         vectors.append(name+' '+' '.join(f'{v:08X}' for v in values))
     return {'bsc-memory.hex': ('\n'.join(lines)+'\n').encode(),
             'bsc-memory.tsv': ('\n'.join(vectors)+'\n').encode()}

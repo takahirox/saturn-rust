@@ -2820,3 +2820,64 @@ and comprehensive acceptance inventory remain mandatory in this same PR. No
 umbrella checkbox is checked, no Issue is closed/replaced/reopened, and no human,
 proprietary-firmware, live-site or external-workflow approval gate is introduced.
 PR #18 remains Draft and must not be merged in this node.
+
+## CPU/peripheral internal-bus completion and real DIVU waits (2026-10-22)
+
+Related to #17. Upstream `main` was checked again with `git ls-remote` and remains
+`dbd981b030a46daa6923072ce240680dd2e58ebf`. This change preserves the existing
+PR implementation and all three licensed demonstration discs.
+
+SH7604 CPU peripheral MMIO previously executed immediately, alongside a separate
+scheduled on-chip-DMA path. CPU byte/word/long accesses now request the local
+internal/peripheral bus. DMA wins simultaneous requests and retains ownership
+through a transfer/burst. An unbuffered external read holds that processor's
+internal bus; the other processor's internal bus progresses independently.
+Reads sample and writes publish at completion. CPU and DMAC cancellation check
+the granted owner, preventing both late canceled writes and accidental removal
+of another owner's transaction.
+
+DIVU CPU interlocks now consume actual hardware clocks before accessing the
+result registers. A CPU read no longer forces division completion and publishes
+OVF/IRQ early while merely charging a later execution delay. Independent vectors
+check the six-clock overflow deadline, deferred read completion, three advance
+chunk sizes and no double charge, on both processors.
+
+[CPUIO](hardware-conformance.md#sh7604-cpuinternal-bus-completion-and-divu-ordering-cpuio)
+links primary-manual sections, implementation, six additional independent native
+bus tests and the expanded TIMING guest. Both real SH-2s execute 32 SCI reads
+and 32 writes, comparing independently authored FRT intervals. Changing the guest
+SCI write operand changes the recorded read value from FF to 5A, with unchanged
+timing. Native and browser Wasm repeat cold resets and preserve the earlier
+arithmetic/control-flow mutations. The source-authored fixture and generated
+ROM/vector files retain their original MIT license.
+
+Initial bus-timing regressions exposed legacy FRT oracles that omitted the new
+peripheral read states and deferred write completion. BWAIT/IDLEG/BCMEM/ABUS
+builders now document the state arithmetic. Their native and browser mutation
+oracles were updated accordingly; guest computation/data expectations and the
+underlying external-bus timing rules were preserved.
+
+Validation on the final implementation:
+
+- `cargo fmt --check`, `cargo build --locked`, native all-target Clippy and
+  wasm32 Clippy with `-D warnings`: pass, stable Rust 1.99.0.
+- `CARGO_PROFILE_TEST_OPT_LEVEL=1 cargo test --locked`: **565 tests pass**
+  (332 unit + 233 integration), zero failures/ignored. Debug assertions and
+  overflow checks remain enabled. The final full suite includes both new bus
+  ownership vectors and the guest-operand mutation.
+- `sh scripts/build-web.sh`: pass, wasm-bindgen 0.2.129. The complete extended
+  `npm run test:browser` passes with the final production Wasm, Chromium
+  145.0.7632.6 and Node 24.12.0 under `/saturn-rust/`, without required skips.
+  Star Collector, Prism Courier, Hardware Lab, HLE/BIOS separation, guest DSP,
+  audio/WebAudio, controls, restart, backup, local-file privacy and all previous
+  guest suites retain their assertions.
+- All **60** CI guest/media reproducibility commands pass. Changed builders were
+  also checked after their explanatory comment updates. The three demonstration
+  media are unchanged. JavaScript syntax, local documentation links and Git
+  whitespace checks pass.
+
+These changes resolve the CPU-peripheral bypass, local DMA ownership and early
+DIVU publication defects. They do not complete the other agent-fixable findings
+or establish the mandatory umbrella acceptance criteria. Issue #17 remains
+incomplete; no Issue/PR closure, push or merge was performed, and no human or
+proprietary-firmware gate was introduced.

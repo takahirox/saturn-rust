@@ -24,8 +24,8 @@ fn run(m: &mut Machine, image: &[u8]) -> [Vec<u32>; 2] {
         assert_eq!(cpu.exceptions, 0);
     }
     [0x0600E600, 0x0600E700].map(|base| {
-        (0..21)
-            .map(|i| m.bus().read32(base + i * 4).unwrap())
+        (0..include_str!("fixtures/sh2-timing.tsv").lines().count())
+            .map(|i| m.bus().read32(base + i as u32 * 4).unwrap())
             .collect()
     })
 }
@@ -67,5 +67,30 @@ fn changed_guest_control_flow_changes_elapsed_time_and_computation() {
     changed[1] = 16;
     for trace in run(&mut Machine::new(), &image) {
         assert_eq!(trace, changed);
+    }
+}
+
+#[test]
+fn guest_peripheral_operand_mutation_changes_read_data_on_both_cpus_without_changing_time() {
+    let mut image = rom();
+    let mut count = 0;
+    for at in (0..image.len() - 4).step_by(2) {
+        // MOV #-1,R0; MOV.B R0,@R10 -> MOV #$5A,R0, then real SCI BRR.
+        if image[at..at + 4] == [0xE0, 0xFF, 0x2A, 0] {
+            image[at + 1] = 0x5A;
+            count += 1;
+        }
+    }
+    assert_eq!(count, 24);
+    let mut expected: Vec<_> = include_str!("fixtures/sh2-timing.tsv")
+        .lines()
+        .map(|s| u32::from_str_radix(s, 16).unwrap())
+        .collect();
+    expected[21] = 0x5A;
+    let mut machine = Machine::new();
+    for _ in 0..2 {
+        for trace in run(&mut machine, &image) {
+            assert_eq!(trace, expected);
+        }
     }
 }

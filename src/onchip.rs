@@ -527,6 +527,25 @@ impl OnChip {
         winner
     }
 
+    pub(crate) fn cpu_peripheral_wait(&self, address: u32, width: usize, write: bool) -> u32 {
+        // H §10.4: the internal bus remains busy until DIVU completes.
+        // Scheduled CPU accesses must let hardware time elapse, rather than
+        // forcing the quotient/OVF/IRQ early and charging waits afterwards.
+        let valid = (width == 4 && address & 3 == 0 && (DIVU..DIVU + 0x18).contains(&address))
+            || (width == 2 && matches!(address, 0xFFFFFF08 | 0xFFFFFF0A | 0xFFFFFF0C | 0xFFFFFF0E));
+        if !valid || self.module_stop & 4 != 0 {
+            return 0;
+        }
+        let consecutive = !write
+            && self
+                .division_write_epoch
+                .take()
+                .is_some_and(|epoch| epoch.wrapping_add(1) == self.instruction_epoch.get());
+        self.division
+            .borrow()
+            .remaining()
+            .max(u32::from(consecutive))
+    }
     pub(crate) fn dma_wait_clocks(&self, address: u32, width: usize) -> u32 {
         if width == 4 && (DIVU..DIVU + 0x18).contains(&address) && self.module_stop & 4 == 0 {
             self.division.borrow().remaining()
