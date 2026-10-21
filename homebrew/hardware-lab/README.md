@@ -14,7 +14,7 @@ python3 homebrew/hardware-lab/build.py --check
 
 In the browser choose **BIOS-less HLE disc** and select `hardware-lab.cue`,
 `hardware-lab.iso` and `hardware-lab-audio.bin` together. Enable audio for the
-independent 68k PCM and CD-DA mix. The guest displays a rotation/coefficient,
+independent 68k PCM and DSP-processed CD-DA mix. The guest displays a rotation/coefficient,
 line-scroll and window scene after completing its diagnostics. Start/Enter
 restarts the diagnostics and increments the persistent backup byte. The first
 track can also boot alone as a cooked ISO; the mixed-track acceptance uses CUE.
@@ -43,13 +43,19 @@ Guest results at `0x06010000`, in longwords:
 | 1C | Advanced video scene entered, 1 |
 | 20 | Completion, 0x600D |
 | 24 | Backup word after increment (odd low byte persists) |
+| 28 | Executing SCSP effects DSP result, 0x0900 (.5 * MEMS0=0x120000) |
 
 The first data track contains 64 sectors. LBA60/FAD210 contains 512 original
 big-endian words, `3*(i+1)`; these bytes are not the boot executable. The guest
 reads that sector with the CD command/FIFO protocol and fixed-source SCU DMA,
 then sums the actual transferred words. Track 2 starts at FAD214 and contains
 eight original stereo sectors. Guest MMIO routes its two channels through SCSP
-EXTS0/1 while the independent 68k programs a direct PCM voice and timer IRQ.
+EXTS0/1 into an effects program while the independent 68k programs a PCM voice,
+timer IRQ, two coefficients and eight actual DSP instructions. The DSP routes
+half-gain PCM left, half-gain CD left and quarter-gain CD right; direct EXTS
+outputs are muted. A fourth multiply/output pair computes the diagnostic
+constant in EFREG1 without mixing it into audio. The SH-2 reads that register
+and records the result only after the 68k has initialized the program.
 JavaScript only supplies files and controller levels and presents pixels/audio.
 
 `tests/hardware_lab.rs` boots the actual mixed disc, asserts computed results,
@@ -58,7 +64,14 @@ restart. Changing a runtime sector changes the computed checksum in native and
 browser Wasm tests. The browser also verifies the real Canvas and AudioWorklet
 and local missing-file rejection. CI checks source/media reproducibility.
 
-This guest covers the executing SCU DSP and direct SCSP PCM/CD-DA path. It does
-not exercise an SCSP effects DSP: that implementation and the corresponding
-required exerciser scene remain necessary for Issue #17. No umbrella completion
-is claimed by these diagnostics.
+The native and browser tests also change only the original 68k coefficient
+immediate in the disc, to .5, .25 and zero. With a silent CD track the resulting
+first PCM stereo pair is respectively [2304,4096], [1280,4096] and [256,4096];
+the full bipolar four-frame waveform is asserted. The guest-read DSP result
+changes from 0x0900 to 0x0480 to zero. These checks reject an inert DSP, canned
+output and direct-only PCM. The usual mixed-disc run verifies real AudioWorklet
+delivery and a changed CD track changes the actual mixed sample buffer.
+
+This adds the required executing effects-DSP scene. Complete hardware semantics,
+remaining independent DSP/pipeline/bus-contention vectors and the full Issue #17
+acceptance inventory are still required. No umbrella completion is claimed.

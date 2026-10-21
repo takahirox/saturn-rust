@@ -314,7 +314,13 @@ SCU cross-device/arbitration/DSP edge conformance,
 remaining SMPC system/clock/analog-direct controls, additional VDP2
 modes, remaining VDP1 conformance, full CD drive/command/error behavior, BIOS services and full synthetic boot pathways
 remain required work. The executing MC68EC000, direct SCSP PCM and browser audio
-are implemented; SCSP envelopes/FM/LFO/noise/effects DSP remain absent; CD-DA now mixes through EXTS0/1 and has native/browser evidence.
+and the sample-clock SCSP effects interpreter are implemented; SCSP
+envelopes/FM/LFO/noise remain absent. The DSP owns COEF/MADRS/MPRO,
+TEMP/MEMS/MIXS/EFREG and sound-RAM ring/table addressing. Slots and external
+CD-DA feed real instructions; EFREG outputs use the SCSP effect sends. Hardware
+Lab's independent 68k uploads an original effects program, and native/browser
+checks compare exact samples and changed guest coefficients. Detailed timing,
+full DSP conformance and bus contention remain required.
 Reference-emulator/physical-hardware comparison and performance measurements
 have not been performed. Synthetic Gamepad input is automatically tested. No dynarec, workers,
 server backend or general-game compatibility is introduced.

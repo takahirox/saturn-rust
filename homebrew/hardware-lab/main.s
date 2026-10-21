@@ -177,10 +177,10 @@ load 0x2010001f,r1
 load 0x6,r0
 mov.b r0,@r1
 load 0x25b00216,r1
-load 0xff,r0
+load 0x0,r0
 mov.w r0,@r1
 load 0x25b00236,r1
-load 0xef,r0
+load 0x0,r0
 mov.w r0,@r1
 load 0x3000,r4
 load 0x0,r5
@@ -263,6 +263,16 @@ dsp_wait:
 mov.l @r1,r0
 tst r0,r0
 bt dsp_wait
+load 0x25a00800,r1
+sound_wait:
+mov.l @r1,r0
+tst r0,r0
+bt sound_wait
+load 0x25b00ec2,r1
+mov.w @r1,r0
+extu.w r0,r0
+load 0x06010028,r1
+mov.l r0,@r1
 load 0x6010020,r1
 load 0x600d,r0
 mov.l r0,@r1

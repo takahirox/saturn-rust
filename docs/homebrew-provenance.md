@@ -114,4 +114,8 @@ are printed by `python3 homebrew/hardware-lab/build.py --check` and recorded in
 execute the actual guest and assert changed-media results. No third-party code,
 recordings, firmware or SDK objects are introduced. The independent HLE reset
 trampoline also has [original source and MIT license](../src/hle/boot.s).
-The effects-DSP scene and other remaining hardware acceptance are still required.
+Hardware Lab now includes an original 68k-uploaded SCSP effects program in
+`tests/fixtures/build_sound.py`, covered by that directory's MIT license. Its
+eight literal instructions, original coefficient/data initialization and
+reproducible media have native and browser numeric/mutation evidence. Remaining
+hardware acceptance is still required.

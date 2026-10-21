@@ -50,8 +50,9 @@ def main_source():
     s+='load 0x0600a000,r2\nload 0x25a00000,r3\nload 0x1100,r4\ncopy_sound:\nmov.l @r2+,r0\nmov.l r0,@r3\nadd #4,r3\ndt r4\nbf copy_sound\n'
     s+='load 0x20100063,r1\nsmpc_wait:\nmov.b @r1,r0\ntst #1,r0\nbf smpc_wait\n'
     s+=store(0x20100063,1,'b')+store(0x2010001F,6,'b')
-    # Configure external CD audio and preserve the 68k's direct PCM voice.
-    s+=store(0x25B00216,0xFF,'w')+store(0x25B00236,0xEF,'w')
+    # CD audio is routed through an actual 68k-uploaded effects program.
+    # No direct EXTS bypass can make the new scene audible if DSP is absent.
+    s+=store(0x25B00216,0,'w')+store(0x25B00236,0,'w')
     s+=call(0x3000)
     # Runtime read of source-authored sector 210 (LBA60), independent of boot.
     s+=call(0x1080,210,0x80,1)
@@ -67,6 +68,10 @@ def main_source():
     s+='load 0x06006200,r1\njsr @r1\nnop\n'
     # Signal completion only after actual slave, DSP and DMA results are present.
     s+='load 0x06010000,r1\ndsp_wait:\nmov.l @r1,r0\ntst r0,r0\nbt dsp_wait\n'
+    # Wait for real sound-CPU initialization, then log
+    # the executing effects-DSP's independently known .5*0x120000 result.
+    s+='load 0x25a00800,r1\nsound_wait:\nmov.l @r1,r0\ntst r0,r0\nbt sound_wait\n'
+    s+='load 0x25b00ec2,r1\nmov.w @r1,r0\nextu.w r0,r0\nload 0x06010028,r1\nmov.l r0,@r1\n'
     s+=store(R+0x20,0x600D)
     s+=store(0x20100079,0x60,'b')+store(0x2010007D,1,'b')+store(0x20100075,0x40,'b')
     s+='restart_wait:\nload 0x20100075,r1\nmov.b @r1,r0\ntst #8,r0\nbf restart_wait\nload 0x06004000,r1\njmp @r1\nnop\n'
@@ -94,7 +99,7 @@ def build():
     effects=(ROOT/'tests/fixtures/effects.s').read_text().split('load 0x600a000,r1')[0]
     video='load 0x0601001c,r1\nmov #1,r0\nmov.l r0,@r1\n'+effects+'rts\nnop\n'
     assert section(0x2200,video)<0x3E00
-    program[0x6000:0xA400]=snd.sound_image()
+    program[0x6000:0xA400]=snd.sound_image(effects=True)
     iso=bytearray(a.build(bytes(program),(HERE/'LICENSE').read_bytes(),'HARDWARE LAB','HWLAB-001 V1.000'))
     # Independent 512-word runtime vector. Its byte mutation must change guest sum.
     for i in range(512):struct.pack_into('>I',iso,60*2048+i*4,(i+1)*3)

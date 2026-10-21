@@ -1303,7 +1303,7 @@ try {
     advanceFrame();
     const frame=emulator.framebuffer();
     const canvas=document.getElementById("screen").getContext("2d");
-    return {results:Array.from({length:10},(_,i)=>emulator.read_long(0x06010000+i*4)),
+    return {results:Array.from({length:11},(_,i)=>emulator.read_long(0x06010000+i*4)),
       slave:Number(emulator.slave_instruction_count()),sound:Number(emulator.sound_instruction_count()),
       pcmNonzero:samples.some(v=>v!==0),stereo:samples.some((v,i)=>i%2===0&&v!==samples[i+1]),
       wasm:Array.from(frame.slice(0,4)),canvas:Array.from(canvas.getImageData(0,0,1,1).data),
@@ -1315,6 +1315,7 @@ try {
   assert.deepEqual(labResult.results.slice(0,6),[1,1,84,35,42,393984]);
   assert(labResult.results[6]>=1);
   assert.deepEqual(labResult.results.slice(7,9),[1,0x600D]);
+  assert.equal(labResult.results[10],0x900);
   assert.equal(labResult.backup,1);
   assert(labResult.slave>5 && labResult.sound>20 && labResult.pcmNonzero && labResult.stereo, JSON.stringify(labResult));
   assert.deepEqual(labResult.wasm,[255,255,255,255]);
@@ -1346,6 +1347,26 @@ try {
   }
   assert.equal(labBuffers[0].length,labBuffers[1].length);
   assert.notDeepEqual(labBuffers[0],labBuffers[1]);
+  // Original 68k instructions upload a real effects program. Change only its
+  // coefficient immediate in the disc, then assert the DSP's guest-read result
+  // and exact stereo samples. Dry PCM alone cannot satisfy the wet left vector.
+  const effectMove=Buffer.from([0x33,0xFC,0x40,0,0,0x10,7,0]);
+  const effectAt=labIso.indexOf(effectMove);
+  assert(effectAt>=0);assert.equal(labIso.indexOf(effectMove,effectAt+1),-1);
+  for(const [coef,result,left] of [[0x4000,0x900,2304],[0x2000,0x480,1280],[0,0,256]]) {
+    const effectIso=Buffer.from(labIso);effectIso.writeUInt16BE(coef,effectAt+2);
+    await lab.locator("#disc").setInputFiles(labFiles(effectIso,Buffer.alloc(labAudio.length)));
+    await lab.waitForFunction(()=>document.getElementById("status").textContent==="Ready");
+    const effect=await lab.evaluate(async()=>{
+      const {emulator}=await import("./app.js");
+      for(let i=0;i<40&&emulator.read_long(0x06010020)!==0x600D;i++)emulator.run_steps(10000);
+      emulator.audio_samples(8192);emulator.advance_frame();
+      return {result:emulator.read_long(0x06010028),samples:Array.from(emulator.audio_samples(8192))};
+    });
+    assert.equal(effect.result,result);
+    const expected=[left,4096,-left,-4096,-left*2,-8192,left*2,8192];
+    assert(effect.samples.some((_,i)=>i%2===0&&expected.every((v,j)=>effect.samples[i+j]===v)));
+  }
   const changedLab=Buffer.from(labIso);changedLab[60*2048+3]=9;
   await lab.locator("#disc").setInputFiles(labFiles(changedLab));
   await lab.waitForFunction(()=>document.getElementById("status").textContent==="Ready");
@@ -1356,7 +1377,7 @@ try {
   assert.match(rejected.state,/Reset/);assert.equal(rejected.retired,"0");
   assert(labRequests.every(r=>r.method==="GET"&&!r.body&&r.url.startsWith(address+prefix)));
   await lab.close();
-  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, BCR1 processor identity/refresh IRQ/module stops/reset repeatability, four-layer VDP2 tile guest/palette mutation/Wasm and production Canvas presentation, original rotation/coefficient/line-scroll/line-window guest and mutated matrix pixels, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, SH-2-uploaded MC68EC000 PCM computation/SCSP timer IRQ/stereo samples and WebAudio worklet delivery/underflow/mute/blocked states, SMPC RTC/SMEM/INTBACK IRQs and synthetic digital+ID15/ID16 analog Gamepad/focus release, timed both-port direct analog handshake guest, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation; Prism Courier original disc, VDP1 sprite/polygons + VDP2 composition/Canvas, draw-end IRQ, 68k stereo + actual AudioWorklet, keyboard collision/win/restart, changed-disc texture mutation; Hardware Lab local CUE/mixed tracks, dual CPU, executing SCU DSP, CD FIFO-to-SCU DMA/IRQs/checksum, independent 68k/CD-DA stereo and AudioWorklet, rotation Canvas, backup/restart, sector/audio mutations, missing local file rejection.`);
+  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, BCR1 processor identity/refresh IRQ/module stops/reset repeatability, four-layer VDP2 tile guest/palette mutation/Wasm and production Canvas presentation, original rotation/coefficient/line-scroll/line-window guest and mutated matrix pixels, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, SH-2-uploaded MC68EC000 PCM computation/SCSP timer IRQ/stereo samples and WebAudio worklet delivery/underflow/mute/blocked states, SMPC RTC/SMEM/INTBACK IRQs and synthetic digital+ID15/ID16 analog Gamepad/focus release, timed both-port direct analog handshake guest, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation; Prism Courier original disc, VDP1 sprite/polygons + VDP2 composition/Canvas, draw-end IRQ, 68k stereo + actual AudioWorklet, keyboard collision/win/restart, changed-disc texture mutation; Hardware Lab local CUE/mixed tracks, dual CPU, executing SCU DSP, CD FIFO-to-SCU DMA/IRQs/checksum, independent 68k-uploaded SCSP effects DSP, exact wet stereo/coefficient mutations, CD-DA through DSP and AudioWorklet, rotation Canvas, backup/restart, sector/audio mutations, missing local file rejection.`);
 } finally {
   if (browser) await browser.close();
   if (server?.pid && server.exitCode === null) {

@@ -37,6 +37,7 @@ fn mixed_disc_guest_computes_slave_dsp_dma_cd_sound_backup_and_video_results() {
     assert_eq!(r[7], 1);
     assert_eq!(r[8], 0x600D);
     assert_eq!(r[9] & 255, 1);
+    assert_eq!(m.bus().read32(0x06010028), Ok(0x900));
     assert_eq!(m.bus().read32(0x06011000), Ok(3));
     assert_eq!(m.bus().read32(0x060117FC), Ok(1536));
     assert!(m.slave_state().instructions > 5);
@@ -58,8 +59,41 @@ fn mixed_disc_guest_computes_slave_dsp_dma_cd_sound_backup_and_video_results() {
     m.set_buttons(0);
     run(&mut m);
     assert_eq!(m.backup_ram()[0], 2);
+    assert_eq!(m.bus().read32(0x06010028), Ok(0x900));
     m.reset(Boot::HlePrototype).unwrap();
     assert_eq!(m.backup_ram()[0], 2);
+}
+
+#[test]
+fn guest_uploaded_effects_program_changes_exact_stereo_samples_and_computed_result() {
+    let original = include_bytes!("../web/hardware-lab.iso");
+    let silent_cd = vec![0; include_bytes!("../web/hardware-lab-audio.bin").len()];
+    for (coefficient, result, left) in
+        [(0x4000u16, 0x900, 2304), (0x2000, 0x480, 1280), (0, 0, 256)]
+    {
+        let mut iso = original.to_vec();
+        // Change only the immediate in the original 68k MOVE.W #coef,$100700.
+        // No host state writes after boot, and no emulator-side disc detection.
+        let signature = [0x33, 0xFC, 0x40, 0, 0, 0x10, 7, 0];
+        let locations: Vec<_> = iso
+            .windows(8)
+            .enumerate()
+            .filter_map(|(i, w)| (w == signature).then_some(i))
+            .collect();
+        assert_eq!(locations.len(), 1);
+        iso[locations[0] + 2..locations[0] + 4].copy_from_slice(&coefficient.to_be_bytes());
+        let mut machine = Machine::new();
+        machine.reset_media(media(&iso, &silent_cd)).unwrap();
+        run(&mut machine);
+        assert_eq!(machine.bus().read32(0x06010028), Ok(result));
+        assert_eq!(machine.bus().read16(0x05B00EC2), Ok(result as u16));
+        machine.drain_audio(8192);
+        machine.advance_frame().unwrap();
+        // Wet PCM is half/quarter/zero gain panned left; direct PCM retains
+        // pan8 (left /16). Dry right is unchanged and CD samples are all zero.
+        let expected = [left, 4096, -left, -4096, -left * 2, -8192, left * 2, 8192];
+        assert!(machine.drain_audio(8192).windows(8).any(|w| w == expected));
+    }
 }
 #[test]
 fn runtime_sector_mutation_changes_guest_sum_and_media_reset_repeats() {

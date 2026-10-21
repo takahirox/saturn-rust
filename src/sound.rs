@@ -1,7 +1,8 @@
 //! Shared SCSP/sound-CPU bus and independent audio clock domain.
 //! Primary references: ST-077 §§1.2, 3, 4.2; M68000PRM §§2–4.
-//! PCM direct mode is implemented here. Unsupported synthesis/DSP settings are
+//! PCM direct mode and the effects processor are implemented here. Unsupported synthesis settings are
 //! diagnosed instead of being stored as inert, apparently implemented controls.
+mod dsp;
 use crate::bus::{BusError, Memory};
 use crate::m68k::M68k;
 use std::cell::{Cell, RefCell};
@@ -15,6 +16,30 @@ const REFERENCE_HZ: u64 = 26_874_100;
 const SOUND_CPU_HZ: u64 = 11_289_600;
 const BUFFER_FRAMES: usize = 8192;
 
+fn mix_sample(mix: &mut [i64; 2], sample: i16, send: u16, pan: u16) {
+    const PAN: [i64; 16] = [
+        32768, 23170, 16384, 11585, 8192, 5793, 4096, 2896, 2048, 1448, 1024, 724, 512, 362, 256, 0,
+    ];
+    if send == 0 {
+        return;
+    }
+    let level = (i64::from(sample) << (send - 1)) / 64;
+    mix[0] += level
+        * if pan < 16 {
+            PAN[usize::from(pan)]
+        } else {
+            32768
+        }
+        / 32768;
+    mix[1] += level
+        * if pan >= 16 {
+            PAN[usize::from(pan - 16)]
+        } else {
+            32768
+        }
+        / 32768;
+}
+
 #[derive(Default, Clone, Copy)]
 struct Voice {
     active: bool,
@@ -22,6 +47,7 @@ struct Voice {
     reverse: bool,
 }
 pub struct Scsp {
+    dsp: dsp::Dsp,
     slots: [[u16; 12]; 32],
     voices: [Voice; 32],
     common: [u16; 24],
@@ -42,6 +68,7 @@ pub struct Scsp {
 impl Default for Scsp {
     fn default() -> Self {
         Self {
+            dsp: dsp::Dsp::default(),
             slots: [[0; 12]; 32],
             voices: [Voice::default(); 32],
             common: [0; 24],
@@ -80,7 +107,7 @@ impl Scsp {
                 Ok(self.slots[(offset / 32) as usize][(offset as usize & 31) / 2])
             }
             0x400 => Ok(0), // MEM4MB/MVOL/DAC18B are write-only (ST-077 §4.2).
-            0x402 => Ok(self.common[1]),
+            0x402 => Ok(0), // RBL/RBP are write-only, ST-077 §4.3.
             0x404 => {
                 let flags = self.midi_status();
                 let mut fifo = self.midi_in.borrow_mut();
@@ -107,6 +134,7 @@ impl Scsp {
             0x42C => Ok(self.main_pending.get()),
             0x422 | 0x424 | 0x426 | 0x428 | 0x42E => Ok(0),
             0x600..=0x67E => Ok(self.stack[((offset - 0x600) / 2) as usize] as u16),
+            0x700..=0xEDE => self.dsp.read(offset),
             _ => Err(Self::error(offset)),
         }
     }
@@ -121,9 +149,8 @@ impl Scsp {
             0..=0x3FF if offset & 31 < 24 => {
                 let slot = (offset / 32) as usize;
                 let index = (offset as usize & 31) / 2;
-                // Reject envelope/LFO/FM/effects input until their behavior exists.
-                if (matches!(index, 4 | 5 | 7 | 9 | 10) && value != 0)
-                    || (index == 11 && value & 255 != 0 && !matches!(slot, 16 | 17))
+                // Reject envelope/LFO/FM until their behavior exists.
+                if (matches!(index, 4 | 5 | 7 | 9) && value != 0)
                     || (index == 0 && value & 0x0180 != 0)
                 {
                     return Err(Self::error(offset));
@@ -132,8 +159,8 @@ impl Scsp {
                     0 => 0x0FFF,
                     6 => 0x03FF,
                     8 => 0x7BFF,
-                    11 if matches!(slot, 16 | 17) => 0xFFFF,
-                    11 => 0xFF00,
+                    10 => 0x007F,
+                    11 if slot >= 18 => 0xFF00, // No EFREG/EXTS output on these slots.
                     _ => u16::MAX,
                 };
                 self.slots[slot][index] = value & mask;
@@ -159,8 +186,7 @@ impl Scsp {
                 }
                 self.common[0] = value;
             }
-            // Ring/DSP routing is intentionally unsupported, not fake readback.
-            0x402 if value == 0 => self.common[1] = 0,
+            0x402 => self.common[1] = value & 0x1FF,
             0x406 => {
                 let fifo = self.midi_out.get_mut();
                 if fifo.len() == 4 {
@@ -193,6 +219,7 @@ impl Scsp {
             0x42E => self.main_pending.set(self.main_pending.get() & !value),
             0x424 | 0x426 | 0x428 => self.common[((offset - 0x400) / 2) as usize] = value & 255,
             0x600..=0x67E => self.stack[((offset - 0x600) / 2) as usize] = value as i16,
+            0x700..=0xEDE => self.dsp.write(offset, value)?,
             _ => return Err(Self::error(offset)),
         }
         Ok(())
@@ -406,6 +433,7 @@ impl Scsp {
             if regs[6] & 0x200 == 0 {
                 self.stack[(self.stack_index + i) & 63] = value;
             }
+            self.dsp.add_slot(regs[10], value);
             let send = (regs[11] >> 13) & 7;
             let pan = ((regs[11] >> 8) & 31) as usize;
             let level = if send == 0 {
@@ -431,6 +459,13 @@ impl Scsp {
             voice.phase += if voice.reverse { -step } else { step };
         }
         self.stack_index = (self.stack_index + 32) & 63;
+        self.dsp.sample(ram, self.common[1], self.external)?;
+        for (channel, sample) in self.dsp.effects.into_iter().enumerate() {
+            let routing = self.slots[channel][11];
+            let send = (routing >> 5) & 7;
+            let pan = routing & 31;
+            mix_sample(&mut mix, sample, send, pan);
+        }
         // ST-077 table 4.31: EXTS0/1 use slot 16/17 EFSDL/EFPAN.
         for (channel, sample) in self.external.into_iter().enumerate() {
             let routing = self.slots[16 + channel][11];
@@ -586,6 +621,8 @@ impl Scsp {
             self.slots[(offset / 32) as usize][(offset as usize & 31) / 2]
         } else if (0x400..0x430).contains(&offset) {
             self.common[((offset - 0x400) / 2) as usize]
+        } else if (0x600..0xEE0).contains(&offset) {
+            self.read16(aligned)?
         } else {
             return Err(Self::error(offset));
         };

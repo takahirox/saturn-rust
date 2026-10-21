@@ -204,15 +204,7 @@ fn sample_delivery_is_bounded_and_unsupported_synthesis_never_succeeds_silently(
     assert_eq!(scsp.dropped, 5);
     assert_eq!(scsp.drain(usize::MAX).len(), BUFFER_FRAMES * 2);
     assert!(scsp.drain(1).is_empty());
-    for (address, value) in [
-        (8, 1),
-        (10, 1),
-        (14, 1),
-        (18, 1),
-        (20, 1),
-        (22, 1),
-        (0x700, 1),
-    ] {
+    for (address, value) in [(8, 1), (10, 1), (14, 1), (18, 1)] {
         assert!(scsp.write16(address, value).is_err());
     }
 }
@@ -308,12 +300,19 @@ fn reset_instruction_pulses_external_scsp_without_erasing_sound_ram_or_cpu_state
     sound.ram[..8].copy_from_slice(&[0, 7, 0xFF, 0, 0, 0, 1, 0]);
     sound.ram[0x100..0x108].copy_from_slice(&[0x70, 37, 0x4E, 0x70, 0x4E, 0x72, 0x27, 0]);
     sound.scsp.write16(0x400, 0x20F).unwrap();
+    sound.scsp.write16(0x700, 0x4000).unwrap();
+    sound.scsp.write16(0xE02, 0x1200).unwrap();
+    sound.scsp.write16(0x802, 0xA000).unwrap();
+    sound.scsp.write16(0x804, 2).unwrap();
     sound.set_enabled(true).unwrap();
     sound.advance(10000).unwrap();
     assert_eq!(sound.cpu.state.d[0], 37);
     assert!(sound.cpu.state.stopped);
     assert_eq!(sound.ram[0x101], 37);
     assert_eq!(sound.scsp.common[0], 0);
+    assert_eq!(sound.scsp.read16(0x700), Ok(0));
+    assert_eq!(sound.scsp.read16(0xE02), Ok(0));
+    assert_eq!(sound.scsp.read16(0x802), Ok(0));
     assert!(sound.scsp.generated > 10);
 }
 

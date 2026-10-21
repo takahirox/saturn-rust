@@ -292,10 +292,12 @@ Hardware Lab is the original mixed-track diagnostic in
 [homebrew/hardware-lab](../homebrew/hardware-lab/README.md). Select the three
 `web/hardware-lab` CUE/ISO/audio files together in local disc settings. It computes
 slave SH-2, SCU DSP and runtime CD/FIFO/DMA/IRQ results, starts the independent
-68k sound guest, mixes CD-DA through SCSP, displays the advanced VDP2 scene and
+68k sound guest, uploads/executes its SCSP effects program, mixes CD-DA through
+the effects path, displays the advanced VDP2 scene and
 increments backup RAM on controller-driven restart. Native and browser checks
-assert those results, changed-sector checksums and changed-audio buffers; the
+assert those results, exact wet stereo/changed-coefficient results, changed-sector
+checksums and changed-audio buffers; the
 browser exercises the actual Canvas/AudioWorklet path and missing-file rejection.
-The remaining SCSP effects-DSP interpreter/scene and the other mandatory Issue
-#17 criteria are still required. CI also verifies the original independent HLE
+Full SCSP synthesis/DSP conformance and the other mandatory Issue #17 criteria
+are still required. CI also verifies the original independent HLE
 slave reset trampoline; external BIOS mode never installs that trampoline.

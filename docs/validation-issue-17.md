@@ -772,3 +772,97 @@ umbrella coverage. New passing tests establish implemented behavior only. No
 proprietary BIOS, human listening/approval, physical console, live Pages or
 post-merge check is required or claimed. Genuine BIOS/retail compatibility is
 not independently confirmed. No push, merge or Issue closure was performed.
+
+
+## Executing SCSP effects DSP and Hardware Lab scene (2026-10-21)
+
+Related to #17. This revision preserves the PR and upstream runtime-CD work and
+adds an original effects interpreter plus the missing guest scene. The full
+Issue #17 target is **not achieved**; all remaining requirements in the
+[conformance inventory](hardware-conformance.md) remain mandatory. PR #18 must
+remain Draft and Issue #17 must remain open. No merge, replacement tracker or
+historical Issue reopening is authorized or performed.
+
+Implementation and independently expected evidence:
+
+- `src/sound/dsp.rs` executes 128 parallel instruction steps per 44.1-kHz sample:
+  signed multiplication/26-bit accumulation, previous-accumulator shift with
+  saturation/wrap, TEMP circular addressing, MEMS/MIXS/EXTS, Y/fraction/address
+  latches, effect writes and sound-RAM ring/table transfers with linear/normalized
+  floating conversion. All programmer-visible DSP RAM, coefficient, address and
+  program ports have actual effects; unsupported/reserved ports/instructions
+  return bounded diagnostics. Slot IMXL/ISEL and output EFSDL/EFPAN now connect
+  the processor to the existing stereo mixer. RBL/RBP are masked write-only
+  controls. Byte lanes preserve adjacent register data.
+- Nine independent numeric tests in `src/sound/dsp/tests.rs` check signed
+  coefficients, accumulation, previous-value/read-before-write behavior, sample
+  delays, all RBL sizes, ring wrapping/table addressing, read latch latency,
+  simultaneous read/write, linear/float bit patterns, clipping/wrapping, mixed
+  input overflow, exact stereo/muting and invalid instructions. The existing
+  68k RESET test also checks DSP program/data/coefficient reset and retained RAM.
+- The original MIT `tests/fixtures/build_sound.py` optionally generates a new
+  68k routine for Hardware Lab only. Guest instructions write two coefficients,
+  MEMS0 and eight actual DSP instructions. MIXS0, MEMS0 and both CD external
+  channels independently traverse multiply/output pairs. Constant diagnostic
+  EFREG1 is not an audio source. Both direct CD sends are muted, so CD data
+  must pass through the DSP to affect the mixed output.
+- Hardware Lab's SH-2 waits for sound CPU initialization, reads EFREG1 and stores
+  its result at `06010028`. `tests/hardware_lab.rs` and browser Wasm assert 0900.
+  Changing only the 68k coefficient immediate in the ISO to .25/zero changes
+  this guest-computed result to 0480/0000. With a silent CD track, native and
+  Wasm compare the exact four-frame bipolar waveform. At .5 gain it is
+  `[2304,4096],[-2304,-4096],[-4608,-8192],[4608,8192]`; changing gain alters
+  the wet left channel while retaining the direct right channel. Actual
+  AudioWorklet rendering and changing the CD audio track remain asserted.
+  No host-written result, guest identity detection or canned output is added.
+
+Primary behavior references are SCSP User's Manual ST-077 §4.1 figs.4.5–4.7,
+§4.3 table4.41, §5 fig.5.1 and dAsms ST-228 Reference1/2. These describe the
+register/data-path and signal-flow model. Low-level encoding/converter/pipeline
+edge corroboration, delayed RAM bus-cycle timing, DRAM/CPU/DMA contention and
+complete DSP guest vectors remain required for full conformance; the manuals
+omit some details. No third-party processor/effect/assembler implementation,
+SDK routine or firmware was imported. Manuals were consulted outside the repo.
+
+Reproducible original artifacts:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Hardware Lab ISO with 68k effects routine | `8bc56657bf0376fece7dece1a094f9e159f0d365af94adb6f87cb2fa5dc7995c` |
+| Hardware Lab BINARY audio (unchanged) | `1c86e2d495e7d745dbfe1e4369afa104fb75eae9f042abb61e8fe56d8c67fd1d` |
+| Hardware Lab CUE (unchanged) | `398e70e871f8b3ed6db6033bb9c34f08c9cd62dd59f87195cdb81e4ec3433f7e` |
+
+Star Collector, Prism Courier and existing synthetic ROMs remain byte-identical.
+All original guest code/media remains covered by adjacent MIT licenses. The
+new routine is included only when the Hardware Lab builder requests it.
+
+Checks performed on this revision:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`: pass;
+  **243 native tests, zero failures and zero ignored**.
+- Native all-target and wasm32 Clippy with `-D warnings`: pass.
+- `sh scripts/build-web.sh`: pass using the installed Rustup stable toolchain
+  and matching wasm-bindgen-cli 0.2.129. Native checks use Homebrew Rust.
+- All thirteen CI guest-media/fixture reproducibility builders: pass.
+- `npm ci --ignore-scripts`, `npx playwright install chromium`, and the complete
+  extended `npm run test:browser`: pass in Chromium 145.0.7632.6 under
+  `/saturn-rust/`. No existing checks were skipped. The new DSP mutation and
+  exact sample checks run alongside Canvas, real AudioWorklet, both games,
+  hardware guests, local media, controller/focus and privacy assertions.
+- JavaScript syntax, relative-file documentation links and Git whitespace: pass.
+
+Initial development vectors caught incorrect negative float reconstruction and
+fixture operand/waveform expectations; these were corrected before the complete
+passing runs. Initial Clippy findings were fixed without suppressing warnings.
+Passing local validation does not claim remote CI or production deployment.
+Genuine Sega BIOS/retail compatibility is not independently confirmed and is
+optional. No personal firmware, listening/human approval, live Pages inspection,
+external-workflow investigation or post-merge approval condition is needed.
+
+This is saved implementation progress, **not successful full resolution of the
+Run objective**. Remaining CPU/SH7604, MC68EC000, map/reset/backup/HLE services,
+hardware-time CPU/bus contention, SCU mode/pipeline corpus, VDP1/VDP2 modes and
+raster effects, SCSP envelope/FM/LFO/noise and full DSP timing, remaining CD
+commands/errors, SMPC clock/system/latch controls, complete synthetic service
+fixtures and comprehensive umbrella evidence remain mandatory. Continue on
+this same PR and Issue; do not mark it ready until all are implemented/validated.

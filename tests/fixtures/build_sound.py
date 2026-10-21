@@ -16,7 +16,7 @@ assembler = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(assembler)
 
 
-def sound_image():
+def sound_image(effects=False):
     image = bytearray(0x4400)
     struct.pack_into('>II', image, 0, 0x7FF00, 0x100)
     struct.pack_into('>I', image, 28 * 4, 0x300)  # level-four autovector
@@ -29,6 +29,8 @@ def sound_image():
     movw(0x20F, 0x100400)  # 4Mbit sound RAM, full master volume
     for offset, value in [(2, 0x4000), (4, 0), (6, 4), (12, 0x100), (16, 0), (22, 0xE800), (0, 0x1820)]:
         movw(value, 0x100000 + offset)  # PCM16, loop, direct mode, pan 8
+    if effects:
+        emit(0x4EB9, 0, 0x900)  # JSR original effects setup (Hardware Lab only).
     movw(0x40, 0x10041E)  # timer A enabled for sound CPU
     movw(0x40, 0x100428)  # timer A level-four interrupt
     movw(0xFE, 0x100418)  # expires after one sample tick
@@ -38,6 +40,33 @@ def sound_image():
     # ADDQ.L #1,$804; clear timer A pending; RTE.
     handler = [0x52B9, 0, 0x804, 0x33FC, 0x40, 0x10, 0x422, 0x4E73]
     struct.pack_into('>'+'H'*len(handler), image, 0x300, *handler)
+    if effects:
+        words = []
+        # ST-077 fig.5.1 / ST-228 Reference 2: independently authored 128-step
+        # program, four active multiply/output pairs. .5*MIXS0 -> EFREG0;
+        # .5*MEMS0 -> EFREG1; .5*EXTS0 -> EFREG2; .25*EXTS1 -> EFREG3.
+        movw(0x4000, 0x100700)  # signed Q12 .5, left aligned by three bits
+        movw(0x2000, 0x100702)  # .25
+        movw(0, 0x100E00)
+        movw(0x1200, 0x100E02)  # MEMS0=0x120000 -> EFREG1=0x0900
+        program = [
+            [0, 0xA800, 0x0002, 0], [0, 0, 0x1002, 0],
+            [0, 0xA000, 0x0002, 0], [0, 0, 0x1102, 0],
+            [0, 0xAC00, 0x0002, 0], [0, 0, 0x1202, 0],
+            [0, 0xAC40, 0x0002, 0x0200], [0, 0, 0x1302, 0],
+        ]
+        for i, step in enumerate(program):
+            for j, word in enumerate(step):
+                movw(word, 0x100800 + i*8 + j*2)
+        # Direct voice keeps its original pan; wet voice left only. The known
+        # constant on EFREG1 is diagnostic-only, never an audio source.
+        movw(7, 0x100014)  # ISEL0, full IMXL
+        movw(0xE8FF, 0x100016)  # direct PCM plus EFREG0 left
+        movw(0x00FF, 0x100056)  # EFREG2 CD left
+        movw(0x00EF, 0x100076)  # EFREG3 CD right
+        emit(0x4E75)  # RTS
+        struct.pack_into('>'+'H'*len(words), image, 0x900, *words)
+        assert 0x900+len(words)*2 < 0x4000
     return image
 
 

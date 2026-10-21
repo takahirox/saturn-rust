@@ -9,7 +9,8 @@ WebAudio delivery, SMPC RTC/SMEM/INTBACK and clock-based NTSC raster events. It 
 backup RAM and both direct digital pads. It does not complete the Saturn hardware
 or the complete required hardware exerciser demonstration. Hardware Lab now
 executes runtime CD/DMA/IRQ, dual CPU, SCU DSP, PCM/CD-DA, advanced video and backup
-but still requires SCSP effects-DSP implementation and a corresponding scene. The original playable Prism
+and an executing SCSP effects-DSP scene. Full chip conformance and the complete
+acceptance inventory remain required. The original playable Prism
 Courier disc now runs with VDP1/VDP2 composition, 68k audio and guest IRQ/input
 in native and browser Wasm checks. No umbrella acceptance checkbox is met.
 
@@ -432,6 +433,7 @@ mailbox writes are used.
 ## Sound
 
 **SNDV**: [native SCSP vectors](../src/sound/tests.rs).
+**DSPV**: [original DSP register/arithmetic/ring/float/output vectors](../src/sound/dsp/tests.rs).
 **SNDR**: [original SH-2 + 68k sound ROM](../tests/fixtures/build_sound.py),
 [native guest assertions](../tests/sound.rs) and
 [browser guest/WebAudio assertions](../scripts/browser-smoke.mjs).
@@ -445,19 +447,19 @@ Implementation: [shared sound bus, PCM and clock domain](../src/sound.rs),
 | 32 slots, PCM8/16, [SCSP] §4.2 table 4.14 | Guest key-on/off, signed PCM, source bit controls, all 32 slots, no/forward/reverse/alternative loops, Q16 OCT/FNS pitch, signed first-order PCM8/16 interpolation for all loop directions, sound stack | SNDV, SNDR (including guest half-pitch vectors) / SNDR (half-pitch vectors) | Exact hardware fractional boundary rounding and complete envelope-controlled playback | Pending |
 | Envelope, [SCSP] §4.2 | Nonzero envelope settings rejected; direct mode requires SDIR | SNDV / explicit errors | Attack/decay/sustain/release/key scaling | Pending |
 | FM/modulation/LFO, [SCSP] §4.2 | Unsupported nonzero controls rejected | SNDV / explicit errors | Noise, modulation/LFO execution and routing | Pending |
-| Levels/pan/external inputs, [SCSP] §4.2 tables 4.27/28 | Direct send and fixed-point stereo pan, clipping, master output control; independently expected full-volume stereo buffers | SNDV, SNDR / SNDR | Intermediate master gain conformance, effect/external inputs/CD-DA | Pending |
+| Levels/pan/external inputs, [SCSP] §4.2 tables 4.27/28 | Direct send and fixed-point stereo pan, clipping, master output control; independently expected full-volume stereo buffers | SNDV, SNDR / SNDR | Intermediate master gain conformance and complete routing boundary corpus | Pending |
 | Timers/interrupts, [SCSP] §4.2 tables 4.33–38 | Three sample-clock prescaled counters; sound/main pending/enables/clear; programmed autovector levels, 68k IRQ/RTE, SCU source 6 | SNDV, SNDR / SNDR | Complete cross-device contention/timer reset edge evidence | Pending |
 | MIDI registers, [SCSP] §4.2 figs.4.59–61 | Four-byte input/output FIFOs, status/overflow, byte-lane read effects, empty transitions and IRQ requests | SNDV / not yet guest-tested | Serial bit pacing/external pin wiring and browser guest vectors | Pending |
 | SCSP DMA, [SCSP] §4.2 fig.4.66/table 4.39 | Word transfers in both directions, zero gate, count/address progress, DEXE completion and IRQ; DMA-register target rejected | SNDV / not yet guest-tested | Exact transfer timing/arbitration, full boundaries and guest evidence | Pending |
-| SCSP effects DSP, [SCSP] DSP model | Not implemented; DSP ports reject accesses | SNDV / explicit errors | Interpreter, program/register/ring-buffer routing | Pending |
+| SCSP effects DSP, [SCSP] §§4.1/4.3/5; [ST-228][SCDSPASM] Reference 1/2 | Executing multiply/add pipeline; COEF/MADRS/MPRO/TEMP/MEMS/MIXS/EFREG, slot and EXTS inputs, ring/table RAM reads/writes, linear/float conversion, stereo effect routing | DSPV, CLAB / CLAB coefficient mutation, exact stereo, WebAudio | Full field/pipeline boundary corpus, RAM-access contention and independently corroborated converter/timing edges | Pending |
 | Browser audio output | Bounded 8192-frame producer/ring, stereo sample-rate adaptation, explicit gesture enable, pause/mute/blocked/underflow/drop states; worklet renders nonzero guest PCM | SNDV / SNDR WebAudio instrumentation | Full synthesis/DSP/CD-DA validation depends on missing hardware | Pending |
-| CD-DA, [CD] §§3/4/8 / [SCSP] table 4.31 | Guest play/repeat, signed stereo BINARY tracks; EXTS0/1 EFSDL/EFPAN, mixed with 68k PCM at sample deadlines | `tests/cd.rs::cdda_stereo_external_scsp_route_has_exact_samples_and_muting`, CLAB / CLAB WebAudio + changed audio track | Effects DSP route, scan/de-emphasis/subcode and complete synthesis remain | Pending |
+| CD-DA, [CD] §§3/4/8 / [SCSP] table 4.31 | Guest play/repeat, signed stereo BINARY tracks; EXTS0/1 EFSDL/EFPAN, mixed with 68k PCM at sample deadlines | `tests/cd.rs::cdda_stereo_external_scsp_route_has_exact_samples_and_muting`, CLAB / CLAB WebAudio + changed audio track | Full effects pipeline/scan/de-emphasis/subcode and complete synthesis remain | Pending |
 
 The sound CPU has an independent 11.2896 MHz domain and SCSP has a 44.1 kHz
 sample domain relative to the fixed 26.8741 MHz reference. Native traces match
 across 1/3/8/17/611/10000-clock advancement chunks. These deadlines do not make
 the approximate 68k opcode budgets or one-word-per-sample SCSP DMA electrically
-accurate. Unsupported synthesis/DSP paths fail explicitly. Original guest arithmetic
+accurate. Unsupported synthesis and invalid DSP instructions/ports fail explicitly. Original guest arithmetic
 changes alter both RAM waveform and exact native/Wasm PCM; canned buffers and
 no-op CPU/device implementations cannot satisfy those assertions.
 
@@ -489,7 +491,7 @@ no-op CPU/device implementations cannot satisfy those assertions.
    cycle-based dual-CPU scheduling and arbitration. CPU opcode decoding alone
    does not satisfy the CPU or multiprocessor criterion.
 2. Complete MC68EC000 timing/prefetch edge conformance and sound bus arbitration;
-   SCSP envelope/FM/LFO/noise/effects DSP remain missing; CD-DA now has CLAB evidence. Direct PCM,
+   SCSP envelope/FM/LFO/noise remain missing; effects DSP and CD-DA have CLAB subset evidence. Direct PCM,
    executing sound CPU, timers/DMA/FIFO subsets and WebAudio now have evidence.
 3. Full base memory map, remaining backup mirrors and BIOS filesystem/calls,
    plus hardware clock/event scheduling. Packed backup import/export and byte
@@ -508,8 +510,8 @@ no-op CPU/device implementations cannot satisfy those assertions.
    joystick/3D-pad packets and direct analog handshakes have subset evidence.
 7. The multiprocessor/SCU/runtime-CD/CD-DA/SCSP-DSP/advanced-video/backup
    hardware exerciser now has the original Hardware Lab disc (CLAB), covering
-   the listed paths except SCSP effects DSP. Its required effects-DSP scene and
-   full remaining chip behavior are still mandatory. Prism Courier supplies the
+   all those named paths, including its new 68k-uploaded effects-DSP scene.
+   Full remaining chip behavior and comprehensive independent evidence are still mandatory. Prism Courier supplies the
    original playable VDP1+VDP2+audio guest demonstration, including guest input,
    win/loss/restart and actual native/Wasm execution. The existing synthetic
    ROMs remain supporting fixtures; CLAB does not yet satisfy the entire exerciser criterion.
@@ -753,9 +755,9 @@ browser also asserts actual production Canvas and AudioWorklet delivery.
 
 Every new guest/asset/trampoline has original source and adjacent MIT licensing.
 CI checks all generated media and both new reproducibility builders. Hardware Lab
-includes no SCSP effects-DSP program: that missing interpreter and guest scene,
-all other mandatory unresolved features, and comprehensive conformance evidence
-remain required for #17. No umbrella checkbox is satisfied by this evidence alone.
+now includes an executing SCSP effects-DSP program (see below). All other
+mandatory unresolved features and comprehensive conformance evidence remain
+required for #17. No umbrella checkbox is satisfied by this evidence alone.
 
 
 Reverse and alternating fractional PCM now interpolate decoded signed PCM8/16
@@ -764,4 +766,49 @@ in traversal order, with reverse wrapping and alternating endpoint holds.
 uses independently authored positive/negative half-pitch vectors. The browser
 patches only the original 68k sound guest's SCSP pitch/key-on immediate words and
 checks an exact reverse-loop stereo vector in Wasm. Exact hardware sub-sample
-rounding, envelope/FM/LFO/noise and the effects DSP remain mandatory work.
+rounding, envelope/FM/LFO/noise and full effects-DSP conformance remain mandatory work.
+
+
+## Executing SCSP effects processor and guest evidence
+
+The independent [effects interpreter](../src/sound/dsp.rs) executes 128 parallel
+steps per sample. Its signed 24-bit inputs, 13-bit multiplier operand, 26-bit
+accumulator, previous-accumulator shifter, TEMP/sample decrement and sound RAM
+paths follow [SCSP][SCSP] §5 fig.5.1; register locations/widths follow §4.1
+figs.4.5–4.7, and RBL/RBP follow §4.3 table4.41. [ST-228][SCDSPASM] Reference1
+and Reference2 describe the original assembler operations and delayed signal
+flow. The documentation omits some low-level instruction/pipeline details;
+this functional implementation is not evidence of electrically accurate SCSP
+DRAM cycles or complete converter/undocumented-bit conformance. No third-party
+processor core, assembler, SDK object or effect program was used.
+
+| Register/instruction group | Implementation | Native evidence | Wasm/guest evidence and remaining work |
+| --- | --- | --- | --- |
+| COEF/MADRS/MPRO; TEMP/MEMS/MIXS/EFREG; byte lanes | `Dsp::read/write`; `Scsp::write8` | DSPV `coefficient_internal_ram_and_byte_lanes_obey_physical_widths`; RESET vector in SNDV | CLAB uploads coefficients/program/MEMS and SH-2 reads EFREG1; complete per-port guest corpus remains |
+| TRA/TWA/TWT, sample decrement, read-before-write | `Dsp::sample` circular TEMP indices | DSPV `temp_pointer_moves_once_per_sample_and_reads_precede_parallel_writes` | CLAB arithmetic; delayed TEMP guest scene remains |
+| XSEL/YSEL/IRA, signed multiplication, ZERO/BSEL/NEGB | `Dsp::sample` signed multiplier/26-bit accumulator | DSPV `multiply_accumulate_uses_signed_13_bit_y_and_previous_accumulator_output` | CLAB MIXS0/MEMS0/EXTS0/1 and two coefficients; all ALU control combinations remain |
+| SHIFT, EWT/EWA, saturation/wrap | `Dsp::sample` prior accumulator and 16-bit effect accumulation | DSPV `shifter_clips_or_wraps_and_effect_writes_accumulate_with_sixteen_bit_width` | CLAB exact bipolar stereo; complete overflow guest corpus remains |
+| YRL/FRCL/ADRL/ADREB | `Dsp::sample` latches and address gate | DSPV `y_fraction_and_address_latches_use_previous_step_values` | Complete interpolation/address-modulation guest vectors remain |
+| MRD/MWT/IWT/IWA, TABLE/MASA/NXADR, RBL/RBP | `Dsp::sample` sound RAM path, read latch after two steps | DSPV `ring_table_linear_reads_use_two_step_latency_and_preserve_read_before_write` | Complete sound RAM/pipeline guest corpus and CPU/DMA contention remain |
+| NOFL linear/normalized-float conversion | `pack/unpack`, `Dsp::sample` | DSPV `floating_memory_format_has_independent_bit_patterns_and_bounded_error` | Full independent float/subnormal/rounding and delayed memory-cycle corroboration remains |
+| IMXL/ISEL, EFSDL/EFPAN, external CD route | `Dsp::add_slot`, `Scsp::sample` | DSPV `slot_send_wraps_mix_without_saturation_and_dsp_output_obeys_routing`; CLAB exact samples | CLAB in browser: changed guest coefficient changes exact stereo and computed result; real AudioWorklet, changed CD track; full synthesis remains |
+| Invalid instructions/ports | `Dsp::sample/read/write` bounded diagnostics | DSPV `illegal_memory_steps_and_reserved_ports_fail_without_faking_effects` | Guest fault corpus remains |
+
+Hardware Lab's eight original DSP instructions are uploaded by actual 68k
+`MOVE.W` instructions. Half-gain MIXS0 drives EFREG0, a half-gain MEMS0 multiply
+computes EFREG1=0900, and half/quarter-gain EXTS0/1 drive EFREG2/3. The SH-2
+reads EFREG1 into result offset28. Tests change only the 68k coefficient immediate
+in the original disc and obtain 0900/0480/0000 and exact wet/dry PCM vectors.
+With silent CD, the four stereo frames at half gain are
+`[2304,4096],[-2304,-4096],[-4608,-8192],[4608,8192]`.
+CD direct sends are muted, so changed CD-DA data must pass through the effects
+processor to change the mixed buffer. Program/data/reset effects arise from
+emulated instructions/MMIO; the host supplies media and inputs only.
+
+The reproducible Hardware Lab ISO SHA-256 is now
+`8bc56657bf0376fece7dece1a094f9e159f0d365af94adb6f87cb2fa5dc7995c`.
+Its audio/CUE, Star Collector and Prism Courier remain byte-identical. See the
+[validation record](validation-issue-17.md) and [guest contract](../homebrew/hardware-lab/README.md).
+This implementation/evidence does not satisfy the full audio or umbrella criteria.
+
+[SCDSPASM]: https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-228-R1-030596.pdf
