@@ -4,6 +4,83 @@
 criterion is complete; #17 must remain open.** Issues #11/#13/#15 are historical,
 administratively closed trackers and must not be reopened.
 
+## MC68EC000 operand cycles and original SYS_EXECDMP (2026-10-22)
+
+Continues PR #18 from the assigned checkpoint
+`7d61af70ba088c6fd4964f32df09fc04638e74ad`, preserving the previous BSC/DMA/SMPC
+fixes and all three original demonstrations. Upstream `main` was rechecked as
+`dbd981b030a46daa6923072ce240680dd2e58ebf`; PR #18 remains the sole Draft PR.
+The full Issue #17 target is retained and remains incomplete.
+
+MC68EC000 Scc and MOVE SR memory destinations now perform the specified byte/
+word read before writing. A failed read therefore prevents the write and stacks
+a read-error frame. ADDX/SUBX/ABCD/SBCD now finish the source read before
+predecrementing or reading the destination. Native bus spies check exact cycle
+order, first/second longword faults, retained address updates, all aliased address
+registers and A7's byte stride. All 16 Scc conditions are checked against a
+separately authored truth table for every CCR value, on both register and memory.
+The original sound-bus guest has twenty authored access-frame records, including
+these ten new operand-fault programs; native and Wasm compare every word.
+Replacing Scc/MOVE SR with ordinary MOVE writes changes only the expected SSW/IR
+fields. All new test programs and data use the existing fixture MIT license.
+
+SYS_EXECDMP is now an actual non-returning original SH-2 CD player, installed at
+its documented work-RAM ABI pointer only by HLE startup. It establishes its own
+stack, disables the master watchdog/DMAC, handles an unfinished INTBACK, resets
+video/SCU/sound through the guest clock service, and resets/reads the CD through
+real commands and FIFO transfers. Original guest code rasterizes original glyphs,
+reads digital/ID15/ID16 INTBACK packets, selects audio tracks from the real TOC
+and controls play/pause/resume/completion/restart. Analog X and keyboard/pad
+buttons enter through SMPC; CD-DA reaches SCSP EXTS stereo routing. Host code
+never computes menu state, pixels, or audio samples.
+
+The original MIT caller disc deliberately leaves a changed PLL, unfinished TOC
+transfer and INTBACK continuation before calling the service. Native/Wasm check
+non-return, persistent power-clear/backup bytes, reset, audio-track wrapping/data
+skipping, held/neutral axes, A/B/Start, every native cursor-rail pixel, production
+Canvas pixels, exact stereo signals and changed audio. AudioWorklet instrumentation
+checks actual rendered nonzero buffers and expected peak. Data-only media stays
+silent and cannot select a nonexistent audio track. External-BIOS tests verify
+that no HLE pointer or player ROM is installed in that separate mode.
+
+Primary references, exact implementation/test links, hashes and limitations are
+in [the conformance entry](hardware-conformance.md#mc68ec000-operand-cycles-and-guest-executed-cd-player),
+[service contract](../src/hle/README.md#original-guest-cd-player) and
+[provenance](homebrew-provenance.md). CI and setup now reproduce the caller media.
+
+Validation on the final implementation:
+
+- `cargo fmt --check`, `cargo build --locked` and the complete final
+  `cargo test --locked` pass: **509 tests (284 unit + 225 integration)**,
+  zero failed or ignored, using Homebrew Rust/Cargo **1.94.0**. Native all-target
+  Clippy passes with `-D warnings`.
+- All three final HLE-player native integration tests pass in release mode.
+- wasm32 Clippy passes with `-D warnings`; `sh scripts/build-web.sh` passes
+  using rustup stable 1.99.0 and wasm-bindgen-cli 0.2.129.
+- All **57** CI guest/media reproducibility commands pass. Star Collector,
+  Prism Courier and Hardware Lab source/generated media are unchanged.
+- The complete final `npm run test:browser` passes in Chromium **145.0.7632.6**,
+  Node **24.12.0**, under `/saturn-rust/`. No required test is skipped. This
+  includes the new analog-packet/player/Canvas/WebAudio and twenty-frame 68k
+  cases, all existing demos, controllers/focus, backup and local-file privacy.
+- Deliberately removing either required destination read, or restoring reversed
+  extended-arithmetic operand order, is rejected by the specific native bus
+  test. The harness restores exact production bytes in `finally`.
+- JavaScript syntax, local documentation targets and Git whitespace pass.
+  Development failures identified fixture polling before INTBACK continuation,
+  repeated full-rail drawing across scanout, browser file-load synchronization,
+  a Play-only missing register-table assumption and the Canvas presenter's audio
+  drain. The final tests use guest completion/field boundaries and fresh produced
+  PCM; expected pixels/samples/frames remain independently authored.
+
+These are local validation results, not remote CI/deployment or complete Saturn
+conformance. The remaining SH-2/SH7604 and 68k sequencing, shared transaction
+arbitration/reset/cache/bus behavior, SCU/DSP, complete VDP1/VDP2 and SCSP/DSP,
+runtime CD/complete HLE CD-library ABI, remaining SMPC boundaries and comprehensive
+umbrella evidence are still mandatory. The Run's full-resolution objective is
+unmet; this is continued implementation on the same Draft PR, with no merge,
+Issue closure/replacement, historical reopening, or human/firmware/live-site gate.
+
 ## Review fixes: memory protocols, DMA descriptors and SMPC boundaries (2026-10-22)
 
 Related to #17. Starting review checkpoint: `1faef6622afa077741bc05c9f97a31ca76f2ba74`.

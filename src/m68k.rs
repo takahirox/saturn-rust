@@ -725,6 +725,9 @@ impl M68k {
                     }
                     Self::require(Self::data(bits, true))?;
                     let dst = self.ea(memory, bits, Size::Byte)?;
+                    // M68000PRM Scc, p.4-173: MC68000 memory destinations
+                    // are read before being written, even for ST/SF.
+                    self.get(memory, dst, Size::Byte)?;
                     self.put(
                         memory,
                         dst,
@@ -1075,6 +1078,9 @@ impl M68k {
             }
             let ea = self.ea(memory, bits, Size::Word)?;
             if from {
+                // M68000PRM MOVE from SR, p.4-125: the otherwise unused
+                // destination read has real MMIO and bus-error effects.
+                self.get(memory, ea, Size::Word)?;
                 self.put(memory, ea, Size::Word, u32::from(self.state.sr))?;
             } else {
                 let v = self.get(memory, ea, Size::Word)? as u16;
@@ -1263,15 +1269,18 @@ impl M68k {
         let mode = (op >> 6) & 7;
         if matches!(group, 8 | 12) && op & 0x01F0 == 0x0100 {
             // SBCD/ABCD
-            let (src, dst) = if op & 8 == 0 {
-                (Ea::Data(src_r), Ea::Data(r))
+            let src = if op & 8 == 0 {
+                Ea::Data(src_r)
             } else {
-                let s = self.ea(memory, 0x20 | src_r as u16, Size::Byte)?;
-                let d = self.ea(memory, 0x20 | r as u16, Size::Byte)?;
-                (s, d)
+                self.ea(memory, 0x20 | src_r as u16, Size::Byte)?
+            };
+            let b = self.get(memory, src, Size::Byte)?;
+            let dst = if op & 8 == 0 {
+                Ea::Data(r)
+            } else {
+                self.ea(memory, 0x20 | r as u16, Size::Byte)?
             };
             let a = self.get(memory, dst, Size::Byte)?;
-            let b = self.get(memory, src, Size::Byte)?;
             let v = self.bcd(a, b, group == 8);
             self.put(memory, dst, Size::Byte, v)?;
             return Ok(if op & 8 == 0 { 6 } else { 18 });
@@ -1287,15 +1296,18 @@ impl M68k {
         if matches!(group, 9 | 13) && op & 0x0130 == 0x0100 && mode != 7 && mode != 3 {
             // SUBX/ADDX
             let size = Self::size(op)?;
-            let (src, dst) = if op & 8 == 0 {
-                (Ea::Data(src_r), Ea::Data(r))
+            let src = if op & 8 == 0 {
+                Ea::Data(src_r)
             } else {
-                let s = self.ea(memory, 0x20 | src_r as u16, size)?;
-                let d = self.ea(memory, 0x20 | r as u16, size)?;
-                (s, d)
+                self.ea(memory, 0x20 | src_r as u16, size)?
+            };
+            let b = self.get(memory, src, size)?;
+            let dst = if op & 8 == 0 {
+                Ea::Data(r)
+            } else {
+                self.ea(memory, 0x20 | r as u16, size)?
             };
             let a = self.get(memory, dst, size)?;
-            let b = self.get(memory, src, size)?;
             let v = self.arithmetic(a, b, size, group == 9, true, false);
             self.put(memory, dst, size, v)?;
             return Ok(if op & 8 == 0 {
@@ -1515,5 +1527,7 @@ impl M68k {
     }
 }
 
+#[cfg(test)]
+mod bus_tests;
 #[cfg(test)]
 mod tests;

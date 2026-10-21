@@ -29,6 +29,8 @@ pub(crate) fn install(bus: &mut Bus, aip_entry: u32, slave_stack: u32) -> Result
     rom[0x4000..0x4000 + system.len()].copy_from_slice(system);
     let backup = include_bytes!("hle/backup.bin");
     rom[0x10000..0x10000 + backup.len()].copy_from_slice(backup);
+    let player = include_bytes!("hle/player.bin");
+    rom[0x18000..0x18000 + player.len()].copy_from_slice(player);
     bus.load_bios(&rom)?;
     for vector in 0..128 {
         let scu = (0x40..0x60).contains(&vector) && !matches!(vector, 0x4E | 0x4F);
@@ -43,17 +45,18 @@ pub(crate) fn install(bus: &mut Bus, aip_entry: u32, slave_stack: u32) -> Result
     // Public system entry pointers; the referenced code executes on the caller's
     // processor, so VBR and architectural TAS are naturally CPU-correct.
     for (pointer, target) in [
-        (0x280, 0x4800), // SYS_CHGUIPR
-        (0x300, 0x4200), // SYS_SETUINT
-        (0x304, 0x4300), // SYS_GETUINT
-        (0x310, 0x4000), // SYS_SETSINT
-        (0x314, 0x4100), // SYS_GETSINT
-        (0x320, 0x4D00), // SYS_CHGSYSCK
-        (0x330, 0x4600), // SYS_TASSEM
-        (0x334, 0x4700), // SYS_CLRSEM
-        (0x340, 0x4400), // SYS_SETSCUIM
-        (0x344, 0x4500), // SYS_CHGSCUIM
-        (0x358, 0x5000), // BUP_Init
+        (0x26C, 0x18000), // SYS_EXECDMP, non-returning original CD player
+        (0x280, 0x4800),  // SYS_CHGUIPR
+        (0x300, 0x4200),  // SYS_SETUINT
+        (0x304, 0x4300),  // SYS_GETUINT
+        (0x310, 0x4000),  // SYS_SETSINT
+        (0x314, 0x4100),  // SYS_GETSINT
+        (0x320, 0x4D00),  // SYS_CHGSYSCK
+        (0x330, 0x4600),  // SYS_TASSEM
+        (0x334, 0x4700),  // SYS_CLRSEM
+        (0x340, 0x4400),  // SYS_SETSCUIM
+        (0x344, 0x4500),  // SYS_CHGSCUIM
+        (0x358, 0x5000),  // BUP_Init
         (0x210, POWER_CLEAR),
     ] {
         bus.write32(0x0600_0000 + pointer, target)?;

@@ -219,3 +219,26 @@ and browser Wasm execute identical SH-2/DSP programs, including changed data
 and stride operands. No third-party firmware, SDK, emulator output or assets
 are included. [Conformance evidence](hardware-conformance.md#scu-dsp-b-bus-cycles-and-program-prefetch)
 records hashes and limits; all three existing demo media remain unchanged.
+
+
+The original [HLE CD player](../src/hle/player.s), its glyph assets in the
+[builder](../src/hle/build.py) and generated ROM fragment are covered by the
+[HLE MIT license](../src/hle/LICENSE). The original
+[caller/mixed-disc builder](../tests/fixtures/build_hle_player.py) uses only Python
+standard-library code and the existing original SH-2 assembler. Its ISO embeds
+[the fixture MIT license](../tests/fixtures/LICENSE); the CUE and two separately
+identifiable stereo signals use that same license. The fonts, control graphics
+and audio are authored here. No Sega screen, SDK routine, proprietary firmware,
+commercial track or third-party core is included. `python3 src/hle/build.py --check`
+and `python3 tests/fixtures/build_hle_player.py --check` reproduce the media.
+[Native](../tests/hle_player.rs) and [Wasm/Canvas/WebAudio](../scripts/hle-player.mjs)
+tests execute the guest, including both analog pad report IDs, changed audio and
+reset. These diagnostics supplement the existing three demonstrations.
+
+The existing original MC68EC000 family fixture now includes ten additional
+[source-authored operand fault programs](../tests/fixtures/m68k_faults.py),
+for twenty total access-frame records. Its adjacent fixture MIT license remains
+in force. The original assembler/standard-library builder reproduces the expanded
+ROM, and native/browser guest mutations distinguish required destination reads
+from ordinary writes. [The conformance entry](hardware-conformance.md#mc68ec000-operand-cycles-and-guest-executed-cd-player)
+records exact implementation/tests, primary manual references, hashes and limits.

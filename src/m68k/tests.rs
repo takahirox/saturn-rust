@@ -2,7 +2,7 @@
 //! M68000PRM §§2 (addressing), 3–4 (integer operations), appendix B (frames).
 use super::*;
 
-struct Ram(Vec<u8>);
+pub(super) struct Ram(Vec<u8>);
 impl Default for Ram {
     fn default() -> Self {
         Self(vec![0; 65536])
@@ -62,7 +62,7 @@ impl Memory for Ram {
         self.write16(a + 2, v as u16)
     }
 }
-fn fixture(words: &[u16]) -> (M68k, Ram) {
+pub(super) fn fixture(words: &[u16]) -> (M68k, Ram) {
     let mut ram = Ram::default();
     ram.write32(0, 0xF000).unwrap();
     ram.write32(4, 0x100).unwrap();

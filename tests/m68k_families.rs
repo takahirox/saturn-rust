@@ -6,8 +6,7 @@ use saturn_rust::{
     sound::SOUND_RAM,
 };
 
-#[test]
-fn sound_cpu_executes_independent_architectural_families_and_effective_addresses() {
+fn rom() -> Vec<u8> {
     let mut rom = vec![0; BIOS_SIZE];
     for line in include_str!("fixtures/m68k-families.hex").lines() {
         if line.is_empty() || line.starts_with('#') {
@@ -20,6 +19,12 @@ fn sound_cpu_executes_independent_architectural_families_and_effective_addresses
                 .copy_from_slice(&u16::from_str_radix(word, 16).unwrap().to_be_bytes());
         }
     }
+    rom
+}
+
+#[test]
+fn sound_cpu_executes_independent_architectural_families_and_effective_addresses() {
+    let rom = rom();
     let mut m = Machine::new();
     for _ in 0..2 {
         m.reset(Boot::ExternalBios(&rom)).unwrap();
@@ -65,5 +70,45 @@ fn sound_cpu_executes_independent_architectural_families_and_effective_addresses
             }
         }
         assert!(m.drain_audio(8192).iter().any(|s| *s != 0));
+    }
+}
+
+#[test]
+fn changing_guest_rmw_to_a_plain_write_changes_the_bus_error_access_and_ir() {
+    for (opcode, replacement, index) in [(0x50D0u16, 0x1080u16, 10), (0x40D0, 0x3080, 11)] {
+        let mut image = rom();
+        let [high, low] = opcode.to_be_bytes();
+        let needle = [high, low, 0x33, 0xFC, 0xAB, 0xCD];
+        let positions: Vec<_> = image
+            .windows(needle.len())
+            .enumerate()
+            .filter_map(|(at, bytes)| (bytes == needle).then_some(at))
+            .collect();
+        assert_eq!(positions.len(), 1);
+        image[positions[0]..positions[0] + 2].copy_from_slice(&replacement.to_be_bytes());
+        let mut m = Machine::new();
+        m.reset(Boot::ExternalBios(&image)).unwrap();
+        for _ in 0..10 {
+            m.run_steps(10000).unwrap();
+        }
+        assert_eq!(m.bus().read32(0x06007004), Ok(0x600D));
+        for (i, line) in include_str!("fixtures/m68k-faults.tsv").lines().enumerate() {
+            let fields: Vec<_> = line.split('\t').collect();
+            for (j, word) in fields[1..].iter().enumerate() {
+                let expected = if i == index && j == 0 {
+                    0x00050008
+                } else if i == index && j == 1 {
+                    u32::from(replacement)
+                } else {
+                    u32::from_str_radix(word, 16).unwrap()
+                };
+                assert_eq!(
+                    m.bus().read32(SOUND_RAM + 0x5900 + (i * 32 + j * 4) as u32),
+                    Ok(expected),
+                    "{} field {j}",
+                    fields[0]
+                );
+            }
+        }
     }
 }

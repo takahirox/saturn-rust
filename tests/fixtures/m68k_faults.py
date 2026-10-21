@@ -24,7 +24,19 @@ def install(image, words, base=0x1000):
         ('user data fault',0x80000,[0x2010],0x80000,0x12345678,0xDEADBEEF,0x80000,0x2010,0x11,0xBABE),
         ('branch target fetch',0x80000,[0x4ED0],0x80000,0x12345678,0xDEADBEEF,0x80000,0x4ED0,0x16,0xBABE),
         ('sequential prefetch',0x7FFFC,[0x4ED0],0x7FFFC,3,0xDEADBEEF,0x80000,0x4E71,0x16,0x4E71),
+        # PRM pp.4-125/4-173: these otherwise write-only operations first
+        # read the destination. A failed read must be recorded as a read.
+        ('scc destination read',0x80000,[0x50D0],0x80000,0x12345678,0xDEADBEEF,0x80000,0x50D0,0x15,0xBABE),
+        ('move sr destination read',0x80000,[0x40D0],0x80000,0x12345678,0xDEADBEEF,0x80000,0x40D0,0x15,0xBABE),
     ]
+    # A1 source faults before A0's destination predecrement. All integer
+    # sizes and both BCD instructions execute, rather than classifying opcodes.
+    for name,op,size in [('addx byte',0xD109,1),('addx word',0xD149,2),
+                         ('addx long',0xD189,4),('subx byte',0x9109,1),
+                         ('subx word',0x9149,2),('subx long',0x9189,4),
+                         ('abcd',0xC109,1),('sbcd',0x8109,1)]:
+        cases.append((name+' source fault',0x7FFFE,[0x43F9,8,size,op],
+                      0x7FFFE,0x12345678,0xDEADBEEF,0x80000,op,0x15,0xBABE))
     for name, a0, code, final_a0, d0, d1, fault, ir, ssw, retained in cases:
         # Restore guard data using ordinary MC68000 word writes before each case.
         for address,value in [(0x7FFFA,0xABCD),(0x7FFFC,0xCAFE),(0x7FFFE,0xBABE)]:

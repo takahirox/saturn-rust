@@ -573,8 +573,8 @@ no-op CPU/device implementations cannot satisfy those assertions.
 | CD drive/TOC/session/track state, [CD] §§4/7/8.2 | TOC/session/Q, bounded seek, data play, CD-DA/repeat/end, media-dependent FAD/track/index reports; timed CDON/OFF, 60 Hz pause reports, programmed standby, scan directions/range/muting, tray/media retention and deterministic virtual close | `tests/cd.rs`, CLAB, CDDRV | CLAB, CDDRV | Remaining initialization/subcode options and full drive/response lifecycle boundary evidence | Pending |
 | CD buffers/transfers, [CD] §§3.4/5.3/5.4/8.2 | 200-sector pool, 24 partitions, get/delete/get-delete/put, short/over transfers, size/info/search, FIFO word/long and fixed-source SCU DMA | `tests/cd.rs`, CLAB | CLAB actual DMA/IRQ/checksum, sector mutation | Pool-full pause/resume at the blocked FAD has native data vectors; complete transfer overlap and timing/error inventory remain | Pending |
 | Filters/selectors/partitions, [CD] §§5.2/5.3/8.2.5 | FAD and masked subheader comparisons, reverse conditions, true/false routes, reset, copy/move through destination filter | `tests/cd.rs::selectors_fad_range_connections_copy_move_and_size`, Mode2 reverse vectors | CLAB default filter/partition route | Full connection constraints and all boundary/error vectors remain | Pending |
-| BIOS-less startup, [Boot ROM][BOOT] / [DISC] | Original first-read HLE plus licensed SH-2 master/slave reset trampoline and system-service initialization, separate from ExternalBios | disc.rs, game.rs, CLAB, src/hle/boot.s, HLESYS | SC, CLAB, HLESYS | Remaining clock/multiplayer, backup/CD services and full startup/region/version contracts | Pending |
-| BIOS services, [BOOT], ST-162-R1 System Program §2.2 | Original guest-executed vector/callback registration, SCU mask/shadow, shared semaphores, copied priorities and power-clear bytes; see HLESYS below | tests/hle_system.rs | HLESYS, including nested IRQs, mutations and reset | Clock and BUPG backup calls have dedicated evidence below; multiplayer/CD calls and complete per-call ABI/side effects remain | Pending |
+| BIOS-less startup, [Boot ROM][BOOT] / [DISC] | Original first-read HLE plus licensed SH-2 master/slave reset trampoline and system-service initialization, separate from ExternalBios | disc.rs, game.rs, CLAB, src/hle/boot.s, HLESYS, DPLAYER below | SC, CLAB, HLESYS, DPLAYER | Full startup/region/version, CD-library and per-call/reset contracts remain mandatory | Pending |
+| BIOS services, [BOOT], ST-162-R1 System Program §2.2 | Original guest-executed vector/callback registration, SCU mask/shadow, shared semaphores, copied priorities, power-clear bytes and non-returning SYS_EXECDMP CD player | tests/hle_system.rs, tests/hle_player.rs | HLESYS and DPLAYER, including digital/analog input, real CD-DA/Canvas/WebAudio, mutations and reset | Clock and BUPG backup calls have dedicated evidence below; complete CD-library ABI and remaining per-call side effects/timing remain | Pending |
 | External BIOS execution, [BOOT] | Genuine reset vectors, original synthetic ROM handlers | boot.rs, sh2_system.rs | ROM | Genuine BIOS initialization/menu/boot **unverified**; no lawful local BIOS supplied | Pending |
 | SMPC direct digital port 1, [SMPC] §3 | Active-low nibble selection; per-bit PDR/DDR input/output merging; TH input visible with EXLE | devices.rs, INTCG | SC, INTCG | DIGG settling and CLKG clock/reset vectors below; full system timing remains required | Pending |
 | SMPC commands/status/timing, [SMPC] §§1.2/2.3/2.4/3.2 | SF/IREG/OREG/SR, CPU commands, INTBACK status/peripheral phases, continue/break, VBlank collection and optimization; SCU source 7 | smpc/tests.rs, tests/smpc.rs, DUAL | SMPR, DUAL | TVG covers selected standard-TV clocks and collection intervals; SMPB adds zero-byte packing, BREAK during each collection phase, timeout and direct analog-route cancellation; remaining command/latch/reset boundaries remain | Pending |
@@ -1843,3 +1843,50 @@ not resolve all review findings or satisfy Issue #17's full acceptance checklist
 The outstanding MC68EC000 sequencing, complete CPU/shared transaction scheduling,
 SCU/DSP, video, SCSP/audio, CD/HLE and remaining SMPC contracts are unchanged
 requirements. No completion checkbox or Issue state is changed by this evidence.
+
+
+## MC68EC000 operand cycles and guest-executed CD player
+
+**68BUS** identifies [the original operand-cycle vectors](../src/m68k/bus_tests.rs)
+and the expanded [sound-bus guest](../tests/fixtures/m68k_faults.py),
+[authored frames](../tests/fixtures/m68k-faults.tsv),
+[native integration](../tests/m68k_families.rs) and identical browser Wasm execution
+in [browser-smoke.mjs](../scripts/browser-smoke.mjs). The guest now records twenty
+complete access-error frames. Its new ten cases execute destination-read faults
+for Scc/MOVE SR and source faults in every size of ADDX/SUBX plus ABCD/SBCD.
+
+**DPLAYER** is the original [SYS_EXECDMP guest service](../src/hle/player.s),
+[font/build source](../src/hle/build.py), [caller/media builder](../tests/fixtures/build_hle_player.py),
+[native tests](../tests/hle_player.rs) and [browser tests](../scripts/hle-player.mjs).
+The work-RAM pointer is installed only by [HLE startup](../src/hle.rs), never by
+ExternalBios. The guest retains its own state at 06000F00 and its actual FIFO-read
+TOC at 06000D00; host code only observes results or supplies controller/media inputs.
+
+| Contract / primary specification | Implementation | Independent native and guest/browser evidence | Remaining limits |
+| --- | --- | --- | --- |
+| Scc memory destination read, [68] p.4-173; [68UM] table8-6 | `M68k::execute` reads the destination byte before writing, with one EA calculation | `scc_and_move_sr_read_the_destination_before_writing_with_one_ea_update` checks indirect/postincrement/predecrement, widths, CCR, fault frame and suppressed writes. `scc_all_conditions_and_register_forms_preserve_ccr_and_never_read_memory_data` checks 16 conditions × 32 CCR values × register/memory. 68BUS native/Wasm stacks source-authored read-error frames | Instruction-specific prefetch placement, bus arbitration and exact cycle placement remain required. |
+| MOVE SR memory destination read, [68] p.4-125; [68UM] table8-12 | `M68k::group4` performs the otherwise unused word read before writing SR | 68BUS checks successful word cycles, one EA update, preserved CCR and read-error SSW/IR. Native/Wasm mutations replace it and Scc with ordinary MOVE writes: only the authored SSW/IR fields change | These operand-cycle tests do not establish all MC68EC000 microsequences. |
+| Extended memory arithmetic operand order, [68] ABCD/ADDX/SBCD/SUBX entries; [68UM] §§5.1/5.4.1/6.3.9.1 | `M68k::alu` completes source read before decrementing or reading destination | Bus spies check byte/word/long cycles, both longword fault positions, retained address updates and low-word-first writes; alias tests use all eight address registers, including A7 byte stride. 68BUS executes source faults on the real sound bus in native/Wasm | Shared sound-bus arbitration and full per-instruction pipeline/timing evidence remain required. |
+| SYS_EXECDMP, [System Program](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-162-R1-092994.pdf) §2.2 function6.1 | Pointer 0600026C -> original SH-2 ROM18000; independent stack; guest SMPC/clock/CD initialization; non-returning CD player | DPLAYER caller leaves an unfinished TOC transfer and INTBACK continuation, changes PLL and calls through the ABI. Native/Wasm check no return, real TOC tracks, persistent power-clear/backup, cold reset and absent HLE installation in external BIOS mode | Complete CD-library/system/startup ABI, all hardware-state entry combinations and reset/timing contracts remain mandatory. Original menu graphics are not Sega firmware. |
+| Player controller packets, [SMPC] §3.2/tables3.19/3.37 and [STN43] | Guest INTBACK reads common button bytes for digital/ID15/ID16; analog X generates left/right edges with neutral between | Native ID15/ID16 tests and synthetic browser Gamepad API test held axes, neutral, data-track skipping and actual A/B packet controls; keyboard A/Start and direct B inputs also execute | Complete SMPC hardware acceptance still requires the remaining system/reset/latch edges in its inventory. |
+| Player video/audio/media, [VDP2] bitmap mode, [CD] §§3.4/8.2 and [SCSP] table4.31 | Guest glyph rasterizer, RGB555 cursor state, TOC FIFO/END transfer, play/pause/resume/end, EXTS stereo routing | Native compares every rail pixel and exact original stereo pairs. Wasm/production Canvas match authored pixels. AudioWorklet instrumentation checks rendered nonzero stereo and expected peak; changed audio changes samples; data-only media stays silent | The player is a system-service diagnostic; it does not replace either required demo or complete outstanding chip behavior. |
+
+All player code, font/audio assets, caller disc and generated fixtures are original
+MIT works under [the HLE license](../src/hle/LICENSE) and
+[the fixture license](../tests/fixtures/LICENSE). No firmware/SDK routines,
+third-party core, game detection, host-written running guest state or canned
+frame/audio results are used. The [provenance record](homebrew-provenance.md)
+identifies the build commands. Reproducible hashes:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| HLE player ROM fragment | `435c8ea8c4e6eb8378d3f8b2f7daf537f96fbf8796c9c9ad830c7a33dd35d6f9` |
+| Caller ISO, with embedded MIT license | `6c3b3e4522fbd244e30c54d29f4c70271530ef73c338cf2a22a06b5d71f47727` |
+| Caller CUE | `60386b4595cbd15efb0f8e1665ed35c9354251616e9fc5ca552d88ed5cbe63db` |
+| Original stereo BINARY tracks | `5d1dc5665f447cb6370f674918e0e6042aba8a6e8bc42f0952ddef80a394338e` |
+| Expanded 512 KiB 68BUS synthetic BIOS | `b4cf150df3fdfd6a94509745362b294977bc28357e80dda50c7e8e4d2264a7c0` |
+
+These are additional implemented contracts, not complete Issue #17 acceptance.
+All remaining CPU/SH7604, shared bus/scheduler/reset, SCU/DSP, video, sound,
+CD/HLE and SMPC requirements remain on this same Draft PR and Issue. No umbrella
+checkbox is checked, and no tracker is closed, replaced or reopened.

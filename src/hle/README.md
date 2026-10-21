@@ -23,6 +23,7 @@ Arguments use R4–R7, results R0, and callbacks obey the SHC callee-save conven
 
 | Work-RAM interface | Implemented service | Observable behavior |
 | --- | --- | --- |
+| `0600026C` | SYS_EXECDMP | Non-returning transfer to the original guest CD player, including hardware initialization, real TOC, audio-track selection and CD-DA controls |
 | `06000310`, `06000314` | SYS_SETSINT / SYS_GETSINT | Use the calling CPU's VBR; zero restores the appropriate dummy or SCU wrapper |
 | `06000300`, `06000304` | SYS_SETUINT / SYS_GETUINT | Register/retrieve C callbacks independently of architectural vector overrides |
 | `06000340`, `06000344`, `06000348` | SYS_SETSCUIM / SYS_CHGSCUIM / SYS_GETSCUIM | Write-only hardware mask plus RAM shadow; read/modify/publish excludes maskable interrupts; last address contains data |
@@ -72,9 +73,48 @@ clock and reset domains in [native execution](../../tests/clock.rs) and browser
 Wasm, including a changed caller argument. The clock disc carries the fixture
 MIT license; the synthetic BIOS has no HLE installation.
 
-This implementation does not provide SYS_EXECDMP or CD-library services.
-Their required implementations and full
-system/boot conformance remain tracked by [Issue #17](https://github.com/takahirox/saturn-rust/issues/17).
+CD-library services and full system/boot conformance remain tracked by
+[Issue #17](https://github.com/takahirox/saturn-rust/issues/17).
+
+## Original guest CD player
+
+`SYS_EXECDMP` follows ST-162-R1 System Program function 6.1: a master-CPU call
+does not return and starts the CD player. The pointer at `0600026C` is the
+documented interface from the original SEGA_SYS.H declarations; no SDK routine
+or firmware code is used. [player.s](player.s) and the original glyph bitmaps in
+[build.py](build.py) implement the player entirely as SH-2 instructions and ROM
+data under the adjacent MIT license. Its appearance is original; Sega's menu
+graphics, firmware and optional commercial-BIOS behavior are not reproduced.
+
+The service establishes its own stack, masks IRQs, disables the master watchdog
+and DMAC, completes or breaks an unfinished SMPC transaction, enables CD, and
+calls the guest clock service to reset the video/SCU/sound domains. It resets the
+CD command/transfer state, reads the actual 408-byte TOC through the FIFO and
+ends that transfer. Work RAM, power-clear bytes, RTC and backup RAM are retained.
+Private player memory uses `06000D00`–`06000E97` for the TOC and `06000F00`–
+`06000F13` for display/cursor state, below the loaded IP.
+
+The player draws its own RGB555 bitmap and text through VDP2 VRAM writes. The
+cursor uses the selected TOC track number; yellow means paused, green playing,
+and red no audio track. Timed INTBACK packets carry digital, analog joystick
+and 3D-pad buttons; analog X also supplies left/right edges, with neutral
+between selections. Left/right wrap through audio tracks, skipping data tracks;
+A plays/resumes, B pauses and Start toggles. A completed track restarts at its
+INDEX01. CD-DA is routed through the SCSP EXTS left/right registers; neither
+host audio nor host code computes player state or frame pixels.
+
+[The original caller disc and mixed audio](../../tests/fixtures/build_hle_player.py)
+deliberately leave an unfinished TOC transfer, a changed PLL and INTBACK waiting
+for CONTINUE. [Native execution](../../tests/hle_player.rs) and
+[browser Wasm/Canvas/WebAudio execution](../../scripts/hle-player.mjs) verify
+recovery, TOC-based selection, pixels, nonzero exact stereo samples, pause,
+held-key edges, completion/restart, cold resets, changed audio and data-only
+media. Both analog report IDs and held/neutral axis transitions have native
+and synthetic Gamepad API coverage. The caller's post-call error instruction never executes. External BIOS
+tests verify that this pointer and ROM are absent from that separate startup
+mode. These checks do not establish all CD/BIOS service, reset and
+transaction-timing combinations; the umbrella
+acceptance criteria remain mandatory.
 
 ## Independent backup library
 
