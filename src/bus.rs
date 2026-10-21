@@ -28,6 +28,49 @@ pub struct CpuBus<'a> {
     cached: bool,
 }
 
+/// SCU DMA/DSP bus-master transactions have physical pins, rather than the
+/// CPU-local cache/peripheral view. Both UBCs can monitor these cycles.
+struct ExternalBus<'a>(&'a mut Bus);
+impl ExternalBus<'_> {
+    fn observe(&self, address: u32, width: usize, value: u32, write: bool) {
+        for chip in &self.0.onchip {
+            chip.observe_access(Bus::physical(address), width, value, write, false, true);
+        }
+    }
+}
+impl Memory for ExternalBus<'_> {
+    fn read8(&self, address: u32) -> Result<u8, BusError> {
+        let value = self.0.read8(address)?;
+        self.observe(address, 1, u32::from(value), false);
+        Ok(value)
+    }
+    fn read16(&self, address: u32) -> Result<u16, BusError> {
+        let value = self.0.read16(address)?;
+        self.observe(address, 2, u32::from(value), false);
+        Ok(value)
+    }
+    fn read32(&self, address: u32) -> Result<u32, BusError> {
+        let value = self.0.read32(address)?;
+        self.observe(address, 4, value, false);
+        Ok(value)
+    }
+    fn write8(&mut self, address: u32, value: u8) -> Result<(), BusError> {
+        self.0.write8(address, value)?;
+        self.observe(address, 1, u32::from(value), true);
+        Ok(())
+    }
+    fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
+        self.0.write16(address, value)?;
+        self.observe(address, 2, u32::from(value), true);
+        Ok(())
+    }
+    fn write32(&mut self, address: u32, value: u32) -> Result<(), BusError> {
+        self.0.write32(address, value)?;
+        self.observe(address, 4, value, true);
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusError {
     Unaligned { address: u32, width: usize },
@@ -70,6 +113,15 @@ impl std::error::Error for BusError {}
 
 /// The interpreter fetches through this boundary; it owns no memory pointers.
 pub trait Memory {
+    fn enter_sleep(&mut self) {}
+    /// SH7604 §6.3.2: only fetches of instructions that execute qualify.
+    fn instruction_break(&self, _pc: u32, _after: bool) -> bool {
+        false
+    }
+    fn break_pending(&self) -> bool {
+        false
+    }
+    fn acknowledge_break(&self) {}
     fn read8(&self, address: u32) -> Result<u8, BusError>;
     fn read16(&self, address: u32) -> Result<u16, BusError>;
     fn fetch16(&self, address: u32) -> Result<u16, BusError> {
@@ -158,12 +210,18 @@ impl Bus {
             None
         };
         match (internal, external) {
-            (Some(i), Some(e)) => Some(if i.0 > e.0 { i } else { e }),
+            // H table 5.4: UBC precedes IRL15; all other internal sources
+            // follow an equal-priority external request.
+            (Some(i), Some(e)) => Some(if i == (15, 12) || i.0 > e.0 { i } else { e }),
             (i, e) => i.or(e),
         }
     }
 
     pub(crate) fn acknowledge_interrupt(&mut self, processor: Processor, irq: (u8, u8)) {
+        if irq == (15, 12) && self.onchip[processor as usize].interrupt() == Some(irq) {
+            self.onchip[processor as usize].acknowledge_break();
+            return;
+        }
         if processor == Processor::Master && self.scu.interrupt() == Some(irq) {
             self.scu.acknowledge(irq.1);
         }
@@ -173,7 +231,7 @@ impl Bus {
             return Ok(());
         }
         let mut scu = std::mem::take(&mut self.scu);
-        let result = scu.advance_dma(self);
+        let result = scu.advance_dma(&mut ExternalBus(self));
         self.scu = scu;
         result
     }
@@ -215,6 +273,9 @@ impl Bus {
     pub(crate) fn signal_nmi(&mut self, processor: Processor) {
         self.onchip[processor as usize].signal_nmi();
     }
+    pub(crate) fn nmi_ready(&self, processor: Processor) -> bool {
+        self.onchip[processor as usize].nmi_ready()
+    }
     pub(crate) fn advance_dma(&mut self, processor: Processor) -> bool {
         let index = processor as usize;
         if self.onchip[index].reset_active() || self.onchip[index].dma_stopped() {
@@ -240,10 +301,13 @@ impl Bus {
         let mut command = None;
         while remaining != 0 {
             let delta = remaining
+                .min(self.onchip[0].clocks_to_event())
+                .min(self.onchip[1].clocks_to_event())
                 .min(self.raster.clocks_to_event())
                 .min(self.scu.clocks_to_event())
                 .min(self.vdp1.clocks_to_event())
                 .min(self.cd.clocks_to_event())
+                .min(self.smpc.clocks_to_event())
                 .min(self.sound.clocks_to_sample())
                 .min(if self.scu.dma_pending() {
                     8 - self.scu_dma_phase
@@ -353,6 +417,25 @@ impl Bus {
             smpc,
             ..Self::default()
         };
+    }
+
+    /// ST-169 §2.3.8: SYSRES restarts the installed ROM, clears volatile
+    /// hardware/memory and retains the physical disc and battery-backed state.
+    pub(crate) fn system_reset(&mut self) {
+        let bios = self.bios.take();
+        let media = self.cd.media().cloned();
+        let backup = std::mem::take(&mut self.backup);
+        let mut smpc = std::mem::take(&mut self.smpc);
+        smpc.system_reset();
+        *self = Self {
+            bios,
+            backup,
+            smpc,
+            ..Self::default()
+        };
+        if let Some(media) = media {
+            self.cd.mount(media);
+        }
     }
 
     // SH7604 §2.3: P1 cache-through accesses share the external physical bus.
@@ -706,6 +789,23 @@ impl Memory for Bus {
 }
 
 impl CpuBus<'_> {
+    fn observe(&self, address: u32, width: usize, value: u32, write: bool) {
+        let index = self.processor as usize;
+        self.bus.onchip[index].observe_access(address, width, value, write, self.cached, false);
+    }
+    fn observe_external(&self, address: u32, width: usize, value: u32, write: bool) {
+        // Only actual external cycles (not cache hits) reach the other BSC.
+        if address < 0x4000_0000 {
+            self.bus.onchip[1 - self.processor as usize].observe_access(
+                Bus::physical(address),
+                width,
+                value,
+                write,
+                false,
+                true,
+            );
+        }
+    }
     fn read<const N: usize>(&self, address: u32, instruction: bool) -> Result<[u8; N], BusError> {
         if !address.is_multiple_of(N as u32) {
             return Err(BusError::Unaligned { address, width: N });
@@ -715,13 +815,22 @@ impl CpuBus<'_> {
             if let Some(bytes) = cache.array_read(address)? {
                 return Ok(bytes);
             }
-            if let Some(bytes) =
-                cache.read(address, instruction, |line| self.bus.read::<16>(line))?
-            {
+            if let Some(bytes) = cache.read(address, instruction, |line| {
+                let bytes = self.bus.read::<16>(line)?;
+                for (i, word) in bytes.as_chunks::<4>().0.iter().enumerate() {
+                    self.observe_external(line + i as u32 * 4, 4, u32::from_be_bytes(*word), false);
+                }
+                Ok(bytes)
+            })? {
                 return Ok(bytes);
             }
         }
-        self.bus.read(address)
+        let bytes = self.bus.read::<N>(address)?;
+        let value = bytes
+            .iter()
+            .fold(0u32, |v, byte| (v << 8) | u32::from(*byte));
+        self.observe_external(address, N, value, false);
+        Ok(bytes)
     }
     fn write<const N: usize>(&mut self, address: u32, bytes: [u8; N]) -> Result<(), BusError> {
         if !address.is_multiple_of(N as u32) {
@@ -736,6 +845,10 @@ impl CpuBus<'_> {
             return Ok(());
         }
         self.bus.write(address, bytes)?;
+        let value = bytes
+            .iter()
+            .fold(0u32, |v, byte| (v << 8) | u32::from(*byte));
+        self.observe_external(address, N, value, true);
         if self.cached {
             self.bus.cache[index].get_mut().written(address, bytes);
         }
@@ -743,32 +856,67 @@ impl CpuBus<'_> {
     }
 }
 impl Memory for CpuBus<'_> {
+    fn break_pending(&self) -> bool {
+        self.bus.onchip[self.processor as usize].interrupt() == Some((15, 12))
+    }
+    fn enter_sleep(&mut self) {
+        self.bus.onchip[self.processor as usize].enter_sleep();
+    }
+    fn instruction_break(&self, pc: u32, after: bool) -> bool {
+        self.bus.onchip[self.processor as usize].instruction_break(pc, after)
+    }
+    fn acknowledge_break(&self) {
+        self.bus.onchip[self.processor as usize].acknowledge_break();
+    }
     fn read8(&self, address: u32) -> Result<u8, BusError> {
         if address == CCR {
             return Ok(self.bus.cache[self.processor as usize].borrow().control());
         }
         if address >= 0xFFFF_FE00 {
-            return self.bus.onchip[self.processor as usize].read8(address);
+            if !self.cached && (0xFFFF_FF40..0xFFFF_FF7C).contains(&address) {
+                return Err(BusError::UnsupportedDevice { address, width: 1 });
+            }
+            let value = self.bus.onchip[self.processor as usize].read8(address)?;
+            self.observe(address, 1, u32::from(value), false);
+            return Ok(value);
         }
-        Ok(self.read::<1>(address, false)?[0])
+        let value = self.read::<1>(address, false)?[0];
+        self.observe(address, 1, u32::from(value), false);
+        Ok(value)
     }
     fn read16(&self, address: u32) -> Result<u16, BusError> {
         if address >= 0xFFFF_FE00 {
-            return self.bus.onchip[self.processor as usize].read16(address);
+            if !self.cached && (0xFFFF_FF40..0xFFFF_FF7C).contains(&address) {
+                return Err(BusError::UnsupportedDevice { address, width: 2 });
+            }
+            let value = self.bus.onchip[self.processor as usize].read16(address)?;
+            self.observe(address, 2, u32::from(value), false);
+            return Ok(value);
         }
-        Ok(u16::from_be_bytes(self.read(address, false)?))
+        let value = u16::from_be_bytes(self.read(address, false)?);
+        self.observe(address, 2, u32::from(value), false);
+        Ok(value)
     }
     fn fetch16(&self, address: u32) -> Result<u16, BusError> {
         Ok(u16::from_be_bytes(self.read(address, true)?))
     }
     fn tas_read8(&self, address: u32) -> Result<u8, BusError> {
-        Ok(self.bus.read::<1>(address)?[0])
+        let value = self.bus.read::<1>(address)?[0];
+        self.observe(address, 1, u32::from(value), false);
+        Ok(value)
     }
     fn read32(&self, address: u32) -> Result<u32, BusError> {
         if address >= 0xFFFF_FE00 {
-            return self.bus.onchip[self.processor as usize].read32(address);
+            if !self.cached && (0xFFFF_FF40..0xFFFF_FF7C).contains(&address) {
+                return Err(BusError::UnsupportedDevice { address, width: 4 });
+            }
+            let value = self.bus.onchip[self.processor as usize].read32(address)?;
+            self.observe(address, 4, value, false);
+            return Ok(value);
         }
-        Ok(u32::from_be_bytes(self.read(address, false)?))
+        let value = u32::from_be_bytes(self.read(address, false)?);
+        self.observe(address, 4, value, false);
+        Ok(value)
     }
     fn write8(&mut self, address: u32, value: u8) -> Result<(), BusError> {
         if address == CCR {
@@ -778,27 +926,118 @@ impl Memory for CpuBus<'_> {
             return Ok(());
         }
         if address >= 0xFFFF_FE00 {
-            return self.bus.onchip[self.processor as usize].write8(address, value);
+            if !self.cached && (0xFFFF_FF40..0xFFFF_FF7C).contains(&address) {
+                return Err(BusError::UnsupportedDevice { address, width: 1 });
+            }
+            self.bus.onchip[self.processor as usize].write8(address, value)?;
+            self.observe(address, 1, u32::from(value), true);
+            return Ok(());
         }
-        self.write(address, [value])
+        self.write(address, [value])?;
+        self.observe(address, 1, u32::from(value), true);
+        Ok(())
     }
     fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
         if address >= 0xFFFF_FE00 {
-            return self.bus.onchip[self.processor as usize].write16(address, value);
+            if !self.cached && (0xFFFF_FF40..0xFFFF_FF7C).contains(&address) {
+                return Err(BusError::UnsupportedDevice { address, width: 2 });
+            }
+            self.bus.onchip[self.processor as usize].write16(address, value)?;
+            self.observe(address, 2, u32::from(value), true);
+            return Ok(());
         }
-        self.write(address, value.to_be_bytes())
+        self.write(address, value.to_be_bytes())?;
+        self.observe(address, 2, u32::from(value), true);
+        Ok(())
     }
     fn write32(&mut self, address: u32, value: u32) -> Result<(), BusError> {
         if address >= 0xFFFF_FE00 {
-            return self.bus.onchip[self.processor as usize].write32(address, value);
+            if !self.cached && (0xFFFF_FF40..0xFFFF_FF7C).contains(&address) {
+                return Err(BusError::UnsupportedDevice { address, width: 4 });
+            }
+            self.bus.onchip[self.processor as usize].write32(address, value)?;
+            self.observe(address, 4, value, true);
+            return Ok(());
         }
-        self.write(address, value.to_be_bytes())
+        self.write(address, value.to_be_bytes())?;
+        self.observe(address, 4, value, true);
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod scu_timing_tests {
     use super::*;
+    #[test]
+    fn user_breaks_distinguish_cached_cpu_accesses_from_external_bus_transactions() {
+        let mut bus = Bus::default();
+        // H §6.3.4: external masters have no operand-size qualification.
+        for index in 0..2 {
+            bus.onchip[index].write32(0xFFFF_FF40, HIGH_WRAM).unwrap();
+            bus.onchip[index]
+                .write16(0xFFFF_FF48, if index == 0 { 0x67 } else { 0xA5 })
+                .unwrap();
+            bus.onchip[index].write16(0xFFFF_FF78, 0x3000).unwrap();
+        }
+        bus.write32(HIGH_WRAM, 0x12345678).unwrap();
+        bus.for_cpu(Processor::Master).write8(CCR, 1).unwrap();
+        assert_eq!(
+            bus.for_cpu(Processor::Master).read32(HIGH_WRAM).unwrap(),
+            0x12345678
+        );
+        assert_eq!(bus.onchip[0].interrupt(), Some((15, 12))); // CPU long read
+        assert_eq!(bus.onchip[1].interrupt(), Some((15, 12))); // actual cache fill
+        for chip in &bus.onchip {
+            chip.acknowledge_break();
+        }
+        bus.for_cpu(Processor::Master).read32(HIGH_WRAM).unwrap();
+        assert_eq!(bus.onchip[0].interrupt(), Some((15, 12)));
+        assert_eq!(bus.onchip[1].interrupt(), None); // cached data has no external cycle
+        bus.for_cpu(Processor::Master)
+            .read32(HIGH_WRAM | 0x20000000)
+            .unwrap();
+        assert_eq!(bus.onchip[1].interrupt(), Some((15, 12)));
+        bus.scu.write32(SCU + 0xA0, 0xBFFE).unwrap();
+        bus.scu.signal(0); // VBlank-in asserts external level 15.
+        assert_eq!(bus.interrupt(Processor::Master), Some((15, 12)));
+        bus.acknowledge_interrupt(Processor::Master, (15, 12));
+        assert_eq!(bus.interrupt(Processor::Master), Some((15, 0x40)));
+    }
+    #[test]
+    fn external_scu_bus_and_local_dmac_have_separate_user_break_sources() {
+        let mut bus = Bus::default();
+        for chip in &mut bus.onchip {
+            chip.write32(0xFFFF_FF60, HIGH_WRAM + 0x100).unwrap();
+            chip.write16(0xFFFF_FF68, 0xA8).unwrap(); // peripheral/data/write
+            chip.write16(0xFFFF_FF78, 0x3000).unwrap();
+        }
+        bus.write32(HIGH_WRAM, 0x12345678).unwrap();
+        for (offset, value) in [
+            (0, HIGH_WRAM),
+            (4, HIGH_WRAM + 0x100),
+            (8, 4),
+            (12, 0x102),
+            (20, 7),
+            (16, 0x101),
+        ] {
+            bus.write32(SCU + offset, value).unwrap();
+        }
+        for _ in 0..4 {
+            bus.advance_scu_dma().unwrap();
+        }
+        assert_eq!(bus.read32(HIGH_WRAM + 0x100).unwrap(), 0x12345678);
+        for chip in &bus.onchip {
+            assert_eq!(chip.interrupt(), Some((15, 12)));
+            assert_eq!(chip.read16(0xFFFF_FF78).unwrap(), 0x3040);
+        }
+        // H §6.3.7: DMAC cannot program UBC registers as ordinary memory.
+        let dma_view = CpuBus {
+            bus: &mut bus,
+            processor: Processor::Master,
+            cached: false,
+        };
+        assert!(dma_view.read32(0xFFFF_FF40).is_err());
+    }
     #[test]
     fn vdp1_end_interrupt_and_draw_end_dma_trigger_obey_clock_deadlines() {
         for chunk in [1, 3, 8, 17, 32] {

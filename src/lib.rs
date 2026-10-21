@@ -142,25 +142,7 @@ impl Machine {
             }
             Boot::HleDisc(image) => {
                 self.mode = Some(BootMode::HleDisc);
-                let boot = disc::parse(image).map_err(MachineError::Disc)?;
-                for (i, byte) in boot.ip.iter().enumerate() {
-                    self.bus.write8(disc::IP_ADDRESS + i as u32, *byte)?;
-                }
-                for (i, byte) in boot.executable.iter().enumerate() {
-                    self.bus.write8(boot.load_address + i as u32, *byte)?;
-                }
-                // Independent HLE reset code; never installed in ExternalBios.
-                // It provides the slave work-RAM handoff through instructions,
-                // so SSHON uses exactly the same reset path as external ROMs.
-                let mut rom = vec![0; bus::BIOS_SIZE];
-                rom[..16].copy_from_slice(&[0, 0, 1, 0, 6, 15, 224, 0, 0, 0, 1, 0, 6, 15, 224, 0]);
-                let code = include_bytes!("hle/boot.bin");
-                rom[0x100..0x100 + code.len()].copy_from_slice(code);
-                self.bus.load_bios(&rom)?;
-                self.cpu = Cpu::start(disc::AIP_ENTRY, boot.stack);
-                self.bus
-                    .cd
-                    .mount(media::Media::iso(image).map_err(MachineError::Disc)?);
+                self.boot_disc(image)?;
             }
             Boot::HlePrototype => {
                 self.mode = Some(BootMode::HlePrototype);
@@ -170,6 +152,31 @@ impl Machine {
                 self.cpu = Cpu::start(FIXTURE_PC, HIGH_WRAM + WRAM_SIZE as u32);
             }
         }
+        Ok(())
+    }
+
+    /// HLE bootstrap shared by cold startup and guest SYSRES. Hardware reset
+    /// has already selected the reset domain; this only reloads IP/executable.
+    fn boot_disc(&mut self, image: &[u8]) -> Result<(), MachineError> {
+        let boot = disc::parse(image).map_err(MachineError::Disc)?;
+        for (i, byte) in boot.ip.iter().enumerate() {
+            self.bus.write8(disc::IP_ADDRESS + i as u32, *byte)?;
+        }
+        for (i, byte) in boot.executable.iter().enumerate() {
+            self.bus.write8(boot.load_address + i as u32, *byte)?;
+        }
+        // Independent HLE reset code; never installed in ExternalBios.
+        // It provides the slave work-RAM handoff through instructions,
+        // so SSHON uses exactly the same reset path as external ROMs.
+        let mut rom = vec![0; bus::BIOS_SIZE];
+        rom[..16].copy_from_slice(&[0, 0, 1, 0, 6, 15, 224, 0, 0, 0, 1, 0, 6, 15, 224, 0]);
+        let code = include_bytes!("hle/boot.bin");
+        rom[0x100..0x100 + code.len()].copy_from_slice(code);
+        self.bus.load_bios(&rom)?;
+        self.cpu = Cpu::start(disc::AIP_ENTRY, boot.stack);
+        self.bus
+            .cd
+            .mount(media::Media::iso(image).map_err(MachineError::Disc)?);
         Ok(())
     }
 
@@ -280,14 +287,17 @@ impl Machine {
         if self.bus.cpu_reset_active(Processor::Master) {
             self.cpu = Cpu::default();
         } else {
+            let nmi_ready = self.bus.nmi_ready(Processor::Master);
             let mut memory = self.bus.for_cpu(Processor::Master);
             let dma_accepted =
                 self.dma_errors[0] && self.cpu.accept_dma_address_error(&mut memory)?;
             if dma_accepted {
                 self.dma_errors[0] = false;
             }
-            let nmi_accepted =
-                !dma_accepted && self.nmi_pending && self.cpu.accept_nmi(&mut memory)?;
+            let nmi_accepted = !dma_accepted
+                && self.nmi_pending
+                && nmi_ready
+                && self.cpu.accept_nmi(&mut memory)?;
             if nmi_accepted {
                 self.nmi_pending = false;
             }
@@ -362,6 +372,29 @@ impl Machine {
             Some(0x07) => self.bus.sound.set_enabled(false)?,
             Some(0x08) => self.bus.cd.set_enabled(true),
             Some(0x09) => self.bus.cd.set_enabled(false),
+            Some(0x0D) => {
+                self.bus.system_reset();
+                self.cpu = Cpu::default();
+                self.slave = Cpu::default();
+                match self.mode {
+                    Some(BootMode::HleDisc) => {
+                        if let Some(media) = self.bus.cd.media().cloned() {
+                            let image = media.boot_iso().map_err(MachineError::Disc)?;
+                            self.boot_disc(&image)?;
+                            self.bus.cd.mount(media);
+                        }
+                    }
+                    Some(BootMode::HlePrototype) => {
+                        for (i, opcode) in FIXTURE.iter().enumerate() {
+                            self.bus.write16(FIXTURE_PC + i as u32 * 2, *opcode)?;
+                        }
+                        self.cpu = Cpu::start(FIXTURE_PC, HIGH_WRAM + WRAM_SIZE as u32);
+                    }
+                    _ => self.cpu = Cpu::power_on(&self.bus)?,
+                }
+                self.nmi_pending = false;
+                self.dma_errors = [false; 2];
+            }
             Some(0x18) => {
                 self.nmi_pending = true;
                 self.bus.signal_nmi(Processor::Master);

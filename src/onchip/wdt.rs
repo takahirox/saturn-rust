@@ -32,6 +32,18 @@ impl Default for Watchdog {
     }
 }
 impl Watchdog {
+    pub fn enter_standby(&mut self) {
+        self.control = (self.control & 7) | 0x18;
+        self.reset = 0x1F;
+        self.observed.set(0);
+        self.reset_observed.set(false);
+        self.divider = 0;
+    }
+    pub fn settling_clocks(&self) -> u32 {
+        // H §14.4.2/fig.14.1: oscillator settling uses the selected WDT
+        // overflow interval. This counter is independent of the halted CPU.
+        256 * [2, 64, 128, 256, 512, 1024, 4096, 8192][(self.control & 7) as usize]
+    }
     pub fn read(&self, offset: u32) -> Option<u8> {
         match offset {
             0 => {

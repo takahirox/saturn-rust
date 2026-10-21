@@ -28,6 +28,31 @@ fn mounted() -> (CdBlock, Vec<u8>) {
     cd.mount(Media::iso(&bytes).unwrap());
     (cd, bytes)
 }
+#[test]
+fn cue_indices_are_used_by_track_index_seek_status_and_q_subcode() {
+    let audio = vec![0; saturn_rust::media::RAW_SECTOR * 8];
+    let cue = "FILE \"a.bin\" BINARY\nTRACK 01 AUDIO\nINDEX 01 00:00:00\nINDEX 02 00:00:02\nINDEX 03 00:00:04\n";
+    let mut cd = CdBlock::default();
+    cd.mount(Media::cue(cue, &[("a.bin", &audio)]).unwrap());
+    // ST-162 §§7.2.4/8.2.2 track/index addressing: 000103 is track 1, index 3.
+    let response = issue(&mut cd, [0x1100, 0x0103, 0, 0]);
+    assert_ne!(response[0], 0xFF00);
+    cd.advance(26_875);
+    let response = issue(&mut cd, [0, 0, 0, 0]);
+    assert_eq!(response[1], 0x0101);
+    assert_eq!(response[2], 0x0300);
+    assert_eq!(response[3], 154);
+    assert_eq!(issue(&mut cd, [0x2000, 0, 0, 0])[1], 5);
+    assert_eq!(read(&cd, 10), [1, 1, 3, 0, 0, 4, 0, 0, 0, 154]);
+    issue(&mut cd, [0x0600, 0, 0, 0]);
+    // Missing indices reject rather than silently seeking to INDEX 01.
+    assert_eq!(issue(&mut cd, [0x1100, 0x0104, 0, 0])[0], 0xFF00);
+    issue(&mut cd, [0x1180, 152, 0, 0]);
+    cd.advance(26_875);
+    let response = issue(&mut cd, [0, 0, 0, 0]);
+    assert_eq!(response[2], 0x0200);
+    assert_eq!(response[3], 152);
+}
 fn sectors(cd: &mut CdBlock, n: u16) {
     assert_ne!(issue(cd, [0x3000, 0, 0, 0])[0] >> 8, 255);
     assert_ne!(issue(cd, [0x1080, 150, 0x0080, n])[0] >> 8, 255);

@@ -439,9 +439,12 @@ fn module_stops_reset_frt_sci_preserve_vectors_and_gate_count_and_external_captu
     chip.advance_clocks(8);
     assert_eq!(chip.read8(FRT + 2).unwrap(), 0);
     assert_eq!(chip.read8(FRT + 3).unwrap(), 1);
-    // Unsupported oscillator standby must remain an explicit failure.
-    assert!(chip.write8(SBYCR, 0x80).is_err());
-    assert_eq!(chip.read8(SBYCR).unwrap(), 0);
+    // SBY is a selection; clocks halt only when SLEEP executes.
+    chip.write8(SBYCR, 0x80).unwrap();
+    assert_eq!(chip.read8(SBYCR).unwrap(), 0x80);
+    chip.advance_clocks(8);
+    assert_eq!(chip.read8(FRT + 2).unwrap(), 0);
+    assert_eq!(chip.read8(FRT + 3).unwrap(), 2);
 }
 
 #[test]
@@ -471,4 +474,61 @@ fn stopped_dmac_preserves_pending_transfer_until_module_clock_resumes() {
     assert_eq!(b.read32(HIGH_WRAM + 0x100).unwrap(), 0x12345678);
     assert_eq!(b.read32(DMAC + 8).unwrap(), 0);
     assert_eq!(b.read32(DMAC + 12).unwrap() & 3, 3);
+}
+
+#[test]
+fn software_standby_resets_selected_modules_freezes_clocks_and_waits_for_nmi_settling() {
+    // H table 14.3 and §14.4.2: distinct from both sleep and module standby.
+    for chunk in [1, 3, 64, 511, 512, 1000] {
+        let mut chip = OnChip::default();
+        chip.write16(IPRB, 0xAB00).unwrap();
+        chip.write16(VCRC, 0x5253).unwrap();
+        chip.write32(0xFFFF_FF40, 0x12345678).unwrap();
+        chip.write32(DMAC, 0x06001234).unwrap();
+        chip.write32(DMAC + 8, 7).unwrap();
+        chip.write32(DMAC + 12, 1).unwrap();
+        chip.write32(DMAC + 0x30, 1).unwrap();
+        chip.write8(SCI + 1, 12).unwrap();
+        chip.advance_clocks(80);
+        chip.write8(SBYCR, 0xC8).unwrap();
+        chip.enter_sleep();
+        assert!(!chip.nmi_ready());
+        assert!(chip.dma_stopped());
+        assert_eq!(chip.read8(SBYCR).unwrap(), 0xC8);
+        assert_eq!(chip.read8(SCI + 1).unwrap(), 255);
+        assert_eq!(chip.read32(DMAC).unwrap(), 0x06001234);
+        assert_eq!(chip.read32(DMAC + 8).unwrap(), 7);
+        assert_eq!(chip.read32(DMAC + 12).unwrap(), 0);
+        assert_eq!(chip.read32(DMAC + 0x30).unwrap(), 0);
+        assert_eq!(chip.read16(IPRB).unwrap(), 0xAB00);
+        assert_eq!(chip.read16(VCRC).unwrap(), 0x5253);
+        assert_eq!(chip.read32(0xFFFF_FF40).unwrap(), 0x12345678);
+        chip.advance_clocks(100_000);
+        chip.capture_strobe();
+        assert_eq!(chip.read8(FRT + 1).unwrap(), 0);
+        assert_eq!(chip.read8(FRT + 2).unwrap(), 0);
+        assert_eq!(chip.read8(FRT + 3).unwrap(), 0);
+        assert_eq!(chip.interrupt(), None);
+        chip.signal_nmi();
+        let mut left = 511;
+        while left != 0 {
+            let n = left.min(chunk);
+            chip.advance_clocks(n);
+            left -= n;
+        }
+        assert!(!chip.nmi_ready());
+        assert_eq!(chip.clocks_to_event(), 1);
+        chip.advance_clocks(1);
+        assert!(chip.nmi_ready());
+        assert!(!chip.dma_stopped());
+        chip.advance_clocks(8);
+        assert_eq!(chip.read8(FRT + 2).unwrap(), 0);
+        assert_eq!(chip.read8(FRT + 3).unwrap(), 1);
+    }
+    let mut chip = OnChip::default();
+    chip.write16(WDT, 0xA520).unwrap();
+    chip.write8(SBYCR, 0xC8).unwrap();
+    assert_eq!(chip.read8(SBYCR).unwrap(), 0x48); // TME inhibits SBY.
+    chip.enter_sleep();
+    assert!(chip.nmi_ready());
 }

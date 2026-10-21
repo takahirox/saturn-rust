@@ -20,11 +20,33 @@ pub struct Track {
     pub start: u32,
     pub index0: u32,
     pub end: u32,
+    indices: Vec<(u8, u32)>,
     bytes: Arc<[u8]>,
     offset: usize,
     byte_end: usize,
     stride: usize,
     stored_start: u32,
+}
+impl Track {
+    /// Disc indices are binary index numbers, distinct from track numbers and
+    /// absolute FAD. INDEX 00 covers the entire stored/synthesized pregap.
+    pub fn index(&self, number: u8) -> Option<u32> {
+        if number == 0 {
+            Some(self.index0)
+        } else {
+            self.indices
+                .iter()
+                .find(|(n, _)| *n == number)
+                .map(|(_, fad)| *fad)
+        }
+    }
+    pub fn index_at(&self, fad: u32) -> u8 {
+        self.indices
+            .iter()
+            .rev()
+            .find(|(_, start)| fad >= *start)
+            .map_or(0, |(number, _)| *number)
+    }
 }
 #[derive(Clone)]
 pub struct Media {
@@ -56,6 +78,7 @@ struct CueTrack {
     stride: usize,
     index0: Option<u32>,
     index1: Option<u32>,
+    indices: Vec<(u8, u32)>,
     pregap: u32,
     postgap: u32,
 }
@@ -84,6 +107,7 @@ impl Media {
                 start: 150,
                 index0: 150,
                 end,
+                indices: vec![(1, 150)],
                 bytes: Arc::from(bytes),
                 offset: 0,
                 byte_end: bytes.len(),
@@ -158,6 +182,7 @@ impl Media {
                         stride,
                         index0: None,
                         index1: None,
+                        indices: Vec::new(),
                         pregap: 0,
                         postgap: 0,
                     });
@@ -171,12 +196,33 @@ impl Media {
                         return Err(invalid("Malformed CUE INDEX"));
                     }
                     let n = time(fields[1])?;
-                    match fields[0] {
-                        "00" if t.index0.is_none() && t.index1.is_none() => t.index0 = Some(n),
-                        "01" if t.index1.is_none() && t.index0.is_none_or(|i| i <= n) => {
+                    let number = fields[0]
+                        .parse::<u8>()
+                        .ok()
+                        .filter(|i| {
+                            *i <= 99
+                                && fields[0].len() == 2
+                                && fields[0].bytes().all(|b| b.is_ascii_digit())
+                        })
+                        .ok_or_else(|| invalid("Invalid CUE index number"))?;
+                    match number {
+                        0 if t.index0.is_none() && t.index1.is_none() => t.index0 = Some(n),
+                        1 if t.index1.is_none() && t.index0.is_none_or(|i| i <= n) => {
                             t.index1 = Some(n)
                         }
-                        _ => return Err(invalid("CUE requires ordered INDEX 00/01")),
+                        2..=99
+                            if t.index1.is_some_and(|first| n > first)
+                                && t.indices.last().is_none_or(|(previous, time)| {
+                                    number > *previous && n > *time
+                                }) =>
+                        {
+                            t.indices.push((number, n));
+                        }
+                        _ => {
+                            return Err(invalid(
+                                "CUE requires increasing index numbers and times after INDEX 01",
+                            ));
+                        }
                     }
                 }
                 "PREGAP" | "POSTGAP" => {
@@ -227,7 +273,11 @@ impl Media {
             } else {
                 (data.len() / t.stride) as u32
             };
-            if begin > index || index >= end || end as usize > data.len() / t.stride {
+            if begin > index
+                || index >= end
+                || end as usize > data.len() / t.stride
+                || t.indices.iter().any(|(_, position)| *position >= end)
+            {
                 return Err(invalid("CUE indices overlap or exceed file"));
             }
             // First-track pregap precedes FAD150. Subsequent gaps occupy disc time.
@@ -256,6 +306,13 @@ impl Media {
                 start,
                 index0,
                 end: track_end,
+                indices: std::iter::once((1, start))
+                    .chain(
+                        t.indices
+                            .iter()
+                            .map(|(number, position)| (*number, start + position - index)),
+                    )
+                    .collect(),
                 bytes: owned[t.file].clone(),
                 offset: (if i == 0 {
                     index - (index - begin).min(150)

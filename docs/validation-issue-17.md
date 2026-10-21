@@ -4,6 +4,77 @@
 criterion is complete; #17 must remain open.** Issues #11/#13/#15 are historical,
 administratively closed trackers and must not be reopened.
 
+## Review fixes: UBC, power controls and CUE indices (2026-10-21)
+
+Related to #17. This revision starts at `f0665c3f4e94438b1d3132ee410f6111a61ab23c`
+and preserves PR #18's existing hardware/demos. `git ls-remote origin
+refs/heads/main` again returned `dbd981b030a46daa6923072ce240680dd2e58ebf`.
+The PR was not pushed or merged by this node.
+
+Implemented and independently exercised:
+
+- `src/onchip/ubc.rs` implements the H §§6.2–6.3 register/comparison model:
+  both channels, masked address/data, operand size, CPU/DMAC/external master,
+  sequential matching and sticky match flags. `Cpu::execute/step` distinguish
+  before/after execution and preserve the existing delay-slot/interrupt deferral
+  rules. A successful fetch is required for a before-execution match. UBC
+  vector 12 wins the level-15 tie with external IRL15 (H table 5.4).
+- `CpuBus` observes actual CPU data accesses, including cache hits, separately
+  from physical external cycles. Cache-fill/P1 and SCU DMA/DSP beats can be
+  observed by the other/external UBC; cached data cannot invent a physical bus
+  cycle. DMAC accesses to CPU-only UBC registers are rejected (H §6.3.7).
+- Software standby (H §§14.2/14.4 and table 14.3) freezes local clocks, resets
+  FRT/SCI and DMA control, retains CPU/INTC/UBC/BSC and DMA operands, and wakes
+  only after the WDT-selected NMI settling interval. SBY cannot be selected
+  while the watchdog runs. Native vectors vary advancement chunks and test
+  retained registers, stopped capture, resume and NMI at SR.I=15.
+- SMPC SYSRES (ST-169 §2.3.8 p.29) has an emulated 100 ms deadline, clears
+  volatile devices/memories and cache state, preserves backup/SMEM/RTC and the
+  mounted physical media, and restarts the selected ExternalBios or HLE path.
+  HLE disc startup shares its IP/first-read initialization with SYSRES; it does
+  not run the slave trampoline against cleared work RAM. The original SYSRES
+  guest executes as both a synthetic BIOS and an ISO first-read program.
+- CUE INDEX02–99 preserve file-sector layout, translate to absolute FAD and
+  drive track/index seeks, status and Q subcode (ST-162 §§7.2.4/7.2.5/8.2.2).
+  Native golden vectors cover pregaps, shared files, absent indices and invalid
+  number/time ordering/bounds. Browser Wasm boots Hardware Lab with INDEX02/99,
+  checks unchanged computed hardware results and correct persistent-backup
+  increments, and rejects malformed ordering.
+
+All new guest source and expanded ROMs use the existing MIT fixture license.
+The generated ROM hashes are reproducible from the adjacent assembly/builders:
+
+| Fixture | Expanded 512 KiB ROM SHA-256 |
+| --- | --- |
+| `ubc.hex` | `33b17804f1d0b49c825a060a5db1538031270490830347bb073c4173affade73` |
+| `system-reset.hex` | `b100144eaac62eae0983601b4fd61b28981a7f265b49b655f5a4c76630c97f07` |
+| `standby.hex` | `7c232722489437e59e46a14997ec227b6a2bf69d3df393d4846bbd7efdb5d925` |
+
+Validation: `cargo fmt --check`, locked native build/test and native Clippy,
+Wasm Clippy, `sh scripts/build-web.sh`, all 16 CI reproducibility commands,
+JavaScript syntax/whitespace checks and the complete Chromium browser suite.
+The native suite has 257 passing tests (155 unit tests and 102 integration
+checks), with no failures or ignored tests. Browser assertions include the new
+UBC, SYSRES (both startup modes), standby/NMI and CUE vectors alongside Star
+Collector, Prism Courier, Hardware Lab, actual WebAudio and privacy/input checks.
+Native checks use the installed Homebrew Rust 1.94.0; Wasm checks use the
+installed Rustup stable 1.99.0 and wasm-bindgen 0.2.129. The initial Wasm build
+failed because the Homebrew toolchain lacked the target; selecting the already
+installed Rustup binaries/target resolved it. The newer Clippy's constant-chunk
+lint is fixed in an existing audio test without changing its sample assertions.
+An added browser comparison initially compared a persistent backup counter to
+its first-boot value; it now asserts the guest's increment and byte-lane result
+explicitly across boots.
+
+These changes do not establish umbrella completion. The existing conformance
+inventory retains the mandatory unimplemented/unverified behavior, including
+remaining CPU/SH7604 and timing edges, BSC/DACK/DIVU overflow, MC68EC000 prefetch,
+complete bus/scheduler/backup services, SCU/video/audio/CD, BIOS/HLE services and
+SMPC clock/system controls. UBC's configuration pipeline/compatibility overrun
+fetches and standby's initial five-cycle NMI guard remain unmodeled. No acceptance
+criterion is waived or replaced with this validation record, and no completion
+or Issue-closing claim is made.
+
 ## VDP2 rotation/line effects and timed analog protocols
 
 Related to #17. The complete Issue #17 target and all mandatory criteria remain

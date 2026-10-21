@@ -196,9 +196,27 @@ impl Default for Smpc {
 impl Smpc {
     // ST-169 §2.3: 30 µs at the fixed NTSC 320 reference clock, rounded up.
     pub const CPU_COMMAND_CLOCKS: u32 = 807;
+    // ST-169 §2.3.8: 100 ms + oscillator settling. The functional model
+    // completes at 100 ms of reference time; no host wall clock is involved.
+    pub const SYSTEM_RESET_CLOCKS: u32 = 2_687_410;
     const STATUS_CLOCKS: u32 = 8600; // §2.4: 320 µs status collection upper bound.
     pub(crate) fn busy(&self) -> bool {
         self.pending.is_some() || self.await_continue || self.await_vblank
+    }
+    pub(crate) fn clocks_to_event(&self) -> u32 {
+        self.pending.map_or(u32::MAX, |(_, n)| n)
+    }
+    pub(crate) fn system_reset(&mut self) {
+        let battery = self.battery.clone();
+        let buttons = self.buttons;
+        let analog = self.analog;
+        *self = Self {
+            battery,
+            buttons,
+            analog,
+            ..Self::default()
+        };
+        self.output[31] = 0x0D;
     }
     pub(crate) fn reset_volatile(&mut self) {
         let battery = self.battery.clone();
@@ -384,6 +402,7 @@ impl Smpc {
                 let clocks = match value {
                     0 | 2 | 3 | 6 | 7 | 0x18 | 0x19 | 0x1A => Self::CPU_COMMAND_CLOCKS,
                     8 | 9 => 1075, // ST-169 §§2.3.6/2.3.7: 40 microseconds.
+                    0x0D => Self::SYSTEM_RESET_CLOCKS,
                     0x16 if Battery::parse(self.input).is_some() => 1882,
                     0x17 => 1075,
                     0x10 if matches!(self.input[0], 0 | 1)

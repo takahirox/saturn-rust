@@ -15,6 +15,37 @@ fn output(s: &Smpc, count: usize) -> Vec<u8> {
         .collect()
 }
 #[test]
+fn sysres_has_a_hardware_deadline_and_retains_battery_calendar_memory_and_input() {
+    // ST-169 §2.3.8: no IRQ, power-on controls, 256 Kbit backup is external.
+    for chunk in [1, 8, 1024, Smpc::SYSTEM_RESET_CLOCKS] {
+        let mut s = Smpc {
+            battery: Battery::parse([0x20, 0x24, 0x11, 1, 0x12, 0, 0]).unwrap(),
+            ..Smpc::default()
+        };
+        s.battery.memory = [1, 2, 3, 4];
+        s.set_buttons(0x1001);
+        issue(&mut s, 0x0D);
+        assert_eq!(s.clocks_to_event(), Smpc::SYSTEM_RESET_CLOCKS);
+        let mut left = Smpc::SYSTEM_RESET_CLOCKS - 1;
+        while left != 0 {
+            let n = left.min(chunk);
+            assert_eq!(s.advance_clocks(n), None);
+            left -= n;
+        }
+        assert_eq!(s.read(SMPC + 0x63).unwrap(), 1);
+        assert_eq!(s.advance_clocks(1), Some(0x0D));
+        assert!(!s.take_irq());
+        s.system_reset();
+        assert_eq!(s.output[31], 13);
+        assert_eq!(s.battery.memory, [1, 2, 3, 4]);
+        assert_eq!(s.battery.phase, u64::from(Smpc::SYSTEM_RESET_CLOCKS));
+        assert_eq!(s.buttons[0], 0x1001);
+        assert!(s.reset_disabled);
+        assert!(!s.sound_enabled);
+        assert!(!s.busy());
+    }
+}
+#[test]
 fn status_time_memory_region_reset_enable_and_irq_are_effects_not_stored_registers() {
     let mut s = Smpc::default();
     input(&mut s, &[0x20, 0x24, 0x32, 0x29, 0x23, 0x59, 0x59]);

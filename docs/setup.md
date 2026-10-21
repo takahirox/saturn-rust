@@ -59,6 +59,9 @@ python3 homebrew/hardware-lab/build.py --check
 python3 tests/fixtures/build_dual_sh2.py --check
 python3 tests/fixtures/build_sh7604.py --check
 python3 tests/fixtures/build_bsc.py --check
+python3 tests/fixtures/build_ubc.py --check
+python3 tests/fixtures/build_system_reset.py --check
+python3 tests/fixtures/build_standby.py --check
 python3 tests/fixtures/build_tiles.py --check
 python3 tests/fixtures/build_effects.py --check
 python3 tests/fixtures/build_controller.py --check

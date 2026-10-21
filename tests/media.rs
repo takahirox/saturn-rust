@@ -2,6 +2,35 @@
 use saturn_rust::media::{Media, RAW_SECTOR, TrackMode};
 
 #[test]
+fn cue_subindices_translate_file_offsets_without_creating_new_tracks_or_sectors() {
+    let bytes: Vec<_> = (0..8).flat_map(|n| vec![n; RAW_SECTOR]).collect();
+    let cue = "FILE \"a.bin\" BINARY\nTRACK 01 AUDIO\nINDEX 01 00:00:00\nINDEX 02 00:00:02\nINDEX 03 00:00:03\nTRACK 02 AUDIO\nPREGAP 00:00:02\nINDEX 00 00:00:04\nINDEX 01 00:00:05\nINDEX 02 00:00:06\nINDEX 99 00:00:07\n";
+    let m = Media::cue(cue, &[("a.bin", &bytes)]).unwrap();
+    assert_eq!(m.tracks().len(), 2);
+    let indices: Vec<_> = (150..160)
+        .map(|fad| m.track(fad).unwrap().index_at(fad))
+        .collect();
+    assert_eq!(indices, [1, 1, 2, 3, 0, 0, 0, 1, 2, 99]);
+    assert_eq!(m.tracks()[1].index(0), Some(154));
+    assert_eq!(m.tracks()[1].index(1), Some(157));
+    assert_eq!(m.tracks()[1].index(2), Some(158));
+    assert_eq!(m.tracks()[1].index(99), Some(159));
+    assert_eq!(m.tracks()[1].index(3), None);
+    assert_eq!(m.raw_sector(158).unwrap(), [6; RAW_SECTOR]);
+    for invalid in [
+        "INDEX 02 00:00:00",                    // coincides with index 1
+        "INDEX 02 00:00:08",                    // outside track
+        "INDEX 03 00:00:02\nINDEX 02 00:00:03", // reversed numbers
+        "INDEX 02 00:00:03\nINDEX 03 00:00:02", // reversed times
+        "INDEX 02 00:00:02\nINDEX 02 00:00:03", // duplicate number
+        "INDEX 100 00:00:02",
+    ] {
+        let cue = format!("FILE \"a.bin\" BINARY\nTRACK 01 AUDIO\nINDEX 01 00:00:00\n{invalid}\n");
+        assert!(Media::cue(&cue, &[("a.bin", &bytes)]).is_err(), "{invalid}");
+    }
+}
+
+#[test]
 fn cooked_and_raw_data_have_identical_user_bytes_and_header_addresses() {
     let bytes: Vec<_> = (0..4096).map(|i| (i ^ (i >> 8)) as u8).collect();
     let iso = Media::iso(&bytes).unwrap();

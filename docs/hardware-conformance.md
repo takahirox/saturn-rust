@@ -3,7 +3,8 @@
 **Status: incomplete; Issue #17 is the active continuation tracker.** Issues
 #11/#13/#15 remain administratively closed; do not reopen them. This checkpoint
 includes independent slave SH-2 execution, CPU-local FRT/WDT/SCI/DIVU/DMAC,
-internal interrupt arbitration, write-through caches, timed SMPC CPU control,
+internal interrupt arbitration, executing UBC comparisons, software standby/NMI wake,
+write-through caches, timed SMPC CPU control and SYSRES,
 SCU interrupt/DMA/DSP execution, an independent MC68EC000 core, direct SCSP PCM,
 WebAudio delivery, SMPC RTC/SMEM/INTBACK and clock-based NTSC raster events. It preserves the address-error fixtures, Star Collector,
 backup RAM and both direct digital pads. It does not complete the Saturn hardware
@@ -114,6 +115,29 @@ including golden ALU/parallel-bus/control/DMA/timer vectors; **TIME** means
 [SCU Final Specifications][SCUFINAL] #1–27/30–36. SCUROM is a diagnostic synthetic
 ROM, not either required demonstration disc.
 
+**UBCG** means the original [UBC guest source](../tests/fixtures/ubc.s),
+[reproducible ROM builder](../tests/fixtures/build_ubc.py) and
+[native execution](../tests/ubc.rs), repeated through browser Wasm in
+[browser-smoke.mjs](../scripts/browser-smoke.mjs). It checks saved PC/SR for
+before/after instruction execution, delay-slot deferral, masked CPU data writes
+and DMAC writes. [UBC vectors](../src/onchip/ubc.rs) cover registers, sequential
+matching, masks, widths, CPU/peripheral and external-bus selection. The
+`user_breaks_distinguish_cached_cpu_accesses_from_external_bus_transactions`
+and `external_scu_bus_and_local_dmac_have_separate_user_break_sources` tests in
+[bus.rs](../src/bus.rs) distinguish cache hits, fills, P1 and SCU bus cycles.
+Sources: H §§6.2–6.3, tables 6.1–6.4.
+
+**PWRG** means the original [SYSRES guest](../tests/fixtures/system-reset.s)
+and [standby guest](../tests/fixtures/standby.s), built by
+[build_system_reset.py](../tests/fixtures/build_system_reset.py) and
+[build_standby.py](../tests/fixtures/build_standby.py). The identical ROMs execute
+in [system_reset.rs](../tests/system_reset.rs), [standby.rs](../tests/standby.rs)
+and browser Wasm. SYSRES tests verify both ExternalBios and HLE-disc restart,
+cleared volatile memories, retained backup/SMEM and installed-media retention.
+Standby tests verify local clock gating, FRT/SCI initialization, retained CPU
+registers and NMI wake/RTE at I=15. Sources: H table 14.3, §§14.2/14.4;
+SMPC §2.3.8 p.29. No proprietary firmware is used.
+
 ## SH-2 instruction families
 
 All rows describe functional interpreter behavior. Common outstanding limitations:
@@ -198,22 +222,22 @@ not turn those missing hardware paths into supported behavior.
 
 | Feature / reference | Implemented behavior and edges | Native | Browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- | --- |
-| Register/reset model, H §§2/4.2 | Independent CPUs; power-on 0/4 and watchdog manual-reset 8/12 vectors, SR=F0; 512-clock watchdog reset hold retains shared RAM/backup and clears CCR | boot.rs, DUAL, PERIPH | DUAL, PERIPH | External reset pin timing and UBC preservation remain; BSC retention/identity now covered by BSCG | Pending |
+| Register/reset model, H §§2/4.2 | Independent CPUs; power-on 0/4 and watchdog manual-reset 8/12 vectors, SR=F0; 512-clock watchdog reset hold retains shared RAM/backup and clears CCR | boot.rs, DUAL, PERIPH | DUAL, PERIPH | External reset pin timing remains; UBC contents after manual reset are undefined by H table 6.1 (deterministically zero here); BSC retention/identity covered by BSCG | Pending |
 | General/slot illegal, H §4.5 | Vectors 4/6, correct saved PC, no retirement | exception | ROM | No double-fault bus handling | Pending |
 | TRAPA/RTE, H §§4.5/4.7 | Guest stack layout and handler return | exception, sh2_system.rs | ROM | Non-FRT system IRQ sources absent | Pending |
 | CPU address errors, H §§4.3/4.6/4.7/4.8.3, Tables 4.6/4.10/4.11 | Vector 9, operand/fetch checks, next-PC/SR, auto-update and deferral; misaligned stacking completes original exception then accepts address error without recursion | AE, AEROM, PERIPH | AEROM, PERIPH | Invalid data and unaligned stacking bytes are deterministic policies rather than physical bus signals; misaligned VBR unsupported | Pending |
 | Maskable IRQ/NMI, H §4.4 | Explicit caller-supplied level/vector, I mask, NMI vector 11, stack/wake | sleep, special | — | Missing device priority selection, assertion/acknowledgment, NMI signal latch | Pending |
 | Deferral, H §4.6 | IRQ/NMI defer through delayed successors and control/system successors; address errors defer only through delayed successors | special, AE | ROM, AEROM | No pipeline-cycle timing or device IRQ selection; unfetchable successor policy below | Pending |
 | Cache/address regions, H §8, tables 8.2–8.4, figs.8.10/8.11 | CPU-local 4 KiB/four-way cache, write-through, no snooping; ID/OD, pseudo-LRU, two-way RAM, P1 bypass, P2 purge, P3 address array, P6 data array; TAS external read | CACHE, PERIPH; `Cache` and `CpuBus` | PERIPH | Pipeline/fill-cycle/bus arbitration timing absent; RAM mirrors remain missing | Pending |
-| On-chip INTC, H §5.3, table 5.4 | IPRA/IPRB, VCRA–D/VCRWDT, DIVU/DMA vectors, source priorities/tie order and guest acknowledgement | FRT, DUAL, PERIPH | DUAL, PERIPH | External ICR/IRL arbitration and UBC sources missing; refresh interval CMI now arbitrates at WDT priority | Pending |
+| On-chip INTC, H §5.3, table 5.4 | IPRA/IPRB, VCRA–D/VCRWDT, DIVU/DMA vectors, source priorities/tie order and guest acknowledgement | FRT, DUAL, PERIPH | DUAL, PERIPH | UBC source 12 at level 15 covered by UBCG; external ICR/IRL arbitration remains; refresh CMI arbitrates at WDT priority | Pending |
 | FRT, H §§11.1–11.5, tables 11.2/11.3 | FRC, OCRA/B, capture, divisors, overflow/compare/clear, TIER/FTCSR, shared TEMP, output level state and IRQ; Saturn capture wires (ST-202 §1.2) | FRT, DUAL | FRT (compare), DUAL (capture) | Internal/external pin synchronization, WAIT, clock-switch edges and contention timing absent; no external clock source or output-pin routing | Pending |
 | Watchdog, H §§12.2–12.3, table 12.2 | Keyed byte-register/word-write protocol, eight divisors, interval IRQ, read-before-clear, watchdog reset selection/cause and 512-clock CPU hold | PERIPH; `Watchdog` | PERIPH | External WDTOVF pin routing and sub-turn event ordering missing | Pending |
 | SCI, H §§13.2–13.3 | SMR/BRR/SCR/TDR/SSR/RDR, timed internal-clock transmission, external completed-character input, overrun/framing/parity flags, IRQs and DMA handshakes | PERIPH; `Serial` | PERIPH (transmit completion) | No external clock-edge adapter or physical serial pin waveform; multiprocessor and format combinations lack exhaustive integration coverage | Pending |
 | On-chip DMAC, H §§9.2–9.3 | Both channels; byte/word/long/16-byte transfers; fixed/increment/decrement addresses; auto/DREQ/SCI requests; fixed/round-robin channel selection, TE/AE/NMIF acknowledgement, vectors/IRQ | PERIPH; `Dma` and `Bus::advance_dma` | PERIPH (copy/end IRQ/error 10/no cache snoop) | Single-address DACK mode rejected explicitly; CPU/refresh arbitration, burst/cycle-steal timing and wait states missing | Pending |
 | DIVU, H §§10.2–10.4 | Signed 32/32 and 64/32 quotient/remainder, 39/6-clock completion/interlock, DVCR/VCRDIV, sticky overflow and IRQ | PERIPH; `Division` | PERIPH (signed 32/64-bit normal division) | Six-cycle intermediate overflow state is not modeled: deterministic saturation and input-high preservation are used even with OVFIE=1; no full conformance claim | Pending |
 | BSC identification/interval timer, H §§7.1.4/7.2/7.5.7/7.11.1 | BCR1.MASTER per CPU, read-only word lanes, keyed long writes, RTCNT/RTCOR/RTCSR, all clock divisors, CMF read-before-clear, CMI vector/priority and manual-reset retention; `Bsc::read/write/advance`, `OnChip::interrupt` | [BSCG](../tests/bsc.rs), [register/reset vectors](../src/onchip/peripheral_tests.rs), [BSC vectors](../src/onchip/bsc.rs) | BSCG | Changed external memory-interface settings explicitly rejected; refresh bus ownership/waits remain | Pending |
-| Module stop, H §14.2.1 | SBYCR SCI/FRT reset and clock gating, preserved INTC vectors, DIVU/DMAC gating; `OnChip::write8/advance_clocks`, `Bus::advance_dma` | [stop/resume and DMA vectors](../src/onchip/peripheral_tests.rs), BSCG | BSCG (FRT/SCI) | Oscillator standby, HIZ and MULT stop explicitly rejected; wake settling/clock switching remain | Pending |
-| UBC, H §6 | None | — | — | Break matching, bus observation and exception behavior missing | Pending |
+| Module stop/standby, H §§14.2/14.4, table 14.3 | SBYCR, SCI/FRT reset and gating, preserved INTC/UBC/BSC, retained DMA operands with control reset, WDT-selected NMI settling; `OnChip::enter_sleep/advance_clocks`, `Bus::advance_dma` | [standby/retention vectors](../src/onchip/peripheral_tests.rs), BSCG, PWRG | BSCG, PWRG | Electrical HIZ/pin states, initial five-cycle NMI guard, physical oscillator and clock-switch edges remain unverified; executing stopped MULT instructions is software-prohibited/undefined (H §2.5.2) | Pending |
+| UBC, H §6 | A/B registers, masked address/data/size/master matching, sequential conditions, match flags, before/after fetch breaks and deferred level-15 vector 12; CPU/cache/DMAC and external SCU observation; `Ubc::observe`, `Cpu::step/execute` | UBCG and bus vectors | UBCG | Three-cycle configuration pipeline and SH7000-compatible speculative overrun fetch breaks remain unmodeled; instruction/bus cycle scheduling remains pending | Pending |
 | Slave SH-2, [Dual CPU User's Guide][DUALREF] §§1/3/4, [SMPC] table 1.1 | Independent interpreter/registers/stacks/peripherals/cache; shared bus, SSHON/SSHOFF, bidirectional capture IRQs | DUAL, CACHE, PERIPH | DUAL, PERIPH | Bus contention and full CPU clock accounting absent; BCR1 identity covered by BSCG | Pending |
 
 ## MC68EC000 instruction families
@@ -331,7 +355,7 @@ complete CPU/scheduler acceptance criteria remain pending.
 | Base-system address decoding, O map | Only documented subset in architecture.md | bus.rs | SC | A-bus/cartridge decoding and full base map missing | Pending |
 | MMIO widths/side effects, device manuals | Unsupported accesses return errors | devices.rs | SC | Full device routing/width rules missing | Pending |
 | Backup byte storage, SCU §1.2 figs.1.3/1.5; SMPC §2.3 SYSRES p.29 | 32 KiB, odd-byte storage; even lanes read FF and ignore writes; word/long strobes; P1 aliases; unformatted zero initialization | BK; `backup_byte_lanes_endpoints_and_cache_through_access_do_not_alias_work_ram` | BK | Additional backup aliases, filesystem/service integration and remaining reset domains pending | Pending |
-| Backup reset retention, SMPC §2.3 SYSRES p.29 | Bytes survive successful/rejected HLE, disc and ROM resets; new Machine starts empty | BK; `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot` | BK, reset/mode/read-race checks | Guest SYSRES and other power/reset domains missing | Pending |
+| Backup reset retention, SMPC §2.3 SYSRES p.29 | Bytes survive successful/rejected HLE, disc and ROM resets and guest SYSRES; new Machine starts empty | BK; `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot`, PWRG | BK, PWRG, reset/mode/read-race checks | SYSRES guest retention now covered by PWRG; remaining power/reset and service contracts pending | Pending |
 | Local backup import/export (host interface) | Exact 32768 packed bytes; atomic replacement; explicit local download; stale import cancellation; no network/storage | `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot` | Download byte comparison, offline import, invalid size/read errors, races, fresh-tab isolation | BIOS backup filesystem/calls and cartridge backup absent; no automatic cross-session persistence | Pending |
 | Shared event scheduler, O clock domains | Deterministic CPU order, raster/SCU event deadlines and clock-driven DSP/DMA; field deadlines replace instruction budgets | TIME, SCUROM, game.rs, DUAL | SCUROM, SC, DUAL | CPU opcode/on-chip DMA cycles, contention, refresh and full cross-clock ordering missing; CD command/sector/sample deadlines now exercised by CLAB | Pending |
 | Video timing, VDP2 display registers | Clock-based 263-line/224-visible NTSC raster, HBLANK/VBLANK bits and SCU edges; bounded field advancement | TIME, SCUROM, game.rs | SCUROM, SC | Other resolutions, PAL/interlace/clock modes and exact beam phase remain missing | Pending |
@@ -468,7 +492,7 @@ no-op CPU/device implementations cannot satisfy those assertions.
 | Feature / manual | Current behavior / edge cases | Native | Browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- | --- |
 | Cooked ISO, [Disc Format][DISC] | Bounded IP/ISO9660 first-read startup; retained media and runtime sector/file reads | disc.rs, media.rs, cd.rs, CLAB | SC, CLAB/local ISO | General boot layouts/size, interleaved/XA filesystem records | Pending |
-| BIN/CUE/raw/mixed tracks, [DISC] / [CD] §§4/7.2.3 | Caller-resolved files, cooked/2352-byte Mode1/Mode2/audio, shared/separate files, INDEX00/01, gaps and TOC | `tests/media.rs`, CLAB | CLAB local multi-file CUE, missing-reference/reset/privacy checks | WAVE/compression, additional indices/flags and full corrupt-sector ECC handling | Pending |
+| BIN/CUE/raw/mixed tracks, [DISC] / [CD] §§4/7.2.3 | Caller-resolved files, cooked/2352-byte Mode1/Mode2/audio, shared/separate files, INDEX00–99, gaps and TOC; subindices drive seek/status/Q reporting | `tests/media.rs`, CLAB | CLAB local multi-file CUE, INDEX02/99 and malformed ordering, missing-reference/reset/privacy checks | Additional flags and full corrupt-sector ECC handling; WAVE/compression absent | Pending |
 | CD command/status/HIRQ, [CD] §§3.1–3.4 | Separate command/response latches; 1075-clock command completion, read-protected responses, CMOK/DRDY/CSCT/end flags, masks, clear-zero HIRQ and SCU A-bus IRQ | `tests/cd.rs`, CLAB | CLAB command/FIFO/DMA/IRQ | Full command-specific timing and register mirrors, scan and subcode R–W remain | Pending |
 | CD drive/TOC/session/track state, [CD] §§4/7/8.2 | TOC/session/Q, bounded seek, data play, CD-DA/repeat/end, media-dependent FAD/track/index reports; timed CDON/OFF retains disc and clears CD buffers | `tests/cd.rs`, CLAB | CLAB track playback | Standby, scan, retry/ECC, complete initialize options/periodic response phase and tray lifecycle remain | Pending |
 | CD buffers/transfers, [CD] §§3.4/5.3/5.4/8.2 | 200-sector pool, 24 partitions, get/delete/get-delete/put, short/over transfers, size/info/search, FIFO word/long and fixed-source SCU DMA | `tests/cd.rs`, CLAB | CLAB actual DMA/IRQ/checksum, sector mutation | Complete pool-full flow control/transfer overlap and timing/error inventory remain | Pending |
@@ -478,7 +502,7 @@ no-op CPU/device implementations cannot satisfy those assertions.
 | External BIOS execution, [BOOT] | Genuine reset vectors, original synthetic ROM handlers | boot.rs, sh2_system.rs | ROM | Genuine BIOS initialization/menu/boot **unverified**; no lawful local BIOS supplied | Pending |
 | SMPC direct digital port 1, [SMPC] §3 | Active-low nibble selection and button levels | devices.rs | SC | Full I/O mode behavior and timing | Pending |
 | SMPC commands/status/timing, [SMPC] §§1.2/2.3/2.4/3.2 | SF/IREG/OREG/SR, CPU commands, INTBACK status/peripheral phases, continue/break, VBlank collection and optimization; SCU source 7 | smpc/tests.rs, tests/smpc.rs, DUAL | SMPR, DUAL | Remaining system commands, firmware jitter and all clock modes | Pending |
-| SMPC reset/power/clock, [SMPC] table 1.1/§2.3 | MSHON, SSHON/OFF, SNDON/OFF, CDON/OFF, NMIREQ; RESENAB/DISA control reset-button NMI edges and VBlank-latched RESB | DUAL, SNDV, SNDR, smpc/tests.rs | DUAL, SNDR | SYSRES, clock switching, full status/power domains | Pending |
+| SMPC reset/power/clock, [SMPC] table 1.1/§2.3 | MSHON, SSHON/OFF, SNDON/OFF, CDON/OFF, NMIREQ, SYSRES (volatile reset, installed-ROM or HLE-disc restart and battery retention); RESENAB/DISA control reset-button NMI edges and VBlank-latched RESB | DUAL, SNDV, SNDR, PWRG, smpc/tests.rs | DUAL, SNDR, PWRG | Clock switching, full status/power domains | Pending |
 | RTC/region/system flags, [SMPC] §§2.4/2.5 | Deterministic Gregorian/BCD RTC, SETTIME, retained four-byte SETSMEM, status/region Japan, output control flags | smpc/tests.rs, tests/smpc.rs | SMPR | Full system-control/region configuration; remaining reset domains | Pending |
 | SMPC direct digital port 2, [SMPC] §1.2 pp.7–9, §3.4 table 3.36 p.97 | Independent PDR2/DDR2, IOSEL2/EXLE2; active-low nibble reports; host keyboard levels | BK; `both_digital_ports_have_independent_direction_selection_and_enable_bits` | BK; I/K/J/L keyboard input and release checks | Settling remains immediate; no timed INTBACK/peripheral packets or external latch IRQ | Pending |
 | Analog input, [SMPC] tables 3.19/3.37; [STN43] Analog mode | ID15 X/Y/Z and ID16 X/Y/AR/AL, active-low buttons, trigger hysteresis (146 on / 85 off); timed INTBACK and direct TH/TR/TL handshake, transaction latching/abort, independent ports; standard Gamepad radial axes/triggers and focus neutralization | smpc/tests.rs, tests/smpc.rs; `Analog`, `Handshake` in [controller.rs](../src/smpc/controller.rs) | SMPR + PADR (both direct ports, changed axis, ID15/16 Gamepad/focus) | Full electrical timing, mode-switch calibration, direct digital settling, external latch and complete command/reset/clock integration remain | Pending |
@@ -486,7 +510,7 @@ no-op CPU/device implementations cannot satisfy those assertions.
 
 ## Concrete unresolved gaps and closure gates
 
-1. Remaining SH-2 semantic/exception edges, complete reset domains, BSC/UBC/standby,
+1. Remaining SH-2 semantic/exception edges, complete reset domains, BSC configuration and remaining UBC/standby timing,
    DIVU overflow intermediates, DMAC DACK/CPU arbitration, external IRQs and bus locking;
    cycle-based dual-CPU scheduling and arbitration. CPU opcode decoding alone
    does not satisfy the CPU or multiprocessor criterion.

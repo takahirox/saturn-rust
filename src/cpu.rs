@@ -217,6 +217,16 @@ impl Cpu {
     /// Bounded: sleeping calls return without fetching or retiring an instruction.
     /// Faults caused by unavailable host bus/device behavior stay sticky until reset.
     pub fn step(&mut self, bus: &mut impl Memory) -> Result<(), CpuError> {
+        let pc = self.state.pc;
+        if matches!(self.state.status, CpuStatus::Running | CpuStatus::Sleeping)
+            && !self.state.address_error_pending
+            && bus.break_pending()
+            && 15 > (self.state.sr >> 4) & 15
+            && self.interrupt(bus, 12, 15)?
+        {
+            bus.acknowledge_break();
+            return Ok(());
+        }
         match &self.state.status {
             CpuStatus::Running => (),
             CpuStatus::Sleeping if !self.state.address_error_pending => return Ok(()),
@@ -224,6 +234,7 @@ impl Cpu {
             CpuStatus::Faulted(error) => return Err(error.clone()),
             _ => return Err(CpuError::NotRunning),
         }
+        let retired = self.state.instructions;
         let result = if self.state.address_error_pending && !self.address_error_inhibited {
             self.address_error(bus)
         } else {
@@ -231,6 +242,9 @@ impl Cpu {
         };
         if let Err(error) = &result {
             self.state.status = CpuStatus::Faulted(error.clone());
+        }
+        if self.state.instructions != retired {
+            bus.instruction_break(pc, true);
         }
         result
     }
@@ -306,6 +320,15 @@ impl Cpu {
             return Ok(());
         }
         let opcode = bus.fetch16(pc).map_err(access)?;
+        // H §6.3.2: a before-execution break requires a successfully fetched
+        // instruction. A fetch failure or speculative fill cannot cause it.
+        if bus.instruction_break(pc, false)
+            && 15 > (self.state.sr >> 4) & 15
+            && self.interrupt(bus, 12, 15)?
+        {
+            bus.acknowledge_break();
+            return Ok(());
+        }
         let rewrites_pc = matches!(opcode & 0xF000, 0xA000 | 0xB000)
             || matches!(opcode & 0xFF00, 0x8900 | 0x8B00 | 0x8D00 | 0x8F00 | 0xC300)
             || matches!(opcode & 0xF0FF, 0x0003 | 0x0023 | 0x400B | 0x402B)
@@ -346,7 +369,10 @@ impl Cpu {
             0x0019 => s.sr &= !(M | Q | T), // DIV0U
             0x0009 => (),
             0x000B => next_branch = Some(s.pr),
-            0x001B => s.status = CpuStatus::Sleeping,
+            0x001B => {
+                s.status = CpuStatus::Sleeping;
+                bus.inner.enter_sleep();
+            }
             0x002B => {
                 // RTE: restore SR before executing the slot.
                 let target = bus.read32(s.r[15]).map_err(access)?;

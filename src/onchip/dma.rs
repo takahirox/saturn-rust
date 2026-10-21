@@ -49,6 +49,18 @@ impl Default for Dma {
     }
 }
 impl Dma {
+    /// H table 14.3: address/count/vector registers survive software standby;
+    /// CHCR0/1 and DMAOR initialize, aborting any outstanding request.
+    pub fn standby(&mut self) {
+        for channel in &mut self.channels {
+            channel.control = 0;
+            channel.observed.set(false);
+            channel.external_edge = false;
+        }
+        self.operation = 0;
+        self.observed.set(0);
+        self.address_error = false;
+    }
     pub fn read(&self, offset: u32) -> Option<u32> {
         Some(match offset {
             0..=0x1F => {

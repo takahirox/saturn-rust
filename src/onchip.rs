@@ -6,6 +6,7 @@ mod bsc;
 mod divu;
 mod dma;
 mod sci;
+mod ubc;
 mod wdt;
 use divu::Division;
 use dma::Dma;
@@ -29,8 +30,11 @@ pub const VCRC: u32 = 0xFFFF_FE66;
 pub const VCRD: u32 = 0xFFFF_FE68;
 
 pub struct OnChip {
+    ubc: RefCell<ubc::Ubc>,
     bsc: bsc::Bsc,
     module_stop: u8,
+    standby: bool,
+    wake_remaining: Option<u32>,
     division: RefCell<Division>,
     pub(super) dma: Dma,
     serial: Serial,
@@ -60,8 +64,11 @@ pub struct OnChip {
 impl Default for OnChip {
     fn default() -> Self {
         Self {
+            ubc: RefCell::new(ubc::Ubc::default()),
             bsc: bsc::Bsc::default(),
             module_stop: 0,
+            standby: false,
+            wake_remaining: None,
             division: RefCell::new(Division::default()),
             dma: Dma::default(),
             serial: Serial::default(),
@@ -172,13 +179,23 @@ impl OnChip {
         })
     }
 
+    fn reset_frt(&mut self) {
+        let initial = Self::default();
+        self.tier = initial.tier;
+        self.status = initial.status;
+        self.observed.set(0);
+        self.counter = initial.counter;
+        self.compare = initial.compare;
+        self.capture = initial.capture;
+        self.temp.set(0);
+        self.control = initial.control;
+        self.output_control = initial.output_control;
+        self.outputs = initial.outputs;
+        self.divider = 0;
+    }
+
     pub fn write8(&mut self, address: u32, value: u8) -> Result<(), BusError> {
         if address == SBYCR {
-            // §14.2.1: module stops are effects, not merely latched bits. Full
-            // standby and MULT stop require additional CPU/oscillator behavior.
-            if value & 0xC8 != 0 {
-                return Err(Self::unsupported(address, 1));
-            }
             let rising = value & !self.module_stop;
             if rising & 0x10 != 0 && self.dma.active() {
                 return Err(Self::unsupported(address, 1));
@@ -187,20 +204,10 @@ impl OnChip {
                 self.serial = Serial::default();
             }
             if rising & 2 != 0 {
-                let initial = Self::default();
-                self.tier = initial.tier;
-                self.status = initial.status;
-                self.observed.set(0);
-                self.counter = initial.counter;
-                self.compare = initial.compare;
-                self.capture = initial.capture;
-                self.temp.set(0);
-                self.control = initial.control;
-                self.output_control = initial.output_control;
-                self.outputs = initial.outputs;
-                self.divider = 0;
+                self.reset_frt();
             }
-            self.module_stop = value & 0x17;
+            // SBY cannot be set while the watchdog is running (§14.2.1).
+            self.module_stop = value & 0xDF & if self.watchdog.enabled() { 0x7F } else { 0xFF };
             return Ok(());
         }
         if (SCI..SCI + 6).contains(&address) {
@@ -248,6 +255,9 @@ impl OnChip {
         if address >= bsc::BSC {
             return self.bsc.read(address, 2).map(|v| v as u16);
         }
+        if (ubc::BASE..ubc::BASE + 0x3C).contains(&address) {
+            return self.ubc.borrow().read(address, 2).map(|v| v as u16);
+        }
         if matches!(
             address,
             0xFFFF_FF08 | 0xFFFF_FF0A | 0xFFFF_FF0C | 0xFFFF_FF0E
@@ -267,6 +277,9 @@ impl OnChip {
     pub fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
         if address & 1 != 0 {
             return Err(BusError::Unaligned { address, width: 2 });
+        }
+        if (ubc::BASE..ubc::BASE + 0x3C).contains(&address) {
+            return self.ubc.get_mut().write(address, 2, u32::from(value));
         }
         if matches!(address, WDT | 0xFFFF_FE82) {
             self.watchdog.write(address - WDT, value);
@@ -303,6 +316,18 @@ impl OnChip {
     /// Pin synchronization, access wait states and clock-switch glitches are
     /// outside this functional model (SH7604 §§11.4/11.7).
     pub fn advance_clocks(&mut self, clocks: u32) {
+        if self.standby {
+            if let Some(remaining) = self.wake_remaining {
+                if clocks < remaining {
+                    self.wake_remaining = Some(remaining - clocks);
+                } else {
+                    self.wake_remaining = None;
+                    self.standby = false;
+                    self.advance_clocks(clocks - remaining);
+                }
+            }
+            return;
+        }
         let held_reset = self.watchdog.reset_active();
         self.watchdog.advance(clocks);
         if held_reset || self.watchdog.reset_active() {
@@ -360,7 +385,7 @@ impl OnChip {
     /// Saturn's 16-bit communication strobe contains both edges, so either
     /// IEDG selection captures. The strobe data has no data-transfer meaning.
     pub(crate) fn capture_strobe(&mut self) {
-        if self.module_stop & 2 != 0 {
+        if self.standby || self.module_stop & 2 != 0 {
             return;
         }
         self.capture = self.counter;
@@ -370,6 +395,12 @@ impl OnChip {
     /// Level-sensitive until guest software reads/clears FTCSR. Exception
     /// acceptance itself does not acknowledge the peripheral flag (§11.5).
     pub fn interrupt(&self) -> Option<(u8, u8)> {
+        if self.standby {
+            return None;
+        }
+        if self.ubc.borrow().pending() {
+            return Some((15, 12));
+        }
         // H table 5.4: earlier source wins when programmed levels are equal.
         let div = self.division.borrow();
         let frt = self.tier & self.status & 0x8E;
@@ -419,6 +450,9 @@ impl OnChip {
         if address >= bsc::BSC {
             return self.bsc.read(address, 4);
         }
+        if (ubc::BASE..ubc::BASE + 0x3C).contains(&address) {
+            return self.ubc.borrow().read(address, 4);
+        }
         if (DIVU..DIVU + 0x18).contains(&address) {
             let mut div = self.division.borrow_mut();
             if self.module_stop & 4 != 0 && div.busy() {
@@ -447,6 +481,9 @@ impl OnChip {
         if address >= bsc::BSC {
             return self.bsc.write(address, value);
         }
+        if (ubc::BASE..ubc::BASE + 0x3C).contains(&address) {
+            return self.ubc.get_mut().write(address, 4, value);
+        }
         if (DIVU..DIVU + 0x18).contains(&address) {
             if self.module_stop & 4 != 0 {
                 return Err(Self::unsupported(address, 4));
@@ -465,7 +502,7 @@ impl OnChip {
     }
 
     pub fn receive_serial(&mut self, byte: u8, errors: u8, multiprocessor: bool) {
-        if self.module_stop & 1 == 0 {
+        if !self.standby && self.module_stop & 1 == 0 {
             self.serial.receive(byte, errors, multiprocessor);
         }
     }
@@ -478,7 +515,7 @@ impl OnChip {
         }
     }
     pub(crate) fn dma_stopped(&self) -> bool {
-        self.module_stop & 0x10 != 0
+        self.standby || self.module_stop & 0x10 != 0
     }
     pub(crate) fn serial_dma_requests(&self) -> [bool; 2] {
         [self.serial.dma_request(1), self.serial.dma_request(2)]
@@ -496,7 +533,31 @@ impl OnChip {
         self.watchdog.request.take()
     }
     pub(crate) fn signal_nmi(&mut self) {
+        if self.standby && self.wake_remaining.is_none() {
+            self.wake_remaining = Some(self.watchdog.settling_clocks());
+        }
         self.dma.nmi();
+    }
+    pub(crate) fn nmi_ready(&self) -> bool {
+        !self.standby
+    }
+    pub(crate) fn clocks_to_event(&self) -> u32 {
+        self.wake_remaining.unwrap_or(u32::MAX)
+    }
+    pub(crate) fn enter_sleep(&mut self) {
+        if self.module_stop & 0x80 == 0 {
+            return;
+        }
+        // H table 14.3: preserve INTC/UBC/BSC and the CPU, reset FRT/SCI
+        // and DMA control. DIVU contents are undefined; retain operands under
+        // the same deterministic policy used for other undefined reset data.
+        self.reset_frt();
+        self.serial = Serial::default();
+        self.dma.standby();
+        self.division.get_mut().reset();
+        self.watchdog.enter_standby();
+        self.standby = true;
+        self.wake_remaining = None;
     }
     pub(crate) fn reset_from_watchdog(&mut self, reset: ResetRequest) {
         // DIVU operand/vector registers retain values (§10.2); RSTCSR retains
@@ -522,7 +583,44 @@ impl OnChip {
     pub(crate) fn set_slave(&mut self, slave: bool) {
         self.bsc.set_slave(slave);
     }
+    pub(crate) fn instruction_break(&self, pc: u32, after: bool) -> bool {
+        if self.standby {
+            return false;
+        }
+        let mut ubc = self.ubc.borrow_mut();
+        ubc.observe(pc, 2, 0, false, ubc::Master::Cpu, Some(after));
+        ubc.pending()
+    }
+    pub(crate) fn acknowledge_break(&self) {
+        self.ubc.borrow_mut().acknowledge();
+    }
+    pub(crate) fn observe_access(
+        &self,
+        address: u32,
+        width: usize,
+        value: u32,
+        write: bool,
+        cpu: bool,
+        external: bool,
+    ) {
+        if self.standby {
+            return;
+        }
+        let master = if external {
+            ubc::Master::External
+        } else if cpu {
+            ubc::Master::Cpu
+        } else {
+            ubc::Master::Dma
+        };
+        self.ubc
+            .borrow_mut()
+            .observe(address, width, value, write, master, None);
+    }
     pub(crate) fn can_request_interrupt(&self) -> bool {
+        if self.standby {
+            return self.wake_remaining.is_some();
+        }
         (self.ipra & 0xF0 != 0 && self.bsc.can_request_interrupt())
             || (self.iprb & 0x0F00 != 0 && self.tier & 0x8E != 0)
             || (self.ipra & 0x00F0 != 0 && self.watchdog.enabled())

@@ -211,7 +211,7 @@ impl CdBlock {
                 (
                     if t.mode == TrackMode::Audio { 1 } else { 0x41 },
                     t.number,
-                    u8::from(self.fad >= t.start),
+                    t.index_at(self.fad),
                 )
             },
         );
@@ -515,7 +515,7 @@ impl CdBlock {
                 .tracks
                 .iter()
                 .find(|t| t.number == track)
-                .map(|t| if field & 255 == 0 { t.index0 } else { t.start })
+                .and_then(|t| t.index(field as u8))
         }
     }
     fn wait(&self) -> bool {
@@ -690,18 +690,7 @@ impl CdBlock {
                 }
                 let relative = self.fad.abs_diff(t.start);
                 let ctrl = if t.mode == TrackMode::Audio { 1 } else { 0x41 };
-                let mut bytes = vec![
-                    ctrl,
-                    t.number,
-                    u8::from(self.fad >= t.start),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                ];
+                let mut bytes = vec![ctrl, t.number, t.index_at(self.fad), 0, 0, 0, 0, 0, 0, 0];
                 bytes[3..6].copy_from_slice(&relative.to_be_bytes()[1..]);
                 bytes[7..10].copy_from_slice(&self.fad.to_be_bytes()[1..]);
                 response(self, 5, 0, 0);

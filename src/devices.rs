@@ -51,7 +51,7 @@ mod smpc_command_tests {
     fn unsupported_commands_and_register_width_contract_are_explicit() {
         let mut smpc = Smpc::default();
         smpc.write(SMPC + 0x63, 1).unwrap();
-        for command in [0x0D, 0x0E, 0x0F, 0xFF] {
+        for command in [0x0E, 0x0F, 0xFF] {
             assert!(smpc.write(SMPC + 0x1F, command).is_err());
             assert_eq!(smpc.read(SMPC + 0x5F).unwrap(), 0);
             assert_eq!(smpc.read(SMPC + 0x63).unwrap(), 1);

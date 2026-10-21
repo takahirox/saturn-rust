@@ -357,7 +357,9 @@ fn fractional_reverse_and_alternating_loops_interpolate_in_traversal_direction()
                 }
                 let actual: Vec<_> = s
                     .drain(expected.len())
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|p| p[0])
                     .collect();
                 let expected: Vec<_> = expected.into_iter().map(|v| v * sign * 256).collect();
