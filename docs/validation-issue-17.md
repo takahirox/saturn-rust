@@ -2170,3 +2170,65 @@ scope remains mandatory. PR #18 stays Draft with `Closes #17` as its intended
 full-resolution outcome; no umbrella criterion is waived or marked complete.
 No human, proprietary-firmware, live-site, external-workflow or post-merge gate
 is introduced, no replacement Issue is created, and no Issue is reopened or merged.
+
+
+## BSC sharing, XA files and metadata-driven HLE boot review fixes
+
+Rechecked upstream `main` through the GitHub branch API on 2026-10-22:
+`dbd981b030a46daa6923072ce240680dd2e58ebf`, unchanged. The existing PR implementation
+and original three demo media are preserved. This revision implements valid
+BSTROM/PSHR initialization and PSHR arbitration/UBC effects, ISO/XA file metadata
+and interleave addressing, held file-information windows and filesystem filter
+side effects, multi-area AIP placement, interleaved first-read loading and the
+header-selected slave stack. It addresses concrete parts of review findings
+1/2/8/9; their broader requirements and the other findings remain unresolved.
+
+The new original MIT sharing BIOS, raw-XA filesystem disc/BIOS and boot-layout
+disc execute in native and actual browser Wasm. Both processors and device MMIO
+produce the results. Cold-reset repetitions and changed PSHR, logical-sector,
+area-group, stack and payload operands distinguish the implementations from canned
+outputs. The filesystem test includes 120 independent unit/gap/size combinations,
+a 300-child directory crossing the 254-child held-window limit, failed-operation
+atomicity and an accessible embedded license file. The
+[conformance inventory](hardware-conformance.md#bsc-sharing-and-isoxa-bootstrap-and-runtime-files)
+links primary sections, functions, exact tests and reproducible artifact hashes.
+
+Validation on 2026-10-22:
+
+- `cargo fmt --check`, `cargo build --locked` and native
+  `cargo clippy --locked --all-targets -- -D warnings` pass with Rust/Cargo 1.94.0.
+- Complete `cargo test --locked` passes **467 tests**, zero failed/ignored. After
+  the final fixture file-number/embedded-license consistency correction, all
+  **29 CD register/parser tests plus the filesystem guest test** pass again,
+  including one newly added license-read test (**468 distinct native tests**
+  across these runs). No production Rust behavior changed after the complete run.
+- Wasm build via `sh scripts/build-web.sh` and Wasm Clippy with `-D warnings`
+  pass using installed rustup stable 1.99.0 and wasm-bindgen-cli 0.2.129. The default
+  Homebrew Rust lacks the Wasm target; selecting the installed rustup binaries
+  resolves that local toolchain mismatch without repository configuration changes.
+- All **53** CI reproducibility commands pass; the final filesystem builder
+  passes again after its metadata consistency correction. Star Collector, Prism
+  Courier and all Hardware Lab media remain byte-identical to reviewed PR head
+  `5902a61899c20e20600959e7489af28a358e0d3c`.
+- The complete extended `npm run test:browser` passes on the final media in
+  Chromium **145.0.7632.6**, Node **24.12.0**, under `/saturn-rust/`, with no
+  required tests skipped. The new sharing, filesystem and boot-layout cases
+  include operand mutations and repeated resets; Star Collector, Prism Courier
+  and Hardware Lab retain their graphics, audio, controls, DMA/IRQ/DSP/CD and
+  restart assertions, along with Canvas, AudioWorklet and local-file privacy.
+- JavaScript syntax and Git whitespace checks pass. All **418** local link
+  targets in the five edited implementation/setup/provenance/conformance documents
+  resolve.
+- Development checks caught the old single-area/interleave rejection assumptions,
+  old successful-empty-scope expectation after directory initialization failure,
+  a stale browser scope-count assertion on damaged raw media, and Clippy
+  expressions. Assertions now distinguish specified rejection status from
+  undefined response fields; they retain successful scope counts and all existing
+  guest outcomes.
+
+This revision does not complete Issue #17. Its original hardware and acceptance
+requirements remain mandatory, including the unresolved CPU/peripheral/MCR,
+transaction arbitration/reset, 68k sequencing, SCU/DSP, VDP1/VDP2, SCSP/DSP,
+CD timing/connections/lifecycle, SYS_EXECDMP/CD-library and SMPC work. No umbrella
+criterion is marked complete. There is no human, firmware, live-site, external
+workflow or post-merge gate, and no replacement tracker or historical Issue reopening.

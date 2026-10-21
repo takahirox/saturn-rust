@@ -112,8 +112,11 @@ impl OnChip {
     pub(crate) fn external_little_endian(&self, physical_address: u32) -> bool {
         self.bsc.little_endian(physical_address)
     }
+    pub(crate) fn shared_external_access(&self, physical_address: u32) -> bool {
+        self.bsc.shared_access(physical_address)
+    }
     pub(crate) fn release_external_bus(&self) {
-        self.bsc.reset_bus();
+        self.bsc.release_shared_bus();
     }
 
     pub(crate) fn external_access(&self, physical_address: u32, write: bool) {
@@ -732,7 +735,7 @@ impl OnChip {
         cpu: bool,
         external: bool,
     ) {
-        if self.standby {
+        if self.standby || (external && !self.bsc.monitors_external_bus()) {
             return;
         }
         let master = if external {

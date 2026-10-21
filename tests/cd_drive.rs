@@ -101,6 +101,10 @@ fn guest_runtime_directory_commands_reject_malformed_extents_without_trapping() 
         assert_eq!(read(0x30), 0x600D);
         assert_eq!(read(0), if invalid { 0xFF00 } else { 0x0180 });
         assert_eq!(read(0x10), if invalid { 0xFF00 } else { 0x0180 });
-        assert_eq!(read(0x24), if invalid { 0 } else { 2 });
+        if invalid {
+            assert_eq!(read(0x20), 0xFF00); // Scope rejects an uninitialized table.
+        } else {
+            assert_eq!(read(0x24), 2);
+        }
     }
 }

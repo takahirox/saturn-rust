@@ -474,15 +474,13 @@ fn runtime_directory_rejects_overflow_truncation_and_invalid_root_and_child_reco
                 0xFF00,
                 "record={record}, field={field}, value={value}"
             );
-            assert_eq!(issue(&mut cd, [0x7200, 0, 0, 0])[1], 0);
+            assert_eq!(issue(&mut cd, [0x7200, 0, 0, 0])[0], 0xFF00);
         }
         for (field, value) in [
             (0, 33),
-            (1, 1),
             (6, 255),
             (14, 255),
             (25, 0x80),
-            (26, 1),
             (27, 1),
             (28, 2),
             (31, 2),
@@ -494,7 +492,7 @@ fn runtime_directory_rejects_overflow_truncation_and_invalid_root_and_child_reco
             let mut cd = CdBlock::default();
             cd.mount(Media::iso(&iso).unwrap());
             assert_eq!(
-                issue(&mut cd, [0x7100, 0, 0xFF, 0xFFFF])[0],
+                issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFF])[0],
                 0xFF00,
                 "record={record}, field={field}, value={value}"
             );
@@ -817,6 +815,9 @@ fn software_reset_aborts_an_incomplete_transfer_and_discards_cached_directory_in
     cd.mount(Media::iso(image).unwrap());
     issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFF]);
     assert_eq!(issue(&mut cd, [0x7200, 0, 0, 0])[1], 2);
+    // Directory access programs a FAD filter. Restore an unrestricted filter
+    // before explicitly playing sector150 rather than the directory at170.
+    issue(&mut cd, [0x4400, 0, 0, 0]);
     sectors(&mut cd, 1);
     issue(&mut cd, [0x6100, 0, 0, 1]);
     assert_ne!(cd.read16(CD + 8).unwrap() & 2, 0);
@@ -824,5 +825,121 @@ fn software_reset_aborts_an_incomplete_transfer_and_discards_cached_directory_in
     assert_eq!(cd.read16(CD + 8).unwrap() & 14, 0);
     assert_eq!(cd.read16(DATA).unwrap(), 0xFFFF);
     assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 0);
-    assert_eq!(issue(&mut cd, [0x7200, 0, 0, 0])[1], 0);
+    assert_eq!(issue(&mut cd, [0x7200, 0, 0, 0])[0], 0xFF00);
+}
+
+fn set_iso_number(bytes: &mut [u8], at: usize, value: u32) {
+    bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    bytes[at + 4..at + 8].copy_from_slice(&value.to_be_bytes());
+}
+
+#[test]
+fn original_xa_fixture_license_is_an_accessible_noninterleaved_file() {
+    let mut cd = CdBlock::default();
+    cd.mount(
+        Media::cue(
+            include_str!("fixtures/cd-filesystem.cue"),
+            &[(
+                "cd-filesystem.bin",
+                include_bytes!("fixtures/cd-filesystem.bin"),
+            )],
+        )
+        .unwrap(),
+    );
+    assert_ne!(issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFF])[0], 0xFF00);
+    assert_ne!(issue(&mut cd, [0x7400, 0, 0x0100, 3])[0], 0xFF00);
+    cd.advance(1_000_000);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0x0100, 0])[3], 1);
+    issue(&mut cd, [0x6100, 0, 0x0100, 1]);
+    let bytes = read(&cd, 2048);
+    let license = include_bytes!("fixtures/LICENSE");
+    assert_eq!(&bytes[..license.len()], license);
+}
+
+#[test]
+fn interleave_extent_bounds_include_gaps_attributes_and_empty_file_boundaries() {
+    // Authored XA Form1 payload offsets, independent of the media decoder.
+    let base: Vec<u8> = include_bytes!("fixtures/cd-filesystem.bin")
+        .chunks_exact(2352)
+        .flat_map(|s| s[24..2072].iter().copied())
+        .collect();
+    let child = 20 * 2048 + 68;
+    for unit in [0u8, 1, 2, 7, 255] {
+        for gap in [0u8, 1, 3, 255] {
+            for sectors in [0u32, 1, 2, 3, 42, 257] {
+                let mut iso = base.clone();
+                iso[child + 25] = 1; // ISO hidden must not set reserved CdcFile bits.
+                iso[child + 26] = unit;
+                iso[child + 27] = gap;
+                set_iso_number(&mut iso, child + 10, sectors * 2048);
+                let last_offset = if sectors == 0 {
+                    0
+                } else if unit == 0 {
+                    sectors - 1
+                } else {
+                    (sectors - 1) / u32::from(unit) * (u32::from(unit) + u32::from(gap))
+                        + (sectors - 1) % u32::from(unit)
+                };
+                let valid = (unit != 0 || gap == 0) && (sectors == 0 || 22 + last_offset < 64);
+                let mut cd = CdBlock::default();
+                cd.mount(Media::iso(&iso).unwrap());
+                assert_eq!(
+                    issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFF])[0] != 0xFF00,
+                    valid,
+                    "unit={unit} gap={gap} sectors={sectors}"
+                );
+                if valid {
+                    issue(&mut cd, [0x7300, 0, 0, 2]);
+                    let info = read(&cd, 12);
+                    assert_eq!(&info[..4], &172u32.to_be_bytes());
+                    assert_eq!(&info[8..], &[unit, gap, 7, 0x28]);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn held_information_window_preserves_self_parent_ids_and_has_exact_254_child_limit() {
+    // ST-162 §§6.2.1/8.2.8: ReadDir selects a window of the current
+    // directory, rather than treating its first FID argument as a directory.
+    let mut iso = include_bytes!("../web/star-collector.iso").to_vec();
+    let directory_size = 6 * 2048;
+    set_iso_number(&mut iso, 16 * 2048 + 156 + 10, directory_size);
+    let mut own = iso[20 * 2048..20 * 2048 + 34].to_vec();
+    set_iso_number(&mut own, 10, directory_size);
+    iso[20 * 2048..26 * 2048].fill(0);
+    iso[20 * 2048..20 * 2048 + 34].copy_from_slice(&own);
+    own[33] = 1;
+    iso[20 * 2048 + 34..20 * 2048 + 68].copy_from_slice(&own);
+    let mut template = own;
+    template[25] = 0;
+    template[33] = b'A';
+    set_iso_number(&mut template, 2, 31);
+    set_iso_number(&mut template, 10, 0);
+    let mut at = 20 * 2048 + 68;
+    for _ in 0..300 {
+        if at % 2048 + 34 > 2048 {
+            at = (at / 2048 + 1) * 2048;
+        }
+        iso[at..at + 34].copy_from_slice(&template);
+        at += 34;
+    }
+    let mut cd = CdBlock::default();
+    cd.mount(Media::iso(&iso).unwrap());
+    assert_ne!(issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFF])[0], 0xFF00);
+    assert_eq!(issue(&mut cd, [0x7200, 0, 0, 0])[1..], [254, 0x100, 2]);
+    assert_eq!(issue(&mut cd, [0x7300, 0, 0, 256])[0], 0xFF00);
+    assert_ne!(issue(&mut cd, [0x7100, 0, 0, 256])[0], 0xFF00);
+    assert_eq!(issue(&mut cd, [0x7200, 0, 0, 0])[1..], [46, 0x100, 256]);
+    for id in [0, 1, 256, 301] {
+        assert_ne!(issue(&mut cd, [0x7300, 0, 0, id])[0], 0xFF00);
+        assert_eq!(read(&cd, 12).len(), 12);
+        issue(&mut cd, [0x0600, 0, 0, 0]);
+    }
+    for id in [2, 255, 302] {
+        assert_eq!(issue(&mut cd, [0x7300, 0, 0, id])[0], 0xFF00);
+    }
+    assert_eq!(issue(&mut cd, [0x7100, 0, 0, 302])[0], 0xFF00);
+    assert_eq!(issue(&mut cd, [0x7200, 0, 0, 0])[1..], [46, 0x100, 256]);
 }

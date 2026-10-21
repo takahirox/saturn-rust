@@ -102,6 +102,45 @@ fn replace_literal(rom: &mut [u8], before: u32, after: u32) {
 }
 
 #[test]
+fn guest_partial_sharing_disables_external_monitoring_but_preserves_local_breaks() {
+    // H §§7.2.1/7.8/7.10.3: identical cold-boot code on both processors,
+    // including valid BSTROM initialization on the board's 32-bit CS0 bus.
+    let rom = load(include_str!("fixtures/bsc-share.hex"));
+    let golden: Vec<_> = include_str!("fixtures/bsc-share.tsv")
+        .lines()
+        .map(|v| u32::from_str_radix(v, 16).unwrap())
+        .collect();
+    for sharing in [0xFF0, 0xBF0] {
+        let mut rom = rom.clone();
+        replace_literal(&mut rom, 0xA55A0FF0, 0xA55A0000 | sharing);
+        let mut m = Machine::new();
+        for _ in 0..2 {
+            m.reset(Boot::ExternalBios(&rom)).unwrap();
+            m.run_steps(3000).unwrap();
+            assert_eq!(m.cpu_state().exceptions, 0);
+            assert_eq!(m.slave_state().exceptions, 0);
+            for (cpu, base) in [0x0600E600, 0x0600E700].into_iter().enumerate() {
+                assert_eq!(
+                    m.bus().read32(base).unwrap(),
+                    sharing | if cpu == 1 { 0x8000 } else { 0 }
+                );
+                let mut expected = golden.clone();
+                if sharing & 0x400 == 0 {
+                    expected[0] = 0x7000;
+                }
+                for (i, value) in expected.into_iter().enumerate() {
+                    assert_eq!(
+                        m.bus().read32(base + 4 + i as u32 * 4).unwrap(),
+                        value,
+                        "CPU {cpu} record {i}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn reset_time_bus_width_and_endian_operands_change_actual_guest_transfers() {
     let rom = load(include_str!("fixtures/bsc-waits.hex"));
     let baseline = waits_run(&rom);

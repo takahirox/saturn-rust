@@ -6,6 +6,17 @@ generated ROM fragments are covered by [LICENSE](LICENSE). No SDK routine,
 firmware, emulator core or instruction-interception hook is used. External BIOS
 mode loads only its selected ROM and never installs these services.
 
+ST-040 §§4.1/4.3/4.5–4.7 startup metadata selects AIP after the complete
+J/T/U/E area group and supplies the independent master/slave stack pointers.
+Zero stack fields select `06002000` / `06001000` respectively. The original reset
+trampoline executes its ordinary instructions with these literal-pool parameters;
+external BIOS mode has no such installation. The original
+[boot-layout disc](../../tests/fixtures/build_boot_layout.py) combines four area
+blocks, an extended-attribute block and interleaved first-read payload. Native
+and browser tests execute both CPUs, default/custom slave stacks and changed
+payload words. HLE does not execute proprietary security/area objects or claim
+commercial BIOS region/authentication behavior.
+
 The behavioral reference is Sega's [ST-162-R1 System Program manual §2.2](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-162-R1-092994.pdf)
 and [its later function specifications](https://github.com/luckyseoul/saturn-docs/blob/main/files/ssddv25/segahtml/prgg/sysg/prog/hon/p02_11.htm).
 Arguments use R4–R7, results R0, and callbacks obey the SHC callee-save convention.

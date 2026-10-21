@@ -442,10 +442,49 @@ try {
         emulator.reset_bios(Uint8Array.from(rom));
         emulator.mount_disc(Uint8Array.from(image));
         emulator.run_steps(3000);
-        return [0, 0x10, 0x24, 0x30].map((offset) => emulator.read_long(0x06009000 + offset));
+        return [0, 0x10, 0x20, 0x24, 0x30].map((offset) => emulator.read_long(0x06009000 + offset));
       } finally { emulator.free(); }
     }, { rom: [...directoryRom], image: [...image] });
-    assert.deepEqual(trace, typeof offset !== "number" ? [0x0180, 0x0180, 2, 0x600D] : [0xFF00, 0xFF00, 0, 0x600D]);
+    if (typeof offset !== "number") {
+      assert.deepEqual(trace, [0x0180, 0x0180, 0x0180, 2, 0x600D]);
+    } else {
+      assert.deepEqual([trace[0], trace[1], trace[2], trace[4]], [0xFF00, 0xFF00, 0xFF00, 0x600D]);
+    }
+  }
+  // Original interleaved XA disc: actual SH-2 commands/FIFO reads, independent
+  // metadata/checksum goldens, logical-offset mutation and repeated cold reset.
+  const filesystemRom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/cd-filesystem.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [at, ...words] = line.trim().split(/\s+/).map(v => parseInt(v, 16));
+    words.forEach((v, i) => filesystemRom.writeUInt16BE(v, at+i*2));
+  }
+  const filesystemRaw = await readFile("tests/fixtures/cd-filesystem.bin");
+  const filesystemCue = await readFile("tests/fixtures/cd-filesystem.cue", "utf8");
+  const filesystemGolden = (await readFile("tests/fixtures/cd-filesystem.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v,16));
+  for (const offset of [0, 1]) {
+    const rom = Buffer.from(filesystemRom), at = rom.indexOf(Buffer.from([0xE6,0]));
+    assert(at >= 0 && rom.indexOf(Buffer.from([0xE6,0]), at+1) < 0);
+    rom[at+1] = offset;
+    const results = await page.evaluate(async ({rom, raw, cue}) => {
+      const {Emulator} = await import("./pkg/saturn_rust.js");
+      const emulator = new Emulator(), results = [];
+      try {
+        for (let repetition = 0; repetition < 2; repetition++) {
+          emulator.reset_bios(Uint8Array.from(rom));
+          emulator.mount_cue(cue, "cd-filesystem.bin", Uint32Array.from([raw.length]), Uint8Array.from(raw));
+          for (let block = 0; block < 100 && emulator.read_long(0x0600B01C) !== 0x600D; block++) emulator.run_steps(10000);
+          results.push({trace: Array.from({length:8}, (_,i) => emulator.read_long(0x0600B000+i*4)),
+            mode: emulator.read_long(0x0600A020) & 0x5F, connectors: emulator.read_long(0x0600A034),
+            device: emulator.read_long(0x0600A048), exceptions: emulator.exception_count()});
+        }
+        return results;
+      } finally {emulator.free();}
+    }, {rom:[...rom], raw:[...filesystemRaw], cue:filesystemCue});
+    const trace = [...filesystemGolden];
+    if (offset) {trace[3] = 2; trace[4] -= 0x1111*1024;}
+    const expected = {trace, mode:0x41, connectors:0x03FF, device:0x0300, exceptions:"0"};
+    assert.deepEqual(results, [expected, expected]);
   }
   // Both startup paths below execute original AIP instructions in Wasm.
   const startup=await page.evaluate(async images=>{
@@ -466,6 +505,31 @@ try {
   })()].map(b=>[...b]));
   assert.equal(startup[0][1],directoryIso.readUInt32BE(21*2048));
   assert.deepEqual(startup[1],[42,0,27]); // 23 original reset + four AIP instructions
+  const layoutIso = await readFile("tests/fixtures/boot-layout.iso");
+  const layoutGolden = (await readFile("tests/fixtures/boot-layout.tsv","utf8")).trim().split(/\r?\n/).map(v=>parseInt(v,16));
+  for (const [areas, stack, value] of [["U",0,0x87654321],["JT",0x060FD000,0x87654321],["EUJT",0x060FD000,0x76543210]]) {
+    const image = Buffer.from(layoutIso), entry = 0xE00+areas.length*32;
+    image.fill(32,0x40,0x50); image.write(areas,0x40,"ascii");
+    image.fill(0,0xE00,0xF00); layoutIso.copy(image,entry,0xE80,0xE8C);
+    image.writeUInt32BE(stack,0xEC); image.writeUInt32BE(value,36*2048);
+    const result = await page.evaluate(async ({image,entry})=>{
+      const {Emulator} = await import("./pkg/saturn_rust.js");
+      const m = new Emulator(), results=[];
+      try {
+        for (let repeat=0;repeat<2;repeat++) {
+          m.reset_disc(Uint8Array.from(image));
+          for (let i=0;i<32 && m.special_registers()[0] !== 0x06002000+entry;i++) m.step();
+          const aip = m.special_registers()[0]; m.run_steps(1000);
+          results.push({aip,trace:Array.from({length:6},(_,i)=>m.read_long(0x0600A000+i*4)),
+            exceptions:[m.exception_count(),m.slave_exception_count()]});
+        }
+        return results;
+      } finally {m.free();}
+    },{image:[...image],entry});
+    const trace=[...layoutGolden]; trace[1]=(0x12345678+value)>>>0; trace[4]=stack||0x06001000;
+    const expected={aip:0x06002000+entry,trace,exceptions:["0","0"]};
+    assert.deepEqual(result,[expected,expected]);
+  }
   // Original HLE-service disc: actual SH-2 calls through BIOS entry pointers,
   // both-CPU TAS/VBR, nested SCU callbacks, copied priorities and reset domains.
   const hleSystemIso=await readFile("tests/fixtures/hle-system.iso");
@@ -795,10 +859,14 @@ try {
         }
         emulator.mount_cue('FILE "d" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00', "d", new Uint32Array([raw.length]), Uint8Array.from(raw));
         emulator.run_steps(3000);
-        return [0, 0x10, 0x24, 0x30].map((offset) => emulator.read_long(0x06009000 + offset));
+        return [0, 0x10, 0x20, 0x24, 0x30].map((offset) => emulator.read_long(0x06009000 + offset));
       } finally { emulator.free(); }
     }, { rom: [...directoryRom], raw: [...raw] });
-    assert.deepEqual(trace, damage === "uncorrectable" ? [0xFF00, 0xFF00, 0, 0x600D] : [0x0180, 0x0180, 2, 0x600D]);
+    if (damage === "uncorrectable") {
+      assert.deepEqual([trace[0], trace[1], trace[2], trace[4]], [0xFF00, 0xFF00, 0xFF00, 0x600D]);
+    } else {
+      assert.deepEqual(trace, [0x0180, 0x0180, 0x0180, 2, 0x600D]);
+    }
   }
   // The original guest configures runtime correction/retries, observes RETRY
   // and ERROR, reads received/corrected bytes and cancels infinite retry. Host
@@ -1040,6 +1108,34 @@ try {
     await page.locator("#reset").click();
     assert.deepEqual(await run(), actual);
   }
+  const shareRom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/bsc-share.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [at, ...words] = line.trim().split(/\s+/).map(v => parseInt(v,16));
+    words.forEach((v,i) => shareRom.writeUInt16BE(v, at+i*2));
+  }
+  const shareGolden = (await readFile("tests/fixtures/bsc-share.tsv", "utf8")).trim().split(/\r?\n/).map(v=>parseInt(v,16));
+  for (const bits of [0xFF0, 0xBF0]) {
+    const rom = Buffer.from(shareRom), needle = Buffer.from([0xA5,0x5A,0x0F,0xF0]), at = rom.indexOf(needle);
+    assert(at >= 0 && rom.indexOf(needle, at+1) < 0);
+    rom.writeUInt32BE(0xA55A0000 + bits, at);
+    const results = await page.evaluate(async rom => {
+      const {Emulator} = await import("./pkg/saturn_rust.js");
+      const emulator = new Emulator(), results = [];
+      try {
+        for (let repetition=0; repetition<2; repetition++) {
+          emulator.reset_bios(Uint8Array.from(rom)); emulator.run_steps(3000);
+          results.push({traces:[0x0600E600,0x0600E700].map(base => Array.from({length:5},(_,i)=>emulator.read_long(base+i*4))),
+            exceptions:[emulator.exception_count(),emulator.slave_exception_count()]});
+        }
+        return results;
+      } finally {emulator.free();}
+    }, [...rom]);
+    const expected = [...shareGolden]; if (!(bits & 0x400)) expected[0] = 0x7000;
+    const trace = {traces:[[bits,...expected],[bits|0x8000,...expected]],exceptions:["0","0"]};
+    assert.deepEqual(results,[trace,trace]);
+  }
+  console.log("Original BSC-sharing, XA/interleaved-filesystem and multi-area/bootstrap guests passed, including operand mutations and repeated cold resets.");
   // Both SH-2s warm their instruction cache and execute real TAS read/write
   // pairs. FRT must reflect IW3=0/1's mandatory one cycle and IW3=2's two.
   const idleRom = Buffer.alloc(524288);

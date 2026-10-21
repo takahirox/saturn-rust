@@ -268,7 +268,7 @@ impl Machine {
         }
         // Original HLE reset and system routines are never installed in BIOS
         // mode. Master and slave execute the same real reset trampoline.
-        hle::install(&mut self.bus)?;
+        hle::install(&mut self.bus, boot.aip_entry, boot.slave_stack)?;
         self.cpu = Cpu::start(0x100, boot.stack);
         self.bus
             .cd

@@ -292,12 +292,13 @@ exercise real SH-2 loads/stores and port-2 reads natively and in Chromium/Wasm.
 
 [Star Collector's build and layout](../homebrew/star-collector/README.md) specify
 the supported self-contained guest contract. The parser accepts cooked
-2048-byte-sector ISO files, 22 sectors to 16 MiB, with a Saturn hardware identifier,
-one region, IP size 1000–8000 hex and aligned stack/first-read destination in high
-RAM. It validates primary and terminator descriptors at sectors 16/17, matching
+2048-byte-sector ISO files, 18 sectors to 16 MiB, with a Saturn hardware identifier,
+distinct J/T/U/E area symbols, IP size 1000–8000 hex and aligned stack/first-read destination in high
+RAM. It scans the descriptor set starting at sector 16 for primary and terminator descriptors, checking matching
 little/big-endian volume/extent values, 2048-byte blocks, root directory records,
-names, bounds and contiguous single-volume extents. Unsupported extended
-attributes, interleaving, multi-extent files and malformed/truncated data fail
+names, bounds and single-volume extents. Extended-attribute blocks are skipped;
+file-unit/gap addressing gathers interleaved first-read data. Unsupported
+multi-extent files and malformed/truncated data fail
 before loading. The first root child must be a regular file (Saturn first-read
 file identifier 2); its filename is not special. Retained BIN/CUE media may have
 cooked or raw Mode1/Mode2 data and BINARY audio tracks. Plain ECMA-130 Mode2
@@ -311,8 +312,10 @@ block retains the complete medium, including tracks, indices and gaps.
 Compressed images and large/general ISO boot layouts remain unsupported.
 
 HLE copies the IP system area to 06002000, loads the first-read file at the header's
-F0 destination, initializes the master stack from E8 (zero means 06002000), then
-executes the original AIP at 06002E20 for a single 20-hex-byte area block. The
+F0 destination, initializes the master stack from E8 (zero means 06002000) and
+the slave stack from EC (zero means 06001000), then executes the original AIP
+after the area group at `06002E00 + 20 hex × area count`. The reset trampoline's
+two original literal-pool values carry those metadata-selected addresses. The
 original bootstrap jumps to the loaded executable. The IP includes no Sega
 security/area executable; HLE deliberately skips those proprietary boot stages.
 No arbitrary bytes are treated as a disc. System/vector/clock and backup services execute original SH-2 instructions,
@@ -321,6 +324,10 @@ required. An original licensed SH-2 reset trampoline provides a slave handoff
 through the work-RAM entry pointer; external BIOS selection never installs it.
 The runtime CD block, SCU DMA/IRQ and SCSP external input operate on the actual
 retained medium, including the Hardware Lab mixed-disc guest.
+Runtime directory services retain self/parent plus up to 254 selected child
+records. ReadDir changes the held FID window within the current directory. XA
+system-use fields supply unit/gap/file number/attributes; file reads select the
+actual interleaved sectors and program the documented filter/partition settings.
 The Saturn header's first-read size is ignored for CD boot; the ISO file size is
 used, as specified by the manual. This narrow contract does not promise that
 arbitrary homebrew or stock-console authenticated discs will boot.

@@ -69,6 +69,7 @@ python3 tests/fixtures/build_divu.py --check
 python3 tests/fixtures/build_bsc.py --check
 python3 tests/fixtures/build_bsc_waits.py --check
 python3 tests/fixtures/build_bsc_idle.py --check
+python3 tests/fixtures/build_bsc_share.py --check
 python3 tests/fixtures/build_sh2_timing.py --check
 python3 tests/fixtures/build_dsp_dma.py --check
 python3 tests/fixtures/build_intc.py --check
@@ -104,6 +105,8 @@ python3 tests/fixtures/build_raster_history.py --check
 python3 tests/fixtures/build_sound_io.py --check
 python3 tests/fixtures/build_cd_drive.py --check
 python3 tests/fixtures/build_cd_directory.py --check
+python3 tests/fixtures/build_cd_filesystem.py --check
+python3 tests/fixtures/build_boot_layout.py --check
 python3 tests/fixtures/build_cd_decode.py --check
 python3 tests/fixtures/build_cdda.py --check
 python3 tests/fixtures/build_sprite_effects.py --check
@@ -156,8 +159,9 @@ Rust or guest source. Opening `index.html` as a `file:` URL will not work. The c
    or return from Debug, playback stays paused. Choose **BIOS-less HLE disc** and
    a local authorized ISO to use the same loader without fetching the sample.
    Local images load paused; close settings and use Resume to play.
-   Startup uses the documented single-area Saturn IP + ISO9660 first-read
-   contract, up to 16 MiB. Select a cooked ISO alone, or select one CUE and all its
+   Startup supports Saturn IP area groups and ISO9660 first-read files,
+   including file-unit/gap interleaving and extended-attribute offsets, up to
+   16 MiB. Select a cooked ISO alone, or select one CUE and all its
    BINARY data/audio track files together (up to 128 MiB). Cooked and raw Mode1,
    raw Mode2, audio, shared/separate files and track gaps/indices are supported.
    Runtime CD commands retain and read the actual medium; CD-DA passes through

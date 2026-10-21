@@ -1127,7 +1127,11 @@ impl CpuBus<'_> {
     fn observe_external(&self, address: u32, width: usize, value: u32, write: bool) {
         // Only actual external cycles (not cache hits) reach the other BSC.
         if address < 0x4000_0000 {
-            self.bus.claim_external_bus(self.processor);
+            let shared = self.bus.onchip[self.processor as usize]
+                .shared_external_access(Bus::physical(address));
+            if shared {
+                self.bus.claim_external_bus(self.processor);
+            }
             // H fig.7.7: ordinary external beats occupy T1/T2 even with no
             // software waits. Keep those clocks separate from Tw and internal
             // execution states; cache hits and on-chip accesses do not enter.
@@ -1144,14 +1148,16 @@ impl CpuBus<'_> {
                     ),
                 );
             }
-            self.bus.onchip[1 - self.processor as usize].observe_access(
-                Bus::physical(address),
-                width,
-                value,
-                write,
-                false,
-                true,
-            );
+            if shared {
+                self.bus.onchip[1 - self.processor as usize].observe_access(
+                    Bus::physical(address),
+                    width,
+                    value,
+                    write,
+                    false,
+                    true,
+                );
+            }
         }
     }
     fn read<const N: usize>(&self, address: u32, instruction: bool) -> Result<[u8; N], BusError> {

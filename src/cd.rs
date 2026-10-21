@@ -114,10 +114,15 @@ pub struct CdBlock {
     actual_size: u32,
     search: [u16; 3],
     copy_error: u16,
-    directory: u32,
+    directory: Option<File>,
     volume_end: u32,
     files: Vec<File>,
-    file_read: Option<(u32, u32, u8)>,
+    file_read: Option<FileRead>,
+}
+struct FileRead {
+    file: File,
+    logical_sector: u32,
+    selector: u8,
 }
 #[derive(Clone)]
 struct File {
@@ -125,8 +130,24 @@ struct File {
     size: u32,
     flags: u8,
     id: u32,
+    unit: u8,
+    gap: u8,
+    number: u8,
+    is_directory: bool,
 }
 impl File {
+    // ISO9660 §§6.4.3/9.1.7–9.1.8: file size excludes interleave gaps.
+    fn sector(&self, logical: u32) -> Option<u32> {
+        let offset = if self.unit == 0 {
+            logical
+        } else {
+            let unit = u32::from(self.unit);
+            (logical / unit)
+                .checked_mul(unit + u32::from(self.gap))?
+                .checked_add(logical % unit)?
+        };
+        self.fad.checked_add(offset)
+    }
     // ISO9660 §9.1 / ST-162 §6.2: both-endian numbers must agree. Validate
     // before converting LBA to FAD or publishing any new directory state.
     fn from_record(record: &[u8], media: &Media, limit: u32, id: u32) -> Option<Self> {
@@ -140,9 +161,7 @@ impl File {
         let minimum = 33 + name_length + usize::from(name_length.is_multiple_of(2));
         if name_length == 0
             || minimum > record.len()
-            || record[1] != 0
-            || record[26] != 0
-            || record[27] != 0
+            || (record[26] == 0 && record[27] != 0)
             || record[25] & !3 != 0
             || record[28..32] != [1, 0, 0, 1]
         {
@@ -153,9 +172,35 @@ impl File {
             let big = u32::from_be_bytes(record[offset + 4..offset + 8].try_into().ok()?);
             (little == big).then_some(little)
         };
-        let fad = dual(2)?.checked_add(150)?;
+        let fad = dual(2)?
+            .checked_add(150)?
+            .checked_add(u32::from(record[1]))?;
         let size = dual(10)?;
-        let end = fad.checked_add(size.div_ceil(2048))?;
+        // CD-ROM XA system use is a 14-byte record after the padded name.
+        // Its high attribute byte supplies public bits 3–7; the ISO directory
+        // bit is retained for records without XA information (ST-162 §6.8).
+        let xa = record
+            .get(minimum..minimum + 14)
+            .filter(|s| &s[6..8] == b"XA");
+        let is_directory = xa.map_or(record[25] & 2 != 0, |s| s[4] & 0x80 != 0);
+        if is_directory && record[26..28] != [0, 0] {
+            return None;
+        }
+        let file = Self {
+            fad,
+            size,
+            id,
+            flags: record[25] & 2 | xa.map_or(0, |s| s[4] & 0xF8),
+            unit: record[26],
+            gap: record[27],
+            number: xa.map_or(0, |s| s[8]),
+            is_directory,
+        };
+        let end = if size == 0 {
+            fad
+        } else {
+            file.sector(size.div_ceil(2048) - 1)?.checked_add(1)?
+        };
         if fad > limit || end > limit || end > media.leadout {
             return None;
         }
@@ -165,12 +210,7 @@ impl File {
                 return None;
             }
         }
-        Some(Self {
-            fad,
-            size,
-            flags: record[25],
-            id,
-        })
+        Some(file)
     }
 }
 impl Default for CdBlock {
@@ -216,7 +256,7 @@ impl Default for CdBlock {
             actual_size: 0,
             search: [0; 3],
             copy_error: 0,
-            directory: 0,
+            directory: None,
             volume_end: 0,
             files: Vec::new(),
             file_read: None,
@@ -228,7 +268,7 @@ impl CdBlock {
         self.retry_attempts = 0;
         self.tray_open = false;
         self.files.clear();
-        self.directory = 0;
+        self.directory = None;
         self.volume_end = 0;
         self.file_read = None;
         *self.transfer.get_mut() = None;
@@ -524,11 +564,22 @@ impl CdBlock {
                 }
                 self.retry_attempts = 0;
                 self.status = 3;
-                self.route(Sector { fad: self.fad, raw });
-                self.raise(CSCT);
+                let selected = self
+                    .file_read
+                    .as_ref()
+                    .is_none_or(|r| r.file.sector(r.logical_sector) == Some(self.fad));
+                if selected {
+                    self.route(Sector { fad: self.fad, raw });
+                    self.raise(CSCT);
+                    if let Some(r) = &mut self.file_read {
+                        r.logical_sector += 1;
+                    }
+                }
                 self.fad += 1;
-                if let Some((_, end, _)) = self.file_read
-                    && self.fad >= end
+                if self
+                    .file_read
+                    .as_ref()
+                    .is_some_and(|r| r.logical_sector >= r.file.size.div_ceil(2048))
                 {
                     self.file_read = None;
                     self.playing = false;
@@ -567,8 +618,8 @@ impl CdBlock {
     }
     fn route(&mut self, sector: Sector) {
         let mut selector = self.connection;
-        if let Some((_, _, sel)) = self.file_read {
-            selector = sel;
+        if let Some(r) = &self.file_read {
+            selector = r.selector;
         }
         self.last = self.route_from(sector, selector);
     }
@@ -820,7 +871,7 @@ impl CdBlock {
                     self.repeat = 0;
                     self.repeats = 0;
                     self.files.clear();
-                    self.directory = 0;
+                    self.directory = None;
                     self.volume_end = 0;
                     self.hirq
                         .set(self.hirq.get() & !(DRDY | CSCT | BFUL | PEND));
@@ -834,7 +885,7 @@ impl CdBlock {
             0x05 => {
                 self.retry_attempts = 0;
                 self.files.clear();
-                self.directory = 0;
+                self.directory = None;
                 self.volume_end = 0;
                 self.playing = false;
                 self.scan = None;
@@ -1252,21 +1303,57 @@ impl CdBlock {
                 if selector >= SELECTORS {
                     return false;
                 }
-                if !self.load_directory(field2) {
+                if !self.load_directory(field2, 2) {
                     return false;
                 }
+                let directory = self.directory.as_ref().unwrap();
+                self.prepare_file_filter(
+                    selector,
+                    directory.fad,
+                    directory.size.div_ceil(2048),
+                    None,
+                );
+                self.file_read = None;
+                self.playing = false;
+                self.status = 1;
                 self.raise(EFLS);
             }
             0x71 => {
                 if selector >= SELECTORS {
                     return false;
                 }
-                if !self.load_directory(field2) {
+                let first = if field2 == 0xFF_FFFF {
+                    2
+                } else {
+                    field2.max(2)
+                };
+                if !self.load_directory(0, first) {
                     return false;
                 }
+                let directory = self.directory.as_ref().unwrap();
+                self.prepare_file_filter(
+                    selector,
+                    directory.fad,
+                    directory.size.div_ceil(2048),
+                    None,
+                );
+                self.file_read = None;
+                self.playing = false;
+                self.status = 1;
                 self.raise(EFLS);
             }
-            0x72 => response(self, self.files.len().saturating_sub(2) as u16, 0x0100, 2),
+            0x72 => {
+                if self.directory.is_none() {
+                    return false;
+                }
+                let first = self.files.get(2).map_or(2, |f| f.id);
+                response(
+                    self,
+                    self.files.len().saturating_sub(2) as u16,
+                    0x0100 | (first >> 16) as u16,
+                    first as u16,
+                );
+            }
             0x73 => {
                 let fid = field2;
                 let selected: Vec<_> = if fid == 0xFF_FFFF {
@@ -1281,7 +1368,7 @@ impl CdBlock {
                 for f in selected {
                     bytes.extend(f.fad.to_be_bytes());
                     bytes.extend(f.size.to_be_bytes());
-                    bytes.extend([0, 0, 0, f.flags]);
+                    bytes.extend([f.unit, f.gap, f.number, f.flags]);
                 }
                 response(self, (bytes.len() / 2) as u16, 0, 0);
                 return self.begin_get(bytes, None);
@@ -1290,23 +1377,35 @@ impl CdBlock {
                 let Some(f) = self
                     .files
                     .iter()
-                    .find(|f| f.id == field2 && f.flags & 2 == 0)
+                    .find(|f| f.id == field2 && !f.is_directory)
                 else {
                     return false;
                 };
                 if selector >= SELECTORS {
                     return false;
                 }
-                let Some(start) = f.fad.checked_add(field1) else {
+                let Some(start) = f.sector(field1) else {
                     return false;
                 };
-                let Some(end) = f.fad.checked_add(f.size.div_ceil(2048)) else {
+                let Some(end) = f
+                    .size
+                    .div_ceil(2048)
+                    .checked_sub(1)
+                    .and_then(|last| f.sector(last))
+                    .and_then(|last| last.checked_add(1))
+                else {
                     return false;
                 };
                 if start >= end {
                     return false;
                 }
-                self.file_read = Some((start, end, selector as u8));
+                let file = f.clone();
+                self.prepare_file_filter(selector, start, end - start, Some(file.number));
+                self.file_read = Some(FileRead {
+                    file,
+                    logical_sector: field1,
+                    selector: selector as u8,
+                });
                 self.fad = start;
                 self.end = end;
                 self.play_start = start;
@@ -1325,7 +1424,19 @@ impl CdBlock {
         }
         true
     }
-    fn load_directory(&mut self, id: u32) -> bool {
+    fn prepare_file_filter(&mut self, selector: usize, start: u32, count: u32, number: Option<u8>) {
+        // ST-162 §6.2.3/table6.1: file access owns the selected filter and
+        // partition; AbortFile deliberately leaves these settings intact.
+        let mut filter = Filter::reset(selector);
+        filter.start = start;
+        filter.count = count;
+        filter.mode = 0x40 | u8::from(number.is_some());
+        filter.subheader[0] = number.unwrap_or(0);
+        self.filters[selector] = filter;
+        self.partitions[selector].clear();
+        self.connection = selector as u8;
+    }
+    fn load_directory(&mut self, id: u32, first: u32) -> bool {
         let Some(media) = &self.media else {
             return false;
         };
@@ -1380,43 +1491,56 @@ impl CdBlock {
             if root.fad < descriptors_end {
                 return false;
             }
-            ((root.fad, root.size), limit)
+            (root, limit)
         } else {
-            let Some(f) = self.files.iter().find(|f| f.id == id && f.flags & 2 != 0) else {
+            let Some(f) = self.files.iter().find(|f| f.id == id && f.is_directory) else {
                 return false;
             };
-            ((f.fad, f.size), self.volume_end)
+            (f.clone(), self.volume_end)
         };
-        if extent.1 == 0 || extent.1 > 1024 * 1024 {
+        if extent.size == 0 || extent.size > 1024 * 1024 {
             return false;
         }
         let mut bytes = Vec::new();
-        for i in 0..extent.1.div_ceil(2048) {
-            let Ok(sector) = media.cooked_sector(extent.0 + i) else {
+        for i in 0..extent.size.div_ceil(2048) {
+            let Ok(sector) = media.cooked_sector(extent.fad + i) else {
                 return false;
             };
             bytes.extend(sector);
         }
         let mut files = Vec::new();
         let mut offset = 0;
-        while offset < extent.1 as usize {
+        let mut fid = 0;
+        while offset < extent.size as usize {
             let len = bytes[offset] as usize;
             if len == 0 {
                 offset = (offset / 2048 + 1) * 2048;
                 continue;
             }
-            if len < 34 || offset + len > extent.1 as usize || offset % 2048 + len > 2048 {
+            if len < 34 || offset + len > extent.size as usize || offset % 2048 + len > 2048 {
                 return false;
             }
             let r = &bytes[offset..offset + len];
-            let Some(file) = File::from_record(r, media, volume_end, files.len() as u32) else {
+            let Some(file) = File::from_record(r, media, volume_end, fid) else {
                 return false;
             };
-            files.push(file);
+            if fid < 2 && (r[32..34] != [1, fid as u8] || !file.is_directory) {
+                return false;
+            }
+            if fid == 0 && (file.fad != extent.fad || file.size != extent.size) {
+                return false;
+            }
+            if fid < 2 || (fid >= first && files.len() < 256) {
+                files.push(file);
+            }
+            fid += 1;
             offset += len;
         }
+        if fid < 2 || (first > 2 && first >= fid) {
+            return false;
+        }
         self.files = files;
-        self.directory = id;
+        self.directory = Some(extent);
         self.volume_end = volume_end;
         true
     }

@@ -4,7 +4,7 @@ use crate::bus::{BIOS_SIZE, Bus, BusError, Memory};
 
 pub(crate) const POWER_CLEAR: u32 = 0x0600_0C00;
 
-pub(crate) fn install(bus: &mut Bus) -> Result<(), BusError> {
+pub(crate) fn install(bus: &mut Bus, aip_entry: u32, slave_stack: u32) -> Result<(), BusError> {
     let mut rom = vec![0; BIOS_SIZE];
     for (offset, value) in [
         (0, 0x100_u32),
@@ -14,8 +14,17 @@ pub(crate) fn install(bus: &mut Bus) -> Result<(), BusError> {
     ] {
         rom[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
     }
-    let reset = include_bytes!("hle/boot.bin");
-    rom[0x100..0x100 + reset.len()].copy_from_slice(reset);
+    let mut reset = include_bytes!("hle/boot.bin").to_vec();
+    // Configure the original reset program's literal pool from ST-040 IP
+    // metadata. It still executes ordinary guest loads/jumps on both CPUs.
+    for (before, after) in [(0x0600_2E20u32, aip_entry), (0x060F_E000, slave_stack)] {
+        let offset = reset
+            .windows(4)
+            .position(|b| b == before.to_be_bytes())
+            .unwrap();
+        reset[offset..offset + 4].copy_from_slice(&after.to_be_bytes());
+    }
+    rom[0x100..0x100 + reset.len()].copy_from_slice(&reset);
     let system = include_bytes!("hle/system.bin");
     rom[0x4000..0x4000 + system.len()].copy_from_slice(system);
     let backup = include_bytes!("hle/backup.bin");

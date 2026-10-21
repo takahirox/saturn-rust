@@ -39,6 +39,7 @@ jobs:
           python3 tests/fixtures/build_bsc.py --check
           python3 tests/fixtures/build_bsc_waits.py --check
           python3 tests/fixtures/build_bsc_idle.py --check
+          python3 tests/fixtures/build_bsc_share.py --check
           python3 tests/fixtures/build_sh2_timing.py --check
           python3 tests/fixtures/build_dsp_dma.py --check
           python3 tests/fixtures/build_intc.py --check
@@ -64,6 +65,8 @@ jobs:
           python3 tests/fixtures/build_sprite_effects.py --check
           python3 tests/fixtures/build_cd_drive.py --check
           python3 tests/fixtures/build_cd_directory.py --check
+          python3 tests/fixtures/build_cd_filesystem.py --check
+          python3 tests/fixtures/build_boot_layout.py --check
           python3 tests/fixtures/build_cd_decode.py --check
           python3 tests/fixtures/build_mode2.py --check
           python3 tests/fixtures/build_cdda.py --check

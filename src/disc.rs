@@ -1,6 +1,7 @@
-//! Cooked ISO9660 + single-area Saturn IP loader, independently implemented.
+//! Cooked ISO9660 + Saturn IP loader, independently implemented.
 //! ST-040-R4 §§3–4 (system area, IP header, first-read file identifier 2).
 use crate::bus::{HIGH_WRAM, WRAM_SIZE};
+use std::borrow::Cow;
 use std::fmt;
 
 pub const SECTOR: usize = 2048;
@@ -46,9 +47,66 @@ fn ram_range(address: u32, size: usize) -> bool {
 
 pub struct DiscBoot<'a> {
     pub ip: &'a [u8],
-    pub executable: &'a [u8],
+    pub executable: Cow<'a, [u8]>,
     pub load_address: u32,
     pub stack: u32,
+    pub slave_stack: u32,
+    pub aip_entry: u32,
+}
+
+#[derive(Clone, Copy)]
+struct FileExtent {
+    sector: u32,
+    size: u32,
+    unit: u8,
+    gap: u8,
+}
+impl FileExtent {
+    fn sector_at(self, index: u32) -> Option<u32> {
+        let unit = u32::from(self.unit);
+        let offset = match index.checked_div(unit) {
+            None => index,
+            Some(units) => units
+                .checked_mul(unit + u32::from(self.gap))?
+                .checked_add(index % unit)?,
+        };
+        self.sector.checked_add(offset)
+    }
+    fn from_record(record: &[u8], image: &[u8]) -> Result<Self, DiscError> {
+        let file = Self {
+            sector: dual32(record, 2)?
+                .checked_add(u32::from(record[1]))
+                .ok_or_else(|| invalid("ISO extended-attribute extent overflow"))?,
+            size: dual32(record, 10)?,
+            unit: record[26],
+            gap: record[27],
+        };
+        if (file.unit == 0 && file.gap != 0) || (record[25] & 2 != 0 && file.unit != 0) {
+            return Err(invalid("invalid ISO9660 interleave unit/gap"));
+        }
+        let end = if file.size == 0 {
+            file.sector
+        } else {
+            file.sector_at(file.size.div_ceil(SECTOR as u32) - 1)
+                .and_then(|s| s.checked_add(1))
+                .ok_or_else(|| invalid("ISO interleave extent overflow"))?
+        };
+        if end as u64 * SECTOR as u64 > image.len() as u64 {
+            return Err(invalid("truncated ISO file/interleave extent"));
+        }
+        Ok(file)
+    }
+    fn bytes(self, image: &[u8]) -> Result<Cow<'_, [u8]>, DiscError> {
+        if self.unit == 0 || self.gap == 0 {
+            return Ok(Cow::Borrowed(extent(image, self.sector, self.size)?));
+        }
+        let mut bytes = Vec::with_capacity(self.size as usize);
+        for i in 0..self.size.div_ceil(SECTOR as u32) {
+            let length = (self.size as usize - bytes.len()).min(SECTOR);
+            bytes.extend_from_slice(extent(image, self.sector_at(i).unwrap(), length as u32)?);
+        }
+        Ok(Cow::Owned(bytes))
+    }
 }
 
 /// ST-040 §3.2.1: scan the volume descriptor set, rather than assuming its
@@ -95,14 +153,19 @@ pub fn parse(image: &[u8]) -> Result<DiscBoot<'_>, DiscError> {
             "missing Saturn hardware identifier in IP system area",
         ));
     }
-    let areas = image[0x40..0x50]
-        .iter()
-        .filter(|&&c| c != b' ')
-        .copied()
-        .collect::<Vec<_>>();
-    if areas.len() != 1 || !b"JTUE".contains(&areas[0]) {
+    let field = &image[0x40..0x50];
+    let count = field.iter().position(|c| *c == b' ').unwrap_or(field.len());
+    let areas = &field[..count];
+    if areas.is_empty()
+        || areas.len() > 4
+        || field[count..].iter().any(|c| *c != b' ')
+        || areas
+            .iter()
+            .enumerate()
+            .any(|(i, c)| !b"JTUE".contains(c) || areas[..i].contains(c))
+    {
         return Err(invalid(
-            "HLE currently requires exactly one Saturn area code (J, T, U or E)",
+            "Saturn area symbols must be distinct J/T/U/E codes followed by spaces",
         ));
     }
     let ip_size = be32(image, 0xE0) as usize;
@@ -112,6 +175,9 @@ pub fn parse(image: &[u8]) -> Result<DiscBoot<'_>, DiscError> {
         ));
     }
     let ip = &image[..ip_size];
+    // ST-040 §§4.1/4.5/4.6: each area block adds 32 bytes before AIP.
+    // Independent HLE never executes or substitutes Sega security/area objects.
+    let aip_entry = IP_ADDRESS + 0xE00 + areas.len() as u32 * 0x20;
     let stack = match be32(image, 0xE8) {
         0 => HIGH_WRAM + 0x2000,
         n => n,
@@ -122,6 +188,18 @@ pub fn parse(image: &[u8]) -> Result<DiscBoot<'_>, DiscError> {
     {
         return Err(invalid(
             "master stack must be aligned in high work RAM outside the IP",
+        ));
+    }
+    let slave_stack = match be32(image, 0xEC) {
+        0 => HIGH_WRAM + 0x1000,
+        n => n,
+    };
+    if !slave_stack.is_multiple_of(4)
+        || !ram_range(slave_stack.wrapping_sub(4), 4)
+        || (slave_stack > IP_ADDRESS && slave_stack <= IP_ADDRESS + ip_size as u32)
+    {
+        return Err(invalid(
+            "slave stack must be aligned in high work RAM outside the IP",
         ));
     }
     let load_address = be32(image, 0xF0);
@@ -174,18 +252,13 @@ pub fn parse(image: &[u8]) -> Result<DiscBoot<'_>, DiscError> {
         let name_length = record[32] as usize;
         if name_length == 0
             || 33 + name_length > length
-            || record[1] != 0
-            || record[26..28] != [0, 0]
             || record[28..32] != [1, 0, 0, 1]
             || record[25] & !3 != 0
         {
-            return Err(invalid(
-                "unsupported ISO record (extended attributes, flags, interleave or multi-volume)",
-            ));
+            return Err(invalid("unsupported ISO record flags or volume sequence"));
         }
-        let sector = dual32(record, 2)?;
-        let size = dual32(record, 10)?;
-        extent(image, sector, size)?;
+        let file = FileExtent::from_record(record, image)?;
+        let (sector, size) = (file.sector, file.size);
         let name = &record[33..33 + name_length];
         if record_index < 2 {
             if name != [record_index as u8]
@@ -208,10 +281,10 @@ pub fn parse(image: &[u8]) -> Result<DiscBoot<'_>, DiscError> {
                     < directory_sector as u64 * SECTOR as u64 + directory_size as u64
             {
                 return Err(invalid(
-                    "first root entry must be a contiguous executable file after the directory",
+                    "first root entry must be an executable file after the directory",
                 ));
             }
-            first_file = Some((sector, size));
+            first_file = Some(file);
         }
         record_index += 1;
         offset += length;
@@ -221,16 +294,21 @@ pub fn parse(image: &[u8]) -> Result<DiscBoot<'_>, DiscError> {
     if load_address == 0 {
         return Ok(DiscBoot {
             ip,
-            executable: &[],
+            executable: Cow::Borrowed(&[]),
             load_address,
             stack,
+            slave_stack,
+            aip_entry,
         });
     }
-    let (sector, size) =
+    let file =
         first_file.ok_or_else(|| invalid("missing first-read executable in root directory"))?;
+    let size = file.size;
     if size == 0
         || !ram_range(load_address, size as usize)
-        || (stack > load_address && stack <= load_address.saturating_add(size))
+        || [stack, slave_stack]
+            .iter()
+            .any(|&sp| sp > load_address && sp <= load_address.saturating_add(size))
     {
         return Err(invalid(
             "first-read executable is empty, exceeds high work RAM, or overlaps the stack",
@@ -238,8 +316,10 @@ pub fn parse(image: &[u8]) -> Result<DiscBoot<'_>, DiscError> {
     }
     Ok(DiscBoot {
         ip,
-        executable: extent(image, sector, size)?,
+        executable: file.bytes(image)?,
         load_address,
         stack,
+        slave_stack,
+        aip_entry,
     })
 }

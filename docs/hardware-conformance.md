@@ -567,7 +567,7 @@ no-op CPU/device implementations cannot satisfy those assertions.
 
 | Feature / manual | Current behavior / edge cases | Native | Browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- | --- |
-| Cooked ISO, [Disc Format][DISC] | Bounded IP/ISO9660 first-read startup; retained media and runtime sector/file reads; checked LBA/FAD/volume/record bounds and atomic directory changes | disc.rs, media.rs, cd.rs, CLAB | SC, CLAB/local ISO | General boot layouts/size, interleaved/XA filesystem records | Pending |
+| Cooked ISO, [Disc Format][DISC] | Bounded multi-area IP/ISO9660 startup; extended-attribute offsets and interleaved first-read/runtime files; XA file metadata, held FID windows and checked LBA/FAD/volume bounds | disc.rs, media.rs, cd.rs, CLAB, filesystem/layout evidence below | SC, CLAB/local ISO, original filesystem/layout Wasm guests below | 16 MiB boot bound, remaining record formats and complete runtime command/timing/error corpus | Pending |
 | BIN/CUE/raw/mixed tracks, [DISC] / [CD] §§4/7.2.3 | Caller-resolved files, cooked/2352-byte Mode1/Mode2/audio, shared/separate files, INDEX00–99, gaps and TOC; subindices and PRE/DCP/4CH CONTROL metadata drive TOC/status/Q reporting; malformed/duplicate flags rejected; EDC validation, bounded P/Q correction for Mode1/XA Form1, Form2 EDC and PRE audio processing | [media vectors](../tests/media.rs), [parity-matrix/XA vectors](../src/media/integrity.rs), [directory guest](../tests/cd_drive.rs), CLAB | Directory guest on clean/correctable/uncorrectable raw media; CLAB multi-file CUE, INDEX02/99, malformed ordering, missing-reference/reset/privacy | M2G adds plain 2336-byte Mode2 payloads; complete decode/timing boundaries remain; WAVE/compression absent | Pending |
 | CD command/status/HIRQ, [CD] §§3.1–3.4 | Separate command/response latches; 1075-clock command completion, read-protected responses, CMOK/DRDY/CSCT/end flags, masks, clear-zero HIRQ and SCU A-bus IRQ | `tests/cd.rs`, CLAB | CLAB command/FIFO/DMA/IRQ | Full command-specific timing and register mirrors; BIN/CUE has no R–W stream, with empty FIFO WAIT now tested | Pending |
 | CD drive/TOC/session/track state, [CD] §§4/7/8.2 | TOC/session/Q, bounded seek, data play, CD-DA/repeat/end, media-dependent FAD/track/index reports; timed CDON/OFF, 60 Hz pause reports, programmed standby, scan directions/range/muting, tray/media retention and deterministic virtual close | `tests/cd.rs`, CLAB, CDDRV | CLAB, CDDRV | Remaining initialization/subcode options and full drive/response lifecycle boundary evidence | Pending |
@@ -1179,8 +1179,9 @@ Physical padding is not part of that volume. A zero first-read address disables
 that transfer as specified by ST-040 §4.3; original AIP instructions still execute.
 [Native startup vectors](../tests/disc.rs),
 [original runtime guest](../tests/cd_drive.rs) and browser Wasm execute these cases.
-General HLE system/backup/CD ABI, multi-area startup and other required media
-contracts remain required; this change does not substitute for those services.
+At that revision, general HLE system/backup/CD ABI, multi-area startup and other
+media contracts remained required. The later ISO/XA bootstrap inventory below
+records additional implementations without substituting for the pending services.
 
 ## Gradation and cache refill/RAM implementation
 
@@ -1739,3 +1740,36 @@ or generated demo bytes are changed by this scheduler revision.
 The new evidence removes fixed CPU issue turns; it does not resolve the remaining
 pipeline/bus, CPU/peripheral/reset, SCU/DSP, video, SCSP, CD/media, HLE and SMPC
 requirements or comprehensive umbrella acceptance. All remain mandatory in #17.
+
+## BSC sharing and ISO/XA bootstrap and runtime files
+
+Primary references: [H] §§7.2.1, 7.8, 7.10.3–7.10.4; [DISC] §3.2.4,
+tables3.10–3.11 and §§4.1/4.3/4.5–4.7; [CD] §§6.2.1–6.2.3/table6.1,
+§6.8 and §8.2.8; ISO9660 §9.1. All three new fixture builders and their
+outputs use the adjacent [MIT license](../tests/fixtures/LICENSE). The discs
+embed that license as a directory file. No security/area object or firmware
+is included, and no host code writes a running guest's results.
+
+| Behavior | Implementation | Independent native evidence | Same guest in browser Wasm |
+| --- | --- | --- | --- |
+| Valid BSTROM/PSHR initialization | [Bsc::write/shared_access/monitors_external_bus](../src/onchip/bsc.rs); [CpuBus::observe_external](../src/bus.rs); [OnChip::observe_access](../src/onchip.rs) | All four bit combinations and both MD5 pin states; private turnaround survives another shared owner; key/lane/reset tests retained | [BSC sharing guest](../tests/fixtures/build_bsc_share.py), [native integration](../tests/bsc.rs), [browser suite](../scripts/browser-smoke.mjs): both CPUs exchange real RAM writes, test external versus local UBC matches, and repeat reset. Changing only PSHR changes both external flags from 3000 to 7000; local flags stay 9000. BSTROM cannot shorten a single beat on the existing 32-bit CS0 adapter; narrow-ROM nibble protocols are not established by this evidence. |
+| XA and extended-attribute metadata | [File::from_record](../src/cd.rs) | Authored unit/gap/file-number/attribute bytes, checked data-start offset and physical volume/track bounds; hidden ISO flags do not become reserved public attribute bits | [Filesystem guest/media](../tests/fixtures/build_cd_filesystem.py), [native execution](../tests/cd_filesystem.rs), browser: reads 12 actual FIFO bytes identifying FAD172, size6144 and metadata02020728. The authored raw XA Form1 disc includes EDC/P/Q, attribute block and independently numbered gap sectors. |
+| Runtime interleaved data and offsets | `File::sector`, `CdBlock::drive_frame`, ReadFile in [cd.rs](../src/cd.rs) | [120 unit/gap/size combinations](../tests/cd.rs) include empty files, invalid unit=0/gap>0, last physical sector and out-of-volume gaps | Guest sums all payload words through real commands/HIRQ/FIFO; BB attributes and EE gap bytes are excluded. Changing MOV #0,R6 to MOV #1,R6 selects two sectors and removes exactly 1111×1024 from the checksum. Both reset repetitions agree. |
+| File information windows | `CdBlock::load_directory`, commands71/72/73 | [300-child directory](../tests/cd.rs): exactly254 children plus self/parent, ReadDir window256–301 with46 children, absent FID rejection, invalid navigation retains previous window; uninitialized scope rejects as specified in [CD] §6.2.2 | Existing original directory BIOS still runs cooked and clean/correctable/uncorrectable raw inputs. Browser checks rejection status after failed initialization rather than interpreting undefined response fields as an empty valid table. The large-window boundary corpus is native evidence. |
+| Filesystem selector/partition effects | `CdBlock::prepare_file_filter`, directory/read-file commands | Existing sector/partition/native file tests; selected destination is cleared, true route returns to its own partition, false route disconnects, FAD/file-number filtering is enabled | Filesystem guest starts a second read into the same partition without deleting the first read's stored sectors: resulting count is1, not4. It reads filter mode41, connectors03FF and CD connection0300 through actual commands. Full selector connection constraints and transfer overlap timing remain required. |
+| Multi-area bootstrap and independent stacks | [disc::parse](../src/disc.rs); [hle::install](../src/hle.rs) configures the original reset literal pool from IP metadata | [Disc vectors](../tests/disc.rs) reject duplicate/invalid area strings and misaligned, IP-overlapping or first-read-overlapping slave stacks | [Boot-layout disc](../tests/fixtures/build_boot_layout.py): one/two/four area blocks select AIP at2E20/2E40/2E80; guest master/slave report FF000 and FD000/default1000 stack offsets, respectively. Reordered area symbols, changed fourth-sector data and repeated cold resets run in native and Wasm. Commercial region/authentication behavior is not claimed. |
+| Interleaved first-read bootstrap | `FileExtent::from_record/sector_at/bytes` in [disc.rs](../src/disc.rs) | Checked logical/physical extent bounds; ordinary contiguous files borrow their bytes while interleaved files gather only their data sectors | Boot-layout guest uses unit2/gap1, one extended-attribute sector and four logical data sectors. Real SH-2 loads from the third/fourth loaded sectors compute99999999; a changed disc word changes that sum. The AIP and both processors execute ordinary guest instructions. |
+
+| Original artifact | SHA-256 |
+| --- | --- |
+| `bsc-share.hex` | `dcae6692bd0661a8f694d4ebe90351b0bf08f3330f2025ccb0e5f1fe412383bb` |
+| `cd-filesystem.hex` | `4d4659d3fe740a60893340cc86e37279a9e73d4d7473d33f4766f87ebcc67260` |
+| `cd-filesystem.bin` | `5c67809a98b8678a507a5fb5192ae89baca3278a3b9000d72f03c2ff521d8d3b` |
+| `boot-layout.iso` | `a0e7f5d7de82278d586a4520096ff39d40caede59867450cf94b47d3d9384602` |
+
+These changes implement specific BSC, filesystem and bootstrap contracts. They
+do not establish the remaining BSC/MCR or board protocols, transaction
+arbitration/locking, CPU/peripheral/pipeline/reset, SCU/DSP, video, SCSP/DSP,
+CD timing/connection/lifecycle, SYS_EXECDMP/CD-library or SMPC requirements.
+All original Issue #17 acceptance criteria remain mandatory; no umbrella
+criterion is marked complete by these fixtures.

@@ -66,10 +66,12 @@ impl Bsc {
         let i = (offset / 4) as usize;
         let mask = [0x1FF7, 0x00FC, 0xFFFF, 0xFEFC, 0x00F8, 0x00FF, 0x00FF][i];
         let mut word = value as u16 & mask;
-        // Ordinary-space software waits have real external-access effects.
-        // Keep other interface changes explicit until their bus protocols exist:
-        // BCR1 memory/arbitration and MCR remain separate bus protocols.
-        let implemented = [0x13F0, 0x00FC, 0xFFFF, 0][i.min(3)];
+        // H §§7.2.1/7.8: BSTROM is a valid initialization even with this
+        // board's 32-bit CS0 adapter. Nibble access only changes transfers
+        // wider than an 8/16-bit ROM; it cannot shorten a single 32-bit beat.
+        // PSHR controls arbitration and external UBC monitoring (§7.10.3).
+        // Memory-interface selection still requires its separate protocol.
+        let implemented = [0x1FF0, 0x00FC, 0xFFFF, 0][i.min(3)];
         if i < 4 && (word ^ self.registers[i]) & !implemented != 0 {
             return Err(BusError::UnsupportedDevice { address, width: 4 });
         }
@@ -162,6 +164,25 @@ impl Bsc {
     pub fn reset_bus(&self) {
         self.access.set(None);
     }
+    pub fn release_shared_bus(&self) {
+        // A different shared owner supplies no empty cycles on a partial
+        // master's private bus. Preserve private turnaround history (§7.10.3).
+        if self
+            .access
+            .get()
+            .is_none_or(|last| self.shared_access(last.area << 25))
+        {
+            self.reset_bus();
+        }
+    }
+    /// H §§7.2.1/7.10.3: partial-share master mode requests ownership only
+    /// for CS2. The MD5 slave pin takes precedence over the software PSHR bit.
+    pub fn shared_access(&self, address: u32) -> bool {
+        self.slave || self.registers[0] & 0x400 == 0 || address >> 25 == 2
+    }
+    pub fn monitors_external_bus(&self) -> bool {
+        self.slave || self.registers[0] & 0x400 == 0
+    }
     /// H §§7.2.2/7.3.1: ordinary CS1-CS3 narrow buses divide larger
     /// operand/refill requests into separate external byte/word transactions.
     /// CS0 retains this board model's existing 32-bit external adapter.
@@ -213,6 +234,48 @@ impl Bsc {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn burst_rom_and_partial_sharing_are_valid_initializations_with_pin_specific_effects() {
+        // H §§7.8/7.10.3: a 32-bit CS0 adapter needs no nibble cycles;
+        // PSHR affects master-mode arbitration/monitoring, never the MD5 pin.
+        for slave in [false, true] {
+            for bits in [0, 0x400, 0x800, 0xC00] {
+                let mut b = Bsc::default();
+                b.set_slave(slave);
+                b.write(BSC, 0xA55A_03F0 | bits).unwrap();
+                assert_eq!(
+                    b.read(BSC, 4),
+                    Ok(0x3F0 | bits | if slave { 0x8000 } else { 0 })
+                );
+                assert_eq!(b.monitors_external_bus(), slave || bits & 0x400 == 0);
+                for area in 0..4 {
+                    assert_eq!(
+                        b.shared_access(area << 25),
+                        slave || bits & 0x400 == 0 || area == 2
+                    );
+                    assert_eq!(
+                        b.access_waits(area << 25, false),
+                        if area == 0 { 6 } else { 8 }
+                    );
+                    assert_eq!(b.bus_width(area << 25), 4);
+                }
+            }
+        }
+    }
+    #[test]
+    fn partial_private_turnaround_survives_other_shared_bus_owners() {
+        let mut b = Bsc::default();
+        b.write(BSC, 0xA55A_07F0).unwrap();
+        b.write(BSC + 8, 0xA55A_AA00).unwrap();
+        assert_eq!(b.access_waits(0x0600_0000, false), 0);
+        b.release_shared_bus();
+        assert_eq!(b.access_waits(0x0600_0000, true), 2);
+        assert_eq!(b.access_waits(0x0400_0000, false), 0);
+        b.release_shared_bus();
+        assert_eq!(b.access_waits(0x0400_0000, true), 0);
+        b.reset_bus();
+        assert_eq!(b.access_waits(0x0600_0000, true), 0);
+    }
     #[test]
     fn keyed_registers_processor_pins_and_word_lanes() {
         for slave in [false, true] {
@@ -278,7 +341,6 @@ mod tests {
         assert_eq!(b.read(BSC, 4), Ok(0x120));
         assert_eq!(b.read(BSC + 8, 4), Ok(0xAA39));
         for (address, value) in [
-            (BSC, 0xA55A_0920),      // burst ROM
             (BSC, 0xA55A_0121),      // SDRAM
             (BSC + 4, 0xA55A_00F0),  // reserved bus width
             (BSC + 8, 0xA55A_AB39),  // reserved idle encoding

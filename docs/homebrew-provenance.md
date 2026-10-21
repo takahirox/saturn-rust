@@ -196,3 +196,16 @@ The [readout conformance entry](hardware-conformance.md#vdp1-rotatedinterlaced-r
 links implementation, native vectors, browser/Canvas tests and mutations. HSS's
 existing guest now waits for its documented framebuffer-change latch without
 changing its original expected samples. All three demonstration media are unchanged.
+
+The additional BSC-sharing, CD-filesystem and boot-layout diagnostics are original
+MIT works under [tests/fixtures/LICENSE](../tests/fixtures/LICENSE). Their
+[sharing builder](../tests/fixtures/build_bsc_share.py),
+[XA/filesystem builder](../tests/fixtures/build_cd_filesystem.py) and
+[boot-layout builder](../tests/fixtures/build_boot_layout.py) contain their complete
+source. Standard-library Python and the existing original SH-2 assembler produce
+the ROM, ISO/CUE, XA EDC/P/Q and golden records; there are no SDK objects, firmware,
+commercial data or third-party assets. Both new disc images embed the license as
+a file. CI verifies their reproducible bytes. Native and browser Wasm execute the
+same original guests; the [conformance inventory](hardware-conformance.md#bsc-sharing-and-isoxa-bootstrap-and-runtime-files)
+records behavior, checks, hashes and limits. These diagnostics supplement the
+preserved Star Collector, Prism Courier and Hardware Lab discs.
