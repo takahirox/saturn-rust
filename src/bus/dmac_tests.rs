@@ -5,6 +5,182 @@ use crate::onchip::{DMAC, IPRA};
 const SOURCE: u32 = HIGH_WRAM + 0x100;
 const DEST: u32 = HIGH_WRAM + 0x200;
 
+#[test]
+fn internal_peripheral_dma_has_cpu_local_one_state_phases_parallel_to_external_bus() {
+    // H §§7.11.2–7.11.3/9.3.5: SCI SMR -> BRR is an internal transfer.
+    // A TAS-held external transaction must neither delay it nor inherit any
+    // of its phase time. Both physical SH7604s have independent internal buses.
+    for chunk in [1, 2, 7] {
+        let mut bus = setup(Processor::Master, 0, 1, false);
+        bus.onchip[0].write32(DMAC + 0x30, 0).unwrap();
+        assert_eq!(
+            bus.replay_cpu(Processor::Slave).tas_read8(DEST),
+            Err(BusError::Pending)
+        );
+        bus.advance_clocks(2).unwrap();
+        assert_eq!(bus.replay_cpu(Processor::Slave).tas_read8(DEST), Ok(0));
+        for p in [Processor::Master, Processor::Slave] {
+            let chip = &mut bus.onchip[p as usize];
+            chip.write8(0xFFFFFE00, 0x31 + p as u8).unwrap();
+            for (off, value) in [
+                (0, 0xFFFFFE00),
+                (4, 0xFFFFFE01),
+                (8, 1),
+                (12, 0x205),
+                (0x20, 0x44),
+                (0x30, 1),
+            ] {
+                chip.write32(DMAC + off, value).unwrap();
+            }
+            chip.write16(IPRA, 0x600).unwrap();
+        }
+        bus.advance_clocks(1).unwrap(); // only the internal read completes
+        for p in [Processor::Master, Processor::Slave] {
+            let chip = &mut bus.onchip[p as usize];
+            assert_eq!(chip.read8(0xFFFFFE01), Ok(0xFF));
+            assert_eq!(chip.read32(DMAC + 8), Ok(1));
+            assert_eq!(chip.interrupt(), None);
+            chip.write8(0xFFFFFE00, 0x71).unwrap(); // cannot change sampled data
+        }
+        bus.advance_clocks(chunk).unwrap();
+        for p in [Processor::Master, Processor::Slave] {
+            let chip = &bus.onchip[p as usize];
+            assert_eq!(chip.read8(0xFFFFFE01), Ok(0x31 + p as u8));
+            assert_eq!(chip.read32(DMAC + 8), Ok(0));
+            assert_eq!(chip.interrupt(), Some((6, 0x44)));
+        }
+        // The external lock is still live; internal DMA never acquired it.
+        assert_eq!(
+            bus.replay_cpu(Processor::Master).read32(SOURCE),
+            Err(BusError::Pending)
+        );
+        bus.advance_clocks(8).unwrap();
+        assert!(!bus.take_cpu_transaction_completion(Processor::Master));
+        bus.finish_cpu_transaction(Processor::Slave);
+        bus.advance_clocks(8).unwrap();
+        assert_eq!(
+            bus.replay_cpu(Processor::Master).read32(SOURCE),
+            Ok(0x11223344)
+        );
+        assert_eq!(bus.take_dma_errors(), [false; 2]);
+    }
+}
+
+#[test]
+fn slave_reset_cancels_its_granted_internal_phase_without_canceling_master_or_external_bus() {
+    let mut bus = setup(Processor::Slave, 0, 1, false);
+    for (off, value) in [(0, 0xFFFFFE00), (4, 0xFFFFFE01), (12, 0x205)] {
+        bus.onchip[1].write32(DMAC + off, value).unwrap();
+    }
+    bus.onchip[1].write8(0xFFFFFE00, 0x53).unwrap();
+    bus.grant_bus_transaction();
+    bus.set_slave_enabled(false); // cancel the granted internal read
+    bus.set_slave_enabled(true);
+    bus.advance_clocks(8).unwrap();
+    assert_eq!(bus.onchip[1].read8(0xFFFFFE01), Ok(0xFF));
+    assert_eq!(bus.onchip[1].interrupt(), None);
+    // Repeat with a completed read and a granted write.
+    for (off, value) in [
+        (0, 0xFFFFFE00),
+        (4, 0xFFFFFE01),
+        (8, 1),
+        (12, 0x205),
+        (0x30, 1),
+    ] {
+        bus.onchip[1].write32(DMAC + off, value).unwrap();
+    }
+    bus.advance_clocks(1).unwrap();
+    bus.grant_bus_transaction();
+    bus.set_slave_enabled(false);
+    // A post-reset value exposes a late write from the canceled phase.
+    bus.onchip[1].write8(0xFFFFFE01, 0x67).unwrap();
+    bus.advance_clocks(8).unwrap();
+    assert_eq!(bus.onchip[1].read8(0xFFFFFE01), Ok(0x67));
+    assert_eq!(bus.onchip[1].interrupt(), None);
+    assert_eq!(bus.take_dma_errors(), [false; 2]);
+}
+
+#[test]
+fn internal_dma_completes_concurrently_with_another_cpus_granted_external_read() {
+    let mut bus = setup(Processor::Master, 0, 1, false);
+    for (off, value) in [(0, 0xFFFFFE00), (4, 0xFFFFFE01), (12, 0x205)] {
+        bus.onchip[0].write32(DMAC + off, value).unwrap();
+    }
+    bus.onchip[0].write8(0xFFFFFE00, 0x35).unwrap();
+    let address = SOURCE | 0x20000000;
+    assert_eq!(
+        bus.replay_cpu(Processor::Slave).read32(address),
+        Err(BusError::Pending)
+    );
+    bus.advance_clocks(1).unwrap();
+    assert!(!bus.take_cpu_transaction_completion(Processor::Slave));
+    assert_eq!(bus.onchip[0].read8(0xFFFFFE01), Ok(0xFF));
+    bus.write32(SOURCE, 0x88776655).unwrap();
+    bus.advance_clocks(1).unwrap();
+    assert!(bus.take_cpu_transaction_completion(Processor::Slave));
+    assert_eq!(
+        bus.replay_cpu(Processor::Slave).read32(address),
+        Ok(0x88776655)
+    );
+    assert_eq!(bus.onchip[0].read8(0xFFFFFE01), Ok(0x35));
+    assert_eq!(bus.onchip[0].interrupt(), Some((6, 0x44)));
+}
+
+#[test]
+fn external_level_request_is_not_accepted_while_tas_retains_the_bus() {
+    let mut bus = setup(Processor::Master, 2, 1, false);
+    bus.onchip[0].write32(DMAC + 0x30, 0).unwrap();
+    assert_eq!(
+        bus.replay_cpu(Processor::Slave).tas_read8(DEST),
+        Err(BusError::Pending)
+    );
+    bus.advance_clocks(2).unwrap();
+    assert_eq!(bus.replay_cpu(Processor::Slave).tas_read8(DEST), Ok(0));
+    bus.onchip[0].write32(DMAC + 12, 0x5805).unwrap(); // active-low level DREQ
+    bus.onchip[0].write32(DMAC + 0x30, 1).unwrap();
+    bus.onchip[0].set_dma_request_pin(0, false);
+    bus.advance_clocks(16).unwrap(); // request while the other CPU owns TAS
+    bus.onchip[0].set_dma_request_pin(0, true);
+    bus.finish_cpu_transaction(Processor::Slave);
+    bus.advance_clocks(16).unwrap();
+    assert_eq!(bus.read32(DEST), Ok(0));
+    assert_eq!(bus.onchip[0].read32(DMAC + 8), Ok(1));
+    bus.onchip[0].set_dma_request_pin(0, false);
+    bus.advance_clocks(5).unwrap();
+    assert_eq!(bus.read32(DEST), Ok(0x11223344));
+    assert_eq!(bus.onchip[0].interrupt(), Some((6, 0x44)));
+}
+
+#[test]
+fn internal_divu_dma_waits_for_division_without_premature_result_irq_or_cpu_waits() {
+    use crate::onchip::DIVU;
+    for p in [Processor::Master, Processor::Slave] {
+        let mut bus = setup(p, 2, 1, false);
+        let chip = &mut bus.onchip[p as usize];
+        chip.write16(IPRA, 0x6600).unwrap();
+        chip.write32(DIVU + 0xC, 0x45).unwrap();
+        chip.write32(DIVU + 8, 2).unwrap(); // unsaturated overflow result + IRQ
+        chip.write32(DIVU, 0).unwrap();
+        chip.write32(DIVU + 4, 5).unwrap();
+        chip.write32(DMAC, DIVU + 4).unwrap();
+        // H table10.2: three setup + three non-restoring steps. Zero divisor,
+        // initial low=5 -> partial low=(5<<3)|7=47; interrupt at clock6.
+        bus.advance_clocks(5).unwrap();
+        assert_eq!(bus.onchip[p as usize].interrupt(), None);
+        assert_eq!(bus.read32(DEST), Ok(0));
+        assert_eq!(bus.onchip[p as usize].take_wait_clocks(), 0);
+        bus.advance_clocks(1).unwrap();
+        assert_eq!(bus.onchip[p as usize].interrupt(), Some((6, 0x45)));
+        assert_eq!(bus.onchip[p as usize].read32(DMAC + 8), Ok(1));
+        bus.advance_clocks(2).unwrap(); // internal read done; external write T1
+        assert_eq!(bus.read32(DEST), Ok(0));
+        bus.advance_clocks(1).unwrap();
+        assert_eq!(bus.read32(DEST), Ok(47));
+        assert_eq!(bus.onchip[p as usize].read32(DMAC + 8), Ok(0));
+        assert_eq!(bus.onchip[p as usize].take_wait_clocks(), 0);
+    }
+}
+
 fn setup(processor: Processor, size: u32, count: u32, burst: bool) -> Bus {
     let mut bus = Bus::default();
     bus.set_slave_enabled(true);

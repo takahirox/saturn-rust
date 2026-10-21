@@ -3,6 +3,28 @@ use super::*;
 use crate::bus::{Bus, Memory, Processor};
 
 #[test]
+fn dma_divu_accesses_preserve_cpu_instruction_dependencies_and_do_not_create_new_ones() {
+    // H §10.4.1 consecutive *CPU instruction* dependency is independent of
+    // the peripheral DMA master and of elapsed external bus time.
+    for slave in [false, true] {
+        let mut chip = OnChip::default();
+        chip.set_slave(slave);
+        chip.instruction_break(0x200, false);
+        chip.write32(DIVU, 3).unwrap();
+        chip.advance_clocks(100);
+        assert_eq!(chip.dma_read32(DIVU), Ok(3));
+        assert_eq!(chip.take_wait_clocks(), 0);
+        chip.instruction_break(0x202, false);
+        assert_eq!(chip.read32(DIVU), Ok(3));
+        assert_eq!(chip.take_wait_clocks(), 1);
+        chip.dma_write32(DIVU, 7).unwrap();
+        chip.instruction_break(0x204, false);
+        assert_eq!(chip.read32(DIVU), Ok(7));
+        assert_eq!(chip.take_wait_clocks(), 0);
+    }
+}
+
+#[test]
 fn divu_consecutive_read_interlock_follows_instructions_not_time_and_word_writes_are_not_reads() {
     // SH7604 §10.4.1. Word-accessible registers have the same dependency;
     // a NOP removes it, elapsed bus/peripheral time alone does not.

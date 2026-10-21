@@ -27,8 +27,8 @@ fn independent_cpus_execute_all_dma_widths_short_bursts_overlapping_reads_and_ir
         let mut rom = original.clone();
         let mut replacements = 0;
         if changed {
-            for bytes in rom.chunks_exact_mut(4) {
-                if bytes == 0x11223344u32.to_be_bytes() {
+            for bytes in rom.as_chunks_mut::<4>().0 {
+                if *bytes == 0x11223344u32.to_be_bytes() {
                     bytes.copy_from_slice(&0x91223344u32.to_be_bytes());
                     replacements += 1;
                 }
@@ -60,7 +60,7 @@ fn independent_cpus_execute_all_dma_widths_short_bursts_overlapping_reads_and_ir
             }
             for state in [m.cpu_state(), m.slave_state()] {
                 assert_eq!(state.status, CpuStatus::Sleeping, "pc={:08X}", state.pc);
-                assert_eq!(state.exceptions, 5);
+                assert_eq!(state.exceptions, 8);
                 assert_eq!(state.last_exception.as_ref().unwrap().vector, 0x44);
             }
             assert_eq!(m.fault(), None);

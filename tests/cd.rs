@@ -120,6 +120,46 @@ fn selectors_fad_range_connections_copy_move_and_size() {
     issue(&mut cd, [0x5500, 0, 0x0400, 151]);
     assert_eq!(issue(&mut cd, [0x5600, 0, 0, 0])[1], 1);
 }
+
+#[test]
+fn selector_connection_commands_validate_both_outputs_and_exclusive_inputs_atomically() {
+    // ST-162 §§5.3/7.2.5 table5.1: 24 selectors, FF=disconnected,
+    // one source per filter input, multiple true outputs per partition.
+    let (mut cd, _) = mounted();
+    assert_ne!(issue(&mut cd, [0x4603, 0x0304, 0, 0])[0], 0xFF00);
+    for invalid in [24u16, 25, 127, 254] {
+        for args in [(invalid << 8) | 5, 0x0600 | invalid] {
+            cd.write16(CD + 8, !0x40).unwrap();
+            assert_eq!(issue(&mut cd, [0x4603, args, 0, 0])[0], 0xFF00);
+            assert_eq!(cd.read16(CD + 8).unwrap() & 0x40, 0); // no ESEL
+            assert_eq!(issue(&mut cd, [0x4700, 0, 0, 0])[1], 0x0304);
+        }
+        assert_eq!(issue(&mut cd, [0x3000, 0, invalid << 8, 0])[0], 0xFF00);
+    }
+    // Flags select bytes individually; ignored invalid values cannot reject.
+    assert_ne!(issue(&mut cd, [0x4601, 0x07FE, 0, 0])[0], 0xFF00);
+    assert_eq!(issue(&mut cd, [0x4700, 0, 0, 0])[1], 0x0704);
+    assert_ne!(issue(&mut cd, [0x4602, 0xFE05, 0, 0])[0], 0xFF00);
+    assert_eq!(issue(&mut cd, [0x4700, 0, 0, 0])[1], 0x0705);
+    // Another true output can feed partition 7; another false output or
+    // CD device cannot share the already connected filter input 5.
+    assert_ne!(issue(&mut cd, [0x4601, 0x0700, 0x0100, 0])[0], 0xFF00);
+    assert_eq!(issue(&mut cd, [0x4603, 0x0805, 0x0100, 0])[0], 0xFF00);
+    assert_eq!(issue(&mut cd, [0x4700, 0, 0x0100, 0])[1], 0x07FF);
+    assert_eq!(issue(&mut cd, [0x3000, 0, 0x0500, 0])[0], 0xFF00);
+    assert_ne!(issue(&mut cd, [0x3000, 0, 0x0600, 0])[0], 0xFF00);
+    assert_eq!(issue(&mut cd, [0x4602, 0x0006, 0, 0])[0], 0xFF00);
+    // Disconnect the old source, connect the new source, and observe actual
+    // sector routing through filter 6 to partition 6 rather than just readback.
+    assert_ne!(issue(&mut cd, [0x3000, 0, 0xFF00, 0])[0], 0xFF00);
+    assert_ne!(issue(&mut cd, [0x4602, 0x0006, 0, 0])[0], 0xFF00);
+    assert_ne!(issue(&mut cd, [0x3000, 0, 0, 0])[0], 0xFF00);
+    issue(&mut cd, [0x4000, 151, 0, 1]);
+    issue(&mut cd, [0x4440, 0, 0, 0]);
+    sectors(&mut cd, 2);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0x0700, 0])[3], 1);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0x0600, 0])[3], 1);
+}
 #[test]
 fn toc_raw_transfer_lengths_put_reset_and_chunk_invariance() {
     let (mut cd, bytes) = mounted();

@@ -379,10 +379,10 @@ try {
     const cueFiles = files.filter((file) => /\.cue$/i.test(file.name));
     const cue = cueFiles.length === 1 ? cueFiles[0] : null;
     const file = files[0];
-    if ((!cue && (files.length !== 1 || file.size < 45056 || file.size > 16777216 || file.size % 2048 !== 0)) ||
+    if ((!cue && (files.length !== 1 || file.size < 18 * 2048 || file.size > 16777216 || file.size % 2048 !== 0)) ||
         cueFiles.length > 1 || files.reduce((total, file) => total + file.size, 0) > 134217728 ||
         (cue && (cue.size > 1048576 || files.length < 2 || files.length > 100))) {
-      $("error").textContent = "Select one complete 2048-byte-sector ISO (22 sectors to 16 MiB), or one CUE and all its BINARY track files together (up to 128 MiB).";
+      $("error").textContent = "Select one complete 2048-byte-sector ISO (18 sectors to 16 MiB), or one CUE and all its BINARY track files together (up to 128 MiB).";
       render();
       return;
     }

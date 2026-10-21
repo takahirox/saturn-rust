@@ -42,6 +42,19 @@ def build():
     s += 'load 0x25818000,r1\nmov.l @r1,r0\nload 0x060090E0,r2\nmov.l r0,@r2\n'
     s += command([0x0600,0,0,0], 'end_toc', 0x060090B0)
     s += command([0x5100,0,0,0], 'count', 0x060090C0)
+    # Independent selector error/atomicity vectors, executed through MMIO.
+    for index, (words, name) in enumerate([
+        ([0x4603,0x0304,0,0], 'connect_filter'),
+        ([0x4603,0x1805,0,0], 'bad_partition'),
+        ([0x4603,0x0618,0,0], 'bad_filter'),
+        ([0x4700,0,0,0], 'retained_connections'),
+        ([0x4603,0x0804,0x0100,0], 'duplicate_input'),
+        ([0x3000,0,0x0400,0], 'device_conflict'),
+        ([0x4602,0x00ff,0,0], 'disconnect_false'),
+        ([0x3000,0,0x0400,0], 'device_reconnect'),
+        ([0x3100,0,0,0], 'device_destination'),
+    ]):
+        s += command(words, name, 0x06009100 + index * 16)
     s += 'load 0x060090F0,r1\nload 0x600d,r0\nmov.l r0,@r1\nsleep\n'
     rom = bytearray(524288)
     struct.pack_into('>II',rom,0,0x200,0x06100000)

@@ -49,6 +49,9 @@ pub(super) struct Transactions {
     dmac_yield: bool,
     previous_dmac: Option<Processor>,
     active: Option<Active>,
+    // H §7.11.3: on-chip peripheral cycles do not drive or acquire the
+    // external bus. Each SH7604 has its own internal/peripheral buses.
+    internal: [Option<Active>; 2],
     lock: Option<Processor>,
     previous: Option<Processor>,
     scu: Option<crate::scu::DmaCycle>,
@@ -217,6 +220,7 @@ impl Bus {
         }
     }
     pub(super) fn cancel_dmac_transaction(&mut self, processor: Processor) {
+        self.transactions.internal[processor as usize] = None;
         if self
             .transactions
             .active
@@ -239,6 +243,9 @@ impl Bus {
             [Processor::Master, Processor::Slave]
         };
         for processor in order {
+            if self.transactions.internal[processor as usize].is_some() {
+                continue;
+            }
             self.prepare_dmac(processor);
             let Some(transfer) = self.transactions.journals[processor as usize + 2]
                 .borrow()
@@ -246,6 +253,9 @@ impl Bus {
             else {
                 continue;
             };
+            if transfer.address >= 0xFFFF_FE00 {
+                continue;
+            }
             self.transactions.dmac_owner = Some(processor);
             self.transactions.previous_dmac = Some(processor);
             self.grant_cpu_beat(processor, transfer, true);
@@ -329,6 +339,43 @@ impl Bus {
         )
     }
     pub(crate) fn grant_bus_transaction(&mut self) {
+        for processor in [Processor::Master, Processor::Slave] {
+            let i = processor as usize;
+            if self.transactions.internal[i].is_some()
+                || self
+                    .transactions
+                    .active
+                    .as_ref()
+                    .is_some_and(|a| a.owner == Owner::Dmac(processor))
+            {
+                continue;
+            }
+            let waiting = self.transactions.journals[i + 2].borrow().waiting;
+            if waiting.is_some_and(|t| t.address < 0xFFFF_FE00)
+                || (waiting.is_none()
+                    && !self.onchip[i]
+                        .dma
+                        .internal_request(self.onchip[i].serial_dma_requests()))
+            {
+                // Do not accept a new external request merely to find its
+                // address while another master owns the external bus.
+                continue;
+            }
+            self.prepare_dmac(processor);
+            let transfer = self.transactions.journals[i + 2].borrow().waiting;
+            if let Some(transfer) = transfer.filter(|t| t.address >= 0xFFFF_FE00) {
+                // H §9.3.5: internal peripheral access is one state, with
+                // neither external T1/T2 nor BSC software/turnaround waits.
+                self.transactions.internal[i] = Some(Active {
+                    owner: Owner::Dmac(processor),
+                    transfer,
+                    remaining: 1 + self.onchip[i].dma_wait_clocks(transfer.address, transfer.width),
+                });
+                if self.transactions.dmac_owner == Some(processor) {
+                    self.transactions.dmac_owner = None;
+                }
+            }
+        }
         if self.transactions.active.is_some() {
             return;
         }
@@ -416,26 +463,50 @@ impl Bus {
         }
     }
     pub(crate) fn bus_transaction_deadline(&self) -> u32 {
-        self.transactions
-            .active
-            .as_ref()
-            .map_or(u32::MAX, |a| self.system_clock.deadline(a.remaining).max(1))
+        self.system_clock.deadline(self.bus_main_deadline()).max(1)
     }
     pub(super) fn bus_main_deadline(&self) -> u32 {
         self.transactions
             .active
-            .as_ref()
-            .map_or(u32::MAX, |a| a.remaining)
+            .iter()
+            .chain(self.transactions.internal.iter().flatten())
+            .map(|a| a.remaining)
+            .min()
+            .unwrap_or(u32::MAX)
     }
     pub(super) fn advance_bus_transaction(&mut self, clocks: u32) -> Result<(), ScuError> {
-        let Some(active) = &mut self.transactions.active else {
-            return Ok(());
-        };
-        active.remaining = active.remaining.saturating_sub(clocks);
-        if active.remaining != 0 {
-            return Ok(());
+        // Decrement every already-granted phase before completing any of
+        // them: a completion may queue a new phase, never retroactively age it.
+        for active in self
+            .transactions
+            .internal
+            .iter_mut()
+            .flatten()
+            .chain(self.transactions.active.iter_mut())
+        {
+            active.remaining = active.remaining.saturating_sub(clocks);
         }
-        let active = self.transactions.active.take().unwrap();
+        for i in 0..2 {
+            if self.transactions.internal[i]
+                .as_ref()
+                .is_some_and(|a| a.remaining == 0)
+            {
+                let active = self.transactions.internal[i].take().unwrap();
+                self.complete_bus_transaction(active)?;
+            }
+        }
+        if self
+            .transactions
+            .active
+            .as_ref()
+            .is_some_and(|a| a.remaining == 0)
+        {
+            let active = self.transactions.active.take().unwrap();
+            self.complete_bus_transaction(active)?;
+        }
+        Ok(())
+    }
+    fn complete_bus_transaction(&mut self, active: Active) -> Result<(), ScuError> {
         let t = active.transfer;
         let processor = match active.owner {
             Owner::Cpu(p) | Owner::Dmac(p) => p,
@@ -447,14 +518,14 @@ impl Bus {
                 match t.width {
                     1 => chip.write8(t.address, value as u8),
                     2 => chip.write16(t.address, value as u16),
-                    _ => chip.write32(t.address, value),
+                    _ => chip.dma_write32(t.address, value),
                 }
                 .map(|_| value)
             } else {
                 match t.width {
                     1 => chip.read8(t.address).map(u32::from),
                     2 => chip.read16(t.address).map(u32::from),
-                    _ => chip.read32(t.address),
+                    _ => chip.dma_read32(t.address),
                 }
             }
         } else if t.width == 0 {

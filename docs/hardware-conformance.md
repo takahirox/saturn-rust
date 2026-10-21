@@ -651,8 +651,9 @@ an eight-reference-clock bound. See [the timing inventory below](#independent-sh
 On-chip DMA advances on separate source/destination completion deadlines even
 without CPU issue. [DMABG](#on-chip-dmac-bus-transactions-dmabg) replaces its
 eight-clock copy cadence with BSC-sized phases, cycle-steal/burst ownership and
-TAS exclusion. Exact request sampling, internal peripheral timing and complete
-refresh/display/sound ownership remain required. DMA address errors latch for vector10
+TAS exclusion. Exact external request sampling and complete
+refresh/display/sound ownership remain required; independent internal phases and
+DIVU interlocks are covered below. DMA address errors latch for vector10
 at the next eligible CPU boundary. NMI precedes internal IRQ selection; each CPU
 applies its own SR mask, delayed-branch and control-transfer inhibition. Accepted
 interrupts consume a boundary without retiring an instruction. FRT requests
@@ -1988,10 +1989,10 @@ completed MMIO without issuing them twice. All device work remains guest-driven.
 
 | Contract | Implementation | Independent native evidence | Guest / browser evidence |
 | --- | --- | --- | --- |
-| Data, TCR/TE and IRQ become visible at their actual completion boundaries | `Bus::prepare_dmac/grant_dmac/advance_bus_transaction`, `Dma::transfer` | `dmac_samples_reads_then_publishes_writes_count_and_irq_at_separate_deadlines`: both CPUs, source mutation before/after sampling, exact 2-state read + 3-state write, no early destination/count/IRQ | [Original builder](../tests/fixtures/build_dmac_bus.py), [ROM](../tests/fixtures/dmac-bus.hex), [authored vectors](../tests/fixtures/dmac-bus.tsv), [native](../tests/dmac_bus.rs) and [production Wasm](../scripts/dmac-bus.mjs): both CPUs independently execute five transfers and five IRQ handlers |
+| Data, TCR/TE and IRQ become visible at their actual completion boundaries | `Bus::prepare_dmac/grant_dmac/advance_bus_transaction`, `Dma::transfer` | `dmac_samples_reads_then_publishes_writes_count_and_irq_at_separate_deadlines`: both CPUs, source mutation before/after sampling, exact 2-state read + 3-state write, no early destination/count/IRQ | [Original builder](../tests/fixtures/build_dmac_bus.py), [ROM](../tests/fixtures/dmac-bus.hex), [authored vectors](../tests/fixtures/dmac-bus.tsv), [native](../tests/dmac_bus.rs) and [production Wasm](../scripts/dmac-bus.mjs): both CPUs independently execute eight transfers and eight IRQ handlers |
 | BSC width/waits apply to actual DMAC physical beats | `CpuBus::reserve_external/external_read_group/external_write`, separate DMA journal indices | `every_narrow_bus_and_software_wait_delays_actual_beats_and_the_final_irq`: both CPUs × 8/16/32-bit buses × four wait settings, literal `(2+Tw)*beats*2+1` deadlines; earlier clock-chunk test now expects the reset BSC's 18-state first longword unit | DMABG runs with guest-programmed waits and a real shared external bus, changing only its own MMIO/RAM |
 | A 16-byte unit performs four reads before any writes; final TCR=1/2/3 emits only that many writes | `Dma::transfer` samples four longwords; `Memory::dma_read32` preserves source-burst first/last signals; source advances 16 regardless of SM | `sixteen_byte_units_read_the_whole_source_before_writing_even_for_short_final_counts`: both CPUs, all four final counts, overlapping source/destination, no premature writes or lost canary; `zero_tcr_means_sixteen_million_longwords_and_standby_discards_burst_state` checks 24-bit TCR wrap | DMABG's TCR=3 overlaps by one longword and preserves the fourth destination canary. Interleaved reads/writes corrupt independently expected values and a four-write implementation destroys the canary |
-| Unit ownership, cycle-steal yielding, burst retention, channel priorities and TAS exclusion | `Transactions::dmac_owner/dmac_yield`, `Dma::cycle_previous/next` | `cycle_steal_yields_to_a_waiting_cpu_while_burst_retains_the_bus_and_cache_hits_proceed`, `fixed_cycle_steal_alternates_and_burst_priorities_follow_the_programmed_mode`, `tas_excludes_dmac_until_its_write_and_instruction_release` | DMABG executes independent CPUs, five width/address/burst cases and a final peer-completion handshake |
+| Unit ownership, cycle-steal yielding, burst retention, channel priorities and TAS exclusion | `Transactions::dmac_owner/dmac_yield`, `Dma::cycle_previous/next` | `cycle_steal_yields_to_a_waiting_cpu_while_burst_retains_the_bus_and_cache_hits_proceed`, `fixed_cycle_steal_alternates_and_burst_priorities_follow_the_programmed_mode`, `tas_excludes_dmac_until_its_write_and_instruction_release` | DMABG executes independent CPUs, five width/address/burst cases, SCI-to-SCI/RAM and DIVU-to-RAM, and a final peer-completion handshake |
 | DREQ is accepted once per edge; a later edge survives the current unit; a burst edge activates the block | `Channel::external_edge/burst`, latched `Dma::selected` | `edge_requests_are_consumed_at_acceptance_and_burst_edges_start_the_whole_block`: unrequested wait, a second edge while a read is pending, cycle-steal stops after two units and burst completes three | Existing DACK native/Wasm guest still waits for real pins rather than receiving invented standard-board data |
 | NMI finishes the accepted unit; DME=0 stops at the current cycle; reset cancels queued/granted work | `Dma::transfer`, `Bus::cancel_dmac_transaction`, slave/watchdog/cold-reset paths | `nmi_completes_the_accepted_unit_but_dme_abort_never_issues_another_cycle`, `reset_cancels_both_pending_read_and_granted_write_without_late_dma_or_irq`: read/write boundaries, retained counts and suppressed tail/IRQ | DMABG repeats cold boot, guest handlers acknowledge TE before subsequent work, and both CPU results repeat |
 | DMA bypasses caches and cannot access cache/DMAC/BSC/UBC registers | uncached `CpuBus`, P4 exclusions, separate peripheral completion path | `dmac_cannot_access_its_own_bsc_ubc_or_cache_registers_or_change_them`, existing SCI/cache/UBC vectors | Existing PERIPH and cache guests remain required alongside DMABG |
@@ -2006,13 +2007,33 @@ Original source, generated ROM and authored results use the adjacent
 [fixture MIT license](../tests/fixtures/LICENSE). Reproduce with
 `python3 tests/fixtures/build_dmac_bus.py --check`, required in CI. Hashes:
 
-- Expanded 512 KiB ROM: `8af4bc51336fbb02434f1a5f50d3199d422e355a13fdb69b574faa2ddf7897cd`.
-- Hex container: `8a8dbc5876d4d6d8e230555a1f8cb60c3cb1a175188567d80325fb6216870288`.
-- Authored TSV: `71aa31c2dfa0ecb5e8e8b4e97d2bf5ec756714113e4f08b0f7762d99568c370a`.
+- Expanded 512 KiB ROM: `7161e843e92dd4bd746694ffd31d58f92e02b937c4411c878d43ee5621b5ff0e`.
+- Hex container: `9033d405620a0016ef6744d1b63490e3e8ebe4c48bc16f8572887e0034b085c9`.
+- Authored TSV: `018eb3ada87198eeb9a8c96521cbb997741c6bb56b2cc5d937b1332d7c1b9a66`.
 
 These contracts do not complete the DMA/hardware acceptance inventory. Required
 remaining work includes exact DREQ sampling/acknowledge-pin timing, complete
-refresh/display/sound ownership and preemption, peripheral-bus cycle timing
-(currently a bounded one-main-state phase), every manual-reset/partial-error
+refresh/display/sound ownership and preemption, CPU/internal-peripheral bus
+arbitration and write buffering, every manual-reset/partial-error
 boundary, and the other CPU, SCU/DSP, video, sound, CD/HLE, SMPC and integration
 requirements already recorded above. No umbrella criterion is waived or checked.
+
+## Internal DMA, sound data phases and media validation
+
+Sources: [SH7604][H] §§7.11.2–3, 9.3.5, 10.3–10.4;
+[MC68000UM][68UM] §5.1 and chapter 8; [CD] §5.3 table5.1 and
+function specifications 4.1/5.7–5.8; [DISC] §4.3.
+
+| Contract | Implementation and independent native vectors | Guest/browser evidence |
+| --- | --- | --- |
+| CPU-local internal DMA can overlap another master's external access, including TAS ownership | [transactions.rs](../src/bus/transactions.rs) stores separate internal phases. [dmac_tests.rs](../src/bus/dmac_tests.rs) checks simultaneous read/write deadlines, both CPUs, sampled source mutations, count/IRQ publication, TAS exclusion and slave-reset cancellation. A negated external level request while TAS owns the bus is not accepted early. | Extended DMABG executes SCI-to-SCI, SCI-to-RAM and DIVU-to-RAM on both CPUs, eight real IRQs each, changed operands and cold reset in native/Wasm. |
+| DIVU DMA waits on the DMA phase, preserving CPU instruction dependencies | `OnChip::dma_wait_clocks/dma_read32/dma_write32`; `internal_divu_dma_waits_for_division_without_premature_result_irq_or_cpu_waits` checks overflow IRQ at clock 6, internal read at 7 and RAM write at 9, literal quotient 47 and zero CPU waits. [peripheral_tests.rs](../src/onchip/peripheral_tests.rs) checks CPU-only consecutive-instruction dependencies across DMA. | DMABG's independently computed `99/3=33` is transferred by DMA and read by guest code in native/Wasm. |
+| Sound CPU accesses publish at separate four-clock byte/word completions | [sound/transactions.rs](../src/sound/transactions.rs) retains completed MMIO through CPU replay; `Sound::clocks_to_event` includes CPU and MIDI deadlines. [sound/tests.rs](../src/sound/tests.rs) checks normal/predecrement longword order, a main-CPU change between source words, MIDI consumption once, cancellation of a pending word and clock-chunk invariance. | SNDR, SIOG, FAMG, SYNTH, Prism Courier and Hardware Lab execute through these phases, retaining native/Wasm register/fault/stereo assertions and actual WebAudio. SNDR's second IRQ now precedes its first STOP: setup 23 + IRQ handlers 6 + STOP 1 = 30 instructions. |
+| CD connection errors preserve both outputs and filter-input exclusivity | `CdBlock::execute` validates both selected output destinations before mutation; `selector_connection_commands_validate_both_outputs_and_exclusive_inputs_atomically` checks indices 24–254, ignored arguments, disconnect/reconnect, ESEL and actual sector routing. | [CD drive guest](../tests/fixtures/build_cd_drive.py), [native](../tests/cd_drive.rs) and [browser](../scripts/browser-smoke.mjs) assert rejection, retained `0304` connections and explicit reconnection. Hex SHA-256: `8203401b2a7d7d76aef396b69bdb7caaf73ee1d8dd26eea4aea7eac39c23da95`. |
+| Compact ISO size validation agrees with the core | [app.js](../web/app.js) accepts complete sectors from 18 sectors to 16 MiB and delegates structural validation to the core. | Offline actual-picker regressions in browser-smoke execute original 19/21-sector AIP instructions (`R0=37`, 100 retired, no exceptions); reject short/partial/oversized files and parse a malformed size-valid 18-sector image. |
+
+The four-clock sound bus phases preserve the existing interpreter's access order;
+they do not establish every instruction-specific prefetch sequence, RESET pin
+timing, SCSP RAM arbitration or sub-sample DSP/DMA scheduling. Internal DMA
+timing does not establish CPU/internal-bus arbitration or full write buffering.
+Other mandatory inventory entries above remain pending with their original scope.

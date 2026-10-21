@@ -527,6 +527,38 @@ impl OnChip {
         winner
     }
 
+    pub(crate) fn dma_wait_clocks(&self, address: u32, width: usize) -> u32 {
+        if width == 4 && (DIVU..DIVU + 0x18).contains(&address) && self.module_stop & 4 == 0 {
+            self.division.borrow().remaining()
+        } else {
+            0
+        }
+    }
+    pub(crate) fn dma_read32(&self, address: u32) -> Result<u32, BusError> {
+        if address & 3 == 0 && (DIVU..DIVU + 0x18).contains(&address) {
+            // The scheduled internal phase already waited for DIVU. A DMAC
+            // access neither consumes the CPU's consecutive-instruction epoch
+            // nor charges its wait accumulator (H §§9.3.5/10.4).
+            if self.module_stop & 4 != 0 && self.division.borrow().busy() {
+                return Err(Self::unsupported(address, 4));
+            }
+            return self
+                .division
+                .borrow()
+                .read(address - DIVU)
+                .ok_or(Self::unsupported(address, 4));
+        }
+        self.read32(address)
+    }
+    pub(crate) fn dma_write32(&mut self, address: u32, value: u32) -> Result<(), BusError> {
+        if address & 3 == 0 && (DIVU..DIVU + 0x18).contains(&address) {
+            if self.module_stop & 4 == 0 && self.division.get_mut().write(address - DIVU, value) {
+                return Ok(());
+            }
+            return Err(Self::unsupported(address, 4));
+        }
+        self.write32(address, value)
+    }
     pub fn read32(&self, address: u32) -> Result<u32, BusError> {
         if address & 3 != 0 {
             return Err(BusError::Unaligned { address, width: 4 });

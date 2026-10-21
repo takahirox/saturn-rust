@@ -50,9 +50,20 @@ fn guest_scanline_writes_survive_later_vram_and_color_offset_changes() {
             (192, [0, 0, 255, 255], [255; 4]),
         ] {
             let row = &frame[y * 320 * 4..(y + 1) * 320 * 4];
-            let prefix = row.chunks_exact(4).take_while(|p| *p == old).count();
+            let prefix = row
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .take_while(|p| **p == old)
+                .count();
             assert!((1..159).contains(&prefix), "line {y}: prefix {prefix}");
-            assert!(row[prefix * 4..].chunks_exact(4).all(|p| p == new));
+            assert!(
+                row[prefix * 4..]
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .all(|p| *p == new)
+            );
         }
         // The frame remains unchanged during VBlank, then the next field
         // uses the new black back color plus its red offset.

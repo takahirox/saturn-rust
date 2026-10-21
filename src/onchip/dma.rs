@@ -186,6 +186,29 @@ impl Dma {
                 .iter()
                 .any(|c| c.control & 0x13 == 0x11 && Self::requested(c, serial))
     }
+    fn requested_channel(&self, serial: [bool; 2]) -> Option<usize> {
+        if let Some(selected) = self.selected {
+            return Some(selected);
+        }
+        if self.operation & 7 != 1 {
+            return None;
+        }
+        let order = if self.operation & 8 == 0 && !self.cycle_previous {
+            [0, 1]
+        } else {
+            [self.next, 1 - self.next]
+        };
+        order.into_iter().find(|&i| {
+            let c = &self.channels[i];
+            c.control & 3 == 1 && Self::requested(c, serial)
+        })
+    }
+    pub(crate) fn internal_request(&self, serial: [bool; 2]) -> bool {
+        self.requested_channel(serial).is_some_and(|i| {
+            let c = &self.channels[i];
+            c.control & 8 == 0 && c.source >= 0xFFFF_FE00
+        })
+    }
     /// Returns the SCI request acknowledged, if any. Errors abort DMA and latch
     /// AE; they are not propagated as a host CPU bus failure.
     pub fn transfer(&mut self, memory: &mut impl Memory, serial: [bool; 2]) -> Option<u8> {
@@ -196,18 +219,8 @@ impl Dma {
             self.selected = None;
             return None;
         }
-        let order = if self.operation & 8 == 0 && !self.cycle_previous {
-            [0, 1]
-        } else {
-            [self.next, 1 - self.next]
-        };
         let resuming = self.selected.is_some();
-        let selected = self.selected.or_else(|| {
-            order.into_iter().find(|&i| {
-                let c = &self.channels[i];
-                c.control & 3 == 1 && Self::requested(c, serial)
-            })
-        })?;
+        let selected = self.requested_channel(serial)?;
         self.selected = Some(selected);
         let c = &mut self.channels[selected];
         if c.control & 3 != 1 && !resuming {

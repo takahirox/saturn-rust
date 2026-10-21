@@ -2,7 +2,7 @@
 """Original MIT dual-SH-2/on-chip DMA bus guest; H §§9.1.1/9.3.4–9.3.8.
 
 Each CPU runs its own DMAC through short/overlapping 16-byte, longword,
-byte/word decrement and burst transfers, handling and acknowledging five IRQs.
+byte/word decrement, burst and internal SCI/DIVU transfers, acknowledging eight IRQs.
 The source-authored oracle is independent of the emulator.
 """
 import argparse
@@ -25,6 +25,7 @@ def program(data, mailbox):
     for i, value in enumerate([0x11223344, 0x55667788, 0x99AABBCC, 0xDDEEFF00, 0x13579BDF]):
         s += store(data + i * 4, value)
     record = mailbox + 8
+    s += 'load 0xfffffe00,r1\nmov #53,r0\nmov.b r0,@r1\n'
     # A final 16-byte unit with TCR=3 still reads four source longwords.
     # Source/destination overlap by one: interleaving R/W corrupts the result.
     for case, (source, dest, count, control, readback) in enumerate([
@@ -33,12 +34,18 @@ def program(data, mailbox):
         (data + 3, data + 0x110, 4, 0x6205, [data + 0x110]),
         (data + 2, data + 0x120, 2, 0x6605, [data + 0x120]),
         (data, data + 0x130, 2, 0x5A15, [data + 0x130, data + 0x134]),
+        (0xFFFFFE00, 0xFFFFFE01, 1, 0x0205, [0xFFFFFE01]),
+        (0xFFFFFE01, data + 0x140, 4, 0x4205, [data + 0x140]),
+        (0xFFFFFF04, data + 0x150, 1, 0x4A05, [data + 0x150]),
     ], 1):
+        if source == 0xFFFFFF04:
+            s += store(0xFFFFFFB0, 0) + store(0xFFFFFF00, 3) + store(0xFFFFFF04, 99)
         for offset, value in [(0, source), (4, dest), (8, count), (12, control), (0x30, 1)]:
             s += store(0xFFFFFF80 + offset, value)
         s += (f'wait{case}:\nmov.l @r8,r0\nmov #{case},r2\ncmp/eq r2,r0\nbf wait{case}\n')
         for address in readback:
-            s += f'load {address:#x},r1\nmov.l @r1,r0\nload {record:#x},r1\nmov.l r0,@r1\n'
+            width = 'b' if address >= 0xFFFFFE00 else 'l'
+            s += f'load {address:#x},r1\nmov.{width} @r1,r0\nload {record:#x},r1\nmov.l r0,@r1\n'
             record += 4
     # Each CPU must observe its peer's completed device work before sleeping.
     s += store(mailbox + 4, 0x600D)
@@ -69,8 +76,9 @@ def build():
         if any(rom[at:at + 16]):
             lines.append(f'{at:04X} ' + ' '.join(f'{word:04X}' for word in struct.unpack('>8H', rom[at:at + 16])))
     # Literal architectural results, not values measured from an emulator.
-    golden = [5, 0x600D, 0x11223344, 0x55667788, 0x99AABBCC, 0x13579BDF,
-              0x11223344, 0x11223344, 0x44332211, 0x33441122, 0x11223344, 0x11223344]
+    golden = [8, 0x600D, 0x11223344, 0x55667788, 0x99AABBCC, 0x13579BDF,
+              0x11223344, 0x11223344, 0x44332211, 0x33441122, 0x11223344, 0x11223344,
+              0x35, 0x35353535, 33]
     return {'dmac-bus.hex': ('\n'.join(lines) + '\n').encode(),
             'dmac-bus.tsv': ''.join(f'{word:08X}\n' for word in golden).encode()}
 

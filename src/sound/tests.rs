@@ -318,7 +318,8 @@ fn thirty_two_envelopes_release_retrigger_and_bypass_independently() {
 }
 
 #[test]
-fn reset_release_waits_forty_sound_clocks_before_first_instruction() {
+fn reset_release_waits_forty_sound_clocks_before_first_instruction_fetch_and_retirement_waits_for_data()
+ {
     let mut sound = Sound::default();
     sound.ram[..8].copy_from_slice(&[0, 7, 0xFF, 0, 0, 0, 1, 0]);
     sound.ram[0x100..0x104].copy_from_slice(&[0x70, 42, 0x4E, 0x71]);
@@ -327,8 +328,96 @@ fn reset_release_waits_forty_sound_clocks_before_first_instruction() {
     sound.advance(deadline - 1).unwrap();
     assert_eq!(sound.cpu.state.instructions, 0);
     sound.advance(1).unwrap();
+    assert_eq!(sound.cpu.state.instructions, 0);
+    let completed = (48 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ) as u32;
+    sound.advance(completed - deadline - 1).unwrap();
+    assert_eq!(sound.cpu.state.instructions, 0);
+    sound.advance(1).unwrap();
     assert_eq!(sound.cpu.state.instructions, 1);
     assert_eq!(sound.cpu.state.d[0], 42);
+}
+
+#[test]
+fn sound_longword_accesses_sample_and_publish_each_word_on_its_own_bus_deadline() {
+    // MC68000UM §§5.1/8.3: four CPU clocks per word. An initially empty
+    // instruction queue fetches opcode and successor before the operand cycles.
+    // Read/write order is independently authored, including predecrement.
+    for opcode in [0x2010u16, 0x2080, 0x2100] {
+        for chunk in [1, 3, 17, 1000] {
+            let mut sound = Sound::default();
+            sound.ram[..8].copy_from_slice(&[0, 0, 0x10, 0, 0, 0, 1, 0]);
+            sound.ram[0x100..0x102].copy_from_slice(&opcode.to_be_bytes());
+            sound.ram[0x102..0x104].copy_from_slice(&0x4E71u16.to_be_bytes());
+            sound.ram[0x200..0x204].copy_from_slice(&0x11223344u32.to_be_bytes());
+            sound.set_enabled(true).unwrap();
+            sound.cpu.state.a[0] = if opcode == 0x2100 { 0x204 } else { 0x200 };
+            sound.cpu.state.d[0] = 0x55667788;
+            let advance_to = |sound: &mut Sound, ticks: u64| {
+                let deadline = (ticks * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
+                while sound.time < deadline {
+                    sound
+                        .advance((deadline - sound.time).min(chunk) as u32)
+                        .unwrap();
+                }
+            };
+            advance_to(&mut sound, 51);
+            assert_eq!(&sound.ram[0x200..0x204], &0x11223344u32.to_be_bytes());
+            assert_eq!(sound.cpu.state.instructions, 0);
+            advance_to(&mut sound, 52);
+            match opcode {
+                0x2010 => {
+                    // High source half is now latched; the low half must see
+                    // the main CPU's later write through the shared controller.
+                    sound.write_ram8(0x200, 0xAA);
+                    sound.write_ram8(0x201, 0xBB);
+                    sound.write_ram8(0x202, 0xCC);
+                    sound.write_ram8(0x203, 0xDD);
+                }
+                0x2080 => assert_eq!(&sound.ram[0x200..0x204], &[0x55, 0x66, 0x33, 0x44]),
+                _ => assert_eq!(&sound.ram[0x200..0x204], &[0x11, 0x22, 0x77, 0x88]),
+            }
+            assert_eq!(sound.cpu.state.instructions, 0);
+            advance_to(&mut sound, 56);
+            assert_eq!(sound.cpu.state.instructions, 1);
+            if opcode == 0x2010 {
+                assert_eq!(sound.cpu.state.d[0], 0x1122CCDD);
+            } else {
+                assert_eq!(&sound.ram[0x200..0x204], &0x55667788u32.to_be_bytes());
+            }
+        }
+    }
+}
+
+#[test]
+fn sound_reset_cancels_an_uncompleted_word_and_mmio_reads_are_never_repeated() {
+    let mut sound = Sound::default();
+    sound.ram[..8].copy_from_slice(&[0, 0, 0x10, 0, 0, 0, 1, 0]);
+    // MOVE.L (A0),D0, whose low word is a different MMIO register.
+    sound.ram[0x100..0x104].copy_from_slice(&[0x20, 0x10, 0x4E, 0x71]);
+    sound.scsp.receive_midi(0x35);
+    sound.scsp.receive_midi(0x46);
+    sound.set_enabled(true).unwrap();
+    sound.cpu.state.a[0] = 0x100404;
+    sound
+        .advance((56 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ) as u32)
+        .unwrap();
+    assert_eq!(sound.cpu.state.d[0], 0x08350000);
+    assert_eq!(sound.scsp.read16(0x404).unwrap() & 255, 0x46);
+
+    sound.set_enabled(false).unwrap();
+    sound.ram[0x100..0x104].copy_from_slice(&[0x20, 0x80, 0x4E, 0x71]); // MOVE.L D0,(A0)
+    sound.set_enabled(true).unwrap();
+    sound.cpu.state.a[0] = 0x200;
+    sound.cpu.state.d[0] = 0x12345678;
+    let first = sound.cpu_origin + (52 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
+    sound.advance((first - sound.time) as u32).unwrap();
+    assert_eq!(&sound.ram[0x200..0x204], &[0x12, 0x34, 0, 0]);
+    sound.set_enabled(false).unwrap();
+    sound.write_ram8(0x202, 0xAB);
+    sound.write_ram8(0x203, 0xCD);
+    sound.advance(10000).unwrap();
+    assert_eq!(&sound.ram[0x200..0x204], &[0x12, 0x34, 0xAB, 0xCD]);
+    assert_eq!(sound.cpu.state.instructions, 0);
 }
 #[test]
 fn sound_cpu_and_sample_clock_traces_do_not_depend_on_host_advance_chunks() {

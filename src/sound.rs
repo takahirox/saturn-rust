@@ -4,6 +4,7 @@
 mod dsp;
 mod envelope;
 mod synthesis;
+mod transactions;
 use crate::bus::{BusError, Memory};
 use crate::m68k::M68k;
 use std::cell::{Cell, RefCell};
@@ -630,6 +631,7 @@ pub struct Sound {
     cpu_origin: u64,
     next_cpu: u64,
     next_sample: u64,
+    transactions: transactions::Transactions,
 }
 impl Default for Sound {
     fn default() -> Self {
@@ -643,6 +645,7 @@ impl Default for Sound {
             cpu_origin: 0,
             next_cpu: u64::MAX,
             next_sample: REFERENCE_HZ.div_ceil(SAMPLE_RATE),
+            transactions: transactions::Transactions::default(),
         }
     }
 }
@@ -752,11 +755,13 @@ impl Sound {
     pub fn write_ram8(&mut self, address: usize, value: u8) {
         self.scsp.ram_config().write8(&mut self.ram, address, value);
     }
-    pub(crate) fn clocks_to_sample(&self) -> u32 {
-        (self.next_sample - self.time).min(u64::from(u32::MAX)) as u32
+    pub(crate) fn clocks_to_event(&self) -> u32 {
+        (self.next_sample.min(self.next_cpu) - self.time)
+            .min(u64::from(self.scsp.midi_clocks_to_event())) as u32
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<(), BusError> {
         if enabled && !self.enabled {
+            self.transactions = transactions::Transactions::default();
             let memory = SoundBus {
                 ram: &mut self.ram,
                 scsp: &mut self.scsp,
@@ -769,6 +774,7 @@ impl Sound {
             self.next_cpu = self.time + (40 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
         } else if !enabled {
             self.cpu = M68k::default();
+            self.transactions = transactions::Transactions::default();
             self.next_cpu = u64::MAX;
         }
         self.enabled = enabled;
@@ -800,12 +806,7 @@ impl Sound {
             self.scsp.advance_midi((deadline - now) as u32);
             now = deadline;
             if deadline == self.next_cpu {
-                self.cpu.set_interrupt(self.scsp.interrupt_level());
-                let mut memory = SoundBus {
-                    ram: &mut self.ram,
-                    scsp: &mut self.scsp,
-                };
-                let clocks = self.cpu.step(&mut memory);
+                self.advance_cpu_cycle();
                 if std::mem::take(&mut self.cpu.reset_output) {
                     let generated = self.scsp.generated;
                     let dropped = self.scsp.dropped;
@@ -815,7 +816,6 @@ impl Sound {
                         ..Scsp::default()
                     };
                 }
-                self.cpu_ticks += u64::from(clocks);
                 self.next_cpu =
                     self.cpu_origin + (self.cpu_ticks * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
             } else if deadline == self.next_sample {

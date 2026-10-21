@@ -1049,7 +1049,12 @@ impl CdBlock {
                 return self.begin_get(bytes, None);
             }
             0x30 => {
-                if selector >= SELECTORS && selector != 255 {
+                // ST-162 §5.3 table5.1: a filter input has one source;
+                // true outputs alone permit multiple sources per partition.
+                if (selector >= SELECTORS && selector != 255)
+                    || (selector != 255
+                        && self.filters.iter().any(|f| usize::from(f.no) == selector))
+                {
                     return false;
                 }
                 self.connection = selector as u8;
@@ -1058,6 +1063,24 @@ impl CdBlock {
             0x31 => response(self, 0, u16::from(self.connection) << 8, 0),
             0x32 => response(self, 0, u16::from(self.last) << 8, 0),
             0x40..=0x47 => {
+                if command == 0x46 {
+                    let yes = usize::from(c[1] >> 8);
+                    let no = usize::from(c[1] as u8);
+                    let valid = |n| n < SELECTORS || n == 255;
+                    // Validate the entire command before either connection
+                    // changes. Unselected bytes have no effect, even if invalid.
+                    if (c[0] & 1 != 0 && !valid(yes))
+                        || (c[0] & 2 != 0
+                            && (!valid(no)
+                                || (no != 255
+                                    && (usize::from(self.connection) == no
+                                        || self.filters.iter().enumerate().any(|(i, f)| {
+                                            i != selector && usize::from(f.no) == no
+                                        })))))
+                    {
+                        return false;
+                    }
+                }
                 let Some(f) = self.filters.get_mut(selector) else {
                     return false;
                 };

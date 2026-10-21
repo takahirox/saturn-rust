@@ -4,6 +4,64 @@
 criterion is complete; #17 must remain open.** Issues #11/#13/#15 are historical,
 administratively closed trackers and must not be reopened.
 
+## Review fixes: internal DMA, sound bus completion and media validation (2026-10-22)
+
+Continues reviewed PR head `ffb0d31a6f036819a738165821be7326a8c3dbff`
+in the assigned worktree. Upstream main was rechecked as
+`dbd981b030a46daa6923072ce240680dd2e58ebf`. No push, merge or Issue-state
+change is part of this work.
+
+- Internal peripheral DMA has one independent phase per SH7604, concurrent
+  with the other CPU's external access and TAS ownership. Internal and external
+  completions retain separate sampled data and reset cancellation. Requests for
+  the external bus are not accepted merely while probing internal readiness.
+- DMA access to DIVU waits for division on its own phase. It cannot finish
+  division early, cause an early overflow IRQ, charge CPU waits or consume/create
+  the CPU's consecutive-instruction dependency. The extended original DMABG
+  executes SCI-to-SCI/RAM and DIVU-to-RAM, eight transfers/IRQs per CPU.
+- Each sound-CPU byte/word access completes after four sound clocks through a
+  replay journal. Completed MMIO and partial writes occur once; later words can
+  observe main-CPU changes. Sound CPU/MIDI deadlines join board scheduling.
+  Reset discards uncompleted accesses. Native vectors cover word order, MIDI,
+  reset and clock chunks. Existing sound guests retain independently authored
+  fault/register/stereo assertions. The refined bus timing delivers SNDR's
+  second IRQ before its first STOP, producing 30 retired instructions.
+- CD connection commands validate both output destinations before mutation,
+  including disconnected FF, ignored arguments and exclusive filter inputs.
+  Native sector-routing tests and the extended original CD guest check actual
+  effects, errors, retained connections and explicit reconnection.
+- The actual browser picker now agrees with the core's 18-sector size bound.
+  Offline 19/21-sector images run original AIP instructions, produce R0=37,
+  retire 100 instructions without exceptions, and retain parser rejection of
+  malformed images and picker rejection of invalid sizes.
+
+Implementation, primary-manual sections, executable evidence and updated fixture
+hashes are linked in [the conformance entry](hardware-conformance.md#internal-dma-sound-data-phases-and-media-validation).
+All original required subsystems and acceptance criteria remain in scope. These
+changes address parts of the P1 findings and the compact-ISO P2; they do not
+establish resolution of all P1 findings or completion of Issue #17.
+
+Validation for this revision:
+
+- Rust/Cargo 1.99.0: formatting, locked build, native all-target Clippy and
+  wasm32 Clippy with warnings denied pass. Two existing constant-chunk pixel
+  checks and the touched DMA mutation check use array chunks to satisfy the
+  current Clippy lint without changing their assertions.
+- `CARGO_PROFILE_TEST_OPT_LEVEL=1 cargo test --locked`: **555 tests pass**
+  (324 unit + 231 integration), zero failed/ignored; debug assertions and
+  overflow checks remain enabled.
+- `sh scripts/build-web.sh` passes with wasm-bindgen-cli 0.2.129; production
+  Wasm SHA-256: `f897e132d7d2428fe22b52483ad4ac94115e07fac8e3c4b4ccece2b5d2d5771e`.
+- All 60 CI guest/media reproducibility commands pass. Both changed fixture
+  builders also pass their checks after the final rebuild. JavaScript syntax
+  and Git whitespace checks pass.
+- Complete extended `npm run test:browser` passes against the final Wasm in
+  Chromium 145.0.7632.6 with Node 24.12.0, no required skips. Includes both
+  changed guests, compact ISO pickers, Star Collector, Prism Courier, Hardware
+  Lab, Canvas, actual WebAudio, synthetic input/focus, backup and local privacy.
+- Final `cargo test --locked` in the unoptimized default profile also passes
+  **555 tests**, zero failed/ignored.
+
 ## Deferred on-chip DMAC bus phases and original dual-CPU guest (2026-10-22)
 
 Continues the assigned checkpoint `09d8e4fd5a2642a586a5506a64c3c459cf853e38`

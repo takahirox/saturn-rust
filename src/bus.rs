@@ -605,7 +605,7 @@ impl Bus {
                 .min(self.system_clock.deadline(self.main_deadline()).max(1))
                 .min(self.cd.clocks_to_event())
                 .min(self.smpc.clocks_to_event())
-                .min(self.sound.clocks_to_sample());
+                .min(self.sound.clocks_to_event());
             let main_clocks = self.system_clock.advance(delta);
             if let Some(completed) = self.advance_main_clocks(main_clocks, delta)? {
                 if matches!(completed, 0x0E | 0x0F) {

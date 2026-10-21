@@ -42,7 +42,7 @@ impl Default for State {
         }
     }
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct M68k {
     pub state: State,
     opcode: u16,

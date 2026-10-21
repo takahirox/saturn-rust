@@ -1400,7 +1400,7 @@ try {
       const {emulator}=await import("./app.js");
       emulator.mount_disc(new Uint8Array(2048*100));
       for(let i=0;i<80;i++) emulator.run_steps(10000);
-      return Array.from({length:64},(_,i)=>emulator.read_long(0x06009000+i*4));
+      return Array.from({length:100},(_,i)=>emulator.read_long(0x06009000+i*4));
     });
     assert.equal(result[0xF0/4],0x600D);
     for (const [offset,status] of [[0,0x0180],[0x10,0x0500],[0x30,0x0500],[0x50,0x0400],
@@ -1413,6 +1413,9 @@ try {
     assert.equal(result[0xB4/4],2);
     assert.equal(result[0xCC/4],0);
     assert.equal(result[0xE0/4],0x41000096);
+    for (const offset of [0x110,0x120,0x140,0x150]) assert.equal(result[offset/4],0xFF00);
+    assert.equal(result[0x134/4],0x0304);
+    assert.equal(result[0x188/4],0x0400);
     if (previousDrive) assert.deepEqual(result,previousDrive);
     previousDrive=result;
   }
@@ -1869,7 +1872,7 @@ try {
   assert.deepEqual(soundFinished.waveform, [0x1000F000, 0xE0002000]);
   assert.deepEqual(soundFinished.samples, [256,4096,-256,-4096,-512,-8192,512,8192,256,4096,-256,-4096,-512,-8192,512,8192]);
   assert.equal(soundFinished.irqs,2);
-  assert.equal(BigInt(soundFinished.count),32n); // setup23 + two IRQ3 handlers + STOP2 + BRA1
+  assert.equal(BigInt(soundFinished.count),30n); // setup23 + two IRQ3 handlers + STOP1; IRQ2 precedes STOP
   assert.equal(soundFinished.dropped, "0");
   await page.locator("#reset").click();
   assert.deepEqual(await soundResult(), soundFinished);
@@ -2639,6 +2642,42 @@ try {
   // Local supported ISO works offline, and selecting bad media clears old CPU.
   const disc = await readFile("web/star-collector.iso");
   await context.setOffline(true);
+  // ST-040 §4.3 permits no first-read file. Exercise the actual picker with
+  // compact original images: IP, PVD, terminator and a self/parent-only root.
+  // The guest AIP computes R0=37 and loops; the host supplies no result state.
+  for (const sectors of [19, 21]) {
+    const compact = Buffer.alloc(sectors * 2048);
+    disc.copy(compact, 0, 0, 18 * 2048);
+    const dual32 = (at, value) => { compact.writeUInt32LE(value, at); compact.writeUInt32BE(value, at + 4); };
+    compact.writeUInt32BE(0, 0xF0);
+    compact.writeUInt16BE(0xE025, 0xE20); // MOV #37,R0
+    compact.writeUInt16BE(0xAFFE, 0xE22); // BRA to itself
+    compact.writeUInt16BE(0x0009, 0xE24);
+    dual32(16 * 2048 + 80, sectors);
+    dual32(16 * 2048 + 156 + 2, sectors - 1);
+    const root = compact.subarray(16 * 2048 + 156, 16 * 2048 + 190);
+    root.copy(compact, (sectors - 1) * 2048);
+    root.copy(compact, (sectors - 1) * 2048 + 34);
+    compact[(sectors - 1) * 2048 + 34 + 33] = 1;
+    await page.locator("#disc").setInputFiles({ name:`compact-${sectors}.iso`, mimeType:"application/octet-stream", buffer:compact });
+    await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
+    assert.equal(await value("error"), "");
+    await page.locator("#count").fill("100");
+    await page.locator("#run").click();
+    const compactState = await machine();
+    assert.equal(compactState.registers[0], 37);
+    assert.equal(compactState.retired, "100");
+    assert.equal(compactState.exceptions, "0");
+  }
+  // Size-valid malformed media reaches the core parser; incomplete sectors
+  // and oversized images remain picker errors and cannot keep an old CPU alive.
+  for (const size of [17 * 2048, 18 * 2048 + 1, 16777216 + 2048]) {
+    await page.locator("#disc").setInputFiles({ name:"invalid-size.iso", mimeType:"application/octet-stream", buffer:Buffer.alloc(size) });
+    assert.match(await value("error"), /18 sectors to 16 MiB/);
+    assert.equal(await page.locator("#run").isDisabled(), true);
+  }
+  await page.locator("#disc").setInputFiles({ name:"invalid-structure.iso", mimeType:"application/octet-stream", buffer:Buffer.alloc(18 * 2048) });
+  await page.waitForFunction(() => /missing Saturn hardware identifier/.test(document.getElementById("error").textContent));
   await page.locator("#disc").setInputFiles({name:"authorized-homebrew.iso", mimeType:"application/octet-stream", buffer:disc});
   await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
   assert.equal(await value("pause"), "Resume");

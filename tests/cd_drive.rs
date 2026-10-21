@@ -51,7 +51,12 @@ fn guest_scans_reverses_pauses_waits_and_reopens_same_disc_without_reading_secto
         assert_eq!(read(0xB4), 2); // Two TOC words transferred by actual guest MOV.L.
         assert_eq!(read(0xCC), 0); // Scan never routes data to a partition.
         assert_eq!(read(0xE0), 0x41000096);
-        let trace = (0..64).map(|i| read(i * 4)).collect::<Vec<_>>();
+        for offset in [0x110, 0x120, 0x140, 0x150] {
+            assert_eq!(read(offset), 0xFF00, "rejected connection at {offset:x}");
+        }
+        assert_eq!(read(0x134), 0x0304); // both retained across invalid commands
+        assert_eq!(read(0x188), 0x0400); // connect after explicit disconnect
+        let trace = (0..100).map(|i| read(i * 4)).collect::<Vec<_>>();
         if let Some(old) = previous {
             assert_eq!(trace, old);
         }
