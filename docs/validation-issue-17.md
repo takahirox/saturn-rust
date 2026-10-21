@@ -2881,3 +2881,76 @@ DIVU publication defects. They do not complete the other agent-fixable findings
 or establish the mandatory umbrella acceptance criteria. Issue #17 remains
 incomplete; no Issue/PR closure, push or merge was performed, and no human or
 proprietary-firmware gate was introduced.
+
+## Shared refresh ownership and external UBC monitor arbitration (2026-10-22)
+
+Related to #17. `git ls-remote origin refs/heads/main` again reports
+`dbd981b030a46daa6923072ce240680dd2e58ebf`. This work preserves the existing PR
+implementation and the three original demonstration discs.
+
+Normal BSC refresh now latches one request until the board grants its bus cycle.
+It no longer ages a refresh countdown alongside an accepted transfer, closes RAM
+rows before the refresh grant, or treats CMF acknowledgement as cancellation.
+The grant precedes simultaneous CPU/DMAC/SCU requests and waits for accepted
+transactions, cache fills, narrow operands, TAS and DMA bursts. CPU groups retain
+all physical beats; cancellation preserves completed bytes and drops later work.
+The SCU's refresh input now follows the granted refresh boundary. Self-refresh
+holds external requests while cached instructions and local MCR accesses can
+execute; exit recovery has its own hardware deadline.
+
+The UBC's synchronized SH-2/EBBE control now reserves the processor's internal
+bus while an external master owns the shared bus, including retained groups
+between beats. CPU and on-chip-DMAC peripheral requests wait for that owner to
+release the bus. Already accepted internal phases finish before a new external
+handoff. Partial-share master and MD5-slave eligibility remain distinct.
+An intermediate overrestriction also blocked same-CPU internal DMA under TAS
+without UBC monitoring; the broader native suite rejected it. That extra
+restriction was removed, preserving valid independent internal transfers.
+
+The [RFSHG inventory](hardware-conformance.md#granted-refresh-indivisible-cpu-groups-and-self-refresh-rfshg)
+links primary-manual sections, implementation, eleven new native test functions
+and three native guest tests. The original MIT `refresh.hex` computes independent
+master/slave sums and FRT observations; changing its timer operand removes the
+refresh penalty and changing its data operand changes both sums. Cached guest
+instructions enter/exit self-refresh. Removing the guest exit leaves completion
+absent within bounded execution. The original MIT `monitor.hex` runs simultaneous
+master RAM polling and slave SCI/FRT sampling. Its control mutation removes the
+monitor delay; its data mutation changes the actual guest sum. Both fixtures
+repeat cold resets in native and production browser Wasm, with no host result
+injection. The existing CI command set now includes their reproducible builder.
+
+Validation on the final native implementation:
+
+- `cargo fmt --check`, `cargo build --locked`, native all-target Clippy and
+  wasm32 Clippy with warnings denied: pass, stable Rust 1.99.0.
+- `CARGO_PROFILE_TEST_OPT_LEVEL=1 cargo test --locked`: **579 tests pass**
+  (343 unit + 236 integration), zero failures/ignored, with debug assertions and
+  overflow checks enabled. Final unoptimized `cargo test --locked --lib` also
+  passes all 343 unit tests. Before the UBC addition, the complete ordinary
+  unoptimized `cargo test --locked` passed all 574 tests; final UBC integration
+  is included in the complete 579-test suite above.
+- All **61** CI reproducibility commands pass, including both new fixture ROMs.
+  JavaScript syntax, local documentation file targets and Git whitespace checks
+  pass. The three demonstration media are unchanged.
+- Four separate deliberate regressions are rejected by their required native
+  tests: disabled refresh ownership, disabled CPU-group retention, ignored
+  self-refresh hold and disabled external-monitor ownership. Production source
+  bytes were restored exactly after each probe; the final suites above use the
+  restored implementation.
+- `sh scripts/build-web.sh` and the complete extended `npm run test:browser`:
+  pass using the final production Wasm, wasm-bindgen 0.2.129, Chromium
+  145.0.7632.6 and Node 24.12.0 under `/saturn-rust/`, without required skips.
+  Both new guests and their mutations/cold resets pass. Star Collector, Prism
+  Courier, Hardware Lab, CPU/DSP execution, Canvas/WebAudio, keyboard/Gamepad,
+  backup/reset, HLE/BIOS separation and local-file privacy retain their checks.
+
+These are local checks, not remote CI or deployment results. Genuine proprietary
+BIOS/retail compatibility remains optional and not independently confirmed.
+
+Full Issue #17 acceptance remains unmet. SH-2 pipeline/exception/SH7604 and 68k
+sequencing, remaining board arbitration/reset/services, SCU/DSP, video, sound,
+runtime CD/HLE, SMPC and complete per-feature/demonstration coverage remain
+mandatory in this same PR. No umbrella checkbox is checked. PR #18 must remain
+Draft, with Closes #17 retained as the intended completed outcome. No merge,
+Issue closure/replacement/reopening, human testing/approval, personal firmware,
+live Pages inspection or external-workflow gate is introduced.

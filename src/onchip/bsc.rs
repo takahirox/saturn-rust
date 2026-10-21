@@ -29,8 +29,10 @@ pub(super) struct Bsc {
     // to the instruction cache. SDRAM has two independently active banks.
     rows: Cell<[Option<u32>; 2]>,
     burst_words: Cell<u32>,
+    // Self-refresh exit recovery only. Normal refresh time belongs to the
+    // board's granted transaction, never a countdown started at the request.
     refresh_remaining: Cell<u32>,
-    refresh_output: Cell<bool>,
+    refresh_pending: Cell<bool>,
 }
 impl Default for Bsc {
     fn default() -> Self {
@@ -44,7 +46,7 @@ impl Default for Bsc {
             rows: Cell::new([None; 2]),
             burst_words: Cell::new(0),
             refresh_remaining: Cell::new(0),
-            refresh_output: Cell::new(false),
+            refresh_pending: Cell::new(false),
         }
     }
 }
@@ -423,19 +425,36 @@ impl Bsc {
     pub fn can_request_interrupt(&self) -> bool {
         self.registers[4] & 0x40 != 0 && self.registers[4] & 0x38 != 0
     }
+    pub fn inhibits_external_bus(&self) -> bool {
+        // H §7.5.7: self-refresh holds the bus even against slave requests;
+        // exiting it prohibits commands for the recovery interval.
+        self.registers[3] & 12 == 12 || self.refresh_remaining.get() != 0
+    }
     pub fn clocks_to_event(&self) -> u32 {
+        let recovery = match self.refresh_remaining.get() {
+            0 => u32::MAX,
+            n => n,
+        };
         let divisor =
             [0, 4, 16, 64, 256, 1024, 2048, 4096][((self.registers[4] >> 3) & 7) as usize];
         if divisor == 0 {
-            return u32::MAX;
+            return recovery;
         }
         let ticks = self.registers[6].wrapping_sub(self.registers[5]) & 255;
         (u32::from(if ticks == 0 { 256 } else { ticks }) * divisor)
             .saturating_sub(self.phase)
             .max(1)
+            .min(recovery)
     }
-    pub fn take_refresh_output(&self) -> bool {
-        self.refresh_output.replace(false)
+    /// H §§7.2.7/7.5.7/7.10: a compare latches a request, not an
+    /// overlapping refresh cycle. The board arbiter calls this only after
+    /// the current owner's indivisible transfer has relinquished the bus.
+    pub fn grant_refresh(&self) -> Option<u32> {
+        if !self.refresh_pending.replace(false) {
+            return None;
+        }
+        self.reset_bus(); // PALL invalidates both open-bank rows.
+        Some(self.refresh_clocks())
     }
     pub fn advance(&mut self, clocks: u32) {
         let select = (self.registers[4] >> 3) as usize & 7;
@@ -465,16 +484,9 @@ impl Bsc {
                 self.registers[5] = 0;
                 self.registers[4] |= 0x80;
                 if !self.slave && self.registers[3] & 12 == 8 && self.registers[0] & 7 != 0 {
-                    self.refresh_output.set(true);
-                    self.rows.set([None; 2]);
-                    let busy = self.access.get().map_or(0, |a| a.busy);
-                    // H §7.5.7: requests pending during the same external
-                    // transfer replace one another rather than accumulating.
-                    self.refresh_remaining.set(if busy != 0 {
-                        busy.saturating_add(self.refresh_clocks())
-                    } else {
-                        self.refresh_remaining.get().max(self.refresh_clocks())
-                    });
+                    // A later match replaces the unserved request. Neither
+                    // rows nor elapsed bus time change before it is granted.
+                    self.refresh_pending.set(true);
                 }
             }
         }
@@ -845,9 +857,11 @@ mod memory_tests {
             b.advance(4);
             assert_eq!(b.read(BSC + 16, 4).unwrap(), 0x88);
             b.write(BSC + 16, 0xA55A_0000).unwrap(); // no second refresh
+            assert_eq!(b.grant_refresh(), if slave { None } else { Some(6) });
+            b.advance(if slave { 0 } else { 6 });
             assert_eq!(
                 cycle(&b, 0x0600_0004, true, true, true),
-                if slave { 1 } else { 8 }
+                if slave { 1 } else { 2 }
             );
         }
         // Compare during a busy transfer leaves one request, even if the
@@ -858,11 +872,15 @@ mod memory_tests {
         assert_eq!(cycle(&b, 0x0600_0000, false, true, true), 7);
         assert_eq!(cycle(&b, 0x0600_0004, false, true, true), 7);
         b.advance(4);
-        assert_eq!(b.refresh_remaining.get(), 16); // 10 unfinished + 6 refresh
+        assert!(b.refresh_pending.get());
         b.advance(4);
-        assert_eq!(b.refresh_remaining.get(), 12); // 6 unfinished + ONE refresh
+        assert!(b.refresh_pending.get());
         b.write(BSC + 16, 0xA55A_0000).unwrap();
-        assert_eq!(cycle(&b, 0x0600_0000, false, true, true), 13); // one six-clock refresh, then seven-clock read
+        b.advance(100); // An ungranted request never expires with time.
+        assert_eq!(b.grant_refresh(), Some(6));
+        assert_eq!(b.grant_refresh(), None); // one pending request
+        b.advance(6);
+        assert_eq!(cycle(&b, 0x0600_0000, false, true, true), 7);
     }
 
     #[test]

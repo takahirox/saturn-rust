@@ -13,6 +13,7 @@ import { busTransactions } from "./bus-transactions.mjs";
 import { dmacBus } from "./dmac-bus.mjs";
 import { abusTiming } from "./abus.mjs";
 import { hardwareBoundaries } from "./hardware-boundaries.mjs";
+import { refreshArbitration } from "./refresh.mjs";
 import { hlePlayer } from "./hle-player.mjs";
 
 // Fail before upload if web/ includes anything beyond the public runtime assets.
@@ -1073,6 +1074,7 @@ try {
   // real external read delays. Changing only WCR or the source data must change
   // the corresponding computed guest records, excluding canned timing/results.
   await hardwareBoundaries(page);
+  await refreshArbitration(page);
   const waitsRom = Buffer.alloc(524288);
   for (const line of (await readFile("tests/fixtures/bsc-waits.hex", "utf8")).split(/\r?\n/)) {
     if (!line || line.startsWith("#")) continue;

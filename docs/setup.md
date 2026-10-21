@@ -72,6 +72,7 @@ python3 tests/fixtures/build_bsc_waits.py --check
 python3 tests/fixtures/build_bsc_idle.py --check
 python3 tests/fixtures/build_bsc_share.py --check
 python3 tests/fixtures/build_bsc_memory.py --check
+python3 tests/fixtures/build_refresh.py --check
 python3 tests/fixtures/build_smpc_boundaries.py --check
 python3 tests/fixtures/build_sh2_timing.py --check
 python3 tests/fixtures/build_bus_transactions.py --check

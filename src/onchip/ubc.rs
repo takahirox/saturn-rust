@@ -68,6 +68,12 @@ impl Ubc {
     pub fn clocks_to_event(&self) -> u32 {
         self.changes.borrow().front().map_or(u32::MAX, |p| p.0)
     }
+    pub fn monitors_external_bus(&self) -> bool {
+        // H §§6.3.4/7.10: SH-2 mode + EBBE routes the external
+        // address monitor through the internal bus. Use synchronized active
+        // conditions, not programming writes still in the three-clock queue.
+        self.active.get().control & 0x3000 == 0x3000
+    }
     pub fn read(&self, address: u32, width: usize) -> Result<u32, BusError> {
         let result = self.read_register(address, width);
         // H §6.3.7(4): reading the register written last is the prescribed

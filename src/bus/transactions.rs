@@ -2,6 +2,12 @@
 //! data is sampled/published at completion, and TAS retains ownership through
 //! its write. Replaying an instruction never repeats an already completed I/O.
 use super::*;
+#[cfg(test)]
+#[path = "monitor_tests.rs"]
+mod monitor_tests;
+#[cfg(test)]
+#[path = "refresh_tests.rs"]
+mod refresh_tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Operation {
@@ -36,6 +42,7 @@ enum Owner {
     Cpu(Processor),
     Dmac(Processor),
     Scu,
+    Refresh,
 }
 struct Active {
     owner: Owner,
@@ -53,6 +60,9 @@ pub(super) struct Transactions {
     // external bus. Each SH7604 has its own internal/peripheral buses.
     internal: [Option<Active>; 2],
     lock: Option<Processor>,
+    // H §7.10: narrow operands and cache fills are indivisible even
+    // though the adapter completes each physical beat separately.
+    cpu_group: Option<Processor>,
     previous: Option<Processor>,
     scu: Option<crate::scu::DmaCycle>,
 }
@@ -184,6 +194,32 @@ impl Memory for ReplayMemory<'_> {
     }
 }
 impl Bus {
+    fn external_monitor_owns_internal(&self, processor: Processor) -> bool {
+        self.onchip[processor as usize].monitors_external_bus()
+            && (self
+                .transactions
+                .active
+                .as_ref()
+                .is_some_and(|a| match a.owner {
+                    Owner::Cpu(p) | Owner::Dmac(p) => p != processor,
+                    Owner::Scu => true,
+                    Owner::Refresh => false,
+                })
+                || [
+                    self.transactions.cpu_group,
+                    self.transactions.lock,
+                    self.transactions.dmac_owner,
+                ]
+                .into_iter()
+                .flatten()
+                .any(|p| p != processor))
+    }
+    fn external_monitor_waits_for_internal(&self) -> bool {
+        [Processor::Master, Processor::Slave].into_iter().any(|p| {
+            self.onchip[p as usize].monitors_external_bus()
+                && self.transactions.internal[p as usize].is_some()
+        })
+    }
     fn prepare_dmac(&mut self, processor: Processor) {
         let i = processor as usize;
         if (i == 1 && !self.slave_enabled)
@@ -269,6 +305,9 @@ impl Bus {
         false
     }
     fn grant_cpu_beat(&mut self, processor: Processor, transfer: Transfer, dmac: bool) {
+        if !dmac && !transfer.last {
+            self.transactions.cpu_group = Some(processor);
+        }
         self.for_cpu(processor).reserve_external(
             transfer.address,
             transfer.width,
@@ -313,6 +352,9 @@ impl Bus {
         if self.transactions.lock == Some(processor) {
             self.transactions.lock = None;
         }
+        if self.transactions.cpu_group == Some(processor) {
+            self.transactions.cpu_group = None;
+        }
     }
     pub(super) fn cancel_scu_transaction(&mut self) {
         if self
@@ -352,11 +394,13 @@ impl Bus {
     fn grant_cpu_internal(&mut self) {
         // H §§7.11.2–7.11.3/9.3: CPU and DMAC share this
         // processor's peripheral bus; the DMAC wins a simultaneous request.
-        // Neither processor's internal access needs the external bus, and
-        // an already granted access cannot be displaced by a later request.
+        // Peripheral cycles are independent of the external bus unless UBC
+        // monitoring reserves their internal bus for an external owner.
+        // An already granted access cannot be displaced by a later request.
         for processor in [Processor::Master, Processor::Slave] {
             let i = processor as usize;
             if self.transactions.internal[i].is_some()
+                || self.external_monitor_owns_internal(processor)
                 || self.transactions.dmac_owner == Some(processor)
                 || self.transactions.active.as_ref().is_some_and(
                     |a| matches!(a.owner, Owner::Cpu(p) | Owner::Dmac(p) if p == processor),
@@ -385,6 +429,7 @@ impl Bus {
         for processor in [Processor::Master, Processor::Slave] {
             let i = processor as usize;
             if self.transactions.internal[i].is_some()
+                || self.external_monitor_owns_internal(processor)
                 || self.transactions.active.as_ref().is_some_and(
                     |a| matches!(a.owner, Owner::Cpu(p) | Owner::Dmac(p) if p == processor),
                 )
@@ -418,6 +463,55 @@ impl Bus {
             }
         }
         if self.transactions.active.is_some() {
+            self.grant_cpu_internal();
+            return;
+        }
+        if self.onchip[0].inhibits_external_bus() {
+            self.grant_cpu_internal();
+            return;
+        }
+        if let Some(processor) = self.transactions.cpu_group {
+            // The interpreter resumes the same operand to queue the next
+            // beat. An empty queue here is not a bus release.
+            let transfer = self.transactions.journals[processor as usize]
+                .borrow()
+                .waiting;
+            if let Some(transfer) = transfer
+                && !self.external_monitor_waits_for_internal()
+            {
+                self.grant_cpu_beat(processor, transfer, false);
+            }
+            self.grant_cpu_internal();
+            return;
+        }
+        if self.transactions.lock.is_none()
+            && self.transactions.dmac_owner.is_none()
+            && let Some(remaining) = self.onchip[0].grant_refresh()
+        {
+            // H §7.10: refresh precedes simultaneous external-master,
+            // DMAC and CPU requests. A latched request cannot age while
+            // waiting for a burst, narrow operand, cache fill or TAS.
+            self.release_external_bus();
+            self.scu.refresh_abus();
+            self.transactions.active = Some(Active {
+                owner: Owner::Refresh,
+                transfer: Transfer {
+                    address: 0,
+                    width: 0,
+                    write: None,
+                    first: true,
+                    last: true,
+                    locked: false,
+                },
+                remaining,
+            });
+            self.grant_cpu_internal();
+            return;
+        }
+        if self.external_monitor_waits_for_internal() {
+            // Do not pass the external bus to a new master until an
+            // already accepted peripheral cycle has released its monitor bus.
+            // Refresh is BSC-local and does not drive an external data cycle.
             self.grant_cpu_internal();
             return;
         }
@@ -559,10 +653,13 @@ impl Bus {
         Ok(())
     }
     fn complete_bus_transaction(&mut self, active: Active) -> Result<(), ScuError> {
+        if active.owner == Owner::Refresh {
+            return Ok(());
+        }
         let t = active.transfer;
         let processor = match active.owner {
             Owner::Cpu(p) | Owner::Dmac(p) => p,
-            Owner::Scu => Processor::Master,
+            Owner::Scu | Owner::Refresh => Processor::Master,
         };
         let result = if matches!(active.owner, Owner::Cpu(_)) && t.address >= 0xFFFF_FE00 {
             let mut memory = self.for_cpu(processor);
@@ -640,6 +737,12 @@ impl Bus {
             let cycle = self.transactions.scu.take().unwrap();
             self.scu.complete_dma_cycle(cycle, result)?;
         } else {
+            if matches!(active.owner, Owner::Cpu(_))
+                && (t.last || result.is_err())
+                && self.transactions.cpu_group == Some(processor)
+            {
+                self.transactions.cpu_group = None;
+            }
             if let Ok(value) = result {
                 let memory = self.for_cpu(processor);
                 memory.observe_external_data(t.address, t.width, value, t.write.is_some());

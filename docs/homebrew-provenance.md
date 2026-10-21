@@ -265,3 +265,21 @@ SDK routine, third-party core, external asset, host result writer or game-detect
 path. The three demonstration discs are preserved. Reproduce with
 `python3 tests/fixtures/build_dmac_bus.py --check`; hashes and primary references
 are recorded in [the conformance entry](hardware-conformance.md#on-chip-dmac-bus-transactions-dmabg).
+
+The original [refresh/self-refresh BIOS builder](../tests/fixtures/build_refresh.py)
+and its [generated ROM](../tests/fixtures/refresh.hex) use the adjacent
+[MIT fixture license](../tests/fixtures/LICENSE). It reuses only the original
+SH-2 assembler and Python standard library. Both guest CPUs compute their own
+RAM-read sums and FRT intervals. The master exits self-refresh using cached
+guest instructions and local MCR writes. Native and production browser Wasm
+checks change timer/data operands, omit the guest exit, and repeat cold resets.
+There is no external firmware, asset, third-party core, host-computed result
+or game-specific path. The [RFSHG inventory](hardware-conformance.md#granted-refresh-indivisible-cpu-groups-and-self-refresh-rfshg)
+records primary references, exact bus vectors, fixture hash and remaining scope.
+
+The same builder generates [monitor.hex](../tests/fixtures/monitor.hex), an
+original guest under that same license. The master polls real shared RAM while
+the slave's cached instructions read SCI/FRT through its internal bus. Guest
+BRCR and SCI operand mutations demonstrate the UBC monitor's timing effect and
+computed sums in native and browser Wasm, with repeated cold resets. No
+third-party code or content is included.

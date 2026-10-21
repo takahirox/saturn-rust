@@ -112,8 +112,19 @@ impl OnChip {
     pub(crate) fn write_sdram_mode(&mut self, address: u32) -> Result<(), BusError> {
         self.bsc.write_mode(address)
     }
-    pub(crate) fn take_refresh_output(&self) -> bool {
-        self.bsc.take_refresh_output()
+    pub(crate) fn grant_refresh(&self) -> Option<u32> {
+        if self.standby || self.watchdog.reset_active() {
+            return None;
+        }
+        self.bsc.grant_refresh()
+    }
+    pub(crate) fn inhibits_external_bus(&self) -> bool {
+        self.bsc.inhibits_external_bus()
+    }
+    pub(crate) fn monitors_external_bus(&self) -> bool {
+        !self.standby
+            && self.bsc.monitors_external_bus()
+            && self.ubc.borrow().monitors_external_bus()
     }
     pub(crate) fn external_bus_width(&self, physical_address: u32) -> usize {
         self.bsc.bus_width(physical_address)

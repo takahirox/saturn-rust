@@ -518,9 +518,6 @@ impl Bus {
                 self.onchip[1].advance_clocks(delta);
             }
             self.scu.advance_clocks(delta)?;
-            if self.onchip[0].take_refresh_output() {
-                self.scu.refresh_abus();
-            }
             if self.vdp1.advance(delta)? {
                 self.scu.signal(13);
             }
