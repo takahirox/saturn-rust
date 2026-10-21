@@ -3,6 +3,8 @@
 mod abus;
 mod dma;
 mod dsp;
+mod transactions;
+pub(crate) use transactions::DmaCycle;
 #[cfg(test)]
 mod tests;
 
@@ -58,7 +60,6 @@ pub struct Scu {
     dsp_phase: u32,
     sdram: bool,
     abus: abus::Abus,
-    bus_waits: Cell<u32>,
 }
 impl Default for Scu {
     fn default() -> Self {
@@ -76,7 +77,6 @@ impl Default for Scu {
             dsp_phase: 0,
             sdram: false,
             abus: abus::Abus::default(),
-            bus_waits: Cell::new(0),
         }
     }
 }
@@ -101,6 +101,7 @@ impl Scu {
             self.status &= !(1 << (vector - 0x40));
         }
     }
+    #[cfg(test)]
     pub(crate) fn dma_pending(&self) -> bool {
         self.dsp.dma_pending() || self.channels.iter().any(|c| c.pending())
     }
@@ -200,14 +201,10 @@ impl Scu {
         Ok(())
     }
     /// One bounded external beat. High level preempts at beat boundaries.
+    #[cfg(test)]
     pub(crate) fn advance_dma(&mut self, memory: &mut impl Memory) -> Result<(), ScuError> {
         if let Some(index) = (0..3).rev().find(|i| self.channels[*i].pending()) {
-            let mut timed = AbusMemory {
-                memory,
-                timing: &self.abus,
-                waits: &self.bus_waits,
-            };
-            match self.channels[index].beat(&mut timed, index) {
+            match self.channels[index].beat(memory, index) {
                 Ok(true) => self.signal(11 - index as u8),
                 Ok(false) => (),
                 Err(error) => {
@@ -222,12 +219,7 @@ impl Scu {
                 }
             }
         } else {
-            let mut timed = AbusMemory {
-                memory,
-                timing: &self.abus,
-                waits: &self.bus_waits,
-            };
-            self.dsp.dma_beat(&mut timed)?;
+            self.dsp.dma_beat(memory)?;
         }
         Ok(())
     }
@@ -236,9 +228,6 @@ impl Scu {
     }
     pub(crate) fn refresh_abus(&self) {
         self.abus.request_refresh();
-    }
-    pub(crate) fn take_bus_waits(&self) -> u32 {
-        self.bus_waits.replace(0)
     }
     pub(crate) fn clocks_to_event(&self) -> u32 {
         self.timer1_remaining
@@ -278,52 +267,4 @@ impl Scu {
 fn next_data_address(address: &Cell<u8>) {
     let old = address.get();
     address.set((old & 0xC0) | (old.wrapping_add(1) & 63));
-}
-
-/// The same A-bus programming applies to DMA descriptors/data and DSP DMA.
-struct AbusMemory<'a, M> {
-    memory: &'a mut M,
-    timing: &'a abus::Abus,
-    waits: &'a Cell<u32>,
-}
-impl<M> AbusMemory<'_, M> {
-    fn charge(&self, address: u32, width: usize, write: bool) {
-        self.waits.set(
-            self.waits
-                .get()
-                .saturating_add(self.timing.access(address, width, write)),
-        );
-    }
-}
-impl<M: Memory> Memory for AbusMemory<'_, M> {
-    fn read8(&self, address: u32) -> Result<u8, BusError> {
-        let value = self.memory.read8(address)?;
-        self.charge(address, 1, false);
-        Ok(value)
-    }
-    fn read16(&self, address: u32) -> Result<u16, BusError> {
-        let value = self.memory.read16(address)?;
-        self.charge(address, 2, false);
-        Ok(value)
-    }
-    fn read32(&self, address: u32) -> Result<u32, BusError> {
-        let value = self.memory.read32(address)?;
-        self.charge(address, 4, false);
-        Ok(value)
-    }
-    fn write8(&mut self, address: u32, value: u8) -> Result<(), BusError> {
-        self.memory.write8(address, value)?;
-        self.charge(address, 1, true);
-        Ok(())
-    }
-    fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
-        self.memory.write16(address, value)?;
-        self.charge(address, 2, true);
-        Ok(())
-    }
-    fn write32(&mut self, address: u32, value: u32) -> Result<(), BusError> {
-        self.memory.write32(address, value)?;
-        self.charge(address, 4, true);
-        Ok(())
-    }
 }

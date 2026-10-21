@@ -2553,3 +2553,67 @@ SMPC contracts and their complete acceptance evidence remain mandatory in this
 same PR/tracker. No criterion is waived, no replacement Issue is created, no
 historical Issue is reopened, and no human/firmware/live-site/external-workflow
 or post-merge gate is introduced. PR #18 must remain Draft and must not be merged.
+
+## Deferred CPU/SCU bus transactions and SDRAM MRS — 2026-10-22
+
+Related to #17. PR #18 now delays external CPU and SCU descriptor/data effects
+until their granted data phases complete. Instruction replay preserves sampled
+reads and completed MMIO effects, including CD FIFO consumption. TAS retains
+ownership through its write; watchdog/slave/system/cold reset cancellation drops
+unfinished CPU work. SCU grants charge BSC, A-bus and VDP2 access-slot waits
+before publication. Device waits also extend BSC busy occupancy. DSP DMA latches
+its address/data when granted, retaining both B-bus halves across later RAM
+writes. Long DMA ownership yields bounded hardware work without manufacturing a
+CPU fault. SDRAM MRS implements the six documented word-address encodings,
+bank precharge, TRP timing and the table4.6 alignment exemption. Primary manual
+references and individual executable checks are linked in
+[BUSG conformance](hardware-conformance.md#deferred-cpuscu-transactions-and-sdram-mode-writes-busg).
+
+The new original MIT synthetic BIOS runs both SH-2s, changes a shared counter
+under TAS, checks overlapping critical sections, executes all six MRS encodings
+on each CPU, and drives all three SCU DMA channels. Its indirect/direct transfers
+reach work, sound and VDP2 RAM, with three real guest completion handlers.
+Native and production Wasm assertions check the same records, changed loop
+operands and repeated cold resets. The three demonstration discs are preserved.
+
+Validation actually performed:
+
+- `cargo fmt --check`, `cargo build --locked`, native all-target Clippy and
+  wasm32 Clippy with `-D warnings`: pass. Native Rust/Cargo is **1.94.0**;
+  Wasm uses installed rustup stable **1.99.0**, wasm-bindgen **0.2.129**.
+- Complete `cargo test --locked`: **532 passed**, zero failed/ignored. Final
+  additional FIFO replay and long-DMA regressions are followed by the complete
+  `cargo test --locked --release`: **534 passed** (305 unit + 229 integration),
+  zero failed/ignored. All final unit tests and the strengthened BUSG integration
+  test also pass in debug mode.
+- All **59** CI guest/media reproducibility commands pass, including BUSG.
+  JavaScript syntax, Git whitespace and all **486** local Markdown targets in
+  the three checked documents pass.
+- `sh scripts/build-web.sh`: pass using the installed matching CLI. The initial
+  shell needed that CLI added to PATH; locked npm dependencies were installed
+  before browser execution.
+- Complete `npm run test:browser`: pass in Chromium **145.0.7632.6**, Node
+  **24.12.0**, under `/saturn-rust/`, after rebuilding the final Wasm. All prior
+  guests and three demonstrations remain enabled, including Canvas, exact
+  stereo/AudioWorklet, keyboard/Gamepad/focus, backup and local-file privacy.
+  BUSG adds both-CPU MRS/TAS/critical-section records, all three SCU DMA IRQs,
+  physical transfer results, changed operands and repeated cold resets.
+- Removing TAS ownership is rejected by the new guest test; exact production
+  source bytes are restored in `finally`, then the guest passes again. The first
+  counter-only oracle could miss the missing lock, so the final guest also checks
+  overlapping critical sections. The deliberately broken run is not a passing
+  conformance result.
+
+Development checks caught an extra post-stall retirement clock, a zero-deadline
+PLL subtraction overflow and the long-DMA false fault. The FRT guest now measures
+from completion of the actual timer-start write. Sound startup now executes
+setup23 + two IRQ3 handlers + two STOPs + BRA1 = **32** sound instructions; its
+waveform, two IRQs and exact stereo sample expectations are unchanged.
+
+Issue #17 is still incomplete. In particular, the full SH-2/SH7604 pipeline and
+DMAC contracts, MC68EC000 bus sequences, complete memory/reset/backup boundaries,
+SCU DSP conflicts, display and sound contention/effects, runtime CD behavior,
+HLE CD/startup ABI, SMPC boundaries and comprehensive acceptance evidence remain
+required. These implemented fixes and passing subset checks do not authorize
+closing #17 or merging PR #18 as complete. No scope is waived or moved to a new
+tracker, and no human/firmware/live-site/external-workflow gate is introduced.

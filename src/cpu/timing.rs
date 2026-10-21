@@ -97,7 +97,7 @@ mod tests {
 /// Programming Manual §7.5/fig.7.9. WB follows the successor's EX stage.
 /// A conflicting successor splits the slot once; repeated loads and MAC use
 /// the documented MA forwarding path. The state belongs to each CPU.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(super) struct LoadPipeline {
     destination: Option<u8>,
 }

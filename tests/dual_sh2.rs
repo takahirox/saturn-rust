@@ -45,8 +45,8 @@ fn guest_compare_irq_waits_for_the_edge_leaving_ocra_and_wakes_sleep() {
             machine.step().unwrap();
         }
         assert_eq!(machine.cpu_state().pc, 0x13C);
+        machine.step().unwrap(); // Start timer after this ROM fetch completes.
         let deadline = machine.clocks() + 128 * (u64::from(compare) + 1);
-        machine.step().unwrap(); // Start timer, including this ROM fetch's Tw.
         machine.step().unwrap(); // Execute SLEEP, also fetched from ROM.
         while machine.clocks() + u64::from(CLOCKS_PER_STEP) < deadline {
             machine.step().unwrap();

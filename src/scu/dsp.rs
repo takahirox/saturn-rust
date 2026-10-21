@@ -14,6 +14,7 @@ const CARRY: u32 = 1 << 20;
 const OVERFLOW: u32 = 1 << 19;
 const END: u32 = 1 << 18;
 
+#[derive(Clone)]
 pub(super) struct Dsp {
     program: [u32; 256],
     data: [[u32; 64]; 4],
@@ -38,6 +39,7 @@ pub(super) struct Dsp {
     repeat: Option<u8>,
     dma: Option<Dma>,
 }
+#[derive(Clone)]
 struct Dma {
     bank: u8,
     write: bool,
@@ -49,6 +51,9 @@ struct Dma {
     // Retain the sampled longword between grants; a DSP RAM write between
     // its halves must not replace the low half of the in-flight word.
     halfword: Option<u32>,
+    // Address/data sampled when the arbiter grants a word, retained through
+    // both B-bus halves even if parallel DSP instructions change CT/RAM.
+    latch: Option<(usize, u32)>,
 }
 impl Default for Dsp {
     fn default() -> Self {
@@ -417,6 +422,7 @@ impl Dsp {
                         add,
                         hold: instruction & 0x4000 != 0,
                         halfword: None,
+                        latch: None,
                     });
                 }
                 1 => {
@@ -460,17 +466,27 @@ impl Dsp {
         self.prefetched = Some((self.pc, self.program[self.pc as usize]));
         Ok(interrupt)
     }
+    pub(super) fn grant_dma_cycle(&mut self) {
+        if let Some(dma) = self.dma.as_mut()
+            && dma.latch.is_none()
+        {
+            let bank = dma.bank as usize;
+            let ct = if bank < 4 {
+                self.ct[bank] as usize
+            } else {
+                self.load_address as usize
+            };
+            dma.latch = Some((ct, if dma.write { self.data[bank][ct] } else { 0 }));
+        }
+    }
     pub(super) fn dma_beat(&mut self, memory: &mut impl Memory) -> Result<(), ScuError> {
+        self.grant_dma_cycle();
         let Some(dma) = self.dma.as_mut() else {
             return Ok(());
         };
         let bank = dma.bank as usize;
         let address = dma.address;
-        let ct = if bank < 4 {
-            self.ct[bank] as usize
-        } else {
-            self.load_address as usize
-        };
+        let (ct, outgoing) = dma.latch.unwrap();
         if dma.write {
             if !super::dma::valid_destination(address) {
                 return Err(ScuError::DmaParameters { channel: 3 });
@@ -486,7 +502,7 @@ impl Dsp {
                     memory.write16(low_address, value as u16)?;
                     dma.halfword = None;
                 } else {
-                    let value = self.data[bank][ct];
+                    let value = outgoing;
                     memory.write16(address, (value >> 16) as u16)?;
                     dma.halfword = Some(value);
                     return Ok(());
@@ -498,7 +514,7 @@ impl Dsp {
                 if dma.add > 1 {
                     return Err(ScuError::DmaParameters { channel: 3 });
                 }
-                memory.write32(address, self.data[bank][ct])?;
+                memory.write32(address, outgoing)?;
                 dma.address = address.wrapping_add(dma.add * 4);
             }
         } else {
@@ -525,15 +541,16 @@ impl Dsp {
             };
             if bank == 4 {
                 self.program[ct] = value;
-                self.load_address = self.load_address.wrapping_add(1);
+                self.load_address = (ct as u8).wrapping_add(1);
             } else {
                 self.data[bank][ct] = value;
             }
             dma.address = address.wrapping_add(dma.add * 4);
         }
         if bank < 4 {
-            self.ct[bank] = self.ct[bank].wrapping_add(1) & 63;
+            self.ct[bank] = (ct as u8).wrapping_add(1) & 63;
         }
+        dma.latch = None;
         dma.remaining -= 1;
         if !dma.hold {
             if dma.write {

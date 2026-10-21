@@ -112,7 +112,7 @@ impl CpuState {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Cpu {
     state: CpuState,
     /// System/control transfers and delayed conditional branches inhibit interrupts

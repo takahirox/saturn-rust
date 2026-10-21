@@ -9,6 +9,7 @@ import { join, resolve } from "node:path";
 import { chromium } from "playwright";
 import { rawMode1 } from "./raw-media-fixture.mjs";
 import { videoTransactions } from "./video-transactions.mjs";
+import { busTransactions } from "./bus-transactions.mjs";
 import { abusTiming } from "./abus.mjs";
 import { hardwareBoundaries } from "./hardware-boundaries.mjs";
 import { hlePlayer } from "./hle-player.mjs";
@@ -360,8 +361,8 @@ try {
       for (let i = 0; i < 100 && pc() !== 0x13C; i++) emulator.step();
       if (pc() !== 0x13C) throw new Error("Guest did not reach timer start");
       const state = () => [pc(), emulator.exception_count()];
+      emulator.step(); // Start timer after the ordinary ROM fetch completes.
       const deadline = Number(emulator.peripheral_clocks()) + 128 * (compare + 1);
-      emulator.step(); // Start timer: ordinary ROM fetch includes BSC waits.
       emulator.step(); // SLEEP fetch includes its waits; sleeping turns do not.
       while (Number(emulator.peripheral_clocks()) + 8 < deadline) emulator.step();
       const beforeEdge = state();
@@ -783,6 +784,7 @@ try {
   assert.deepEqual(displayTraces.at(-1),{canvas:[704,480],edge:[0,255,0,255]});
   await videoTransactions(page);
   await abusTiming(page);
+  await busTransactions(page);
   const shrinkRom=Buffer.alloc(524288);
   for(const line of (await readFile("tests/fixtures/sprite-shrink.hex","utf8")).split(/\r?\n/)) {
     if(!line||line.startsWith("#"))continue;
@@ -1865,7 +1867,7 @@ try {
   assert.deepEqual(soundFinished.waveform, [0x1000F000, 0xE0002000]);
   assert.deepEqual(soundFinished.samples, [256,4096,-256,-4096,-512,-8192,512,8192,256,4096,-256,-4096,-512,-8192,512,8192]);
   assert.equal(soundFinished.irqs,2);
-  assert.equal(BigInt(soundFinished.count),30n); // setup23 + two IRQ3 handlers + STOP1
+  assert.equal(BigInt(soundFinished.count),32n); // setup23 + two IRQ3 handlers + STOP2 + BRA1
   assert.equal(soundFinished.dropped, "0");
   await page.locator("#reset").click();
   assert.deepEqual(await soundResult(), soundFinished);

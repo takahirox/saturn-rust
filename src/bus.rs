@@ -9,6 +9,7 @@ use crate::timing::{Raster, RasterEvent, SystemClock};
 use crate::vdp1::{self, Vdp1};
 use std::cell::{Cell, RefCell};
 use std::fmt;
+mod transactions;
 
 pub const BIOS_SIZE: usize = 512 * 1024;
 pub const WRAM_SIZE: usize = 1024 * 1024;
@@ -26,11 +27,14 @@ pub struct CpuBus<'a> {
     bus: &'a mut Bus,
     processor: Processor,
     cached: bool,
+    scheduled: bool,
 }
 
 /// SCU DMA/DSP bus-master transactions have physical pins, rather than the
 /// CPU-local cache/peripheral view. Both UBCs can monitor these cycles.
+#[cfg(test)]
 struct ExternalBus<'a>(&'a mut Bus);
+#[cfg(test)]
 impl ExternalBus<'_> {
     fn observe(&self, address: u32, width: usize, value: u32, write: bool) {
         self.0.release_external_bus();
@@ -39,6 +43,7 @@ impl ExternalBus<'_> {
         }
     }
 }
+#[cfg(test)]
 impl Memory for ExternalBus<'_> {
     fn read8(&self, address: u32) -> Result<u8, BusError> {
         let value = self.0.read8(address)?;
@@ -74,17 +79,36 @@ impl Memory for ExternalBus<'_> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusError {
-    Unaligned { address: u32, width: usize },
-    Unmapped { address: u32, width: usize },
-    ReadOnly { address: u32, width: usize },
-    BiosLength { actual: usize },
-    BackupLength { actual: usize },
-    UnsupportedDevice { address: u32, width: usize },
+    /// Internal scheduler suspension; never an architectural address error.
+    Pending,
+    Unaligned {
+        address: u32,
+        width: usize,
+    },
+    Unmapped {
+        address: u32,
+        width: usize,
+    },
+    ReadOnly {
+        address: u32,
+        width: usize,
+    },
+    BiosLength {
+        actual: usize,
+    },
+    BackupLength {
+        actual: usize,
+    },
+    UnsupportedDevice {
+        address: u32,
+        width: usize,
+    },
 }
 
 impl fmt::Display for BusError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Pending => write!(f, "Bus transaction is pending"),
             Self::Unaligned { address, width } => {
                 write!(f, "Unaligned {width}-byte access at 0x{address:08X}")
             }
@@ -177,6 +201,7 @@ pub trait Memory {
 }
 
 pub struct Bus {
+    transactions: transactions::Transactions,
     bios: Option<Vec<u8>>,
     low: Vec<u8>,
     high: Vec<u8>,
@@ -187,7 +212,6 @@ pub struct Bus {
     smpc: Smpc,
     pub(crate) scu: Scu,
     pub(crate) raster: Raster,
-    scu_dma_remaining: u32,
     cpu_dma_remaining: [u32; 2],
     cpu_dma_errors: [bool; 2],
     cpu_bus_clocks: [Cell<u32>; 2],
@@ -202,6 +226,7 @@ pub struct Bus {
 impl Default for Bus {
     fn default() -> Self {
         Self {
+            transactions: transactions::Transactions::default(),
             bios: None,
             low: vec![0; WRAM_SIZE],
             high: vec![0; WRAM_SIZE],
@@ -212,7 +237,6 @@ impl Default for Bus {
             smpc: Smpc::default(),
             scu: Scu::default(),
             raster: Raster::default(),
-            scu_dma_remaining: 8,
             cpu_dma_remaining: [8; 2],
             cpu_dma_errors: [false; 2],
             cpu_bus_clocks: [Cell::new(0), Cell::new(0)],
@@ -304,6 +328,7 @@ impl Bus {
             bus: self,
             processor,
             cached: true,
+            scheduled: false,
         }
     }
 
@@ -337,6 +362,7 @@ impl Bus {
             self.scu.acknowledge(vector);
         }
     }
+    #[cfg(test)]
     pub(crate) fn advance_scu_dma(&mut self) -> Result<(), ScuError> {
         if !self.scu.dma_pending() {
             return Ok(());
@@ -357,6 +383,9 @@ impl Bus {
     }
 
     pub(crate) fn set_slave_enabled(&mut self, enabled: bool) {
+        if !enabled {
+            self.cancel_cpu_transaction(Processor::Slave);
+        }
         if enabled != self.slave_enabled {
             self.cpu_dma_remaining[1] = 8;
             self.cpu_dma_errors[1] = false;
@@ -399,6 +428,7 @@ impl Bus {
         let chip = &mut self.onchip[processor as usize];
         let reset = chip.take_reset_request()?;
         chip.reset_from_watchdog(reset);
+        self.cancel_cpu_transaction(processor);
         self.cache[processor as usize].get_mut().reset_control();
         Some(reset)
     }
@@ -419,6 +449,7 @@ impl Bus {
             bus: self,
             processor,
             cached: false,
+            scheduled: false,
         };
         let acknowledged = dma.transfer(&mut memory, requests);
         if let Some(source) = acknowledged {
@@ -438,6 +469,7 @@ impl Bus {
     fn main_deadline(&self) -> u32 {
         self.onchip[0]
             .clocks_to_event()
+            .min(self.bus_main_deadline())
             .min(self.onchip[1].clocks_to_event())
             .min(self.raster.clocks_to_event())
             .min(self.scu.clocks_to_event())
@@ -445,11 +477,6 @@ impl Bus {
             .min(self.cpu_dma_remaining[0])
             .min(if self.slave_enabled {
                 self.cpu_dma_remaining[1]
-            } else {
-                u32::MAX
-            })
-            .min(if self.scu.dma_pending() {
-                self.scu_dma_remaining.max(1)
             } else {
                 u32::MAX
             })
@@ -482,6 +509,7 @@ impl Bus {
         let mut reference_clocks = Some(reference_clocks);
         let mut command = None;
         while remaining != 0 {
+            self.grant_bus_transaction();
             let delta = remaining.min(self.main_deadline());
             self.onchip[0].advance_clocks(delta);
             if self.slave_enabled {
@@ -543,11 +571,8 @@ impl Bus {
             let (h, v) = self.raster.counters();
             self.vdp2.counters(h, v);
             self.vdp2.scan_field(self.raster.odd());
-            self.scu_dma_remaining = self.scu_dma_remaining.saturating_sub(delta);
-            if self.scu_dma_remaining == 0 {
-                self.advance_scu_dma()?;
-                self.scu_dma_remaining = 8u32.saturating_add(self.scu.take_bus_waits());
-            }
+            // Complete the granted data phase before contenders at this edge.
+            self.advance_bus_transaction(delta)?;
             // On-chip DMA has its own hardware-clock deadline. It must not
             // transfer faster merely because a CPU runs single-state opcodes,
             // nor stop while both CPUs sleep. The eight-clock DMA beat is a
@@ -559,6 +584,10 @@ impl Bus {
                 }
                 self.cpu_dma_remaining[i] -= delta;
                 if self.cpu_dma_remaining[i] == 0 {
+                    if self.bus_busy() {
+                        self.cpu_dma_remaining[i] = 1;
+                        continue;
+                    }
                     self.cpu_dma_errors[i] |= self.advance_dma(processor);
                     self.cpu_dma_remaining[i] =
                         8u32.saturating_add(self.onchip[i].take_wait_clocks());
@@ -580,7 +609,7 @@ impl Bus {
         self.vdp2.pal = self.raster.pal;
         self.raster.configure(0);
         self.scu = Scu::default();
-        self.scu_dma_remaining = 8;
+        self.cancel_scu_transaction();
         self.sound = Sound::default();
         self.set_slave_enabled(false);
     }
@@ -1082,13 +1111,14 @@ impl Memory for Bus {
 
 impl CpuBus<'_> {
     fn external_read<const N: usize>(&self, address: u32) -> Result<[u8; N], BusError> {
-        self.external_read_group(address, true, true)
+        self.external_read_group(address, true, true, false)
     }
     fn external_read_group<const N: usize>(
         &self,
         address: u32,
         first: bool,
         last: bool,
+        locked: bool,
     ) -> Result<[u8; N], BusError> {
         let chip = &self.bus.onchip[self.processor as usize];
         let bus_width = chip.external_bus_width(Bus::physical(address));
@@ -1100,20 +1130,20 @@ impl CpuBus<'_> {
         let mut result = [0; N];
         for (i, bytes) in result.chunks_mut(width).enumerate() {
             let at = address + (i * width) as u32;
-            match width {
-                1 => bytes.copy_from_slice(&self.bus.read::<1>(at)?),
-                2 => bytes.copy_from_slice(&self.bus.read::<2>(at)?),
-                _ => bytes.copy_from_slice(&self.bus.read::<4>(at)?),
+            let first = first && i == 0;
+            let last = last && (i + 1) * width == N;
+            if self.scheduled {
+                let value = self.scheduled_external(at, width, None, first, last, locked)?;
+                bytes.copy_from_slice(&value.to_be_bytes()[4 - width..]);
+            } else {
+                match width {
+                    1 => bytes.copy_from_slice(&self.bus.read::<1>(at)?),
+                    2 => bytes.copy_from_slice(&self.bus.read::<2>(at)?),
+                    _ => bytes.copy_from_slice(&self.bus.read::<4>(at)?),
+                }
+                let value = bytes.iter().fold(0u32, |v, b| v << 8 | u32::from(*b));
+                self.observe_external(at, width, value, false, first, last);
             }
-            let value = bytes.iter().fold(0u32, |v, b| v << 8 | u32::from(*b));
-            self.observe_external(
-                at,
-                width,
-                value,
-                false,
-                first && i == 0,
-                last && (i + 1) * width == N,
-            );
         }
         if little {
             result.reverse();
@@ -1134,6 +1164,18 @@ impl CpuBus<'_> {
         }
         for (i, bytes) in bytes.chunks(width).enumerate() {
             let at = address + (i * width) as u32;
+            let value = bytes.iter().fold(0u32, |v, b| v << 8 | u32::from(*b));
+            if self.scheduled {
+                self.scheduled_external(
+                    at,
+                    width,
+                    Some(value),
+                    i == 0,
+                    (i + 1) * width == N,
+                    false,
+                )?;
+                continue;
+            }
             let result = match width {
                 1 => self.bus.write(at, [bytes[0]]),
                 2 => self.bus.write(at, [bytes[0], bytes[1]]),
@@ -1164,8 +1206,18 @@ impl CpuBus<'_> {
         first: bool,
         last: bool,
     ) {
-        // Only actual external cycles (not cache hits) reach the other BSC.
-        if address < 0x4000_0000 {
+        self.reserve_external(address, width, write, first, last);
+        self.observe_external_data(address, width, value, write);
+    }
+    fn reserve_external(&self, address: u32, width: usize, write: bool, first: bool, last: bool) {
+        if (0xFFFF8000..0xFFFFC000).contains(&address) && write && width == 2 {
+            let i = self.processor as usize;
+            let states = self.bus.onchip[i]
+                .sdram_mode_states(address)
+                .expect("validated MRS");
+            self.bus.claim_external_bus(self.processor);
+            self.bus.cpu_bus_clocks[i].set(self.bus.cpu_bus_clocks[i].get().saturating_add(states));
+        } else if address < 0x4000_0000 {
             let shared = self.bus.onchip[self.processor as usize]
                 .shared_external_access(Bus::physical(address));
             if shared {
@@ -1184,31 +1236,36 @@ impl CpuBus<'_> {
                 last,
             );
             clocks.set(clocks.get().saturating_add(base));
-            self.bus.onchip[self.processor as usize].add_wait_clocks(self.bus.scu.abus_access(
-                address & 0x1FFF_FFFF,
-                width,
-                write,
-            ));
+            self.bus.onchip[self.processor as usize].add_external_wait_clocks(
+                self.bus
+                    .scu
+                    .abus_access(address & 0x1FFF_FFFF, width, write),
+            );
             let physical = Bus::physical(address);
             if (VRAM..VRAM + 0x80000).contains(&physical) {
                 let slots = self.bus.vdp2.cpu_access_slots(physical);
-                self.bus.onchip[self.processor as usize].add_wait_clocks(
+                self.bus.onchip[self.processor as usize].add_external_wait_clocks(
                     self.bus.raster.vram_wait_clocks(
                         slots,
                         self.bus.onchip[self.processor as usize].pending_wait_clocks(),
                     ),
                 );
             }
-            if shared {
-                self.bus.onchip[1 - self.processor as usize].observe_access(
-                    Bus::physical(address),
-                    width,
-                    value,
-                    write,
-                    false,
-                    true,
-                );
-            }
+        }
+    }
+    fn observe_external_data(&self, address: u32, width: usize, value: u32, write: bool) {
+        if address < 0x4000_0000
+            && self.bus.onchip[self.processor as usize]
+                .shared_external_access(Bus::physical(address))
+        {
+            self.bus.onchip[1 - self.processor as usize].observe_access(
+                Bus::physical(address),
+                width,
+                value,
+                write,
+                false,
+                true,
+            );
         }
     }
     fn read<const N: usize>(&self, address: u32, instruction: bool) -> Result<[u8; N], BusError> {
@@ -1223,7 +1280,7 @@ impl CpuBus<'_> {
             let mut index = 0;
             if let Some(bytes) = cache.read(address, instruction, |beat| {
                 index += 1;
-                self.external_read_group::<4>(beat, index == 1, index == 4)
+                self.external_read_group::<4>(beat, index == 1, index == 4, false)
             })? {
                 return Ok(bytes);
             }
@@ -1295,7 +1352,7 @@ impl Memory for CpuBus<'_> {
         Ok(u16::from_be_bytes(self.read(address, true)?))
     }
     fn tas_read8(&self, address: u32) -> Result<u8, BusError> {
-        let value = self.external_read::<1>(address)?[0];
+        let value = self.external_read_group::<1>(address, true, true, true)?[0];
         self.observe(address, 1, u32::from(value), false);
         Ok(value)
     }
@@ -1332,6 +1389,19 @@ impl Memory for CpuBus<'_> {
         Ok(())
     }
     fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
+        if (0xFFFF8000..0xFFFFC000).contains(&address) {
+            let i = self.processor as usize;
+            let states = self.bus.onchip[i].sdram_mode_states(address)?;
+            if self.scheduled {
+                self.scheduled_external(address, 2, Some(u32::from(value)), true, true, false)?;
+            } else {
+                self.bus.onchip[i].write_sdram_mode(address)?;
+                self.bus.cpu_bus_clocks[i]
+                    .set(self.bus.cpu_bus_clocks[i].get().saturating_add(states));
+            }
+            self.observe(address, 2, u32::from(value), true);
+            return Ok(());
+        }
         if address >= 0xFFFF_FE00 {
             if !self.cached && (0xFFFF_FF40..0xFFFF_FF7C).contains(&address) {
                 return Err(BusError::UnsupportedDevice { address, width: 2 });
@@ -1688,6 +1758,7 @@ mod scu_timing_tests {
             bus: &mut bus,
             processor: Processor::Master,
             cached: false,
+            scheduled: false,
         };
         assert!(dma_view.read32(0xFFFF_FF40).is_err());
     }
@@ -1721,7 +1792,10 @@ mod scu_timing_tests {
             b.advance_clocks(1).unwrap();
             assert_eq!(b.interrupt(Processor::Master), Some((2, 65)));
             assert_eq!(b.read16(vdp1::REGISTERS + 0x10).unwrap(), 2);
-            b.advance_clocks(16).unwrap();
+            // Setup2 + RAM read8 + read-to-write turnaround2 + write8.
+            b.advance_clocks(19).unwrap();
+            assert_eq!(b.read32(VRAM).unwrap(), 0);
+            b.advance_clocks(1).unwrap();
             assert_eq!(b.read32(VRAM).unwrap(), 0x12340000);
             b.advance_clocks(8).unwrap();
             assert_eq!(b.read32(VRAM).unwrap(), 0x12345678);
@@ -1785,10 +1859,10 @@ mod scu_timing_tests {
             b.write32(SCU + 0x80, 0x18000).unwrap();
             let mut elapsed = 0;
             for (deadline, value, pending) in [
-                (7, 0, true),
-                (8, 0x11220000, true),
-                (15, 0x11220000, true),
-                (16, 0x11223344, false),
+                (11, 0, true),
+                (12, 0x11220000, true),
+                (19, 0x11220000, true),
+                (20, 0x11223344, false),
             ] {
                 while elapsed < deadline {
                     let clocks = chunk.min(deadline - elapsed);
@@ -1803,7 +1877,7 @@ mod scu_timing_tests {
             b.write32(SCU + 0x88, 1).unwrap();
             b.write32(SCU + 0x8c, 0xdeadbeef).unwrap();
             b.write32(SCU + 0x80, 0x18000).unwrap();
-            b.advance_clocks(8).unwrap();
+            b.advance_clocks(12).unwrap();
             assert_eq!(b.read32(vdp1::VRAM + 0x1000).unwrap(), 0xdead3344);
             b.reset_volatile();
             b.advance_clocks(32).unwrap();
@@ -2008,7 +2082,9 @@ mod bsc_memory_tests {
                 b.write32(SCU + off, value).unwrap();
             }
             let mut elapsed = 0;
-            for deadline in [8, 16, 24, 32, 40, 47, 48] {
+            // One SCU setup clock (two main), five eight-main-clock data
+            // phases, plus IW3's two read-to-write turnaround clocks.
+            for deadline in [2, 10, 18, 26, 34, 43, 44] {
                 while elapsed < deadline {
                     let n = chunk.min(deadline - elapsed);
                     b.advance_clocks(n).unwrap();
@@ -2016,11 +2092,11 @@ mod bsc_memory_tests {
                 }
                 assert_eq!(
                     b.read32(HIGH_WRAM + 0x200).unwrap(),
-                    if deadline == 48 { 0x12345678 } else { 0 }
+                    if deadline == 44 { 0x12345678 } else { 0 }
                 );
                 assert_eq!(
                     b.scu.read32(SCU + 0xA4).unwrap() & 0x800,
-                    if deadline == 48 { 0x800 } else { 0 }
+                    if deadline == 44 { 0x800 } else { 0 }
                 );
             }
             b.write32(SCU + 4, HIGH_WRAM).unwrap();
@@ -2120,11 +2196,9 @@ mod abus_dma_tests {
     use super::*;
     #[test]
     fn a_bus_waits_delay_scu_data_publication_and_reset_cancels_the_next_beat() {
-        // ST-097 §3.2: a CS0 long read crosses two 16-bit cycles, each
-        // adding NW3 main clocks. Against the existing functional
-        // eight-clock DMA grants, writes move from clocks24/40 to30/52 (including the initial
-        // channel-setup grant).
-        // The base eight-clock cadence is explicitly not electrical proof.
+        // ST-097 §3.2 and H §7.4: setup2, CS0 read8+NW6, then
+        // RAM write8+IW2. Later reads/writes repeat14+10. Publication is
+        // at the END of each data phase (26/50), never before its waits.
         for chunk in [1, 3, 8, 17, 64] {
             let mut b = Bus::default();
             b.write32(SCU + 0xB0, 0x00300000).unwrap();
@@ -2140,10 +2214,10 @@ mod abus_dma_tests {
             }
             let mut elapsed = 0;
             for (deadline, first, second) in [
-                (29, 0, 0),
-                (30, u32::MAX, 0),
-                (51, u32::MAX, 0),
-                (52, u32::MAX, u32::MAX),
+                (25, 0, 0),
+                (26, u32::MAX, 0),
+                (49, u32::MAX, 0),
+                (50, u32::MAX, u32::MAX),
             ] {
                 while elapsed < deadline {
                     let n = (deadline - elapsed).min(chunk);

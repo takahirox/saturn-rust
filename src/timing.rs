@@ -37,7 +37,9 @@ impl SystemClock {
         if main_clocks == u32::MAX {
             return u32::MAX;
         }
-        (u64::from(main_clocks) * Self::REFERENCE - self.phase).div_ceil(self.frequency()) as u32
+        (u64::from(main_clocks) * Self::REFERENCE)
+            .saturating_sub(self.phase)
+            .div_ceil(self.frequency()) as u32
     }
     pub fn advance(&mut self, reference_clocks: u32) -> u32 {
         let elapsed = self.phase + u64::from(reference_clocks) * self.frequency();

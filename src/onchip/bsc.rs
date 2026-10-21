@@ -21,6 +21,7 @@ enum Interface {
 pub(super) struct Bsc {
     registers: [u16; 7],
     slave: bool,
+    sdram_mode: Option<u16>,
     observed: Cell<bool>,
     phase: u32,
     access: Cell<Option<Access>>,
@@ -36,6 +37,7 @@ impl Default for Bsc {
         Self {
             registers: [0x03F0, 0x00FC, 0xAAFF, 0, 0, 0, 0],
             slave: false,
+            sdram_mode: None,
             observed: Cell::new(false),
             phase: 0,
             access: Cell::new(None),
@@ -47,6 +49,29 @@ impl Default for Bsc {
     }
 }
 impl Bsc {
+    /// H §7.5.8/fig.7.27. A0 is not a word-address pin; the MRS
+    /// cycle is explicitly exempt from the CPU address-error checks (table4.6).
+    pub fn mode_states(&self, address: u32) -> Result<u32, BusError> {
+        let code = (address & !1).wrapping_sub(0xFFFF8000);
+        let valid = if self.registers[3] & 0x40 == 0 {
+            matches!(code, 0x426 | 0x446 | 0x466)
+        } else {
+            matches!(code, 0x848 | 0x888 | 0x8C8)
+        };
+        if !valid {
+            return Err(BusError::UnsupportedDevice { address, width: 2 });
+        }
+        Ok(2 + u32::from(self.registers[3] >> 15))
+    }
+    pub fn write_mode(&mut self, address: u32) -> Result<(), BusError> {
+        self.mode_states(address)?;
+        self.sdram_mode = Some((address & !1).wrapping_sub(0xFFFF8000) as u16);
+        // PALL precedes MRS even if the value did not change. The next access
+        // must activate its row anew, independently in both SDRAM banks.
+        self.rows.set([None; 2]);
+        self.burst_words.set(0);
+        Ok(())
+    }
     pub fn set_slave(&mut self, slave: bool) {
         self.slave = slave;
     }
@@ -338,6 +363,12 @@ impl Bsc {
             gap: 0,
         }));
         (base, waits)
+    }
+    pub fn extend_access(&self, clocks: u32) {
+        if let Some(mut access) = self.access.get() {
+            access.busy = access.busy.saturating_add(clocks);
+            self.access.set(Some(access));
+        }
     }
     pub fn advance_bus(&self, clocks: u32) {
         if let Some(mut last) = self.access.get() {
@@ -847,6 +878,40 @@ mod memory_tests {
             assert_eq!(b.refresh_remaining.get(), expected);
             b.advance(expected);
             assert_eq!(b.refresh_remaining.get(), 0);
+        }
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+    #[test]
+    fn all_six_documented_mrs_addresses_latch_address_ignore_data_and_precharge_both_banks() {
+        for slave in [false, true] {
+            for (size, codes) in [(0, [0x426, 0x446, 0x466]), (0x40, [0x848, 0x888, 0x8C8])] {
+                for trp in [0, 0x8000] {
+                    let mut b = Bsc::default();
+                    b.set_slave(slave);
+                    b.write(BSC, 0xA55A0001).unwrap();
+                    b.write(BSC + 8, 0xA55A0000).unwrap();
+                    b.write(BSC + 12, 0xA55A0200 | size | trp).unwrap();
+                    for code in codes {
+                        for a0 in [0, 1] {
+                            b.access_timing(0x06000000, true, true, true);
+                            assert!(b.rows.get().iter().any(Option::is_some));
+                            let address = 0xFFFF8000 | code | a0;
+                            assert_eq!(b.mode_states(address), Ok(2 + (trp >> 15)));
+                            b.write_mode(address).unwrap();
+                            assert_eq!(b.sdram_mode, Some(code as u16));
+                            assert_eq!(b.rows.get(), [None; 2]);
+                            assert_eq!(b.burst_words.get(), 0);
+                        }
+                    }
+                    let before = b.sdram_mode;
+                    assert!(b.write_mode(0xFFFF8000).is_err());
+                    assert_eq!(b.sdram_mode, before);
+                }
+            }
         }
     }
 }

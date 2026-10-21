@@ -106,6 +106,12 @@ impl Default for OnChip {
 }
 
 impl OnChip {
+    pub(crate) fn sdram_mode_states(&self, address: u32) -> Result<u32, BusError> {
+        self.bsc.mode_states(address)
+    }
+    pub(crate) fn write_sdram_mode(&mut self, address: u32) -> Result<(), BusError> {
+        self.bsc.write_mode(address)
+    }
     pub(crate) fn take_refresh_output(&self) -> bool {
         self.bsc.take_refresh_output()
     }
@@ -133,6 +139,10 @@ impl OnChip {
         self.wait_clocks
             .set(self.wait_clocks.get().saturating_add(waits));
         base
+    }
+    pub(crate) fn add_external_wait_clocks(&self, clocks: u32) {
+        self.bsc.extend_access(clocks);
+        self.add_wait_clocks(clocks);
     }
     pub(crate) fn add_wait_clocks(&self, clocks: u32) {
         self.wait_clocks

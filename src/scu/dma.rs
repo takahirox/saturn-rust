@@ -15,6 +15,7 @@ pub(super) fn valid_destination(address: u32) -> bool {
     b_bus(address) || (0x0600_0000..0x0610_0000).contains(&address)
 }
 
+#[derive(Clone)]
 pub(super) struct Channel {
     source: u32,
     destination: u32,
@@ -27,6 +28,7 @@ pub(super) struct Channel {
     active: Option<Transfer>,
     table: Option<Table>,
 }
+#[derive(Clone)]
 struct Table {
     address: u32,
     words: [u32; 3],
@@ -65,6 +67,7 @@ impl Table {
         }))
     }
 }
+#[derive(Clone)]
 struct Transfer {
     source: u32,
     destination: u32,

@@ -63,6 +63,11 @@ impl<'a, B: Memory> Operands<'a, B> {
         value: u32,
         access: Access,
     ) -> Result<(), BusError> {
+        // H table4.6 note1 / §7.5.8: MRS word writes do not raise an
+        // alignment address error. A0 is not driven to the SDRAM mode pins.
+        if width == 2 && (0xFFFF8000..0xFFFFC000).contains(&address) {
+            return self.inner.write16(address, value as u16);
+        }
         if self.invalid(address, width, access) {
             return Ok(());
         }
