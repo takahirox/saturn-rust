@@ -32,38 +32,25 @@ fn guest_scanline_writes_survive_later_vram_and_color_offset_changes() {
         let frame = m.framebuffer().unwrap();
         for y in 0..224 {
             let rgb = match y {
-                0..=63 => [255, 0, 0, 255],
-                64..=127 => [0, 255, 0, 255],
-                128..=191 => [0, 0, 255, 255],
+                0..=64 => [255, 0, 0, 255],
+                65..=128 => [0, 255, 0, 255],
+                129..=192 => [0, 0, 255, 255],
                 _ => [255; 4],
             };
             for x in [159, 319] {
                 assert_eq!(&frame[(y * 320 + x) * 4..][..4], rgb, "({x},{y})");
             }
         }
-        // Counter polling and the following write take time. The first dots
-        // of a transition line retain the previous color; HBlank must not
-        // retroactively recolor them. Check each transition is a single prefix.
+        // Back-screen data is read once for each line, not once per dot.
+        // Guest writes after observing a line start affect the next line.
         for (y, old, new) in [
             (64, [255, 0, 0, 255], [0, 255, 0, 255]),
             (128, [0, 255, 0, 255], [0, 0, 255, 255]),
             (192, [0, 0, 255, 255], [255; 4]),
         ] {
             let row = &frame[y * 320 * 4..(y + 1) * 320 * 4];
-            let prefix = row
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .take_while(|p| **p == old)
-                .count();
-            assert!((1..159).contains(&prefix), "line {y}: prefix {prefix}");
-            assert!(
-                row[prefix * 4..]
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .all(|p| *p == new)
-            );
+            assert!(row.as_chunks::<4>().0.iter().all(|p| *p == old));
+            assert_eq!(&frame[((y + 1) * 320) * 4..][..4], new);
         }
         // The frame remains unchanged during VBlank, then the next field
         // uses the new black back color plus its red offset.

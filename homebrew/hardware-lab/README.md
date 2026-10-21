@@ -82,4 +82,4 @@ including both line-window edges, in native execution, Wasm and Canvas. Separate
 matrix-translation and line-window-start mutations in the actual disc change
 independently expected pixels; complete diagnostic records and video are checked
 again after Start restart. Current data-disc SHA-256:
-`6eef0cafaf4dc14575ce692a8892937cc140b9e10502de1b6ed6d03d6cd7c6d6`.
+`9f70a8fec648cd31795ce6c3c4f131417fea256f4e0e370fa1183615819091a9`.

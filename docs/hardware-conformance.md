@@ -500,7 +500,7 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 | Sprite texture/color modes, [VDP1] §§6.3–6.6 | Packed 4-bit bank/LUT, 64/128/256 bank and RGB555, transparent pixels, two end codes per raster row | VIDEO | PRISM (RGB555) | Scaling/end-code interaction, wrapping and all browser formats | Pending |
 | Shading/color calculation, [VDP1] §6.3 | Gouraud, mesh, MSB-only, shadow, half-luminance/transparency, combined Gouraud effects | VIDEO | PRISM (replace only) | Subpixel interpolation and duplicate-coverage edges; complete readout/effects corpus | Pending |
 | Draw/erase/swap/status/IRQ, [VDP1] §4 | PTMR; bounded 30-clock ENDR; per-dot draw cursor, manual transfer-over; scanline display erase and word-clock VBlank erase with 200-clock/raster overhead; manual/auto change, persistent VBE, CEF/BEF/COPR/LOPR; SCU IRQ/DMA trigger | VIDEO, VIRQ, PRISM, VTX | PRISM, VTX | CPU/VRAM arbitration, complete command/effect costs, mid-blank enable phase and half-line phase | Pending |
-| VDP2 VRAM, [VDP2] §3 | Bitmap RAM/bank offsets; all eight cycle words select CPU grants, split-bank matching and idle/linked timing, unused-screen release, rotation ownership and high-resolution slot limits | VIDEO, SC, VTX; `access.rs`, `vram_grant_tests.rs` | PRISM, SC, VTX | Full display-fetch bandwidth, transaction retirement and SCU/DMA arbitration remain | Pending |
+| VDP2 VRAM, [VDP2] §3 | Bitmap RAM/bank offsets; all eight cycle words select CPU grants, split-bank matching and idle/linked timing, unused-screen release, rotation ownership and high-resolution slot limits; beam output requires addressed-bank display grants and format/reduction bandwidth | VIDEO, SC, VTX, [FETCHG](#vdp2-display-fetch-grants-and-line-table-latches-fetchg); `access.rs`, `vram_grant_tests.rs` | PRISM, SC, VTX, FETCHG | Per-word display-fetch phase/retention and complete SCU/DMA arbitration remain | Pending |
 | VDP2 CRAM, [VDP2] §3.4 | Modes 0/1 RGB555 and 2 RGB888; mode-0 upper-half mirror; palette offsets | VIDEO | — | Full lane/alias and guest/browser palette corpus | Pending |
 | TVMD/TVSTAT, [VDP2] §2.2 | 320/352/640/704 dots, 224/240/PAL256 lines, noninterlace/single/double density; 480-line exclusive monitors and NBG0/NBG1 pixel multiplexing; border/display enable, PAL/ODD and blanking flags | VIDEO, TIME, TVG, VTX | PRISM, SC, SCUROM, TVG, VTX | Complete raster-time latches, half-line phase and switching transients remain | Pending |
 | NBG0 bitmap, [VDP2] §§4–6 | 4/8/11-bit palette, RGB555/RGB888, bitmap dimensions/base, transparency, fixed-point scroll/zoom | VIDEO | PRISM, SC (RGB555, unit zoom) | Full format/dimension/zoom vectors and browser coverage | Pending |
@@ -2146,3 +2146,40 @@ and complete reset-domain boundaries, all other pending device/service contracts
 and complete umbrella acceptance evidence. These vectors do not establish
 physical pin timing, illegal self-refresh access results, or analog RAM decay.
 The other Issue #17 requirements remain mandatory; no umbrella checkbox is checked.
+
+## VDP2 display-fetch grants and line-table latches (FETCHG)
+
+Primary reference: [VDP2] §3.3, tables3.2–3.5 and figs.3.2–3.7;
+§5.3 (line-scroll read intervals), §6.1 (per-line rotation-parameter reads),
+§6.2 (rotation banks), §7.1 (line color) and §8.1 (line windows).
+This evidence implements additional Issue #17 video behavior; the umbrella
+acceptance checklist remains unsatisfied.
+
+| Contract | Implementation | Independent native evidence | Guest/Wasm evidence |
+| --- | --- | --- | --- |
+| Pattern-name commands 0–3, character/bitmap commands 4–7 | `Vdp2::name_slots/character_access`, `tile_map/background` in [access.rs](../src/vdp2/access.rs) and [vdp2.rs](../src/vdp2.rs) | Exhaustive addressed-bank tests for four layers, five formats, 0–8 grants and normal/high-resolution/exclusive timing ranges; literal table3.4 pipeline masks for each name timing; x1/x2/x4 name/character requirements and ZMCTL | [Original licensed builder](../tests/fixtures/build_vdp2_fetch.py), [native guest](../tests/vdp2_fetch.rs), identical [production Wasm/Canvas test](../scripts/video-transactions.mjs); removing grants, putting them in another bank and changing color depth changes actual historical pixels |
+| VRAM split addressing and rotation ownership | `display_bank/rotation_bank/rotation_access` | A1/B1 cycle words ignored when unsplit, independent when split; every bank/rotation-role pair; RBG1's fixed B1 names/B0 characters retained | FETCHG switches the bitmap from A0 to A1, proves blank output until A1 receives grants, then recovers; RBG1/effects/Hardware Lab use explicit RBG0 bank roles |
+| Vertical cell-scroll commands 12/13 | `cell_access`, `normal_coordinates` | Literal early-slot limits, NBG0-before-NBG1 and same-bank requirements; NBG1-only release | Existing effects guest exercises table setup; phase/latency guest coverage for this port remains required |
+| Line-scroll interval retention | `Vdp2::read_line_tables/scroll_data` in [tables.rs](../src/vdp2/tables.rs) | Mid-line mutation leaves the current read intact; an interval of two retains line0's read on line1, reads the next record on line2, and reloads at the next field | Existing line-effects guest and Hardware Lab rerun through Wasm; mid-interval mutation has native evidence |
+| Per-line/per-dot coefficient reads | `RotationRead::coefficients`, `read_rotation_line/coefficient/read_coefficient` in [rotation.rs](../src/vdp2/rotation.rs) | A coefficient read once per line stays unchanged after a RAM write; a per-dot coefficient requires RAMCTL role1 or CRAM and samples changed RAM on later dots | FETCHG's guest-written start/matrix selects X=1*kx. Writes of coefficients1/2 preserve the current line's red/green pixel and change the following line. Switching to per-dot coefficients loses the RBG0 pixel until B0 is assigned role1, and removing the port loses it again; native/Wasm compare both sample points and guest-color mutations |
+| Line-window, back/line-color and rotation-parameter reads | `read_line_tables`, `rotation_long/rotation_word`, `render_region/window` | Mid-line scroll/window/back-table mutations preserve earlier reads while palette/color-offset changes remain live; all 24 rotation longwords, packed points and both parameter banks are retained until the next line | FETCHG rewrites the current and following line-window records after polling VCNT; the current window remains full-width and the next becomes narrow. The existing raster-history native/Wasm guest now checks the held whole line and the next-line change, with a changed guest color operand. Existing sprite-rotation and effect guests retain their expected pixels |
+| Correctly programmed licensed media | Guest MMIO and original source builders | Four-layer tile guest now advances through two actual fields before checking pixels; A supplies four names, B supplies five character accesses. Native Prism Courier and Hardware Lab still complete/restart | Full browser suite checks all three discs, Canvas, guest input/results/restart and production WebAudio; exclusive-monitor diagnostics now use two non-overlapping 256-color surfaces, independently fetched from A/B |
+
+FETCHG expanded synthetic ROM SHA-256:
+`74ffd46da1859432343b8c62d27c68499461511f2989f3d7678e89c133208419`.
+Sources and generated `.hex`/`.s` files use the adjacent [MIT license](../tests/fixtures/LICENSE).
+CI runs `python3 tests/fixtures/build_vdp2_fetch.py --check`.
+Mutating all five guest color literals changes the rendered color in native and
+Wasm without changing running result RAM, pixels or host device state.
+
+A missing addressed-bank grant or inadequate bandwidth produces a transparent
+layer in this deterministic model. The manual says such programming cannot
+produce the correct screen; it does not specify golden invalid-configuration
+pixels. Static `Vdp2::framebuffer/composite` debugger decoding intentionally
+shows an unclocked register/VRAM snapshot for inspecting unfinished setup.
+`scan_to/scanout`, including completed fields presented by the production app,
+apply the display grants and retain line reads. Snapshot decoder vectors alone
+are not bus/beam evidence. Per-word fetch phases and retention, coefficient/cell
+port timing, half-line transitions and the other pending hardware contracts
+remain required; these results do not establish complete VDP2 or Issue #17
+conformance.

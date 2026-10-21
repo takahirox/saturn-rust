@@ -4,6 +4,60 @@
 criterion is complete; #17 must remain open.** Issues #11/#13/#15 are historical,
 administratively closed trackers and must not be reopened.
 
+## Review fixes: VDP2 display grants and raster-table reads (2026-10-22)
+
+Continues reviewed PR head `19ccfeead15898b554daf893333597a490f981f1` in the
+assigned worktree. Upstream main was rechecked as
+`dbd981b030a46daa6923072ce240680dd2e58ebf`.
+
+Beam output now requires the addressed VRAM bank's name/character grants,
+format/reduction bandwidth and name-to-character timing. Rotation data roles
+override normal cycle commands; vertical cell-scroll reads require the early
+NBG0/NBG1 slots. ZMCTL is implemented and its reserved encoding is rejected.
+Line-scroll intervals, windows, back/line colors, all rotation-parameter words
+and per-line coefficients retain their fetched values. Per-dot coefficients
+read live data through a dedicated coefficient bank or CRAM. Palette and
+color-offset changes remain live independently of those table reads.
+
+The original MIT FETCHG synthetic BIOS writes every control/table/pixel itself.
+Native and production Wasm/Canvas compare bandwidth starvation/recovery,
+misbanked grants, split A0/A1, 8/16-bit formats, current/next-line windows,
+held per-line coefficients and per-dot coefficient-bank removal/recovery.
+Both cold resets and five mutated guest color literals retain independent
+expectations. The expanded ROM hash is
+`74ffd46da1859432343b8c62d27c68499461511f2989f3d7678e89c133208419`.
+See [implementation, sources, primary specification and vectors](hardware-conformance.md#vdp2-display-fetch-grants-and-line-table-latches-fetchg).
+
+Existing diagnostics now program real fetch grants. The four-layer tile guest
+puts names in A and characters in B and its native test checks two completed
+fields. Exclusive monitors use non-overlapping 256-color surfaces. Prism
+Courier reserves its bitmap reads; Hardware Lab reserves rotation/coefficient
+banks. Their source-rebuilt hashes and READMEs are updated. The back-color
+raster tests now assert a held whole line followed by the next-line change,
+replacing the former incorrect per-dot table-read expectation.
+
+Validation actually performed:
+
+- `cargo fmt --check` and `cargo build --locked`: passed.
+- `CARGO_PROFILE_TEST_OPT_LEVEL=1 cargo test --locked`: **589 passed**, none
+  failed or skipped; debug assertions remain enabled, Cargo.toml is unchanged.
+- Native all-target and Wasm Clippy with `-D warnings`: passed using stable
+  Rust 1.99.0. Native test execution used host Rust 1.94.0.
+- `sh scripts/build-web.sh`: passed with wasm-bindgen 0.2.129.
+- All **62** reproducible guest-media checks extracted from the CI workflow:
+  passed, including FETCHG and all three demonstration discs.
+- `npm run test:browser`: passed completely on Chromium **145.0.7632.6**
+  against the final rebuilt assets under `/saturn-rust/`, including FETCHG,
+  Star Collector, Prism Courier, Hardware Lab, Canvas, real WebAudio,
+  input/focus, offline operation and local-file privacy checks.
+- `git diff --check` and conformance/setup relative-link checks: passed.
+
+The requested complete Issue #17 resolution has **not** been achieved.
+Per-word display-fetch phases/retention and the other pending CPU, bus/reset,
+SCU/DSP, VDP1/VDP2, sound, CD/HLE and SMPC contracts still require implementation
+and acceptance evidence. No umbrella checkbox or Issue state is changed, and
+no human, personal-firmware or post-merge gate is introduced.
+
 ## Review fixes: internal DMA, sound bus completion and media validation (2026-10-22)
 
 Continues reviewed PR head `ffb0d31a6f036819a738165821be7326a8c3dbff`

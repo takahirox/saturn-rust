@@ -67,5 +67,30 @@ export async function videoTransactions(page) {
   const { records: released } = await run(page,patch(grants,0x25F80020,0x25F80022),0x0600DE00,7);
   assert.equal(released[6],0x600D);
   for (const value of released.slice(0,6)) assert(value > 0 && value < 60, `${released}`);
+  const fetchRom = await rom("vdp2-fetch");
+  const rows = [0,15,17,31,33,47,49,63,65,79,81,95,97,111,113,127,128,129,130,
+    144,145,160,161,176,177,191,193,207,209,223];
+  for (const changed of [false,false,true]) {
+    const bytes = changed ? patch(fetchRom,0x801F,0x83E0,5) : fetchRom;
+    const result = await page.evaluate(async ({bytes,rows}) => {
+      const {emulator,advanceFrame} = await import("./app.js");
+      emulator.reset_bios(Uint8Array.from(bytes));
+      for (let i=0;i<500 && emulator.read_long(0x0600DF00)!==0x600D;i++) emulator.run_steps(500);
+      if (emulator.read_long(0x0600DF00)!==0x600D) throw new Error("Display-fetch guest did not complete");
+      advanceFrame();
+      const f=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
+      return {exceptions:Number(emulator.exception_count()),
+        pixels:rows.flatMap(y=>[159,319].map(x=>Array.from(f.slice((y*320+x)*4,(y*320+x)*4+4)))),
+        canvas:rows.flatMap(y=>[159,319].map(x=>Array.from(canvas.getImageData(x,y,1,1).data)))};
+    },{bytes:[...bytes],rows});
+    const expected=rows.flatMap(y=>{
+      const visible=!(y>=17&&y<=47 || y>=65&&y<=79 || y>=97&&y<=111 || y===129);
+      const color=visible?(changed||y>=145&&y<=160||y>=193&&y<=207?[0,255,0,255]:[255,0,0,255]):[0,0,0,255];
+      return [color,color];
+    });
+    assert.equal(result.exceptions,0);
+    assert.deepEqual(result.pixels,expected);assert.deepEqual(result.canvas,expected);
+  }
+  console.log("Display fetch passed: guest bandwidth starvation/recovery, wrong-bank grants, split A0/A1, 8/16-bit read requirements, line-window and per-line coefficient capture, per-dot coefficient bank ownership, cold resets, pixel operand mutation and production Wasm/Canvas.");
   console.log("Video transactions passed: partial VDP1 dots/ENDR/status, bounded VBlank erase and operand changes; all four exclusive monitor modes, 480-line pixels/counters/Wasm/Canvas and NBG1 mutation; split VRAM grants, HBlank stalls, ignored high-resolution slots and disabled-screen release.");
 }

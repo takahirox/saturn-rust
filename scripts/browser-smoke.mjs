@@ -1484,17 +1484,12 @@ try {
         next:Array.from(canvas.getImageData(0,100,1,1).data),
         finalVram:emulator.read_long(0x25E60000)>>>16};
     },rasterYs);
-    const expected=rasterYs.map(y=>y<64?[255,0,0,255]:y<128?(mutated?[255,0,0,255]:[0,255,0,255]):y<192?[0,0,255,255]:[255,255,255,255]);
+    const expected=rasterYs.map(y=>y<=64?[255,0,0,255]:y<=128?(mutated?[255,0,0,255]:[0,255,0,255]):y<=192?[0,0,255,255]:[255,255,255,255]);
     assert.deepEqual(result.pixels,expected);assert.deepEqual(result.presented,expected);
     for (const [index,y] of [64,128,192].entries()) {
       const old = y===64 ? [255,0,0,255] : y===128 ? (mutated ? [255,0,0,255] : [0,255,0,255]) : [0,0,255,255];
-      const next = y===64 ? (mutated ? old : [0,255,0,255]) : y===128 ? [0,0,255,255] : [255,255,255,255];
       const row = result.rows[index];
-      if (mutated && y===64) { assert.deepEqual(row,Array.from({length:320},()=>old).flat()); continue; }
-      let prefix=0;
-      while (prefix<320 && row.slice(prefix*4,prefix*4+4).every((v,c)=>v===old[c])) prefix++;
-      assert(prefix>0 && prefix<159, `line ${y}: ${prefix} previous-color dots`);
-      assert.deepEqual(row.slice(prefix*4),Array.from({length:320-prefix},()=>next).flat());
+      assert.deepEqual(row,Array.from({length:320},()=>old).flat());
     }
     assert.deepEqual(result.next,[31,0,0,255]);assert.equal(result.finalVram,0x8000);
   }

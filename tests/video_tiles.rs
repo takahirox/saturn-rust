@@ -223,6 +223,8 @@ fn guest_programs_all_four_layers_and_mutated_guest_palette_changes_real_pixels(
         m.reset(Boot::ExternalBios(&image)).unwrap();
         m.run_steps(3000).unwrap();
         assert_eq!(m.bus().read32(0x06009000).unwrap(), 0x600D);
+        m.advance_frame().unwrap();
+        m.advance_frame().unwrap();
         let frame = m.framebuffer().unwrap();
         for (x, color) in [
             (

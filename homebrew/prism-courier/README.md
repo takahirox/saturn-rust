@@ -20,7 +20,7 @@ python3 homebrew/prism-courier/build.py --check
 
 Output: `web/prism-courier.iso`, a deterministic 131072-byte cooked ISO9660 disc
 containing its own `LICENSE.TXT`. SHA-256:
-`2fd953d65b931383518f28f81919f5c89c3ea8974b742546e1606333c2064bee`.
+`8427b45677d5fb9b7f401ebc58f6975b689d77c9741745489a3bc660e2d91137`.
 The existing generic Saturn IP/first-read loader starts the executable at
 06004000. The executable uploads command tables, an original 8×8 diamond
 texture, a 68k program and an SH-2 interrupt handler from its own disc data.

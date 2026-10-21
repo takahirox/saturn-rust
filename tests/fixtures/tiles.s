@@ -2,6 +2,18 @@
 load 0x25f80000,r1
 load 0x8000,r0
 mov.w r0,@r1
+load 0x25f80010,r1
+load 0x123,r0
+mov.w r0,@r1
+load 0x25f80012,r1
+load 0xffff,r0
+mov.w r0,@r1
+load 0x25f80018,r1
+load 0x4556,r0
+mov.w r0,@r1
+load 0x25f8001a,r1
+load 0xfff7,r0
+mov.w r0,@r1
 load 0x25f80020,r1
 load 0xf,r0
 mov.w r0,@r1
@@ -12,16 +24,16 @@ load 0x25f8002a,r1
 load 0x1,r0
 mov.w r0,@r1
 load 0x25f80030,r1
-load 0x8000,r0
+load 0x8008,r0
 mov.w r0,@r1
 load 0x25f80032,r1
 load 0x0,r0
 mov.w r0,@r1
 load 0x25f80034,r1
-load 0x8000,r0
+load 0x8008,r0
 mov.w r0,@r1
 load 0x25f80036,r1
-load 0xc000,r0
+load 0xc008,r0
 mov.w r0,@r1
 load 0x25f80040,r1
 load 0x8,r0
@@ -81,7 +93,7 @@ load 0x25e14004,r1
 load 0x0,r0
 mov.w r0,@r1
 load 0x25e14006,r1
-load 0x110,r0
+load 0x2110,r0
 mov.w r0,@r1
 load 0x25e18002,r1
 load 0x48,r0
@@ -104,7 +116,7 @@ mov.w r0,@r1
 load 0x25f00008,r1
 load 0x7fff,r0
 mov.w r0,@r1
-load 0x25e02000,r1
+load 0x25e42000,r1
 load 0x11111111,r0
 mov #8,r2
 fill0:
@@ -112,7 +124,7 @@ mov.l r0,@r1
 add #4,r1
 dt r2
 bf fill0
-load 0x25e02200,r1
+load 0x25e42200,r1
 load 0x2020202,r0
 mov #16,r2
 fill1:
@@ -120,7 +132,7 @@ mov.l r0,@r1
 add #4,r1
 dt r2
 bf fill1
-load 0x25e02400,r1
+load 0x25e42400,r1
 load 0x33333333,r0
 mov #32,r2
 fill2:
@@ -128,7 +140,7 @@ mov.l r0,@r1
 add #4,r1
 dt r2
 bf fill2
-load 0x25e02800,r1
+load 0x25e42800,r1
 load 0x44444444,r0
 mov #8,r2
 fill3:

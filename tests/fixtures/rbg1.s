@@ -3,7 +3,7 @@ load 0x25f80020,r1
 load 0x30,r0
 mov.w r0,@r1
 load 0x25f8000e,r1
-load 0x200,r0
+load 0x203,r0
 mov.w r0,@r1
 load 0x25f80028,r1
 load 0x0,r0

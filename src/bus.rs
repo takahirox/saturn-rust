@@ -2134,7 +2134,7 @@ mod raster_write_tests {
         bus.vdp2.scanout(&bus.vdp1).unwrap()
     }
     #[test]
-    fn completed_dots_preserve_back_color_at_every_display_density() {
+    fn line_start_back_color_fetch_is_held_until_the_next_line_at_every_density() {
         // ST-058 §§2.1/2.4/7.2. No instruction timing assumptions: the bus
         // writes take place at literal main-clock boundaries.
         for (mode, width, period) in [
@@ -2154,14 +2154,11 @@ mod raster_write_tests {
                 for x in 0..width {
                     assert_eq!(
                         &frame[x as usize * 4..][..4],
-                        if x < split {
-                            [255, 0, 0, 255]
-                        } else {
-                            [0, 255, 0, 255]
-                        },
+                        [255, 0, 0, 255],
                         "mode={mode:X}, split={split}, x={x}"
                     );
                 }
+                assert_eq!(&frame[width as usize * 4..][..4], [0, 255, 0, 255]);
             }
         }
     }
@@ -2171,6 +2168,8 @@ mod raster_write_tests {
         let mut b = Bus::default();
         for (offset, value) in [
             (0, 0x8000),
+            (0x10, 0x44FF),
+            (0x12, 0xEEEE),
             (0x20, 0x101),
             (0x28, 0x12),
             (0x78, 1),

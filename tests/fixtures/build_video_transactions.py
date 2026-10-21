@@ -52,15 +52,20 @@ def monitor_source():
     s = 'load 0x0600dc00,r8\n'
     # Set all control/data while display is disabled. Odd pixels come from
     # NBG1 only in exclusive high-resolution mode, following §2.1 p.13.
-    for off, value in [(0xE, 0), (0x10, 0xFFFF), (0x12, 0xFFFF),
-                       (0x14, 0xFFFF), (0x16, 0xFFFF), (0x18, 0xFFFF),
+    for off, value in [(0xE, 0), (0x10, 0x4444), (0x12, 0xFFFF),
+                       (0x14, 0xFFFF), (0x16, 0xFFFF), (0x18, 0x5555),
                        (0x1A, 0xFFFF), (0x1C, 0xFFFF), (0x1E, 0xFFFF),
-                       (0x20, 0x303), (0x28, 0x3636), (0xF8, 0x101),
+                       (0x20, 0x303), (0x28, 0x1616), (0x3C,0x20), (0xF8, 0x101),
                        (0x7C, 1), (0x8C, 1), (0xAC, 3), (0xAE, 0xF800)]:
         s += put16(0x25F80000 + off, value)
-    for y in [0, 479]:
-        for x, color in enumerate([0x801F, 0x83E0, 0xFC00, 0xFFFF, 0x801F, 0x83E0, 0xFC00, 0xFFFF]):
-            s += put16(0x25E00000 + (y * 512 + x) * 2, color)
+    # 256-color 512x512 bitmaps fit separately in A and B. Two 16-bit
+    # 512x512 surfaces would overlap and cannot reserve independent fetches.
+    for index,color in enumerate([0x801F,0x83E0,0xFC00,0xFFFF],1):
+        s += put16(0x25F00000+index*2,color)
+    for base in [0x25E00000,0x25E40000]:
+        for y in [0,479]:
+            for x,word in enumerate([0x0102,0x0304,0x0102,0x0304]):
+                s += put16(base+y*512+x*2,word)
     s += 'load 0x8006,r9\nmov r9,r0\nmov #2,r2\nand r2,r0\ntst r0,r0\nbt ordinary\n'
     for off, value in [(0x78, 2), (0x88, 2), (0x80, 1)]:
         s += put16(0x25F80000 + off, value)

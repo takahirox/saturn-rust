@@ -10,6 +10,7 @@ pub(super) struct RotationRead {
     pub line: Option<usize>,
     previous: Option<usize>,
     starts: [[i64; 3]; 2],
+    coefficients: [Option<Coefficient>; 2],
 }
 
 #[derive(Clone, Copy)]
@@ -39,10 +40,9 @@ impl Vdp2 {
             .previous
             .map_or(y, |old| y.saturating_sub(old));
         for parameter in 0..2 {
-            let at = self.rotation_table(parameter);
             let control = self.word(0xB2) >> (parameter * 8);
             for (i, offset) in [0, 4, 0x54].into_iter().enumerate() {
-                let raw = self.vlong(at + offset);
+                let raw = self.rotation_long(parameter, offset);
                 let start = if i == 2 {
                     i64::from(raw & 0xFFFFFFC0)
                 } else {
@@ -66,12 +66,22 @@ impl Vdp2 {
         }
         self.rotation_read.previous = Some(y);
         self.rotation_read.line = Some(y);
+        for parameter in 0..2 {
+            self.rotation_read.coefficients[parameter] =
+                if self.rotation_long(parameter, 0x5C) & 0x03FFFFC0 == 0 {
+                    self.read_coefficient(parameter, 0, y)
+                } else {
+                    None
+                };
+        }
     }
     fn rotation_delta(&self, parameter: usize, index: usize) -> i64 {
-        let at = self.rotation_table(parameter);
         let offset = [0xC, 0x10, 0x58][index];
         let bits = if index == 2 { 26 } else { 19 };
-        signed(self.vlong(at + offset) & ((1 << bits) - 64), bits)
+        signed(
+            self.rotation_long(parameter, offset) & ((1 << bits) - 64),
+            bits,
+        )
     }
     fn rotation_start(&self, parameter: usize, index: usize, y: usize) -> i64 {
         if self.rotation_read.line == Some(y) {
@@ -79,8 +89,7 @@ impl Vdp2 {
         }
         // Direct debugger renders evaluate a static table, including a reload
         // on every row when enabled. Beam-driven output uses the latches above.
-        let at = self.rotation_table(parameter);
-        let raw = self.vlong(at + [0, 4, 0x54][index]);
+        let raw = self.rotation_long(parameter, [0, 4, 0x54][index]);
         let start = if index == 2 {
             i64::from(raw & 0xFFFFFFC0)
         } else {
@@ -107,10 +116,9 @@ impl Vdp2 {
         // ST-058 p.159: line starts are signed Q10.9 and horizontal
         // increments signed Q2.9. Discard seven low Q16 bits BEFORE adding
         // each horizontal increment. VDP1 §1.2: no framebuffer wrapping.
-        let at = self.rotation_table(0);
         let coordinate = |index, offset| {
             let start = signed((self.rotation_start(0, index, y) >> 7) as u32, 20);
-            let delta = signed(self.vlong(at + offset) >> 7, 12);
+            let delta = signed(self.rotation_long(0, offset) >> 7, 12);
             signed((start + delta * x as i64) as u32, 20) >> 9
         };
         let sx = coordinate(0, 0x14);
@@ -162,18 +170,23 @@ impl Vdp2 {
         }
         Ok(())
     }
-    fn rotation_table(&self, parameter: usize) -> usize {
+    pub(super) fn rotation_table(&self, parameter: usize) -> usize {
         // RPTA bit 6 is fixed to 0/1 for A/B, not part of the base.
         (self.table_address(0xBC) & !0x80) | (parameter * 0x80)
     }
     fn coefficient(&self, parameter: usize, x: usize, y: usize) -> Option<Coefficient> {
+        if self.beam_rendering && self.rotation_long(parameter, 0x5C) & 0x03FFFFC0 == 0 {
+            return self.rotation_read.coefficients[parameter];
+        }
+        self.read_coefficient(parameter, x, y)
+    }
+    fn read_coefficient(&self, parameter: usize, x: usize, y: usize) -> Option<Coefficient> {
         let control = self.word(0xB4) >> (parameter * 8);
         if control & 1 == 0 {
             return None;
         }
-        let at = self.rotation_table(parameter);
         let index = (self.rotation_start(parameter, 2, y)
-            + signed(self.vlong(at + 0x5C) & 0x03FFFFC0, 26) * x as i64)
+            + signed(self.rotation_long(parameter, 0x5C) & 0x03FFFFC0, 26) * x as i64)
             >> 16;
         let mode = control >> 2 & 3;
         let short = control & 2 != 0;
@@ -181,6 +194,20 @@ impl Vdp2 {
         let address = (bank * 0x10000)
             .wrapping_add(index as usize)
             .wrapping_mul(if short { 2 } else { 4 });
+        // §6.2/6.4: per-line coefficients can come from any bank. Per-dot
+        // coefficients need a dedicated rotation coefficient bank, or CRAM.
+        if self.beam_rendering
+            && self.word(0xE) & 0x8000 == 0
+            && self.rotation_long(parameter, 0x5C) & 0x03FFFFC0 != 0
+            && !self.rotation_access(4, address, 1)
+        {
+            return Some(Coefficient {
+                transparent: true,
+                value: 0,
+                mode,
+                line_color: None,
+            });
+        }
         // ST-058 §6.4 pp.163/167: CRKTE uses the latter 2 KiB of CRAM,
         // ignoring KTAOF and all but ten word-address bits. Both word sizes
         // wrap within that half; parameter and image tables still use VRAM.
@@ -224,12 +251,11 @@ impl Vdp2 {
         y: usize,
         coefficient: Option<Coefficient>,
     ) -> (i64, i64) {
-        let at = self.rotation_table(parameter);
-        let start = |offset| signed(self.vlong(at + offset) & 0x1FFFFFC0, 29);
-        let delta = |offset| signed(self.vlong(at + offset) & 0x7FFC0, 19);
-        let matrix = |offset| signed(self.vlong(at + offset) & 0xFFFC0, 20);
-        let point = |offset| signed(u32::from(self.vword(at + offset)), 14) << 16;
-        let shift = |offset| signed(self.vlong(at + offset) & 0x3FFFFFC0, 30);
+        let start = |offset| signed(self.rotation_long(parameter, offset) & 0x1FFFFFC0, 29);
+        let delta = |offset| signed(self.rotation_long(parameter, offset) & 0x7FFC0, 19);
+        let matrix = |offset| signed(self.rotation_long(parameter, offset) & 0xFFFC0, 20);
+        let point = |offset| signed(u32::from(self.rotation_word(parameter, offset)), 14) << 16;
+        let shift = |offset| signed(self.rotation_long(parameter, offset) & 0x3FFFFFC0, 30);
         let a = matrix(0x1C);
         let b = matrix(0x20);
         let c = matrix(0x24);
@@ -249,8 +275,8 @@ impl Vdp2 {
             multiply(a, px - cx) + multiply(b, py - cy) + multiply(c, pz - cz) + cx + shift(0x44);
         let yp =
             multiply(d, px - cx) + multiply(e, py - cy) + multiply(f, pz - cz) + cy + shift(0x48);
-        let mut kx = signed(self.vlong(at + 0x4C), 24);
-        let mut ky = signed(self.vlong(at + 0x50), 24);
+        let mut kx = signed(self.rotation_long(parameter, 0x4C), 24);
+        let mut ky = signed(self.rotation_long(parameter, 0x50), 24);
         if let Some(Coefficient { value, mode, .. }) = coefficient {
             match mode {
                 0 => {
@@ -367,6 +393,9 @@ impl Vdp2 {
                 outside && over == 1,
             )?
         };
+        if bitmap && !self.rotation_access(id, Self::dot_address(base, pixel, format), 3) {
+            return None;
+        }
         let pixel = self.color(
             format,
             base,
@@ -486,5 +515,41 @@ mod tests {
         assert_eq!(v.rotation_read.previous, None);
         assert_eq!(v.rotation_read.line, None);
         assert_eq!(v.rotation_read.starts, [[0; 3]; 2]);
+    }
+    #[test]
+    fn line_coefficients_are_captured_but_dot_coefficients_require_their_own_bank() {
+        let mut v = Vdp2::default();
+        for (at, value) in [
+            (0, 0x8000),
+            (0x20, 0x10),
+            (0xE, 0x300),
+            (0xBC, 1),
+            (0xB4, 3),
+            (0xB6, 2),
+        ] {
+            v.write16(VDP2 + at, value).unwrap();
+        }
+        v.vram[0x40000..0x40002].copy_from_slice(&0x0400u16.to_be_bytes());
+        v.begin_scanline(0);
+        v.beam_rendering = true;
+        v.vram[0x40000..0x40002].copy_from_slice(&0x0800u16.to_be_bytes());
+        assert_eq!(v.coefficient(0, 5, 0).unwrap().value, 1 << 16);
+        v.beam_rendering = false;
+        v.begin_scanline(1);
+        v.beam_rendering = true;
+        assert_eq!(v.coefficient(0, 5, 1).unwrap().value, 2 << 16);
+        // Change the guest rotation table to select per-dot coefficients.
+        v.vram[0x2005C..0x20060].copy_from_slice(&0x10000u32.to_be_bytes());
+        v.vram[0x40004..0x40006].copy_from_slice(&0x0C00u16.to_be_bytes());
+        v.beam_rendering = false;
+        v.begin_scanline(2);
+        v.beam_rendering = true;
+        assert!(v.coefficient(0, 2, 2).unwrap().transparent); // no coefficient port in B0
+        v.write16(VDP2 + 0xE, 0x310).unwrap();
+        let coefficient = v.coefficient(0, 2, 2).unwrap();
+        assert!(!coefficient.transparent);
+        assert_eq!(coefficient.value, 3 << 16);
+        v.vram[0x40004..0x40006].copy_from_slice(&0x1000u16.to_be_bytes());
+        assert_eq!(v.coefficient(0, 2, 2).unwrap().value, 4 << 16); // actual per-dot read
     }
 }

@@ -1,4 +1,10 @@
 ; Original MIT sprite composition guest. ST-058 §§8/9/14.
+load 0x25f80010,r1
+load 0x4444,r0
+mov.w r0,@r1
+load 0x25f80012,r1
+load 0xeeee,r0
+mov.w r0,@r1
 load 0x25f80020,r1
 load 0x101,r0
 mov.w r0,@r1

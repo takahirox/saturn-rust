@@ -69,6 +69,10 @@ background:
 next_pixel:
     dt r2
     bf background
+    ; Four NBG0 direct-color reads and four CPU grants per display cycle.
+    load 0x05f80010,r1
+    load 0x4444eeee,r0
+    mov.l r0,@r1
     load 0x05f80000,r1
     load 0x8000,r0
     mov.w r0,@r1

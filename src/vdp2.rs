@@ -6,6 +6,7 @@ use std::cell::Cell;
 mod access;
 mod rotation;
 mod sprite;
+mod tables;
 
 pub const CRAM: u32 = 0x05F0_0000;
 pub struct Vdp2 {
@@ -27,6 +28,10 @@ pub struct Vdp2 {
     rotation_read: rotation::RotationRead,
     scan_x: usize,
     scan_history: [[u8; 3]; 2],
+    // Static debugger decoding remains useful for inspecting an unfinished
+    // register setup. Only beam-driven output consumes display bus grants.
+    beam_rendering: bool,
+    line_tables: tables::LineTables,
 }
 impl Default for Vdp2 {
     fn default() -> Self {
@@ -49,6 +54,8 @@ impl Default for Vdp2 {
             rotation_read: rotation::RotationRead::default(),
             scan_x: 0,
             scan_history: [[0; 3]; 2],
+            beam_rendering: false,
+            line_tables: tables::LineTables::default(),
         }
     }
 }
@@ -85,7 +92,7 @@ impl Vdp2 {
     fn supported(offset: usize) -> bool {
         matches!(offset,
             0 | 2 | 4 | 8 | 0xA | 0xE | 0x10..=0x1E | 0x20..=0x2E | 0x30..=0x6E |
-            0x70..=0x96 | 0x9A..=0xBE | 0xC0..=0xDE | 0xE0 | 0xE2 |
+            0x70..=0xBE | 0xC0..=0xDE | 0xE0 | 0xE2 |
             0xE4..=0xFC | 0x100..=0x11E
         ) && offset & 1 == 0
     }
@@ -183,7 +190,10 @@ impl Vdp2 {
         } else {
             line
         };
+        self.read_line_tables(y);
+        self.beam_rendering = true;
         self.read_rotation_line(y, line == 0);
+        self.beam_rendering = false;
         self.rotation_read.line = None;
     }
     pub(crate) fn scanline(&mut self, sprites: &Vdp1, line: usize) {
@@ -211,24 +221,29 @@ impl Vdp2 {
         if y >= size.1 {
             return;
         }
-        // Table reload is a line-start event. Writes during active display
-        // must not move this line's origin before it is sampled at HBlank.
-        // The initial reset field, or a density change inside a line, has no
-        // matching line-start latch and initializes here.
-        if !self.rotation_line_ready(y) {
-            self.read_rotation_line(y, line == 0);
-        }
         let first = self.scan_x;
         let end = end.min(size.0);
         if end <= first {
             return;
         }
+        // Table reload is a line-start event. Writes during active display
+        // must not move this line's origin before it is sampled at HBlank.
+        // The initial reset field, or a density change inside a line, has no
+        // matching line-start latch and initializes here.
+        if !self.rotation_line_ready(y) || self.line_tables.line != Some(y) {
+            self.read_line_tables(y);
+            self.beam_rendering = true;
+            self.read_rotation_line(y, line == 0);
+            self.beam_rendering = false;
+        }
         self.rotation_read.line = Some(y);
+        self.beam_rendering = true;
         let mut history = self.scan_history;
         let pixels = self.render_region(Some(sprites), y, y + 1, first..end, &mut history);
         self.scan_history = history;
         self.scan_x = end;
         self.rotation_read.line = None;
+        self.beam_rendering = false;
         match pixels {
             Ok(pixels) => self.scanning[(y * size.0 + first) * 4..(y * size.0 + end) * 4]
                 .copy_from_slice(&pixels),
@@ -286,6 +301,9 @@ impl Vdp2 {
                 continue;
             }
             let (ctl, format) = self.character_control(layer);
+            if layer < 2 && self.word(0x98) >> (layer * 8) & 3 == 2 {
+                return Err("Reserved VDP2 reduction display setting".into());
+            }
             if mode & 6 != 0 && layer == 0 && format == 4 {
                 return Err("VDP2 RGB888 NBG0 requires normal display mode".into());
             }
@@ -386,8 +404,7 @@ impl Vdp2 {
             any = true;
             let base = 0xC0 + i * 8;
             let (left, right) = if self.word(0xD8 + i * 4) & 0x8000 != 0 {
-                let at = self.table_address(0xD8 + i * 4) + y * 4;
-                (self.vword(at), self.vword(at + 2))
+                self.window_data(i, y)
             } else {
                 (self.word(base), self.word(base + 4))
             };
@@ -436,7 +453,7 @@ impl Vdp2 {
     /// held X/zoom over the programmed line interval, and Y advancement only
     /// since the last table read. Vertical-cell entries are interleaved when both
     /// normal screens use them; mosaic takes precedence over cell scrolling.
-    fn normal_coordinates(&self, layer: usize, x: usize, y: usize) -> (usize, usize) {
+    fn normal_coordinates(&self, layer: usize, x: usize, y: usize) -> Option<(usize, usize)> {
         let scroll = 0x70 + layer * 0x10;
         let control = self.word(0x9A) >> (layer * 8) & 0x3F;
         let interval = 1usize << (control >> 4);
@@ -446,18 +463,19 @@ impl Vdp2 {
         let mut sy = u64::from(self.long(scroll + 4) & 0x7FFFF00);
         let mut dx = self.long(scroll + 8) & 0x7FF00;
         if control & 2 != 0 {
-            sx += u64::from(self.vlong(at) & 0x7FFFF00);
+            sx += u64::from(self.scroll_data(layer, 0, at)? & 0x7FFFF00);
             at += 4;
         }
         let dy = u64::from(self.long(scroll + 12) & 0x7FF00);
         if control & 4 != 0 {
-            sy += u64::from(self.vlong(at) & 0x7FFFF00) + (y % interval) as u64 * dy;
+            sy +=
+                u64::from(self.scroll_data(layer, 1, at)? & 0x7FFFF00) + (y % interval) as u64 * dy;
             at += 4;
         } else {
             sy += y as u64 * dy;
         }
         if control & 8 != 0 {
-            dx = self.vlong(at) & 0x7FF00;
+            dx = self.scroll_data(layer, 2, at)? & 0x7FF00;
         }
         if control & 1 != 0 && self.word(0x22) & (1 << layer) == 0 {
             let both = self.word(0x9A) & 0x101 == 0x101;
@@ -467,12 +485,16 @@ impl Vdp2 {
                 8
             };
             let entry = x / cell_size * if both { 2 } else { 1 } + if both { layer } else { 0 };
-            sy += u64::from(self.vlong(self.table_address(0x9C) + entry * 4) & 0x7FFFF00);
+            let address = self.table_address(0x9C) + entry * 4;
+            if !self.cell_access(layer, address) {
+                return None;
+            }
+            sy += u64::from(self.vlong(address) & 0x7FFFF00);
         }
-        (
+        Some((
             ((sx + x as u64 * u64::from(dx)) >> 16) as usize,
             (sy >> 16) as usize,
-        )
+        ))
     }
     /// ST-058 §§4.6–4.8, figs.4.9/4.10, table4.8. A page covers 512²
     /// pixels regardless of character/name size. Plane selection precedes page,
@@ -524,10 +546,9 @@ impl Vdp2 {
         let page = py / 512 * pages_x + px / 512;
         let name_index = (py % 512 / size) * columns + px % 512 / size;
         let at = base + page * page_bytes + name_index * name_bytes;
-        let rbg1 = layer == 0 && parameter == Some(1);
         // ST-058 §6.2: RBG1 names are read from B1; its characters from B0.
         // An address outside the selected bank cannot fetch display data.
-        if rbg1 && !over && (at & 0x60000) != 0x60000 {
+        if !over && !self.name_access(layer, at, parameter.is_some()) {
             return None;
         }
         let name = if over {
@@ -569,7 +590,13 @@ impl Vdp2 {
         let cell = (cy / 8) * 2 + cx / 8;
         let cell_bytes = [32, 64, 128, 128, 256][usize::from(format)];
         let base = (character * 32 + cell * cell_bytes) & 0x7FFFF;
-        if rbg1 && (base & 0x60000) != 0x40000 {
+        if !self.character_access(
+            layer,
+            base,
+            format,
+            (!over).then_some(at),
+            parameter.is_some(),
+        ) {
             return None;
         }
         let special = if one || over {
@@ -615,7 +642,7 @@ impl Vdp2 {
         }
         let (ctl, format) = self.character_control(layer);
         let (sx, sy) = if layer < 2 {
-            self.normal_coordinates(layer, x, y)
+            self.normal_coordinates(layer, x, y)?
         } else {
             (
                 x + usize::from(self.word(0x90 + (layer - 2) * 4) & 0x7FF),
@@ -634,6 +661,12 @@ impl Vdp2 {
         } else {
             self.tile(layer, ctl, format, sx, sy)?
         };
+        if layer < 2 && ctl & 2 != 0 {
+            let address = Self::dot_address(base, pixel, format);
+            if !self.character_access(layer, address, format, None, false) {
+                return None;
+            }
+        }
         let opaque = self.word(0x20) & (0x100 << layer) != 0;
         let offset = usize::from(self.word(0xE4) >> (layer * 4) & 7) * 256;
         let pixel = self.color(format, base, pixel, offset, palette, opaque)?;
@@ -720,6 +753,14 @@ impl Vdp2 {
             color_msb,
         })
     }
+    fn dot_address(base: usize, pixel: usize, format: u16) -> usize {
+        base + match format {
+            0 => pixel / 2,
+            1 => pixel,
+            2 | 3 => pixel * 2,
+            _ => pixel * 4,
+        }
+    }
     fn render(&self, sprites: Option<&Vdp1>) -> Result<Vec<u8>, String> {
         self.render_lines(sprites, 0, self.dimensions().1)
     }
@@ -768,19 +809,18 @@ impl Vdp2 {
             if columns.start == 0 {
                 *history = [[0u8; 3]; 2];
             }
-            let back = self.vword(
-                ((self.long(0xAC) & 0x7FFFF) as usize
-                    + if self.word(0xAC) & 0x8000 != 0 {
-                        if self.word(0) & 0x8000 == 0 {
-                            height - 1
-                        } else {
-                            y
-                        }
+            let back = if self.beam_rendering {
+                self.line_tables.back
+            } else {
+                self.vword(self.line_address(
+                    0xAC,
+                    if self.word(0) & 0x8000 == 0 {
+                        height - 1
                     } else {
-                        0
-                    })
-                    * 2,
-            );
+                        y
+                    },
+                ))
+            };
             for x in columns.clone() {
                 if self.word(0) & 0x8000 == 0 {
                     pixels[((y - first) * width + x - columns.start) * 4..][..4]
@@ -844,10 +884,11 @@ impl Vdp2 {
                 let inserted =
                     gradation.is_none() && top.id != 5 && self.word(0xE8) & (1 << line_bit) != 0;
                 if inserted {
-                    let address = ((self.long(0xA8) & 0x7FFFF) as usize
-                        + if self.word(0xA8) & 0x8000 != 0 { y } else { 0 })
-                        * 2;
-                    let mut index = self.vword(address) & 0x7FF;
+                    let mut index = if self.beam_rendering {
+                        self.line_tables.color
+                    } else {
+                        self.vword(self.line_address(0xA8, y))
+                    } & 0x7FF;
                     if let Some(low) = top.coefficient_color {
                         index = (index & 0x780) | low;
                     }

@@ -15,7 +15,8 @@ HERE=Path(__file__).resolve().parent
 def build():
     s=put8(0x20100063,1)+'load 0x100,r1\nmov.w @r1,r0\ntst #1,r0\nbt slow_clock\nmov #14,r0\nbra set_clock\nnop\nslow_clock:\nmov #15,r0\nset_clock:\nload 0x2010001f,r1\nmov.b r0,@r1\nload 0x20100063,r1\nclock_wait:\nmov.b @r1,r0\ntst #1,r0\nbf clock_wait\n'
     s+='load 0x100,r1\nmov.w @r1,r0\nload 0x25f80000,r1\nmov.w r0,@r1\n'
-    for at,value in [(0x20,1),(0x28,0x36),(0x78,1),(0x7c,1),(0xf8,3),(0xac,3),(0xae,0x8000)]:
+    for at,value in [(0x10,0x4444),(0x12,0xEEEE),(0x18,0x4444),(0x1A,0xEEEE),
+                     (0x20,1),(0x28,0x36),(0x78,1),(0x7c,1),(0xf8,3),(0xac,3),(0xae,0x8000)]:
         s+=put16(0x25f80000+at,value)
     s+=put16(0x25e70000,0x801f)
     # A real 512x512 direct-color bitmap. Each authored row has four colors;
