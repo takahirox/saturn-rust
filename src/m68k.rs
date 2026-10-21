@@ -55,6 +55,9 @@ pub struct M68k {
     prefetch: std::collections::VecDeque<(u32, u16)>,
     bus_pc: u32,
     exception_activity: bool,
+    // MOVEM memory-to-register consumes its EA extensions before the operand
+    // burst, then performs a terminal word read before its next program fetch.
+    defer_prefetch: bool,
 }
 #[derive(Clone, Copy)]
 enum Size {
@@ -320,7 +323,7 @@ impl M68k {
         // A five-word instruction has used the final EA extension. Do not
         // eagerly issue a sixth word before its operand cycle: UM §6.3.9.1
         // bounds the saved internal PC at ten bytes beyond the instruction.
-        if self.state.pc.wrapping_sub(self.start_pc) != 10 {
+        if !self.defer_prefetch && self.state.pc.wrapping_sub(self.start_pc) != 10 {
             self.refill(memory, 1, false)?;
         }
         Ok(value)
@@ -638,6 +641,7 @@ impl M68k {
         }
         self.start_pc = self.state.pc;
         self.exception_activity = false;
+        self.defer_prefetch = false;
         let trace = self.state.sr & T != 0;
         let result = self
             .next_word(memory, true)
@@ -1163,6 +1167,7 @@ impl M68k {
         } else {
             mode == 0x20 || Self::memory_alterable(bits) && mode != 0x18
         })?;
+        self.defer_prefetch = load;
         let mask = self.next(memory)?;
         let size = if op & 0x40 != 0 {
             Size::Long
@@ -1220,6 +1225,16 @@ impl M68k {
         }
         if mode == 0x20 || mode == 0x18 {
             self.state.a[reg] = address;
+        }
+        if load {
+            // MC68000UM table8-10: the load direction has one extra read
+            // independent of the mask and operand size. It reads the word
+            // following the operand burst, including for an empty list. The
+            // data are discarded, but device effects and BERR are real. This
+            // cycle never changes a listed register or advances the base.
+            self.read(memory, address, Size::Word, false)?;
+            self.defer_prefetch = false;
+            self.refill(memory, 1, false)?;
         }
         let address_clocks = if mode == 0x20 {
             0

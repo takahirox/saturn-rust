@@ -2491,3 +2491,65 @@ coverage remain mandatory. The full umbrella acceptance checklist is still unmet
 no Issue state, acceptance criterion, PR description or external workflow is
 changed by this revision. No human, proprietary-firmware or post-merge gate is
 introduced. No push or merge was performed.
+
+## MC68EC000 MOVEM terminal reads and deferred prefetch (2026-10-22)
+
+Rechecked upstream `main` (`dbd981b030a46daa6923072ce240680dd2e58ebf`) and PR #18
+head (`3b5aaeddb1ddd6f9231c68784a60361906c4aca5`) with `git ls-remote`.
+This worktree preserves the preceding SH-2 load-interlock, A-bus wait and raster
+history implementation in `34ab141`, and continues the same Draft PR.
+
+`M68k::movem` now performs the memory-to-register terminal word read and defers
+the following instruction fetch until that read succeeds. Device side effects
+and BERR remain observable even with an empty register mask. Completed register
+loads and base postincrements survive a terminal error. A subsequent program-fetch
+fault has a distinct function code/internal PC and retains the same completed
+loads. The [conformance entry](hardware-conformance.md#mc68ec000-movem-load-bus-sequence)
+links the primary specifications, implementation and exact tests.
+
+The original MIT sound-bus guest has four more terminal-read cases (24 complete
+access-frame records). Its handler copies actual exception frames, repairs the
+saved return PC and executes RTE. Native and browser Wasm compare the same
+authored records. Changing the guest longword load into a word load moves its
+terminal read into connected sound RAM: exactly that error frame disappears,
+while the other frames remain unchanged. Both paths repeat reset. No host code
+writes running guest state or supplies precomputed device results.
+
+Validation actually performed:
+
+- Formatting, locked native build and the complete `cargo test --locked` pass:
+  **522 tests (294 unit + 228 integration), zero failed/ignored**, Rust/Cargo
+  **1.94.0**. A final added program-fetch fault test and expanded A7 coverage are
+  followed by the complete **295-test unit suite**, plus the five affected
+  sound-bus integration tests again: **523 distinct native tests** across these
+  runs. Production Rust is identical throughout the successful complete run and
+  final checks, apart from deliberate, restored mutation checks below.
+- Native all-target Clippy and wasm32 Clippy pass with `-D warnings`.
+  `sh scripts/build-web.sh` passes with installed rustup stable **1.99.0** and
+  wasm-bindgen **0.2.129**; no repository toolchain/configuration change is needed.
+- All **58** CI guest/media reproducibility commands pass, including the expanded
+  sound-bus fixture. The three existing demonstration sources/media are preserved.
+- The complete extended `npm run test:browser` passes in Chromium
+  **145.0.7632.6**, Node **24.12.0**, under `/saturn-rust/`. It checks the 24 sound
+  access frames and terminal-read width mutation alongside all prior guests,
+  three demonstrations, Canvas, AudioWorklet, input/focus, backup and privacy.
+  No required browser test is skipped. The later console-summary wording change
+  is checked with `node --check`; it changes no assertions or execution.
+- Removing the terminal read is rejected by the new bus-spy test and actual
+  native guest test. Restoring eager successor prefetch is independently rejected
+  by the bus-spy sequence. Exact production source bytes are restored in `finally`;
+  all 295 unit tests and both affected integration binaries pass afterward.
+- Git whitespace, JavaScript syntax and all **452** local file targets in the
+  edited conformance/provenance/setup documents pass. Development checks caught
+  stale fixture mutation-match bytes, the old SIOG MOVEM saved-PC expectation,
+  and the test RAM's deliberate rejection of four-byte-aligned-only long reads
+  when inspecting an A7 exception frame. Corrections retain strict literal
+  expectations and inspect that word-aligned frame as two word reads.
+
+These local results do **not** complete Issue #17 or its full Run objective.
+Shared CPU/DMA/refresh transaction ownership, remaining instruction/peripheral
+sequencing, SCU/DSP, video, SCSP/audio, runtime CD/media, complete BIOS/HLE and
+SMPC contracts and their complete acceptance evidence remain mandatory in this
+same PR/tracker. No criterion is waived, no replacement Issue is created, no
+historical Issue is reopened, and no human/firmware/live-site/external-workflow
+or post-merge gate is introduced. PR #18 must remain Draft and must not be merged.

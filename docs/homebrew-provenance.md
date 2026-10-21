@@ -237,8 +237,12 @@ reset. These diagnostics supplement the existing three demonstrations.
 
 The existing original MC68EC000 family fixture now includes ten additional
 [source-authored operand fault programs](../tests/fixtures/m68k_faults.py),
-for twenty total access-frame records. Its adjacent fixture MIT license remains
+and four MOVEM terminal-read cases, for twenty-four total access-frame records.
+Its adjacent fixture MIT license remains
 in force. The original assembler/standard-library builder reproduces the expanded
 ROM, and native/browser guest mutations distinguish required destination reads
-from ordinary writes. [The conformance entry](hardware-conformance.md#mc68ec000-operand-cycles-and-guest-executed-cd-player)
+from ordinary writes. Changing the terminal-read guest's actual longword load
+to a word load moves the terminal read into connected sound RAM and removes only
+that exception record; both native and browser Wasm verify the other records and
+repeat after reset. [The conformance entry](hardware-conformance.md#mc68ec000-movem-load-bus-sequence)
 records exact implementation/tests, primary manual references, hashes and limits.

@@ -2,7 +2,7 @@
 
 MC68000UM §§5.4.1/6.1/6.3.9.1, fig.6-7. No results sampled from any core.
 PC literals use assembled boundaries and the declared word-boundary prefetch
-policy; instruction-specific bus placement remains pending in the conformance matrix;
+policy, with deferred next-instruction fetch for MOVEM loads (UM table8-10);
 all other expected fields below are source-authored constants.
 """
 import struct
@@ -37,9 +37,17 @@ def install(image, words, base=0x1000):
                          ('abcd',0xC109,1),('sbcd',0x8109,1)]:
         cases.append((name+' source fault',0x7FFFE,[0x43F9,8,size,op],
                       0x7FFFE,0x12345678,0xDEADBEEF,0x80000,op,0x15,0xBABE))
+    # MOVEM loads perform a final word read after every selected register,
+    # including an empty mask. Real sound-RAM bounds cause that cycle to fault.
+    cases += [
+        ('movem long terminal',0x7FFFC,[0x4CD8,1],0x80000,0xCAFEBABE,0xDEADBEEF,0x80000,0x4CD8,0x15,0xBABE),
+        ('movem word terminal',0x7FFFE,[0x4C98,1],0x80000,0xFFFFBABE,0xDEADBEEF,0x80000,0x4C98,0x15,0xBABE),
+        ('movem empty terminal',0x80000,[0x4CD8,0],0x80000,0x12345678,0xDEADBEEF,0x80000,0x4CD8,0x15,0xBABE),
+        ('movem listed base terminal',0x7FFF8,[0x4CD8,0x0101],0x80000,0x1234ABCD,0xDEADBEEF,0x80000,0x4CD8,0x15,0xBABE),
+    ]
     for name, a0, code, final_a0, d0, d1, fault, ir, ssw, retained in cases:
         # Restore guard data using ordinary MC68000 word writes before each case.
-        for address,value in [(0x7FFFA,0xABCD),(0x7FFFC,0xCAFE),(0x7FFFE,0xBABE)]:
+        for address,value in [(0x7FFF8,0x1234),(0x7FFFA,0xABCD),(0x7FFFC,0xCAFE),(0x7FFFE,0xBABE)]:
             words += [0x33FC,value,7,address&65535]
         if name == 'sequential prefetch':
             words += [0x33FC,0x7003,7,0xFFFC,0x33FC,0x4E71,7,0xFFFE]
@@ -53,7 +61,7 @@ def install(image, words, base=0x1000):
         words += [0x46FC,sr] + code
         # UM §6.3.9.1: straight-line operand/branch faults have prefetched one
         # successor word; failed sequential lookahead has its own internal PC.
-        pc = 0x80002 if name == 'sequential prefetch' else resume+(0 if len(code)==5 else 2)
+        pc = 0x80002 if name == 'sequential prefetch' else resume+(0 if len(code)==5 or ir in [0x4C98,0x4CD8] else 2)
         if name == 'sequential prefetch': sr=0x2710 # MOVEQ #3 retained X
         expected = [(ssw<<16)|(fault>>16), ((fault&65535)<<16)|ir,
                     (sr<<16)|(pc>>16), (pc&65535)<<16, d0,d1,final_a0,retained<<16]

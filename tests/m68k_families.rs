@@ -78,7 +78,7 @@ fn changing_guest_rmw_to_a_plain_write_changes_the_bus_error_access_and_ir() {
     for (opcode, replacement, index) in [(0x50D0u16, 0x1080u16, 10), (0x40D0, 0x3080, 11)] {
         let mut image = rom();
         let [high, low] = opcode.to_be_bytes();
-        let needle = [high, low, 0x33, 0xFC, 0xAB, 0xCD];
+        let needle = [high, low, 0x33, 0xFC, 0x12, 0x34];
         let positions: Vec<_> = image
             .windows(needle.len())
             .enumerate()
@@ -109,6 +109,51 @@ fn changing_guest_rmw_to_a_plain_write_changes_the_bus_error_access_and_ir() {
                     fields[0]
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn changing_movem_operand_width_removes_only_its_terminal_bus_error() {
+    let mut image = rom();
+    // MOVEM.L (A0)+,D0 at 7FFFC reads a long then faults at 80000.
+    // MOVEM.W reads one word and its terminal read at 7FFFE succeeds.
+    let needle = [0x4C, 0xD8, 0, 1, 0x33, 0xFC, 0x12, 0x34];
+    let at = image
+        .windows(needle.len())
+        .position(|v| v == needle)
+        .unwrap();
+    assert!(!image[at + 1..].windows(needle.len()).any(|v| v == needle));
+    image[at + 1] = 0x98;
+    let vectors: Vec<_> = include_str!("fixtures/m68k-faults.tsv")
+        .lines()
+        .filter(|s| !s.starts_with("movem long terminal\t"))
+        .collect();
+    let mut m = Machine::new();
+    for _ in 0..2 {
+        m.reset(Boot::ExternalBios(&image)).unwrap();
+        for _ in 0..10 {
+            m.run_steps(10000).unwrap();
+        }
+        assert_eq!(m.bus().read32(0x06007004), Ok(0x600D));
+        assert!(m.sound_state().stopped && !m.sound_state().halted);
+        for (i, line) in vectors.iter().enumerate() {
+            let fields: Vec<_> = line.split('\t').collect();
+            for (j, word) in fields[1..].iter().enumerate() {
+                assert_eq!(
+                    m.bus().read32(SOUND_RAM + 0x5900 + (i * 32 + j * 4) as u32),
+                    Ok(u32::from_str_radix(word, 16).unwrap()),
+                    "{} field {j}",
+                    fields[0]
+                );
+            }
+        }
+        for j in 0..8 {
+            assert_eq!(
+                m.bus()
+                    .read32(SOUND_RAM + 0x5900 + (vectors.len() * 32 + j * 4) as u32),
+                Ok(0)
+            );
         }
     }
 }

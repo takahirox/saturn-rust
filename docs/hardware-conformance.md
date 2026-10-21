@@ -1125,7 +1125,7 @@ including PC-relative forms, and supplement SNDR/SIOG's decimal, extend, MOVEM
 and MOVEP evidence. Undefined CHK flags are deliberately excluded. Browser mutation
 of ADD.B to SUB.B changes only that computed result/CCR.
 Expanded 512 KiB ROM SHA-256:
-`d3cfead4f1403ad9ae1a65628368302f9daf36e9b919ff6e14c9b7d249532785`.
+`eab6da01671b529a3e730affce05c7f39dfa51e3008609654f4bd3bc70a1474a`.
 The adjacent MIT license covers source and generated ROM/TSV; no SDK or firmware.
 
 [`M68k::ea_clocks/execute/group0/group4/alu/shift/movem`](../src/m68k.rs)
@@ -1852,9 +1852,10 @@ requirements. No completion checkbox or Issue state is changed by this evidence.
 and the expanded [sound-bus guest](../tests/fixtures/m68k_faults.py),
 [authored frames](../tests/fixtures/m68k-faults.tsv),
 [native integration](../tests/m68k_families.rs) and identical browser Wasm execution
-in [browser-smoke.mjs](../scripts/browser-smoke.mjs). The guest now records twenty
-complete access-error frames. Its new ten cases execute destination-read faults
+in [browser-smoke.mjs](../scripts/browser-smoke.mjs). The guest now records twenty-four
+complete access-error frames. Ten cases execute destination-read faults
 for Scc/MOVE SR and source faults in every size of ADDX/SUBX plus ABCD/SBCD.
+Four further cases exercise the MOVEM terminal-read sequence documented below.
 
 **DPLAYER** is the original [SYS_EXECDMP guest service](../src/hle/player.s),
 [font/build source](../src/hle/build.py), [caller/media builder](../tests/fixtures/build_hle_player.py),
@@ -1885,7 +1886,7 @@ identifies the build commands. Reproducible hashes:
 | Caller ISO, with embedded MIT license | `6c3b3e4522fbd244e30c54d29f4c70271530ef73c338cf2a22a06b5d71f47727` |
 | Caller CUE | `60386b4595cbd15efb0f8e1665ed35c9354251616e9fc5ca552d88ed5cbe63db` |
 | Original stereo BINARY tracks | `5d1dc5665f447cb6370f674918e0e6042aba8a6e8bc42f0952ddef80a394338e` |
-| Expanded 512 KiB 68BUS synthetic BIOS | `b4cf150df3fdfd6a94509745362b294977bc28357e80dda50c7e8e4d2264a7c0` |
+| Expanded 512 KiB 68BUS synthetic BIOS | `eab6da01671b529a3e730affce05c7f39dfa51e3008609654f4bd3bc70a1474a` |
 
 These are additional implemented contracts, not complete Issue #17 acceptance.
 All remaining CPU/SH7604, shared bus/scheduler/reset, SCU/DSP, video, sound,
@@ -1911,3 +1912,32 @@ pins read high. There is no synthetic cartridge or host-injected result.
 `abus.hex` SHA-256 is `c1c8fbe99eeacb29172bfe50a0b90a9c5e0c7ed83cad6d985d7f586c5ad1b7a0`;
 `abus.tsv` is `9802fb7594d1d344b2676e786d47651f72a043df4e21588d6197aff6de926d36`.
 The fixture source and generated data use the adjacent [MIT license](../tests/fixtures/LICENSE).
+
+## MC68EC000 MOVEM load bus sequence
+
+Related to #17. [MC68000UM][68UM] §8.9/table8-10 specifies one additional
+read cycle for the memory-to-register direction, independent of mask population
+and word/long size. [M68000PRM][68] MOVEM defines register order, sign extension
+and the postincrement base-register override. UM §6.3.9.1/fig.6-7 defines the
+access-error context. This revision implements the terminal operand-word read
+before the following instruction fetch. It does not establish complete
+instruction-specific sequencing for every other opcode.
+
+| Contract | Implementation | Independent native evidence | Guest/Wasm evidence |
+| --- | --- | --- | --- |
+| Operand burst followed by a terminal data-word read, including empty masks | `M68k::movem` discards the extra word's data while retaining device effects/errors; no extra base update | `movem_load_reads_the_terminal_word_before_fetching_the_next_instruction` in [bus_tests.rs](../src/m68k/bus_tests.rs) checks complete bus traces for empty/single/sparse/all-register lists, both sizes, read counts, order and unchanged SR | [Original fault programs](../tests/fixtures/m68k_faults.py) read the last connected sound-RAM word/long, then fault at 080000; an empty list also faults. Native and browser compare all 24 authored frame records |
+| EA extension fetches precede the burst; the following instruction fetch waits for the terminal read | `M68k::next_word` honors the MOVEM load's deferred-prefetch state; `movem` refills after successful completion | `movem_load_ea_extensions_precede_operands_and_terminal_read_has_no_base_update` checks indirect, displacement, index, absolute word/long and both PC-relative modes | Existing SIOG and FAMG MOVEM fault PCs now point just past the consumed mask rather than an unissued successor fetch; native/Wasm check the literal assembled boundaries |
+| A terminal BERR retains completed loads and reports a data-read fault | `M68k::read/movem` preserves register writes and the completed postincrement pointer; error dispatch uses the real faulting word address | `movem_terminal_read_fault_preserves_every_loaded_register_and_base_progress` checks all eight base registers, five masks, both sizes, loaded base override, complete SSW/address/IR/PC fields and absence of successor fetch | Long, word, empty and listed-base terminal cases execute through the real sound bus and recover through the guest's vector-2 handler/RTE |
+| Operand-dependent result and reset | No game/fixture detection or host-written running guest state | [m68k_families.rs](../tests/m68k_families.rs) changes the longword terminal case to a word: its final read moves from disconnected 080000 to connected 07FFFE, so only that frame disappears | [browser-smoke.mjs](../scripts/browser-smoke.mjs) repeats the same mutation in actual Wasm, checks all other records and repeats cold boot |
+
+Source, generated hexadecimal ROM and TSV vectors use the existing
+[fixture MIT license](../tests/fixtures/LICENSE). Reproduce with
+`python3 tests/fixtures/build_m68k_families.py --check` (already required in CI).
+Expanded ROM SHA-256:
+`eab6da01671b529a3e730affce05c7f39dfa51e3008609654f4bd3bc70a1474a`.
+The three demonstration discs and all other guest artifacts are unchanged.
+`movem_following_program_fetch_fault_occurs_after_all_operand_reads` separately
+checks completed loads, the terminal read and subsequent program-fetch failure,
+including program function codes and its distinct internal PC.
+CPU/DMA bus arbitration and the other mandatory umbrella requirements remain
+required; no Issue #17 acceptance checkbox is claimed complete by these vectors.

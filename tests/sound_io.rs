@@ -52,7 +52,9 @@ fn sound_guest_polls_dma_and_paced_midi_then_acknowledges_three_interrupt_levels
             (0x890, 0xFFFFFFFD),
             (0x894, 0),
             (0x898, 0xFF),
-            (0x89C, 0x9D2),
+            // MOVEM's operand burst faults before the next program fetch:
+            // 09CC=opcode, 09CE=mask, internal PC=09D0.
+            (0x89C, 0x9D0),
         ] {
             assert_eq!(
                 m.bus().read32(SOUND_RAM + offset).unwrap(),

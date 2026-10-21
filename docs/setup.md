@@ -46,8 +46,9 @@ An additional original SCU guest executes DSP product/sum programs, direct and
 indirect DMA, timer IRQs, and reset/fault checks natively and in browser Wasm.
 The interrupt/latch ROM additionally exercises SH-2 signed DIV1 sequences,
 ICR auto/external vectors, SCU DMA acknowledgement and both TH/PAD/VDP2 latch
-inputs. The sound family ROM checks ten complete fault frames and partial
-transfers, plus self-modifying instruction prefetch. Both run in native and Wasm.
+inputs. The sound family ROM checks twenty-four complete fault frames and partial
+transfers, including MOVEM terminal reads and deferred instruction fetch, plus
+self-modifying instruction prefetch. Both run in native and Wasm.
 An original HLE service disc also executes vector/callback/mask/semaphore/priority
 calls, nested IRQs, both CPU views and NMI/SYSRES retention. Native and browser
 Wasm compare authored records and changed guest data/priority operands.
