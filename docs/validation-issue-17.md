@@ -1436,3 +1436,84 @@ PR #18 stays Draft with Closes #17 as its intended final outcome. No criterion
 is waived, no tracker is replaced or administratively closed, no historical Issue
 is reopened, and no human/firmware/live-site/external-workflow gate is introduced.
 This node updates the existing PR only; it does not merge or mark it ready.
+
+## 2026-10-21 original guest-executed HLE system services
+
+Related to #17. Upstream main was rechecked as
+`dbd981b030a46daa6923072ce240680dd2e58ebf` with `git ls-remote`.
+This work preserves the inherited `99dcf8a` CPU/interrupt/latch fixes and all
+earlier PR #18 hardware, demos and evidence. The PR continues to target full
+Issue #17 resolution and remains Draft with Closes #17 as the intended outcome.
+
+HLE disc startup now installs independently authored, MIT-licensed SH-2 system
+routines and executes the original master reset trampoline before disc AIP.
+Nine callable services and two data interfaces implement VBR-relative interrupt
+registration/readback, SCU C callbacks, atomic mask/shadow updates, shared
+semaphore acquire/release, copied interrupt priorities and power-clear bytes.
+SCU callbacks actually execute through guest wrappers, including nested interrupts
+and complete caller-save register restoration. Private data writes update the
+caller's write-through cache; shared semaphore operations use P1 and real TAS.
+The external-BIOS path never installs or substitutes these routines.
+
+The [conformance entry](hardware-conformance.md#original-hle-system-service-execution)
+links primary ST-162-R1 and later system specifications, production SCU ST-210
+restrictions, original source, ABI/layout, native assertions and actual browser
+Wasm execution. Production IST writes remain prohibited; services use the
+permitted mask/AIACK and ordinary interrupt acknowledgement paths.
+
+The original [service diagnostic disc](../tests/fixtures/build_hle_system.py)
+executes both CPUs, real SCU DMA/IRQ and all implemented interfaces. Its 46
+authored main records, slave results, nested SR/mask records and reset traces
+match in native and browser Wasm runs. Cases cover cached/uncached callers,
+alternate VBR, zero/default restoration, semaphore endpoints and shared
+contention, copied-table independence and R0–R7/MACH/MACL/PR/SP/SR restoration.
+Changing only guest DMA data changes transferred values; changing the priority
+operand changes the callback's actual SR. A separate original guest computes
+retained bytes across NMI, requests timed SYSRES, then checks power-clear retention
+and reset mask/callback/semaphore state. Repeated cold boots reset all eight
+power-clear bytes. No host writes running guest results or detects game identity.
+
+The disc and expected records use [the original fixture MIT license](../tests/fixtures/LICENSE),
+and the ISO contains LICENSE.TXT. Service source and ROM fragments use
+[the HLE MIT license](../src/hle/LICENSE). SHA-256 values:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `src/hle/system.bin` | `20bdeed8c27a35fba5c0baa61c334383ac7812378a2774ee6f2e7bb26eaad745` |
+| `tests/fixtures/hle-system.iso` | `20087f76e82f3aaafb049a7c1fbad46c9ea032e6b9638b3118cb0b30e472b0fa` |
+
+Checks actually completed for the combined worktree:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`: pass with
+  explicitly selected Rustup stable Rust/Cargo **1.99.0**. **366 native tests pass,
+  zero failed/ignored** (195 unit, 171 integration).
+- Native all-target and wasm32 Clippy with `-D warnings`: pass.
+- `sh scripts/build-web.sh`: pass using matching **wasm-bindgen-cli 0.2.129**.
+- All **33** CI reproducibility commands pass, including the HLE ROM fragments
+  and new service disc. Existing Star Collector, Prism Courier and Hardware Lab
+  media hashes remain unchanged.
+- `npm ci --ignore-scripts`, Chromium installation, JavaScript syntax and the
+  complete extended `npm run test:browser`: pass with Node **24.12.0**, Chromium
+  **145.0.7632.6** and project subpath `/saturn-rust/`. No required tests skipped.
+  All new HLE traces/mutations and existing games, hardware guests, Canvas,
+  WebAudio, input/focus, privacy and packaging assertions pass.
+- Changed documentation's **336** local link targets and Git whitespace checks:
+  pass.
+
+Development failures exposed obsolete fixed startup budgets and cacheable SMPC
+accesses in the new caller; those were corrected before final passing runs. The
+additional 23 reset instructions are explicitly counted, preserving each test's
+original AIP/game/pad assertions. An initial Wasm Clippy selected the Homebrew
+compiler; selecting the installed Rustup compiler and target passed. No remote
+CI or production publication result is claimed.
+
+**The full Issue #17 and Run objectives remain unmet.** SYS_CHGSYSCK,
+SYS_GETSYSCK, SYS_EXECDMP, backup filesystem/library and CD-library ABI remain
+required, along with the other CPU/peripheral, bus/reset/scheduler/arbitration,
+SCU/DSP, video/audio, CD/SMPC and comprehensive demonstration/coverage criteria
+in the conformance matrix. DIVU overflow intermediates were checked against the
+primary manual but are not implemented or independently confirmed here. No
+acceptance criterion is waived or marked complete; this validation is not a
+successful completion of the umbrella Run. Keep the same PR Draft, do not merge,
+do not close or replace the tracker, and do not reopen #11/#13/#15. No human,
+proprietary-firmware, live-site or external-workflow gate is introduced.

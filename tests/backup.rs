@@ -133,7 +133,7 @@ fn diagnostic_guest_also_executes_from_a_locally_built_hle_disc() {
     let mut machine = Machine::new();
     machine.reset(Boot::HleDisc(&image)).unwrap();
     machine.set_port2_buttons(1);
-    machine.run_steps(86).unwrap(); // Three AIP instructions + the same guest.
+    machine.run_steps(109).unwrap(); // 23 reset + three AIP + the same guest.
     assert_eq!(machine.backup_ram()[0], 1);
     assert_eq!(machine.bus().read32(0x0600_1004), Ok(0x3E));
     machine.set_port2_buttons(0);

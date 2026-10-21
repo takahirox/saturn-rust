@@ -13,7 +13,7 @@ fn frames(m: &mut Machine, n: usize, buttons: u16) {
 fn actual_disc_guest_moves_collects_completes_and_restarts() {
     let mut m = Machine::new();
     m.reset(Boot::HleDisc(ISO)).unwrap();
-    assert_eq!(m.cpu_state().pc, 0x06002E20);
+    assert_eq!(m.cpu_state().pc, 0x100); // Original HLE reset precedes AIP.
     frames(&mut m, 20, 0);
     assert_eq!(&state(&m)[..4], &[32, 112, 0, 0]);
     assert_eq!(m.cpu_state().instructions * 8, m.clocks());

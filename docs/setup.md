@@ -48,6 +48,9 @@ The interrupt/latch ROM additionally exercises SH-2 signed DIV1 sequences,
 ICR auto/external vectors, SCU DMA acknowledgement and both TH/PAD/VDP2 latch
 inputs. The sound family ROM checks ten complete fault frames and partial
 transfers, plus self-modifying instruction prefetch. Both run in native and Wasm.
+An original HLE service disc also executes vector/callback/mask/semaphore/priority
+calls, nested IRQs, both CPU views and NMI/SYSRES retention. Native and browser
+Wasm compare authored records and changed guest data/priority operands.
 No proprietary files are required. See [Issue #17 coverage](hardware-conformance.md),
 [current validation](validation-issue-17.md) and
 [earlier SH-2 validation](validation-issue-11.md). The committed sample can be rebuilt and
@@ -64,6 +67,7 @@ python3 tests/fixtures/build_dual_sh2.py --check
 python3 tests/fixtures/build_sh7604.py --check
 python3 tests/fixtures/build_bsc.py --check
 python3 tests/fixtures/build_intc.py --check
+python3 tests/fixtures/build_hle_system.py --check
 python3 tests/fixtures/build_ubc.py --check
 python3 tests/fixtures/build_system_reset.py --check
 python3 tests/fixtures/build_standby.py --check

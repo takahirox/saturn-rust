@@ -451,7 +451,67 @@ try {
     return image;
   })()].map(b=>[...b]));
   assert.equal(startup[0][1],directoryIso.readUInt32BE(21*2048));
-  assert.deepEqual(startup[1],[42,0,4]);
+  assert.deepEqual(startup[1],[42,0,27]); // 23 original reset + four AIP instructions
+  // Original HLE-service disc: actual SH-2 calls through BIOS entry pointers,
+  // both-CPU TAS/VBR, nested SCU callbacks, copied priorities and reset domains.
+  const hleSystemIso=await readFile("tests/fixtures/hle-system.iso");
+  const hleSystemExpected=(await readFile("tests/fixtures/hle-system.tsv","utf8")).trim()
+    .split(/\r?\n/).map(line=>parseInt(line.split("\t")[1],16));
+  const hleSystemRun=async image=>page.evaluate(async ({image,count})=>{
+    const {Emulator}=await import("./pkg/saturn_rust.js");
+    const m=new Emulator(),traces=[];
+    try {
+      for(let repeat=0;repeat<2;repeat++) {
+        m.reset_disc(Uint8Array.from(image));m.run_steps(10000);
+        const words=base=>Array.from({length:7},(_,i)=>m.read_long(base+i*4));
+        traces.push({main:Array.from({length:count},(_,i)=>m.read_long(0x0600E000+i*4)),
+          slave:words(0x0600E500),outer:words(0x0600E600).slice(0,5),
+          inner:words(0x0600E700).slice(0,5),exceptions:m.exception_count(),
+          copied:m.read_long(0x06000BAC),source:m.read_long(0x0600F02C)});
+      }
+      return traces;
+    } finally {m.free();}
+  },{image:[...image],count:hleSystemExpected.length});
+  const hleSystemTrace={main:hleSystemExpected,
+    slave:[0,1,1,1,0x06009000,0x4B00,0x600D],outer:[0x20,0xFBFF,0,0,1],
+    inner:[0xF0,0xFFFF,0,0,1],exceptions:"3",copied:0x0020F800,source:0x00F0FFFF};
+  assert.deepEqual(await hleSystemRun(hleSystemIso),[hleSystemTrace,hleSystemTrace]);
+  const hleUncached=Buffer.from(hleSystemIso),cacheEnable=Buffer.from([0xE0,19,0x21,0]);
+  const hleCacheAt=hleUncached.indexOf(cacheEnable);
+  assert(hleCacheAt>=0 && hleUncached.indexOf(cacheEnable,hleCacheAt+1)===-1);
+  hleUncached[hleCacheAt+1]=0;
+  const hleUncachedExpected=structuredClone(hleSystemTrace);hleUncachedExpected.main[2]=0;
+  assert.deepEqual(await hleSystemRun(hleUncached),[hleUncachedExpected,hleUncachedExpected]);
+  for(const [before,after] of [[0x13579BDF,0x2468ACE0],[0x0020F800,0x0030F800]]) {
+    const image=Buffer.from(hleSystemIso),literal=Buffer.alloc(4);literal.writeUInt32BE(before);
+    const at=image.indexOf(literal,21*2048);
+    assert(at>=21*2048 && image.indexOf(literal,at+1)===-1);
+    image.writeUInt32BE(after,at);
+    const expected=structuredClone(hleSystemTrace);
+    if(before===0x13579BDF) {
+      expected.main[expected.main.length-3]=after;
+      expected.main[expected.main.length-2]=after;
+    } else {expected.outer[0]=0x30;expected.copied=after;}
+    assert.deepEqual(await hleSystemRun(image),[expected,expected]);
+  }
+  const hleResetImage=Buffer.from(hleSystemIso);
+  hleResetImage.writeUInt32BE(0x06009600,0xE28);
+  const hleResetTrace=await page.evaluate(async image=>{
+    const {Emulator}=await import("./pkg/saturn_rust.js");
+    const m=new Emulator(),traces=[];
+    try {
+      for(let repeat=0;repeat<2;repeat++) {
+        m.reset_disc(Uint8Array.from(image));
+        const cold=[m.read_long(0x06000C00),m.read_long(0x06000C04)];
+        for(let i=0;i<35;i++)m.run_steps(10000);
+        traces.push({cold,words:Array.from({length:6},(_,i)=>m.read_long(0x0600E800+i*4)),
+          exceptions:m.exception_count()});
+      }
+      return traces;
+    } finally {m.free();}
+  },[...hleResetImage]);
+  const hleResetExpected={cold:[0,0],words:[0x12345678,0x12345679,0xBFFF,0x4B10,1,0x600D],exceptions:"0"};
+  assert.deepEqual(hleResetTrace,[hleResetExpected,hleResetExpected]);
   const rawDirectory = rawMode1(directoryIso);
   for (const damage of ["none", "correctable", "uncorrectable"]) {
     const raw = Buffer.from(rawDirectory);
@@ -1837,7 +1897,7 @@ try {
   await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
   const samplePad = () => page.evaluate(async () => {
     const { emulator } = await import("./app.js");
-    emulator.run_steps(100);
+    emulator.run_steps(123); // Include the original 23-instruction HLE reset.
     return emulator.read_long(0x06001004);
   });
   await settings.click(); // Close settings; local discs remain paused.

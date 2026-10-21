@@ -15,6 +15,7 @@ automated local/CI checks; live Pages inspection is not a completion gate.
 | src/bus.rs | Aligned big-endian byte/word/long accesses, RAM, ROM, VRAM and MMIO routing |
 | src/backup.rs | Packed battery RAM, atomic import and odd-byte storage with word/long bus lanes |
 | src/disc.rs | Bounded ISO9660 and Saturn IP validation, first-read executable selection |
+| src/hle.rs, src/hle/ | HLE boot tables and original guest-executed vector, callback, mask, semaphore and priority services |
 | src/media.rs | Retained cooked/raw/BIN/CUE data/audio media and track indices/gaps |
 | src/cd.rs | Timed runtime CD commands, selector/sector pool, FIFO and CD-DA |
 | src/devices.rs | Shared device constants and compatibility exports |

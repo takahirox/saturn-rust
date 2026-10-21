@@ -10,6 +10,10 @@ use std::cell::Cell;
 use std::fmt;
 
 pub const SCU: u32 = 0x05FE_0000;
+pub(crate) const INTERRUPT_LEVELS: [u8; 32] = [
+    15, 14, 13, 12, 11, 10, 9, 8, 8, 6, 6, 5, 3, 2, 0, 0, 7, 7, 7, 7, 4, 4, 4, 4, 1, 1, 1, 1, 1, 1,
+    1, 1,
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScuError {
@@ -75,10 +79,6 @@ impl Default for Scu {
 impl Scu {
     /// ST-097 table 2.1. Only the master receives the SCU interrupt output.
     pub fn interrupt(&self) -> Option<(u8, u8)> {
-        const LEVELS: [u8; 32] = [
-            15, 14, 13, 12, 11, 10, 9, 8, 8, 6, 6, 5, 3, 2, 0, 0, 7, 7, 7, 7, 4, 4, 4, 4, 1, 1, 1,
-            1, 1, 1, 1, 1,
-        ];
         let unmasked = self.status & !u32::from(self.mask) & 0x3FFF
             | if self.mask & 0x8000 == 0 {
                 self.status & 0xFFFF_0000
@@ -88,7 +88,7 @@ impl Scu {
         // Equal-level sources use ascending vector order.
         (0..32)
             .filter(|bit| unmasked & (1 << bit) != 0)
-            .map(|bit| (LEVELS[bit], 0x40 + bit as u8))
+            .map(|bit| (INTERRUPT_LEVELS[bit], 0x40 + bit as u8))
             .max_by_key(|(level, vector)| (*level, 255 - *vector))
     }
     pub(crate) fn acknowledge(&mut self, vector: u8) {

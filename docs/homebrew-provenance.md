@@ -70,6 +70,8 @@ command, disc layout and HLE boot contract are in the
 | web/star-collector-LICENSE.txt | Exact copy of the game's MIT license, available beside the ISO on Pages |
 | homebrew/prism-courier source, generated geometry/texture and original 68k sound computation | Original work under its adjacent MIT license; reuses the repository's MIT-licensed assembler/ISO builder and sound guest |
 | web/prism-courier.iso and prism-courier-LICENSE.txt | Deterministic original guest disc including LICENSE.TXT, plus an exact public license copy; no SDK/firmware/recorded audio |
+| src/hle/system.s, system.bin and build.py | Original SH-2 system-service routines and build output under src/hle/LICENSE; manual-defined ABI, no SDK routine or instruction hook |
+| tests/fixtures/build_hle_system.py, hle-system.iso and hle-system.tsv | Original SH-2 diagnostic, ISO/AIP and authored expectations under tests/fixtures/LICENSE; disc includes LICENSE.TXT; no external assets |
 | Python 3 | External build tool under the PSF license, standard library only; no Python code/runtime embedded in disc |
 | wasm-bindgen and Playwright | Existing Wasm/browser infrastructure dependencies; retain their package licenses and lockfiles; no guest linkage |
 

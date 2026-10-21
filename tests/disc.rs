@@ -15,13 +15,22 @@ fn boot_uses_saturn_metadata_iso_first_file_and_original_aip_instructions() {
     let mut m = Machine::new();
     m.reset(Boot::HleDisc(ISO)).unwrap();
     assert_eq!(m.mode(), Some(BootMode::HleDisc));
-    assert_eq!(m.cpu_state().pc, AIP_ENTRY);
+    assert_eq!(m.cpu_state().pc, 0x100);
     assert_eq!(m.cpu_state().r[15], parsed.stack);
     assert_eq!(m.bus().read32(IP_ADDRESS), Ok(0x53454741));
     assert_eq!(m.bus().read32(0), Ok(0x100)); // original independent HLE reset trampoline
+    for _ in 0..32 {
+        if m.cpu_state().pc == AIP_ENTRY {
+            break;
+        }
+        m.step().unwrap();
+    }
+    assert_eq!(m.cpu_state().pc, AIP_ENTRY);
+    assert_eq!(m.cpu_state().vbr, 0x06000000);
+    let before = m.cpu_state().instructions;
     m.run_steps(3).unwrap();
     assert_eq!(m.cpu_state().pc, parsed.load_address);
-    assert_eq!(m.cpu_state().instructions, 3);
+    assert_eq!(m.cpu_state().instructions - before, 3);
 }
 fn rejects(mut edit: impl FnMut(&mut Vec<u8>)) {
     let mut image = ISO.to_vec();
@@ -116,6 +125,13 @@ fn descriptor_sets_padding_and_hidden_first_read_preserve_guest_boot() {
     image.resize(image.len() + SECTOR * 2, 0xA5); // outside logical volume
     let mut m = Machine::new();
     m.reset(Boot::HleDisc(&image)).unwrap();
+    for _ in 0..32 {
+        if m.cpu_state().pc == AIP_ENTRY {
+            break;
+        }
+        m.step().unwrap();
+    }
+    assert_eq!(m.cpu_state().pc, AIP_ENTRY);
     m.run_steps(3).unwrap();
     assert_eq!(m.cpu_state().pc, parse(ISO).unwrap().load_address);
     assert_eq!(
@@ -166,5 +182,5 @@ fn zero_first_read_address_executes_original_aip_without_loading_a_file() {
     assert_eq!(m.cpu_state().status, CpuStatus::Sleeping);
     assert_eq!(m.bus().read32(0x06008000), Ok(42));
     assert_eq!(m.bus().read32(0x06004000), Ok(0));
-    assert_eq!(m.cpu_state().instructions, 4);
+    assert_eq!(m.cpu_state().instructions, 27); // 23 reset + four original AIP instructions
 }

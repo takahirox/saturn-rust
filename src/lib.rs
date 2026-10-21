@@ -7,6 +7,7 @@ mod cd_audio;
 pub mod cpu;
 pub mod devices;
 pub mod disc;
+mod hle;
 pub mod m68k;
 pub mod media;
 pub mod onchip;
@@ -166,18 +167,10 @@ impl Machine {
         for (i, byte) in boot.executable.iter().enumerate() {
             self.bus.write8(boot.load_address + i as u32, *byte)?;
         }
-        // Independent HLE reset code; never installed in ExternalBios.
-        // It provides the slave work-RAM handoff through instructions,
-        // so SSHON uses exactly the same reset path as external ROMs.
-        let mut rom = vec![0; bus::BIOS_SIZE];
-        rom[..16].copy_from_slice(&[0, 0, 1, 0, 6, 15, 224, 0, 0, 0, 1, 0, 6, 15, 224, 0]);
-        let code = include_bytes!("hle/boot.bin");
-        rom[0x100..0x100 + code.len()].copy_from_slice(code);
-        self.bus.load_bios(&rom)?;
-        // Independent HLE system initialization selects the SCU-supplied vector
-        // path. External BIOS mode retains the SH7604 reset value (auto-vector).
-        self.bus.write16(onchip::ICR, 1)?;
-        self.cpu = Cpu::start(disc::AIP_ENTRY, boot.stack);
+        // Original HLE reset and system routines are never installed in BIOS
+        // mode. Master and slave execute the same real reset trampoline.
+        hle::install(&mut self.bus)?;
+        self.cpu = Cpu::start(0x100, boot.stack);
         self.bus
             .cd
             .mount(media::Media::iso(image).map_err(MachineError::Disc)?);
@@ -381,6 +374,14 @@ impl Machine {
             Some(0x08) => self.bus.cd.set_enabled(true),
             Some(0x09) => self.bus.cd.set_enabled(false),
             Some(0x0D) => {
+                let power_clear = if self.mode == Some(BootMode::HleDisc) {
+                    Some([
+                        self.bus.read32(hle::POWER_CLEAR)?,
+                        self.bus.read32(hle::POWER_CLEAR + 4)?,
+                    ])
+                } else {
+                    None
+                };
                 self.bus.system_reset();
                 self.cpu = Cpu::default();
                 self.slave = Cpu::default();
@@ -390,6 +391,10 @@ impl Machine {
                             let image = media.boot_iso().map_err(MachineError::Disc)?;
                             self.boot_disc(&image)?;
                             self.bus.cd.mount(media);
+                            if let Some(words) = power_clear {
+                                self.bus.write32(hle::POWER_CLEAR, words[0])?;
+                                self.bus.write32(hle::POWER_CLEAR + 4, words[1])?;
+                            }
                         }
                     }
                     Some(BootMode::HlePrototype) => {

@@ -562,8 +562,8 @@ no-op CPU/device implementations cannot satisfy those assertions.
 | CD drive/TOC/session/track state, [CD] §§4/7/8.2 | TOC/session/Q, bounded seek, data play, CD-DA/repeat/end, media-dependent FAD/track/index reports; timed CDON/OFF, 60 Hz pause reports, programmed standby, scan directions/range/muting, tray/media retention and deterministic virtual close | `tests/cd.rs`, CLAB, CDDRV | CLAB, CDDRV | Remaining initialization/subcode options and full drive/response lifecycle boundary evidence | Pending |
 | CD buffers/transfers, [CD] §§3.4/5.3/5.4/8.2 | 200-sector pool, 24 partitions, get/delete/get-delete/put, short/over transfers, size/info/search, FIFO word/long and fixed-source SCU DMA | `tests/cd.rs`, CLAB | CLAB actual DMA/IRQ/checksum, sector mutation | Pool-full pause/resume at the blocked FAD has native data vectors; complete transfer overlap and timing/error inventory remain | Pending |
 | Filters/selectors/partitions, [CD] §§5.2/5.3/8.2.5 | FAD and masked subheader comparisons, reverse conditions, true/false routes, reset, copy/move through destination filter | `tests/cd.rs::selectors_fad_range_connections_copy_move_and_size`, Mode2 reverse vectors | CLAB default filter/partition route | Full connection constraints and all boundary/error vectors remain | Pending |
-| BIOS-less startup, [Boot ROM][BOOT] / [DISC] | Original first-read HLE plus licensed SH-2 reset trampoline, separate from ExternalBios; slave handoff executes guest instructions | disc.rs, game.rs, CLAB, src/hle/boot.s | SC, CLAB | General system/backup/CD service ABI and full startup/region/version contracts | Pending |
-| BIOS services, [BOOT] | None | — | — | System/backup/CD calls and per-call ABI/side effects | Pending |
+| BIOS-less startup, [Boot ROM][BOOT] / [DISC] | Original first-read HLE plus licensed SH-2 master/slave reset trampoline and system-service initialization, separate from ExternalBios | disc.rs, game.rs, CLAB, src/hle/boot.s, HLESYS | SC, CLAB, HLESYS | Remaining clock/multiplayer, backup/CD services and full startup/region/version contracts | Pending |
+| BIOS services, [BOOT], ST-162-R1 System Program §2.2 | Original guest-executed vector/callback registration, SCU mask/shadow, shared semaphores, copied priorities and power-clear bytes; see HLESYS below | tests/hle_system.rs | HLESYS, including nested IRQs, mutations and reset | Clock/multiplayer, backup/CD calls and complete per-call ABI/side effects remain | Pending |
 | External BIOS execution, [BOOT] | Genuine reset vectors, original synthetic ROM handlers | boot.rs, sh2_system.rs | ROM | Genuine BIOS initialization/menu/boot **unverified**; no lawful local BIOS supplied | Pending |
 | SMPC direct digital port 1, [SMPC] §3 | Active-low nibble selection; per-bit PDR/DDR input/output merging; TH input visible with EXLE | devices.rs, INTCG | SC, INTCG | Direct digital settling and full clock/reset timing | Pending |
 | SMPC commands/status/timing, [SMPC] §§1.2/2.3/2.4/3.2 | SF/IREG/OREG/SR, CPU commands, INTBACK status/peripheral phases, continue/break, VBlank collection and optimization; SCU source 7 | smpc/tests.rs, tests/smpc.rs, DUAL | SMPR, DUAL | Remaining system commands, firmware jitter and all clock modes | Pending |
@@ -1204,3 +1204,52 @@ firmware, copied emulator implementation or host-generated guest result is used.
 | --- | --- |
 | `python3 tests/fixtures/build_gradation.py --check` | `358df4380f519123fe4096d53b4703ff8cca7d1add4b5eb2212cad975b967009` |
 | `python3 tests/fixtures/build_cache.py --check` | `22534b689efcce1ace6cb36b4798c9e20abaf24e8c0585d6b2462739bd2d4791` |
+
+## Original HLE system-service execution
+
+Related to #17. **HLESYS** means the original MIT
+[service routines](../src/hle/system.s), [ABI and memory layout](../src/hle/README.md),
+[boot-table installation](../src/hle.rs), [guest-disc source](../tests/fixtures/build_hle_system.py),
+[authored register records](../tests/fixtures/hle-system.tsv),
+[native integration](../tests/hle_system.rs) and identical guest execution in
+[the browser Wasm suite](../scripts/browser-smoke.mjs). The primary behavior is
+[ST-162-R1 System Program §§1/2.2](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-162-R1-092994.pdf),
+services 1.1–3.2, 5.1 and 7.1, with the
+[later function specification](https://github.com/luckyseoul/saturn-docs/blob/main/files/ssddv25/segahtml/prgg/sysg/prog/hon/p02_11.htm)
+and production [SCU Final Specifications][SCUFINAL] #7/10.
+
+| Required system interface | Implementation / effect | Native and actual browser Wasm evidence | Remaining limits |
+| --- | --- | --- | --- |
+| SYS_SETSINT / SYS_GETSINT, §2.2 1.1/1.3 | Guest VBR-relative vector access; zero restores the dummy or SCU wrapper, excluding reserved 4E/4F | Master TRAPA executes a registered handler; alternate VBR and independently executing slave access their own tables; default restoration | Complete exception/interrupt and bus-cycle conformance remains required |
+| SYS_SETUINT / SYS_GETUINT, §2.2 1.2/1.4 | Guest callback table, independent of architectural vector overrides | Registration/readback, restored SCU wrapper and actual DMA0/1 callbacks; R0–R7/MACH/MACL/PR/SP/SR restored after nested handlers | Complete SCU pin, priority-edge and arbitration coverage remains required |
+| SYS_SETSCUIM / SYS_CHGSCUIM / SYS_GETSCUIM, §2.2 2.1–2.3 | Guest atomic mask/shadow publication and modification; AIACK arm when A-bus enabled; public shadow is data | Exact set/change values, AIACK, nested mask FBFF/FFFF and restoration to B3FF; data cache enabled/primed and disabled caller cases | ST-210 #7 prohibits the earlier manual's IST writes; follow production behavior without an ignored-write escape |
+| SYS_TASSEM / SYS_CLRSEM, §2.2 3.1/3.2 | Actual SH-2 TAS and shared P1 byte storage | Endpoints 0/127/128/255; both CPUs contend for semaphore 9 and release/reacquire it; cold reset clears all 256 bytes | Full hardware bus-lock arbitration remains required |
+| SYS_CHGUIPR, §2.2 5.1 | Guest copy of all 32 priority words, used by executing interrupt wrappers | Caller overwrites its table after copying; DMA0 callback observes SR=2, nested DMA1 SR=15; changing only the priority operand changes outer SR to 3 | Full cross-clock/priority-edge conformance remains required |
+| SYS_PCLRMEM, §2.2 7.1 | Eight actual work-RAM bytes, cold-cleared and retained over NMI/SYSRES | Original guest derives the second word after NMI, requests timed SYSRES, then reads both words and reset callback/mask/semaphore state; repeats cold boots | Other reset/clock domains and remaining system services remain required |
+
+Private master-only service state uses P0 reads/writes so the caller's resident
+write-through lines remain consistent with public values. Semaphores and guest
+inter-CPU mailbox polls use P1. The guest uses cache-through SMPC/SCU MMIO.
+Independent data and priority operand mutations must change the computed traces;
+no host writes running guest results or detects a game/PC/opcode. HLE startup now
+executes 23 original reset instructions before AIP. Existing three-instruction AIP
+and four-instruction zero-first-read tests retain their original guest assertions
+and account for the additional reset instructions explicitly.
+
+The disc includes its MIT LICENSE.TXT and uses only original code, ISO metadata
+and authored numeric values. [Fixture licensing](../tests/fixtures/LICENSE) covers
+the caller source/ISO/records; [HLE licensing](../src/hle/LICENSE) covers service
+source/build output. Neither source contains Sega SDK routines or firmware.
+Existing Star Collector, Prism Courier and Hardware Lab media are unchanged.
+
+| Reproducible artifact | SHA-256 |
+| --- | --- |
+| `python3 src/hle/build.py --check`: `system.bin` | `20bdeed8c27a35fba5c0baa61c334383ac7812378a2774ee6f2e7bb26eaad745` |
+| `python3 tests/fixtures/build_hle_system.py --check`: `hle-system.iso` | `20087f76e82f3aaafb049a7c1fbad46c9ea032e6b9638b3118cb0b30e472b0fa` |
+
+SYS_CHGSYSCK, SYS_GETSYSCK, SYS_EXECDMP, backup-library/filesystem and CD-library
+ABIs remain mandatory and unimplemented. Full synthetic BIOS/service acceptance
+and the other required CPU/peripheral, bus/reset/scheduler, SCU/DSP, video/audio,
+CD/SMPC and demonstration evidence remain incomplete. HLESYS is a diagnostic
+disc, not a replacement for either required demonstration. No umbrella checkbox
+is marked complete by these service implementations.
