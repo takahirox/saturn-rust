@@ -39,6 +39,18 @@ load 0x25c0080e,r1
 load 0x8007,r0
 mov.w r0,@r1
 load 0x25d00002,r1
+load 0x3,r0
+mov.w r0,@r1
+load 0x25f80004,r1
+blank_in_0:
+mov.w @r1,r0
+tst #8,r0
+bt blank_in_0
+blank_out_0:
+mov.w @r1,r0
+tst #8,r0
+bf blank_out_0
+load 0x25d00002,r1
 load 0x2,r0
 mov.w r0,@r1
 load 0x25c00020,r1
@@ -105,6 +117,18 @@ mov.w @r1,r0
 extu.w r0,r0
 mov.l r0,@r8
 add #4,r8
+load 0x25d00002,r1
+load 0x3,r0
+mov.w r0,@r1
+load 0x25f80004,r1
+blank_in_1:
+mov.w @r1,r0
+tst #8,r0
+bt blank_in_1
+blank_out_1:
+mov.w @r1,r0
+tst #8,r0
+bf blank_out_1
 load 0x25d00002,r1
 load 0x2,r0
 mov.w r0,@r1
@@ -173,6 +197,18 @@ extu.w r0,r0
 mov.l r0,@r8
 add #4,r8
 load 0x25d00002,r1
+load 0x13,r0
+mov.w r0,@r1
+load 0x25f80004,r1
+blank_in_2:
+mov.w @r1,r0
+tst #8,r0
+bt blank_in_2
+blank_out_2:
+mov.w @r1,r0
+tst #8,r0
+bf blank_out_2
+load 0x25d00002,r1
 load 0x12,r0
 mov.w r0,@r1
 load 0x25c00020,r1
@@ -239,6 +275,18 @@ mov.w @r1,r0
 extu.w r0,r0
 mov.l r0,@r8
 add #4,r8
+load 0x25d00002,r1
+load 0x3,r0
+mov.w r0,@r1
+load 0x25f80004,r1
+blank_in_3:
+mov.w @r1,r0
+tst #8,r0
+bt blank_in_3
+blank_out_3:
+mov.w @r1,r0
+tst #8,r0
+bf blank_out_3
 load 0x25d00002,r1
 load 0x2,r0
 mov.w r0,@r1
@@ -307,6 +355,18 @@ extu.w r0,r0
 mov.l r0,@r8
 add #4,r8
 load 0x25d00002,r1
+load 0x13,r0
+mov.w r0,@r1
+load 0x25f80004,r1
+blank_in_4:
+mov.w @r1,r0
+tst #8,r0
+bt blank_in_4
+blank_out_4:
+mov.w @r1,r0
+tst #8,r0
+bf blank_out_4
+load 0x25d00002,r1
 load 0x12,r0
 mov.w r0,@r1
 load 0x25c00020,r1
@@ -374,6 +434,18 @@ extu.w r0,r0
 mov.l r0,@r8
 add #4,r8
 load 0x25d00002,r1
+load 0x3,r0
+mov.w r0,@r1
+load 0x25f80004,r1
+blank_in_5:
+mov.w @r1,r0
+tst #8,r0
+bt blank_in_5
+blank_out_5:
+mov.w @r1,r0
+tst #8,r0
+bf blank_out_5
+load 0x25d00002,r1
 load 0x2,r0
 mov.w r0,@r1
 load 0x25c00020,r1
@@ -440,6 +512,18 @@ mov.w @r1,r0
 extu.w r0,r0
 mov.l r0,@r8
 add #4,r8
+load 0x25d00002,r1
+load 0x13,r0
+mov.w r0,@r1
+load 0x25f80004,r1
+blank_in_6:
+mov.w @r1,r0
+tst #8,r0
+bt blank_in_6
+blank_out_6:
+mov.w @r1,r0
+tst #8,r0
+bf blank_out_6
 load 0x25d00002,r1
 load 0x12,r0
 mov.w r0,@r1

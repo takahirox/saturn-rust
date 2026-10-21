@@ -723,7 +723,9 @@ try {
     const {emulator,advanceFrame}=await import("./app.js");
     const traces=[];
     for(let repeat=0;repeat<2;repeat++) {
-      emulator.reset_bios(Uint8Array.from(rom));emulator.run_steps(10000);emulator.advance_frame();
+      emulator.reset_bios(Uint8Array.from(rom));
+      for(let i=0;i<300 && emulator.read_long(0x0600D074)!==0x600D;i++)emulator.run_steps(5000);
+      emulator.advance_frame();
       advanceFrame();
       const f=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
       traces.push({words:Array.from({length:count},(_,i)=>emulator.read_long(0x0600D000+i*4)),
@@ -737,7 +739,8 @@ try {
       if(changed[i]===0&&changed[i+1]===0&&changed[i+2]===0x10&&changed[i+3]===0x68){changed[i+2]=0;patches++;}
     }
     if(patches!==6)throw new Error(`HSS operand count ${patches}`);
-    emulator.reset_bios(changed);emulator.run_steps(10000);
+    emulator.reset_bios(changed);
+    for(let i=0;i<300 && emulator.read_long(0x0600D074)!==0x600D;i++)emulator.run_steps(5000);
     traces.push({changed:Array.from({length:count},(_,i)=>emulator.read_long(0x0600D000+i*4))});
     return traces;
   },{rom:[...shrinkRom],count:shrinkExpected.length});
@@ -1266,6 +1269,74 @@ try {
     const expected=rasterYs.map(y=>y<64?[255,0,0,255]:y<128?(mutated?[255,0,0,255]:[0,255,0,255]):y<192?[0,0,255,255]:[255,255,255,255]);
     assert.deepEqual(result.pixels,expected);assert.deepEqual(result.presented,expected);
     assert.deepEqual(result.next,[31,0,0,255]);assert.equal(result.finalVram,0x8000);
+  }
+  // Original VDP1 polygons, rotated through A's Q9 sprite link. The guest
+  // rewrites starts at line64 without reload, then enables X/Y reload on128/192.
+  // Compare historical Wasm and production Canvas, then the next black field.
+  for(const depth of [16,8]) {
+    const image=Buffer.alloc(524288);
+    for(const line of (await readFile(`tests/fixtures/sprite-rotation${depth}.hex`,"utf8")).split(/\r?\n/)) {
+      if(!line||line.startsWith("#"))continue;
+      const [at,...words]=line.split(/\s+/).map(w=>parseInt(w,16));
+      words.forEach((w,i)=>image.writeUInt16BE(w,at+i*2));
+    }
+    const records=(await readFile(`tests/fixtures/sprite-rotation${depth}.tsv`,"utf8")).trim().split(/\r?\n/).map(w=>parseInt(w,16));
+    for(const changed of [false,false,true]) {
+      if(changed)image.writeUInt32BE(0,0x104);
+      const result=await page.evaluate(async rom=>{
+        const {emulator,advanceFrame}=await import("./app.js");
+        emulator.reset_bios(Uint8Array.from(rom));
+        for(let i=0;i<500 && emulator.read_long(0x0600DE18)!==0x600D;i++)emulator.run_steps(500);
+        if(emulator.read_long(0x0600DE18)!==0x600D)throw new Error("VDP1 rotation guest did not complete");
+        advanceFrame();
+        const frame=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
+        const points=[0,63,64,127,128,191,192,223].flatMap(y=>[0,127,128,255,256,319].map(x=>[x,y]));
+        const pixels=points.map(([x,y])=>Array.from(frame.slice((y*320+x)*4,(y*320+x)*4+4)));
+        const presented=points.map(([x,y])=>Array.from(canvas.getImageData(x,y,1,1).data));
+        const records=Array.from({length:7},(_,i)=>emulator.read_long(0x0600DE00+i*4));
+        advanceFrame();
+        return {records,pixels,presented,next:Array.from(canvas.getImageData(0,0,320,224).data)};
+      },[...image]);
+      const expected=[0,63,64,127,128,191,192,223].flatMap(y=>[0,127,128,255,256,319].map(x=>{
+        if(changed)x=0;
+        if(x>=256)return [0,0,0,255];
+        if(y<128)return x<128?[0,255,0,255]:[255,255,255,255];
+        if(y<192)return x<128?[255,0,0,255]:[0,0,255,255];
+        return x<128?[0,0,255,255]:[0,0,0,255];
+      }));
+      assert.deepEqual(result.records,records);
+      assert.deepEqual(result.pixels,expected);assert.deepEqual(result.presented,expected);
+      assert(result.next.every((v,i)=>v===(i%4===3?255:0)));
+    }
+  }
+  const interlaceImage=Buffer.alloc(524288);
+  for(const line of (await readFile("tests/fixtures/sprite-interlace.hex","utf8")).split(/\r?\n/)) {
+    if(!line||line.startsWith("#"))continue;
+    const [at,...words]=line.split(/\s+/).map(w=>parseInt(w,16));
+    words.forEach((w,i)=>interlaceImage.writeUInt16BE(w,at+i*2));
+  }
+  const interlaceRecords=(await readFile("tests/fixtures/sprite-interlace.tsv","utf8")).trim().split(/\r?\n/).map(w=>parseInt(w,16));
+  for(const changed of [false,false,true]) {
+    if(changed)interlaceImage.writeUInt32BE(0xF,0x100);
+    const result=await page.evaluate(async rom=>{
+      const {emulator,advanceFrame}=await import("./app.js");
+      emulator.reset_bios(Uint8Array.from(rom));
+      for(let i=0;i<1000 && emulator.read_long(0x0600DF34)!==0x600D;i++)emulator.run_steps(500);
+      if(emulator.read_long(0x0600DF34)!==0x600D)throw new Error("VDP1 interlace guest did not complete");
+      advanceFrame();
+      const frame=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
+      const pixels=Array.from({length:10},(_,i)=>Array.from(frame.slice(((429+i)*320+10)*4,((429+i)*320+10)*4+4)));
+      const presented=Array.from({length:10},(_,i)=>Array.from(canvas.getImageData(10,429+i,1,1).data));
+      const records=Array.from({length:14},(_,i)=>emulator.read_long(0x0600DF00+i*4));
+      const dimensions=[canvas.canvas.width,canvas.canvas.height];
+      advanceFrame();
+      return {records,pixels,presented,dimensions,next:Array.from(canvas.getImageData(10,430,1,8).data)};
+    },[...interlaceImage]);
+    const records=[...interlaceRecords];if(changed)records.fill(0x83E0,1,5);
+    const expected=Array.from({length:10},(_,i)=>i===0||i===9?[0,0,0,255]:changed||i%2===0?[0,255,0,255]:[255,0,0,255]);
+    assert.deepEqual(result.records,records);assert.deepEqual(result.dimensions,[320,448]);
+    assert.deepEqual(result.pixels,expected);assert.deepEqual(result.presented,expected);
+    assert.deepEqual(result.next,Array.from({length:8},()=>[0,255,0,255]).flat());
   }
   // Four normal tile backgrounds come exclusively from guest instruction/MMIO
   // writes. Mutate the guest palette literal and assert Wasm plus real Canvas.
@@ -2826,7 +2897,7 @@ try {
   }
   await cddaPage.waitForFunction(() => window.cddaAudio.stats.rendered > 128 && window.cddaAudio.stats.peak > 0.1);
   await cddaPage.close();
-  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-CPU DIVU overflow intermediates/UBC acknowledgement and dividend mutations, all eight SMPC area codes and independent CD/sound reset reports, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, BCR1 processor identity/refresh IRQ/module stops/reset repeatability, UBC before/after/slot/data/DMAC saved-PC vectors, software standby/timed NMI wake, SYSRES volatile/battery retention, four-layer VDP2 tile guest/palette mutation/Wasm and production Canvas presentation, original rotation/coefficient/line-scroll/line-window guest and mutated matrix pixels, original RBG0/RBG1 guest with B0/B1 data and changed parameter-B pixels/Canvas, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, original CD scan/reverse/pause/tray/TOC guest, malformed runtime ISO root/child rejection and bounded raw-sector correction/failure responses, CD-DA PRE reference stereo/sector continuity and AudioWorklet, sprite-window/shadow/palette-MSB guest and Canvas mutations, 68k BCD/MOVEM/MOVEP/arithmetic/partial-fault/trap guest plus timed MIDI/SCSP DMA and three interrupt levels; SH-2-uploaded MC68EC000 PCM computation/SCSP timer IRQ/stereo samples and WebAudio worklet delivery/underflow/mute/blocked states, SCSP FM recent/past stack pipeline, TL gain, ALFO/PLFO and timed-envelope guest mutations and AudioWorklet; 73 original 68k family/EA/CCR/exception vectors, ten guest access-frame/partial-transfer/prefetch records and ADD-to-SUB mutation; ICR auto/external vectors, signed DIV1 sequences and both-port SMPC-to-SCU/VDP2 latching with control mutation, DACK armed waiting/reset, two-way cache RAM isolation and operand mutation, gradation top/second filtering and changed controls/Wasm/Canvas, descriptor-set runtime/startup and zero-first-read AIP; guest-executed HLE backup library expansion/relocation, 158 ABI records, full-capacity allocation, prefixes/compaction, Gregorian dates, corruption and persistent raw import/export, changed guest XOR operand; BIOS/HLE PLL transitions and reset domains, rational FRT/raster clocks, 352-dot Canvas output, 60 standard TV-mode/PAL/interlace guests with INTBACK/field/counter/pixel vectors and 704x480 Canvas, VDP1 HSS/EOS scaled/distorted/flipped guest pixels and changed HSS operands, two-port digital settling/operand mutations; SMPC RTC/SMEM/INTBACK IRQs and synthetic digital+ID15/ID16 analog Gamepad/focus release, timed both-port direct analog handshake guest, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation; Prism Courier original disc, VDP1 sprite/polygons + VDP2 composition/Canvas, draw-end IRQ, 68k stereo + actual AudioWorklet, keyboard collision/win/restart, changed-disc texture mutation; Hardware Lab local CUE/mixed tracks, dual CPU, executing SCU DSP, CD FIFO-to-SCU DMA/IRQs/checksum, independent 68k-uploaded SCSP effects DSP, exact wet stereo/coefficient mutations, CD-DA through DSP and AudioWorklet, fourteen rotation/window Canvas pixels, disc matrix/window mutations, full diagnostic/pixel restart checks, backup, sector/audio mutations, CUE subindices and malformed ordering, missing local file rejection.`);
+  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-CPU DIVU overflow intermediates/UBC acknowledgement and dividend mutations, all eight SMPC area codes and independent CD/sound reset reports, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, BCR1 processor identity/refresh IRQ/module stops/reset repeatability, UBC before/after/slot/data/DMAC saved-PC vectors, software standby/timed NMI wake, SYSRES volatile/battery retention, four-layer VDP2 tile guest/palette mutation/Wasm and production Canvas presentation, original rotation/coefficient/line-scroll/line-window guest and mutated matrix pixels, original RBG0/RBG1 guest with B0/B1 data and changed parameter-B pixels/Canvas, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, original CD scan/reverse/pause/tray/TOC guest, malformed runtime ISO root/child rejection and bounded raw-sector correction/failure responses, CD-DA PRE reference stereo/sector continuity and AudioWorklet, sprite-window/shadow/palette-MSB guest and Canvas mutations, 68k BCD/MOVEM/MOVEP/arithmetic/partial-fault/trap guest plus timed MIDI/SCSP DMA and three interrupt levels; SH-2-uploaded MC68EC000 PCM computation/SCSP timer IRQ/stereo samples and WebAudio worklet delivery/underflow/mute/blocked states, SCSP FM recent/past stack pipeline, TL gain, ALFO/PLFO and timed-envelope guest mutations and AudioWorklet; 73 original 68k family/EA/CCR/exception vectors, ten guest access-frame/partial-transfer/prefetch records and ADD-to-SUB mutation; ICR auto/external vectors, signed DIV1 sequences and both-port SMPC-to-SCU/VDP2 latching with control mutation, DACK armed waiting/reset, two-way cache RAM isolation and operand mutation, gradation top/second filtering and changed controls/Wasm/Canvas, descriptor-set runtime/startup and zero-first-read AIP; guest-executed HLE backup library expansion/relocation, 158 ABI records, full-capacity allocation, prefixes/compaction, Gregorian dates, corruption and persistent raw import/export, changed guest XOR operand; BIOS/HLE PLL transitions and reset domains, rational FRT/raster clocks, 352-dot Canvas output, 60 standard TV-mode/PAL/interlace guests with INTBACK/field/counter/pixel vectors and 704x480 Canvas, VDP1 Rotation16/Rotation8 Q9 readout, line-start X/Y reloads, guest delta mutations, double-interlace/DIL buffer traces and 448-line Wasm/Canvas fields, latched HSS/EOS scaled/distorted/flipped guest pixels and changed HSS operands, two-port digital settling/operand mutations; SMPC RTC/SMEM/INTBACK IRQs and synthetic digital+ID15/ID16 analog Gamepad/focus release, timed both-port direct analog handshake guest, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation; Prism Courier original disc, VDP1 sprite/polygons + VDP2 composition/Canvas, draw-end IRQ, 68k stereo + actual AudioWorklet, keyboard collision/win/restart, changed-disc texture mutation; Hardware Lab local CUE/mixed tracks, dual CPU, executing SCU DSP, CD FIFO-to-SCU DMA/IRQs/checksum, independent 68k-uploaded SCSP effects DSP, exact wet stereo/coefficient mutations, CD-DA through DSP and AudioWorklet, fourteen rotation/window Canvas pixels, disc matrix/window mutations, full diagnostic/pixel restart checks, backup, sector/audio mutations, CUE subindices and malformed ordering, missing local file rejection.`);
 } finally {
   if (browser) await browser.close();
   if (server?.pid && server.exitCode === null) {

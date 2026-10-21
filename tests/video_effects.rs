@@ -301,8 +301,8 @@ fn rotation_tile_sixteen_plane_map_pattern_names_palette_and_screen_over_charact
     assert_eq!(pixel(&v.framebuffer().unwrap(), 0, 0), GREEN);
 }
 #[test]
-fn unimplemented_rotation_reload_and_reserved_special_modes_are_not_inert_latches() {
-    for (offset, value) in [(0xB2, 1), (0xEA, 0x300), (0xEE, 0x200)] {
+fn reserved_rotation_reload_and_special_modes_are_not_inert_latches() {
+    for (offset, value) in [(0xB2, 8), (0xEA, 0x300), (0xEE, 0x200)] {
         let mut v = rotation();
         reg(&mut v, offset, value);
         assert!(v.framebuffer().is_err());

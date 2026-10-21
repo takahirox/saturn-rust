@@ -1964,3 +1964,71 @@ ABI, SMPC boundaries and exhaustive umbrella evidence remain required. No
 acceptance criterion is waived or marked complete; no replacement tracker,
 external-workflow investigation, human approval, proprietary firmware or live-site
 gate is introduced. Nothing was pushed or merged by this worktree operation.
+
+## Rotated/interlaced sprites and rotation parameter start reloads
+
+Related to #17. Upstream `main` was rechecked as
+`dbd981b030a46daa6923072ce240680dd2e58ebf`. This revision preserves the previous
+PR #18 work, including the memory-geometry/Mode2/raster-history changes. It adds
+standard-TV Rotation16/Rotation8 framebuffer readout, signed Q9 sprite-link
+quantization, transformed sprite windows, independent A/B Xst/Yst/KAst reloads,
+double-density draw/scanout, and EOS/DIE/DIL framebuffer-change latches.
+[The conformance inventory](hardware-conformance.md#vdp1-rotatedinterlaced-readout-and-rotation-start-reloads-rscg)
+links the primary specifications, implementation, original licensed sources,
+register/pixel vectors, native/Wasm tests, mutations and reproducible hashes.
+
+Rotation start reloads occur at line start. The native vectors cover every
+combination of the three reload bits for each parameter, current-delta changes,
+field initialization, coefficient table addressing and reset. Both original
+rotation BIOS fixtures execute guest VDP1 polygon lists, poll beam counters and
+modify actual table RAM/RPRCTL: a table write without reload cannot replace the
+running origin, and a write after a line begins cannot change that line's latch.
+Native tests compare every pixel, both framebuffer depths, changed horizontal
+delta and repeatable resets. Browser Wasm and production Canvas check authored
+row/column boundaries and the unchanged completed field after blank-period writes.
+
+The third original BIOS guest draws even/odd texture rows into separate real
+framebuffers. Native tests compare all 143,360 pixels at 320×448; browser checks
+verify 448-line Canvas, both fields, physical RAM guards, cold resets, changed DIL
+and subsequent field retention. Native 16/8-bit vectors independently distinguish
+logical rows430–437 from physical215–218, including a pending draw-control write
+that must not affect drawing until a framebuffer change. The existing HSS guest
+now waits for each EOS latch before drawing; all original sample, flipped,
+distorted, mutation and MODR records remain asserted. All three original demo
+media are byte-identical to the preceding checkpoint.
+
+Validation performed locally on 2026-10-22:
+
+- Formatting, locked native build and full native tests pass: **435 tests**,
+  **231 unit + 204 integration**, **zero failed/ignored**, using Rust/Cargo 1.94.0.
+- Native all-target Clippy with `-D warnings` passes; wasm32 Clippy passes with
+  rustup stable 1.99.0. `sh scripts/build-web.sh` passes with that compiler and
+  the existing matching wasm-bindgen-cli 0.2.129.
+- All **48** CI `--check` guest/media commands pass. The two new builders are in
+  CI and the setup instructions. The original fixture MIT license covers source,
+  textures, polygons, ROMs and TSV vectors; no third-party core, firmware or SDK
+  routine is included.
+- The complete extended `npm run test:browser` passes in Chromium 145.0.7632.6
+  under `/saturn-rust/`, using Node 24.12.0. Required checks are retained: existing
+  guest diagnostics, all three demos and restart/mutations, Canvas, WebAudio,
+  controller/focus, backup, local-file privacy, responsive UI and subpath assets.
+  None is skipped. The new rotation/interlace guests execute actual Wasm and
+  compare production Canvas, without a human visual/listening check.
+- The initial browser attempt found Playwright absent from this fresh worktree;
+  `npm ci --ignore-scripts` and the existing Chromium installation resolved it.
+  A subsequent new browser assertion read dimensions from the drawing context
+  instead of its Canvas element; it was corrected and the full suite passed.
+  Native development checks also corrected authored reserved-register/MODR and
+  signed-delta expectations; no hardware behavior was waived to pass those checks.
+- JavaScript syntax, Git whitespace and **368** existing local documentation
+  link targets pass.
+
+These results validate the implemented contracts, not the full umbrella. The
+coordinated instruction/transaction CPU/bus scheduler, remaining SH7604/BSC/cache
+and 68k sequencing, SCU arbitration/DSP boundaries, physical VDP1 draw/erase and
+transfer-over, remaining VDP2 fetch/bank/window behavior, full SCSP/CD/media/
+SMPC contracts, SYS_EXECDMP/CD-library/startup services and comprehensive
+mandatory acceptance evidence remain required. Existing remaining scope is not
+waived or replaced by this evidence. PR #18 remains Draft with `Closes #17` as its
+intended full-resolution outcome; Issue #17 remains open. No human, proprietary
+firmware, live-site, external-workflow or post-merge approval gate is added.

@@ -183,8 +183,12 @@ SCU source 13/DMA trigger 6 reflect actual command progress. Cyclic lists stay
 busy; malformed/prohibited commands produce bounded machine diagnostics.
 TVMR/FBCR/EWDR/EWLR/EWRR control buffer formats, field changes and erase rectangles.
 Erase is applied at the field boundary; physical erase bandwidth, subpixel edge
-rounding, interlaced/rotated/high-resolution scanout and exact
-transfer-over behavior remain incomplete. Non-normal scanout fails explicitly. HSS/EOS selects the source X parity on
+rounding and exact transfer-over behavior remain incomplete. Standard-TV normal,
+high-resolution and rotated 16/8-bit framebuffer readout are composed by VDP2.
+Rotation uses parameter A start/deltas quantized to the sprite link's signed Q9
+widths, without its matrix/coefficients or framebuffer wrapping. Double-density
+drawing selects even/odd logical rows and packs them into physical framebuffer
+rows; scanout retains both historical fields. EOS/DIE/DIL latch on buffer changes. HSS/EOS selects the source X parity on
 reduced scaled/distorted sprite rows, retains normal sampling on expansion and
 disables end codes at all magnifications. Native and browser guest vectors cover
 both parities, flips, draw polling, MODR and actual Canvas pixels.
@@ -206,8 +210,11 @@ Machine presentation captures each visible scanline at HBlank and publishes it
 at VBlank. Later register/VRAM writes cannot repaint preceding lines. Double
 density updates alternate rows and retains the other field; published dimensions
 stay paired with their pixels. Before the first completed field, the debugger may
-inspect current state. Mid-line fetches, exact table/window/reload strobes, complete
-VRAM-cycle/bank arbitration and half-line interlace phase remain required. Exclusive-monitor dimensions are decoded; exclusive-monitor scanout and special
+inspect current state. Xst/Yst/KAst have independent A/B RPRCTL reloads at line
+start, otherwise accumulating the current vertical delta. Active-line writes
+cannot replace that line's latched origins. Mid-line fetches, other table/window
+strobes, complete VRAM-cycle/bank arbitration and half-line interlace phase remain
+required. Exclusive-monitor dimensions are decoded; exclusive-monitor scanout and special
 high-resolution layer multiplexing remain unsupported. BDCLMD selects the back
 screen during display blanking (the lowermost line for a line back table), or
 opaque black. Reserved display encodings and 256-line mode on NTSC fail.

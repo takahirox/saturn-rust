@@ -1,8 +1,16 @@
 //! Independent fixed-point rotation equations from ST-058-R2 §6.1, p.147;
 //! table layout/widths: §6.3 figs.6.2/6.3; coefficient modes: §6.4 fig.6.7.
-//! The renderer samples a frame snapshot. Scanline reloads/bank-cycle timing
-//! remain separate work; unsupported enabled controls are rejected explicitly.
+//! RPRCTL start-coordinate/coefficient reloads: §6.3 pp.152/158–159.
+//! Sprite readout uses A's start/deltas, not its matrix or coefficients (p.159).
 use super::{Layer, Vdp2};
+use crate::vdp1::Vdp1;
+
+#[derive(Default)]
+pub(super) struct RotationRead {
+    pub line: Option<usize>,
+    previous: Option<usize>,
+    starts: [[i64; 3]; 2],
+}
 
 #[derive(Clone, Copy)]
 struct Coefficient {
@@ -19,7 +27,104 @@ fn multiply(a: i64, b: i64) -> i64 {
     (a * b) >> 16
 }
 impl Vdp2 {
+    pub(super) fn rotation_line_ready(&self, y: usize) -> bool {
+        self.rotation_read.previous == Some(y)
+    }
+    /// Capture each line's start values. With RxSTRE clear the previous
+    /// value advances by the current delta; changing table RAM alone cannot
+    /// reload it. Each of Xst, Yst and KAst has an independent reload strobe.
+    pub(super) fn read_rotation_line(&mut self, y: usize, first: bool) {
+        let distance = self
+            .rotation_read
+            .previous
+            .map_or(y, |old| y.saturating_sub(old));
+        for parameter in 0..2 {
+            let at = self.rotation_table(parameter);
+            let control = self.word(0xB2) >> (parameter * 8);
+            for (i, offset) in [0, 4, 0x54].into_iter().enumerate() {
+                let raw = self.vlong(at + offset);
+                let start = if i == 2 {
+                    i64::from(raw & 0xFFFFFFC0)
+                } else {
+                    signed(raw & 0x1FFFFFC0, 29)
+                };
+                let step = self.rotation_delta(parameter, i);
+                let value = if first || self.rotation_read.previous.is_none() {
+                    start + step * y as i64
+                } else if control & (1 << i) != 0 {
+                    start
+                } else {
+                    self.rotation_read.starts[parameter][i] + step * distance as i64
+                };
+                // The accumulators have the table's documented width.
+                self.rotation_read.starts[parameter][i] = if i == 2 {
+                    i64::from(value as u32)
+                } else {
+                    signed(value as u32, 29)
+                };
+            }
+        }
+        self.rotation_read.previous = Some(y);
+        self.rotation_read.line = Some(y);
+    }
+    fn rotation_delta(&self, parameter: usize, index: usize) -> i64 {
+        let at = self.rotation_table(parameter);
+        let offset = [0xC, 0x10, 0x58][index];
+        let bits = if index == 2 { 26 } else { 19 };
+        signed(self.vlong(at + offset) & ((1 << bits) - 64), bits)
+    }
+    fn rotation_start(&self, parameter: usize, index: usize, y: usize) -> i64 {
+        if self.rotation_read.line == Some(y) {
+            return self.rotation_read.starts[parameter][index];
+        }
+        // Direct debugger renders evaluate a static table, including a reload
+        // on every row when enabled. Beam-driven output uses the latches above.
+        let at = self.rotation_table(parameter);
+        let raw = self.vlong(at + [0, 4, 0x54][index]);
+        let start = if index == 2 {
+            i64::from(raw & 0xFFFFFFC0)
+        } else {
+            signed(raw & 0x1FFFFFC0, 29)
+        };
+        start
+            + if self.word(0xB2) >> (parameter * 8) & (1 << index) == 0 {
+                self.rotation_delta(parameter, index) * y as i64
+            } else {
+                0
+            }
+    }
+    pub(super) fn sprite_data(&self, sprites: &Vdp1, x: usize, y: usize) -> u16 {
+        if !sprites.rotated_scanout() {
+            // Each double-density field reads one 256-line buffer. VDP2's
+            // historical scanout retains the opposite field's output rows.
+            let row = if self.word(0) & 0xC0 == 0xC0 {
+                y / 2
+            } else {
+                y
+            };
+            return sprites.display_pixel(x, row);
+        }
+        // ST-058 p.159: line starts are signed Q10.9 and horizontal
+        // increments signed Q2.9. Discard seven low Q16 bits BEFORE adding
+        // each horizontal increment. VDP1 §1.2: no framebuffer wrapping.
+        let at = self.rotation_table(0);
+        let coordinate = |index, offset| {
+            let start = signed((self.rotation_start(0, index, y) >> 7) as u32, 20);
+            let delta = signed(self.vlong(at + offset) >> 7, 12);
+            signed((start + delta * x as i64) as u32, 20) >> 9
+        };
+        let sx = coordinate(0, 0x14);
+        let sy = coordinate(1, 0x18);
+        if sx < 0 || sy < 0 {
+            0
+        } else {
+            sprites.display_pixel(sx as usize, sy as usize)
+        }
+    }
     pub(super) fn validate_rotation(&self) -> Result<(), String> {
+        if self.word(0xB2) & !0x707 != 0 {
+            return Err("Reserved VDP2 rotation parameter reload bits".into());
+        }
         if self.word(0x20) & 0x30 == 0 {
             return Ok(());
         }
@@ -37,8 +142,8 @@ impl Vdp2 {
             );
         }
         let ctl = self.word(0x2A) >> 8;
-        if ctl >> 4 & 7 > 4 || self.word(0xB2) != 0 {
-            return Err("Unsupported VDP2 rotation reload or color format".into());
+        if ctl >> 4 & 7 > 4 {
+            return Err("Unsupported VDP2 rotation color format".into());
         }
         self.validate_special(4, ctl >> 4 & 7)?;
         if rbg1 {
@@ -67,8 +172,7 @@ impl Vdp2 {
             return None;
         }
         let at = self.rotation_table(parameter);
-        let index = (i64::from(self.vlong(at + 0x54) & 0xFFFFFFC0)
-            + signed(self.vlong(at + 0x58) & 0x03FFFFC0, 26) * y as i64
+        let index = (self.rotation_start(parameter, 2, y)
             + signed(self.vlong(at + 0x5C) & 0x03FFFFC0, 26) * x as i64)
             >> 16;
         let mode = control >> 2 & 3;
@@ -138,8 +242,8 @@ impl Vdp2 {
         let cx = point(0x3C);
         let cy = point(0x3E);
         let cz = point(0x40);
-        let sx = start(0) + delta(0xC) * y as i64 + delta(0x14) * x as i64 - px;
-        let sy = start(4) + delta(0x10) * y as i64 + delta(0x18) * x as i64 - py;
+        let sx = self.rotation_start(parameter, 0, y) + delta(0x14) * x as i64 - px;
+        let sy = self.rotation_start(parameter, 1, y) + delta(0x18) * x as i64 - py;
         let sz = start(8) - pz;
         let mut xp =
             multiply(a, px - cx) + multiply(b, py - cy) + multiply(c, pz - cz) + cx + shift(0x44);
@@ -280,5 +384,106 @@ impl Vdp2 {
         }
         .and_then(|c| c.line_color);
         Some(layer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::devices::VDP2;
+
+    fn put(v: &mut Vdp2, offset: usize, value: u32) {
+        v.vram[0x10000 + offset..0x10004 + offset].copy_from_slice(&value.to_be_bytes());
+    }
+    #[test]
+    fn parameter_reload_strobes_are_independent_and_accumulate_current_deltas() {
+        // ST-058 §6.3 pp.152/158: each start loads on the first row;
+        // later RxSTRE bits independently choose reload or accumulation.
+        for parameter in 0..2 {
+            for enabled in 0..8 {
+                let mut v = Vdp2::default();
+                v.write16(VDP2 + 0xBE, 0x8000).unwrap();
+                let base = parameter * 0x80;
+                for (off, value) in [
+                    (0, 10 << 16),
+                    (4, 20 << 16),
+                    (0x54, 30 << 16),
+                    (0xC, 1 << 16),
+                    (0x10, 0xFFFF0000),
+                    (0x58, 2 << 16),
+                ] {
+                    put(&mut v, base + off, value);
+                }
+                v.read_rotation_line(0, true);
+                assert_eq!(
+                    v.rotation_read.starts[parameter],
+                    [10 << 16, 20 << 16, 30 << 16]
+                );
+                // First line is loaded even when the other parameter's bits are set.
+                v.rotation_read.line = None;
+                v.write16(VDP2 + 0xB2, enabled << (parameter * 8)).unwrap();
+                for (off, value) in [(0, 100 << 16), (4, 200 << 16), (0x54, 300 << 16)] {
+                    put(&mut v, base + off, value);
+                }
+                v.read_rotation_line(1, false);
+                assert_eq!(
+                    v.rotation_read.starts[parameter],
+                    [
+                        if enabled & 1 != 0 {
+                            100 << 16
+                        } else {
+                            11 << 16
+                        },
+                        if enabled & 2 != 0 {
+                            200 << 16
+                        } else {
+                            19 << 16
+                        },
+                        if enabled & 4 != 0 {
+                            300 << 16
+                        } else {
+                            32 << 16
+                        },
+                    ]
+                );
+                v.rotation_read.line = None;
+                v.write16(VDP2 + 0xB2, 0).unwrap();
+                // Delta changes apply at the next line, without reloading starts.
+                put(&mut v, base + 0xC, 2 << 16);
+                let old = v.rotation_read.starts[parameter];
+                v.read_rotation_line(3, false);
+                assert_eq!(
+                    v.rotation_read.starts[parameter],
+                    [old[0] + (4 << 16), old[1] - (2 << 16), old[2] + (4 << 16)]
+                );
+                // A new field must discard all accumulated values.
+                v.read_rotation_line(0, true);
+                assert_eq!(
+                    v.rotation_read.starts[parameter],
+                    [100 << 16, 200 << 16, 300 << 16]
+                );
+            }
+        }
+    }
+    #[test]
+    fn coefficient_reload_changes_executed_table_address_and_reset_clears_latches() {
+        let mut v = Vdp2::default();
+        v.write16(VDP2 + 0xBE, 0x8000).unwrap();
+        v.write16(VDP2 + 0xB4, 3).unwrap(); // 16-bit Q4.10 coefficients, A
+        put(&mut v, 0x54, 0x20000);
+        put(&mut v, 0x58, 0x10000);
+        v.vram[4..12].copy_from_slice(&[0x04, 0, 0x08, 0, 0x0C, 0, 0x10, 0]);
+        v.read_rotation_line(0, true);
+        assert_eq!(v.coefficient(0, 0, 0).unwrap().value, 1 << 16);
+        put(&mut v, 0x54, 0x50000);
+        v.read_rotation_line(1, false);
+        assert_eq!(v.coefficient(0, 0, 1).unwrap().value, 2 << 16);
+        v.write16(VDP2 + 0xB2, 4).unwrap();
+        v.read_rotation_line(2, false);
+        assert_eq!(v.coefficient(0, 0, 2).unwrap().value, 4 << 16);
+        v = Vdp2::default();
+        assert_eq!(v.rotation_read.previous, None);
+        assert_eq!(v.rotation_read.line, None);
+        assert_eq!(v.rotation_read.starts, [[0; 3]; 2]);
     }
 }

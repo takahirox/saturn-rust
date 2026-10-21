@@ -1,7 +1,7 @@
 //! Original VDP1 command processor. Behavioral source: Sega ST-013-R3 §§2–7.
 //! Commands advance on emulated clocks, never on framebuffer inspection. Pixel
-//! coverage uses integer ruled quadrilaterals; subpixel hardware edge rounding,
-//! high-speed shrink and interlaced/rotated scanout remain separate work.
+//! coverage uses integer ruled quadrilaterals; subpixel hardware edge rounding
+//! and physical draw/erase bandwidth remain separate work.
 use crate::bus::BusError;
 
 pub const VRAM: u32 = 0x05C0_0000;
@@ -45,6 +45,7 @@ pub struct Vdp1 {
     draw: usize,
     tvmr: u16,
     fbcr: u16,
+    draw_control: u16,
     fb_request: bool,
     ptmr: u16,
     erase: [u16; 3],
@@ -68,6 +69,7 @@ impl Default for Vdp1 {
             draw: 0,
             tvmr: 0,
             fbcr: 0,
+            draw_control: 0,
             fb_request: false,
             ptmr: 0,
             erase: [0; 3],
@@ -95,8 +97,8 @@ impl Vdp1 {
     pub fn busy(&self) -> bool {
         self.running
     }
-    pub(crate) fn normal_scanout(&self) -> bool {
-        self.tvmr & 6 == 0
+    pub(crate) fn rotated_scanout(&self) -> bool {
+        self.tvmr & 2 != 0
     }
     fn geometry(&self) -> (usize, usize, usize) {
         match self.tvmr & 7 {
@@ -131,9 +133,9 @@ impl Vdp1 {
     }
     pub fn validate_write(address: u32, value: u16) -> Result<(), BusError> {
         let valid = match address - REGISTERS {
-            // Explicitly reject scanout/interlace modes not yet integrated.
+            // HDTV/exclusive monitors remain separate from standard TV modes.
             0 => value & !0xF == 0 && matches!(value & 7, 0..=3),
-            2 => value & !0x13 == 0,
+            2 => value & !0x1F == 0 && value & 0xC != 4,
             4 => value <= 2,
             6 | 8 | 10 => true,
             12 => value == 0,
@@ -186,6 +188,9 @@ impl Vdp1 {
         let change = self.fbcr & 2 == 0 || self.fb_request && self.fbcr & 1 != 0;
         if change {
             self.draw ^= 1;
+            // ST-013 §4, p.35/43/44: EOS/DIE/DIL apply to drawing
+            // only after a framebuffer change, not on the CPU write.
+            self.draw_control = self.fbcr & 0x1C;
             self.lopr = self.copr;
             self.edsr = (self.edsr >> 1) & 1;
         }
@@ -431,7 +436,7 @@ impl Vdp1 {
                 // when the command flips horizontally.
                 let high_speed = c[2] & 0x1000 != 0;
                 if high_speed && steps < (uv1.0 - uv0.0).abs() {
-                    u = (u & !1) | usize::from(self.fbcr & 0x10 != 0);
+                    u = (u & !1) | usize::from(self.draw_control & 0x10 != 0);
                 }
                 let pixel = v * w + u;
                 let base = usize::from(c[4]) * 8;
@@ -476,12 +481,20 @@ impl Vdp1 {
     }
     fn plot(&mut self, p: Point, color: u16, mode: u16, shade: [i32; 3]) {
         let (width, height, bytes) = self.geometry();
+        // ST-013 §4.2/fig.4.1: choose logical even/odd rows, then
+        // pack them into the 256 physical framebuffer rows. CPU accesses and
+        // erase Y coordinates continue to address physical rows.
+        let interlace = self.draw_control & 8 != 0;
+        if interlace && (p.y & 1) != i32::from(self.draw_control >> 2 & 1) {
+            return;
+        }
+        let buffer_y = if interlace { p.y >> 1 } else { p.y };
         if p.x < 0
             || p.y < 0
             || p.x > self.system.x
             || p.y > self.system.y
             || p.x as usize >= width
-            || p.y as usize >= height
+            || buffer_y as usize >= height
         {
             return;
         }
@@ -497,7 +510,7 @@ impl Vdp1 {
         if mode & 0x100 != 0 && (p.x ^ p.y) & 1 != 0 {
             return;
         }
-        let at = (p.y as usize * width + p.x as usize) * bytes;
+        let at = (buffer_y as usize * width + p.x as usize) * bytes;
         if bytes == 1 {
             self.buffers[self.draw][at] = color as u8;
             return;

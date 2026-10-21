@@ -21,7 +21,12 @@ fn guest_draws_scaled_distorted_flipped_sprites_with_both_source_parities() {
     let mut m = Machine::new();
     for _ in 0..2 {
         m.reset(Boot::ExternalBios(&rom)).unwrap();
-        m.run_steps(10000).unwrap();
+        for _ in 0..300 {
+            m.run_steps(5000).unwrap();
+            if m.bus().read32(0x0600d074) == Ok(0x600d) {
+                break;
+            }
+        }
         let actual: Vec<_> = (0..expected.len())
             .map(|i| m.bus().read32(0x0600d000 + i as u32 * 4).unwrap())
             .collect();
@@ -43,7 +48,12 @@ fn guest_draws_scaled_distorted_flipped_sprites_with_both_source_parities() {
     }
     assert_eq!(patched, 6);
     m.reset(Boot::ExternalBios(&rom)).unwrap();
-    m.run_steps(10000).unwrap();
+    for _ in 0..300 {
+        m.run_steps(5000).unwrap();
+        if m.bus().read32(0x0600d074) == Ok(0x600d) {
+            break;
+        }
+    }
     let expected_changed = [
         0x8000, 0x8002, 0x8004, 0x8007, 0x8000, 0x8002, 0x8004, 0x8007, 0x8000, 0x8002, 0x8004,
         0x8007, 0x8000, 0x8002, 0x8004, 0x8007, 0x8000, 0x8002, 0x8004, 0x8007, 0x8007, 0x8005,

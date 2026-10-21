@@ -43,7 +43,7 @@ impl Vdp2 {
     pub(super) fn sprite_window(&self, sprites: Option<&Vdp1>, x: usize, y: usize) -> bool {
         self.word(0xE0) & 0x30 == 0x10
             && (2..=7).contains(&(self.word(0xE0) & 15))
-            && sprites.is_some_and(|s| s.display_pixel(x, y) & 0x8000 != 0)
+            && sprites.is_some_and(|s| self.sprite_data(s, x, y) & 0x8000 != 0)
     }
     pub(super) fn palette_msb(&self, index: usize) -> bool {
         let mode = self.word(0xE) >> 12 & 3;
@@ -58,7 +58,7 @@ impl Vdp2 {
         if !self.window(self.word(0xD4) >> 8, x, y, false) {
             return Sprite::default();
         }
-        let data = sprites.display_pixel(x, y);
+        let data = self.sprite_data(sprites, x, y);
         if data == 0 {
             return Sprite::default();
         }

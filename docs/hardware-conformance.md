@@ -490,21 +490,21 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 
 | Feature / manual | Current behavior / edges | Native | Browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- | --- |
-| VDP1 VRAM/framebuffers/registers, [VDP1] §§2,4 | 512 KiB VRAM, two draw/display buffers, byte/word/long memory; checked paired register writes; MODR | VIDEO | PRISM | All bus lanes/mirrors/waits; alternative scanout modes | Pending |
+| VDP1 VRAM/framebuffers/registers, [VDP1] §§2,4 | 512 KiB VRAM, two draw/display buffers, byte/word/long memory; checked paired register writes; MODR | VIDEO | PRISM | All bus lanes/mirrors/waits; exclusive-monitor readout | Pending |
 | Command list/control flow, [VDP1] §6.1 | END, next/assign/call/return and skip variants, one return level, invalid links/prohibited commands, bounded cyclic lists | VIDEO | PRISM (sequential END) | Full guest control-flow corpus, precise fetch timing | Pending |
 | Normal/scaled/distorted sprites, [VDP1] §§6.2,7.4–7.6 | Width/height, flips, two-point and nine anchor scales, ruled quadrilateral scan conversion, HSS/EOS source selection | VIDEO, HSSG | PRISM (normal), HSSG | Physical edge/zoom rounding, preclip direction and draw bandwidth | Pending |
 | Polygons/lines/polylines, [VDP1] §§7.7–7.9 | Solid ruled quads and integer line segments | VIDEO | PRISM (polygons) | Full independent sloped-edge and repeated-pixel corpus | Pending |
 | Clip/local coordinates, [VDP1] §§7.1–7.3 | System/user inside/outside clips, local offsets | VIDEO | PRISM (system) | Full extreme-coordinate/clip boundary corpus | Pending |
 | Sprite texture/color modes, [VDP1] §§6.3–6.6 | Packed 4-bit bank/LUT, 64/128/256 bank and RGB555, transparent pixels, two end codes per raster row | VIDEO | PRISM (RGB555) | Scaling/end-code interaction, wrapping and all browser formats | Pending |
-| Shading/color calculation, [VDP1] §6.3 | Gouraud, mesh, MSB-only, shadow, half-luminance/transparency, combined Gouraud effects | VIDEO | PRISM (replace only) | Subpixel interpolation and duplicate-coverage edges; non-normal scanout | Pending |
-| Draw/erase/swap/status/IRQ, [VDP1] §4 | PTMR, forced stop, manual/auto change and display erase, persistent VBE, CEF/BEF/COPR/LOPR; SCU IRQ/DMA trigger | VIDEO, VIRQ, PRISM | PRISM (auto/IRQ) | Physical erase bandwidth/timing, transfer-over, interlace/rotation | Pending |
+| Shading/color calculation, [VDP1] §6.3 | Gouraud, mesh, MSB-only, shadow, half-luminance/transparency, combined Gouraud effects | VIDEO | PRISM (replace only) | Subpixel interpolation and duplicate-coverage edges; complete readout/effects corpus | Pending |
+| Draw/erase/swap/status/IRQ, [VDP1] §4 | PTMR, forced stop, manual/auto change and display erase, persistent VBE, CEF/BEF/COPR/LOPR; SCU IRQ/DMA trigger | VIDEO, VIRQ, PRISM | PRISM (auto/IRQ) | Physical erase bandwidth/timing, transfer-over, half-line phase | Pending |
 | VDP2 VRAM, [VDP2] §3 | Bitmap RAM and bank offsets | VIDEO, SC | PRISM, SC | VRAM bank/cycle arbitration; CYCA0 words still only stored | Pending |
 | VDP2 CRAM, [VDP2] §3.4 | Modes 0/1 RGB555 and 2 RGB888; mode-0 upper-half mirror; palette offsets | VIDEO | — | Full lane/alias and guest/browser palette corpus | Pending |
 | TVMD/TVSTAT, [VDP2] §2.2 | 320/352/640/704 dots, 224/240/PAL256 lines, noninterlace/single/double density, border/display enable, PAL/ODD and blanking flags | VIDEO, TIME, TVG | PRISM, SC, SCUROM, TVG | Raster-time latches, half-line phase and exclusive-monitor high-resolution multiplexing | Pending |
 | NBG0 bitmap, [VDP2] §§4–6 | 4/8/11-bit palette, RGB555/RGB888, bitmap dimensions/base, transparency, fixed-point scroll/zoom | VIDEO | PRISM, SC (RGB555, unit zoom) | Full format/dimension/zoom vectors and browser coverage | Pending |
 | NBG0–3 tile/character, [VDP2] §§4.4–4.8, figs.4.9/4.10, table4.8 | `Vdp2::character_control/tile/background`: one/two-word names, both supplement modes, 8×8/16×16 characters, 4/8/11-bit palette and RGB555/888 where applicable, flips, plane/page alignment/maps/wrap | [seven independent pixel/guest tests](../tests/video_tiles.rs) | TILE (four layers, names, palette/VRAM, window, mutation) | VRAM cycle arbitration, bandwidth/layer restrictions and exhaustive guest corpus remain | Pending |
 | NBG1–3 bitmap/layer control, [VDP2] §§4–6 | NBG1 bitmap composition, formats applicable to NBG1, scroll/zoom/priority | VIDEO | — | Complete layer restrictions and guest format corpus; NBG2/3 tile layers now exercised by TILE | Pending |
-| Rotation backgrounds, [VDP2] §6.1 p.147, §6.3 figs.6.2–6.4, §6.4 fig.6.7 | RBG0 fixed-point A/B matrices, viewpoint/center/Z/translation/scales, 16-plane tile or bitmap, four screen-over modes, 16/32-bit coefficient modes in VRAM or upper CRAM, coefficient line-color data, per-dot/line indexing, transparency and parameter/window switching; RBG1 parameter B/cells/B0 characters/B1 names, NBG0 effects controls | EFFECTS, R1, LINE | EFFECTS + R1 + LINE (matrix/coefficient/color mutations and Canvas) | Complete RBG1 boundaries and bank contention; scanline parameter latching/reloads and cycle/bank arbitration remain required | Pending |
+| Rotation backgrounds, [VDP2] §6.1 p.147, §6.3 figs.6.2–6.4, §6.4 fig.6.7 | RBG0 fixed-point A/B matrices, viewpoint/center/Z/translation/scales, 16-plane tile or bitmap, four screen-over modes, 16/32-bit coefficient modes in VRAM or upper CRAM, coefficient line-color data, per-dot/line indexing, transparency and parameter/window switching; RBG1 parameter B/cells/B0 characters/B1 names, NBG0 effects controls | EFFECTS, R1, LINE | EFFECTS + R1 + LINE (matrix/coefficient/color mutations and Canvas) | RSCG below implements A/B start reloads; complete RBG1 boundaries and cycle/bank arbitration remain required | Pending |
 | Line/vertical-cell scroll, [VDP2] §5.3 figs.5.4–5.8 | Packed enabled X/Y/zoom fields, relative offsets and held line intervals, fractional coordinates, independent NBG0/1, interleaved vertical cell tables and mosaic precedence | EFFECTS | EFFECTS (line X) | Raster-time table reads, cycle/bandwidth arbitration and full guest field/interval corpus remain | Pending |
 | Windows/line windows, [VDP2] §8.1 figs.8.2–8.4 | W0/W1 rectangle or VRAM line tables and SD-bit sprite windows, inside/outside, inclusive edges, empty/inverted ranges, AND/OR on normal/rotation/sprite/color calculation; rotation-parameter windows | VIDEO, EFFECTS, SPRX | EFFECTS, SPRX (Wasm/Canvas and changed guest controls) | Full raster-window update timing and complete independent guest corpus remain | Pending |
 | Mosaic, [VDP2] §5 | NBG0–3 horizontal/vertical grouping | VIDEO | — | All independent vertical/layer/guest vectors | Pending |
@@ -519,7 +519,8 @@ cycles. Erase takes effect at a field boundary. Color calculations use integer
 interpolation; exact physical edge rounding/transfer-over remain required. Native
 vectors caught and corrected shadow MSB halving and automatic-start BEF handling.
 Cyclic lists remain busy without reporting END. Invalid lists stop the machine
-explicitly. Rotated VDP1 scanout and unsupported enabled VDP2 effect configurations fail
+explicitly. RSCG below adds rotated/interlaced sprite readout and independent
+start-coordinate/coefficient reloads. Unsupported enabled VDP2 effects still fail
 explicitly. Readback of VDP2 write-only controls remains a debugger convenience.
 No game-specific rendering, guest identity check, canned pixels or host result
 mailbox writes are used.
@@ -805,10 +806,10 @@ boundary. Mutating My from 3 to 2 changes the rotated pixels in both paths; the
 browser asserts production Canvas presentation. Expanded ROM SHA-256:
 `c537273e864fd3410441d618bfe78e8642137838d869d154f002c3c33c3a77d5`.
 The direct VDP2 debugger renderer samples current state; Machine presentation now
-uses scanline history (RASTG below). Mid-line fetches and parameter reload strobes
-remain required. Coefficient line color
-and CRAM coefficient sources are now implemented and tested by LINE below;
-enabled unsupported parameter reloads still fail explicitly.
+uses scanline history (RASTG below). RSCG below adds independent A/B Xst/Yst/KAst
+line-start reloads. Mid-line fetches and other table strobes remain required.
+Coefficient line color and CRAM coefficient sources are implemented and tested
+by LINE below; reserved parameter reload bits still fail explicitly.
 
 **PADR** is [controller.s](../tests/fixtures/controller.s), reproduced with
 [build_controller.py](../tests/fixtures/build_controller.py). The guest configures
@@ -1531,11 +1532,13 @@ draws, poll CEF, read twenty-eight actual framebuffer words and MODR.
 [browser Wasm/Canvas](../scripts/browser-smoke.mjs) compare authored records,
 pixels and restart. Clearing only six HSS operands in the guest changes the
 sample coordinates while EOS alone becomes ineffective. Expanded ROM SHA-256:
-`c39bd97bde799c27021d656aa679bfcbc3924a87220034c8d08e17a198a751ee`.
+`f21ddc6c195a0202cf6e77469225a8e5a878a728d0da26fc6932e23286b1c79b`.
+The guest now waits for each EOS framebuffer-change latch before drawing; all
+original sample, mutation and MODR expectations remain unchanged.
 
 This implements the shrink sampling/end-code controls, not measured VDP1 bus or
-raster execution speed. Transfer-over, progressive erase timing, complete edge
-rules and remaining interlaced/rotated scanout are still required. The original
+raster execution speed. Transfer-over, progressive erase timing and complete edge rules remain required;
+RSCG below adds interlaced/rotated scanout and the EOS framebuffer-change latch. The original
 Issue #17 acceptance criteria remain unchanged and incomplete.
 
 
@@ -1627,3 +1630,39 @@ FAMG now selects MEM4MB before its first stack access and again after RESET.
 Its regenerated literal fault-frame records include the relocated code addresses;
 all 73 family/EA vectors and ten fault records remain checked. Star Collector,
 Prism Courier and Hardware Lab disc bytes are unchanged.
+
+## VDP1 rotated/interlaced readout and rotation start reloads (RSCG)
+
+Primary specifications: [VDP1] §1.2 pp.14–15, §4 pp.35/43–44/47;
+[VDP2] §2.4 and §6.3 pp.152/158–159. All new builders, SH-2 sources,
+synthetic ROMs and TSV vectors use [the fixture MIT license](../tests/fixtures/LICENSE).
+These are additional diagnostics; they do not replace either required demonstration.
+
+| Required behavior | Implementation | Independent native evidence | Actual browser evidence |
+| --- | --- | --- | --- |
+| Rotation16/Rotation8 sprite framebuffer readout | `Vdp2::sprite_data` uses A Xst/Yst, vertical deltas and horizontal deltas; signed 20/12-bit Q9 link precision, transparent out-of-buffer coordinates. The matrix, coefficients and parameter B do not move sprites. Sprite windows use the same transformed data. | [video_scanout.rs](../tests/video_scanout.rs): identity/quarter-turn, negative and last/outside row/column, ignored matrix/B/coefficients, discarded fractional bits, signed delta widths and rotated sprite-window pixels | [sprite_rotation.rs](../tests/sprite_rotation.rs)'s two identical [guest ROMs](../tests/fixtures/build_sprite_rotation.py) execute through [browser-smoke.mjs](../scripts/browser-smoke.mjs); authored Wasm/production Canvas boundary pixels and guest operand mutations |
+| Independent start reloads | `Bus::advance_main_clocks` invokes `Vdp2::begin_scanline`; `read_rotation_line/rotation_start` hold Xst/Yst/KAst independently for A/B, accumulate current vertical deltas when disabled, reload on RxSTRE and reset each field. Reserved RPRCTL bits fail. | [rotation unit vectors](../src/vdp2/rotation.rs) cover all eight bit combinations for each parameter, changed deltas, field reload, real coefficient table selection and reset; RSCG guests change table RAM without reload, then enable X/Y reload ahead of rows128/192 | Both depth guests poll real beam counters and change MMIO after line starts. All 71,680 native pixels and browser row/column boundary pixels match authored colors; writing a start during a line does not change that line's latched origin. Blank-period writes cannot repaint the completed field. |
+| Double-density drawing and physical RAM | `Vdp1::plot` selects logical even/odd rows and packs Y/2 into physical framebuffer rows. CPU/erase addresses remain physical. `Vdp2::sprite_data` reads Y/2 while historical scanout retains the opposite field. | [video.rs](../tests/video.rs): both pixel depths, logical rows430–437 versus physical215–218, untouched guards and pending controls. [sprite_interlace.rs](../tests/sprite_interlace.rs) compares every pixel of the actual 320×448 guest frame and the next field. | [Original guest](../tests/fixtures/build_sprite_interlace.py) draws alternating texture rows into both buffers. Browser Wasm and production Canvas check both fields, 448-line dimensions, reset, changed DIL and the subsequent field. |
+| EOS/DIE/DIL buffer-change latches | `Vdp1::vblank_out` captures draw controls only on a framebuffer change; register writes remain readable in MODR. Prohibited DIL-only settings fail atomically. | Existing HSS vectors now explicitly change buffers before drawing. Updated [HSS guest](../tests/fixtures/build_sprite_shrink.py) waits for field changes; all 28 original samples, MODR, flipped/scaled/distorted and mutation records are retained. | The existing full HSS native/Wasm/Canvas path now waits for its real latch, retaining all expected pixels and changed-HSS assertions. |
+
+All three new synthetic BIOS images execute original SH-2 instructions and device
+MMIO. Rotation guests draw polygons through VDP1 command lists, not host pixels.
+Interlace uses a guest-authored alternating-row texture and both real buffers.
+Changing the rotation guest's horizontal Y-delta at ROM104 changes the authored
+column outputs; changing the interlace guest's initial DIL at ROM100 changes the
+first physical-buffer trace and even-field pixels. Each path repeats cold reset.
+
+The original Star Collector, Prism Courier and Hardware Lab media remain unchanged.
+Physical draw/erase bandwidth, transfer-over, complete edge/effects corpus,
+subscanline fetches, other table/window strobes, VRAM-cycle/bank arbitration,
+half-line phase and all other outstanding Issue #17 requirements remain mandatory.
+No umbrella criterion is marked complete by RSCG.
+
+| Reproducible artifact | SHA-256 |
+| --- | --- |
+| `sprite-rotation16.hex` | `6504e77c1d4b094968c910c3c0699d2d9febbe0ec2ef5ec33a3e38b0fc28e091` |
+| `sprite-rotation16.tsv` | `81e30f69e8093bc349c452dbf75c6b2ab7504ab389b8369537a32a8033522748` |
+| `sprite-rotation8.hex` | `9265110cc638d2ae7daa132fac110c7146f7e299d1e151fc8949c6cc01c4877e` |
+| `sprite-rotation8.tsv` | `946db30774561bdcea9ddd6c93766c7dafd21cfc8b9542e459efd49c77e94b25` |
+| `sprite-interlace.hex` | `8d6d795024a9c28ef2a9c7539e5aa29a0682f7991934b40d3d0720734a8642ec` |
+| `sprite-interlace.tsv` | `65e193f1c8a01ce19c412c614f3de652cc12a7f8fa2eebb2e87f3ebce1184b00` |

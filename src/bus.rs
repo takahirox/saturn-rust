@@ -431,8 +431,15 @@ impl Bus {
                     let active = self.system_clock.deadline(self.raster.active_clocks());
                     self.smpc.vblank_out_after(active);
                     self.vdp1.vblank_out();
+                    self.vdp2.scan_field(self.raster.odd());
+                    self.vdp2.begin_scanline(0);
                 }
-                Some(RasterEvent::LineStart) => self.vdp2.hblank = false,
+                Some(RasterEvent::LineStart) => {
+                    self.vdp2.hblank = false;
+                    if self.raster.line < self.raster.display_lines() {
+                        self.vdp2.begin_scanline(usize::from(self.raster.line));
+                    }
+                }
                 None => (),
             }
             let (h, v) = self.raster.counters();

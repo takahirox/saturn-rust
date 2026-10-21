@@ -22,6 +22,9 @@ def build():
         (2,True,True,False,[1,3,5,7]),(2,True,False,True,[6,4,2,0]),
         (2,True,True,True,[7,5,3,1]),
     ]):
+        s+=put16(0x25d00002,3|(16 if eos else 0))
+        s+=(f'load 0x25f80004,r1\nblank_in_{n}:\nmov.w @r1,r0\ntst #8,r0\nbt blank_in_{n}\n'
+            f'blank_out_{n}:\nmov.w @r1,r0\ntst #8,r0\nbf blank_out_{n}\n')
         s+=put16(0x25d00002,2|(16 if eos else 0))
         for at,value in [(0,kind|(16 if flip else 0)),(4,0x68|(0x1000 if hss else 0)),
                          (8,0x100),(10,0x101),(12,10),(14,20),(16,13),(18,20),

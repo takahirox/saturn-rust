@@ -23,6 +23,7 @@ pub struct Vdp2 {
     scan_error: Option<String>,
     scan_size: (usize, usize),
     completed_size: (usize, usize),
+    rotation_read: rotation::RotationRead,
 }
 impl Default for Vdp2 {
     fn default() -> Self {
@@ -42,6 +43,7 @@ impl Default for Vdp2 {
             scan_error: None,
             scan_size: (0, 0),
             completed_size: (0, 0),
+            rotation_read: rotation::RotationRead::default(),
         }
     }
 }
@@ -149,9 +151,6 @@ impl Vdp2 {
         self.render(None)
     }
     pub fn composite(&self, sprites: &Vdp1) -> Result<Vec<u8>, String> {
-        if !sprites.normal_scanout() {
-            return Err("Unsupported VDP1 scanout mode in VDP2 compositor".into());
-        }
         self.render(Some(sprites))
     }
     /// The debugger may inspect current VRAM before the first field completes.
@@ -161,6 +160,15 @@ impl Vdp2 {
         self.completed
             .clone()
             .unwrap_or_else(|| self.composite(sprites))
+    }
+    pub(crate) fn begin_scanline(&mut self, line: usize) {
+        let y = if self.word(0) & 0xC0 == 0xC0 {
+            line * 2 + usize::from(!self.odd)
+        } else {
+            line
+        };
+        self.read_rotation_line(y, line == 0);
+        self.rotation_read.line = None;
     }
     pub(crate) fn scanline(&mut self, sprites: &Vdp1, line: usize) {
         let size = self.dimensions();
@@ -179,11 +187,16 @@ impl Vdp2 {
         if y >= size.1 {
             return;
         }
-        let pixels = if sprites.normal_scanout() {
-            self.render_lines(Some(sprites), y, y + 1)
-        } else {
-            Err("Unsupported VDP1 scanout mode in VDP2 compositor".into())
-        };
+        // Table reload is a line-start event. Writes during active display
+        // must not move this line's origin before it is sampled at HBlank.
+        // The initial reset field, or a density change inside a line, has no
+        // matching line-start latch and initializes here.
+        if !self.rotation_line_ready(y) {
+            self.read_rotation_line(y, line == 0);
+        }
+        self.rotation_read.line = Some(y);
+        let pixels = self.render_lines(Some(sprites), y, y + 1);
+        self.rotation_read.line = None;
         match pixels {
             Ok(pixels) => {
                 self.scanning[y * size.0 * 4..(y + 1) * size.0 * 4].copy_from_slice(&pixels)

@@ -185,3 +185,14 @@ no Sega BIOS, SDK, third-party core, captured emulator output or external assets
 are included. The [conformance inventory](hardware-conformance.md#bsc-intercycle-turnaround-and-scu-dsp-dma-execution)
 records the hashes and native/browser evidence. They are diagnostics and do not
 replace either required demo. All three existing demonstration media are unchanged.
+
+The original MIT [sprite rotation](../tests/fixtures/build_sprite_rotation.py) and
+[double-interlace](../tests/fixtures/build_sprite_interlace.py) builders generate
+readable SH-2 source, synthetic BIOS images and authored TSV records using only
+the existing original assembler and Python standard library. Guest commands draw
+all polygons/textures; no captured emulator images, external assets, firmware or
+SDK objects are included. Source/generated files use the adjacent fixture license.
+The [readout conformance entry](hardware-conformance.md#vdp1-rotatedinterlaced-readout-and-rotation-start-reloads-rscg)
+links implementation, native vectors, browser/Canvas tests and mutations. HSS's
+existing guest now waits for its documented framebuffer-change latch without
+changing its original expected samples. All three demonstration media are unchanged.

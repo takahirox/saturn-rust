@@ -48,7 +48,7 @@ fn vdp1_bus_widths_aliases_and_atomic_register_writes() {
     }
     assert!(b.read16(REGISTERS).is_err());
     assert!(b.write16(REGISTERS + 0x10, 1).is_err());
-    assert!(b.write32(REGISTERS, 0x00000008).is_err());
+    assert!(b.write32(REGISTERS, 0x00000004).is_err());
     assert_eq!(b.read16(REGISTERS + 0x16).unwrap(), 0x1000);
     b.write16(CRAM, 0x801F).unwrap();
     assert_eq!(b.read16(CRAM + 0x800).unwrap(), 0x801F); // mode-0 mirrors
@@ -621,8 +621,9 @@ fn high_speed_shrink_selects_original_x_parity_and_ignores_end_codes() {
             (true, true, true, [7, 5, 3, 1]),
         ] {
             let mut v = setup();
-            v.write16(REGISTERS + 2, 2 | if eos { 16 } else { 0 })
+            v.write16(REGISTERS + 2, 3 | if eos { 16 } else { 0 })
                 .unwrap();
+            v.vblank_out();
             command(
                 &mut v,
                 32,
@@ -686,10 +687,83 @@ fn high_speed_shrink_selects_original_x_parity_and_ignores_end_codes() {
         assert_eq!(pixel(&v, end_x as usize, 20), 0x8007);
         assert!((10..=end_x as usize).any(|x| pixel(&v, x, 20) == 0x7fff));
     }
-    // EOS is a real readable MODR field and remains distinct from the
-    // still-unimplemented double-interlace draw controls.
+    // EOS/DIE/DIL are real readable MODR fields; DIL alone is prohibited.
     let mut v = setup();
     v.write16(REGISTERS + 2, 0x12).unwrap();
     assert_eq!(v.read16(REGISTERS + 0x16).unwrap() & 0x80, 0x80);
-    assert!(v.write16(REGISTERS + 2, 0x1c).is_err());
+    assert!(v.write16(REGISTERS + 2, 4).is_err());
+    v.write16(REGISTERS + 2, 0x1c).unwrap();
+    assert_eq!(v.read16(REGISTERS + 0x16).unwrap() & 0xe0, 0xe0);
+}
+
+#[test]
+fn interlace_parity_packs_high_logical_rows_and_latches_only_on_buffer_change() {
+    // ST-013 §4.2/fig4.1: logical rows430..437 pack into physical215..218.
+    // Both normal (16-bit) and high-resolution (8-bit) buffers retain 256 rows.
+    for mode in [0, 1] {
+        let mut v = setup();
+        v.write16(REGISTERS, mode).unwrap();
+        command(&mut v, 0, &[(0, 9), (20, 1023), (22, 511)]);
+        command(
+            &mut v,
+            32,
+            &[
+                (0, 0),
+                (4, 0xE8),
+                (8, 0x100),
+                (10, 0x108),
+                (12, 10),
+                (14, 430),
+            ],
+        );
+        for y in 0..8 {
+            for x in 0..8 {
+                let color = if y % 2 == 0 { 0x801F_u16 } else { 0x83E0 };
+                v.vram[0x800 + (y * 8 + x) * 2..0x802 + (y * 8 + x) * 2]
+                    .copy_from_slice(&color.to_be_bytes());
+            }
+        }
+        // A CPU write cannot apply DIE/DIL until a framebuffer change.
+        v.write16(REGISTERS + 2, 0xA).unwrap();
+        draw(&mut v);
+        assert!(v.draw_buffer().iter().all(|b| *b == 0));
+        v.write16(REGISTERS + 2, 0xB).unwrap();
+        v.vblank_out();
+        for pending in [false, true] {
+            if pending {
+                v.write16(REGISTERS + 2, 0xF).unwrap();
+            }
+            v.draw_buffer_mut().fill(0);
+            draw(&mut v);
+            let (width, bytes) = if mode == 0 { (512, 2) } else { (1024, 1) };
+            for y in 214..220 {
+                for x in 9..19 {
+                    let at = (y * width + x) * bytes;
+                    let actual = if bytes == 2 {
+                        u16::from_be_bytes(v.draw_buffer()[at..at + 2].try_into().unwrap())
+                    } else {
+                        u16::from(v.draw_buffer()[at])
+                    };
+                    let expected = if (215..=218).contains(&y) && (10..=17).contains(&x) {
+                        if bytes == 2 { 0x801F } else { 0x1F }
+                    } else {
+                        0
+                    };
+                    assert_eq!(
+                        actual, expected,
+                        "mode={mode}, pending={pending}, ({x},{y})"
+                    );
+                }
+            }
+        }
+        // The pending odd selection now takes effect; even source rows vanish.
+        v.vblank_out();
+        draw(&mut v);
+        if mode == 0 {
+            assert_eq!(pixel(&v, 10, 215), 0x83E0);
+        } else {
+            assert_eq!(v.draw_buffer()[215 * 1024 + 10], 0xE0);
+        }
+        assert_eq!(v.read16(REGISTERS + 0x16).unwrap() & 0x60, 0x60);
+    }
 }
