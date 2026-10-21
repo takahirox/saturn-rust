@@ -1137,3 +1137,50 @@ PR #18 remains Draft with Closes #17 as the intended final outcome. The full
 resolution objective is still unmet. No new tracker, reopened historical Issue,
 human/firmware/live-site/external-workflow gate or waiver is introduced. This
 node does not merge; local passing checks do not claim remote CI or deployment.
+
+
+## 2026-10-21 runtime media review fixes
+
+Related to #17. The reported 17-sector runtime-directory overflow now returns a
+CD rejection response. Root and child records, volume/endian/identifier bounds
+and file-range arithmetic are validated before directory state is published.
+Failed navigation is atomic and mounting new media discards the old file table.
+The original directory-command fixture runs against valid and malformed ISO and
+clean/correctable/uncorrectable raw media in native and browser Wasm tests.
+
+Raw Mode1/XA Form1 now executes bounded P/Q correction with EDC validation;
+Form2 checks its EDC. Independent parity-matrix vectors, every protected Mode1
+byte position, selected all-byte error deltas, XA subheader/Form-bit cases and
+uncorrectable runtime error/pool/recovery behavior pass. The browser's original
+raw fixture is generated with a separate parity-matrix encoder.
+
+CD-DA PRE now selects a 50/15 µs digital de-emphasis filter before SCSP routing.
+The original SH-2 CD-DA guest writes CD/SCSP registers and produces stereo PCM
+matching independent reference values across sector boundaries. Browser tests
+compare 1178 frames within 0.51 sample unit and deliver those emulated samples to
+the actual AudioWorklet. Native tests also verify DC/Nyquist gain, unchanged-start
+pause/resume history, and explicit-seek restart. All previous games, synthetic
+BIOS fixtures and guest checks remain in the passing suites.
+
+Checks actually completed on this revision:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`: pass;
+  **315 tests passed, zero failed/ignored** (167 unit, 148 integration), Rust/Cargo
+  **1.99.0**. Native all-target Clippy with `-D warnings` passes.
+- `sh scripts/build-web.sh` and Wasm Clippy with `-D warnings`: pass, using
+  rustup stable and `wasm-bindgen 0.2.129`.
+- All **25** CI reproducibility checks pass, including both new MIT-licensed
+  fixtures. Existing demonstration media hashes remain unchanged.
+- `npm ci --ignore-scripts`, JavaScript syntax checks and the complete
+  `npm run test:browser`: pass, Node **24.12.0**, Chromium **145.0.7632.6**,
+  project subpath `/saturn-rust/`. No required browser tests were skipped.
+- Changed documentation's local links and `git diff --check`: pass.
+
+These changes resolve the concrete extent panic and implement additional media
+and audio behavior. They **do not complete Issue #17**. Configurable CD decode
+repetitions/retries/error-output policy and the other mandatory CPU, scheduler,
+bus/backup, SCU, video, SCSP, BIOS/HLE, SMPC and comprehensive integration
+requirements remain open in the conformance matrix. No Issue, PR state or
+acceptance criterion was closed or waived; no push, merge, proprietary firmware,
+human gate, model switch or allowance reset was used. PR #18 still requires
+implementation and review against the full umbrella scope.

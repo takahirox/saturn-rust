@@ -3,6 +3,7 @@ pub mod backup;
 pub mod bus;
 pub mod cache;
 pub mod cd;
+mod cd_audio;
 pub mod cpu;
 pub mod devices;
 pub mod disc;

@@ -1,6 +1,7 @@
 //! Owned CD media, independent of bootstrap extraction (ST-040 §§3–5).
 //! CUE references are resolved only against caller-supplied bytes, never the
 //! filesystem or network. Track times are binary 75 Hz frames; FAD starts at 150.
+mod integrity;
 use crate::disc::{DiscError, SECTOR};
 use std::sync::Arc;
 
@@ -385,12 +386,7 @@ impl Media {
         };
         if t.stride == RAW_SECTOR {
             sector.copy_from_slice(bytes);
-            if t.mode != TrackMode::Audio
-                && (sector[..12] != [0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0]
-                    || sector[15] != if t.mode == TrackMode::Mode1 { 1 } else { 2 })
-            {
-                return Err(invalid("Malformed raw data sector sync/mode"));
-            }
+            integrity::validate(&mut sector, t.mode)?;
         } else {
             sector[1..11].fill(255);
             let bcd = |v: u32| (v / 10 * 16 + v % 10) as u8;
@@ -456,38 +452,9 @@ impl Media {
         table
     }
 }
-// ECMA-130 annexes A/B: EDC CRC and GF(2^8) product-code parity. Original
-// implementation; no encoder/emulator code or precomputed sector assets.
+// ECMA-130 §14.3/annex A; cooked images acquire real raw-sector parity.
 fn mode1_checksums(sector: &mut [u8; RAW_SECTOR]) {
-    let mut crc = 0u32;
-    for byte in &sector[..2064] {
-        crc ^= u32::from(*byte);
-        for _ in 0..8 {
-            crc = (crc >> 1) ^ if crc & 1 != 0 { 0xD801_8001 } else { 0 };
-        }
-    }
+    let crc = integrity::edc(&sector[..2064]);
     sector[2064..2068].copy_from_slice(&crc.to_le_bytes());
-    let forward = |v: u8| ((u16::from(v) << 1) ^ if v & 128 != 0 { 0x11D } else { 0 }) as u8;
-    let mut inverse = [0; 256];
-    for v in 0..=255u8 {
-        inverse[(v ^ forward(v)) as usize] = v;
-    }
-    for (major_count, minor_count, mult, increment, output) in
-        [(86, 24, 2, 86, 2076), (52, 43, 86, 88, 2248)]
-    {
-        for major in 0..major_count {
-            let mut index = (major >> 1) * mult + (major & 1);
-            let (mut a, mut b) = (0, 0);
-            for _ in 0..minor_count {
-                let value = sector[12 + index];
-                index = (index + increment) % (major_count * minor_count);
-                a ^= value;
-                b ^= value;
-                a = forward(a);
-            }
-            a = inverse[(forward(a) ^ b) as usize];
-            sector[output + major] = a;
-            sector[output + major + major_count] = a ^ b;
-        }
-    }
+    integrity::encode(sector);
 }

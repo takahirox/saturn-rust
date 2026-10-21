@@ -243,6 +243,18 @@ fn mode2_subheader_filters_reverse_only_subheader_and_preserve_fad_gate() {
         s[16..20].copy_from_slice(&[5, i as u8, 0x28, 0x21]);
         s[20..24].copy_from_slice(&[5, i as u8, 0x28, 0x21]);
         s[24..2348].fill(i as u8 + 1);
+        // Independent MSB-first polynomial remainder, reversed at the boundary.
+        let mut crc = 0u32;
+        for byte in &s[16..2348] {
+            for bit in 0..8 {
+                let feedback = (crc >> 31) ^ u32::from((byte >> bit) & 1);
+                crc <<= 1;
+                if feedback != 0 {
+                    crc ^= 0x8001_801B;
+                }
+            }
+        }
+        s[2348..].copy_from_slice(&crc.reverse_bits().to_le_bytes());
     }
     let mut cd = CdBlock::default();
     cd.mount(
@@ -428,4 +440,197 @@ fn cue_copy_preemphasis_and_channel_control_survive_drive_and_q_reports() {
     assert_eq!(issue(&mut cd, [0, 0, 0, 0])[1], 0xB101);
     issue(&mut cd, [0x2000, 0, 0, 0]);
     assert_eq!(read(&cd, 10), [0xB1, 1, 1, 0, 0, 0, 0, 0, 0, 150]);
+}
+
+// ISO9660 §§8.4/9.1 and ST-162 §6.2. The runtime CD filesystem must reject
+// malformed media through its command response, never a native panic/Wasm trap.
+#[test]
+fn runtime_directory_rejects_overflow_truncation_and_invalid_root_and_child_records() {
+    let original = include_bytes!("../web/star-collector.iso");
+    let root = 16 * 2048 + 156;
+    let child = 20 * 2048 + 68;
+    let dual32 = |image: &mut [u8], at: usize, value: u32| {
+        image[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        image[at + 4..at + 8].copy_from_slice(&value.to_be_bytes());
+    };
+    for record in [root, child] {
+        for (field, value) in [
+            (2, u32::MAX),
+            (2, u32::MAX - 149),
+            (2, 64),
+            (2, 63),
+            (10, u32::MAX),
+            (10, 1_048_577),
+        ] {
+            let mut iso = original.to_vec();
+            dual32(&mut iso, record + field, value);
+            if field == 2 && value == 63 {
+                dual32(&mut iso, record + 10, 2049);
+            }
+            let mut cd = CdBlock::default();
+            cd.mount(Media::iso(&iso).unwrap());
+            assert_eq!(
+                issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFF])[0],
+                0xFF00,
+                "record={record}, field={field}, value={value}"
+            );
+            assert_eq!(issue(&mut cd, [0x7200, 0, 0, 0])[1], 0);
+        }
+        for (field, value) in [
+            (0, 33),
+            (1, 1),
+            (6, 255),
+            (14, 255),
+            (25, 0x80),
+            (26, 1),
+            (27, 1),
+            (28, 2),
+            (31, 2),
+            (32, 0),
+            (32, 255),
+        ] {
+            let mut iso = original.to_vec();
+            iso[record + field] = value;
+            let mut cd = CdBlock::default();
+            cd.mount(Media::iso(&iso).unwrap());
+            assert_eq!(
+                issue(&mut cd, [0x7100, 0, 0xFF, 0xFFFF])[0],
+                0xFF00,
+                "record={record}, field={field}, value={value}"
+            );
+        }
+    }
+    // The record must fit the declared directory size, not only its last sector.
+    let mut iso = original.to_vec();
+    dual32(&mut iso, root + 10, 69);
+    let mut cd = CdBlock::default();
+    cd.mount(Media::iso(&iso).unwrap());
+    assert_eq!(issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFF])[0], 0xFF00);
+    // Exact reviewer reproducer: minimally signed 17-sector image.
+    let mut iso = vec![0; 17 * 2048];
+    iso[16 * 2048 + 1..16 * 2048 + 6].copy_from_slice(b"CD001");
+    dual32(&mut iso, root + 2, u32::MAX);
+    dual32(&mut iso, root + 10, 2048);
+    cd.mount(Media::iso(&iso).unwrap());
+    assert_eq!(issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFF])[0], 0xFF00);
+}
+
+#[test]
+fn runtime_directory_mutation_corpus_is_bounded_and_new_media_discards_old_files() {
+    let original = include_bytes!("../web/star-collector.iso");
+    let mut seed = 0x9817u32;
+    for _ in 0..512 {
+        let mut iso = original.to_vec();
+        for _ in 0..8 {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let base = if seed & 1 == 0 { 16 * 2048 } else { 20 * 2048 };
+            iso[base + ((seed >> 8) as usize % 2048)] = (seed >> 24) as u8;
+        }
+        let mut cd = CdBlock::default();
+        cd.mount(Media::iso(&iso).unwrap());
+        let status = issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFF])[0];
+        assert!(status == 0xFF00 || status & 0xFF00 == 0x0100);
+    }
+    let mut cd = CdBlock::default();
+    cd.mount(Media::iso(original).unwrap());
+    assert_ne!(issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFF])[0], 0xFF00);
+    cd.mount(Media::iso(&vec![0; 17 * 2048]).unwrap());
+    assert_eq!(issue(&mut cd, [0x7300, 0, 0, 2])[0], 0xFF00);
+    assert_eq!(issue(&mut cd, [0x7400, 0, 0, 2])[0], 0xFF00);
+}
+
+#[test]
+fn runtime_directory_checks_volume_extent_and_failed_navigation_is_atomic() {
+    let original = include_bytes!("../web/star-collector.iso");
+    for blocks in [0u32, 16, 20, 21, 65, u32::MAX] {
+        let mut iso = original.to_vec();
+        iso[16 * 2048 + 80..16 * 2048 + 84].copy_from_slice(&blocks.to_le_bytes());
+        iso[16 * 2048 + 84..16 * 2048 + 88].copy_from_slice(&blocks.to_be_bytes());
+        let mut cd = CdBlock::default();
+        cd.mount(Media::iso(&iso).unwrap());
+        assert_eq!(
+            issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFF])[0],
+            0xFF00,
+            "volume {blocks}"
+        );
+    }
+    let mut iso = original.to_vec();
+    iso[20 * 2048 + 68 + 25] = 2; // A directory record whose extent contains guest instructions.
+    let mut cd = CdBlock::default();
+    cd.mount(Media::iso(&iso).unwrap());
+    assert_ne!(issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFF])[0], 0xFF00);
+    assert_eq!(issue(&mut cd, [0x7200, 0, 0, 0])[1], 2);
+    assert_eq!(issue(&mut cd, [0x7000, 0, 0, 2])[0], 0xFF00);
+    assert_eq!(issue(&mut cd, [0x7200, 0, 0, 0])[1], 2);
+    // The old directory and its independent license-file information still exist.
+    assert_ne!(issue(&mut cd, [0x7300, 0, 0, 3])[0], 0xFF00);
+}
+
+#[test]
+fn cdda_pause_resume_preserves_sample_and_filter_history_and_explicit_seek_restarts() {
+    let mut audio = vec![0; 2352 * 2];
+    for (index, frame) in audio.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        frame[..2].copy_from_slice(&((index as i16 + 1) * 20).to_le_bytes());
+        frame[2..].copy_from_slice(&(-10000i16).to_le_bytes());
+    }
+    let media = Media::cue(
+        "FILE \"a\" BINARY\nTRACK 01 AUDIO\nFLAGS PRE\nINDEX 01 00:00:00",
+        &[("a", &audio)],
+    )
+    .unwrap();
+    let mut cd = CdBlock::default();
+    let mut uninterrupted = CdBlock::default();
+    cd.mount(media.clone());
+    uninterrupted.mount(media);
+    for device in [&mut cd, &mut uninterrupted] {
+        issue(device, [0x1080, 150, 0x80, 2]);
+        device.advance(26_875);
+    }
+    let initial = cd.audio_sample();
+    assert_eq!(initial, uninterrupted.audio_sample());
+    for _ in 0..17 {
+        assert_eq!(cd.audio_sample(), uninterrupted.audio_sample());
+    }
+    issue(&mut cd, [0x11FF, 0xFFFF, 0, 0]);
+    cd.advance(26_875);
+    for _ in 0..64 {
+        assert_eq!(cd.audio_sample(), [0, 0]);
+    }
+    issue(&mut cd, [0x10FF, 0xFFFF, 0x00FF, 0xFFFF]);
+    for _ in 0..600 {
+        assert_eq!(cd.audio_sample(), uninterrupted.audio_sample());
+    }
+    issue(&mut cd, [0x1080, 150, 0x80, 2]);
+    cd.advance(26_875);
+    assert_eq!(cd.audio_sample(), initial);
+}
+
+#[test]
+fn uncorrectable_runtime_sector_stops_drive_without_publishing_corrupt_data() {
+    let original = vec![0x69; 4096];
+    let cooked = Media::iso(&original).unwrap();
+    let mut raw = cooked.raw_sector(150).unwrap().to_vec();
+    raw.extend(cooked.raw_sector(151).unwrap());
+    raw[16..2064].fill(0); // Deliberately beyond P/Q recovery, keeping old EDC.
+    let mut cd = CdBlock::default();
+    cd.mount(
+        Media::cue(
+            "FILE \"d\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00",
+            &[("d", &raw)],
+        )
+        .unwrap(),
+    );
+    cd.write16(CD + 8, 0).unwrap();
+    sectors(&mut cd, 2);
+    let response = issue(&mut cd, [0, 0, 0, 0]);
+    assert_eq!(response[0] >> 8, 9); // ST-162 table 4.3: ERROR until a drive command.
+    assert_eq!(response[3], 150); // The bad sector is not consumed or replaced by zeros.
+    assert_eq!(cd.read16(CD + 8).unwrap() & 4, 0); // No sector-stored interrupt.
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 0);
+    assert_ne!(issue(&mut cd, [0x6100, 0, 0, 1])[0] & 0x8000, 0);
+    issue(&mut cd, [0x1080, 151, 0x80, 1]);
+    cd.advance(300_000);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 1);
+    issue(&mut cd, [0x6100, 0, 0, 1]);
+    assert_eq!(read(&cd, 2048), original[2048..]);
 }

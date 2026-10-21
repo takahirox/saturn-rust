@@ -51,7 +51,7 @@ fn cooked_and_raw_data_have_identical_user_bytes_and_header_addresses() {
     assert_eq!(media.boot_iso().unwrap(), bytes);
     assert_eq!(media.cooked_sector(151).unwrap(), bytes[2048..]);
     assert!(media.raw_sector(152).is_err());
-    bin[15] = 3;
+    bin[1] = 3;
     assert!(
         Media::cue(cue, &[("data.bin", &bin)])
             .unwrap()
@@ -177,4 +177,59 @@ fn cue_control_flags_reach_toc_and_reject_invalid_or_misplaced_flags() {
             format!("FILE \"d\" BINARY\nTRACK 01 MODE1/2048\nFLAGS {flag}\nINDEX 01 00:00:00");
         assert!(Media::cue(&cue, &[("d", &data)]).is_err());
     }
+}
+
+#[test]
+fn mode_one_product_code_corrects_every_symbol_position_and_rejects_unrecoverable_data() {
+    let image = Media::iso(&(0..2048).map(|i| (i ^ (i >> 4)) as u8).collect::<Vec<_>>()).unwrap();
+    let raw = image.raw_sector(150).unwrap();
+    let cue = "FILE \"d\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00";
+    // All header/data/EDC/reserved/P/Q positions; all nonzero byte deltas at
+    // selected locations, plus a burst crossing multiple P and Q codewords.
+    for index in 12..2352 {
+        let mut damaged = raw;
+        damaged[index] ^= ((index * 31) % 255 + 1) as u8;
+        let media = Media::cue(cue, &[("d", &damaged)]).unwrap();
+        assert_eq!(media.raw_sector(150).unwrap(), raw, "offset {index}");
+    }
+    for error in 1..=255 {
+        for index in [12, 1024, 2064, 2076, 2248, 2351] {
+            let mut damaged = raw;
+            damaged[index] ^= error;
+            assert_eq!(
+                Media::cue(cue, &[("d", &damaged)])
+                    .unwrap()
+                    .raw_sector(150)
+                    .unwrap(),
+                raw
+            );
+        }
+    }
+    let mut damaged = raw;
+    for byte in &mut damaged[512..544] {
+        *byte ^= 0xB7;
+    }
+    assert_eq!(
+        Media::cue(cue, &[("d", &damaged)])
+            .unwrap()
+            .raw_sector(150)
+            .unwrap(),
+        raw
+    );
+    damaged[16..2064].fill(0);
+    assert!(
+        Media::cue(cue, &[("d", &damaged)])
+            .unwrap()
+            .cooked_sector(150)
+            .is_err()
+    );
+    // An adversary can recompute EDC but cannot make mismatched parity valid.
+    damaged = raw;
+    damaged[2076..].fill(0);
+    assert!(
+        Media::cue(cue, &[("d", &damaged)])
+            .unwrap()
+            .raw_sector(150)
+            .is_err()
+    );
 }

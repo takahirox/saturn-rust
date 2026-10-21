@@ -73,6 +73,8 @@ python3 tests/fixtures/build_sound.py --check
 python3 tests/fixtures/build_synthesis.py --check
 python3 tests/fixtures/build_sound_io.py --check
 python3 tests/fixtures/build_cd_drive.py --check
+python3 tests/fixtures/build_cd_directory.py --check
+python3 tests/fixtures/build_cdda.py --check
 python3 tests/fixtures/build_sprite_effects.py --check
 python3 tests/fixtures/build_smpc.py --check
 ```

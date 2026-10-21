@@ -36,34 +36,7 @@ impl Emulator {
         lengths: &[u32],
         bytes: &[u8],
     ) -> Result<(), JsValue> {
-        let result = (|| {
-            let names: Vec<_> = names.split('\0').collect();
-            if names.len() != lengths.len() || lengths.len() > 99 || bytes.len() > 134_217_728 {
-                return Err(crate::disc::DiscError(
-                    "Invalid local CUE file table".into(),
-                ));
-            }
-            let mut files = Vec::new();
-            let mut offset = 0usize;
-            for (name, length) in names.into_iter().zip(lengths) {
-                let end = offset
-                    .checked_add(*length as usize)
-                    .ok_or_else(|| crate::disc::DiscError("CUE file length overflow".into()))?;
-                files.push((
-                    name,
-                    bytes
-                        .get(offset..end)
-                        .ok_or_else(|| crate::disc::DiscError("Truncated CUE file table".into()))?,
-                ));
-                offset = end;
-            }
-            if offset != bytes.len() {
-                return Err(crate::disc::DiscError(
-                    "Unexpected bytes after CUE file table".into(),
-                ));
-            }
-            crate::media::Media::cue(cue, &files)
-        })();
+        let result = cue_media(cue, names, lengths, bytes);
         match result {
             Ok(media) => self.machine.reset_media(media).map_err(js_error),
             Err(error) => {
@@ -71,6 +44,20 @@ impl Emulator {
                 Err(JsValue::from_str(&error.to_string()))
             }
         }
+    }
+    /// Attach caller-supplied mixed-track media without resetting the CPU or
+    /// installing HLE. This is the CUE counterpart of mount_disc for BIOS mode.
+    pub fn mount_cue(
+        &mut self,
+        cue: &str,
+        names: &str,
+        lengths: &[u32],
+        bytes: &[u8],
+    ) -> Result<(), JsValue> {
+        let media = cue_media(cue, names, lengths, bytes)
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        self.machine.mount_media(media);
+        Ok(())
     }
     pub fn mount_disc(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
         let media =
@@ -218,4 +205,39 @@ impl Emulator {
 
 fn js_error(error: crate::MachineError) -> JsValue {
     JsValue::from_str(&error.to_string())
+}
+
+// Resolve only the caller's in-memory selection; never open a CUE path.
+fn cue_media(
+    cue: &str,
+    names: &str,
+    lengths: &[u32],
+    bytes: &[u8],
+) -> Result<crate::media::Media, crate::disc::DiscError> {
+    let names = names.split('\0');
+    if lengths.len() > 99 || bytes.len() > 134_217_728 || names.clone().count() != lengths.len() {
+        return Err(crate::disc::DiscError(
+            "Invalid local CUE file table".into(),
+        ));
+    }
+    let mut files = Vec::new();
+    let mut offset = 0usize;
+    for (name, length) in names.zip(lengths) {
+        let end = offset
+            .checked_add(*length as usize)
+            .ok_or_else(|| crate::disc::DiscError("CUE file length overflow".into()))?;
+        files.push((
+            name,
+            bytes
+                .get(offset..end)
+                .ok_or_else(|| crate::disc::DiscError("Truncated CUE file table".into()))?,
+        ));
+        offset = end;
+    }
+    if offset != bytes.len() {
+        return Err(crate::disc::DiscError(
+            "Unexpected bytes after CUE file table".into(),
+        ));
+    }
+    crate::media::Media::cue(cue, &files)
 }

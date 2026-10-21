@@ -58,3 +58,38 @@ fn guest_scans_reverses_pauses_waits_and_reopens_same_disc_without_reading_secto
         previous = Some(trace);
     }
 }
+
+#[test]
+fn guest_runtime_directory_commands_reject_malformed_extents_without_trapping() {
+    let mut fixture = vec![0; BIOS_SIZE];
+    for line in include_str!("fixtures/cd-directory.hex")
+        .lines()
+        .filter(|s| !s.starts_with('#'))
+    {
+        let mut fields = line.split_whitespace();
+        let Some(address) = fields.next() else {
+            continue;
+        };
+        let address = usize::from_str_radix(address, 16).unwrap();
+        for (i, word) in fields.enumerate() {
+            fixture[address + i * 2..address + i * 2 + 2]
+                .copy_from_slice(&u16::from_str_radix(word, 16).unwrap().to_be_bytes());
+        }
+    }
+    let original = include_bytes!("../web/star-collector.iso");
+    for field in [None, Some(16 * 2048 + 158), Some(20 * 2048 + 70)] {
+        let mut image = original.to_vec();
+        if let Some(offset) = field {
+            image[offset..offset + 8].fill(255);
+        }
+        let mut machine = Machine::new();
+        machine.reset(Boot::ExternalBios(&fixture)).unwrap();
+        machine.mount_media(Media::iso(&image).unwrap());
+        machine.run_steps(3000).unwrap();
+        let read = |offset: u32| machine.bus().read32(0x06009000 + offset).unwrap();
+        assert_eq!(read(0x30), 0x600D);
+        assert_eq!(read(0), if field.is_some() { 0xFF00 } else { 0x0180 });
+        assert_eq!(read(0x10), if field.is_some() { 0xFF00 } else { 0x0180 });
+        assert_eq!(read(0x24), if field.is_some() { 0 } else { 2 });
+    }
+}

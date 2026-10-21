@@ -99,6 +99,7 @@ pub struct CdBlock {
     playing: bool,
     enabled: bool,
     audio_index: usize,
+    deemphasis: crate::cd_audio::Deemphasis,
     connection: u8,
     last: u8,
     filters: [Filter; SELECTORS],
@@ -110,6 +111,7 @@ pub struct CdBlock {
     search: [u16; 3],
     copy_error: u16,
     directory: u32,
+    volume_end: u32,
     files: Vec<File>,
     file_read: Option<(u32, u32, u8)>,
 }
@@ -119,6 +121,53 @@ struct File {
     size: u32,
     flags: u8,
     id: u32,
+}
+impl File {
+    // ISO9660 §9.1 / ST-162 §6.2: both-endian numbers must agree. Validate
+    // before converting LBA to FAD or publishing any new directory state.
+    fn from_record(record: &[u8], media: &Media, limit: u32, id: u32) -> Option<Self> {
+        if record.len() < 34
+            || !record.len().is_multiple_of(2)
+            || usize::from(record[0]) != record.len()
+        {
+            return None;
+        }
+        let name_length = usize::from(record[32]);
+        let minimum = 33 + name_length + usize::from(name_length.is_multiple_of(2));
+        if name_length == 0
+            || minimum > record.len()
+            || record[1] != 0
+            || record[26] != 0
+            || record[27] != 0
+            || record[25] & !2 != 0
+            || record[28..32] != [1, 0, 0, 1]
+        {
+            return None;
+        }
+        let dual = |offset| {
+            let little = u32::from_le_bytes(record[offset..offset + 4].try_into().ok()?);
+            let big = u32::from_be_bytes(record[offset + 4..offset + 8].try_into().ok()?);
+            (little == big).then_some(little)
+        };
+        let fad = dual(2)?.checked_add(150)?;
+        let size = dual(10)?;
+        let end = fad.checked_add(size.div_ceil(2048))?;
+        if fad > limit || end > limit || end > media.leadout {
+            return None;
+        }
+        if size != 0 {
+            let track = media.track(fad)?;
+            if track.mode == TrackMode::Audio || fad < track.start || end > track.end {
+                return None;
+            }
+        }
+        Some(Self {
+            fad,
+            size,
+            flags: record[25],
+            id,
+        })
+    }
 }
 impl Default for CdBlock {
     fn default() -> Self {
@@ -148,6 +197,7 @@ impl Default for CdBlock {
             playing: false,
             enabled: true,
             audio_index: 0,
+            deemphasis: crate::cd_audio::Deemphasis::default(),
             connection: 255,
             last: 255,
             filters: std::array::from_fn(Filter::reset),
@@ -159,6 +209,7 @@ impl Default for CdBlock {
             search: [0; 3],
             copy_error: 0,
             directory: 0,
+            volume_end: 0,
             files: Vec::new(),
             file_read: None,
         }
@@ -167,6 +218,15 @@ impl Default for CdBlock {
 impl CdBlock {
     pub fn mount(&mut self, media: Media) {
         self.tray_open = false;
+        self.files.clear();
+        self.directory = 0;
+        self.volume_end = 0;
+        self.file_read = None;
+        *self.transfer.get_mut() = None;
+        self.playing = false;
+        self.seeking = 0;
+        self.audio_index = 0;
+        self.deemphasis = crate::cd_audio::Deemphasis::default();
         self.scan = None;
         self.buffer_paused = false;
         self.pause_clocks = 0;
@@ -369,6 +429,7 @@ impl CdBlock {
                     };
                     self.fad = next.clamp(lower, self.end.saturating_sub(1).max(lower));
                     self.audio_index = 0;
+                    self.deemphasis = crate::cd_audio::Deemphasis::default();
                     if next < lower || next >= self.end {
                         self.scan = None;
                         self.status = 1;
@@ -518,12 +579,10 @@ impl CdBlock {
         let Some(media) = &self.media else {
             return [0; 2];
         };
-        if !media
-            .track(self.fad)
-            .is_some_and(|t| t.mode == TrackMode::Audio)
-        {
+        let Some(track) = media.track(self.fad).filter(|t| t.mode == TrackMode::Audio) else {
             return [0; 2];
-        }
+        };
+        let preemphasis = track.control & 1 != 0;
         let Ok(raw) = media.raw_sector(self.fad) else {
             self.status = 9;
             self.playing = false;
@@ -535,6 +594,12 @@ impl CdBlock {
             i16::from_le_bytes([raw[i], raw[i + 1]]),
             i16::from_le_bytes([raw[i + 2], raw[i + 3]]),
         ];
+        let sample = if preemphasis {
+            self.deemphasis.sample(sample)
+        } else {
+            self.deemphasis = crate::cd_audio::Deemphasis::default();
+            sample
+        };
         let sample = if scanning {
             // -12 dB is two binary amplitude halvings (ST-162 §8.2.2).
             sample.map(|s| s / 4)
@@ -674,6 +739,7 @@ impl CdBlock {
                 self.playing = false;
                 self.seeking = 0;
                 self.audio_index = 0;
+                self.deemphasis = crate::cd_audio::Deemphasis::default();
                 self.file_read = None;
                 self.speed = if c[0] & 0x10 != 0 { 1 } else { 2 };
                 if c[0] & 1 != 0 {
@@ -697,6 +763,7 @@ impl CdBlock {
                 self.scan = None;
                 self.seeking = 0;
                 self.audio_index = 0;
+                self.deemphasis = crate::cd_audio::Deemphasis::default();
                 self.tray_open = true;
                 self.status = 6;
                 self.file_read = None;
@@ -769,14 +836,19 @@ impl CdBlock {
                 self.buffer_paused = false;
                 self.pause_clocks = 0;
                 self.fad = start;
-                self.play_start = start;
                 self.end = end;
-                self.audio_index = 0;
+                // ST-162 §8.2.2: an unchanged start cancels pause without
+                // replaying the current sector or restarting the loop range.
+                if field1 != 0xFF_FFFF {
+                    self.play_start = start;
+                    self.audio_index = 0;
+                    self.deemphasis = crate::cd_audio::Deemphasis::default();
+                    self.repeats = 0;
+                }
                 self.playing = true;
-                self.status = 4;
-                self.seeking = 26_875;
+                self.seeking = if field1 == 0xFF_FFFF { 0 } else { 26_875 };
+                self.status = if self.seeking == 0 { 3 } else { 4 };
                 self.repeat = ((c[2] >> 8) & 15) as u8;
-                self.repeats = 0;
                 self.report(false);
             }
             0x11 => {
@@ -804,7 +876,10 @@ impl CdBlock {
                 self.pause_clocks = 0;
                 self.fad = fad;
                 self.playing = false;
-                self.audio_index = 0;
+                if field1 != 0xFF_FFFF {
+                    self.audio_index = 0;
+                    self.deemphasis = crate::cd_audio::Deemphasis::default();
+                }
                 self.status = 4;
                 self.seeking = 26_875;
                 self.report(false);
@@ -1142,8 +1217,12 @@ impl CdBlock {
                 if selector >= SELECTORS {
                     return false;
                 }
-                let start = f.fad.saturating_add(field1);
-                let end = f.fad + f.size.div_ceil(2048);
+                let Some(start) = f.fad.checked_add(field1) else {
+                    return false;
+                };
+                let Some(end) = f.fad.checked_add(f.size.div_ceil(2048)) else {
+                    return false;
+                };
                 if start >= end {
                     return false;
                 }
@@ -1168,24 +1247,37 @@ impl CdBlock {
         let Some(media) = &self.media else {
             return false;
         };
-        let extent = if id == 0xFF_FFFF {
+        let (extent, volume_end) = if id == 0xFF_FFFF {
             let Ok(pvd) = media.cooked_sector(166) else {
                 return false;
             };
-            if &pvd[1..6] != b"CD001" {
+            if pvd.len() != 2048
+                || &pvd[..7] != b"\x01CD001\x01"
+                || pvd[128..132] != [0, 8, 8, 0]
+                || pvd[156] != 34
+                || pvd[181] != 2
+                || pvd[188..190] != [1, 0]
+            {
                 return false;
             }
-            (
-                150 + u32::from_le_bytes(pvd[158..162].try_into().unwrap()),
-                u32::from_le_bytes(pvd[166..170].try_into().unwrap()),
-            )
+            let blocks = u32::from_le_bytes(pvd[80..84].try_into().unwrap());
+            if blocks != u32::from_be_bytes(pvd[84..88].try_into().unwrap()) {
+                return false;
+            }
+            let Some(limit) = blocks.checked_add(150).filter(|&end| end <= media.leadout) else {
+                return false;
+            };
+            let Some(root) = File::from_record(&pvd[156..190], media, limit, 0) else {
+                return false;
+            };
+            ((root.fad, root.size), limit)
         } else {
             let Some(f) = self.files.iter().find(|f| f.id == id && f.flags & 2 != 0) else {
                 return false;
             };
-            (f.fad, f.size)
+            ((f.fad, f.size), self.volume_end)
         };
-        if extent.1 > 1024 * 1024 {
+        if extent.1 == 0 || extent.1 > 1024 * 1024 {
             return false;
         }
         let mut bytes = Vec::new();
@@ -1203,36 +1295,19 @@ impl CdBlock {
                 offset = (offset / 2048 + 1) * 2048;
                 continue;
             }
-            if len < 34 || offset + len > bytes.len() || offset % 2048 + len > 2048 {
+            if len < 34 || offset + len > extent.1 as usize || offset % 2048 + len > 2048 {
                 return false;
             }
             let r = &bytes[offset..offset + len];
-            if r[1] != 0
-                || r[26] != 0
-                || r[27] != 0
-                || r[25] & !2 != 0
-                || u32::from_le_bytes(r[2..6].try_into().unwrap())
-                    != u32::from_be_bytes(r[6..10].try_into().unwrap())
-                || u32::from_le_bytes(r[10..14].try_into().unwrap())
-                    != u32::from_be_bytes(r[14..18].try_into().unwrap())
-            {
+            let Some(file) = File::from_record(r, media, volume_end, files.len() as u32) else {
                 return false;
-            }
-            let fad = 150 + u32::from_le_bytes(r[2..6].try_into().unwrap());
-            let size = u32::from_le_bytes(r[10..14].try_into().unwrap());
-            if fad.saturating_add(size.div_ceil(2048)) > media.leadout {
-                return false;
-            }
-            files.push(File {
-                fad,
-                size,
-                flags: r[25],
-                id: files.len() as u32,
-            });
+            };
+            files.push(file);
             offset += len;
         }
         self.files = files;
         self.directory = id;
+        self.volume_end = volume_end;
         true
     }
 }

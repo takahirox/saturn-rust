@@ -504,7 +504,7 @@ Implementation: [shared sound bus, PCM and clock domain](../src/sound.rs),
 | SCSP DMA, [SCSP] §4.2 fig.4.66/table 4.39 | Word transfers in both directions, zero gate, count/address progress, DEXE completion and IRQ; DMA-register target rejected | SNDV, SIOG / SIOG (68k register DMA, completion IRQ and source mutation) | Exact transfer timing/arbitration and full boundary/route evidence | Pending |
 | SCSP effects DSP, [SCSP] §§4.1/4.3/5; [ST-228][SCDSPASM] Reference 1/2 | Executing multiply/add pipeline; COEF/MADRS/MPRO/TEMP/MEMS/MIXS/EFREG, slot and EXTS inputs, ring/table RAM reads/writes, linear/float conversion, stereo effect routing | DSPV, CLAB / CLAB coefficient mutation, exact stereo, WebAudio | Full field/pipeline boundary corpus, RAM-access contention and independently corroborated converter/timing edges | Pending |
 | Browser audio output | Bounded 8192-frame producer/ring, stereo sample-rate adaptation, explicit gesture enable, pause/mute/blocked/underflow/drop states; worklet renders nonzero guest PCM | SNDV / SNDR WebAudio instrumentation | Full synthesis/DSP/CD-DA validation depends on missing hardware | Pending |
-| CD-DA, [CD] §§3/4/8 / [SCSP] table 4.31 | Guest play/repeat, signed stereo BINARY tracks; EXTS0/1 EFSDL/EFPAN, mixed with 68k PCM at sample deadlines | `tests/cd.rs::cdda_stereo_external_scsp_route_has_exact_samples_and_muting`, CLAB / CLAB WebAudio + changed audio track | Full effects pipeline/de-emphasis/subcode and complete synthesis remain; scan attenuation/muting has native vectors | Pending |
+| CD-DA, [CD] §§3/4/8 / [SCSP] table 4.31 | Guest play/repeat, signed stereo BINARY tracks; PRE 50/15 µs de-emphasis with continuous sector history; unchanged-start pause/resume retains the sample/filter state; EXTS0/1 EFSDL/EFPAN, mixed with 68k PCM at sample deadlines | [CD-DA vectors](../tests/cd.rs), [original CD-DA guest](../tests/cdda.rs), CLAB / CD-DA guest reference buffers + AudioWorklet, CLAB changed audio track | Full effects pipeline/subcode and complete synthesis remain; scan attenuation/muting has native vectors | Pending |
 
 The sound CPU has an independent 11.2896 MHz domain and SCSP has a 44.1 kHz
 sample domain relative to the fixed 26.8741 MHz reference. Native traces match
@@ -518,8 +518,8 @@ no-op CPU/device implementations cannot satisfy those assertions.
 
 | Feature / manual | Current behavior / edge cases | Native | Browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- | --- |
-| Cooked ISO, [Disc Format][DISC] | Bounded IP/ISO9660 first-read startup; retained media and runtime sector/file reads | disc.rs, media.rs, cd.rs, CLAB | SC, CLAB/local ISO | General boot layouts/size, interleaved/XA filesystem records | Pending |
-| BIN/CUE/raw/mixed tracks, [DISC] / [CD] §§4/7.2.3 | Caller-resolved files, cooked/2352-byte Mode1/Mode2/audio, shared/separate files, INDEX00–99, gaps and TOC; subindices and PRE/DCP/4CH CONTROL metadata drive TOC/status/Q reporting; malformed/duplicate flags rejected | `tests/media.rs`, CLAB | CLAB local multi-file CUE, INDEX02/99 and malformed ordering, missing-reference/reset/privacy checks | Full corrupt-sector ECC handling and de-emphasis processing; WAVE/compression absent | Pending |
+| Cooked ISO, [Disc Format][DISC] | Bounded IP/ISO9660 first-read startup; retained media and runtime sector/file reads; checked LBA/FAD/volume/record bounds and atomic directory changes | disc.rs, media.rs, cd.rs, CLAB | SC, CLAB/local ISO | General boot layouts/size, interleaved/XA filesystem records | Pending |
+| BIN/CUE/raw/mixed tracks, [DISC] / [CD] §§4/7.2.3 | Caller-resolved files, cooked/2352-byte Mode1/Mode2/audio, shared/separate files, INDEX00–99, gaps and TOC; subindices and PRE/DCP/4CH CONTROL metadata drive TOC/status/Q reporting; malformed/duplicate flags rejected; EDC validation, bounded P/Q correction for Mode1/XA Form1, Form2 EDC and PRE audio processing | [media vectors](../tests/media.rs), [parity-matrix/XA vectors](../src/media/integrity.rs), [directory guest](../tests/cd_drive.rs), CLAB | Directory guest on clean/correctable/uncorrectable raw media; CLAB multi-file CUE, INDEX02/99, malformed ordering, missing-reference/reset/privacy | Guest-configured ECC repetitions/retry/output-error policy and raw non-XA Mode2 remain; WAVE/compression absent | Pending |
 | CD command/status/HIRQ, [CD] §§3.1–3.4 | Separate command/response latches; 1075-clock command completion, read-protected responses, CMOK/DRDY/CSCT/end flags, masks, clear-zero HIRQ and SCU A-bus IRQ | `tests/cd.rs`, CLAB | CLAB command/FIFO/DMA/IRQ | Full command-specific timing and register mirrors; BIN/CUE has no R–W stream, with empty FIFO WAIT now tested | Pending |
 | CD drive/TOC/session/track state, [CD] §§4/7/8.2 | TOC/session/Q, bounded seek, data play, CD-DA/repeat/end, media-dependent FAD/track/index reports; timed CDON/OFF, 60 Hz pause reports, programmed standby, scan directions/range/muting, tray/media retention and deterministic virtual close | `tests/cd.rs`, CLAB, CDDRV | CLAB, CDDRV | Retry/ECC, remaining initialization options and full drive/response lifecycle boundary evidence | Pending |
 | CD buffers/transfers, [CD] §§3.4/5.3/5.4/8.2 | 200-sector pool, 24 partitions, get/delete/get-delete/put, short/over transfers, size/info/search, FIFO word/long and fixed-source SCU DMA | `tests/cd.rs`, CLAB | CLAB actual DMA/IRQ/checksum, sector mutation | Pool-full pause/resume at the blocked FAD has native data vectors; complete transfer overlap and timing/error inventory remain | Pending |
@@ -971,3 +971,55 @@ literal operands, rejecting canned output and inert MMIO. All existing demo medi
 remain byte-identical. Gradation, display modes/interlace, raster parameter reloads,
 VRAM cycle arbitration and comprehensive remaining hardware acceptance are still
 required. No umbrella checkbox is declared complete by these additions.
+
+## Runtime ISO and CD-DA review regressions
+
+Related to #17. [CD directory parsing](../src/cd.rs) validates PVD type/version,
+2048-byte block size, the root record, matching endian copies, volume sequence,
+record/name/sector boundaries and volume/media extent bounds before publishing a
+new directory. LBA-to-FAD and file-range arithmetic are checked. A rejected
+navigation preserves the prior directory; mounting a new medium invalidates the
+old file table and transfer. The exact 17-sector overflowing-root reproducer,
+root/child mutation corpus and atomicity cases are in [CD vectors](../tests/cd.rs).
+The original directory-command SH-2 fixture executes Change/Read Directory and
+scope commands through real MMIO in [native](../tests/cd_drive.rs) and
+[browser Wasm](../scripts/browser-smoke.mjs) tests. No debugger writes command
+responses or result mailboxes.
+
+[Raw-sector integrity](../src/media/integrity.rs) derives CRC-32 EDC and P/Q
+product-code parity from [ECMA-130 §14.3 and annex A](https://ecma-international.org/wp-content/uploads/ECMA-130_2nd_edition_june_1996.pdf).
+A bounded four-pass decoder repairs single-symbol codeword errors and recoverable
+interleaved bursts, and requires matching EDC/parity before returning data.
+Mode1 headers, reserved bytes, Mode2 duplicated XA subheaders and Form2 EDC are
+checked. Form2 has no P/Q correction. Native tests verify the CRC check value,
+both parity-check-matrix rows, every protected Mode1 byte position, every nonzero
+error byte at selected positions, XA Form1/subheader correction, Form2 error
+rejection and unrecoverable sectors. Browser tests generate original raw media
+using an [independent parity-matrix encoder](../scripts/raw-media-fixture.mjs),
+then execute the directory guest against clean, corrected and rejected sectors.
+The [Wasm CUE mount API](../src/wasm.rs) attaches caller-owned bytes to a running
+synthetic BIOS without resetting it or invoking HLE. Configurable hardware ECC
+repetitions, retry scheduling and error-output policies still require work.
+
+[CD audio processing](../src/cd_audio.rs) applies IEC 60908's 50/15 µs response
+when the audio track's CONTROL/PRE bit is set, before SCSP routing and scan
+attenuation. The digital implementation uses a documented 44.1 kHz bilinear
+transform and Q24 stereo history; it does not claim analog circuit equivalence.
+History crosses sector boundaries, resets on explicit seeks/media changes and
+survives pause/resume with unchanged position. A new original
+[SH-2 routing/play guest](../tests/fixtures/build_cdda.py) drives CD and SCSP MMIO.
+[Native guest tests](../tests/cdda.rs) and browser Wasm compare 1178 stereo frames
+to independently evaluated SI-time-constant reference values (within 0.51 sample
+unit), including impulses at frames 587/588. The browser delivers those actual
+filtered samples to the production AudioWorklet and asserts rendered frames and
+nonzero peak. Independent unit vectors also assert DC unity and Nyquist gain.
+
+Both new fixtures are covered by [the original fixture MIT license](../tests/fixtures/LICENSE):
+
+| Builder | Expanded 512 KiB ROM SHA-256 |
+| --- | --- |
+| `python3 tests/fixtures/build_cd_directory.py --check` | `e96346d309c35807053e92c87203fa7a781dfdfe0e29139f43590d7b15790413` |
+| `python3 tests/fixtures/build_cdda.py --check` | `9253c539e776793666b6e18309ea8d5055687be5f179c5200416c4c16f8e1d9f` |
+
+These regressions do not establish completion of the other required hardware
+contracts or the umbrella acceptance criteria above.
