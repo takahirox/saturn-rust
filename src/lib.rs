@@ -6,6 +6,8 @@ pub mod cpu;
 pub mod devices;
 pub mod disc;
 pub mod onchip;
+pub mod scu;
+pub mod timing;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
@@ -45,6 +47,7 @@ pub enum MachineError {
     StepLimit(u32),
     Disc(disc::DiscError),
     Video(String),
+    Scu(scu::ScuError),
 }
 
 impl fmt::Display for MachineError {
@@ -55,6 +58,7 @@ impl fmt::Display for MachineError {
             Self::SlaveCpu(error) => write!(f, "Slave SH-2: {error}"),
             Self::Disc(error) => error.fmt(f),
             Self::Video(error) => f.write_str(error),
+            Self::Scu(error) => error.fmt(f),
             Self::StepLimit(n) => write!(f, "Run count {n} is outside 1..={MAX_RUN_STEPS}"),
         }
     }
@@ -77,7 +81,6 @@ pub struct Machine {
     slave: Cpu,
     bus: Bus,
     mode: Option<BootMode>,
-    frames: u64,
     clocks: u64,
     nmi_pending: bool,
     dma_errors: [bool; 2],
@@ -117,7 +120,6 @@ impl Machine {
     /// Internal battery-backed RAM survives all boot selections and failed boots.
     /// A rejected BIOS leaves ExternalBios selected and the CPU stopped in Reset.
     pub fn reset(&mut self, boot: Boot<'_>) -> Result<(), MachineError> {
-        self.frames = 0;
         self.clocks = 0;
         self.nmi_pending = false;
         self.dma_errors = [false; 2];
@@ -171,28 +173,25 @@ impl Machine {
     }
 
     pub fn frames(&self) -> u64 {
-        self.frames
+        self.bus.raster.fields
     }
 
     pub fn framebuffer(&self) -> Result<Vec<u8>, MachineError> {
         self.bus.vdp2.framebuffer().map_err(MachineError::Video)
     }
 
-    /// Deterministic instruction budgets, not cycle-accurate Saturn timing.
-    /// One active phase followed by one blank phase. Guest polls TVSTAT.
-    /// No game-specific PC, state, opcode or memory interception.
+    /// Advance to the next raster field deadline. Peripherals and video events
+    /// progress during SLEEP and DIVU stalls; execution stays bounded for the UI.
+    /// CPU issue still uses a fixed quantum; this does not claim opcode/bus timing.
     pub fn advance_frame(&mut self) -> Result<(), MachineError> {
-        self.bus.vdp2.vblank = false;
-        for _ in 0..60_000 {
+        let target = self.frames() + 1;
+        for _ in 0..100_000 {
             self.step()?;
+            if self.frames() >= target {
+                return Ok(());
+            }
         }
-        self.bus.vdp2.vblank = true;
-        for _ in 0..20_000 {
-            self.step()?;
-        }
-        self.bus.vdp2.vblank = false;
-        self.frames += 1;
-        Ok(())
+        Err(MachineError::StepLimit(100_000))
     }
 
     pub fn step(&mut self) -> Result<(), MachineError> {
@@ -232,6 +231,11 @@ impl Machine {
                 } else {
                     false
                 };
+            if irq_accepted {
+                self.bus
+                    .acknowledge_interrupt(Processor::Master, irq.unwrap());
+            }
+            let mut memory = self.bus.for_cpu(Processor::Master);
             if !dma_accepted && !nmi_accepted && !irq_accepted {
                 self.cpu.step(&mut memory)?;
             }
@@ -271,7 +275,11 @@ impl Machine {
         }
         let elapsed = CLOCKS_PER_STEP.saturating_add(self.bus.take_wait_clocks());
         self.clocks += u64::from(elapsed);
-        match self.bus.advance_clocks(elapsed) {
+        match self
+            .bus
+            .advance_clocks(elapsed)
+            .map_err(MachineError::Scu)?
+        {
             Some(0x02) if !self.bus.slave_enabled => {
                 self.slave = Cpu::power_on(&self.bus)
                     .map_err(|source| MachineError::SlaveCpu(CpuError::Bus { pc: 0, source }))?;

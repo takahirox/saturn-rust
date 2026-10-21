@@ -3,6 +3,8 @@ use crate::backup::{BACKUP_RAM, BACKUP_WINDOW, BackupRam};
 use crate::cache::{CCR, Cache};
 use crate::devices::{SMPC, Smpc, VDP2, VRAM, Vdp2};
 use crate::onchip::OnChip;
+use crate::scu::{SCU, Scu, ScuError};
+use crate::timing::{Raster, RasterEvent};
 use std::cell::RefCell;
 use std::fmt;
 
@@ -99,6 +101,9 @@ pub struct Bus {
     high: Vec<u8>,
     pub(crate) vdp2: Vdp2,
     smpc: Smpc,
+    pub(crate) scu: Scu,
+    pub(crate) raster: Raster,
+    scu_dma_phase: u32,
     pub(crate) backup: BackupRam,
     onchip: [OnChip; 2],
     cache: [RefCell<Cache>; 2],
@@ -113,6 +118,9 @@ impl Default for Bus {
             high: vec![0; WRAM_SIZE],
             vdp2: Vdp2::default(),
             smpc: Smpc::default(),
+            scu: Scu::default(),
+            raster: Raster::default(),
+            scu_dma_phase: 0,
             backup: BackupRam::default(),
             onchip: std::array::from_fn(|_| OnChip::default()),
             cache: std::array::from_fn(|_| RefCell::new(Cache::default())),
@@ -131,11 +139,37 @@ impl Bus {
     }
 
     pub(crate) fn interrupt(&self, processor: Processor) -> Option<(u8, u8)> {
-        self.onchip[processor as usize].interrupt()
+        let internal = self.onchip[processor as usize].interrupt();
+        let external = if processor == Processor::Master {
+            self.scu.interrupt()
+        } else {
+            None
+        };
+        match (internal, external) {
+            (Some(i), Some(e)) => Some(if i.0 > e.0 { i } else { e }),
+            (i, e) => i.or(e),
+        }
     }
 
+    pub(crate) fn acknowledge_interrupt(&mut self, processor: Processor, irq: (u8, u8)) {
+        if processor == Processor::Master && self.scu.interrupt() == Some(irq) {
+            self.scu.acknowledge(irq.1);
+        }
+    }
+    pub(crate) fn advance_scu_dma(&mut self) -> Result<(), ScuError> {
+        if !self.scu.dma_pending() {
+            return Ok(());
+        }
+        let mut scu = std::mem::take(&mut self.scu);
+        let result = scu.advance_dma(self);
+        self.scu = scu;
+        result
+    }
     pub(crate) fn can_wake_master(&self) -> bool {
-        self.slave_enabled || self.smpc.busy() || self.onchip[0].can_request_interrupt()
+        self.slave_enabled
+            || self.smpc.busy()
+            || self.onchip[0].can_request_interrupt()
+            || self.scu.can_wake()
     }
 
     pub(crate) fn set_slave_enabled(&mut self, enabled: bool) {
@@ -185,12 +219,49 @@ impl Bus {
         self.onchip[index].dma = dma;
         error
     }
-    pub(crate) fn advance_clocks(&mut self, clocks: u32) -> Option<u8> {
-        self.onchip[0].advance_clocks(clocks);
-        if self.slave_enabled {
-            self.onchip[1].advance_clocks(clocks);
+    pub(crate) fn advance_clocks(&mut self, clocks: u32) -> Result<Option<u8>, ScuError> {
+        let mut remaining = clocks;
+        let mut command = None;
+        while remaining != 0 {
+            let delta = remaining
+                .min(self.raster.clocks_to_event())
+                .min(self.scu.clocks_to_event())
+                .min(if self.scu.dma_pending() {
+                    8 - self.scu_dma_phase
+                } else {
+                    u32::MAX
+                });
+            self.onchip[0].advance_clocks(delta);
+            if self.slave_enabled {
+                self.onchip[1].advance_clocks(delta);
+            }
+            self.scu.advance_clocks(delta)?;
+            command = self.smpc.advance_clocks(delta).or(command);
+            match self.raster.advance(delta) {
+                Some(RasterEvent::HBlankIn) => {
+                    self.vdp2.hblank = true;
+                    self.scu.hblank_in();
+                }
+                Some(RasterEvent::VBlankIn) => {
+                    self.vdp2.hblank = false;
+                    self.vdp2.vblank = true;
+                    self.scu.signal(0);
+                }
+                Some(RasterEvent::VBlankOut) => {
+                    self.vdp2.hblank = false;
+                    self.vdp2.vblank = false;
+                    self.scu.vblank_out();
+                }
+                Some(RasterEvent::LineStart) => self.vdp2.hblank = false,
+                None => (),
+            }
+            self.scu_dma_phase = (self.scu_dma_phase + delta) % 8;
+            if self.scu_dma_phase == 0 {
+                self.advance_scu_dma()?;
+            }
+            remaining -= delta;
         }
-        self.smpc.advance_clocks(clocks)
+        Ok(command)
     }
     /// Replaces ROM atomically. Machine reset separately discards old ROM first.
     pub fn load_bios(&mut self, bytes: &[u8]) -> Result<(), BusError> {
@@ -269,6 +340,14 @@ impl Bus {
         if !address.is_multiple_of(N as u32) {
             return Err(BusError::Unaligned { address, width: N });
         }
+        if (SCU..SCU + 0xD0).contains(&address) {
+            if N != 4 {
+                return Err(BusError::UnsupportedDevice { address, width: N });
+            }
+            let mut bytes = [0; N];
+            bytes.copy_from_slice(&self.scu.read32(address)?.to_be_bytes());
+            return Ok(bytes);
+        }
         if (BACKUP_RAM..BACKUP_RAM + BACKUP_WINDOW).contains(&address) {
             if N != 1 {
                 return Err(BusError::UnsupportedDevice { address, width: N });
@@ -326,6 +405,15 @@ impl Bus {
                 self.onchip[target].capture_strobe();
             }
             return Ok(());
+        }
+        if (SCU..SCU + 0xD0).contains(&address) {
+            if N != 4 {
+                return Err(BusError::UnsupportedDevice { address, width: N });
+            }
+            return self.scu.write32(
+                address,
+                u32::from_be_bytes(bytes.as_slice().try_into().unwrap()),
+            );
         }
         if (BACKUP_RAM..BACKUP_RAM + BACKUP_WINDOW).contains(&address) {
             if N != 1 {
@@ -506,5 +594,66 @@ impl Memory for CpuBus<'_> {
             return self.bus.onchip[self.processor as usize].write32(address, value);
         }
         self.write(address, value.to_be_bytes())
+    }
+}
+
+#[cfg(test)]
+mod scu_timing_tests {
+    use super::*;
+    #[test]
+    fn scu_dma_and_dsp_progress_by_hardware_clocks_independent_of_cpu_issue() {
+        fn result(chunk: u32) -> (u32, u32, u64) {
+            let mut b = Bus::default();
+            b.write32(HIGH_WRAM, 0x12345678).unwrap();
+            for (off, value) in [
+                (0, HIGH_WRAM),
+                (4, VRAM),
+                (8, 4),
+                (12, 0x101),
+                (20, 7),
+                (16, 0x101),
+            ] {
+                b.write32(SCU + off, value).unwrap();
+            }
+            b.write32(SCU + 0x80, 0x8000).unwrap();
+            b.write32(SCU + 0x84, 0x8000002A).unwrap(); // MVI #42,MC0
+            b.write32(SCU + 0x84, 0xF8000000).unwrap(); // ENDI
+            b.write32(SCU + 0x80, 0x8000).unwrap();
+            b.write32(SCU + 0x80, 0x10000).unwrap();
+            let mut elapsed = 0;
+            while elapsed < 100 {
+                let n = chunk.min(100 - elapsed);
+                b.advance_clocks(n).unwrap();
+                elapsed += n;
+            }
+            b.write32(SCU + 0x88, 0).unwrap();
+            assert_eq!(b.read32(SCU + 0x8C).unwrap(), 42);
+            (
+                b.read32(VRAM).unwrap(),
+                b.read32(SCU + 0xA4).unwrap(),
+                b.raster.fields,
+            )
+        }
+        let expected = (0x12345678, (1 << 11) | (1 << 5), 0);
+        for chunk in [1, 3, 8, 17, 100] {
+            assert_eq!(result(chunk), expected);
+        }
+    }
+    #[test]
+    fn sleeping_master_can_wait_for_future_scu_timer_and_blanking_interrupts() {
+        let mut b = Bus::default();
+        assert!(!b.can_wake_master());
+        b.write32(SCU + 0xA0, 0xBFF7).unwrap();
+        b.write32(SCU + 0x98, 1).unwrap();
+        assert!(b.can_wake_master());
+        b.write32(SCU + 0x98, 0).unwrap();
+        assert!(!b.can_wake_master());
+        b.write32(SCU + 0xA0, 0xBFFE).unwrap();
+        assert!(b.can_wake_master());
+        b.reset_volatile();
+        assert!(!b.can_wake_master());
+        assert_eq!(b.raster.fields, 0);
+        assert!(!b.vdp2.hblank);
+        assert!(!b.vdp2.vblank);
     }
 }

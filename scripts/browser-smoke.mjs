@@ -399,6 +399,49 @@ try {
   assert.equal(peripheralResult.pending, false);
   await page.locator("#reset").click();
   assert.deepEqual(await peripherals(), peripheralResult);
+  // SCU guest executes DSP arithmetic + external DMA, direct/indirect DMA,
+  // and raster timer handlers through the actual Wasm machine and UI BIOS path.
+  const scuRom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/scu.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [offset, ...words] = line.trim().split(/\s+/).map((word) => parseInt(word, 16));
+    words.forEach((word, i) => scuRom.writeUInt16BE(word, offset + i * 2));
+  }
+  await page.locator("#bios").setInputFiles({ name: "original-scu.bin", mimeType: "application/octet-stream", buffer: scuRom });
+  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  const scuResult = () => page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    emulator.run_steps(10000);
+    return { mailbox: Array.from({length: 11}, (_, i) => emulator.read_long(0x06004000 + i * 4)),
+      pixels: Array.from({length: 4}, (_, i) => emulator.read_long(0x05E00090 + i * 4)),
+      dspSum: emulator.read_long(0x06006000), exceptions: emulator.exception_count(),
+      sp: emulator.registers()[15], status: emulator.status() };
+  });
+  const scuFinished = await scuResult();
+  assert.deepEqual(scuFinished.mailbox, [2, 2, 1, 84, 7, 48, 0x600D, 1, 0x40015, 7, 11]);
+  assert.deepEqual(scuFinished.pixels, [7, 11, 13, 17]);
+  assert.equal(scuFinished.dspSum, 48);
+  assert.equal(scuFinished.exceptions, "6");
+  assert.equal(scuFinished.sp, 0x060FF000);
+  assert.match(scuFinished.status, /Sleeping/);
+  await page.locator("#reset").click();
+  assert.deepEqual(await scuResult(), scuFinished);
+  const badScuRom = Buffer.from(scuRom);
+  const dspLiteral = badScuRom.indexOf(Buffer.from([0x02, 0x08, 0x40, 0x00]));
+  assert(dspLiteral > 0);
+  badScuRom.writeUInt32BE(0x40000000, dspLiteral);
+  await page.locator("#bios").setInputFiles({ name: "original-illegal-scu.bin", mimeType: "application/octet-stream", buffer: badScuRom });
+  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  await page.locator("#count").fill("1000");
+  await page.locator("#run").click();
+  assert.match(await value("error"), /SCU DSP illegal instruction 40000000 at 00/);
+  assert.equal(await page.locator("#run").isDisabled(), true);
+  const scuStopped = await machine();
+  await page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    try { emulator.run_steps(10); } catch { /* Sticky hardware fault. */ }
+  });
+  assert.deepEqual(await machine(), scuStopped);
   // Independent processors execute this same original licensed guest natively
   // in tests/dual_sh2.rs. All shared RAM/IRQ/SMPC changes are guest MMIO writes.
   const dualRom = Buffer.alloc(524288);
@@ -600,7 +643,10 @@ try {
   assert.notDeepEqual(collected.progress, initial.progress);
   assert(collected.instructions > initial.instructions);
   assert(collected.state[4] > initial.state[4]);
-  await hold("ArrowRight", 48);
+  await page.locator("#screen").focus();
+  await page.keyboard.down("ArrowRight");
+  for (let i = 0; i < 80 && (await gameState()).state[3] !== 1; i++) await stepFrames(1);
+  await page.keyboard.up("ArrowRight");
   const won = await gameState();
   assert.deepEqual(won.state.slice(0,4), [256,112,5,1]);
   assert.deepEqual(won.banner, [0,255,0,255]);
@@ -873,7 +919,7 @@ try {
   await missingBuild.waitForFunction(() => document.getElementById("status").textContent === "Initialization failed");
   assert.match(await missingBuild.locator("#error").textContent(), /Build web\/pkg and serve/);
   assert.equal(await missingBuild.locator("#reset").isDisabled(), true);
-  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation.`);
+  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation.`);
 } finally {
   if (browser) await browser.close();
   if (server?.pid && server.exitCode === null) {

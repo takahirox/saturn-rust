@@ -42,6 +42,8 @@ An additional original SH7604 guest computes signed division, copies RAM through
 on-chip DMA, handles DMA/WDT IRQs and a DMA address error, polls serial completion,
 proves stale-cache/purge behavior, triggers watchdog manual reset and handles
 misaligned exception stacking. It executes in native and browser Wasm tests.
+An additional original SCU guest executes DSP product/sum programs, direct and
+indirect DMA, timer IRQs, and reset/fault checks natively and in browser Wasm.
 No proprietary files are required. See [Issue #17 coverage](hardware-conformance.md),
 [current validation](validation-issue-17.md) and
 [earlier SH-2 validation](validation-issue-11.md). The committed sample can be rebuilt and
@@ -53,6 +55,7 @@ python3 homebrew/star-collector/build.py
 python3 homebrew/star-collector/build.py --check
 python3 tests/fixtures/build_dual_sh2.py --check
 python3 tests/fixtures/build_sh7604.py --check
+python3 tests/fixtures/build_scu.py --check
 ```
 
 ## Build and serve the browser client
@@ -219,8 +222,8 @@ report publication defects after merge; it is not an approval/closure gate.
 Local results do not prove a production deployment succeeded. This implementation
 run does not push, publish or verify a new live revision.
 
-The hosted build supports only the original silent Star Collector hardware
-subset. External BIOS mode retains local/private reset-vector stepping but does
+The hosted build supports Star Collector and the documented synthetic diagnostic
+subsets, including SCU DSP/DMA/interrupts and NTSC raster timing. It remains silent. External BIOS mode retains local/private reset-vector stepping but does
 not promise a Sega BIOS splash screen or game boot. No proprietary BIOS/security
 code or commercial disc is distributed. See [architecture](architecture.md) and
 [game license/provenance](homebrew-provenance.md).

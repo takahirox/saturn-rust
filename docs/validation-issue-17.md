@@ -4,6 +4,103 @@
 criterion is complete; #17 must remain open.** Issues #11/#13/#15 are historical,
 administratively closed trackers and must not be reopened.
 
+## PR #18 SCU execution and raster timing (2026-10-21)
+
+The full Issue #17 objective remains mandatory and **is not achieved**. PR #18
+must remain Draft; this revision is progress within that PR, not a successful
+umbrella completion. No historical Issue is reopened, no replacement Issue is
+created, and no merge or Issue closure is performed. The operator requires the
+PR's full target and intended final `Closes #17` outcome to be preserved despite
+its current incomplete implementation.
+
+Started at worktree checkpoint `6e0a446e225db835f1fec7b1c47db5b13b150c98`,
+which includes the earlier SH7604 fixes and PR head
+`a286e489f06c4044368b03a2e947f5bbef673bd7`. Upstream main was rechecked with
+`git ls-remote` and remains `dbd981b030a46daa6923072ce240680dd2e58ebf`.
+The earlier work is preserved.
+
+New executable behavior:
+
+- SCU IMS/IST, fixed vector/priority selection, master SH-2 interrupt acceptance
+  and acknowledgment, A-bus acknowledgment gate, timer0/1 and reset state.
+- Three SCU DMA channels execute direct and indirect bus transfers with counts,
+  unaligned heads/tails, B-bus halfword strides, source/destination save/update,
+  priority preemption, edge/GO triggers, one held retrigger, end/error handling.
+  Final-spec indirect entries are count/write/read with the end bit in read bit 31.
+- The original SCU DSP interpreter executes parallel X/Y/D1 operations, ALU and
+  signed multiplication, immediate transfers, delayed branches, BTM/LPS loops,
+  END/ENDI, pause/single-step, data ports and asynchronous external DMA/HOLD.
+- NTSC 320-dot raster events drive TVSTAT HBlank/VBlank, SCU edges/timers and
+  bounded field advancement. SCU DSP instructions and DMA advance by clock
+  deadlines, including during DIVU waits/SLEEP. Native tests compare results for
+  different clock chunk sizes. CPU issue/on-chip DMA still use fixed turns;
+  full CPU/bus timing and other television modes remain required work.
+
+Primary references are original **ST-097 §§2–4** and the superseding
+**ST-210 final-specification corrections #1–27/30–36**, linked in the
+[conformance matrix](hardware-conformance.md#scu-and-dsp). In particular, the old
+DSTA/DSTOP functions are removed and IST writes prohibited in the final spec;
+unsupported accesses fail rather than accepting inert writes. No emulator source,
+third-party core, SDK objects, proprietary BIOS or manual sample program is used.
+
+The original MIT-licensed [SCU guest source/builder](../tests/fixtures/build_scu.py)
+generates [scu.hex](../tests/fixtures/scu.hex). Its zero-filled 524288-byte expanded
+ROM has SHA-256:
+
+```text
+d8acbfdede3290fd581a2227e6f3eb8e6c1eb05a5edb38d415efe2b11f5d137a
+```
+
+Both [native integration](../tests/scu.rs) and the real
+[browser Wasm test](../scripts/browser-smoke.mjs) boot that same synthetic ROM.
+After boot, only guest instructions write guest/device state. The guest loads a
+DSP program computing 7×6+42=84, performs direct DMA to VRAM, walks two indirect
+entries, then loads another DSP program that DMA-loads 7/11/13/17 and sums them
+to 48 before DMA-writing the result to high RAM. Guest IRQ handlers observe DSP,
+DMA0/1 and timer0/1 completion, read the actual devices, preserve registers/stack,
+and return through RTE. The eleven independently expected mailbox longwords are:
+
+```text
+00000002 00000002 00000001 00000054 00000007 00000030 0000600D
+00000001 00040015 00000007 0000000B
+```
+
+There are six accepted interrupts; final SP=060FF000 and CPU=SLEEP. Cold reset
+repeats the results. A negative test patches an original DSP instruction to
+40000000 and requires an observable sticky bounded machine fault at DSP PC 00,
+including through the browser UI. No-op DSP/DMA implementations cannot produce
+the required computed/mailbox/VRAM results. This fixture is a CPU/device diagnostic
+ROM and **does not satisfy either new demonstration-disc requirement**.
+
+Validation performed on this revision:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`: pass;
+  **117 native tests**, none ignored. Existing address-error, dual-CPU, backup,
+  two-pad, ISO parser and game completion/restart tests all remain in the suite.
+- Native all-target Clippy and wasm32 Clippy, warnings denied: pass.
+- Star Collector, dual-SH-2, SH7604 and SCU fixture `--check` builds: pass.
+  CI verifies the new SCU fixture alongside the preserved fixtures.
+- `sh scripts/build-web.sh`: pass with the existing Rustup stable toolchain
+  and matching wasm-bindgen-cli 0.2.129. No new Rust dependencies/core are added.
+- `npm ci --ignore-scripts`, `npx playwright install chromium`, and the complete
+  `npm run test:browser`: pass in **Chromium 145.0.7632.6** under `/saturn-rust/`.
+  New SCU output/reset/fault assertions run alongside all previous UI, privacy,
+  file/error, input, gameplay, backup and synthetic BIOS checks; no required check
+  is skipped. Native/browser initial runs exposed a fixed old gameplay-frame
+  budget assumption (position 252, four stars after 48 fields). With the new clock
+  deadlines, tests now hold input until the actual guest win state within 80
+  fields, preserving all position/score/pixel/completion/restart assertions.
+- Browser-script syntax, source whitespace and documentation relative links: pass.
+
+Remaining mandatory implementation includes MC68EC000, VDP1 and advanced VDP2,
+SCSP/effects DSP/CD-DA/WebAudio, runtime CD/BIN/CUE, complete BIOS/HLE/backup and
+SMPC/analog services, SH7604/CPU/reset/bus edges, SCU arbitration/device routes and
+complete DSP transfer/condition/bank-conflict evidence, and both required original
+licensed guest demo discs. The matrix keeps these pending; passing this subset is
+not full hardware conformance. Genuine Sega BIOS/retail compatibility is not
+independently confirmed and remains optional. No human-only approval/testing,
+external workflow investigation, personal firmware or live Pages gate is added.
+
 ## PR #18 review fixes: SH7604 and cache (2026-10-21)
 
 Started from review checkpoint `1cd6385b801d7b5462a915794687a13df3eb9102`,

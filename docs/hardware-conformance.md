@@ -3,14 +3,15 @@
 **Status: incomplete; Issue #17 is the active continuation tracker.** Issues
 #11/#13/#15 remain administratively closed; do not reopen them. This checkpoint
 includes independent slave SH-2 execution, CPU-local FRT/WDT/SCI/DIVU/DMAC,
-internal interrupt arbitration, write-through caches and timed SMPC CPU control. It preserves the address-error fixtures, Star Collector,
+internal interrupt arbitration, write-through caches, timed SMPC CPU control,
+SCU interrupt/DMA/DSP execution and clock-based NTSC raster events. It preserves the address-error fixtures, Star Collector,
 backup RAM and both direct digital pads. It does not complete the Saturn hardware
 or either required new demonstration. No umbrella acceptance checkbox is met.
 
 Inspected upstream main: `dbd981b030a46daa6923072ce240680dd2e58ebf` (2026-10-21),
-verified with `git ls-remote origin refs/heads/main`. The assigned readiness
-review checkpoint is `1cd6385b801d7b5462a915794687a13df3eb9102`; its agent-fixable
-findings identify the full outstanding hardware scope. See [current validation](validation-issue-17.md),
+verified with `git ls-remote origin refs/heads/main`. This revision starts from
+`6e0a446e225db835f1fec7b1c47db5b13b150c98`, preserving the earlier review and
+SH7604 fixes. The full outstanding hardware scope remains mandatory. See [current validation](validation-issue-17.md),
 [historical address-error validation](validation-issue-15.md),
 [backup/pad validation](validation-issue-13.md) and the
 [historical SH-2 checkpoint](validation-issue-11.md). **Pending** means required
@@ -93,6 +94,19 @@ from misaligned exception stacking. **CACHE** means the four vectors in
 The fixture is MIT licensed and reproducible using
 [build_sh7604.py](../tests/fixtures/build_sh7604.py), which CI verifies. It is a
 CPU diagnostic ROM, not either required new demonstration disc.
+
+**SCUROM** means [tests/scu.rs](../tests/scu.rs) and the identical original
+[SCU fixture](../tests/fixtures/build_scu.py), generated as
+[scu.hex](../tests/fixtures/scu.hex) and executed by browser Wasm in
+[browser-smoke.mjs](../scripts/browser-smoke.mjs). SH-2 instructions load and
+execute DSP product/sum programs, configure direct/indirect DMA to VRAM and
+acknowledge six interrupts. Independent expected results are 84 and 48, not
+host-computed guest output. **SCUV** means [src/scu/tests.rs](../src/scu/tests.rs),
+including golden ALU/parallel-bus/control/DMA/timer vectors; **TIME** means
+[src/timing.rs](../src/timing.rs) and the SCU timing tests in
+[src/bus.rs](../src/bus.rs). All use [SCU] §§2–4 corrected by
+[SCU Final Specifications][SCUFINAL] #1–27/30–36. SCUROM is a diagnostic synthetic
+ROM, not either required demonstration disc.
 
 ## SH-2 instruction families
 
@@ -192,7 +206,7 @@ not turn those missing hardware paths into supported behavior.
 | On-chip DMAC, H §§9.2–9.3 | Both channels; byte/word/long/16-byte transfers; fixed/increment/decrement addresses; auto/DREQ/SCI requests; fixed/round-robin channel selection, TE/AE/NMIF acknowledgement, vectors/IRQ | PERIPH; `Dma` and `Bus::advance_dma` | PERIPH (copy/end IRQ/error 10/no cache snoop) | Single-address DACK mode rejected explicitly; CPU/refresh arbitration, burst/cycle-steal timing and wait states missing | Pending |
 | DIVU, H §§10.2–10.4 | Signed 32/32 and 64/32 quotient/remainder, 39/6-clock completion/interlock, DVCR/VCRDIV, sticky overflow and IRQ | PERIPH; `Division` | PERIPH (signed 32/64-bit normal division) | Six-cycle intermediate overflow state is not modeled: deterministic saturation and input-high preservation are used even with OVFIE=1; no full conformance claim | Pending |
 | BSC/UBC/standby, H bus/break/power chapters | None | — | — | Software-visible control/register behavior missing | Pending |
-| Slave SH-2, [Dual CPU User's Guide][DUALREF] §§1/3/4, [SMPC] table 1.1 | Independent interpreter/registers/stacks/peripherals/cache; shared bus, SSHON/SSHOFF, bidirectional capture IRQs | DUAL, CACHE, PERIPH | DUAL, PERIPH | BCR1 identity, bus contention and hardware-time scheduling absent | Pending |
+| Slave SH-2, [Dual CPU User's Guide][DUALREF] §§1/3/4, [SMPC] table 1.1 | Independent interpreter/registers/stacks/peripherals/cache; shared bus, SSHON/SSHOFF, bidirectional capture IRQs | DUAL, CACHE, PERIPH | DUAL, PERIPH | BCR1 identity, bus contention and full CPU clock accounting absent | Pending |
 
 ## MC68EC000 instruction families
 
@@ -288,25 +302,44 @@ manual entry in this table is an outstanding requirement, never a checked box.
 | Backup byte storage, SCU §1.2 figs.1.3/1.5; SMPC §2.3 SYSRES p.29 | 32 KiB, odd byte addresses in 00180000–0018FFFF; P1 aliases; unformatted zero initialization | BK; `backup_byte_lanes_endpoints_and_cache_through_access_do_not_alias_work_ram` | BK | Even lanes/open bus, word/long semantics, additional mirrors and hardware lane confirmation pending | Pending |
 | Backup reset retention, SMPC §2.3 SYSRES p.29 | Bytes survive successful/rejected HLE, disc and ROM resets; new Machine starts empty | BK; `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot` | BK, reset/mode/read-race checks | Guest SYSRES and other power/reset domains missing | Pending |
 | Local backup import/export (host interface) | Exact 32768 packed bytes; atomic replacement; explicit local download; stale import cancellation; no network/storage | `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot` | Download byte comparison, offline import, invalid size/read errors, races, fresh-tab isolation | BIOS backup filesystem/calls and cartridge backup absent; no automatic cross-session persistence | Pending |
-| Shared event scheduler, O clock domains | Deterministic master/slave/peripheral ordering, eight-clock functional turns; legacy visible/blank budgets | game.rs, DUAL | SC, DUAL | Real instruction/bus cycles, scanline events, all clock domains and contention missing | Pending |
-| Video timing, VDP2 display registers | Pollable frame VBLANK bit | game.rs | SC | HBLANK, scanlines, PAL/NTSC, interlace/field behavior and IRQs missing | Pending |
+| Shared event scheduler, O clock domains | Deterministic CPU order, raster/SCU event deadlines and clock-driven DSP/DMA; field deadlines replace instruction budgets | TIME, SCUROM, game.rs, DUAL | SCUROM, SC, DUAL | CPU opcode/on-chip DMA cycles, all remaining clock domains and bus contention missing | Pending |
+| Video timing, VDP2 display registers | Clock-based 263-line/224-visible NTSC raster, HBLANK/VBLANK bits and SCU edges; bounded field advancement | TIME, SCUROM, game.rs | SCUROM, SC | Other resolutions, PAL/interlace/clock modes and exact beam phase remain missing | Pending |
 | Audio timing, SCSP/CD | None | — | — | Sample clocks, bounded stereo stream, underflow/muting missing | Pending |
 | Power/reset domains, SMPC / H | Cold reset clears both CPUs/devices and retains backup; SSHOFF resets slave CPU/FRT while retaining shared state; SLEEP distinct | boot.rs, sh2_system.rs, DUAL | ROM/reset, DUAL | Manual/system reset and remaining power/clock controls missing | Pending |
 
 ## SCU and DSP
 
-All missing rows require executable native and Wasm guest fixtures; accepting or
-storing a register without effects will not count as implementation.
+SCU subsets now execute actual operations. The entire SCU acceptance criterion
+remains pending: bus arbitration/waits, all device connections and exhaustive DSP
+edge/transfer coverage are still required. Unsupported registers fail explicitly.
 
 | Feature / manual | Implemented behavior | Native / browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- |
-| SCU interrupt registers, [SCU] | None | — / — | Requests, masks, priorities, vectors, CPU delivery/acknowledgment | Pending |
-| A/B-bus coordination, [SCU] | None | — / — | Access ordering/waits/errors | Pending |
-| DMA channels 0–2 direct, [SCU] | None | — / — | Registers, lengths, increments, triggers, completion/errors | Pending |
-| DMA indirect, [SCU] | None | — / — | Descriptor walking/end, address updates | Pending |
-| DMA device interactions, [SCU] | None | — / — | VDP/sound/CD transfers and IRQs | Pending |
-| SCU DSP execution/registers, [SCUDSP] | None | — / — | ALU/multiply, parallel operations, moves/immediates, jumps/loops, END/control | Pending |
-| SCU DSP memory/transfers, [SCUDSP] | None | — / — | Internal banks, ports, address counters, DSP DMA | Pending |
+| SCU interrupt registers, [SCU] table 2.1/§3.5, [SCUFINAL] #7/10 | IMS/IST, fixed priorities/vectors, master delivery/acknowledgment, A-bus acknowledgment gate | SCUV, SCUROM / SCUROM | Sound, CD and VDP1 producers missing; complete external interrupt pin behavior unverified | Pending |
+| A/B-bus coordination, [SCU] §3.6, [SCUFINAL] #8–12 | Prohibited DMA source/destination checks and bounded error handling | SCUV / SCUROM (valid transfers) | ASR/refresh wait-state and CPU/bus contention behavior missing | Pending |
+| DMA channels 0–2 direct, [SCU] §§2.1/3.2, [SCUFINAL] #15–24 | Counts, address save/update, unaligned heads/tails, B-bus halfword strides, all seven edge triggers/GO, end/illegal IRQ and priority preemption; one queued retrigger | SCUV, SCUROM / SCUROM (channels 0/1) | Exhaustive trigger/device/boundary tests, actual bus latencies and prohibited three-channel behavior pending | Pending |
+| DMA indirect, [SCUFINAL] #24/25 | Final-spec count/write/read layout, source bit-31 end marker, table walking, write-address continuation | SCUV, SCUROM / SCUROM | Entire table alignment/overflow/error contract and all count limits need further vectors | Pending |
+| DMA device interactions, [SCU] §2.1 | High-RAM to VDP2 VRAM and executing DSP external RAM transfers, real IRQ handlers | SCUV, SCUROM / SCUROM | VDP1/sound/CD hardware paths and arbitration missing | Pending |
+| SCU DSP execution/registers, [SCU] §4.5 pp.91–131/141–158 | ALU logical/arithmetic/shift/rotate, signed multiply, parallel X/Y/D1 moves, immediates, delayed jumps/subroutine control, BTM/LPS, END/ENDI, pause/step and read-cleared E/V | SCUV, SCUROM / SCUROM (product/sum/loop/ENDI) | Full conditional/DMA timing, conflicting bank access and ALU overflow/pipeline edge inventory pending | Pending |
+| SCU DSP memory/transfers, [SCU] §§3.3/4.1/4.5 pp.132–140, [SCUFINAL] #16/18/19/26/27 | Four 64-word banks, host ports, address counters, bounded asynchronous input/output DMA and HOLD, END permits DMA continuation | SCUV, SCUROM / SCUROM (immediate-count RAM DMA) | Register-count/program-RAM DMA, cross-device routes and data-bank conflicts lack complete evidence | Pending |
+| SCU timers, [SCU] §§2.2/3.4, [SCUFINAL] #30/31 | Raster-driven timer0 clear/compare and timer1 dot countdown, zero=512, no reload while active, compare-line selection | SCUV, TIME, SCUROM / SCUROM | Full television modes and beam-phase conformance pending | Pending |
+
+Implementation: [SCU ports/interrupts/timers](../src/scu.rs),
+[DMA beats](../src/scu/dma.rs), [DSP interpreter](../src/scu/dsp.rs),
+[clock-domain dispatch](../src/bus.rs) and [raster deadlines](../src/timing.rs).
+ST-210 supersedes the earlier indirect-table diagram and removes DSTA/DSTOP;
+these ports and prohibited IST writes raise diagnostics rather than behaving as
+inert registers. SCU pending edges clear on accepted CPU interrupt acknowledgment.
+A-bus requests require AIACK to be armed again after its acknowledge cycle.
+
+The DSP executes every two reference clocks. External SCU DMA issues at most one
+beat per eight reference clocks, independent of CPU issue and DIVU wait length.
+SCU timer, DSP and raster deadlines split peripheral clock advancement. Native
+vectors prove identical results for 1/3/8/17/100-clock chunks. Raster vectors prove
+identical event traces for 1/3/8/127/1708/10000-clock chunks. CPU issue/on-chip DMA
+still use the interpreter turn, so this is not complete Saturn bus arbitration or
+opcode cycle accounting. Three simultaneous DMA channels, bank conflicts and
+invalid software parameters do not claim physical electrical behavior.
 
 ## VDP1 and VDP2
 
@@ -322,7 +355,7 @@ storing a register without effects will not count as implementation.
 | Draw/erase/swap/status/IRQ, [VDP1] | None | — | — | Framebuffer lifecycle and SCU drawing-end integration | Pending |
 | VDP2 VRAM, [VDP2] §3 | Bank-zero bitmap RAM | devices.rs | SC | VRAM banks/cycle-pattern arbitration; cycle words only stored | Pending |
 | VDP2 CRAM, [VDP2] color RAM | None | — | — | Palette modes and access rules | Pending |
-| TVMD/TVSTAT, [VDP2] §2.2 | 320×224 noninterlace, display enable and polled VBLANK | devices.rs | SC | PAL/NTSC/resolutions/interlace/beam status/IRQ | Pending |
+| TVMD/TVSTAT, [VDP2] §2.2 | 320×224 noninterlace, display enable, clocked HBLANK/VBLANK and SCU edges | devices.rs, TIME | SC, SCUROM | Other resolutions, PAL/interlace and full beam status/latches | Pending |
 | NBG0 bitmap, [VDP2] §§4–5 | RGB555 512-pixel pitch, bank 0, unity zoom | devices.rs | SC | Other formats, transparency, scroll/zoom | Pending |
 | NBG0–3 tile/character, [VDP2] scroll screens | None | — | — | Pattern names, maps/planes, character formats | Pending |
 | NBG1–3 bitmap/layer control, [VDP2] scroll screens | None | — | — | Applicable screen modes/VRAM/priority | Pending |
@@ -383,7 +416,9 @@ storing a register without effects will not count as implementation.
 3. Full base memory map, backup bus lanes/widths/mirrors and BIOS filesystem/calls,
    plus hardware clock/event scheduling. Packed backup import/export and byte
    retention pass subset tests; other reset domains remain absent.
-4. SCU register/interrupt controller, all DMA modes/channels and executing SCU DSP.
+4. Complete SCU A/B-bus wait-state/arbitration and device routes, DMA boundary/
+   trigger coverage, DSP conditional/pipeline/bank-conflict and program-DMA evidence.
+   SCUROM now executes real DMA/DSP/timer/IRQ operations but is subset evidence.
 5. VDP1 and remaining VDP2 modes/effects/composition/timing, with independent
    expected pixel outputs. Existing single bitmap mode is the only video evidence.
 6. Runtime CD block, BIN/CUE/mixed tracks, complete BIOS HLE ABI, full native BIOS
@@ -411,8 +446,9 @@ plain references and continue implementation under the current umbrella backlog.
 Do not reopen #11/#13/#15 or require workflow-owner confirmation, a real BIOS,
 manual hardware testing, subjective visual/audio approval or a live-site check.
 Existing CI runs native, Wasm and headless browser tests under `/saturn-rust/`.
-This node makes no remote changes; it neither investigates nor changes external
-GitWeave configuration. All hardware gaps above remain technical requirements.
+PR #18 remains Draft while required implementation/validation is pending. Its
+full Issue #17 target is retained; no merge or Issue closure is authorized here.
+All hardware gaps above remain technical requirements.
 
 ## Dual-CPU/FRT scope and deterministic deviations
 
@@ -429,10 +465,11 @@ its FRT and interrupt state while retaining shared memory and master state.
 A failure on either CPU stops subsequent machine turns until reset; successful
 earlier accesses within a failing turn are not rolled back.
 
-The eight-clock quantum is a **functional interleave**, not SH-2 opcode cycle
-accounting or Saturn hardware-time scheduling. `advance_frame` retains the
-60000/20000-turn visible/blank budgets; it has no scanline/HBlank events or bus
-arbitration. The 807-clock SMPC delay rounds the documented minimum 30 µs at
+The eight-clock CPU quantum remains a **functional interleave**, not SH-2 opcode
+cycle accounting. `advance_frame` now advances to a clock-based raster field
+deadline instead of 60000/20000 instruction budgets. Scanline/HBlank/VBlank and
+SCU timer/DSP/DMA events are clock-driven; CPU/on-chip-DMA and full bus
+arbitration remain incomplete. The 807-clock SMPC delay rounds the documented minimum 30 µs at
 26.8741 MHz upward; firmware jitter is absent. The guest sees completion at a
 turn boundary. Unsupported commands still fail explicitly. SF=0 command issue,
 SF clear writes and busy command overwrite are rejected; these invalid-software
@@ -523,3 +560,5 @@ observations were used in this checkpoint.
 [DISC]: https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-040-R4-051795.pdf
 
 [DUALREF]: https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-202-R1-120994.pdf
+
+[SCUFINAL]: https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-210-110194.pdf

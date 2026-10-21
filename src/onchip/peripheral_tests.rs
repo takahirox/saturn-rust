@@ -357,9 +357,9 @@ fn sci_dma_requests_move_real_data_acknowledge_flags_and_bypass_warm_cpu_cache()
     }
     assert!(!bus.advance_dma(Processor::Master));
     assert_eq!(bus.read8(SCI + 4).unwrap() & 0x84, 0); // TDRE/TEND cleared by DMAC.
-    bus.advance_clocks(319);
+    bus.advance_clocks(319).unwrap();
     assert_eq!(bus.take_serial_output(Processor::Master), None);
-    bus.advance_clocks(1);
+    bus.advance_clocks(1).unwrap();
     assert_eq!(bus.take_serial_output(Processor::Master), Some(0x35));
     assert_eq!(bus.read8(SCI + 4).unwrap() & 0x84, 0x84);
 }

@@ -96,6 +96,7 @@ pub struct Vdp2 {
     registers: [u8; 0x120],
     pub vram: Vec<u8>,
     pub vblank: bool,
+    pub hblank: bool,
 }
 
 impl Default for Vdp2 {
@@ -104,6 +105,7 @@ impl Default for Vdp2 {
             registers: [0; 0x120],
             vram: vec![0; 512 * 1024],
             vblank: false,
+            hblank: false,
         }
     }
 }
@@ -123,8 +125,8 @@ impl Vdp2 {
     pub fn read16(&self, address: u32) -> Result<u16, BusError> {
         let offset = (address - VDP2) as usize;
         if offset == 4 {
-            // ST-058 §2.2 screen status: VBLANK bit 3. No raster/HBlank model.
-            return Ok(if self.vblank { 8 } else { 0 });
+            // ST-058 §2.2: HBLANK bit 2, VBLANK bit 3.
+            return Ok(u16::from(self.vblank) << 3 | u16::from(self.hblank) << 2);
         }
         if !Self::supported(offset) {
             return Err(BusError::UnsupportedDevice { address, width: 2 });

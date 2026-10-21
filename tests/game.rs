@@ -16,7 +16,9 @@ fn actual_disc_guest_moves_collects_completes_and_restarts() {
     assert_eq!(m.cpu_state().pc, 0x06002E20);
     frames(&mut m, 20, 0);
     assert_eq!(&state(&m)[..4], &[32, 112, 0, 0]);
-    assert_eq!(m.cpu_state().instructions, m.frames() * 80_000);
+    assert_eq!(m.cpu_state().instructions * 8, m.clocks());
+    assert!(m.clocks() >= m.frames() * saturn_rust::timing::CLOCKS_PER_FIELD);
+    assert!(m.clocks() < m.frames() * saturn_rust::timing::CLOCKS_PER_FIELD + 8);
     let initial = m.framebuffer().unwrap();
     frames(&mut m, 8, 8);
     assert_eq!(&state(&m)[..4], &[64, 112, 1, 0]);
@@ -27,7 +29,12 @@ fn actual_disc_guest_moves_collects_completes_and_restarts() {
         &initial[(27 * 320 + 45) * 4..][..4],
         &collected[(27 * 320 + 45) * 4..][..4]
     );
-    frames(&mut m, 48, 8);
+    for _ in 0..80 {
+        frames(&mut m, 1, 8);
+        if state(&m)[3] == 1 {
+            break;
+        }
+    }
     assert_eq!(&state(&m)[..4], &[256, 112, 5, 1]);
     let won = m.framebuffer().unwrap();
     assert_eq!(&won[(150 * 320 + 100) * 4..][..4], &[0, 255, 0, 255]);

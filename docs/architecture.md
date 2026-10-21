@@ -16,7 +16,9 @@ automated local/CI checks; live Pages inspection is not a completion gate.
 | src/disc.rs | Bounded cooked ISO9660 and Saturn IP validation, first-read executable selection |
 | src/devices.rs | VDP2 bitmap rasterization and SMPC digital-pad electrical inputs |
 | src/lib.rs | Explicit cold-boot modes, independent master/slave ownership, bounded functional interleaving |
-| src/onchip.rs | Independent per-CPU FRT and FRT-related INTC registers |
+| src/onchip.rs | CPU-local FRT/WDT/SCI/DIVU/DMAC and internal INTC |
+| src/scu.rs, src/scu/ | SCU interrupt controller, three DMA channels and original DSP interpreter |
+| src/timing.rs | Clock-based NTSC raster deadlines |
 | src/wasm.rs | Thin Wasm adapter; no gameplay or browser APIs |
 | web/app.js | Local file handling, keyboard levels, animation scheduling and RGBA framebuffer copy to Canvas |
 | homebrew/star-collector | Buildable MIT-licensed SH-2 guest and reproducible ISO builder |
@@ -27,10 +29,11 @@ boot. Invalid input leaves that mode selected and CPU in Reset, with no stale
 media or fallback. Battery-backed bytes are retained. `step()` makes one bounded master turn and,
 when enabled, one slave turn, then advances peripherals by eight reference clocks;
 exception entry or a sleeping turn can retire no instructions. `run_steps(n)` accepts 1–10000 steps.
-`advance_frame()` performs 60000 steps with TVSTAT VBLANK clear,
-then 20000 with VBLANK set. Every frame has a bounded CPU budget and aborts on
-its first fault. This is a deterministic functional interleave, not SH-2 opcode cycle accounting,
-60 Hz hardware execution, raster interrupts or bus arbitration. See the
+`advance_frame()` waits for the next NTSC raster field deadline with a bounded
+turn limit and aborts on its first fault. Raster, SCU timer and DSP deadlines split
+peripheral advancement; SCU external DMA advances on eight-clock boundaries.
+CPU issue remains a deterministic functional interleave without SH-2 opcode cycle
+accounting or full bus arbitration. See the
 [dual-CPU/FRT timing limits](hardware-conformance.md#dual-cpufrt-scope-and-deterministic-deviations).
 The browser advances at most one frame per requestAnimationFrame callback,
 limited to 60 updates per second; it does no catch-up loop. Actual speed depends
@@ -122,6 +125,7 @@ bus locking/arbitration between processors, or native Sega BIOS compatibility.
 | 01000000 / 01800000 | Write-only word capture strobes to slave/master FRT |
 | 05E00000–05E7FFFF | 512 KiB VDP2 VRAM |
 | 05F80000–05F8011F | VDP2, only the listed register subset |
+| 05FE0000–05FE00CF | SCU documented port subset; long accesses, prohibited/unsupported ports fail |
 | 06000000–060FFFFF | 1 MiB high work RAM |
 | FFFFFE10–FFFFFE19 | CPU-local FRT, byte accesses only |
 | FFFFFE00–FFFFFE05 | CPU-local SCI, byte access |
@@ -250,7 +254,8 @@ used as implementation code. Manual section/page references use printed pages.
 - [SMPC User's Manual](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-169-R1-072694.pdf), §1.2 pp.5–8 byte-only register map; §3.1 pp.74–75 direct access; §3.4 table 3.36 p.97 digital-pad TH/TR protocol.
 - [Disc Format Standards](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-040-R4-051795.pdf), §§3–4, especially pp.25–31 IP fields, master stack and first-read file; ISO9660 directory record/volume layout.
 - [Boot ROM User's Manual](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-079B-R3-011895.pdf), §§1–3 startup/services. Full BIOS services are not implemented.
-- [SCU User's Manual](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-097-R5-072694.pdf) and [VDP1 User's Manual](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-013-R3-061694.pdf) were consulted for subsystem boundaries. Neither device is needed by this target or emulated here.
+- [SCU User's Manual](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-097-R5-072694.pdf), §§2–4, corrected by [Final Specifications](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-210-110194.pdf) #1–27/30–36: interrupt, DMA, DSP and raster timer behavior. The original guest programs contain no SDK/manual sample code.
+- [VDP1 User's Manual](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-013-R3-061694.pdf) defines remaining VDP1 work; this device is still absent.
 
 The [game redistribution audit](homebrew-provenance.md) records candidate decisions,
 original-game licensing and build provenance. Existing wasm-bindgen (MIT/Apache-2.0)
@@ -259,8 +264,8 @@ added. Manuals/firmware are not redistributed.
 
 ## Remaining milestones
 
-Misaligned exception stacking, non-FRT interrupt wiring, accurate hardware cycles
-and timer contention, remaining SH7604 peripherals, SCU DMA/DSP/interrupts,
+Accurate CPU/bus cycles and contention, remaining SH7604 peripherals and
+SCU cross-device/arbitration/DSP edge conformance,
 remaining SMPC commands/INTBACK, additional VDP2
 modes, VDP1, CD-block runtime reads, BIOS services and native BIOS startup remain
 future compatibility work. Audio (68EC000/SCSP) is absent; this build is silent.
@@ -272,3 +277,20 @@ server backend or general-game compatibility is introduced.
 Issue #17 continues all unmet hardware criteria; #11/#13/#15 remain closed.
 See [hardware conformance and unresolved gaps](hardware-conformance.md)
 and [current validation](validation-issue-17.md).
+
+## SCU and raster clock domains
+
+The SCU now interprets guest-loaded DSP instructions, moves actual bus data with
+three DMA channels and external DSP DMA, and delivers fixed-priority IRQs to the
+master SH-2. Native and browser tests use the same original synthetic guest ROM.
+See [the conformance matrix](hardware-conformance.md#scu-and-dsp) for operation,
+register and test links and the remaining limitations.
+
+`timing::Raster` emits clock-based NTSC 320-dot scanline/HBlank/VBlank deadlines.
+`Bus::advance_clocks` splits device advancement at raster, SCU timer and DSP
+boundaries, with external DMA beats on eight-clock boundaries. `advance_frame`
+waits for a raster field boundary with a hard turn bound. It no longer assigns
+60000/20000 retired-instruction budgets to active/blank phases. The CPU issue
+quantum and on-chip DMA arbitration remain incomplete timing models; this change
+does not establish full hardware-time acceptance. Star Collector completion tests
+wait for the guest result within a bound rather than requiring the old budget.
