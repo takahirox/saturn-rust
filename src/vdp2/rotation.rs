@@ -140,16 +140,27 @@ impl Vdp2 {
             (multiply(ky, multiply(d, sx) + multiply(e, sy) + multiply(f, sz)) + yp) >> 16,
         )
     }
-    pub(super) fn rotation(&self, x: usize, y: usize) -> Option<Layer> {
-        self.rotation_screen(false, x, y)
+    pub(super) fn rotation(&self, x: usize, y: usize, sprite_window: bool) -> Option<Layer> {
+        self.rotation_screen(false, x, y, sprite_window)
     }
-    pub(super) fn rotation1(&self, x: usize, y: usize) -> Option<Layer> {
-        self.rotation_screen(true, x, y)
+    pub(super) fn rotation1(&self, x: usize, y: usize, sprite_window: bool) -> Option<Layer> {
+        self.rotation_screen(true, x, y, sprite_window)
     }
-    fn rotation_screen(&self, rbg1: bool, mut x: usize, y: usize) -> Option<Layer> {
+    fn rotation_screen(
+        &self,
+        rbg1: bool,
+        mut x: usize,
+        y: usize,
+        sprite_window: bool,
+    ) -> Option<Layer> {
         let id = if rbg1 { 0 } else { 4 };
         if self.word(0x20) & if rbg1 { 0x20 } else { 0x10 } == 0
-            || !self.window(self.word(if rbg1 { 0xD0 } else { 0xD4 }), x, y)
+            || !self.window(
+                self.word(if rbg1 { 0xD0 } else { 0xD4 }),
+                x,
+                y,
+                sprite_window,
+            )
         {
             return None;
         }
@@ -169,7 +180,7 @@ impl Vdp2 {
                 0 => 0,
                 1 => 1,
                 2 => usize::from(ca.is_some_and(|c| c.0)),
-                _ => usize::from(!self.window(self.word(0xD6), x, y)),
+                _ => usize::from(!self.window(self.word(0xD6), x, y, sprite_window)),
             }
         };
         let coefficient = if parameter == 0 {

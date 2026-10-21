@@ -44,10 +44,7 @@ fn execute(m: &mut Machine, rom: &[u8]) -> Vec<[i16; 2]> {
     assert!(m.sound_state().stopped && !m.sound_state().halted);
     assert_eq!(m.sound_state().last_vector, Some(28));
     assert_eq!(m.bus().read16(SOUND_RAM + 0x4300).unwrap(), 8192);
-    m.drain_audio(8192)
-        .chunks_exact(2)
-        .map(|s| [s[0], s[1]])
-        .collect()
+    m.drain_audio(8192).as_chunks::<2>().0.to_vec()
 }
 fn audible(audio: &[[i16; 2]]) -> &[[i16; 2]] {
     &audio[audio.iter().position(|s| s[1] != 0).unwrap()..]

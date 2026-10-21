@@ -1005,3 +1005,66 @@ its intended final outcome, not a statement that this validation completes it.
 No proprietary firmware, human approval/testing/listening, live Pages inspection,
 external-workflow investigation or post-merge approval gate is required. Nothing
 is merged; local validation does not claim remote CI or production deployment.
+
+## Review fixes: CI, CD drive, sprite composition and sound I/O
+
+Related to #17. Upstream `main` was rechecked as
+`dbd981b030a46daa6923072ce240680dd2e58ebf` on 2026-10-21.
+
+- Replaced the six constant-size slice chunk calls rejected by Rust 1.99
+  Clippy. Required lints/checks remain enabled.
+- Implemented separate CD read/report deadlines, 60 Hz pause reporting,
+  programmable pause-to-standby, directional scan with range termination and
+  CD-DA attenuation/muting, tray/media retention and virtual close, empty
+  subcode R–W FIFO WAIT and full-sector-pool pause/resume without dropping the
+  blocked sector. Scan speed is unspecified in ST-162; the deterministic model
+  advances ten sectors per 75 Hz drive tick. It does not claim measured pickup
+  speed. CUE PRE/DCP/4CH CONTROL flags now reach TOC/status/Q metadata; malformed,
+  duplicate and incompatible flags are rejected. This metadata support does not
+  implement de-emphasis filtering or four-channel output.
+- Implemented all sixteen VDP2 sprite field layouts, including shared selector/
+  palette bits; normal 8-bit VDP1 scanout; sprite windows combined with normal/
+  line windows; normal/MSB/transparent shadow controls and ordering after color
+  calculation/offset; palette-MSB color-calculation conditions in RGB555/RGB888.
+  Rotated scanout and other required display modes remain outstanding.
+- Implemented automatic 31.25 kbit/s 8-N-1 MIDI output deadlines in the sound
+  event domain. Host inspection retrieves completed characters without driving
+  FIFO progress. Tests assert timing, independent sound/main interrupt clearing,
+  reset cancellation and bounded output. Native and Wasm guests program SCSP
+  DMA, poll MIDI completion and acknowledge three IRQ levels. Their real 68k
+  instructions additionally compute BCD, MOVEP/MOVEM, multiply/divide/extend
+  arithmetic, a partial-transfer bus-fault frame and TRAP/RTE results. Guest
+  operand mutations change actual DMA output; no host writes set result state.
+
+The three added synthetic ROMs share [the original MIT fixture license](../tests/fixtures/LICENSE).
+They contain no proprietary firmware, SDK objects or third-party device cores.
+Their builders are required by CI, alongside the preserved licensed discs.
+
+| Original guest | Source/build | Expanded ROM SHA-256 |
+| --- | --- | --- |
+| CD drive | [build_cd_drive.py](../tests/fixtures/build_cd_drive.py) | `9f9860732832f22ff1f25038b53a1b3ae108680b83295ba42b0257428c543380` |
+| Sprite effects | [sprite-effects.s](../tests/fixtures/sprite-effects.s), [builder](../tests/fixtures/build_sprite_effects.py) | `c640bb5a10cb281c0b0e6a86e067c085f5f8434505ccd9c4b2690cea68c7b1c1` |
+| Sound I/O and CPU families | [build_sound_io.py](../tests/fixtures/build_sound_io.py), [original 68k encodings](../tests/fixtures/build_sound.py) | `740db49f8bd44c7ab574bd267a419ddc7d74ef7bb2527aa44a819d898e83600e` |
+
+Actual local checks at this revision, using Rust 1.99.0 and wasm-bindgen 0.2.129:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`: **287
+  passed, zero failed/ignored** (164 unit tests and 123 integration tests).
+- Native all-target and Wasm Clippy with `-D warnings`: passed.
+- All **21** CI reproducibility commands: passed; existing Star Collector,
+  Prism Courier and Hardware Lab media hashes remain unchanged.
+- `sh scripts/build-web.sh`, `node --check scripts/browser-smoke.mjs`, and the
+  complete `npm run test:browser`: passed in Chromium **145.0.7632.6**.
+  The browser executes all three new guests, repeated resets, guest-operand
+  mutations and real Canvas comparisons, alongside the existing games,
+  Hardware Lab, AudioWorklet, input/focus, asset-prefix and privacy assertions.
+
+These checks restore local mandatory CI parity and validate the implemented
+contracts above. They do **not** satisfy the entire Issue #17 acceptance checklist.
+The conformance inventory still identifies required SH7604/DIVU/DACK/BSC and
+CPU/bus timing, MC68EC000 prefetch, complete bus/reset/backup services, SCU,
+remaining VDP1/VDP2 modes/raster behavior, timed SCSP envelopes/DSP boundaries,
+remaining CD/ECC/services and SMPC controls. The full source Issue remains the
+completion target; no criterion has been waived, replaced with documentation or
+converted to a human approval requirement. No push, merge or remote CI run was
+performed by this fix node.

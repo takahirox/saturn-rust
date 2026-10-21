@@ -17,6 +17,8 @@ pub enum TrackMode {
 pub struct Track {
     pub number: u8,
     pub mode: TrackMode,
+    /// Red Book CONTROL nibble: data, copy permission, pre-emphasis, channels.
+    pub control: u8,
     pub start: u32,
     pub index0: u32,
     pub end: u32,
@@ -28,6 +30,9 @@ pub struct Track {
     stored_start: u32,
 }
 impl Track {
+    pub fn control_adr(&self) -> u8 {
+        (self.control << 4) | 1
+    }
     /// Disc indices are binary index numbers, distinct from track numbers and
     /// absolute FAD. INDEX 00 covers the entire stored/synthesized pregap.
     pub fn index(&self, number: u8) -> Option<u32> {
@@ -73,6 +78,7 @@ fn time(text: &str) -> Result<u32, DiscError> {
     Ok((n[0] * 60 + n[1]) * 75 + n[2])
 }
 struct CueTrack {
+    flags: Option<u8>,
     file: usize,
     mode: TrackMode,
     stride: usize,
@@ -104,6 +110,7 @@ impl Media {
             tracks: vec![Track {
                 number: 1,
                 mode: TrackMode::Mode1,
+                control: 4,
                 start: 150,
                 index0: 150,
                 end,
@@ -177,6 +184,7 @@ impl Media {
                         _ => return Err(invalid("Unsupported CUE track format")),
                     };
                     tracks.push(CueTrack {
+                        flags: None,
                         file: file.ok_or_else(|| invalid("CUE TRACK before FILE"))?,
                         mode,
                         stride,
@@ -239,7 +247,28 @@ impl Media {
                     }
                     *field = time(rest)?;
                 }
-                "FLAGS" if rest.split_whitespace().all(|s| s == "DCP") => (),
+                "FLAGS" => {
+                    let track = tracks
+                        .last_mut()
+                        .ok_or_else(|| invalid("CUE FLAGS before TRACK"))?;
+                    if track.flags.is_some() || rest.is_empty() {
+                        return Err(invalid("Duplicate or empty CUE FLAGS"));
+                    }
+                    let mut flags = 0;
+                    for flag in rest.split_whitespace() {
+                        let bit = match flag.to_ascii_uppercase().as_str() {
+                            "PRE" if track.mode == TrackMode::Audio => 1,
+                            "DCP" => 2,
+                            "4CH" if track.mode == TrackMode::Audio => 8,
+                            _ => return Err(invalid("Unsupported CUE track flag")),
+                        };
+                        if flags & bit != 0 {
+                            return Err(invalid("Duplicate CUE track flag"));
+                        }
+                        flags |= bit;
+                    }
+                    track.flags = Some(flags);
+                }
                 _ => return Err(invalid("Unsupported CUE directive")),
             }
         }
@@ -303,6 +332,7 @@ impl Media {
             result.push(Track {
                 number: (i + 1) as u8,
                 mode: t.mode,
+                control: t.flags.unwrap_or(0) | if t.mode == TrackMode::Audio { 0 } else { 4 },
                 start,
                 index0,
                 end: track_end,
@@ -410,31 +440,14 @@ impl Media {
     pub fn toc(&self) -> Vec<u8> {
         let mut table = vec![255; 408];
         for t in &self.tracks {
-            let control: u8 = if t.mode == TrackMode::Audio {
-                0x01
-            } else {
-                0x41
-            };
+            let control = t.control_adr();
             let value = u32::from(control) << 24 | t.start;
             table[(t.number as usize - 1) * 4..t.number as usize * 4]
                 .copy_from_slice(&value.to_be_bytes());
         }
-        table[396..400].copy_from_slice(&[
-            if self.tracks[0].mode == TrackMode::Audio {
-                1
-            } else {
-                0x41
-            },
-            1,
-            0,
-            0,
-        ]);
+        table[396..400].copy_from_slice(&[self.tracks[0].control_adr(), 1, 0, 0]);
         table[400..404].copy_from_slice(&[
-            if self.tracks.last().unwrap().mode == TrackMode::Audio {
-                1
-            } else {
-                0x41
-            },
+            self.tracks.last().unwrap().control_adr(),
             self.tracks.len() as u8,
             0,
             0,

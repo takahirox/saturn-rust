@@ -133,6 +133,8 @@ fn byte_lanes_do_not_read_write_only_registers_or_pop_midi() {
     }
     assert!(scsp.write16(0x406, 9).is_err());
     for x in 0..4 {
+        assert_eq!(scsp.take_midi_output(), None);
+        scsp.advance_midi(scsp.midi_clocks_to_event());
         assert_eq!(scsp.take_midi_output(), Some(x));
     }
     assert_eq!(scsp.read16(0x420).unwrap() & 0x200, 0x200);
@@ -373,7 +375,7 @@ fn fractional_reverse_and_alternating_loops_interpolate_in_traversal_direction()
 fn total_level_held_attack_amplitude_lfo_and_direct_bypass_affect_real_stereo() {
     let mut scsp = Scsp::default();
     let mut ram = vec![0; SOUND_RAM_SIZE];
-    for chunk in ram[0x100..0x108].chunks_exact_mut(2) {
+    for chunk in ram[0x100..0x108].as_chunks_mut::<2>().0 {
         chunk.copy_from_slice(&16384i16.to_be_bytes());
     }
     direct(&mut scsp, 0, 0x100, 1, false, 0);
@@ -406,7 +408,7 @@ fn total_level_held_attack_amplitude_lfo_and_direct_bypass_affect_real_stereo() 
 fn fm_carrier_reads_executing_muted_modulator_with_generation_and_inhibit_controls() {
     let mut scsp = Scsp::default();
     let mut ram = vec![0; SOUND_RAM_SIZE];
-    for chunk in ram[0x100..0x108].chunks_exact_mut(2) {
+    for chunk in ram[0x100..0x108].as_chunks_mut::<2>().0 {
         chunk.copy_from_slice(&8192i16.to_be_bytes());
     }
     for i in 0..64 {
@@ -423,7 +425,7 @@ fn fm_carrier_reads_executing_muted_modulator_with_generation_and_inhibit_contro
     }
     assert_eq!(scsp.drain(3), [2048, 2048, 2304, 2304, 2560, 2560]);
     // 8192 -> -8192 shifts the carrier by -8 samples instead of +8.
-    for chunk in ram[0x100..0x108].chunks_exact_mut(2) {
+    for chunk in ram[0x100..0x108].as_chunks_mut::<2>().0 {
         chunk.copy_from_slice(&(-8192i16).to_be_bytes());
     }
     for _ in 0..6 {
@@ -432,7 +434,7 @@ fn fm_carrier_reads_executing_muted_modulator_with_generation_and_inhibit_contro
     let audio = scsp.drain(6);
     assert_eq!(&audio[audio.len() - 2..], &[0, 0]); // carrier phase8 minus8
     scsp.write16(12, 0x300).unwrap(); // STWINH: preserve modulator stack data
-    for chunk in ram[0x100..0x108].chunks_exact_mut(2) {
+    for chunk in ram[0x100..0x108].as_chunks_mut::<2>().0 {
         chunk.copy_from_slice(&16384i16.to_be_bytes());
     }
     scsp.sample(&mut ram).unwrap();
@@ -460,5 +462,51 @@ fn internal_noise_and_zero_sources_execute_and_noise_ignores_lfo_reset_frequency
         &[-21279, -21279, -7568, -7568, 28984, 28984, 14492, 14492]
     );
     assert_eq!(samples(0, 2), [0; 32]);
-    assert!(noise.chunks_exact(2).all(|s| s[0] == s[1]));
+    assert!(noise.as_chunks::<2>().0.iter().all(|s| s[0] == s[1]));
+}
+
+#[test]
+fn midi_serial_deadlines_irq_and_reset_are_independent_of_host_consumption() {
+    for chunk in [1, 7, 1000, 10000] {
+        let mut sound = Sound::default();
+        for byte in [0x90, 0x40, 0x7F, 0x80] {
+            sound.scsp.write16(0x406, byte).unwrap();
+        }
+        sound.scsp.write16(0x41E, 0x200).unwrap();
+        sound.scsp.write16(0x42A, 0x200).unwrap();
+        sound.scsp.write16(0x424, 0x80).unwrap();
+        sound.scsp.write16(0x426, 0x80).unwrap();
+        // Four bytes * ten bits / 31250 Hz, rounded once at the deadline.
+        let mut left = 34_398;
+        while left != 0 {
+            let n = left.min(chunk);
+            sound.advance(n).unwrap();
+            left -= n;
+        }
+        assert_eq!(sound.scsp.interrupt_level(), 0);
+        assert!(!sound.scsp.main_interrupt());
+        assert_eq!(sound.scsp.take_midi_output(), Some(0x90));
+        assert_eq!(sound.scsp.take_midi_output(), Some(0x40));
+        assert_eq!(sound.scsp.take_midi_output(), Some(0x7F));
+        assert_eq!(sound.scsp.take_midi_output(), None);
+        sound.advance(1).unwrap();
+        assert_eq!(sound.scsp.interrupt_level(), 3);
+        assert!(sound.scsp.main_interrupt());
+        assert_eq!(sound.scsp.read8(0x404).unwrap() & 0x18, 8);
+        assert_eq!(sound.scsp.take_midi_output(), Some(0x80));
+        sound.scsp.write16(0x422, 0x200).unwrap();
+        assert_eq!(sound.scsp.interrupt_level(), 0);
+        assert!(sound.scsp.main_interrupt());
+        sound.scsp.write16(0x42E, 0x200).unwrap();
+        sound.scsp.write16(0x406, 0xA5).unwrap();
+        sound.advance(8599).unwrap();
+        assert_eq!(sound.scsp.take_midi_output(), None);
+        sound.scsp = Scsp {
+            generated: sound.scsp.generated,
+            ..Scsp::default()
+        }; // MC68k RESET preserves the sample clock.
+        sound.advance(10000).unwrap();
+        assert_eq!(sound.scsp.take_midi_output(), None);
+        assert_eq!(sound.scsp.interrupt_level(), 0);
+    }
 }

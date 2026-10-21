@@ -7,6 +7,7 @@ use crate::{
 };
 
 mod rotation;
+mod sprite;
 
 pub const CRAM: u32 = 0x05F0_0000;
 pub struct Vdp2 {
@@ -53,7 +54,7 @@ impl Vdp2 {
     fn supported(offset: usize) -> bool {
         matches!(offset,
             0 | 4 | 0xE | 0x10 | 0x12 | 0x20 | 0x22 | 0x28 | 0x2A | 0x2C | 0x2E | 0x30..=0x6E |
-            0x70..=0x96 | 0x9A..=0xA6 | 0xAC..=0xBE | 0xC0..=0xDE | 0xE0 |
+            0x70..=0x96 | 0x9A..=0xA6 | 0xAC..=0xBE | 0xC0..=0xDE | 0xE0 | 0xE2 |
             0xE4 | 0xE6 | 0xEC | 0xF0..=0xFC | 0x100..=0x10C | 0x110..=0x11E
         ) && offset & 1 == 0
     }
@@ -113,12 +114,7 @@ impl Vdp2 {
                     })
                 != 0
             || self.word(0xE) >> 12 == 3
-            || self.word(0xEC) & !0x15F != 0
-            || self.word(0xE0) & 0x10 != 0
-            || self.word(0xD0) & 0x2020 != 0
-            || self.word(0xD2) & 0x2020 != 0
-            || self.word(0xD4) & 0x2020 != 0
-            || self.word(0xD6) & 0x2020 != 0;
+            || self.word(0xEC) & !0x15F != 0;
         if unsupported {
             return Err("Unsupported VDP2 display, banking, layer or effects configuration".into());
         }
@@ -147,10 +143,6 @@ impl Vdp2 {
             }
         }
         self.validate_rotation()?;
-        // Palette sprite types 0/1 and mixed RGB are currently implemented.
-        if self.word(0xE0) & 15 > 1 {
-            return Err("Unsupported VDP2 sprite type".into());
-        }
         Ok(())
     }
     fn palette(&self, index: usize) -> [u8; 3] {
@@ -177,7 +169,7 @@ impl Vdp2 {
         }
         rgb
     }
-    fn window(&self, control: u16, x: usize, y: usize) -> bool {
+    fn window(&self, control: u16, x: usize, y: usize, sprite: bool) -> bool {
         let mut any = false;
         let and = control & 0x80 != 0;
         let mut result = and;
@@ -198,6 +190,15 @@ impl Vdp2 {
                 && y >= usize::from(self.word(base + 2))
                 && y <= usize::from(self.word(base + 6));
             let valid = inside != (control & (1 << (i * 2)) != 0);
+            if and {
+                result &= valid;
+            } else {
+                result |= valid;
+            }
+        }
+        if control & 0x20 != 0 {
+            any = true;
+            let valid = sprite != (control & 0x10 != 0);
             if and {
                 result &= valid;
             } else {
@@ -357,10 +358,21 @@ impl Vdp2 {
         }
         Some((base, (cy & 7) * 8 + (cx & 7), palette))
     }
-    fn background(&self, layer: usize, mut x: usize, mut y: usize) -> Option<Layer> {
+    fn background(
+        &self,
+        layer: usize,
+        mut x: usize,
+        mut y: usize,
+        sprite_window: bool,
+    ) -> Option<Layer> {
         if self.word(0x20) & 0x20 != 0
             || self.word(0x20) & (1 << layer) == 0
-            || !self.window(self.word(0xD0 + (layer / 2) * 2) >> ((layer & 1) * 8), x, y)
+            || !self.window(
+                self.word(0xD0 + (layer / 2) * 2) >> ((layer & 1) * 8),
+                x,
+                y,
+                sprite_window,
+            )
         {
             return None;
         }
@@ -454,57 +466,6 @@ impl Vdp2 {
             }
         })
     }
-    fn sprite(&self, sprites: &Vdp1, x: usize, y: usize) -> Result<Option<Layer>, String> {
-        if !self.window(self.word(0xD4) >> 8, x, y) {
-            return Ok(None);
-        }
-        let data = sprites.display_pixel(x, y);
-        if data == 0 {
-            return Ok(None);
-        }
-        let rgb_mode = self.word(0xE0) & 0x20 != 0 && data & 0x8000 != 0;
-        let (selector, ratio, rgb) = if rgb_mode {
-            (0, 0, rgb555(data))
-        } else {
-            let (p, r) = if self.word(0xE0) & 15 == 0 {
-                (data >> 14, data >> 11 & 7)
-            } else {
-                (data >> 13 & 7, data >> 11 & 3)
-            };
-            (
-                usize::from(p),
-                usize::from(r),
-                self.palette(
-                    usize::from(data & 2047) + usize::from(self.word(0xE6) >> 4 & 7) * 256,
-                ),
-            )
-        };
-        let priority = self.word(0xF0 + selector / 2 * 2) >> (selector % 2 * 8) & 7;
-        if priority == 0 {
-            return Ok(None);
-        }
-        let condition = self.word(0xE0) >> 12 & 3;
-        if !rgb_mode && data & 2047 == 2046 {
-            return Err("Unsupported VDP2 normal shadow sprite".into());
-        }
-        if condition == 3 && !rgb_mode && self.word(0xEC) & 0x40 != 0 {
-            return Err("Unsupported VDP2 palette sprite color-MSB calculation".into());
-        }
-        let number = self.word(0xE0) >> 8 & 7;
-        let calculate = match condition {
-            0 => priority <= number,
-            1 => priority == number,
-            2 => priority >= number,
-            _ => data & 0x8000 != 0,
-        };
-        Ok(Some(Layer {
-            rgb,
-            priority,
-            ratio: self.word(0x100 + ratio / 2 * 2) >> (ratio % 2 * 8) & 31,
-            calculate: calculate && self.word(0xEC) & 0x40 != 0,
-            id: 6,
-        }))
-    }
     fn render(&self, sprites: Option<&Vdp1>) -> Result<Vec<u8>, String> {
         let mut pixels = vec![0; WIDTH * HEIGHT * 4];
         if self.word(0) & 0x8000 == 0 {
@@ -521,6 +482,8 @@ impl Vdp2 {
                     * 2,
             );
             for x in 0..WIDTH {
+                let sprite_window = self.sprite_window(sprites, x, y);
+                let sprite = sprites.map(|s| self.sprite(s, x, y)).unwrap_or_default();
                 let mut top = Layer {
                     rgb: rgb555(back),
                     id: 5,
@@ -528,13 +491,13 @@ impl Vdp2 {
                 };
                 let mut second = top;
                 for layer in [
-                    self.background(3, x, y),
-                    self.background(2, x, y),
-                    self.background(1, x, y),
-                    self.background(0, x, y),
-                    self.rotation1(x, y),
-                    self.rotation(x, y),
-                    sprites.map(|s| self.sprite(s, x, y)).transpose()?.flatten(),
+                    self.background(3, x, y, sprite_window),
+                    self.background(2, x, y, sprite_window),
+                    self.background(1, x, y, sprite_window),
+                    self.background(0, x, y, sprite_window),
+                    self.rotation1(x, y, sprite_window),
+                    self.rotation(x, y, sprite_window),
+                    sprite.layer,
                 ]
                 .into_iter()
                 .flatten()
@@ -547,7 +510,7 @@ impl Vdp2 {
                     }
                 }
                 let mut rgb = top.rgb;
-                if top.calculate && self.window(self.word(0xD6) >> 8, x, y) {
+                if top.calculate && self.window(self.word(0xD6) >> 8, x, y, sprite_window) {
                     for (ch, value) in rgb.iter_mut().enumerate() {
                         *value = if self.word(0xEC) & 0x100 != 0 {
                             u16::from(*value)
@@ -564,6 +527,12 @@ impl Vdp2 {
                 // ST-058 §13.1: offset follows color calculation and uses
                 // the top screen's enable/select, never the lower screen's.
                 rgb = self.offset(rgb, top.id);
+                if (sprite.shade_sprite && top.id == 6)
+                    || (sprite.shadow_priority.is_some_and(|p| p >= top.priority)
+                        && self.word(0xE2) & (1 << top.id) != 0)
+                {
+                    rgb = rgb.map(|v| v >> 1);
+                }
                 p[..3].copy_from_slice(&rgb);
                 p[3] = 255;
             }

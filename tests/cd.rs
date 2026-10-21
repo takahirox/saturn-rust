@@ -295,3 +295,137 @@ fn power_controls_cancel_pending_transfers_retain_media_and_use_forty_microsecon
     assert_eq!(m.bus().read16(CD + 12).unwrap(), 0);
     assert_eq!(m.cpu_state().status, saturn_rust::cpu::CpuStatus::Sleeping);
 }
+
+#[test]
+fn pause_reports_run_at_sixty_hz_and_standby_preserves_pickup_and_media() {
+    // ST-162 §§3.4/4.2/8.2.1: 16.7 ms pause report, programmable
+    // PAUSE->STANDBY seconds; seek-current returns from standby without ejecting.
+    let (mut cd, _) = mounted();
+    issue(&mut cd, [0x0400, 1, 0, 0]);
+    cd.write16(CD + 8, 0).unwrap();
+    cd.advance(447_901 - 1075);
+    assert_eq!(cd.read16(CD + 8).unwrap() & 1024, 0);
+    cd.advance(1);
+    assert_eq!(cd.read16(CD + 8).unwrap() & 1024, 1024);
+    assert_eq!(cd.read16(CD + 0x18).unwrap() >> 8, 0x21);
+    cd.advance(26_874_100 - (447_902 - 1075) - 1);
+    assert_eq!(issue(&mut cd, [0, 0, 0, 0])[0] >> 8, 2);
+    assert_eq!(issue(&mut cd, [0x11FF, 0xFFFF, 0, 0])[3], 150);
+    cd.advance(26_875);
+    assert_eq!(issue(&mut cd, [0, 0, 0, 0])[0] >> 8, 1);
+    assert!(cd.media().is_some());
+}
+
+#[test]
+fn tray_open_stops_audio_and_scan_retains_inserted_media_and_close_reuses_it() {
+    let (mut cd, _) = mounted();
+    sectors(&mut cd, 1);
+    assert_eq!(issue(&mut cd, [0x0500, 0, 0, 0])[0] >> 8, 6);
+    assert_eq!(cd.audio_sample(), [0, 0]);
+    assert_eq!(issue(&mut cd, [0x0200, 0, 0, 0])[0], 0xFF00);
+    // Tray opening is distinct from removing the medium; this virtual drive
+    // closes deterministically on the documented initialization command.
+    assert!(cd.media().is_some());
+    assert_eq!(issue(&mut cd, [0x0400, 0xFFFF, 0, 0])[0] >> 8, 1);
+    assert_eq!(issue(&mut cd, [0x0200, 0, 0, 0])[1], 204);
+    assert_eq!(&read(&cd, 4), &[0x41, 0, 0, 150]);
+    issue(&mut cd, [0x0600, 0, 0, 0]);
+}
+
+#[test]
+fn scan_is_directional_never_reads_data_and_obeys_range_and_pause_mute() {
+    // ST-162 §8.2.2: scan does not decode CD-ROM sectors; reversing a scan
+    // changes pickup direction, exceeding the play range pauses the drive.
+    for chunk in [1, 7, 1000, 400_000] {
+        let mut cd = CdBlock::default();
+        cd.mount(Media::iso(&vec![0; 2048 * 100]).unwrap());
+        issue(&mut cd, [0x3000, 0, 0, 0]);
+        assert_eq!(issue(&mut cd, [0x1202, 0, 0, 0])[0], 0xFF00);
+        assert_eq!(issue(&mut cd, [0x1200, 0, 0, 0])[0] >> 8, 5);
+        let mut remaining = 800_000;
+        while remaining != 0 {
+            let n = remaining.min(chunk);
+            cd.advance(n);
+            remaining -= n;
+        }
+        let before = issue(&mut cd, [0, 0, 0, 0]);
+        assert_eq!(before[0] >> 8, 5);
+        assert!(before[3] > 150 && before[3] < 250);
+        assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 0);
+        issue(&mut cd, [0x1201, 0, 0, 0]);
+        cd.advance(800_000);
+        let after = issue(&mut cd, [0, 0, 0, 0]);
+        assert!(after[3] < before[3]);
+        cd.advance(2_000_000);
+        assert_eq!(issue(&mut cd, [0, 0, 0, 0])[0] >> 8, 1);
+        assert_eq!(cd.audio_sample(), [0; 2]);
+        // The R-W FIFO is empty in BIN/CUE (no stored subcode packs).
+        assert_ne!(issue(&mut cd, [0x2001, 0, 0, 0])[0] & 0x8000, 0);
+        assert_eq!(cd.read16(DATA).unwrap(), 0xFFFF);
+    }
+}
+
+#[test]
+fn scan_from_play_attenuates_audio_but_scan_from_pause_is_muted() {
+    let mut audio = vec![0; 2352 * 100];
+    for frame in audio.as_chunks_mut::<4>().0 {
+        frame[..2].copy_from_slice(&16384i16.to_le_bytes());
+        frame[2..].copy_from_slice(&(-8192i16).to_le_bytes());
+    }
+    let mut cd = CdBlock::default();
+    cd.mount(
+        Media::cue(
+            "FILE \"a\" BINARY\nTRACK 01 AUDIO\nINDEX 01 00:00:00",
+            &[("a", &audio)],
+        )
+        .unwrap(),
+    );
+    issue(&mut cd, [0x1080, 150, 0x0080, 100]);
+    cd.advance(26_875);
+    assert_eq!(cd.audio_sample(), [16384, -8192]);
+    issue(&mut cd, [0x1200, 0, 0, 0]);
+    assert_eq!(cd.audio_sample(), [4096, -2048]);
+    issue(&mut cd, [0x11FF, 0xFFFF, 0, 0]);
+    cd.advance(26_875);
+    issue(&mut cd, [0x1200, 0, 0, 0]);
+    assert_eq!(cd.audio_sample(), [0; 2]);
+}
+
+#[test]
+fn full_sector_pool_pauses_and_freed_partition_resumes_at_same_pickup() {
+    // ST-162 §4.2: buffer-full pause is reversible, without rereading or
+    // dropping the blocked sector, and BFUL remains software-acknowledged.
+    let bytes: Vec<u8> = (0..2048 * 210).map(|i| (i / 2048) as u8).collect();
+    let mut cd = CdBlock::default();
+    cd.mount(Media::iso(&bytes).unwrap());
+    issue(&mut cd, [0x3000, 0, 0, 0]);
+    issue(&mut cd, [0x1080, 150, 0x0080, 210]);
+    cd.advance(40_000_000);
+    let full = issue(&mut cd, [0, 0, 0, 0]);
+    assert_eq!((full[0] >> 8, full[3]), (1, 350));
+    assert_ne!(cd.read16(CD + 8).unwrap() & 8, 0);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 200);
+    issue(&mut cd, [0x6200, 0, 0, 1]);
+    cd.advance(400_000);
+    let resumed = issue(&mut cd, [0, 0, 0, 0]);
+    assert_eq!(resumed[3], 351);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 200);
+    issue(&mut cd, [0x6100, 199, 0, 1]);
+    assert_eq!(read(&cd, 2048), [200; 2048]);
+}
+
+#[test]
+fn cue_copy_preemphasis_and_channel_control_survive_drive_and_q_reports() {
+    let audio = vec![0; 2352 * 2];
+    let mut cd = CdBlock::default();
+    cd.mount(
+        Media::cue(
+            "FILE \"a\" BINARY\nTRACK 01 AUDIO\nFLAGS DCP PRE 4CH\nINDEX 01 00:00:00",
+            &[("a", &audio)],
+        )
+        .unwrap(),
+    );
+    assert_eq!(issue(&mut cd, [0, 0, 0, 0])[1], 0xB101);
+    issue(&mut cd, [0x2000, 0, 0, 0]);
+    assert_eq!(read(&cd, 10), [0xB1, 1, 1, 0, 0, 0, 0, 0, 0, 150]);
+}

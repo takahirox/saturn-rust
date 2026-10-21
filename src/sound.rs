@@ -58,6 +58,8 @@ pub struct Scsp {
     midi_in: RefCell<VecDeque<u8>>,
     midi_overflow: Cell<bool>,
     midi_out: RefCell<VecDeque<u8>>,
+    midi_sent: RefCell<VecDeque<u8>>,
+    midi_phase: u64,
     stack: synthesis::Stack,
     lfo: [synthesis::Lfo; 32],
     dma_remaining: u16,
@@ -79,6 +81,8 @@ impl Default for Scsp {
             midi_in: RefCell::new(VecDeque::new()),
             midi_overflow: Cell::new(false),
             midi_out: RefCell::new(VecDeque::new()),
+            midi_sent: RefCell::new(VecDeque::new()),
+            midi_phase: 0,
             stack: synthesis::Stack::default(),
             lfo: std::array::from_fn(synthesis::Lfo::new),
             dma_remaining: 0,
@@ -264,13 +268,40 @@ impl Scsp {
         }
         true
     }
+    /// Completed serial characters, never a host-driven FIFO drain. The
+    /// standard console leaves these pins unconnected (ST-077 fig.4.59).
     pub fn take_midi_output(&self) -> Option<u8> {
-        let mut fifo = self.midi_out.borrow_mut();
-        let byte = fifo.pop_front();
-        if byte.is_some() && fifo.is_empty() {
-            self.request(0x200);
+        self.midi_sent.borrow_mut().pop_front()
+    }
+    fn midi_clocks_to_event(&self) -> u32 {
+        if self.midi_out.borrow().is_empty() {
+            u32::MAX
+        } else {
+            (REFERENCE_HZ * 10 - self.midi_phase).div_ceil(31_250) as u32
         }
-        byte
+    }
+    fn advance_midi(&mut self, clocks: u32) {
+        if self.midi_out.get_mut().is_empty() {
+            return;
+        }
+        // MIDI 8-N-1: one byte occupies ten serial bits at 31.25 kbit/s.
+        // Carry the rational phase across characters, including native/Wasm.
+        self.midi_phase += u64::from(clocks) * 31_250;
+        while self.midi_phase >= REFERENCE_HZ * 10 {
+            self.midi_phase -= REFERENCE_HZ * 10;
+            if let Some(byte) = self.midi_out.get_mut().pop_front() {
+                let sent = self.midi_sent.get_mut();
+                if sent.len() == 256 {
+                    sent.pop_front();
+                }
+                sent.push_back(byte);
+            }
+            if self.midi_out.get_mut().is_empty() {
+                self.midi_phase = 0;
+                self.request(0x200);
+                break;
+            }
+        }
     }
     fn dma(&mut self, ram: &mut [u8]) -> Result<(), BusError> {
         if self.dma_remaining == 0 {
@@ -704,8 +735,16 @@ impl Sound {
         mut cd: Option<&mut crate::cd::CdBlock>,
     ) -> Result<(), BusError> {
         let target = self.time + u64::from(clocks);
-        while self.next_cpu.min(self.next_sample) <= target {
-            if self.next_cpu <= self.next_sample {
+        let mut now = self.time;
+        loop {
+            let next_midi = now + u64::from(self.scsp.midi_clocks_to_event());
+            let deadline = self.next_cpu.min(self.next_sample).min(next_midi);
+            if deadline > target {
+                break;
+            }
+            self.scsp.advance_midi((deadline - now) as u32);
+            now = deadline;
+            if deadline == self.next_cpu {
                 self.cpu.set_interrupt(self.scsp.interrupt_level());
                 let mut memory = SoundBus {
                     ram: &mut self.ram,
@@ -724,12 +763,13 @@ impl Sound {
                 self.cpu_ticks += u64::from(clocks);
                 self.next_cpu =
                     self.cpu_origin + (self.cpu_ticks * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
-            } else {
+            } else if deadline == self.next_sample {
                 self.scsp.external = cd.as_mut().map_or([0; 2], |cd| cd.audio_sample());
                 self.scsp.sample(&mut self.ram)?;
                 self.next_sample = ((self.scsp.generated + 1) * REFERENCE_HZ).div_ceil(SAMPLE_RATE);
             }
         }
+        self.scsp.advance_midi((target - now) as u32);
         self.time = target;
         Ok(())
     }

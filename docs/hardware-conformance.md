@@ -138,6 +138,33 @@ Standby tests verify local clock gating, FRT/SCI initialization, retained CPU
 registers and NMI wake/RTE at I=15. Sources: H table 14.3, §§14.2/14.4;
 SMPC §2.3.8 p.29. No proprietary firmware is used.
 
+**CDDRV** is the original [CD drive guest builder](../tests/fixtures/build_cd_drive.py),
+[ROM](../tests/fixtures/cd-drive.hex) and [native integration](../tests/cd_drive.rs),
+also executed in browser Wasm. It issues and polls real CD commands for forward/reverse
+scan, pause, empty R–W WAIT, tray open/close and a real TOC FIFO transfer. Native
+[CD vectors](../tests/cd.rs) additionally check scan audio attenuation/muting,
+60 Hz pause reports, standby deadlines, full-pool pause/resume and CUE CONTROL/Q fields.
+
+**SPRX** is the original [sprite-effects source](../tests/fixtures/sprite-effects.s),
+[builder](../tests/fixtures/build_sprite_effects.py), [ROM](../tests/fixtures/sprite-effects.hex)
+and [native integration](../tests/sprite_effects.rs), repeated through browser Wasm
+and production Canvas with guest-literal mutations. It exercises sprite windows,
+normal/MSB shadows and palette-MSB blend conditions (VDP2 §§8/9/14).
+[Sprite field vectors](../src/vdp2/sprite.rs) and [pixel vectors](../tests/video.rs)
+cover all sixteen sprite types, shared palette bits, priority/ratio selection,
+8-bit scanout, shadow enables/order and both CRAM color formats.
+
+**SIOG** is the original [SH-2/68k builder](../tests/fixtures/build_sound_io.py),
+[shared original 68k encodings](../tests/fixtures/build_sound.py),
+[ROM](../tests/fixtures/sound-io.hex) and [native integration](../tests/sound_io.rs),
+also executed in browser Wasm. It computes BCD, MOVEP/MOVEM and arithmetic results,
+handles a partial MOVEM bus fault and TRAP/RTE, programs SCSP DMA, polls serial-paced
+MIDI and acknowledges timer/MIDI/DMA interrupts at three levels. Changed guest DMA
+source operands change actual register/mailbox results. Native MIDI vectors check
+31.25 kbit/s 8-N-1 deadlines across advancement chunks, independent main/sound IRQ
+acknowledgment and reset cancellation. These are additional guest fixtures, not
+complete CPU/chip conformance or new acceptance gates.
+
 ## SH-2 instruction families
 
 All rows describe functional interpreter behavior. Common outstanding limitations:
@@ -272,12 +299,12 @@ complete CPU/scheduler acceptance criteria remain pending.
 
 | Family | Manual entry (68, MC68000 subset) | Implementation | Native / browser | Status |
 | --- | --- | --- | --- | --- |
-| ABCD | ABCD instruction description | `M68k::bcd / alu / group4` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| ABCD | ABCD instruction description | `M68k::bcd / alu / group4` | m68k/tests.rs semantic vectors / SIOG native + browser | Functional vectors; timing pending |
 | ADD | ADD instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
 | ADDA | ADDA instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
 | ADDI | ADDI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
 | ADDQ | ADDQ instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
-| ADDX | ADDX instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| ADDX | ADDX instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / SIOG native + browser | Functional vectors; timing pending |
 | AND | AND instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
 | ANDI | ANDI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
 | ASL | ASL instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
@@ -295,7 +322,7 @@ complete CPU/scheduler acceptance criteria remain pending.
 | CMPI | CMPI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
 | CMPM | CMPM instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
 | DBcc | DBcc instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| DIVS | DIVS instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| DIVS | DIVS instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / SIOG native + browser | Functional vectors; timing pending |
 | DIVU | DIVU instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
 | EOR | EOR instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
 | EORI | EORI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
@@ -310,12 +337,12 @@ complete CPU/scheduler acceptance criteria remain pending.
 | LSR | LSR instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
 | MOVE (including CCR/SR/USP transfers) | MOVE instruction description | `M68k::execute / group4 / sr` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
 | MOVEA | MOVEA instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
-| MOVEM | MOVEM instruction description | `M68k::movem` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| MOVEP | MOVEP instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| MOVEM | MOVEM instruction description | `M68k::movem` | m68k/tests.rs semantic vectors / SIOG native + browser | Functional vectors; timing pending |
+| MOVEP | MOVEP instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / SIOG native + browser | Functional vectors; timing pending |
 | MOVEQ | MOVEQ instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
-| MULS | MULS instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| MULS | MULS instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / SIOG native + browser | Functional vectors; timing pending |
 | MULU | MULU instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| NBCD | NBCD instruction description | `M68k::bcd / alu / group4` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| NBCD | NBCD instruction description | `M68k::bcd / alu / group4` | m68k/tests.rs semantic vectors / SIOG native + browser | Functional vectors; timing pending |
 | NEG | NEG instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
 | NEGX | NEGX instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
 | NOP | NOP instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
@@ -331,17 +358,17 @@ complete CPU/scheduler acceptance criteria remain pending.
 | RTE | RTE instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
 | RTR | RTR instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
 | RTS | RTS instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| SBCD | SBCD instruction description | `M68k::bcd / alu / group4` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| SBCD | SBCD instruction description | `M68k::bcd / alu / group4` | m68k/tests.rs semantic vectors / SIOG native + browser | Functional vectors; timing pending |
 | Scc | Scc instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
 | STOP | STOP instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / SNDR | Functional vectors; timing pending |
 | SUB | SUB instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
 | SUBA | SUBA instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
 | SUBI | SUBI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
 | SUBQ | SUBQ instruction description | `M68k::execute` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| SUBX | SUBX instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| SUBX | SUBX instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / SIOG native + browser | Functional vectors; timing pending |
 | SWAP | SWAP instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
 | TAS | TAS instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
-| TRAP | TRAP instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
+| TRAP | TRAP instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / SIOG native + browser | Functional vectors; timing pending |
 | TRAPV | TRAPV instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
 | TST | TST instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
 | UNLK | UNLK instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / guest family coverage pending | Functional vectors; timing pending |
@@ -436,10 +463,10 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 | NBG1–3 bitmap/layer control, [VDP2] §§4–6 | NBG1 bitmap composition, formats applicable to NBG1, scroll/zoom/priority | VIDEO | — | Complete layer restrictions and guest format corpus; NBG2/3 tile layers now exercised by TILE | Pending |
 | Rotation backgrounds, [VDP2] §6.1 p.147, §6.3 figs.6.2–6.4, §6.4 fig.6.7 | RBG0 fixed-point A/B matrices, viewpoint/center/Z/translation/scales, 16-plane tile or bitmap, four screen-over modes, 16/32-bit coefficient modes, per-dot/line coefficient indexing, transparent coefficients and parameter/window switching; RBG1 parameter B/cells/B0 characters/B1 names, NBG0 effects controls | EFFECTS, R1 | EFFECTS + R1 (quarter turn, A/B coefficient switch, matrix mutations/Canvas) | Complete RBG1 boundaries and bank contention; scanline parameter latching/reloads, CRAM coefficients, coefficient line-color and cycle/bank arbitration remain required | Pending |
 | Line/vertical-cell scroll, [VDP2] §5.3 figs.5.4–5.8 | Packed enabled X/Y/zoom fields, relative offsets and held line intervals, fractional coordinates, independent NBG0/1, interleaved vertical cell tables and mosaic precedence | EFFECTS | EFFECTS (line X) | Raster-time table reads, cycle/bandwidth arbitration and full guest field/interval corpus remain | Pending |
-| Windows/line windows, [VDP2] §8.1 figs.8.2–8.4 | W0/W1 rectangle or VRAM line tables, inside/outside, inclusive edges, empty/inverted ranges, AND/OR on normal/rotation/sprite/color calculation; rotation-parameter windows | VIDEO, EFFECTS | EFFECTS (line window and composition) | Sprite windows and full independent guest corpus remain | Pending |
+| Windows/line windows, [VDP2] §8.1 figs.8.2–8.4 | W0/W1 rectangle or VRAM line tables and SD-bit sprite windows, inside/outside, inclusive edges, empty/inverted ranges, AND/OR on normal/rotation/sprite/color calculation; rotation-parameter windows | VIDEO, EFFECTS, SPRX | EFFECTS, SPRX (Wasm/Canvas and changed guest controls) | Full raster-window update timing and complete independent guest corpus remain | Pending |
 | Mosaic, [VDP2] §5 | NBG0–3 horizontal/vertical grouping | VIDEO | — | All independent vertical/layer/guest vectors | Pending |
-| Priority/composition, [VDP2] §§9–10 | Four normal backgrounds, RBG0 and VDP1; sprite types 0/1 and mixed RGB; priority-0 disable/ties | VIDEO, PRISM | PRISM | All sprite types, layers and special priorities | Pending |
-| Color calculation/offset/shadow, [VDP2] §§11–13 | Ratio/additive blending, sprite conditions/ratios and signed offsets | VIDEO | PRISM (replace only) | VDP2 shadows, palette color-MSB condition, extended/special effects and complete guest corpus | Pending |
+| Priority/composition, [VDP2] §§9–10 | Four normal backgrounds, RBG0 and VDP1; all sixteen palette sprite types (including shared bits) and mixed RGB; priority-0 disable/ties | VIDEO, PRISM, SPRX | PRISM, SPRX | Full display/layer and special-priority boundaries | Pending |
+| Color calculation/offset/shadow, [VDP2] §§11–13 | Ratio/additive blending, palette color-MSB conditions/ratios, signed offsets, normal/MSB/transparent shadows after blend/offset | VIDEO, SPRX | SPRX, PRISM | Extended/special effects and complete guest/raster corpus | Pending |
 | Back/line color, [VDP2] §§3–4 | Back-screen single/per-line VRAM table, signed offset | VIDEO | PRISM (back underneath bitmap) | Line-color screen and full per-line guest corpus | Pending |
 | Combined VDP1/VDP2 pipeline | Sprite/background overlap, priority, transparency, game result/restart, texture mutation changes actual pixels | VIDEO, PRISM | PRISM + Canvas assertions | Remaining modes/effects and timing above | Pending |
 
@@ -449,7 +476,7 @@ cycles. Erase takes effect at a field boundary. Color calculations use integer
 interpolation; exact physical edge rounding/transfer-over remain required. Native
 vectors caught and corrected shadow MSB halving and automatic-start BEF handling.
 Cyclic lists remain busy without reporting END. Invalid lists stop the machine
-explicitly. Non-normal VDP1 scanout and enabled unimplemented VDP2 modes fail
+explicitly. Rotated VDP1 scanout and enabled unimplemented VDP2 display modes fail
 explicitly. Readback of VDP2 write-only controls remains a debugger convenience.
 No game-specific rendering, guest identity check, canned pixels or host result
 mailbox writes are used.
@@ -473,11 +500,11 @@ Implementation: [shared sound bus, PCM and clock domain](../src/sound.rs),
 | FM/modulation/LFO, [SCSP] §4.2 figs.4.18/4.31, tables4.16–4.24 | Executing recent/past sound-stack selection with five-slot pipeline, signed averaging/MDL, guard-waveform reads; per-slot AM/PM LFO waveforms, frequency/depth/reset; internal noise/zero source | SNDV, SYNTH / SYNTH operand mutations and WebAudio | Exact chip noise sequence is unspecified; physical sub-sample rounding, full FM overflow/loop boundaries and envelope integration remain | Pending |
 | Levels/pan/external inputs, [SCSP] §4.2 tables 4.27/28 | Binary total-level attenuation, direct send and fixed-point stereo pan, clipping, master output control; independently expected full-volume stereo buffers | SNDV, SNDR / SNDR | Intermediate master gain conformance and complete routing boundary corpus | Pending |
 | Timers/interrupts, [SCSP] §4.2 tables 4.33–38 | Three sample-clock prescaled counters; sound/main pending/enables/clear; programmed autovector levels, 68k IRQ/RTE, SCU source 6 | SNDV, SNDR / SNDR | Complete cross-device contention/timer reset edge evidence | Pending |
-| MIDI registers, [SCSP] §4.2 figs.4.59–61 | Four-byte input/output FIFOs, status/overflow, byte-lane read effects, empty transitions and IRQ requests | SNDV / not yet guest-tested | Serial bit pacing/external pin wiring and browser guest vectors | Pending |
-| SCSP DMA, [SCSP] §4.2 fig.4.66/table 4.39 | Word transfers in both directions, zero gate, count/address progress, DEXE completion and IRQ; DMA-register target rejected | SNDV / not yet guest-tested | Exact transfer timing/arbitration, full boundaries and guest evidence | Pending |
+| MIDI registers, [SCSP] §4.2 figs.4.59–61 | Four-byte input/output FIFOs, status/overflow, byte lanes, serial-paced 8-N-1 output, independent main/sound empty IRQs and reset cancellation | SNDV, SIOG / SIOG | Serial bit-level input/external wiring; the standard console has no MIDI connector (fig.4.59) | Pending |
+| SCSP DMA, [SCSP] §4.2 fig.4.66/table 4.39 | Word transfers in both directions, zero gate, count/address progress, DEXE completion and IRQ; DMA-register target rejected | SNDV, SIOG / SIOG (68k register DMA, completion IRQ and source mutation) | Exact transfer timing/arbitration and full boundary/route evidence | Pending |
 | SCSP effects DSP, [SCSP] §§4.1/4.3/5; [ST-228][SCDSPASM] Reference 1/2 | Executing multiply/add pipeline; COEF/MADRS/MPRO/TEMP/MEMS/MIXS/EFREG, slot and EXTS inputs, ring/table RAM reads/writes, linear/float conversion, stereo effect routing | DSPV, CLAB / CLAB coefficient mutation, exact stereo, WebAudio | Full field/pipeline boundary corpus, RAM-access contention and independently corroborated converter/timing edges | Pending |
 | Browser audio output | Bounded 8192-frame producer/ring, stereo sample-rate adaptation, explicit gesture enable, pause/mute/blocked/underflow/drop states; worklet renders nonzero guest PCM | SNDV / SNDR WebAudio instrumentation | Full synthesis/DSP/CD-DA validation depends on missing hardware | Pending |
-| CD-DA, [CD] §§3/4/8 / [SCSP] table 4.31 | Guest play/repeat, signed stereo BINARY tracks; EXTS0/1 EFSDL/EFPAN, mixed with 68k PCM at sample deadlines | `tests/cd.rs::cdda_stereo_external_scsp_route_has_exact_samples_and_muting`, CLAB / CLAB WebAudio + changed audio track | Full effects pipeline/scan/de-emphasis/subcode and complete synthesis remain | Pending |
+| CD-DA, [CD] §§3/4/8 / [SCSP] table 4.31 | Guest play/repeat, signed stereo BINARY tracks; EXTS0/1 EFSDL/EFPAN, mixed with 68k PCM at sample deadlines | `tests/cd.rs::cdda_stereo_external_scsp_route_has_exact_samples_and_muting`, CLAB / CLAB WebAudio + changed audio track | Full effects pipeline/de-emphasis/subcode and complete synthesis remain; scan attenuation/muting has native vectors | Pending |
 
 The sound CPU has an independent 11.2896 MHz domain and SCSP has a 44.1 kHz
 sample domain relative to the fixed 26.8741 MHz reference. Native traces match
@@ -492,10 +519,10 @@ no-op CPU/device implementations cannot satisfy those assertions.
 | Feature / manual | Current behavior / edge cases | Native | Browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- | --- |
 | Cooked ISO, [Disc Format][DISC] | Bounded IP/ISO9660 first-read startup; retained media and runtime sector/file reads | disc.rs, media.rs, cd.rs, CLAB | SC, CLAB/local ISO | General boot layouts/size, interleaved/XA filesystem records | Pending |
-| BIN/CUE/raw/mixed tracks, [DISC] / [CD] §§4/7.2.3 | Caller-resolved files, cooked/2352-byte Mode1/Mode2/audio, shared/separate files, INDEX00–99, gaps and TOC; subindices drive seek/status/Q reporting | `tests/media.rs`, CLAB | CLAB local multi-file CUE, INDEX02/99 and malformed ordering, missing-reference/reset/privacy checks | Additional flags and full corrupt-sector ECC handling; WAVE/compression absent | Pending |
-| CD command/status/HIRQ, [CD] §§3.1–3.4 | Separate command/response latches; 1075-clock command completion, read-protected responses, CMOK/DRDY/CSCT/end flags, masks, clear-zero HIRQ and SCU A-bus IRQ | `tests/cd.rs`, CLAB | CLAB command/FIFO/DMA/IRQ | Full command-specific timing and register mirrors, scan and subcode R–W remain | Pending |
-| CD drive/TOC/session/track state, [CD] §§4/7/8.2 | TOC/session/Q, bounded seek, data play, CD-DA/repeat/end, media-dependent FAD/track/index reports; timed CDON/OFF retains disc and clears CD buffers | `tests/cd.rs`, CLAB | CLAB track playback | Standby, scan, retry/ECC, complete initialize options/periodic response phase and tray lifecycle remain | Pending |
-| CD buffers/transfers, [CD] §§3.4/5.3/5.4/8.2 | 200-sector pool, 24 partitions, get/delete/get-delete/put, short/over transfers, size/info/search, FIFO word/long and fixed-source SCU DMA | `tests/cd.rs`, CLAB | CLAB actual DMA/IRQ/checksum, sector mutation | Complete pool-full flow control/transfer overlap and timing/error inventory remain | Pending |
+| BIN/CUE/raw/mixed tracks, [DISC] / [CD] §§4/7.2.3 | Caller-resolved files, cooked/2352-byte Mode1/Mode2/audio, shared/separate files, INDEX00–99, gaps and TOC; subindices and PRE/DCP/4CH CONTROL metadata drive TOC/status/Q reporting; malformed/duplicate flags rejected | `tests/media.rs`, CLAB | CLAB local multi-file CUE, INDEX02/99 and malformed ordering, missing-reference/reset/privacy checks | Full corrupt-sector ECC handling and de-emphasis processing; WAVE/compression absent | Pending |
+| CD command/status/HIRQ, [CD] §§3.1–3.4 | Separate command/response latches; 1075-clock command completion, read-protected responses, CMOK/DRDY/CSCT/end flags, masks, clear-zero HIRQ and SCU A-bus IRQ | `tests/cd.rs`, CLAB | CLAB command/FIFO/DMA/IRQ | Full command-specific timing and register mirrors; BIN/CUE has no R–W stream, with empty FIFO WAIT now tested | Pending |
+| CD drive/TOC/session/track state, [CD] §§4/7/8.2 | TOC/session/Q, bounded seek, data play, CD-DA/repeat/end, media-dependent FAD/track/index reports; timed CDON/OFF, 60 Hz pause reports, programmed standby, scan directions/range/muting, tray/media retention and deterministic virtual close | `tests/cd.rs`, CLAB, CDDRV | CLAB, CDDRV | Retry/ECC, remaining initialization options and full drive/response lifecycle boundary evidence | Pending |
+| CD buffers/transfers, [CD] §§3.4/5.3/5.4/8.2 | 200-sector pool, 24 partitions, get/delete/get-delete/put, short/over transfers, size/info/search, FIFO word/long and fixed-source SCU DMA | `tests/cd.rs`, CLAB | CLAB actual DMA/IRQ/checksum, sector mutation | Pool-full pause/resume at the blocked FAD has native data vectors; complete transfer overlap and timing/error inventory remain | Pending |
 | Filters/selectors/partitions, [CD] §§5.2/5.3/8.2.5 | FAD and masked subheader comparisons, reverse conditions, true/false routes, reset, copy/move through destination filter | `tests/cd.rs::selectors_fad_range_connections_copy_move_and_size`, Mode2 reverse vectors | CLAB default filter/partition route | Full connection constraints and all boundary/error vectors remain | Pending |
 | BIOS-less startup, [Boot ROM][BOOT] / [DISC] | Original first-read HLE plus licensed SH-2 reset trampoline, separate from ExternalBios; slave handoff executes guest instructions | disc.rs, game.rs, CLAB, src/hle/boot.s | SC, CLAB | General system/backup/CD service ABI and full startup/region/version contracts | Pending |
 | BIOS services, [BOOT] | None | — | — | System/backup/CD calls and per-call ABI/side effects | Pending |
@@ -524,7 +551,7 @@ no-op CPU/device implementations cannot satisfy those assertions.
    trigger coverage, DSP conditional/pipeline/bank-conflict and program-DMA evidence.
    SCUROM now executes real DMA/DSP/timer/IRQ operations but is subset evidence.
 5. Remaining VDP1 edge/scanout/timing conformance and VDP2 tile timing, complete RBG1 edge coverage,
-   parameter reloads/CRAM coefficients, sprite windows/shadow/display modes, with
+   parameter reloads/CRAM coefficients and remaining display modes, with
    complete independent guest and browser coverage. VIDEO, EFFECTS and PRISM
    provide actual subset pixel/composition evidence.
 6. Complete remaining CD drive/command/timing/error behavior (see CD inventory),

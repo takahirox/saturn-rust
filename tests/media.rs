@@ -147,3 +147,34 @@ fn malformed_cue_and_sector_inputs_never_panic_or_allocate_unboundedly() {
         }
     }
 }
+
+#[test]
+fn cue_control_flags_reach_toc_and_reject_invalid_or_misplaced_flags() {
+    // ST-040 §2.2 TOC CONTROL: data/copy/pre-emphasis/channel bits belong
+    // to each track; they must not be discarded while accepting a CUE file.
+    let audio = vec![0; 2352 * 2];
+    let cue = "FILE \"a\" BINARY\nTRACK 01 AUDIO\nFLAGS PRE DCP 4CH\nINDEX 01 00:00:00";
+    let media = Media::cue(cue, &[("a", &audio)]).unwrap();
+    assert_eq!(media.tracks()[0].control, 11);
+    assert_eq!(media.toc()[0], 0xB1);
+    assert_eq!(media.toc()[396], 0xB1);
+    assert_eq!(media.toc()[400], 0xB1);
+    for flags in [
+        "",
+        "DCP DCP",
+        "PRE PRE",
+        "4CH 4CH",
+        "SCMS",
+        "DCP\nFLAGS PRE",
+    ] {
+        let malformed = cue.replace("PRE DCP 4CH", flags);
+        assert!(Media::cue(&malformed, &[("a", &audio)]).is_err(), "{flags}");
+    }
+    assert!(Media::cue(&format!("FLAGS DCP\n{cue}"), &[("a", &audio)]).is_err());
+    let data = vec![0; 2048 * 2];
+    for flag in ["PRE", "4CH"] {
+        let cue =
+            format!("FILE \"d\" BINARY\nTRACK 01 MODE1/2048\nFLAGS {flag}\nINDEX 01 00:00:00");
+        assert!(Media::cue(&cue, &[("d", &data)]).is_err());
+    }
+}

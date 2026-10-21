@@ -87,6 +87,14 @@ pub struct CdBlock {
     repeats: u8,
     speed: u32,
     phase: u64,
+    report_phase: u64,
+    pause_clocks: u64,
+    standby_seconds: u16,
+    // Scan speed is not specified by ST-162; advance ten frames per 75 Hz
+    // drive tick. Preserve direction and whether scan began during playback.
+    scan: Option<(bool, bool)>,
+    buffer_paused: bool,
+    tray_open: bool,
     seeking: u32,
     playing: bool,
     enabled: bool,
@@ -130,6 +138,12 @@ impl Default for CdBlock {
             repeats: 0,
             speed: 2,
             phase: 0,
+            report_phase: 0,
+            pause_clocks: 0,
+            standby_seconds: 180,
+            scan: None,
+            buffer_paused: false,
+            tray_open: false,
             seeking: 0,
             playing: false,
             enabled: true,
@@ -152,6 +166,10 @@ impl Default for CdBlock {
 }
 impl CdBlock {
     pub fn mount(&mut self, media: Media) {
+        self.tray_open = false;
+        self.scan = None;
+        self.buffer_paused = false;
+        self.pause_clocks = 0;
         self.fad = media.tracks[0].start;
         self.end = media.leadout;
         self.media = Some(media);
@@ -186,14 +204,24 @@ impl CdBlock {
         self.enabled && self.hirq.get() & self.mask != 0
     }
     pub fn active(&self) -> bool {
-        self.enabled && (self.playing || self.pending.is_some() || self.seeking != 0)
+        self.enabled
+            && (self.playing || self.scan.is_some() || self.pending.is_some() || self.seeking != 0)
     }
     pub fn clocks_to_event(&self) -> u32 {
         if !self.enabled {
             return u32::MAX;
         }
-        let drive = (HZ - self.phase).div_ceil(75 * u64::from(self.speed)) as u32;
+        let drive = (HZ - self.phase).div_ceil(75 * u64::from(self.drive_speed())) as u32;
+        let report = (HZ - self.report_phase).div_ceil(self.report_hz()) as u32;
+        let standby = if self.status == 1 && !self.playing {
+            (u64::from(self.standby_seconds) * HZ - self.pause_clocks).min(u64::from(u32::MAX))
+                as u32
+        } else {
+            u32::MAX
+        };
         drive
+            .min(report)
+            .min(standby)
             .min(self.pending.map_or(u32::MAX, |(_, n)| n))
             .min(if self.seeking == 0 {
                 u32::MAX
@@ -201,21 +229,44 @@ impl CdBlock {
                 self.seeking
             })
     }
+    fn drive_speed(&self) -> u32 {
+        if self.scan.is_some()
+            || self
+                .media
+                .as_ref()
+                .and_then(|m| m.track(self.fad))
+                .is_some_and(|t| t.mode == TrackMode::Audio)
+        {
+            1
+        } else {
+            self.speed
+        }
+    }
+    fn report_hz(&self) -> u64 {
+        // ST-162 §3.4: 75/150 Hz during play, 60 Hz while stopped/paused.
+        if self.playing || self.scan.is_some() {
+            75 * u64::from(self.drive_speed())
+        } else {
+            60
+        }
+    }
     fn report(&self, periodic: bool) {
         if periodic && self.response_latched.get() {
             return;
         }
-        let (ctrl, track, index) = self.media.as_ref().and_then(|m| m.track(self.fad)).map_or(
-            (255u8, 255u8, 255u8),
-            |t| {
-                (
-                    if t.mode == TrackMode::Audio { 1 } else { 0x41 },
-                    t.number,
-                    t.index_at(self.fad),
-                )
-            },
-        );
-        let flags = if ctrl == 0x41 { 0x80 } else { 0 };
+        let (ctrl, track, index) = self
+            .media
+            .as_ref()
+            .filter(|_| !self.tray_open)
+            .and_then(|m| m.track(self.fad))
+            .map_or((255u8, 255u8, 255u8), |t| {
+                (t.control_adr(), t.number, t.index_at(self.fad))
+            });
+        let flags = if ctrl != 255 && ctrl & 0x40 != 0 && self.status != 4 && self.scan.is_none() {
+            0x80
+        } else {
+            0
+        };
         self.response.set([
             u16::from(self.status | if periodic { 0x20 } else { 0 }) << 8
                 | flags
@@ -291,12 +342,52 @@ impl CdBlock {
         }
         while clocks != 0 {
             let delta = clocks.min(self.clocks_to_event());
-            let speed = self.speed;
+            let speed = self.drive_speed();
+            let report_hz = self.report_hz();
+            if self.status == 1 && !self.playing {
+                self.pause_clocks += u64::from(delta);
+                if self.pause_clocks >= u64::from(self.standby_seconds) * HZ {
+                    self.status = 2;
+                }
+            } else {
+                self.pause_clocks = 0;
+            }
             let was_seeking = self.seeking != 0;
             self.seeking = self.seeking.saturating_sub(delta);
             if was_seeking && self.seeking == 0 {
                 self.status = if self.playing { 3 } else { 1 };
             }
+            self.phase += u64::from(delta) * 75 * u64::from(speed);
+            while self.phase >= HZ {
+                self.phase -= HZ;
+                if let Some((reverse, _)) = self.scan {
+                    let lower = self.play_start.max(150);
+                    let next = if reverse {
+                        self.fad.saturating_sub(10)
+                    } else {
+                        self.fad.saturating_add(10)
+                    };
+                    self.fad = next.clamp(lower, self.end.saturating_sub(1).max(lower));
+                    self.audio_index = 0;
+                    if next < lower || next >= self.end {
+                        self.scan = None;
+                        self.status = 1;
+                        self.raise(PEND);
+                    }
+                } else if self.playing && self.seeking == 0 {
+                    self.drive_frame();
+                }
+            }
+            self.report_phase += u64::from(delta) * report_hz;
+            if self.report_phase >= HZ {
+                self.report_phase -= HZ;
+                self.raise(SCDQ);
+                if self.pending.is_none() {
+                    self.report(true);
+                }
+            }
+            // A completed command takes effect at the end of this interval,
+            // never retroactively on the drive clocks preceding its deadline.
             if let Some((cmd, left)) = self.pending {
                 if delta >= left {
                     self.pending = None;
@@ -309,17 +400,6 @@ impl CdBlock {
                     self.raise(CMOK);
                 } else {
                     self.pending = Some((cmd, left - delta));
-                }
-            }
-            self.phase += u64::from(delta) * 75 * u64::from(speed);
-            while self.phase >= HZ {
-                self.phase -= HZ;
-                self.raise(SCDQ);
-                if self.playing && self.seeking == 0 {
-                    self.drive_frame();
-                }
-                if self.pending.is_none() {
-                    self.report(true);
                 }
             }
             clocks -= delta;
@@ -344,8 +424,14 @@ impl CdBlock {
             return;
         } // CD-DA advances exactly every 588 sample frames.
         if self.used() >= POOL {
+            self.buffer_paused = true;
+            self.status = 1;
             self.raise(BFUL);
             return;
+        }
+        if self.buffer_paused {
+            self.buffer_paused = false;
+            self.status = 3;
         }
         match media.raw_sector(self.fad) {
             Ok(raw) => {
@@ -422,7 +508,11 @@ impl CdBlock {
     }
     /// External SCSP input: signed stereo, 588 frames per Red Book sector.
     pub fn audio_sample(&mut self) -> [i16; 2] {
-        if !self.enabled || !self.playing || self.seeking != 0 {
+        let scanning = self.scan.is_some();
+        if !self.enabled
+            || (!self.playing && !self.scan.is_some_and(|(_, audible)| audible))
+            || self.seeking != 0
+        {
             return [0; 2];
         }
         let Some(media) = &self.media else {
@@ -445,11 +535,19 @@ impl CdBlock {
             i16::from_le_bytes([raw[i], raw[i + 1]]),
             i16::from_le_bytes([raw[i + 2], raw[i + 3]]),
         ];
+        let sample = if scanning {
+            // -12 dB is two binary amplitude halvings (ST-162 §8.2.2).
+            sample.map(|s| s / 4)
+        } else {
+            sample
+        };
         self.audio_index += 1;
         if self.audio_index == 588 {
             self.audio_index = 0;
-            self.fad += 1;
-            self.finish_play();
+            if !scanning {
+                self.fad += 1;
+                self.finish_play();
+            }
         }
         sample
     }
@@ -540,6 +638,9 @@ impl CdBlock {
             r[3] = d;
             this.response.set(r);
         };
+        if self.tray_open && matches!(command, 0x02 | 0x03 | 0x20) {
+            return false;
+        }
         match command {
             0x00 => (),
             0x01 => response(self, 0x0002, 0, 0),
@@ -563,6 +664,13 @@ impl CdBlock {
                 response(self, 0, (value >> 16) as u16, value as u16);
             }
             0x04 => {
+                if c[1] != 0xFFFF {
+                    self.standby_seconds = if c[1] == 0 { 180 } else { c[1] };
+                }
+                self.pause_clocks = 0;
+                self.tray_open = false;
+                self.scan = None;
+                self.buffer_paused = false;
                 self.playing = false;
                 self.seeking = 0;
                 self.audio_index = 0;
@@ -586,8 +694,11 @@ impl CdBlock {
             }
             0x05 => {
                 self.playing = false;
+                self.scan = None;
+                self.seeking = 0;
+                self.audio_index = 0;
+                self.tray_open = true;
                 self.status = 6;
-                self.media = None;
                 self.file_read = None;
                 self.report(false);
                 self.raise(0x20 | EFLS);
@@ -653,6 +764,10 @@ impl CdBlock {
                 if start < 150 || start >= end || end > m.leadout {
                     return false;
                 }
+                self.tray_open = false;
+                self.scan = None;
+                self.buffer_paused = false;
+                self.pause_clocks = 0;
                 self.fad = start;
                 self.play_start = start;
                 self.end = end;
@@ -665,12 +780,28 @@ impl CdBlock {
                 self.report(false);
             }
             0x11 => {
+                if field1 == 0 {
+                    if self.media.is_none() {
+                        return false;
+                    }
+                    self.tray_open = false;
+                    self.playing = false;
+                    self.scan = None;
+                    self.seeking = 0;
+                    self.status = 2;
+                    self.report(false);
+                    return true;
+                }
                 let Some(fad) = self.position(field1, self.fad) else {
                     return false;
                 };
                 if self.media.as_ref().is_none_or(|m| fad >= m.leadout) {
                     return false;
                 }
+                self.tray_open = false;
+                self.scan = None;
+                self.buffer_paused = false;
+                self.pause_clocks = 0;
                 self.fad = fad;
                 self.playing = false;
                 self.audio_index = 0;
@@ -679,9 +810,24 @@ impl CdBlock {
                 self.report(false);
             }
             0x12 => {
-                return false;
-            } // scan is not silently accepted
+                if c[0] & 255 > 1 || self.media.is_none() {
+                    return false;
+                }
+                let audible = self.scan.map_or(self.playing, |(_, audible)| audible);
+                self.scan = Some((c[0] & 1 != 0, audible));
+                self.tray_open = false;
+                self.playing = false;
+                self.buffer_paused = false;
+                self.seeking = 0;
+                self.status = 5;
+                self.report(false);
+            }
             0x20 => {
+                // ISO/BIN/CUE carries no R–W pack stream. An empty pack FIFO
+                // returns WAIT, not a fabricated all-zero pack (ST-162 §4.3).
+                if c[0] & 255 == 1 {
+                    return self.wait();
+                }
                 let Some(t) = self.media.as_ref().and_then(|m| m.track(self.fad)) else {
                     return false;
                 };
@@ -689,7 +835,7 @@ impl CdBlock {
                     return false;
                 }
                 let relative = self.fad.abs_diff(t.start);
-                let ctrl = if t.mode == TrackMode::Audio { 1 } else { 0x41 };
+                let ctrl = t.control_adr();
                 let mut bytes = vec![ctrl, t.number, t.index_at(self.fad), 0, 0, 0, 0, 0, 0, 0];
                 bytes[3..6].copy_from_slice(&relative.to_be_bytes()[1..]);
                 bytes[7..10].copy_from_slice(&self.fad.to_be_bytes()[1..]);

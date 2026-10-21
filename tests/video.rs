@@ -462,19 +462,148 @@ fn vdp2_two_bitmaps_windows_priorities_blending_and_vdp1_composition() {
     assert_eq!(&v.composite(&s).unwrap()[..3], &[255, 0, 0]);
 }
 
-#[test]
-fn unimplemented_vdp2_shadow_and_palette_msb_effects_fail_explicitly() {
-    let mut v = bitmap();
-    v.write16(VDP2 + 0xF0, 3).unwrap();
+// ST-058 §§9.1/9.2/14.1: expected pixels are literal register/palette
+// vectors, including the ordering of blend, offset, then shadow.
+fn scanout(kind: u16, data: &[u16]) -> Vdp1 {
     let mut s = Vdp1::default();
-    s.draw_buffer_mut()[..2].copy_from_slice(&0x07FEu16.to_be_bytes());
+    if kind >= 8 {
+        s.write16(REGISTERS, 1).unwrap();
+    }
+    for (i, value) in data.iter().enumerate() {
+        if kind >= 8 {
+            s.draw_buffer_mut()[i] = *value as u8;
+        } else {
+            s.draw_buffer_mut()[i * 2..i * 2 + 2].copy_from_slice(&value.to_be_bytes());
+        }
+    }
     s.write16(REGISTERS + 2, 3).unwrap();
     s.vblank_out();
-    assert!(v.composite(&s).unwrap_err().contains("shadow"));
-    s.draw_buffer_mut()[..2].copy_from_slice(&0x0001u16.to_be_bytes());
-    s.write16(REGISTERS + 2, 3).unwrap();
-    s.vblank_out();
-    v.write16(VDP2 + 0xE0, 0x3000).unwrap();
-    v.write16(VDP2 + 0xEC, 0x40).unwrap();
-    assert!(v.composite(&s).unwrap_err().contains("color-MSB"));
+    s
+}
+#[test]
+fn all_sprite_types_select_independent_priority_ratio_and_palette_fields() {
+    for (kind, data, ratio, color) in [
+        (0, 0xD801, 3, 1),
+        (1, 0xD801, 3, 1),
+        (2, 0x5801, 3, 1),
+        (3, 0x5801, 3, 1),
+        (4, 0x5401, 5, 1),
+        (5, 0x5801, 1, 1),
+        (6, 0x5C01, 3, 1),
+        (7, 0x5E01, 7, 1),
+        (8, 0x81, 0, 1),
+        (9, 0xC1, 1, 1),
+        (10, 0x81, 0, 1),
+        (11, 0xC1, 3, 1),
+        (12, 0x81, 0, 0x81),
+        (13, 0xC1, 1, 0xC1),
+        (14, 0x81, 0, 0x81),
+        (15, 0xC1, 3, 0xC1),
+    ] {
+        let mut v = bitmap();
+        v.vram[..2].copy_from_slice(&0x801Fu16.to_be_bytes());
+        v.cram[color * 2..color * 2 + 2].copy_from_slice(&0x83E0u16.to_be_bytes());
+        for off in [0xF0, 0xF2, 0xF4, 0xF6] {
+            v.write16(VDP2 + off, 0x0707).unwrap();
+        }
+        // register r holds ratio r*4+3; all eight selectors differ.
+        for r in 0..8 {
+            let at = 0x100 + r / 2 * 2;
+            let old = v.read16(VDP2 + at).unwrap();
+            v.write16(VDP2 + at, old | (((r * 4 + 3) << (r % 2 * 8)) as u16))
+                .unwrap();
+        }
+        v.write16(VDP2 + 0xE0, 0x2000 | kind).unwrap();
+        v.write16(VDP2 + 0xEC, 0x40).unwrap();
+        let s = scanout(kind, &[data]);
+        let ratio = ratio * 4 + 3;
+        assert_eq!(
+            &v.composite(&s).unwrap()[..3],
+            &[
+                ((255 * (ratio + 1)) >> 5) as u8,
+                ((255 * (31 - ratio)) >> 5) as u8,
+                0
+            ],
+            "type {kind:X}"
+        );
+        // No sprite priority means transparent, including all shared-bit types.
+        for off in [0xF0, 0xF2, 0xF4, 0xF6] {
+            v.write16(VDP2 + off, 0).unwrap();
+        }
+        assert_eq!(&v.composite(&s).unwrap()[..3], &[255, 0, 0]);
+    }
+}
+#[test]
+fn normal_and_msb_shadows_follow_enable_priority_and_color_offset_order() {
+    let mut v = bitmap();
+    v.vram[..2].copy_from_slice(&0xC210u16.to_be_bytes()); // RGB132
+    v.write16(VDP2 + 0xF0, 3).unwrap();
+    let normal = scanout(0, &[0x7FE]);
+    assert_eq!(&v.composite(&normal).unwrap()[..3], &[132, 132, 132]);
+    v.write16(VDP2 + 0xE2, 1).unwrap();
+    assert_eq!(&v.composite(&normal).unwrap()[..3], &[66, 66, 66]);
+    v.write16(VDP2 + 0x110, 1).unwrap();
+    v.write16(VDP2 + 0x114, 20).unwrap();
+    assert_eq!(&v.composite(&normal).unwrap()[..3], &[76, 66, 66]);
+    v.write16(VDP2 + 0xF8, 4).unwrap(); // shadow below background
+    assert_eq!(&v.composite(&normal).unwrap()[..3], &[152, 132, 132]);
+    v.write16(VDP2 + 0xF8, 1).unwrap();
+    v.write16(VDP2 + 0xE0, 3).unwrap();
+    v.cram[2..4].copy_from_slice(&0x83E0u16.to_be_bytes());
+    let shaded = scanout(3, &[0x8001]);
+    assert_eq!(&v.composite(&shaded).unwrap()[..3], &[0, 127, 0]);
+    let transparent = scanout(3, &[0x8000]);
+    assert_eq!(&v.composite(&transparent).unwrap()[..3], &[152, 132, 132]);
+    v.write16(VDP2 + 0xE2, 0x101).unwrap();
+    assert_eq!(&v.composite(&transparent).unwrap()[..3], &[76, 66, 66]);
+}
+#[test]
+fn sprite_window_masks_normal_layers_and_combines_with_rectangles() {
+    let mut v = bitmap();
+    v.write16(VDP2 + 0xAE, 0xF000).unwrap();
+    for x in 0..4 {
+        v.vram[x * 2..x * 2 + 2].copy_from_slice(&0x801Fu16.to_be_bytes());
+    }
+    v.write16(VDP2 + 0xE0, 0x13).unwrap(); // type3 SD becomes window
+    v.write16(VDP2 + 0xD0, 0x20).unwrap(); // inside sprite window
+    let s = scanout(3, &[0x8000, 0, 0x8000, 0]);
+    let f = v.composite(&s).unwrap();
+    assert_eq!(
+        &f[..16],
+        &[255, 0, 0, 255, 0, 0, 0, 255, 255, 0, 0, 255, 0, 0, 0, 255]
+    );
+    v.write16(VDP2 + 0xD0, 0x30).unwrap(); // outside
+    assert_eq!(
+        &v.composite(&s).unwrap()[..8],
+        &[0, 0, 0, 255, 255, 0, 0, 255]
+    );
+    for (off, value) in [(0xC0, 0), (0xC4, 2), (0xC2, 0), (0xC6, 0), (0xD0, 0xA2)] {
+        v.write16(VDP2 + off, value).unwrap();
+    } // inside rectangle AND inside sprite window
+    assert_eq!(
+        &v.composite(&s).unwrap()[..16],
+        &[255, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255]
+    );
+}
+#[test]
+fn palette_msb_calculation_uses_cram_metadata_in_both_color_formats() {
+    for mode in [0, 1, 2] {
+        let mut v = bitmap();
+        v.vram[..2].copy_from_slice(&0x801Fu16.to_be_bytes());
+        v.write16(VDP2 + 0xE, mode << 12).unwrap();
+        v.write16(VDP2 + 0xE0, 0x3000).unwrap();
+        v.write16(VDP2 + 0xEC, 0x40).unwrap();
+        v.write16(VDP2 + 0xF0, 3).unwrap();
+        v.write16(VDP2 + 0x100, 15).unwrap();
+        let at = if mode == 2 { 4 } else { 2 };
+        if mode == 2 {
+            v.cram[at..at + 4].copy_from_slice(&[0, 0, 255, 0]);
+        } else {
+            v.cram[at..at + 2].copy_from_slice(&0x03E0u16.to_be_bytes());
+        }
+        let s = scanout(0, &[1]);
+        assert_eq!(&v.composite(&s).unwrap()[..3], &[0, 255, 0]);
+        v.cram[at] |= 0x80;
+        assert_eq!(&v.composite(&s).unwrap()[..3], &[127, 127, 0]);
+    }
 }

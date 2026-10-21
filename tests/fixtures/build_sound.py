@@ -16,7 +16,7 @@ assembler = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(assembler)
 
 
-def sound_image(effects=False, synthesis=False):
+def sound_image(effects=False, synthesis=False, peripherals=False):
     image = bytearray(0x4400)
     struct.pack_into('>II', image, 0, 0x7FF00, 0x100)
     struct.pack_into('>I', image, 28 * 4, 0x300)  # level-four autovector
@@ -32,17 +32,72 @@ def sound_image(effects=False, synthesis=False):
     else:
         for offset, value in [(2, 0x4000), (4, 0), (6, 4), (12, 0x100), (16, 0), (22, 0xE800), (0, 0x1820)]:
             movw(value, 0x100000 + offset)  # PCM16, loop, direct mode, pan 8
+    if peripherals:
+        emit(0x4EB9, 0, 0xC00)  # JSR original DMA/MIDI routine
     if effects:
         emit(0x4EB9, 0, 0x900)  # JSR original effects setup (Hardware Lab only).
-    movw(0x40, 0x10041E)  # timer A enabled for sound CPU
+    movw(0x250 if peripherals else 0x40, 0x10041E)  # timer A enabled for sound CPU
     movw(0x40, 0x100428)  # timer A level-four interrupt
     movw(0xFE, 0x100418)  # expires after one sample tick
+    if peripherals:
+        movw(0x40,0x100422) # clear the power-on timer request before unmasking
     # MOVE.L #$600D,$800; MOVE #$2000,SR; STOP #$2000; BRA.S back to STOP.
     emit(0x23FC, 0, 0x600D, 0, 0x800, 0x46FC, 0x2000, 0x4E72, 0x2000, 0x60FA)
     struct.pack_into('>'+'H'*len(words), image, 0x100, *words)
     # ADDQ.L #1,$804; clear timer A pending; RTE.
     handler = [0x52B9, 0, 0x804, 0x33FC, 0x40, 0x10, 0x422, 0x4E73]
     struct.pack_into('>'+'H'*len(handler), image, 0x300, *handler)
+    if peripherals:
+        # Independent handlers: MIDI at level3, DMA at level1, timer at level4.
+        for level, address, flag, mailbox in [(3,0x500,0x200,0x818),(1,0x600,0x10,0x81C)]:
+            struct.pack_into('>I',image,(24+level)*4,address)
+            handler=[0x52B9,0,mailbox,0x33FC,flag,0x10,0x422,0x4E73]
+            struct.pack_into('>'+'H'*len(handler),image,address,*handler)
+        # Additional original 68000 family vectors execute on the real sound
+        # RAM bus (M68000PRM instruction entries / MC68000UM §6.3.9).
+        words=[]
+        def result(register,address):emit(0x23C0|register,0,address)
+        emit(0x7049,0x7250,0x44FC,4,0xC101);result(0,0x830) # ABCD 49+50=99
+        emit(0x4800);result(0,0x834) # NBCD 99 -> 01 (X from ABCD is zero)
+        emit(0x7000,0x7201,0x44FC,4,0x8101);result(0,0x838) # SBCD 00-01=99
+        emit(0x41F9,0,0x4400,0x203C,0x1234,0x5678,0x01C8,1,0x0348,1)
+        result(1,0x83C) # MOVEP.L uses four odd byte lanes, not a contiguous long
+        emit(0x41F9,0,0x4500,0x203C,0x1122,0x3344,0x223C,0x5566,0x7788)
+        emit(0x48E0,0xC080,0x7000,0x7200,0x4CD8,0x0103)
+        result(0,0x840);result(1,0x844);result(8,0x848)
+        emit(0x203C,0,0xFFFF,0x7202,0xC1C1);result(0,0x88C) # MULS -1*2
+        emit(0x70F9,0x7202,0x81C1);result(0,0x890) # DIVS -7/2 -> rem -1, quotient -3
+        emit(0x203C,0,0xFF,0x7200,0x44FC,0x14,0xD101);result(0,0x894)
+        emit(0x7000,0x44FC,0x14,0x9101);result(0,0x898)
+        # MOVEM's first load completes before its next long hits the disconnected
+        # sound-bus region. The handler records the actual seven-word fault frame.
+        movw(0xCAFE,0x7FFFC);movw(0xBABE,0x7FFFE)
+        emit(0x41F9,0x0007,0xFFFC,0x223C,0xDEAD,0xBEEF,0x4CD8,3)
+        result(0,0x850);result(1,0x854);result(8,0x858)
+        emit(0x4E40,0x4E75) # TRAP #0/RTE then RTS to the I/O routine
+        assert 0x900+len(words)*2<0xC00
+        struct.pack_into('>'+'H'*len(words),image,0x900,*words)
+        struct.pack_into('>I',image,2*4,0x700)
+        struct.pack_into('>I',image,32*4,0x820)
+        # MOVE.W (SP),$860; MOVE.L 2(SP),$864; MOVE.W 6(SP),$868;
+        # LEA 8(SP),SP drops the extended fault prefix before normal RTE.
+        fault=[0x33D7,0,0x860,0x23EF,2,0,0x864,0x33EF,6,0,0x868,0x4FEF,8,0x4E73]
+        struct.pack_into('>'+'H'*len(fault),image,0x700,*fault)
+        trap=[0x52B9,0,0x884,0x4E73]
+        struct.pack_into('>'+'H'*len(trap),image,0x820,*trap)
+        words=[]
+        emit(0x4EB9,0,0x900) # Execute architectural family/fault vectors first.
+        movw(0xA55A,0x4300);movw(0x1234,0x4302)
+        movw(0x4300,0x100412);movw(0x3E2,0x100414);movw(0x1004,0x100416)
+        emit(0x3039,0x10,0x416,0x0240,0x1000,0x66F4) # poll DEXE
+        for source,destination in [(0x1003E2,0x810),(0x1003E4,0x812)]:
+            emit(0x33F9,source>>16,source&65535,0,destination)
+        for byte in [0x91,0x40,0x7F]:movw(byte,0x100406)
+        emit(0x3039,0x10,0x404,0x0240,0x0800,0x67F4) # poll MOEMP
+        emit(0x33F9,0x10,0x420,0,0x814) # record DMA + MIDI pending
+        movw(0x90,0x100424);movw(0x80,0x100426)
+        emit(0x4E75)
+        struct.pack_into('>'+'H'*len(words),image,0xC00,*words)
     if effects:
         words = []
         # ST-077 fig.5.1 / ST-228 Reference 2: independently authored 128-step
@@ -98,13 +153,13 @@ def sound_image(effects=False, synthesis=False):
     return image
 
 
-def build(synthesis=False):
+def build(synthesis=False, peripherals=False):
     rom = bytearray(524288)
     struct.pack_into('>II', rom, 0, 0x200, 0x06100000)
     host = assembler.assemble((HERE/'sound.s').read_text(), base=0x200)
     assert len(host) < 0x1E00
     rom[0x200:0x200+len(host)] = host
-    sound = sound_image(synthesis=synthesis)
+    sound = sound_image(synthesis=synthesis, peripherals=peripherals)
     rom[0x2000:0x2000+len(sound)] = sound
     text = ['# Original dual-architecture sound BIOS fixture. MIT: adjacent LICENSE.',
             '# Generated by build_sound.py from sound.s and original MC68EC000 words.']

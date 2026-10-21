@@ -96,7 +96,7 @@ impl Vdp1 {
         self.running
     }
     pub(crate) fn normal_scanout(&self) -> bool {
-        self.tvmr & 7 == 0
+        self.tvmr & 6 == 0
     }
     fn geometry(&self) -> (usize, usize, usize) {
         match self.tvmr & 7 {
