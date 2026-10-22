@@ -83,6 +83,7 @@ python3 tests/fixtures/build_refresh.py --check
 python3 tests/fixtures/build_smpc_boundaries.py --check
 python3 tests/fixtures/build_sh2_timing.py --check
 python3 tests/fixtures/build_sh2_bus_pipeline.py --check
+python3 tests/fixtures/build_sh2_reset_bus.py --check
 python3 tests/fixtures/build_bus_transactions.py --check
 python3 tests/fixtures/build_dmac_bus.py --check
 python3 tests/fixtures/build_abus.py --check

@@ -458,9 +458,12 @@ impl Bus {
         &mut self,
         processor: Processor,
     ) -> Option<crate::onchip::ResetRequest> {
+        if !self.reset_drain_complete(processor) {
+            return None;
+        }
         let chip = &mut self.onchip[processor as usize];
         let reset = chip.take_reset_request()?;
-        chip.reset_from_watchdog(reset);
+        chip.finish_watchdog_reset();
         self.cancel_cpu_transaction(processor);
         self.cancel_dmac_transaction(processor);
         self.cache[processor as usize].get_mut().reset_control();
@@ -603,6 +606,11 @@ impl Bus {
             self.vdp2.scan_field(self.raster.odd());
             // Complete the granted data phase before contenders at this edge.
             self.advance_bus_transaction(delta)?;
+            for processor in [Processor::Master, Processor::Slave] {
+                if self.cpu_reset_active(processor) {
+                    self.hold_cpu_reset(processor);
+                }
+            }
             remaining -= delta;
         }
         Ok(command)
@@ -1142,7 +1150,15 @@ impl CpuBus<'_> {
             let first = first && i == 0;
             let last = last && (i + 1) * width == N;
             if self.scheduled {
-                let value = self.scheduled_external(at, width, None, first, last, locked)?;
+                let value = self.scheduled_transfer(transactions::Transfer {
+                    address: at,
+                    width,
+                    write: None,
+                    first,
+                    last,
+                    unit_end: address + N as u32,
+                    locked,
+                })?;
                 bytes.copy_from_slice(&value.to_be_bytes()[4 - width..]);
             } else {
                 match width {
@@ -2136,7 +2152,7 @@ mod bsc_memory_tests {
         b.onchip[0].reset_from_watchdog(crate::onchip::ResetRequest::Manual);
         assert_eq!(b.for_cpu(p).read32(0xFFFFFFEC), Ok(0x240));
         b.for_cpu(p).write32(0x26000404, 0x66666666).unwrap();
-        assert_eq!(b.cpu_delay(p, 1), 2); // retained mode, closed row
+        assert_eq!(b.cpu_delay(p, 1), 1); // H §7.11.1: retained mode and open row
     }
     #[test]
     fn indirect_dma_table_reads_have_separate_deadlines_and_reset_cancels_a_partial_descriptor() {

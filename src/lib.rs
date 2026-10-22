@@ -194,6 +194,55 @@ mod scheduling_tests {
     }
 
     #[test]
+    fn watchdog_reset_vectors_sample_at_separate_bus_completions_and_peer_runs() {
+        for p in [Processor::Master, Processor::Slave] {
+            for reset in [onchip::ResetRequest::PowerOn, onchip::ResetRequest::Manual] {
+                let mut m = cached_pair(&[9; 8], &[9; 8]);
+                let vector = if reset == onchip::ResetRequest::Manual {
+                    8
+                } else {
+                    0
+                };
+                let mut rom = vec![0; bus::BIOS_SIZE];
+                rom[vector..vector + 4].copy_from_slice(&0x06003000u32.to_be_bytes());
+                rom[vector + 4..vector + 8].copy_from_slice(&0x06004000u32.to_be_bytes());
+                m.bus.load_bios(&rom).unwrap();
+                m.bus.for_cpu(p).write8(cache::CCR, 0).unwrap();
+                let i = p as usize;
+                if p == Processor::Master {
+                    m.cpu = Cpu::default();
+                } else {
+                    m.slave = Cpu::default();
+                }
+                m.cpu_reset_vectors[i] = Some(reset);
+                while m.clocks < 34 {
+                    m.step_hardware_boundary().unwrap();
+                }
+                // The completed PC cannot change; the unstarted SP read can.
+                rom[vector..vector + 4].copy_from_slice(&0x06005000u32.to_be_bytes());
+                rom[vector + 4..vector + 8].copy_from_slice(&0x06006000u32.to_be_bytes());
+                m.bus.load_bios(&rom).unwrap();
+                while m.clocks < 36 {
+                    m.step_hardware_boundary().unwrap();
+                }
+                assert!(m.issue_cpu(p).unwrap());
+                let (cpu, peer) = if p == Processor::Master {
+                    (m.cpu_state(), m.slave_state())
+                } else {
+                    (m.slave_state(), m.cpu_state())
+                };
+                assert_eq!(
+                    (cpu.pc, cpu.r[15], cpu.instructions),
+                    (0x06003000, 0x06006000, 0)
+                );
+                assert_eq!((cpu.vbr, cpu.sr), (0, 0xF0));
+                assert_eq!(peer.instructions, 4);
+                assert_eq!(m.cpu_reset_vectors[i], None);
+            }
+        }
+    }
+
+    #[test]
     fn long_dma_ownership_yields_without_faulting_or_publishing_cpu_work_early() {
         let mut m = Machine::new();
         m.reset(Boot::HlePrototype).unwrap();
@@ -284,6 +333,7 @@ pub struct Machine {
     dma_errors: [bool; 2],
     cpu_ready: [u64; 2],
     cpu_boundary: [Option<CpuBoundary>; 2],
+    cpu_reset_vectors: [Option<onchip::ResetRequest>; 2],
     fault: Option<MachineError>,
 }
 
@@ -304,10 +354,13 @@ impl Machine {
         self.fault.as_ref()
     }
     pub fn reset_in_progress(&self) -> bool {
-        self.bus.cpu_reset_active(Processor::Master)
+        self.bus.cpu_reset_active(Processor::Master) || self.cpu_reset_vectors[0].is_some()
     }
     pub fn can_wake_master(&self) -> bool {
-        self.nmi_pending || self.dma_errors[0] || self.bus.can_wake_master()
+        self.cpu_reset_vectors[0].is_some()
+            || self.nmi_pending
+            || self.dma_errors[0]
+            || self.bus.can_wake_master()
     }
     pub fn mode(&self) -> Option<BootMode> {
         self.mode
@@ -325,6 +378,7 @@ impl Machine {
         self.dma_errors = [false; 2];
         self.cpu_ready = [0; 2];
         self.cpu_boundary = [None; 2];
+        self.cpu_reset_vectors = [None; 2];
         self.fault = None;
         self.cpu = Cpu::default();
         self.slave = Cpu::default();
@@ -491,8 +545,9 @@ impl Machine {
         let i = processor as usize;
         let slave = processor == Processor::Slave;
         if self.bus.cpu_reset_active(processor) {
-            self.bus.cancel_cpu_transaction(processor);
+            self.bus.hold_cpu_reset(processor);
             self.cpu_boundary[i] = None;
+            self.cpu_reset_vectors[i] = None;
             if slave {
                 self.slave = Cpu::default();
             } else {
@@ -503,6 +558,42 @@ impl Machine {
         }
         if self.cpu_ready[i] > self.clocks {
             return Ok(false);
+        }
+        if let Some(reset) = self.cpu_reset_vectors[i] {
+            let result = {
+                let memory = self.bus.replay_cpu(processor);
+                match reset {
+                    onchip::ResetRequest::PowerOn => Cpu::power_on(&memory),
+                    onchip::ResetRequest::Manual => Cpu::manual_reset(&memory),
+                }
+            };
+            return match result {
+                Err(BusError::Pending) => {
+                    self.cpu_ready[i] = u64::MAX;
+                    Ok(false)
+                }
+                Err(source) => {
+                    self.bus.cancel_cpu_transaction(processor);
+                    let error = CpuError::Bus { pc: 0, source };
+                    if slave {
+                        self.slave.deferred_write_fault(error.clone());
+                        Err(MachineError::SlaveCpu(error))
+                    } else {
+                        self.cpu.deferred_write_fault(error.clone());
+                        Err(MachineError::Cpu(error))
+                    }
+                }
+                Ok(cpu) => {
+                    if slave {
+                        self.slave = cpu;
+                    } else {
+                        self.cpu = cpu;
+                    }
+                    self.cpu_reset_vectors[i] = None;
+                    self.bus.finish_cpu_transaction(processor);
+                    Ok(true)
+                }
+            };
         }
         let boundary = *self.cpu_boundary[i].get_or_insert_with(|| CpuBoundary {
             dma: self.dma_errors[i],
@@ -639,6 +730,7 @@ impl Machine {
                 self.bus.set_slave_enabled(false);
                 self.slave = Cpu::default();
                 self.cpu_boundary[1] = None;
+                self.cpu_reset_vectors[1] = None;
             }
             Some(0x06) => self.bus.sound.set_enabled(true)?,
             Some(0x07) => self.bus.sound.set_enabled(false)?,
@@ -680,12 +772,14 @@ impl Machine {
                 self.dma_errors = [false; 2];
                 self.cpu_ready = [self.clocks; 2];
                 self.cpu_boundary = [None; 2];
+                self.cpu_reset_vectors = [None; 2];
             }
             Some(0x0E | 0x0F) => {
                 self.slave = Cpu::default();
                 self.dma_errors[1] = false;
                 self.cpu_ready = [self.clocks; 2];
                 self.cpu_boundary = [None; 2];
+                self.cpu_reset_vectors[1] = None;
             }
             Some(0x18) => {
                 self.nmi_pending = true;
@@ -702,17 +796,14 @@ impl Machine {
                 continue;
             }
             if let Some(reset) = self.bus.take_cpu_reset(processor) {
-                let cpu = match reset {
-                    onchip::ResetRequest::PowerOn => Cpu::power_on(&self.bus),
-                    onchip::ResetRequest::Manual => Cpu::manual_reset(&self.bus),
-                }?;
                 match processor {
                     Processor::Master => {
-                        self.cpu = cpu;
+                        self.cpu = Cpu::default();
                         self.nmi_pending = false;
                     }
-                    Processor::Slave => self.slave = cpu,
+                    Processor::Slave => self.slave = Cpu::default(),
                 }
+                self.cpu_reset_vectors[processor as usize] = Some(reset);
                 self.dma_errors[processor as usize] = false;
                 self.cpu_ready[processor as usize] = self.clocks;
                 self.cpu_boundary[processor as usize] = None;

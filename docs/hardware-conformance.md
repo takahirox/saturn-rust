@@ -2339,3 +2339,36 @@ The complete IF/ID/EX/MA/WB/multiplier pipeline, all manual-reset/standby
 boundaries and the other mandatory subsystem contracts remain subject to the
 full Issue #17 acceptance checklist. This evidence does not establish those
 unimplemented contracts or close the umbrella Issue.
+
+## SH7604 watchdog reset bus completion (RSTBUS)
+
+Primary specification: [H] §§4.2.2–4.2.3, table4.5, §7.11.1, §§8.4.6/12.3.1.
+Power-on reset aborts pending external work. Manual reset completes the current
+external operand, stopping cache refills and 16-byte DMAC requests at a longword.
+A word on a byte-wide interface still stops at its word boundary. Reset does not
+resume the interrupted instruction or issue the next DMA unit.
+
+| Contract | Implementation | Independent native evidence | Executing guest / production Wasm evidence |
+| --- | --- | --- | --- |
+| Manual completion versus power-on cancellation | `Transfer::unit_end`, `Bus::hold_cpu_reset/grant_reset_drain` in [transactions.rs](../src/bus/transactions.rs); physical phases retain sampled write data independently of canceled CPU/DMAC journals | [reset_tests.rs](../src/bus/reset_tests.rs) covers both processors, all three ordinary bus widths, pre/post-beat reset edges, advancement chunks, a queued second operand, narrow word reads, cache refill and 16-byte DMA stopping at the current longword | [Original MIT builder](../tests/fixtures/build_sh2_reset_bus.py) and [ROM](../tests/fixtures/sh2-reset-bus.hex) execute a warmed guest write one clock before WDT assertion. Both CPUs read `12345678` after manual reset and zero after power reset; changed guest operands produce `89ABCDEF` only in manual mode |
+| Reset initialization and retained domains | `OnChip::reset_from_watchdog/finish_watchdog_reset`, `Watchdog::reset_preserving_cause`, cache control reset at assertion | `reset_assertion_initializes_modules_and_power_reset_releases_self_refresh_before_pulse_ends` checks SCI/CCR/UBC and peer access during the pulse. [Peripheral vectors](../src/onchip/peripheral_tests.rs) and the updated [SDRAM comparator vector](../src/bus.rs) check retained BSC/open-row timing | RSTBUS checks distinct power/manual vector entries, retained/reset BCR2 (`7C`/`FC`), disabled cache, watchdog cause and completion on both CPUs |
+| Pulse completion versus bus completion | Reset remains pending until the granted cycle and its operand tail finish; new CPU/peripheral/DMA requests are blocked | A real VDP2 grant stall lasts 1282 main clocks, beyond the 512-clock WDT pulse; no reset-vector release occurs at514 or1281. The peer SCI completes independently during the drain | RSTBUS waits through actual WDT reset and scheduled vector reads, without host advancement of guest result state |
+| Arbitration, diagnostic and board-reset boundaries | Reset-drain ownership retains the current unit, observes external UBC ownership, respects a peer TAS lock and cancels on SYSRES/CPU disable | `retained_manual_reset_buffer_cannot_break_the_other_processors_tas_lock`, `reset_cancels_unaccepted_buffer_and_system_reset_cancels_manual_drain`, and `reset_drain_preserves_cpu_and_exception_diagnostic_provenance` | Existing SYSRES, DMA, refresh/monitor and shared-bus guests remain enabled in the complete browser suite |
+| Scheduled watchdog vectors | `Machine::issue_cpu`, per-CPU `cpu_reset_vectors` in [lib.rs](../src/lib.rs); PC and SP use separate replayed bus reads after reset release | `watchdog_reset_vectors_sample_at_separate_bus_completions_and_peer_runs` checks physical power/manual vector addresses, retained completed PC, later SP sampling, SR/VBR initialization, zero premature retirement and peer execution | [Native RSTBUS](../tests/sh2_reset_bus.rs) and [Wasm RSTBUS](../scripts/sh2-reset-bus.mjs) run the identical original BIOS, manual/power selections, operand mutations and repeated cold resets |
+
+UBC register values after manual reset are undefined in H §6.2. Retaining them
+is an explicit deterministic policy, not a claim that hardware guarantees them.
+The BSC's documented configuration and SDRAM row retention are implemented;
+partial cache-fill contents remain subject to the existing deterministic policy.
+Initial cold-boot and SMPC slave-start vector scheduling, full CPU pipelines,
+other reset/peripheral/board contracts and the other mandatory Issue #17
+subsystems still require completion. No umbrella acceptance checkbox is changed.
+
+The fixture and generated ROM use the adjacent [MIT license](../tests/fixtures/LICENSE).
+`python3 tests/fixtures/build_sh2_reset_bus.py --check` is required in CI alongside
+the other 65 reproducibility commands. Expanded 512 KiB ROM SHA-256:
+`e0bc3e201436e2f3b6b48649dd91b9552f4537780024640471b0501da270b628`.
+Removing manual-reset draining makes RSTBUS fail; extending a canceled cache
+refill past its current longword makes its independent bus vector fail. Both
+intentional regressions were rejected and the production sources restored
+byte-for-byte before final validation.

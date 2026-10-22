@@ -113,7 +113,7 @@ impl OnChip {
         self.bsc.write_mode(address)
     }
     pub(crate) fn grant_refresh(&self) -> Option<u32> {
-        if self.standby || self.watchdog.reset_active() {
+        if self.standby || self.reset_active() {
             return None;
         }
         self.bsc.grant_refresh()
@@ -421,7 +421,7 @@ impl OnChip {
             }
             return;
         }
-        let held_reset = self.watchdog.reset_active();
+        let held_reset = self.reset_active();
         self.watchdog.advance(clocks);
         if held_reset {
             self.bsc.advance_bus(clocks);
@@ -685,7 +685,10 @@ impl OnChip {
         self.wait_clocks.replace(0)
     }
     pub(crate) fn reset_active(&self) -> bool {
-        self.watchdog.reset_active()
+        self.watchdog.reset_kind().is_some()
+    }
+    pub(crate) fn reset_kind(&self) -> Option<ResetRequest> {
+        self.watchdog.reset_kind()
     }
     pub(crate) fn take_reset_request(&mut self) -> Option<ResetRequest> {
         self.watchdog.request.take()
@@ -729,7 +732,7 @@ impl OnChip {
             return self.wake_remaining.unwrap_or(u32::MAX);
         }
         let watchdog = self.watchdog.clocks_to_event();
-        if self.watchdog.reset_active() {
+        if self.reset_active() {
             return watchdog;
         }
         let mut next = watchdog
@@ -765,6 +768,9 @@ impl OnChip {
         self.standby = true;
         self.wake_remaining = None;
     }
+    pub(crate) fn finish_watchdog_reset(&self) {
+        self.bsc.cancel_burst();
+    }
     pub(crate) fn reset_from_watchdog(&mut self, reset: ResetRequest) {
         // DIVU operand/vector registers retain values (§10.2); RSTCSR retains
         // the watchdog cause (§12.2.3). Other implemented registers reset.
@@ -774,13 +780,23 @@ impl OnChip {
             bsc = bsc::Bsc::default();
         }
         bsc.set_slave(slave);
-        bsc.reset_bus();
+        let ubc = if reset == ResetRequest::Manual {
+            std::mem::take(&mut self.ubc)
+        } else {
+            RefCell::default()
+        };
+        // H §§4.2.3/7.11.1: manual reset preserves BSC configuration and
+        // the retained bus/SDRAM state after completing the current unit.
+        if reset == ResetRequest::PowerOn {
+            bsc.reset_bus();
+        }
         let mut division = std::mem::take(self.division.get_mut());
         division.reset();
         let mut watchdog = std::mem::take(&mut self.watchdog);
         watchdog.reset_preserving_cause();
         *self = Self {
             bsc,
+            ubc,
             nmi_high: self.nmi_high,
             division: RefCell::new(division),
             watchdog,
@@ -836,6 +852,7 @@ impl OnChip {
         (self.ipra & 0xF0 != 0 && self.bsc.can_request_interrupt())
             || (self.iprb & 0x0F00 != 0 && self.tier & 0x8E != 0)
             || (self.ipra & 0x00F0 != 0 && self.watchdog.enabled())
+            || self.reset_active()
             || self.watchdog.can_reset()
             || (self.iprb & 0xF000 != 0 && self.serial.can_wake())
             || (self.module_stop & 4 == 0 && self.division.borrow().busy())

@@ -13,6 +13,9 @@ mod monitor_tests;
 #[path = "refresh_tests.rs"]
 mod refresh_tests;
 #[cfg(test)]
+#[path = "reset_tests.rs"]
+mod reset_tests;
+#[cfg(test)]
 #[path = "vdp1_tests.rs"]
 mod vdp1_tests;
 #[cfg(test)]
@@ -33,13 +36,14 @@ enum Operation {
     WriteContext(u32, Option<u8>),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Transfer {
-    address: u32,
-    width: usize,
-    write: Option<u32>,
-    first: bool,
-    last: bool,
-    locked: bool,
+pub(super) struct Transfer {
+    pub(super) address: u32,
+    pub(super) width: usize,
+    pub(super) write: Option<u32>,
+    pub(super) first: bool,
+    pub(super) last: bool,
+    pub(super) unit_end: u32, // byte/word/longword end, independently of burst end
+    pub(super) locked: bool,
 }
 #[derive(Default)]
 pub(super) struct Journal {
@@ -60,6 +64,7 @@ enum Owner {
     Dmac(Processor),
     Scu,
     Refresh,
+    ResetDrain(Processor),
     WriteAccept(Processor, bool), // processor, DMAC
     WriteBuffer(Processor, bool),
 }
@@ -84,6 +89,10 @@ pub(super) struct Transactions {
     // external bus. Each SH7604 has its own internal/peripheral buses.
     internal: [Option<Active>; 2],
     writes: [Option<BufferedWrite>; 2],
+    resetting: [bool; 2],
+    reset_drains: [VecDeque<Transfer>; 2],
+    reset_owner: Option<Processor>,
+    reset_context: [(u32, Option<u8>); 2],
     write_errors: [Option<crate::cpu::CpuError>; 2],
     lock: Option<Processor>,
     // H §7.10: narrow operands and cache fills are indivisible even
@@ -256,6 +265,105 @@ impl Memory for ReplayMemory<'_> {
     }
 }
 impl Bus {
+    /// H §§4.2.3/7.11.1: power-on reset aborts; manual reset completes
+    /// the BSC's current operand, stopping a refill/16-byte DMA at a longword.
+    /// Retain physical phases, not an interpreter that could issue more work.
+    pub(crate) fn hold_cpu_reset(&mut self, processor: Processor) {
+        let i = processor as usize;
+        if self.transactions.resetting[i] {
+            return;
+        }
+        let mut active = None;
+        let mut drain = VecDeque::new();
+        if self.onchip[i].reset_kind() == Some(crate::onchip::ResetRequest::Manual) {
+            if self.transactions.active.as_ref().is_some_and(|a| {
+                matches!(a.owner, Owner::Cpu(p) | Owner::Dmac(p) | Owner::WriteBuffer(p, _) if p == processor)
+            }) {
+                active = self.transactions.active.take();
+            }
+            let admitting = self.transactions.internal[i]
+                .as_ref()
+                .is_some_and(|a| matches!(a.owner, Owner::WriteAccept(_, _)));
+            if let Some(write) = &self.transactions.writes[i]
+                && (!admitting || active.is_some())
+            {
+                drain = write.beats.clone();
+                if active.is_some() {
+                    drain.pop_front();
+                }
+            } else {
+                let completed = if self.transactions.cpu_group == Some(processor) {
+                    self.transactions.journals[i]
+                        .borrow()
+                        .beats
+                        .last()
+                        .map(|(t, _)| *t)
+                } else if self.transactions.dmac_owner == Some(processor) {
+                    self.transactions.journals[i + 2]
+                        .borrow()
+                        .beats
+                        .last()
+                        .map(|(t, _)| *t)
+                } else {
+                    None
+                };
+                if let Some(t) = active.as_ref().map(|a| a.transfer).or(completed) {
+                    let mut address = t.address + t.width as u32;
+                    while address < t.unit_end {
+                        drain.push_back(Transfer {
+                            address,
+                            first: false,
+                            last: address + t.width as u32 == t.unit_end,
+                            locked: false,
+                            ..t
+                        });
+                        address += t.width as u32;
+                    }
+                }
+            }
+        }
+        let context = self.transactions.writes[i].as_ref().map_or_else(
+            || self.transactions.journals[i].borrow().write_context,
+            |write| write.context,
+        );
+        self.cancel_cpu_transaction(processor);
+        self.cancel_dmac_transaction(processor);
+        self.transactions.reset_context[i] = context;
+        if self.transactions.lock == Some(processor) {
+            self.transactions.lock = None;
+        }
+        if self.transactions.cpu_group == Some(processor) {
+            self.transactions.cpu_group = None;
+        }
+        self.transactions.resetting[i] = true;
+        self.transactions.reset_drains[i] = drain;
+        if let Some(reset) = self.onchip[i].reset_kind() {
+            // Initialize modules at assertion, retaining the watchdog pulse.
+            // A power reset also immediately releases BSC self-refresh.
+            self.onchip[i].reset_from_watchdog(reset);
+            self.cache[i].get_mut().reset_control();
+        }
+        if let Some(mut active) = active {
+            active.owner = Owner::ResetDrain(processor);
+            self.transactions.active = Some(active);
+            self.transactions.reset_owner = Some(processor);
+        }
+    }
+    pub(crate) fn reset_drain_complete(&self, processor: Processor) -> bool {
+        self.transactions.reset_drains[processor as usize].is_empty()
+            && self.transactions.write_errors[processor as usize].is_none()
+            && self.transactions.reset_owner != Some(processor)
+    }
+    fn grant_reset_drain(&mut self, processor: Processor) {
+        let Some(transfer) = self.transactions.reset_drains[processor as usize].pop_front() else {
+            self.transactions.reset_owner = None;
+            return;
+        };
+        self.grant_cpu_beat(processor, transfer, false);
+        self.transactions.active.as_mut().unwrap().owner = Owner::ResetDrain(processor);
+        self.transactions.cpu_group = None;
+        self.transactions.reset_owner = Some(processor);
+    }
     pub(super) fn vdp1_bus_ownership(&self) -> (bool, bool) {
         let Some(active) = &self.transactions.active else {
             return (false, false);
@@ -276,7 +384,10 @@ impl Bus {
                 .active
                 .as_ref()
                 .is_some_and(|a| match a.owner {
-                    Owner::Cpu(p) | Owner::Dmac(p) | Owner::WriteBuffer(p, _) => p != processor,
+                    Owner::Cpu(p)
+                    | Owner::Dmac(p)
+                    | Owner::WriteBuffer(p, _)
+                    | Owner::ResetDrain(p) => p != processor,
                     Owner::WriteAccept(_, _) => false,
                     Owner::Scu => true,
                     Owner::Refresh => false,
@@ -285,6 +396,7 @@ impl Bus {
                     self.transactions.cpu_group,
                     self.transactions.lock,
                     self.transactions.dmac_owner,
+                    self.transactions.reset_owner,
                 ]
                 .into_iter()
                 .flatten()
@@ -363,6 +475,9 @@ impl Bus {
             [Processor::Master, Processor::Slave]
         };
         for processor in order {
+            if self.onchip[processor as usize].reset_active() {
+                continue;
+            }
             if self.transactions.writes[processor as usize]
                 .as_ref()
                 .is_some_and(|w| w.dmac)
@@ -460,6 +575,11 @@ impl Bus {
         self.transactions.scu = None;
     }
     pub(crate) fn cancel_cpu_transaction(&mut self, processor: Processor) {
+        self.transactions.resetting[processor as usize] = false;
+        self.transactions.reset_drains[processor as usize].clear();
+        if self.transactions.reset_owner == Some(processor) {
+            self.transactions.reset_owner = None;
+        }
         self.instruction_word[processor as usize].set(None);
         self.transactions.write_errors[processor as usize] = None;
         if self.transactions.internal[processor as usize]
@@ -469,7 +589,7 @@ impl Bus {
             self.transactions.internal[processor as usize] = None;
         }
         if self.transactions.active.as_ref().is_some_and(
-            |a| matches!(a.owner, Owner::Cpu(p) | Owner::WriteBuffer(p, false) if p == processor),
+            |a| matches!(a.owner, Owner::Cpu(p) | Owner::WriteBuffer(p, false) | Owner::ResetDrain(p) if p == processor),
         ) {
             self.transactions.active = None;
         }
@@ -536,7 +656,8 @@ impl Bus {
         // An already granted access cannot be displaced by a later request.
         for processor in [Processor::Master, Processor::Slave] {
             let i = processor as usize;
-            if self.transactions.internal[i].is_some()
+            if self.onchip[i].reset_active()
+                || self.transactions.internal[i].is_some()
                 || self.external_monitor_owns_internal(processor)
                 || (self.transactions.writes[i].is_none()
                     && !self.onchip[i].dma_stopped()
@@ -573,7 +694,8 @@ impl Bus {
     pub(crate) fn grant_bus_transaction(&mut self) {
         for processor in [Processor::Master, Processor::Slave] {
             let i = processor as usize;
-            if self.transactions.internal[i].is_some()
+            if self.onchip[i].reset_active()
+                || self.transactions.internal[i].is_some()
                 || self.external_monitor_owns_internal(processor)
                 || self.transactions.active.as_ref().is_some_and(
                     |a| matches!(a.owner, Owner::Cpu(p) | Owner::Dmac(p) if p == processor),
@@ -619,6 +741,12 @@ impl Bus {
         if self.transactions.active.is_some() {
             return;
         }
+        if let Some(processor) = self.transactions.reset_owner {
+            if !self.external_monitor_waits_for_internal() {
+                self.grant_reset_drain(processor);
+            }
+            return;
+        }
         if self.onchip[0].inhibits_external_bus() {
             self.grant_cpu_internal();
             return;
@@ -660,6 +788,7 @@ impl Bus {
                     write: None,
                     first: true,
                     last: true,
+                    unit_end: 0,
                     locked: false,
                 },
                 remaining,
@@ -714,6 +843,7 @@ impl Bus {
                     write: cycle.value,
                     first: true,
                     last: true,
+                    unit_end: 0,
                     locked: false,
                 },
                 remaining,
@@ -733,6 +863,18 @@ impl Bus {
             [Processor::Master, Processor::Slave]
         };
         for processor in order {
+            if !self.transactions.reset_drains[processor as usize].is_empty()
+                && self
+                    .transactions
+                    .lock
+                    .is_none_or(|owner| owner == processor)
+            {
+                self.grant_reset_drain(processor);
+                return;
+            }
+            if self.onchip[processor as usize].reset_active() {
+                continue;
+            }
             if self.transactions.writes[processor as usize]
                 .as_ref()
                 .is_some_and(|w| !w.dmac)
@@ -857,7 +999,7 @@ impl Bus {
         }
         let t = active.transfer;
         let processor = match active.owner {
-            Owner::Cpu(p) | Owner::Dmac(p) | Owner::WriteBuffer(p, _) => p,
+            Owner::Cpu(p) | Owner::Dmac(p) | Owner::WriteBuffer(p, _) | Owner::ResetDrain(p) => p,
             Owner::WriteAccept(_, _) => unreachable!(),
             Owner::Scu | Owner::Refresh => Processor::Master,
         };
@@ -919,7 +1061,29 @@ impl Bus {
                 _ => self.read::<4>(t.address).map(u32::from_be_bytes),
             }
         };
-        if let Owner::WriteBuffer(processor, dmac) = active.owner {
+        if let Owner::ResetDrain(processor) = active.owner {
+            if let Ok(value) = result {
+                self.for_cpu(processor).observe_external_data(
+                    t.address,
+                    t.width,
+                    value,
+                    t.write.is_some(),
+                );
+            }
+            // No architectural instruction or next burst unit resumes on reset.
+            if let Err(source) = result {
+                let i = processor as usize;
+                let (pc, vector) = self.transactions.reset_context[i];
+                self.transactions.write_errors[i] = Some(match vector {
+                    Some(vector) => crate::cpu::CpuError::ExceptionEntry { pc, vector, source },
+                    None => crate::cpu::CpuError::Bus { pc, source },
+                });
+                self.transactions.reset_drains[i].clear();
+            }
+            if self.transactions.reset_drains[processor as usize].is_empty() {
+                self.transactions.reset_owner = None;
+            }
+        } else if let Owner::WriteBuffer(processor, dmac) = active.owner {
             // Invalid device accesses remain observable diagnostics even when
             // the issuing CPU has retired; they never become silent no-ops.
             let value = match result {
@@ -1028,6 +1192,7 @@ impl CpuBus<'_> {
                     write: Some(bytes.iter().fold(0, |v, b| v << 8 | u32::from(*b))),
                     first: i == 0,
                     last: (i + 1) * width == N,
+                    unit_end: address + N as u32,
                     locked: false,
                 })
                 .collect()
@@ -1052,8 +1217,12 @@ impl CpuBus<'_> {
             write,
             first,
             last,
+            unit_end: address + width as u32,
             locked,
         };
+        self.scheduled_transfer(transfer)
+    }
+    pub(super) fn scheduled_transfer(&self, transfer: Transfer) -> Result<u32, BusError> {
         let mut journal = self.bus.transactions.journals[self.journal_index()].borrow_mut();
         let cursor = journal.beat_cursor;
         if let Some(&(recorded, result)) = journal.beats.get(cursor) {

@@ -3300,3 +3300,68 @@ CD/HLE, SMPC and comprehensive acceptance findings still require implementation
 and evidence in this PR. No Issue is closed or replaced, no historical Issue is
 reopened, and no human, proprietary-firmware, live-site or external-workflow gate
 is introduced. No push or merge is performed by this node.
+
+## SH7604 watchdog reset bus completion and scheduled vectors
+
+Related to #17. Upstream main was rechecked as
+`dbd981b030a46daa6923072ce240680dd2e58ebf`. This revision preserves PR #18 and
+its existing implementation, including the upstream node's aligned instruction
+fetches and CPU/DMAC write buffers.
+
+Manual reset now finishes the current external operand while canceling the
+interpreter and DMA request. Narrow word/longword tails retain their physical
+beats; cache fills and 16-byte DMA stop at the current longword. Power-on reset
+aborts uncompleted phases. Reset initializes modules and cache control at
+assertion while retaining the 512-clock watchdog pulse. Manual reset retains BSC
+configuration/open SDRAM rows; power reset releases self-refresh immediately.
+An external cycle lasting beyond the reset pulse keeps vector loading pending.
+Watchdog PC/SP vector reads now complete separately through the scheduled bus,
+while the peer CPU continues executing. TAS/UBC ownership, diagnostic provenance,
+queued writes and board-reset cancellation have independent boundary tests.
+
+The new original MIT RSTBUS BIOS executes on both CPUs. It selects manual or
+power reset, issues its own buffered operand and checks the appropriate reset
+entry, actual memory, BCR2, CCR and reset cause. Native and production Wasm tests
+repeat cold resets and mutate guest data without host-written running results.
+The [conformance entry](hardware-conformance.md#sh7604-watchdog-reset-bus-completion-rstbus)
+links primary sections, implementation, tests, license and reproducible hash.
+
+Two deliberate regressions are rejected: removing manual-reset draining fails
+the guest; extending a canceled cache fill beyond its current longword fails
+the independent physical-bus vector. Sources were restored byte-for-byte.
+An initial native run rejected an older test's closed-row expectation after
+manual reset; the corrected literal one-state open-row expectation follows
+H §7.11.1 and the new independently authored peripheral vector. Initial browser
+startup lacked this worktree's Playwright dependency; `npm ci` installed the
+locked existing dependencies, without a package/lockfile change.
+
+Validation on the final implementation:
+
+- `cargo fmt --check`, `cargo build --locked`, native all-target Clippy and
+  wasm32 Clippy with `-D warnings`: passed. Native execution used Homebrew
+  Rust/Cargo 1.94.0; Clippy/Wasm used installed rustup stable 1.99.0 and
+  wasm-bindgen 0.2.129.
+- `CARGO_PROFILE_TEST_OPT_LEVEL=1 cargo test --locked`: **642 passed**
+  (393 unit + 249 integration), zero failed, ignored or filtered tests, with
+  successful doc tests. Debug assertions remain enabled. The superseded
+  ordinary unoptimized run was interrupted during the long display-mode suite
+  while reset changes were still being implemented; it is not reported as a
+  complete pass.
+- `sh scripts/build-web.sh` and all **66** CI fixture/media reproducibility
+  commands: passed. All three original demonstration media remain unchanged.
+  JavaScript syntax, documentation relative file targets and Git whitespace
+  checks passed.
+- Complete final `npm run test:browser`: passed on Chromium **145.0.7632.6**
+  with Node **24.12.0** against the rebuilt production Wasm under
+  `/saturn-rust/`, with no required skips. RSTBUS, IFBUF, the existing hardware
+  guests, all three demonstrations, Canvas/WebAudio, restart, keyboard/Gamepad/
+  focus, backup, separate BIOS/HLE paths and local-file privacy checks passed.
+
+The requested full Issue #17 resolution remains **unmet**. Initial cold-boot and
+SMPC slave-start vector scheduling, complete CPU/pipeline/peripheral/reset and
+board contracts, MC68EC000 sequencing, SCU/DSP, VDP1/VDP2, SCSP/DSP, runtime
+CD/media/HLE, SMPC and complete per-feature/demo acceptance still require work.
+This evidence completes additional reset behavior, not the umbrella checklist.
+PR #18 stays Draft with Closes #17 as its intended final outcome. No Issue is
+closed/replaced/reopened, and no merge, human testing/approval, personal firmware,
+live Pages inspection or external-workflow gate is introduced.

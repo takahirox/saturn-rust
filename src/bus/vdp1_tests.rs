@@ -67,7 +67,10 @@ fn request(bus: &mut Bus, owner: Owner, address: u32) -> u32 {
                 bus.scu.write32(SCU + offset, value).unwrap();
             }
         }
-        Owner::Refresh | Owner::WriteAccept(_, _) | Owner::WriteBuffer(_, _) => unreachable!(),
+        Owner::Refresh
+        | Owner::ResetDrain(_)
+        | Owner::WriteAccept(_, _)
+        | Owner::WriteBuffer(_, _) => unreachable!(),
     }
     bus.grant_bus_transaction();
     let startup = if owner == Owner::Scu {

@@ -12,6 +12,7 @@ import { videoTransactions } from "./video-transactions.mjs";
 import { busTransactions } from "./bus-transactions.mjs";
 import { dmacBus } from "./dmac-bus.mjs";
 import { sh2BusPipeline } from "./sh2-bus-pipeline.mjs";
+import { sh2ResetBus } from "./sh2-reset-bus.mjs";
 import { abusTiming } from "./abus.mjs";
 import { hardwareBoundaries } from "./hardware-boundaries.mjs";
 import { refreshArbitration } from "./refresh.mjs";
@@ -794,6 +795,7 @@ try {
   await busTransactions(page);
   await dmacBus(page);
   await sh2BusPipeline(page);
+  await sh2ResetBus(page);
   const shrinkRom=Buffer.alloc(524288);
   for(const line of (await readFile("tests/fixtures/sprite-shrink.hex","utf8")).split(/\r?\n/)) {
     if(!line||line.startsWith("#"))continue;

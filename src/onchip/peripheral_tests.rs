@@ -303,9 +303,10 @@ fn watchdog_reset_selection_cause_retention_and_no_reset_mode() {
             chip.advance_clocks(511);
             assert_eq!(chip.take_reset_request(), None);
             chip.advance_clocks(1);
-            assert!(!chip.reset_active());
+            assert!(chip.reset_active());
         }
         assert_eq!(chip.take_reset_request(), expected);
+        assert!(!chip.reset_active());
         assert_eq!(chip.read8(WDT).unwrap(), 0x18);
         assert_eq!(chip.read8(WDT + 3).unwrap(), reset_control as u8 | 0x80);
         chip.reset_from_watchdog(expected.unwrap_or(ResetRequest::Manual));
@@ -817,8 +818,39 @@ fn watchdog_assertion_preserves_preceding_clocks_and_freezes_only_the_reset_hold
             }
             assert_eq!(chip.counter, 1, "slave={slave}, chunk={chunk}");
             assert_eq!(chip.division.borrow().remaining(), 25);
-            assert!(!chip.reset_active());
+            assert!(chip.reset_active()); // pending reset still holds CPU/peripherals
             assert_eq!(chip.take_reset_request(), Some(ResetRequest::Manual));
+            assert!(!chip.reset_active());
+        }
+    }
+}
+
+#[test]
+fn manual_reset_retains_sdram_row_and_ubc_registers_while_power_reset_initializes_them() {
+    // H §§4.2.3/7.11.1: BSC isn't initialized on manual reset. UBC
+    // values are undefined (§6.2); retaining them is our deterministic policy.
+    for slave in [false, true] {
+        for reset in [ResetRequest::Manual, ResetRequest::PowerOn] {
+            let mut chip = OnChip::default();
+            chip.set_slave(slave);
+            chip.write32(0xFFFFFFE0, 0xA55A0005).unwrap();
+            chip.write32(0xFFFFFFE8, 0xA55A0000).unwrap();
+            chip.write32(0xFFFFFFEC, 0xA55A0240).unwrap();
+            chip.write32(0xFFFFFF40, 0x06001234).unwrap();
+            chip.write32(0xFFFFFF60, 0x00205678).unwrap();
+            assert_eq!(chip.external_access(0x06000000, true, true, true), 2);
+            chip.take_wait_clocks();
+            chip.advance_clocks(16);
+            chip.reset_from_watchdog(reset);
+            if reset == ResetRequest::Manual {
+                assert_eq!(chip.external_access(0x06000004, true, true, true), 1);
+                assert_eq!(chip.read32(0xFFFFFF40), Ok(0x06001234));
+                assert_eq!(chip.read32(0xFFFFFF60), Ok(0x00205678));
+            } else {
+                assert_eq!(chip.external_access(0x06000004, true, true, true), 2);
+                assert_eq!(chip.read32(0xFFFFFF40), Ok(0));
+                assert_eq!(chip.read32(0xFFFFFF60), Ok(0));
+            }
         }
     }
 }

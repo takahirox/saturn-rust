@@ -380,6 +380,9 @@ impl Bsc {
             self.access.set(Some(last));
         }
     }
+    pub fn cancel_burst(&self) {
+        self.burst_words.set(0);
+    }
     pub fn reset_bus(&self) {
         self.access.set(None);
         self.rows.set([None; 2]);

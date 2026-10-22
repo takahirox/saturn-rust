@@ -137,6 +137,9 @@ impl Watchdog {
             }
         }
     }
+    pub fn reset_kind(&self) -> Option<ResetRequest> {
+        self.reset_hold.map(|(_, request)| request).or(self.request)
+    }
     pub fn reset_active(&self) -> bool {
         self.reset_hold.is_some()
     }
@@ -151,7 +154,11 @@ impl Watchdog {
     }
     pub fn reset_preserving_cause(&mut self) {
         let cause = self.reset;
+        let hold = self.reset_hold;
+        let request = self.request;
         *self = Self::default();
         self.reset = cause;
+        self.reset_hold = hold;
+        self.request = request;
     }
 }
