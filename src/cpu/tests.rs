@@ -21,6 +21,102 @@ fn nop_only_advances_pc_and_instruction_count() {
 }
 
 #[test]
+fn unaligned_vector_tables_complete_entry_then_dispatch_one_repairable_address_error() {
+    // H §§4.8.2–3: VBR alignment is checked even with an aligned stack.
+    // Undefined invalid-cycle bytes follow Memory's exact-address policy.
+    for misalignment in 1..=3 {
+        for vector in [4, 11, 64, 127] {
+            let mut memory = FlatMemory(vec![0; 65536]);
+            let mut cpu = Cpu::start(0x100, 0x8000);
+            cpu.state.vbr = 0x1000 + misalignment;
+            cpu.state.sr = 0x51;
+            for (v, target) in [(vector, 0x200u32), (9, 0x300)] {
+                for (i, byte) in target.to_be_bytes().into_iter().enumerate() {
+                    memory
+                        .write8(cpu.state.vbr + v * 4 + i as u32, byte)
+                        .unwrap();
+                }
+            }
+            let (saved_pc, handler_sr) = match vector {
+                11 => {
+                    assert!(cpu.accept_nmi(&mut memory).unwrap());
+                    (0x100, 0xF1)
+                }
+                64 | 127 => {
+                    assert!(cpu.accept_interrupt(&mut memory, 7, vector as u8).unwrap());
+                    (0x100, 0x71)
+                }
+                _ => {
+                    cpu.enter_exception(&mut memory, vector as u8, 0x102)
+                        .unwrap();
+                    (0x102, 0x51)
+                }
+            };
+            assert_eq!((cpu.state.pc, cpu.state.r[15]), (0x200, 0x7FF8));
+            assert_eq!(
+                (memory.read32(0x7FF8), memory.read32(0x7FFC)),
+                (Ok(saved_pc), Ok(0x51))
+            );
+            assert!(cpu.state.address_error_pending);
+            cpu.step(&mut memory).unwrap();
+            assert_eq!((cpu.state.pc, cpu.state.r[15]), (0x300, 0x7FF0));
+            assert_eq!(
+                (memory.read32(0x7FF0), memory.read32(0x7FF4)),
+                (Ok(0x200), Ok(handler_sr))
+            );
+            assert_eq!(cpu.state.exceptions, 2);
+            assert!(!cpu.state.address_error_pending);
+            assert_eq!(cpu.state.instructions, 0);
+            // The address-error handler can run and repair VBR; it must not
+            // recurse merely because its own vector read was also unaligned.
+            memory.write16(0x300, 0x402E).unwrap(); // LDC R0,VBR
+            cpu.step(&mut memory).unwrap();
+            assert_eq!(cpu.state.vbr, 0);
+            assert_eq!((cpu.state.exceptions, cpu.state.instructions), (2, 1));
+        }
+    }
+}
+
+#[test]
+fn mac_register_writeback_and_loaded_pr_have_architectural_results_and_interlocks() {
+    // P §7.7.6 figs7.86/7.90, §6 STS/LDS/RTS. These execute real
+    // instructions in addition to the timing mask vectors.
+    for n in 0..16 {
+        for (system, value) in [(0x000A, 0x81234567), (0x001A, 0x13579BDF)] {
+            let (mut c, mut b) = setup(&[system | n << 8, 0x7001 | n << 8]);
+            c.state.mach = 0x81234567;
+            c.state.macl = 0x13579BDF;
+            c.state.sr = SR_MASK;
+            c.step(&mut b).unwrap();
+            assert_eq!(c.last_clocks(), 1);
+            assert_eq!(c.state.r[n as usize], value);
+            c.step(&mut b).unwrap();
+            assert_eq!(c.last_clocks(), 2);
+            assert_eq!(c.state.r[n as usize], value + 1);
+            assert_eq!(c.state.sr, SR_MASK);
+            assert_eq!(c.state.exceptions, 0);
+        }
+        let (mut c, mut b) = setup(&[0x4026 | n << 8, 0x000B, 9]);
+        let data = HIGH_WRAM + 0x200;
+        let target = HIGH_WRAM + 0x100;
+        c.state.r[n as usize] = data;
+        b.write32(data, target).unwrap();
+        c.step(&mut b).unwrap();
+        assert_eq!(c.state.pr, target);
+        assert_eq!(c.state.r[n as usize], data + 4);
+        assert_eq!(c.last_clocks(), 1);
+        c.step(&mut b).unwrap();
+        assert_eq!(c.last_clocks(), 3); // RTS base2 plus PR WB/EX interlock
+        assert_eq!(c.state.delay_target, Some(target));
+        assert_eq!(c.state.pc, HIGH_WRAM + 4);
+        c.step(&mut b).unwrap();
+        assert_eq!(c.state.pc, target);
+        assert_eq!(c.state.pr, target);
+        assert_eq!(c.state.instructions, 3);
+    }
+}
+
+#[test]
 fn mov_immediate_sign_extends_at_boundaries_into_every_register() {
     for n in 0..16 {
         for (immediate, expected) in [
@@ -158,7 +254,7 @@ fn illegal_slots_dispatch_vector_six_and_save_the_branch_destination() {
 #[test]
 fn fetch_faults_are_explicit_and_stopped_states_do_not_execute() {
     let mut bus = Bus::default();
-    let pc = 0x0400_0000;
+    let pc = 0x0800_0000;
     let mut cpu = Cpu::start(pc, 0);
     assert!(matches!(cpu.step(&mut bus), Err(CpuError::Bus { pc: p, .. }) if pc == p));
     assert_eq!(cpu.state.instructions, 0);
@@ -196,7 +292,7 @@ fn data_faults_do_not_retire_or_modify_destination_or_pending_slot() {
     for opcode in [0x6120, 0x6121, 0x6122, 0x2210, 0x2211, 0x2212] {
         let (mut cpu, mut bus) = setup(&[0xA001, opcode]);
         cpu.state.r[1] = 0x12345678;
-        cpu.state.r[2] = 0x04000000;
+        cpu.state.r[2] = 0x08000000;
         cpu.step(&mut bus).unwrap();
         let before = cpu.state.clone();
         assert!(matches!(cpu.step(&mut bus), Err(CpuError::Bus { .. })));
@@ -1225,5 +1321,50 @@ impl Memory for FlatMemory {
         assert_eq!(a % 4, 0);
         self.0[a as usize..a as usize + 4].copy_from_slice(&v.to_be_bytes());
         Ok(())
+    }
+}
+
+#[test]
+fn signed_division_sequences_cover_signs_extrema_and_truncate_towards_zero() {
+    // P §6.19 example4 uses sign extension, one's-complement correction, then
+    // 32 ROTCL/DIV1 pairs. Golden math uses a wider signed host quotient, not
+    // the core's bit recurrence; zero and overflowing quotients are prohibited.
+    let mut code = vec![0x6323, 0x4324, 0x311A, 0x233A, 0x323A, 0x2107];
+    for _ in 0..32 {
+        code.extend([0x4224, 0x3104]);
+    }
+    code.extend([0x4224, 0x323E]);
+    for dividend in [
+        i32::MIN,
+        i32::MIN + 1,
+        -65536,
+        -100,
+        -7,
+        -1,
+        0,
+        1,
+        7,
+        100,
+        65536,
+        i32::MAX,
+    ] {
+        for divisor in [i32::MIN, -65536, -7, -3, -1, 1, 2, 3, 7, 65536, i32::MAX] {
+            let q = i64::from(dividend) / i64::from(divisor);
+            if q > i64::from(i32::MAX) {
+                continue;
+            }
+            for t in [0, 1] {
+                let (mut c, mut b) = setup(&code);
+                c.state.r[2] = dividend as u32;
+                c.state.r[0] = divisor as u32;
+                c.state.r[1] = 0x12345678;
+                c.state.sr = 0xF2 | t;
+                for _ in &code {
+                    c.step(&mut b).unwrap();
+                }
+                assert_eq!(c.state.r[2], q as u32, "{dividend}/{divisor}, T={t}");
+                assert_eq!(c.state.sr & 0xF2, 0xF2); // S and I survive the full sequence
+            }
+        }
     }
 }

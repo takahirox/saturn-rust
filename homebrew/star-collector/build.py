@@ -10,9 +10,9 @@ OUTPUT = HERE.parent.parent / 'web' / 'star-collector.iso'
 BASE = 0x06004000
 
 
-def assemble(source):
+def assemble(source, base=BASE):
     labels, entries = {}, []
-    pc = BASE
+    pc = base
     for raw in source.splitlines():
         line = raw.split(';')[0].strip().lower()
         if not line:
@@ -48,13 +48,13 @@ def assemble(source):
 
     for pc, op, a, size, raw in entries:
         try:
-            assert len(result) == pc - BASE
+            assert len(result) == pc - base
             if op == 'load':
                 literal = (pc + 9) & ~3
                 word(0xD000 | reg(a[1]) << 8 | (literal - ((pc + 4) & ~3)) // 4)
                 word(0xA000 | ((pc + size - (pc + 6)) // 2))
                 word(0x0009)
-                while (BASE + len(result)) % 4:
+                while (base + len(result)) % 4:
                     word(0x0009)
                 result.extend(struct.pack('>I', num(a[0])))
             elif op in ('bt.l', 'bf.l'):
@@ -62,26 +62,59 @@ def assemble(source):
                 word(0xA000 | branch(pc + 2, a[0], 12))
                 word(0x0009)
             elif op == 'nop': word(0x0009)
+            elif op == 'clrmac': word(0x0028)
+            elif op in ('clrt', 'sett'): word(0x0008 if op == 'clrt' else 0x0018)
+            elif op == 'sleep': word(0x001B)
+            elif op == 'rte': word(0x002B)
+            elif op == 'trapa':
+                assert 0 <= num(a[0]) <= 255
+                word(0xC300 | num(a[0]))
+            elif op == 'ldc':
+                word({'sr': 0x400E, 'gbr': 0x401E, 'vbr': 0x402E}[a[1]] | reg(a[0]) << 8)
+            elif op == 'ldc.l':
+                assert a[0].startswith('@') and a[0].endswith('+')
+                word({'sr':0x4007, 'gbr':0x4017, 'vbr':0x4027}[a[1]] | reg(a[0][1:-1]) << 8)
+            elif op == 'stc.l':
+                assert a[1].startswith('@-')
+                word({'sr':0x4003, 'gbr':0x4013, 'vbr':0x4023}[a[0]] | reg(a[1][2:]) << 8)
+            elif op == 'stc':
+                word({'sr': 0x0002, 'gbr': 0x0012, 'vbr': 0x0022}[a[0]] | reg(a[1]) << 8)
+            elif op == 'lds':
+                word({'mach': 0x400A, 'macl': 0x401A, 'pr': 0x402A}[a[1]] | reg(a[0]) << 8)
+            elif op == 'lds.l':
+                assert a[0].startswith('@') and a[0].endswith('+')
+                word({'mach': 0x4006, 'macl': 0x4016, 'pr': 0x4026}[a[1]] | reg(a[0][1:-1]) << 8)
+            elif op in ('tas.b', 'movt'):
+                word((0x401B | reg(a[0][1:]) << 8) if op == 'tas.b' else (0x0029 | reg(a[0]) << 8))
             elif op == 'rts': word(0x000B)
-            elif op == 'jmp': word(0x402B | reg(a[0][1:]) << 8)
-            elif op in ('bra', 'bsr', 'bt', 'bf'):
-                word({'bra': 0xA000, 'bsr': 0xB000, 'bt': 0x8900, 'bf': 0x8B00}[op] | branch(pc, a[0], 12 if op in ('bra', 'bsr') else 8))
-            elif op in ('shll', 'shll2', 'shll8', 'dt'):
-                word({'shll': 0x4000, 'shll2': 0x4008, 'shll8': 0x4018, 'dt': 0x4010}[op] | reg(a[0]) << 8)
+            elif op in ('jmp','jsr'): word((0x402B if op=='jmp' else 0x400B) | reg(a[0][1:]) << 8)
+            elif op in ('bra', 'bsr', 'bt', 'bf', 'bt/s', 'bf/s'):
+                word({'bra': 0xA000, 'bsr': 0xB000, 'bt': 0x8900, 'bf': 0x8B00, 'bt/s':0x8D00, 'bf/s':0x8F00}[op] | branch(pc, a[0], 12 if op in ('bra', 'bsr') else 8))
+            elif op in ('shll', 'shll2', 'shll8', 'shlr', 'shlr16', 'dt', 'rotcl'):
+                word({'shll': 0x4000, 'shll2': 0x4008, 'shll8': 0x4018, 'shlr': 0x4001, 'shlr16': 0x4029, 'dt': 0x4010, 'rotcl': 0x4024}[op] | reg(a[0]) << 8)
+            elif op in ('extu.b', 'extu.w'):
+                word((0x600C if op == 'extu.b' else 0x600D) | reg(a[1]) << 8 | reg(a[0]) << 4)
             elif op == 'tst':
-                assert a[1] == 'r0' and 0 <= num(a[0]) <= 255
-                word(0xC800 | num(a[0]))
+                if a[0].startswith('#'):
+                    assert a[1] == 'r0' and 0 <= num(a[0]) <= 255
+                    word(0xC800 | num(a[0]))
+                else:
+                    word(0x2008 | reg(a[1]) << 8 | reg(a[0]) << 4)
             elif op in ('mov', 'add') and a[0].startswith('#'):
                 assert -128 <= num(a[0]) <= 127
                 word((0xE000 if op == 'mov' else 0x7000) | reg(a[1]) << 8 | num(a[0]) & 255)
-            elif op in ('mov', 'add', 'sub', 'cmp/eq', 'cmp/hs'):
-                word({'mov': 0x6003, 'add': 0x300C, 'sub': 0x3008, 'cmp/eq': 0x3000, 'cmp/hs': 0x3002}[op] | reg(a[1]) << 8 | reg(a[0]) << 4)
+            elif op == 'sts':
+                word({'mach':0x000A,'macl':0x001A,'pr':0x002A}[a[0]] | reg(a[1]) << 8)
+            elif op in ('mov', 'add', 'sub', 'cmp/eq', 'cmp/hs', 'subc', 'addc', 'and', 'or', 'xor', 'div0s', 'div1', 'mul.l'):
+                word({'mov': 0x6003, 'add': 0x300C, 'sub': 0x3008, 'cmp/eq': 0x3000, 'cmp/hs': 0x3002, 'subc':0x300A, 'addc':0x300E, 'and':0x2009, 'or':0x200B, 'xor':0x200A, 'div0s':0x2007, 'div1':0x3004, 'mul.l':0x0007}[op] | reg(a[1]) << 8 | reg(a[0]) << 4)
             elif op in ('mov.b', 'mov.w', 'mov.l'):
                 width = {'mov.b': 0, 'mov.w': 1, 'mov.l': 2}[op]
                 if a[0].startswith('@'):
-                    word(0x6000 | width | reg(a[1]) << 8 | reg(a[0][1:]) << 4)
+                    post = a[0].endswith('+')
+                    word(0x6000 | (4 if post else 0) | width | reg(a[1]) << 8 | reg(a[0][1:-1] if post else a[0][1:]) << 4)
                 else:
-                    word(0x2000 | width | reg(a[1][1:]) << 8 | reg(a[0]) << 4)
+                    pre = a[1].startswith('@-')
+                    word(0x2000 | (4 if pre else 0) | width | reg(a[1][2:] if pre else a[1][1:]) << 8 | reg(a[0]) << 4)
             else:
                 raise ValueError('Unsupported assembly')
         except Exception as error:
@@ -100,27 +133,29 @@ def record(name, sector, size, directory=False):
             + both16(1) + bytes([len(name)]) + name + bytes(length - 33 - len(name)))
 
 
-def build():
-    game = assemble((HERE / 'game.s').read_text())
-    license_text = (HERE / 'LICENSE').read_bytes()
+def build(game=None, license_text=None, title='STAR COLLECTOR', product='STAR-001 V1.000'):
+    if game is None:
+        game = assemble((HERE / 'game.s').read_text())
+    if license_text is None:
+        license_text = (HERE / 'LICENSE').read_bytes()
     assert 0 < len(game) < 0xB000
     iso = bytearray(64 * 2048)
     def put(offset, data): iso[offset:offset + len(data)] = data
     def text(offset, size, value): put(offset, value.encode('ascii').ljust(size, b' '))
     text(0, 16, 'SEGA SEGASATURN')
     text(0x10, 16, 'ORIGINAL HOMEBREW')
-    text(0x20, 16, 'STAR-001 V1.000')
+    text(0x20, 16, product)
     text(0x30, 16, '20260101CD-1/1')
     text(0x40, 16, 'U')
     text(0x50, 16, 'J')
-    text(0x60, 112, 'STAR COLLECTOR')
+    text(0x60, 112, title)
     put(0xE0, struct.pack('>IIIIII', 0x1000, 0, 0x060FF000, 0, BASE, len(game)))
     # Original AIP: MOV.L @(1,PC),R0; JMP @R0; NOP; align; destination.
     put(0xE20, struct.pack('>HHHHI', 0xD001, 0x402B, 0x0009, 0x0009, BASE))
     pvd = 16 * 2048
     put(pvd, b'\x01CD001\x01\x00')
     text(pvd + 8, 32, 'SATURN RUST')
-    text(pvd + 40, 32, 'STAR COLLECTOR')
+    text(pvd + 40, 32, title)
     put(pvd + 80, both32(64))
     put(pvd + 120, both16(1) + both16(1) + both16(2048) + both32(10))
     put(pvd + 140, struct.pack('<I', 18))

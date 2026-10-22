@@ -28,6 +28,10 @@ cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 ```
 
+The test profile uses optimization level 1 with debug assertions and overflow
+checks explicitly enabled. Hardware guests still execute every emulated clock;
+optimization keeps the complete native integration suite practical in CI.
+
 The Rust library is browser-independent. Tests cover instructions/flags/delay
 slots, synthetic BIOS vectors, RAM/VRAM/MMIO, digital-pad selection, VDP2 pixels,
 ISO parsing/errors and actual guest gameplay/completion/restart. The shared
@@ -35,8 +39,36 @@ original synthetic ROM also exercises guest trap/illegal/slot-illegal
 handlers, RTE and bounded SLEEP in native and Wasm execution. An additional original
 synthetic BIOS tests address errors from data, branch slots and odd fetches,
 guest-written exception traces, RTE recovery and reset of a pending error.
-No proprietary files are required. See [Issue #15 coverage](hardware-conformance.md),
-[current validation](validation-issue-15.md) and
+The original dual-SH-2 ROM additionally tests independent register/stack state,
+shared RAM, timed SSHON/SSHOFF, bidirectional FRT capture interrupts, SLEEP wake,
+slave restart and NMIREQ in both native and browser Wasm execution.
+An additional original SH7604 guest computes signed division, copies RAM through
+on-chip DMA, handles DMA/WDT IRQs and a DMA address error, polls serial completion,
+proves stale-cache/purge behavior, triggers watchdog manual reset and handles
+misaligned exception stacking. It executes in native and browser Wasm tests.
+An additional original SCU guest executes DSP product/sum programs, direct and
+indirect DMA, timer IRQs, and reset/fault checks natively and in browser Wasm.
+The interrupt/latch ROM additionally exercises SH-2 signed DIV1 sequences,
+ICR auto/external vectors, SCU DMA acknowledgement and both TH/PAD/VDP2 latch
+inputs. The sound family ROM checks twenty-four complete fault frames and partial
+transfers, including MOVEM terminal reads and deferred instruction fetch, plus
+self-modifying instruction prefetch. UNLK's A7 alias now has a source-authored
+family case and frame-literal mutation, retaining all other family/fault records.
+Independent native vectors cover every UNLK address register, flags, user/supervisor
+stacks, first/second-word faults and separate four-clock sound-bus sampling.
+Both ROMs run in native and Wasm.
+The sound reset builder also reproduces two original guests: SH-2 changes the
+sound PC vector after SNDON completes, and a traced 68k RESET records its saved
+SR/PC and retained operand from the guest trace handler. The video transaction
+builder additionally reproduces command-word retention and local-memory
+ownership guests; FRT distinguishes framebuffer contention from independent
+VRAM access during untextured drawing. Native and browser checks include
+operand changes, missing/reordered guest-write controls and cold resets.
+An original HLE service disc also executes vector/callback/mask/semaphore/priority
+calls, nested IRQs, both CPU views and NMI/SYSRES retention. Native and browser
+Wasm compare authored records and changed guest data/priority operands.
+No proprietary files are required. See [Issue #17 coverage](hardware-conformance.md),
+[current validation](validation-issue-17.md) and
 [earlier SH-2 validation](validation-issue-11.md). The committed sample can be rebuilt and
 verified without an
 external cross compiler or SDK:
@@ -44,6 +76,77 @@ external cross compiler or SDK:
 ```sh
 python3 homebrew/star-collector/build.py
 python3 homebrew/star-collector/build.py --check
+python3 homebrew/prism-courier/build.py --check
+python3 src/hle/build.py --check
+python3 homebrew/hardware-lab/build.py --check
+python3 tests/fixtures/build_dual_sh2.py --check
+python3 tests/fixtures/build_sh7604.py --check
+python3 tests/fixtures/build_divu.py --check
+python3 tests/fixtures/build_bsc.py --check
+python3 tests/fixtures/build_bsc_waits.py --check
+python3 tests/fixtures/build_bsc_idle.py --check
+python3 tests/fixtures/build_bsc_share.py --check
+python3 tests/fixtures/build_bsc_memory.py --check
+python3 tests/fixtures/build_refresh.py --check
+python3 tests/fixtures/build_smpc_boundaries.py --check
+python3 tests/fixtures/build_sh2_timing.py --check
+python3 tests/fixtures/build_sh2_bus_pipeline.py --check
+python3 tests/fixtures/build_sh2_reset_bus.py --check
+python3 tests/fixtures/build_bus_transactions.py --check
+python3 tests/fixtures/build_scu_fringe.py --check
+python3 tests/fixtures/build_dmac_bus.py --check
+python3 tests/fixtures/build_abus.py --check
+python3 tests/fixtures/build_dsp_dma.py --check
+python3 tests/fixtures/build_dsp_bus.py --check
+python3 tests/fixtures/build_intc.py --check
+python3 tests/fixtures/build_hle_system.py --check
+python3 tests/fixtures/build_hle_player.py --check
+python3 tests/fixtures/build_hle_backup.py --check
+python3 tests/fixtures/build_clock.py --check
+python3 tests/fixtures/build_display_modes.py --check
+python3 tests/fixtures/build_vdp2_status.py --check
+python3 tests/fixtures/build_sprite_shrink.py --check
+python3 tests/fixtures/build_sprite_rotation.py --check
+python3 tests/fixtures/build_sprite_interlace.py --check
+python3 tests/fixtures/build_video_transactions.py --check
+python3 tests/fixtures/build_vdp2_fetch.py --check
+python3 tests/fixtures/build_digital_timing.py --check
+python3 tests/fixtures/build_ubc.py --check
+python3 tests/fixtures/build_system_reset.py --check
+python3 tests/fixtures/build_standby.py --check
+python3 tests/fixtures/build_tiles.py --check
+python3 tests/fixtures/build_effects.py --check
+python3 tests/fixtures/build_rbg1.py --check
+python3 tests/fixtures/build_line_color.py --check
+python3 tests/fixtures/build_special_video.py --check
+python3 tests/fixtures/build_gradation.py --check
+python3 tests/fixtures/build_controller.py --check
+python3 tests/fixtures/build_scu.py --check
+python3 tests/fixtures/build_sound.py --check
+python3 tests/fixtures/build_synthesis.py --check
+python3 tests/fixtures/build_envelope.py --check
+python3 tests/fixtures/build_dack.py --check
+python3 tests/fixtures/build_cache.py --check
+python3 tests/fixtures/build_m68k_families.py --check
+python3 tests/fixtures/build_memory_contracts.py --check
+python3 tests/fixtures/build_mode2.py --check
+python3 tests/fixtures/build_raster_history.py --check
+python3 tests/fixtures/build_sound_io.py --check
+python3 tests/fixtures/build_scsp_monitor.py --check
+python3 tests/fixtures/build_m68k_reset.py --check
+python3 tests/fixtures/build_scsp_clock.py --check
+python3 tests/fixtures/build_scsp_dma.py --check
+python3 tests/fixtures/build_scsp_pcm.py --check
+python3 tests/fixtures/build_cd_drive.py --check
+python3 tests/fixtures/build_cd_copy.py --check
+python3 tests/fixtures/build_cd_directory.py --check
+python3 tests/fixtures/build_cd_filesystem.py --check
+python3 tests/fixtures/build_boot_layout.py --check
+python3 tests/fixtures/build_cd_decode.py --check
+python3 tests/fixtures/build_cdda.py --check
+python3 tests/fixtures/build_sprite_effects.py --check
+python3 tests/fixtures/build_smpc.py --check
+python3 tests/fixtures/build_smpc_status.py --check
 ```
 
 ## Build and serve the browser client
@@ -69,7 +172,9 @@ Rust or guest source. Opening `index.html` as a `file:` URL will not work. The c
    clearing takes a few frames. Click the screen for keyboard focus; arrows move
    the cyan player, yellow stars are collected one at a time. Five gold blocks and a green banner
    mean success. Press **Enter / Start** to restart inside the guest, including
-   after completion. This is a silent build.
+   after completion. Star Collector has no soundtrack. **Enable audio** starts
+   WebAudio for guests using the supported direct PCM path; its status reports
+   blocked, muted, paused and underflow states explicitly.
 2. Use the adjacent **Pause/Resume**, **Restart** and **Fullscreen** controls.
    Restart cold-boots the selected disc and starts playback when settings are
    closed. Fullscreen targets the player shell; exit with its button or the
@@ -89,9 +194,13 @@ Rust or guest source. Opening `index.html` as a `file:` URL will not work. The c
    or return from Debug, playback stays paused. Choose **BIOS-less HLE disc** and
    a local authorized ISO to use the same loader without fetching the sample.
    Local images load paused; close settings and use Resume to play.
-   Only the documented single-area Saturn IP + ISO9660 cooked 2048-byte-sector
-   format and device subset are supported, up to 16 MiB. BIN/CUE, compressed images
-   and generic game compatibility are future work. Malformed or unsupported media
+   Startup supports Saturn IP area groups and ISO9660 first-read files,
+   including file-unit/gap interleaving and extended-attribute offsets, up to
+   16 MiB. Select a cooked ISO alone, or select one CUE and all its
+   BINARY data/audio track files together (up to 128 MiB). Cooked and raw Mode1,
+   raw Mode2, audio, shared/separate files and track gaps/indices are supported.
+   Runtime CD commands retain and read the actual medium; CD-DA passes through
+   SCSP. Compressed images and generic game compatibility remain unsupported. Malformed or unsupported media
    produce errors and stop the old machine.
 5. To inspect the preserved debugger fixture, select **HLE bootstrap prototype**
    in settings and choose **Debug**. Click Step to see `R0=5`, then
@@ -118,10 +227,11 @@ Rust or guest source. Opening `index.html` as a `file:` URL will not work. The c
    Right Shift for Start. Both pads release with focus loss and pause.
 9. Debug Reset restarts the selected mode. Changing mode or file performs a cold
    reset; switching modes discards the previous file selection. Run accepts a whole
-   count from 1 to 10000 CPU steps. Exception entry and sleeping steps may retire
-   no instructions. SLEEP disables instruction controls until a reset or an
-   accepted hardware interrupt; device IRQ generation is not integrated yet.
-   Faults remain stopped until reset.
+   count from 1 to 10000 interleaved machine turns. Each turn attempts a master
+   step and, when enabled, a slave step; exception entry and sleeping turns may
+   retire no instructions. SLEEP keeps controls enabled when an implemented
+   peripheral or the slave can wake the master. CPU/device faults stop the entire
+   machine until reset.
 
 Only static files, including the original MIT-licensed sample ISO, are fetched.
 Local BIOS/disc bytes are read via `File.arrayBuffer()` and
@@ -162,7 +272,10 @@ updates, loading/view races, Play Restart and Debug frame advancement. At
 the hardware boundary it also executes an original backup/port-2 guest as a
 synthetic ROM and temporary local ISO, checks local backup import/export bytes,
 reset retention, rejected/read-failing imports and stale-read cancellation,
-second-pad input release and fresh-tab isolation. At
+second-pad input release and fresh-tab isolation. It also executes the original
+dual-SH-2 ROM, checking independent CPU registers/stacks, shared guest computation,
+FRT IRQ/capture results, two slave starts/stops, master NMI and a visible sticky
+slave exception-entry fault. At
 1440×900, 768×1024 and 390×844 it asserts native canvas dimensions, rendered 10:7
 ratio, pixelated scaling, no document horizontal overflow and reachable controls
 in Play, Debug and expanded settings (including a selected BIOS).
@@ -199,15 +312,112 @@ or repository setting, then push a fix or rerun the latest `main` workflow.
 The existing relative asset URLs and `wasm-unsafe-eval` CSP work at the project
 prefix; no custom domain or backend is required.
 
-Issue #15 requires no human post-merge verification. Mandatory checks run before
+Issue #17 requires no human post-merge verification. Mandatory checks run before
 merge using native/Wasm tests and the headless browser against the same static
 assets under `/saturn-rust/`. An optional automated deployed-site smoke check may
 report publication defects after merge; it is not an approval/closure gate.
-Local results do not prove a production deployment succeeded. This implementation
-run does not push, publish or verify a new live revision.
+Local results do not prove a production deployment succeeded. Updating a draft
+implementation PR does not publish or verify a new live revision.
 
-The hosted build supports only the original silent Star Collector hardware
-subset. External BIOS mode retains local/private reset-vector stepping but does
+The hosted build supports Star Collector and the documented synthetic diagnostic
+subsets, including SCU DSP/DMA/interrupts, MC68EC000/direct SCSP PCM, SMPC
+RTC/INTBACK and NTSC raster timing. The original game has no soundtrack; a
+bounded AudioWorklet path plays emulated PCM when explicitly enabled. External BIOS mode retains local/private reset-vector stepping but does
 not promise a Sega BIOS splash screen or game boot. No proprietary BIOS/security
 code or commercial disc is distributed. See [architecture](architecture.md) and
 [game license/provenance](homebrew-provenance.md).
+
+The original sound and SMPC fixture builders use the existing original SH-2
+assembler plus literal independently authored 68k encodings, with the adjacent
+MIT license. Their native/browser tests assert computed stereo samples, 68k timer
+IRQ/RTE, RTC/SMEM status, timed INTBACK/SCU IRQ and digital/analog packets. The
+browser suite enables the real AudioWorklet via a click and checks nonzero render
+instrumentation, drain/underflow, mute and suspended-context feedback. Synthetic
+Gamepads exercise two independent ports and focus release. These fixtures are
+diagnostics and do not replace the two required original demonstration discs.
+
+**Play Prism Courier** starts the new original MIT-licensed VDP1+VDP2+SCSP disc.
+Steer the cyan prism through the red barrier's gap to the green dock; collision
+turns the banner red, delivery turns it green, and Enter/Start restarts. Enable
+audio for the separately executing 68k's computed stereo tone. The source,
+license, reproducible SHA-256 and guest contract are in its
+[README](../homebrew/prism-courier/README.md). The native and browser suites now
+test this disc's pixels, VDP1 IRQ, input, loss/win/restart, 68k computation and
+nonzero stereo; the browser also verifies real Canvas and AudioWorklet delivery.
+Mutating its original texture changes native and Wasm pixels. This is the first
+required new demonstration; the hardware exerciser disc remains required.
+
+When the display has focus, the first two connected Gamepads map standard buttons
+0/1/2/3/4/5/6/7/9 to A/B/C/X/Y/Z/L/R/Start and buttons 12–15 to directions.
+Standard-mapped Gamepads with at least two axes expose a 3D-pad ID16 report:
+X/Y are bounded to the circular stick range, and buttons 7/6 supply independent
+right/left analog trigger levels. The emulated controller applies the documented
+trigger hysteresis. Other mappings retain the ID15 X/Y/Z joystick report. Axis
+levels map from [-1,1] to [0,255]; missing Z is zero. Focus loss/pause releases
+buttons, centers X/Y and sets triggers/Z to zero. Keyboard controls remain independent.
+
+
+The original BSC and four-layer tile fixtures also execute in native and browser
+Wasm checks. They cover BCR1 processor identification, refresh interval IRQ/RTE,
+module stops, NBG0–3 pattern names/characters and actual Canvas output. The
+builders above verify the committed source/hex; license and reproducible ROM
+hashes are recorded in the [conformance matrix](hardware-conformance.md#additional-original-review-fixtures).
+
+The original advanced-video and direct-controller fixtures also execute in native
+and browser Wasm checks. They cover guest-created RBG0 matrix/coefficient data,
+line scrolling, line-window composition and changed matrix pixels on the actual
+Canvas, plus both ports' clock-delayed analog handshake/ID/data and changed axis
+input. Their reproducibility commands are listed above; licenses, hashes,
+implementation and limitations are in the [conformance matrix](hardware-conformance.md#original-advanced-video-and-controller-fixtures).
+
+
+Hardware Lab is the original mixed-track diagnostic in
+[homebrew/hardware-lab](../homebrew/hardware-lab/README.md). Select the three
+`web/hardware-lab` CUE/ISO/audio files together in local disc settings. It computes
+slave SH-2, SCU DSP and runtime CD/FIFO/DMA/IRQ results, starts the independent
+68k sound guest, uploads/executes its SCSP effects program, mixes CD-DA through
+the effects path, displays the advanced VDP2 scene and
+increments backup RAM on controller-driven restart. Native and browser checks
+assert those results, exact wet stereo/changed-coefficient results, changed-sector
+checksums and changed-audio buffers; the
+browser exercises the actual Canvas/AudioWorklet path and missing-file rejection.
+Full SCSP synthesis/DSP conformance and the other mandatory Issue #17 criteria
+are still required. CI also verifies the original independent HLE
+slave reset trampoline; external BIOS mode never installs that trampoline.
+
+
+The original slot-synthesis and dual-rotation fixtures also run natively and in
+browser Wasm. The 68k programs FM, TL and amplitude/pitch LFO, with independent
+stereo expectations, guest-operand mutations, internal noise/zero sources and
+production AudioWorklet delivery. The SH-2 RBG1 guest writes VRAM-B0 characters,
+VRAM-B1 pattern names and both matrices; tests assert dual-layer pixels, changed
+parameter-B pixels and actual Canvas output. Both fixtures are original MIT
+content, reproducible using the builders listed above. Timed envelopes, full
+video timing and the other mandatory umbrella requirements remain pending in the
+[conformance inventory](hardware-conformance.md).
+
+The original gradation and two-way-cache fixtures run in native and browser Wasm
+checks. The gradation guest writes both bitmaps, palettes and CCCTL through MMIO;
+tests compare top/second-screen filtering, changed controls, repeated reset and
+actual Canvas pixels. The cache guest executes from P1, verifies RAM ways0/1
+cannot satisfy cache tags or receive cache-hit writes, and mutates guest source
+operands. The builders listed above reproduce both original MIT-licensed ROMs;
+[the conformance entries](hardware-conformance.md#gradation-and-cache-refillram-implementation)
+record primary specifications, hashes, evidence and remaining deviations.
+
+The original PCM read and PCM/EG/noise arbitration guests run in native and browser
+Wasm checks. The 68k changes actual waveform RAM between the two retained
+interpolation operands; the SH-2 separately times internal DMA with 32 PCM voices,
+maximum attenuation and noise. The browser verifies the arithmetic midpoints,
+FRT bounds, mutations, repeated boots, omitted-KEYON silence and production
+AudioWorklet output. Reproduce both with the PCM builder listed above; source,
+license and primary-specification evidence are linked in the
+[PCM conformance entry](hardware-conformance.md#separately-retained-pcm-operands-and-sound-memory-ownership).
+
+The SCSP clock builder also reproduces the original repeated-effect-store guest.
+Its 68k-uploaded DSP program overwrites positive, negative and zero effect
+register values and computes separate left/right samples. Native and browser
+checks include three operand pairs, an omitted-store control, cold resets and
+production AudioWorklet delivery. The [effect-store conformance entry](hardware-conformance.md#scsp-effect-register-store-semantics)
+links the primary rule, source, license, hash and deadline vectors for all sixteen
+registers.

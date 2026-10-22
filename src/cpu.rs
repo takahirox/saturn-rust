@@ -3,6 +3,7 @@ use crate::bus::{BusError, Memory};
 use std::fmt;
 
 mod memory;
+mod timing;
 use memory::Operands;
 
 const T: u32 = 1;
@@ -111,7 +112,7 @@ impl CpuState {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Cpu {
     state: CpuState,
     /// System/control transfers and delayed conditional branches inhibit interrupts
@@ -119,11 +120,19 @@ pub struct Cpu {
     interrupt_inhibited: bool,
     /// Unlike control transfers, delayed branches also defer address errors.
     address_error_inhibited: bool,
+    /// Main-clock execution states for the last issued boundary, excluding
+    /// external bus waits. Sleeping polls issue no instruction and report zero.
+    last_clocks: u32,
+    load_pipeline: timing::LoadPipeline,
 }
 
 impl Cpu {
     pub fn state(&self) -> &CpuState {
         &self.state
+    }
+
+    pub fn last_clocks(&self) -> u32 {
+        self.last_clocks
     }
 
     pub fn start(pc: u32, sp: u32) -> Self {
@@ -137,6 +146,8 @@ impl Cpu {
             state,
             interrupt_inhibited: false,
             address_error_inhibited: false,
+            last_clocks: 0,
+            load_pipeline: timing::LoadPipeline::default(),
         }
     }
 
@@ -145,9 +156,17 @@ impl Cpu {
         Ok(Self::start(bus.read32(0)?, bus.read32(4)?))
     }
 
+    /// SH7604 table 4.3: manual reset vectors are physical 8/12.
+    pub fn manual_reset(bus: &impl Memory) -> Result<Self, BusError> {
+        Ok(Self::start(bus.read32(8)?, bus.read32(12)?))
+    }
+
     /// Debugger stop, separate from the architectural SLEEP state.
     pub fn halt(&mut self) {
         self.state.status = CpuStatus::Halted;
+    }
+    pub(crate) fn deferred_write_fault(&mut self, error: CpuError) {
+        self.state.status = CpuStatus::Faulted(error);
     }
 
     /// The caller supplies the winning hardware interrupt and retries if deferred.
@@ -162,6 +181,23 @@ impl Cpu {
             return Ok(false);
         }
         self.interrupt(bus, vector, level)
+    }
+
+    /// DMA address errors use vector 10 and cannot be masked by SR.I.
+    pub fn accept_dma_address_error(&mut self, bus: &mut impl Memory) -> Result<bool, CpuError> {
+        if !matches!(self.state.status, CpuStatus::Running | CpuStatus::Sleeping)
+            || self.state.delay_target.is_some()
+            || self.address_error_inhibited
+            || self.state.address_error_pending
+        {
+            return Ok(false);
+        }
+        let result = self.enter_exception(bus, 10, self.state.pc);
+        if let Err(error) = result {
+            self.state.status = CpuStatus::Faulted(error.clone());
+            return Err(error);
+        }
+        Ok(true)
     }
 
     /// NMI has vector 11 and raises the interrupt mask to 15.
@@ -195,6 +231,17 @@ impl Cpu {
     /// Bounded: sleeping calls return without fetching or retiring an instruction.
     /// Faults caused by unavailable host bus/device behavior stay sticky until reset.
     pub fn step(&mut self, bus: &mut impl Memory) -> Result<(), CpuError> {
+        self.last_clocks = 0;
+        let pc = self.state.pc;
+        if matches!(self.state.status, CpuStatus::Running | CpuStatus::Sleeping)
+            && !self.state.address_error_pending
+            && bus.break_pending()
+            && 15 > (self.state.sr >> 4) & 15
+            && self.interrupt(bus, 12, 15)?
+        {
+            bus.acknowledge_break();
+            return Ok(());
+        }
         match &self.state.status {
             CpuStatus::Running => (),
             CpuStatus::Sleeping if !self.state.address_error_pending => return Ok(()),
@@ -202,6 +249,7 @@ impl Cpu {
             CpuStatus::Faulted(error) => return Err(error.clone()),
             _ => return Err(CpuError::NotRunning),
         }
+        let retired = self.state.instructions;
         let result = if self.state.address_error_pending && !self.address_error_inhibited {
             self.address_error(bus)
         } else {
@@ -209,6 +257,9 @@ impl Cpu {
         };
         if let Err(error) = &result {
             self.state.status = CpuStatus::Faulted(error.clone());
+        }
+        if self.state.instructions != retired {
+            bus.instruction_break(pc, true);
         }
         result
     }
@@ -219,6 +270,12 @@ impl Cpu {
         vector: u8,
         saved_pc: u32,
     ) -> Result<(), CpuError> {
+        // H §5.5 table5.9: acceptance to handler fetch is 5+m1+m2+m3;
+        // the three single-state memory operations are included here. The
+        // bus supplies additional waits independently to the machine scheduler.
+        bus.sh2_write_context(self.state.pc, Some(vector));
+        self.last_clocks = 8;
+        self.load_pipeline = timing::LoadPipeline::default();
         let s = &mut self.state;
         let access = |source| CpuError::ExceptionEntry {
             pc: s.pc,
@@ -228,11 +285,17 @@ impl Cpu {
         // Bus operations are ordered SR push, PC push, vector fetch (SH7604 §4.1.2).
         // A failed entry is a bounded diagnostic, not recursive host exception dispatch.
         let sp = s.r[15].wrapping_sub(8);
-        bus.write32(sp.wrapping_add(4), s.sr).map_err(access)?;
-        bus.write32(sp, saved_pc).map_err(access)?;
-        let target = bus
-            .read32(s.vbr.wrapping_add(vector as u32 * 4))
+        bus.exception_write32(sp.wrapping_add(4), s.sr)
             .map_err(access)?;
+        bus.exception_write32(sp, saved_pc).map_err(access)?;
+        let target = bus
+            .exception_read32(s.vbr.wrapping_add(vector as u32 * 4))
+            .map_err(access)?;
+        // Accept a stacking/vector alignment error after this entry completes.
+        // Vector 9 must not recursively re-enter forever (§§4.8.2–3).
+        if (sp | s.vbr) & 3 != 0 && vector != 9 {
+            s.address_error_pending = true;
+        }
         s.r[15] = sp;
         s.pc = target;
         s.delay_target = None;
@@ -241,6 +304,7 @@ impl Cpu {
         s.status = CpuStatus::Running;
         self.interrupt_inhibited = false;
         self.address_error_inhibited = false;
+        bus.sh2_discard_prefetch();
         Ok(())
     }
 
@@ -262,6 +326,7 @@ impl Cpu {
 
     fn execute(&mut self, bus: &mut impl Memory) -> Result<(), CpuError> {
         let pc = self.state.pc;
+        bus.sh2_write_context(pc, None);
         let access = |source| CpuError::Bus { pc, source };
         // SH7604 Table 4.6: no instruction fetches from odd addresses or
         // on-chip peripheral modules. Do not send such reads to a device.
@@ -273,11 +338,21 @@ impl Cpu {
             // An unfetchable successor cannot decode/retire. Finish the branch
             // boundary before accepting the latched error (Table 4.10).
             self.state.pc = self.state.delay_target.take().unwrap_or(pc.wrapping_add(2));
+            bus.sh2_discard_prefetch();
             self.address_error_inhibited = false;
             self.interrupt_inhibited = false;
             return Ok(());
         }
-        let opcode = bus.read16(pc).map_err(access)?;
+        let opcode = bus.fetch16(pc).map_err(access)?;
+        // H §6.3.2: a before-execution break requires a successfully fetched
+        // instruction. A fetch failure or speculative fill cannot cause it.
+        if bus.instruction_break(pc, false)
+            && 15 > (self.state.sr >> 4) & 15
+            && self.interrupt(bus, 12, 15)?
+        {
+            bus.acknowledge_break();
+            return Ok(());
+        }
         let rewrites_pc = matches!(opcode & 0xF000, 0xA000 | 0xB000)
             || matches!(opcode & 0xFF00, 0x8900 | 0x8B00 | 0x8D00 | 0x8F00 | 0xC300)
             || matches!(opcode & 0xF0FF, 0x0003 | 0x0023 | 0x400B | 0x402B)
@@ -289,6 +364,12 @@ impl Cpu {
             self.enter_exception(bus, opcode as u8, pc.wrapping_add(2))?;
             self.state.instructions += 1;
             return Ok(());
+        }
+
+        let interlock = self.load_pipeline.issue(opcode);
+        self.last_clocks = timing::execution_states(opcode, self.state.sr & T != 0) + interlock;
+        if interlock != 0 {
+            bus.sh2_pipeline_wait(interlock).map_err(access)?;
         }
 
         // Invalid operand cycles latch vector 9, allowing the instruction to
@@ -303,6 +384,7 @@ impl Cpu {
         let s = &mut self.state;
         let mut next_branch = None;
         let mut sequential_pc = pc.wrapping_add(2);
+        let mut direct_branch = false;
         let mut inhibit = false;
         let operand_pc = s
             .delay_target
@@ -318,7 +400,10 @@ impl Cpu {
             0x0019 => s.sr &= !(M | Q | T), // DIV0U
             0x0009 => (),
             0x000B => next_branch = Some(s.pr),
-            0x001B => s.status = CpuStatus::Sleeping,
+            0x001B => {
+                s.status = CpuStatus::Sleeping;
+                bus.inner.enter_sleep();
+            }
             0x002B => {
                 // RTE: restore SR before executing the slot.
                 let target = bus.read32(s.r[15]).map_err(access)?;
@@ -623,6 +708,7 @@ impl Cpu {
                         next_branch = Some(target);
                     } else {
                         sequential_pc = target;
+                        direct_branch = true;
                     }
                 }
             }
@@ -644,6 +730,9 @@ impl Cpu {
                 next_branch = Some(pc.wrapping_add(4).wrapping_add((displacement * 2) as u32));
             }
             _ => return self.illegal(bus.inner),
+        }
+        if s.delay_target.is_some() || direct_branch {
+            bus.inner.sh2_discard_prefetch();
         }
         s.pc = s.delay_target.take().unwrap_or(sequential_pc);
         s.delay_target = next_branch;

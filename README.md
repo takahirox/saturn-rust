@@ -19,15 +19,19 @@ Switching views or opening settings pauses and releases held input; returning or
 closing settings never resumes automatically. View changes preserve the CPU,
 selected local media and diagnostics. Reset cold-boots the selected mode; Restart
 in Play cold-boots the loaded disc and starts playback when settings are closed.
-Keyboard required; virtual touchscreen controls are not included.
+Keyboard and standard Gamepad inputs are supported; virtual touchscreen controls are not included.
 
 The display is rasterized in Rust from guest-written VDP2 VRAM, and controls go
 through emulated SMPC hardware. Game rules and drawing execute as guest SH-2 code.
+The original hardware diagnostics also execute a sound CPU and direct SCSP PCM
+through a bounded WebAudio path. **Enable audio** requires a user gesture and
+reports playback/blocked/mute/underflow states; Star Collector has no soundtrack.
 
 - [Build, run, test and Pages setup](docs/setup.md)
 - [Supported CPU, disc boot and hardware; limitations and primary manuals](docs/architecture.md)
-- [Hardware conformance matrix and outstanding Issue #15 scope](docs/hardware-conformance.md)
-- [Address-error implementation and automated validation](docs/validation-issue-15.md)
+- [Hardware conformance matrix and outstanding Issue #17 scope](docs/hardware-conformance.md)
+- [Hardware implementation and automated validation](docs/validation-issue-17.md)
+- [Historical address-error implementation and automated validation](docs/validation-issue-15.md)
 - [Historical backup RAM and second-pad validation](docs/validation-issue-13.md)
 - [SH-2 expansion validation](docs/validation-issue-11.md)
 - [Game source, reproducible ISO build and MIT license](homebrew/star-collector/README.md)
@@ -68,7 +72,7 @@ A repository administrator may need to select **Settings → Pages → Build and
 deployment → Source: GitHub Actions** and permit Actions/deployments. Check
 **Actions → Browser Pages** and the `github-pages` environment for failures.
 Local tests do not prove live publication. [Optional automated deployment checks](docs/setup.md#github-pages)
-are separate from Issue #15's native/Wasm/browser acceptance requirements.
+are separate from Issue #17's native/Wasm/browser acceptance requirements.
 
 Contributor and AI agent guidance:
 

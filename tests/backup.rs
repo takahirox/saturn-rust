@@ -45,34 +45,53 @@ fn backup_byte_lanes_endpoints_and_cache_through_access_do_not_alias_work_ram() 
     assert_eq!(bus.read32(0x0600_0000), Ok(0));
     assert!(matches!(
         bus.read8(BACKUP_RAM - 1),
-        Err(BusError::Unmapped { .. })
+        Err(BusError::UnsupportedDevice { .. }) // mirrored SMPC EXLE, write-only
     ));
-    assert!(matches!(
-        bus.read8(BACKUP_RAM + BACKUP_WINDOW),
-        Err(BusError::Unmapped { .. })
-    ));
-    // Unsupported lanes/widths must not silently succeed or corrupt valid bytes.
-    let before = bus.read8(BACKUP_RAM + 1);
-    for result in [
-        bus.write8(BACKUP_RAM, 42),
-        bus.write16(BACKUP_RAM, 42),
-        bus.write32(BACKUP_RAM, 42),
-    ] {
-        assert!(matches!(result, Err(BusError::UnsupportedDevice { .. })));
+    assert_eq!(bus.read8(BACKUP_RAM + BACKUP_WINDOW), Ok(255));
+    // Even lanes are unconnected; wider bus cycles strobe only odd bytes.
+    let before = bus.read8(BACKUP_RAM + 1).unwrap();
+    bus.write8(BACKUP_RAM, 42).unwrap();
+    assert_eq!(bus.read8(BACKUP_RAM), Ok(255));
+    assert_eq!(bus.read16(BACKUP_RAM), Ok(0xFF00 | u16::from(before)));
+    bus.write16(BACKUP_RAM, 0x1267).unwrap();
+    assert_eq!(bus.read16(BACKUP_RAM), Ok(0xFF67));
+    bus.write32(BACKUP_RAM, 0x12345678).unwrap();
+    assert_eq!(bus.read32(BACKUP_RAM), Ok(0xFF34FF78));
+    assert_eq!(bus.read8(BACKUP_RAM + 1), Ok(0x34));
+    assert_eq!(bus.read8(BACKUP_RAM + 3), Ok(0x78));
+}
+
+#[test]
+fn all_eight_backup_select_aliases_share_lanes_and_atomic_import_across_reset() {
+    let mut machine = Machine::new();
+    let rom = original_rom();
+    for reset in 0..2 {
+        machine.reset(Boot::ExternalBios(&rom)).unwrap();
+        if reset == 0 {
+            // An executable guest changes the first physical byte.
+            machine.run_steps(83).unwrap();
+        }
+        for alias in 0..8 {
+            for cache_through in [0, 0x2000_0000] {
+                let base = BACKUP_RAM + alias * BACKUP_WINDOW + cache_through;
+                assert_eq!(machine.bus().read16(base), Ok(0xFF01));
+                assert_eq!(machine.bus().read32(base), Ok(0xFF01_FF00));
+                assert_eq!(machine.bus().read16(base + BACKUP_WINDOW - 2), Ok(0xFF00));
+            }
+        }
+        assert!(machine.import_backup_ram(&[0xAA; 3]).is_err());
+        assert_eq!(machine.backup_ram()[0], 1);
     }
-    assert!(matches!(
-        bus.read8(BACKUP_RAM),
-        Err(BusError::UnsupportedDevice { .. })
-    ));
-    assert!(matches!(
-        bus.read16(BACKUP_RAM),
-        Err(BusError::UnsupportedDevice { .. })
-    ));
-    assert!(matches!(
-        bus.read32(BACKUP_RAM),
-        Err(BusError::UnsupportedDevice { .. })
-    ));
-    assert_eq!(bus.read8(BACKUP_RAM + 1), before);
+    let mut bus = Bus::default();
+    for alias in 0..8 {
+        let base = BACKUP_RAM + alias * BACKUP_WINDOW;
+        bus.write32(base + BACKUP_WINDOW - 4, 0x1234_5678 + alias)
+            .unwrap();
+        assert_eq!(
+            bus.read32(BACKUP_RAM + BACKUP_WINDOW - 4),
+            Ok(0xFF34_FF78 + alias)
+        );
+    }
 }
 
 #[test]
@@ -144,7 +163,7 @@ fn diagnostic_guest_also_executes_from_a_locally_built_hle_disc() {
     let mut machine = Machine::new();
     machine.reset(Boot::HleDisc(&image)).unwrap();
     machine.set_port2_buttons(1);
-    machine.run_steps(86).unwrap(); // Three AIP instructions + the same guest.
+    machine.run_steps(109).unwrap(); // 23 reset + three AIP + the same guest.
     assert_eq!(machine.backup_ram()[0], 1);
     assert_eq!(machine.bus().read32(0x0600_1004), Ok(0x3E));
     machine.set_port2_buttons(0);

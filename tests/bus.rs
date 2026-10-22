@@ -43,10 +43,9 @@ fn bios_is_exactly_512_kib_big_endian_and_read_only_at_all_widths() {
         assert!(matches!(result, Err(BusError::ReadOnly { .. })));
     }
     assert_eq!(bus.read32(0), Ok(0x1234_5678));
-    assert!(matches!(
-        bus.read8(BIOS_SIZE as u32),
-        Err(BusError::Unmapped { .. })
-    ));
+    assert_eq!(bus.read32(BIOS_SIZE as u32), Ok(0x12345678));
+    assert_eq!(bus.read32(0x20080000), Ok(0x12345678));
+    assert!(bus.write32(0x80000, 0).is_err());
 }
 
 #[test]
@@ -72,14 +71,7 @@ fn invalid_and_unaligned_accesses_fail_without_partial_writes() {
         ));
         assert_eq!(bus.read32(base), Ok(0x1234_5678));
     }
-    for address in [
-        LOW_WRAM - 4,
-        LOW_WRAM + WRAM_SIZE as u32,
-        HIGH_WRAM - 4,
-        HIGH_WRAM + WRAM_SIZE as u32,
-        0x2000_0000,
-        0xFFFF_FFFC,
-    ] {
+    for address in [0x0800_0000, 0x2000_0000, 0xFFFF_FFFC] {
         assert!(matches!(bus.read8(address), Err(BusError::Unmapped { .. })));
         assert!(matches!(
             bus.read16(address),
@@ -106,4 +98,82 @@ fn invalid_and_unaligned_accesses_fail_without_partial_writes() {
         bus.read32(u32::MAX),
         Err(BusError::Unaligned { .. })
     ));
+}
+
+#[test]
+fn absent_board_selects_return_high_data_and_cpu_rom_writes_have_no_storage_effect() {
+    let mut bus = Bus::default();
+    let mut rom = vec![0; BIOS_SIZE];
+    rom[..4].copy_from_slice(&0x12345678u32.to_be_bytes());
+    bus.load_bios(&rom).unwrap();
+    for cpu in [Processor::Master, Processor::Slave] {
+        for alias in [0, 0x20000000] {
+            for base in [
+                0x00400000, 0x01000004, 0x01800004, 0x02000000, 0x04000000, 0x05000000, 0x05900000,
+            ] {
+                let address = base + alias;
+                let mut memory = bus.for_cpu(cpu);
+                memory.write32(address, 0x12345678).unwrap();
+                memory.write16(address, 0).unwrap();
+                memory.write8(address, 0).unwrap();
+                assert_eq!(memory.read32(address), Ok(u32::MAX));
+                assert_eq!(memory.read16(address + 2), Ok(u16::MAX));
+                assert_eq!(memory.read8(address + 3), Ok(u8::MAX));
+                assert!(matches!(
+                    memory.read16(address + 1),
+                    Err(BusError::Unaligned { .. })
+                ));
+                memory.write32(alias, 0).unwrap();
+                memory.write16(alias + 2, 0).unwrap();
+                memory.write8(alias, 0).unwrap();
+                assert_eq!(memory.read32(alias), Ok(0x12345678));
+            }
+        }
+    }
+    // An absent expansion must not become a permissive decoder for real chips.
+    assert!(matches!(
+        bus.read32(0x05FE00CC),
+        Err(BusError::UnsupportedDevice { .. })
+    ));
+    assert!(bus.read32(0x08000000).is_err()); // reserved SH7604 partition
+}
+
+#[test]
+fn ram_cs_mirrors_share_physical_bytes_on_both_cache_through_aliases() {
+    let mut b = Bus::default();
+    for high in [false, true] {
+        let base = if high { HIGH_WRAM } else { LOW_WRAM };
+        let mirrors = if high { 32 } else { 2 };
+        for n in 0..mirrors {
+            b.write32(base + n * 0x100000 + 0x80, n + 0x12340000)
+                .unwrap();
+            for m in 0..mirrors {
+                assert_eq!(b.read32(base + m * 0x100000 + 0x80), Ok(n + 0x12340000));
+                assert_eq!(
+                    b.read32(base + m * 0x100000 + 0x20000080),
+                    Ok(n + 0x12340000)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn sound_video_and_smpc_chip_select_mirrors_and_lanes() {
+    let mut b = Bus::default();
+    for (base, mirror) in [
+        (0x05A00000, 0x05A80000),
+        (0x05C80000, 0x05CC0000),
+        (0x05E00000, 0x05E80000),
+    ] {
+        b.write32(base + 0x10, 0x12345678).unwrap();
+        assert_eq!(b.read32(mirror + 0x10), Ok(0x12345678));
+        b.write16(mirror + 0x12, 0xCAFE).unwrap();
+        assert_eq!(b.read32(base + 0x10), Ok(0x1234CAFE));
+    }
+    b.write8(0x00100162, 0).unwrap(); // no connected even SMPC lane
+    b.write16(0x00100162, 1).unwrap();
+    assert_eq!(b.read16(0x00100062), Ok(0xFF01));
+    b.write16(0x0010011E, 0).unwrap(); // MSHON through mirrored word bus
+    assert_eq!(b.read16(0x0010005E), Ok(0xFF00));
 }

@@ -2,13 +2,16 @@
 //!
 //! SCU User's Manual ST-097 §1.2, figs. 1.3/1.5 defines the 64 KiB window;
 //! SMPC User's Manual ST-169 §2.3 (SYSRES) specifies 256 Kbit retention.
-//! Only odd-address byte accesses are supported here. Unconnected byte lanes,
-//! wider accesses and undocumented aliases remain explicit unsupported accesses.
+//! D7–D0 are connected on odd byte lanes. Even lanes read pulled-up ones and
+//! writes have no strobe. Bus word/long accesses decompose into these lanes.
 use crate::bus::BusError;
 
 pub const BACKUP_RAM: u32 = 0x0018_0000;
 pub const BACKUP_SIZE: usize = 32 * 1024;
 pub const BACKUP_WINDOW: u32 = 64 * 1024;
+/// The CPU-board select spans 00180000–001FFFFF. Only A15–A1 reach
+/// the 32 KiB chip; the remaining addresses select the same byte lanes.
+pub const BACKUP_SELECT: u32 = 512 * 1024;
 
 pub struct BackupRam {
     bytes: Vec<u8>,
@@ -41,19 +44,27 @@ impl BackupRam {
     }
 
     fn offset(address: u32) -> Result<usize, BusError> {
-        if (BACKUP_RAM..BACKUP_RAM + BACKUP_WINDOW).contains(&address) && address & 1 != 0 {
-            Ok(((address - BACKUP_RAM) / 2) as usize)
+        if (BACKUP_RAM..BACKUP_RAM + BACKUP_SELECT).contains(&address) {
+            Ok((((address - BACKUP_RAM) & (BACKUP_WINDOW - 1)) / 2) as usize)
         } else {
             Err(BusError::UnsupportedDevice { address, width: 1 })
         }
     }
 
     pub fn read8(&self, address: u32) -> Result<u8, BusError> {
-        Ok(self.bytes[Self::offset(address)?])
+        let offset = Self::offset(address)?;
+        Ok(if address & 1 == 0 {
+            255
+        } else {
+            self.bytes[offset]
+        })
     }
 
     pub fn write8(&mut self, address: u32, value: u8) -> Result<(), BusError> {
-        self.bytes[Self::offset(address)?] = value;
+        let offset = Self::offset(address)?;
+        if address & 1 != 0 {
+            self.bytes[offset] = value;
+        }
         Ok(())
     }
 }

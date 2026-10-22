@@ -16,6 +16,9 @@ impl Emulator {
             machine: Machine::new(),
         }
     }
+    pub fn set_pal(&mut self, pal: bool) {
+        self.machine.set_pal(pal);
+    }
     pub fn reset_hle(&mut self) -> Result<(), JsValue> {
         self.machine.reset(Boot::HlePrototype).map_err(js_error)
     }
@@ -27,11 +30,86 @@ impl Emulator {
     pub fn reset_disc(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
         self.machine.reset(Boot::HleDisc(bytes)).map_err(js_error)
     }
+    /// A NUL-separated name table, lengths and concatenated local file bytes
+    /// marshal a complete CUE selection in one call. No path is opened here.
+    pub fn reset_cue(
+        &mut self,
+        cue: &str,
+        names: &str,
+        lengths: &[u32],
+        bytes: &[u8],
+    ) -> Result<(), JsValue> {
+        let result = cue_media(cue, names, lengths, bytes);
+        match result {
+            Ok(media) => self.machine.reset_media(media).map_err(js_error),
+            Err(error) => {
+                let _ = self.machine.reset(Boot::HleDisc(&[]));
+                Err(JsValue::from_str(&error.to_string()))
+            }
+        }
+    }
+    /// Attach caller-supplied mixed-track media without resetting the CPU or
+    /// installing HLE. This is the CUE counterpart of mount_disc for BIOS mode.
+    pub fn mount_cue(
+        &mut self,
+        cue: &str,
+        names: &str,
+        lengths: &[u32],
+        bytes: &[u8],
+    ) -> Result<(), JsValue> {
+        let media = cue_media(cue, names, lengths, bytes)
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        self.machine.mount_media(media);
+        Ok(())
+    }
+    pub fn mount_disc(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+        let media =
+            crate::media::Media::iso(bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        self.machine.mount_media(media);
+        Ok(())
+    }
     pub fn advance_frame(&mut self) -> Result<(), JsValue> {
         self.machine.advance_frame().map_err(js_error)
     }
     pub fn framebuffer(&self) -> Result<Vec<u8>, JsValue> {
         self.machine.framebuffer().map_err(js_error)
+    }
+    pub fn audio_samples(&mut self, frames: u32) -> Vec<i16> {
+        self.machine.drain_audio(frames as usize)
+    }
+    pub fn audio_generated(&self) -> String {
+        self.machine.audio_generated().to_string()
+    }
+    pub fn audio_dropped(&self) -> String {
+        self.machine.audio_dropped().to_string()
+    }
+    pub fn sound_registers(&self) -> Vec<u32> {
+        self.machine.sound_state().d.to_vec()
+    }
+    pub fn sound_pc(&self) -> u32 {
+        self.machine.sound_state().pc
+    }
+    pub fn sound_instruction_count(&self) -> String {
+        self.machine.sound_state().instructions.to_string()
+    }
+    pub fn set_region(&mut self, code: u8) -> Result<(), JsValue> {
+        let region = crate::smpc::Region::try_from(code).map_err(JsValue::from_str)?;
+        self.machine.set_region(region);
+        Ok(())
+    }
+    pub fn set_analog(&mut self, port: u8, enabled: bool, x: u8, y: u8, z: u8) {
+        self.machine
+            .set_analog(port as usize, enabled.then_some([x, y, z]));
+    }
+    pub fn set_3d_pad(&mut self, port: u8, enabled: bool, x: u8, y: u8, right: u8, left: u8) {
+        self.machine
+            .set_3d_pad(port as usize, enabled.then_some([x, y, right, left]));
+    }
+    pub fn sound_halted(&self) -> bool {
+        self.machine.sound_state().halted
+    }
+    pub fn set_peripheral_th(&mut self, port: u8, high: bool) {
+        self.machine.set_peripheral_th(port as usize, high);
     }
     pub fn set_buttons(&mut self, buttons: u16) {
         self.machine.set_buttons(buttons);
@@ -56,11 +134,32 @@ impl Emulator {
     pub fn frames(&self) -> String {
         self.machine.frames().to_string()
     }
+    pub fn peripheral_clocks(&self) -> String {
+        self.machine.clocks().to_string()
+    }
+    pub fn slave_registers(&self) -> Vec<u32> {
+        self.machine.slave_state().r.to_vec()
+    }
+    pub fn slave_instruction_count(&self) -> String {
+        self.machine.slave_state().instructions.to_string()
+    }
+    pub fn slave_pc(&self) -> u32 {
+        self.machine.slave_state().pc
+    }
+    pub fn slave_exception_count(&self) -> String {
+        self.machine.slave_state().exceptions.to_string()
+    }
     pub fn step(&mut self) -> Result<(), JsValue> {
         self.machine.step().map_err(js_error)
     }
     pub fn run_steps(&mut self, count: u32) -> Result<(), JsValue> {
         self.machine.run_steps(count).map_err(js_error)
+    }
+    pub fn video_width(&self) -> u32 {
+        self.machine.video_dimensions().0 as u32
+    }
+    pub fn video_height(&self) -> u32 {
+        self.machine.video_dimensions().1 as u32
     }
     pub fn registers(&self) -> Vec<u32> {
         self.machine.cpu_state().r.to_vec()
@@ -78,6 +177,9 @@ impl Emulator {
     }
     pub fn address_error_pending(&self) -> bool {
         self.machine.cpu_state().address_error_pending
+    }
+    pub fn hardware_wake_possible(&self) -> bool {
+        self.machine.can_wake_master()
     }
     pub fn last_exception(&self) -> String {
         self.machine
@@ -102,6 +204,12 @@ impl Emulator {
         .into()
     }
     pub fn status(&self) -> String {
+        if let Some(error) = self.machine.fault() {
+            return format!("Faulted: {error}");
+        }
+        if self.machine.reset_in_progress() {
+            return "Resetting — waiting for hardware reset vectors".into();
+        }
         match &self.machine.cpu_state().status {
             CpuStatus::Reset => "Reset — waiting for valid boot input".into(),
             CpuStatus::Running => "Ready".into(),
@@ -114,4 +222,39 @@ impl Emulator {
 
 fn js_error(error: crate::MachineError) -> JsValue {
     JsValue::from_str(&error.to_string())
+}
+
+// Resolve only the caller's in-memory selection; never open a CUE path.
+fn cue_media(
+    cue: &str,
+    names: &str,
+    lengths: &[u32],
+    bytes: &[u8],
+) -> Result<crate::media::Media, crate::disc::DiscError> {
+    let names = names.split('\0');
+    if lengths.len() > 99 || bytes.len() > 134_217_728 || names.clone().count() != lengths.len() {
+        return Err(crate::disc::DiscError(
+            "Invalid local CUE file table".into(),
+        ));
+    }
+    let mut files = Vec::new();
+    let mut offset = 0usize;
+    for (name, length) in names.zip(lengths) {
+        let end = offset
+            .checked_add(*length as usize)
+            .ok_or_else(|| crate::disc::DiscError("CUE file length overflow".into()))?;
+        files.push((
+            name,
+            bytes
+                .get(offset..end)
+                .ok_or_else(|| crate::disc::DiscError("Truncated CUE file table".into()))?,
+        ));
+        offset = end;
+    }
+    if offset != bytes.len() {
+        return Err(crate::disc::DiscError(
+            "Unexpected bytes after CUE file table".into(),
+        ));
+    }
+    crate::media::Media::cue(cue, &files)
 }

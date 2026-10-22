@@ -230,17 +230,44 @@ fn rte_operand_error_waits_for_its_slot_but_control_transfers_do_not() {
 }
 
 #[test]
-fn pending_errors_and_failed_entries_remain_bounded() {
+fn unaligned_exception_stacking_reaches_vector_nine_without_recursive_errors() {
+    // H §4.8.3: complete the original exception, then dispatch address error;
+    // do not recursively latch another error while stacking vector 9 itself.
+    for offset in 1..=3 {
+        let (mut cpu, mut bus) = setup(&[0xC320]); // TRAPA #32
+        bus.write32(cpu.state.vbr + 32 * 4, HANDLER + 0x20).unwrap();
+        bus.write16(HANDLER, 0x0009).unwrap();
+        cpu.state.r[15] = STACK + offset;
+        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.state.pc, HANDLER + 0x20);
+        assert_eq!(cpu.state.r[15], STACK + offset - 8);
+        assert!(cpu.state.address_error_pending);
+        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.state.pc, HANDLER);
+        assert_eq!(cpu.state.exceptions, 2);
+        assert_eq!(
+            cpu.state.last_exception.as_ref().unwrap().saved_pc,
+            HANDLER + 0x20
+        );
+        assert_eq!(cpu.state.r[15], STACK + offset - 16);
+        assert!(!cpu.state.address_error_pending);
+        cpu.step(&mut bus).unwrap();
+        assert_eq!(cpu.state.exceptions, 2);
+    }
+}
+
+#[test]
+fn unavailable_exception_stack_remains_a_bounded_host_diagnostic() {
     let (mut cpu, mut bus) = setup(&[0x6212]);
     cpu.state.r[1] = HIGH_WRAM + 0x801;
-    cpu.state.r[15] = STACK + 1;
+    cpu.state.r[15] = 0x08000011;
     cpu.step(&mut bus).unwrap();
     let error = cpu.step(&mut bus).unwrap_err();
     assert!(matches!(
         error,
         CpuError::ExceptionEntry {
             vector: 9,
-            source: BusError::Unaligned { .. },
+            source: BusError::Unmapped { .. },
             ..
         }
     ));
@@ -304,12 +331,7 @@ fn peripheral_width_pc_relative_and_tas_checks_precede_device_access() {
         }
     }
     // Correct-width ordinary accesses still diagnose missing implementations.
-    for (opcode, address) in [
-        (0x6210, 0xFFFF_FE00),
-        (0x6211, 0xFFFF_FF00),
-        (0x6212, 0xFFFF_FF00),
-        (0x6210, 0x0400_0000),
-    ] {
+    for (opcode, address) in [(0x6211, 0xFFFF_FF00), (0x6210, 0x0800_0000)] {
         let (mut cpu, mut bus) = setup(&[opcode]);
         cpu.state.r[1] = address;
         assert!(matches!(cpu.step(&mut bus), Err(CpuError::Bus { .. })));

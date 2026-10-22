@@ -1,0 +1,137 @@
+//! Original guest commands and polls: ST-162 §§3.4/4.2/4.3/8.2.
+use saturn_rust::{
+    Boot, Machine,
+    bus::{BIOS_SIZE, Memory},
+    media::Media,
+};
+fn rom() -> Vec<u8> {
+    let mut rom = vec![0; BIOS_SIZE];
+    for line in include_str!("fixtures/cd-drive.hex")
+        .lines()
+        .filter(|s| !s.is_empty() && !s.starts_with('#'))
+    {
+        let mut words = line.split_whitespace();
+        let mut at = usize::from_str_radix(words.next().unwrap(), 16).unwrap();
+        for word in words {
+            rom[at..at + 2].copy_from_slice(&u16::from_str_radix(word, 16).unwrap().to_be_bytes());
+            at += 2;
+        }
+    }
+    rom
+}
+#[test]
+fn guest_scans_reverses_pauses_waits_and_reopens_same_disc_without_reading_sectors() {
+    let mut machine = Machine::new();
+    let original = rom();
+    let mut previous = None;
+    for (iteration, payload) in [0x1357u16, 0x1357, 0x2468, 0x2468].into_iter().enumerate() {
+        let mut rom = original.clone();
+        rom[0x100..0x102].copy_from_slice(&payload.to_be_bytes());
+        if iteration == 2 {
+            previous = None;
+        }
+        machine.reset(Boot::ExternalBios(&rom)).unwrap();
+        machine.mount_media(Media::iso(&vec![0; 2048 * 100]).unwrap());
+        for _ in 0..80 {
+            machine.run_steps(10000).unwrap();
+            if machine.bus().read32(0x060090F0) == Ok(0x600D) {
+                break;
+            }
+        }
+        let read = |offset: u32| machine.bus().read32(0x06009000 + offset).unwrap();
+        assert_eq!(read(0xF0), 0x600D);
+        for (offset, status) in [
+            (0, 0x0180),
+            (0x10, 0x0500),
+            (0x30, 0x0500),
+            (0x50, 0x0400),
+            (0x60, 0x0180),
+            (0x70, 0x8180),
+            (0x80, 0x0600),
+            (0x90, 0x0180),
+            (0xA0, 0x4180),
+        ] {
+            assert_eq!(read(offset), status, "offset {offset:x}");
+        }
+        assert!(read(0x2C) >= 170 && read(0x2C) < 250);
+        assert!(read(0x4C) < 160 && read(0x4C) >= 150);
+        assert_eq!(read(0xA4), 204);
+        assert_eq!(read(0xB4), 2); // Two TOC words transferred by actual guest MOV.L.
+        assert_eq!(read(0xCC), 0); // Scan never routes data to a partition.
+        assert_eq!(read(0xE0), 0x41000096);
+        for offset in [0x110, 0x120, 0x140, 0x150] {
+            assert_eq!(read(offset), 0xFF00, "rejected connection at {offset:x}");
+        }
+        assert_eq!(read(0x134), 0x0304); // both retained across invalid commands
+        assert_eq!(read(0x188), 0x0400); // connect after explicit disconnect
+        for (offset, value) in [
+            (0x2F0, 0),
+            (0x2F4, 0x80),
+            (0x234, 1),
+            (0x24C, 0),
+            (0x25C, 2),
+            (0x264, 198),
+            (0x284, 1025),
+            (0x294, 200),
+            (0x300, u32::from(payload)),
+            (0x304, 0),
+        ] {
+            assert_eq!(read(offset), value, "host transfer field {offset:X}");
+        }
+        let trace = (0..194).map(|i| read(i * 4)).collect::<Vec<_>>();
+        if let Some(old) = previous {
+            assert_eq!(trace, old);
+        }
+        previous = Some(trace);
+    }
+}
+
+#[test]
+fn guest_runtime_directory_commands_reject_malformed_extents_without_trapping() {
+    let mut fixture = vec![0; BIOS_SIZE];
+    for line in include_str!("fixtures/cd-directory.hex")
+        .lines()
+        .filter(|s| !s.starts_with('#'))
+    {
+        let mut fields = line.split_whitespace();
+        let Some(address) = fields.next() else {
+            continue;
+        };
+        let address = usize::from_str_radix(address, 16).unwrap();
+        for (i, word) in fields.enumerate() {
+            fixture[address + i * 2..address + i * 2 + 2]
+                .copy_from_slice(&u16::from_str_radix(word, 16).unwrap().to_be_bytes());
+        }
+    }
+    let original = include_bytes!("../web/star-collector.iso");
+    for field in [None, Some(0), Some(16 * 2048 + 158), Some(20 * 2048 + 70)] {
+        let mut image = original.to_vec();
+        if field == Some(0) {
+            let primary = image[16 * 2048..17 * 2048].to_vec();
+            image[16 * 2048..17 * 2048].fill(0);
+            image[16 * 2048..16 * 2048 + 7].copy_from_slice(b"\0CD001\x01");
+            image[17 * 2048..18 * 2048].copy_from_slice(&primary);
+            image[18 * 2048..19 * 2048].fill(0);
+            image[18 * 2048..18 * 2048 + 7].copy_from_slice(b"\x02CD001\x01");
+            image[19 * 2048..20 * 2048].fill(0);
+            image[19 * 2048..19 * 2048 + 7].copy_from_slice(b"\xFFCD001\x01");
+            image[20 * 2048 + 68 + 25] = 1;
+        } else if let Some(offset) = field {
+            image[offset..offset + 8].fill(255);
+        }
+        let invalid = field.is_some_and(|offset| offset != 0);
+        let mut machine = Machine::new();
+        machine.reset(Boot::ExternalBios(&fixture)).unwrap();
+        machine.mount_media(Media::iso(&image).unwrap());
+        machine.run_steps(3000).unwrap();
+        let read = |offset: u32| machine.bus().read32(0x06009000 + offset).unwrap();
+        assert_eq!(read(0x30), 0x600D);
+        assert_eq!(read(0), if invalid { 0xFF00 } else { 0x0180 });
+        assert_eq!(read(0x10), if invalid { 0xFF00 } else { 0x0180 });
+        if invalid {
+            assert_eq!(read(0x20), 0xFF00); // Scope rejects an uninitialized table.
+        } else {
+            assert_eq!(read(0x24), 2);
+        }
+    }
+}

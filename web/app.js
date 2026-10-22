@@ -1,11 +1,40 @@
+import { AudioOutput } from "./audio.js";
 const $ = (id) => document.getElementById(id);
 const hex = (value) => `0x${value.toString(16).toUpperCase().padStart(8, "0")}`;
 export let emulator;
 let discBytes = null;
+let cueMedia = null;
 let playing = false;
 let playAfterLoad = false;
 let buttons = 0;
 let port2Buttons = 0;
+const gamepadMasks = [0, 0];
+const analogConnected = [false, false];
+const pad3d = [false, false];
+export function pollGamepads() {
+  if (!emulator || document.hidden || !document.hasFocus() || document.activeElement !== $("screen")) return;
+  const pads = Array.from(navigator.getGamepads?.() ?? []).filter((pad) => pad?.connected).slice(0, 2);
+  // Standard Gamepad buttons -> Saturn A/B/C/X/Y/Z/L/R/Start and four directions.
+  const mapping = [[0,64],[1,16],[2,32],[3,1024],[4,512],[5,256],[6,4096],[7,2048],[9,128],[12,1],[13,2],[14,4],[15,8]];
+  const axis = (value) => Math.round((Math.max(-1, Math.min(1, Number.isFinite(value) ? value : 0)) + 1) * 127.5);
+  for (let port = 0; port < 2; port++) {
+    const pad = pads[port];
+    let mask = 0;
+    if (pad) for (const [index, bit] of mapping) if (pad.buttons[index]?.pressed || pad.buttons[index]?.value > 0.5) mask |= bit;
+    gamepadMasks[port] = mask;
+    analogConnected[port] = Boolean(pad && pad.axes.length >= 2);
+    pad3d[port] = analogConnected[port] && pad.mapping === "standard";
+    if (pad3d[port]) {
+      const rawX = Number.isFinite(pad.axes[0]) ? pad.axes[0] : 0;
+      const rawY = Number.isFinite(pad.axes[1]) ? pad.axes[1] : 0;
+      const radius = Math.max(1, Math.hypot(rawX, rawY));
+      const trigger = (i) => Math.round(Math.max(0, Math.min(1, Number.isFinite(pad.buttons[i]?.value) ? pad.buttons[i].value : 0)) * 255);
+      emulator.set_3d_pad(port, true, axis(rawX / radius), axis(rawY / radius), trigger(7), trigger(6));
+    } else emulator.set_analog(port, analogConnected[port], pad ? axis(pad.axes[0]) : 128, pad ? axis(pad.axes[1]) : 128, pad ? axis(pad.axes[2] ?? -1) : 0);
+  }
+  emulator.set_buttons(buttons | gamepadMasks[0]);
+  emulator.set_port2_buttons(port2Buttons | gamepadMasks[1]);
+}
 let lastFrame = 0;
 const context = $("screen").getContext("2d");
 let biosBytes = null;
@@ -14,6 +43,20 @@ let loadingFile = false;
 let backupGeneration = 0;
 let loadingBackup = false;
 let view = "play";
+
+export const audio = new AudioOutput((stats) => {
+  $("audio-status").textContent = `Audio: ${stats.state} · ${stats.rendered} frames · ${stats.underflow} underflow · ${stats.dropped} dropped`;
+});
+$("audio-enable").addEventListener("click", async () => {
+  try {
+    if (!audio.node || audio.context.state !== "running") {
+      await audio.enable();
+      audio.setPaused(!playing);
+    } else audio.setMuted(!audio.muted);
+    $("audio-enable").textContent = audio.muted ? "Unmute audio" : "Mute audio";
+  } catch (error) { $("audio-status").textContent = `Audio: blocked · ${error}`; }
+});
+export function pumpAudio() { audio.deliver(emulator.audio_samples(8192)); }
 
 function rows(target, names, values) {
   target.replaceChildren(...names.map((name, i) => {
@@ -34,18 +77,34 @@ function releaseButtons() {
   emulator?.set_buttons(0);
   port2Buttons = 0;
   emulator?.set_port2_buttons(0);
+  gamepadMasks.fill(0);
+  for (let port = 0; port < 2; port++) {
+    if (pad3d[port]) emulator?.set_3d_pad(port, analogConnected[port], 128, 128, 0, 0);
+    else emulator?.set_analog(port, analogConnected[port], 128, 128, 0);
+  }
 }
 
 function pause() {
   playing = false;
+  audio.setPaused(true);
   playAfterLoad = false;
   releaseButtons();
 }
 
 export function advanceFrame() {
+  pollGamepads();
   emulator.advance_frame();
+  audio.setPaused(!playing);
+  pumpAudio();
   const pixels = new Uint8ClampedArray(emulator.framebuffer());
-  context.putImageData(new ImageData(pixels, 320, 224), 0, 0);
+  const width = emulator.video_width(), height = emulator.video_height();
+  const canvas = $("screen");
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+    canvas.style.aspectRatio = `${width} / ${height}`;
+  }
+  context.putImageData(new ImageData(pixels, width, height), 0, 0);
 }
 
 function animate(now) {
@@ -62,7 +121,7 @@ function setText(id, text) {
 }
 
 function canExecute(status = emulator.status()) {
-  return status === "Ready" || (status.startsWith("Sleeping") && emulator.address_error_pending());
+  return status === "Ready" || (status.startsWith("Resetting") && emulator.hardware_wake_possible()) || (status.startsWith("Sleeping") && (emulator.address_error_pending() || emulator.hardware_wake_possible()));
 }
 
 function render() {
@@ -90,9 +149,10 @@ function render() {
   const discReady = ready && $("mode").value === "disc";
   $("pause").disabled = !discReady;
   $("pause").textContent = playing ? "Pause" : "Resume";
-  $("restart").disabled = busy || $("mode").value !== "disc" || !discBytes;
+  $("restart").disabled = busy || $("mode").value !== "disc" || !(discBytes || cueMedia);
   $("frame").disabled = !discReady || playing;
   $("play-homebrew").disabled = busy;
+  $("play-prism").disabled = busy;
   $("backup-export").disabled = busy;
   const state = loadingFile ? "Loading image…" : loadingBackup ? "Reading backup RAM…" : $("error").textContent ? "Stopped — see error below" :
     playing ? "Running" : discReady ? "Paused — Resume to play" : "Ready — Play Star Collector or open Debug";
@@ -154,12 +214,19 @@ function reset() {
   backupGeneration++;
   loadingBackup = false;
   pause();
-  context.clearRect(0, 0, 320, 224);
+  const canvas = $("screen");
+  context.clearRect(0, 0, canvas.width, canvas.height);
   act(() => {
-    if ($("mode").value === "disc") emulator.reset_disc(discBytes ?? new Uint8Array());
+    if ($("mode").value === "disc") {
+      if (cueMedia) emulator.reset_cue(cueMedia.cue, cueMedia.names, cueMedia.lengths, cueMedia.bytes);
+      else emulator.reset_disc(discBytes ?? new Uint8Array());
+    }
     else if ($("mode").value === "hle") emulator.reset_hle();
     else emulator.reset_bios(biosBytes ?? new Uint8Array());
   });
+  canvas.width = emulator.video_width();
+  canvas.height = emulator.video_height();
+  canvas.style.aspectRatio = `${canvas.width} / ${canvas.height}`;
 }
 
 try {
@@ -234,6 +301,7 @@ try {
     fileGeneration++;
     biosBytes = null;
     discBytes = null;
+    cueMedia = null;
     $("disc").value = "";
     loadingFile = false;
     $("bios").value = "";
@@ -278,7 +346,7 @@ try {
       render();
     }
   };
-  $("play-homebrew").addEventListener("click", async () => {
+  for (const [button, image] of [["play-homebrew", "star-collector.iso"], ["play-prism", "prism-courier.iso"]]) $(button).addEventListener("click", async () => {
     $("mode").value = "disc";
     $("mode").dispatchEvent(new Event("change"));
     const generation = ++fileGeneration;
@@ -287,7 +355,7 @@ try {
     $("error").textContent = "";
     render();
     try {
-      const response = await fetch("./star-collector.iso");
+      const response = await fetch(`./${image}`);
       if (!response.ok) throw new Error(`Sample ISO HTTP ${response.status}; rebuild or select the ISO locally.`);
       const bytes = new Uint8Array(await response.arrayBuffer());
       if (generation !== fileGeneration) return;
@@ -302,13 +370,19 @@ try {
   });
   $("disc").addEventListener("change", async () => {
     const generation = ++fileGeneration;
-    const file = $("disc").files[0];
+    const files = [...$("disc").files];
     discBytes = null;
+    cueMedia = null;
     loadingFile = false;
     reset();
-    if (!file) return;
-    if (file.size < 45056 || file.size > 16777216 || file.size % 2048 !== 0) {
-      $("error").textContent = "Select a complete 2048-byte-sector ISO (22 sectors to 16 MiB). BIN/CUE and compressed images are unsupported.";
+    if (!files.length) return;
+    const cueFiles = files.filter((file) => /\.cue$/i.test(file.name));
+    const cue = cueFiles.length === 1 ? cueFiles[0] : null;
+    const file = files[0];
+    if ((!cue && (files.length !== 1 || file.size < 18 * 2048 || file.size > 16777216 || file.size % 2048 !== 0)) ||
+        cueFiles.length > 1 || files.reduce((total, file) => total + file.size, 0) > 134217728 ||
+        (cue && (cue.size > 1048576 || files.length < 2 || files.length > 100))) {
+      $("error").textContent = "Select one complete 2048-byte-sector ISO (18 sectors to 16 MiB), or one CUE and all its BINARY track files together (up to 128 MiB).";
       render();
       return;
     }
@@ -316,9 +390,20 @@ try {
     $("error").textContent = "";
     render();
     try {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      if (generation !== fileGeneration) return;
-      discBytes = bytes;
+      if (cue) {
+        const tracks = files.filter((file) => file !== cue);
+        const buffers = await Promise.all(tracks.map(async (file) => new Uint8Array(await file.arrayBuffer())));
+        const cueText = new TextDecoder("utf-8", { fatal: true }).decode(await cue.arrayBuffer());
+        if (generation !== fileGeneration) return;
+        const bytes = new Uint8Array(buffers.reduce((total, buffer) => total + buffer.length, 0));
+        let offset = 0;
+        for (const buffer of buffers) { bytes.set(buffer, offset); offset += buffer.length; }
+        cueMedia = { cue: cueText, names: tracks.map((file) => file.name).join("\0"), lengths: new Uint32Array(buffers.map((buffer) => buffer.length)), bytes };
+      } else {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        if (generation !== fileGeneration) return;
+        discBytes = bytes;
+      }
       loadingFile = false;
       beginDisc();
     } catch (error) {
@@ -343,8 +428,8 @@ try {
       event.preventDefault();
       if (eventName === "keydown") { buttons |= mask ?? 0; port2Buttons |= port2Mask ?? 0; }
       else { buttons &= ~(mask ?? 0); port2Buttons &= ~(port2Mask ?? 0); }
-      emulator.set_buttons(buttons);
-      emulator.set_port2_buttons(port2Buttons);
+      emulator.set_buttons(buttons | gamepadMasks[0]);
+      emulator.set_port2_buttons(port2Buttons | gamepadMasks[1]);
     });
   }
   $("screen").addEventListener("blur", releaseButtons);
