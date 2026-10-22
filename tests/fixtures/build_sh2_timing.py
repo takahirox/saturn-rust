@@ -30,18 +30,32 @@ KERNELS = [
     # H §7.11.2: determine-cycle state plus internal peripheral read.
     ('peripheral_read', 'mov.b @r10,r6\n' * 32, 64, 0xffffffff),
     ('peripheral_write', 'mov.b r6,@r10\n' * 32, 32, 0),
+    # §7.7.6 figs7.86/7.90: system transfers with WB use the same
+    # one-successor interlock. PR is an implicit source of STS PR.
+    ('sts_macl', 'sts macl,r6\nadd #1,r6\n' * 16, 48, 1),
+    ('sts_mach', 'sts mach,r6\nadd #1,r6\n' * 16, 48, 1),
+    ('sts_separated', 'sts macl,r6\nnop\nadd #1,r6\n' * 8, 24, 1),
+    ('pr_use', 'lds.l @r12+,pr\nsts pr,r6\n' * 16, 48, 0),
+    ('pr_separated', 'lds.l @r12+,pr\nnop\nsts pr,r6\n' * 8, 24, 0),
 ]
 
 
-def kernel(body):
+def kernel(body, preserve_pr=False):
     # The caller preloads FRC high/low into R4/R5 and SBYCR into R7.
     # The resume write completes while the FRT is stopped, starting phase zero.
     # High latch(2), low read(2), body(N), final latch(2): H §7.11.2
     # gives floor((6+N)/8) at the final high-byte read. All N are multiples
     # of eight, so this is exactly N/8.
-    return ('mov #2,r0\nmov.b r0,@r7\nmov #0,r0\nmov.b r0,@r7\n'
+    save = 'sts pr,r14\n' if preserve_pr else ''
+    restore = 'lds r14,pr\n' if preserve_pr else ''
+    return (save + 'mov #2,r0\nmov.b r0,@r7\nmov #0,r0\nmov.b r0,@r7\n'
             'mov.b @r4,r0\nmov.b @r5,r0\n' + body +
-            'mov.b @r4,r0\nmov.b @r5,r0\nextu.b r0,r0\nrts\nnop\n')
+            'mov.b @r4,r0\nmov.b @r5,r0\nextu.b r0,r0\n' + restore + 'rts\nnop\n')
+
+
+def kernel_address(index):
+    # Preserve the original zero words at 7000..707C used by LDC/LDS.L.
+    return 0x4000 + index * 0x400 if index < 12 else 0x10000 + (index - 12) * 0x400
 
 
 def build():
@@ -54,18 +68,18 @@ def build():
           'load 0xfffffe12,r4\nload 0xfffffe13,r5\nload 0xfffffe91,r7\n'
           'load 0xfffffe01,r10\n')
     for i, (name, _, _, _) in enumerate(KERNELS):
-        address = 0x4000 + i * 0x400
+        address = kernel_address(i)
         # Two identical calls; only the second warmed-cache result is recorded.
         for _ in range(2):
-            s += 'mov #-1,r0\nmov.b r0,@r10\n'
+            s += 'clrmac\nmov #-1,r0\nmov.b r0,@r10\n'
             s += (f'load {address:#x},r3\nmov #0,r6\n'
                   f'load {0xC0000400 if name == "stc" else 0x7000:#x},r12\n'
                   'jsr @r3\nnop\n')
         s += record() + record(6)
     s += 'load 0x600d,r0\n' + record() + 'done:\nsleep\nbra done\nnop\n'
     sections = {0x200: s}
-    for i, (_, body, _, _) in enumerate(KERNELS):
-        sections[0x4000 + i * 0x400] = kernel(body)
+    for i, (name, body, _, _) in enumerate(KERNELS):
+        sections[kernel_address(i)] = kernel(body, preserve_pr=name.startswith('pr_'))
     rom = bytearray(524288)
     struct.pack_into('>IIII', rom, 0, 0x200, 0x060FF000, 0x200, 0x060FE000)
     for address, source in sections.items():

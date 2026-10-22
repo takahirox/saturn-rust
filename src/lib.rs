@@ -173,6 +173,34 @@ mod scheduling_tests {
         assert_eq!(m.bus.read32(shared), Ok(0));
     }
     #[test]
+    fn writeback_interlock_precedes_dependent_mmio_while_the_peer_keeps_running() {
+        // MOV #42,R0; LDS R0,MACL; STS MACL,R0; MOV.B R0,@R15.
+        // P §7.7.6 fig7.90: STS's WB conflicts with MOV's EX.
+        let mut m = cached_pair(&[0xE02A, 0x401A, 0x001A, 0x2F00, 9], &[9; 8]);
+        m.cpu = Cpu::start(HIGH_WRAM, 0xFFFFFE01); // SCI BRR
+        for _ in 0..3 {
+            m.step().unwrap();
+        }
+        assert_eq!(m.clocks(), 35);
+        assert_eq!(m.cpu_state().instructions, 3);
+        assert!(!m.issue_cpu(Processor::Master).unwrap());
+        m.bus.grant_bus_transaction();
+        assert_eq!(m.bus.for_cpu(Processor::Master).read8(0xFFFFFE01), Ok(255));
+        // Only the local WB wait expires at t36. The dependent write has
+        // not even requested the peripheral bus, and peer NOPs still retire.
+        m.step_hardware_boundary().unwrap();
+        assert_eq!(m.clocks(), 36);
+        assert_eq!(m.cpu_state().instructions, 3);
+        assert_eq!(m.slave_state().instructions, 4);
+        assert_eq!(m.bus.for_cpu(Processor::Master).read8(0xFFFFFE01), Ok(255));
+        m.step_hardware_boundary().unwrap();
+        assert_eq!(m.clocks(), 37);
+        assert_eq!(m.bus.for_cpu(Processor::Master).read8(0xFFFFFE01), Ok(42));
+        m.step_hardware_boundary().unwrap();
+        assert_eq!(m.cpu_state().instructions, 4);
+    }
+
+    #[test]
     fn long_dma_ownership_yields_without_faulting_or_publishing_cpu_work_early() {
         let mut m = Machine::new();
         m.reset(Boot::HlePrototype).unwrap();

@@ -51,7 +51,7 @@ fn changed_guest_control_flow_changes_elapsed_time_and_computation() {
         .enumerate()
         .filter_map(|(i, b)| (b == [0x76, 1]).then_some(i))
         .collect();
-    assert_eq!(occurrences.len(), 80); // 32 arithmetic + 8×3 branch/slot adds
+    assert_eq!(occurrences.len(), 120); // arithmetic, branch/slot and STS WB successors
     // Replace 16 of the 32 ADDs by eight BRA-to-successor/NOP pairs. This adds eight
     // real states and removes sixteen increments without a host result write.
     let start = occurrences[0];
@@ -81,7 +81,7 @@ fn guest_peripheral_operand_mutation_changes_read_data_on_both_cpus_without_chan
             count += 1;
         }
     }
-    assert_eq!(count, 24);
+    assert_eq!(count, 34);
     let mut expected: Vec<_> = include_str!("fixtures/sh2-timing.tsv")
         .lines()
         .map(|s| u32::from_str_radix(s, 16).unwrap())
@@ -91,6 +91,36 @@ fn guest_peripheral_operand_mutation_changes_read_data_on_both_cpus_without_chan
     for _ in 0..2 {
         for trace in run(&mut machine, &image) {
             assert_eq!(trace, expected);
+        }
+    }
+}
+
+#[test]
+fn removing_system_register_dependencies_removes_only_their_guest_measured_stalls() {
+    for (pattern, replacement, time_index) in [
+        ([0x06, 0x1A, 0x76, 1], [0x79, 1], 24), // STS MACL,R6; ADD #1,R9
+        ([0x4C, 0x26, 0x06, 0x2A], [0xE6, 0], 30), // LDS.L PR; MOV #0,R6
+    ] {
+        let mut image = rom();
+        let mut changes = 0;
+        for at in (0..image.len() - 4).step_by(2) {
+            if image[at..at + 4] == pattern {
+                image[at + 2..at + 4].copy_from_slice(&replacement);
+                changes += 1;
+            }
+        }
+        assert_eq!(changes, 16);
+        let mut expected: Vec<_> = include_str!("fixtures/sh2-timing.tsv")
+            .lines()
+            .map(|s| u32::from_str_radix(s, 16).unwrap())
+            .collect();
+        expected[time_index] = 4; // 16×2 states /8, rather than 16×3 /8.
+        expected[time_index + 1] = 0;
+        let mut m = Machine::new();
+        for _ in 0..2 {
+            for trace in run(&mut m, &image) {
+                assert_eq!(trace, expected);
+            }
         }
     }
 }

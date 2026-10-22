@@ -337,8 +337,6 @@ impl Cpu {
             return Ok(());
         }
         let opcode = bus.fetch16(pc).map_err(access)?;
-        self.last_clocks = timing::execution_states(opcode, self.state.sr & T != 0)
-            + self.load_pipeline.issue(opcode);
         // H §6.3.2: a before-execution break requires a successfully fetched
         // instruction. A fetch failure or speculative fill cannot cause it.
         if bus.instruction_break(pc, false)
@@ -359,6 +357,12 @@ impl Cpu {
             self.enter_exception(bus, opcode as u8, pc.wrapping_add(2))?;
             self.state.instructions += 1;
             return Ok(());
+        }
+
+        let interlock = self.load_pipeline.issue(opcode);
+        self.last_clocks = timing::execution_states(opcode, self.state.sr & T != 0) + interlock;
+        if interlock != 0 {
+            bus.sh2_pipeline_wait(interlock).map_err(access)?;
         }
 
         // Invalid operand cycles latch vector 9, allowing the instruction to

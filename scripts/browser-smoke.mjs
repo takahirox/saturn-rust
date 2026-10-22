@@ -1192,14 +1192,24 @@ try {
     words.forEach((word,i) => timingRom.writeUInt16BE(word,at+i*2));
   }
   const timingVectors = (await readFile("tests/fixtures/sh2-timing.tsv","utf8")).trim().split(/\r?\n/).map(v=>parseInt(v,16));
-  for (const mutation of [false,true,"peripheral"]) {
+  for (const mutation of [false,true,"peripheral","sts-writeback","pr-writeback"]) {
     const image=Buffer.from(timingRom),expected=[...timingVectors];
-    if(mutation === "peripheral") {
+    if(mutation === "sts-writeback" || mutation === "pr-writeback") {
+      const sts=mutation === "sts-writeback";
+      const pattern=sts ? 0x061A7601 : 0x4C26062A;
+      let changes=0;
+      for(let at=0;at<image.length-4;at+=2) {
+        if(image.readUInt32BE(at)===pattern) {image.writeUInt16BE(sts ? 0x7901 : 0xE600,at+2);changes++;}
+      }
+      assert.equal(changes,16);
+      expected[sts ? 24 : 30]=4;
+      expected[sts ? 25 : 31]=0;
+    } else if(mutation === "peripheral") {
       let changes=0;
       for(let at=0;at<image.length-4;at+=2) {
         if(image.readUInt32BE(at)===0xE0FF2A00) {image[at+1]=0x5A;changes++;}
       }
-      assert.equal(changes,24);
+      assert.equal(changes,34);
       expected[21]=0x5A;
     } else if(mutation) {
       const at=image.indexOf(Buffer.from([0x76,1,0x76,1]));
@@ -1895,14 +1905,16 @@ try {
     return { mailbox: [emulator.read_long(0x06007000), emulator.read_long(0x06007004)],
       waveform: [emulator.read_long(0x05A04000), emulator.read_long(0x05A04004)],
       samples: audio.slice(first, first + 16), generated: emulator.audio_generated(),
-      dropped: emulator.audio_dropped(), count: emulator.sound_instruction_count(), irqs:emulator.read_long(0x05A00804) };
+      dropped: emulator.audio_dropped(), count: emulator.sound_instruction_count(), irqs:emulator.read_long(0x05A00804),
+      irqReturn: emulator.read_long(0x05A7FEFC) };
   });
   const soundFinished = await soundResult();
   assert.deepEqual(soundFinished.mailbox, [1, 0x600D]);
   assert.deepEqual(soundFinished.waveform, [0x1000F000, 0xE0002000]);
   assert.deepEqual(soundFinished.samples, [256,4096,-256,-4096,-512,-8192,512,8192,256,4096,-256,-4096,-512,-8192,512,8192]);
   assert.equal(soundFinished.irqs,2);
-  assert.equal(BigInt(soundFinished.count),30n); // setup23 + two IRQ3 handlers + STOP1; IRQ2 precedes STOP
+  assert.equal(soundFinished.irqReturn,0x182); // IRQ2 wakes STOP $17E; return to BRA $182
+  assert.equal(BigInt(soundFinished.count),32n); // setup23 + two IRQ3 handlers + STOP2 + BRA1
   assert.equal(soundFinished.dropped, "0");
   await page.locator("#reset").click();
   assert.deepEqual(await soundResult(), soundFinished);

@@ -298,3 +298,16 @@ No firmware, SDK routine, third-party core or asset, host-written running result
 or game-specific detection is used. Both `--check` build commands are required in
 CI; [the conformance entry](hardware-conformance.md#scsp-slot-monitor-and-mc68ec000-reset-retention-scmon--sreset)
 records primary specifications, exact implementation/tests, ROM hashes and limits.
+
+
+The extended original [SH-2 TIMING builder](../tests/fixtures/build_sh2_timing.py)
+adds five WB-interlock kernels to its existing twelve. They execute STS
+MACH/MACL and LDS.L-to-PR on both SH-2s and read their independent FRTs;
+dependency mutations remove the measured stall through changed guest opcodes.
+Source, generated [ROM](../tests/fixtures/sh2-timing.hex) and authored
+[records](../tests/fixtures/sh2-timing.tsv) use the adjacent MIT license.
+No new external tool, guest asset or firmware is used. Its existing CI
+reproducibility command checks the changed artifacts; the shared A-bus helper's
+output and all three demonstration discs are preserved. The
+[conformance entry](hardware-conformance.md#scheduled-sh-2-system-register-write-back-interlocks)
+links manual sections, native/Wasm checks, hashes and remaining limitations.

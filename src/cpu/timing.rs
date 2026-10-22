@@ -114,6 +114,15 @@ impl LoadPipeline {
     }
 }
 fn load_destination(op: u16) -> Option<u8> {
+    // §7.7.6 figs7.86/7.90: LDS.L to PR and STS from MACH/MACL
+    // have the same WB stage as memory-to-GPR loads. PR is register16 in
+    // this private dependency mask, separate from every general register.
+    if op & 0xF0FF == 0x4026 {
+        return Some(16);
+    }
+    if matches!(op & 0xF0FF, 0x000A | 0x001A) {
+        return Some((op >> 8 & 15) as u8);
+    }
     match op >> 12 {
         0 if matches!(op & 15, 0xC..=0xE) => Some((op >> 8 & 15) as u8),
         5 | 9 | 0xD => Some((op >> 8 & 15) as u8),
@@ -123,9 +132,19 @@ fn load_destination(op: u16) -> Option<u8> {
         _ => None,
     }
 }
-fn register_uses(op: u16) -> u16 {
+fn register_uses(op: u16) -> u32 {
     let n = 1 << (op >> 8 & 15);
     let m = 1 << (op >> 4 & 15);
+    let pr = 1 << 16;
+    if op == 0x000B {
+        return pr;
+    }
+    if op >> 12 == 0xB {
+        return pr;
+    }
+    if matches!(op & 0xF0FF, 0x002A | 0x4022 | 0x402A | 0x400B | 0x0003) {
+        return n | pr;
+    }
     match op >> 12 {
         0 => match op & 0xFF {
             0x02 | 0x12 | 0x22 | 0x0A | 0x1A | 0x2A | 0x29 | 0x03 | 0x23 => n,
@@ -148,6 +167,43 @@ fn register_uses(op: u16) -> u16 {
 #[cfg(test)]
 mod load_pipeline_tests {
     use super::*;
+    #[test]
+    fn system_register_writeback_uses_the_actual_destination_and_implicit_pr() {
+        // §7.7.6 figs7.86/7.90, §7.5 fig7.9: STS MACH/MACL and
+        // LDS.L PR have WB. STS PR and LDS register forms do not.
+        for n in 0..16 {
+            for system in [0x000A, 0x001A] {
+                let load = system | n << 8;
+                for (successor, expected) in [
+                    (0x7001 | n << 8, 1),
+                    (0x6003 | n << 4, 1),
+                    (0xE000 | n << 8, 1),
+                    (0x0009, 0),
+                    (0xB000 | n << 8, 0), // BSR displacement is not Rn
+                ] {
+                    let mut p = LoadPipeline::default();
+                    p.issue(load);
+                    assert_eq!(p.issue(successor), expected, "{load:04X}->{successor:04X}");
+                }
+            }
+            for successor in [0x000B, 0x002A, 0x4022, 0x402A, 0x400B, 0x0003, 0xBFFF] {
+                let mut p = LoadPipeline::default();
+                p.issue(0x4026 | n << 8);
+                assert_eq!(p.issue(successor), 1);
+                assert_eq!(p.issue(successor), 0);
+            }
+            for successor in [0x0009, 0x0023, 0x402B, 0xAFFF, 0x4026 | n << 8] {
+                let mut p = LoadPipeline::default();
+                p.issue(0x4026 | n << 8);
+                assert_eq!(p.issue(successor), 0);
+            }
+            for transfer in [0x002A, 0x400A, 0x401A, 0x402A] {
+                let mut p = LoadPipeline::default();
+                p.issue(transfer | n << 8);
+                assert_eq!(p.issue(0x7001 | n << 8), 0);
+            }
+        }
+    }
     #[test]
     fn all_load_widths_and_registers_split_only_the_dependent_successor() {
         // §7.5: same-destination repeated loads and MAC do not split.

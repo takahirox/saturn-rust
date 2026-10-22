@@ -21,6 +21,45 @@ fn nop_only_advances_pc_and_instruction_count() {
 }
 
 #[test]
+fn mac_register_writeback_and_loaded_pr_have_architectural_results_and_interlocks() {
+    // P §7.7.6 figs7.86/7.90, §6 STS/LDS/RTS. These execute real
+    // instructions in addition to the timing mask vectors.
+    for n in 0..16 {
+        for (system, value) in [(0x000A, 0x81234567), (0x001A, 0x13579BDF)] {
+            let (mut c, mut b) = setup(&[system | n << 8, 0x7001 | n << 8]);
+            c.state.mach = 0x81234567;
+            c.state.macl = 0x13579BDF;
+            c.state.sr = SR_MASK;
+            c.step(&mut b).unwrap();
+            assert_eq!(c.last_clocks(), 1);
+            assert_eq!(c.state.r[n as usize], value);
+            c.step(&mut b).unwrap();
+            assert_eq!(c.last_clocks(), 2);
+            assert_eq!(c.state.r[n as usize], value + 1);
+            assert_eq!(c.state.sr, SR_MASK);
+            assert_eq!(c.state.exceptions, 0);
+        }
+        let (mut c, mut b) = setup(&[0x4026 | n << 8, 0x000B, 9]);
+        let data = HIGH_WRAM + 0x200;
+        let target = HIGH_WRAM + 0x100;
+        c.state.r[n as usize] = data;
+        b.write32(data, target).unwrap();
+        c.step(&mut b).unwrap();
+        assert_eq!(c.state.pr, target);
+        assert_eq!(c.state.r[n as usize], data + 4);
+        assert_eq!(c.last_clocks(), 1);
+        c.step(&mut b).unwrap();
+        assert_eq!(c.last_clocks(), 3); // RTS base2 plus PR WB/EX interlock
+        assert_eq!(c.state.delay_target, Some(target));
+        assert_eq!(c.state.pc, HIGH_WRAM + 4);
+        c.step(&mut b).unwrap();
+        assert_eq!(c.state.pc, target);
+        assert_eq!(c.state.pr, target);
+        assert_eq!(c.state.instructions, 3);
+    }
+}
+
+#[test]
 fn mov_immediate_sign_extends_at_boundaries_into_every_register() {
     for n in 0..16 {
         for (immediate, expected) in [

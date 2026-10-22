@@ -140,6 +140,12 @@ impl std::error::Error for BusError {}
 
 /// The interpreter fetches through this boundary; it owns no memory pointers.
 pub trait Memory {
+    /// SH programming manual §7.5: a WB/EX interlock precedes the
+    /// dependent instruction's operand cycles. Clocked adapters suspend the
+    /// CPU locally; an architectural memory fixture has no clock domain.
+    fn sh2_pipeline_wait(&mut self, _clocks: u32) -> Result<(), BusError> {
+        Ok(())
+    }
     /// MC68000UM §5.5: RESET holds the external device signal for 124 clocks.
     /// A clocked sound adapter suspends here until the pulse completes; an
     /// architectural-only memory fixture has no external clock domain.

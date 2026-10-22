@@ -14,6 +14,7 @@ mod vdp1_tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Operation {
+    PipelineWait(u32),
     Read(u32, usize, bool, bool), // address, width, instruction, TAS
     Write(u32, usize, u32),
     DmaRead(u32, bool, bool),
@@ -39,6 +40,7 @@ pub(super) struct Journal {
     beat_cursor: usize,
     waiting: Option<Transfer>,
     completed: bool,
+    pipeline_wait: Option<(u32, u32)>, // requested clocks, remaining clocks
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Owner {
@@ -85,6 +87,11 @@ impl ScheduledMemory<'_> {
             journal.beat_cursor = 0;
         }
         let result = match op {
+            Operation::PipelineWait(clocks) => {
+                let mut journal = self.0.bus.transactions.journals[i].borrow_mut();
+                journal.pipeline_wait.get_or_insert((clocks, clocks));
+                Err(BusError::Pending)
+            }
             Operation::DmaRead(a, first, last) => self.0.dma_read32(a, first, last),
             Operation::Read(a, 1, _, true) => self.0.tas_read8(a).map(u32::from),
             Operation::Read(a, 1, _, _) => self.0.read8(a).map(u32::from),
@@ -120,6 +127,15 @@ impl ScheduledMemory<'_> {
 // a resumed interpreter uses exactly the same checked Memory boundary.
 pub(crate) struct ReplayMemory<'a>(RefCell<ScheduledMemory<'a>>);
 impl Memory for ReplayMemory<'_> {
+    fn sh2_pipeline_wait(&mut self, clocks: u32) -> Result<(), BusError> {
+        if clocks == 0 {
+            return Ok(());
+        }
+        self.0
+            .get_mut()
+            .operation(Operation::PipelineWait(clocks))
+            .map(|_| ())
+    }
     fn read8(&self, a: u32) -> Result<u8, BusError> {
         self.0
             .borrow_mut()
@@ -365,6 +381,7 @@ impl Bus {
         journal.beat_cursor = 0;
         journal.waiting = None;
         journal.completed = false;
+        journal.pipeline_wait = None;
         if self.transactions.lock == Some(processor) {
             self.transactions.lock = None;
         }
@@ -628,13 +645,18 @@ impl Bus {
         self.system_clock.deadline(self.bus_main_deadline()).max(1)
     }
     pub(super) fn bus_main_deadline(&self) -> u32 {
-        self.transactions
+        let bus = self
+            .transactions
             .active
             .iter()
             .chain(self.transactions.internal.iter().flatten())
             .map(|a| a.remaining)
             .min()
-            .unwrap_or(u32::MAX)
+            .unwrap_or(u32::MAX);
+        self.transactions.journals[..2]
+            .iter()
+            .filter_map(|j| j.borrow().pipeline_wait.map(|(_, remaining)| remaining))
+            .fold(bus, u32::min)
     }
     pub(super) fn advance_bus_transaction(&mut self, clocks: u32) -> Result<(), ScuError> {
         // Decrement every already-granted phase before completing any of
@@ -647,6 +669,21 @@ impl Bus {
             .chain(self.transactions.active.iter_mut())
         {
             active.remaining = active.remaining.saturating_sub(clocks);
+        }
+        for journal in &mut self.transactions.journals[..2] {
+            let journal = journal.get_mut();
+            if let Some((requested, remaining)) = journal.pipeline_wait {
+                let remaining = remaining.saturating_sub(clocks);
+                journal.pipeline_wait = if remaining == 0 {
+                    journal
+                        .operations
+                        .push((Operation::PipelineWait(requested), Ok(0)));
+                    journal.completed = true;
+                    None
+                } else {
+                    Some((requested, remaining))
+                };
+            }
         }
         for i in 0..2 {
             if self.transactions.internal[i]
@@ -831,6 +868,52 @@ mod tests {
         let clocks = b.bus_transaction_deadline();
         assert_ne!(clocks, u32::MAX);
         b.advance_clocks(clocks).unwrap();
+    }
+    #[test]
+    fn pipeline_waits_are_cpu_local_replayed_once_and_canceled_by_reset() {
+        for p in [Processor::Master, Processor::Slave] {
+            let other = if p == Processor::Master {
+                Processor::Slave
+            } else {
+                Processor::Master
+            };
+            let mut b = Bus::default();
+            assert_eq!(b.replay_cpu(p).sh2_pipeline_wait(0), Ok(()));
+            assert_eq!(b.replay_cpu(p).sh2_pipeline_wait(5), Err(BusError::Pending));
+            // The wait has no external/internal bus owner. Another CPU's
+            // SCI write finishes in one cycle while this CPU is stalled.
+            assert_eq!(
+                write(&mut b, other, 0xFFFFFE01, 0x5A),
+                Err(BusError::Pending)
+            );
+            b.grant_bus_transaction();
+            assert!(b.transactions.active.is_none());
+            assert!(b.transactions.internal[p as usize].is_none());
+            b.advance_clocks(1).unwrap();
+            assert_eq!(write(&mut b, other, 0xFFFFFE01, 0x5A), Ok(()));
+            assert!(!b.take_cpu_transaction_completion(p));
+            b.finish_cpu_transaction(other);
+            b.advance_clocks(3).unwrap();
+            assert!(!b.take_cpu_transaction_completion(p));
+            assert_eq!(b.bus_transaction_deadline(), 1);
+            b.advance_clocks(1).unwrap();
+            assert!(b.take_cpu_transaction_completion(p));
+            assert_eq!(b.replay_cpu(p).sh2_pipeline_wait(5), Ok(()));
+            b.advance_clocks(100).unwrap();
+            assert_eq!(b.replay_cpu(p).sh2_pipeline_wait(5), Ok(()));
+            assert!(!b.take_cpu_transaction_completion(p));
+            b.finish_cpu_transaction(p);
+
+            assert_eq!(b.replay_cpu(p).sh2_pipeline_wait(5), Err(BusError::Pending));
+            b.advance_clocks(2).unwrap();
+            b.cancel_cpu_transaction(p);
+            b.advance_clocks(20).unwrap();
+            assert!(!b.take_cpu_transaction_completion(p));
+            assert_eq!(b.replay_cpu(p).sh2_pipeline_wait(5), Err(BusError::Pending));
+            b.system_reset();
+            b.advance_clocks(20).unwrap();
+            assert!(!b.take_cpu_transaction_completion(p));
+        }
     }
     #[test]
     fn queued_reads_sample_at_completion_and_waiting_writes_never_publish_early() {

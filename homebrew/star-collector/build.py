@@ -62,6 +62,7 @@ def assemble(source, base=BASE):
                 word(0xA000 | branch(pc + 2, a[0], 12))
                 word(0x0009)
             elif op == 'nop': word(0x0009)
+            elif op == 'clrmac': word(0x0028)
             elif op in ('clrt', 'sett'): word(0x0008 if op == 'clrt' else 0x0018)
             elif op == 'sleep': word(0x001B)
             elif op == 'rte': word(0x002B)
@@ -80,6 +81,9 @@ def assemble(source, base=BASE):
                 word({'sr': 0x0002, 'gbr': 0x0012, 'vbr': 0x0022}[a[0]] | reg(a[1]) << 8)
             elif op == 'lds':
                 word({'mach': 0x400A, 'macl': 0x401A, 'pr': 0x402A}[a[1]] | reg(a[0]) << 8)
+            elif op == 'lds.l':
+                assert a[0].startswith('@') and a[0].endswith('+')
+                word({'mach': 0x4006, 'macl': 0x4016, 'pr': 0x4026}[a[1]] | reg(a[0][1:-1]) << 8)
             elif op in ('tas.b', 'movt'):
                 word((0x401B | reg(a[0][1:]) << 8) if op == 'tas.b' else (0x0029 | reg(a[0]) << 8))
             elif op == 'rts': word(0x000B)
