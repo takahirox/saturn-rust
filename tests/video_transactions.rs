@@ -65,6 +65,68 @@ fn guest_observes_partial_drawing_stop_transfer_over_and_unfinished_vblank_erase
         assert_eq!(run(&mut m, &changed, 0x0600D800, 10), e);
     }
 }
+
+#[test]
+fn guest_write_after_ctrl_fetch_does_not_replace_an_in_flight_vdp1_command() {
+    let original = load(include_str!("fixtures/vdp1-command-fetch.hex"));
+    let mut m = Machine::new();
+    for color in [0x801Fu32, 0x83E0] {
+        let mut rom = original.clone();
+        patch(&mut rom, 0x801F, color);
+        for _ in 0..2 {
+            assert_eq!(
+                run(&mut m, &rom, 0x0600E100, 5),
+                [color, color, 8, 2, 0x600D]
+            );
+        }
+    }
+    // Move the same guest store before PTMR: the genuine END command is now
+    // fetched first, so no clip or line executes and COPR stays zero.
+    let mut before_start = original;
+    let at: Vec<_> = before_start
+        .windows(4)
+        .enumerate()
+        .filter_map(|(i, bytes)| (bytes == [0x24, 0x01, 0x25, 0x61]).then_some(i))
+        .collect();
+    assert_eq!(at.len(), 1);
+    before_start[at[0]..at[0] + 4].copy_from_slice(&[0x25, 0x61, 0x24, 0x01]);
+    assert_eq!(
+        run(&mut m, &before_start, 0x0600E100, 5),
+        [0, 0, 0, 2, 0x600D]
+    );
+}
+
+#[test]
+fn guest_frt_measures_framebuffer_ownership_pausing_drawing_but_independent_vram_does_not() {
+    let original = load(include_str!("fixtures/vdp1-memory-ownership.hex"));
+    let mut m = Machine::new();
+    let mut times = Vec::new();
+    for repeat in 0..2 {
+        for color in [0x801Fu32, 0x83E0] {
+            let mut pair = Vec::new();
+            for framebuffer in [false, true] {
+                let mut rom = original.clone();
+                patch(&mut rom, 0x801F, color);
+                if !framebuffer {
+                    patch(&mut rom, 0x25C81000, 0x25C01000);
+                }
+                let r = run(&mut m, &rom, 0x0600E200, 5);
+                assert_eq!(&r[1..], &[color, color, 2, 0x600D]);
+                assert!(r[0] > 500 && r[0] < 2000, "{r:X?}");
+                pair.push(r[0]);
+            }
+            assert!(
+                pair[1] > pair[0] + 50,
+                "framebuffer wait versus VRAM: {pair:?}"
+            );
+            if repeat == 0 && times.is_empty() {
+                times = pair;
+            } else {
+                assert_eq!(pair, times);
+            }
+        }
+    }
+}
 #[test]
 fn guest_exclusive_modes_multiplex_adjacent_pixels_and_sample_480_line_counters() {
     let original = load(include_str!("fixtures/exclusive-monitor.hex"));

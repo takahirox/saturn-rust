@@ -101,6 +101,7 @@ enum Ea {
 }
 #[derive(Debug)]
 enum Fault {
+    Suspended,
     Vector(u8, bool), // true: stack the following PC (trap), false: instruction PC.
     Access {
         address: u32,
@@ -174,6 +175,9 @@ impl M68k {
     }
     fn reset_long(memory: &impl Memory, address: u32) -> std::result::Result<u32, BusError> {
         Ok(u32::from(memory.read16(address)?) << 16 | u32::from(memory.read16(address + 2)?))
+    }
+    pub(crate) fn reset_prefetch(&mut self, address: u32, value: u16) {
+        self.prefetch.push_back((address, value));
     }
     /// Autovectored IRQ pins. Level seven is edge-sensitive, others level-sensitive.
     pub fn set_interrupt(&mut self, level: u8) {
@@ -561,7 +565,7 @@ impl M68k {
         // function-code pins. Group 0/1 exception cycles assert I/N.
         // UM table6-3: only TRAP/TRAPV/CHK/zero-divide are group2.
         // Illegal/privilege/trace (including line-A/F emulation) are group1.
-        self.exception_activity = !matches!(vector, 5..=7 | 32..=47);
+        self.exception_activity = level.is_some() || !matches!(vector, 5..=7 | 32..=47);
         self.prefetch.clear();
         self.sr((old_sr | S) & !T);
         self.state.stopped = false;
@@ -588,6 +592,7 @@ impl M68k {
     }
     fn fault_context(&mut self, fault: Fault) -> (u8, u32, Option<(u32, u16)>) {
         match fault {
+            Fault::Suspended => unreachable!("a suspended control cycle has no exception frame"),
             Fault::Vector(v, next) => {
                 self.state.instructions += u64::from(next);
                 (v, if next { self.state.pc } else { self.start_pc }, None)
@@ -647,9 +652,13 @@ impl M68k {
         let mask = ((self.state.sr >> 8) & 7) as u8;
         if self.level7_edge || (self.irq != 0 && self.irq > mask) {
             let level = if self.level7_edge { 7 } else { self.irq };
+            let vector = match memory.m68k_interrupt_acknowledge(level) {
+                Ok(vector) => vector,
+                Err(BusError::Pending) => return 0,
+                Err(_) => 24, // BERR during IACK is spurious, not vector2.
+            };
             self.level7_edge = false;
-            return 44
-                + self.deliver_exception(memory, 24 + level, self.state.pc, Some(level), None);
+            return 44 + self.deliver_exception(memory, vector, self.state.pc, Some(level), None);
         }
         if self.state.stopped {
             return 4;
@@ -662,6 +671,7 @@ impl M68k {
             .next_word(memory, true)
             .and_then(|op| self.execute(memory, op));
         match result {
+            Err(Fault::Suspended) => 0,
             Ok(clocks) => {
                 self.state.instructions += 1;
                 let exception_clocks = if trace {
@@ -962,6 +972,9 @@ impl M68k {
             0x4E70 => {
                 self.supervisor()?;
                 self.reset_output = true;
+                // Suspend before trace processing or the next instruction can
+                // publish any bus cycle during the external reset interval.
+                memory.m68k_reset_output().map_err(|_| Fault::Suspended)?;
                 return Ok(132);
             } // RESET: device reset output, handled by sound board.
             0x4E71 => return Ok(4),

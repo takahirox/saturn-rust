@@ -287,7 +287,7 @@ fn command_deadlines_forced_stop_and_cyclic_lists_are_bounded() {
     }
     assert_eq!(v.read16(REGISTERS + 0x10).unwrap(), 0);
     v.write16(REGISTERS + 12, 0).unwrap();
-    assert_eq!(v.clocks_to_event(), 30);
+    assert_eq!(v.clocks_to_event(), 2); // next word fetch precedes stop deadline
     assert!(v.busy());
     assert!(!v.advance(29).unwrap());
     assert!(v.busy());

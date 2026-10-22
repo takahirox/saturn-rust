@@ -11,6 +11,7 @@ pub const REGISTERS: u32 = 0x05D0_0000;
 pub const VRAM_SIZE: usize = 0x80000;
 pub const BUFFER_SIZE: usize = 0x40000;
 const COMMAND_CLOCKS: u32 = 32;
+const COMMAND_WORD_CLOCKS: u32 = COMMAND_CLOCKS / 16;
 
 #[derive(Clone, Copy, Default)]
 struct Point {
@@ -89,6 +90,8 @@ pub struct Vdp1 {
     return_address: Option<usize>,
     running: bool,
     phase: u32,
+    command_words: [u16; 16],
+    command_read: usize,
     stop_remaining: Option<u32>,
     vblank: bool,
     blank_erase_started: bool,
@@ -119,6 +122,8 @@ impl Default for Vdp1 {
             return_address: None,
             running: false,
             phase: 0,
+            command_words: [0; 16],
+            command_read: 0,
             stop_remaining: None,
             vblank: false,
             blank_erase_started: false,
@@ -234,6 +239,7 @@ impl Vdp1 {
         self.return_address = None;
         self.running = true;
         self.phase = 0;
+        self.command_read = 0;
         self.stop_remaining = None;
     }
     /// Field-change latch; CPU sees only the buffer currently being drawn.
@@ -367,7 +373,7 @@ impl Vdp1 {
             let draw = if self.drawing.is_some() {
                 1
             } else {
-                COMMAND_CLOCKS - self.phase
+                COMMAND_WORD_CLOCKS - self.phase
             };
             draw.min(self.stop_remaining.unwrap_or(u32::MAX))
         } else {
@@ -379,6 +385,31 @@ impl Vdp1 {
     /// occupy a separate deadline. Cyclic command lists remain busy and bounded.
     /// The caller splits advancement at `clocks_to_event`, as the Bus scheduler does.
     pub fn advance(&mut self, clocks: u32) -> Result<bool, BusError> {
+        self.advance_with_bus(clocks, false, false)
+    }
+    /// ST-013 §2.1 pp.19–20: the system controller has priority over
+    /// drawing on each local memory. The other framebuffer remains independent.
+    pub(crate) fn advance_with_bus(
+        &mut self,
+        clocks: u32,
+        vram_busy: bool,
+        framebuffer_busy: bool,
+    ) -> Result<bool, BusError> {
+        let mut remaining = clocks;
+        let mut ended = false;
+        while remaining != 0 {
+            let delta = remaining.min(self.clocks_to_event());
+            ended |= self.advance_phase(delta, vram_busy, framebuffer_busy)?;
+            remaining -= delta;
+        }
+        Ok(ended)
+    }
+    fn advance_phase(
+        &mut self,
+        clocks: u32,
+        vram_busy: bool,
+        framebuffer_busy: bool,
+    ) -> Result<bool, BusError> {
         assert!(clocks <= self.clocks_to_event());
         self.advance_erase(clocks);
         if !self.running {
@@ -392,6 +423,13 @@ impl Vdp1 {
                 return Ok(false);
             }
             self.stop_remaining = Some(left - clocks);
+        }
+        let needs_vram = self
+            .drawing
+            .as_ref()
+            .is_none_or(|draw| draw.command[0] & 15 <= 2);
+        if (vram_busy && needs_vram) || (framebuffer_busy && self.drawing.is_some()) {
+            return Ok(false);
         }
         if let Some(mut draw) = self.drawing.take() {
             if clocks == 0 {
@@ -413,21 +451,30 @@ impl Vdp1 {
             return Ok(false);
         }
         self.phase += clocks;
-        if self.phase < COMMAND_CLOCKS {
+        if self.phase < COMMAND_WORD_CLOCKS {
             return Ok(false);
         }
-        self.phase -= COMMAND_CLOCKS;
-        self.command()
+        self.phase -= COMMAND_WORD_CLOCKS;
+        if self.pc + 32 > VRAM_SIZE || self.pc & 31 != 0 {
+            return self.invalid();
+        }
+        // §8.3 fig.8.3: +1E is dummy and is skipped during table fetch.
+        // Retain the existing final decode phase without issuing a RAM read.
+        if self.command_read != 15 {
+            self.command_words[self.command_read] = self.word(self.pc + self.command_read * 2);
+        }
+        self.command_read += 1;
+        if self.command_read != 16 {
+            return Ok(false);
+        }
+        self.command_read = 0;
+        self.command(self.command_words)
     }
     fn word(&self, offset: usize) -> u16 {
         let offset = offset & (VRAM_SIZE - 1);
         u16::from_be_bytes([self.vram[offset], self.vram[(offset + 1) & (VRAM_SIZE - 1)]])
     }
-    fn command(&mut self) -> Result<bool, BusError> {
-        if self.pc + 32 > VRAM_SIZE || self.pc & 31 != 0 {
-            return self.invalid();
-        }
-        let c: [u16; 16] = std::array::from_fn(|i| self.word(self.pc + i * 2));
+    fn command(&mut self, c: [u16; 16]) -> Result<bool, BusError> {
         self.copr = (self.pc / 8) as u16;
         if c[0] & 0x8000 != 0 {
             self.edsr |= 2;

@@ -49,6 +49,13 @@ ICR auto/external vectors, SCU DMA acknowledgement and both TH/PAD/VDP2 latch
 inputs. The sound family ROM checks twenty-four complete fault frames and partial
 transfers, including MOVEM terminal reads and deferred instruction fetch, plus
 self-modifying instruction prefetch. Both run in native and Wasm.
+The sound reset builder also reproduces two original guests: SH-2 changes the
+sound PC vector after SNDON completes, and a traced 68k RESET records its saved
+SR/PC and retained operand from the guest trace handler. The video transaction
+builder additionally reproduces command-word retention and local-memory
+ownership guests; FRT distinguishes framebuffer contention from independent
+VRAM access during untextured drawing. Native and browser checks include
+operand changes, missing/reordered guest-write controls and cold resets.
 An original HLE service disc also executes vector/callback/mask/semaphore/priority
 calls, nested IRQs, both CPU views and NMI/SYSRES retention. Native and browser
 Wasm compare authored records and changed guest data/priority operands.

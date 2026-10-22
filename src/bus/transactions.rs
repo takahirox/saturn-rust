@@ -8,6 +8,9 @@ mod monitor_tests;
 #[cfg(test)]
 #[path = "refresh_tests.rs"]
 mod refresh_tests;
+#[cfg(test)]
+#[path = "vdp1_tests.rs"]
+mod vdp1_tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Operation {
@@ -194,6 +197,19 @@ impl Memory for ReplayMemory<'_> {
     }
 }
 impl Bus {
+    pub(super) fn vdp1_bus_ownership(&self) -> (bool, bool) {
+        let Some(active) = &self.transactions.active else {
+            return (false, false);
+        };
+        if active.owner == Owner::Refresh {
+            return (false, false);
+        }
+        let address = Bus::physical(active.transfer.address);
+        (
+            (vdp1::VRAM..vdp1::FRAMEBUFFER).contains(&address),
+            (vdp1::FRAMEBUFFER..vdp1::REGISTERS).contains(&address),
+        )
+    }
     fn external_monitor_owns_internal(&self, processor: Processor) -> bool {
         self.onchip[processor as usize].monitors_external_bus()
             && (self

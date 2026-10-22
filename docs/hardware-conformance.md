@@ -395,7 +395,7 @@ CPU/scheduler acceptance criteria.
 | OR | OR instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
 | ORI | ORI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
 | PEA | PEA instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
-| RESET | RESET instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
+| RESET | RESET instruction description; [68UM] §5.5 | `M68k::group4`, sound transaction journal | m68k/tests.rs; [reset/trace guest, native + Wasm](#scheduled-68k-resetiack-and-vdp1-local-memory-ownership) | Scheduled 124-clock output and trace deferral; sound-memory arbitration and general instruction timing pending |
 | ROL | ROL instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
 | ROR | ROR instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
 | ROXL | ROXL instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
@@ -493,13 +493,13 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 | Feature / manual | Current behavior / edges | Native | Browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- | --- |
 | VDP1 VRAM/framebuffers/registers, [VDP1] §§2,4 | 512 KiB VRAM, two draw/display buffers, byte/word/long memory; checked paired register writes; MODR | VIDEO | PRISM | All bus lanes/mirrors/waits; exclusive-monitor readout | Pending |
-| Command list/control flow, [VDP1] §6.1 | END, next/assign/call/return and skip variants, one return level, invalid links/prohibited commands, bounded cyclic lists | VIDEO | PRISM (sequential END) | Full guest control-flow corpus, precise fetch timing | Pending |
+| Command list/control flow, [VDP1] §6.1 | END, next/assign/call/return and skip variants, one return level, invalid links/prohibited commands, bounded cyclic lists | VIDEO, [local-memory vectors](#scheduled-68k-resetiack-and-vdp1-local-memory-ownership) | PRISM; command-fetch guest | Full guest control-flow corpus and command-dependent fetch costs | Pending |
 | Normal/scaled/distorted sprites, [VDP1] §§6.2,7.4–7.6 | Width/height, flips, two-point and nine anchor scales, ruled quadrilateral scan conversion, HSS/EOS source selection | VIDEO, HSSG | PRISM (normal), HSSG | Physical edge/zoom rounding, preclip direction and draw bandwidth | Pending |
 | Polygons/lines/polylines, [VDP1] §§7.7–7.9 | Solid ruled quads and integer line segments | VIDEO | PRISM (polygons) | Full independent sloped-edge and repeated-pixel corpus | Pending |
 | Clip/local coordinates, [VDP1] §§7.1–7.3 | System/user inside/outside clips, local offsets | VIDEO | PRISM (system) | Full extreme-coordinate/clip boundary corpus | Pending |
 | Sprite texture/color modes, [VDP1] §§6.3–6.6 | Packed 4-bit bank/LUT, 64/128/256 bank and RGB555, transparent pixels, two end codes per raster row | VIDEO | PRISM (RGB555) | Scaling/end-code interaction, wrapping and all browser formats | Pending |
 | Shading/color calculation, [VDP1] §6.3 | Gouraud, mesh, MSB-only, shadow, half-luminance/transparency, combined Gouraud effects | VIDEO | PRISM (replace only) | Subpixel interpolation and duplicate-coverage edges; complete readout/effects corpus | Pending |
-| Draw/erase/swap/status/IRQ, [VDP1] §4 | PTMR; bounded 30-clock ENDR; per-dot draw cursor, manual transfer-over; scanline display erase and word-clock VBlank erase with 200-clock/raster overhead; manual/auto change, persistent VBE, CEF/BEF/COPR/LOPR; SCU IRQ/DMA trigger | VIDEO, VIRQ, PRISM, VTX | PRISM, VTX | CPU/VRAM arbitration, complete command/effect costs, mid-blank enable phase and half-line phase | Pending |
+| Draw/erase/swap/status/IRQ, [VDP1] §4 | PTMR; bounded 30-clock ENDR; per-dot draw cursor, manual transfer-over; scanline display erase and word-clock VBlank erase with 200-clock/raster overhead; manual/auto change, persistent VBE, CEF/BEF/COPR/LOPR; SCU IRQ/DMA trigger | VIDEO, VIRQ, PRISM, VTX; [local-memory vectors](#scheduled-68k-resetiack-and-vdp1-local-memory-ownership) | PRISM, VTX; command-fetch/ownership guests | Complete command/effect memory costs, mid-blank enable and half-line/swap phase | Pending |
 | VDP2 VRAM, [VDP2] §3 | Bitmap RAM/bank offsets; all eight cycle words select CPU grants, split-bank matching and idle/linked timing, unused-screen release, rotation ownership and high-resolution slot limits; beam output requires addressed-bank display grants and format/reduction bandwidth | VIDEO, SC, VTX, [FETCHG](#vdp2-display-fetch-grants-and-line-table-latches-fetchg); `access.rs`, `vram_grant_tests.rs` | PRISM, SC, VTX, FETCHG | Per-word display-fetch phase/retention and complete SCU/DMA arbitration remain | Pending |
 | VDP2 CRAM, [VDP2] §3.4 | Modes 0/1 RGB555 and 2 RGB888; mode-0 upper-half mirror; palette offsets | VIDEO | — | Full lane/alias and guest/browser palette corpus | Pending |
 | TVMD/TVSTAT, [VDP2] §2.2 | 320/352/640/704 dots, 224/240/PAL256 lines, noninterlace/single/double density; 480-line exclusive monitors and NBG0/NBG1 pixel multiplexing; border/display enable, PAL/ODD and blanking flags | VIDEO, TIME, TVG, VTX | PRISM, SC, SCUROM, TVG, VTX | Complete raster-time latches, half-line phase and switching transients remain | Pending |
@@ -2218,3 +2218,40 @@ claims. Cold-power register contents remain a deterministic policy. Remaining
 SCSP memory ownership/DMA/EG/effects timing, and every other outstanding Issue #17
 requirement remain mandatory in the same Draft PR. No acceptance checkbox is
 checked and no tracker is closed, replaced or reopened.
+
+## Scheduled 68k reset/IACK and VDP1 local-memory ownership
+
+Related to #17. This entry supersedes the immediate sound reset-vector snapshot,
+immediate RESET device clearing, missing IACK cycle and atomic VDP1 command-read
+behavior in the earlier entries. References: [MC68000UM][68UM] §5.5 fig.5-30,
+§§6.2.5/6.3.1–4/6.3.8 and table8-14; [VDP1] §2.1 pp.19–20, §3.1 table-access
+steps and §8.3 fig.8.3.
+
+| Required behavior | Implementation | Independent native evidence | Guest / production Wasm evidence |
+| --- | --- | --- | --- |
+| Separate reset SSP/PC/prefetch reads | `Sound::set_enabled`, `Sound::advance_cpu_cycle` in [transactions.rs](../src/sound/transactions.rs): four vector words and two program words complete separately; no vector snapshot at SNDON | [reset_tests.rs](../src/sound/reset_tests.rs): authored writes on either side of each deadline, retained halves/prefetch, 24-bit pins versus architectural PC, partial-reset cancellation boundaries and fault halt/recovery; chunks1/3/17/10000 | [Original builder](../tests/fixtures/build_m68k_reset.py), [native guest](../tests/m68k_reset.rs), [browser guest](../scripts/m68k-reset.mjs): SH-2 changes PC after timed SNDON returns. The actual 68k selects the new entry; omitting that guest store selects the failure entry. Operand mutations and cold resets repeat |
+| RESET output interval and trace ordering | `Memory::m68k_reset_output`, `Operation::ResetOutput`, `Scsp::set_reset`: suspend execution for the output interval, hold device reset for 124 sound clocks, preserve RAM and previously produced host samples; finish pulse independently of CPU disable | Sound reset tests include before/at/after signal edges, ignored writes/MIDI while held, CPU disable during pulse, and no trace stack bus access until the pulse ends | Original `m68k-traced-reset` executes MOVE-to-SR, RESET and the actual trace handler. Native/Wasm require saved SR=A700, saved PC=20C, retained D3 and completion600D. The following failure store never runs; changing D3's immediate changes its record |
+| Interrupt acknowledge before stacking | `Memory::m68k_interrupt_acknowledge`, `Operation::InterruptAcknowledge`, `M68k::step/exception`: four-clock cycle, latched accepted level, autovector/device vector or spurious vector24 on IACK BERR | [bus_tests.rs](../src/m68k/bus_tests.rs): levels1–7, exact IACK/stack/vector/prefetch traces, device vectors15/32/64 and spurious short frames. Sound test clears SCSP's source during IACK and requires accepted level3 and delayed first stack write | Existing native/Wasm sound, synthesis, envelope, sound-I/O, family, Prism Courier and Hardware Lab guests exercise SCSP IRQs through the scheduled acknowledgement path |
+| VDP1 command-word retention | `Vdp1::advance_phase/command` in [vdp1.rs](../src/vdp1.rs): retain each word; +1E dummy is not read; PTMR discards unfinished reads | [progress_tests.rs](../src/vdp1/progress_tests.rs): CTRL/COLR changes on opposite sides of read boundaries, PTMR restart, existing partial draw/stop/reset/erase vectors | [Original builder](../tests/fixtures/build_video_transactions.py), [native integration](../tests/video_transactions.rs), [browser integration](../scripts/video-transactions.mjs): guest writes END after CTRL was fetched and still draws the authored line. Moving that store before PTMR correctly leaves sample pixels zero and COPR=0 |
+| VDP1 local VRAM/framebuffer ownership | `Bus::vdp1_bus_ownership`, `Vdp1::advance_with_bus`: active CPU/DMAC/SCU data phase holds the selected local memory; VRAM fetches/textured drawing pause on VRAM access and draw dots pause on draw-framebuffer access | [vdp1_tests.rs](../src/bus/vdp1_tests.rs): both SH-2 CPU and DMAC owners, SCU internal activation, held partial XC read, delayed dots and canceled CPU write. Command reads and untextured draws continue on independent memory | Original `vdp1-memory-ownership` compares FRT intervals for the same poll loop reading framebuffer versus VRAM. Only the address operand differs; framebuffer access takes longer while both runs produce the same guest-drawn pixels. Native/Wasm require repeatable timing across color mutations and cold resets |
+
+All new sources and generated fixtures are original works under the adjacent
+[MIT license](../tests/fixtures/LICENSE). Existing CI commands
+`python3 tests/fixtures/build_m68k_reset.py --check` and
+`python3 tests/fixtures/build_video_transactions.py --check` reproduce them.
+Expanded 512 KiB synthetic ROM SHA-256 values:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `m68k-reset-phases.hex` | `3134988e8a450c25b05ffa0e2f5320198c861ce500432122dff481c7cf19616b` |
+| `m68k-traced-reset.hex` | `3312189850063dfaec6b692d989a90d12fafafd35a449c6209a77a28602dae7e` |
+| `vdp1-command-fetch.hex` | `27974ed4fc9c3048180f5d51353394a7f5d289122cf37ffc55bc9e40263f2c9e` |
+| `vdp1-memory-ownership.hex` | `056639795344bed31055be8edaa4d1b9920bb30a27f23404240c4f2ce8fc38d3` |
+
+The existing 32-clock uncontended VDP1 command budget is divided into word reads
+and a final decode phase; this does not establish every command-dependent physical
+access cost. Gouraud/lookup-table accesses, full texture/effect and erase/swap
+timing, SCSP memory ownership and DMA/effects pipelines, general 68k instruction/
+prefetch/exception timing, and the other reviewed SH-2/SH7604, bus/reset, SCU/DSP,
+VDP2/raster, CD/HLE and SMPC contracts still require work. All original Issue #17
+acceptance criteria remain mandatory; none is checked by these changes alone.

@@ -37,6 +37,34 @@ async function run(page, bytes, base, count, pixels = false) {
   }, { bytes: [...bytes], base, count, pixels });
 }
 export async function videoTransactions(page) {
+  const commands = await rom("vdp1-command-fetch");
+  for (const color of [0x801F, 0x83E0]) {
+    for (let repeat = 0; repeat < 2; repeat++) {
+      assert.deepEqual((await run(page, patch(commands, 0x801F, color), 0x0600E100, 5)).records,
+        [color, color, 8, 2, 0x600D]);
+    }
+  }
+  const beforeStart = Buffer.from(commands), needle = Buffer.from([0x24, 0x01, 0x25, 0x61]);
+  const at = beforeStart.indexOf(needle);
+  assert(at >= 0 && beforeStart.indexOf(needle, at + 1) < 0);
+  beforeStart.set([0x25, 0x61, 0x24, 0x01], at);
+  assert.deepEqual((await run(page, beforeStart, 0x0600E100, 5)).records, [0, 0, 0, 2, 0x600D]);
+  const ownership = await rom("vdp1-memory-ownership");
+  let referenceTimes;
+  for (let repeat = 0; repeat < 2; repeat++) for (const color of [0x801F, 0x83E0]) {
+    const times = [];
+    for (const framebuffer of [false, true]) {
+      let bytes = patch(ownership, 0x801F, color);
+      if (!framebuffer) bytes = patch(bytes, 0x25C81000, 0x25C01000);
+      const {records} = await run(page, bytes, 0x0600E200, 5);
+      assert.deepEqual(records.slice(1), [color, color, 2, 0x600D]);
+      assert(records[0] > 500 && records[0] < 2000);
+      times.push(records[0]);
+    }
+    assert(times[1] > times[0] + 50, `VDP1 framebuffer/VRAM FRT intervals: ${times}`);
+    if (!referenceTimes) referenceTimes = times; else assert.deepEqual(times, referenceTimes);
+  }
+  console.log("VDP1 memory ownership passed: guest post-fetch CTRL write, early-write negative case, framebuffer/VRAM FRT comparison, real pixels, color mutations and cold resets in production Wasm.");
   const draw = await rom("vdp1-progress");
   const expected = (await readFile("tests/fixtures/vdp1-progress.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v,16));
   for (let repeat = 0; repeat < 2; repeat++) assert.deepEqual((await run(page, draw, 0x0600D800,10)).records, expected);

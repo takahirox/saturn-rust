@@ -5,6 +5,7 @@ use std::cell::RefCell;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Cycle {
+    Acknowledge(u8),
     Read(u32, usize),
     Write(u32, usize, u32),
 }
@@ -12,6 +13,7 @@ struct Spy {
     ram: tests::Ram,
     cycles: RefCell<Vec<Cycle>>,
     fail: Option<(u32, usize)>,
+    acknowledgement: Option<std::result::Result<u8, BusError>>,
 }
 impl Spy {
     fn read(&self, address: u32, width: usize) -> std::result::Result<(), BusError> {
@@ -29,6 +31,7 @@ impl Spy {
             .copied()
             .filter(|cycle| {
                 let address = match cycle {
+                    Cycle::Acknowledge(_) => return false,
                     Cycle::Read(a, _) | Cycle::Write(a, _, _) => a,
                 };
                 (0x2000..0x4000).contains(address)
@@ -37,6 +40,10 @@ impl Spy {
     }
 }
 impl Memory for Spy {
+    fn m68k_interrupt_acknowledge(&mut self, level: u8) -> std::result::Result<u8, BusError> {
+        self.cycles.get_mut().push(Cycle::Acknowledge(level));
+        self.acknowledgement.unwrap_or(Ok(24 + level))
+    }
     fn read8(&self, a: u32) -> std::result::Result<u8, BusError> {
         self.read(a, 1)?;
         self.ram.read8(a)
@@ -68,6 +75,7 @@ fn fixture(op: u16) -> (M68k, Spy) {
             ram,
             cycles: RefCell::default(),
             fail: None,
+            acknowledgement: None,
         },
     )
 }
@@ -487,5 +495,82 @@ fn external_reset_preserves_general_registers_and_usp_but_reloads_vectors_and_co
             assert_eq!(c.state.instructions, 0);
             assert_eq!(c.state.exceptions, 0);
         }
+    }
+}
+
+#[test]
+fn autovector_device_vector_and_iack_berr_precede_the_short_exception_frame() {
+    // MC68000UM §§6.2.5/6.3.2–4 and table8-14: five reads (including
+    // IACK), three writes; IACK BERR selects24 without a bus-error frame.
+    for level in 1..=7 {
+        for response in [
+            None,
+            Some(Ok(15)),
+            Some(Ok(32)),
+            Some(Ok(64)),
+            Some(Err(BusError::Unmapped {
+                address: 0xFFFFFF,
+                width: 1,
+            })),
+        ] {
+            let (mut cpu, mut memory) = fixture(0x4E71);
+            memory.acknowledgement = response;
+            let vector = match response {
+                None => 24 + level,
+                Some(Ok(v)) => v,
+                Some(Err(_)) => 24,
+            };
+            memory.ram.write32(u32::from(vector) * 4, 0x500).unwrap();
+            memory.ram.write16(0x500, 0x4E71).unwrap();
+            memory.ram.write16(0x502, 0x4E71).unwrap();
+            cpu.state.sr = 0x2015;
+            let sp = cpu.state.a[7];
+            cpu.set_interrupt(level);
+            assert_eq!(cpu.step(&mut memory), 44);
+            assert_eq!(
+                *memory.cycles.borrow(),
+                [
+                    Cycle::Acknowledge(level),
+                    Cycle::Write(sp - 2, 2, 0x100),
+                    Cycle::Write(sp - 4, 2, 0),
+                    Cycle::Write(sp - 6, 2, 0x2015),
+                    Cycle::Read(u32::from(vector) * 4, 2),
+                    Cycle::Read(u32::from(vector) * 4 + 2, 2),
+                    Cycle::Read(0x500, 2),
+                    Cycle::Read(0x502, 2),
+                ]
+            );
+            assert_eq!(cpu.state.sr, 0x2015 | u16::from(level) << 8);
+            assert_eq!(cpu.state.pc, 0x500);
+            assert_eq!(cpu.state.a[7], sp - 6);
+            assert_eq!(cpu.state.last_vector, Some(vector));
+            assert_eq!(cpu.state.exceptions, 1);
+            assert!(!cpu.state.halted);
+        }
+    }
+}
+
+#[test]
+fn interrupt_vector_fetch_fault_describes_irq_activity_even_for_a_trap_number() {
+    // UM §§6.2.5/6.3.9.1: a device-provided vector number does not
+    // change an interrupt into TRAP activity in a subsequent group0 frame.
+    for vector in [15u8, 32, 64] {
+        let (mut cpu, mut memory) = fixture(0x4E71);
+        memory.acknowledgement = Some(Ok(vector));
+        memory.ram.write32(8, 0x500).unwrap();
+        memory.ram.write16(0x500, 0x4E71).unwrap();
+        memory.ram.write16(0x502, 0x4E71).unwrap();
+        memory.fail = Some((u32::from(vector) * 4, 2));
+        cpu.state.sr = 0x2015;
+        let sp = cpu.state.a[7];
+        cpu.set_interrupt(3);
+        cpu.step(&mut memory);
+        assert_eq!(cpu.state.last_vector, Some(2));
+        assert_eq!(cpu.state.pc, 0x500);
+        assert_eq!(cpu.state.a[7], sp - 20);
+        assert_eq!(memory.ram.read16(sp - 20), Ok(0x1D)); // read / I-N / supervisor data
+        assert_eq!(memory.ram.read16(sp - 18), Ok(0));
+        assert_eq!(memory.ram.read16(sp - 16), Ok(u16::from(vector) * 4));
+        assert!(!cpu.state.halted);
     }
 }

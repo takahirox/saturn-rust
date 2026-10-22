@@ -244,3 +244,36 @@ fn sequential_command_fetch_wraps_vram_without_an_illegal_address_or_false_end()
     assert!(bus.vdp1.busy());
     assert_eq!(bus.read16(REGISTERS + 0x10), Ok(0));
 }
+
+#[test]
+fn command_words_are_retained_on_separate_deadlines_and_restart_discards_partial_reads() {
+    for chunk in [1, 3, 17, 10000] {
+        let mut bus = Bus::default();
+        line(&mut bus, 8);
+        // The line command starts at clock32; CTRL is read at34 and COLR
+        // at40. Changing CTRL after34 must not turn it into END. Changing
+        // COLR before40 must affect this draw; later writes must not.
+        advance(&mut bus, 34, chunk);
+        bus.write16(VRAM + 32, 0x8000).unwrap();
+        advance(&mut bus, 5, chunk);
+        bus.write16(VRAM + 38, 0x83E0).unwrap();
+        advance(&mut bus, 1, chunk);
+        bus.write16(VRAM + 38, 0xFC00).unwrap();
+        advance(&mut bus, 32 + 32, chunk);
+        assert_eq!(bus.read16(FRAMEBUFFER), Ok(0x83E0));
+        assert_eq!(bus.read16(FRAMEBUFFER + 14), Ok(0x83E0));
+        assert_eq!(bus.read16(REGISTERS + 0x10), Ok(2));
+
+        // PTMR discards an incomplete table and begins again at word zero.
+        command(&mut bus, 0, &[(0, 9), (20, 511), (22, 255)]);
+        reg(&mut bus, 4, 1);
+        advance(&mut bus, 2, chunk);
+        bus.write16(VRAM, 0x8000).unwrap();
+        reg(&mut bus, 4, 1);
+        advance(&mut bus, 31, chunk);
+        assert_eq!(bus.read16(REGISTERS + 0x10).unwrap() & 2, 0);
+        advance(&mut bus, 1, chunk);
+        assert_eq!(bus.read16(REGISTERS + 0x10).unwrap() & 2, 2);
+        assert_eq!(bus.read16(REGISTERS + 0x14), Ok(0));
+    }
+}

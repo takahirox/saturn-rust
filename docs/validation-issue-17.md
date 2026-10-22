@@ -4,6 +4,56 @@
 criterion is complete; #17 must remain open.** Issues #11/#13/#15 are historical,
 administratively closed trackers and must not be reopened.
 
+## Review fixes: scheduled sound reset and VDP1 ownership (2026-10-22)
+
+Continues reviewed PR head `d7ddb09d9fa113e5613889bf19238fd8e2a3a837` in the
+assigned worktree. Upstream main was rechecked as
+`dbd981b030a46daa6923072ce240680dd2e58ebf`.
+
+SNDON now schedules the four 68k reset-vector reads and two prefetches instead
+of taking a synchronous snapshot. An original SH-2 guest changes PC from `0x100` to `0x200`
+after SNDON returns; the sound CPU executes the changed entry. Omitting the guest
+write executes the failure entry. RESET now holds the device output for 124 sound
+clocks and suspends the core before trace processing; an original traced-RESET
+guest checks saved SR/PC and retained D3. Independent bus tests cover all IRQ
+levels, device/autovectors, spurious IACK, vector-fetch fault activity, partial
+reset cancellation, prefetch retention and pulse completion after CPU disable.
+
+VDP1 retains command words as they are fetched, skips the dummy word, and
+cancels partial fetches on PTMR. Active CPU/DMAC/SCU transfers own the selected
+local VRAM or draw framebuffer and pause conflicting fetch/draw work. Independent
+memories continue concurrently. An original guest compares FRT intervals for
+framebuffer versus VRAM reads during untextured drawing. Another changes CTRL
+after its fetch; moving that same store before PTMR correctly produces no line.
+Both guests check actual pixels, changed color operands and repeated cold resets
+in native and production Wasm. Sources, hashes, specification sections and linked
+vectors are in the [conformance entry](hardware-conformance.md#scheduled-68k-resetiack-and-vdp1-local-memory-ownership).
+
+Validation actually performed on these changes:
+
+- `cargo fmt --check`, `cargo build --locked`: passed.
+- `CARGO_PROFILE_TEST_OPT_LEVEL=1 cargo test --locked`: **616 passed**, none
+  failed, ignored or filtered out; debug assertions remain enabled. Host Rust
+  1.94.0 ran native tests. An initial unoptimized run was interrupted during
+  the long display-mode suite before switching to this existing test profile.
+- Native all-target and Wasm Clippy with `-D warnings`: passed with stable
+  Rust 1.99.0, including the new register/bus/fault tests.
+- `sh scripts/build-web.sh`: passed with wasm-bindgen 0.2.129.
+- All **64** reproducibility commands from the CI workflow: passed, including
+  the four new synthetic BIOS fixtures and all three original demonstration discs.
+- Complete `npm run test:browser`: passed on Chromium **145.0.7632.6** using
+  the rebuilt production assets under `/saturn-rust/`. This includes all new
+  guests/controls and the existing Star Collector, Prism Courier, Hardware Lab,
+  Canvas, WebAudio, restart, input/focus, offline and local-file privacy checks.
+- `git diff --check` and changed documentation's relative file links: passed.
+
+These changes do not complete the reviewed umbrella requirements. SH-2/SH7604
+pipeline/peripheral timing, complete board/sound ownership and reset contracts,
+SCU/DSP, remaining VDP1 costs/effects and VDP2/raster behavior, SCSP synthesis/DMA/
+effects timing, CD/media, HLE CD/system/startup services, SMPC boundaries and
+complete per-feature guest evidence remain required. Issue #17 is not closed,
+replaced or reduced in scope; historical trackers remain closed.
+
 ## Review fixes: VDP2 display grants and raster-table reads (2026-10-22)
 
 Continues reviewed PR head `19ccfeead15898b554daf893333597a490f981f1` in the

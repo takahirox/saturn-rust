@@ -2,11 +2,11 @@
 use saturn_rust::{Boot, Machine, bus::Memory, cpu::CpuStatus};
 
 fn rom() -> Vec<u8> {
+    load(include_str!("fixtures/m68k-reset.hex"))
+}
+fn load(text: &str) -> Vec<u8> {
     let mut rom = vec![0; 524288];
-    for line in include_str!("fixtures/m68k-reset.hex")
-        .lines()
-        .filter(|line| !line.starts_with('#'))
-    {
+    for line in text.lines().filter(|line| !line.starts_with('#')) {
         let mut words = line.split_whitespace();
         let at = usize::from_str_radix(words.next().unwrap(), 16).unwrap();
         for (i, word) in words.enumerate() {
@@ -15,6 +15,67 @@ fn rom() -> Vec<u8> {
         }
     }
     rom
+}
+
+#[test]
+fn sh2_vector_write_after_sndon_is_seen_by_scheduled_sound_cpu_reset_reads() {
+    let original = load(include_str!("fixtures/m68k-reset-phases.hex"));
+    for operand in [0x13579BDFu32, 0x2468ACE0] {
+        let mut rom = original.clone();
+        rom[0x2202..0x2206].copy_from_slice(&operand.to_be_bytes());
+        let mut machine = Machine::new();
+        for _ in 0..2 {
+            machine.reset(Boot::ExternalBios(&rom)).unwrap();
+            for _ in 0..10 {
+                machine.run_steps(10000).unwrap();
+            }
+            assert_eq!(machine.cpu_state().status, CpuStatus::Sleeping);
+            assert_eq!(machine.cpu_state().exceptions, 0);
+            assert_eq!(machine.sound_state().exceptions, 0);
+            assert!(!machine.sound_state().halted);
+            assert_eq!(machine.bus().read32(0x0600ED00), Ok(operand));
+        }
+    }
+    let mut without_write = original;
+    let at: Vec<_> = without_write
+        .windows(2)
+        .enumerate()
+        .filter_map(|(i, word)| (word == [0x25, 0x62]).then_some(i))
+        .collect();
+    assert_eq!(at.len(), 1);
+    without_write[at[0]..at[0] + 2].copy_from_slice(&[0, 9]); // guest NOP
+    let mut machine = Machine::new();
+    machine.reset(Boot::ExternalBios(&without_write)).unwrap();
+    for _ in 0..10 {
+        machine.run_steps(10000).unwrap();
+    }
+    assert_eq!(machine.bus().read32(0x0600ED00), Ok(0xBAD));
+    assert_eq!(machine.sound_state().exceptions, 0);
+}
+
+#[test]
+fn traced_guest_reset_completes_then_stacks_and_vectors_without_running_the_following_store() {
+    let original = load(include_str!("fixtures/m68k-traced-reset.hex"));
+    let mut machine = Machine::new();
+    for operand in [0x13579BDFu32, 0x2468ACE0] {
+        let mut rom = original.clone();
+        rom[0x2202..0x2206].copy_from_slice(&operand.to_be_bytes());
+        for _ in 0..2 {
+            machine.reset(Boot::ExternalBios(&rom)).unwrap();
+            for _ in 0..10 {
+                machine.run_steps(10000).unwrap();
+            }
+            let records: Vec<_> = (0..4)
+                .map(|i| machine.bus().read32(0x0600EE00 + i * 4).unwrap())
+                .collect();
+            assert_eq!(records, [0xA700, 0x20C, operand, 0x600D]);
+            assert_eq!(machine.cpu_state().status, CpuStatus::Sleeping);
+            assert_eq!(machine.cpu_state().exceptions, 0);
+            assert_eq!(machine.sound_state().exceptions, 1);
+            assert_eq!(machine.sound_state().last_vector, Some(9));
+            assert!(machine.sound_state().stopped && !machine.sound_state().halted);
+        }
+    }
 }
 fn run(machine: &mut Machine, rom: &[u8]) -> Vec<u32> {
     machine.reset(Boot::ExternalBios(rom)).unwrap();

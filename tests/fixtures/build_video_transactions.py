@@ -48,6 +48,44 @@ def draw_source():
     return s
 
 
+def command_source():
+    # PTMR starts a clip command. The following guest store changes CTRL
+    # after its first word has been read but before the full table completes.
+    # Retained CTRL=9 allows the line to draw; a late atomic snapshot sees END
+    # and leaves both independently selected framebuffer samples black.
+    s = 'load 0x0600e100,r8\n' + put16(0x25D00002, 2)
+    for at, value in [(0, 9), (20, 511), (22, 255), (32, 6),
+                      (36, 0xC0), (38, 0x801F), (48, 7), (64, 0x8000)]:
+        s += put16(0x25C00000 + at, value)
+    s += ('load 0x25d00004,r4\nload 0x25c00000,r5\nload 0x8000,r6\n'
+          'mov #1,r0\nmov.w r0,@r4\nmov.w r6,@r5\n'
+          'load 0x25d00010,r1\nwait_draw:\nmov.w @r1,r0\n'
+          'tst #2,r0\nbt wait_draw\n')
+    for address in [0x25C80000, 0x25C8000E, 0x25D00014, 0x25D00010]:
+        s += read(address, 2)
+    s += 'load 0x600d,r0\n' + record() + 'park:\nsleep\nbra park\nnop\n'
+    return s
+
+
+def contention_source():
+    s = 'load 0x0600e200,r8\n' + put16(0x25D00002, 2)
+    for at, value in [(0, 9), (20, 511), (22, 255), (32, 6),
+                      (36, 0xC0), (38, 0x801F), (48, 4095), (64, 0x8000)]:
+        s += put16(0x25C00000 + at, value)
+    s += ('load 0x25c81000,r4\nload 0x25d00010,r5\n'
+          'load 0xfffffe12,r10\nload 0xfffffe13,r11\n')
+    timer = ('mov.b @r10,r0\nextu.b r0,r0\nshll8 r0\n'
+             'mov.b @r11,r1\nextu.b r1,r1\nor r1,r0\n')
+    s += timer + 'mov r0,r9\n' + put16(0x25D00004, 1)
+    s += ('poll_draw:\nmov.w @r4,r2\nmov.w @r5,r0\n'
+          'tst #2,r0\nbt poll_draw\n')
+    s += timer + 'sub r9,r0\nextu.w r0,r0\n' + record()
+    for address in [0x25C80000, 0x25C803FE, 0x25D00010]:
+        s += read(address, 2)
+    s += 'load 0x600d,r0\n' + record() + 'park:\nsleep\nbra park\nnop\n'
+    return s
+
+
 def monitor_source():
     s = 'load 0x0600dc00,r8\n'
     # Set all control/data while display is disabled. Odd pixels come from
@@ -128,9 +166,13 @@ def build():
     files.update(monitor)
     grants, grants_hash = encode('vram-grants', grants_source())
     files.update(grants)
+    commands, command_hash = encode('vdp1-command-fetch', command_source())
+    files.update(commands)
+    contention, contention_hash = encode('vdp1-memory-ownership', contention_source())
+    files.update(contention)
     files['vdp1-progress.tsv'] = ''.join(f'{v:08X}\n' for v in
         [0x801F, 0, 0, 0, 4, 0, 0x1234, 0x1234, 0xFFFF, 0x600D]).encode()
-    return files, [draw_hash, monitor_hash, grants_hash]
+    return files, [draw_hash, monitor_hash, grants_hash, command_hash, contention_hash]
 
 
 if __name__ == '__main__':

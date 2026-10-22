@@ -318,8 +318,7 @@ fn thirty_two_envelopes_release_retrigger_and_bypass_independently() {
 }
 
 #[test]
-fn reset_release_waits_forty_sound_clocks_before_first_instruction_fetch_and_retirement_waits_for_data()
- {
+fn reset_release_performs_prefetch_before_first_instruction_starts_at_forty_clocks() {
     let mut sound = Sound::default();
     sound.ram[..8].copy_from_slice(&[0, 7, 0xFF, 0, 0, 0, 1, 0]);
     sound.ram[0x100..0x104].copy_from_slice(&[0x70, 42, 0x4E, 0x71]);
@@ -328,19 +327,14 @@ fn reset_release_waits_forty_sound_clocks_before_first_instruction_fetch_and_ret
     sound.advance(deadline - 1).unwrap();
     assert_eq!(sound.cpu.state.instructions, 0);
     sound.advance(1).unwrap();
-    assert_eq!(sound.cpu.state.instructions, 0);
-    let completed = (48 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ) as u32;
-    sound.advance(completed - deadline - 1).unwrap();
-    assert_eq!(sound.cpu.state.instructions, 0);
-    sound.advance(1).unwrap();
     assert_eq!(sound.cpu.state.instructions, 1);
     assert_eq!(sound.cpu.state.d[0], 42);
 }
 
 #[test]
 fn sound_longword_accesses_sample_and_publish_each_word_on_its_own_bus_deadline() {
-    // MC68000UM §§5.1/8.3: four CPU clocks per word. An initially empty
-    // instruction queue fetches opcode and successor before the operand cycles.
+    // MC68000UM §§5.1/8.3: four CPU clocks per word. The reset
+    // sequence has already fetched opcode and successor before operand cycles.
     // Read/write order is independently authored, including predecrement.
     for opcode in [0x2010u16, 0x2080, 0x2100] {
         for chunk in [1, 3, 17, 1000] {
@@ -360,10 +354,10 @@ fn sound_longword_accesses_sample_and_publish_each_word_on_its_own_bus_deadline(
                         .unwrap();
                 }
             };
-            advance_to(&mut sound, 51);
+            advance_to(&mut sound, 43);
             assert_eq!(&sound.ram[0x200..0x204], &0x11223344u32.to_be_bytes());
             assert_eq!(sound.cpu.state.instructions, 0);
-            advance_to(&mut sound, 52);
+            advance_to(&mut sound, 44);
             match opcode {
                 0x2010 => {
                     // High source half is now latched; the low half must see
@@ -377,7 +371,7 @@ fn sound_longword_accesses_sample_and_publish_each_word_on_its_own_bus_deadline(
                 _ => assert_eq!(&sound.ram[0x200..0x204], &[0x11, 0x22, 0x77, 0x88]),
             }
             assert_eq!(sound.cpu.state.instructions, 0);
-            advance_to(&mut sound, 56);
+            advance_to(&mut sound, 48);
             assert_eq!(sound.cpu.state.instructions, 1);
             if opcode == 0x2010 {
                 assert_eq!(sound.cpu.state.d[0], 0x1122CCDD);
@@ -409,7 +403,7 @@ fn sound_reset_cancels_an_uncompleted_word_and_mmio_reads_are_never_repeated() {
     sound.set_enabled(true).unwrap();
     sound.cpu.state.a[0] = 0x200;
     sound.cpu.state.d[0] = 0x12345678;
-    let first = sound.cpu_origin + (52 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
+    let first = sound.cpu_origin + (44 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
     sound.advance((first - sound.time) as u32).unwrap();
     assert_eq!(&sound.ram[0x200..0x204], &[0x12, 0x34, 0, 0]);
     sound.set_enabled(false).unwrap();
@@ -464,6 +458,11 @@ fn sound_off_on_reloads_vectors_without_discarding_shared_ram_or_running_scsp() 
     assert!(sound.scsp.generated > n);
     assert_eq!(sound.ram[0x100], 0x52);
     sound.set_enabled(true).unwrap();
+    assert_eq!(sound.cpu.state.pc, 0);
+    assert_eq!(sound.cpu.state.d[0], retained);
+    sound
+        .advance((32 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ) as u32)
+        .unwrap();
     assert_eq!(sound.cpu.state.pc, 0x100);
     assert_eq!(sound.cpu.state.d[0], retained);
 }

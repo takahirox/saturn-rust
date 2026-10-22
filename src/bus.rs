@@ -140,6 +140,18 @@ impl std::error::Error for BusError {}
 
 /// The interpreter fetches through this boundary; it owns no memory pointers.
 pub trait Memory {
+    /// MC68000UM §5.5: RESET holds the external device signal for 124 clocks.
+    /// A clocked sound adapter suspends here until the pulse completes; an
+    /// architectural-only memory fixture has no external clock domain.
+    fn m68k_reset_output(&mut self) -> Result<(), BusError> {
+        Ok(())
+    }
+    /// MC68000UM §§5.1/6.3.2–4: the standard sound board autovectors.
+    /// Other architectural fixtures may return a device vector or BERR
+    /// (spurious vector24). Pending defers stacking until IACK completes.
+    fn m68k_interrupt_acknowledge(&mut self, level: u8) -> Result<u8, BusError> {
+        Ok(24 + level)
+    }
     /// SH7604 §9.3.4 single-address DMA selects a peripheral by its DACK pin,
     /// not by SAR/DAR. A board adapter supplies these electrical data transfers.
     /// Unconnected/unsupported endpoints never become a second memory access.
@@ -518,7 +530,11 @@ impl Bus {
                 self.onchip[1].advance_clocks(delta);
             }
             self.scu.advance_clocks(delta)?;
-            if self.vdp1.advance(delta)? {
+            let (vram_busy, framebuffer_busy) = self.vdp1_bus_ownership();
+            if self
+                .vdp1
+                .advance_with_bus(delta, vram_busy, framebuffer_busy)?
+            {
                 self.scu.signal(13);
             }
             // Keep the established boundary order: main peripherals, fixed

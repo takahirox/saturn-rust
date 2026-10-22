@@ -84,6 +84,7 @@ struct Voice {
     envelope: envelope::Envelope,
 }
 pub struct Scsp {
+    reset_held: bool,
     dsp: dsp::Dsp,
     slots: [[u16; 12]; 32],
     voices: [Voice; 32],
@@ -107,6 +108,7 @@ pub struct Scsp {
 impl Default for Scsp {
     fn default() -> Self {
         Self {
+            reset_held: false,
             dsp: dsp::Dsp::default(),
             slots: [[0; 12]; 32],
             voices: [Voice::default(); 32],
@@ -130,6 +132,18 @@ impl Default for Scsp {
     }
 }
 impl Scsp {
+    fn set_reset(&mut self, held: bool) {
+        // Retain elapsed time and already-produced host audio. RESET affects
+        // the device, not sound RAM or samples from before the signal edge.
+        let output = std::mem::take(&mut self.output);
+        *self = Self {
+            reset_held: held,
+            generated: self.generated,
+            dropped: self.dropped,
+            output,
+            ..Self::default()
+        };
+    }
     fn ram_config(&self) -> RamConfig {
         RamConfig {
             four_mbit: self.common[0] & 0x200 != 0,
@@ -190,6 +204,9 @@ impl Scsp {
                 address: SCSP + offset,
                 width: 2,
             });
+        }
+        if self.reset_held {
+            return Ok(());
         }
         match offset {
             0..=0x3FF if offset & 31 < 24 => {
@@ -300,6 +317,9 @@ impl Scsp {
         self.main_pending.get() & self.common[21] != 0
     }
     pub fn receive_midi(&self, byte: u8) -> bool {
+        if self.reset_held {
+            return false;
+        }
         let mut fifo = self.midi_in.borrow_mut();
         if fifo.len() == 4 {
             self.midi_overflow.set(true);
@@ -379,6 +399,16 @@ impl Scsp {
     /// One stereo 44.1 kHz frame. Integer Q16 phase and fixed gain constants make
     /// native and Wasm output identical. Direct mode bypasses envelope/TL/LFO.
     fn sample(&mut self, ram: &mut [u8]) -> Result<(), BusError> {
+        if self.reset_held {
+            if self.output.len() >= BUFFER_FRAMES * 2 {
+                self.output.pop_front();
+                self.output.pop_front();
+                self.dropped += 1;
+            }
+            self.output.extend([0, 0]);
+            self.generated += 1;
+            return Ok(());
+        }
         self.dma(ram)?;
         let config = self.ram_config();
         for timer in 0..3 {
@@ -639,6 +669,8 @@ pub struct Sound {
     cpu_origin: u64,
     next_cpu: u64,
     next_sample: u64,
+    reset_output_start: Option<u64>,
+    reset_output_end: Option<u64>,
     transactions: transactions::Transactions,
 }
 impl Default for Sound {
@@ -653,6 +685,8 @@ impl Default for Sound {
             cpu_origin: 0,
             next_cpu: u64::MAX,
             next_sample: REFERENCE_HZ.div_ceil(SAMPLE_RATE),
+            reset_output_start: None,
+            reset_output_end: None,
             transactions: transactions::Transactions::default(),
         }
     }
@@ -764,26 +798,30 @@ impl Sound {
         self.scsp.ram_config().write8(&mut self.ram, address, value);
     }
     pub(crate) fn clocks_to_event(&self) -> u32 {
-        (self.next_sample.min(self.next_cpu) - self.time)
+        (self
+            .next_sample
+            .min(self.next_cpu)
+            .min(self.reset_output_start.unwrap_or(u64::MAX))
+            .min(self.reset_output_end.unwrap_or(u64::MAX))
+            - self.time)
             .min(u64::from(self.scsp.midi_clocks_to_event())) as u32
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<(), BusError> {
         if enabled && !self.enabled {
-            self.transactions = transactions::Transactions::default();
-            let memory = SoundBus {
-                ram: &mut self.ram,
-                scsp: &mut self.scsp,
-            };
-            self.cpu.reset(&memory)?;
-            // MC68000UM table8-14: reset exception/vector/prefetch takes forty
-            // sound-CPU clocks before the first instruction can be issued.
-            self.cpu_ticks = 40;
+            self.cpu.assert_reset();
+            self.transactions = transactions::Transactions::reset();
+            // MC68000UM §5.5 fig.5-30/table8-14: sixteen internal clocks,
+            // then six distinct four-clock reads (SSP, PC, two prefetches).
+            // No vector is sampled until its bus cycle completes.
+            self.cpu_ticks = 20;
             self.cpu_origin = self.time;
-            self.next_cpu = self.time + (40 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
+            self.next_cpu = self.time + (20 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
         } else if !enabled {
             self.cpu.assert_reset();
             self.transactions = transactions::Transactions::default();
             self.next_cpu = u64::MAX;
+            // An already asserted RESET output finishes its external pulse;
+            // canceling the CPU must not strand the devices in reset.
         }
         self.enabled = enabled;
         Ok(())
@@ -807,23 +845,26 @@ impl Sound {
         let mut now = self.time;
         loop {
             let next_midi = now + u64::from(self.scsp.midi_clocks_to_event());
-            let deadline = self.next_cpu.min(self.next_sample).min(next_midi);
+            let deadline = self
+                .next_cpu
+                .min(self.next_sample)
+                .min(next_midi)
+                .min(self.reset_output_start.unwrap_or(u64::MAX))
+                .min(self.reset_output_end.unwrap_or(u64::MAX));
             if deadline > target {
                 break;
             }
             self.scsp.advance_midi((deadline - now) as u32);
             now = deadline;
-            if deadline == self.next_cpu {
+            if Some(deadline) == self.reset_output_start {
+                self.scsp.set_reset(true);
+                self.reset_output_start = None;
+            } else if Some(deadline) == self.reset_output_end {
+                self.scsp.set_reset(false);
+                self.reset_output_end = None;
+            } else if deadline == self.next_cpu {
                 self.advance_cpu_cycle();
-                if std::mem::take(&mut self.cpu.reset_output) {
-                    let generated = self.scsp.generated;
-                    let dropped = self.scsp.dropped;
-                    self.scsp = Scsp {
-                        generated,
-                        dropped,
-                        ..Scsp::default()
-                    };
-                }
+                self.cpu.reset_output = false; // pulse handled by the transaction journal
                 self.next_cpu =
                     self.cpu_origin + (self.cpu_ticks * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
             } else if deadline == self.next_sample {
@@ -837,5 +878,7 @@ impl Sound {
         Ok(())
     }
 }
+#[cfg(test)]
+mod reset_tests;
 #[cfg(test)]
 mod tests;
