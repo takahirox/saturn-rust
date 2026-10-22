@@ -277,6 +277,15 @@ impl Memory for ReplayMemory<'_> {
     }
 }
 impl Bus {
+    // ST-077 §3.1/§3.2: a buffered main-interface request precedes SCPU
+    // memory access. Device/DMA/refresh ownership can still delay this beat.
+    pub(super) fn sound_ram_requested(&self) -> bool {
+        self.transactions.active.as_ref().is_some_and(|active| {
+            let address = active.transfer.address & 0x1FFF_FFFF;
+            !matches!(active.owner, Owner::WriteAccept(_, _))
+                && (crate::sound::SOUND_RAM..crate::sound::SCSP).contains(&address)
+        })
+    }
     /// H §§4.2.3/7.11.1: power-on reset aborts; manual reset completes
     /// the BSC's current operand, stopping a refill/16-byte DMA at a longword.
     /// Retain physical phases, not an interpreter that could issue more work.

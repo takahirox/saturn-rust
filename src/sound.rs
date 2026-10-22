@@ -1,6 +1,7 @@
 //! Shared SCSP/sound-CPU bus and independent audio clock domain.
 //! Primary references: ST-077 §§1.2, 3, 4.2; M68000PRM §§2–4.
 //! PCM, slot modulation/LFO/noise and the effects processor execute here.
+mod dma;
 mod dsp;
 mod envelope;
 mod synthesis;
@@ -101,6 +102,7 @@ pub struct Scsp {
     stack: synthesis::Stack,
     lfo: [synthesis::Lfo; 32],
     dma_remaining: u16,
+    dma_word: Option<dma::Word>,
     external: [i16; 2],
     frame_mix: [i64; 2],
     frame_active: bool,
@@ -127,6 +129,7 @@ impl Default for Scsp {
             stack: synthesis::Stack::default(),
             lfo: std::array::from_fn(synthesis::Lfo::new),
             dma_remaining: 0,
+            dma_word: None,
             external: [0; 2],
             frame_mix: [0; 2],
             frame_active: false,
@@ -372,35 +375,6 @@ impl Scsp {
             }
         }
     }
-    fn dma(&mut self, ram: &mut [u8]) -> Result<(), BusError> {
-        if self.dma_remaining == 0 {
-            self.common[11] &= !0x1000;
-            return Ok(());
-        }
-        let address = (usize::from(self.common[10] & 0xF000) << 4) | usize::from(self.common[9]);
-        let config = self.ram_config();
-        let reg = u32::from(self.common[10] & 0xFFE);
-        if (0x412..=0x416).contains(&reg) {
-            return Err(Self::error(reg));
-        }
-        let gate = self.common[11] & 0x4000 != 0;
-        if self.common[11] & 0x2000 != 0 {
-            let value = if gate { 0 } else { self.read16(reg)? };
-            config.write16(ram, address, value);
-        } else {
-            let value = if gate { 0 } else { config.read16(ram, address) };
-            self.write16(reg, value)?;
-        }
-        let next = (address + 2) & 0xF_FFFF;
-        self.common[9] = next as u16;
-        self.common[10] = ((next >> 4) as u16 & 0xF000) | ((reg as u16 + 2) & 0xFFE);
-        self.dma_remaining -= 2;
-        if self.dma_remaining == 0 {
-            self.common[11] &= !0x1000;
-            self.request(16);
-        }
-        Ok(())
-    }
     /// Capture source inputs once per frame. Effects instructions subsequently
     /// run at separate sound-domain deadlines; output is committed after step127.
     fn begin_sample(&mut self, ram: &mut [u8]) -> Result<(), BusError> {
@@ -409,7 +383,6 @@ impl Scsp {
         if self.reset_held {
             return Ok(());
         }
-        self.dma(ram)?;
         let config = self.ram_config();
         let mut mix = [0i64; 2];
         for i in 0..32 {
@@ -671,8 +644,12 @@ impl Scsp {
     }
     #[cfg(test)]
     fn sample(&mut self, ram: &mut [u8]) -> Result<(), BusError> {
+        self.memory_cycle(0, ram)?;
         self.begin_sample(ram)?;
         for step in 0..128 {
+            if step != 0 {
+                self.memory_cycle(step, ram)?;
+            }
             self.dsp_step(step, ram)?;
         }
         self.end_sample();
@@ -697,6 +674,7 @@ pub struct Sound {
     cpu_origin: u64,
     next_cpu: u64,
     ram_busy_until: u64,
+    main_ram_requested: bool,
     scsp_tick: u64,
     reset_output_start: Option<u64>,
     reset_output_end: Option<u64>,
@@ -714,6 +692,7 @@ impl Default for Sound {
             cpu_origin: 0,
             next_cpu: u64::MAX,
             ram_busy_until: 0,
+            main_ram_requested: false,
             scsp_tick: 0,
             reset_output_start: None,
             reset_output_end: None,
@@ -820,6 +799,9 @@ impl Scsp {
     }
 }
 impl Sound {
+    pub(crate) fn main_ram_request(&mut self, pending: bool) {
+        self.main_ram_requested = pending;
+    }
     /// Main CPU/SCU and sound CPU use the same SCSP DRAM controller.
     pub fn read_ram8(&self, address: usize) -> u8 {
         self.scsp.ram_config().read8(&self.ram, address)
@@ -827,8 +809,8 @@ impl Sound {
     pub fn write_ram8(&mut self, address: usize, value: u8) {
         self.scsp.ram_config().write8(&mut self.ram, address, value);
     }
-    /// ST-077 §3.2/fig3.2: DSP memory requests precede the main and
-    /// sound CPU. A memory instruction owns one of the 128 cycles/Fs.
+    /// ST-077 §3.2/fig3.2: DSP, refresh and internal DMA precede the
+    /// main and sound CPU. Each owns one of the 128 DRAM cycles/Fs.
     pub(crate) fn ram_busy(&self) -> bool {
         self.time < self.ram_busy_until
     }
@@ -843,8 +825,16 @@ impl Sound {
         // An untouched DSP executes no instructions. Keep source-capture and
         // output edges, skipping only empty intervening execution slots. A live
         // MPRO write immediately exposes the next slot at the current phase.
-        if !self.scsp.dsp.programmed() && tick & 127 != 1 {
-            tick = (tick + 127) & !127;
+        if !self.scsp.dsp.programmed() && !self.scsp.dma_active() {
+            // Source capture, two refresh requests and output remain clocked
+            // even when no effects program or internal DMA is running.
+            let frame = (tick - 1) & !127;
+            let phase = tick - frame;
+            tick = frame
+                + [1, 125, 127, 128]
+                    .into_iter()
+                    .find(|&t| t >= phase)
+                    .unwrap();
         }
         (tick * REFERENCE_HZ).div_ceil(DSP_HZ)
     }
@@ -924,23 +914,28 @@ impl Sound {
                 let tick = deadline * DSP_HZ / REFERENCE_HZ;
                 self.scsp_tick = tick;
                 let step = ((tick - 1) & 127) as usize;
+                // Finish the previous DRAM cycle before the next sample
+                // captures sources. In particular, a word granted at step127
+                // must be visible to the following frame's PCM reads.
+                if self.scsp.memory_cycle(step, &mut self.ram)? {
+                    self.ram_busy_until = ((tick + 1) * REFERENCE_HZ).div_ceil(DSP_HZ);
+                }
                 if step == 0 {
                     self.scsp.external = cd.as_mut().map_or([0; 2], |cd| cd.audio_sample());
                     self.scsp.begin_sample(&mut self.ram)?;
-                }
-                if self.scsp.frame_active && self.scsp.dsp.memory_access(step) {
-                    self.ram_busy_until = ((tick + 1) * REFERENCE_HZ).div_ceil(DSP_HZ);
                 }
                 self.scsp.dsp_step(step, &mut self.ram)?;
                 if step == 127 {
                     self.scsp.end_sample();
                 }
             } else if deadline == self.next_cpu {
-                if self.transactions.ram_pending() && deadline < self.ram_busy_until {
+                if self.transactions.ram_pending(self.cpu.state.pc)
+                    && (deadline < self.ram_busy_until || self.main_ram_requested)
+                {
                     // Translate wait states into the independently clocked CPU
                     // domain without retiring, repeating or publishing a cycle.
-                    let end = ((self.ram_busy_until - self.cpu_origin) * SOUND_CPU_HZ)
-                        .div_ceil(REFERENCE_HZ);
+                    let release = self.ram_busy_until.max(deadline + 1);
+                    let end = ((release - self.cpu_origin) * SOUND_CPU_HZ).div_ceil(REFERENCE_HZ);
                     self.transactions.stall(end - self.cpu_ticks);
                     self.cpu_ticks = end;
                 } else {

@@ -560,8 +560,8 @@ Implementation: [shared sound bus, PCM and clock domain](../src/sound.rs),
 | Levels/pan/external inputs, [SCSP] §4.2 tables 4.27/28 | Binary total-level attenuation, direct send and fixed-point stereo pan, clipping, master output control; independently expected full-volume stereo buffers | SNDV, SNDR / SNDR | Intermediate master gain conformance and complete routing boundary corpus | Pending |
 | Timers/interrupts, [SCSP] §4.2 tables 4.33–38 | Three sample-clock prescaled counters; sound/main pending/enables/clear; programmed autovector levels, 68k IRQ/RTE, SCU source 6 | SNDV, SNDR / SNDR | Complete cross-device contention/timer reset edge evidence | Pending |
 | MIDI registers, [SCSP] §4.2 figs.4.59–61 | Four-byte input/output FIFOs, status/overflow, byte lanes, serial-paced 8-N-1 output, independent main/sound empty IRQs and reset cancellation | SNDV, SIOG / SIOG | Serial bit-level input/external wiring; the standard console has no MIDI connector (fig.4.59) | Pending |
-| SCSP DMA, [SCSP] §4.2 fig.4.66/table 4.39 | Word transfers in both directions, zero gate, count/address progress, DEXE=0 preserves busy until completion and IRQ; DMA-register target rejected | SNDV, SIOG / SIOG (68k register DMA, completion IRQ and source mutation) | Exact transfer timing/arbitration and full boundary/route evidence | Pending |
-| SCSP effects DSP, [SCSP] §§4.1/4.3/5; [ST-228][SCDSPASM] Reference 1/2 | Individually scheduled 128-instruction/sample multiply/add pipeline; COEF/MADRS/MPRO/TEMP/MEMS/MIXS/EFREG, slot and EXTS inputs, ring/table RAM reads/writes, linear/float conversion, stereo effect routing | DSPV, CLAB, [DSP clock vectors](../src/sound/dsp/clock_tests.rs), [board contention](../src/bus/sound_tests.rs), [68k/DSP guest](../tests/scsp_clock.rs) / CLAB and [SCSP clock Wasm/WebAudio](../scripts/scsp-clock.mjs) | Full field/pipeline/converter corpus, PCM/refresh/DMA ownership and CPU-to-CPU sound-memory arbitration remain | Pending |
+| SCSP DMA, [SCSP] §3.2/§4.2 fig.4.66/tables4.39–40 | Separately granted/completed DRAM-cycle words in both directions, zero gate, retained address/direction/geometry, count/address progress, DEXE=0 preserves busy and completion IRQ; DSP/refresh priority and main/sound CPU waits; prohibited DMA-register target diagnosed | SNDV, SIOG, [DMA/refresh vectors](../src/sound/dma/tests.rs), [board vectors](../src/bus/sound_tests.rs), [original timed guest](../tests/scsp_dma.rs) / SIOG, [DMA Wasm/WebAudio](../scripts/scsp-dma.mjs) | PCM-slot ownership, complete physical grant phases and full boundary/route corpus remain; [functional timing policy](#scsp-shared-dram-dma-refresh-and-cpu-request-priority) | Pending |
+| SCSP effects DSP, [SCSP] §§4.1/4.3/5; [ST-228][SCDSPASM] Reference 1/2 | Individually scheduled 128-instruction/sample multiply/add pipeline; COEF/MADRS/MPRO/TEMP/MEMS/MIXS/EFREG, slot and EXTS inputs, ring/table RAM reads/writes, linear/float conversion, stereo effect routing | DSPV, CLAB, [DSP clock vectors](../src/sound/dsp/clock_tests.rs), [board contention](../src/bus/sound_tests.rs), [68k/DSP guest](../tests/scsp_clock.rs) / CLAB and [SCSP clock Wasm/WebAudio](../scripts/scsp-clock.mjs) | Full field/pipeline/converter corpus, PCM ownership and complete physical CPU/memory grant phases remain; DMA/refresh and buffered main-before-sound requests are covered below | Pending |
 | Browser audio output | Bounded 8192-frame producer/ring, stereo sample-rate adaptation, explicit gesture enable, pause/mute/blocked/underflow/drop states; worklet renders nonzero guest PCM | SNDV / SNDR WebAudio instrumentation | Full synthesis/DSP/CD-DA validation depends on missing hardware | Pending |
 | CD-DA, [CD] §§3/4/8 / [SCSP] table 4.31 | Guest play/repeat, signed stereo BINARY tracks; PRE 50/15 µs de-emphasis with continuous sector history; unchanged-start pause/resume retains the sample/filter state; EXTS0/1 EFSDL/EFPAN, mixed with 68k PCM at sample deadlines | [CD-DA vectors](../tests/cd.rs), [original CD-DA guest](../tests/cdda.rs), CLAB / CD-DA guest reference buffers + AudioWorklet, CLAB changed audio track | Full effects pipeline/subcode and complete synthesis remain; scan attenuation/muting has native vectors | Pending |
 
@@ -932,8 +932,10 @@ SH-2 or SCU beat until release; the [sound adapter](../src/sound/transactions.rs
 extends reset/data/prefetch cycles and instruction retirement with sound-clock
 wait states. A delayed RESET prefetch moves both external pulse edges and
 retirement, so an event cannot be scheduled into the past. This implements
-DSP ownership; full PCM, refresh, SCSP DMA and main/sound CPU arbitration remain
-mandatory, along with the other unresolved audio inventory entries.
+DSP ownership. The [DMA/refresh/request-priority entry](#scsp-shared-dram-dma-refresh-and-cpu-request-priority)
+adds internal transfers, refresh reservations and buffered main-before-sound
+requests. Full PCM and physical grant-phase evidence remain mandatory, along
+with the other unresolved audio inventory entries.
 
 The original MIT [SCSP clock fixture builder](../tests/fixtures/build_scsp_clock.py)
 emits a synthetic BIOS with independent SH-2, 68k and DSP programs. The 68k
@@ -1225,7 +1227,7 @@ register manual supplies stage transitions but no numeric rate table: dyadic
 Q16 slopes and the key-scaling/gain calibration are an explicit functional policy,
 not independent evidence of chip envelope times. No full audio acceptance claim.
 Expanded ROM SHA-256:
-`f086078191c69e137bf70c2c8acc5ceca09724505ca4dbdbc32abfcc291806fc`.
+`6ec3ef18e07484d4993051afd32b13c8ca928b672f20fd7508c4e844dbaca1e9`.
 Source/generated ROM use the adjacent MIT license.
 
 [ISO bootstrap](../src/disc.rs) and [runtime CD directory commands](../src/cd.rs)
@@ -1498,7 +1500,7 @@ assertions are retained. Full SCSP transfer timing/arbitration remains required.
 | `divu.hex` text | `506e848ffbce8b0b066513af7f8c687dfe9710d3615277c362ac9b9ffb74fde4` |
 | `divu.tsv` | `4fffc7d4e5cae2a024aee440e964d329093bb93203e8e9af54ee43f24b47433c` |
 | `smpc-status.hex` text | `ebc72a7f0deb1a2bdbef2fb5e9e368e707015f5a702b880233fd9a9e921946dd` |
-| Expanded `sound-io.hex` BIOS | `33181c5909939af23a2aa50fb8892e2dae53cb81fa49be5cd44203f07e6a5b3c` |
+| Expanded `sound-io.hex` BIOS | `3f1e40e2f276d04b9d5c3ce81a9046a714ae870c85fb5d73dfafabb9402dc07c` |
 
 Seven deliberate implementation regressions are rejected by the corresponding
 native tests: suppressed partial quotient, immediate UBC comparison changes,
@@ -2296,7 +2298,7 @@ Expanded 512 KiB synthetic ROM SHA-256 values:
 
 | Artifact | SHA-256 |
 | --- | --- |
-| `m68k-reset-phases.hex` | `3134988e8a450c25b05ffa0e2f5320198c861ce500432122dff481c7cf19616b` |
+| `m68k-reset-phases.hex` | `150726e7384ebff8513ff90045799f3a1850042da1b29b63e7dbdafa946b8393` |
 | `m68k-traced-reset.hex` | `3312189850063dfaec6b692d989a90d12fafafd35a449c6209a77a28602dae7e` |
 | `vdp1-command-fetch.hex` | `27974ed4fc9c3048180f5d51353394a7f5d289122cf37ffc55bc9e40263f2c9e` |
 | `vdp1-memory-ownership.hex` | `056639795344bed31055be8edaa4d1b9920bb30a27f23404240c4f2ce8fc38d3` |
@@ -2742,3 +2744,44 @@ required. Already completed operand writes remain visible before retirement;
 the barrier never rolls back or repeats them. Other mandatory CPU/peripheral,
 bus/reset, SCU/DSP, video/audio, CD/HLE, SMPC and coverage work remains open.
 This evidence does not complete an umbrella acceptance checkbox or resolve #17.
+
+
+## SCSP shared DRAM DMA, refresh and CPU request priority
+
+Related to #17. [SCSP] §3.2 pp.20–21, fig.3.2 specifies 128 memory
+cycles per sample, two refresh cycles and the priority PCM/DSP > refresh >
+internal DMA > main CPU > sound CPU. §4.2 pp.101–102, fig.4.66 and
+tables4.39–40 define word transfers, increasing addresses, gate/direction,
+DEXE=0 preservation and completion. This replaces the old one-word-per-sample
+internal DMA implementation. It preserves the independently scheduled DSP.
+
+| Contract | Implementation | Independent native evidence | Guest / production Wasm evidence |
+| --- | --- | --- | --- |
+| DMA grants and completion are separate DRAM-cycle boundaries; a word retains its address, direction, gate and RAM geometry; source data remains live until completion | `Scsp::memory_cycle`, `Word` in [dma.rs](../src/sound/dma.rs); `Sound::scsp_deadline/advance_domain` in [sound.rs](../src/sound.rs) | [DMA vectors](../src/sound/dma/tests.rs): four word deadlines, both directions, zero gate, source changes, address/geometry crossing and separate sound/main interrupt acknowledgement | [Original builder](../tests/fixtures/build_scsp_dma.py), [native guest](../tests/scsp_dma.rs), [Wasm/WebAudio](../scripts/scsp-dma.mjs): real SH-2 FRT times a 64-word RAM-to-COEF transfer; real 68k reads transferred COEF0, computes positive/negative PCM and configures its voice |
+| DSP and refresh precede DMA; accepted words finish before the following owner; transfer progress/DEXE/IRQ publish only after completion | `Scsp::memory_cycle`, `Sound::ram_busy` | Literal DSP123/refresh124/DMA125/refresh126/DMA127 ordering; retained DSP read/IWT; exactly two refresh reservations per frame; no drift over four frames; reset cancels only unfinished work; SNDOFF leaves DMA running; a step127 word completes before the next PCM source capture | Guest data/coefficient changes alter the computed bipolar stereo. Omitting the actual guest DEXE store leaves the 68k polling, with no completion or sound. The guest rejects the old sample-paced DMA baseline (FRT=4864, outside the authored 32–99 interval) |
+| SH-2/SCU beats wait while internal DMA owns DRAM; buffered main-interface requests precede simultaneous SCPU data phases | `Bus::sound_ram_requested/advance_fixed_clocks`, [board transaction completion](../src/bus/transactions.rs), `Sound::main_ram_request`, [68k pending-cycle classification](../src/sound/transactions.rs) | [Board vectors](../src/bus/sound_tests.rs): both SH-2s, all SCU channels, retained writes, last-word/IRQ boundary; main write at ref48 delays SCPU reset sampling to ref50 and retains that high word through the later low read. Internal SCSP reset prefetches do not request DRAM | Existing SIOG, bus, sound, reset, DSP, demonstration and audio guests continue executing actual memory/MMIO and IRQ handlers |
+
+The original synthetic BIOS and generated SH-2 source use the adjacent
+[MIT license](../tests/fixtures/LICENSE). Reproduce with
+`python3 tests/fixtures/build_scsp_dma.py --check`, also in CI. Expanded
+512 KiB ROM SHA-256:
+`efc6a059e988a4e6ce1a98b9b642b622b33a8907457ba28b9c4d5f8af8fb0a99`.
+Native/Wasm repeat cold resets and three source operands, requiring actual
+transferred end words, computation markers, non-silent positive/negative stereo,
+no CPU exceptions and deterministic results. Production AudioWorklet must report
+the expected peak, rendered frames, explicit underflow and zero dropped frames.
+
+Main-priority scheduling exposed two original guest races. The reset-vector guest
+now publishes a separate completion flag after both halves of its result;
+the sound-I/O and envelope guests clear stale timer requests **before** arming
+the timer. No result/pixel/audio assertion was weakened. Their updated hashes
+are recorded in the corresponding entries above, and their original builders
+remain CI reproducibility checks.
+
+The manual does not specify refresh phase; this functional implementation
+reserves cycles124/126. Source synthesis remains captured at the first sample
+step, without separately arbitrated PCM fetches. Exact physical CPU-interface
+request/grant phases, PCM ownership, complete synthesis/envelope/DSP/converter
+vectors and the other mandatory CPU, board, SCU, video, CD/HLE, SMPC and
+per-feature demonstration/acceptance evidence remain required. The tests above
+do not establish these missing contracts or complete an umbrella checkbox.

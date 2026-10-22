@@ -24,11 +24,13 @@ mov.b @r1,r0
 tst #1,r0
 bf wait_smpc6
 mov.l r6,@r5
-load 0x25a00800,r1
+load 0x25a00804,r1
 wait_sound:
 mov.l @r1,r0
 tst r0,r0
 bt wait_sound
+load 0x25a00800,r1
+mov.l @r1,r0
 load 0x2600ed00,r1
 mov.l r0,@r1
 finished:

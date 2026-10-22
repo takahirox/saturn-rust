@@ -76,7 +76,12 @@ fn both_sh2_and_scu_wait_for_dsp_ram_without_publishing_or_resampling_early() {
             assert!(b.sound.ram_busy());
             b.write16(SOUND_RAM + 0x1000, 0xABCD).unwrap(); // independent debugger mutation
             advance(&mut b, if owner == Owner::Scu { 3 } else { 4 }, chunk);
-            assert_eq!(b.read16(SOUND_RAM + 0x1000), Ok(0xABCD));
+            assert_eq!(
+                b.read16(SOUND_RAM + 0x1000),
+                Ok(0xABCD),
+                "owner_cpu={} chunk={chunk}",
+                matches!(owner, Owner::Cpu(_))
+            );
             advance(&mut b, 1, chunk);
             assert_eq!(b.read16(SOUND_RAM + 0x1000), Ok(0x5678));
             advance(&mut b, 15, chunk);
@@ -85,6 +90,96 @@ fn both_sh2_and_scu_wait_for_dsp_ram_without_publishing_or_resampling_early() {
                 assert_eq!(b.read32(SOUND_RAM + 0x1000), Ok(0x56789ABC));
                 assert_ne!(b.read32(SCU + 0xA4).unwrap() & (1 << (11 - channel)), 0);
             }
+        }
+    }
+}
+
+#[test]
+fn main_interface_owns_sound_ram_before_simultaneous_sound_cpu_reset_sampling() {
+    for chunk in [1, 3, 17, 10000] {
+        for processor in [Processor::Master, Processor::Slave] {
+            let mut b = Bus::default();
+            b.set_slave_enabled(true);
+            b.write16(SCSP + 0x400, 0x20F).unwrap();
+            b.write32(SOUND_RAM, 0x0007FF00).unwrap();
+            b.write32(SOUND_RAM + 4, 0x200).unwrap();
+            b.write32(SOUND_RAM + 0x200, 0x4E722700).unwrap();
+            b.sound.set_enabled(true).unwrap();
+            advance(&mut b, 40, chunk);
+            assert_eq!(
+                b.replay_cpu(processor).write16(SOUND_RAM | 0x20000000, 6),
+                Err(BusError::Pending)
+            );
+            b.grant_bus_transaction();
+            advance(&mut b, 8, chunk); // first SCPU read and main write at ref48
+            assert_eq!(b.read16(SOUND_RAM), Ok(6));
+            assert_eq!(b.sound.cpu.state.a[7], 0);
+            b.write16(SOUND_RAM, 5).unwrap();
+            advance(&mut b, 2, chunk); // delayed SCPU high samples5 at ref50
+            b.write16(SOUND_RAM, 4).unwrap();
+            advance(&mut b, 10, chunk); // low completes at ref60
+            assert_eq!(b.sound.cpu.state.a[7], 0x0005FF00);
+            advance(&mut b, 100, chunk);
+            assert!(b.sound.cpu.state.stopped && !b.sound.cpu.state.halted);
+            assert_eq!(b.sound.cpu.state.exceptions, 0);
+        }
+    }
+}
+
+#[test]
+fn internal_dma_holds_both_cpu_and_all_scu_word_phases_until_its_final_word() {
+    for chunk in [1, 3, 17, 10000] {
+        for (channel, owner) in [
+            (0, Owner::Cpu(Processor::Master)),
+            (0, Owner::Cpu(Processor::Slave)),
+            (0, Owner::Scu),
+            (1, Owner::Scu),
+            (2, Owner::Scu),
+        ] {
+            let mut b = Bus::default();
+            b.set_slave_enabled(true);
+            b.write16(SCSP + 0x400, 0x20F).unwrap();
+            b.write16(SCSP + 0x700, 0x1230).unwrap();
+            b.write16(SCSP + 0x702, 0x5678).unwrap();
+            b.write16(SCSP + 0x704, 0x9AB8).unwrap();
+            b.write16(SCSP + 0x706, 0xDEF0).unwrap();
+            b.write16(SCSP + 0x412, 0x1000).unwrap();
+            b.write16(SCSP + 0x414, 0x700).unwrap();
+            b.write16(SCSP + 0x416, 0x3008).unwrap();
+            advance(&mut b, 2, chunk);
+            if let Owner::Cpu(p) = owner {
+                assert_eq!(
+                    b.replay_cpu(p).write16(SOUND_RAM | 0x20001000, 0xABCD),
+                    Err(BusError::Pending)
+                );
+                b.grant_bus_transaction();
+            } else {
+                b.write32(HIGH_WRAM + 0x100, 0xABCD9876).unwrap();
+                for (at, value) in [
+                    (0, HIGH_WRAM + 0x100),
+                    (4, SOUND_RAM + 0x1000),
+                    (8, 4),
+                    (12, 0x101),
+                    (20, 7),
+                    (16, 0x101),
+                ] {
+                    b.write32(SCU + channel * 32 + at, value).unwrap();
+                }
+            }
+            advance(&mut b, 8, chunk); // first DMA word at ref10
+            assert_eq!(b.read16(SOUND_RAM + 0x1000), Ok(0x1230));
+            advance(&mut b, 13, chunk);
+            assert_eq!(b.read16(SOUND_RAM + 0x1000), Ok(0x1230));
+            assert_eq!(b.read16(SCSP + 0x420).unwrap() & 16, 0);
+            advance(&mut b, 1, chunk); // last DMA word, release and main write
+            assert_eq!(
+                b.read16(SOUND_RAM + 0x1000),
+                Ok(0xABCD),
+                "owner_cpu={} chunk={chunk}",
+                matches!(owner, Owner::Cpu(_))
+            );
+            assert_eq!(b.read16(SOUND_RAM + 0x1004), Ok(0x9AB8));
+            assert_ne!(b.read16(SCSP + 0x420).unwrap() & 16, 0);
         }
     }
 }

@@ -548,6 +548,7 @@ impl Bus {
         if self.cd.interrupt() {
             self.scu.signal(16);
         }
+        self.sound.main_ram_request(self.sound_ram_requested());
         self.sound.advance_with_cd(clocks, &mut self.cd)?;
         if self.sound.scsp.main_interrupt() {
             self.scu.signal(6);

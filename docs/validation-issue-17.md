@@ -3964,3 +3964,91 @@ main/sound CPU ownership, the remaining synthesis/converter boundaries and the
 other CPU, board/reset, SCU, video, CD/HLE, SMPC and comprehensive conformance
 findings remain mandatory. The full-resolution objective is still unmet; no
 umbrella acceptance criterion is marked complete, reduced or waived.
+
+
+## SCSP DMA memory cycles, refresh and main/sound priority (2026-10-22)
+
+Continues Issue #17 on existing Draft PR #18, preserving the inherited individually
+scheduled SCSP DSP and sound-CPU retirement/reset work. Upstream main was
+rechecked as `dbd981b030a46daa6923072ce240680dd2e58ebf`; the remote Draft head
+at the start was `c7f00d479fcebba5f85b989c839bcfa68383951b`.
+
+The old internal DMA transferred one word per audio sample and never owned sound
+RAM. It now grants/completes individual words on 5.6448 MHz DRAM-cycle boundaries,
+retaining accepted address/direction/gate/geometry while sampling source data at
+completion. DSP requests and two refresh reservations precede DMA; both SH-2s,
+SCU channels and the 68k wait behind the device. Buffered main-interface requests
+precede simultaneous sound-CPU RAM accesses. Internal SCSP reset-prefetch reads
+remain independent of DRAM. A word carried from step127 completes before the
+following frame captures PCM sources. Reset cancels unfinished words and retains
+completed RAM; SNDOFF leaves internal DMA running.
+
+Independent vectors cover word/data/count/DEXE/IRQ deadlines, both directions,
+gate/source changes, address/geometry crossing, DSP/IWT and refresh ordering,
+all three SCU channels, both SH-2s, delayed 68k reset reads, four advancement
+sizes, partial reset and cross-frame PCM capture. The new original MIT synthetic
+BIOS executes real SH-2 FRT timing and 68k computation: 64 RAM words become DSP
+coefficients, and the 68k reads COEF0 and computes bipolar stereo PCM. Three
+source mutations change exact audio; omitting the actual guest DEXE store leaves
+both result and audio absent. The same guest runs in production Wasm, with real
+AudioWorklet peak, rendered-frame, explicit underflow and zero-drop assertions.
+Primary references, implementation, tests, source/license and reproducible hashes
+are linked in the [conformance entry](hardware-conformance.md#scsp-shared-dram-dma-refresh-and-cpu-request-priority).
+
+Main-priority scheduling exposed original fixture races. The sound reset-vector
+guest now publishes a separate completion flag after its entire longword result;
+the sound-I/O/envelope guests clear stale timer requests before arming the timer,
+so an intervening sample cannot cause a newly raised interrupt to be discarded.
+Their original result/audio/IRQ assertions are preserved. All three demonstration
+discs, source licenses, dependency manifests and lockfiles remain byte-identical.
+
+Validation actually performed:
+
+- Complete default-profile `cargo test --locked` and
+  `CARGO_PROFILE_TEST_OPT_LEVEL=1 cargo test --locked`: **735 passed each**
+  (457 unit + 278 integration), zero failed/ignored/filtered; doc tests passed.
+  Debug assertions remain enabled in both profiles. The separate unoptimized
+  unit run also passed all **457** tests.
+- `cargo fmt --check`, `cargo build --locked`, native all-target Clippy and
+  Wasm Clippy with `-D warnings`: passed. Native build/tests use Rust/Cargo
+  1.94.0; Clippy/Wasm use rustup stable Rust 1.99.0.
+- `sh scripts/build-web.sh`: passed with wasm-bindgen 0.2.129. All **71** CI
+  guest/media reproducibility commands passed, including the new DMA builder
+  and the updated reset/sound-I/O/envelope fixtures.
+- Complete final production-Wasm `npm run test:browser`: passed on Chromium
+  145.0.7632.6 / Node 24.12.0 under `/saturn-rust/`, with no required tests
+  skipped. This includes the DMA guest and omitted-DEXE control, three source
+  mutations/cold resets, real WebAudio peak/underflow/drop checks, inherited
+  hardware fixtures, all three demonstrations, Canvas/audio/input/reset/backup,
+  offline execution and local-file privacy assertions.
+- An isolated copy of baseline `ebd83980aa2127cfe1452eb290e2904074d2aace`
+  (the inherited sample-paced DMA implementation) rejects the
+  new independent guest: FRT interval **4864**, outside the authored **32–99**
+  interval. This was an intentional negative control; production sources were
+  never changed for it.
+- JavaScript syntax, changed documentation file links and Git whitespace checks
+  passed. Initial full-suite attempts exposed the two fixture races above; they
+  are not counted as passing runs. The first Wasm attempt used Homebrew Rust
+  without its Wasm target; the final build uses the already-installed rustup
+  toolchain/target. No dependencies or allowance limits were changed.
+
+**The full-resolution Run objective is still unmet.** This implements the stated
+DMA/refresh/buffered-request contracts, with explicitly documented refresh phase
+(cycles124/126). It does not supply separately arbitrated PCM fetches or complete
+physical CPU-interface grant phases. Full synthesis/envelope/DSP/converter
+boundaries and the remaining mandatory SH-2/SH7604, 68k, board/reset, SCU/DSP,
+video, CD/media/HLE, SMPC and comprehensive demonstration/conformance acceptance
+remain required. Keep PR #18 Draft, with the complete target and intended
+`Closes #17`; do not mark any umbrella criterion complete, merge, close/replace
+#17, reopen historical trackers or introduce human/firmware/live-site/external
+workflow approval gates. Continue implementation on this same PR.
+
+
+The next sound implementation is the actual PCM read pipeline in
+`Scsp::begin_sample`: ST-077 §3.2 requires two memory cycles per sounding slot,
+with no fetch at maximum envelope attenuation. Retain the interpolation operands
+at their separate read boundaries and arbitrate them with DSP/refresh/DMA/main/
+sound requests, preserving sound-stack and DSP-input ordering. Add an original
+guest that changes waveform RAM between those reads and verifies computed audio
+and wait-state ordering in native and browser Wasm; the current first-step source
+capture must not be treated as completion of that requirement.

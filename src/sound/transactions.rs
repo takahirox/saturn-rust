@@ -45,9 +45,12 @@ struct ResetSequence {
     high: u16,
 }
 impl Transactions {
-    pub fn ram_pending(&self) -> bool {
-        self.reset.is_some()
-            || matches!(self.waiting, Some(Operation::Read(a, _) | Operation::Write(a, _, _))
+    pub fn ram_pending(&self, pc: u32) -> bool {
+        self.reset.as_ref().is_some_and(|reset| {
+            reset.word < 4
+                || (pc.wrapping_add((reset.word as u32 - 4) * 2) & 0xFF_FFFF)
+                    < SOUND_RAM_SIZE as u32
+        }) || matches!(self.waiting, Some(Operation::Read(a, _) | Operation::Write(a, _, _))
                 if a < SOUND_RAM_SIZE as u32)
     }
     pub fn stall(&mut self, clocks: u64) {

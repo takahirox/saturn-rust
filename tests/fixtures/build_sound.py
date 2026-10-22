@@ -43,9 +43,11 @@ def sound_image(effects=False, synthesis=False, peripherals=False, envelope=Fals
         emit(0x4EB9, 0, 0x900)  # JSR original effects setup (Hardware Lab only).
     movw(0x250 if peripherals else 0x40, 0x10041E)  # timer A enabled for sound CPU
     movw(0x40, 0x100428)  # timer A level-four interrupt
-    movw(0x100 if envelope else 0xFE, 0x100418)  # EG fixture waits 512 samples
     if peripherals or envelope:
-        movw(0x40,0x100422) # clear the power-on timer request before unmasking
+        # Clear stale requests BEFORE arming: clearing after the timer write
+        # can discard a genuine overflow at an intervening sample boundary.
+        movw(0x40,0x100422)
+    movw(0x100 if envelope else 0xFE, 0x100418)  # EG fixture waits 512 samples
     # MOVE.L #$600D,$800; MOVE #$2000,SR; STOP #$2000; BRA.S back to STOP.
     emit(0x23FC, 0, 0x600D, 0, 0x800, 0x46FC, 0x2000, 0x4E72, 0x2000, 0x60FA)
     struct.pack_into('>'+'H'*len(words), image, 0x100, *words)
