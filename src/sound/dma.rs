@@ -1,5 +1,5 @@
 //! ST-077 §3.2/fig.3.2: 128 shared DRAM cycles/Fs, two refresh cycles,
-//! DSP > refresh > DMA > main CPU > sound CPU. §4.2/fig.4.66/tables4.39–40:
+//! PCM/DSP > refresh > DMA > main CPU > sound CPU. §4.2/fig.4.66/tables4.39–40:
 //! a DMA word moves between sound memory and an internal control register.
 //! Accepted words retain their address/direction until the cycle completes.
 use super::*;
@@ -15,10 +15,7 @@ impl Scsp {
     pub(super) fn dma_active(&self) -> bool {
         self.dma_remaining != 0 || self.dma_word.is_some()
     }
-    pub(super) fn memory_cycle(&mut self, step: usize, ram: &mut [u8]) -> Result<bool, BusError> {
-        if self.reset_held {
-            return Ok(false);
-        }
+    pub(super) fn complete_dma(&mut self, ram: &mut [u8]) -> Result<(), BusError> {
         if let Some(word) = self.dma_word.take() {
             let value = if word.gate {
                 0
@@ -41,13 +38,22 @@ impl Scsp {
                 self.request(16);
             }
         }
-        if self.frame_active && self.dsp.memory_access(step) {
+        Ok(())
+    }
+    pub(super) fn memory_cycle(&mut self, step: usize) -> Result<bool, BusError> {
+        if self.reset_held {
+            return Ok(false);
+        }
+        if matches!(step, 124 | 126) {
+            self.refresh_pending = self.refresh_pending.saturating_add(1);
+        }
+        if self.grant_pcm(step) || (self.frame_active && self.dsp.memory_access(step)) {
             return Ok(true);
         }
-        // The manual specifies two refresh cycles per Fs, without assigning
-        // their phase. This functional model reserves cycles124 and126;
-        // neither conflicts with an odd DSP memory instruction.
-        if matches!(step, 124 | 126) {
+        // Two refresh requests/Fs. PCM/DSP may defer them; retain a
+        // request across frame edges rather than stealing an active PCM read.
+        if self.refresh_pending != 0 {
+            self.refresh_pending -= 1;
             return Ok(true);
         }
         if self.dma_remaining == 0 {

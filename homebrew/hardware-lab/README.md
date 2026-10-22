@@ -82,4 +82,8 @@ including both line-window edges, in native execution, Wasm and Canvas. Separate
 matrix-translation and line-window-start mutations in the actual disc change
 independently expected pixels; complete diagnostic records and video are checked
 again after Start restart. Current data-disc SHA-256:
-`9f70a8fec648cd31795ce6c3c4f131417fea256f4e0e370fa1183615819091a9`.
+`f8683e5768b4e68de1192469e4c81532d547e89b570ebe94d8dd4212ea228a83`.
+
+The effects program reads MIXS0 at DSP instruction 4, after slot 0's two separate
+PCM read phases complete. The original wet/dry stereo arithmetic is unchanged;
+this avoids depending on the former instantaneous frame-wide PCM snapshot.

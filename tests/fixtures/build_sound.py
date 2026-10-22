@@ -122,7 +122,10 @@ def sound_image(effects=False, synthesis=False, peripherals=False, envelope=Fals
         movw(0x2000, 0x100702)  # .25
         movw(0, 0x100E00)
         movw(0x1200, 0x100E02)  # MEMS0=0x120000 -> EFREG1=0x0900
-        program = [
+        # Slot0 finishes its two waveform reads before instruction4. Wait
+        # for the real input-mixer contribution instead of sampling MIXS0
+        # before its slot has run (ST-077 §§3.2/4.2 fig.4.30).
+        program = [[0, 0, 2, 0] for _ in range(4)] + [
             [0, 0xA800, 0x0002, 0], [0, 0, 0x1002, 0],
             [0, 0xA000, 0x0002, 0], [0, 0, 0x1102, 0],
             [0, 0xAC00, 0x0002, 0], [0, 0, 0x1202, 0],

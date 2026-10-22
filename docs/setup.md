@@ -28,6 +28,10 @@ cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 ```
 
+The test profile uses optimization level 1 with debug assertions and overflow
+checks explicitly enabled. Hardware guests still execute every emulated clock;
+optimization keeps the complete native integration suite practical in CI.
+
 The Rust library is browser-independent. Tests cover instructions/flags/delay
 slots, synthetic BIOS vectors, RAM/VRAM/MMIO, digital-pad selection, VDP2 pixels,
 ISO parsing/errors and actual guest gameplay/completion/restart. The shared
@@ -132,6 +136,7 @@ python3 tests/fixtures/build_scsp_monitor.py --check
 python3 tests/fixtures/build_m68k_reset.py --check
 python3 tests/fixtures/build_scsp_clock.py --check
 python3 tests/fixtures/build_scsp_dma.py --check
+python3 tests/fixtures/build_scsp_pcm.py --check
 python3 tests/fixtures/build_cd_drive.py --check
 python3 tests/fixtures/build_cd_copy.py --check
 python3 tests/fixtures/build_cd_directory.py --check
@@ -399,3 +404,12 @@ cannot satisfy cache tags or receive cache-hit writes, and mutates guest source
 operands. The builders listed above reproduce both original MIT-licensed ROMs;
 [the conformance entries](hardware-conformance.md#gradation-and-cache-refillram-implementation)
 record primary specifications, hashes, evidence and remaining deviations.
+
+The original PCM read and PCM/EG/noise arbitration guests run in native and browser
+Wasm checks. The 68k changes actual waveform RAM between the two retained
+interpolation operands; the SH-2 separately times internal DMA with 32 PCM voices,
+maximum attenuation and noise. The browser verifies the arithmetic midpoints,
+FRT bounds, mutations, repeated boots, omitted-KEYON silence and production
+AudioWorklet output. Reproduce both with the PCM builder listed above; source,
+license and primary-specification evidence are linked in the
+[PCM conformance entry](hardware-conformance.md#separately-retained-pcm-operands-and-sound-memory-ownership).

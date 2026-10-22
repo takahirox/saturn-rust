@@ -2778,10 +2778,48 @@ the timer. No result/pixel/audio assertion was weakened. Their updated hashes
 are recorded in the corresponding entries above, and their original builders
 remain CI reproducibility checks.
 
-The manual does not specify refresh phase; this functional implementation
-reserves cycles124/126. Source synthesis remains captured at the first sample
-step, without separately arbitrated PCM fetches. Exact physical CPU-interface
-request/grant phases, PCM ownership, complete synthesis/envelope/DSP/converter
-vectors and the other mandatory CPU, board, SCU, video, CD/HLE, SMPC and
-per-feature demonstration/acceptance evidence remain required. The tests above
-do not establish these missing contracts or complete an umbrella checkbox.
+The PCM implementation below supersedes the first-step source snapshot.
+Refresh requests originate at cycles124/126; PCM/DSP can defer them, including
+across frame edges. Exact physical CPU-interface request/grant phases, complete
+synthesis/envelope/DSP/converter vectors and the other mandatory CPU, board,
+SCU, video, CD/HLE, SMPC and per-feature demonstration/acceptance evidence
+remain required. The DMA tests alone do not establish those contracts.
+
+
+## Separately retained PCM operands and sound-memory ownership
+
+Primary reference: [SCSP] §2.2 (first-order interpolation), §3.2 pp.20–21,
+fig.3.2 (128 DRAM cycles/sample, two reads/slot, PCM/DSP priority, EG3FF
+suppression), §4.2 p.72 (SDIR bypass), fig.4.30 (slot input/output order).
+Implementation: [PCM slot/read pipeline](../src/sound/pcm.rs),
+[shared DRAM grant/completion](../src/sound/dma.rs), and
+[fixed-domain scheduling](../src/sound.rs), `sample_cycle`, `begin_slot`,
+`grant_pcm`, `complete_pcm`, `end_slot`, `memory_cycle`, `scsp_deadline`.
+No guest identification, host-written result, waveform snapshot or canned audio
+is used.
+
+| Contract | Independent native evidence | Executing native / production Wasm evidence |
+| --- | --- | --- |
+| Two separately granted/read operands; signed PCM8 and aligned PCM16; first sample survives later writes; second sees its own completion-time data | [phase vectors](../src/sound/pcm/tests.rs): slots 0/7/31, four advancement sizes, signed half-sample arithmetic, shared-word byte reads, accepted geometry versus later MEM4MB changes and retained SA | Original MIT [builder](../tests/fixtures/build_scsp_pcm.py), [SH-2 source](../tests/fixtures/scsp-pcm.s), literal 68k program, [native](../tests/scsp_pcm.rs) and [browser](../scripts/scsp-pcm.mjs). Real 68k stores alternate one waveform word; a half-rate one-sample loop produces the arithmetic midpoint only when a write separates the two reads. Three operand pairs, repeated cold boots and omitted-KEYON silence control |
+| EG3FF suppresses PCM; SDIR bypass and unrouted PCM retain reads; noise/zero need no waveform bus | Native vectors check actual busy cycles, generated silence, continuing phase/EG/timer behavior and all source selectors | The second original [SH-2 guest](../tests/fixtures/scsp-pcm-arbitration.s) uses FRT to time 64-word internal DMA with 32 maximum-attenuation voices, 32 direct PCM voices and 32 noise voices. Independently bounded native/Wasm intervals require the PCM waits and their absence for quiet EG/noise; actual transferred coefficients and repeated resets are also asserted |
+| PCM/DSP precede refresh/DMA/main/sound; accepted DMA word completes before the next grant; refresh is retained when both high-priority paths are full | Native PCM vectors cover 64 PCM grants/frame, full DSP traffic and deferred refresh, retained DMA data/IRQ, and completed MIXS routing. [Board vectors](../src/bus/sound_tests.rs) check both SH-2s and all three SCU channels publishing after the second read | The timed 68k waveform guest runs through the real sound-memory arbiter; FRT/DMA guest verifies the aggregate ownership in production Wasm |
+| Reset cancels either unfinished operand and preserves completed RAM; exact stereo reaches the worklet | Native phase vectors reset after either grant/first completion, then start a new voice with distinct RAM | Both guests execute the external synthetic BIOS path; the browser checks production AudioWorklet peak, rendered frames, zero drops and explicit underflow for all three waveform mutations |
+
+Expanded 512-KiB ROM SHA-256:
+
+- PCM read guest: `a9b537f0c025d01c4fe010b0ab5b60886e15a08a92f6650ab5e92b62b84a2495`.
+- PCM/EG/noise arbitration guest: `2c6ff0ef8edabb8c140c2342c9f95cf192d693ce3cfd3b10a0d72d0f37653841`.
+
+Both are wholly original under the adjacent [MIT fixture license](../tests/fixtures/LICENSE).
+`python3 tests/fixtures/build_scsp_pcm.py --check` reproduces both; CI runs it
+alongside the existing fixtures. The Hardware Lab effects program now consumes
+MIXS0 after slot 0's operand reads finish. Its exact wet/dry vectors are retained;
+its rebuilt original disc hash is in the [demo README](../homebrew/hardware-lab/README.md).
+
+The inherited atomic-read implementation fails the independent midpoint guest
+with `missing midpoint 4000`. The fixed implementation must also pass all existing
+synthesis, effects, sound-clock, DMA, reset and three-disc demonstrations.
+The cycle origin and refresh request phase are deterministic functional policies;
+the manuals do not define a power-on oscillator phase. This supplies PCM
+ownership/operand retention, not full chip/CPU pin timing or completion of the
+remaining Issue #17 acceptance criteria.

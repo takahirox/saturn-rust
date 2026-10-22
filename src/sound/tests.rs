@@ -245,28 +245,28 @@ fn scsp_dma_moves_register_words_both_directions_clears_gate_and_requests_irq() 
     scsp.write16(0x412, 0x200).unwrap();
     scsp.write16(0x414, 2).unwrap();
     scsp.write16(0x416, 0x1004).unwrap();
-    scsp.memory_cycle(0, &mut ram).unwrap();
+    scsp.sample_cycle(0, &mut ram).unwrap();
     assert_eq!(scsp.read16(2).unwrap(), 0);
-    scsp.memory_cycle(1, &mut ram).unwrap();
+    scsp.sample_cycle(1, &mut ram).unwrap();
     assert_eq!(scsp.read16(2).unwrap(), 1);
     assert_ne!(scsp.read16(0x416).unwrap() & 0x1000, 0);
-    scsp.memory_cycle(2, &mut ram).unwrap();
+    scsp.sample_cycle(2, &mut ram).unwrap();
     assert_eq!(scsp.read16(4).unwrap(), 2);
     assert_eq!(scsp.read16(0x416).unwrap() & 0x1000, 0);
     assert_ne!(scsp.read16(0x420).unwrap() & 16, 0);
     scsp.write16(0x412, 0x204).unwrap();
     scsp.write16(0x414, 2).unwrap();
     scsp.write16(0x416, 0x3004).unwrap();
-    scsp.memory_cycle(0, &mut ram).unwrap();
-    scsp.memory_cycle(1, &mut ram).unwrap();
-    scsp.memory_cycle(2, &mut ram).unwrap();
+    scsp.sample_cycle(0, &mut ram).unwrap();
+    scsp.sample_cycle(1, &mut ram).unwrap();
+    scsp.sample_cycle(2, &mut ram).unwrap();
     assert_eq!(&ram[0x204..0x208], &[0, 1, 0, 2]);
     scsp.write16(0x412, 0x204).unwrap();
     scsp.write16(0x414, 2).unwrap();
     scsp.write16(0x416, 0x7004).unwrap();
-    scsp.memory_cycle(0, &mut ram).unwrap();
-    scsp.memory_cycle(1, &mut ram).unwrap();
-    scsp.memory_cycle(2, &mut ram).unwrap();
+    scsp.sample_cycle(0, &mut ram).unwrap();
+    scsp.sample_cycle(1, &mut ram).unwrap();
+    scsp.sample_cycle(2, &mut ram).unwrap();
     assert_eq!(&ram[0x204..0x208], &[0; 4]);
 }
 #[test]
@@ -741,14 +741,14 @@ fn scsp_dma_zero_execute_write_preserves_busy_and_completion_interrupt() {
     scsp.write16(0x414, 0x10).unwrap();
     scsp.write16(0x416, 0x1008).unwrap();
     scsp.write16(0x42A, 16).unwrap();
-    scsp.memory_cycle(0, &mut ram).unwrap();
+    scsp.sample_cycle(0, &mut ram).unwrap();
     for n in 0..4 {
         scsp.write16(0x416, 8).unwrap();
         assert_eq!(scsp.read16(0x416).unwrap() & 0x1000, 0x1000);
         assert!(!scsp.main_interrupt());
         assert_eq!(scsp.read16(0x420).unwrap() & 16, 0);
         assert_eq!(scsp.dma_remaining, 8 - n * 2);
-        scsp.memory_cycle(n as usize + 1, &mut ram).unwrap();
+        scsp.sample_cycle(n as usize + 1, &mut ram).unwrap();
     }
     assert_eq!(scsp.read16(0x416).unwrap() & 0x1000, 0);
     assert!(scsp.main_interrupt());

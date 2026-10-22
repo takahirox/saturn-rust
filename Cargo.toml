@@ -10,3 +10,10 @@ crate-type = ["rlib", "cdylib"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "=0.2.129"
+
+# Hardware guests advance millions of emulated clocks. Optimize their execution
+# while retaining the development-time checks throughout the test profile.
+[profile.test]
+opt-level = 1
+debug-assertions = true
+overflow-checks = true

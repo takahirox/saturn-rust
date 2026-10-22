@@ -4052,3 +4052,62 @@ sound requests, preserving sound-stack and DSP-input ordering. Add an original
 guest that changes waveform RAM between those reads and verifies computed audio
 and wait-state ordering in native and browser Wasm; the current first-step source
 capture must not be treated as completion of that requirement.
+
+
+## PCM operand phases and sound-memory arbitration (2026-10-22)
+
+Related to #17 and the PCM finding against PR #18 head
+`23f01bd91d88457778f7fb3b8d37664f4a4ee37d`. Upstream main was rechecked as
+`dbd981b030a46daa6923072ce240680dd2e58ebf` before implementation.
+
+PCM now grants and retains its two interpolation operands separately, including
+completion-time waveform data and accepted DRAM geometry. Slot output, sound
+stack and effects input follow the completed reads. Maximum effective envelope
+attenuation suppresses waveform fetches; SDIR bypasses attenuation, and internal
+noise/zero sources need no waveform bus. PCM/DSP precede retained refresh/DMA
+requests and both CPU interfaces. Reset cancels unfinished PCM operands.
+
+Eight independent phase/routing vectors and a board arbitration test cover signed
+PCM8/PCM16, slots 0/7/31, all 32 voices, geometry/source changes, four advancement
+sizes, full DSP traffic, refresh deferral, DMA completion, both SH-2s, all SCU
+channels and reset. Two new original MIT synthetic BIOS guests verify actual
+68k waveform writes between reads and SH-2 FRT measurements of 64-word DMA with
+PCM, silent EG and noise. Three waveform mutations, omitted-KEYON silence and
+repeated boots run in native and production Wasm; production AudioWorklet checks
+require expected peaks, rendered samples, zero drops and observable underflow.
+Primary references, implementation, source/license, ROM hashes and test links are
+in the [PCM conformance entry](hardware-conformance.md#separately-retained-pcm-operands-and-sound-memory-ownership).
+
+Hardware Lab reads MIXS0 at instruction 4 after its slot's PCM reads finish.
+The original exact wet/dry stereo assertions pass; its reproducible ISO hash is
+updated in the demo README. Star Collector, Prism Courier, mixed CD-DA, both pad
+ports, backup, external BIOS/HLE selection and browser privacy checks are retained.
+
+Validation actually performed:
+
+- Final `cargo test --locked`: **746 passed** (466 unit + 280 integration), zero
+  failed/ignored; doc tests passed. The complete optimized run with debug
+  assertions also passed 746 tests before the test-profile change.
+- The test profile now uses optimization level 1 with debug assertions and
+  overflow checks explicitly enabled. The initial unoptimized full run passed 573
+  tests before interruption for runtime; its 60-mode display test alone passed
+  after 344.96 seconds. It is not reported as a complete unoptimized pass.
+- `cargo fmt --check`, `cargo build --locked`, native all-target Clippy and
+  Wasm Clippy with `-D warnings`: passed. Final toolchain: Rust/Cargo 1.99.0;
+  wasm-bindgen 0.2.129. An initial Wasm Clippy invocation selected Homebrew's
+  compiler without its Wasm target; the corrected documented PATH passed.
+- `sh scripts/build-web.sh`, all **72** CI fixture/media reproduction commands,
+  and the complete final `npm run test:browser`: passed on Chromium 145.0.7632.6
+  / Node 24.12.0 at `/saturn-rust/`. No required browser tests were skipped.
+- Both new guests fail against an isolated inherited implementation: the waveform
+  test reports `missing midpoint 4000`; the FRT test measures 43–44 ticks for active
+  PCM, failing its independently authored 65–129 interval and required extra waits.
+  Production sources were never modified for these negative controls.
+- JavaScript syntax, changed documentation file links and Git whitespace checks
+  passed. The initial native run exposed Hardware Lab's early MIXS read; its
+  guest schedule was corrected while retaining the exact audio assertions.
+
+This fixes the separately retained PCM-read and ownership finding. The other
+reviewed SH-2/SH7604, 68k, board/reset, SCU/DSP, clocked video, remaining SCSP
+synthesis/DSP, CD/media/HLE, SMPC and comprehensive conformance acceptance findings
+remain unresolved. This evidence does not establish completion of Issue #17.

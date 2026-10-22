@@ -183,3 +183,61 @@ fn internal_dma_holds_both_cpu_and_all_scu_word_phases_until_its_final_word() {
         }
     }
 }
+
+#[test]
+fn pcm_second_read_holds_both_sh2_and_all_scu_channels_until_the_read_completes() {
+    // ST-077 §3.2/fig3.2. Slot0 occupies ref5..10 and15..20.
+    // The main-interface beat would finish at15 (CPU) or18 (SCU),
+    // but cannot publish while that second PCM cycle owns sound memory.
+    for chunk in [1, 3, 17, 10000] {
+        for (channel, owner) in [
+            (0, Owner::Cpu(Processor::Master)),
+            (0, Owner::Cpu(Processor::Slave)),
+            (0, Owner::Scu),
+            (1, Owner::Scu),
+            (2, Owner::Scu),
+        ] {
+            let mut b = Bus::default();
+            b.set_slave_enabled(true);
+            for (at, value) in [
+                (0x400, 0x20F),
+                (2, 0x1000),
+                (6, 4),
+                (12, 0x100),
+                (22, 0xE000),
+                (0, 0x1820),
+            ] {
+                b.write16(SCSP + at, value).unwrap();
+            }
+            b.write16(SOUND_RAM + 0x1000, 0x1234).unwrap();
+            if let Owner::Cpu(p) = owner {
+                advance(&mut b, 7, chunk);
+                assert_eq!(
+                    b.replay_cpu(p).write16(SOUND_RAM | 0x20001000, 0x5678),
+                    Err(BusError::Pending)
+                );
+                b.grant_bus_transaction();
+            } else {
+                b.write32(HIGH_WRAM + 0x100, 0x56789ABC).unwrap();
+                for (at, value) in [
+                    (0, HIGH_WRAM + 0x100),
+                    (4, SOUND_RAM + 0x1000),
+                    (8, 4),
+                    (12, 0x101),
+                    (20, 7),
+                    (16, 0x101),
+                ] {
+                    b.write32(SCU + channel * 32 + at, value).unwrap();
+                }
+                advance(&mut b, 7, chunk);
+            }
+            advance(&mut b, 12, chunk); // ref19, pending access not published
+            assert!(b.sound.ram_busy());
+            assert_eq!(b.read16(SOUND_RAM + 0x1000), Ok(0x1234));
+            advance(&mut b, 1, chunk); // PCM completes before main publication
+            assert_eq!(b.read16(SOUND_RAM + 0x1000), Ok(0x5678));
+            advance(&mut b, 610, chunk);
+            assert_eq!(&b.sound.scsp.drain(1), &[0x1234; 2]);
+        }
+    }
+}

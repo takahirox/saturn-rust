@@ -4,6 +4,7 @@
 mod dma;
 mod dsp;
 mod envelope;
+mod pcm;
 mod synthesis;
 mod transactions;
 use crate::bus::{BusError, Memory};
@@ -103,6 +104,10 @@ pub struct Scsp {
     lfo: [synthesis::Lfo; 32],
     dma_remaining: u16,
     dma_word: Option<dma::Word>,
+    pcm_slot: Option<pcm::Slot>,
+    pcm_word: Option<pcm::Word>,
+    pcm_clocked: bool,
+    refresh_pending: u32,
     external: [i16; 2],
     frame_mix: [i64; 2],
     frame_active: bool,
@@ -130,6 +135,10 @@ impl Default for Scsp {
             lfo: std::array::from_fn(synthesis::Lfo::new),
             dma_remaining: 0,
             dma_word: None,
+            pcm_slot: None,
+            pcm_word: None,
+            pcm_clocked: false,
+            refresh_pending: 0,
             external: [0; 2],
             frame_mix: [0; 2],
             frame_active: false,
@@ -375,196 +384,24 @@ impl Scsp {
             }
         }
     }
-    /// Capture source inputs once per frame. Effects instructions subsequently
-    /// run at separate sound-domain deadlines; output is committed after step127.
-    fn begin_sample(&mut self, ram: &mut [u8]) -> Result<(), BusError> {
+    /// Frame edges reset output/effects; PCM operands are captured only by
+    /// their individually granted DRAM reads (ST-077 §3.2/fig.3.2).
+    fn begin_sample(&mut self) {
         self.frame_active = !self.reset_held;
         self.frame_mix = [0; 2];
-        if self.reset_held {
-            return Ok(());
+        self.pcm_clocked = self.frame_active && self.voices.iter().any(|v| v.active);
+        if !self.frame_active {
+            return;
         }
-        let config = self.ram_config();
-        let mut mix = [0i64; 2];
-        for i in 0..32 {
-            let regs = self.slots[i];
-            self.stack.begin_slot(i);
-            let lfo = self.lfo[i];
-            self.lfo[i].advance(regs[9]);
-            self.stack.write(i, 0, regs[6] & 0x200 != 0);
-            if !self.voices[i].active {
-                continue;
+        // An idle generator still clocks its noise/LFO/stack. It need not
+        // wake the scheduler for each empty slot. KEYON becomes visible at
+        // the next frame when the whole generator was idle at this edge.
+        if !self.pcm_clocked {
+            for i in 0..32 {
+                self.begin_slot(i);
             }
-            let voice = &mut self.voices[i];
-            let attenuation = voice.envelope.advance(
-                regs[4],
-                regs[5],
-                regs[8],
-                voice.phase >= (i64::from(regs[2]) << 16),
-            );
-            let Some(attenuation) = attenuation else {
-                voice.active = false;
-                continue;
-            };
-            let start = (usize::from(regs[0] & 15) << 16) | usize::from(regs[1]);
-            let lsa = i64::from(regs[2]) << 16;
-            let lea = i64::from(regs[3]) << 16;
-            if lea == 0 {
-                voice.active = false;
-                continue;
-            }
-            let looping = (regs[0] >> 5) & 3;
-            let span = lea - lsa;
-            if looping != 0 && span <= 0 {
-                voice.active = false;
-                continue;
-            }
-            // ST-077 figure 4.10: reverse mode skips from the attack's LSA
-            // crossing to the loop end; alternative mode first traverses forward.
-            if looping == 2 && !voice.reverse && voice.phase >= lsa {
-                voice.phase = lea - 1 - (voice.phase - lsa);
-                voice.reverse = true;
-            }
-            if voice.phase >= lea {
-                match looping {
-                    0 => {
-                        voice.active = false;
-                        self.slots[i][0] &= !0x800;
-                        continue;
-                    }
-                    1 => voice.phase = lsa + (voice.phase - lsa).rem_euclid(span),
-                    3 => {
-                        let n = (voice.phase - lea).rem_euclid(2 * span);
-                        voice.reverse = n < span;
-                        voice.phase = if voice.reverse {
-                            lea - 1 - n
-                        } else {
-                            lsa + n - span
-                        };
-                    }
-                    _ => unreachable!(),
-                }
-            }
-            if voice.reverse && voice.phase < lsa {
-                if looping == 2 {
-                    voice.phase = lea - 1 - (lsa - 1 - voice.phase).rem_euclid(span);
-                } else {
-                    let n = (lsa - 1 - voice.phase).rem_euclid(2 * span);
-                    voice.reverse = n >= span;
-                    voice.phase = if voice.reverse {
-                        lea - 1 - (n - span)
-                    } else {
-                        lsa + n
-                    };
-                }
-            }
-            let pcm8 = regs[0] & 16 != 0;
-            // ST-077 §§2.2/3.1, fig.4.30 OP4: first-order interpolation
-            // follows waveform reads. Interpolate decoded signed samples, not
-            // addresses or mixed output. Q16 arithmetic rounds towards -infinity.
-            let shift = self.stack.displacement(i, regs[7]);
-            let position = voice.phase + shift;
-            let index = position >> 16;
-            // CA counts samples for both PCM widths. The first interpolation
-            // address is the current output position, including FM displacement;
-            // neither SA nor the pitch step for the next sample is part of CA.
-            voice.call_address = (index as u16 >> 12) & 15;
-            // A reverse phase names the upper edge of its sample interval.
-            // Measure interpolation distance from that edge toward the previous
-            // sample, wrapping only reverse loops and holding ping-pong ends.
-            let fraction = if voice.reverse {
-                0xFFFF - (position & 0xFFFF)
-            } else {
-                position & 0xFFFF
-            };
-            let next = if shift != 0 {
-                index + if voice.reverse { -1 } else { 1 }
-            } else if voice.reverse {
-                if index <= i64::from(regs[2]) {
-                    if looping == 2 {
-                        i64::from(regs[3]) - 1
-                    } else {
-                        index
-                    }
-                } else {
-                    index - 1
-                }
-            } else if index + 1 >= i64::from(regs[3]) {
-                if looping == 1 {
-                    i64::from(regs[2])
-                } else {
-                    index
-                }
-            } else {
-                index + 1
-            };
-            let decode = |index: i64| {
-                let offset = (start as i64 + index * if pcm8 { 1 } else { 2 }).rem_euclid(0x10_0000)
-                    as usize;
-                let mut value = if pcm8 {
-                    i16::from(config.read8(ram, offset) as i8) << 8
-                } else {
-                    config.read16(ram, offset & !1) as i16
-                };
-                if regs[0] & 0x200 != 0 {
-                    value ^= 0x7FFF;
-                }
-                if regs[0] & 0x400 != 0 {
-                    value ^= i16::MIN;
-                }
-                i64::from(value)
-            };
-            let mut value = match (regs[0] >> 7) & 3 {
-                0 => {
-                    let a = decode(index);
-                    ((a * (65536 - fraction) + decode(next) * fraction) >> 16) as i16
-                }
-                source @ (1 | 2) => {
-                    let mut value = if source == 1 { lfo.noise() } else { 0 };
-                    if regs[0] & 0x200 != 0 {
-                        value ^= 0x7FFF;
-                    }
-                    if regs[0] & 0x400 != 0 {
-                        value ^= i16::MIN;
-                    }
-                    value
-                }
-                _ => unreachable!("reserved SSCTL is rejected on write"),
-            };
-            if regs[6] & 0x100 == 0 {
-                value = synthesis::enveloped(value, attenuation);
-                value = synthesis::attenuate(value, regs[6] as u8, lfo.attenuation(regs[9]));
-            }
-            self.stack.write(i, value, regs[6] & 0x200 != 0);
-            self.dsp.add_slot(regs[10], value);
-            let send = (regs[11] >> 13) & 7;
-            let pan = ((regs[11] >> 8) & 31) as usize;
-            let level = if send == 0 {
-                0
-            } else {
-                i64::from(value) << (send - 1)
-            } / 64;
-            // ST-077 table 4.28: 3 dB steps, ±infinity at extreme pan.
-            const PAN: [i64; 16] = [
-                32768, 23170, 16384, 11585, 8192, 5793, 4096, 2896, 2048, 1448, 1024, 724, 512,
-                362, 256, 0,
-            ];
-            mix[0] += level * if pan < 16 { PAN[pan] } else { 32768 } / 32768;
-            mix[1] += level * if pan >= 16 { PAN[pan - 16] } else { 32768 } / 32768;
-            let oct = ((regs[8] >> 11) & 15) as i8;
-            let oct = if oct >= 8 { oct - 16 } else { oct };
-            let mut step = i64::from(1024 + (regs[8] & 1023)) << 6;
-            if oct >= 0 {
-                step <<= oct;
-            } else {
-                step >>= -oct;
-            }
-            step = lfo.step(regs[9], step);
-            voice.phase += if voice.reverse { -step } else { step };
         }
-        self.stack.end_frame();
-        self.frame_mix = mix;
         self.dsp.begin_sample();
-        Ok(())
     }
     fn dsp_step(&mut self, step: usize, ram: &mut [u8]) -> Result<(), BusError> {
         if self.frame_active {
@@ -574,6 +411,7 @@ impl Scsp {
         Ok(())
     }
     fn end_sample(&mut self) {
+        self.stack.end_frame();
         if !self.frame_active {
             self.push_output([0; 2]);
             return;
@@ -644,15 +482,9 @@ impl Scsp {
     }
     #[cfg(test)]
     fn sample(&mut self, ram: &mut [u8]) -> Result<(), BusError> {
-        self.memory_cycle(0, ram)?;
-        self.begin_sample(ram)?;
         for step in 0..128 {
-            if step != 0 {
-                self.memory_cycle(step, ram)?;
-            }
-            self.dsp_step(step, ram)?;
+            self.sample_cycle(step, ram)?;
         }
-        self.end_sample();
         Ok(())
     }
     pub fn drain(&mut self, frames: usize) -> Vec<i16> {
@@ -809,7 +641,7 @@ impl Sound {
     pub fn write_ram8(&mut self, address: usize, value: u8) {
         self.scsp.ram_config().write8(&mut self.ram, address, value);
     }
-    /// ST-077 §3.2/fig3.2: DSP, refresh and internal DMA precede the
+    /// ST-077 §3.2/fig3.2: PCM, DSP, refresh and internal DMA precede the
     /// main and sound CPU. Each owns one of the 128 DRAM cycles/Fs.
     pub(crate) fn ram_busy(&self) -> bool {
         self.time < self.ram_busy_until
@@ -825,8 +657,12 @@ impl Sound {
         // An untouched DSP executes no instructions. Keep source-capture and
         // output edges, skipping only empty intervening execution slots. A live
         // MPRO write immediately exposes the next slot at the current phase.
-        if !self.scsp.dsp.programmed() && !self.scsp.dma_active() {
-            // Source capture, two refresh requests and output remain clocked
+        if !self.scsp.dsp.programmed()
+            && !self.scsp.dma_active()
+            && !self.scsp.pcm_clocked
+            && self.scsp.refresh_pending == 0
+        {
+            // Frame edges, two refresh requests and output remain clocked
             // even when no effects program or internal DMA is running.
             let frame = (tick - 1) & !127;
             let phase = tick - frame;
@@ -914,19 +750,11 @@ impl Sound {
                 let tick = deadline * DSP_HZ / REFERENCE_HZ;
                 self.scsp_tick = tick;
                 let step = ((tick - 1) & 127) as usize;
-                // Finish the previous DRAM cycle before the next sample
-                // captures sources. In particular, a word granted at step127
-                // must be visible to the following frame's PCM reads.
-                if self.scsp.memory_cycle(step, &mut self.ram)? {
-                    self.ram_busy_until = ((tick + 1) * REFERENCE_HZ).div_ceil(DSP_HZ);
-                }
                 if step == 0 {
                     self.scsp.external = cd.as_mut().map_or([0; 2], |cd| cd.audio_sample());
-                    self.scsp.begin_sample(&mut self.ram)?;
                 }
-                self.scsp.dsp_step(step, &mut self.ram)?;
-                if step == 127 {
-                    self.scsp.end_sample();
+                if self.scsp.sample_cycle(step, &mut self.ram)? {
+                    self.ram_busy_until = ((tick + 1) * REFERENCE_HZ).div_ceil(DSP_HZ);
                 }
             } else if deadline == self.next_cpu {
                 if self.transactions.ram_pending(self.cpu.state.pc)
