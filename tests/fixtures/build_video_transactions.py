@@ -123,6 +123,69 @@ def effects_source():
     return s
 
 
+def lookup_source():
+    # The first sprite expands eight source dots to 504x4 raster dots. The
+    # guest changes all palette entries during drawing. Only the next command
+    # may see that change; framebuffer output never supplies the goldens.
+    s = 'load 0x0600e400,r8\n' + put16(0x25D00002, 2)
+    for at, value in [(0, 9), (20, 511), (22, 255),
+                      (32, 1), (36, 0xC8), (38, 0x200), (40, 0x100), (42, 0x101),
+                      (52, 503), (54, 3),
+                      (64, 0), (68, 0xC8), (70, 0x200), (72, 0x102), (74, 0x102),
+                      (78, 8), (96, 0x8000), (0x800, 0x1111), (0x802, 0x1111),
+                      (0x810, 0x0123), (0x812, 0x4567), (0x814, 0x89AB), (0x816, 0xCDEF)]:
+        s += put16(0x25C00000 + at, value)
+    def palette(label, operand):
+        return (f'load {operand:#x},r1\nmov.w @r1,r0\n'
+                'load 0x25c01000,r4\nmov #16,r5\n'
+                f'{label}:\nmov.w r0,@r4\nadd #2,r4\nadd #1,r0\n'
+                f'dt r5\nbf {label}\n')
+    s += palette('initial_palette', 0x100)
+    s += put16(0x25D00004, 1) + 'nop\n' * 64
+    s += palette('changed_palette', 0x102)
+    s += ('load 0x25d00010,r1\npoll_lookup:\nmov.w @r1,r0\n'
+          'tst #2,r0\nbt poll_lookup\n')
+    for address in [0x25C80000, 0x25C803EE, 0x25C80C00, 0x25C80FEE]:
+        s += read(address, 2)
+    for y in range(2):
+        for x in range(8):
+            s += read(0x25C82000 + y * 1024 + x * 2, 2)
+    for address in [0x25D00010, 0x25D00014]:
+        s += read(address, 2)
+    s += 'load 0x25fe00a4,r1\nmov.l @r1,r0\nload 0x2000,r2\nand r2,r0\n' + record()
+    s += 'load 0x600d,r0\n' + record() + 'park:\nsleep\nbra park\nnop\n'
+    return s
+
+
+def character_source():
+    # Four nibbles share a physical texture word. A very wide first sprite
+    # keeps that word selected while the guest changes it. The later command
+    # must reload the changed character data. All writes/polls are SH-2 code.
+    s = 'load 0x0600e500,r8\n' + put16(0x25D00002, 2)
+    for at, value in [(0, 9), (20, 511), (22, 255),
+                      (32, 1), (36, 0xC8), (38, 0x200), (40, 0x100), (42, 0x101),
+                      (52, 4095), (54, 0),
+                      (64, 0), (68, 0xC8), (70, 0x200), (72, 0x100), (74, 0x101),
+                      (78, 2), (96, 0x8000), (0x800, 0x1111), (0x802, 0x3333)]:
+        s += put16(0x25C00000 + at, value)
+    for i in range(16):
+        s += put16(0x25C01000 + i * 2, 0x8010 + i)
+    s += put16(0x25D00004, 1) + 'nop\n' * 64
+    s += ('load 0x100,r1\nmov.w @r1,r0\nload 0x25c00800,r1\nmov.w r0,@r1\n')
+    s += put16(0x25C00802, 0x4444)
+    s += ('load 0x25d00010,r1\npoll_character:\nmov.w @r1,r0\n'
+          'tst #2,r0\nbt poll_character\n')
+    for x in [0, 255, 511]:
+        s += read(0x25C80000 + x * 2, 2)
+    for x in range(8):
+        s += read(0x25C80800 + x * 2, 2)
+    for address in [0x25D00010, 0x25D00014]:
+        s += read(address, 2)
+    s += 'load 0x25fe00a4,r1\nmov.l @r1,r0\nload 0x2000,r2\nand r2,r0\n' + record()
+    s += 'load 0x600d,r0\n' + record() + 'park:\nsleep\nbra park\nnop\n'
+    return s
+
+
 def monitor_source():
     s = 'load 0x0600dc00,r8\n'
     # Set all control/data while display is disabled. Odd pixels come from
@@ -211,9 +274,13 @@ def build():
     files.update(contention)
     effects, effects_hash = encode('vdp1-effects-timing', effects_source(), [(0x100, 0xC4), (0x102, 0x8010)])
     files.update(effects)
+    lookup, lookup_hash = encode('vdp1-lookup-fetch', lookup_source(), [(0x100, 0x8000), (0x102, 0x83E0)])
+    files.update(lookup)
+    character, character_hash = encode('vdp1-character-fetch', character_source(), [(0x100, 0x2222)])
+    files.update(character)
     files['vdp1-progress.tsv'] = ''.join(f'{v:08X}\n' for v in
         [0x801F, 0, 0, 0, 4, 0, 0x1234, 0x1234, 0xFFFF, 0x600D]).encode()
-    return files, [draw_hash, monitor_hash, grants_hash, command_hash, contention_hash, effects_hash]
+    return files, [draw_hash, monitor_hash, grants_hash, command_hash, contention_hash, effects_hash, lookup_hash, character_hash]
 
 
 if __name__ == '__main__':

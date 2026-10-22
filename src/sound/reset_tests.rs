@@ -18,6 +18,64 @@ fn fixture() -> Sound {
 }
 
 #[test]
+fn ea_internal_clocks_delay_operand_sampling_and_sound_off_cancels_the_wait() {
+    for chunk in [1, 3, 17, 10000] {
+        for indexed in [false, true] {
+            // Reset40, MOVEA extension cycles44/48, next issue52.
+            // Next program fetch56, then the EA wait ends58. Indexed mode
+            // also consumes its extension/refill at60 and waits until62.
+            // MOVE.W's operand therefore samples at62 /66 respectively.
+            let sample = if indexed { 66 } else { 62 };
+            let mut sound = fixture();
+            sound.ram[4..8].copy_from_slice(&0x200u32.to_be_bytes());
+            let mut words: Vec<u16> = vec![
+                0x207C,
+                0,
+                if indexed { 0x600 } else { 0x602 },
+                if indexed { 0x3030 } else { 0x3020 },
+            ];
+            if indexed {
+                words.push(0x1000);
+            } // d8(A0,D1.W)
+            words.extend([0x33C0, 0, 0x800, 0x4E72, 0x2700, 0x4E71, 0x4E71]);
+            for (i, word) in words.into_iter().enumerate() {
+                sound.ram[0x200 + i * 2..0x202 + i * 2].copy_from_slice(&word.to_be_bytes());
+            }
+            sound.ram[0x600..0x602].copy_from_slice(&0x1234u16.to_be_bytes());
+            sound.set_enabled(true).unwrap();
+            until(&mut sound, sample - 1, chunk);
+            assert_eq!(sound.cpu.state.d[0], 0);
+            sound.ram[0x600..0x602].copy_from_slice(&0x5678u16.to_be_bytes());
+            until(&mut sound, sample, chunk);
+            assert_eq!(sound.cpu.state.d[0], 0x5678, "indexed={indexed}");
+            until(&mut sound, 160, chunk);
+            assert_eq!(&sound.ram[0x800..0x802], &0x5678u16.to_be_bytes());
+            assert!(sound.cpu.state.stopped && !sound.cpu.state.halted);
+            assert_eq!(sound.cpu.state.exceptions, 0);
+        }
+    }
+    for boundary in [56, 57, 58, 59, 61] {
+        let mut sound = fixture();
+        sound.ram[4..8].copy_from_slice(&0x200u32.to_be_bytes());
+        for (i, word) in [0x207Cu16, 0, 0x602, 0x3020, 0x4E72, 0x2700, 0x4E71]
+            .into_iter()
+            .enumerate()
+        {
+            sound.ram[0x200 + i * 2..0x202 + i * 2].copy_from_slice(&word.to_be_bytes());
+        }
+        sound.set_enabled(true).unwrap();
+        until(&mut sound, boundary, 1);
+        sound.set_enabled(false).unwrap();
+        sound.ram[0x600..0x602].copy_from_slice(&0x7654u16.to_be_bytes());
+        sound.advance(1000).unwrap();
+        assert_eq!(sound.cpu.state.d[0], 0);
+        sound.set_enabled(true).unwrap();
+        until(&mut sound, 100, 7);
+        assert_eq!(sound.cpu.state.d[0], 0x7654);
+    }
+}
+
+#[test]
 fn reset_vectors_and_prefetch_are_six_independent_reads_not_an_early_snapshot() {
     for chunk in [1, 3, 17, 10000] {
         let mut sound = fixture();

@@ -14,6 +14,7 @@ struct Spy {
     cycles: RefCell<Vec<Cycle>>,
     fail: Option<(u32, usize)>,
     acknowledgement: Option<std::result::Result<u8, BusError>>,
+    waits: RefCell<Vec<(usize, u32)>>,
 }
 impl Spy {
     fn read(&self, address: u32, width: usize) -> std::result::Result<(), BusError> {
@@ -40,6 +41,12 @@ impl Spy {
     }
 }
 impl Memory for Spy {
+    fn m68k_internal_wait(&self, clocks: u32) -> std::result::Result<(), BusError> {
+        self.waits
+            .borrow_mut()
+            .push((self.cycles.borrow().len(), clocks));
+        Ok(())
+    }
     fn m68k_interrupt_acknowledge(&mut self, level: u8) -> std::result::Result<u8, BusError> {
         self.cycles.get_mut().push(Cycle::Acknowledge(level));
         self.acknowledgement.unwrap_or(Ok(24 + level))
@@ -76,8 +83,79 @@ fn fixture(op: u16) -> (M68k, Spy) {
             cycles: RefCell::default(),
             fail: None,
             acknowledgement: None,
+            waits: RefCell::default(),
         },
     )
+}
+
+#[test]
+fn indexed_and_predecrement_calculations_precede_operand_cycles_across_instruction_families() {
+    // UM table8-1: -(An) adds2 beyond (An); d8(An,Xn) adds2 beyond
+    // d16(An). Both widths still use ordinary four-clock operand cycles.
+    for reg in 0..8 {
+        for indexed in [false, true] {
+            for family in [
+                0x1000, 0x3000, 0x2000, 0xD000, 0xD040, 0xD080, 0x9000, 0x9040, 0x9080, 0x8000,
+                0x8040, 0x8080, 0xC000, 0xC040, 0xC080, 0xB000, 0xB040, 0xB080, 0x4A00, 0x4A40,
+                0x4A80, 0x4200, 0x4240, 0x4280, 0x5200, 0x5240, 0x5280, 0x56C0, 0xE0C0, 0xC0C0,
+                0x80C0,
+            ] {
+                let op = family | if indexed { 0x30 } else { 0x20 } | reg;
+                let (mut c, mut m) = fixture(op);
+                for a in &mut c.state.a {
+                    *a = 0x2004;
+                }
+                c.state.d[1] = 0; // word-sized index
+                m.ram.write16(0x102, 0x1000).unwrap();
+                m.ram.write32(0x2000, 0x00100002).unwrap();
+                m.ram.write32(0x2004, 0x00200003).unwrap();
+                c.step(&mut m);
+                assert_eq!(c.state.exceptions, 0, "{op:04X}");
+                let waits = m.waits.borrow();
+                assert_eq!(waits.len(), 1, "{op:04X}");
+                let (position, clocks) = waits[0];
+                assert_eq!(clocks, 2);
+                let trace = m.cycles.borrow();
+                assert!(
+                    trace[..position]
+                        .iter()
+                        .all(|event| matches!(event, Cycle::Read(a, 2) if *a < 0x2000)),
+                    "{op:04X}: {trace:?}"
+                );
+                assert!(
+                    matches!(trace[position], Cycle::Read(0x2000..=0x2004, _)),
+                    "{op:04X}: {trace:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn paired_predecrements_share_one_wait_and_move_destination_has_no_source_wait() {
+    // UM tables8-2 and8-11. A7's byte decrement is two, including alias.
+    for src in 0..8 {
+        for dst in 0..8 {
+            for family in [
+                0xD108, 0xD148, 0xD188, 0x9108, 0x9148, 0x9188, 0xC108, 0x8108,
+            ] {
+                let op = family | dst << 9 | src;
+                let (mut c, mut m) = fixture(op);
+                c.state.a.fill(0x2008);
+                c.step(&mut m);
+                assert_eq!(c.state.exceptions, 0, "{op:04X}");
+                assert_eq!(m.waits.borrow().len(), 1, "{op:04X}");
+                assert_eq!(m.waits.borrow()[0].1, 2);
+            }
+            for family in [0x1100, 0x3100, 0x2100] {
+                let (mut c, mut m) = fixture(family | dst << 9 | src);
+                c.state.a.fill(0x2008);
+                c.step(&mut m);
+                assert_eq!(c.state.exceptions, 0);
+                assert!(m.waits.borrow().is_empty());
+            }
+        }
+    }
 }
 
 #[test]

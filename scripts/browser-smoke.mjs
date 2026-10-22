@@ -1447,14 +1447,17 @@ try {
     words.forEach((w,i)=>driveRom.writeUInt16BE(w,at+i*2));
   }
   let previousDrive;
-  for (let reset=0;reset<2;reset++) {
+  for (let reset=0;reset<4;reset++) {
+    const payload=reset<2?0x1357:0x2468;
+    driveRom.writeUInt16BE(payload,0x100);
+    if (reset===2) previousDrive=undefined;
     await page.locator("#bios").setInputFiles({name:"original-cd-drive.bin",mimeType:"application/octet-stream",buffer:driveRom});
     await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const result=await page.evaluate(async()=>{
       const {emulator}=await import("./app.js");
       emulator.mount_disc(new Uint8Array(2048*100));
-      for(let i=0;i<80;i++) emulator.run_steps(10000);
-      return Array.from({length:100},(_,i)=>emulator.read_long(0x06009000+i*4));
+      for(let i=0;i<80 && emulator.read_long(0x060090F0)!==0x600D;i++) emulator.run_steps(10000);
+      return Array.from({length:194},(_,i)=>emulator.read_long(0x06009000+i*4));
     });
     assert.equal(result[0xF0/4],0x600D);
     for (const [offset,status] of [[0,0x0180],[0x10,0x0500],[0x30,0x0500],[0x50,0x0400],
@@ -1470,6 +1473,10 @@ try {
     for (const offset of [0x110,0x120,0x140,0x150]) assert.equal(result[offset/4],0xFF00);
     assert.equal(result[0x134/4],0x0304);
     assert.equal(result[0x188/4],0x0400);
+    for (const [offset,value] of [[0x2F0,0],[0x2F4,0x80],[0x234,1],[0x24C,0],
+      [0x25C,2],[0x264,198],[0x284,1025],[0x294,200],[0x300,payload],[0x304,0]]) {
+      assert.equal(result[offset/4],value,`CD host transfer ${offset.toString(16)}`);
+    }
     if (previousDrive) assert.deepEqual(result,previousDrive);
     previousDrive=result;
   }

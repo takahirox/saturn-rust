@@ -45,6 +45,40 @@ fn run(m: &mut Machine, rom: &[u8], base: u32, count: u32) -> Vec<u32> {
     records
 }
 #[test]
+fn guest_character_word_rewrite_cannot_replace_already_fetched_nibbles() {
+    let original = load(include_str!("fixtures/vdp1-character-fetch.hex"));
+    let mut m = Machine::new();
+    for (texture, color) in [(0x2222u16, 0x8012), (0x5555, 0x8015)] {
+        let mut rom = original.clone();
+        rom[0x100..0x102].copy_from_slice(&texture.to_be_bytes());
+        let mut expected = vec![0x8011; 3];
+        expected.extend([color; 4]);
+        expected.extend([0x8014; 4]);
+        expected.extend([2, 12, 0x2000, 0x600D]);
+        for _ in 0..2 {
+            assert_eq!(run(&mut m, &rom, 0x0600E500, 15), expected);
+        }
+    }
+}
+
+#[test]
+fn guest_palette_rewrites_during_scaling_affect_only_the_next_lookup_sprite() {
+    let original = load(include_str!("fixtures/vdp1-lookup-fetch.hex"));
+    let mut m = Machine::new();
+    for (old, new) in [(0x8000u16, 0x83E0u16), (0xFC00, 0x8010)] {
+        let mut rom = original.clone();
+        rom[0x100..0x102].copy_from_slice(&old.to_be_bytes());
+        rom[0x102..0x104].copy_from_slice(&new.to_be_bytes());
+        let mut expected = vec![u32::from(old + 1); 4];
+        expected.extend((0..16).map(|i| u32::from(new + i)));
+        expected.extend([2, 12, 0x2000, 0x600D]);
+        for _ in 0..2 {
+            assert_eq!(run(&mut m, &rom, 0x0600E400, 24), expected);
+        }
+    }
+}
+
+#[test]
 fn guest_measures_gouraud_fetches_and_six_clock_shadow_and_translucent_pixels() {
     // ST-013 §5.3 tables5.2/5.3 and §6.3 color calculations. Sixteen
     // independent rows, 128 dots: six-clock RMW costs 640 additional clocks;

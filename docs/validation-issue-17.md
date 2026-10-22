@@ -3638,3 +3638,80 @@ runtime CD/media/HLE services, remaining SMPC transitions and the comprehensive
 acceptance inventory still require implementation and evidence. These passing
 checks do not resolve Issue #17 or authorize closing its umbrella checklist.
 No push, merge, Issue closure, replacement or reopening was performed.
+
+## VDP1 retained fetches, 68k EA waits and CD transfer ends — 2026-10-22
+
+Related to #17. Upstream `main` was checked with
+`git ls-remote origin refs/heads/main` and remains
+`dbd981b030a46daa6923072ce240680dd2e58ebf`. Existing PR #18 implementation,
+all three demonstrations, backup persistence and both pads are preserved.
+
+Implementation and independent evidence:
+
+- VDP1 loads and retains all sixteen LUT entries before raster drawing, with
+  separate word deadlines. Character reads retain complete physical words
+  containing four nibbles, two bytes or one RGB dot. VRAM and framebuffer
+  ownership pause their respective phases. Native vectors cover every color
+  format, both flips, capture boundaries, table cancellation, partial words,
+  RMW publication and chunk invariance. Additional board vectors exercise
+  both CPUs, both DMACs and SCU grants, independent memory overlap and final
+  pixel/status/IRQ deadlines. Two original MIT SH-2 guests rewrite palettes
+  and character data during scaling, then execute another draw command;
+  native and production Wasm assert retained/reloaded pixels, changed guest
+  operands, EDSR/COPR/IRQ and repeated cold resets.
+- The 68k sound adapter now schedules indexed and source-predecrement EA
+  calculation waits before operand reads. Paired predecrements share their
+  one interval; MOVE write-only destinations add none. Native bus traces
+  cover 1,200 family/register/width/EA cases. Actual MOVEA/MOVE/STOP programs
+  sample independently mutated RAM at sound clocks62/66 and test five
+  SNDOff/SNDOn cancellation boundaries. The existing native/Wasm family and
+  fault guests retain all results, frames and nonzero PCM.
+- CD DataEnd publishes every reserved PUT sector even on an early end,
+  retaining the transferred prefix and routing through the selected filter.
+  Unspecified unwritten bytes use deterministic zero fill. Sector I/O alone
+  raises EHST; TOC, Q and file-info completion no longer infer IRQ type from
+  payload length. Native vectors cover all four lengths and eight partial/full
+  boundaries each, routing, word counts, capacity/reclamation and non-sector
+  transfer ends. The expanded original drive guest checks one written word
+  in a two-sector reservation, actual FIFO data, routing, capacity, counts and
+  IRQs; native/Wasm repeat cold boots and change the guest payload operand.
+
+The [conformance entry](hardware-conformance.md#retained-vdp1-tables-and-characters-68k-ea-waits-and-cd-transfer-completion)
+links primary manual sections, implementations, native/guest/Wasm checks,
+fixture licenses, reproduction commands and expanded-ROM SHA-256 values.
+
+Performed validation:
+
+- Formatting, locked native build, native all-target Clippy and Wasm Clippy
+  with `-D warnings`: passed. Native Cargo/Rust are Homebrew1.94.0;
+  the web/Wasm checks use rustup stable Rust1.99.0 and wasm-bindgen0.2.129.
+- Full `CARGO_PROFILE_TEST_OPT_LEVEL=1 cargo test --locked`: 687 passed,
+  0 failed, 0 ignored, including the final two board vectors. This changes
+  test optimization only; no repository test profile or required check is removed.
+- All 67 existing CI reproducibility commands passed. The two modified builders
+  were rechecked after the final CD payload-mutation extension and passed.
+- `sh scripts/build-web.sh`: passed. `npm ci --ignore-scripts`: passed.
+- Complete final `npm run test:browser`: passed on Chromium145.0.7632.6 and
+  Node24.12.0 at `/saturn-rust/`, including Star Collector, Prism Courier,
+  Hardware Lab, both new VDP1 guests, the extended CD guest, Canvas/WebAudio,
+  focus/input, reset/restart, backup and local-file privacy checks.
+- Four deliberate regressions were independently rejected: live per-dot LUT
+  rereads, discarded character-word retention, omitted EA waits and discarded
+  partially written PUT reservations. Production sources were restored
+  byte-for-byte after each mutation. The final tests use the restored sources.
+
+An earlier browser process was stopped after its test module became superseded
+by the CD payload-mutation extension; the complete final run above used the
+updated tests. Initial board-vector timing expectations treated SCU byte
+fringes as consecutive reads; the corrected independent event calculation
+includes their intervening work-RAM writes and overlapping VRAM/framebuffer
+activity. Those initial failed checks are not reported as passing evidence.
+
+Full Issue #17 resolution is **not achieved**. The review's remaining SH-2/
+SH7604 pipeline/peripheral contracts, complete 68k bus sequencing/DIV timing,
+shared sound/board arbitration/reset contracts, SCU DMA/DSP boundaries,
+remaining VDP1/VDP2 modes/raster behavior, SCSP synthesis/DSP scheduling,
+runtime CD/media/HLE CD-library services, SMPC boundaries and comprehensive
+mandatory conformance evidence remain required. These code corrections and
+passing demonstrations do not satisfy the umbrella acceptance checklist.
+No push, merge, Issue closure, replacement or reopening was performed.

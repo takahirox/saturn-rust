@@ -37,6 +37,27 @@ async function run(page, bytes, base, count, pixels = false) {
   }, { bytes: [...bytes], base, count, pixels });
 }
 export async function videoTransactions(page) {
+  const character=await rom("vdp1-character-fetch");
+  for (const [texture,color] of [[0x2222,0x8012],[0x5555,0x8015]]) {
+    const bytes=Buffer.from(character);bytes.writeUInt16BE(texture,0x100);
+    const expected=[...Array(3).fill(0x8011),...Array(4).fill(color),...Array(4).fill(0x8014),
+      2,12,0x2000,0x600D];
+    for (let repeat=0;repeat<2;repeat++) {
+      assert.deepEqual((await run(page,bytes,0x0600E500,15)).records,expected);
+    }
+  }
+  console.log("VDP1 character fetch passed: already-fetched nibbles survive a guest texture write during scaling; the next command reloads both changed words, with operand mutations and cold resets in Wasm.");
+  const lookup = await rom("vdp1-lookup-fetch");
+  for (const [oldColor,newColor] of [[0x8000,0x83E0],[0xFC00,0x8010]]) {
+    const bytes=Buffer.from(lookup);
+    bytes.writeUInt16BE(oldColor,0x100);bytes.writeUInt16BE(newColor,0x102);
+    const expected=[...Array(4).fill(oldColor+1),...Array.from({length:16},(_,i)=>newColor+i),
+      2,12,0x2000,0x600D];
+    for (let repeat=0;repeat<2;repeat++) {
+      assert.deepEqual((await run(page,bytes,0x0600E400,24)).records,expected);
+    }
+  }
+  console.log("VDP1 lookup fetch passed: guest palette writes during 504x4 scaling preserve the current table and change the next command, all sixteen entries, status/IRQ, operand mutations and cold resets in Wasm.");
   const effects = await rom("vdp1-effects-timing");
   let referenceEffectsTimes;
   for (let repeat = 0; repeat < 2; repeat++) {

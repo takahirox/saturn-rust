@@ -338,7 +338,9 @@ predecrement low-word-first and five-word immediate MOVE failures, two MOVEM par
 address/user faults and sequential/branch prefetch faults. Two additional FAMG
 cases distinguish a retained opcode from a fresh extension. SIOG records actual
 fault PC/SR and writes an explicit guest recovery label before RTE.
-Instruction-specific prefetch placement and full bus arbitration still need
+Indexed EA and source-predecrement internal waits now precede operand sampling;
+[independent bus and sound-clock vectors](#retained-vdp1-tables-and-characters-68k-ea-waits-and-cd-transfer-completion)
+cover the two-clock intervals and reset cancellation. Instruction-specific prefetch placement and full bus arbitration still need
 validation; these word-boundary semantics do not establish the complete
 CPU/scheduler acceptance criteria.
 
@@ -497,7 +499,7 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 | Normal/scaled/distorted sprites, [VDP1] §§6.2,7.4–7.6 | Width/height, flips, two-point and nine anchor scales, ruled quadrilateral scan conversion, HSS/EOS source selection | VIDEO, HSSG | PRISM (normal), HSSG | Physical edge/zoom rounding, preclip direction and draw bandwidth | Pending |
 | Polygons/lines/polylines, [VDP1] §§7.7–7.9 | Solid ruled quads and integer line segments | VIDEO | PRISM (polygons) | Full independent sloped-edge and repeated-pixel corpus | Pending |
 | Clip/local coordinates, [VDP1] §§7.1–7.3 | System/user inside/outside clips, local offsets | VIDEO | PRISM (system) | Full extreme-coordinate/clip boundary corpus | Pending |
-| Sprite texture/color modes, [VDP1] §§6.3–6.6 | Packed 4-bit bank/LUT, 64/128/256 bank and RGB555, transparent pixels, two end codes per raster row | VIDEO | PRISM (RGB555) | Scaling/end-code interaction, wrapping and all browser formats | Pending |
+| Sprite texture/color modes, [VDP1] §§3.1/5.1/5.2/6.3–6.6 | Packed 4-bit bank/LUT, 64/128/256 bank and RGB555, retained 16-word LUT before drawing, separately fetched character words and framebuffer publication, transparent pixels, two end codes per raster row | VIDEO; [table/character vectors](#retained-vdp1-tables-and-characters-68k-ea-waits-and-cd-transfer-completion) | PRISM (RGB555); original lookup/character rewrite guests | Scaling/end-code interaction, wrapping, physical prefetch overlap and all browser formats | Pending |
 | Shading/color calculation, [VDP1] §6.3 | Gouraud vertex-word fetches, mesh, MSB-only, six-clock shadow/transparency, half-luminance and combined Gouraud effects | VIDEO, [VDP1 memory/effect vectors](#vertical-counter-and-vdp1smpc-memory-boundaries) | PRISM; original FRT/pixel effects guest | Subpixel interpolation and duplicate-coverage edges; complete readout/effects corpus | Pending |
 | Draw/erase/swap/status/IRQ, [VDP1] §4 | PTMR; bounded 30-clock ENDR; per-dot draw cursor, manual transfer-over; scanline display erase and word-clock VBlank erase with 200-clock/raster overhead; manual/auto change, persistent VBE, CEF/BEF/COPR/LOPR; SCU IRQ/DMA trigger | VIDEO, VIRQ, PRISM, VTX; [local-memory vectors](#scheduled-68k-resetiack-and-vdp1-local-memory-ownership) | PRISM, VTX; command-fetch/ownership guests | Complete command/effect memory costs, mid-blank enable and half-line/swap phase | Pending |
 | VDP2 VRAM, [VDP2] §3 | Bitmap RAM/bank offsets; all eight cycle words select CPU grants, split-bank matching and idle/linked timing, unused-screen release, rotation ownership and high-resolution slot limits; beam output requires addressed-bank display grants and format/reduction bandwidth | VIDEO, SC, VTX, [FETCHG](#vdp2-display-fetch-grants-and-line-table-latches-fetchg); `access.rs`, `vram_grant_tests.rs` | PRISM, SC, VTX, FETCHG | Per-word display-fetch phase/retention and complete SCU/DMA arbitration remain | Pending |
@@ -574,7 +576,7 @@ no-op CPU/device implementations cannot satisfy those assertions.
 | BIN/CUE/raw/mixed tracks, [DISC] / [CD] §§4/7.2.3 | Caller-resolved files, cooked/2352-byte Mode1/Mode2/audio, shared/separate files, INDEX00–99, gaps and TOC; subindices and PRE/DCP/4CH CONTROL metadata drive TOC/status/Q reporting; malformed/duplicate flags rejected; EDC validation, bounded P/Q correction for Mode1/XA Form1, Form2 EDC and PRE audio processing | [media vectors](../tests/media.rs), [parity-matrix/XA vectors](../src/media/integrity.rs), [directory guest](../tests/cd_drive.rs), CLAB | Directory guest on clean/correctable/uncorrectable raw media; CLAB multi-file CUE, INDEX02/99, malformed ordering, missing-reference/reset/privacy | M2G adds plain 2336-byte Mode2 payloads; complete decode/timing boundaries remain; WAVE/compression absent | Pending |
 | CD command/status/HIRQ, [CD] §§3.1–3.4 | Separate command/response latches; 1075-clock command completion, read-protected responses, CMOK/DRDY/CSCT/end flags, masks, clear-zero HIRQ and SCU A-bus IRQ | `tests/cd.rs`, CLAB | CLAB command/FIFO/DMA/IRQ | Full command-specific timing and register mirrors; BIN/CUE has no R–W stream, with empty FIFO WAIT now tested | Pending |
 | CD drive/TOC/session/track state, [CD] §§4/7/8.2 | TOC/session/Q, bounded seek, data play, CD-DA/repeat/end, media-dependent FAD/track/index reports; timed CDON/OFF, 60 Hz pause reports, programmed standby, scan directions/range/muting, tray/media retention and deterministic virtual close | `tests/cd.rs`, CLAB, CDDRV | CLAB, CDDRV | Remaining initialization/subcode options and full drive/response lifecycle boundary evidence | Pending |
-| CD buffers/transfers, [CD] §§3.4/5.3/5.4/8.2 | 200-sector pool, 24 partitions, get/delete/get-delete/put, short/over transfers, size/info/search, FIFO word/long and fixed-source SCU DMA | `tests/cd.rs`, CLAB | CLAB actual DMA/IRQ/checksum, sector mutation | Pool-full pause/resume at the blocked FAD has native data vectors; complete transfer overlap and timing/error inventory remain | Pending |
+| CD buffers/transfers, [CD] §§3.2/3.4/5.3/5.4/8.2 | 200-sector pool, 24 partitions, get/delete/get-delete/put, early-ended writes retain all reserved sectors and use filter routing; explicit sector-I/O EHST completion; size/info/search, FIFO word/long and fixed-source SCU DMA | `tests/cd.rs`, CLAB; [transfer vectors](#retained-vdp1-tables-and-characters-68k-ea-waits-and-cd-transfer-completion) | CLAB actual DMA/IRQ/checksum, sector mutation; extended CD drive guest checks early end, routing, capacity, IRQ and changed payload | Pool-full pause/resume at the blocked FAD has native data vectors; complete transfer overlap and timing/error inventory remain | Pending |
 | Filters/selectors/partitions, [CD] §§5.2/5.3/8.2.5 | FAD and masked subheader comparisons, reverse conditions, true/false routes, reset, copy/move through destination filter | `tests/cd.rs::selectors_fad_range_connections_copy_move_and_size`, Mode2 reverse vectors | CLAB default filter/partition route | Full connection constraints and all boundary/error vectors remain | Pending |
 | BIOS-less startup, [Boot ROM][BOOT] / [DISC] | Original first-read HLE plus licensed SH-2 master/slave reset trampoline and system-service initialization, separate from ExternalBios | disc.rs, game.rs, CLAB, src/hle/boot.s, HLESYS, DPLAYER below | SC, CLAB, HLESYS, DPLAYER | Full startup/region/version, CD-library and per-call/reset contracts remain mandatory | Pending |
 | BIOS services, [BOOT], ST-162-R1 System Program §2.2 | Original guest-executed vector/callback registration, SCU mask/shadow, shared semaphores, copied priorities, power-clear bytes and non-returning SYS_EXECDMP CD player | tests/hle_system.rs, tests/hle_player.rs | HLESYS and DPLAYER, including digital/analog input, real CD-DA/Canvas/WebAudio, mutations and reset | Clock and BUPG backup calls have dedicated evidence below; complete CD-library ABI and remaining per-call side effects/timing remain | Pending |
@@ -2546,3 +2548,51 @@ This establishes the specified byte-fringe and B-bus-unit behavior. Complete
 shared sound-memory ownership, external WAIT sampling, descriptor constraints, trigger/reset/arbitration boundaries and
 full SCU/DSP acceptance still require implementation/evidence. It completes no
 umbrella checkbox and does not establish full hardware conformance.
+
+## Retained VDP1 tables and characters, 68k EA waits and CD transfer completion
+
+Related to #17. Primary references: [VDP1] §2.1 (independent local memories),
+§3.1 steps5–6 (table loading before raster), §§5.1–5.2/fig5.1 (physical words,
+character packing and the sixteen-entry LUT); [68UM] table8-1, tables8-2/8-11
+(EA and multiprecision clocks); [CD] §3.2 table3.2 (command-end flags),
+§5.3.3 and §8.2.7 function7.5 (host/filter connection and early-ended writes).
+
+| Programming effect | Implementation | Independent native evidence | Executing guest / Wasm evidence |
+| --- | --- | --- | --- |
+| Lookup-table loading precedes character drawing | `Drawing::tables_pending`, `Vdp1::advance_phase/draw_dot` in [vdp1.rs](../src/vdp1.rs) retain sixteen separately read LUT words per command, alongside the existing Gouraud words | [table_tests.rs](../src/vdp1/table_tests.rs): 544 capture/flip/shade/chunk cases, all sixteen word boundaries; partial fetch ownership, stop/restart cancellation and exact modeled END deadline | Original [lookup guest](../tests/fixtures/vdp1-lookup-fetch.s) changes the palette while a 504×4 sprite draws. The current command retains old colors; the following command uses all sixteen new entries. [Native](../tests/video_transactions.rs) and [production Wasm](../scripts/video-transactions.mjs) repeat cold boots with changed guest palette operands |
+| Character reads retain the complete physical word | `Drawing::texture_address/texture_pending`, `Vdp1::texture_coordinates/advance_phase/draw_dot` separately fetch a VRAM word and publish framebuffer dots; a word carries four nibbles, two bytes or one RGB dot | 864 capture/format/flip/chunk cases in [table_tests.rs](../src/vdp1/table_tests.rs); mutation before/after fetch, independent VRAM/framebuffer owners, retained RGB translucency background and next-word blocking. [progress_tests.rs](../src/vdp1/progress_tests.rs) preserves unfetched-word mutation and prior stop/reset/erase vectors | Original [character guest](../tests/fixtures/vdp1-character-fetch.s) changes a selected texture word during scaling. Existing captured nibbles remain old; a following command reloads both changed words. The same native/Wasm helper checks pixels, EDSR, COPR, draw IRQ, changed texture operands and cold resets |
+| Indexed and predecrement EA internal clocks precede operand sampling | `Memory::m68k_internal_wait`, `M68k::index/get/internal_wait`, replayed `InternalWait` in [sound/transactions.rs](../src/sound/transactions.rs); waits drive no memory cycle, paired predecrements share one interval, MOVE write-only destinations add none | [bus_tests.rs](../src/m68k/bus_tests.rs): 1,200 family/register/width/EA cases place the wait before the first operand; [sound-clock vectors](../src/sound/reset_tests.rs) execute MOVEA/MOVE/STOP, mutate shared RAM immediately before the actual read at clocks62/66, and cancel five partial waits/reads through SNDOff/SNDOn | Existing original [family/fault guest](../tests/m68k_families.rs) runs through the changed adapter natively and in the complete browser suite, retaining all family/EA results, exception frames and nonzero PCM |
+| Early DataEnd retains all reserved PUT sectors and routes them through the selected filter | `CdBlock::execute` command06 and `route_from` in [cd.rs](../src/cd.rs); transferred prefix retained; unspecified unwritten bytes use deterministic zero fill; complete reservation released on reset | [CD vectors](../tests/cd.rs): four sector lengths × eight short/full transfer boundaries, all three reserved sectors, alternate DATATRNS word addresses, target partition7 rather than filter3, exact prefix/count/guards/free capacity, get-delete reclamation | Expanded original [CD drive builder](../tests/fixtures/build_cd_drive.py) writes only one word of a two-sector reservation, reads both through real FIFO and checks routing/capacity/counts. [Native](../tests/cd_drive.rs) and [browser](../scripts/browser-smoke.mjs) repeat cold boots and mutate the actual guest data operand |
+| Completion IRQ follows command class | Explicit `Transfer::host_io`, not payload length, controls EHST; TOC/Q/file-info transfer end clears DRDY without raising sector-I/O completion | Independent register vectors cover no-read and partial TOC, Q, single/all-file-info ends plus GET/GET-DELETE completion | The same CD guest clears EHST, ends a short TOC, then ends PUT; it must record zero and80H respectively, along with the actual word counts |
+
+The table/character fetch model uses the existing two-main-clock VRAM-word
+cadence; replacement publication takes one clock and framebuffer RMW six.
+These tests establish retained data and independent memory ownership in that
+model, not every physical VDP1 prefetch overlap or command-dependent bandwidth.
+Character retention is per raster line. Scaling/end-code/preclip/duplicate-edge,
+erase/swap and half-line boundaries remain part of mandatory video acceptance.
+Additional [board vectors](../src/bus/vdp1_tests.rs) grant both CPUs, both
+DMACs and SCU access while lookup/character reads are active, with four
+advancement chunk sizes per owner. They assert retained versus unfetched LUT
+entries, texture loading during framebuffer ownership, all eight final pixels
+and the exact modeled END/IRQ boundaries. SCU byte fringes interleave independent
+work-RAM writes; the test preserves the resulting overlap with VRAM reads.
+The two-clock 68k EA intervals do not complete instruction-specific prefetch,
+DIV microsequencing, exception/IRQ phases or shared sound-memory arbitration.
+CD command-specific operation timing, copy/move failure handling, concurrent
+transfers, subcode/media and HLE-library requirements remain mandatory.
+
+Reproduce both new VDP1 fixtures with
+`python3 tests/fixtures/build_video_transactions.py --check`, and the expanded
+CD guest with `python3 tests/fixtures/build_cd_drive.py --check`. All original
+source and generated fixtures use the adjacent [MIT license](../tests/fixtures/LICENSE).
+Expanded 512 KiB synthetic BIOS SHA-256 values:
+
+- Lookup: `5a219c44761a94ae832e1537b9eb41ebf9ae76e9e6800e422639f19324304c5f`.
+- Character: `332b1cdf5325cac6643131c8919d8b5a34a14464c7996d710230dfdfc867ab0f`.
+- CD drive: `9fae535596f08c4744b6f93be2071bdaff6aa0cb81e4a4ffc91e1b0d9e7756c2`.
+
+All three demonstration discs retain their original source, bytes and licenses.
+The full CPU/peripheral, bus/reset, SCU/DSP, video, SCSP/DSP, CD/HLE, SMPC and
+coverage criteria remain mandatory; this evidence does not mark an umbrella
+checkbox complete or establish that Issue #17 can close.

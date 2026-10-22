@@ -5,6 +5,7 @@ use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Operation {
+    InternalWait(u32),
     Read(u32, usize),
     Write(u32, usize, u32),
     ResetOutput,
@@ -13,6 +14,7 @@ enum Operation {
 impl Operation {
     fn complete(self, memory: &mut impl Memory) -> Result<u32, BusError> {
         match self {
+            Self::InternalWait(_) => Ok(0),
             Self::ResetOutput => Ok(0),
             Self::InterruptAcknowledge(level) => {
                 memory.m68k_interrupt_acknowledge(level).map(u32::from)
@@ -66,6 +68,9 @@ impl Replay<'_> {
     }
 }
 impl Memory for Replay<'_> {
+    fn m68k_internal_wait(&self, clocks: u32) -> Result<(), BusError> {
+        self.access(Operation::InternalWait(clocks)).map(|_| ())
+    }
     fn m68k_interrupt_acknowledge(&mut self, level: u8) -> Result<u8, BusError> {
         self.access(Operation::InterruptAcknowledge(level))
             .map(|v| v as u8)
@@ -156,6 +161,8 @@ impl Sound {
                     self.cpu_origin + ((journal.start + 128) * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ),
                 );
                 self.cpu_ticks = journal.start + 128;
+            } else if let Some(Operation::InternalWait(clocks)) = journal.waiting {
+                self.cpu_ticks += u64::from(clocks);
             } else {
                 self.cpu_ticks += 4;
             }

@@ -38,9 +38,42 @@ struct Drawing {
     points: [Point; 4],
     shade: [[i32; 3]; 4],
     shade_read: usize,
+    lookup: [u16; 16],
+    lookup_read: usize,
+    texture: Option<(usize, u16)>,
     row: i32,
     rows: i32,
     line: Option<RasterLine>,
+}
+impl Drawing {
+    fn tables_pending(&self) -> bool {
+        self.shade_read < 4 || self.lookup_read < 16
+    }
+    fn texture_address(&self, control: u16) -> Option<usize> {
+        if self.command[0] & 15 > 2 {
+            return None;
+        }
+        let line;
+        let current = match &self.line {
+            Some(current) => current,
+            None => {
+                line = Vdp1::raster_line(self);
+                &line
+            }
+        };
+        let (pixel, _) = Vdp1::texture_coordinates(&self.command, current, control);
+        let mode = self.command[2] >> 3 & 7;
+        let offset = match mode {
+            0 | 1 => pixel / 2,
+            2..=4 => pixel,
+            _ => pixel * 2,
+        };
+        Some((usize::from(self.command[4]) * 8 + offset) & (VRAM_SIZE - 2))
+    }
+    fn texture_pending(&self, control: u16) -> bool {
+        self.texture_address(control)
+            .is_some_and(|address| self.texture.is_none_or(|(old, _)| old != address))
+    }
 }
 
 struct RasterLine {
@@ -385,7 +418,11 @@ impl Vdp1 {
                 pixel.clocks
             } else {
                 match &self.drawing {
-                    Some(draw) if draw.shade_read == 4 => 1,
+                    Some(draw)
+                        if !draw.tables_pending() && !draw.texture_pending(self.draw_control) =>
+                    {
+                        1
+                    }
                     _ => COMMAND_WORD_CLOCKS - self.phase,
                 }
             };
@@ -440,17 +477,18 @@ impl Vdp1 {
             }
             self.stop_remaining = Some(left - clocks);
         }
-        let shade_pending = self
-            .drawing
-            .as_ref()
-            .is_some_and(|draw| draw.shade_read < 4);
-        let needs_vram = self
-            .drawing
-            .as_ref()
-            .is_none_or(|draw| draw.shade_read < 4 || draw.command[0] & 15 <= 2)
-            && self.pending_pixel.is_none();
+        let tables_pending = self.drawing.as_ref().is_some_and(Drawing::tables_pending);
+        let texture_pending = self.pending_pixel.is_none()
+            && self
+                .drawing
+                .as_ref()
+                .is_some_and(|draw| draw.texture_pending(self.draw_control));
+        let needs_vram =
+            self.drawing.as_ref().is_none_or(|draw| {
+                draw.tables_pending() || draw.texture_pending(self.draw_control)
+            }) && self.pending_pixel.is_none();
         if (vram_busy && needs_vram)
-            || (framebuffer_busy && self.drawing.is_some() && !shade_pending)
+            || (framebuffer_busy && self.drawing.is_some() && !tables_pending && !texture_pending)
         {
             return Ok(false);
         }
@@ -474,17 +512,26 @@ impl Vdp1 {
             return Ok(false);
         }
         if let Some(mut draw) = self.drawing.take() {
-            if draw.shade_read < 4 {
+            if draw.tables_pending() {
                 self.phase += clocks;
                 if self.phase == COMMAND_WORD_CLOCKS {
                     self.phase = 0;
                     // ST-013 §5.3 table5.2: A, B, C, D are independent
                     // VRAM words. A CPU grant pauses this fetch, without
                     // resampling earlier vertices or touching the framebuffer.
-                    let v = self.word(usize::from(draw.command[14]) * 8 + draw.shade_read * 2);
-                    draw.shade[draw.shade_read] =
-                        std::array::from_fn(|ch| i32::from(v >> (ch * 5) & 31) - 16);
-                    draw.shade_read += 1;
+                    if draw.shade_read < 4 {
+                        let v = self.word(usize::from(draw.command[14]) * 8 + draw.shade_read * 2);
+                        draw.shade[draw.shade_read] =
+                            std::array::from_fn(|ch| i32::from(v >> (ch * 5) & 31) - 16);
+                        draw.shade_read += 1;
+                    } else {
+                        // ST-013 §3.1 step5 / §5.2: load the lookup table
+                        // before character drawing. Retain all sixteen words,
+                        // including entries not selected by the texture.
+                        draw.lookup[draw.lookup_read] =
+                            self.word(usize::from(draw.command[3]) * 8 + draw.lookup_read * 2);
+                        draw.lookup_read += 1;
+                    }
                 }
                 self.drawing = Some(draw);
                 return Ok(false);
@@ -493,14 +540,30 @@ impl Vdp1 {
                 self.drawing = Some(draw);
                 return Ok(false);
             }
+            if draw.texture_pending(self.draw_control) {
+                self.phase += clocks;
+                if self.phase == COMMAND_WORD_CLOCKS {
+                    self.phase = 0;
+                    let address = draw.texture_address(self.draw_control).unwrap();
+                    draw.texture = Some((address, self.word(address)));
+                }
+                self.drawing = Some(draw);
+                return Ok(false);
+            }
             if draw.line.is_none() {
                 draw.line = Some(Self::raster_line(&draw));
             }
             let line = draw.line.as_mut().unwrap();
-            let done = self.draw_dot(&draw.command, line);
+            let done = self.draw_dot(
+                &draw.command,
+                &draw.lookup,
+                draw.texture.map(|(_, word)| word),
+                line,
+            );
             if done {
                 draw.line = None;
                 draw.row += 1;
+                draw.texture = None;
             }
             if draw.row <= draw.rows || self.pending_pixel.is_some() {
                 self.drawing = Some(draw);
@@ -635,6 +698,13 @@ impl Vdp1 {
             points: p,
             shade: [[0; 3]; 4],
             shade_read: if mode & 4 != 0 { 0 } else { 4 },
+            lookup: [0; 16],
+            lookup_read: if textured && mode >> 3 & 7 == 1 {
+                0
+            } else {
+                16
+            },
+            texture: None,
             row: 0,
             rows,
             line: None,
@@ -677,12 +747,33 @@ impl Vdp1 {
             end_codes: 0,
         }
     }
-    fn draw_dot(&mut self, c: &[u16; 16], line: &mut RasterLine) -> bool {
+    fn texture_coordinates(c: &[u16; 16], line: &RasterLine, control: u16) -> (usize, bool) {
+        let w = usize::from(c[5] >> 8 & 63) * 8;
+        let h = usize::from(c[5] & 255);
+        let mut u = lerp(line.uv0.0, line.uv1.0, line.dot, line.a.distance(line.b)) as usize;
+        let mut v = lerp(line.uv0.1, line.uv1.1, line.dot, line.a.distance(line.b)) as usize;
+        if c[0] & 0x10 != 0 {
+            u = w - 1 - u;
+        }
+        if c[0] & 0x20 != 0 {
+            v = h - 1 - v;
+        }
+        let high_speed = c[2] & 0x1000 != 0;
+        if high_speed && line.a.distance(line.b) < (line.uv1.0 - line.uv0.0).abs() {
+            u = (u & !1) | usize::from(control & 0x10 != 0);
+        }
+        (v * w + u, high_speed)
+    }
+    fn draw_dot(
+        &mut self,
+        c: &[u16; 16],
+        lookup: &[u16; 16],
+        texture: Option<u16>,
+        line: &mut RasterLine,
+    ) -> bool {
         let RasterLine {
             a,
             b,
-            uv0,
-            uv1,
             shade0,
             shade1,
             textured,
@@ -690,51 +781,31 @@ impl Vdp1 {
         } = *line;
         let steps = a.distance(b);
         let n = line.dot;
-        line.dot += 1;
         // The cursor advances even for transparent, clipped or mesh pixels.
-        // Texture data is fetched when this dot executes, never for a whole
-        // future row at once.
+        // Character data comes from the retained physical word; publication
+        // uses the independent framebuffer port.
         (|| {
             let point = a.lerp(b, n, steps);
             let mut color = c[3];
             if textured {
-                let w = usize::from(c[5] >> 8 & 63) * 8;
-                let h = usize::from(c[5] & 255);
-                let mut u = lerp(uv0.0, uv1.0, n, steps) as usize;
-                let mut v = lerp(uv0.1, uv1.1, n, steps) as usize;
-                if c[0] & 0x10 != 0 {
-                    u = w - 1 - u;
-                }
-                if c[0] & 0x20 != 0 {
-                    v = h - 1 - v;
-                }
                 // ST-013 §6.3/fig.6.5: HSS samples only the selected
                 // original X parity on reduced raster lines. Expansion retains
                 // ordinary sampling. EOS refers to source coordinates even
                 // when the command flips horizontally.
-                let high_speed = c[2] & 0x1000 != 0;
-                if high_speed && steps < (uv1.0 - uv0.0).abs() {
-                    u = (u & !1) | usize::from(self.draw_control & 0x10 != 0);
-                }
-                let pixel = v * w + u;
-                let base = usize::from(c[4]) * 8;
+                let (pixel, high_speed) = Self::texture_coordinates(c, line, self.draw_control);
                 let mode = c[2] >> 3 & 7;
+                let word =
+                    texture.expect("texture data must be fetched before the framebuffer phase");
                 let (raw, end) = match mode {
-                    0 | 1 => {
-                        let byte = self.vram[(base + pixel / 2) & (VRAM_SIZE - 1)];
-                        (
-                            u16::from(if pixel & 1 == 0 { byte >> 4 } else { byte & 15 }),
-                            15,
-                        )
-                    }
-                    2..=4 => (u16::from(self.vram[(base + pixel) & (VRAM_SIZE - 1)]), 255),
-                    _ => (self.word(base + pixel * 2), 0x7FFF),
+                    0 | 1 => (word >> ((3 - pixel % 4) * 4) & 15, 15),
+                    2..=4 => (word >> ((1 - pixel % 2) * 8) & 255, 255),
+                    _ => (word, 0x7FFF),
                 };
                 // HSS ignores end codes at every magnification (§6.3).
                 if raw == end && c[2] & 0x80 == 0 && !high_speed {
                     line.end_codes += 1;
                     if line.end_codes == 2 {
-                        line.dot = steps + 1;
+                        line.dot = steps;
                     }
                     return;
                 }
@@ -748,7 +819,7 @@ impl Vdp1 {
                 }
                 color = match mode {
                     0 => c[3] & !15 | raw,
-                    1 => self.word(usize::from(c[3]) * 8 + usize::from(raw) * 2),
+                    1 => lookup[usize::from(raw)],
                     2..=4 => c[3] & !((1 << (mode + 4)) - 1) | raw,
                     _ => raw,
                 };
@@ -756,6 +827,7 @@ impl Vdp1 {
             let shade = std::array::from_fn(|ch| lerp(shade0[ch], shade1[ch], n, steps));
             self.plot(point, color, c[2], shade);
         })();
+        line.dot += 1;
         line.dot > steps
     }
     fn plot(&mut self, p: Point, color: u16, mode: u16, shade: [i32; 3]) {
@@ -845,3 +917,5 @@ impl Vdp1 {
 
 #[cfg(test)]
 mod progress_tests;
+#[cfg(test)]
+mod table_tests;

@@ -165,6 +165,110 @@ fn both_cpus_dmacs_and_scu_hold_unfetched_gouraud_words_on_the_real_bus() {
     }
 }
 
+fn lookup_fixture() -> Bus {
+    let mut bus = fixture();
+    for (offset, value) in [
+        (32, 0),
+        (36, 0xC8),
+        (38, 0x200),
+        (40, 0x100),
+        (42, 0x101),
+        (0x800, 0x0123),
+        (0x802, 0x4567),
+    ] {
+        bus.write16(VRAM + offset, value).unwrap();
+    }
+    for i in 0..16 {
+        bus.write16(VRAM + 0x1000 + i * 2, 0x8000 + i as u16)
+            .unwrap();
+    }
+    bus
+}
+
+#[test]
+fn every_board_master_holds_unfetched_lookup_words_but_preserves_captured_entries() {
+    for owner in [
+        Owner::Cpu(Processor::Master),
+        Owner::Cpu(Processor::Slave),
+        Owner::Dmac(Processor::Master),
+        Owner::Dmac(Processor::Slave),
+        Owner::Scu,
+    ] {
+        for chunk in [1, 3, 17, 10000] {
+            let mut bus = lookup_fixture();
+            advance(&mut bus, 63, chunk);
+            let startup = request(&mut bus, owner, VRAM + 0x2000);
+            advance(&mut bus, 8, chunk);
+            bus.write16(VRAM + 0x1000, 0x83E0).unwrap();
+            // SCU interleaves its first read with a work-RAM byte write;
+            // that independent cycle permits LUT entries0/1.
+            let capture = 74;
+            advance(&mut bus, capture - 63 - startup - 8, chunk);
+            bus.write16(VRAM + 0x1000, 0xFC00).unwrap();
+            bus.write16(VRAM + 0x1002, 0x801F).unwrap();
+            // Uncontended:64 command+32 LUT+4 texture+8 dots+32 END=140.
+            // CPU/DMAC add one8-clock word; SCU adds two8-clock byte fringes.
+            let finish = if owner == Owner::Scu { 156 } else { 148 };
+            advance(&mut bus, finish - capture - 1, chunk);
+            assert_eq!(bus.read16(FRAMEBUFFER), Ok(0x83E0));
+            assert_eq!(
+                bus.read16(FRAMEBUFFER + 2),
+                Ok(0x801F),
+                "scu={}, chunk={chunk}",
+                owner == Owner::Scu
+            );
+            assert_eq!(bus.read16(FRAMEBUFFER + 14), Ok(0x8007));
+            assert_eq!(bus.read16(REGISTERS + 0x10), Ok(0));
+            assert_eq!(bus.read32(SCU + 0xA4).unwrap() & 0x2000, 0);
+            advance(&mut bus, 1, chunk);
+            assert_eq!(bus.read16(REGISTERS + 0x10), Ok(2));
+            assert_ne!(bus.read32(SCU + 0xA4).unwrap() & 0x2000, 0);
+        }
+    }
+}
+
+#[test]
+fn every_board_framebuffer_owner_allows_texture_fetch_and_blocks_pixel_publication() {
+    for owner in [
+        Owner::Cpu(Processor::Master),
+        Owner::Cpu(Processor::Slave),
+        Owner::Dmac(Processor::Master),
+        Owner::Dmac(Processor::Slave),
+        Owner::Scu,
+    ] {
+        for chunk in [1, 3, 17, 10000] {
+            let mut bus = lookup_fixture();
+            advance(&mut bus, 96, chunk); // all LUT entries captured
+            let startup = request(&mut bus, owner, FRAMEBUFFER + 0x100);
+            advance(&mut bus, 8, chunk); // VRAM word captured at98
+            bus.write16(VRAM + 0x800, 0x9999).unwrap();
+            assert_eq!(bus.read16(FRAMEBUFFER), Ok(0));
+            // SCU's byte reads are separated by a ten-clock WRAM byte
+            // write under reset BSC settings. All8 dots plus the second
+            // two-clock character fetch finish in that independent interval;
+            // the second framebuffer read overlaps END's VRAM reads.
+            let finish = if owner == Owner::Scu { 148 } else { 146 };
+            advance(&mut bus, finish - 96 - startup - 8 - 1, chunk);
+            for (x, color) in [
+                0x8000, 0x8001, 0x8002, 0x8003, 0x8004, 0x8005, 0x8006, 0x8007,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                assert_eq!(bus.read16(FRAMEBUFFER + x as u32 * 2), Ok(color));
+            }
+            assert_eq!(
+                bus.read16(REGISTERS + 0x10),
+                Ok(0),
+                "scu={}, chunk={chunk}",
+                owner == Owner::Scu
+            );
+            advance(&mut bus, 1, chunk);
+            assert_eq!(bus.read16(REGISTERS + 0x10), Ok(2));
+        }
+    }
+}
+
 #[test]
 fn framebuffer_access_holds_draw_dots_and_cancel_releases_them_without_delayed_cpu_write() {
     for processor in [Processor::Master, Processor::Slave] {

@@ -69,6 +69,9 @@ struct Transfer {
     position: usize,
     put: Option<(usize, usize)>,
     delete: Option<(usize, usize, usize)>,
+    // ST-162 §3.2 table3.2: EHST belongs to sector-buffer I/O, not
+    // TOC, subcode or file-information transfers of a coincident byte count.
+    host_io: bool,
 }
 
 pub struct CdBlock {
@@ -727,7 +730,12 @@ impl CdBlock {
             }
         }
     }
-    fn begin_get(&mut self, bytes: Vec<u8>, delete: Option<(usize, usize, usize)>) -> bool {
+    fn begin_get(
+        &mut self,
+        bytes: Vec<u8>,
+        delete: Option<(usize, usize, usize)>,
+        host_io: bool,
+    ) -> bool {
         if self.transfer.borrow().is_some() {
             return false;
         }
@@ -736,6 +744,7 @@ impl CdBlock {
             position: 0,
             put: None,
             delete,
+            host_io,
         });
         let mut r = self.response.get();
         r[0] |= 0x4000;
@@ -798,7 +807,7 @@ impl CdBlock {
                 };
                 let toc = m.toc();
                 response(self, 204, 0, 0);
-                return self.begin_get(toc, None);
+                return self.begin_get(toc, None, false);
             }
             0x03 => {
                 let Some(m) = &self.media else {
@@ -912,9 +921,12 @@ impl CdBlock {
                 if let Some((partition, start, count)) = t.delete {
                     self.partitions[partition].drain(start..start + count);
                 }
-                if let Some((partition, count)) = t.put {
-                    let complete = (t.position / self.put_length).min(count);
-                    for n in 0..complete {
+                if let Some((selector, count)) = t.put {
+                    // ST-162 §8.2.7 function7.5: all reserved sectors are
+                    // written even when the host ends early. Untransferred
+                    // bytes are unspecified; this model deterministically
+                    // retains the zero initialization of the reservation.
+                    for n in 0..count {
                         let mut raw = [0; RAW_SECTOR];
                         raw[15] = 0;
                         let offset = if self.put_length == 2048 {
@@ -925,11 +937,13 @@ impl CdBlock {
                         raw[offset..offset + self.put_length].copy_from_slice(
                             &t.bytes[n * self.put_length..(n + 1) * self.put_length],
                         );
-                        self.partitions[partition].push(Sector { fad: 0, raw });
+                        // Host writes enter the selected filter, just like
+                        // CD/copy input; they do not bypass its connectors.
+                        self.route_from(Sector { fad: 0, raw }, selector as u8);
                     }
                 }
                 self.hirq.set(self.hirq.get() & !DRDY);
-                if t.delete.is_some() || t.put.is_some() || t.bytes.len() != 408 {
+                if t.host_io {
                     self.raise(EHST);
                 }
                 let mut r = self.response.get();
@@ -1046,7 +1060,7 @@ impl CdBlock {
                 bytes[3..6].copy_from_slice(&relative.to_be_bytes()[1..]);
                 bytes[7..10].copy_from_slice(&self.fad.to_be_bytes()[1..]);
                 response(self, 5, 0, 0);
-                return self.begin_get(bytes, None);
+                return self.begin_get(bytes, None, false);
             }
             0x30 => {
                 // ST-162 §5.3 table5.1: a filter input has one source;
@@ -1209,6 +1223,7 @@ impl CdBlock {
                             } else {
                                 None
                             },
+                            true,
                         );
                     }
                     0x62 => {
@@ -1311,6 +1326,7 @@ impl CdBlock {
                     position: 0,
                     put: Some((selector, n)),
                     delete: None,
+                    host_io: true,
                 });
                 self.raise(DRDY);
                 let mut r = self.response.get();
@@ -1394,7 +1410,7 @@ impl CdBlock {
                     bytes.extend([f.unit, f.gap, f.number, f.flags]);
                 }
                 response(self, (bytes.len() / 2) as u16, 0, 0);
-                return self.begin_get(bytes, None);
+                return self.begin_get(bytes, None, false);
             }
             0x74 => {
                 let Some(f) = self

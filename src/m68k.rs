@@ -58,6 +58,7 @@ pub struct M68k {
     // MOVEM memory-to-register consumes its EA extensions before the operand
     // burst, then performs a terminal word read before its next program fetch.
     defer_prefetch: bool,
+    predecrement_waited: bool,
 }
 #[derive(Clone, Copy)]
 enum Size {
@@ -373,6 +374,9 @@ impl M68k {
     }
     fn index(&mut self, memory: &impl Memory, base: u32) -> Result<u32> {
         let e = self.next(memory)?;
+        // UM table8-1: the brief-index sum needs two internal clocks after
+        // its extension fetch, before any operand cycle can sample memory.
+        Self::internal_wait(memory, 2)?;
         // MC68000 brief extension: scale/full-format bits have no function.
         let r = ((e >> 12) & 7) as usize;
         let index = if e & 0x8000 != 0 {
@@ -445,7 +449,19 @@ impl M68k {
             Err(Fault::Vector(4, false))
         }
     }
-    fn get(&self, memory: &impl Memory, ea: Ea, size: Size) -> Result<u32> {
+    fn internal_wait(memory: &impl Memory, clocks: u32) -> Result<()> {
+        memory
+            .m68k_internal_wait(clocks)
+            .map_err(|_| Fault::Suspended)
+    }
+    fn get(&mut self, memory: &impl Memory, ea: Ea, size: Size) -> Result<u32> {
+        if matches!(ea, Ea::Predecrement(_)) && !self.predecrement_waited {
+            // The source predecrement adds two clocks. MOVE destinations
+            // do not use get; paired ADDX/SUBX/ABCD/SBCD operands share this
+            // one internal interval (UM tables8-2/8-11).
+            Self::internal_wait(memory, 2)?;
+            self.predecrement_waited = true;
+        }
         Ok(match ea {
             Ea::Data(r) => self.state.d[r],
             Ea::Address(r) => self.state.a[r],
@@ -666,6 +682,7 @@ impl M68k {
         self.start_pc = self.state.pc;
         self.exception_activity = false;
         self.defer_prefetch = false;
+        self.predecrement_waited = false;
         let trace = self.state.sr & T != 0;
         let result = self
             .next_word(memory, true)

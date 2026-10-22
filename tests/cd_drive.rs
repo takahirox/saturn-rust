@@ -22,13 +22,21 @@ fn rom() -> Vec<u8> {
 #[test]
 fn guest_scans_reverses_pauses_waits_and_reopens_same_disc_without_reading_sectors() {
     let mut machine = Machine::new();
-    let rom = rom();
+    let original = rom();
     let mut previous = None;
-    for _ in 0..2 {
+    for (iteration, payload) in [0x1357u16, 0x1357, 0x2468, 0x2468].into_iter().enumerate() {
+        let mut rom = original.clone();
+        rom[0x100..0x102].copy_from_slice(&payload.to_be_bytes());
+        if iteration == 2 {
+            previous = None;
+        }
         machine.reset(Boot::ExternalBios(&rom)).unwrap();
         machine.mount_media(Media::iso(&vec![0; 2048 * 100]).unwrap());
         for _ in 0..80 {
             machine.run_steps(10000).unwrap();
+            if machine.bus().read32(0x060090F0) == Ok(0x600D) {
+                break;
+            }
         }
         let read = |offset: u32| machine.bus().read32(0x06009000 + offset).unwrap();
         assert_eq!(read(0xF0), 0x600D);
@@ -56,7 +64,21 @@ fn guest_scans_reverses_pauses_waits_and_reopens_same_disc_without_reading_secto
         }
         assert_eq!(read(0x134), 0x0304); // both retained across invalid commands
         assert_eq!(read(0x188), 0x0400); // connect after explicit disconnect
-        let trace = (0..100).map(|i| read(i * 4)).collect::<Vec<_>>();
+        for (offset, value) in [
+            (0x2F0, 0),
+            (0x2F4, 0x80),
+            (0x234, 1),
+            (0x24C, 0),
+            (0x25C, 2),
+            (0x264, 198),
+            (0x284, 1025),
+            (0x294, 200),
+            (0x300, u32::from(payload)),
+            (0x304, 0),
+        ] {
+            assert_eq!(read(offset), value, "host transfer field {offset:X}");
+        }
+        let trace = (0..194).map(|i| read(i * 4)).collect::<Vec<_>>();
         if let Some(old) = previous {
             assert_eq!(trace, old);
         }

@@ -153,6 +153,12 @@ pub trait Memory {
     fn sh2_pipeline_wait(&mut self, _clocks: u32) -> Result<(), BusError> {
         Ok(())
     }
+    /// MC68000UM table8-1: internal effective-address calculation clocks
+    /// occupy no external data cycle. Clocked adapters suspend before the
+    /// following operand access; architectural fixtures need no clock domain.
+    fn m68k_internal_wait(&self, _clocks: u32) -> Result<(), BusError> {
+        Ok(())
+    }
     /// MC68000UM §5.5: RESET holds the external device signal for 124 clocks.
     /// A clocked sound adapter suspends here until the pulse completes; an
     /// architectural-only memory fixture has no external clock domain.

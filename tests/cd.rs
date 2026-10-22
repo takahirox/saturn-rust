@@ -201,6 +201,82 @@ fn toc_raw_transfer_lengths_put_reset_and_chunk_invariance() {
         assert_eq!(issue(&mut c, [0x5100, 0, 0, 0])[3], 1);
     }
 }
+
+#[test]
+fn early_put_end_publishes_all_reserved_sectors_through_the_selected_filter() {
+    // ST-162 §8.2.7 function7.5: early DataEnd writes every designated
+    // sector; bytes the host did not transfer are unspecified (zero here).
+    // §5.3.3: a host input enters a filter, not its same-numbered partition.
+    for (size_code, size) in [2048, 2336, 2340, 2352].into_iter().enumerate() {
+        for words in [
+            0,
+            1,
+            size / 2 - 1,
+            size / 2,
+            size / 2 + 1,
+            size,
+            size * 3 / 2 - 1,
+            size * 3 / 2,
+        ] {
+            let (mut cd, _) = mounted();
+            issue(
+                &mut cd,
+                [0x6000 | size_code as u16, (size_code as u16) << 8, 0, 0],
+            );
+            issue(&mut cd, [0x4601, 0x0700, 0x0300, 0]); // filter3 -> partition7
+            cd.write16(CD + 8, !0x80).unwrap();
+            assert_ne!(issue(&mut cd, [0x6400, 0, 0x0300, 3])[0] & 0x4000, 0);
+            let mut expected = vec![0; size * 3];
+            for n in 0..words {
+                let value = (n as u16).wrapping_mul(0x123).wrapping_add(0x2468);
+                cd.write16(DATA + (n as u32 & 1) * 2, value).unwrap();
+                expected[n * 2..n * 2 + 2].copy_from_slice(&value.to_be_bytes());
+            }
+            assert_eq!(cd.read16(CD + 8).unwrap() & 0x80, 0);
+            assert_eq!(issue(&mut cd, [0x0600, 0, 0, 0])[1], words as u16);
+            assert_eq!(cd.read16(CD + 8).unwrap() & 0x82, 0x80);
+            assert_eq!(issue(&mut cd, [0x5100, 0, 0x0300, 0])[3], 0);
+            assert_eq!(issue(&mut cd, [0x5100, 0, 0x0700, 0])[3], 3);
+            assert_eq!(issue(&mut cd, [0x5000, 0, 0, 0])[1], 197);
+            issue(&mut cd, [0x6300, 0, 0x0700, 3]);
+            assert_eq!(read(&cd, size * 3), expected, "size={size}, words={words}");
+            issue(&mut cd, [0x0600, 0, 0, 0]);
+            assert_eq!(issue(&mut cd, [0x5000, 0, 0, 0])[1], 200);
+        }
+    }
+}
+
+#[test]
+fn only_sector_buffer_transfers_raise_host_io_completion() {
+    // ST-162 §3.2 table3.2: TOC, Q and file info use DATATRNS but have no
+    // EHST command-end flag. The payload size does not determine IRQ type.
+    let mut cd = CdBlock::default();
+    cd.mount(Media::iso(include_bytes!("../web/star-collector.iso")).unwrap());
+    issue(&mut cd, [0x7000, 0, 0x00FF, 0xFFFF]);
+    for cmd in [
+        [0x0200, 0, 0, 0],
+        [0x2000, 0, 0, 0],
+        [0x7300, 0, 0, 2],
+        [0x7300, 0, 0xFF, 0xFFFF],
+    ] {
+        for words in [0, 1] {
+            cd.write16(CD + 8, !0x80).unwrap();
+            assert_ne!(issue(&mut cd, cmd)[0] & 0x4000, 0);
+            read(&cd, words * 2);
+            assert_eq!(issue(&mut cd, [0x0600, 0, 0, 0])[1], words as u16);
+            assert_eq!(cd.read16(CD + 8).unwrap() & 0x82, 0);
+        }
+    }
+    issue(&mut cd, [0x483F, 0, 0, 0]);
+    sectors(&mut cd, 1);
+    for cmd in [0x6100, 0x6300] {
+        cd.write16(CD + 8, !0x80).unwrap();
+        issue(&mut cd, [cmd, 0, 0, 1]);
+        assert_eq!(cd.read16(CD + 8).unwrap() & 0x82, 2);
+        issue(&mut cd, [0x0600, 0, 0, 0]);
+        assert_eq!(cd.read16(CD + 8).unwrap() & 0x82, 0x80);
+    }
+}
 #[test]
 fn cdda_stereo_external_scsp_route_has_exact_samples_and_muting() {
     let iso = vec![0; 2048];

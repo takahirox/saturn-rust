@@ -38,9 +38,12 @@ def build():
     s += command([0x2001,0,0,0], 'empty_rw', 0x06009070)
     s += command([0x0500,0,0,0], 'open', 0x06009080)
     s += command([0x0400,0xFFFF,0,0], 'close', 0x06009090)
+    s += store(0x25890008, 0xFF7F) # clear EHST before non-sector TOC transfer
     s += command([0x0200,0,0,0], 'toc', 0x060090A0)
     s += 'load 0x25818000,r1\nmov.l @r1,r0\nload 0x060090E0,r2\nmov.l r0,@r2\n'
     s += command([0x0600,0,0,0], 'end_toc', 0x060090B0)
+    s += ('load 0x25890008,r1\nmov.w @r1,r0\nload 0x82,r2\nand r2,r0\n'
+          'load 0x060092f0,r1\nmov.l r0,@r1\n')
     s += command([0x5100,0,0,0], 'count', 0x060090C0)
     # Independent selector error/atomicity vectors, executed through MMIO.
     for index, (words, name) in enumerate([
@@ -55,9 +58,29 @@ def build():
         ([0x3100,0,0,0], 'device_destination'),
     ]):
         s += command(words, name, 0x06009100 + index * 16)
+    s += command([0x483F,0,0,0], 'reset_buffers', 0x06009200)
+    s += command([0x4601,0x0700,0x0300,0], 'host_filter', 0x06009210)
+    s += store(0x25890008, 0xFF7F)
+    s += command([0x6400,0,0x0300,2], 'put_two', 0x06009220)
+    # One transferred word still commits both reserved sectors on DataEnd.
+    s += ('load 0x100,r1\nmov.w @r1,r0\nload 0x25818000,r1\nmov.w r0,@r1\n')
+    s += command([0x0600,0,0,0], 'end_partial_put', 0x06009230)
+    s += ('load 0x25890008,r1\nmov.w @r1,r0\nload 0x82,r2\nand r2,r0\n'
+          'load 0x060092f4,r1\nmov.l r0,@r1\n')
+    s += command([0x5100,0,0x0300,0], 'filter_partition', 0x06009240)
+    s += command([0x5100,0,0x0700,0], 'routed_partition', 0x06009250)
+    s += command([0x5000,0,0,0], 'reserved_size', 0x06009260)
+    s += command([0x6300,0,0x0700,2], 'get_reserved', 0x06009270)
+    s += ('load 0x25818000,r4\nmov.w @r4,r0\nextu.w r0,r0\n'
+          'load 0x06009300,r1\nmov.l r0,@r1\n'
+          'load 1023,r5\nconsume_sector:\nmov.w @r4,r0\ndt r5\nbf consume_sector\n'
+          'mov.w @r4,r0\nextu.w r0,r0\nload 0x06009304,r1\nmov.l r0,@r1\n')
+    s += command([0x0600,0,0,0], 'end_reserved', 0x06009280)
+    s += command([0x5000,0,0,0], 'released_size', 0x06009290)
     s += 'load 0x060090F0,r1\nload 0x600d,r0\nmov.l r0,@r1\nsleep\n'
     rom = bytearray(524288)
     struct.pack_into('>II',rom,0,0x200,0x06100000)
+    struct.pack_into('>H',rom,0x100,0x1357)
     code = assembler.assemble(s,base=0x200)
     assert len(code)<0x5000
     rom[0x200:0x200+len(code)] = code

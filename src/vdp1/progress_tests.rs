@@ -78,11 +78,12 @@ fn texture_writes_between_pixel_clocks_change_only_unfetched_dots() {
         bus.write16(VRAM + 0x800 + x * 2, 0x801F).unwrap();
     }
     reg(&mut bus, 4, 1);
-    advance(&mut bus, 68, 8);
+    // Four independently fetched RGB words (2+1 clocks each).
+    advance(&mut bus, 76, 8);
     for x in 0..8 {
         bus.write16(VRAM + 0x800 + x * 2, 0x83E0).unwrap();
     }
-    advance(&mut bus, 36, 3);
+    advance(&mut bus, 44, 3);
     for x in 0..8 {
         assert_eq!(
             bus.read16(FRAMEBUFFER + x * 2),
