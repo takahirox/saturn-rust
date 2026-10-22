@@ -1,9 +1,10 @@
 //! Original software-visible VDP2 renderer; Sega ST-058-R2 §§3–6,8–13.
 //! Normal tile/bitmap sampling and VDP1 composition are independent of guest identity.
 use crate::{bus::BusError, devices::VDP2, vdp1::Vdp1};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 mod access;
+mod fetch;
 mod rotation;
 mod sprite;
 mod tables;
@@ -32,6 +33,7 @@ pub struct Vdp2 {
     // register setup. Only beam-driven output consumes display bus grants.
     beam_rendering: bool,
     line_tables: tables::LineTables,
+    display_fetch: RefCell<fetch::DisplayFetch>,
 }
 impl Default for Vdp2 {
     fn default() -> Self {
@@ -56,6 +58,7 @@ impl Default for Vdp2 {
             scan_history: [[0; 3]; 2],
             beam_rendering: false,
             line_tables: tables::LineTables::default(),
+            display_fetch: RefCell::default(),
         }
     }
 }
@@ -118,7 +121,7 @@ impl Vdp2 {
         if offset == 4 {
             // ST-058 §2.5: board TV standard and current scan field.
             return Ok(u16::from(self.external_latched.replace(false)) << 9
-                | u16::from(self.vblank) << 3
+                | u16::from(self.vblank || self.word(0) & 0x8000 == 0) << 3
                 | u16::from(self.hblank) << 2
                 | u16::from(self.odd || self.word(0) & 0xC0 == 0) << 1
                 | u16::from(self.pal));
@@ -183,6 +186,7 @@ impl Vdp2 {
             .unwrap_or_else(|| self.composite(sprites))
     }
     pub(crate) fn begin_scanline(&mut self, line: usize) {
+        *self.display_fetch.get_mut() = fetch::DisplayFetch::default();
         self.scan_x = 0;
         self.scan_history = [[0; 3]; 2];
         let y = if self.word(0) & 0xC0 == 0xC0 {
@@ -231,6 +235,7 @@ impl Vdp2 {
         // The initial reset field, or a density change inside a line, has no
         // matching line-start latch and initializes here.
         if !self.rotation_line_ready(y) || self.line_tables.line != Some(y) {
+            *self.display_fetch.get_mut() = fetch::DisplayFetch::default();
             self.read_line_tables(y);
             self.beam_rendering = true;
             self.read_rotation_line(y, line == 0);
@@ -489,7 +494,9 @@ impl Vdp2 {
             if !self.cell_access(layer, address) {
                 return None;
             }
-            sy += u64::from(self.vlong(address) & 0x7FFFF00);
+            let value = u32::from(self.display_word(layer, 2, address)) << 16
+                | u32::from(self.display_word(layer, 2, address + 2));
+            sy += u64::from(value & 0x7FFFF00);
         }
         Some((
             ((sx + x as u64 * u64::from(dx)) >> 16) as usize,
@@ -554,7 +561,7 @@ impl Vdp2 {
         let name = if over {
             self.word(0xB8 + parameter.unwrap() * 2)
         } else {
-            self.vword(at)
+            self.display_word(layer, 0, at)
         };
         let (character, palette, flip) = if one || over {
             let aux = pnc & 0x4000 != 0;
@@ -574,7 +581,7 @@ impl Vdp2 {
             (character, palette, if aux { 0 } else { name >> 10 & 3 })
         } else {
             (
-                usize::from(self.vword(at + 2) & 0x7FFF),
+                usize::from(self.display_word(layer, 0, at + 2) & 0x7FFF),
                 usize::from(name & 0x7F) * 16,
                 name >> 14 & 3,
             )
@@ -669,7 +676,7 @@ impl Vdp2 {
         }
         let opaque = self.word(0x20) & (0x100 << layer) != 0;
         let offset = usize::from(self.word(0xE4) >> (layer * 4) & 7) * 256;
-        let pixel = self.color(format, base, pixel, offset, palette, opaque)?;
+        let pixel = self.color(layer, format, base, pixel, offset, palette, opaque)?;
         self.scroll_layer(layer, format, pixel, special)
     }
     /// ST-058 §4.5 p.60: the color decoder shares resources across layers.
@@ -685,8 +692,10 @@ impl Vdp2 {
             _ => true,
         }
     }
+    #[allow(clippy::too_many_arguments)]
     fn color(
         &self,
+        layer: usize,
         format: u16,
         base: usize,
         pixel: usize,
@@ -696,7 +705,7 @@ impl Vdp2 {
     ) -> Option<Pixel> {
         let (rgb, code, color_msb) = match format {
             0 => {
-                let byte = self.vram[(base + pixel / 2) & 0x7FFFF];
+                let byte = self.display_byte(layer, base + pixel / 2);
                 let index = usize::from(if pixel & 1 == 0 { byte >> 4 } else { byte & 15 });
                 if index == 0 && !opaque {
                     return None;
@@ -709,7 +718,7 @@ impl Vdp2 {
                 )
             }
             1 => {
-                let index = usize::from(self.vram[(base + pixel) & 0x7FFFF]);
+                let index = usize::from(self.display_byte(layer, base + pixel));
                 if index == 0 && !opaque {
                     return None;
                 }
@@ -721,7 +730,7 @@ impl Vdp2 {
                 )
             }
             2 => {
-                let index = usize::from(self.vword(base + pixel * 2) & 2047);
+                let index = usize::from(self.display_word(layer, 1, base + pixel * 2) & 2047);
                 if index == 0 && !opaque {
                     return None;
                 }
@@ -732,15 +741,15 @@ impl Vdp2 {
                 )
             }
             3 => {
-                let color = self.vword(base + pixel * 2);
+                let color = self.display_word(layer, 1, base + pixel * 2);
                 if color & 0x8000 == 0 && !opaque {
                     return None;
                 }
                 (rgb555(color), 0, true)
             }
             _ => {
-                let a = self.vword(base + pixel * 4);
-                let b = self.vword(base + pixel * 4 + 2);
+                let a = self.display_word(layer, 1, base + pixel * 4);
+                let b = self.display_word(layer, 1, base + pixel * 4 + 2);
                 if a & 0x8000 == 0 && !opaque {
                     return None;
                 }

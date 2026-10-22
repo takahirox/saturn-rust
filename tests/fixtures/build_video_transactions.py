@@ -21,9 +21,11 @@ def blank(label):
 
 
 def draw_source():
-    s = 'load 0x0600d800,r8\n' + put16(0x25D00002, 2)
+    # TVSTAT.VBLANK is forced high when DISP=0. Enable display before
+    # waiting on real raster transitions; VDP1 framebuffer reads are separate.
+    s = 'load 0x0600d800,r8\n' + put16(0x25D00002, 2) + put16(0x25F80000, 0x8000)
     for at, value in [(0, 9), (20, 511), (22, 255),
-                      (32, 6), (36, 0xC0), (38, 0x801F), (48, 4095), (64, 0x8000)]:
+                      (32, 6), (36, 0x8C0), (38, 0x801F), (48, 4095), (64, 0x8000)]:
         s += put16(0x25C00000 + at, value)
     s += put16(0x25D00004, 1)
     s += ('load 0x25d00014,r1\nwait_line:\nmov.w @r1,r0\n'
@@ -70,7 +72,7 @@ def command_source():
 def contention_source():
     s = 'load 0x0600e200,r8\n' + put16(0x25D00002, 2)
     for at, value in [(0, 9), (20, 511), (22, 255), (32, 6),
-                      (36, 0xC0), (38, 0x801F), (48, 4095), (64, 0x8000)]:
+                      (36, 0x8C0), (38, 0x801F), (48, 4095), (64, 0x8000)]:
         s += put16(0x25C00000 + at, value)
     s += ('load 0x25c81000,r4\nload 0x25d00010,r5\n'
           'load 0xfffffe12,r10\nload 0xfffffe13,r11\n')
@@ -186,6 +188,29 @@ def character_source():
     return s
 
 
+def preclip_source():
+    # A normal sprite begins outside the clip with two end codes. Pre-clipping
+    # starts at its visible endpoint, reversing UVs. A second command proves
+    # that separated lines finish without sampling or drawing their texture.
+    s = 'load 0x0600e600,r8\n' + put16(0x25D00002, 2)
+    for at, value in [(0, 9), (20, 511), (22, 255),
+                      (32, 0), (38, 0x8000), (40, 0x100), (42, 0x101),
+                      (44, 0xFFFC), (64, 0), (72, 0x100), (74, 0x101),
+                      (76, 0xFFF0), (96, 0x8000), (0x800, 0xFF12), (0x802, 0x3456)]:
+        s += put16(0x25C00000 + at, value)
+    s += ('load 0x100,r1\nmov.w @r1,r0\nload 0x25c00024,r1\nmov.w r0,@r1\n')
+    s += put16(0x25D00004, 1)
+    s += ('load 0x25d00010,r1\npreclip_done:\nmov.w @r1,r0\n'
+          'tst #2,r0\nbt preclip_done\n')
+    for x in range(5):
+        s += read(0x25C80000 + x * 2, 2)
+    for at in [0x25D00010, 0x25D00014]:
+        s += read(at, 2)
+    s += 'load 0x25fe00a4,r1\nmov.l @r1,r0\nload 0x2000,r2\nand r2,r0\n' + record()
+    s += 'load 0x600d,r0\n' + record() + 'park:\nsleep\nbra park\nnop\n'
+    return s
+
+
 def monitor_source():
     s = 'load 0x0600dc00,r8\n'
     # Set all control/data while display is disabled. Odd pixels come from
@@ -278,9 +303,11 @@ def build():
     files.update(lookup)
     character, character_hash = encode('vdp1-character-fetch', character_source(), [(0x100, 0x2222)])
     files.update(character)
+    preclip, preclip_hash = encode('vdp1-preclip', preclip_source(), [(0x100, 0)])
+    files.update(preclip)
     files['vdp1-progress.tsv'] = ''.join(f'{v:08X}\n' for v in
         [0x801F, 0, 0, 0, 4, 0, 0x1234, 0x1234, 0xFFFF, 0x600D]).encode()
-    return files, [draw_hash, monitor_hash, grants_hash, command_hash, contention_hash, effects_hash, lookup_hash, character_hash]
+    return files, [draw_hash, monitor_hash, grants_hash, command_hash, contention_hash, effects_hash, lookup_hash, character_hash, preclip_hash]
 
 
 if __name__ == '__main__':

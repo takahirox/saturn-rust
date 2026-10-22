@@ -45,6 +45,23 @@ fn run(m: &mut Machine, rom: &[u8], base: u32, count: u32) -> Vec<u32> {
     records
 }
 #[test]
+fn guest_preclipping_reverses_texture_reads_before_hidden_end_codes() {
+    let original = load(include_str!("fixtures/vdp1-preclip.hex"));
+    let mut m = Machine::new();
+    for disable in [false, false, true, true] {
+        let mut image = original.clone();
+        image[0x100..0x102].copy_from_slice(&(if disable { 0x800u16 } else { 0 }).to_be_bytes());
+        let colors = if disable {
+            [0; 4]
+        } else {
+            [0x8003, 0x8004, 0x8005, 0x8006]
+        };
+        let mut expected = colors.to_vec();
+        expected.extend([0, 2, 12, 0x2000, 0x600D]);
+        assert_eq!(run(&mut m, &image, 0x0600E600, 9), expected);
+    }
+}
+#[test]
 fn guest_character_word_rewrite_cannot_replace_already_fetched_nibbles() {
     let original = load(include_str!("fixtures/vdp1-character-fetch.hex"));
     let mut m = Machine::new();

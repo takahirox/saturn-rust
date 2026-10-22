@@ -113,7 +113,8 @@ fn cpu_dmac_and_scu_vram_reads_hold_the_in_flight_command_word() {
             bus.write16(VRAM + 20, 0).unwrap();
             // SCU count=2 is two byte reads (ST-097 fig.2.1), so it
             // owns VRAM for two eight-clock grants. CPU/DMAC use a word.
-            let finish = if owner == Owner::Scu { 144 } else { 136 };
+            // The newly captured XC=0 also pre-clips the line to one dot.
+            let finish = if owner == Owner::Scu { 113 } else { 105 };
             advance(&mut bus, finish - 19 - startup - 8 - 1, chunk);
             assert_eq!(bus.read16(REGISTERS + 0x10), Ok(0));
             advance(&mut bus, 1, chunk);

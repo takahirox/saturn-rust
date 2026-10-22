@@ -1,4 +1,7 @@
 load 0x0600d000,r8
+load 0x25f80000,r1
+load 0x8000,r0
+mov.w r0,@r1
 load 0x25d00002,r1
 load 0x2,r0
 mov.w r0,@r1

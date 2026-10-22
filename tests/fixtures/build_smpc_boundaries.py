@@ -11,6 +11,7 @@ from pathlib import Path
 from build_scu import assembler
 from build_hle_system import record
 from build_smpc import byte, issue, idle
+from build_clock import put16
 
 HERE=Path(__file__).resolve().parent
 
@@ -24,7 +25,9 @@ def read_byte(at):
 
 
 def build():
-    s='load 0x2600ec00,r8\n'+params(1,0)
+    # ST-058 §2.5: DISP must be set before polling TVSTAT for actual
+    # retrace transitions; DISP=0 always reports VBLANK, even during collection.
+    s='load 0x2600ec00,r8\n'+put16(0x25F80000,0x8000)+params(1,0)
     s+='load 0x100061,r1\nstatus:\nmov.b @r1,r0\ntst #64,r0\nbt status\n'
     s+=read_byte(0x100063)+byte(0x100001,0x41)+read_byte(0x100063)
     s+=params(0,0)+byte(0x100001,0x40)+read_byte(0x100063)

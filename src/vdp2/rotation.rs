@@ -397,6 +397,7 @@ impl Vdp2 {
             return None;
         }
         let pixel = self.color(
+            id,
             format,
             base,
             pixel,

@@ -37,6 +37,28 @@ async function run(page, bytes, base, count, pixels = false) {
   }, { bytes: [...bytes], base, count, pixels });
 }
 export async function videoTransactions(page) {
+  const heldWord = await rom("vdp2-word-retention");
+  for (const initial of [0x1111,0x1111,0x3333,0x3333]) {
+    const image = Buffer.from(heldWord);image.writeUInt16BE(initial,0x100);
+    const result = await page.evaluate(async image => {
+      const {emulator} = await import("./app.js");
+      emulator.reset_bios(Uint8Array.from(image));
+      for(let i=0;i<100 && emulator.read_long(0x0600DF04)!==0x600D;i++)emulator.run_steps(5000);
+      const f=emulator.framebuffer();
+      return {done:emulator.read_long(0x0600DF04),exceptions:emulator.exception_count(),
+        rows:[0,15,16,17,223].map(y=>Array.from(f.slice(y*320*4,(y+1)*320*4)))};
+    },[...image]);
+    const old=initial===0x1111?[255,0,0,255]:[0,0,255,255],green=[0,255,0,255];
+    const row = color => Array.from({length:320},()=>color).flat();
+    assert.deepEqual(result,{done:0x600D,exceptions:"0",rows:[old,old,old,green,green].map(row)});
+  }
+  const preclip = await rom("vdp1-preclip");
+  for (const disable of [false, false, true, true]) {
+    const image = Buffer.from(preclip);
+    image.writeUInt16BE(disable ? 0x800 : 0, 0x100);
+    const colors = disable ? [0,0,0,0] : [0x8003,0x8004,0x8005,0x8006];
+    assert.deepEqual((await run(page,image,0x0600E600,9)).records,[...colors,0,2,12,0x2000,0x600D]);
+  }
   const character=await rom("vdp1-character-fetch");
   for (const [texture,color] of [[0x2222,0x8012],[0x5555,0x8015]]) {
     const bytes=Buffer.from(character);bytes.writeUInt16BE(texture,0x100);

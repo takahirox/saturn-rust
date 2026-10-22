@@ -178,7 +178,7 @@ fn unfinished_manual_drawing_crosses_a_field_without_fabricating_end_status() {
         32,
         &[
             (0, 4),
-            (4, 0xC0),
+            (4, 0x8C0), // Disable pre-clipping to retain the offscreen workload.
             (6, 0x801F),
             (16, 4095),
             (20, 4095),

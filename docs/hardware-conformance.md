@@ -2628,3 +2628,38 @@ Expanded 512 KiB ROM SHA-256:
 This implements additional CD selector/host contracts. Full CPU/peripheral,
 board/reset, SCU/DSP, video/audio, CD/media/HLE, SMPC and comprehensive acceptance
 remain mandatory. No umbrella checkbox is satisfied by this fixture alone.
+
+## Display blanking, VDP1 pre-clipping and retained VDP2 words
+
+Related to #17. Primary references: [VDP1] §6.3 p.83/fig.6.6 (pre-clipping),
+[VDP2] §3.3 tables3.2–3.5 (display paths) and
+[VDP2 §2.5 TVSTAT](https://github.com/luckyseoul/saturn-docs/blob/main/files/ssddv25/segahtml/hard/vdp2/hon/p02_50.htm).
+
+| Programming behavior | Implementation | Independent native evidence | Executing guest / Wasm evidence |
+| --- | --- | --- | --- |
+| DISP=0 forces TVSTAT.VBLANK=1; raster events continue independently | `Vdp2::read16` in [vdp2.rs](../src/vdp2.rs) derives the status bit without changing `Raster` or SCU signaling | [vdp2_status.rs](../tests/vdp2_status.rs): exact clock100 reproduction, HBlank, before/at VBlank-in/out, two fields, four advancement sizes, matching counters and SCU interrupt edges | Original [builder](../tests/fixtures/build_vdp2_status.py), [native](../tests/vdp2_status.rs) and [Wasm](../scripts/vdp2-status.mjs): guest compares display-on/off status with actual SCU status, polls VCNT during forced blank, changes the DISP operand and repeats cold boots |
+| Pre-clipping rejects separated raster lines, truncates horizontal/vertical traversal and may invert its direction | `Drawing::clip`, `RasterLine::preclip`, `Vdp1::raster_line/texture_address/draw_dot` in [vdp1.rs](../src/vdp1.rs); UV/shading endpoints follow inversion, interpolation retains the original denominator, rejected lines acquire neither character nor framebuffer memory | [preclip_tests.rs](../src/vdp1/preclip_tests.rs): -4096/4095 endpoints in four directions, exact modeled completion, unchanged visible pixels, four separated diagonals, user/system intersection, hidden end-code pair and independently authored Gouraud pixels. [Bus vector](../src/bus/vdp1_tests.rs) checks earlier END/IRQ after a newly captured XC=0 | `vdp1-preclip` from the existing [video builder](../tests/fixtures/build_video_transactions.py), [native](../tests/video_transactions.rs) and [Wasm](../scripts/video-transactions.mjs): hidden end codes, four literal visible pixels, clipped separate command, EDSR/COPR/draw IRQ, Pclp operand mutation and cold resets |
+| Fetched packed words survive subsequent VRAM writes | `display_word/display_byte` in [fetch.rs](../src/vdp2/fetch.rs), used by normal/rotation names, character/bitmap decoding and vertical-cell data; independent layer/path latches reset at line start | Four-/eight-bit packed-dot mutations at each interior word boundary, unfetched neighbour, next-line reload, debugger snapshot independence, separate name/character/cell/layer paths and mirrored address in [fetch vectors](../src/vdp2/fetch.rs) | `vdp2-word-retention` from the existing [fetch builder](../tests/fixtures/build_vdp2_fetch.py), [native](../tests/vdp2_fetch.rs) and [production Wasm](../scripts/video-transactions.mjs): guest writes VRAM on line16 during 256× enlargement; all old packed dots remain, line17 reads the new word; changed original texture and cold resets |
+
+The retained-word model samples two-word serializers on first display use.
+It does not yet schedule advance reads at individual cycle-pattern slots, so it
+does not complete display-fetch ownership or all raster/bank transition contracts.
+The existing functional VDP1 pixel/word cadence is retained: rejected lines take
+one decision clock; these vectors do not claim measured pre-clipping overhead
+or complete sloped/repeated-edge coverage. Other review findings and mandatory
+umbrella acceptance remain unresolved; this evidence does not close #17.
+
+The VDP1 progress/ownership fixtures explicitly set Pclp=1 where they deliberately
+walk offscreen to test unfinished drawing and contention. The progress, shrink
+and SMPC boundary guests now enable TVMD.DISP before polling actual blanking
+transitions. Their previous disabled-display polls relied on the TVSTAT bug;
+their existing framebuffer, packet and result goldens are retained.
+
+All new source and ROM bytes use the adjacent [MIT fixture license](../tests/fixtures/LICENSE).
+The three builders above run in CI; the expanded 512 KiB ROM SHA-256 values are:
+
+| ROM | SHA-256 |
+| --- | --- |
+| `vdp2-status` | `2f75d635d32cfb2b6a9371b8709c004298d64f5e0e5a0a07a303bedf375aeb4f` |
+| `vdp1-preclip` | `0a3a311632d5998f5c245313d73ffe172bbb1968d0b6a37131965ec8ba86d222` |
+| `vdp2-word-retention` | `242a1e1f3e832525a12463da39937ba47a5f814f0e5d66a77e862f0edf4e9c69` |

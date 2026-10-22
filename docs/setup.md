@@ -100,6 +100,7 @@ python3 tests/fixtures/build_hle_player.py --check
 python3 tests/fixtures/build_hle_backup.py --check
 python3 tests/fixtures/build_clock.py --check
 python3 tests/fixtures/build_display_modes.py --check
+python3 tests/fixtures/build_vdp2_status.py --check
 python3 tests/fixtures/build_sprite_shrink.py --check
 python3 tests/fixtures/build_sprite_rotation.py --check
 python3 tests/fixtures/build_sprite_interlace.py --check

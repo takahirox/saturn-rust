@@ -3797,3 +3797,44 @@ CD behavior and evidence; it does not satisfy or waive the umbrella acceptance
 checklist. PR #18 must remain Draft with Closes #17 retained as its intended
 final outcome. No merge, Issue closure, replacement or historical reopening is
 performed.
+
+## Display status, pre-clipping and retained display-word review fixes
+
+Related to #17. This revision fixes TVSTAT.VBLANK with DISP disabled,
+implements VDP1 line pre-clipping/inversion and retains fetched VDP2 words
+across beam flushes. The implementation, primary manual sections, independent
+vectors, original MIT guest sources and ROM hashes are linked in the
+[conformance record](hardware-conformance.md#display-blanking-vdp1-pre-clipping-and-retained-vdp2-words).
+All three new guests run through ordinary external-BIOS SH-2 execution in
+native and production Wasm tests, with operand mutations and repeated cold
+resets. The existing three demonstration discs and licenses are unchanged.
+
+Validation actually performed:
+
+- `cargo fmt --check`, `cargo build --locked`, native all-target Clippy and
+  Wasm Clippy with `-D warnings`: passed using rustup stable Rust 1.99.0.
+- Complete `CARGO_PROFILE_TEST_OPT_LEVEL=1 cargo test --locked`: **707 passed**
+  (433 unit and 274 integration), zero failed/ignored/filtered, plus passing
+  doc tests. Debug assertions remain enabled.
+- All **69** CI guest/media reproducibility commands: passed, including the
+  new status builder and expanded video/fetch builders.
+- `sh scripts/build-web.sh`: passed with wasm-bindgen 0.2.129.
+- Complete `npm run test:browser`: passed on Chromium 145.0.7632.6 and
+  Node 24.12.0, using the rebuilt production Wasm under `/saturn-rust/`.
+  The new status/pre-clipping/retention checks, existing fixtures, all three
+  demonstrations, Canvas/WebAudio, focus/input, backup and privacy checks ran.
+- New JavaScript syntax, conformance links and Git whitespace checks passed.
+
+Initial native/browser runs exposed disabled-DISP polling in the VDP1 progress,
+sprite-shrink and SMPC boundary fixtures. They now enable display before polling
+the raster; their original packet/pixel/result goldens remain unchanged. The
+bus vector for a newly captured XC=0 now expects pre-clipping's earlier END/IRQ.
+Tests intentionally requiring offscreen traversal explicitly disable pre-clipping.
+The initial failures are not counted as passing runs.
+
+The full Issue #17 objective is **not complete**. The new VDP2 serializers are
+demand sampled, without an advance cycle-slot fetch pipeline; VDP1's physical
+pre-clipping overhead and complete sloped/repeated coverage are not established.
+The other CPU/peripheral, MC68EC000, board ownership/reset, SCU/DSP, audio,
+CD/media/HLE, SMPC and comprehensive acceptance findings remain unresolved.
+No Issue closure, new tracker, historical reopening, push or merge is performed.

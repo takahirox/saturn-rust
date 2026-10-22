@@ -9,6 +9,7 @@ import struct
 from pathlib import Path
 from build_scu import assembler
 from build_clock import put16
+from build_video_transactions import encode
 
 HERE = Path(__file__).resolve().parent
 
@@ -68,7 +69,26 @@ def build():
     lines=['# Original MIT VDP2 display-fetch synthetic BIOS. Adjacent LICENSE.']
     for at in range(0,len(rom),16):
         if any(rom[at:at+16]):lines.append(f'{at:04X} '+' '.join(f'{w:04X}' for w in struct.unpack('>8H',rom[at:at+16])))
-    return {'vdp2-fetch.s':s.encode(),'vdp2-fetch.hex':('\n'.join(lines)+'\n').encode()},hashlib.sha256(rom).hexdigest()
+    files = {'vdp2-fetch.s':s.encode(),'vdp2-fetch.hex':('\n'.join(lines)+'\n').encode()}
+    # One bitmap word is reused by zoomed pixels on each line. A guest write
+    # after display has consumed its first dot must not alter its other dots;
+    # the next line fetches the new word. CRAM remains independently live.
+    held = ''
+    for at, value in [(0x10,0x4EEE),(0x12,0xEEEE),(0x20,1),(0x28,2),
+                      (0x78,0),(0x7A,0x100),(0x7C,0),(0x7E,0x100),(0xF8,1)]:
+        held += put16(0x25F80000+at,value)
+    for index, value in [(1,0x801F),(2,0x83E0),(3,0xFC00)]:
+        held += put16(0x25F00000+index*2,value)
+    held += ('load 0x100,r1\nmov.w @r1,r0\nload 0x25e00000,r1\nmov.w r0,@r1\n')
+    held += put16(0x25F80000,0x8000)
+    held += ('load 0x25f80004,r1\nheld_blank_in:\nmov.w @r1,r0\ntst #8,r0\nbt held_blank_in\n'
+             'held_blank_out:\nmov.w @r1,r0\ntst #8,r0\nbf held_blank_out\n')
+    held += line(16) + put16(0x25E00000,0x2222)
+    held += ('load 0x25f80004,r1\nheld_finish:\nmov.w @r1,r0\ntst #8,r0\nbt held_finish\n'
+             'load 0x2600df04,r1\nload 0x600d,r0\nmov.l r0,@r1\nheld_park:\nsleep\nbra held_park\nnop\n')
+    new_files, _ = encode('vdp2-word-retention',held,[(0x100,0x1111)])
+    files.update(new_files)
+    return files,hashlib.sha256(rom).hexdigest()
 
 
 if __name__=='__main__':

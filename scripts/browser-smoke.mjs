@@ -21,6 +21,7 @@ import { hlePlayer } from "./hle-player.mjs";
 import { scspMonitor } from "./scsp-monitor.mjs";
 import { m68kReset } from "./m68k-reset.mjs";
 import { cdCopy } from "./cd-copy.mjs";
+import { vdp2Status } from "./vdp2-status.mjs";
 
 // Fail before upload if web/ includes anything beyond the public runtime assets.
 const assets = ["audio.js", "audio-worklet.js", "app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt", "prism-courier.iso", "prism-courier-LICENSE.txt", "hardware-lab.iso", "hardware-lab-audio.bin", "hardware-lab.cue", "hardware-lab-LICENSE.txt"];
@@ -793,6 +794,7 @@ try {
     assert.deepEqual(points,[...row,...row,...(width>=640?[[255,0,255,255],[255,0,0,255]]:[])]);
   }
   assert.deepEqual(displayTraces.at(-1),{canvas:[704,480],edge:[0,255,0,255]});
+  await vdp2Status(page);
   await videoTransactions(page);
   await abusTiming(page);
   await busTransactions(page);

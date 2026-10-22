@@ -44,6 +44,7 @@ struct Drawing {
     row: i32,
     rows: i32,
     line: Option<RasterLine>,
+    clip: Option<[Point; 2]>,
 }
 impl Drawing {
     fn tables_pending(&self) -> bool {
@@ -61,6 +62,9 @@ impl Drawing {
                 &line
             }
         };
+        if current.dot > current.last {
+            return None;
+        }
         let (pixel, _) = Vdp1::texture_coordinates(&self.command, current, control);
         let mode = self.command[2] >> 3 & 7;
         let offset = match mode {
@@ -85,7 +89,49 @@ struct RasterLine {
     shade1: [i32; 3],
     textured: bool,
     dot: i32,
+    last: i32,
     end_codes: u8,
+}
+
+impl RasterLine {
+    /// ST-013-R3 §6.3 p.83/fig.6.6: reject separated lines. Only
+    /// horizontal/vertical lines may start at the clipping boundary; keep
+    /// the original interpolation denominator and texture/shading endpoints.
+    fn preclip(&mut self, [low, high]: [Point; 2]) {
+        if low.x > high.x
+            || low.y > high.y
+            || self.a.x.max(self.b.x) < low.x
+            || self.a.x.min(self.b.x) > high.x
+            || self.a.y.max(self.b.y) < low.y
+            || self.a.y.min(self.b.y) > high.y
+        {
+            self.last = -1;
+            return;
+        }
+        if self.a.x != self.b.x && self.a.y != self.b.y {
+            return;
+        }
+        let inside = |p: Point| p.x >= low.x && p.x <= high.x && p.y >= low.y && p.y <= high.y;
+        // Starting at the inside endpoint avoids reading end codes from the
+        // clipped side. UVs and Gouraud endpoints follow the inverted line.
+        if !inside(self.a) && inside(self.b) {
+            std::mem::swap(&mut self.a, &mut self.b);
+            std::mem::swap(&mut self.uv0, &mut self.uv1);
+            std::mem::swap(&mut self.shade0, &mut self.shade1);
+        }
+        let (a, b, low, high) = if self.a.y == self.b.y {
+            (self.a.x, self.b.x, low.x, high.x)
+        } else {
+            (self.a.y, self.b.y, low.y, high.y)
+        };
+        if b >= a {
+            self.dot = (low - a).max(0);
+            self.last = self.last.min(high - a);
+        } else {
+            self.dot = (a - high).max(0);
+            self.last = self.last.min(a - low);
+        }
+    }
 }
 
 struct PendingPixel {
@@ -483,12 +529,29 @@ impl Vdp1 {
                 .drawing
                 .as_ref()
                 .is_some_and(|draw| draw.texture_pending(self.draw_control));
+        let rejected = framebuffer_busy
+            && self.pending_pixel.is_none()
+            && self.drawing.as_ref().is_some_and(|draw| {
+                let line;
+                let current = match &draw.line {
+                    Some(current) => current,
+                    None => {
+                        line = Self::raster_line(draw);
+                        &line
+                    }
+                };
+                current.dot > current.last
+            });
         let needs_vram =
             self.drawing.as_ref().is_none_or(|draw| {
                 draw.tables_pending() || draw.texture_pending(self.draw_control)
             }) && self.pending_pixel.is_none();
         if (vram_busy && needs_vram)
-            || (framebuffer_busy && self.drawing.is_some() && !tables_pending && !texture_pending)
+            || (framebuffer_busy
+                && self.drawing.is_some()
+                && !tables_pending
+                && !texture_pending
+                && !rejected)
         {
             return Ok(false);
         }
@@ -708,6 +771,26 @@ impl Vdp1 {
             row: 0,
             rows,
             line: None,
+            clip: if mode & 0x800 == 0 {
+                let (width, height, _) = self.geometry();
+                let mut low = Point::default();
+                let mut high = Point {
+                    x: self.system.x.min(width as i32 - 1),
+                    y: self
+                        .system
+                        .y
+                        .min((height * if self.draw_control & 8 != 0 { 2 } else { 1 }) as i32 - 1),
+                };
+                if mode & 0x600 == 0x400 {
+                    low.x = low.x.max(self.user[0].x);
+                    low.y = low.y.max(self.user[0].y);
+                    high.x = high.x.min(self.user[1].x);
+                    high.y = high.y.min(self.user[1].y);
+                }
+                Some([low, high])
+            } else {
+                None
+            },
         });
         Ok(())
     }
@@ -735,7 +818,7 @@ impl Vdp1 {
             let v = lerp(0, i32::from(c[5] & 255) - 1, *row, *rows);
             (a, b, (0, v), (i32::from(c[5] >> 8 & 63) * 8 - 1, v), sa, sb)
         };
-        RasterLine {
+        let mut line = RasterLine {
             a,
             b,
             uv0,
@@ -744,8 +827,13 @@ impl Vdp1 {
             shade1,
             textured: kind <= 2,
             dot: 0,
+            last: a.distance(b),
             end_codes: 0,
+        };
+        if let Some(clip) = draw.clip {
+            line.preclip(clip);
         }
+        line
     }
     fn texture_coordinates(c: &[u16; 16], line: &RasterLine, control: u16) -> (usize, bool) {
         let w = usize::from(c[5] >> 8 & 63) * 8;
@@ -771,6 +859,9 @@ impl Vdp1 {
         texture: Option<u16>,
         line: &mut RasterLine,
     ) -> bool {
+        if line.dot > line.last {
+            return true;
+        }
         let RasterLine {
             a,
             b,
@@ -805,7 +896,7 @@ impl Vdp1 {
                 if raw == end && c[2] & 0x80 == 0 && !high_speed {
                     line.end_codes += 1;
                     if line.end_codes == 2 {
-                        line.dot = steps;
+                        line.dot = line.last;
                     }
                     return;
                 }
@@ -828,7 +919,7 @@ impl Vdp1 {
             self.plot(point, color, c[2], shade);
         })();
         line.dot += 1;
-        line.dot > steps
+        line.dot > line.last
     }
     fn plot(&mut self, p: Point, color: u16, mode: u16, shade: [i32; 3]) {
         let (width, height, bytes) = self.geometry();
@@ -915,6 +1006,8 @@ impl Vdp1 {
     }
 }
 
+#[cfg(test)]
+mod preclip_tests;
 #[cfg(test)]
 mod progress_tests;
 #[cfg(test)]

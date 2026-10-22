@@ -1750,8 +1750,8 @@ mod scu_timing_tests {
         b.advance_clocks(40).unwrap();
         b.set_peripheral_th(0, false);
         assert_eq!(b.read32(VDP2 + 8), Ok(0x00500001));
-        assert_eq!(b.read16(VDP2 + 4), Ok(0x202));
-        assert_eq!(b.read16(VDP2 + 4), Ok(2)); // read clears EXLTFG only
+        assert_eq!(b.read16(VDP2 + 4), Ok(0x20A));
+        assert_eq!(b.read16(VDP2 + 4), Ok(10)); // read clears EXLTFG only
         assert_eq!(b.read32(SCU + 0xA4).unwrap() & 0x100, 0x100);
         b.scu.acknowledge(0x48);
         b.advance_clocks(40).unwrap();
@@ -1766,12 +1766,12 @@ mod scu_timing_tests {
         b.write16(VDP2 + 2, 0).unwrap();
         b.set_peripheral_th(1, false); // PAD IRQ does not require VDP2 EXLTEN
         assert_eq!(b.read32(SCU + 0xA4).unwrap() & 0x100, 0x100);
-        assert_eq!(b.read16(VDP2 + 4), Ok(2));
+        assert_eq!(b.read16(VDP2 + 4), Ok(10));
         // The physical TH input is visible on PDR even with all bits input.
         assert_eq!(b.read8(SMPC + 0x77).unwrap() & 0x40, 0);
         b.reset_volatile();
         assert_eq!(b.read32(VDP2 + 8), Ok(0));
-        assert_eq!(b.read16(VDP2 + 4), Ok(2));
+        assert_eq!(b.read16(VDP2 + 4), Ok(10));
     }
     #[test]
     fn cache_refill_wrap_order_is_observable_by_the_other_cpus_sequential_ubc() {

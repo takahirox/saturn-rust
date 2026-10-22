@@ -11,7 +11,8 @@ from build_clock import put16,read
 HERE=Path(__file__).resolve().parent
 
 def build():
-    s='load 0x0600d000,r8\n'
+    # TVSTAT reports forced blank until DISP is set (ST-058 §2.5).
+    s='load 0x0600d000,r8\n'+put16(0x25f80000,0x8000)
     s+=put16(0x25d00002,2)
     for at,value in [(0,9),(20,511),(22,255),(64,0x8000)]:s+=put16(0x25c00000+at,value)
     for x in range(8):s+=put16(0x25c00800+x*2,0x8000+x)
