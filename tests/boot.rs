@@ -16,13 +16,18 @@ fn bios() -> Vec<u8> {
 fn external_bios_uses_power_on_vectors_and_reset_registers() {
     let mut machine = Machine::new();
     machine.reset(Boot::ExternalBios(&bios())).unwrap();
+    assert_eq!(machine.cpu_state(), &CpuState::default());
+    assert!(machine.reset_in_progress());
+    assert_eq!(machine.clocks(), 0);
+    machine.step().unwrap();
     let s = machine.cpu_state();
-    assert_eq!(s.pc, 0x100);
+    assert_eq!(s.pc, 0x102);
     assert_eq!(s.r[15], 0x0610_0000);
     assert_eq!((s.sr, s.vbr), (0xF0, 0));
     assert_eq!((s.pr, s.gbr, s.mach, s.macl), (0, 0, 0, 0));
     assert_eq!(s.status, CpuStatus::Running);
-    machine.step().unwrap();
+    assert!(!machine.reset_in_progress());
+    assert!(machine.clocks() >= 4); // distinct vector data phases precede IF
     assert_eq!(machine.cpu_state().r[0], 0x05FE00CC);
     assert_eq!(machine.bus().read32(LOW_WRAM), Ok(0));
     assert_eq!(machine.bus().read32(HIGH_WRAM), Ok(0));

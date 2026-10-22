@@ -276,7 +276,7 @@ not turn those missing hardware paths into supported behavior.
 | Register/reset model, H §§2/4.2 | Independent CPUs; power-on 0/4 and watchdog manual-reset 8/12 vectors, SR=F0; 512-clock watchdog reset hold retains shared RAM/backup and clears CCR | boot.rs, DUAL, PERIPH | DUAL, PERIPH | External reset pin timing remains; UBC contents after manual reset are undefined by H table 6.1 (deterministically zero here); BSC retention/identity covered by BSCG | Pending |
 | General/slot illegal, H §4.5 | Vectors 4/6, correct saved PC, no retirement | exception | ROM | No double-fault bus handling | Pending |
 | TRAPA/RTE, H §§4.5/4.7 | Guest stack layout and handler return | exception, sh2_system.rs | ROM | Non-FRT system IRQ sources absent | Pending |
-| CPU address errors, H §§4.3/4.6/4.7/4.8.3, Tables 4.6/4.10/4.11 | Vector 9, operand/fetch checks, next-PC/SR, auto-update and deferral; misaligned stacking completes original exception then accepts address error without recursion | AE, AEROM, PERIPH | AEROM, PERIPH | Invalid data and unaligned stacking bytes are deterministic policies rather than physical bus signals; misaligned VBR unsupported | Pending |
+| CPU address errors, H §§4.3/4.6/4.7/4.8.3, Tables 4.6/4.10/4.11 | Vector 9, operand/fetch checks, next-PC/SR, auto-update and deferral; misaligned stacking completes original exception then accepts address error without recursion | AE, AEROM, PERIPH | AEROM, PERIPH | Invalid data, unaligned stacking and vector-read bytes follow deterministic exact-address policies rather than physical bus signals; VBR alignment dispatch/repair is covered by VBRG below | Pending |
 | Maskable IRQ/NMI, H §4.4 | Device priority selection, I mask, NMI vector11, stack/wake; ICR auto/external vector modes, NMIL/NMIE and selected-edge NMIF/standby wake | sleep, special, PERIPH, INTCG | INTCG, DUAL | Pin synchronization and complete cross-clock assertion boundaries remain | Pending |
 | Deferral, H §4.6 | IRQ/NMI defer through delayed successors and control/system successors; address errors defer only through delayed successors | special, AE | ROM, AEROM | No pipeline-cycle timing or device IRQ selection; unfetchable successor policy below | Pending |
 | Cache/address regions, H §8, tables 8.2–8.4, figs.8.10/8.11 | CPU-local 4 KiB/four-way cache, write-through, no snooping; ID/OD, pseudo-LRU, two-way RAM, P1 bypass, P2 purge, P3 address array, P6 data array; TAS external read; ordered four-longword refills and two-way RAM tag isolation | CACHE, PERIPH, CACHEG; `Cache` and `CpuBus` | PERIPH, CACHEG | Pipeline/fill-cycle/bus arbitration timing remains required; work-RAM mirrors are decoded | Pending |
@@ -288,7 +288,7 @@ not turn those missing hardware paths into supported behavior.
 | DIVU, H §§10.2–10.4/table 10.2 | Signed 32/32 and 64/32 quotient/remainder; six-clock overflow exposes three division steps, saturating only the quotient when OVFIE=0; 39-clock normal completion/interlock; word DVCR/VCRDIV, sticky overflow and IRQ | PERIPH, [DIVG](../tests/sh7604.rs), [independent boundary vectors](../src/onchip/peripheral_tests.rs); `Division::start/overflow_result` | DIVG on both CPUs, normal/overflow signs/zero, aliases, IRQ acknowledgement, repeat boots and changed dividend | The one-clock read-after-write interlock is covered by MEMG below; full CPU bus scheduling remains | Pending |
 | BSC identification/memory/interval timer, H §§7.1.4/7.2/7.5–7.7/7.11.1 | BCR1.MASTER per CPU, read-only word lanes, keyed long writes, RTCNT/RTCOR/RTCSR, all clock divisors, CMF read-before-clear, CMI vector/priority and manual-reset retention; ordinary software waits, intercycle turnaround, narrow transfers, CS2 endian conversion, SDRAM/DRAM/pseudo-SRAM widths and timing, open rows and refresh recovery (BWAIT/IDLEG/BCMEM below) | [BSCG/BWAIT](../tests/bsc.rs), [register/reset vectors](../src/onchip/peripheral_tests.rs), [BSC vectors](../src/onchip/bsc.rs), [bus beats](../src/bus.rs) | BSCG, BWAIT, IDLEG, BCMEM | BUSG below adds all six SDRAM MRS encodings, precharge and command timing; RFSHG below adds retained CPU groups, refresh/DMAC ownership and self-refresh bus inhibition; external WAIT input and full board widths/lanes remain | Pending |
 | Module stop/standby, H §§14.2/14.4, table 14.3 | SBYCR, SCI/FRT reset and gating, preserved INTC/UBC/BSC, retained DMA operands with control reset, WDT-selected NMI settling; `OnChip::enter_sleep/advance_clocks`, `Bus::advance_dma` | [standby/retention vectors](../src/onchip/peripheral_tests.rs), BSCG, PWRG | BSCG, PWRG | Electrical HIZ/pin states, initial five-cycle NMI guard, physical oscillator and clock-switch edges remain unverified; executing stopped MULT instructions is software-prohibited/undefined (H §2.5.2) | Pending |
-| UBC, H §6 | A/B registers, masked address/data/size/master matching, sequential conditions, match flags, before/after fetch breaks and deferred level-15 vector 12; CPU/cache/DMAC and external SCU observation; `Ubc::observe`, `Cpu::step/execute` | UBCG and bus vectors | UBCG | Three-clock propagation, independent successive-write deadlines and last-register read barrier are implemented in `Ubc::advance/read`; DIVG handles data breaks on both CPUs, including slave acknowledgement after exception acceptance. SH7000-compatible speculative overrun fetch breaks and instruction/bus cycle scheduling remain pending | Pending |
+| UBC, H §6 | A/B registers, masked address/data/size/master matching, sequential conditions, match flags, before/after fetch breaks and deferred level-15 vector 12; CPU/cache/DMAC and external SCU observation; `Ubc::observe`, `Cpu::step/execute` | UBCG and bus vectors | UBCG | Three-clock propagation, independent successive-write deadlines and last-register read barrier are implemented in `Ubc::advance/read`; DIVG handles data breaks on both CPUs, including slave acknowledgement after exception acceptance. SH7000-compatible unused words of real IF longwords are covered by IFUBC below; complete speculative IF/MA pipeline scheduling remains pending | Pending |
 | Slave SH-2, [Dual CPU User's Guide][DUALREF] §§1/3/4, [SMPC] table 1.1 | Independent interpreter/registers/stacks/peripherals/cache; shared bus, SSHON/SSHOFF, bidirectional capture IRQs | DUAL, CACHE, PERIPH | DUAL, PERIPH | BUSG adds deferred round-robin CPU transactions and TAS exclusion; complete IF/MA overlap, on-chip DMAC and display-fetch contention remain; BCR1 identity covered by BSCG | Pending |
 
 ## MC68EC000 instruction families
@@ -2360,8 +2360,8 @@ UBC register values after manual reset are undefined in H §6.2. Retaining them
 is an explicit deterministic policy, not a claim that hardware guarantees them.
 The BSC's documented configuration and SDRAM row retention are implemented;
 partial cache-fill contents remain subject to the existing deterministic policy.
-Initial cold-boot and SMPC slave-start vector scheduling, full CPU pipelines,
-other reset/peripheral/board contracts and the other mandatory Issue #17
+Cold-boot, SSHON and external-BIOS SYSRES now share scheduled vector loading
+(STARTV below). Full CPU pipelines and other reset/peripheral/board contracts and the other mandatory Issue #17
 subsystems still require completion. No umbrella acceptance checkbox is changed.
 
 The fixture and generated ROM use the adjacent [MIT license](../tests/fixtures/LICENSE).
@@ -2372,3 +2372,30 @@ Removing manual-reset draining makes RSTBUS fail; extending a canceled cache
 refill past its current longword makes its independent bus vector fail. Both
 intentional regressions were rejected and the production sources restored
 byte-for-byte before final validation.
+
+
+## SH-2 startup vectors, VBR alignment and IF comparison boundaries (STARTV/VBRG/IFUBC)
+
+Primary references: [H] §§4.2.2–3, 4.8.2–3, 6.3.2, 6.3.7 table6.4,
+7.3/7.11; [SMPC] §§2.3.2/2.3.8. Related to #17.
+
+| Contract | Implementation | Independent native evidence | Guest/Wasm evidence |
+| --- | --- | --- | --- |
+| All hardware PC/SP reset paths use scheduled data phases | `Machine::schedule_cpu_reset/issue_cpu/step_hardware_boundary` in [lib.rs](../src/lib.rs); cold external BIOS, SSHON, external-BIOS SYSRES and both watchdog kinds share the replayed bus | [Machine reset vectors](../src/reset_tests.rs): PC completes at clock8 and SP at clock16 under reset WCR; later ROM mutation affects unsampled SP only; neither value nor instructions publish early. Cached master progresses during slave waits. SSHOFF cancels queued vectors behind a master video cycle; a later SSHON samples a fresh pair. SYSRES/new boot/rejected boot cancel old journals | [Native reset/exception guests](../tests/sh2_reset_bus.rs), [existing dual guest](../tests/dual_sh2.rs), [SYSRES guest](../tests/system_reset.rs); [production Wasm](../scripts/sh2-reset-bus.mjs) asserts initial zero PC/SP/instruction/time, completed waits before first execution, boot cancellation, changed reset SP and repeated cold boots; existing dual/watchdog/SYSRES guests retain their results |
+| Misaligned VBR enters vector9 after the original exception entry | `Memory::exception_read32` in [bus.rs](../src/bus.rs), `Cpu::enter_exception/address_error` in [cpu.rs](../src/cpu.rs) | `unaligned_vector_tables_complete_entry_then_dispatch_one_repairable_address_error` in [CPU vectors](../src/cpu/tests.rs): offsets1/2/3 and vectors4/11/64/127, both frames/PC/SR, no premature instruction, bounded vector9 suppression and VBR repair | Original `sh2-vector-error.hex` executes TRAPA on both SH-2s, records nested frames and resume labels, repairs VBR and RTEs through the original frame. Native/Wasm assert two exceptions, original stack restoration, the skipped first handler and completion; Wasm also mutates the actual reset SP |
+| SH7000-compatible IF matching includes words never executed | `Ubc::fetch_longword/native_mode`, `OnChip::instruction_fetch/instruction_break`, `CpuBus::fetch16` | `compatible_ubc_observes_both_if_words_and_native_ubc_waits_for_execution` in [IF vectors](../src/bus/fetch_tests.rs): both CPUs, cache hit/miss, entry at 4n/4n+2, retained word, native/compatible mode and compatible flag behavior | Original `sh2-overrun.hex` enters at 4n+2. The unused first word triggers a compatible break and never a native pre-execution break. Both guest CPUs record saved PC5002, zero compatible match flags and pre-execution R12; changed executed opcodes alter actual results. [Native](../tests/sh2_reset_bus.rs) and [Wasm](../scripts/sh2-reset-bus.mjs) repeat each mode/operand across cold resets |
+
+The two new source-authored ROMs use the adjacent [MIT license](../tests/fixtures/LICENSE).
+The existing `python3 tests/fixtures/build_sh2_reset_bus.py --check` CI command
+reproduces all three reset-boundary fixtures. Expanded 512 KiB ROM SHA-256:
+
+- VBRG: `6f7bce545a8e2a9d8c588bd335b7aa981c75b1fd05db7fb5dfdb0468cc888f8f`.
+- IFUBC: `dca735641007de22dc2962826f9a064eb22106f369600d5b5e6e73bfaefd25be`.
+
+Unaligned vector-cycle data uses the same explicit exact-address byte policy as
+invalid exception stacking. It is not a claim of physical invalid-bus data.
+IFUBC covers actual fetched longwords, including their unused words; complete
+advance IF/MA/multiplier timing and interrupt-transition speculation still require
+implementation/evidence. These changes do not satisfy the remaining CPU/peripheral,
+68k, board, SCU/DSP, video, audio, CD/HLE, SMPC and comprehensive acceptance findings.
+No umbrella acceptance checkbox is changed.

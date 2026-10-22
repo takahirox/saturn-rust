@@ -289,11 +289,11 @@ impl Cpu {
             .map_err(access)?;
         bus.exception_write32(sp, saved_pc).map_err(access)?;
         let target = bus
-            .read32(s.vbr.wrapping_add(vector as u32 * 4))
+            .exception_read32(s.vbr.wrapping_add(vector as u32 * 4))
             .map_err(access)?;
-        // Accept the first stacking error after completing this exception.
-        // Vector 9 stacking must not recursively re-enter forever (§4.8.3).
-        if sp & 3 != 0 && vector != 9 {
+        // Accept a stacking/vector alignment error after this entry completes.
+        // Vector 9 must not recursively re-enter forever (§§4.8.2–3).
+        if (sp | s.vbr) & 3 != 0 && vector != 9 {
             s.address_error_pending = true;
         }
         s.r[15] = sp;

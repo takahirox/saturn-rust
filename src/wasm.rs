@@ -208,7 +208,7 @@ impl Emulator {
             return format!("Faulted: {error}");
         }
         if self.machine.reset_in_progress() {
-            return "Resetting — internal watchdog reset".into();
+            return "Resetting — waiting for hardware reset vectors".into();
         }
         match &self.machine.cpu_state().status {
             CpuStatus::Reset => "Reset — waiting for valid boot input".into(),

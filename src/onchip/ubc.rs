@@ -169,11 +169,31 @@ impl Ubc {
     pub fn pending(&self) -> bool {
         self.pending
     }
+    pub fn native_mode(&self) -> bool {
+        self.active.get().control & 0x1000 != 0
+    }
+    /// H §§6.3.2/6.3.7 table6.4: SH7000 mode compares the actual
+    /// two-word IF cycle, including words that control flow never executes.
+    /// SH7604 mode compares only the executed instruction boundary instead.
+    pub fn fetch_longword(&mut self, address: u32) {
+        if !self.native_mode() {
+            self.observe(address, 2, 0, false, Master::Cpu, Some(false));
+            self.observe(
+                address.wrapping_add(2),
+                2,
+                0,
+                false,
+                Master::Cpu,
+                Some(false),
+            );
+        }
+    }
     pub fn acknowledge(&mut self) {
         self.pending = false;
     }
 
-    /// `instruction` is Some(before/after) only at an executed fetch boundary.
+    /// `instruction` is Some(before/after) for instruction comparisons: native
+    /// execution boundaries or compatible-mode physical IF words.
     /// An external cycle has only A26–A0, with no size/data qualification (§6.3.4).
     pub fn observe(
         &mut self,

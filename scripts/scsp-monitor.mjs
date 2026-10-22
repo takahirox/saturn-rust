@@ -30,7 +30,7 @@ export async function scspMonitor(page) {
       expected.fill(0);
     }
     await page.locator("#bios").setInputFiles({ name: `original-scsp-monitor-${variant}.bin`, mimeType: "application/octet-stream", buffer: image });
-    await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+    await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const run = () => page.evaluate(async () => {
       const { emulator } = await import("./app.js");
       for (let i = 0; i < 20; i++) emulator.run_steps(10000);

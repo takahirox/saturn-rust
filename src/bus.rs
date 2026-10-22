@@ -192,7 +192,8 @@ pub trait Memory {
         })
     }
     fn enter_sleep(&mut self) {}
-    /// SH7604 §6.3.2: only fetches of instructions that execute qualify.
+    /// SH7604 §6.3.2: native-mode before/after execution comparison.
+    /// SH7000-compatible comparisons belong to the adapter's real IF cycle.
     fn instruction_break(&self, _pc: u32, _after: bool) -> bool {
         false
     }
@@ -228,6 +229,21 @@ pub trait Memory {
             self.write8(address.wrapping_add(i as u32), byte)?;
         }
         Ok(())
+    }
+
+    /// H §4.8.2: an unaligned VBR raises an address error during exception
+    /// entry. As with invalid stacking, complete the original entry before
+    /// dispatching that error. Use exact-address big-endian bytes as the
+    /// deterministic invalid-cycle data policy, without rounding the VBR.
+    fn exception_read32(&self, address: u32) -> Result<u32, BusError> {
+        if address & 3 == 0 {
+            return self.read32(address);
+        }
+        let mut bytes = [0; 4];
+        for (i, byte) in bytes.iter_mut().enumerate() {
+            *byte = self.read8(address.wrapping_add(i as u32))?;
+        }
+        Ok(u32::from_be_bytes(bytes))
     }
 }
 
@@ -1403,6 +1419,7 @@ impl Memory for CpuBus<'_> {
             return Ok(word);
         }
         let words: [u8; 4] = self.read(address & !3, true)?;
+        self.bus.onchip[self.processor as usize].instruction_fetch(address & !3);
         if address & 2 == 0 {
             retained.set(Some((
                 address + 2,

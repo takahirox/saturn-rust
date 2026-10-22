@@ -23,7 +23,7 @@ export async function m68kReset(page) {
       expected[3] = 0x13579BDF;
     }
     await page.locator("#bios").setInputFiles({ name: `original-68k-reset-${changed}.bin`, mimeType: "application/octet-stream", buffer: image });
-    await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+    await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const run = () => page.evaluate(async () => {
       const { emulator } = await import("./app.js");
       for (let i = 0; i < 10; i++) emulator.run_steps(10000);

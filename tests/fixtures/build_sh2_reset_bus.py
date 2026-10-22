@@ -73,14 +73,93 @@ def build():
     return ('\n'.join(lines)+'\n').encode(), rom
 
 
+def vector_error_build():
+    """H §§4.8.2–3: original guest with deliberately unaligned vector tables.
+
+    Invalid cycle data uses the documented emulator byte policy; the required
+    architectural evidence is nested vector9 dispatch, bounded suppression,
+    untouched first handler, original frames and guest repair/RTE.
+    """
+    rom = bytearray(524288)
+    struct.pack_into('>II', rom, 0, 0x200, 0x060FF000)
+    sections = {0x200: dispatch(0x800, 0x1800),
+                0x8000: 'mov #99,r12\nsleep\n',
+                0x8800: ('stc vbr,r0\n' + record() + record(15)
+                         + 'mov.l @r15,r0\n' + record()
+                         + 'mov r15,r1\nadd #4,r1\nmov.l @r1,r0\n' + record()
+                         + 'add #4,r1\nmov.l @r1,r0\n' + record() + record(9)
+                         + 'add #4,r1\nmov.l @r1,r0\n' + record()
+                         + 'mov #0,r0\nldc r0,vbr\nadd #8,r15\nrte\nnop\n')}
+    for entry, mailbox, vector, stack, master in [
+            (0x800, 0x2601F000, 0x4001, 0x060FF000, True),
+            (0x1800, 0x2601F100, 0x4101, 0x060FE000, False)]:
+        struct.pack_into('>I', rom, vector + 64 * 4, 0x8000)
+        struct.pack_into('>I', rom, vector + 9 * 4, 0x8800)
+        source = ((f'load {stack:#x},r15\n' if not master else '') + f'load {mailbox:#x},r8\n'
+                  + f'load {vector:#x},r0\nldc r0,vbr\n'
+                  'mov #81,r0\nldc r0,sr\nload resume,r9\ntrapa #64\nresume:\n'
+                  'load 0x600d,r0\n' + record() + record(12))
+        if master:
+            source += smpc(2)
+        source += 'done:\nsleep\nbra done\nnop\n'
+        sections[entry] = source
+    for address, source in sections.items():
+        code = assembler.assemble(source, base=address)
+        assert len(code) < 0x800
+        rom[address:address+len(code)] = code
+    lines = ['# Original unaligned-VBR BIOS guest. MIT: adjacent LICENSE.']
+    for at in range(0, len(rom), 16):
+        if any(rom[at:at+16]):
+            lines.append(f'{at:04X} ' + ' '.join(f'{w:04X}' for w in struct.unpack('>8H', rom[at:at+16])))
+    return ('\n'.join(lines)+'\n').encode(), rom
+
+
+def overrun_build():
+    """H §6.3.7 table6.4: IF's unused first word is still a compatible break."""
+    rom = bytearray(524288)
+    struct.pack_into('>II', rom, 0, 0x200, 0x060FF000)
+    struct.pack_into('>I', rom, 12*4, 0x8800)
+    sections = {0x200: dispatch(0x800, 0x1800),
+                0x5000: 'mov #99,r12\nmov #42,r12\nrts\nnop\n',
+                0x8800: ('mov.l @r15,r0\n' + record()
+                         + 'load 0xffffff78,r1\nmov.w @r1,r0\nextu.w r0,r0\n' + record()
+                         + record(12) + 'load 0xffffff48,r1\nmov #0,r0\nmov.w r0,@r1\nrte\nnop\n')}
+    for entry, mailbox, stack, master in [
+            (0x800, 0x2601F200, 0x060FF000, True),
+            (0x1800, 0x2601F300, 0x060FE000, False)]:
+        source = f'load {stack:#x},r15\nload {mailbox:#x},r8\n'
+        source += store(0xFFFFFF40, 0x5000)
+        source += 'load 0xffffff48,r1\nmov #86,r0\nmov.w r0,@r1\n'
+        # A source-authored literal is intentionally distinct for mutation tests.
+        source += ('load 0xffffff78,r1\nload 0x00001000,r0\n'  # native mode; test also clears UBC mode bit
+                   'mov.w r0,@r1\nmov.w @r1,r0\nmov #0,r0\nldc r0,sr\n'
+                   'mov #0,r12\nload 0x5002,r7\njsr @r7\nnop\n')
+        source += f'load {mailbox+0x20:#x},r8\n' + record(12) + 'load 0x600d,r0\n' + record()
+        if master:
+            source += smpc(2)
+        source += 'done:\nsleep\nbra done\nnop\n'
+        sections[entry] = source
+    for address, source in sections.items():
+        code = assembler.assemble(source, base=address)
+        assert len(code) < 0x800
+        rom[address:address+len(code)] = code
+    lines = ['# Original UBC overrun-fetch BIOS guest. MIT: adjacent LICENSE.']
+    for at in range(0, len(rom), 16):
+        if any(rom[at:at+16]):
+            lines.append(f'{at:04X} ' + ' '.join(f'{w:04X}' for w in struct.unpack('>8H', rom[at:at+16])))
+    return ('\n'.join(lines)+'\n').encode(), rom
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()
-    content, rom = build()
-    path = HERE/'sh2-reset-bus.hex'
-    if args.check:
-        assert path.read_bytes() == content, 'Rebuild sh2-reset-bus.hex'
-    else:
-        path.write_bytes(content)
-    print(f'{"Verified" if args.check else "Built"} sh2-reset-bus.hex; expanded ROM SHA-256 {hashlib.sha256(rom).hexdigest()}')
+    for name, builder in [('sh2-reset-bus.hex', build), ('sh2-vector-error.hex', vector_error_build),
+                          ('sh2-overrun.hex', overrun_build)]:
+        content, rom = builder()
+        path = HERE/name
+        if args.check:
+            assert path.read_bytes() == content, f'Rebuild {name}'
+        else:
+            path.write_bytes(content)
+        print(f'{"Verified" if args.check else "Built"} {name}; expanded ROM SHA-256 {hashlib.sha256(rom).hexdigest()}')

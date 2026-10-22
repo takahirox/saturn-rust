@@ -211,9 +211,9 @@ try {
   bios.writeUInt16BE(0x2100, 0x106); // MOV.B R0,@R1
   bios.writeUInt32BE(0x05FE00CC, 0x10C);
   await page.locator("#bios").setInputFiles({ name: "original-test-vectors.bin", mimeType: "application/octet-stream", buffer: bios });
-  await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
-  assert.equal(await value("pc"), "0x00000100");
-  assert.equal(await value("r15"), "0x06100000");
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
+  assert.equal(await value("pc"), "0x00000000");
+  assert.equal(await value("r15"), "0x00000000");
   assert.equal(await value("instructions"), "0");
   await page.locator("#step").click();
   assert.equal(await value("r0"), "0x0000002A");
@@ -241,7 +241,7 @@ try {
   await settings.click();
   assert.deepEqual(await machine(), faulted);
   await page.locator("#reset").click();
-  assert.equal(await value("pc"), "0x00000100");
+  assert.equal(await value("pc"), "0x00000000");
   assert.equal(await value("r0"), "0x00000000");
   await responsive(false);
   // The exact same MIT-licensed synthetic ROM runs in tests/sh2_system.rs.
@@ -253,7 +253,7 @@ try {
     words.forEach((word, i) => systemRom.writeUInt16BE(word, offset + i * 2));
   }
   await page.locator("#bios").setInputFiles({ name: "original-sh2-system.bin", mimeType: "application/octet-stream", buffer: systemRom });
-  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000100");
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   await page.locator("#count").fill("10000");
   await page.locator("#run").click();
   assert.equal(await value("error"), "");
@@ -287,7 +287,7 @@ try {
     words.forEach((word, i) => addressRom.writeUInt16BE(word, offset + i * 2));
   }
   await page.locator("#bios").setInputFiles({ name: "original-sh2-address-errors.bin", mimeType: "application/octet-stream", buffer: addressRom });
-  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000100");
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   await page.locator("#count").fill("4");
   await page.locator("#run").click();
   assert.equal(await value("error"), "");
@@ -340,7 +340,7 @@ try {
   sleepingErrorRom.writeUInt32BE(0x06100000, 4);
   [0xD101, 0x6F13, 0x002B, 0x001B, 0x0800, 0x0011].forEach((word, i) => sleepingErrorRom.writeUInt16BE(word, 0x100 + i * 2));
   await page.locator("#bios").setInputFiles({ name: "original-sleeping-address-error.bin", mimeType: "application/octet-stream", buffer: sleepingErrorRom });
-  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000100");
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   await page.locator("#count").fill("4");
   await page.locator("#run").click();
   assert.equal((await machine()).addressErrorPending, true);
@@ -362,7 +362,7 @@ try {
   for (const compare of [0, 3]) {
     compareRom.writeUInt16BE(0xE000 | compare, 0x114);
     await page.locator("#bios").setInputFiles({ name: "original-frt-compare.bin", mimeType: "application/octet-stream", buffer: compareRom });
-    await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000100");
+    await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const trace = await page.evaluate(async (compare) => {
       const { emulator } = await import("./app.js");
       const pc = () => emulator.special_registers()[0];
@@ -935,7 +935,7 @@ try {
     words.forEach((word, i) => peripheralRom.writeUInt16BE(word, offset + i * 2));
   }
   await page.locator("#bios").setInputFiles({ name: "original-sh7604.bin", mimeType: "application/octet-stream", buffer: peripheralRom });
-  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   const resetSteps = await page.evaluate(async () => {
     const { emulator } = await import("./app.js");
     for (let i = 1; i <= 10000; i++) {
@@ -1057,7 +1057,7 @@ try {
     words.forEach((word, i) => bscRom.writeUInt16BE(word, offset + i * 2));
   }
   await page.locator("#bios").setInputFiles({ name: "original-bsc.bin", mimeType: "application/octet-stream", buffer: bscRom });
-  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   const bscTrace = () => page.evaluate(async () => {
     const { emulator } = await import("./app.js");
     emulator.run_steps(3000);
@@ -1108,7 +1108,7 @@ try {
       changed.writeUInt32BE(0, at);
     }
     await page.locator("#bios").setInputFiles({ name: "original-bsc-waits.bin", mimeType: "application/octet-stream", buffer: changed });
-    await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+    await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const run = () => page.evaluate(async () => {
       const { emulator } = await import("./app.js");
       emulator.run_steps(3000);
@@ -1174,7 +1174,7 @@ try {
       changed.writeUInt32BE(after, at);
     }
     await page.locator("#bios").setInputFiles({ name: "original-bsc-idle.bin", mimeType: "application/octet-stream", buffer: changed });
-    await page.waitForFunction(() => document.getElementById("pc").textContent === "0x20000200");
+    await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const runIdle = () => page.evaluate(async () => {
       const { emulator } = await import("./app.js");
       emulator.run_steps(3000);
@@ -1224,7 +1224,7 @@ try {
       expected[0]=5;expected[1]=16;
     }
     await page.locator("#bios").setInputFiles({name:"original-sh2-timing.bin",mimeType:"application/octet-stream",buffer:image});
-    await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
+    await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const runTiming=()=>page.evaluate(async(count)=>{
       const {emulator}=await import("./app.js");
       emulator.run_steps(10000);
@@ -1257,7 +1257,7 @@ try {
       changed.writeUInt32BE(after, at);
     }
     await page.locator("#bios").setInputFiles({ name: "original-dsp-dma.bin", mimeType: "application/octet-stream", buffer: changed });
-    await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+    await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const runDspDma = () => page.evaluate(async () => {
       const { emulator } = await import("./app.js");
       emulator.run_steps(10000);
@@ -1277,7 +1277,7 @@ try {
   assert(conflictAt >= 0 && conflictedDsp.indexOf(Buffer.from([0, 0, 0x32, 4]), conflictAt + 1) < 0);
   conflictedDsp.writeUInt32BE(0x00003205, conflictAt);
   await page.locator("#bios").setInputFiles({name:"original-dsp-bank-conflict.bin", mimeType:"application/octet-stream", buffer:conflictedDsp});
-  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   await page.locator("#count").fill("4000");
   await page.locator("#run").click();
   assert.match(await value("error"), /SCU DSP at 02: data bank 1 is owned by DMA/);
@@ -1323,7 +1323,7 @@ try {
       expected[1] = 0xCCDDEEEE; expected[2] = 0xEEEEEEEE;
     }
     await page.locator("#bios").setInputFiles({name:"original-dsp-bus.bin", mimeType:"application/octet-stream", buffer:changed});
-    await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+    await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const runDspBus = () => page.evaluate(async count => {
       const {emulator} = await import("./app.js");
       emulator.run_steps(10000);
@@ -1343,7 +1343,7 @@ try {
     words.forEach((word, i) => ubcRom.writeUInt16BE(word, offset + i * 2));
   }
   await page.locator("#bios").setInputFiles({ name: "original-ubc.bin", mimeType: "application/octet-stream", buffer: ubcRom });
-  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   const ubcTrace = () => page.evaluate(async () => {
     const { emulator } = await import("./app.js");
     emulator.run_steps(2000);
@@ -1376,7 +1376,7 @@ try {
       await page.waitForFunction(() => document.getElementById("backup-status").textContent.startsWith("Imported"));
     }
     await page.locator("#bios").setInputFiles({ name: `original-${fixture}.bin`, mimeType: "application/octet-stream", buffer: rom });
-    await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+    await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const result = await page.evaluate(async ({base, count, steps}) => {
       const { emulator } = await import("./app.js");
       for (let done = 0; done < steps; done += 10000) emulator.run_steps(Math.min(10000, steps - done));
@@ -1446,7 +1446,7 @@ try {
   let previousDrive;
   for (let reset=0;reset<2;reset++) {
     await page.locator("#bios").setInputFiles({name:"original-cd-drive.bin",mimeType:"application/octet-stream",buffer:driveRom});
-    await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
+    await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const result=await page.evaluate(async()=>{
       const {emulator}=await import("./app.js");
       emulator.mount_disc(new Uint8Array(2048*100));
@@ -1488,7 +1488,7 @@ try {
       image.writeUInt32BE(0x801F,at);
     }
     await page.locator("#bios").setInputFiles({name:"original-raster-history.bin",mimeType:"application/octet-stream",buffer:image});
-    await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
+    await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const result=await page.evaluate(async ys=>{
       const {emulator,advanceFrame}=await import("./app.js");
       for(let i=0;i<400 && emulator.read_long(0x0600D900)!==0x600D;i++)emulator.run_steps(500);
@@ -1595,7 +1595,7 @@ try {
       image.writeUInt32BE(0x3FF, at);
     }
     await page.locator("#bios").setInputFiles({ name: "original-tiles.bin", mimeType: "application/octet-stream", buffer: image });
-    await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+    await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     await page.locator("#count").fill("3000");
     await page.locator("#run").click();
     assert.equal(await value("error"), "");
@@ -1624,7 +1624,7 @@ try {
   }
   const spriteEffectPixels=async(rom)=>{
     await page.locator("#bios").setInputFiles({name:"original-sprite-effects.bin",mimeType:"application/octet-stream",buffer:rom});
-    await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
+    await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     return page.evaluate(async()=>{
       const {emulator,advanceFrame}=await import("./app.js");
       emulator.run_steps(3000); advanceFrame(); advanceFrame();
@@ -1679,7 +1679,7 @@ try {
       image.writeUInt32BE(2<<16,at);
     }
     await page.locator("#bios").setInputFiles({name:"original-effects.bin",mimeType:"application/octet-stream",buffer:image});
-    await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+    await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const result = await page.evaluate(async (points) => {
       const { emulator, advanceFrame } = await import("./app.js");
       emulator.run_steps(10000);
@@ -1711,7 +1711,7 @@ try {
     assert(at>=0 && image.indexOf(literal,at+1)===-1);
     image.writeUInt32BE(my<<16,at);
     await page.locator("#bios").setInputFiles({name:"original-rbg1.bin",mimeType:"application/octet-stream",buffer:image});
-    await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
+    await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const result=await page.evaluate(async()=>{
       const {emulator,advanceFrame}=await import("./app.js");
       emulator.run_steps(10000); advanceFrame(); advanceFrame();
@@ -1753,7 +1753,7 @@ try {
     let previous;
     for(let repetition=0;repetition<2;repetition++) {
       await page.locator("#bios").setInputFiles({name:"original-line-color.bin",mimeType:"application/octet-stream",buffer:image});
-      await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
+      await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
       const result=await page.evaluate(async()=>{
         const {emulator,advanceFrame}=await import("./app.js");
         emulator.run_steps(10000); advanceFrame(); advanceFrame();
@@ -1792,7 +1792,7 @@ try {
     let previous;
     for(let repetition=0;repetition<2;repetition++) {
       await page.locator("#bios").setInputFiles({name:"original-gradation.bin",mimeType:"application/octet-stream",buffer:image});
-      await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
+      await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
       const result=await page.evaluate(async()=>{
         const {emulator,advanceFrame}=await import("./app.js");
         emulator.run_steps(10000); advanceFrame(); advanceFrame();
@@ -1835,7 +1835,7 @@ try {
     let previous;
     for(let repetition=0;repetition<2;repetition++) {
       await page.locator("#bios").setInputFiles({name:"original-special-video.bin",mimeType:"application/octet-stream",buffer:image});
-      await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
+      await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
       const result=await page.evaluate(async()=>{
         const {emulator,advanceFrame}=await import("./app.js");
         emulator.run_steps(10000); advanceFrame(); advanceFrame();
@@ -1859,7 +1859,7 @@ try {
     words.forEach((word, i) => scuRom.writeUInt16BE(word, offset + i * 2));
   }
   await page.locator("#bios").setInputFiles({ name: "original-scu.bin", mimeType: "application/octet-stream", buffer: scuRom });
-  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   const scuResult = () => page.evaluate(async () => {
     const { emulator } = await import("./app.js");
     emulator.run_steps(10000);
@@ -1882,7 +1882,7 @@ try {
   assert(dspLiteral > 0);
   badScuRom.writeUInt32BE(0x40000000, dspLiteral);
   await page.locator("#bios").setInputFiles({ name: "original-illegal-scu.bin", mimeType: "application/octet-stream", buffer: badScuRom });
-  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   await page.locator("#count").fill("1000");
   await page.locator("#run").click();
   assert.match(await value("error"), /SCU DSP illegal instruction 40000000 at 00/);
@@ -1902,7 +1902,7 @@ try {
     words.forEach((word, i) => soundRom.writeUInt16BE(word, offset + i * 2));
   }
   await page.locator("#bios").setInputFiles({ name: "original-sound.bin", mimeType: "application/octet-stream", buffer: soundRom });
-  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   const soundResult = () => page.evaluate(async () => {
     const { emulator } = await import("./app.js");
     for (let i = 0; i < 10; i++) emulator.run_steps(10000);
@@ -1918,9 +1918,9 @@ try {
   assert.deepEqual(soundFinished.mailbox, [1, 0x600D]);
   assert.deepEqual(soundFinished.waveform, [0x1000F000, 0xE0002000]);
   assert.deepEqual(soundFinished.samples, [256,4096,-256,-4096,-512,-8192,512,8192,256,4096,-256,-4096,-512,-8192,512,8192]);
-  assert.equal(soundFinished.irqs,2);
-  assert.equal(soundFinished.irqReturn,0x17E); // both timer IRQs precede the first STOP
-  assert.equal(BigInt(soundFinished.count),30n); // setup23 + two IRQ3 handlers + STOP1
+  assert.equal(soundFinished.irqs,1);
+  assert.equal(soundFinished.irqReturn,0x17E); // cold vector clocks coalesce timer requests before the first STOP
+  assert.equal(BigInt(soundFinished.count),27n); // setup23 + IRQ3 handler + STOP1
   assert.equal(soundFinished.dropped, "0");
   await page.locator("#reset").click();
   assert.deepEqual(await soundResult(), soundFinished);
@@ -1965,7 +1965,7 @@ try {
   const changedSoundRom = Buffer.from(soundRom);
   changedSoundRom[0x2107] = 8;
   await page.locator("#bios").setInputFiles({ name: "original-changed-sound.bin", mimeType: "application/octet-stream", buffer: changedSoundRom });
-  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   const changedSound = await soundResult();
   assert.deepEqual(changedSound.waveform, [0x0800F800, 0xF0001000]);
   assert.deepEqual(changedSound.samples.slice(0,4), [128,2048,-128,-2048]);
@@ -1975,7 +1975,7 @@ try {
   assert(pitchAt >= 0 && fractionalSoundRom.indexOf(pitchInstruction,pitchAt+1) === -1);
   fractionalSoundRom.writeUInt16BE(0x7800,pitchAt+2);
   await page.locator("#bios").setInputFiles({ name:"original-fractional-sound.bin",mimeType:"application/octet-stream",buffer:fractionalSoundRom });
-  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   const fractionalSound = await soundResult();
   assert.deepEqual(fractionalSound.waveform, [0x1000F000,0xE0002000]);
   assert.deepEqual(fractionalSound.samples,[256,4096,0,0,-256,-4096,-384,-6144,-512,-8192,0,0,512,8192,384,6144]);
@@ -1985,7 +1985,7 @@ try {
   assert(keyAt>=0 && reverseSoundRom.indexOf(keyInstruction,keyAt+1)===-1);
   reverseSoundRom.writeUInt16BE(0x1840,keyAt+2);
   await page.locator("#bios").setInputFiles({name:"original-reverse-fractional-sound.bin",mimeType:"application/octet-stream",buffer:reverseSoundRom});
-  await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   assert.deepEqual((await soundResult()).samples,[512,8192,0,0,-512,-8192,-384,-6144,-256,-4096,0,0,256,4096,384,6144]);
   // Original CPU-board aliases and SCSP DRAM-geometry guest. The source ROM
   // drives all writes, including DMA and effects-DSP read instructions.
@@ -2092,7 +2092,7 @@ try {
   }
   const soundIoResults=async(rom)=>{
     await page.locator("#bios").setInputFiles({name:"original-sound-io.bin",mimeType:"application/octet-stream",buffer:rom});
-    await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
+    await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     return page.evaluate(async()=>{
       const {emulator}=await import("./app.js");
       for(let i=0;i<10;i++) emulator.run_steps(10000);
@@ -2220,7 +2220,7 @@ try {
   };
   const synthesisResult=async(rom)=>{
     await page.locator("#bios").setInputFiles({name:"original-slot-synthesis.bin",mimeType:"application/octet-stream",buffer:rom});
-    await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
+    await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     return page.evaluate(async()=>{
       const {emulator}=await import("./app.js");
       for(let i=0;i<20;i++) emulator.run_steps(10000);
@@ -2316,7 +2316,7 @@ try {
     words.forEach((word, i) => smpcRom.writeUInt16BE(word, offset + i * 2));
   }
   await page.locator("#bios").setInputFiles({ name: "original-smpc.bin", mimeType: "application/octet-stream", buffer: smpcRom });
-  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   await page.locator("#screen").focus();
   const smpcResult = () => page.evaluate(async () => {
     const { emulator } = await import("./app.js");
@@ -2368,7 +2368,7 @@ try {
     words.forEach((word,i)=>controllerRom.writeUInt16BE(word,offset+i*2));
   }
   await page.locator("#bios").setInputFiles({name:"original-controller.bin",mimeType:"application/octet-stream",buffer:controllerRom});
-  await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   for (const x of [0x12,0x56]) {
     if (x===0x56) await page.locator("#reset").click();
     const result=await page.evaluate(async (x)=>{
@@ -2393,7 +2393,7 @@ try {
     words.forEach((word, i) => dualRom.writeUInt16BE(word, offset + i * 2));
   }
   await page.locator("#bios").setInputFiles({ name: "original-dual-sh2.bin", mimeType: "application/octet-stream", buffer: dualRom });
-  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   const dualStarted = await page.evaluate(async () => {
     const { emulator } = await import("./app.js");
     for (let i = 0; i < 2000 && emulator.read_long(0x06002004) !== 1; i++) emulator.step();
@@ -2438,7 +2438,7 @@ try {
   assert(badStack > 0);
   badSlaveRom.writeUInt32BE(0x08000010, badStack);
   await page.locator("#bios").setInputFiles({ name: "original-faulting-slave.bin", mimeType: "application/octet-stream", buffer: badSlaveRom });
-  await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   await page.locator("#run").click();
   assert.match(await value("error"), /Slave SH-2: Exception vector 66 entry/);
   assert.match(await value("status"), /Faulted: Slave SH-2/);
@@ -2826,7 +2826,7 @@ try {
     words.forEach((word, i) => backupRom.writeUInt16BE(word, offset + i * 2));
   }
   await page.locator("#bios").setInputFiles({name:"original-backup-pad.bin", mimeType:"application/octet-stream", buffer:backupRom});
-  await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   const romResults = await page.evaluate(async () => {
     const { emulator } = await import("./app.js");
     emulator.set_port2_buttons(1);

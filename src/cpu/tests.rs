@@ -21,6 +21,63 @@ fn nop_only_advances_pc_and_instruction_count() {
 }
 
 #[test]
+fn unaligned_vector_tables_complete_entry_then_dispatch_one_repairable_address_error() {
+    // H §§4.8.2–3: VBR alignment is checked even with an aligned stack.
+    // Undefined invalid-cycle bytes follow Memory's exact-address policy.
+    for misalignment in 1..=3 {
+        for vector in [4, 11, 64, 127] {
+            let mut memory = FlatMemory(vec![0; 65536]);
+            let mut cpu = Cpu::start(0x100, 0x8000);
+            cpu.state.vbr = 0x1000 + misalignment;
+            cpu.state.sr = 0x51;
+            for (v, target) in [(vector, 0x200u32), (9, 0x300)] {
+                for (i, byte) in target.to_be_bytes().into_iter().enumerate() {
+                    memory
+                        .write8(cpu.state.vbr + v * 4 + i as u32, byte)
+                        .unwrap();
+                }
+            }
+            let (saved_pc, handler_sr) = match vector {
+                11 => {
+                    assert!(cpu.accept_nmi(&mut memory).unwrap());
+                    (0x100, 0xF1)
+                }
+                64 | 127 => {
+                    assert!(cpu.accept_interrupt(&mut memory, 7, vector as u8).unwrap());
+                    (0x100, 0x71)
+                }
+                _ => {
+                    cpu.enter_exception(&mut memory, vector as u8, 0x102)
+                        .unwrap();
+                    (0x102, 0x51)
+                }
+            };
+            assert_eq!((cpu.state.pc, cpu.state.r[15]), (0x200, 0x7FF8));
+            assert_eq!(
+                (memory.read32(0x7FF8), memory.read32(0x7FFC)),
+                (Ok(saved_pc), Ok(0x51))
+            );
+            assert!(cpu.state.address_error_pending);
+            cpu.step(&mut memory).unwrap();
+            assert_eq!((cpu.state.pc, cpu.state.r[15]), (0x300, 0x7FF0));
+            assert_eq!(
+                (memory.read32(0x7FF0), memory.read32(0x7FF4)),
+                (Ok(0x200), Ok(handler_sr))
+            );
+            assert_eq!(cpu.state.exceptions, 2);
+            assert!(!cpu.state.address_error_pending);
+            assert_eq!(cpu.state.instructions, 0);
+            // The address-error handler can run and repair VBR; it must not
+            // recurse merely because its own vector read was also unaligned.
+            memory.write16(0x300, 0x402E).unwrap(); // LDC R0,VBR
+            cpu.step(&mut memory).unwrap();
+            assert_eq!(cpu.state.vbr, 0);
+            assert_eq!((cpu.state.exceptions, cpu.state.instructions), (2, 1));
+        }
+    }
+}
+
+#[test]
 fn mac_register_writeback_and_loaded_pr_have_architectural_results_and_interlocks() {
     // P §7.7.6 figs7.86/7.90, §6 STS/LDS/RTS. These execute real
     // instructions in addition to the timing mask vectors.

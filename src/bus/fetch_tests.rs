@@ -2,6 +2,53 @@
 use super::*;
 
 #[test]
+fn compatible_ubc_observes_both_if_words_and_native_ubc_waits_for_execution() {
+    // H §6.3.7 table6.4. Entry at +2 fetches the complete longword;
+    // its first instruction is an overrun fetch and is never executed.
+    for p in [Processor::Master, Processor::Slave] {
+        for native in [false, true] {
+            for cached in [false, true] {
+                for entry in [0, 2] {
+                    let mut b = Bus::default();
+                    b.set_slave_enabled(true);
+                    b.write32(HIGH_WRAM, 0xE001E102).unwrap();
+                    let address = HIGH_WRAM + (2 - entry);
+                    let mut memory = b.for_cpu(p);
+                    if cached {
+                        memory.write8(CCR, 1).unwrap();
+                        memory.fetch16(HIGH_WRAM).unwrap(); // establish a cache hit
+                        memory.sh2_discard_prefetch();
+                    }
+                    memory.write32(0xFFFFFF40, address).unwrap();
+                    memory.write16(0xFFFFFF48, 0x56).unwrap();
+                    memory
+                        .write16(0xFFFFFF78, if native { 0x1000 } else { 0 })
+                        .unwrap();
+                    memory.read16(0xFFFFFF78).unwrap();
+                    assert_eq!(
+                        memory.fetch16(HIGH_WRAM + entry).unwrap(),
+                        if entry == 0 { 0xE001 } else { 0xE102 }
+                    );
+                    assert_eq!(memory.break_pending(), !native);
+                    assert_eq!(
+                        memory.read16(0xFFFFFF78),
+                        Ok(if native { 0x1000 } else { 0 })
+                    );
+                    memory.acknowledge_break();
+                    // A retained second word is not another physical IF. In
+                    // native mode it matches only when that word will execute.
+                    if entry == 0 {
+                        memory.fetch16(HIGH_WRAM + 2).unwrap();
+                        assert!(!memory.break_pending());
+                        assert_eq!(memory.instruction_break(HIGH_WRAM + 2, false), native);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn uncached_fetch_is_one_aligned_longword_split_on_physical_widths_and_retains_the_second_word() {
     for p in [Processor::Master, Processor::Slave] {
         for (select, width) in [(1, 1), (2, 2), (3, 4)] {

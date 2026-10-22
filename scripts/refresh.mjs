@@ -22,7 +22,7 @@ export async function refreshArbitration(page) {
     if (variant === "operand") replace(image, 0x013579BD, 0x02468ACE);
     const sum = variant === "operand" ? 0x48D159C0 : 0x26AF37A0;
     await page.locator("#bios").setInputFiles({ name: `original-refresh-${variant}.bin`, mimeType: "application/octet-stream", buffer: image });
-    await page.waitForFunction(() => document.getElementById("pc").textContent === "0x00000200");
+    await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const run = () => page.evaluate(async () => {
       const { emulator } = await import("./app.js");
       emulator.run_steps(6000);

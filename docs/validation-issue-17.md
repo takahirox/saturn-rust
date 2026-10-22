@@ -3365,3 +3365,78 @@ This evidence completes additional reset behavior, not the umbrella checklist.
 PR #18 stays Draft with Closes #17 as its intended final outcome. No Issue is
 closed/replaced/reopened, and no merge, human testing/approval, personal firmware,
 live Pages inspection or external-workflow gate is introduced.
+
+
+## Scheduled startup vectors and SH-2 VBR/IF comparison boundaries
+
+Related to #17. Upstream main was rechecked as
+`dbd981b030a46daa6923072ce240680dd2e58ebf`. Existing PR #18 work and original
+licensed demonstrations are preserved.
+
+Cold external-BIOS startup, SSHON and external-BIOS SYSRES now use the scheduled
+PC/SP transaction path shared with watchdog reset. The CPU stays in Reset until
+both reads complete; partial journals are canceled by a new reset, rejected file
+or SSHOFF. Native clock vectors distinguish the completed PC from an unsampled SP,
+show master progress during slave vector waits and test cancellation behind a
+long master VRAM cycle. Production Wasm observes initial zero PC/SP/instructions,
+completed vector waits before first execution, changed reset SP, boot-selection
+cancellation and repeated boots. Existing dual-CPU, watchdog and SYSRES guests
+continue to execute through actual hardware controls.
+
+Misaligned VBR now causes architectural address-error dispatch after the original
+exception entry rather than a host alignment diagnostic. Independent vectors cover
+all three misalignments, exception/NMI/IRQ entry, both saved frames and bounded
+vector9 suppression. An original dual-CPU ROM records its own nested TRAPA frames,
+repairs VBR and returns through the original frame. Undefined vector bytes use an
+explicit exact-address policy, consistent with existing invalid stacking.
+
+SH7000-compatible UBC comparison now observes both words of the actual IF
+longword, including a word never executed. SH7604 comparisons remain at the native
+before/after execution boundary. Independent cache hit/miss and both-CPU vectors
+check the distinction. A second original guest enters at 4n+2, records the
+compatible saved PC and zero match flags, and proves the native-mode control does
+not break. Mutated executed opcodes change both CPU results in native and Wasm.
+The existing CI reset-fixture builder reproduces both new MIT-licensed ROMs;
+[conformance evidence](hardware-conformance.md#sh-2-startup-vectors-vbr-alignment-and-if-comparison-boundaries-startvvbrgifubc)
+links specifications, functions, tests and hashes.
+
+The corrected cold-reset duration advances SCSP's sample phase before guest
+upload. The original sound fixture's FE-to-FF timer edge now reaches the pending
+bit before the first handler acknowledges it, coalescing with the power-on
+request. A native observation checks that edge during the first handler before
+acknowledgement. The authored instruction count is setup23 + handler3 + STOP1 =27;
+native and browser expectations use one IRQ and the same saved STOP PC17E.
+Original generated sound code, computed waveform and stereo sample goldens remain
+unchanged. Browser BIOS-loading tests now expect the pending-reset status before
+execution instead of an unscheduled initial PC.
+
+Validation:
+
+- `cargo fmt --check`, `cargo build --locked`, native all-target Clippy and
+  wasm32 Clippy with `-D warnings`: passed.
+- `CARGO_PROFILE_TEST_OPT_LEVEL=1 cargo test --locked`: **650 passed**
+  (399 unit + 251 integration), zero failed, ignored or filtered tests; doc tests
+  passed. Debug assertions remained enabled. The later expanded NMI/IRQ vector
+  assertions also passed their targeted rerun. An earlier unoptimized full run
+  failed the superseded sound IRQ-count expectation; it is not reported as a
+  complete pass.
+- `sh scripts/build-web.sh`, all **66** existing CI reproducibility commands,
+  changed JavaScript syntax and Git whitespace checks: passed. No dependency,
+  lockfile or original demonstration media change was required. The first web
+  build lacked the existing matching wasm-bindgen CLI on PATH; selecting the
+  documented rustup/Cargo-bin PATH resolved that setup error.
+- Complete final `npm run test:browser`: passed on Chromium **145.0.7632.6**,
+  Node **24.12.0**, rebuilt production Wasm under `/saturn-rust/`, with no
+  required skips. The new reset/VBR/IF guests, existing hardware guests, all three
+  demonstrations, Canvas/WebAudio, input/focus, restart, backup and local-file
+  privacy assertions passed. Earlier browser attempts rejected stale immediate-
+  reset waits and the superseded sound IRQ count; those expectations were fixed
+  before the complete passing run.
+
+This revision fixes the scheduled reset-path finding and parts of the SH-2
+exception/UBC finding. It does **not** complete the remaining required SH-2
+IF/MA/multiplier/peripheral contracts, 68k instruction bus sequencing, board/shared
+sound ownership, SCU DMA/DSP, VDP1/VDP2, SCSP/effects DSP, runtime CD/media/HLE,
+SMPC or comprehensive conformance acceptance findings. Those findings remain
+unresolved in PR #18; this is not evidence that Issue #17 can close. No Issue is
+closed, replaced or reopened, and no push or merge is performed.

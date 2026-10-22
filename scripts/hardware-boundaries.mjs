@@ -14,7 +14,7 @@ async function rom(name) {
 }
 async function load(page,name,image) {
   await page.locator("#bios").setInputFiles({name:`original-${name}.bin`,mimeType:"application/octet-stream",buffer:image});
-  await page.waitForFunction(()=>document.getElementById("pc").textContent==="0x00000200");
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
 }
 
 export async function hardwareBoundaries(page) {

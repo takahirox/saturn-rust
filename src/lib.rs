@@ -11,6 +11,8 @@ mod hle;
 pub mod m68k;
 pub mod media;
 pub mod onchip;
+#[cfg(test)]
+mod reset_tests;
 pub mod scu;
 pub mod smpc;
 pub mod sound;
@@ -225,7 +227,7 @@ mod scheduling_tests {
                 while m.clocks < 36 {
                     m.step_hardware_boundary().unwrap();
                 }
-                assert!(m.issue_cpu(p).unwrap());
+                assert!(!m.issue_cpu(p).unwrap());
                 let (cpu, peer) = if p == Processor::Master {
                     (m.cpu_state(), m.slave_state())
                 } else {
@@ -387,7 +389,7 @@ impl Machine {
             Boot::ExternalBios(bytes) => {
                 self.mode = Some(BootMode::ExternalBios);
                 self.bus.load_bios(bytes)?;
-                self.cpu = Cpu::power_on(&self.bus)?;
+                self.schedule_cpu_reset(Processor::Master, onchip::ResetRequest::PowerOn);
             }
             Boot::HleDisc(image) => {
                 self.mode = Some(BootMode::HleDisc);
@@ -541,6 +543,25 @@ impl Machine {
         result
     }
 
+    /// Every hardware reset samples PC and SP through the same replayed bus
+    /// cycles. Neither architectural value is published until both complete.
+    /// Cancel any older instruction/vector journal before starting a new reset.
+    fn schedule_cpu_reset(&mut self, processor: Processor, reset: onchip::ResetRequest) {
+        let i = processor as usize;
+        self.bus.cancel_cpu_transaction(processor);
+        match processor {
+            Processor::Master => {
+                self.cpu = Cpu::default();
+                self.nmi_pending = false;
+            }
+            Processor::Slave => self.slave = Cpu::default(),
+        }
+        self.dma_errors[i] = false;
+        self.cpu_ready[i] = self.clocks;
+        self.cpu_boundary[i] = None;
+        self.cpu_reset_vectors[i] = Some(reset);
+    }
+
     fn issue_cpu(&mut self, processor: Processor) -> Result<bool, MachineError> {
         let i = processor as usize;
         let slave = processor == Processor::Slave;
@@ -591,7 +612,9 @@ impl Machine {
                     }
                     self.cpu_reset_vectors[i] = None;
                     self.bus.finish_cpu_transaction(processor);
-                    Ok(true)
+                    // A reset does not retire an instruction. Let the bounded
+                    // machine turn continue to the first executable boundary.
+                    Ok(false)
                 }
             };
         }
@@ -720,11 +743,8 @@ impl Machine {
             .map_err(MachineError::Scu)?
         {
             Some(0x02) if !self.bus.slave_enabled => {
-                self.slave = Cpu::power_on(&self.bus)
-                    .map_err(|source| MachineError::SlaveCpu(CpuError::Bus { pc: 0, source }))?;
                 self.bus.set_slave_enabled(true);
-                self.cpu_ready[1] = self.clocks;
-                self.cpu_boundary[1] = None;
+                self.schedule_cpu_reset(Processor::Slave, onchip::ResetRequest::PowerOn);
             }
             Some(0x03) => {
                 self.bus.set_slave_enabled(false);
@@ -748,6 +768,11 @@ impl Machine {
                 self.bus.system_reset();
                 self.cpu = Cpu::default();
                 self.slave = Cpu::default();
+                self.nmi_pending = false;
+                self.dma_errors = [false; 2];
+                self.cpu_ready = [self.clocks; 2];
+                self.cpu_boundary = [None; 2];
+                self.cpu_reset_vectors = [None; 2];
                 match self.mode {
                     Some(BootMode::HleDisc) => {
                         if let Some(media) = self.bus.cd.media().cloned() {
@@ -766,13 +791,8 @@ impl Machine {
                         }
                         self.cpu = Cpu::start(FIXTURE_PC, HIGH_WRAM + WRAM_SIZE as u32);
                     }
-                    _ => self.cpu = Cpu::power_on(&self.bus)?,
+                    _ => self.schedule_cpu_reset(Processor::Master, onchip::ResetRequest::PowerOn),
                 }
-                self.nmi_pending = false;
-                self.dma_errors = [false; 2];
-                self.cpu_ready = [self.clocks; 2];
-                self.cpu_boundary = [None; 2];
-                self.cpu_reset_vectors = [None; 2];
             }
             Some(0x0E | 0x0F) => {
                 self.slave = Cpu::default();
@@ -796,17 +816,7 @@ impl Machine {
                 continue;
             }
             if let Some(reset) = self.bus.take_cpu_reset(processor) {
-                match processor {
-                    Processor::Master => {
-                        self.cpu = Cpu::default();
-                        self.nmi_pending = false;
-                    }
-                    Processor::Slave => self.slave = Cpu::default(),
-                }
-                self.cpu_reset_vectors[processor as usize] = Some(reset);
-                self.dma_errors[processor as usize] = false;
-                self.cpu_ready[processor as usize] = self.clocks;
-                self.cpu_boundary[processor as usize] = None;
+                self.schedule_cpu_reset(processor, reset);
             }
         }
         for processor in [Processor::Master, Processor::Slave] {

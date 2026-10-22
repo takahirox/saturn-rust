@@ -816,8 +816,15 @@ impl OnChip {
                 .set(self.instruction_epoch.get().wrapping_add(1));
         }
         let mut ubc = self.ubc.borrow_mut();
-        ubc.observe(pc, 2, 0, false, ubc::Master::Cpu, Some(after));
+        if ubc.native_mode() {
+            ubc.observe(pc, 2, 0, false, ubc::Master::Cpu, Some(after));
+        }
         ubc.pending()
+    }
+    pub(crate) fn instruction_fetch(&self, address: u32) {
+        if !self.standby {
+            self.ubc.borrow_mut().fetch_longword(address);
+        }
     }
     pub(crate) fn acknowledge_break(&self) {
         self.ubc.borrow_mut().acknowledge();
