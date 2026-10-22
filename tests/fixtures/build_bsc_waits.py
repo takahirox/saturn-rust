@@ -71,15 +71,13 @@ def build():
     for at in range(0, len(rom), 16):
         if any(rom[at:at+16]):
             lines.append(f'{at:04X} '+' '.join(f'{w:04X}' for w in struct.unpack('>8H',rom[at:at+16])))
-    # Module-stop initialization resets FRC and its divider before each
-    # interval. Resuming takes two ROM-fetch clocks; the first latch sees 0.
-    # High/low/EXTU take 6 clocks; first CS3 read takes 2(fetch)+2(data)
-    # +IW0(2)+Tw, next seven also need IW3(2). MOV R0,R6 costs 2+IW3.
-    # H §7.11.2: each CPU peripheral read additionally consumes its
-    # determine/read states, and the resume write publishes at completion.
-    # The interval gains six states: 80+8*Tw -> 10+Tw ticks.
-    # Narrow buses add two clocks and Tw per extra data beat (H figs7.5/7.6).
-    expected = [10+w for w in range(7)]
+    # H §§7.3.1/7.11.2: IF is an aligned longword. Every second
+    # instruction is retained, including the repeated MOV.L sequence. Pairing
+    # removes four IF cycles and their CS0/CS3 turnarounds. Enumerating the
+    # remaining IF, operand and peripheral phases gives 56+8*Tw clocks,
+    # hence 7+Tw FRT ticks (not the old word-fetch 80+8*Tw).
+    # Narrow operands add 2+Tw per extra physical data beat.
+    expected = [7+w for w in range(7)]
     return {'bsc-waits.hex': ('\n'.join(lines)+'\n').encode(),
             'bsc-waits.tsv': ''.join(f'{v:08X}\n' for v in expected).encode(),
             'bsc-endian.tsv': ''.join(f'{v:08X}\n' for v in

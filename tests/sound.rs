@@ -37,16 +37,15 @@ fn master_uploads_starts_sound_cpu_and_observes_scsp_irq_guest_computation_and_s
         assert_eq!(m.sound_state().a[7], 0x7FF00);
         assert!(m.sound_state().stopped);
         assert!(!m.sound_state().halted);
-        // The power-on timer request is already pending when SR unmasks it.
-        // With actual SH-2 WB waits during upload/control, the programmed
-        // FE->FF edge wakes the first STOP. The last IRQ frame saves the BRA
-        // at $182 (STOP is $17E), independently checking that ordering:
-        // setup23 + two IRQ3 handlers + STOP2 + BRA1 = 32.
+        // The power-on request and FE->FF timer edge are both pending
+        // before STOP with longword IF retention and buffered upload writes.
+        // The last IRQ frame saves the first STOP at $17E; independently
+        // count setup23 + two IRQ3 handlers + STOP1 = 30 instructions.
         // The master separately latched the first result.
         assert_eq!(m.bus().read32(SOUND_RAM + 0x804), Ok(2));
         assert_eq!(m.sound_state().exceptions, 2);
-        assert_eq!(m.bus().read32(SOUND_RAM + 0x7FEFC), Ok(0x182));
-        assert_eq!(m.sound_state().instructions, 32);
+        assert_eq!(m.bus().read32(SOUND_RAM + 0x7FEFC), Ok(0x17E));
+        assert_eq!(m.sound_state().instructions, 30);
         assert_eq!(m.bus().read16(SCSP + 0x420).unwrap() & 0x40, 0);
         let audio = m.drain_audio(8192);
         let nonzero = audio.iter().position(|v| *v != 0).unwrap();

@@ -139,35 +139,28 @@ mod scheduling_tests {
         assert_eq!((m.clocks(), m.cpu.state().instructions), (8, 1));
     }
     #[test]
-    fn stalled_cpu_write_is_invisible_to_peer_until_its_data_phase_and_reset_cancels_it() {
-        let mut m = cached_pair(&[0xE02A, 0x2F02, 9, 9], &[9; 8]);
+    fn buffered_cpu_write_retires_before_publication_and_reset_cancels_it() {
+        let mut m = cached_pair(&[0xE02A, 0x2F02, 0x7101, 0x7101, 9], &[9; 8]);
         let shared = HIGH_WRAM + 0x2000;
         m.cpu = Cpu::start(HIGH_WRAM, shared | 0x20000000);
         m.bus
             .for_cpu(Processor::Master)
-            .write32(0xFFFFFFE8, 0xA55A0080)
+            .write32(0xFFFFFFE8, 0xA55A00C0)
             .unwrap();
-        m.step().unwrap(); // cached MOV #42,R0
+        m.step().unwrap();
         assert_eq!(m.clocks(), 33);
-        for expected_clock in 34..=36 {
-            m.step().unwrap();
-            assert_eq!(m.clocks(), expected_clock);
-            assert_eq!(m.bus.read32(shared), Ok(0));
-            assert_eq!(m.cpu.state().instructions, 1);
-        }
-        m.step().unwrap(); // t37: write data is now visible, before retirement
-        assert_eq!(m.bus.read32(shared), Ok(42));
-        assert_eq!(m.cpu.state().instructions, 1);
-        m.step().unwrap();
-        assert_eq!(m.cpu.state().instructions, 2);
-
-        // Cancel a second write between grant and publication. Preserved RAM
-        // in SYSRES must not receive an old instruction's delayed write.
-        let mut m = cached_pair(&[0xE02A, 0x2F02, 9, 9], &[9; 8]);
-        m.cpu = Cpu::start(HIGH_WRAM, shared | 0x20000000);
-        m.step().unwrap();
-        m.step().unwrap();
+        m.step_hardware_boundary().unwrap(); // write admitted at t34
+        assert_eq!(m.clocks(), 34);
+        m.step_hardware_boundary().unwrap(); // writer retires independently
+        assert_eq!(m.cpu_state().instructions, 2);
         assert_eq!(m.bus.read32(shared), Ok(0));
+        for _ in 0..2 {
+            m.step().unwrap();
+        }
+        assert!(m.cpu_state().r[1] >= 1);
+        assert_eq!(m.bus.read32(shared), Ok(0));
+        // SYSRES clears RAM and discards the buffered external cycle. A
+        // canceled write must not repopulate RAM after the board reset.
         m.bus.system_reset();
         m.bus.advance_clocks(100).unwrap();
         assert_eq!(m.bus.read32(shared), Ok(0));
@@ -726,6 +719,18 @@ impl Machine {
             }
         }
         for processor in [Processor::Master, Processor::Slave] {
+            if let Some(error) = self.bus.take_cpu_write_error(processor) {
+                return Err(match processor {
+                    Processor::Master => {
+                        self.cpu.deferred_write_fault(error.clone());
+                        MachineError::Cpu(error)
+                    }
+                    Processor::Slave => {
+                        self.slave.deferred_write_fault(error.clone());
+                        MachineError::SlaveCpu(error)
+                    }
+                });
+            }
             if self.bus.take_cpu_transaction_completion(processor) {
                 self.cpu_ready[processor as usize] = self.clocks;
             }

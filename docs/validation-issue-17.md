@@ -3219,3 +3219,84 @@ No umbrella checkbox is claimed complete. PR #18 remains Draft with Closes #17
 as the intended final outcome; this is not evidence that the Issue is resolved.
 No merge, tracker closure/replacement/reopening, human testing/approval, live
 Pages inspection or external-workflow investigation is introduced.
+
+## Aligned SH-2 instruction fetch and buffered writes
+
+Related to #17. The review identified word-sized uncached instruction fetches
+and synchronous CPU/DMAC external writes. `CpuBus::fetch16` now reads an aligned
+longword, including entry at PC+2, and retains its sequential second instruction.
+Taken control transfers, exceptions and CPU resets invalidate that retained word.
+The existing BSC width adapter splits the longword into actual physical beats.
+
+The scheduled BSC now has one operand-sized write buffer per SH7604, shared by
+its CPU and DMAC. Internal acceptance is distinct from external publication;
+peripheral work and a DMA internal-source read can proceed during the external
+write. A second write waits for buffer space. External reads drain preceding
+writes, cache updates remain CPU-local, TAS keeps its lock, and reset discards
+uncompleted beats. Deferred unsupported-device diagnostics retain the issuing
+CPU, original PC and exception context rather than acquiring an SCU label.
+The implementation and manual-to-test mapping are in
+[IFBUF](hardware-conformance.md#sh7604-aligned-instruction-fetch-and-bsc-write-buffer-ifbuf).
+
+The new original MIT fixture executes on both guest CPUs. Separate cold boots
+select 8-, 16- and 32-bit interfaces before any CS3 access. Native/Wasm records
+check retained self-modifying instructions, branch-target refetch, FRT=1 during
+buffered external writes plus real SCI access, a dependent read of the published
+value, and a second DMA source sample retained before a later guest write changes
+SCI. Mutating instruction/source operands changes the corresponding records.
+Unit vectors also check physical fetch addresses/widths, partial-byte reset
+boundaries, local cache visibility, exact peripheral/write/read completion
+clocks and stable traces across advancement chunks.
+
+The initial complete native run exposed stale expectations in boot faults,
+BWAIT/BCMEM timing, slave fault provenance, Star Collector's fixed per-instruction
+clock assumption, Hardware Lab's short end-of-field audio capture and the sound
+guest's IRQ return PC. The fixes preserve the actual guest computation and
+pixel/audio goldens. BWAIT and BCMEM expectations now follow their documented
+phase arithmetic; the sound guest checks stacked PC `$17E` before its first STOP
+and setup23 + two IRQ3 handlers + STOP1 = 30 instructions. This supersedes the
+previous revision's `$182`/32-instruction result. Hardware Lab captures one full
+field before searching for the unchanged exact stereo waveform.
+
+Initial web/Wasm checks used Homebrew Rust without its Wasm target and a PATH without
+wasm-bindgen. The already installed rustup stable toolchain and matching
+wasm-bindgen 0.2.129 were selected for the successful web build and Wasm Clippy;
+no new compiler, CLI, model or allowance was installed or purchased. An interim
+browser run was invalidated when its already-loaded helper and regenerated
+fixture differed. Native/browser runs with superseded sound expectations were
+stopped and restarted after the focused sound tests passed.
+
+The DMA timing kernel is warmed before measurement. Its DMAOR write, four NOPs
+and live FRT read latch at clock8, producing 1 tick at each physical width on
+both CPUs. An isolated temporary source copy with only DMAC buffering disabled
+fails the same guest test: all data records match but DMA FRT becomes 2 ticks.
+The temporary tree was removed and the production transaction source hash was
+verified unchanged. No mutation remains in this worktree.
+
+Validation completed on the implementation:
+
+- `cargo fmt --check`, `cargo build --locked`, native all-target Clippy and
+  wasm32 Clippy with warnings denied pass. The ordinary native test compiler is
+  Homebrew Rust/Cargo 1.94.0; native Clippy and Wasm use installed rustup stable
+  1.99.0. The web build uses installed wasm-bindgen 0.2.129.
+- `sh scripts/build-web.sh` and the complete `npm run test:browser` pass with
+  Chromium 145.0.7632.6 and Node 24.12.0 under `/saturn-rust/`, with no required
+  skips. The expanded nine-word fetch/buffer guest passes on both CPUs, all
+  three widths, original/mutated operands and repeated cold boots. Existing
+  three-demo, Canvas, WebAudio, backup/reset, BIOS/HLE, input/focus and privacy
+  assertions remain enabled and pass.
+- All 65 CI reproducibility commands pass, including the new original guest;
+  all three demonstration media remain byte-identical. New documentation file
+  links, JavaScript syntax and Git whitespace checks pass.
+- Complete ordinary unoptimized `cargo test --locked`: **630 tests pass**
+  (382 unit + 248 integration), zero failures or ignored tests, followed by
+  successful doc tests. This includes the expanded original fetch/buffer guest,
+  all three demonstration discs and the revised sound stack/PCM assertions.
+
+These are local automated results. They do not establish full Issue #17 hardware
+acceptance or remote CI/deployment. The first two concrete review defects are
+addressed; the remaining CPU/SH7604, 68k, board, SCU/DSP, VDP1/VDP2, SCSP/DSP,
+CD/HLE, SMPC and comprehensive acceptance findings still require implementation
+and evidence in this PR. No Issue is closed or replaced, no historical Issue is
+reopened, and no human, proprietary-firmware, live-site or external-workflow gate
+is introduced. No push or merge is performed by this node.

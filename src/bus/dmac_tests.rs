@@ -210,7 +210,7 @@ fn setup(processor: Processor, size: u32, count: u32, burst: bool) -> Bus {
 }
 
 #[test]
-fn dmac_samples_reads_then_publishes_writes_count_and_irq_at_separate_deadlines() {
+fn dmac_samples_reads_then_accepts_buffered_writes_before_external_publication() {
     for p in [Processor::Master, Processor::Slave] {
         let mut bus = setup(p, 2, 1, false);
         bus.advance_clocks(1).unwrap();
@@ -220,8 +220,10 @@ fn dmac_samples_reads_then_publishes_writes_count_and_irq_at_separate_deadlines(
         bus.write32(SOURCE, 0xDEADBEEF).unwrap();
         bus.advance_clocks(2).unwrap(); // destination T1 + turnaround, not T2
         assert_eq!(bus.read32(DEST), Ok(0));
-        assert_eq!(bus.onchip[p as usize].read32(DMAC + 8), Ok(1));
-        assert_eq!(bus.onchip[p as usize].interrupt(), None);
+        // H §7.11.2: DMAC has handed the write to the BSC. Count/TE
+        // report acceptance; a dependent external read still drains the buffer.
+        assert_eq!(bus.onchip[p as usize].read32(DMAC + 8), Ok(0));
+        assert_eq!(bus.onchip[p as usize].interrupt(), Some((6, 0x44)));
         bus.advance_clocks(1).unwrap();
         assert_eq!(bus.read32(DEST), Ok(0xAABBCCDD));
         assert_eq!(bus.onchip[p as usize].read32(DMAC + 8), Ok(0));
@@ -344,7 +346,7 @@ fn tas_excludes_dmac_until_its_write_and_instruction_release() {
 }
 
 #[test]
-fn every_narrow_bus_and_software_wait_delays_actual_beats_and_the_final_irq() {
+fn every_narrow_bus_and_software_wait_delays_publication_after_buffer_acceptance() {
     // H §§7.2.2/7.3.1/9.3.5. Both endpoints use CS3. Each physical
     // beat is T1+T2+Tw; one read-to-write empty state is mandatory.
     for p in [Processor::Master, Processor::Slave] {
@@ -360,8 +362,8 @@ fn every_narrow_bus_and_software_wait_delays_actual_beats_and_the_final_irq() {
                 let end = (2 + waits) * beats * 2 + 1;
                 bus.advance_clocks(end - 1).unwrap();
                 assert_eq!(bus.read8(DEST + 3), Ok(0));
-                assert_eq!(bus.onchip[p as usize].read32(DMAC + 8), Ok(1));
-                assert_eq!(bus.onchip[p as usize].interrupt(), None);
+                assert_eq!(bus.onchip[p as usize].read32(DMAC + 8), Ok(0));
+                assert_eq!(bus.onchip[p as usize].interrupt(), Some((6, 0x44)));
                 bus.advance_clocks(1).unwrap();
                 assert_eq!(
                     bus.read32(DEST),
@@ -696,9 +698,10 @@ fn local_external_read_holds_internal_bus_until_completion_but_not_the_other_cpu
 }
 
 #[test]
-fn external_dma_unit_and_burst_retain_local_internal_bus_while_peer_peripherals_run() {
-    // H §9.3.3: read/write constitute one transfer; burst owns the bus
-    // through the block. CPU access cannot enter between DMA word phases.
+fn external_dma_buffer_releases_local_internal_bus_while_external_burst_continues() {
+    // H §7.11.2: a buffered destination does not retain the internal bus.
+    // DMA wins simultaneous internal requests; CPU peripheral work follows
+    // acceptance and overlaps external write(3), before next external read.
     for p in [Processor::Master, Processor::Slave] {
         let other = if p == Processor::Master {
             Processor::Slave
@@ -713,20 +716,20 @@ fn external_dma_unit_and_burst_retain_local_internal_bus_while_peer_peripherals_
         );
         bus.advance_clocks(2).unwrap();
         assert!(bus.take_cpu_transaction_completion(other));
-        assert_eq!(bus.replay_cpu(other).read8(0xFFFFFE01), Ok(0xFF));
-        for _ in 0..3 {
-            assert!(!bus.take_cpu_transaction_completion(p));
-            bus.advance_clocks(2).unwrap();
-        }
-        // Each unit is read(2), turnaround(1), write(2): two units take ten.
-        assert_eq!(bus.onchip[p as usize].read32(DMAC + 8), Ok(1));
         assert!(!bus.take_cpu_transaction_completion(p));
-        bus.advance_clocks(2).unwrap();
-        assert_eq!(bus.onchip[p as usize].read32(DMAC + 8), Ok(0));
-        assert_eq!(bus.onchip[p as usize].interrupt(), Some((6, 0x44)));
+        assert_eq!(bus.read32(DEST), Ok(0));
+        bus.advance_clocks(1).unwrap(); // write accepted, internal bus released
         assert!(!bus.take_cpu_transaction_completion(p));
-        bus.advance_clocks(2).unwrap();
+        bus.advance_clocks(1).unwrap();
+        assert!(!bus.take_cpu_transaction_completion(p));
+        assert_eq!(bus.read32(DEST), Ok(0));
+        bus.advance_clocks(1).unwrap(); // peripheral read + external write finish
         assert!(bus.take_cpu_transaction_completion(p));
         assert_eq!(bus.replay_cpu(p).read8(0xFFFFFE01), Ok(0xFF));
+        assert_eq!(bus.read32(DEST), Ok(0x11223344));
+        bus.advance_clocks(5).unwrap();
+        assert_eq!(bus.read32(DEST + 4), Ok(0x11223345));
+        assert_eq!(bus.onchip[p as usize].read32(DMAC + 8), Ok(0));
+        assert_eq!(bus.onchip[p as usize].interrupt(), Some((6, 0x44)));
     }
 }

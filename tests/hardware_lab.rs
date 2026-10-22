@@ -118,10 +118,19 @@ fn guest_uploaded_effects_program_changes_exact_stereo_samples_and_computed_resu
         assert_eq!(machine.bus().read16(0x05B00EC2), Ok(result as u16));
         machine.drain_audio(8192);
         machine.advance_frame().unwrap();
+        // The guest may finish immediately before a raster boundary. Include
+        // one complete field so every rotation of the four-sample waveform
+        // contains the full authored eight-value stereo vector.
+        machine.advance_frame().unwrap();
         // Wet PCM is half/quarter/zero gain panned left; direct PCM retains
         // pan8 (left /16). Dry right is unchanged and CD samples are all zero.
         let expected = [left, 4096, -left, -4096, -left * 2, -8192, left * 2, 8192];
-        assert!(machine.drain_audio(8192).windows(8).any(|w| w == expected));
+        let samples = machine.drain_audio(8192);
+        assert!(
+            samples.windows(8).any(|w| w == expected),
+            "coefficient {coefficient:04X}, samples {:?}",
+            &samples[..samples.len().min(24)]
+        );
     }
 }
 #[test]

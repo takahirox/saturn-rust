@@ -57,6 +57,11 @@ impl Default for Dma {
     }
 }
 impl Dma {
+    pub(crate) fn buffer_error(&mut self) {
+        self.operation |= 4;
+        self.address_error = true;
+        self.selected = None;
+    }
     /// H table 14.3: address/count/vector registers survive software standby;
     /// CHCR0/1 and DMAOR initialize, aborting any outstanding request.
     pub fn standby(&mut self) {
@@ -208,6 +213,9 @@ impl Dma {
             let c = &self.channels[i];
             c.control & 8 == 0 && c.source >= 0xFFFF_FE00
         })
+    }
+    pub(crate) fn requests_internal_bus(&self, serial: [bool; 2]) -> bool {
+        self.requested_channel(serial).is_some()
     }
     /// Returns the SCI request acknowledged, if any. Errors abort DMA and latch
     /// AE; they are not propagated as a host CPU bus failure.

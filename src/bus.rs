@@ -140,6 +140,13 @@ impl std::error::Error for BusError {}
 
 /// The interpreter fetches through this boundary; it owns no memory pointers.
 pub trait Memory {
+    /// Diagnostic provenance for a deferred SH-2 write. This does not make
+    /// the BSC buffer part of the architectural exception mechanism.
+    fn sh2_write_context(&self, _pc: u32, _vector: Option<u8>) {}
+    /// Discard the sequential instruction word on a taken control transfer.
+    /// SH7604 §§7.3.1/7.11.2: the external fetch is a longword, including
+    /// entry at 4n+2. This register is independent of the data cache.
+    fn sh2_discard_prefetch(&self) {}
     /// SH programming manual §7.5: a WB/EX interlock precedes the
     /// dependent instruction's operand cycles. Clocked adapters suspend the
     /// CPU locally; an architectural memory fixture has no clock domain.
@@ -242,6 +249,7 @@ pub struct Bus {
     pub(crate) backup: BackupRam,
     onchip: [OnChip; 2],
     cache: [RefCell<Cache>; 2],
+    instruction_word: [Cell<Option<(u32, u16)>>; 2],
     external_owner: Cell<Option<Processor>>,
     pub(crate) slave_enabled: bool,
 }
@@ -270,6 +278,7 @@ impl Default for Bus {
                 chip
             }),
             cache: std::array::from_fn(|_| RefCell::new(Cache::default())),
+            instruction_word: std::array::from_fn(|_| Cell::new(None)),
             external_owner: Cell::new(None),
             slave_enabled: false,
         }
@@ -1162,6 +1171,11 @@ impl CpuBus<'_> {
         if little {
             bytes.reverse();
         }
+        // TAS keeps the external bus until its write completes. Ordinary CPU
+        // and DMAC writes use the SH7604 BSC's single-entry buffer (§7.11.2).
+        if self.scheduled && !self.buffered_write_locked() {
+            return self.buffered_external_write(address, bytes);
+        }
         for (i, bytes) in bytes.chunks(width).enumerate() {
             let at = address + (i * width) as u32;
             let value = bytes.iter().fold(0u32, |v, b| v << 8 | u32::from(*b));
@@ -1307,6 +1321,9 @@ impl CpuBus<'_> {
     }
 }
 impl Memory for CpuBus<'_> {
+    fn sh2_discard_prefetch(&self) {
+        self.bus.instruction_word[self.processor as usize].set(None);
+    }
     fn break_pending(&self) -> bool {
         self.bus.onchip[self.processor as usize].interrupt() == Some((15, 12))
     }
@@ -1359,7 +1376,27 @@ impl Memory for CpuBus<'_> {
         Ok(value)
     }
     fn fetch16(&self, address: u32) -> Result<u16, BusError> {
-        Ok(u16::from_be_bytes(self.read(address, true)?))
+        if address & 1 != 0 {
+            return Err(BusError::Unaligned { address, width: 2 });
+        }
+        let retained = &self.bus.instruction_word[self.processor as usize];
+        if let Some((next, word)) = retained.get()
+            && next == address
+        {
+            retained.set(None);
+            return Ok(word);
+        }
+        let words: [u8; 4] = self.read(address & !3, true)?;
+        if address & 2 == 0 {
+            retained.set(Some((
+                address + 2,
+                u16::from_be_bytes([words[2], words[3]]),
+            )));
+            Ok(u16::from_be_bytes([words[0], words[1]]))
+        } else {
+            retained.set(None);
+            Ok(u16::from_be_bytes([words[2], words[3]]))
+        }
     }
     fn tas_read8(&self, address: u32) -> Result<u8, BusError> {
         let value = self.external_read_group::<1>(address, true, true, true)?[0];

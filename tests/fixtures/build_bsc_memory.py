@@ -14,9 +14,10 @@ from build_hle_system import record, smpc
 
 HERE = Path(__file__).resolve().parent
 # name, BCR1, MCR, WCR, read ticks, write ticks. All kernels have cached
-# instructions and execute eight operand accesses. H §7.11.2 deferred
-# writes/read determination move the latch overhead from four to eight.
-# Each literal interval below therefore gains one phi/8 tick.
+# instructions and execute eight operand accesses. Read phases include the
+# fixed latch overhead. Write values below describe the old unbuffered kernel;
+# the §7.11.2 buffer permits ADD/acceptance and the final FRT read to overlap
+# external writes. The oracle below derives the new interval from bus states.
 # SDRAM: 32-bit burst/CL1=7; CL2=7; CL3=8; CL4=9. Word bus=11.
 # DRAM/pseudo normal: Tp overlaps previous closed-row Tc2 -> 3.
 # BE joins the two word-bus halves; RASD holds a row across operands.
@@ -75,7 +76,13 @@ def build():
             lines.append(f'{at:04X} '+' '.join(f'{w:04X}' for w in struct.unpack('>8H',rom[at:at+16])))
     vectors = ['# name BCR1 MCR WCR read-ticks read-data write-ticks write-data final-data marker']
     for name,bcr,mcr,wcr,reads,writes in CONFIGS:
-        values = [bcr,mcr,wcr,reads+1,0x13579BDF,writes+1,0x12345608,0x12345608,0x600D]
+        # One ADD and one internal acceptance per write. The first external
+        # write starts at clock7 after FRT resume, and the final latch is two
+        # clocks after the eighth acceptance. EXTU after the first low-byte
+        # load includes its WB/EX interlock: 10+7*max(2, external-cycle).
+        # External-cycle = writes-1 from H figs7.26/7.31/7.34/7.38/7.41.
+        buffered_ticks = (10 + 7 * max(2, writes - 1)) // 8
+        values = [bcr,mcr,wcr,reads+1,0x13579BDF,buffered_ticks,0x12345608,0x12345608,0x600D]
         vectors.append(name+' '+' '.join(f'{v:08X}' for v in values))
     return {'bsc-memory.hex': ('\n'.join(lines)+'\n').encode(),
             'bsc-memory.tsv': ('\n'.join(vectors)+'\n').encode()}

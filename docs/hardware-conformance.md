@@ -1373,7 +1373,7 @@ Canvas, WebAudio, privacy, input/focus and all three demonstrations.
 | --- | --- |
 | `bsc-waits.hex` text | `8c8788632f87a5269a72b9056c33d572dcd61ea9f83c459d10534af5aa390fc6` |
 | Expanded 512 KiB original BIOS | `823017e8691072b0b81d519c3234f660cbebcff04fe82a392ecb5c82fce65251` |
-| `bsc-waits.tsv` | `ae280b88c22094c979a19ad56587e15b7d92701169757230922e852dccc59b6d` |
+| `bsc-waits.tsv` | `6c024728abbe44bff6f4e3baa21c8b090b93e5ecb508bc874bacd696dcef9891` |
 | `bsc-endian.tsv` | `95de3de1f2d74e5da6a0cea05fea79e455a169c1d1f5c5b4ee1f2ff803b9bf24` |
 
 All remaining umbrella hardware implementation and validation criteria stay
@@ -1990,8 +1990,8 @@ completed MMIO without issuing them twice. All device work remains guest-driven.
 
 | Contract | Implementation | Independent native evidence | Guest / browser evidence |
 | --- | --- | --- | --- |
-| Data, TCR/TE and IRQ become visible at their actual completion boundaries | `Bus::prepare_dmac/grant_dmac/advance_bus_transaction`, `Dma::transfer` | `dmac_samples_reads_then_publishes_writes_count_and_irq_at_separate_deadlines`: both CPUs, source mutation before/after sampling, exact 2-state read + 3-state write, no early destination/count/IRQ | [Original builder](../tests/fixtures/build_dmac_bus.py), [ROM](../tests/fixtures/dmac-bus.hex), [authored vectors](../tests/fixtures/dmac-bus.tsv), [native](../tests/dmac_bus.rs) and [production Wasm](../scripts/dmac-bus.mjs): both CPUs independently execute eight transfers and eight IRQ handlers |
-| BSC width/waits apply to actual DMAC physical beats | `CpuBus::reserve_external/external_read_group/external_write`, separate DMA journal indices | `every_narrow_bus_and_software_wait_delays_actual_beats_and_the_final_irq`: both CPUs × 8/16/32-bit buses × four wait settings, literal `(2+Tw)*beats*2+1` deadlines; earlier clock-chunk test now expects the reset BSC's 18-state first longword unit | DMABG runs with guest-programmed waits and a real shared external bus, changing only its own MMIO/RAM |
+| Data, TCR/TE and IRQ become visible at their actual completion boundaries | `Bus::prepare_dmac/grant_dmac/advance_bus_transaction`, `Dma::transfer` | `dmac_samples_reads_then_accepts_buffered_writes_before_external_publication`: both CPUs, source mutation before/after sampling, exact 2-state read + 3-state external write, buffer acceptance/count/IRQ at the intervening internal boundary; destination remains unchanged until external completion (IFBUF below) | [Original builder](../tests/fixtures/build_dmac_bus.py), [ROM](../tests/fixtures/dmac-bus.hex), [authored vectors](../tests/fixtures/dmac-bus.tsv), [native](../tests/dmac_bus.rs) and [production Wasm](../scripts/dmac-bus.mjs): both CPUs independently execute eight transfers and eight IRQ handlers |
+| BSC width/waits apply to actual DMAC physical beats | `CpuBus::reserve_external/external_read_group/external_write`, separate DMA journal indices | `every_narrow_bus_and_software_wait_delays_publication_after_buffer_acceptance`: both CPUs × 8/16/32-bit buses × four wait settings, literal `(2+Tw)*beats*2+1` deadlines; earlier clock-chunk test now expects the reset BSC's 18-state first longword unit | DMABG runs with guest-programmed waits and a real shared external bus, changing only its own MMIO/RAM |
 | A 16-byte unit performs four reads before any writes; final TCR=1/2/3 emits only that many writes | `Dma::transfer` samples four longwords; `Memory::dma_read32` preserves source-burst first/last signals; source advances 16 regardless of SM | `sixteen_byte_units_read_the_whole_source_before_writing_even_for_short_final_counts`: both CPUs, all four final counts, overlapping source/destination, no premature writes or lost canary; `zero_tcr_means_sixteen_million_longwords_and_standby_discards_burst_state` checks 24-bit TCR wrap | DMABG's TCR=3 overlaps by one longword and preserves the fourth destination canary. Interleaved reads/writes corrupt independently expected values and a four-write implementation destroys the canary |
 | Unit ownership, cycle-steal yielding, burst retention, channel priorities and TAS exclusion | `Transactions::dmac_owner/dmac_yield`, `Dma::cycle_previous/next` | `cycle_steal_yields_to_a_waiting_cpu_while_burst_retains_the_bus_and_cache_hits_proceed`, `fixed_cycle_steal_alternates_and_burst_priorities_follow_the_programmed_mode`, `tas_excludes_dmac_until_its_write_and_instruction_release` | DMABG executes independent CPUs, five width/address/burst cases, SCI-to-SCI/RAM and DIVU-to-RAM, and a final peer-completion handshake |
 | DREQ is accepted once per edge; a later edge survives the current unit; a burst edge activates the block | `Channel::external_edge/burst`, latched `Dma::selected` | `edge_requests_are_consumed_at_acceptance_and_burst_edges_start_the_whole_block`: unrequested wait, a second edge while a read is pending, cycle-steal stops after two units and burst completes three | Existing DACK native/Wasm guest still waits for real pins rather than receiving invented standard-board data |
@@ -2015,7 +2015,7 @@ Original source, generated ROM and authored results use the adjacent
 These contracts do not complete the DMA/hardware acceptance inventory. Required
 remaining work includes exact DREQ sampling/acknowledge-pin timing, complete
 refresh/display/sound ownership and preemption, CPU/internal-peripheral bus
-arbitration and write buffering, every manual-reset/partial-error
+arbitration (extended by IFBUF below), every manual-reset/partial-error
 boundary, and the other CPU, SCU/DSP, video, sound, CD/HLE, SMPC and integration
 requirements already recorded above. No umbrella criterion is waived or checked.
 
@@ -2083,7 +2083,7 @@ its overflow interrupt before hardware time reached the division deadline.
 | Contract | Implementation | Independent native evidence | Native / Wasm guest evidence |
 | --- | --- | --- | --- |
 | CPU byte/word/long MMIO publishes or samples at completion; reads include the extra determine state | `CpuBus::read8/read16/read32/write8/write16/write32`, `Bus::grant_cpu_internal/complete_bus_transaction` in [bus.rs](../src/bus.rs) and [transactions.rs](../src/bus/transactions.rs) | `cpu_peripheral_byte_word_and_long_writes_have_one_completion_and_reads_have_two_states` in [dmac_tests.rs](../src/bus/dmac_tests.rs): SCI, INTC and UBC registers on both CPUs; late sampling and stable replay in `cpu_peripheral_reads_sample_at_completion_and_share_only_the_local_dma_bus` | Expanded [TIMING builder](../tests/fixtures/build_sh2_timing.py) executes 32 SCI reads and 32 writes on each CPU; independent FRT results are 8 and 4 ticks. [Native](../tests/sh2_timing.rs) and [browser Wasm](../scripts/browser-smoke.mjs) compare all 35 words, cold-reset repetitions, changed arithmetic/control flow and a changed SCI write operand (FF→5A) |
-| DMA priority and retained transfer/burst ownership serialize the local internal bus; the other processor's peripheral bus remains independent | `Bus::grant_bus_transaction/grant_cpu_internal` | `local_external_read_holds_internal_bus_until_completion_but_not_the_other_cpu_bus`, `external_dma_unit_and_burst_retain_local_internal_bus_while_peer_peripherals_run`; explicit completion/count/IRQ boundaries, including simultaneous pending CPU/DMA requests | Existing [DMABG](../tests/dmac_bus.rs) and [production Wasm](../scripts/dmac-bus.mjs) execute SCI↔RAM and DIVU→RAM, all transfer widths, burst/cycle-steal and eight IRQs on each CPU. TIMING independently exercises both CPU peripheral paths |
+| DMA read phases hold the local internal bus; a buffered write releases it for peripheral work while external burst ownership continues; the other processor remains independent | `Bus::grant_bus_transaction/grant_cpu_internal` | `local_external_read_holds_internal_bus_until_completion_but_not_the_other_cpu_bus`, `external_dma_buffer_releases_local_internal_bus_while_external_burst_continues`; explicit completion/count/IRQ boundaries, including simultaneous pending CPU/DMA requests | Existing [DMABG](../tests/dmac_bus.rs) and [production Wasm](../scripts/dmac-bus.mjs) execute SCI↔RAM and DIVU→RAM, all transfer widths, burst/cycle-steal and eight IRQs on each CPU. TIMING independently exercises both CPU peripheral paths |
 | Reset/cancellation cannot publish a canceled CPU phase or cancel another owner's phase | Owner checks in `Bus::cancel_cpu_transaction/cancel_dmac_transaction` | `cpu_internal_transactions_do_not_acquire_external_bus_and_cancel_by_owner` checks pending/granted writes, DMA-only cancellation, external TAS retention and subsequent bus release on both CPUs; existing reset-domain vectors remain enabled | TIMING and DMABG repeat cold resets; existing SYSRES/standby/slave-reset guests retain their native and browser assertions |
 | DIVU wait consumes actual hardware time, retains its completion/IRQ deadline and does not charge the CPU twice | `OnChip::cpu_peripheral_wait`, `Bus::grant_cpu_internal` | `cpu_divu_interlock_keeps_irq_and_other_devices_on_real_clock_boundaries`: both processors, three clock chunk sizes, no early overflow/IRQ, six-clock completion and later read completion, zero residual wait charge | Existing [DIVG/PERIPH](../tests/sh7604.rs), [memory contracts](../tests/memory_contracts.rs), TIMING and their browser equivalents remain enabled |
 
@@ -2104,8 +2104,8 @@ Current TIMING hashes:
 
 This entry supersedes earlier immediate CPU-peripheral and deferred DIVU-wait
 behavior. It establishes these internal-bus boundaries, not complete SH-2
-IF/MA/multiplier overlap, speculative instruction fetch, BSC write buffering,
-refresh/display/sound ownership, or the other pending mandatory #17 contracts.
+IF/MA/multiplier overlap and speculative pipeline fetch (IFBUF below implements
+aligned longword fetch and BSC buffering), refresh/display/sound ownership, or the other pending mandatory #17 contracts.
 
 ## Granted refresh, indivisible CPU groups and self-refresh (RFSHG)
 
@@ -2280,3 +2280,62 @@ pipeline or every exception/peripheral/cache/bus boundary. All remaining origina
 Issue #17 requirements, including the other chips and full demonstration and
 conformance coverage, remain mandatory. No umbrella acceptance checkbox is
 claimed complete by this entry.
+
+
+## SH7604 aligned instruction fetch and BSC write buffer (IFBUF)
+
+Primary behavior: [H] §§7.3.1/7.11.2 and [P] §7.4.2, fig.7.7.
+Instruction accesses fetch an aligned longword at both 4n and 4n+2 entries;
+only the sequential second word is retained. Taken branches discard it even
+when the destination equals the sequential address. Stores do not snoop it.
+CPU reset discards it independently on each SH-2.
+
+The BSC accepts one byte/word/long operand into a CPU-local buffer. The CPU
+or DMAC receives internal-bus completion before the chip-external data phase
+ends. Physical byte/word beats retain the original operand and lane order.
+A second write waits for space; external reads (including a dummy read of the
+written address) remain behind the buffer. Cache hits and peripheral accesses
+can proceed while it drains. TAS retains its read/write lock through external
+completion. CPU-only reset/cancellation cancels uncompleted beats and preserves
+completed bytes; board SYSRES clears work RAM and retains backup storage.
+This entry supersedes the earlier unbuffered-write and retained-DMAC-internal-bus
+statements; it does not change the broader Pending CPU/bus acceptance status.
+
+| Contract | Implementation | Independent native evidence | Executing native / production Wasm evidence |
+| --- | --- | --- | --- |
+| Longword fetch, 4n+2 entry, sequential word retention and bus splitting | `CpuBus::fetch16`, per-CPU `instruction_word`, existing `external_read_group` in [bus.rs](../src/bus.rs) | [fetch_tests.rs](../src/bus/fetch_tests.rs): both CPUs × three widths × CE=0/P1/ID-disabled paths × both word entries; literal physical address/width/first/last and 8/16/32-clock beat traces; self-modifying code, single-use retention and reset invalidation | [Original guest builder](../tests/fixtures/build_sh2_bus_pipeline.py), [ROM](../tests/fixtures/sh2-bus-pipeline.hex), [authored records](../tests/fixtures/sh2-bus-pipeline.tsv), [native](../tests/sh2_bus_pipeline.rs), [Wasm](../scripts/sh2-bus-pipeline.mjs). Both CPUs execute original RAM functions: first retained immediate=7, second call/refetch=42, modified branch target=42; operand mutation yields 61 |
+| Taken-control-transfer and exception invalidation | `Memory::sh2_discard_prefetch`, replay `DiscardPrefetch`, `Cpu::execute/enter_exception` | `taken_branch_discards_the_word_fetched_beside_its_self_modifying_delay_slot`; `taken_conditional_to_the_sequential_address_still_refetches_its_target` | Same guest executes a modifying delay slot whose branch destination was fetched beside the slot; source mutation and repeated cold reset are checked |
+| Independent write acceptance and publication, dependent-read barrier, bounded buffering | `Journal::pending_write/write_accepted`, `BufferedWrite`, `WriteAccept/WriteBuffer` owners, `Bus::accept_buffered_write/grant_buffered_write/complete_bus_transaction` in [transactions.rs](../src/bus/transactions.rs) | [write_buffer_tests.rs](../src/bus/write_buffer_tests.rs): both CPUs, write accepted at1 while RAM remains old, SCI read completes at3, external write publishes at8, dependent external read at16; chunk-invariant continuation, backpressure and each partial-byte reset boundary. [Scheduler test](../src/lib.rs) executes independent ADDs before publication and cancels pending data on reset | Each cold boot selects one physical width before any CS3 access. A warmed guest kernel measures high(2)+low(2)+write acceptance(1)+SCI read(2)+high(2)=9 clocks, hence FRT=1 at all three widths; the dummy read then returns the actual written value. A synchronous external write cannot produce the timing record |
+| DMAC releases the internal bus after buffer acceptance; next internal source read overlaps prior external write | `Bus::prepare_dmac/grant_cpu_internal`, independent DMA journals and the shared BSC buffer | `dma_internal_source_is_sampled_while_its_previous_external_write_is_buffered`, updated [DMAC phase vectors](../src/bus/dmac_tests.rs): exact acceptance/TCR/TE/IRQ versus destination publication, byte/word/long physical waits and concurrent local peripheral reads | The guest starts SCI→RAM DMA, changes SCI after four NOPs and observes `31310000` from two retained source reads; changing its source immediate gives `52520000`. Its warmed DMA kernel also measures DMAOR write + four NOPs + a live FRT read at clock8 (1 tick). An isolated unbuffered-DMAC regression preserves every data record but changes this timing to 2 ticks and fails the native guest test |
+| Local cache update and diagnostic/reset provenance | `CpuBus::write`, buffer context retained separately from instruction journals; `Cpu::deferred_write_fault`, `Machine::step_hardware_boundary` | `accepting_a_write_updates_only_the_issuing_cache_before_external_memory`; `deferred_diagnostics_keep_the_issuer_pc_and_exception_context_and_reset_discards_them`; existing sticky slave exception-entry and cold-reset tests | Existing browser BIOS faults keep the issuing PC and CPU identity after buffered retirement; external BIOS remains separate from HLE |
+
+FRT oracles were revised from phase arithmetic, without changing guest operands:
+BWAIT's retained IF removes redundant word fetches/turnarounds (7+Tw ticks).
+BCMEM's write kernel overlaps ADD/acceptance with external work; the final latch
+is at `10 + 7*max(2, external-write-states)` clocks, including the initial
+low-byte load's WB/EXTU interlock. Read/data records and all three demo media
+bytes are preserved. The Hardware Lab effects test captures a complete field
+before searching for its unchanged stereo golden vector, independent of the
+raster phase at guest completion.
+
+Reproduce with `python3 tests/fixtures/build_sh2_bus_pipeline.py --check`
+(required in CI alongside the 64 existing media/fixture checks). All new source
+and generated media use the adjacent [MIT license](../tests/fixtures/LICENSE).
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Expanded 512 KiB BIOS | `4e17f25da75a5a60e060ebe0702d2ed5fc23d8055c28316ada02c997c8d3d415` |
+| `sh2-bus-pipeline.hex` | `4c50f34c985bd9334999ec2ddb86c00eacd2f4fd2349584b96b0f3cd0fc7ed8a` |
+| `sh2-bus-pipeline.tsv` | `176502fbd279a05f2b9959540ebebb56b04bb593ee2ebd1aa9f5165c1578777c` |
+| Updated `bsc-memory.tsv` | `96366960dbb3a161ec84261b9f00663a6e7feae4ab640c7fab77b520b46a1e00` |
+
+The existing sound guest now independently checks IRQ2's stacked return PC
+`$17E`, before the first STOP, and setup23 + two IRQ3 handlers + STOP1 = 30
+instructions. Longword IF and buffered upload/control work shift the fixed-domain
+timer's phase relative to the sound CPU; this supersedes the previous `$182`/32
+record without changing guest code or PCM goldens.
+
+The complete IF/ID/EX/MA/WB/multiplier pipeline, all manual-reset/standby
+boundaries and the other mandatory subsystem contracts remain subject to the
+full Issue #17 acceptance checklist. This evidence does not establish those
+unimplemented contracts or close the umbrella Issue.

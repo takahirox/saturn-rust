@@ -80,7 +80,7 @@ fn wait_and_data_operand_mutations_change_guest_timer_and_transfer_results() {
         for (cpu, actual) in waits_run(&changed).iter().enumerate() {
             let mut expected = original[cpu].clone();
             if before == 0xA55AAA40 {
-                expected[4] = 12; // One Tw becomes two, over eight actual reads.
+                expected[4] = 9; // One Tw becomes two, over eight actual reads.
             } else {
                 for i in 0..7 {
                     expected[3 + i * 2] = after;
@@ -156,7 +156,7 @@ fn reset_time_bus_width_and_endian_operands_change_actual_guest_transfers() {
                 // Each extra narrow-bus data beat occupies two clocks and Tw.
                 // The reset-phase FRT fixture removes tick-rounding ambiguity.
                 expected[2 + w * 2] =
-                    (10 + 2 * (4 / width - 1)) as u32 + w as u32 * (4 / width) as u32;
+                    (7 + 2 * (4 / width - 1)) as u32 + w as u32 * (4 / width) as u32;
             }
             if !little {
                 expected[16..23].copy_from_slice(&[

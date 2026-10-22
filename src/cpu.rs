@@ -165,6 +165,9 @@ impl Cpu {
     pub fn halt(&mut self) {
         self.state.status = CpuStatus::Halted;
     }
+    pub(crate) fn deferred_write_fault(&mut self, error: CpuError) {
+        self.state.status = CpuStatus::Faulted(error);
+    }
 
     /// The caller supplies the winning hardware interrupt and retries if deferred.
     /// This is CPU entry only; device requests/acknowledgment are not synthesized here.
@@ -270,6 +273,7 @@ impl Cpu {
         // H §5.5 table5.9: acceptance to handler fetch is 5+m1+m2+m3;
         // the three single-state memory operations are included here. The
         // bus supplies additional waits independently to the machine scheduler.
+        bus.sh2_write_context(self.state.pc, Some(vector));
         self.last_clocks = 8;
         self.load_pipeline = timing::LoadPipeline::default();
         let s = &mut self.state;
@@ -300,6 +304,7 @@ impl Cpu {
         s.status = CpuStatus::Running;
         self.interrupt_inhibited = false;
         self.address_error_inhibited = false;
+        bus.sh2_discard_prefetch();
         Ok(())
     }
 
@@ -321,6 +326,7 @@ impl Cpu {
 
     fn execute(&mut self, bus: &mut impl Memory) -> Result<(), CpuError> {
         let pc = self.state.pc;
+        bus.sh2_write_context(pc, None);
         let access = |source| CpuError::Bus { pc, source };
         // SH7604 Table 4.6: no instruction fetches from odd addresses or
         // on-chip peripheral modules. Do not send such reads to a device.
@@ -332,6 +338,7 @@ impl Cpu {
             // An unfetchable successor cannot decode/retire. Finish the branch
             // boundary before accepting the latched error (Table 4.10).
             self.state.pc = self.state.delay_target.take().unwrap_or(pc.wrapping_add(2));
+            bus.sh2_discard_prefetch();
             self.address_error_inhibited = false;
             self.interrupt_inhibited = false;
             return Ok(());
@@ -377,6 +384,7 @@ impl Cpu {
         let s = &mut self.state;
         let mut next_branch = None;
         let mut sequential_pc = pc.wrapping_add(2);
+        let mut direct_branch = false;
         let mut inhibit = false;
         let operand_pc = s
             .delay_target
@@ -700,6 +708,7 @@ impl Cpu {
                         next_branch = Some(target);
                     } else {
                         sequential_pc = target;
+                        direct_branch = true;
                     }
                 }
             }
@@ -721,6 +730,9 @@ impl Cpu {
                 next_branch = Some(pc.wrapping_add(4).wrapping_add((displacement * 2) as u32));
             }
             _ => return self.illegal(bus.inner),
+        }
+        if s.delay_target.is_some() || direct_branch {
+            bus.inner.sh2_discard_prefetch();
         }
         s.pc = s.delay_target.take().unwrap_or(sequential_pc);
         s.delay_target = next_branch;

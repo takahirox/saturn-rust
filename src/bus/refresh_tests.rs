@@ -96,8 +96,12 @@ fn refresh_is_six_owned_states_before_cpu_dma_or_scu_and_local_io_still_runs() {
             assert_eq!(b.onchip[1].read8(0xFFFF_FE01), Ok(0x5A));
             advance(&mut b, 1, chunk);
             assert!(b.transactions.active.is_none());
-            // Refresh does not consume a CPU journal slot or complete its I/O.
-            assert!(!b.take_cpu_transaction_completion(Processor::Master));
+            // Refresh never completes a data access. A CPU write can already
+            // have been accepted into its BSC buffer while refresh owns pins.
+            assert_eq!(
+                b.take_cpu_transaction_completion(Processor::Master),
+                contender == 0
+            );
             advance(&mut b, 1, chunk);
             assert_eq!(b.read32(TARGET), Ok(0));
             advance(&mut b, 30, chunk);
@@ -120,7 +124,7 @@ fn refresh_waits_for_an_accepted_cycle_and_slave_compare_never_refreshes() {
         );
         b.advance_clocks(7).unwrap();
         assert_eq!(b.read32(TARGET), Ok(0));
-        owner(&b, Owner::Cpu(Processor::Master), 1);
+        owner(&b, Owner::WriteBuffer(Processor::Master, false), 1);
         b.advance_clocks(1).unwrap();
         assert_eq!(b.read32(TARGET), Ok(9));
         stop(&mut b, p);
@@ -241,16 +245,16 @@ fn canceling_a_partial_group_releases_it_but_does_not_cancel_refresh() {
         b.replay_cpu(Processor::Slave).write32(TARGET, 0xAABBCCDD),
         Err(BusError::Pending)
     );
-    b.advance_clocks(4).unwrap();
+    b.advance_clocks(4).unwrap(); // two bytes published, refresh request latched
     stop(&mut b, Processor::Master);
-    assert_eq!(b.read32(TARGET), Ok(0xAA000000));
+    assert_eq!(b.read32(TARGET), Ok(0xAABB0000));
     b.set_slave_enabled(false);
     b.grant_bus_transaction();
     owner(&b, Owner::Refresh, 6);
     b.cancel_cpu_transaction(Processor::Master);
     b.cancel_dmac_transaction(Processor::Master);
     b.advance_clocks(64).unwrap();
-    assert_eq!(b.read32(TARGET), Ok(0xAA000000));
+    assert_eq!(b.read32(TARGET), Ok(0xAABB0000));
     assert!(b.transactions.active.is_none());
 }
 

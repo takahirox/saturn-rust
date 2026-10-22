@@ -86,7 +86,10 @@ fn mode_switches_clear_rom_ram_registers_delay_counters_and_faults() {
     assert_eq!(machine.cpu_state().instructions, 0);
     assert_eq!(machine.bus().read32(FIXTURE_PC), Ok(0));
     machine.step().unwrap();
-    assert!(machine.step().is_err());
+    // The write retires when the BSC accepts it. The unsupported external
+    // port is diagnosed when its data phase subsequently completes.
+    machine.step().unwrap();
+    assert!(machine.run_steps(20).is_err());
     machine.reset(Boot::HlePrototype).unwrap();
     assert_eq!(machine.mode(), Some(BootMode::HlePrototype));
     assert_eq!(machine.cpu_state(), &initial);
@@ -112,6 +115,6 @@ fn run_is_bounded_and_stops_at_first_fault() {
     assert_eq!(machine.cpu_state().instructions, MAX_RUN_STEPS as u64);
     machine.reset(Boot::ExternalBios(&bios())).unwrap();
     assert!(machine.run_steps(20).is_err());
-    assert_eq!(machine.cpu_state().instructions, 1);
-    assert_eq!(machine.cpu_state().pc, 0x102);
+    assert_eq!(machine.cpu_state().instructions, 2);
+    assert_eq!(machine.cpu_state().pc, 0x104);
 }

@@ -2,6 +2,10 @@
 //! data is sampled/published at completion, and TAS retains ownership through
 //! its write. Replaying an instruction never repeats an already completed I/O.
 use super::*;
+use std::collections::VecDeque;
+#[cfg(test)]
+#[path = "fetch_tests.rs"]
+mod fetch_tests;
 #[cfg(test)]
 #[path = "monitor_tests.rs"]
 mod monitor_tests;
@@ -11,6 +15,9 @@ mod refresh_tests;
 #[cfg(test)]
 #[path = "vdp1_tests.rs"]
 mod vdp1_tests;
+#[cfg(test)]
+#[path = "write_buffer_tests.rs"]
+mod write_buffer_tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Operation {
@@ -22,6 +29,8 @@ enum Operation {
     BreakPending,
     InstructionBreak(u32, bool),
     AcknowledgeBreak,
+    DiscardPrefetch,
+    WriteContext(u32, Option<u8>),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Transfer {
@@ -41,6 +50,9 @@ pub(super) struct Journal {
     waiting: Option<Transfer>,
     completed: bool,
     pipeline_wait: Option<(u32, u32)>, // requested clocks, remaining clocks
+    pending_write: Option<VecDeque<Transfer>>,
+    write_accepted: bool,
+    write_context: (u32, Option<u8>),
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Owner {
@@ -48,6 +60,13 @@ enum Owner {
     Dmac(Processor),
     Scu,
     Refresh,
+    WriteAccept(Processor, bool), // processor, DMAC
+    WriteBuffer(Processor, bool),
+}
+struct BufferedWrite {
+    dmac: bool,
+    beats: VecDeque<Transfer>,
+    context: (u32, Option<u8>),
 }
 struct Active {
     owner: Owner,
@@ -64,6 +83,8 @@ pub(super) struct Transactions {
     // H §7.11.3: on-chip peripheral cycles do not drive or acquire the
     // external bus. Each SH7604 has its own internal/peripheral buses.
     internal: [Option<Active>; 2],
+    writes: [Option<BufferedWrite>; 2],
+    write_errors: [Option<crate::cpu::CpuError>; 2],
     lock: Option<Processor>,
     // H §7.10: narrow operands and cache fills are indivisible even
     // though the adapter completes each physical beat separately.
@@ -113,6 +134,16 @@ impl ScheduledMemory<'_> {
                 self.0.acknowledge_break();
                 Ok(0)
             }
+            Operation::DiscardPrefetch => {
+                self.0.sh2_discard_prefetch();
+                Ok(0)
+            }
+            Operation::WriteContext(pc, vector) => {
+                self.0.bus.transactions.journals[i]
+                    .borrow_mut()
+                    .write_context = (pc, vector);
+                Ok(0)
+            }
         };
         if result != Err(BusError::Pending) {
             let mut journal = self.0.bus.transactions.journals[i].borrow_mut();
@@ -127,6 +158,18 @@ impl ScheduledMemory<'_> {
 // a resumed interpreter uses exactly the same checked Memory boundary.
 pub(crate) struct ReplayMemory<'a>(RefCell<ScheduledMemory<'a>>);
 impl Memory for ReplayMemory<'_> {
+    fn sh2_write_context(&self, pc: u32, vector: Option<u8>) {
+        self.0
+            .borrow_mut()
+            .operation(Operation::WriteContext(pc, vector))
+            .unwrap();
+    }
+    fn sh2_discard_prefetch(&self) {
+        self.0
+            .borrow_mut()
+            .operation(Operation::DiscardPrefetch)
+            .unwrap();
+    }
     fn sh2_pipeline_wait(&mut self, clocks: u32) -> Result<(), BusError> {
         if clocks == 0 {
             return Ok(());
@@ -233,7 +276,8 @@ impl Bus {
                 .active
                 .as_ref()
                 .is_some_and(|a| match a.owner {
-                    Owner::Cpu(p) | Owner::Dmac(p) => p != processor,
+                    Owner::Cpu(p) | Owner::Dmac(p) | Owner::WriteBuffer(p, _) => p != processor,
+                    Owner::WriteAccept(_, _) => false,
                     Owner::Scu => true,
                     Owner::Refresh => false,
                 })
@@ -290,19 +334,22 @@ impl Bus {
     pub(super) fn cancel_dmac_transaction(&mut self, processor: Processor) {
         if self.transactions.internal[processor as usize]
             .as_ref()
-            .is_some_and(|a| a.owner == Owner::Dmac(processor))
+            .is_some_and(|a| matches!(a.owner, Owner::Dmac(p) | Owner::WriteAccept(p, true) if p == processor))
         {
             self.transactions.internal[processor as usize] = None;
         }
-        if self
-            .transactions
-            .active
-            .as_ref()
-            .is_some_and(|a| a.owner == Owner::Dmac(processor))
-        {
+        if self.transactions.active.as_ref().is_some_and(
+            |a| matches!(a.owner, Owner::Dmac(p) | Owner::WriteBuffer(p, true) if p == processor),
+        ) {
             self.transactions.active = None;
         }
         *self.transactions.journals[processor as usize + 2].get_mut() = Journal::default();
+        if self.transactions.writes[processor as usize]
+            .as_ref()
+            .is_some_and(|w| w.dmac)
+        {
+            self.transactions.writes[processor as usize] = None;
+        }
         if self.transactions.dmac_owner == Some(processor) {
             self.transactions.dmac_owner = None;
         }
@@ -316,7 +363,15 @@ impl Bus {
             [Processor::Master, Processor::Slave]
         };
         for processor in order {
-            if self.transactions.internal[processor as usize].is_some() {
+            if self.transactions.writes[processor as usize]
+                .as_ref()
+                .is_some_and(|w| w.dmac)
+            {
+                return self.grant_buffered_write(processor);
+            }
+            if self.transactions.internal[processor as usize].is_some()
+                || self.transactions.writes[processor as usize].is_some()
+            {
                 continue;
             }
             self.prepare_dmac(processor);
@@ -382,10 +437,14 @@ impl Bus {
         journal.waiting = None;
         journal.completed = false;
         journal.pipeline_wait = None;
+        journal.pending_write = None;
+        journal.write_accepted = false;
         if self.transactions.lock == Some(processor) {
             self.transactions.lock = None;
         }
-        if self.transactions.cpu_group == Some(processor) {
+        if self.transactions.cpu_group == Some(processor)
+            && self.transactions.writes[processor as usize].is_none()
+        {
             self.transactions.cpu_group = None;
         }
     }
@@ -401,21 +460,60 @@ impl Bus {
         self.transactions.scu = None;
     }
     pub(crate) fn cancel_cpu_transaction(&mut self, processor: Processor) {
+        self.instruction_word[processor as usize].set(None);
+        self.transactions.write_errors[processor as usize] = None;
         if self.transactions.internal[processor as usize]
             .as_ref()
-            .is_some_and(|a| a.owner == Owner::Cpu(processor))
+            .is_some_and(|a| matches!(a.owner, Owner::Cpu(p) | Owner::WriteAccept(p, false) if p == processor))
         {
             self.transactions.internal[processor as usize] = None;
         }
-        if self
-            .transactions
-            .active
-            .as_ref()
-            .is_some_and(|a| a.owner == Owner::Cpu(processor))
-        {
+        if self.transactions.active.as_ref().is_some_and(
+            |a| matches!(a.owner, Owner::Cpu(p) | Owner::WriteBuffer(p, false) if p == processor),
+        ) {
             self.transactions.active = None;
         }
+        if self.transactions.writes[processor as usize]
+            .as_ref()
+            .is_some_and(|w| !w.dmac)
+        {
+            self.transactions.writes[processor as usize] = None;
+        }
         self.finish_cpu_transaction(processor);
+    }
+    fn accept_buffered_write(&mut self, processor: Processor, dmac: bool) -> bool {
+        let i = processor as usize;
+        let journal = self.transactions.journals[i + if dmac { 2 } else { 0 }].get_mut();
+        if self.transactions.writes[i].is_some() || journal.pending_write.is_none() {
+            return false;
+        }
+        // The internal-bus acceptance state precedes notification. The BSC
+        // owns the external data until its final physical beat completes.
+        self.transactions.internal[i] = Some(Active {
+            owner: Owner::WriteAccept(processor, dmac),
+            transfer: *journal.pending_write.as_ref().unwrap().front().unwrap(),
+            remaining: 1,
+        });
+        self.transactions.writes[i] = Some(BufferedWrite {
+            dmac,
+            beats: journal.pending_write.take().unwrap(),
+            context: journal.write_context,
+        });
+        true
+    }
+    fn grant_buffered_write(&mut self, processor: Processor) -> bool {
+        if self.transactions.lock.is_some_and(|p| p != processor) {
+            return false;
+        }
+        let Some(write) = &self.transactions.writes[processor as usize] else {
+            return false;
+        };
+        let transfer = *write.beats.front().unwrap();
+        let dmac = write.dmac;
+        self.grant_cpu_beat(processor, transfer, dmac);
+        self.transactions.active.as_mut().unwrap().owner = Owner::WriteBuffer(processor, dmac);
+        self.transactions.previous = Some(processor);
+        true
     }
     pub(crate) fn take_cpu_transaction_completion(&self, processor: Processor) -> bool {
         std::mem::take(
@@ -423,6 +521,12 @@ impl Bus {
                 .borrow_mut()
                 .completed,
         )
+    }
+    pub(crate) fn take_cpu_write_error(
+        &mut self,
+        processor: Processor,
+    ) -> Option<crate::cpu::CpuError> {
+        self.transactions.write_errors[processor as usize].take()
     }
     fn grant_cpu_internal(&mut self) {
         // H §§7.11.2–7.11.3/9.3: CPU and DMAC share this
@@ -434,11 +538,19 @@ impl Bus {
             let i = processor as usize;
             if self.transactions.internal[i].is_some()
                 || self.external_monitor_owns_internal(processor)
-                || self.transactions.dmac_owner == Some(processor)
+                || (self.transactions.writes[i].is_none()
+                    && !self.onchip[i].dma_stopped()
+                    && !self.onchip[i].reset_active()
+                    && self.onchip[i]
+                        .dma
+                        .requests_internal_bus(self.onchip[i].serial_dma_requests()))
                 || self.transactions.active.as_ref().is_some_and(
                     |a| matches!(a.owner, Owner::Cpu(p) | Owner::Dmac(p) if p == processor),
                 )
             {
+                continue;
+            }
+            if self.accept_buffered_write(processor, false) {
                 continue;
             }
             let waiting = self.transactions.journals[i].borrow().waiting;
@@ -470,8 +582,13 @@ impl Bus {
                 continue;
             }
             let waiting = self.transactions.journals[i + 2].borrow().waiting;
+            let pending_write = self.transactions.journals[i + 2]
+                .borrow()
+                .pending_write
+                .is_some();
             if waiting.is_some_and(|t| t.address < 0xFFFF_FE00)
                 || (waiting.is_none()
+                    && !pending_write
                     && !self.onchip[i]
                         .dma
                         .internal_request(self.onchip[i].serial_dma_requests()))
@@ -481,6 +598,9 @@ impl Bus {
                 continue;
             }
             self.prepare_dmac(processor);
+            if self.accept_buffered_write(processor, true) {
+                continue;
+            }
             let transfer = self.transactions.journals[i + 2].borrow().waiting;
             if let Some(transfer) = transfer.filter(|t| t.address >= 0xFFFF_FE00) {
                 // H §9.3.5: internal peripheral access is one state, with
@@ -495,8 +615,8 @@ impl Bus {
                 }
             }
         }
+        self.grant_cpu_internal();
         if self.transactions.active.is_some() {
-            self.grant_cpu_internal();
             return;
         }
         if self.onchip[0].inhibits_external_bus() {
@@ -504,6 +624,12 @@ impl Bus {
             return;
         }
         if let Some(processor) = self.transactions.cpu_group {
+            if self.transactions.writes[processor as usize].is_some() {
+                if !self.external_monitor_waits_for_internal() {
+                    self.grant_buffered_write(processor);
+                }
+                return;
+            }
             // The interpreter resumes the same operand to queue the next
             // beat. An empty queue here is not a bus release.
             let transfer = self.transactions.journals[processor as usize]
@@ -607,7 +733,17 @@ impl Bus {
             [Processor::Master, Processor::Slave]
         };
         for processor in order {
-            if self.transactions.internal[processor as usize].is_some() {
+            if self.transactions.writes[processor as usize]
+                .as_ref()
+                .is_some_and(|w| !w.dmac)
+                && self.grant_buffered_write(processor)
+            {
+                self.transactions.dmac_yield = false;
+                return;
+            }
+            if self.transactions.internal[processor as usize].is_some()
+                || self.transactions.writes[processor as usize].is_some()
+            {
                 continue;
             }
             if self
@@ -709,9 +845,20 @@ impl Bus {
         if active.owner == Owner::Refresh {
             return Ok(());
         }
+        if let Owner::WriteAccept(processor, dmac) = active.owner {
+            let i = processor as usize;
+            let journal = self.transactions.journals[i + if dmac { 2 } else { 0 }].get_mut();
+            journal.write_accepted = true;
+            journal.completed = true;
+            if dmac {
+                self.prepare_dmac(processor);
+            }
+            return Ok(());
+        }
         let t = active.transfer;
         let processor = match active.owner {
-            Owner::Cpu(p) | Owner::Dmac(p) => p,
+            Owner::Cpu(p) | Owner::Dmac(p) | Owner::WriteBuffer(p, _) => p,
+            Owner::WriteAccept(_, _) => unreachable!(),
             Owner::Scu | Owner::Refresh => Processor::Master,
         };
         let result = if matches!(active.owner, Owner::Cpu(_)) && t.address >= 0xFFFF_FE00 {
@@ -772,7 +919,44 @@ impl Bus {
                 _ => self.read::<4>(t.address).map(u32::from_be_bytes),
             }
         };
-        if active.owner == Owner::Scu {
+        if let Owner::WriteBuffer(processor, dmac) = active.owner {
+            // Invalid device accesses remain observable diagnostics even when
+            // the issuing CPU has retired; they never become silent no-ops.
+            let value = match result {
+                Ok(value) => value,
+                Err(source) => {
+                    let i = processor as usize;
+                    let (pc, vector) = self.transactions.writes[i].take().unwrap().context;
+                    if dmac {
+                        self.onchip[i].dma.buffer_error();
+                        self.cpu_dma_errors[i] = true;
+                        self.cancel_dmac_transaction(processor);
+                    } else {
+                        self.transactions.write_errors[i] = Some(match vector {
+                            Some(vector) => {
+                                crate::cpu::CpuError::ExceptionEntry { pc, vector, source }
+                            }
+                            None => crate::cpu::CpuError::Bus { pc, source },
+                        });
+                    }
+                    if self.transactions.cpu_group == Some(processor) {
+                        self.transactions.cpu_group = None;
+                    }
+                    return Ok(());
+                }
+            };
+            self.for_cpu(processor)
+                .observe_external_data(t.address, t.width, value, true);
+            let i = processor as usize;
+            let write = self.transactions.writes[i].as_mut().unwrap();
+            assert_eq!(write.beats.pop_front(), Some(t));
+            if write.beats.is_empty() {
+                self.transactions.writes[i] = None;
+                if self.transactions.cpu_group == Some(processor) {
+                    self.transactions.cpu_group = None;
+                }
+            }
+        } else if active.owner == Owner::Scu {
             if let Ok(value) = result
                 && t.width != 0
             {
@@ -818,6 +1002,38 @@ impl Bus {
     }
 }
 impl CpuBus<'_> {
+    pub(super) fn buffered_write_locked(&self) -> bool {
+        self.bus.transactions.lock == Some(self.processor)
+    }
+    pub(super) fn buffered_external_write<const N: usize>(
+        &self,
+        address: u32,
+        bytes: [u8; N],
+    ) -> Result<(), BusError> {
+        let mut journal = self.bus.transactions.journals[self.journal_index()].borrow_mut();
+        if journal.write_accepted {
+            journal.write_accepted = false;
+            return Ok(());
+        }
+        let width = self.bus.onchip[self.processor as usize]
+            .external_bus_width(Bus::physical(address))
+            .min(N);
+        journal.pending_write.get_or_insert_with(|| {
+            bytes
+                .chunks(width)
+                .enumerate()
+                .map(|(i, bytes)| Transfer {
+                    address: address + (i * width) as u32,
+                    width,
+                    write: Some(bytes.iter().fold(0, |v, b| v << 8 | u32::from(*b))),
+                    first: i == 0,
+                    last: (i + 1) * width == N,
+                    locked: false,
+                })
+                .collect()
+        });
+        Err(BusError::Pending)
+    }
     fn journal_index(&self) -> usize {
         self.processor as usize + if self.cached { 0 } else { 2 }
     }

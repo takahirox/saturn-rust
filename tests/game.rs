@@ -26,7 +26,10 @@ fn actual_disc_guest_moves_collects_completes_and_restarts() {
     assert_eq!(m.cpu_state().pc, 0x100); // Original HLE reset precedes AIP.
     ready(&mut m);
     assert_eq!(&state(&m)[..4], &[32, 112, 0, 0]);
-    assert!(m.cpu_state().instructions * 8 < m.clocks()); // External BSC Tw clocks.
+    // Longword IF retention and BSC buffered writes overlap execution. This
+    // assertion checks elapsed hardware work without assigning eight clocks
+    // to every retired instruction.
+    assert!(m.cpu_state().instructions < m.clocks());
     assert!(m.clocks() >= m.frames() * saturn_rust::timing::CLOCKS_PER_FIELD);
     // At most one fetched instruction with one operand access crosses a field:
     // eight issue clocks plus two external accesses with six Tw clocks each.

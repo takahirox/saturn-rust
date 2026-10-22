@@ -11,6 +11,7 @@ import { rawMode1 } from "./raw-media-fixture.mjs";
 import { videoTransactions } from "./video-transactions.mjs";
 import { busTransactions } from "./bus-transactions.mjs";
 import { dmacBus } from "./dmac-bus.mjs";
+import { sh2BusPipeline } from "./sh2-bus-pipeline.mjs";
 import { abusTiming } from "./abus.mjs";
 import { hardwareBoundaries } from "./hardware-boundaries.mjs";
 import { refreshArbitration } from "./refresh.mjs";
@@ -222,7 +223,9 @@ try {
     const {emulator}=await import("./app.js");return emulator.read_long(0x28);
   }),0);
   await page.locator("#step").click();
-  await page.locator("#step").click();
+  await page.locator("#step").click(); // buffered write acceptance
+  await page.locator("#count").fill("20");
+  await page.locator("#run").click(); // diagnose its external data phase
   assert.match(await value("error"), /Memory access at PC 0x00000106: Unsupported Saturn device\/register: 1-byte access at 0x05FE00CC/);
   assert.equal(await page.locator("#run").isDisabled(), true);
   const faulted = await machine();
@@ -790,6 +793,7 @@ try {
   await abusTiming(page);
   await busTransactions(page);
   await dmacBus(page);
+  await sh2BusPipeline(page);
   const shrinkRom=Buffer.alloc(524288);
   for(const line of (await readFile("tests/fixtures/sprite-shrink.hex","utf8")).split(/\r?\n/)) {
     if(!line||line.startsWith("#"))continue;
@@ -1113,7 +1117,7 @@ try {
     assert.deepEqual(actual.exceptions, ["0", "0"]);
     for (const [cpu, trace] of actual.traces.entries()) {
       const expected = [cpu ? 0x83F0 : 0x3F0, 0xAAFF];
-      waitVectors.forEach((ticks, i) => expected.push(before === 0xA55AAA40 && i === 1 ? 12 : 10 + 2 * (4 / width - 1) + (ticks - 10) * 4 / width,
+      waitVectors.forEach((ticks, i) => expected.push(before === 0xA55AAA40 && i === 1 ? 9 : 7 + 2 * (4 / width - 1) + (ticks - 7) * 4 / width,
         before === 0x13579BDF ? after : 0x13579BDF));
       expected.push(...(little ? endianVectors : [0x11223344,0x1122,0x3344,0x11,0xA1B2C3D4,0x1234C3D4,0x5634C3D4]), 0x600D);
       assert.deepEqual(trace, expected);
@@ -1913,8 +1917,8 @@ try {
   assert.deepEqual(soundFinished.waveform, [0x1000F000, 0xE0002000]);
   assert.deepEqual(soundFinished.samples, [256,4096,-256,-4096,-512,-8192,512,8192,256,4096,-256,-4096,-512,-8192,512,8192]);
   assert.equal(soundFinished.irqs,2);
-  assert.equal(soundFinished.irqReturn,0x182); // IRQ2 wakes STOP $17E; return to BRA $182
-  assert.equal(BigInt(soundFinished.count),32n); // setup23 + two IRQ3 handlers + STOP2 + BRA1
+  assert.equal(soundFinished.irqReturn,0x17E); // both timer IRQs precede the first STOP
+  assert.equal(BigInt(soundFinished.count),30n); // setup23 + two IRQ3 handlers + STOP1
   assert.equal(soundFinished.dropped, "0");
   await page.locator("#reset").click();
   assert.deepEqual(await soundResult(), soundFinished);
@@ -3110,7 +3114,7 @@ try {
     const effect=await lab.evaluate(async()=>{
       const {emulator}=await import("./app.js");
       for(let i=0;i<40&&emulator.read_long(0x06010020)!==0x600D;i++)emulator.run_steps(10000);
-      emulator.audio_samples(8192);emulator.advance_frame();
+      emulator.audio_samples(8192);emulator.advance_frame();emulator.advance_frame();
       return {result:emulator.read_long(0x06010028),samples:Array.from(emulator.audio_samples(8192))};
     });
     assert.equal(effect.result,result);
