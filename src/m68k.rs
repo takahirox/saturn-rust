@@ -59,6 +59,9 @@ pub struct M68k {
     // burst, then performs a terminal word read before its next program fetch.
     defer_prefetch: bool,
     predecrement_waited: bool,
+    // A traced instruction has already retired while its trace frame/vector
+    // cycles are in flight. Reset must retain that completed register state.
+    retired_state: Option<State>,
 }
 #[derive(Clone, Copy)]
 enum Size {
@@ -662,6 +665,7 @@ impl M68k {
     /// the documented maximum time; per-cycle bus arbitration remains separate.
     /// Fatal double faults halt the core until reset; no host panic or silent NOP.
     pub fn step(&mut self, memory: &mut impl Memory) -> u32 {
+        self.retired_state = None;
         if self.state.halted {
             return 4;
         }
@@ -674,7 +678,9 @@ impl M68k {
                 Err(_) => 24, // BERR during IACK is spurious, not vector2.
             };
             self.level7_edge = false;
-            return 44 + self.deliver_exception(memory, vector, self.state.pc, Some(level), None);
+            let clocks =
+                44 + self.deliver_exception(memory, vector, self.state.pc, Some(level), None);
+            return Self::finish_clocks(memory, clocks);
         }
         if self.state.stopped {
             return 4;
@@ -690,13 +696,21 @@ impl M68k {
         match result {
             Err(Fault::Suspended) => 0,
             Ok(clocks) => {
+                if memory.m68k_finish_clocks(clocks).is_err() {
+                    return 0;
+                }
                 self.state.instructions += 1;
+                self.retired_state = Some(self.state.clone());
                 let exception_clocks = if trace {
                     34 + self.deliver_exception(memory, 9, self.state.pc, None, None)
                 } else {
                     0
                 };
-                clocks + exception_clocks
+                if trace {
+                    Self::finish_clocks(memory, clocks + exception_clocks)
+                } else {
+                    clocks
+                }
             }
             Err(fault) => {
                 // UM §6.3.8: a traced TRAP/CHK/divide exception precedes the
@@ -707,7 +721,7 @@ impl M68k {
                 if trace_after && extra == 0 && !self.state.halted {
                     extra += 34 + self.deliver_exception(memory, 9, self.state.pc, None, None);
                 }
-                extra
+                let clocks = extra
                     + if access.is_some() {
                         50
                     } else {
@@ -716,9 +730,20 @@ impl M68k {
                             6 => 40 + Self::ea_clocks(self.opcode & 63, Size::Word),
                             _ => 34,
                         }
-                    }
+                    };
+                Self::finish_clocks(memory, clocks)
             }
         }
+    }
+    fn finish_clocks(memory: &impl Memory, clocks: u32) -> u32 {
+        if memory.m68k_finish_clocks(clocks).is_err() {
+            0
+        } else {
+            clocks
+        }
+    }
+    pub(crate) fn retired_state(&self) -> Option<&State> {
+        self.retired_state.as_ref()
     }
     fn execute(&mut self, memory: &mut impl Memory, op: u16) -> Result<u32> {
         let bits = op & 63;

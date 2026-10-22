@@ -6,6 +6,7 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Operation {
     InternalWait(u32),
+    FinishClocks(u32),
     Read(u32, usize),
     Write(u32, usize, u32),
     ResetOutput,
@@ -14,7 +15,7 @@ enum Operation {
 impl Operation {
     fn complete(self, memory: &mut impl Memory) -> Result<u32, BusError> {
         match self {
-            Self::InternalWait(_) => Ok(0),
+            Self::InternalWait(_) | Self::FinishClocks(_) => Ok(0),
             Self::ResetOutput => Ok(0),
             Self::InterruptAcknowledge(level) => {
                 memory.m68k_interrupt_acknowledge(level).map(u32::from)
@@ -35,6 +36,7 @@ pub(super) struct Transactions {
     waiting: Option<Operation>,
     start: u64,
     reset: Option<ResetSequence>,
+    cpu: Option<M68k>,
 }
 #[derive(Default)]
 struct ResetSequence {
@@ -68,6 +70,9 @@ impl Replay<'_> {
     }
 }
 impl Memory for Replay<'_> {
+    fn m68k_finish_clocks(&self, clocks: u32) -> Result<(), BusError> {
+        self.access(Operation::FinishClocks(clocks)).map(|_| ())
+    }
     fn m68k_internal_wait(&self, clocks: u32) -> Result<(), BusError> {
         self.access(Operation::InternalWait(clocks)).map(|_| ())
     }
@@ -146,13 +151,16 @@ impl Sound {
         } else {
             journal.start = self.cpu_ticks;
             self.cpu.set_interrupt(self.scsp.interrupt_level());
+            journal.cpu = Some(self.cpu.clone());
         }
         journal.cursor = 0;
-        let before = self.cpu.clone();
-        let clocks = self.cpu.step(&mut Replay(RefCell::new(journal)));
+        let mut execution = journal.cpu.as_ref().unwrap().clone();
+        let clocks = execution.step(&mut Replay(RefCell::new(journal)));
         let journal = &mut self.transactions;
         if journal.waiting.is_some() {
-            self.cpu = before;
+            if let Some(state) = execution.retired_state() {
+                self.cpu.state = state.clone();
+            }
             if journal.waiting == Some(Operation::ResetOutput) {
                 self.reset_output_start = Some(
                     self.cpu_origin + ((journal.start + 4) * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ),
@@ -163,12 +171,19 @@ impl Sound {
                 self.cpu_ticks = journal.start + 128;
             } else if let Some(Operation::InternalWait(clocks)) = journal.waiting {
                 self.cpu_ticks += u64::from(clocks);
+            } else if let Some(Operation::FinishClocks(clocks)) = journal.waiting {
+                // Data cycles already published remain in the journal. Only
+                // the remaining internal clocks delay architectural results;
+                // trace stacking cannot begin until this barrier completes.
+                self.cpu_ticks = self.cpu_ticks.max(journal.start + u64::from(clocks));
             } else {
                 self.cpu_ticks += 4;
             }
         } else {
+            self.cpu = execution;
             self.cpu_ticks = self.cpu_ticks.max(journal.start + u64::from(clocks));
             journal.completed.clear();
+            journal.cpu = None;
         }
     }
 }

@@ -103,9 +103,12 @@ fn reset_vectors_and_prefetch_are_six_independent_reads_not_an_early_snapshot() 
         until(&mut sound, 39, chunk);
         assert_eq!(sound.cpu.state.instructions, 0);
         until(&mut sound, 40, chunk);
+        assert_eq!(sound.cpu.state.instructions, 0);
+        assert_eq!(sound.cpu.state.d[0], 0);
+        until(&mut sound, 44, chunk); // first MOVEQ's four clocks follow reset
         assert_eq!(sound.cpu.state.d[0], 0x25);
         assert_eq!(sound.cpu.state.pc, 0x202);
-        until(&mut sound, 44, chunk);
+        until(&mut sound, 47, chunk);
         assert_eq!(sound.cpu.state.d[1], 0); // next prefetch still in flight
         until(&mut sound, 48, chunk);
         assert_eq!(sound.cpu.state.d[1], 0x36);
@@ -124,7 +127,7 @@ fn sound_off_cancels_each_partial_reset_and_on_starts_a_new_sequence() {
         sound.advance(2000).unwrap();
         assert_eq!(sound.cpu.state.instructions, 0);
         sound.set_enabled(true).unwrap();
-        until(&mut sound, 40, 7);
+        until(&mut sound, 44, 7);
         assert_eq!(sound.cpu.state.a[7], 0x54320, "cancel at {boundary}");
         assert_eq!(sound.cpu.state.pc, 0x202);
         assert_eq!(sound.cpu.state.d[0], 0x25);
@@ -149,7 +152,7 @@ fn reset_prefetch_fault_halts_without_stack_writes_or_recursive_exception() {
         sound.set_enabled(false).unwrap();
         sound.ram[4..8].copy_from_slice(&0x200u32.to_be_bytes());
         sound.set_enabled(true).unwrap();
-        until(&mut sound, 40, 17);
+        until(&mut sound, 44, 17);
         assert!(!sound.cpu.state.halted);
         assert_eq!(sound.cpu.state.d[0], 0x25);
     }
@@ -160,7 +163,7 @@ fn reset_prefetch_uses_24_bit_bus_pins_without_truncating_architectural_pc() {
     let mut sound = fixture();
     sound.ram[4..8].copy_from_slice(&0x01000200u32.to_be_bytes());
     sound.set_enabled(true).unwrap();
-    until(&mut sound, 40, 1);
+    until(&mut sound, 44, 1);
     assert_eq!(sound.cpu.state.pc, 0x01000202);
     assert_eq!(sound.cpu.state.d[0], 0x25);
     assert_eq!(sound.cpu.state.instructions, 1);
@@ -291,8 +294,8 @@ fn irq_acknowledgement_is_a_separate_four_clock_cycle_before_stack_writes() {
         sound.ram[0x300..0x304].copy_from_slice(&[0x4E, 0x72, 0x27, 0]);
         sound.ram[0xFFA..0x1000].fill(0xAA);
         sound.set_enabled(true).unwrap();
-        until(&mut sound, 40, chunk);
         sound.cpu.state.sr = 0x2000;
+        until(&mut sound, 40, chunk);
         for offset in [0x41E, 0x424, 0x426, 0x420] {
             sound.scsp.write16(offset, 0x20).unwrap();
         }
@@ -309,6 +312,185 @@ fn irq_acknowledgement_is_a_separate_four_clock_cycle_before_stack_writes() {
         assert_eq!(&sound.ram[0xFFA..0x1000], &[0x20, 0, 0, 0, 2, 2]);
         assert_eq!(sound.cpu.state.last_vector, Some(27));
         assert_eq!(sound.cpu.state.exceptions, 1);
+        assert!(sound.cpu.state.stopped && !sound.cpu.state.halted);
+    }
+}
+
+#[test]
+fn register_results_and_retirement_wait_for_the_instruction_internal_clocks() {
+    // MC68000UM tables8-4/8-7: literal 16-bit-bus instruction times.
+    // DIV deliberately retains the table's maximum functional timing policy;
+    // MUL and shifts use their documented operand-dependent clock counts.
+    for (opcode, input, source, clocks, expected) in [
+        (0x80C1u16, 7, 2, 140, 0x00010003),       // DIVU D1,D0
+        (0x81C1, 0xFFFFFFF9, 2, 158, 0xFFFFFFFD), // DIVS D1,D0
+        (0xC0C1, 7, 2, 40, 14),                   // MULU, one source bit
+        (0xC1C1, 0xFFFFFFF9, 2, 42, 0xFFFFFFF2),  // MULS, two transitions
+        (0xD081, 7, 2, 8, 9),                     // ADD.L D1,D0
+        (0xE3A8, 0x1000, 2, 12, 0x4000),          // LSL.L D1,D0
+        (0xE3A8, 1, 63, 134, 0),
+    ] {
+        for chunk in [1, 3, 17, 10000] {
+            let mut sound = fixture();
+            sound.ram[4..8].copy_from_slice(&0x200u32.to_be_bytes());
+            for (i, word) in [opcode, 0x4E72, 0x2700, 0x4E71].into_iter().enumerate() {
+                sound.ram[0x200 + i * 2..0x202 + i * 2].copy_from_slice(&word.to_be_bytes());
+            }
+            sound.set_enabled(true).unwrap();
+            sound.cpu.state.d[0] = input;
+            sound.cpu.state.d[1] = source;
+            let deadline = 40 + clocks;
+            until(&mut sound, deadline - 1, chunk);
+            assert_eq!(sound.cpu.state.d[0], input, "opcode={opcode:04X}");
+            assert_eq!(sound.cpu.state.pc, 0x200);
+            assert_eq!(sound.cpu.state.instructions, 0);
+            until(&mut sound, deadline, chunk);
+            assert_eq!(sound.cpu.state.d[0], expected, "opcode={opcode:04X}");
+            assert_eq!(sound.cpu.state.pc, 0x202);
+            assert_eq!(sound.cpu.state.instructions, 1);
+            until(&mut sound, deadline + 32, chunk);
+            assert!(sound.cpu.state.stopped && !sound.cpu.state.halted);
+            assert_eq!(sound.cpu.state.exceptions, 0);
+        }
+    }
+}
+
+#[test]
+fn traced_division_cannot_stack_or_fetch_its_vector_during_the_divide() {
+    for (opcode, dividend, clocks, result, sr) in [
+        (0x80C1u16, 7, 140, 0x10003, 0xA700u16),
+        (0x81C1, 0xFFFFFFF9, 158, 0xFFFFFFFD, 0xA708),
+    ] {
+        for chunk in [1, 3, 17, 10000] {
+            let mut sound = fixture();
+            sound.ram[..8].copy_from_slice(&0x00001000_00000200u64.to_be_bytes());
+            sound.ram[0x200..0x204].copy_from_slice(&[opcode.to_be_bytes(), [0x4E, 0x71]].concat());
+            sound.ram[36..40].copy_from_slice(&0x300u32.to_be_bytes());
+            sound.ram[0x300..0x304].copy_from_slice(&[0x70, 0x0B, 0x4E, 0x71]);
+            sound.ram[0x400..0x404].copy_from_slice(&[0x4E, 0x72, 0x27, 0]);
+            sound.ram[0xFFA..0x1000].fill(0xAA);
+            sound.set_enabled(true).unwrap();
+            sound.cpu.state.d[0] = dividend;
+            sound.cpu.state.d[1] = 2;
+            sound.cpu.state.sr = 0xA700;
+            let deadline = 40 + clocks;
+            until(&mut sound, deadline - 1, chunk);
+            assert_eq!(&sound.ram[0xFFA..0x1000], &[0xAA; 6]);
+            assert_eq!(sound.cpu.state.exceptions, 0);
+            // A real shared-bus vector change while DIV is executing must be
+            // seen later, rather than using a handler fetched before completion.
+            sound.ram[36..40].copy_from_slice(&0x400u32.to_be_bytes());
+            until(&mut sound, deadline + 3, chunk);
+            assert_eq!(&sound.ram[0xFFA..0x1000], &[0xAA; 6]);
+            assert_eq!(sound.cpu.state.d[0], result);
+            assert_eq!(sound.cpu.state.pc, 0x202);
+            assert_eq!(sound.cpu.state.instructions, 1);
+            until(&mut sound, deadline + 4, chunk);
+            assert_eq!(&sound.ram[0xFFE..0x1000], &[2, 2]);
+            until(&mut sound, deadline + 34, chunk);
+            assert_eq!(sound.cpu.state.d[0], result);
+            assert_eq!(sound.cpu.state.last_vector, Some(9));
+            assert_eq!(sound.cpu.state.instructions, 1);
+            assert_eq!(&sound.ram[0xFFA..0xFFC], &sr.to_be_bytes());
+            assert_eq!(&sound.ram[0xFFC..0x1000], &[0, 0, 2, 2]);
+            until(&mut sound, deadline + 66, chunk);
+            assert!(sound.cpu.state.stopped && !sound.cpu.state.halted);
+        }
+    }
+}
+
+#[test]
+fn sound_off_discards_unretired_division_and_on_retains_only_completed_registers() {
+    for boundary in [40, 41, 44, 100, 179] {
+        for chunk in [1, 7, 10000] {
+            let mut sound = fixture();
+            sound.ram[..8].copy_from_slice(&0x00001000_00000200u64.to_be_bytes());
+            sound.ram[0x200..0x204].copy_from_slice(&[0x80, 0xC1, 0x4E, 0x71]);
+            sound.ram[0x300..0x30C]
+                .copy_from_slice(&[0x23, 0xC0, 0, 0, 8, 0, 0x4E, 0x72, 0x27, 0, 0x4E, 0x71]);
+            sound.set_enabled(true).unwrap();
+            sound.cpu.state.d[0] = 7;
+            sound.cpu.state.d[1] = 2;
+            until(&mut sound, boundary, chunk);
+            sound.set_enabled(false).unwrap();
+            assert_eq!(sound.cpu.state.d[0], 7);
+            sound.ram[4..8].copy_from_slice(&0x300u32.to_be_bytes());
+            sound.advance(1000).unwrap();
+            assert_eq!(sound.cpu.state.d[0], 7);
+            sound.set_enabled(true).unwrap();
+            until(&mut sound, 100, chunk);
+            assert_eq!(&sound.ram[0x800..0x804], &7u32.to_be_bytes());
+            assert!(sound.cpu.state.stopped && !sound.cpu.state.halted);
+            assert_eq!(sound.cpu.state.exceptions, 0);
+        }
+    }
+}
+
+#[test]
+fn reset_during_trace_keeps_the_already_completed_division_result() {
+    for after_retirement in [0, 1, 3, 4, 7, 8, 12, 16, 20, 24, 33] {
+        for chunk in [1, 7, 10000] {
+            let mut sound = fixture();
+            sound.ram[..8].copy_from_slice(&0x00001000_00000200u64.to_be_bytes());
+            sound.ram[0x200..0x204].copy_from_slice(&[0x81, 0xC1, 0x4E, 0x71]);
+            sound.ram[36..40].copy_from_slice(&0x400u32.to_be_bytes());
+            sound.ram[0x400..0x404].copy_from_slice(&[0x4E, 0x72, 0x27, 0]);
+            sound.ram[0x300..0x30C]
+                .copy_from_slice(&[0x23, 0xC0, 0, 0, 8, 0, 0x4E, 0x72, 0x27, 0, 0x4E, 0x71]);
+            sound.set_enabled(true).unwrap();
+            sound.cpu.state.d[0] = 0xFFFFFFF9;
+            sound.cpu.state.d[1] = 2;
+            sound.cpu.state.sr = 0xA700;
+            until(&mut sound, 198 + after_retirement, chunk);
+            assert_eq!(sound.cpu.state.d[0], 0xFFFFFFFD);
+            assert_eq!(sound.cpu.state.instructions, 1);
+            sound.set_enabled(false).unwrap();
+            assert_eq!(sound.cpu.state.d[0], 0xFFFFFFFD);
+            assert_eq!(sound.cpu.state.sr, 0x2708);
+            sound.ram[4..8].copy_from_slice(&0x300u32.to_be_bytes());
+            sound.set_enabled(true).unwrap();
+            until(&mut sound, 100, chunk);
+            assert_eq!(&sound.ram[0x800..0x804], &0xFFFFFFFDu32.to_be_bytes());
+            assert_eq!(sound.cpu.state.exceptions, 0);
+            assert!(sound.cpu.state.stopped && !sound.cpu.state.halted);
+        }
+    }
+}
+
+#[test]
+fn irq_arriving_during_division_waits_for_retirement_and_its_own_exception_clocks() {
+    for chunk in [1, 3, 17, 10000] {
+        let mut sound = fixture();
+        sound.ram[..8].copy_from_slice(&0x00001000_00000200u64.to_be_bytes());
+        sound.ram[0x200..0x204].copy_from_slice(&[0x80, 0xC1, 0x4E, 0x71]);
+        sound.ram[27 * 4..28 * 4].copy_from_slice(&0x300u32.to_be_bytes());
+        sound.ram[0x300..0x304].copy_from_slice(&[0x4E, 0x72, 0x27, 0]);
+        sound.ram[0xFFA..0x1000].fill(0xAA);
+        sound.set_enabled(true).unwrap();
+        sound.cpu.state.d[0] = 7;
+        sound.cpu.state.d[1] = 2;
+        sound.cpu.state.sr = 0x2000;
+        until(&mut sound, 100, chunk);
+        for offset in [0x41E, 0x424, 0x426, 0x420] {
+            sound.scsp.write16(offset, 0x20).unwrap();
+        }
+        until(&mut sound, 179, chunk);
+        assert_eq!(&sound.ram[0xFFA..0x1000], &[0xAA; 6]);
+        assert_eq!(sound.cpu.state.d[0], 7);
+        until(&mut sound, 180, chunk);
+        assert_eq!(sound.cpu.state.d[0], 0x10003);
+        assert_eq!(sound.cpu.state.instructions, 1);
+        until(&mut sound, 187, chunk); // IACK184, first stack write188
+        assert_eq!(&sound.ram[0xFFA..0x1000], &[0xAA; 6]);
+        until(&mut sound, 188, chunk);
+        assert_eq!(&sound.ram[0xFFE..0x1000], &[2, 2]);
+        until(&mut sound, 223, chunk);
+        assert_eq!(sound.cpu.state.exceptions, 0);
+        until(&mut sound, 224, chunk); // table8-14: IRQ44 clocks
+        assert_eq!(sound.cpu.state.exceptions, 1);
+        assert_eq!(sound.cpu.state.last_vector, Some(27));
+        assert_eq!(sound.cpu.state.pc, 0x300);
+        until(&mut sound, 256, chunk);
         assert!(sound.cpu.state.stopped && !sound.cpu.state.halted);
     }
 }

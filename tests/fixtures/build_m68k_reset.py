@@ -130,6 +130,58 @@ def trace_fixture():
             'm68k-traced-reset.s': '; Original MIT: adjacent LICENSE.\n' + host}, hashlib.sha256(rom).hexdigest()
 
 
+def retirement_fixture(signed=False):
+    """SH-2 changes the trace vector while a real 68k DIV is executing.
+
+    MC68000UM §§6.3.8/8.3: trace follows the completed instruction. The
+    FRT delay places the vector write after an incorrect early vector fetch,
+    but before the correct post-DIV fetch. Both handlers compute their records
+    using ordinary instructions; no emulator status/result hook is involved.
+    """
+    sound = bytearray(0x500)
+    struct.pack_into('>II', sound, 0, 0x1000, 0x200)
+    struct.pack_into('>I', sound, 9 * 4, 0x300)
+    dividend = 0xfffffff9 if signed else 7
+    words = [0x203c, dividend >> 16, dividend & 65535, 0x7202,
+             0x46fc, 0xa700, 0x81c1 if signed else 0x80c1,
+             0x4afc, 0x4e71]
+    struct.pack_into('>' + 'H' * len(words), sound, 0x200, *words)
+    for entry, marker in [(0x300, 0xbad), (0x400, 0x600d)]:
+        # Save D0, stacked SR and stacked successor PC; then signal completion.
+        words = [0x23c0, 0, 0x900, 0x3017, 0x33c0, 0, 0x904,
+                 0x222f, 2, 0x23c1, 0, 0x908,
+                 0x23fc, 0, marker, 0, 0x90c, 0x4e72, 0x2700]
+        struct.pack_into('>' + 'H' * len(words), sound, entry, *words)
+    host = ('load 0x2000,r1\nload 0x25a00000,r2\nload 0x140,r3\ncopy:\n'
+            'mov.l @r1,r0\nmov.l r0,@r2\nadd #4,r1\nadd #4,r2\ndt r3\nbf copy\n')
+    host += smpc(6)
+    host += ('load 0xfffffe12,r1\nload 0xfffffe13,r3\nmov #0,r0\nmov.b r0,@r1\nmov.b r0,@r3\n'
+             'wait_divide:\nmov.b @r1,r0\nmov.b @r3,r0\nextu.b r0,r0\nmov #32,r2\n'
+             'cmp/hs r2,r0\nbf wait_divide\n')
+    host += store(0x25a00024, 0x400) + wait(0x05a0090c, 'wait_trace')
+    host += 'load 0x2600ef00,r8\n'
+    for address, width in [(0x25a00900, 'l'), (0x25a00904, 'w'),
+                           (0x25a00908, 'l'), (0x25a0090c, 'l')]:
+        host += f'load {address:#x},r1\nmov.{width} @r1,r0\n'
+        if width == 'w':
+            host += 'extu.w r0,r0\n'
+        host += 'mov.l r0,@r8\nadd #4,r8\n'
+    host += 'finished:\nsleep\nbra finished\nnop\n'
+    rom = bytearray(524288)
+    struct.pack_into('>II', rom, 0, 0x200, 0x060ff000)
+    code = assembler.assemble(host, base=0x200)
+    assert len(code) < 0x1e00
+    rom[0x200:0x200 + len(code)] = code
+    rom[0x2000:0x2500] = sound
+    name = 'm68k-retire-divs' if signed else 'm68k-retire-divu'
+    lines = ['# Original sound-CPU retirement BIOS. MIT: adjacent LICENSE.']
+    for at in range(0, len(rom), 16):
+        if any(rom[at:at + 16]):
+            lines.append(f'{at:04X} ' + ' '.join(f'{w:04X}' for w in struct.unpack('>8H', rom[at:at + 16])))
+    return {f'{name}.hex': '\n'.join(lines) + '\n',
+            f'{name}.s': '; Original MIT: adjacent LICENSE.\n' + host}, hashlib.sha256(rom).hexdigest()
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--check', action='store_true')
@@ -158,3 +210,12 @@ if __name__ == '__main__':
         else:
             path.write_text(content)
     print(f'{"Verified" if args.check else "Built"} traced 68k RESET; expanded ROM SHA-256 {digest}')
+    for signed in [False, True]:
+        files, digest = retirement_fixture(signed)
+        for name, content in files.items():
+            path = HERE / name
+            if args.check:
+                assert path.read_text() == content, f'Rebuild {name}'
+            else:
+                path.write_text(content)
+        print(f'{"Verified" if args.check else "Built"} 68k DIV{"S" if signed else "U"} retirement; expanded ROM SHA-256 {digest}')

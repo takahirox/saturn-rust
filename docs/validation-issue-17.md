@@ -3838,3 +3838,71 @@ pre-clipping overhead and complete sloped/repeated coverage are not established.
 The other CPU/peripheral, MC68EC000, board ownership/reset, SCU/DSP, audio,
 CD/media/HLE, SMPC and comprehensive acceptance findings remain unresolved.
 No Issue closure, new tracker, historical reopening, push or merge is performed.
+
+## MC68EC000 completion, trace timing and reset retention (2026-10-22)
+
+Continues the full Issue #17 target on Draft PR #18, preserving the inherited
+VDP blanking/pre-clipping/display-word fixes and all earlier hardware/demo work.
+Upstream main was rechecked as `dbd981b030a46daa6923072ce240680dd2e58ebf`;
+the remote Draft head remained `f20201bcde2e439276137f6c8d7bec7cbe93c641`.
+
+The sound adapter previously published register results before an instruction's
+remaining internal clocks elapsed and could begin trace stacking immediately.
+It now schedules a completion barrier before retirement and trace processing,
+then separately completes the exception's remaining clocks. The journal retains
+a private replay origin and publishes the completed instruction state during
+trace entry, so sound reset discards unfinished division but preserves a result
+that has already completed. Completed RAM/MMIO cycles are never rolled back or
+repeated. Independent vectors cover exact preceding/completion clocks, four
+advancement sizes, MUL/DIV/ALU/shift cases, IRQ acknowledgement and stacking,
+five pre-retirement resets and eleven trace-phase resets.
+
+Two new original MIT synthetic BIOS guests execute SH-2 FRT delays and actual
+68k DIVU/DIVS instructions. SH-2 changes vector9 during division; the sound CPU
+must use the later handler, which computes sound-RAM records of the actual
+quotient/remainder, saved SR/PC and its marker. Changed dividend operands change
+the expected arithmetic; omitting the guest vector store selects the old
+handler. Native and production Wasm run both fixtures with repeated cold boots.
+The existing builder reproduces both new ROMs in CI; source, primary manual
+sections, implementation, vectors, licenses and hashes are linked in the
+[conformance entry](hardware-conformance.md#mc68ec000-instruction-completion-and-tracereset-boundaries).
+
+Validation actually performed:
+
+- `cargo fmt --check`, `cargo build --locked`, native all-target Clippy and
+  Wasm Clippy with `-D warnings`: passed. Native build/tests used Rust/Cargo
+  1.94.0; Clippy/Wasm used rustup stable 1.99.0.
+- Complete `CARGO_PROFILE_TEST_OPT_LEVEL=1 cargo test --locked`: **713 passed**
+  (438 unit + 275 integration), zero failed/ignored/filtered; doc tests passed.
+  Debug assertions remain enabled. The final sound-clock subset also passed
+  after strengthening the next-prefetch assertion to clock 47.
+- `sh scripts/build-web.sh`: passed with wasm-bindgen 0.2.129. All **69** CI
+  guest/media reproduction commands passed; the expanded reset builder was
+  rechecked. Dependencies, lockfiles and all three demonstration discs/licenses
+  remain unchanged. Locked npm dependencies installed from cache.
+- Complete `npm run test:browser`: passed on Chromium 145.0.7632.6, Node
+  24.12.0, with rebuilt production assets under `/saturn-rust/`. This includes
+  the new DIV guests and inherited hardware, three demos, Canvas/WebAudio,
+  input/focus/reset, backup, offline and local-file privacy checks. The final
+  full repeat also passed with the additional omitted-vector-write control;
+  no required tests were skipped.
+- Two deliberate regressions were rejected: bypassing completion clocks fails
+  the independent SH-2/68k guest; discarding the completed-state snapshot fails
+  reset during trace entry. Production sources were restored byte-for-byte
+  before final native/lint checks.
+- JavaScript syntax and Git whitespace checks passed. Initial guest attempts
+  incorrectly used word FRT access, then omitted its high-byte latch read;
+  those fixture errors were corrected to the documented byte sequence. Earlier
+  native reset tests assumed retirement at reset completion; they now distinguish
+  reset at 40 from the first MOVEQ's completion at 44. Initial failures are not
+  counted as passing checks.
+
+**The Run's full-resolution objective remains unmet.** The barrier does not
+implement every instruction-specific prefetch/operand/exception microsequence
+or shared sound-memory arbitration. DIV still uses the manual's maximum
+functional times rather than data-dependent physical clocks. Remaining
+SH-2/SH7604, board/reset, SCU/DSP, VDP1/VDP2, SCSP/effects DSP, CD/media/HLE,
+SMPC and complete per-feature demo/conformance requirements remain mandatory.
+No umbrella checkbox is completed or waived. Keep PR #18 Draft with the full
+target and intended `Closes #17`; do not merge, close/replace #17, reopen the
+historical trackers or introduce human/firmware/live-site/external-workflow gates.

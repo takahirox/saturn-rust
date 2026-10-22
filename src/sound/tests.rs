@@ -318,13 +318,18 @@ fn thirty_two_envelopes_release_retrigger_and_bypass_independently() {
 }
 
 #[test]
-fn reset_release_performs_prefetch_before_first_instruction_starts_at_forty_clocks() {
+fn reset_release_prefetch_finishes_at_forty_then_first_moveq_retires_at_forty_four_clocks() {
     let mut sound = Sound::default();
     sound.ram[..8].copy_from_slice(&[0, 7, 0xFF, 0, 0, 0, 1, 0]);
     sound.ram[0x100..0x104].copy_from_slice(&[0x70, 42, 0x4E, 0x71]);
     sound.set_enabled(true).unwrap();
-    let deadline = (40 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ) as u32;
-    sound.advance(deadline - 1).unwrap();
+    sound
+        .advance((40 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ) as u32)
+        .unwrap();
+    assert_eq!(sound.cpu.state.instructions, 0);
+    assert_eq!(sound.cpu.state.d[0], 0);
+    let deadline = (44 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ) as u32;
+    sound.advance(deadline - sound.time as u32 - 1).unwrap();
     assert_eq!(sound.cpu.state.instructions, 0);
     sound.advance(1).unwrap();
     assert_eq!(sound.cpu.state.instructions, 1);
@@ -372,6 +377,8 @@ fn sound_longword_accesses_sample_and_publish_each_word_on_its_own_bus_deadline(
             }
             assert_eq!(sound.cpu.state.instructions, 0);
             advance_to(&mut sound, 48);
+            assert_eq!(sound.cpu.state.instructions, 0);
+            advance_to(&mut sound, 52);
             assert_eq!(sound.cpu.state.instructions, 1);
             if opcode == 0x2010 {
                 assert_eq!(sound.cpu.state.d[0], 0x1122CCDD);

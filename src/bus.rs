@@ -159,6 +159,13 @@ pub trait Memory {
     fn m68k_internal_wait(&self, _clocks: u32) -> Result<(), BusError> {
         Ok(())
     }
+    /// MC68000UM §§6.3.2/6.3.8 and §8: finish an instruction's internal
+    /// clocks before retirement, trace processing or the next IRQ boundary.
+    /// The argument is the total time since this architectural boundary began,
+    /// including completed bus cycles; it is not an additional bus access.
+    fn m68k_finish_clocks(&self, _clocks: u32) -> Result<(), BusError> {
+        Ok(())
+    }
     /// MC68000UM §5.5: RESET holds the external device signal for 124 clocks.
     /// A clocked sound adapter suspends here until the pulse completes; an
     /// architectural-only memory fixture has no external clock domain.

@@ -77,6 +77,74 @@ fn traced_guest_reset_completes_then_stacks_and_vectors_without_running_the_foll
         }
     }
 }
+
+#[test]
+fn sh2_changes_the_trace_vector_during_signed_and_unsigned_sound_cpu_division() {
+    for (text, original, changed, result, changed_result, sr) in [
+        (
+            include_str!("fixtures/m68k-retire-divu.hex"),
+            7u32,
+            9u32,
+            0x10003,
+            0x10004,
+            0xA700,
+        ),
+        (
+            include_str!("fixtures/m68k-retire-divs.hex"),
+            0xFFFFFFF9,
+            0xFFFFFFF7,
+            0xFFFFFFFD,
+            0xFFFFFFFC,
+            0xA708,
+        ),
+    ] {
+        for (operand, expected, write_vector) in [
+            (original, result, true),
+            (changed, changed_result, true),
+            (original, result, false),
+        ] {
+            let mut rom = load(text);
+            rom[0x2202..0x2206].copy_from_slice(&operand.to_be_bytes());
+            if !write_vector {
+                let stores: Vec<_> = rom
+                    .windows(2)
+                    .enumerate()
+                    .filter_map(|(at, word)| (at % 2 == 0 && word == [0x21, 0x02]).then_some(at))
+                    .collect();
+                assert_eq!(stores.len(), 1);
+                rom[stores[0]..stores[0] + 2].copy_from_slice(&[0, 9]);
+            }
+            let mut machine = Machine::new();
+            for _ in 0..2 {
+                machine.reset(Boot::ExternalBios(&rom)).unwrap();
+                for _ in 0..10 {
+                    machine.run_steps(10000).unwrap();
+                }
+                let records: Vec<_> = (0..4)
+                    .map(|i| machine.bus().read32(0x0600EF00 + i * 4).unwrap())
+                    .collect();
+                assert_eq!(
+                    records,
+                    [
+                        expected,
+                        sr,
+                        0x20E,
+                        if write_vector { 0x600D } else { 0xBAD }
+                    ],
+                    "SH2={:?} sound={:?} token={:?}",
+                    machine.cpu_state(),
+                    machine.sound_state(),
+                    machine.bus().read32(0x05a0090c)
+                );
+                assert_eq!(machine.cpu_state().status, CpuStatus::Sleeping);
+                assert_eq!(machine.cpu_state().exceptions, 0);
+                assert_eq!(machine.sound_state().exceptions, 1);
+                assert_eq!(machine.sound_state().last_vector, Some(9));
+                assert!(machine.sound_state().stopped && !machine.sound_state().halted);
+            }
+        }
+    }
+}
 fn run(machine: &mut Machine, rom: &[u8]) -> Vec<u32> {
     machine.reset(Boot::ExternalBios(rom)).unwrap();
     for _ in 0..10 {

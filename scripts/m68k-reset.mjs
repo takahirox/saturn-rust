@@ -71,6 +71,33 @@ export async function m68kReset(page) {
     }
   }
   console.log("68k reset guest passed: actual SH-2 SNDON/SNDOFF, new reset SSP/PC, retained D0-D7/A0-A6/USP, control state, changed pre-reset operand and cold resets through production Wasm.");
+  for (const [name, operands, results, sr] of [
+    ["m68k-retire-divu", [7, 9], [0x10003, 0x10004], 0xA700],
+    ["m68k-retire-divs", [0xFFFFFFF9, 0xFFFFFFF7], [0xFFFFFFFD, 0xFFFFFFFC], 0xA708],
+  ]) {
+    const original = await fixture(name);
+    for (let variant = 0; variant <= operands.length; variant++) {
+      const image = Buffer.from(original);
+      const omitWrite = variant === operands.length;
+      image.writeUInt32BE(operands[omitWrite ? 0 : variant], 0x2202);
+      if (omitWrite) {
+        const needle = Buffer.from([0x21, 0x02]), at = image.indexOf(needle);
+        assert(at >= 0 && image.indexOf(needle, at + 1) < 0);
+        image.writeUInt16BE(9, at);
+      }
+      for (let repeat = 0; repeat < 2; repeat++) {
+        const result = await page.evaluate(async bytes => {
+          const { emulator } = await import("./app.js");
+          emulator.reset_bios(Uint8Array.from(bytes));
+          for (let i = 0; i < 10; i++) emulator.run_steps(10000);
+          return { records: Array.from({length: 4}, (_, i) => emulator.read_long(0x0600EF00 + i * 4)),
+            halted: emulator.sound_halted(), exceptions: emulator.exception_count() };
+        }, [...image]);
+        assert.deepEqual(result, { records: [results[omitWrite ? 0 : variant], sr, 0x20E, omitWrite ? 0xBAD : 0x600D], halted: false, exceptions: "0" }, name);
+      }
+    }
+  }
+  console.log("68k retirement guests passed: SH-2 FRT-delayed vector writes during DIVU/DIVS, late trace handlers, computed quotient/remainder, stacked SR/PC, changed guest operands and cold resets through production Wasm.");
   console.log("68k reset bus phases passed: SH-2 changes the sound PC vector after SNDON returns; the independent 68k runs the changed entry, including changed arithmetic operand and repeated cold resets through production Wasm.");
   console.log("Traced 68k RESET passed: pulse completion precedes the guest trace handler; saved SR/PC and retained operand records, changed operand and cold resets through production Wasm.");
 }

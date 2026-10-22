@@ -344,6 +344,11 @@ cover the two-clock intervals and reset cancellation. Instruction-specific prefe
 validation; these word-boundary semantics do not establish the complete
 CPU/scheduler acceptance criteria.
 
+The [instruction completion vectors and original DIV trace guests](#mc68ec000-instruction-completion-and-tracereset-boundaries)
+add timed retirement, post-computation trace entry and reset retention of a
+completed result while trace stacking is in flight. Physical DIV timing,
+instruction-specific microsequences and shared sound-bus ownership remain pending.
+
 | Family | Manual entry (68, MC68000 subset) | Implementation | Native / browser | Status |
 | --- | --- | --- | --- | --- |
 | ABCD | ABCD instruction description | `M68k::bcd / alu / group4` | m68k/tests.rs semantic vectors / SIOG native + browser | Functional vectors; timing pending |
@@ -2663,3 +2668,33 @@ The three builders above run in CI; the expanded 512 KiB ROM SHA-256 values are:
 | `vdp2-status` | `2f75d635d32cfb2b6a9371b8709c004298d64f5e0e5a0a07a303bedf375aeb4f` |
 | `vdp1-preclip` | `0a3a311632d5998f5c245313d73ffe172bbb1968d0b6a37131965ec8ba86d222` |
 | `vdp2-word-retention` | `242a1e1f3e832525a12463da39937ba47a5f814f0e5d66a77e862f0edf4e9c69` |
+
+## MC68EC000 instruction completion and trace/reset boundaries
+
+Primary references: [68UM] §§6.3.1/6.3.2/6.3.8 (reset, interrupt and trace
+ordering), §8.3/table8-4 (ALU/MUL/DIV clocks), §8.6/table8-7 (shift clocks),
+and §8.12/table8-14 (exception clocks). [H] §11.2 defines the FRT's byte-wide
+counter and temporary-byte latch used by the independent SH-2 guest.
+
+| Programming behavior | Implementation | Independent native evidence | Executing guest / production Wasm evidence |
+| --- | --- | --- | --- |
+| Register results retire after the remaining internal instruction clocks | `Memory::m68k_finish_clocks`, `M68k::step/finish_clocks` in [m68k.rs](../src/m68k.rs), and `FinishClocks` in [sound transactions](../src/sound/transactions.rs) | [sound-clock vectors](../src/sound/reset_tests.rs), `register_results_and_retirement_wait_for_the_instruction_internal_clocks`: DIVU/DIVS, MULU/MULS, ADD.L and variable-count LSL.L at the preceding clock and completion, four advancement sizes; first MOVEQ retires at 44 after reset finishes at 40 | The original DIVU/DIVS guests below execute actual division instructions and preserve all inherited sound/demo guests |
+| Trace frame writes and vector fetches follow completed computation | The completion barrier precedes `deliver_exception`; replay retains completed memory cycles without repeating MMIO | `traced_division_cannot_stack_or_fetch_its_vector_during_the_divide`: all frame words, first write deadline, computed result/CCR/PC, late vector change and exception completion. `irq_arriving_during_division_waits_for_retirement_and_its_own_exception_clocks` checks IACK, first stack write and the 44-clock IRQ boundary | Original MIT [builder](../tests/fixtures/build_m68k_reset.py), [DIVU SH-2 source](../tests/fixtures/m68k-retire-divu.s), [DIVS SH-2 source](../tests/fixtures/m68k-retire-divs.s) and literal 68k words. SH-2 waits using FRT then changes vector9 while the independent sound CPU is dividing. Both handlers record quotient/remainder, stacked SR/PC and their own marker in sound RAM. [Native](../tests/m68k_reset.rs) and [Wasm](../scripts/m68k-reset.mjs) require the late handler, changed dividend results, repeated cold boots and the old handler when the guest vector store is replaced by NOP |
+| Reset discards unfinished computation and retains a completed result during trace entry | `M68k::retired_state` records the architectural completion; the adapter keeps a separate replay origin until exception bus work completes | `sound_off_discards_unretired_division_and_on_retains_only_completed_registers`: five pre-retirement reset boundaries. `reset_during_trace_keeps_the_already_completed_division_result`: eleven trace-phase reset boundaries. Three advancement sizes each; the restarted 68k stores its retained register through real sound RAM | Existing guest SNDON/SNDOFF and traced RESET cases remain in the same native and browser helper |
+
+Reproduce with `python3 tests/fixtures/build_m68k_reset.py --check`, already
+required by CI. Source and generated fixtures use the adjacent
+[MIT license](../tests/fixtures/LICENSE); no external firmware or SDK routine.
+Expanded 512 KiB ROM hashes:
+
+- DIVU: `3667918fa9c06e6f18e042f02a5fab8720a2c811551b00dfe8c2e3e3f45d6b5e`.
+- DIVS: `8f3e796705789dfef48a5f9e1533a8f36ea9e240c8a23a5730ee8a6492ec9d54`.
+
+The completion barrier establishes these architectural boundaries, not every
+instruction's physical prefetch/operand/exception microsequence or shared
+sound-memory arbitration. DIVU/DIVS still use the manual's maximum functional
+times, 140/158 clocks plus EA; their data-dependent physical timing remains
+required. Already completed operand writes remain visible before retirement;
+the barrier never rolls back or repeats them. Other mandatory CPU/peripheral,
+bus/reset, SCU/DSP, video/audio, CD/HLE, SMPC and coverage work remains open.
+This evidence does not complete an umbrella acceptance checkbox or resolve #17.
