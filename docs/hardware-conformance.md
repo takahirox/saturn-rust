@@ -908,7 +908,7 @@ processor core, assembler, SDK object or effect program was used.
 | COEF/MADRS/MPRO; TEMP/MEMS/MIXS/EFREG; byte lanes | `Dsp::read/write`; `Scsp::write8` | DSPV `coefficient_internal_ram_and_byte_lanes_obey_physical_widths`; RESET vector in SNDV | CLAB uploads coefficients/program/MEMS and SH-2 reads EFREG1; complete per-port guest corpus remains |
 | TRA/TWA/TWT, sample decrement, read-before-write | `Dsp::step` circular TEMP indices | DSPV `temp_pointer_moves_once_per_sample_and_reads_precede_parallel_writes` | CLAB arithmetic; delayed TEMP guest scene remains |
 | XSEL/YSEL/IRA, signed multiplication, ZERO/BSEL/NEGB | `Dsp::step` signed multiplier/26-bit accumulator | DSPV `multiply_accumulate_uses_signed_13_bit_y_and_previous_accumulator_output` | CLAB MIXS0/MEMS0/EXTS0/1 and two coefficients; all ALU control combinations remain |
-| SHIFT, EWT/EWA, saturation/wrap | `Dsp::step` prior accumulator and 16-bit effect accumulation | DSPV `shifter_clips_or_wraps_and_effect_writes_accumulate_with_sixteen_bit_width` | CLAB exact bipolar stereo; complete overflow guest corpus remains |
+| SHIFT, EWT/EWA, saturation/wrap | `Dsp::step` prior accumulator; 16-bit effect stores replace the preceding value ([ST-228][SCDSPASM] p.31) | DSPV `shifter_clips_or_wraps_and_effect_stores_replace_the_previous_sixteen_bits`; [all sixteen effect-port deadline vectors](../src/sound/dsp/clock_tests.rs) | CLAB exact bipolar stereo; [repeated effect-store guest](#scsp-effect-register-store-semantics) with negative/zero results and omitted-store controls; complete overflow guest corpus remains |
 | YRL/FRCL/ADRL/ADREB | `Dsp::step` latches and address gate | DSPV `y_fraction_and_address_latches_use_previous_step_values` | Complete interpolation/address-modulation guest vectors remain |
 | MRD/MWT/IWT/IWA, TABLE/MASA/NXADR, RBL/RBP | `Dsp::step` sound RAM path, read latch after two steps | DSPV `ring_table_linear_reads_use_two_step_latency_and_preserve_read_before_write` | Complete sound RAM/pipeline guest corpus and CPU/DMA contention remain |
 | NOFL linear/normalized-float conversion | `pack/unpack`, `Dsp::step` | DSPV `floating_memory_format_has_independent_bit_patterns_and_bounded_error` | Full independent float/subnormal/rounding and delayed memory-cycle corroboration remains |
@@ -919,9 +919,9 @@ The sound scheduler uses the rational 5.6448 MHz instruction clock from
 [SCSP] §2.2/table2.2 (128 steps at 44.1 kHz). Each instruction reads live MPRO,
 COEF, MADRS and RAM at its own deadline. An MRD result remains latched through
 its two-step delay even if another processor subsequently changes RAM. Only
-step127 commits output and advances timers/sample interrupts. Source synthesis
-is captured at the first step; this explicit functional phase policy is not a
-claim of a complete physical PCM pipeline. An untouched DSP skips empty
+step127 commits output and advances timers/sample interrupts. Each slot's
+source operands use the [separately granted PCM reads](#separately-retained-pcm-operands-and-sound-memory-ownership).
+An untouched DSP skips empty
 instruction deadlines; the first MPRO write joins the current phase without
 replaying elapsed slots.
 
@@ -934,7 +934,8 @@ wait states. A delayed RESET prefetch moves both external pulse edges and
 retirement, so an event cannot be scheduled into the past. This implements
 DSP ownership. The [DMA/refresh/request-priority entry](#scsp-shared-dram-dma-refresh-and-cpu-request-priority)
 adds internal transfers, refresh reservations and buffered main-before-sound
-requests. Full PCM and physical grant-phase evidence remain mandatory, along
+requests. PCM ownership now has the separate operand evidence below;
+complete physical grant-phase evidence remains mandatory, along
 with the other unresolved audio inventory entries.
 
 The original MIT [SCSP clock fixture builder](../tests/fixtures/build_scsp_clock.py)
@@ -2823,3 +2824,46 @@ The cycle origin and refresh request phase are deterministic functional policies
 the manuals do not define a power-on oscillator phase. This supplies PCM
 ownership/operand retention, not full chip/CPU pin timing or completion of the
 remaining Issue #17 acceptance criteria.
+
+## SCSP effect register store semantics
+
+Primary references: [SCSP] §5 fig.5.1 routes the previous accumulator through
+the shifter into EFREG. [ST-228][SCDSPASM] p.31, the multiple-STR warning,
+specifies that a later store to the same EFREG replaces its earlier value.
+`Dsp::step` in [dsp.rs](../src/sound/dsp.rs) now performs that store, replacing
+the inherited incorrect addition. Programs compute sums through the executing
+multiply/add datapath before publishing them to the output register.
+
+The independent [deadline vectors](../src/sound/dsp/clock_tests.rs),
+`every_effect_store_replaces_at_its_own_deadline_including_zero_and_negative_data`,
+cover all sixteen ports, positive/negative/zero values, an intervening CPU
+overwrite, adjacent-port isolation and four advancement sizes. Existing
+shifter saturation/wrap, parallel arithmetic, MRD/IWT, reset and clock vectors
+remain enabled.
+
+The original [fixture builder](../tests/fixtures/build_scsp_clock.py),
+`build_effects`, emits [SH-2 source](../tests/fixtures/scsp-effects.s), literal
+68k/DSP instruction words and the [synthetic ROM](../tests/fixtures/scsp-effects.hex).
+The actual 68k uploads the operands and DSP instructions, polls a DSP-computed
+marker and records the resulting registers. The actual DSP writes EF0 first
+positive then negative, EF1 first negative then positive, and EF2 first positive
+then zero. EF0/1 route independently to left/right; EF2 must read zero.
+
+[Native execution](../tests/scsp_clock.rs) and [production Wasm/WebAudio](../scripts/scsp-clock.mjs),
+`scspEffects`, use three source-authored operand/result pairs, repeated cold
+boots and an omitted-final-EWT control that changes the left channel to the
+earlier value. Fresh complete stereo buffers must contain only the expected
+computed samples. Production AudioWorklet assertions require the expected peak,
+rendered frames, zero drops and observable underflow. Neither host code nor
+the sound CPU writes the DSP's result registers.
+
+All source/generated bytes use the adjacent [MIT fixture license](../tests/fixtures/LICENSE).
+Reproduce using `python3 tests/fixtures/build_scsp_clock.py --check`, already
+required by CI. Expanded 512-KiB ROM SHA-256:
+`dc409f5dcf612c02a98a37d080e807d57132413f80d1fdc3d4852c8039e29ca8`.
+The independent guest rejects the inherited addition with `1000/1000` instead
+of `F000/2000`; the negative control used an isolated checkout without changing
+production sources. The original exact CLAB wet/dry vectors remain required.
+
+This corrects EWT storage, not the full DSP converter/pipeline, synthesis,
+physical sound-interface timing or other mandatory Issue #17 contracts.

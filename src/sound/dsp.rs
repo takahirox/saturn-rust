@@ -208,7 +208,10 @@ impl Dsp {
         }
         if c & 0x1000 != 0 {
             let index = usize::from((c >> 8) & 15);
-            self.effects[index] = self.effects[index].wrapping_add((shifted >> 8) as i16);
+            // ST-228 p.31, "Multiple STR to EFREGxx": only the last
+            // store is valid. EFREG is the shifter's output register, not
+            // an accumulator; sums must be computed by the DSP datapath.
+            self.effects[index] = (shifted >> 8) as i16;
         }
         if c & 8 != 0 {
             self.y = input;

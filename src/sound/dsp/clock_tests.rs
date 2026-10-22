@@ -38,6 +38,45 @@ fn setup() -> Sound {
     s.ram[0x1000..0x1002].copy_from_slice(&0x1234u16.to_be_bytes());
     s
 }
+
+#[test]
+fn every_effect_store_replaces_at_its_own_deadline_including_zero_and_negative_data() {
+    // ST-228 p.31 says that only the last STR to an EFREG is valid.
+    // ST-077 fig.5.1 routes the prior accumulator through the shifter to
+    // EFREG; the same instruction computes the next accumulator in parallel.
+    // These expectations do not call the production DSP arithmetic helpers.
+    for channel in 0..16 {
+        for chunk in [1, 3, 17, 10000] {
+            let mut s = Sound::default();
+            s.scsp.write16(0x400, 0x20F).unwrap();
+            s.scsp.write16(0x700, 0x4000).unwrap(); // .5
+            s.scsp.write16(0xE02, 0x6000).unwrap(); // MEMS0=+24576 PCM
+            s.scsp.write16(0xE06, 0xA000).unwrap(); // MEMS1=-24576 PCM
+            let store = 0x1002 | channel << 8;
+            program(&mut s, 0, [0, 0xA000, 2, 0]);
+            program(&mut s, 1, [0, 0xA040, store, 0]);
+            program(&mut s, 2, [0, 0, store, 0]);
+            program(&mut s, 3, [0, 0, store, 0]);
+            let port = 0xEC0 + u32::from(channel) * 2;
+            until(&mut s, 2, chunk);
+            assert_eq!(s.scsp.read16(port), Ok(12288));
+            // A CPU overwrite is also replaced by the subsequent DSP store.
+            s.scsp.write16(port, 0x1357).unwrap();
+            let next = (3 * REFERENCE_HZ).div_ceil(DSP_HZ);
+            s.advance((next - s.time - 1) as u32).unwrap();
+            assert_eq!(s.scsp.read16(port), Ok(0x1357));
+            until(&mut s, 3, chunk);
+            assert_eq!(s.scsp.read16(port), Ok((-12288i16) as u16));
+            until(&mut s, 4, chunk);
+            assert_eq!(s.scsp.read16(port), Ok(0));
+            for other in 0..16 {
+                if other != channel {
+                    assert_eq!(s.scsp.read16(0xEC0 + u32::from(other) * 2), Ok(0));
+                }
+            }
+        }
+    }
+}
 #[test]
 fn dsp_reads_and_register_results_use_each_instruction_deadline_not_a_sample_snapshot() {
     for chunk in [1, 3, 17, 10000] {

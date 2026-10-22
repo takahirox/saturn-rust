@@ -71,7 +71,7 @@ fn temp_pointer_moves_once_per_sample_and_reads_precede_parallel_writes() {
 }
 
 #[test]
-fn shifter_clips_or_wraps_and_effect_writes_accumulate_with_sixteen_bit_width() {
+fn shifter_clips_or_wraps_and_effect_stores_replace_the_previous_sixteen_bits() {
     for (shift, expected) in [(0, 24576), (1, 32767), (2, -16384), (3, 24576)] {
         let mut dsp = Dsp::default();
         let mut ram = vec![0; SOUND_RAM_SIZE];
@@ -91,7 +91,7 @@ fn shifter_clips_or_wraps_and_effect_writes_accumulate_with_sixteen_bit_width() 
     dsp.program[2] = [0, 0, 0x1000, 0];
     dsp.sample(&mut ram, RamConfig { four_mbit: true }, 0, [0; 2])
         .unwrap();
-    assert_eq!(dsp.effects[0], -16384); // 24576 + 24576 wraps.
+    assert_eq!(dsp.effects[0], 24576); // ST-228 p.31: last store wins.
 }
 
 #[test]

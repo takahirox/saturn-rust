@@ -20,7 +20,7 @@ import { refreshArbitration } from "./refresh.mjs";
 import { hlePlayer } from "./hle-player.mjs";
 import { scspMonitor } from "./scsp-monitor.mjs";
 import { m68kReset } from "./m68k-reset.mjs";
-import { scspClock } from "./scsp-clock.mjs";
+import { scspClock, scspEffects } from "./scsp-clock.mjs";
 import { scspPcm } from "./scsp-pcm.mjs";
 import { scspDma } from "./scsp-dma.mjs";
 import { cdCopy } from "./cd-copy.mjs";
@@ -2148,6 +2148,7 @@ try {
   await scspMonitor(page);
   await m68kReset(page);
   await scspClock(page);
+  await scspEffects(page);
   await scspDma(page);
   await scspPcm(page);
   // Source-authored MC68000 family/EA/exception vectors, executed from sound

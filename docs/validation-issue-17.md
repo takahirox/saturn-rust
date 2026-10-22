@@ -4111,3 +4111,54 @@ This fixes the separately retained PCM-read and ownership finding. The other
 reviewed SH-2/SH7604, 68k, board/reset, SCU/DSP, clocked video, remaining SCSP
 synthesis/DSP, CD/media/HLE, SMPC and comprehensive conformance acceptance findings
 remain unresolved. This evidence does not establish completion of Issue #17.
+
+## SCSP effect-register stores (2026-10-22)
+
+Continues the full Issue #17 target on existing Draft PR #18. Upstream main
+was rechecked as `dbd981b030a46daa6923072ce240680dd2e58ebf`; the remote PR
+head before publication was `23f01bd91d88457778f7fb3b8d37664f4a4ee37d`.
+The inherited separate PCM-read implementation and its evidence are preserved.
+
+The effects DSP incorrectly added each EWT value to the selected EFREG.
+ST-228 p.31 specifies last-store behavior; `Dsp::step` now replaces the old
+value at the instruction deadline. Independent vectors cover all sixteen
+ports, positive/negative/zero stores, an intervening CPU write and four
+advancement sizes. The original MIT SH-2/68k/DSP guest uploads and executes
+repeated stores, records the device results and computes separate stereo
+channels. Three operand pairs, omitted-final-store controls, cold resets,
+exact fresh buffers and real AudioWorklet peak/render/underflow/drop checks
+run in native and production Wasm. Source, license, primary references and
+the reproducible ROM hash are linked in the
+[conformance entry](hardware-conformance.md#scsp-effect-register-store-semantics).
+
+Validation actually performed:
+
+- Complete `cargo test --locked`: **748 passed** (467 unit + 281 integration),
+  zero failed/ignored; doc tests passed. Debug assertions/overflow checks remain
+  enabled in the optimized test profile.
+- `cargo fmt --check`, `cargo build --locked`, native all-target Clippy and
+  Wasm Clippy with `-D warnings`: passed using Rust/Cargo 1.99.0.
+- `sh scripts/build-web.sh` and all **72** CI fixture/media reproduction
+  commands passed. The existing clock builder now verifies the new ROM too.
+  All three demonstration media and licenses, manifests and lockfiles are
+  unchanged from the inherited worktree.
+- Complete production `npm run test:browser` passed on Chromium 145.0.7632.6 /
+  Node 24.12.0 under `/saturn-rust/`, with no required tests skipped. Existing
+  hardware fixtures, three demonstrations, Canvas/audio/input/reset/backup,
+  offline and local-file privacy checks passed along with the new guest.
+- An isolated copy of inherited `d41219d0acc99210c42b7b17e30ec63edc90a8df`
+  rejects the new guest with `1000/1000` instead of authored `F000/2000`.
+  Production sources were never changed for this negative control.
+- JavaScript syntax, changed documentation relative-file links and Git
+  whitespace checks passed. An initial fixture attempt sampled a result after
+  the next frame cleared it; moving the guest DSP computation earlier gave
+  the 68k a bounded read window while preserving every result/audio assertion.
+  That initial failure is not counted as a passing run.
+
+**The full-resolution Run objective remains unmet.** EWT storage is corrected;
+the other mandatory CPU/SH7604, MC68EC000, board/cache/reset/arbitration,
+SCU/DSP, clocked video, remaining SCSP synthesis/DSP/converter, CD/media/HLE,
+SMPC and comprehensive conformance/guest acceptance work remains required.
+No umbrella checkbox is newly claimed complete. Keep PR #18 Draft and retain
+the full target and intended `Closes #17`; no merge, Issue closure/replacement,
+historical reopening or human/firmware/live-site/external-workflow gate.

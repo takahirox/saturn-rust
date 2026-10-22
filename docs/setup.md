@@ -413,3 +413,11 @@ FRT bounds, mutations, repeated boots, omitted-KEYON silence and production
 AudioWorklet output. Reproduce both with the PCM builder listed above; source,
 license and primary-specification evidence are linked in the
 [PCM conformance entry](hardware-conformance.md#separately-retained-pcm-operands-and-sound-memory-ownership).
+
+The SCSP clock builder also reproduces the original repeated-effect-store guest.
+Its 68k-uploaded DSP program overwrites positive, negative and zero effect
+register values and computes separate left/right samples. Native and browser
+checks include three operand pairs, an omitted-store control, cold resets and
+production AudioWorklet delivery. The [effect-store conformance entry](hardware-conformance.md#scsp-effect-register-store-semantics)
+links the primary rule, source, license, hash and deadline vectors for all sixteen
+registers.
