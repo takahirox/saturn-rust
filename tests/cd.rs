@@ -109,9 +109,11 @@ fn selectors_fad_range_connections_copy_move_and_size() {
     assert_eq!(issue(&mut cd, [0x5100, 0, 0x0400, 0])[3], 2);
     let last = issue(&mut cd, [0x3200, 0, 0, 0])[2];
     issue(&mut cd, [0x6505, 0, 0x0300, 1]);
+    cd.advance(2352);
     assert_eq!(issue(&mut cd, [0x3200, 0, 0, 0])[2], last);
     assert_eq!(issue(&mut cd, [0x5100, 0, 0x0500, 0])[3], 1);
     issue(&mut cd, [0x6606, 0, 0x0500, 1]);
+    cd.advance(2352);
     assert_eq!(issue(&mut cd, [0x5100, 0, 0x0500, 0])[3], 0);
     assert_eq!(issue(&mut cd, [0x5100, 0, 0x0600, 0])[3], 1);
     issue(&mut cd, [0x5200, 0, 0x0400, 0xFFFF]);
@@ -119,6 +121,331 @@ fn selectors_fad_range_connections_copy_move_and_size() {
     assert_eq!(issue(&mut cd, [0x5400, 0, 0x0300, 0])[1], 151);
     issue(&mut cd, [0x5500, 0, 0x0400, 151]);
     assert_eq!(issue(&mut cd, [0x5600, 0, 0, 0])[1], 1);
+}
+
+fn empty_sectors(cd: &mut CdBlock, filter: u16, count: u16) {
+    assert_ne!(issue(cd, [0x6400, 0, filter << 8, count])[0], 0xFF00);
+    issue(cd, [0x0600, 0, 0, 0]);
+}
+
+#[test]
+fn selector_copy_move_deadlines_flags_and_raw_data_cover_every_source_and_target() {
+    // ST-162 §§3.2/8.2.7: ECPY ends a separate asynchronous engine;
+    // COPY_BUSY=FF, COPY_OK=0. 2352 clocks/sector is the documented model
+    // policy, not a measured physical CD-block bandwidth.
+    for source in 0..24u16 {
+        for target in 0..24u16 {
+            for moving in [false, true] {
+                let mut cd = CdBlock::default();
+                issue(&mut cd, [0x6400, 0, source << 8, 2]);
+                for sector in 0..2 {
+                    for word in 0..1024 {
+                        cd.write16(DATA, (0x1234 + sector * 0x1000) ^ word).unwrap();
+                    }
+                }
+                issue(&mut cd, [0x0600, 0, 0, 0]);
+                cd.write16(CD + 8, !0x100).unwrap();
+                cd.write16(CD + 12, 0x100).unwrap();
+                assert_ne!(
+                    issue(
+                        &mut cd,
+                        [
+                            if moving { 0x6600 } else { 0x6500 } | target,
+                            0,
+                            source << 8,
+                            2
+                        ]
+                    )[0],
+                    0xFF00
+                );
+                assert!(cd.active());
+                assert!(!cd.interrupt());
+                assert_eq!(cd.clocks_to_event(), 2352);
+                assert_eq!(issue(&mut cd, [0x6700, 0, 0, 0])[0] & 255, 255);
+                cd.advance(1276);
+                assert!(!cd.interrupt()); // one clock before the first sector
+                cd.advance(1);
+                assert!(!cd.interrupt()); // intermediate sector is not ECPY
+                cd.advance(2351);
+                assert!(!cd.interrupt());
+                cd.advance(1);
+                assert!(cd.interrupt());
+                assert!(!cd.active());
+                assert_eq!(issue(&mut cd, [0x6700, 0, 0, 0])[0] & 255, 0);
+                let expected_source = if moving && source != target {
+                    0
+                } else if source == target && !moving {
+                    4
+                } else {
+                    2
+                };
+                assert_eq!(
+                    issue(&mut cd, [0x5100, 0, source << 8, 0])[3],
+                    expected_source
+                );
+                let count = if source == target && !moving { 4 } else { 2 };
+                assert_eq!(issue(&mut cd, [0x5100, 0, target << 8, 0])[3], count);
+                // Copy is always raw2352 regardless of the host GET length.
+                issue(&mut cd, [0x6003, 0x0300, 0, 0]);
+                issue(
+                    &mut cd,
+                    [0x6100, if count == 4 { 2 } else { 0 }, target << 8, 2],
+                );
+                let actual = read(&cd, 2352 * 2);
+                let mut expected = vec![0; 2352 * 2];
+                for sector in 0..2 {
+                    for word in 0..1024 {
+                        let value = (0x1234u16 + sector as u16 * 0x1000) ^ word as u16;
+                        let at = sector * 2352 + 24 + word * 2;
+                        expected[at..at + 2].copy_from_slice(&value.to_be_bytes());
+                    }
+                }
+                assert_eq!(
+                    actual, expected,
+                    "source{source} target{target} moving{moving}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn copy_capacity_wait_and_mid_operation_failure_preserve_completed_and_unmoved_sectors() {
+    // ST-162 §8.2.7 functions7.6–7.8: insufficient space at issue is
+    // WAIT; another device consuming space after acceptance is COPY_NG.
+    let mut cd = CdBlock::default();
+    empty_sectors(&mut cd, 0, 200);
+    cd.write16(CD + 8, !0x100).unwrap();
+    assert_ne!(issue(&mut cd, [0x6501, 0, 0, 1])[0] & 0x8000, 0);
+    assert_eq!(cd.read16(CD + 8).unwrap() & 0x100, 0);
+    assert_eq!(issue(&mut cd, [0x6700, 0, 0, 0])[0] & 255, 0);
+    // Move requires no free sector and must work at 200/200 capacity.
+    issue(&mut cd, [0x6601, 0xFFFF, 0, 0xFFFF]);
+    cd.advance(2352);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 199);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0x0100, 0])[3], 1);
+    assert_eq!(issue(&mut cd, [0x5000, 0, 0, 0])[1], 0);
+
+    let mut cd = CdBlock::default();
+    empty_sectors(&mut cd, 0, 3);
+    empty_sectors(&mut cd, 2, 193);
+    cd.write16(CD + 8, !0x100).unwrap();
+    issue(&mut cd, [0x6501, 0, 0, 3]);
+    cd.advance(2352); // one published copy; total197
+    // EHST and ECPY are independent. A host PUT reserves all remaining
+    // capacity; the next copy fails and must retain its completed prefix.
+    assert_ne!(issue(&mut cd, [0x6400, 0, 0x0300, 3])[0], 0xFF00);
+    cd.advance(1276);
+    assert_eq!(cd.read16(CD + 8).unwrap() & 0x100, 0);
+    cd.advance(1);
+    assert_eq!(cd.read16(CD + 8).unwrap() & 0x100, 0x100);
+    // Queries remain possible while the host transfer is open.
+    assert_eq!(issue(&mut cd, [0x6700, 0, 0, 0])[0] & 255, 1);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0x0100, 0])[3], 1);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 3);
+    assert_eq!(issue(&mut cd, [0x5000, 0, 0, 0])[1], 0);
+    assert_ne!(issue(&mut cd, [0x6501, 0, 0, 1])[0] & 0x8000, 0);
+    assert_eq!(issue(&mut cd, [0x6700, 0, 0, 0])[0] & 255, 1); // WAIT retains error
+    issue(&mut cd, [0x0600, 0, 0, 0]);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0x0300, 0])[3], 3);
+    assert_eq!(issue(&mut cd, [0x5000, 0, 0, 0])[1], 0);
+}
+
+#[test]
+fn drive_sector_wins_the_last_free_slot_at_a_simultaneous_copy_deadline() {
+    // Reference-clock ordering policy: drive -> selector -> host command.
+    // 26,874,100/150 gives the first drive boundary at clock179161.
+    // Every setup command consumes1075 clocks; all media here are data tracks.
+    for chunk in [1, 7, 127, 100_000] {
+        let (mut cd, bytes) = mounted();
+        empty_sectors(&mut cd, 0, 2);
+        empty_sectors(&mut cd, 2, 197);
+        issue(&mut cd, [0x3000, 0, 0x0200, 0]);
+        issue(&mut cd, [0x1080, 150, 0x0080, 1]);
+        let mut left = 179_161 - 6 * 1075 - 2352 - 1075;
+        while left != 0 {
+            let n = left.min(chunk);
+            cd.advance(n);
+            left -= n;
+        }
+        cd.write16(CD + 8, !0x100).unwrap();
+        issue(&mut cd, [0x6501, 0, 0, 1]);
+        cd.advance(2351);
+        assert_eq!(cd.read16(CD + 8).unwrap() & 0x104, 0);
+        cd.advance(1);
+        assert_eq!(cd.read16(CD + 8).unwrap() & 0x104, 0x104); // CSCT and ECPY
+        assert_eq!(issue(&mut cd, [0x6700, 0, 0, 0])[0] & 255, 1);
+        assert_eq!(issue(&mut cd, [0x5100, 0, 0x0100, 0])[3], 0);
+        assert_eq!(issue(&mut cd, [0x5100, 0, 0x0200, 0])[3], 198);
+        assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 2);
+        assert_eq!(issue(&mut cd, [0x5000, 0, 0, 0])[1], 0);
+        issue(&mut cd, [0x6100, 197, 0x0200, 1]);
+        assert_eq!(read(&cd, 2048), bytes[..2048]);
+    }
+}
+
+#[test]
+fn selector_detachment_is_a_partial_copy_move_error_and_a_new_job_clears_it() {
+    for moving in [false, true] {
+        let mut cd = CdBlock::default();
+        empty_sectors(&mut cd, 0, 4);
+        cd.write16(CD + 8, !0x100).unwrap();
+        issue(&mut cd, [if moving { 0x6601 } else { 0x6501 }, 0, 0, 4]);
+        cd.advance(2352);
+        // Reconfigure the target through the independent ESEL engine.
+        issue(&mut cd, [0x4601, 0xFF00, 0x0100, 0]);
+        cd.advance(1277);
+        assert_eq!(cd.read16(CD + 8).unwrap() & 0x100, 0x100);
+        assert_eq!(issue(&mut cd, [0x6700, 0, 0, 0])[0] & 255, 1);
+        assert_eq!(issue(&mut cd, [0x5100, 0, 0x0100, 0])[3], 1);
+        assert_eq!(
+            issue(&mut cd, [0x5100, 0, 0, 0])[3],
+            if moving { 3 } else { 4 }
+        );
+        issue(&mut cd, [0x4601, 0x0100, 0x0100, 0]);
+        cd.write16(CD + 8, !0x100).unwrap();
+        issue(&mut cd, [0x6501, 0xFFFF, 0, 0xFFFF]);
+        assert_eq!(issue(&mut cd, [0x6700, 0, 0, 0])[0] & 255, 255);
+        cd.advance(1277);
+        assert_eq!(issue(&mut cd, [0x6700, 0, 0, 0])[0] & 255, 0);
+        assert_eq!(issue(&mut cd, [0x5100, 0, 0x0100, 0])[3], 2);
+    }
+}
+
+#[test]
+fn transfer_classes_run_independently_and_put_retains_its_accepted_sector_length() {
+    for size in 0..4 {
+        let mut cd = CdBlock::default();
+        issue(&mut cd, [0x60FF, size << 8, 0, 0]);
+        issue(&mut cd, [0x6400, 0, 0x0200, 1]);
+        cd.write16(DATA, 0x5AA5).unwrap();
+        // ESEL may change the length for the NEXT transfer, never this PUT.
+        issue(&mut cd, [0x60FF, ((size + 1) % 4) << 8, 0, 0]);
+        assert_eq!(issue(&mut cd, [0x5000, 0, 0, 0])[1], 199);
+        assert_ne!(issue(&mut cd, [0x6400, 0, 0x0300, 1])[0] & 0x8000, 0);
+        assert_ne!(issue(&mut cd, [0x6200, 0, 0x0200, 1])[0] & 0x8000, 0);
+        assert_eq!(issue(&mut cd, [0x0600, 0, 0, 0])[1], 1);
+        assert_eq!(issue(&mut cd, [0x5100, 0, 0x0200, 0])[3], 1);
+        issue(&mut cd, [0x6000 | size, 0xFF00, 0, 0]);
+        issue(&mut cd, [0x6100, 0, 0x0200, 1]);
+        let length = [2048, 2336, 2340, 2352][size as usize];
+        let bytes = read(&cd, length);
+        assert_eq!(&bytes[..2], &[0x5A, 0xA5]);
+        assert!(bytes[2..].iter().all(|b| *b == 0));
+        issue(&mut cd, [0x0600, 0, 0, 0]);
+    }
+}
+
+#[test]
+fn get_delete_retains_sector_identity_when_an_independent_move_shifts_the_source() {
+    let mut cd = CdBlock::default();
+    issue(&mut cd, [0x6400, 0, 0, 3]);
+    for sector in 1..=3 {
+        for _ in 0..1024 {
+            cd.write16(DATA, sector).unwrap();
+        }
+    }
+    issue(&mut cd, [0x0600, 0, 0, 0]);
+    issue(&mut cd, [0x6300, 1, 0, 1]); // retain sector2 for GET/DELETE
+    assert_eq!(read(&cd, 2), [0, 2]);
+    issue(&mut cd, [0x6601, 0, 0, 1]); // move sector1; sector2 moves to index0
+    cd.advance(2352);
+    assert_eq!(read(&cd, 2), [0, 2]); // unrelated command did not replace FIFO
+    issue(&mut cd, [0x0600, 0, 0, 0]); // delete sector2, never its new neighbour
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 1);
+    issue(&mut cd, [0x6100, 0, 0, 1]);
+    assert_eq!(read(&cd, 2048), [0, 3].repeat(1024));
+    issue(&mut cd, [0x0600, 0, 0, 0]);
+    issue(&mut cd, [0x6100, 0, 0x0100, 1]);
+    assert_eq!(read(&cd, 2048), [0, 1].repeat(1024));
+}
+
+#[test]
+fn pending_selector_job_never_replaces_an_accepted_job_and_missing_sources_fail_boundedly() {
+    for command in [0x6502, 0x6602] {
+        let mut cd = CdBlock::default();
+        empty_sectors(&mut cd, 0, 10);
+        cd.write16(CD + 8, !0x100).unwrap();
+        issue(&mut cd, [0x6501, 0, 0, 10]);
+        assert_ne!(issue(&mut cd, [command, 0, 0, 1])[0] & 0x8000, 0);
+        assert_eq!(issue(&mut cd, [0x6700, 0, 0, 0])[0] & 255, 255);
+        cd.advance(10 * 2352);
+        assert_eq!(issue(&mut cd, [0x5100, 0, 0x0100, 0])[3], 10);
+        assert_eq!(issue(&mut cd, [0x5100, 0, 0x0200, 0])[3], 0);
+        issue(&mut cd, [0x6501, 0, 0, 10]);
+        issue(&mut cd, [0x4800, 0, 0, 0]); // ESEL removes source, not unrelated RAM
+        cd.advance(2352);
+        assert_eq!(issue(&mut cd, [0x6700, 0, 0, 0])[0] & 255, 1);
+        cd.advance(1_000_000);
+        assert_eq!(issue(&mut cd, [0x5100, 0, 0x0100, 0])[3], 10);
+    }
+}
+
+#[test]
+fn copy_jobs_cancel_at_reset_boundaries_and_advance_is_chunk_invariant() {
+    for chunk in [1, 3, 17, 1075, 2352, 100_000] {
+        for elapsed in [0, 1, 2351, 2352, 2353, 7055, 7056] {
+            let mut cd = CdBlock::default();
+            empty_sectors(&mut cd, 0, 3);
+            cd.write16(CD + 8, !0x100).unwrap();
+            issue(&mut cd, [0x6501, 0, 0, 3]);
+            let mut left = elapsed;
+            while left != 0 {
+                let n = left.min(chunk);
+                cd.advance(n);
+                left -= n;
+            }
+            assert_eq!(
+                cd.read16(CD + 8).unwrap() & 0x100,
+                if elapsed == 7056 { 0x100 } else { 0 }
+            );
+            // Reset interrupts even unfinished work and leaves no stale event
+            // able to append a sector into newly initialized partitions.
+            issue(&mut cd, [0x0401, 0, 0, 0]);
+            cd.write16(CD + 8, !0x100).unwrap();
+            cd.advance(100_000);
+            assert_eq!(cd.read16(CD + 8).unwrap() & 0x100, 0);
+            assert_eq!(issue(&mut cd, [0x6700, 0, 0, 0])[0] & 255, 0);
+            assert_eq!(issue(&mut cd, [0x5100, 0, 0x0100, 0])[3], 0);
+        }
+    }
+}
+
+#[test]
+fn power_and_media_replacement_cancel_an_in_flight_selector_job_without_late_irq() {
+    for media_replacement in [false, true] {
+        for elapsed in [0, 1, 2351, 2352, 2353, 7055] {
+            let (mut cd, _) = mounted();
+            empty_sectors(&mut cd, 0, 3);
+            cd.write16(CD + 8, !0x100).unwrap();
+            issue(&mut cd, [0x6501, 0, 0, 3]);
+            cd.advance(elapsed);
+            if media_replacement {
+                cd.mount(Media::iso(&vec![0x5A; 2048]).unwrap());
+            } else {
+                cd.set_enabled(false);
+                cd.advance(10_000);
+                cd.set_enabled(true);
+            }
+            cd.write16(CD + 8, !0x100).unwrap();
+            assert!(!cd.active());
+            cd.advance(100_000);
+            assert_eq!(cd.read16(CD + 8).unwrap() & 0x100, 0);
+            assert_eq!(issue(&mut cd, [0x6700, 0, 0, 0])[0] & 255, 0);
+            assert_eq!(
+                issue(&mut cd, [0x5100, 0, 0x0100, 0])[3],
+                if media_replacement {
+                    (elapsed / 2352) as u16
+                } else {
+                    0
+                }
+            );
+            assert_eq!(
+                issue(&mut cd, [0x5100, 0, 0, 0])[3],
+                if media_replacement { 3 } else { 0 }
+            );
+        }
+    }
 }
 
 #[test]

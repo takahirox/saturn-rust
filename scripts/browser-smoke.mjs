@@ -20,6 +20,7 @@ import { refreshArbitration } from "./refresh.mjs";
 import { hlePlayer } from "./hle-player.mjs";
 import { scspMonitor } from "./scsp-monitor.mjs";
 import { m68kReset } from "./m68k-reset.mjs";
+import { cdCopy } from "./cd-copy.mjs";
 
 // Fail before upload if web/ includes anything beyond the public runtime assets.
 const assets = ["audio.js", "audio-worklet.js", "app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt", "prism-courier.iso", "prism-courier-LICENSE.txt", "hardware-lab.iso", "hardware-lab-audio.bin", "hardware-lab.cue", "hardware-lab-LICENSE.txt"];
@@ -1439,6 +1440,7 @@ try {
     for(const trace of result)assert.deepEqual(trace,{done:0x600D,words:1168,count:0,sum,data});
   }
   // Original CD guest issues every command and polls real HIRQ/CR registers.
+  await cdCopy(page);
   // ISO bytes are original zero-filled sectors; no browser writes to mailboxes.
   const driveRom=Buffer.alloc(524288);
   for (const line of (await readFile("tests/fixtures/cd-drive.hex","utf8")).split(/\r?\n/)) {

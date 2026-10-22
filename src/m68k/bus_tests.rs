@@ -102,9 +102,7 @@ fn indexed_and_predecrement_calculations_precede_operand_cycles_across_instructi
             ] {
                 let op = family | if indexed { 0x30 } else { 0x20 } | reg;
                 let (mut c, mut m) = fixture(op);
-                for a in &mut c.state.a {
-                    *a = 0x2004;
-                }
+                c.state.a.fill(0x2004);
                 c.state.d[1] = 0; // word-sized index
                 m.ram.write16(0x102, 0x1000).unwrap();
                 m.ram.write32(0x2000, 0x00100002).unwrap();

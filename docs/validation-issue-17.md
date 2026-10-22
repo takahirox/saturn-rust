@@ -3715,3 +3715,85 @@ runtime CD/media/HLE CD-library services, SMPC boundaries and comprehensive
 mandatory conformance evidence remain required. These code corrections and
 passing demonstrations do not satisfy the umbrella acceptance checklist.
 No push, merge, Issue closure, replacement or reopening was performed.
+
+
+## Scheduled CD selector transfers and independent command classes — 2026-10-22
+
+Upstream `main` remains `dbd981b030a46daa6923072ce240680dd2e58ebf`,
+rechecked with `git ls-remote origin refs/heads/main` before implementation and
+publication. Existing PR #18 work, all three original licensed demonstrations,
+backup RAM and both controller ports are preserved.
+
+Implemented behavior:
+
+- CD copy/move runs as a scheduled sector engine rather than an atomic command
+  callback. Actual raw sector data, stable source identities, capacity,
+  destination filtering, BUSY/OK/error retention and completion IRQs execute
+  independently of the host FIFO. Moves work in a full pool; initial capacity
+  failures return WAIT, while later allocation/disconnection failures retain the
+  completed prefix and unprocessed source sectors.
+- ESEL, ECPY, drive and query commands run while a host transfer is active;
+  competing FIFO/EHST operations return WAIT. PUT retains its accepted sector
+  length when a concurrent command configures the next transfer. GET/DELETE
+  retains sector identities so an independent move cannot shift deletion onto
+  the wrong neighbouring sector.
+- Original MIT SH-2 CDSEL guest executes 32-sector copies/moves, real FIFO data,
+  simultaneous host I/O, full-buffer WAIT/move, target detachment, capacity
+  failure and reset cancellation. Native and production Wasm repeat cold boots
+  and mutate the actual source operand; both copied and moved results change.
+  Native vectors additionally cover 24×24×2 source/target/direction routes,
+  entire raw sectors, exact final/intermediate IRQ boundaries, four host lengths,
+  identity retention and cancellation across 42 software-reset/chunk cases and 12
+  power/media boundaries. An actual incoming drive sector wins the last slot
+  at a simultaneous copy deadline, verified at the preceding clock and deadline
+  under four advancement chunk sizes.
+
+[CDSEL](hardware-conformance.md#scheduled-cd-selector-transfers-and-independent-command-classes-cdsel)
+links primary manual sections, implementation, independent vectors, original
+source/generated fixture, license, reproduction command and expanded-ROM hash.
+The manual leaves physical copy bandwidth unspecified: this model explicitly
+uses 2352 reference clocks/sector with drive-before-selector-before-command
+ordering. It does not claim measured decoder clocks or complete board contention.
+
+Validation actually performed:
+
+- Final `cargo fmt --check`, `cargo build --locked`, native all-target Clippy
+  and Wasm Clippy with `-D warnings`: passed. An inherited slice-fill loop in a
+  68k bus test triggered the installed Clippy lint; replacing it with array
+  `fill` preserved the vector and resolved the lint.
+- Final complete `CARGO_PROFILE_TEST_OPT_LEVEL=1 cargo test --locked`:
+  **697 passed** (427 unit + 270 integration), zero failed/ignored/filtered;
+  doc tests passed. Debug assertions remain enabled. An earlier complete
+  695-test run passed before the final drive-race and power/media vectors.
+- All **68** CI guest/media reproduction commands passed; the new builder was
+  rechecked after final validation. No dependency, lockfile or demonstration
+  media/license bytes changed.
+- `sh scripts/build-web.sh`: passed using rustup stable Rust 1.99.0 and
+  wasm-bindgen 0.2.129. Native Cargo/Rust are Homebrew 1.94.0.
+- Complete `npm run test:browser`: passed on Chromium 145.0.7632.6,
+  Node 24.12.0, rebuilt production Wasm under `/saturn-rust/`, with no required
+  skips. It includes CDSEL, all inherited fixtures, Star Collector, Prism
+  Courier, Hardware Lab, Canvas/WebAudio, input/focus/reset, backup and privacy.
+  The subsequent changes added native vectors and documentation only; production
+  Rust, guest and browser sources match that passing build/run.
+- Six deliberate regressions were rejected: immediate copy completion, moves
+  requiring free space, changing an accepted PUT length, blocking independent
+  command classes, immediate copies in the guest and no-op copies in the guest.
+  Production sources were restored byte-for-byte, then final native and lint
+  checks ran on the restored sources.
+- Locked npm dependencies installed with `npm ci --ignore-scripts --no-audit
+  --no-fund`; JavaScript syntax, documentation file links and Git whitespace
+  checks passed.
+
+The initial targeted run rejected an older test's atomic-copy expectation;
+that test now waits for the scheduled copy deadline. This earlier failure is
+not counted as a passing run. No other failure or required skip is hidden.
+
+**The full Issue #17 objective remains incomplete.** Remaining SH-2/SH7604
+pipeline/peripheral and MC68EC000 bus/DIV contracts, complete board ownership/
+reset, SCU/DSP, video/audio, CD/media/HLE services, SMPC boundaries and complete
+mandatory conformance evidence remain required. This revision supplies working
+CD behavior and evidence; it does not satisfy or waive the umbrella acceptance
+checklist. PR #18 must remain Draft with Closes #17 retained as its intended
+final outcome. No merge, Issue closure, replacement or historical reopening is
+performed.

@@ -20,6 +20,10 @@ const EFLS: u16 = 512;
 const SCDQ: u16 = 1024;
 const POOL: usize = 200;
 const SELECTORS: usize = 24;
+// Functional selector engine bandwidth: one complete raw sector per 2352
+// reference clocks. ST-162 specifies asynchronous completion, not a physical
+// copy-clock count; retain this explicit deterministic timing policy.
+const COPY_CLOCKS: u32 = RAW_SECTOR as u32;
 
 #[derive(Clone)]
 struct Filter {
@@ -61,17 +65,26 @@ impl Filter {
 }
 #[derive(Clone)]
 struct Sector {
+    id: u64,
     fad: u32,
     raw: [u8; RAW_SECTOR],
 }
 struct Transfer {
     bytes: Vec<u8>,
     position: usize,
-    put: Option<(usize, usize)>,
-    delete: Option<(usize, usize, usize)>,
+    put: Option<(usize, usize, usize)>, // filter, count, retained sector length
+    delete: Option<(usize, Vec<u64>)>,
     // ST-162 §3.2 table3.2: EHST belongs to sector-buffer I/O, not
     // TOC, subcode or file-information transfers of a coincident byte count.
     host_io: bool,
+}
+
+struct SelectorTransfer {
+    source: usize,
+    sectors: std::collections::VecDeque<u64>,
+    destination: u8,
+    moving: bool,
+    clocks: u32,
 }
 
 pub struct CdBlock {
@@ -117,6 +130,8 @@ pub struct CdBlock {
     actual_size: u32,
     search: [u16; 3],
     copy_error: u16,
+    copying: Option<SelectorTransfer>,
+    next_sector_id: u64,
     directory: Option<File>,
     volume_end: u32,
     files: Vec<File>,
@@ -259,6 +274,8 @@ impl Default for CdBlock {
             actual_size: 0,
             search: [0; 3],
             copy_error: 0,
+            copying: None,
+            next_sector_id: 0,
             directory: None,
             volume_end: 0,
             files: Vec::new(),
@@ -268,6 +285,8 @@ impl Default for CdBlock {
 }
 impl CdBlock {
     pub fn mount(&mut self, media: Media) {
+        self.copying = None;
+        self.copy_error = 0;
         self.retry_attempts = 0;
         self.tray_open = false;
         self.files.clear();
@@ -317,7 +336,11 @@ impl CdBlock {
     }
     pub fn active(&self) -> bool {
         self.enabled
-            && (self.playing || self.scan.is_some() || self.pending.is_some() || self.seeking != 0)
+            && (self.playing
+                || self.scan.is_some()
+                || self.pending.is_some()
+                || self.seeking != 0
+                || self.copying.is_some())
     }
     pub fn clocks_to_event(&self) -> u32 {
         if !self.enabled {
@@ -335,6 +358,7 @@ impl CdBlock {
             .min(report)
             .min(standby)
             .min(self.pending.map_or(u32::MAX, |(_, n)| n))
+            .min(self.copying.as_ref().map_or(u32::MAX, |job| job.clocks))
             .min(if self.seeking == 0 {
                 u32::MAX
             } else {
@@ -499,6 +523,15 @@ impl CdBlock {
                     self.report(true);
                 }
             }
+            // Drive input wins a simultaneous free-sector race. A copy sees
+            // that allocation before its own deadline; newly accepted jobs
+            // never consume time preceding command completion.
+            if let Some(job) = &mut self.copying {
+                job.clocks -= delta;
+                if job.clocks == 0 {
+                    self.copy_sector();
+                }
+            }
             // A completed command takes effect at the end of this interval,
             // never retroactively on the drive clocks preceding its deadline.
             if let Some((cmd, left)) = self.pending {
@@ -572,7 +605,8 @@ impl CdBlock {
                     .as_ref()
                     .is_none_or(|r| r.file.sector(r.logical_sector) == Some(self.fad));
                 if selected {
-                    self.route(Sector { fad: self.fad, raw });
+                    let sector = self.new_sector(self.fad, raw);
+                    self.route(sector);
                     self.raise(CSCT);
                     if let Some(r) = &mut self.file_read {
                         r.logical_sector += 1;
@@ -617,7 +651,40 @@ impl CdBlock {
                 .borrow()
                 .as_ref()
                 .and_then(|t| t.put)
-                .map_or(0, |(_, n)| n)
+                .map_or(0, |(_, n, _)| n)
+    }
+    fn new_sector(&mut self, fad: u32, raw: [u8; RAW_SECTOR]) -> Sector {
+        let id = self.next_sector_id;
+        self.next_sector_id = self.next_sector_id.wrapping_add(1);
+        Sector { id, fad, raw }
+    }
+    fn copy_sector(&mut self) {
+        let mut job = self.copying.take().unwrap();
+        let id = job.sectors.pop_front().unwrap();
+        let source = self.partitions[job.source].iter().position(|s| s.id == id);
+        let target = source.map_or(255, |at| {
+            self.route_target(&self.partitions[job.source][at], job.destination)
+        });
+        if target == 255 || (!job.moving && self.used() >= POOL) {
+            self.copy_error = 1;
+            self.raise(ECPY);
+            return;
+        }
+        let at = source.unwrap();
+        let sector = if job.moving {
+            self.partitions[job.source].remove(at)
+        } else {
+            let sector = &self.partitions[job.source][at];
+            self.new_sector(sector.fad, sector.raw)
+        };
+        self.partitions[target as usize].push(sector);
+        if job.sectors.is_empty() {
+            self.copy_error = 0;
+            self.raise(ECPY);
+        } else {
+            job.clocks = COPY_CLOCKS;
+            self.copying = Some(job);
+        }
     }
     fn route(&mut self, sector: Sector) {
         let mut selector = self.connection;
@@ -626,7 +693,14 @@ impl CdBlock {
         }
         self.last = self.route_from(sector, selector);
     }
-    fn route_from(&mut self, sector: Sector, mut selector: u8) -> u8 {
+    fn route_from(&mut self, sector: Sector, selector: u8) -> u8 {
+        let target = self.route_target(&sector, selector);
+        if let Some(partition) = self.partitions.get_mut(target as usize) {
+            partition.push(sector);
+        }
+        target
+    }
+    fn route_target(&self, sector: &Sector, mut selector: u8) -> u8 {
         for _ in 0..SELECTORS {
             let Some(f) = self.filters.get(selector as usize) else {
                 return 255;
@@ -638,12 +712,7 @@ impl CdBlock {
             };
             let matched = f.accepts(sector.fad, sub);
             if matched {
-                let target = f.yes;
-                if let Some(p) = self.partitions.get_mut(target as usize) {
-                    p.push(sector);
-                    return target;
-                }
-                return 255;
+                return f.yes;
             }
             selector = f.no;
         }
@@ -733,7 +802,7 @@ impl CdBlock {
     fn begin_get(
         &mut self,
         bytes: Vec<u8>,
-        delete: Option<(usize, usize, usize)>,
+        delete: Option<(usize, Vec<u64>)>,
         host_io: bool,
     ) -> bool {
         if self.transfer.borrow().is_some() {
@@ -779,9 +848,17 @@ impl CdBlock {
         self.report(false);
         let command = (c[0] >> 8) as u8;
         let software_reset = command == 4 && c[0] & 0x81 == 1;
-        if self.transfer.borrow().is_some()
-            && !matches!(command, 0x00 | 0x01 | 0x06)
-            && !software_reset
+        // ST-162 §3.2 table3.6: ESEL/EHST/ECPY/EFLS are independent
+        // engines. DATATRNS is shared by the commands that actually use it;
+        // an active host transfer must not block drive/selector/query commands.
+        let transfer = self.transfer.borrow();
+        let transfer_busy = transfer.as_ref().is_some_and(|t| {
+            matches!(command, 0x02 | 0x20 | 0x61 | 0x63 | 0x64 | 0x73)
+                || (t.host_io && command == 0x62)
+        });
+        drop(transfer);
+        if !software_reset
+            && (transfer_busy || (self.copying.is_some() && matches!(command, 0x65 | 0x66)))
         {
             return self.wait();
         }
@@ -874,6 +951,7 @@ impl CdBlock {
                     self.actual_size = 0;
                     self.search = [0; 3];
                     self.copy_error = 0;
+                    self.copying = None;
                     self.last = 255;
                     self.play_start = self.fad;
                     self.end = self.media.as_ref().map_or(self.fad, |m| m.leadout);
@@ -918,10 +996,12 @@ impl CdBlock {
                     return true;
                 };
                 let words = t.position / 2;
-                if let Some((partition, start, count)) = t.delete {
-                    self.partitions[partition].drain(start..start + count);
+                if let Some((partition, ids)) = t.delete {
+                    // Another engine may move/remove earlier sectors while
+                    // DATATRNS is active. Never delete a shifted neighbour.
+                    self.partitions[partition].retain(|s| !ids.contains(&s.id));
                 }
-                if let Some((selector, count)) = t.put {
+                if let Some((selector, count, length)) = t.put {
                     // ST-162 §8.2.7 function7.5: all reserved sectors are
                     // written even when the host ends early. Untransferred
                     // bytes are unspecified; this model deterministically
@@ -929,17 +1009,17 @@ impl CdBlock {
                     for n in 0..count {
                         let mut raw = [0; RAW_SECTOR];
                         raw[15] = 0;
-                        let offset = if self.put_length == 2048 {
+                        let offset = if length == 2048 {
                             24
                         } else {
-                            RAW_SECTOR - self.put_length
+                            RAW_SECTOR - length
                         };
-                        raw[offset..offset + self.put_length].copy_from_slice(
-                            &t.bytes[n * self.put_length..(n + 1) * self.put_length],
-                        );
+                        raw[offset..offset + length]
+                            .copy_from_slice(&t.bytes[n * length..(n + 1) * length]);
                         // Host writes enter the selected filter, just like
                         // CD/copy input; they do not bypass its connectors.
-                        self.route_from(Sector { fad: 0, raw }, selector as u8);
+                        let sector = self.new_sector(0, raw);
+                        self.route_from(sector, selector as u8);
                     }
                 }
                 self.hirq.set(self.hirq.get() & !DRDY);
@@ -1219,7 +1299,13 @@ impl CdBlock {
                         return self.begin_get(
                             bytes,
                             if command == 0x63 {
-                                Some((selector, start, count))
+                                Some((
+                                    selector,
+                                    self.partitions[selector][start..start + count]
+                                        .iter()
+                                        .map(|s| s.id)
+                                        .collect(),
+                                ))
                             } else {
                                 None
                             },
@@ -1232,21 +1318,23 @@ impl CdBlock {
                     }
                     0x65 | 0x66 => {
                         let destination = (c[0] & 255) as usize;
-                        if destination >= SELECTORS
-                            || (command == 0x65 && self.used() + count > POOL)
-                        {
-                            self.copy_error = 1;
+                        if destination >= SELECTORS {
                             return false;
                         }
-                        let sectors = self.partitions[selector][start..start + count].to_vec();
-                        if command == 0x66 {
-                            self.partitions[selector].drain(start..start + count);
+                        if command == 0x65 && self.used() + count > POOL {
+                            return self.wait();
                         }
-                        for sector in sectors {
-                            self.route_from(sector, destination as u8);
-                        }
-                        self.copy_error = 0;
-                        self.raise(ECPY);
+                        self.copying = Some(SelectorTransfer {
+                            source: selector,
+                            sectors: self.partitions[selector][start..start + count]
+                                .iter()
+                                .map(|s| s.id)
+                                .collect(),
+                            destination: destination as u8,
+                            moving: command == 0x66,
+                            clocks: COPY_CLOCKS,
+                        });
+                        self.copy_error = 255;
                     }
                     _ => unreachable!(),
                 }
@@ -1313,18 +1401,16 @@ impl CdBlock {
             }
             0x64 => {
                 let n = usize::from(c[3]);
-                if selector >= SELECTORS
-                    || n == 0
-                    || n > POOL - self.used()
-                    || self.transfer.borrow().is_some()
-                {
-                    self.raise(EHST);
+                if selector >= SELECTORS || n == 0 || n > POOL {
                     return false;
+                }
+                if n > POOL - self.used() {
+                    return self.wait();
                 }
                 *self.transfer.get_mut() = Some(Transfer {
                     bytes: vec![0; n * self.put_length],
                     position: 0,
-                    put: Some((selector, n)),
+                    put: Some((selector, n, self.put_length)),
                     delete: None,
                     host_io: true,
                 });
