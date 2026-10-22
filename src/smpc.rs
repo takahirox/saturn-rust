@@ -373,6 +373,10 @@ impl Smpc {
                         0x34 | u8::from(self.clock_352) << 6 | u8::from(!self.sound_enabled);
                     self.output[11] = u8::from(!self.cd_enabled) << 6;
                     self.output[12..16].copy_from_slice(&self.battery.memory);
+                    // ST-169 §2.4 OREG31: status results include the
+                    // INTBACK command code. Clearing the result packet must
+                    // not erase the command accepted at issue time (§2.3).
+                    self.output[31] = 0x10;
                     self.await_continue = self.input[1] & 8 != 0;
                     self.sf = self.await_continue;
                     self.status = 0x40 | u8::from(self.await_continue) << 5;

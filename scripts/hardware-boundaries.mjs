@@ -18,6 +18,16 @@ async function load(page,name,image) {
 }
 
 export async function hardwareBoundaries(page) {
+  const commandReport=await rom("smpc-command-report");
+  const commandExpected=(await readFile("tests/fixtures/smpc-command-report.tsv","utf8")).trim().split(/\r?\n/).map(v=>parseInt(v,16));
+  await load(page,"smpc-command-report",commandReport);
+  const runReport=()=>page.evaluate(async count=>{
+    const {emulator}=await import("./app.js");emulator.run_steps(10000);
+    return {trace:Array.from({length:count},(_,i)=>emulator.read_long(0x0600ED00+i*4)),exceptions:emulator.exception_count()};
+  },commandExpected.length);
+  const reportResult=await runReport();
+  assert.deepEqual(reportResult,{trace:commandExpected,exceptions:"0"});
+  await page.locator("#reset").click();assert.deepEqual(await runReport(),reportResult);
   const original = await rom("bsc-memory");
   const vectors = (await readFile("tests/fixtures/bsc-memory.tsv","utf8")).trim().split(/\r?\n/).filter(l=>!l.startsWith("#"));
   for (const line of vectors) {

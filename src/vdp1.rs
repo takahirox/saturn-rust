@@ -37,6 +37,7 @@ struct Drawing {
     command: [u16; 16],
     points: [Point; 4],
     shade: [[i32; 3]; 4],
+    shade_read: usize,
     row: i32,
     rows: i32,
     line: Option<RasterLine>,
@@ -52,6 +53,13 @@ struct RasterLine {
     textured: bool,
     dot: i32,
     end_codes: u8,
+}
+
+struct PendingPixel {
+    buffer: usize,
+    address: usize,
+    color: Option<u16>,
+    clocks: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -99,6 +107,7 @@ pub struct Vdp1 {
     erasing: Option<Erasing>,
     display_erase: Option<EraseArea>,
     drawing: Option<Drawing>,
+    pending_pixel: Option<PendingPixel>,
     local: Point,
     system: Point,
     user: [Point; 2],
@@ -131,6 +140,7 @@ impl Default for Vdp1 {
             erasing: None,
             display_erase: None,
             drawing: None,
+            pending_pixel: None,
             local: Point::default(),
             system: Point::default(),
             user: [Point::default(); 2],
@@ -235,6 +245,7 @@ impl Vdp1 {
         };
         self.pc = 0;
         self.drawing = None;
+        self.pending_pixel = None;
         self.copr = 0;
         self.return_address = None;
         self.running = true;
@@ -370,10 +381,13 @@ impl Vdp1 {
     }
     pub fn clocks_to_event(&self) -> u32 {
         let draw = if self.running {
-            let draw = if self.drawing.is_some() {
-                1
+            let draw = if let Some(pixel) = &self.pending_pixel {
+                pixel.clocks
             } else {
-                COMMAND_WORD_CLOCKS - self.phase
+                match &self.drawing {
+                    Some(draw) if draw.shade_read == 4 => 1,
+                    _ => COMMAND_WORD_CLOCKS - self.phase,
+                }
             };
             draw.min(self.stop_remaining.unwrap_or(u32::MAX))
         } else {
@@ -381,8 +395,9 @@ impl Vdp1 {
         };
         draw.min(self.erase_deadline())
     }
-    /// ST-013 §2: one raster pixel per main clock. Command table fetches
-    /// occupy a separate deadline. Cyclic command lists remain busy and bounded.
+    /// ST-013 §§2/6.3: replacement draws one pixel per main clock;
+    /// shadow/translucency take six. Table fetches use separate deadlines.
+    /// Cyclic command lists remain busy and bounded.
     /// The caller splits advancement at `clocks_to_event`, as the Bus scheduler does.
     pub fn advance(&mut self, clocks: u32) -> Result<bool, BusError> {
         self.advance_with_bus(clocks, false, false)
@@ -419,19 +434,61 @@ impl Vdp1 {
             if clocks == left {
                 self.running = false;
                 self.drawing = None;
+                self.pending_pixel = None;
                 self.stop_remaining = None;
                 return Ok(false);
             }
             self.stop_remaining = Some(left - clocks);
         }
+        let shade_pending = self
+            .drawing
+            .as_ref()
+            .is_some_and(|draw| draw.shade_read < 4);
         let needs_vram = self
             .drawing
             .as_ref()
-            .is_none_or(|draw| draw.command[0] & 15 <= 2);
-        if (vram_busy && needs_vram) || (framebuffer_busy && self.drawing.is_some()) {
+            .is_none_or(|draw| draw.shade_read < 4 || draw.command[0] & 15 <= 2)
+            && self.pending_pixel.is_none();
+        if (vram_busy && needs_vram)
+            || (framebuffer_busy && self.drawing.is_some() && !shade_pending)
+        {
+            return Ok(false);
+        }
+        if let Some(mut pixel) = self.pending_pixel.take() {
+            pixel.clocks -= clocks;
+            if pixel.clocks == 0 {
+                if let Some(color) = pixel.color {
+                    self.buffers[pixel.buffer][pixel.address..pixel.address + 2]
+                        .copy_from_slice(&color.to_be_bytes());
+                }
+                if self
+                    .drawing
+                    .as_ref()
+                    .is_some_and(|draw| draw.row > draw.rows)
+                {
+                    self.drawing = None;
+                }
+            } else {
+                self.pending_pixel = Some(pixel);
+            }
             return Ok(false);
         }
         if let Some(mut draw) = self.drawing.take() {
+            if draw.shade_read < 4 {
+                self.phase += clocks;
+                if self.phase == COMMAND_WORD_CLOCKS {
+                    self.phase = 0;
+                    // ST-013 §5.3 table5.2: A, B, C, D are independent
+                    // VRAM words. A CPU grant pauses this fetch, without
+                    // resampling earlier vertices or touching the framebuffer.
+                    let v = self.word(usize::from(draw.command[14]) * 8 + draw.shade_read * 2);
+                    draw.shade[draw.shade_read] =
+                        std::array::from_fn(|ch| i32::from(v >> (ch * 5) & 31) - 16);
+                    draw.shade_read += 1;
+                }
+                self.drawing = Some(draw);
+                return Ok(false);
+            }
             if clocks == 0 {
                 self.drawing = Some(draw);
                 return Ok(false);
@@ -445,7 +502,7 @@ impl Vdp1 {
                 draw.line = None;
                 draw.row += 1;
             }
-            if draw.row <= draw.rows {
+            if draw.row <= draw.rows || self.pending_pixel.is_some() {
                 self.drawing = Some(draw);
             }
             return Ok(false);
@@ -568,10 +625,6 @@ impl Vdp1 {
             point.x += self.local.x;
             point.y += self.local.y;
         }
-        let shade: [[i32; 3]; 4] = std::array::from_fn(|i| {
-            let v = self.word(usize::from(c[14]) * 8 + i * 2);
-            std::array::from_fn(|ch| i32::from(v >> (ch * 5) & 31) - 16)
-        });
         let rows = match kind {
             6 => 0,
             5 => 3,
@@ -580,7 +633,8 @@ impl Vdp1 {
         self.drawing = Some(Drawing {
             command: *c,
             points: p,
-            shade,
+            shade: [[0; 3]; 4],
+            shade_read: if mode & 4 != 0 { 0 } else { 4 },
             row: 0,
             rows,
             line: None,
@@ -747,6 +801,12 @@ impl Vdp1 {
             out = old | 0x8000;
         } else if mode & 7 == 1 {
             if old & 0x8000 == 0 {
+                self.pending_pixel = Some(PendingPixel {
+                    buffer: self.draw,
+                    address: at,
+                    color: None,
+                    clocks: 5,
+                });
                 return;
             }
             out = (old & 0x7BDE) >> 1 | 0x8000;
@@ -766,7 +826,20 @@ impl Vdp1 {
                 out |= (component as u16) << (ch * 5);
             }
         }
-        self.buffers[self.draw][at..at + 2].copy_from_slice(&out.to_be_bytes());
+        if mode & 1 != 0 && mode & 0x8000 == 0 {
+            // ST-013 §6.3: shadow and translucency take six times the
+            // replacement time. Retain the sampled background and the
+            // physical buffer through the five remaining clocks. Other
+            // masters may access memory between read and publication.
+            self.pending_pixel = Some(PendingPixel {
+                buffer: self.draw,
+                address: at,
+                color: Some(out),
+                clocks: 5,
+            });
+        } else {
+            self.buffers[self.draw][at..at + 2].copy_from_slice(&out.to_be_bytes());
+        }
     }
 }
 

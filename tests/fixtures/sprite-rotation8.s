@@ -246,7 +246,7 @@ start_field:
 mov.w @r1,r0
 tst #8,r0
 bf start_field
-load 128,r3
+load 64,r3
 line_64:
 load 0x25f80002,r1
 mov.w @r1,r0
@@ -257,7 +257,7 @@ bf line_64
 load 0x25e10000,r1
 load 0x0,r0
 mov.l r0,@r1
-load 254,r3
+load 127,r3
 line_127:
 load 0x25f80002,r1
 mov.w @r1,r0
@@ -268,7 +268,7 @@ bf line_127
 load 0x25f800b2,r1
 load 0x1,r0
 mov.w r0,@r1
-load 382,r3
+load 191,r3
 line_191:
 load 0x25f80002,r1
 mov.w @r1,r0

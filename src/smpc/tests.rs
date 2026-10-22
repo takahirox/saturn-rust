@@ -15,6 +15,55 @@ fn output(s: &Smpc, count: usize) -> Vec<u8> {
         .collect()
 }
 #[test]
+fn command_report_survives_status_publication_continue_break_and_rejected_writes() {
+    // ST-169 §§2.3/2.4: OREG31 publishes at processing start; SF
+    // distinguishes current from completed commands. INTBACK includes OREG31
+    // in both its status result and subsequent peripheral packet.
+    for chunk in [1, 3, 127, 8600] {
+        let mut s = Smpc::default();
+        for command in [6, 7, 8, 9, 0x18, 0x19, 0x1A] {
+            issue(&mut s, command);
+            assert_eq!(s.read(SMPC + 0x5F), Ok(command));
+            assert_eq!(s.read(SMPC + 0x63), Ok(1));
+            assert!(s.write(SMPC + 0x1F, 2).is_err());
+            assert_eq!(s.read(SMPC + 0x5F), Ok(command));
+            let mut left = s.clocks_to_event();
+            while left > 1 {
+                let n = chunk.min(left - 1);
+                assert_eq!(s.advance_clocks(n), None);
+                left -= n;
+            }
+            assert_eq!(s.read(SMPC + 0x63), Ok(1));
+            assert_eq!(s.advance_clocks(1), Some(command));
+            assert_eq!(s.read(SMPC + 0x5F), Ok(command));
+            assert_eq!(s.read(SMPC + 0x63), Ok(0));
+        }
+        for peripheral in [false, true] {
+            input(&mut s, &[1, if peripheral { 8 } else { 0 }, 0xF0]);
+            issue(&mut s, 0x10);
+            assert_eq!(s.read(SMPC + 0x5F), Ok(0x10));
+            s.advance_clocks(Smpc::STATUS_CLOCKS - 1);
+            assert!(!s.take_irq());
+            s.advance_clocks(1);
+            assert!(s.take_irq());
+            assert_eq!(s.read(SMPC + 0x5F), Ok(0x10));
+            assert_eq!(s.read(SMPC + 0x63), Ok(u8::from(peripheral)));
+            if peripheral {
+                s.write(SMPC + 1, 0x81).unwrap();
+                assert_eq!(s.read(SMPC + 0x5F), Ok(0x10));
+                s.write(SMPC + 1, 0x41).unwrap();
+                assert_eq!(s.read(SMPC + 0x63), Ok(0));
+                assert_eq!(s.read(SMPC + 0x5F), Ok(0x10));
+            }
+        }
+        s.system_reset();
+        assert_eq!(s.read(SMPC + 0x5F), Ok(0x0D));
+        s.reset_volatile();
+        assert_eq!(s.read(SMPC + 0x5F), Ok(0));
+    }
+}
+
+#[test]
 fn digital_selection_settles_after_two_microseconds_independently_on_both_ports() {
     // ST-169 §3.4, table3.36; no assumed success from immediate readback.
     for chunk in [1, 3, 8, 53] {

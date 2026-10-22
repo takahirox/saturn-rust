@@ -37,6 +37,30 @@ async function run(page, bytes, base, count, pixels = false) {
   }, { bytes: [...bytes], base, count, pixels });
 }
 export async function videoTransactions(page) {
+  const effects = await rom("vdp1-effects-timing");
+  let referenceEffectsTimes;
+  for (let repeat = 0; repeat < 2; repeat++) {
+    const times = [];
+    for (const [mode, pixel] of [[0,0x8010],[1,0xBC00],[2,0x8008],
+      [3,0xBC08],[4,0x8010],[6,0x8008],[7,0xBC08]]) {
+      const bytes = Buffer.from(effects);
+      bytes.writeUInt16BE(0xC0|mode,0x100);
+      const {records:r} = await run(page,bytes,0x0600E300,8);
+      assert.deepEqual(r.slice(1),[pixel,pixel,pixel,2,0x2000,68,0x600D]);
+      times.push(r[0]);
+    }
+    assert.equal(times[0],times[2]);assert.equal(times[4],times[5]);
+    for (const [a,b,min,max] of [[4,0,14,20],[1,0,78,84],[3,0,78,84],[6,4,78,84]]) {
+      assert(times[a]-times[b]>=min && times[a]-times[b]<=max,`${times}`);
+    }
+    if (referenceEffectsTimes) assert.deepEqual(times,referenceEffectsTimes);
+    else referenceEffectsTimes=times;
+  }
+  const changedEffects=Buffer.from(effects);
+  changedEffects.writeUInt16BE(0x83E0,0x102);
+  assert.deepEqual((await run(page,changedEffects,0x0600E300,8)).records.slice(1),
+    [0x83E0,0x83E0,0x83E0,2,0x2000,68,0x600D]);
+  console.log("VDP1 effects timing passed: guest FRT distinguishes Gouraud table fetches, replacement/half-luminance and six-clock shadow/translucency; pixels, status, draw IRQ, source mutation and cold resets in Wasm.");
   const commands = await rom("vdp1-command-fetch");
   for (const color of [0x801F, 0x83E0]) {
     for (let repeat = 0; repeat < 2; repeat++) {

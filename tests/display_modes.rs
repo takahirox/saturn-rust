@@ -51,7 +51,8 @@ fn original_guest_programs_tv_modes_samples_both_ports_and_observes_fields() {
                         m.cpu_state().pc
                     );
                     assert!(r[1] < 24); // measured first collection just after VBlank-out
-                    let optimized_line = r[15] / 2;
+                    let counter_scale = if interlace == 0xc0 { 2 } else { 1 };
+                    let optimized_line = r[15] / counter_scale;
                     assert!(
                         (lines as u32 - 18..lines as u32 - 12).contains(&optimized_line),
                         "{mode:X}: {optimized_line}"
@@ -65,7 +66,7 @@ fn original_guest_programs_tv_modes_samples_both_ports_and_observes_fields() {
                     }
                     for base in [28, 31] {
                         assert_eq!(r[base] & 9, 8 | u32::from(pal));
-                        assert_eq!(r[base + 2] / 2, lines as u32);
+                        assert_eq!(r[base + 2] / counter_scale, lines as u32);
                     }
                     assert_eq!(r[28] & 2 == r[31] & 2, interlace == 0);
                     assert_eq!(r[30] & 1 == r[33] & 1, interlace != 0xc0);

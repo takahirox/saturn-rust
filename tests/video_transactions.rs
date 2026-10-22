@@ -45,6 +45,57 @@ fn run(m: &mut Machine, rom: &[u8], base: u32, count: u32) -> Vec<u32> {
     records
 }
 #[test]
+fn guest_measures_gouraud_fetches_and_six_clock_shadow_and_translucent_pixels() {
+    // ST-013 §5.3 tables5.2/5.3 and §6.3 color calculations. Sixteen
+    // independent rows, 128 dots: six-clock RMW costs 640 additional clocks;
+    // four Gouraud word reads add 128 clocks. FRT divides elapsed clocks by8.
+    let original = load(include_str!("fixtures/vdp1-effects-timing.hex"));
+    let mut m = Machine::new();
+    let mut reference_times = Vec::new();
+    for repeat in 0..2 {
+        let mut times = Vec::new();
+        for (mode, pixel) in [
+            (0u16, 0x8010),
+            (1, 0xBC00),
+            (2, 0x8008),
+            (3, 0xBC08),
+            (4, 0x8010),
+            (6, 0x8008),
+            (7, 0xBC08),
+        ] {
+            let mut rom = original.clone();
+            rom[0x100..0x102].copy_from_slice(&(0xC0 | mode).to_be_bytes());
+            let r = run(&mut m, &rom, 0x0600E300, 8);
+            assert_eq!(&r[1..], &[pixel, pixel, pixel, 2, 0x2000, 68, 0x600D]);
+            times.push(r[0]);
+        }
+        assert_eq!(times[0], times[2]); // half-luminance reads no background
+        assert_eq!(times[4], times[5]);
+        for (a, b, minimum, maximum) in [
+            (4, 0, 14, 20),
+            (1, 0, 78, 84),
+            (3, 0, 78, 84),
+            (6, 4, 78, 84),
+        ] {
+            assert!(
+                (minimum..=maximum).contains(&(times[a] - times[b])),
+                "{times:?}"
+            );
+        }
+        if repeat == 0 {
+            reference_times = times;
+        } else {
+            assert_eq!(times, reference_times);
+        }
+    }
+    // Mutate the real guest non-texture color; no host framebuffer writes.
+    let mut changed = original;
+    changed[0x102..0x104].copy_from_slice(&0x83E0u16.to_be_bytes());
+    let r = run(&mut m, &changed, 0x0600E300, 8);
+    assert_eq!(&r[1..], &[0x83E0, 0x83E0, 0x83E0, 2, 0x2000, 68, 0x600D]);
+}
+
+#[test]
 fn guest_observes_partial_drawing_stop_transfer_over_and_unfinished_vblank_erase() {
     let rom = load(include_str!("fixtures/vdp1-progress.hex"));
     let expected: Vec<_> = include_str!("fixtures/vdp1-progress.tsv")

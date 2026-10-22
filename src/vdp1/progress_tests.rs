@@ -277,3 +277,179 @@ fn command_words_are_retained_on_separate_deadlines_and_restart_discards_partial
         assert_eq!(bus.read16(REGISTERS + 0x14), Ok(0));
     }
 }
+
+fn shaded_quad(bus: &mut Bus) {
+    command(bus, 0, &[(0, 9), (20, 511), (22, 255)]);
+    command(
+        bus,
+        32,
+        &[
+            (0, 4),
+            (4, 0xC4),
+            (6, 0x8008),
+            (16, 3),
+            (20, 3),
+            (22, 1),
+            (26, 1),
+            (28, 0x100),
+        ],
+    );
+    command(bus, 64, &[(0, 0x8000)]);
+    for i in 0..4 {
+        bus.write16(VRAM + 0x800 + i * 2, 0x4210).unwrap();
+    }
+    reg(bus, 2, 2);
+    reg(bus, 4, 1);
+}
+
+#[test]
+fn gouraud_vertices_have_individual_fetch_deadlines_and_retain_completed_words() {
+    // ST-013 §5.3 tables5.2/5.3: A/B/C/D order, per-channel correction
+    // -16..15. The second row interpolates D to C, not A to B.
+    for chunk in [1, 3, 17, 10000] {
+        let mut bus = Bus::default();
+        shaded_quad(&mut bus);
+        advance(&mut bus, 65, chunk);
+        assert_eq!(bus.read32(FRAMEBUFFER), Ok(0));
+        advance(&mut bus, 1, chunk); // A is now retained at neutral.
+        bus.write16(VRAM + 0x800, 0x4200).unwrap();
+        bus.write16(VRAM + 0x802, 0x421F).unwrap();
+        advance(&mut bus, 2, chunk); // B is now retained at +15 red.
+        bus.write16(VRAM + 0x802, 0x4200).unwrap();
+        bus.write16(VRAM + 0x804, 0x4200).unwrap();
+        advance(&mut bus, 4, chunk); // C=-16 red; D neutral.
+        assert_eq!(bus.read32(FRAMEBUFFER), Ok(0));
+        advance(&mut bus, 8, chunk);
+        assert_eq!(bus.read32(FRAMEBUFFER), Ok(0x8008800D));
+        assert_eq!(bus.read32(FRAMEBUFFER + 4), Ok(0x80128017));
+        assert_eq!(bus.read32(FRAMEBUFFER + 1024), Ok(0x80088003));
+        assert_eq!(bus.read32(FRAMEBUFFER + 1028), Ok(0x80008000));
+        assert_eq!(bus.read16(REGISTERS + 0x10), Ok(0));
+        advance(&mut bus, 32, chunk);
+        assert_eq!(bus.read16(REGISTERS + 0x10), Ok(2));
+        assert_ne!(bus.read32(SCU + 0xA4).unwrap() & (1 << 13), 0);
+    }
+}
+
+#[test]
+fn gouraud_fetch_uses_vram_ownership_and_stop_or_restart_discards_partial_tables() {
+    for sampled in 0..4 {
+        let mut bus = Bus::default();
+        shaded_quad(&mut bus);
+        advance(&mut bus, 64 + sampled * 2, 1);
+        for _ in 0..8 {
+            bus.vdp1.advance_with_bus(1, true, false).unwrap();
+        }
+        // Framebuffer traffic cannot block a Gouraud VRAM read. Conversely,
+        // VRAM traffic above cannot consume any of its remaining words.
+        for _ in sampled..4 {
+            bus.vdp1.advance_with_bus(2, false, true).unwrap();
+        }
+        assert_eq!(bus.read32(FRAMEBUFFER), Ok(0));
+        bus.vdp1.advance_with_bus(1, false, false).unwrap();
+        assert_eq!(bus.read16(FRAMEBUFFER), Ok(0x8008));
+
+        shaded_quad(&mut bus);
+        advance(&mut bus, 64 + sampled * 2, 3);
+        reg(&mut bus, 12, 0);
+        bus.vdp1.advance_with_bus(30, true, false).unwrap();
+        assert!(!bus.vdp1.busy());
+        assert_eq!(bus.read16(REGISTERS + 0x10), Ok(0));
+        assert_eq!(bus.read32(SCU + 0xA4).unwrap() & (1 << 13), 0);
+        // Restart re-reads the whole command and table; the partial shade
+        // state from the stopped command cannot leak into the new draw.
+        for i in 0..4 {
+            bus.write16(VRAM + 0x800 + i * 2, 0x421F).unwrap();
+        }
+        reg(&mut bus, 4, 1);
+        advance(&mut bus, 112, 17);
+        assert_eq!(bus.read32(FRAMEBUFFER), Ok(0x80178017));
+        assert_eq!(bus.read16(REGISTERS + 0x10), Ok(2));
+    }
+}
+
+#[test]
+fn framebuffer_calculations_take_six_clocks_and_retain_the_sampled_background() {
+    // ST-013 §6.3: shadow and translucent modes are six times slower
+    // than replacement. Gouraud saturation precedes averaging (color-calculation note3).
+    for (mode, old, result) in [
+        (1, 0xFC00, Some(0xBC00)),
+        (1, 0x1234, None),
+        (3, 0xFC00, Some(0xBC08)),
+        (3, 0x1234, Some(0x8010)),
+        (7, 0xFC00, Some(0xBC08)),
+    ] {
+        for chunk in [1, 3, 17, 10000] {
+            let mut bus = Bus::default();
+            shaded_quad(&mut bus);
+            command(
+                &mut bus,
+                32,
+                &[
+                    (4, 0xC0 | mode),
+                    (6, 0x8010),
+                    (16, 0),
+                    (20, 0),
+                    (22, 0),
+                    (26, 0),
+                ],
+            );
+            bus.write16(FRAMEBUFFER, old).unwrap();
+            let tables = if mode & 4 != 0 { 8 } else { 0 };
+            advance(&mut bus, 65 + tables, chunk); // framebuffer read
+            assert_eq!(bus.read16(FRAMEBUFFER), Ok(old));
+            bus.write16(FRAMEBUFFER, 0xFFFF).unwrap();
+            advance(&mut bus, 4, chunk);
+            assert_eq!(bus.read16(FRAMEBUFFER), Ok(0xFFFF));
+            advance(&mut bus, 1, chunk); // captured RMW publishes at six
+            assert_eq!(bus.read16(FRAMEBUFFER), Ok(result.unwrap_or(0xFFFF)));
+            advance(&mut bus, 31, chunk);
+            assert_eq!(bus.read16(REGISTERS + 0x10), Ok(0));
+            advance(&mut bus, 1, chunk);
+            assert_eq!(bus.read16(REGISTERS + 0x10), Ok(2));
+        }
+    }
+}
+
+#[test]
+fn framebuffer_calculation_contention_stop_restart_and_reset_cancel_unpublished_writes() {
+    for cancel in 0..4 {
+        let mut bus = Bus::default();
+        line(&mut bus, 1);
+        bus.write16(VRAM + 36, 0xC3).unwrap();
+        bus.write16(FRAMEBUFFER, 0xFC00).unwrap();
+        advance(&mut bus, 65, 1); // read old framebuffer
+        // Framebuffer ownership pauses publication, even after six clocks.
+        bus.vdp1.advance_with_bus(8, false, true).unwrap();
+        assert_eq!(bus.read16(FRAMEBUFFER), Ok(0xFC00));
+        match cancel {
+            0 => {
+                // Texture/command VRAM is independent of the framebuffer
+                // RMW already in flight. The red source=31 averages to15.
+                bus.vdp1.advance_with_bus(5, true, false).unwrap();
+                assert_eq!(bus.read16(FRAMEBUFFER), Ok(0xBC0F));
+            }
+            1 => {
+                reg(&mut bus, 12, 0);
+                bus.vdp1.advance_with_bus(30, false, true).unwrap();
+                advance(&mut bus, 100, 17);
+                assert_eq!(bus.read16(FRAMEBUFFER), Ok(0xFC00));
+                assert_eq!(bus.read16(REGISTERS + 0x10), Ok(0));
+            }
+            2 => {
+                command(&mut bus, 0, &[(0, 0x8000)]);
+                reg(&mut bus, 4, 1);
+                advance(&mut bus, 100, 17);
+                assert_eq!(bus.read16(FRAMEBUFFER), Ok(0xFC00));
+                assert_eq!(bus.read16(REGISTERS + 0x10), Ok(2));
+            }
+            _ => {
+                bus.system_reset();
+                bus.write16(FRAMEBUFFER, 0x2468).unwrap();
+                advance(&mut bus, 100, 17);
+                assert_eq!(bus.read16(FRAMEBUFFER), Ok(0x2468));
+                assert_eq!(bus.read16(REGISTERS + 0x10), Ok(0));
+            }
+        }
+    }
+}

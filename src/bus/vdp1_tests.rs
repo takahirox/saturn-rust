@@ -122,6 +122,47 @@ fn cpu_dmac_and_scu_vram_reads_hold_the_in_flight_command_word() {
 }
 
 #[test]
+fn both_cpus_dmacs_and_scu_hold_unfetched_gouraud_words_on_the_real_bus() {
+    // ST-013 §§2.1/5.3: system-controller VRAM access wins over drawing,
+    // but cannot invalidate vertices already fetched. SCU activation has
+    // two internal clocks before its external grant; both cases end at144.
+    for owner in [
+        Owner::Cpu(Processor::Master),
+        Owner::Cpu(Processor::Slave),
+        Owner::Dmac(Processor::Master),
+        Owner::Dmac(Processor::Slave),
+        Owner::Scu,
+    ] {
+        for chunk in [1, 3, 17] {
+            let mut bus = fixture();
+            bus.write16(VRAM + 36, 0xC4).unwrap();
+            bus.write16(VRAM + 38, 0x8008).unwrap();
+            bus.write16(VRAM + 60, 0x100).unwrap();
+            for i in 0..4 {
+                bus.write16(VRAM + 0x800 + i * 2, 0x4210).unwrap();
+            }
+            advance(&mut bus, 63, chunk);
+            let startup = request(&mut bus, owner, VRAM + 0x100);
+            advance(&mut bus, 8, chunk);
+            bus.write16(VRAM + 0x800, 0x421F).unwrap(); // A still unfetched
+            advance(&mut bus, 3 - startup, chunk); // clock74: A captured
+            bus.write16(VRAM + 0x800, 0x4200).unwrap(); // cannot replace A
+            bus.write16(VRAM + 0x802, 0x4200).unwrap(); // B not yet captured
+            advance(&mut bus, 38, chunk); // final dot completes at112
+            assert_eq!(bus.read16(FRAMEBUFFER), Ok(0x8017));
+            assert_eq!(bus.read16(FRAMEBUFFER + 62), Ok(0x8000));
+            assert_eq!(bus.read16(REGISTERS + 0x10), Ok(0));
+            assert_eq!(bus.read32(SCU + 0xA4).unwrap() & 0x2000, 0);
+            advance(&mut bus, 31, chunk);
+            assert_eq!(bus.read16(REGISTERS + 0x10), Ok(0));
+            advance(&mut bus, 1, chunk);
+            assert_eq!(bus.read16(REGISTERS + 0x10), Ok(2));
+            assert_ne!(bus.read32(SCU + 0xA4).unwrap() & 0x2000, 0);
+        }
+    }
+}
+
+#[test]
 fn framebuffer_access_holds_draw_dots_and_cancel_releases_them_without_delayed_cpu_write() {
     for processor in [Processor::Master, Processor::Slave] {
         let mut bus = fixture();

@@ -1733,17 +1733,17 @@ mod scu_timing_tests {
         let mut b = Bus::default();
         b.advance_clocks(1708 + 40).unwrap();
         assert_eq!(b.read16(VDP2 + 2), Ok(0)); // software latch
-        assert_eq!(b.read32(VDP2 + 8), Ok(0x00140002));
+        assert_eq!(b.read32(VDP2 + 8), Ok(0x00140001));
         b.advance_clocks(80).unwrap();
-        assert_eq!(b.read32(VDP2 + 8), Ok(0x00140002)); // held until another latch
+        assert_eq!(b.read32(VDP2 + 8), Ok(0x00140001)); // held until another latch
         b.read16(VDP2 + 2).unwrap();
-        assert_eq!(b.read32(VDP2 + 8), Ok(0x003C0002));
+        assert_eq!(b.read32(VDP2 + 8), Ok(0x003C0001));
         b.write16(VDP2 + 2, 0x200).unwrap();
         b.write8(SMPC + 0x7D, 3).unwrap();
         b.write8(SMPC + 0x7F, 3).unwrap();
         b.advance_clocks(40).unwrap();
         b.set_peripheral_th(0, false);
-        assert_eq!(b.read32(VDP2 + 8), Ok(0x00500002));
+        assert_eq!(b.read32(VDP2 + 8), Ok(0x00500001));
         assert_eq!(b.read16(VDP2 + 4), Ok(0x202));
         assert_eq!(b.read16(VDP2 + 4), Ok(2)); // read clears EXLTFG only
         assert_eq!(b.read32(SCU + 0xA4).unwrap() & 0x100, 0x100);
@@ -1751,7 +1751,7 @@ mod scu_timing_tests {
         b.advance_clocks(40).unwrap();
         b.set_peripheral_th(0, false); // no second edge
         assert_eq!(b.read32(SCU + 0xA4).unwrap() & 0x100, 0);
-        assert_eq!(b.read32(VDP2 + 8), Ok(0x00500002));
+        assert_eq!(b.read32(VDP2 + 8), Ok(0x00500001));
         b.write8(SMPC + 0x7B, 0x40).unwrap();
         b.set_peripheral_th(1, false); // output TH is not a latch input
         assert_eq!(b.read32(SCU + 0xA4).unwrap() & 0x100, 0);

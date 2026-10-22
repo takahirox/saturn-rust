@@ -58,9 +58,37 @@ def build():
             'smpc-boundaries.tsv':''.join(f'{v:08X}\n' for v in records).encode()}
 
 
+def command_report():
+    # ST-169 §§2.3/2.4: SF and OREG31 distinguish commands in progress
+    # from completed commands; status-only and status+peripheral results
+    # retain the INTBACK code. Original guest instructions perform all reads.
+    from build_video_transactions import encode
+    s = 'load 0x2600ed00,r8\n' + issue(6)
+    s += read_byte(0x100063) + read_byte(0x10005F) + idle('sound_on')
+    s += read_byte(0x100063) + read_byte(0x10005F)
+    records = [1, 6, 0, 6]
+    for n, mode in enumerate([0, 8]):
+        s += byte(0x100001, 1) + byte(0x100003, mode) + byte(0x100005, 0xF0) + issue(0x10)
+        s += read_byte(0x100063) + read_byte(0x10005F)
+        s += (f'load 0x100061,r1\nstatus_report{n}:\nmov.b @r1,r0\n'
+              f'tst #{32 if mode else 64},r0\nbt status_report{n}\n')
+        s += read_byte(0x100063) + read_byte(0x10005F)
+        records += [1, 0x10, int(mode != 0), 0x10]
+        if mode:
+            s += byte(0x100001, 0x41) + read_byte(0x100063) + read_byte(0x10005F)
+            records += [0, 0x10]
+    s += 'load 0x600d,r0\n' + record() + 'park:\nsleep\nbra park\nnop\n'
+    records += [0x600D]
+    files, _ = encode('smpc-command-report', s)
+    files['smpc-command-report.tsv'] = ''.join(f'{v:08X}\n' for v in records).encode()
+    return files
+
+
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--check',action='store_true');args=p.parse_args()
-    for name,data in build().items():
+    files = build()
+    files.update(command_report())
+    for name,data in files.items():
         path=HERE/name
         if args.check: assert path.read_bytes()==data,f'Rebuild {name}'
         else: path.write_bytes(data)

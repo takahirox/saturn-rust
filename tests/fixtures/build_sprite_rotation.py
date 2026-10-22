@@ -15,7 +15,7 @@ def blank(label, inside):
             f'{"bt" if inside else "bf"} {label}\n')
 
 def line(number):
-    return (f'load {number*2},r3\nline_{number}:\nload 0x25f80002,r1\nmov.w @r1,r0\n'
+    return (f'load {number},r3\nline_{number}:\nload 0x25f80002,r1\nmov.w @r1,r0\n'
             f'load 0x25f8000a,r1\nmov.w @r1,r0\ncmp/hs r3,r0\nbf line_{number}\n')
 
 def build():

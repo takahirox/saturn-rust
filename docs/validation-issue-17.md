@@ -33,7 +33,7 @@ Validation actually performed:
   Debug assertions remain enabled. Native build/tests used Rust/Cargo1.94.0.
 - Native all-target and Wasm Clippy with `-D warnings`: passed using installed
   rustup stable1.99.0.
-- `sh scripts/build-web.sh`: passed using stable1.99.0 and wasm-bindgen0.2.129.
+- `sh scripts/build-web.sh`: passed using stable1.99.0 and wasm-bindgen 0.2.129.
 - All **66** existing CI guest/media reproducibility commands: passed. The
   three demonstration media and public licenses remain byte-identical.
 - Complete `npm run test:browser`: passed on Chromium **145.0.7632.6**, Node
@@ -3498,3 +3498,70 @@ sound ownership, SCU DMA/DSP, VDP1/VDP2, SCSP/effects DSP, runtime CD/media/HLE,
 SMPC or comprehensive conformance acceptance findings. Those findings remain
 unresolved in PR #18; this is not evidence that Issue #17 can close. No Issue is
 closed, replaced or reopened, and no push or merge is performed.
+
+## VCNT, VDP1 memory phases and SMPC command reports — 2026-10-22
+
+Related to #17. Upstream `main` remains
+`dbd981b030a46daa6923072ce240680dd2e58ebf`, checked with
+`git ls-remote origin refs/heads/main` before implementation. Existing PR #18
+work, all three original demonstrations, backup persistence and both pads are
+preserved.
+
+Changes and evidence:
+
+- Corrected VDP2 Table 2.4 VCNT encoding: unshifted lines for noninterlace,
+  single-density and exclusive monitors; double-density retains field parity.
+  Exact clock 1748 MMIO/latch tests, counter-bit vectors and the 60 native/Wasm
+  mode cases cover the correction. Beam-polling operands in raster-history,
+  sprite-rotation and display-fetch fixtures now use actual normal-mode lines;
+  their authored pixel expectations remain unchanged.
+- VDP1 Gouraud A/B/C/D words now have separate retained VRAM reads. Shadow,
+  translucency and Gouraud translucency retain their background through six
+  clocks and publish the final pixel separately. Independent word/dot/IRQ
+  vectors cover mutation, contention, no-write shadows, stop/restart/reset and
+  clock chunking. Actual bus grants from either CPU, either DMAC and SCU delay
+  unfetched Gouraud words while preserving captured vertices and the final IRQ.
+  The new original effects guest compares FRT costs, literal pixels, status and
+  IRQ across seven color operations, cold boots and a changed guest operand.
+- Fixed INTBACK status publication clearing OREG31 rather than returning 10H.
+  Native command-deadline vectors and the new original command-report guest
+  cover busy/completed codes, status-only/status+peripheral acquisition, BREAK
+  and reset. The existing eight-area status test now expects the specified code.
+
+The [conformance inventory](hardware-conformance.md#vertical-counter-and-vdp1smpc-memory-boundaries)
+links specifications, implementation, independent tests, guests, licenses,
+reproduction commands and expanded-ROM hashes.
+
+Validation actually performed:
+
+- `cargo fmt --check`, `cargo build --locked`, native all-target Clippy and
+  Wasm Clippy with `-D warnings`: passed using rustup stable Rust 1.99.0.
+- Full `cargo test --locked`: 663 passed, 0 failed,0 ignored. The final library
+  rerun passed 409 tests, including the subsequently added shared-bus Gouraud
+  regression: 664 unique native tests passed overall, with no required skips.
+- All 66 fixture/media reproducibility commands from the existing CI workflow:
+  passed, including both new original MIT fixtures through existing builders.
+- `sh scripts/build-web.sh`: passed with wasm-bindgen 0.2.129.
+- Complete `npm run test:browser`: passed with Chromium 145.0.7632.6,
+  Node 24.12.0 and rebuilt production Wasm mounted under `/saturn-rust/`.
+  New guests, all three demonstrations, Canvas/WebAudio, input/focus, backup,
+  reset/restart and local-file privacy checks ran without required skips.
+- `git diff --check`, staged whitespace checks and new conformance file links:
+  passed.
+
+Earlier browser attempts rejected the old doubled-line guest polling operands
+and zero-valued OREG31 expectation; both were corrected before the complete
+passing run. The new command-report guest initially reused a stale SR status
+bit; it now waits for the appropriate status transition. Initial Wasm commands
+selected Homebrew tools without rustup's target; the documented toolchain PATH
+fixed that setup error. A superseded native run was stopped, and the complete
+final run above used the corrected fixtures, expectations and toolchain.
+
+This implements the VCNT finding and parts of the VDP1 memory/effect and SMPC
+status findings. Full SH-2/SH7604 timing and peripheral boundaries, MC68EC000
+instruction bus sequencing, shared sound/board ownership and reset contracts,
+SCU DMA/DSP boundaries, remaining VDP1/VDP2 conformance, SCSP/effects ordering,
+runtime CD/media/HLE services, remaining SMPC transitions and the comprehensive
+acceptance inventory still require implementation and evidence. These passing
+checks do not resolve Issue #17 or authorize closing its umbrella checklist.
+No push, merge, Issue closure, replacement or reopening was performed.

@@ -777,12 +777,13 @@ try {
   for(const {mode,pal,lines,width,height,r,points,dimensions,length} of displayTraces.slice(0,-1)) {
     assert.equal(r[34],0x600D,`TV mode ${mode.toString(16)}, PAL=${pal}`);
     assert(r[1]<24);
-    assert(Math.floor(r[15]/2)>=lines-18 && Math.floor(r[15]/2)<lines-12);
+    const counterScale=(mode&0xC0)===0xC0?2:1;
+    assert(Math.floor(r[15]/counterScale)>=lines-18 && Math.floor(r[15]/counterScale)<lines-12);
     for(const base of [0,14]) {
       assert.equal(r[base+2],0xC0);
       assert.deepEqual(r.slice(base+3,base+14),[0xF1,2,0xEE,0xF7,0xF1,0x15,0x77,0x7F,0,128,255]);
     }
-    for(const base of [28,31]){assert.equal(r[base]&9,8|Number(pal));assert.equal(Math.floor(r[base+2]/2),lines);}
+    for(const base of [28,31]){assert.equal(r[base]&9,8|Number(pal));assert.equal(Math.floor(r[base+2]/counterScale),lines);}
     assert.equal((r[28]&2)===(r[31]&2),(mode&0xC0)===0);
     assert.equal((r[30]&1)===(r[33]&1),(mode&0xC0)!==0xC0);
     assert.deepEqual(dimensions,[width,height]);assert.equal(length,width*height*4);
@@ -1045,7 +1046,7 @@ try {
   },[...statusRom]);
   for(const [i,code] of [1,2,4,5,6,10,12,13].entries()) {
     const expected=[...[[0x35,0x40],[0x34,0x40],[0x34,0],[0x35,0]]
-      .flatMap(([sound,cd])=>[code,sound,cd,0,0]),0x600D];
+      .flatMap(([sound,cd])=>[code,sound,cd,0x10,0]),0x600D];
     assert.deepEqual(statuses[i],[expected,expected]);
   }
   // Original BSC guest identifies both CPUs through BCR1.MASTER and executes
@@ -2055,7 +2056,7 @@ try {
       if(start[3]===0x600D) for(const port of [0,1,0]) {
         guest.set_peripheral_th(port,true);
         const time=Number(guest.peripheral_clocks());
-        const expected=((Math.floor((time%1708)/4)*2)<<16)|(Math.floor(time/1708)%263)*2;
+        const expected=((Math.floor((time%1708)/4)*2)<<16)|(Math.floor(time/1708)%263);
         guest.set_peripheral_th(port,false);
         guest.run_steps(500);
         const words=Array.from({length:4},(_,i)=>guest.read_long(0x06009010+i*4));

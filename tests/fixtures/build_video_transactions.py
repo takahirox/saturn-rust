@@ -86,6 +86,43 @@ def contention_source():
     return s
 
 
+def effects_source():
+    # All four Gouraud vertices belong to each flat polygon. Sixteen
+    # polygons write independent eight-dot rows, so blend/shadow never
+    # consume an output pixel from an earlier polygon. The FRT measures
+    # table reads and the documented six-clock framebuffer calculations.
+    s = 'load 0x0600e300,r8\n' + put16(0x25D00002, 2)
+    s += 'load 0x100,r1\nmov.w @r1,r12\n'
+    s += 'load 0x102,r1\nmov.w @r1,r13\n'
+    s += put16(0x25C00000, 9) + put16(0x25C00014, 511) + put16(0x25C00016, 255)
+    for row in range(16):
+        at = 0x25C00020 + row * 32
+        for offset, value in [(0, 4), (12, 0), (14, row),
+                              (16, 7), (18, row), (20, 7), (22, row),
+                              (24, 0), (26, row), (28, 0x100)]:
+            s += put16(at + offset, value)
+        s += f'load {at+4:#x},r1\nmov.w r12,@r1\n'
+        s += f'load {at+6:#x},r1\nmov.w r13,@r1\n'
+        for x in range(8):
+            s += put16(0x25C80000 + row * 1024 + x * 2, 0xFC00)
+    s += put16(0x25C00220, 0x8000)
+    for i in range(4):
+        s += put16(0x25C00800 + i * 2, 0x4210)
+    s += 'load 0xfffffe12,r10\nload 0xfffffe13,r11\n'
+    timer = ('mov.b @r10,r0\nextu.b r0,r0\nshll8 r0\n'
+             'mov.b @r11,r1\nextu.b r1,r1\nor r1,r0\n')
+    s += timer + 'mov r0,r9\n' + put16(0x25D00004, 1)
+    s += ('load 0x25d00010,r1\npoll_effects:\nmov.w @r1,r0\n'
+          'tst #2,r0\nbt poll_effects\n')
+    s += timer + 'sub r9,r0\nextu.w r0,r0\n' + record()
+    for address in [0x25C80000, 0x25C8000E, 0x25C83C00, 0x25D00010]:
+        s += read(address, 2)
+    s += 'load 0x25fe00a4,r1\nmov.l @r1,r0\nload 0x2000,r2\nand r2,r0\n' + record()
+    s += read(0x25D00014, 2)
+    s += 'load 0x600d,r0\n' + record() + 'park:\nsleep\nbra park\nnop\n'
+    return s
+
+
 def monitor_source():
     s = 'load 0x0600dc00,r8\n'
     # Set all control/data while display is disabled. Odd pixels come from
@@ -148,11 +185,13 @@ def grants_source():
     return s
 
 
-def encode(name, source):
+def encode(name, source, operands=()):
     code = assembler.assemble(source, base=0x200)
     rom = bytearray(524288)
     rom[:8] = struct.pack('>II', 0x200, 0x060FF000)
     rom[0x200:0x200 + len(code)] = code
+    for address, value in operands:
+        struct.pack_into('>H', rom, address, value)
     lines = [f'# Original MIT {name} synthetic BIOS. Adjacent LICENSE.']
     for at in range(0, len(rom), 16):
         if any(rom[at:at + 16]):
@@ -170,9 +209,11 @@ def build():
     files.update(commands)
     contention, contention_hash = encode('vdp1-memory-ownership', contention_source())
     files.update(contention)
+    effects, effects_hash = encode('vdp1-effects-timing', effects_source(), [(0x100, 0xC4), (0x102, 0x8010)])
+    files.update(effects)
     files['vdp1-progress.tsv'] = ''.join(f'{v:08X}\n' for v in
         [0x801F, 0, 0, 0, 4, 0, 0x1234, 0x1234, 0xFFFF, 0x600D]).encode()
-    return files, [draw_hash, monitor_hash, grants_hash, command_hash, contention_hash]
+    return files, [draw_hash, monitor_hash, grants_hash, command_hash, contention_hash, effects_hash]
 
 
 if __name__ == '__main__':

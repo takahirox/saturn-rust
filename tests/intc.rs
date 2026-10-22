@@ -52,7 +52,7 @@ fn guest_changes_external_vector_mode_acknowledges_dma_and_handles_both_latch_po
             let time = m.clocks();
             // Reference NTSC320 active-line counter encoding, independent of IRQ latency.
             let h = (time % 1708 / 4 * 2) as u32;
-            let v = (time / 1708 % 263 * 2) as u32;
+            let v = (time / 1708 % 263) as u32;
             m.set_peripheral_th(port, false);
             m.run_steps(500).unwrap();
             assert_eq!(m.bus().read32(0x06009010), Ok(i as u32 + 1));

@@ -498,7 +498,7 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 | Polygons/lines/polylines, [VDP1] §§7.7–7.9 | Solid ruled quads and integer line segments | VIDEO | PRISM (polygons) | Full independent sloped-edge and repeated-pixel corpus | Pending |
 | Clip/local coordinates, [VDP1] §§7.1–7.3 | System/user inside/outside clips, local offsets | VIDEO | PRISM (system) | Full extreme-coordinate/clip boundary corpus | Pending |
 | Sprite texture/color modes, [VDP1] §§6.3–6.6 | Packed 4-bit bank/LUT, 64/128/256 bank and RGB555, transparent pixels, two end codes per raster row | VIDEO | PRISM (RGB555) | Scaling/end-code interaction, wrapping and all browser formats | Pending |
-| Shading/color calculation, [VDP1] §6.3 | Gouraud, mesh, MSB-only, shadow, half-luminance/transparency, combined Gouraud effects | VIDEO | PRISM (replace only) | Subpixel interpolation and duplicate-coverage edges; complete readout/effects corpus | Pending |
+| Shading/color calculation, [VDP1] §6.3 | Gouraud vertex-word fetches, mesh, MSB-only, six-clock shadow/transparency, half-luminance and combined Gouraud effects | VIDEO, [VDP1 memory/effect vectors](#vertical-counter-and-vdp1smpc-memory-boundaries) | PRISM; original FRT/pixel effects guest | Subpixel interpolation and duplicate-coverage edges; complete readout/effects corpus | Pending |
 | Draw/erase/swap/status/IRQ, [VDP1] §4 | PTMR; bounded 30-clock ENDR; per-dot draw cursor, manual transfer-over; scanline display erase and word-clock VBlank erase with 200-clock/raster overhead; manual/auto change, persistent VBE, CEF/BEF/COPR/LOPR; SCU IRQ/DMA trigger | VIDEO, VIRQ, PRISM, VTX; [local-memory vectors](#scheduled-68k-resetiack-and-vdp1-local-memory-ownership) | PRISM, VTX; command-fetch/ownership guests | Complete command/effect memory costs, mid-blank enable and half-line/swap phase | Pending |
 | VDP2 VRAM, [VDP2] §3 | Bitmap RAM/bank offsets; all eight cycle words select CPU grants, split-bank matching and idle/linked timing, unused-screen release, rotation ownership and high-resolution slot limits; beam output requires addressed-bank display grants and format/reduction bandwidth | VIDEO, SC, VTX, [FETCHG](#vdp2-display-fetch-grants-and-line-table-latches-fetchg); `access.rs`, `vram_grant_tests.rs` | PRISM, SC, VTX, FETCHG | Per-word display-fetch phase/retention and complete SCU/DMA arbitration remain | Pending |
 | VDP2 CRAM, [VDP2] §3.4 | Modes 0/1 RGB555 and 2 RGB888; mode-0 upper-half mirror; palette offsets | VIDEO | — | Full lane/alias and guest/browser palette corpus | Pending |
@@ -515,8 +515,10 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 | Back/line color, [VDP2] §§7.1/11.3 | Back-screen single/per-line VRAM table, signed offset; LNCLEN top-only insertion, single/per-line LCTA palette data and coefficient-derived low seven address bits; CCRLB line/back ratios | VIDEO, LINE | PRISM (back), LINE (two line colors, coefficient mutations, extended calculation, Canvas) | Interlace/display-mode line rules, raster-time fetches and complete guest format corpus remain | Pending |
 | Combined VDP1/VDP2 pipeline | Sprite/background overlap, priority, transparency, game result/restart, texture mutation changes actual pixels | VIDEO, PRISM | PRISM + Canvas assertions | Remaining modes/effects and timing above | Pending |
 
-VDP1 command fetch retains its 32-main-clock functional deadline, while drawing
-advances a retained cursor one dot at a time. ENDR has a bounded thirty-clock stop.
+VDP1 command fetch retains its 32-main-clock functional deadline. Gouraud reads
+use four separate VRAM word deadlines; shadow/translucency retain a background
+read through a six-clock dot operation. Replacement advances one dot per clock.
+ENDR has a bounded thirty-clock stop.
 Normal erase follows scanline readout; VBlank erase has clocked word writes and
 per-raster overhead, and leaves unfinished pixels at VBlank-OUT. VTX independently
 checks the manual's 58,812-word NTSC budget and manual transfer-over status.
@@ -1638,7 +1640,7 @@ The new original builders are checked in CI. SHA-256 of committed artifacts:
 | `mode2.bin` | `7503a70136dcd7c6aec44d6ac6a1bec849dd05ffb1d6a0dbd0edff751b065d9b` |
 | `mode2-audio.bin` | `dee42ec6e0e7fba4a02375f99b04499fd6d481127c26c51acb31c8e20d36372f` |
 | `mode2.cue` | `8832626090f6056d07589dd83e8f324db65f124863ef5fef5aaff0a259a831bf` |
-| `raster-history.hex` text | `82fab780e18dbd9ba0c16d399bb044557a9a1c48ea150673b850e2998b387409` |
+| `raster-history.hex` text | `54aee2f4e0e10a6ba94f19e67ed06e5b1d7d55a187e2d546d367e1ee0d3304d8` |
 
 FAMG now selects MEM4MB before its first stack access and again after RESET.
 Its regenerated literal fault-frame records include the relocated code addresses;
@@ -1674,9 +1676,9 @@ No umbrella criterion is marked complete by RSCG.
 
 | Reproducible artifact | SHA-256 |
 | --- | --- |
-| `sprite-rotation16.hex` | `6504e77c1d4b094968c910c3c0699d2d9febbe0ec2ef5ec33a3e38b0fc28e091` |
+| `sprite-rotation16.hex` | `cb1f0d083f27b486294ceb22f15972e2458ed2279eb51c57244deb6def218ee2` |
 | `sprite-rotation16.tsv` | `81e30f69e8093bc349c452dbf75c6b2ab7504ab389b8369537a32a8033522748` |
-| `sprite-rotation8.hex` | `9265110cc638d2ae7daa132fac110c7146f7e299d1e151fc8949c6cc01c4877e` |
+| `sprite-rotation8.hex` | `ee738e873bf105058576a5b5658c75843869e6dc02e5230932ecf272ca5a8d9e` |
 | `sprite-rotation8.tsv` | `946db30774561bdcea9ddd6c93766c7dafd21cfc8b9542e459efd49c77e94b25` |
 | `sprite-interlace.hex` | `8d6d795024a9c28ef2a9c7539e5aa29a0682f7991934b40d3d0720734a8642ec` |
 | `sprite-interlace.tsv` | `65e193f1c8a01ce19c412c614f3de652cc12a7f8fa2eebb2e87f3ebce1184b00` |
@@ -2167,7 +2169,7 @@ acceptance checklist remains unsatisfied.
 | Correctly programmed licensed media | Guest MMIO and original source builders | Four-layer tile guest now advances through two actual fields before checking pixels; A supplies four names, B supplies five character accesses. Native Prism Courier and Hardware Lab still complete/restart | Full browser suite checks all three discs, Canvas, guest input/results/restart and production WebAudio; exclusive-monitor diagnostics now use two non-overlapping 256-color surfaces, independently fetched from A/B |
 
 FETCHG expanded synthetic ROM SHA-256:
-`74ffd46da1859432343b8c62d27c68499461511f2989f3d7678e89c133208419`.
+`121eb0283aa2e6f0b677bc5a04755efd5e6df2f6b4810cc99d752e0b5ccd727b`.
 Sources and generated `.hex`/`.s` files use the adjacent [MIT license](../tests/fixtures/LICENSE).
 CI runs `python3 tests/fixtures/build_vdp2_fetch.py --check`.
 Mutating all five guest color literals changes the rendered color in native and
@@ -2439,3 +2441,33 @@ source was restored before complete validation. This entry addresses the UNLK
 contract; the full mandatory CPU, board, SCU, video, audio, CD/HLE, SMPC and
 comprehensive acceptance findings above remain open on this Draft PR. It does
 not establish full Issue #17 resolution or change an umbrella checkbox.
+
+## Vertical counter and VDP1/SMPC memory boundaries
+
+Primary specifications: [VDP2 §2.5, Table 2.4](https://github.com/luckyseoul/saturn-docs/blob/main/files/ssddv25/segahtml/hard/vdp2/hon/p02_50.htm),
+[VDP1 §5.3, Tables 5.2–5.3](https://github.com/luckyseoul/saturn-docs/blob/main/files/ssddv25/segahtml/hard/vdp1/hon/p05_30.htm),
+[VDP1 §6.3, color calculations](https://github.com/luckyseoul/saturn-docs/blob/main/files/ssddv25/segahtml/hard/vdp1/hon/p06_37.htm),
+and [SMPC §§2.3–2.4, OREG31/SF](https://github.com/luckyseoul/saturn-docs/blob/main/files/ssddv25/segahtml/hard/smpc/hon/p02_40.htm).
+Related to #17.
+
+| Contract | Implementation | Independent native evidence | Guest and browser evidence |
+| --- | --- | --- | --- |
+| VCNT bit layout | `Raster::counters` in [timing.rs](../src/timing.rs): noninterlace, single-density and exclusive modes return the line; double-density inserts even-field parity at bit0 | `vertical_counter_uses_v0_except_for_double_density_field_parity`: all horizontal encodings, four fields, seven counter values including bit8/9 boundaries. [MMIO regression](../tests/devices.rs) reproduces the clock1748 latch and checks retention. Existing both-port external-latch tests retain HCNT behavior | [60 NTSC/PAL mode guests](../tests/display_modes.rs) and [INTC guest](../tests/intc.rs) use the corrected expectations in native and browser Wasm. Raster-history, sprite-rotation and display-fetch builders now poll unshifted normal-mode lines; their original pixel expectations are retained |
+| Gouraud table reads | `Drawing::shade_read`, `Vdp1::clocks_to_event/advance_phase` in [vdp1.rs](../src/vdp1.rs): fetch/retain A/B/C/D separately, only for shading; pause on VRAM ownership; framebuffer ownership is independent | [progress_tests.rs](../src/vdp1/progress_tests.rs): before/after-word mutations, literal top/bottom gradient pixels, VRAM/framebuffer contention, all four partial-fetch stop points and restart. [Real bus arbitration vectors](../src/bus/vdp1_tests.rs) additionally grant both CPUs, both DMACs and SCU while retaining unfetched versus captured vertices and the final pixel/IRQ deadline. Chunk sizes 1/3/17/10000 produce identical outputs | [Original effects guest](../tests/fixtures/build_video_transactions.py) draws 16 independent eight-dot polygons, measures the extra fetch time through FRT, reads pixels/EDSR/COPR/SCU status; [native](../tests/video_transactions.rs) and [Wasm](../scripts/video-transactions.mjs) repeat cold boot and mutate the actual guest color operand |
+| Six-clock framebuffer calculations | `PendingPixel`, `Vdp1::plot/advance_phase`: shadow, translucency and Gouraud translucency retain the sampled background and physical target through the five remaining clocks; no-write shadow still consumes time | `framebuffer_calculations_take_six_clocks_and_retain_the_sampled_background`: RGB/palette backgrounds, retained read versus later memory write, suppressed shadow write and IRQ after final publication. Contention/cancellation vectors cover independent VRAM, blocked framebuffer, ENDR, PTMR and SYSRES | The effects guest compares replace/half-luminance, shadow/translucency, Gouraud and combined operations. FRT must distinguish 128 extra Gouraud clocks and 640 extra RMW clocks across 128 dots, within the guest polling interval. Pixel and IRQ results are independently authored |
+| INTBACK command report | `Smpc::advance_clocks` in [smpc.rs](../src/smpc.rs) restores OREG31=10H when publishing status, preserving the code accepted at command start | `command_report_survives_status_publication_continue_break_and_rejected_writes`: seven command latencies, last-clock completion, rejected double issue, status-only/status+peripherals, CONTINUE/BREAK and reset domains | [Original command-report guest](../tests/fixtures/build_smpc_boundaries.py), [native NTSC/PAL execution](../tests/smpc_boundaries.rs) and [browser local-BIOS execution](../scripts/hardware-boundaries.mjs), repeated cold reset. Existing eight-area sound/CD status guest now expects10H rather than zero in OREG31 |
+
+The Gouraud word cadence uses the existing two-main-clock VDP1 VRAM transaction
+model. The manual establishes vertex ordering and six-times replacement cost for
+shadow/translucency; this evidence does not establish every physical texture/LUT
+fetch phase, shading rounding, repeated coverage edge, erase/swap boundary or
+VDP2 half-line transition. Those review findings retain their mandatory scope.
+No umbrella acceptance criterion is marked complete by this evidence.
+
+The new guests and generated artifacts use the existing [MIT fixture license](../tests/fixtures/LICENSE).
+The existing CI commands `build_video_transactions.py --check` and
+`build_smpc_boundaries.py --check` reproduce both additions. Expanded 512 KiB ROM
+SHA-256 values:
+
+- VDP1 effects timing: `c5f756beede69e5596adf4f38e1795ba6fc69361808f63ec0eb03a31b50c5e7d`.
+- SMPC command report: `96e77242bb186adf71fbf88d2b1efd44ae178e9e51b0d2db4c0dc18a9e0e0fbf`.

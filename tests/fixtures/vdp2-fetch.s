@@ -120,7 +120,7 @@ blank_out:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out
-load 32,r3
+load 16,r3
 line_16:
 load 0x25f80002,r1
 mov.w @r1,r0
@@ -131,7 +131,7 @@ bf line_16
 load 0x25f80010,r1
 load 0x4fff,r0
 mov.w r0,@r1
-load 64,r3
+load 32,r3
 line_32:
 load 0x25f80002,r1
 mov.w @r1,r0
@@ -145,7 +145,7 @@ mov.w r0,@r1
 load 0x25f80018,r1
 load 0x4444,r0
 mov.w r0,@r1
-load 96,r3
+load 48,r3
 line_48:
 load 0x25f80002,r1
 mov.w @r1,r0
@@ -156,7 +156,7 @@ bf line_48
 load 0x25f80010,r1
 load 0x4444,r0
 mov.w r0,@r1
-load 128,r3
+load 64,r3
 line_64:
 load 0x25f80002,r1
 mov.w @r1,r0
@@ -170,7 +170,7 @@ mov.w r0,@r1
 load 0x25f8003c,r1
 load 0x1,r0
 mov.w r0,@r1
-load 160,r3
+load 80,r3
 line_80:
 load 0x25f80002,r1
 mov.w @r1,r0
@@ -184,7 +184,7 @@ mov.w r0,@r1
 load 0x25f80016,r1
 load 0xeeee,r0
 mov.w r0,@r1
-load 192,r3
+load 96,r3
 line_96:
 load 0x25f80002,r1
 mov.w @r1,r0
@@ -198,7 +198,7 @@ mov.w r0,@r1
 load 0x25f80014,r1
 load 0x4fff,r0
 mov.w r0,@r1
-load 224,r3
+load 112,r3
 line_112:
 load 0x25f80002,r1
 mov.w @r1,r0
@@ -209,7 +209,7 @@ bf line_112
 load 0x25f80014,r1
 load 0x44ff,r0
 mov.w r0,@r1
-load 240,r3
+load 120,r3
 line_120:
 load 0x25f80002,r1
 mov.w @r1,r0
@@ -220,7 +220,7 @@ bf line_120
 load 0x25f800d0,r1
 load 0x2,r0
 mov.w r0,@r1
-load 256,r3
+load 128,r3
 line_128:
 load 0x25f80002,r1
 mov.w @r1,r0
@@ -234,7 +234,7 @@ mov.w r0,@r1
 load 0x25e60206,r1
 load 0x0,r0
 mov.w r0,@r1
-load 288,r3
+load 144,r3
 line_144:
 load 0x25f80002,r1
 mov.w @r1,r0
@@ -251,7 +251,7 @@ mov.w r0,@r1
 load 0x25e40000,r1
 load 0x800,r0
 mov.w r0,@r1
-load 320,r3
+load 160,r3
 line_160:
 load 0x25f80002,r1
 mov.w @r1,r0
@@ -262,7 +262,7 @@ bf line_160
 load 0x25e40000,r1
 load 0x400,r0
 mov.w r0,@r1
-load 352,r3
+load 176,r3
 line_176:
 load 0x25f80002,r1
 mov.w @r1,r0
@@ -273,7 +273,7 @@ bf line_176
 load 0x25e7005c,r1
 load 0x10000,r0
 mov.l r0,@r1
-load 384,r3
+load 192,r3
 line_192:
 load 0x25f80002,r1
 mov.w @r1,r0
@@ -284,7 +284,7 @@ bf line_192
 load 0x25f8000e,r1
 load 0x113,r0
 mov.w r0,@r1
-load 416,r3
+load 208,r3
 line_208:
 load 0x25f80002,r1
 mov.w @r1,r0

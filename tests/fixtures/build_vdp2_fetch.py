@@ -14,7 +14,7 @@ HERE = Path(__file__).resolve().parent
 
 
 def line(n):
-    return (f'load {n*2},r3\nline_{n}:\nload 0x25f80002,r1\nmov.w @r1,r0\n'
+    return (f'load {n},r3\nline_{n}:\nload 0x25f80002,r1\nmov.w @r1,r0\n'
             'load 0x25f8000a,r1\nmov.w @r1,r0\n'
             f'cmp/hs r3,r0\nbf line_{n}\n')
 

@@ -121,17 +121,18 @@ impl Raster {
             CLOCKS_PER_LINE
         }
     }
-    // ST-058 §2.5 tables2.3/2.4: normal-mode counters leave bit0 invalid.
+    // ST-058 §2.5 tables2.3/2.4: only normal-mode HCNT leaves bit0
+    // invalid. VCNT inserts field parity only in double-density interlace.
     pub(crate) fn counters(&self) -> (u16, u16) {
         let horizontal = if self.mode & 4 != 0 || self.mode & 2 != 0 {
             self.phase / 2
         } else {
             self.phase / 4 * 2
         };
-        let vertical = if self.mode & 4 != 0 {
-            self.line
+        let vertical = if self.mode & 4 == 0 && self.mode & 0xC0 == 0xC0 {
+            self.line * 2 + u16::from(!self.odd())
         } else {
-            self.line * 2 + u16::from(self.mode & 0xC0 == 0xC0 && !self.odd())
+            self.line
         };
         (horizontal as u16, vertical)
     }
@@ -194,6 +195,46 @@ impl Raster {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vertical_counter_uses_v0_except_for_double_density_field_parity() {
+        // ST-058 §2.5 table2.4: all ten V bits in non/single interlace
+        // and exclusive modes; V8..V0 plus parity in double interlace.
+        for horizontal in 0..8 {
+            for interlace in [0, 0x80, 0xC0] {
+                let mut r = Raster::default();
+                r.configure(0x8000 | horizontal | interlace);
+                for field in 0..4 {
+                    r.fields = field;
+                    for (line, plain, double_odd, double_even) in [
+                        (0, 0, 0, 1),
+                        (1, 1, 2, 3),
+                        (2, 2, 4, 5),
+                        (223, 223, 446, 447),
+                        (255, 255, 510, 511),
+                        (256, 256, 512, 513),
+                        (511, 511, 1022, 1023),
+                    ] {
+                        r.line = line;
+                        let expected = if horizontal < 4 && interlace == 0xC0 {
+                            if field % 2 == 0 {
+                                double_odd
+                            } else {
+                                double_even
+                            }
+                        } else {
+                            plain
+                        };
+                        assert_eq!(
+                            r.counters().1,
+                            expected,
+                            "mode={:X}, field={field}, line={line}",
+                            r.mode
+                        );
+                    }
+                }
+            }
+        }
+    }
     #[test]
     fn exclusive_monitors_have_480_active_lines_and_distinct_counter_bit_layouts() {
         // ST-058 tables2.1/2.3/2.4; ST-013 tables4.4/4.5.
@@ -280,7 +321,7 @@ mod tests {
                     (
                         active * width_clock,
                         RasterEvent::VBlankIn,
-                        active as u16 * 2,
+                        active as u16 * if mode & 0xC0 == 0xC0 { 2 } else { 1 },
                         true
                     )
                 );

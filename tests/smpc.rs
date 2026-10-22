@@ -137,7 +137,7 @@ fn region_and_independent_sound_cd_reset_status_execute_as_guest_commands() {
             m.run_steps(10000).unwrap();
             let mut expected = Vec::new();
             for (sound, cd) in [(0x35, 0x40), (0x34, 0x40), (0x34, 0), (0x35, 0)] {
-                expected.extend([u32::from(code), sound, cd, 0, 0]);
+                expected.extend([u32::from(code), sound, cd, 0x10, 0]);
             }
             expected.push(0x600D);
             for (i, value) in expected.into_iter().enumerate() {

@@ -84,6 +84,30 @@ fn both_digital_ports_have_independent_direction_selection_and_enable_bits() {
 }
 
 #[test]
+fn vcnt_latches_unshifted_lines_in_normal_and_single_density_modes() {
+    // ST-058 §2.5 table2.4. Regression for the review's clock1748 probe;
+    // the field-parity bit belongs only to double-density interlace.
+    for (mode, expected) in [
+        (0x8000, 1),
+        (0x8080, 1),
+        (0x8002, 1),
+        (0x8082, 1),
+        (0x80C0, 2),
+        (0x80C2, 2),
+    ] {
+        let mut bus = Bus::default();
+        bus.write16(VDP2, mode).unwrap();
+        bus.advance_clocks(1748).unwrap();
+        bus.read16(VDP2 + 2).unwrap();
+        assert_eq!(bus.read16(VDP2 + 0xA), Ok(expected), "TVMD={mode:04X}");
+        bus.advance_clocks(1708).unwrap();
+        assert_eq!(bus.read16(VDP2 + 0xA), Ok(expected)); // retained latch
+        bus.read16(VDP2 + 2).unwrap();
+        assert_eq!(bus.read16(VDP2 + 0xA), Ok(expected * 2));
+    }
+}
+
+#[test]
 fn vram_aliases_endianness_alignment_register_boundaries_and_read_only_status() {
     let mut bus = Bus::default();
     bus.write32(VRAM, 0x801F83E0).unwrap();
