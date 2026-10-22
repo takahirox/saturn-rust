@@ -130,6 +130,7 @@ python3 tests/fixtures/build_raster_history.py --check
 python3 tests/fixtures/build_sound_io.py --check
 python3 tests/fixtures/build_scsp_monitor.py --check
 python3 tests/fixtures/build_m68k_reset.py --check
+python3 tests/fixtures/build_scsp_clock.py --check
 python3 tests/fixtures/build_cd_drive.py --check
 python3 tests/fixtures/build_cd_copy.py --check
 python3 tests/fixtures/build_cd_directory.py --check

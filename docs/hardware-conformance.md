@@ -561,7 +561,7 @@ Implementation: [shared sound bus, PCM and clock domain](../src/sound.rs),
 | Timers/interrupts, [SCSP] §4.2 tables 4.33–38 | Three sample-clock prescaled counters; sound/main pending/enables/clear; programmed autovector levels, 68k IRQ/RTE, SCU source 6 | SNDV, SNDR / SNDR | Complete cross-device contention/timer reset edge evidence | Pending |
 | MIDI registers, [SCSP] §4.2 figs.4.59–61 | Four-byte input/output FIFOs, status/overflow, byte lanes, serial-paced 8-N-1 output, independent main/sound empty IRQs and reset cancellation | SNDV, SIOG / SIOG | Serial bit-level input/external wiring; the standard console has no MIDI connector (fig.4.59) | Pending |
 | SCSP DMA, [SCSP] §4.2 fig.4.66/table 4.39 | Word transfers in both directions, zero gate, count/address progress, DEXE=0 preserves busy until completion and IRQ; DMA-register target rejected | SNDV, SIOG / SIOG (68k register DMA, completion IRQ and source mutation) | Exact transfer timing/arbitration and full boundary/route evidence | Pending |
-| SCSP effects DSP, [SCSP] §§4.1/4.3/5; [ST-228][SCDSPASM] Reference 1/2 | Executing multiply/add pipeline; COEF/MADRS/MPRO/TEMP/MEMS/MIXS/EFREG, slot and EXTS inputs, ring/table RAM reads/writes, linear/float conversion, stereo effect routing | DSPV, CLAB / CLAB coefficient mutation, exact stereo, WebAudio | Full field/pipeline boundary corpus, RAM-access contention and independently corroborated converter/timing edges | Pending |
+| SCSP effects DSP, [SCSP] §§4.1/4.3/5; [ST-228][SCDSPASM] Reference 1/2 | Individually scheduled 128-instruction/sample multiply/add pipeline; COEF/MADRS/MPRO/TEMP/MEMS/MIXS/EFREG, slot and EXTS inputs, ring/table RAM reads/writes, linear/float conversion, stereo effect routing | DSPV, CLAB, [DSP clock vectors](../src/sound/dsp/clock_tests.rs), [board contention](../src/bus/sound_tests.rs), [68k/DSP guest](../tests/scsp_clock.rs) / CLAB and [SCSP clock Wasm/WebAudio](../scripts/scsp-clock.mjs) | Full field/pipeline/converter corpus, PCM/refresh/DMA ownership and CPU-to-CPU sound-memory arbitration remain | Pending |
 | Browser audio output | Bounded 8192-frame producer/ring, stereo sample-rate adaptation, explicit gesture enable, pause/mute/blocked/underflow/drop states; worklet renders nonzero guest PCM | SNDV / SNDR WebAudio instrumentation | Full synthesis/DSP/CD-DA validation depends on missing hardware | Pending |
 | CD-DA, [CD] §§3/4/8 / [SCSP] table 4.31 | Guest play/repeat, signed stereo BINARY tracks; PRE 50/15 µs de-emphasis with continuous sector history; unchanged-start pause/resume retains the sample/filter state; EXTS0/1 EFSDL/EFPAN, mixed with 68k PCM at sample deadlines | [CD-DA vectors](../tests/cd.rs), [original CD-DA guest](../tests/cdda.rs), CLAB / CD-DA guest reference buffers + AudioWorklet, CLAB changed audio track | Full effects pipeline/subcode and complete synthesis remain; scan attenuation/muting has native vectors | Pending |
 
@@ -891,8 +891,9 @@ rounding, timed envelopes, complete modulation conformance and full effects-DSP 
 
 ## Executing SCSP effects processor and guest evidence
 
-The independent [effects interpreter](../src/sound/dsp.rs) executes 128 parallel
-steps per sample. Its signed 24-bit inputs, 13-bit multiplier operand, 26-bit
+The independent [effects interpreter](../src/sound/dsp.rs) executes 128
+individually scheduled instructions per sample, with parallel datapath fields in
+each instruction. Its signed 24-bit inputs, 13-bit multiplier operand, 26-bit
 accumulator, previous-accumulator shifter, TEMP/sample decrement and sound RAM
 paths follow [SCSP][SCSP] §5 fig.5.1; register locations/widths follow §4.1
 figs.4.5–4.7, and RBL/RBP follow §4.3 table4.41. [ST-228][SCDSPASM] Reference1
@@ -905,14 +906,57 @@ processor core, assembler, SDK object or effect program was used.
 | Register/instruction group | Implementation | Native evidence | Wasm/guest evidence and remaining work |
 | --- | --- | --- | --- |
 | COEF/MADRS/MPRO; TEMP/MEMS/MIXS/EFREG; byte lanes | `Dsp::read/write`; `Scsp::write8` | DSPV `coefficient_internal_ram_and_byte_lanes_obey_physical_widths`; RESET vector in SNDV | CLAB uploads coefficients/program/MEMS and SH-2 reads EFREG1; complete per-port guest corpus remains |
-| TRA/TWA/TWT, sample decrement, read-before-write | `Dsp::sample` circular TEMP indices | DSPV `temp_pointer_moves_once_per_sample_and_reads_precede_parallel_writes` | CLAB arithmetic; delayed TEMP guest scene remains |
-| XSEL/YSEL/IRA, signed multiplication, ZERO/BSEL/NEGB | `Dsp::sample` signed multiplier/26-bit accumulator | DSPV `multiply_accumulate_uses_signed_13_bit_y_and_previous_accumulator_output` | CLAB MIXS0/MEMS0/EXTS0/1 and two coefficients; all ALU control combinations remain |
-| SHIFT, EWT/EWA, saturation/wrap | `Dsp::sample` prior accumulator and 16-bit effect accumulation | DSPV `shifter_clips_or_wraps_and_effect_writes_accumulate_with_sixteen_bit_width` | CLAB exact bipolar stereo; complete overflow guest corpus remains |
-| YRL/FRCL/ADRL/ADREB | `Dsp::sample` latches and address gate | DSPV `y_fraction_and_address_latches_use_previous_step_values` | Complete interpolation/address-modulation guest vectors remain |
-| MRD/MWT/IWT/IWA, TABLE/MASA/NXADR, RBL/RBP | `Dsp::sample` sound RAM path, read latch after two steps | DSPV `ring_table_linear_reads_use_two_step_latency_and_preserve_read_before_write` | Complete sound RAM/pipeline guest corpus and CPU/DMA contention remain |
-| NOFL linear/normalized-float conversion | `pack/unpack`, `Dsp::sample` | DSPV `floating_memory_format_has_independent_bit_patterns_and_bounded_error` | Full independent float/subnormal/rounding and delayed memory-cycle corroboration remains |
+| TRA/TWA/TWT, sample decrement, read-before-write | `Dsp::step` circular TEMP indices | DSPV `temp_pointer_moves_once_per_sample_and_reads_precede_parallel_writes` | CLAB arithmetic; delayed TEMP guest scene remains |
+| XSEL/YSEL/IRA, signed multiplication, ZERO/BSEL/NEGB | `Dsp::step` signed multiplier/26-bit accumulator | DSPV `multiply_accumulate_uses_signed_13_bit_y_and_previous_accumulator_output` | CLAB MIXS0/MEMS0/EXTS0/1 and two coefficients; all ALU control combinations remain |
+| SHIFT, EWT/EWA, saturation/wrap | `Dsp::step` prior accumulator and 16-bit effect accumulation | DSPV `shifter_clips_or_wraps_and_effect_writes_accumulate_with_sixteen_bit_width` | CLAB exact bipolar stereo; complete overflow guest corpus remains |
+| YRL/FRCL/ADRL/ADREB | `Dsp::step` latches and address gate | DSPV `y_fraction_and_address_latches_use_previous_step_values` | Complete interpolation/address-modulation guest vectors remain |
+| MRD/MWT/IWT/IWA, TABLE/MASA/NXADR, RBL/RBP | `Dsp::step` sound RAM path, read latch after two steps | DSPV `ring_table_linear_reads_use_two_step_latency_and_preserve_read_before_write` | Complete sound RAM/pipeline guest corpus and CPU/DMA contention remain |
+| NOFL linear/normalized-float conversion | `pack/unpack`, `Dsp::step` | DSPV `floating_memory_format_has_independent_bit_patterns_and_bounded_error` | Full independent float/subnormal/rounding and delayed memory-cycle corroboration remains |
 | IMXL/ISEL, EFSDL/EFPAN, external CD route | `Dsp::add_slot`, `Scsp::sample` | DSPV `slot_send_wraps_mix_without_saturation_and_dsp_output_obeys_routing`; CLAB exact samples | CLAB in browser: changed guest coefficient changes exact stereo and computed result; real AudioWorklet, changed CD track; full synthesis remains |
-| Invalid instructions/ports | `Dsp::sample/read/write` bounded diagnostics | DSPV `illegal_memory_steps_and_reserved_ports_fail_without_faking_effects` | Guest fault corpus remains |
+| Invalid instructions/ports | `Dsp::step/read/write` bounded diagnostics | DSPV `illegal_memory_steps_and_reserved_ports_fail_without_faking_effects` | Guest fault corpus remains |
+
+The sound scheduler uses the rational 5.6448 MHz instruction clock from
+[SCSP] §2.2/table2.2 (128 steps at 44.1 kHz). Each instruction reads live MPRO,
+COEF, MADRS and RAM at its own deadline. An MRD result remains latched through
+its two-step delay even if another processor subsequently changes RAM. Only
+step127 commits output and advances timers/sample interrupts. Source synthesis
+is captured at the first step; this explicit functional phase policy is not a
+claim of a complete physical PCM pipeline. An untouched DSP skips empty
+instruction deadlines; the first MPRO write joins the current phase without
+replaying elapsed slots.
+
+[SCSP] §3.2/fig3.2 gives DSP requests priority over main/sound CPU requests.
+A DSP RAM instruction owns one memory-cycle interval through the next DSP
+boundary. The [board adapter](../src/bus/transactions.rs) retains a conflicting
+SH-2 or SCU beat until release; the [sound adapter](../src/sound/transactions.rs)
+extends reset/data/prefetch cycles and instruction retirement with sound-clock
+wait states. A delayed RESET prefetch moves both external pulse edges and
+retirement, so an event cannot be scheduled into the past. This implements
+DSP ownership; full PCM, refresh, SCSP DMA and main/sound CPU arbitration remain
+mandatory, along with the other unresolved audio inventory entries.
+
+The original MIT [SCSP clock fixture builder](../tests/fixtures/build_scsp_clock.py)
+emits a synthetic BIOS with independent SH-2, 68k and DSP programs. The 68k
+uploads a program, polls its early EFREG0 result, changes sound RAM and then
+records EFREG1 from a later MRD of the same address. Authored results are
+`091A/11A2` for `1234 -> 2345`, `091A/1A2B` for `1234 -> 3456`, and
+`091A/091A` for the unchanged-operand control. Repeated native/Wasm cold boots
+also require the guest completion marker, no CPU exceptions, the actual RAM
+word and deterministic nonzero stereo. The browser sends fresh emulated samples
+through production AudioWorklet and verifies the expected peak, rendered frames,
+underflow and no dropped samples. Expanded 512 KiB ROM SHA-256:
+`6a9889236deb40ff2d55e4c804c3aea7116940b28314fc88dd8ea3bedf372759`.
+
+Independent [deadline vectors](../src/sound/dsp/clock_tests.rs) cover every side
+of MRD/IWT/multiply/EWT, live program/coefficient/address changes, frame output,
+reset at twelve pipeline boundaries, sound-off independence, idle activation,
+three reset-read wait states, multiply retirement, canceled/stalled RESET and
+simultaneous reset edges at all 128 positions without losing a sample boundary.
+[Board vectors](../src/bus/sound_tests.rs) cover both SH-2s and all three SCU
+channels, retained writes and separate halfword completion. Four advancement
+sizes must produce the same values and boundaries. Existing PCM/FM/envelope,
+CD-DA, Hardware Lab and sound CPU diagnostics remain enabled. This evidence
+addresses these sound contracts and does not complete Issue #17.
 
 Hardware Lab's eight original DSP instructions are uploaded by actual 68k
 `MOVE.W` instructions. Half-gain MIXS0 drives EFREG0, a half-gain MEMS0 multiply

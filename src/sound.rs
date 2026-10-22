@@ -16,6 +16,7 @@ pub const SOUND_RAM_SIZE: usize = 512 * 1024;
 pub const SAMPLE_RATE: u64 = 44_100;
 const REFERENCE_HZ: u64 = 26_874_100;
 const SOUND_CPU_HZ: u64 = 11_289_600;
+const DSP_HZ: u64 = SAMPLE_RATE * 128;
 const BUFFER_FRAMES: usize = 8192;
 
 /// ST-077 §4.2, table 4.32 / fig.4.58: MEM4MB changes the DRAM
@@ -101,6 +102,8 @@ pub struct Scsp {
     lfo: [synthesis::Lfo; 32],
     dma_remaining: u16,
     external: [i16; 2],
+    frame_mix: [i64; 2],
+    frame_active: bool,
     pub generated: u64,
     pub dropped: u64,
     output: VecDeque<i16>,
@@ -125,6 +128,8 @@ impl Default for Scsp {
             lfo: std::array::from_fn(synthesis::Lfo::new),
             dma_remaining: 0,
             external: [0; 2],
+            frame_mix: [0; 2],
+            frame_active: false,
             generated: 0,
             dropped: 0,
             output: VecDeque::with_capacity(BUFFER_FRAMES * 2),
@@ -396,37 +401,16 @@ impl Scsp {
         }
         Ok(())
     }
-    /// One stereo 44.1 kHz frame. Integer Q16 phase and fixed gain constants make
-    /// native and Wasm output identical. Direct mode bypasses envelope/TL/LFO.
-    fn sample(&mut self, ram: &mut [u8]) -> Result<(), BusError> {
+    /// Capture source inputs once per frame. Effects instructions subsequently
+    /// run at separate sound-domain deadlines; output is committed after step127.
+    fn begin_sample(&mut self, ram: &mut [u8]) -> Result<(), BusError> {
+        self.frame_active = !self.reset_held;
+        self.frame_mix = [0; 2];
         if self.reset_held {
-            if self.output.len() >= BUFFER_FRAMES * 2 {
-                self.output.pop_front();
-                self.output.pop_front();
-                self.dropped += 1;
-            }
-            self.output.extend([0, 0]);
-            self.generated += 1;
             return Ok(());
         }
         self.dma(ram)?;
         let config = self.ram_config();
-        for timer in 0..3 {
-            let index = 12 + timer;
-            let prescale = 1 << ((self.common[index] >> 8) & 7);
-            self.timer_phase[timer] += 1;
-            if self.timer_phase[timer] >= prescale {
-                self.timer_phase[timer] = 0;
-                let count = self.common[index] & 255;
-                if count != 255 {
-                    self.common[index] = (self.common[index] & !255) | (count + 1);
-                }
-                if count == 254 {
-                    self.request(1 << (6 + timer));
-                }
-            }
-        }
-        self.request(0x400);
         let mut mix = [0i64; 2];
         for i in 0..32 {
             let regs = self.slots[i];
@@ -605,8 +589,40 @@ impl Scsp {
             voice.phase += if voice.reverse { -step } else { step };
         }
         self.stack.end_frame();
-        self.dsp
-            .sample(ram, config, self.common[1], self.external)?;
+        self.frame_mix = mix;
+        self.dsp.begin_sample();
+        Ok(())
+    }
+    fn dsp_step(&mut self, step: usize, ram: &mut [u8]) -> Result<(), BusError> {
+        if self.frame_active {
+            self.dsp
+                .step(step, ram, self.ram_config(), self.common[1], self.external)?;
+        }
+        Ok(())
+    }
+    fn end_sample(&mut self) {
+        if !self.frame_active {
+            self.push_output([0; 2]);
+            return;
+        }
+        for timer in 0..3 {
+            let index = 12 + timer;
+            let prescale = 1 << ((self.common[index] >> 8) & 7);
+            self.timer_phase[timer] += 1;
+            if self.timer_phase[timer] >= prescale {
+                self.timer_phase[timer] = 0;
+                let count = self.common[index] & 255;
+                if count != 255 {
+                    self.common[index] = (self.common[index] & !255) | (count + 1);
+                }
+                if count == 254 {
+                    self.request(1 << (6 + timer));
+                }
+            }
+        }
+        self.request(0x400);
+        let mut mix = self.frame_mix;
+        self.dsp.end_sample();
         for (channel, sample) in self.dsp.effects.into_iter().enumerate() {
             let routing = self.slots[channel][11];
             let send = (routing >> 5) & 7;
@@ -636,6 +652,10 @@ impl Scsp {
                 }
                 / 32768;
         }
+        self.push_output(mix);
+        self.frame_active = false;
+    }
+    fn push_output(&mut self, mix: [i64; 2]) {
         if self.output.len() >= BUFFER_FRAMES * 2 {
             self.output.pop_front();
             self.output.pop_front();
@@ -648,6 +668,14 @@ impl Scsp {
                 .push_back((value.clamp(-32768, 32767) * volume / 15) as i16);
         }
         self.generated += 1;
+    }
+    #[cfg(test)]
+    fn sample(&mut self, ram: &mut [u8]) -> Result<(), BusError> {
+        self.begin_sample(ram)?;
+        for step in 0..128 {
+            self.dsp_step(step, ram)?;
+        }
+        self.end_sample();
         Ok(())
     }
     pub fn drain(&mut self, frames: usize) -> Vec<i16> {
@@ -668,7 +696,8 @@ pub struct Sound {
     cpu_ticks: u64,
     cpu_origin: u64,
     next_cpu: u64,
-    next_sample: u64,
+    ram_busy_until: u64,
+    scsp_tick: u64,
     reset_output_start: Option<u64>,
     reset_output_end: Option<u64>,
     transactions: transactions::Transactions,
@@ -684,7 +713,8 @@ impl Default for Sound {
             cpu_ticks: 0,
             cpu_origin: 0,
             next_cpu: u64::MAX,
-            next_sample: REFERENCE_HZ.div_ceil(SAMPLE_RATE),
+            ram_busy_until: 0,
+            scsp_tick: 0,
             reset_output_start: None,
             reset_output_end: None,
             transactions: transactions::Transactions::default(),
@@ -797,9 +827,30 @@ impl Sound {
     pub fn write_ram8(&mut self, address: usize, value: u8) {
         self.scsp.ram_config().write8(&mut self.ram, address, value);
     }
+    /// ST-077 §3.2/fig3.2: DSP memory requests precede the main and
+    /// sound CPU. A memory instruction owns one of the 128 cycles/Fs.
+    pub(crate) fn ram_busy(&self) -> bool {
+        self.time < self.ram_busy_until
+    }
+    fn scsp_deadline(&self, now: u64) -> u64 {
+        let current = now * DSP_HZ / REFERENCE_HZ;
+        // A higher-priority reset edge may share the current DSP deadline.
+        // Retain that unprocessed edge until its frame work has also run.
+        let mut tick = current
+            + u64::from(
+                current <= self.scsp_tick || (current * REFERENCE_HZ).div_ceil(DSP_HZ) != now,
+            );
+        // An untouched DSP executes no instructions. Keep source-capture and
+        // output edges, skipping only empty intervening execution slots. A live
+        // MPRO write immediately exposes the next slot at the current phase.
+        if !self.scsp.dsp.programmed() && tick & 127 != 1 {
+            tick = (tick + 127) & !127;
+        }
+        (tick * REFERENCE_HZ).div_ceil(DSP_HZ)
+    }
     pub(crate) fn clocks_to_event(&self) -> u32 {
         (self
-            .next_sample
+            .scsp_deadline(self.time)
             .min(self.next_cpu)
             .min(self.reset_output_start.unwrap_or(u64::MAX))
             .min(self.reset_output_end.unwrap_or(u64::MAX))
@@ -845,9 +896,10 @@ impl Sound {
         let mut now = self.time;
         loop {
             let next_midi = now + u64::from(self.scsp.midi_clocks_to_event());
+            let next_scsp = self.scsp_deadline(now);
             let deadline = self
                 .next_cpu
-                .min(self.next_sample)
+                .min(next_scsp)
                 .min(next_midi)
                 .min(self.reset_output_start.unwrap_or(u64::MAX))
                 .min(self.reset_output_end.unwrap_or(u64::MAX));
@@ -855,25 +907,52 @@ impl Sound {
                 break;
             }
             self.scsp.advance_midi((deadline - now) as u32);
+            if deadline < next_scsp {
+                // Empty slots elapsed before this CPU/MIDI/reset event. A
+                // first MPRO write at the edge must not execute them again.
+                self.scsp_tick = deadline * DSP_HZ / REFERENCE_HZ;
+            }
             now = deadline;
             if Some(deadline) == self.reset_output_start {
                 self.scsp.set_reset(true);
+                self.ram_busy_until = 0;
                 self.reset_output_start = None;
             } else if Some(deadline) == self.reset_output_end {
                 self.scsp.set_reset(false);
                 self.reset_output_end = None;
+            } else if deadline == next_scsp {
+                let tick = deadline * DSP_HZ / REFERENCE_HZ;
+                self.scsp_tick = tick;
+                let step = ((tick - 1) & 127) as usize;
+                if step == 0 {
+                    self.scsp.external = cd.as_mut().map_or([0; 2], |cd| cd.audio_sample());
+                    self.scsp.begin_sample(&mut self.ram)?;
+                }
+                if self.scsp.frame_active && self.scsp.dsp.memory_access(step) {
+                    self.ram_busy_until = ((tick + 1) * REFERENCE_HZ).div_ceil(DSP_HZ);
+                }
+                self.scsp.dsp_step(step, &mut self.ram)?;
+                if step == 127 {
+                    self.scsp.end_sample();
+                }
             } else if deadline == self.next_cpu {
-                self.advance_cpu_cycle();
-                self.cpu.reset_output = false; // pulse handled by the transaction journal
+                if self.transactions.ram_pending() && deadline < self.ram_busy_until {
+                    // Translate wait states into the independently clocked CPU
+                    // domain without retiring, repeating or publishing a cycle.
+                    let end = ((self.ram_busy_until - self.cpu_origin) * SOUND_CPU_HZ)
+                        .div_ceil(REFERENCE_HZ);
+                    self.transactions.stall(end - self.cpu_ticks);
+                    self.cpu_ticks = end;
+                } else {
+                    self.advance_cpu_cycle();
+                    self.cpu.reset_output = false;
+                }
                 self.next_cpu =
                     self.cpu_origin + (self.cpu_ticks * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
-            } else if deadline == self.next_sample {
-                self.scsp.external = cd.as_mut().map_or([0; 2], |cd| cd.audio_sample());
-                self.scsp.sample(&mut self.ram)?;
-                self.next_sample = ((self.scsp.generated + 1) * REFERENCE_HZ).div_ceil(SAMPLE_RATE);
             }
         }
         self.scsp.advance_midi((target - now) as u32);
+        self.scsp_tick = target * DSP_HZ / REFERENCE_HZ;
         self.time = target;
         Ok(())
     }

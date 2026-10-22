@@ -1,7 +1,8 @@
 //! Original SCSP effects processor. ST-077 §4.1 figs.4.5–4.7, §4.3 and
 //! §5 fig.5.1 define the buses, RAM widths and circular addressing. ST-228
 //! Reference 1/2 describes multiply/add, delayed TEMP and sound-memory routing.
-//! This is a sample-clock functional interpreter, not a DRAM contention model.
+//! One instruction executes at each 1/(128*44100) second deadline.
+//! Program, coefficient and RAM accesses use their execution-time values.
 use super::{BusError, RamConfig, Scsp};
 
 pub(super) struct Dsp {
@@ -133,6 +134,146 @@ impl Dsp {
             );
         }
     }
+    pub fn programmed(&self) -> bool {
+        self.programmed
+    }
+    pub fn memory_access(&self, step: usize) -> bool {
+        self.programmed && step & 1 != 0 && self.program[step][2] & 0x6000 != 0
+    }
+    pub fn begin_sample(&mut self) {
+        self.effects.fill(0);
+    }
+    pub fn step(
+        &mut self,
+        step: usize,
+        ram: &mut [u8],
+        config: RamConfig,
+        control: u16,
+        external: [i16; 2],
+    ) -> Result<(), BusError> {
+        if !self.programmed {
+            return Ok(());
+        }
+        let [a, b, c, d] = self.program[step];
+        // MPRO63, MPRO44 and MPRO8:7 are reserved on SCSP.
+        if a & 0x8000 != 0 || b & 0x1000 != 0 || d & 0x180 != 0 {
+            return Err(Scsp::error(0x800 + step as u32 * 8));
+        }
+        let tra = usize::from((a >> 8) & 127);
+        let temp = self.temp[(tra + usize::from(self.decrement)) & 127];
+        let ira = usize::from((b >> 6) & 63);
+        let input = match ira {
+            0..=31 => self.mems[ira],
+            32..=47 => self.mix[ira - 32] << 4,
+            48..=49 => i32::from(external[ira - 48]) << 8,
+            _ => return Err(Scsp::error(0x802 + step as u32 * 8)),
+        };
+        let x = if b & 0x8000 != 0 { input } else { temp };
+        let y = match (b >> 13) & 3 {
+            0 => self.fraction,
+            1 => i32::from(self.coefficients[usize::from((d >> 9) & 63)] as i16) >> 3,
+            2 => self.y >> 11,
+            3 => (self.y >> 4) & 0xFFF,
+            _ => unreachable!(),
+        };
+        let addend = if c & 2 != 0 {
+            0
+        } else if c & 1 != 0 {
+            self.accumulator
+        } else {
+            temp
+        };
+        let addend = if c & 4 != 0 {
+            -i64::from(addend)
+        } else {
+            i64::from(addend)
+        };
+        let memory_address = self.address;
+        let shift = (c >> 4) & 3;
+        let shifted = i64::from(self.accumulator) << u32::from(matches!(shift, 1 | 2));
+        let shifted = if shift < 2 {
+            shifted.clamp(-0x800000, 0x7FFFFF) as i32
+        } else {
+            signed(shifted, 24)
+        };
+        // The shifter consumes the previous accumulator. Parallel reads
+        // precede writes, including TEMP, INPUTS and YRL feedback.
+        self.accumulator = signed(((i64::from(x) * i64::from(y)) >> 12) + addend, 26);
+        if b & 0x20 != 0 {
+            self.mems[usize::from(b & 31)] = self.memory;
+        }
+        if a & 0x80 != 0 {
+            let index = (usize::from(a & 127) + usize::from(self.decrement)) & 127;
+            self.temp[index] = shifted;
+        }
+        if c & 0x1000 != 0 {
+            let index = usize::from((c >> 8) & 15);
+            self.effects[index] = self.effects[index].wrapping_add((shifted >> 8) as i16);
+        }
+        if c & 8 != 0 {
+            self.y = input;
+        }
+        if c & 0x40 != 0 {
+            self.fraction = if shift == 3 {
+                shifted & 0xFFF
+            } else {
+                shifted >> 11
+            };
+        }
+        if c & 0x80 != 0 {
+            self.address = if shift == 3 {
+                (shifted >> 12) as u16
+            } else {
+                (input >> 16) as u16
+            } & 0xFFF;
+        }
+        if c & 0x6000 != 0 {
+            if step & 1 == 0 {
+                return Err(Scsp::error(0x804 + step as u32 * 8));
+            }
+            let table = c & 0x8000 != 0;
+            let mut address = u32::from(self.addresses[usize::from((d >> 2) & 31)]);
+            if !table {
+                address += u32::from(self.decrement);
+            }
+            if d & 2 != 0 {
+                address += u32::from(memory_address);
+            }
+            address += u32::from(d & 1);
+            let mask = if table {
+                0xFFFF
+            } else {
+                (0x2000 << ((control >> 7) & 3)) - 1
+            };
+            let index = ((address & mask) + (u32::from(control & 127) << 12)) as usize * 2;
+            if c & 0x2000 != 0 {
+                let word = config.read16(ram, index);
+                self.reads[step & 1] = Some(if d & 0x8000 != 0 {
+                    i32::from(word as i16) << 8
+                } else {
+                    unpack(word)
+                });
+            }
+            if c & 0x4000 != 0 {
+                let word = if d & 0x8000 != 0 {
+                    (shifted >> 8) as u16
+                } else {
+                    pack(shifted)
+                };
+                config.write16(ram, index, word);
+            }
+        }
+        // Reads requested on odd step N are available to IWT at N+2.
+        if let Some(value) = self.reads[(step + 1) & 1].take() {
+            self.memory = value;
+        }
+        Ok(())
+    }
+    pub fn end_sample(&mut self) {
+        self.decrement = self.decrement.wrapping_sub(1);
+        self.mix.fill(0);
+    }
+    #[cfg(test)]
     pub fn sample(
         &mut self,
         ram: &mut [u8],
@@ -140,129 +281,16 @@ impl Dsp {
         control: u16,
         external: [i16; 2],
     ) -> Result<(), BusError> {
-        self.effects.fill(0);
-        if self.programmed {
-            for step in 0..128 {
-                let [a, b, c, d] = self.program[step];
-                // MPRO63, MPRO44 and MPRO8:7 are reserved on SCSP.
-                if a & 0x8000 != 0 || b & 0x1000 != 0 || d & 0x180 != 0 {
-                    return Err(Scsp::error(0x800 + step as u32 * 8));
-                }
-                let tra = usize::from((a >> 8) & 127);
-                let temp = self.temp[(tra + usize::from(self.decrement)) & 127];
-                let ira = usize::from((b >> 6) & 63);
-                let input = match ira {
-                    0..=31 => self.mems[ira],
-                    32..=47 => self.mix[ira - 32] << 4,
-                    48..=49 => i32::from(external[ira - 48]) << 8,
-                    _ => return Err(Scsp::error(0x802 + step as u32 * 8)),
-                };
-                let x = if b & 0x8000 != 0 { input } else { temp };
-                let y = match (b >> 13) & 3 {
-                    0 => self.fraction,
-                    1 => i32::from(self.coefficients[usize::from((d >> 9) & 63)] as i16) >> 3,
-                    2 => self.y >> 11,
-                    3 => (self.y >> 4) & 0xFFF,
-                    _ => unreachable!(),
-                };
-                let addend = if c & 2 != 0 {
-                    0
-                } else if c & 1 != 0 {
-                    self.accumulator
-                } else {
-                    temp
-                };
-                let addend = if c & 4 != 0 {
-                    -i64::from(addend)
-                } else {
-                    i64::from(addend)
-                };
-                let memory_address = self.address;
-                let shift = (c >> 4) & 3;
-                let shifted = i64::from(self.accumulator) << u32::from(matches!(shift, 1 | 2));
-                let shifted = if shift < 2 {
-                    shifted.clamp(-0x800000, 0x7FFFFF) as i32
-                } else {
-                    signed(shifted, 24)
-                };
-                // The shifter consumes the previous accumulator. Parallel reads
-                // precede writes, including TEMP, INPUTS and YRL feedback.
-                self.accumulator = signed(((i64::from(x) * i64::from(y)) >> 12) + addend, 26);
-                if b & 0x20 != 0 {
-                    self.mems[usize::from(b & 31)] = self.memory;
-                }
-                if a & 0x80 != 0 {
-                    let index = (usize::from(a & 127) + usize::from(self.decrement)) & 127;
-                    self.temp[index] = shifted;
-                }
-                if c & 0x1000 != 0 {
-                    let index = usize::from((c >> 8) & 15);
-                    self.effects[index] = self.effects[index].wrapping_add((shifted >> 8) as i16);
-                }
-                if c & 8 != 0 {
-                    self.y = input;
-                }
-                if c & 0x40 != 0 {
-                    self.fraction = if shift == 3 {
-                        shifted & 0xFFF
-                    } else {
-                        shifted >> 11
-                    };
-                }
-                if c & 0x80 != 0 {
-                    self.address = if shift == 3 {
-                        (shifted >> 12) as u16
-                    } else {
-                        (input >> 16) as u16
-                    } & 0xFFF;
-                }
-                if c & 0x6000 != 0 {
-                    if step & 1 == 0 {
-                        return Err(Scsp::error(0x804 + step as u32 * 8));
-                    }
-                    let table = c & 0x8000 != 0;
-                    let mut address = u32::from(self.addresses[usize::from((d >> 2) & 31)]);
-                    if !table {
-                        address += u32::from(self.decrement);
-                    }
-                    if d & 2 != 0 {
-                        address += u32::from(memory_address);
-                    }
-                    address += u32::from(d & 1);
-                    let mask = if table {
-                        0xFFFF
-                    } else {
-                        (0x2000 << ((control >> 7) & 3)) - 1
-                    };
-                    let index = ((address & mask) + (u32::from(control & 127) << 12)) as usize * 2;
-                    if c & 0x2000 != 0 {
-                        let word = config.read16(ram, index);
-                        self.reads[step & 1] = Some(if d & 0x8000 != 0 {
-                            i32::from(word as i16) << 8
-                        } else {
-                            unpack(word)
-                        });
-                    }
-                    if c & 0x4000 != 0 {
-                        let word = if d & 0x8000 != 0 {
-                            (shifted >> 8) as u16
-                        } else {
-                            pack(shifted)
-                        };
-                        config.write16(ram, index, word);
-                    }
-                }
-                // Reads requested on odd step N are available to IWT at N+2.
-                if let Some(value) = self.reads[(step + 1) & 1].take() {
-                    self.memory = value;
-                }
-            }
+        self.begin_sample();
+        for step in 0..128 {
+            self.step(step, ram, config, control, external)?;
         }
-        self.decrement = self.decrement.wrapping_sub(1);
-        self.mix.fill(0);
+        self.end_sample();
         Ok(())
     }
 }
 
+#[cfg(test)]
+mod clock_tests;
 #[cfg(test)]
 mod tests;

@@ -3906,3 +3906,61 @@ SMPC and complete per-feature demo/conformance requirements remain mandatory.
 No umbrella checkbox is completed or waived. Keep PR #18 Draft with the full
 target and intended `Closes #17`; do not merge, close/replace #17, reopen the
 historical trackers or introduce human/firmware/live-site/external-workflow gates.
+
+## SCSP instruction deadlines and DSP sound-memory ownership (2026-10-22)
+
+Related to #17. The effects interpreter previously ran all 128 instructions at
+one sample boundary. A 68k write after observing an early effects result could
+therefore never affect a later RAM read in that sample. Instructions now run at
+separate 5.6448 MHz deadlines, retaining delayed reads and prior accumulator
+results while later instructions observe live program/coefficient/address/RAM
+writes. Output and timer/sample interrupts complete at step127. DSP RAM cycles
+defer conflicting SH-2/SCU/68k data phases; 68k wait states extend retirement,
+reset-vector reads, prefetches and both RESET pulse edges. Reset edges at all
+128 positions retain the sample boundary. Empty unprogrammed slots are skipped,
+and a first program write joins the current phase.
+
+The original MIT clock fixture uploads an actual 68k and effects program from
+SH-2 instructions. The 68k polls early EFREG0, changes sound RAM, then records
+the late EFREG1 result. Independent expectations distinguish changed operands
+and the unchanged-operand control. Native and production Wasm repeat cold boots;
+real guest samples are delivered through AudioWorklet with exact peak,
+rendered-frame, underflow and drop assertions. Implementation, primary manual
+sections, source, hashes and native/browser tests are linked in the
+[effects conformance entry](hardware-conformance.md#executing-scsp-effects-processor-and-guest-evidence).
+All three demonstration discs and their licenses remain unchanged.
+
+Validation actually performed:
+
+- Complete `CARGO_PROFILE_TEST_OPT_LEVEL=1 cargo test --locked`: **724 passed**
+  (448 unit + 276 integration), zero failed/ignored/filtered; doc tests passed.
+  This uses the previously documented optimization setting with debug assertions
+  enabled. The complete unoptimized unit suite also passed all 448 tests;
+  focused sound/68k/CD-DA/synthesis/Hardware Lab integrations passed unoptimized.
+  Superseded unoptimized full-suite attempts were stopped after the complete
+  optimized run; their partial output is not counted as a full-suite pass.
+- `cargo fmt --check`, `cargo build --locked`, native all-target Clippy and
+  Wasm Clippy with `-D warnings`: passed. Native tests used Rust/Cargo 1.94.0;
+  final Clippy and Wasm builds used rustup stable 1.99.0.
+- `sh scripts/build-web.sh`: passed with wasm-bindgen 0.2.129. All **70** CI
+  reproduction commands passed, including the new clock fixture. Lockfiles and
+  production browser application sources remain unchanged.
+- Complete `npm run test:browser`: passed on Chromium 145.0.7632.6 and
+  Node 24.12.0 against the final rebuilt assets under `/saturn-rust/`. This
+  includes the new clock guest and its real AudioWorklet peak/underflow/drop
+  assertions, all inherited hardware fixtures, all three demonstrations,
+  Canvas/audio/input/reset/backup, offline and local-file privacy checks.
+  No required tests were skipped.
+- The clock-sensitive guest was run against an isolated copy of the reviewed
+  atomic-DSP baseline. It failed the independently authored result assertion:
+  `091A/091A` instead of `091A/11A2`. The production worktree was never mutated
+  for this negative control.
+- JavaScript syntax, documentation relative file links and Git whitespace
+  checks passed. Initial guest/test development and a newer Clippy lint were
+  corrected before the final checks; their failures are not counted as passes.
+
+This implements the described sound contracts. Full PCM/refresh/SCSP DMA and
+main/sound CPU ownership, the remaining synthesis/converter boundaries and the
+other CPU, board/reset, SCU, video, CD/HLE, SMPC and comprehensive conformance
+findings remain mandatory. The full-resolution objective is still unmet; no
+umbrella acceptance criterion is marked complete, reduced or waived.

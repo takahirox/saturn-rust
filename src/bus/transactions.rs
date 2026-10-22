@@ -16,6 +16,9 @@ mod refresh_tests;
 #[path = "reset_tests.rs"]
 mod reset_tests;
 #[cfg(test)]
+#[path = "sound_tests.rs"]
+mod sound_tests;
+#[cfg(test)]
 #[path = "vdp1_tests.rs"]
 mod vdp1_tests;
 #[cfg(test)]
@@ -1021,6 +1024,18 @@ impl Bus {
             .as_ref()
             .is_some_and(|a| a.remaining == 0)
         {
+            let sound_memory = self.transactions.active.as_ref().is_some_and(|active| {
+                let physical = active.transfer.address & 0x1FFF_FFFF;
+                (crate::sound::SOUND_RAM..crate::sound::SCSP).contains(&physical)
+            });
+            if sound_memory && self.sound.ram_busy() {
+                // Keep the accepted beat and sampled halves intact until the
+                // SCSP releases DRAM. Recheck on the next main-clock edge;
+                // PLL selection must not convert a reference wait into an
+                // incorrect number of main clocks.
+                self.transactions.active.as_mut().unwrap().remaining = 1;
+                return Ok(());
+            }
             let active = self.transactions.active.take().unwrap();
             self.complete_bus_transaction(active)?;
         }

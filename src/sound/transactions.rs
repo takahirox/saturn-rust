@@ -35,6 +35,7 @@ pub(super) struct Transactions {
     cursor: usize,
     waiting: Option<Operation>,
     start: u64,
+    stalls: u64,
     reset: Option<ResetSequence>,
     cpu: Option<M68k>,
 }
@@ -44,6 +45,16 @@ struct ResetSequence {
     high: u16,
 }
 impl Transactions {
+    pub fn ram_pending(&self) -> bool {
+        self.reset.is_some()
+            || matches!(self.waiting, Some(Operation::Read(a, _) | Operation::Write(a, _, _))
+                if a < SOUND_RAM_SIZE as u32)
+    }
+    pub fn stall(&mut self, clocks: u64) {
+        if self.cpu.is_some() {
+            self.stalls += clocks;
+        }
+    }
     pub fn reset() -> Self {
         Self {
             reset: Some(ResetSequence::default()),
@@ -150,6 +161,7 @@ impl Sound {
             journal.completed.push((operation, result));
         } else {
             journal.start = self.cpu_ticks;
+            journal.stalls = 0;
             self.cpu.set_interrupt(self.scsp.interrupt_level());
             journal.cpu = Some(self.cpu.clone());
         }
@@ -163,25 +175,33 @@ impl Sound {
             }
             if journal.waiting == Some(Operation::ResetOutput) {
                 self.reset_output_start = Some(
-                    self.cpu_origin + ((journal.start + 4) * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ),
+                    self.cpu_origin
+                        + ((journal.start + journal.stalls + 4) * REFERENCE_HZ)
+                            .div_ceil(SOUND_CPU_HZ),
                 );
                 self.reset_output_end = Some(
-                    self.cpu_origin + ((journal.start + 128) * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ),
+                    self.cpu_origin
+                        + ((journal.start + journal.stalls + 128) * REFERENCE_HZ)
+                            .div_ceil(SOUND_CPU_HZ),
                 );
-                self.cpu_ticks = journal.start + 128;
+                self.cpu_ticks = journal.start + journal.stalls + 128;
             } else if let Some(Operation::InternalWait(clocks)) = journal.waiting {
                 self.cpu_ticks += u64::from(clocks);
             } else if let Some(Operation::FinishClocks(clocks)) = journal.waiting {
                 // Data cycles already published remain in the journal. Only
                 // the remaining internal clocks delay architectural results;
                 // trace stacking cannot begin until this barrier completes.
-                self.cpu_ticks = self.cpu_ticks.max(journal.start + u64::from(clocks));
+                self.cpu_ticks = self
+                    .cpu_ticks
+                    .max(journal.start + journal.stalls + u64::from(clocks));
             } else {
                 self.cpu_ticks += 4;
             }
         } else {
             self.cpu = execution;
-            self.cpu_ticks = self.cpu_ticks.max(journal.start + u64::from(clocks));
+            self.cpu_ticks = self
+                .cpu_ticks
+                .max(journal.start + journal.stalls + u64::from(clocks));
             journal.completed.clear();
             journal.cpu = None;
         }
