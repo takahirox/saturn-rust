@@ -329,3 +329,22 @@ Expanded 512 KiB BIOS SHA-256:
 `fdfbc9457de3504e4a979ab29f26a22ae7b5b2f0c1f543d67161dd75f8df6733`.
 The adjacent `tests/fixtures/LICENSE` covers the source and generated ROM/TSV.
 Star Collector, Prism Courier and Hardware Lab media are unchanged.
+
+
+## SCU byte-fringe and B-bus diagnostic
+
+The original [FRINGE builder](../tests/fixtures/build_scu_fringe.py), generated
+[BIOS](../tests/fixtures/scu-fringe.hex) and source-authored
+[records](../tests/fixtures/scu-fringe.tsv) use the adjacent
+[MIT license](../tests/fixtures/LICENSE). No additional assets, firmware, SDK
+or guest-build dependency is required. The program configures SCU DMA and UBC,
+initializes real work/sound/framebuffer RAM, and executes both SH-2 interrupt handlers in 240
+scenes; the host only observes results after execution. Source-literal mutations
+change the expected copied bytes. Native and browser cold resets use the same
+original ROM. CI checks its reproducibility with
+`python3 tests/fixtures/build_scu_fringe.py --check`.
+
+The [conformance entry](hardware-conformance.md#scu-byte-fringes-and-separate-b-bus-halfwords-fringe)
+links primary manual sections, implementation, independent transaction/guest
+vectors and remaining requirements. The three demonstration media and licenses
+are unchanged.

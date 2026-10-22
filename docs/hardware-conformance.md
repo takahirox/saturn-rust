@@ -444,7 +444,7 @@ edge/transfer coverage are still required. Unsupported registers fail explicitly
 | --- | --- | --- | --- | --- |
 | SCU interrupt registers, [SCU] table 2.1/§3.5, [SCUFINAL] #7/10 | IMS/IST, fixed priorities/vectors, master delivery/acknowledgment, A-bus acknowledgment gate | SCUV, SCUROM / SCUROM | VDP1 source 13 and CD A-bus source 16 now execute guest handlers (CLAB); complete external pin/arbitration behavior unverified | Pending |
 | A/B-bus coordination, [SCU] §3.6, [SCUFINAL] #8–12 | Prohibited DMA source/destination checks and bounded error handling | SCUV / SCUROM (valid transfers) | ABUS and BUSG add ASR/refresh waits and deferred CPU/SCU ownership; complete device/display/on-chip-DMAC contention remains | Pending |
-| DMA channels 0–2 direct, [SCU] §§2.1/3.2, [SCUFINAL] #15–24 | Counts, address save/update, unaligned heads/tails, B-bus halfword strides, all seven edge triggers/GO, end/illegal IRQ and priority preemption; one queued retrigger | SCUV, SCUROM, BUSG / SCUROM, BUSG (all three channels) | Exhaustive trigger/device/boundary tests, actual bus latencies and prohibited three-channel behavior pending | Pending |
+| DMA channels 0–2 direct, [SCU] §§2.1/3.2, [SCUFINAL] #15–24 | Counts, address save/update, individual byte heads/tails, separately sampled B-bus halfwords and strides, all seven edge triggers/GO, end/illegal IRQ and priority preemption; one queued retrigger | SCUV, SCUROM, BUSG, [FRINGE](#scu-byte-fringes-and-separate-b-bus-halfwords-fringe) / SCUROM, BUSG, FRINGE (all three channels) | Exhaustive trigger/device/boundary tests, remaining shared-memory ownership/wait arbitration and prohibited three-channel behavior pending | Pending |
 | DMA indirect, [SCUFINAL] #24/25 | Final-spec count/write/read layout, source bit-31 end marker, separately granted descriptor words, table walking, write-address continuation | SCUV, IDESC, SCUROM / SCUROM | IDESC and BUSG cover descriptor bounds/alignment, all channel count widths, partial table faults/preemption/reset and deferred BSC/VRAM waits; complete device contention and transfer-error/count boundaries remain | Pending |
 | DMA device interactions, [SCU] §2.1 | High-RAM to VDP2 VRAM and executing DSP external RAM transfers, real IRQ handlers | SCUV, SCUROM / SCUROM | CLAB adds CD FIFO to high-RAM fixed-source DMA/IRQ; VDP1 routes and full cross-device arbitration remain | Pending |
 | SCU DSP execution/registers, [SCU] §4.5 pp.91–131/141–158 | ALU logical/arithmetic/shift/rotate, signed multiply, parallel X/Y/D1 moves, immediates, delayed jumps/subroutine control, BTM/LPS, END/ENDI, pause/step and read-cleared E/V | SCUV, SCUROM / SCUROM (product/sum/loop/ENDI); DSPD now executes an MVI-PC entry into DMA-loaded code and its delay-slot write | One-successor PRAM-DMA prefetch has DSPBUS native vectors below; prohibited DMA-bank instruction accesses have explicit native/Wasm diagnostics. Full conditional/DMA timing and ALU overflow/pipeline edge inventory remain | Pending |
@@ -2471,3 +2471,78 @@ SHA-256 values:
 
 - VDP1 effects timing: `c5f756beede69e5596adf4f38e1795ba6fc69361808f63ec0eb03a31b50c5e7d`.
 - SMPC command report: `96e77242bb186adf71fbf88d2b1efd44ae178e9e51b0d2db4c0dc18a9e0e0fbf`.
+
+
+## SCU byte fringes and separate B-bus halfwords (FRINGE)
+
+Primary references: [SCU][SCU] §2.1 p.16/fig.2.1 and §3.2 pp.44–45/
+figs.3.6–3.8; [SH7604][H] §6.3.4 for external UBC address comparison.
+A two-byte head/tail is two byte transfers, even when word aligned. A complete
+SCU longword crosses the B-bus as two physical halfwords. These are separate
+contracts: the low half of an already started longword is not a new byte fringe.
+
+Implementation: `Channel::beat` and `Transfer::write_unit` in
+[scu/dma.rs](../src/scu/dma.rs), with accepted phases completed by
+[SCU transactions](../src/scu/transactions.rs) and
+[board transactions](../src/bus/transactions.rs). `ScuUnit` retains each channel's
+accepted width, sampled prefix and remaining physical beats. CPU-bus 8/16/32-bit
+widths and A-bus 8/16-bit widths drive separate data phases, not atomic longwords.
+Each B-bus read samples at its own completion; buffered data survives priority preemption. Each B-bus write
+publishes separately. Only the final write signals the completion interrupt.
+Cancellation discards an unfinished unit without resampling or later writes.
+
+Independent evidence:
+
+- `all_channels_direct_and_indirect_use_byte_fringes_for_every_alignment_and_short_count`
+  in [scu/dma.rs](../src/scu/dma.rs) checks **7,296** direct/indirect transfers:
+  all three channels, every source/destination alignment, counts 1–19 and all
+  four work-RAM/B-bus routes. Independently constructed transaction lists check
+  logical read units and physical B-bus write strides, copied bytes, untouched guards, pointer
+  updates and exactly one completion.
+- Three `scu_b_bus_*` / `scu_partial_b_bus_*` vectors in
+  [board transactions](../src/bus/transactions.rs) check separate read sampling
+  at clocks 10/18, destination publication and IRQ at 28, partial B-bus writes
+  at 20/28, source mutation between phases, channel 2 preemption of channel 0,
+  and SYSRES at seven phase boundaries. Four advancement chunk sizes agree.
+  CPU-bus vectors separately check 8/16/32-bit
+  publication at 68/36/20, source changes after the first sample, higher-channel
+  preemption of a partial byte unit and reset followed by a different bus width.
+  A-bus vectors check all three programmable selects, per-beat NW3 at 8/16-bit
+  widths, exact completion at 56/34 and UBC comparison of the skipped A+3 address.
+  The VDP1 ownership regression now accounts for two byte reads of count 2;
+  its command read remains blocked until the actual second grant ends.
+- `final_sampled_source_unit_can_end_at_the_map_boundary_and_still_drain_to_destination`
+  in [SCU vectors](../src/scu/tests.rs) checks counts 1–8, all three channels,
+  direct/indirect transfers ending at real work-RAM/framebuffer boundaries.
+  `Channel::beat` validates the source only while unread bytes remain; its
+  advanced pointer cannot invalidate already sampled data before the last write.
+- Original MIT [builder](../tests/fixtures/build_scu_fringe.py),
+  [synthetic BIOS](../tests/fixtures/scu-fringe.hex) and authored
+  [goldens](../tests/fixtures/scu-fringe.tsv) execute **240** scenes through
+  [native integration](../tests/scu_fringe.rs) and the production
+  [browser Wasm helper](../scripts/scu-fringe.mjs), required by the complete
+  [browser suite](../scripts/browser-smoke.mjs). Work RAM, sound RAM and framebuffer sources
+  transfer to work/sound RAM on all three channels, direct and indirect.
+  UBC compares source/read and destination/write byte addresses that an
+  incorrect word transfer skips. The guest checks both flags, executes 480 UBC
+  and SCU IRQ handlers, and copies data from its own literals. A complete-longword scene additionally
+  requires the programmed 16-bit work-RAM bus to expose the second halfword
+  to UBC. Changed literals
+  and repeated cold boots retain all independent register/data expectations.
+- Restoring word-sized fringes deliberately fails that native guest. Replacing
+  separate physical bus phases with an atomic longword deliberately fails
+  the B-bus read-phase vector. The same restoration independently fails
+  the expanded native guest. Restoring the exhausted-source validation also
+  fails the independent boundary vector. Production sources are restored
+  before final checks.
+
+Reproduce: `python3 tests/fixtures/build_scu_fringe.py --check`.
+The adjacent [MIT license](../tests/fixtures/LICENSE) covers source and generated
+media. Expanded 512 KiB BIOS SHA-256 and performed checks are recorded in
+[validation](validation-issue-17.md). All three original demonstration discs
+are preserved.
+
+This establishes the specified byte-fringe and B-bus-unit behavior. Complete
+shared sound-memory ownership, external WAIT sampling, descriptor constraints, trigger/reset/arbitration boundaries and
+full SCU/DSP acceptance still require implementation/evidence. It completes no
+umbrella checkbox and does not establish full hardware conformance.

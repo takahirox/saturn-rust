@@ -231,6 +231,11 @@ impl Scu {
     pub(crate) fn abus_access(&self, address: u32, width: usize, write: bool) -> u32 {
         self.abus.access(address, width, write)
     }
+    pub(crate) fn bus_width(&self, address: u32) -> Option<usize> {
+        self.abus
+            .width(address)
+            .or_else(|| dma::b_bus(address).then_some(2))
+    }
     pub(crate) fn refresh_abus(&self) {
         self.abus.request_refresh();
     }

@@ -4,6 +4,79 @@
 criterion is complete; #17 must remain open.** Issues #11/#13/#15 are historical,
 administratively closed trackers and must not be reopened.
 
+## SCU physical bus units and final-source completion (2026-10-22)
+
+Continues Draft PR #18 at remote head
+`c6f183ff3016c728172319a39ecf2a8c6a369f9c`, preserving inherited commit
+`d973006d63808d8920b20ef5df3fb8c9685dbe53` and all earlier guest/device work.
+Upstream main was rechecked as `dbd981b030a46daa6923072ce240680dd2e58ebf`.
+
+SCU DMA now emits individual byte heads/tails and separate physical beats for
+programmed CPU-bus 8/16/32-bit and A-bus 8/16-bit widths. B-bus longwords have
+two halfwords; each samples or publishes at its own completion. Each channel
+retains its accepted width and sampled prefix through priority preemption.
+Reset cancels unfinished phases, and only the final write signals completion.
+An exhausted source pointer no longer rejects buffered final bytes at the end
+of work RAM. The full target remains unchanged and incomplete.
+
+Independent vectors cover 7,296 alignment/count/route combinations, all three
+channels in direct/indirect mode, exact CPU/A/B-bus deadlines, partial source
+mutations, preemption and reset at physical phase boundaries. The original MIT
+FRINGE BIOS executes 240 scenes and 480 actual UBC/SCU IRQ handlers per boot.
+It initializes work/sound/framebuffer data itself; native and production Wasm
+check independently authored UBC flags, copied bytes, source mutations and
+repeated cold resets. Complete-longword comparisons reject atomic narrow bus
+accesses; boundary scenes require buffered data to drain after the last read.
+
+Expanded 512 KiB synthetic BIOS SHA-256:
+`163e983595d81cbd3b0dc9ea25403dcc5f21874de81c860c855f9e636634cb5b`.
+Source, license, exact specification sections, implementations, goldens and
+checks are linked in the [conformance entry](hardware-conformance.md#scu-byte-fringes-and-separate-b-bus-halfwords-fringe).
+
+Validation actually performed on the final production sources:
+
+- `cargo fmt --check`, `cargo build --locked`: passed.
+- Complete `CARGO_PROFILE_TEST_OPT_LEVEL=1 cargo test --locked`: **673 passed**
+  (417 unit + 256 integration), zero failed/ignored/filtered; doc tests passed.
+  Native Rust/Cargo 1.94.0; debug assertions remain enabled.
+- Native all-target and Wasm Clippy with `-D warnings`: passed using installed
+  rustup stable 1.99.0. `sh scripts/build-web.sh`: passed with the same toolchain
+  and wasm-bindgen 0.2.129.
+- All **67** CI guest/media reproducibility commands passed. The three
+  demonstration media and their public licenses remain byte-identical.
+- Complete `npm run test:browser`: passed on Chromium **145.0.7632.6**,
+  Node **24.12.0**, against the final rebuilt production assets under
+  `/saturn-rust/`, without required skips. This includes all 240 FRINGE scenes,
+  480 guest handlers, four changed source literals, cold resets, inherited
+  video/SMPC/CPU/BIOS/HLE fixtures, all three demonstrations, real Canvas and
+  WebAudio, input/focus/reset, offline operation and local-file privacy.
+- Four deliberate negative-control checks failed as required: word-sized
+  fringes (native guest), exhausted-source rejection (independent boundary
+  vector), atomic B-bus read sampling (bus-phase vector) and atomic narrow
+  CPU-bus access (native guest). Sources were restored byte-for-byte before
+  final native/Clippy/Wasm/browser checks. An earlier attempt to remove only
+  the channel-level B-bus split passed because the board adapter already
+  provided the correct physical phases; redundant channel read staging was
+  then removed, and the controls above target the actual physical adapter.
+- The inherited VDP1 and A-bus timing regressions initially expected atomic
+  reads. Their expectations now follow separately derived physical beat costs
+  (VDP1 count2 ownership and A-bus NW3 per halfword), with positive checks at
+  the actual final clock and no early data/IRQ publication.
+- Locked npm dependencies installed successfully with
+  `npm ci --ignore-scripts --no-audit --no-fund --offline`; no package/lockfile
+  changes. JavaScript syntax, documentation file targets and Git whitespace
+  checks passed. Remote CI/deployment is not inferred from local checks.
+
+**Issue #17 is not resolved.** Full CPU/SH7604/68k instruction timing and
+peripheral/reset contracts, shared bus/sound ownership and remaining reset
+boundaries, SCU trigger/descriptor/DSP behavior, remaining video and SCSP/DSP
+conformance, runtime CD/media and complete HLE ABI, SMPC timing and the full
+per-feature demonstration/coverage inventory remain mandatory. This changeset
+completes no umbrella acceptance checkbox. Keep the same PR Draft with its
+full Issue #17 target and intended final closing reference; do not merge,
+close/replace #17, reopen historical trackers or introduce human/firmware/live-
+site/external-workflow gates.
+
 ## MC68EC000 UNLK stack alias and sound-bus evidence (2026-10-22)
 
 Continues PR #18 and preserves all inherited implementation, including local

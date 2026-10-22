@@ -111,7 +111,10 @@ fn cpu_dmac_and_scu_vram_reads_hold_the_in_flight_command_word() {
             // Replacing XC now must affect the unfinished read. Without
             // ownership XC was read at22 and all32 dots would still draw.
             bus.write16(VRAM + 20, 0).unwrap();
-            advance(&mut bus, 136 - 19 - startup - 8 - 1, chunk);
+            // SCU count=2 is two byte reads (ST-097 fig.2.1), so it
+            // owns VRAM for two eight-clock grants. CPU/DMAC use a word.
+            let finish = if owner == Owner::Scu { 144 } else { 136 };
+            advance(&mut bus, finish - 19 - startup - 8 - 1, chunk);
             assert_eq!(bus.read16(REGISTERS + 0x10), Ok(0));
             advance(&mut bus, 1, chunk);
             assert_eq!(bus.read16(REGISTERS + 0x10), Ok(2));

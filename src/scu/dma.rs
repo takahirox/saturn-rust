@@ -64,6 +64,7 @@ impl Table {
             table: self.address + 12,
             last: self.words[2] & 0x8000_0000 != 0,
             buffer: VecDeque::with_capacity(8),
+            write_unit: 0,
         }))
     }
 }
@@ -76,6 +77,10 @@ struct Transfer {
     table: u32,
     last: bool,
     buffer: VecDeque<u8>,
+    // A complete SCU longword is two physical B-bus halfwords. A
+    // halfword already belonging to that unit is distinct from a two-byte
+    // head/tail, which must use byte cycles (figs.2.1/3.6–3.8).
+    write_unit: usize,
 }
 impl Default for Channel {
     fn default() -> Self {
@@ -180,6 +185,7 @@ impl Channel {
                     table: 0,
                     last: true,
                     buffer: VecDeque::with_capacity(8),
+                    write_unit: 0,
                 }
             };
             self.active = Some(transfer);
@@ -187,20 +193,21 @@ impl Channel {
         }
         let t = self.active.as_mut().unwrap();
         let illegal = || ScuError::DmaParameters { channel: index };
-        if !valid_source(t.source)
+        if (t.unread != 0 && !valid_source(t.source))
             || !valid_destination(t.destination)
             || (self.add & 0x100 == 0 && !(0x0580_0000..0x0590_0000).contains(&t.source))
             || (!b_bus(t.destination) && self.add & 7 != 2)
         {
             return Err(illegal());
         }
-        let write_width = width(
-            t.destination,
-            t.unwritten,
-            if b_bus(t.destination) { 2 } else { 4 },
-        );
+        let write_unit = if t.write_unit != 0 {
+            t.write_unit
+        } else {
+            width(t.destination, t.unwritten)
+        };
+        let write_width = write_unit.min(if b_bus(t.destination) { 2 } else { 4 });
         if t.buffer.len() < write_width && t.unread != 0 {
-            let read_width = width(t.source, t.unread, 4);
+            let read_width = width(t.source, t.unread);
             if !valid_source(t.source + read_width as u32 - 1) {
                 return Err(illegal());
             }
@@ -227,6 +234,7 @@ impl Channel {
             2 => memory.write16(t.destination, u16::from_be_bytes([bytes[0], bytes[1]]))?,
             _ => memory.write8(t.destination, bytes[0])?,
         }
+        t.write_unit = write_unit - write_width;
         let stride = match self.add & 7 {
             0 => 0,
             n => 1 << n,
@@ -264,12 +272,11 @@ impl Channel {
         Ok(true)
     }
 }
-fn width(address: u32, remaining: u32, maximum: usize) -> usize {
-    if maximum >= 4 && address & 3 == 0 && remaining >= 4 {
+fn width(address: u32, remaining: u32) -> usize {
+    if address & 3 == 0 && remaining >= 4 {
         4
-    } else if maximum >= 2 && address & 1 == 0 && remaining >= 2 {
-        2
     } else {
+        // ST-097 §2.1 fig.2.1: no word-sized fringe, even when aligned.
         1
     }
 }
@@ -279,6 +286,154 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::collections::BTreeMap;
+
+    #[derive(Default)]
+    struct BytePort {
+        bytes: BTreeMap<u32, u8>,
+        reads: RefCell<Vec<(u32, usize)>>,
+        writes: Vec<(u32, usize)>,
+    }
+    impl BytePort {
+        fn sample(&self, address: u32, width: usize) -> u32 {
+            self.reads.borrow_mut().push((address, width));
+            (0..width).fold(0, |v, i| {
+                v << 8 | u32::from(*self.bytes.get(&(address + i as u32)).unwrap_or(&0xEE))
+            })
+        }
+        fn publish(&mut self, address: u32, width: usize, value: u32) {
+            self.writes.push((address, width));
+            for i in 0..width {
+                self.bytes
+                    .insert(address + i as u32, (value >> ((width - i - 1) * 8)) as u8);
+            }
+        }
+    }
+    impl Memory for BytePort {
+        fn read8(&self, a: u32) -> Result<u8, BusError> {
+            Ok(self.sample(a, 1) as u8)
+        }
+        fn read16(&self, a: u32) -> Result<u16, BusError> {
+            Ok(self.sample(a, 2) as u16)
+        }
+        fn read32(&self, a: u32) -> Result<u32, BusError> {
+            Ok(self.sample(a, 4))
+        }
+        fn write8(&mut self, a: u32, v: u8) -> Result<(), BusError> {
+            self.publish(a, 1, u32::from(v));
+            Ok(())
+        }
+        fn write16(&mut self, a: u32, v: u16) -> Result<(), BusError> {
+            self.publish(a, 2, u32::from(v));
+            Ok(())
+        }
+        fn write32(&mut self, a: u32, v: u32) -> Result<(), BusError> {
+            self.publish(a, 4, v);
+            Ok(())
+        }
+    }
+    fn byte_fringe_cycles(start: u32, count: u32, halfwords: bool) -> Vec<(u32, usize)> {
+        // Independent construction: complete four-byte aligned blocks, and
+        // every other byte separately. Never call the production selector.
+        let end = start + count;
+        let full_start = (start + 3) & !3;
+        let full_end = end & !3;
+        let mut cycles = Vec::new();
+        for address in start..end {
+            if address >= full_start && address < full_end {
+                if address & 3 == 0 {
+                    if halfwords {
+                        cycles.extend([(address, 2), (address + 2, 2)]);
+                    } else {
+                        cycles.push((address, 4));
+                    }
+                }
+            } else {
+                cycles.push((address, 1));
+            }
+        }
+        cycles
+    }
+    #[test]
+    fn all_channels_direct_and_indirect_use_byte_fringes_for_every_alignment_and_short_count() {
+        // ST-097 §2.1 fig.2.1: even a two-byte aligned fringe is byte
+        // access, not a word. Equal copied data cannot establish bus width.
+        for channel in 0..3 {
+            for indirect in [false, true] {
+                for source_base in [0x06001000, 0x05a01000] {
+                    for (destination_base, dst_halfwords) in
+                        [(0x06002000, false), (0x05a02000, true)]
+                    {
+                        for src_offset in 0..4 {
+                            for dst_offset in 0..4 {
+                                for count in 1..=19 {
+                                    let source = source_base + src_offset;
+                                    let destination = destination_base + dst_offset;
+                                    let mut c = Channel::default();
+                                    let mut p = BytePort::default();
+                                    for i in 0..32 {
+                                        p.bytes.insert(source_base + i, (i * 7 + 3) as u8);
+                                    }
+                                    if indirect {
+                                        for (a, v) in [
+                                            (0x06000000, count),
+                                            (0x06000004, destination),
+                                            (0x06000008, source | 0x80000000),
+                                        ] {
+                                            p.publish(a, 4, v);
+                                        }
+                                        p.writes.clear();
+                                    }
+                                    let base = 0x05fe0000 + channel as u32 * 32;
+                                    for (o, v) in [
+                                        (0, source),
+                                        (4, if indirect { 0x06000000 } else { destination }),
+                                        (8, count),
+                                        (12, if dst_halfwords { 0x101 } else { 0x102 }),
+                                        (20, 0x00010107 | if indirect { 1 << 24 } else { 0 }),
+                                        (16, 0x101),
+                                    ] {
+                                        c.write(o, v, base + o).unwrap();
+                                    }
+                                    let mut completed = 0;
+                                    for _ in 0..100 {
+                                        if !c.pending() {
+                                            break;
+                                        }
+                                        completed += usize::from(c.beat(&mut p, channel).unwrap());
+                                    }
+                                    assert!(!c.pending());
+                                    assert_eq!(completed, 1);
+                                    let reads = p.reads.borrow();
+                                    assert_eq!(
+                                        &reads[if indirect { 3 } else { 0 }..],
+                                        byte_fringe_cycles(source, count, false)
+                                    );
+                                    assert_eq!(
+                                        p.writes,
+                                        byte_fringe_cycles(destination, count, dst_halfwords)
+                                    );
+                                    for i in 0..count {
+                                        assert_eq!(
+                                            p.bytes[&(destination + i)],
+                                            p.bytes[&(source + i)]
+                                        );
+                                    }
+                                    assert!(!p.bytes.contains_key(&(destination - 1)));
+                                    assert!(!p.bytes.contains_key(&(destination + count)));
+                                    if !indirect {
+                                        assert_eq!(
+                                            (c.source, c.destination),
+                                            (source + count, destination + count)
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     #[derive(Default)]
     struct Port {
         words: BTreeMap<u32, u32>,

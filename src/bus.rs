@@ -2301,9 +2301,9 @@ mod abus_dma_tests {
     use super::*;
     #[test]
     fn a_bus_waits_delay_scu_data_publication_and_reset_cancels_the_next_beat() {
-        // ST-097 §3.2 and H §7.4: setup2, CS0 read8+NW6, then
-        // RAM write8+IW2. Later reads/writes repeat14+10. Publication is
-        // at the END of each data phase (26/50), never before its waits.
+        // ST-097 §3.2 and H §7.4: setup2, two separate CS0 halfword
+        // reads of8+NW3, then RAM write8+IW2. Later units repeat22+10.
+        // Publication is at the END (34/66), never before the second read.
         for chunk in [1, 3, 8, 17, 64] {
             let mut b = Bus::default();
             b.write32(SCU + 0xB0, 0x00300000).unwrap();
@@ -2319,10 +2319,10 @@ mod abus_dma_tests {
             }
             let mut elapsed = 0;
             for (deadline, first, second) in [
-                (25, 0, 0),
-                (26, u32::MAX, 0),
-                (49, u32::MAX, 0),
-                (50, u32::MAX, u32::MAX),
+                (33, 0, 0),
+                (34, u32::MAX, 0),
+                (65, u32::MAX, 0),
+                (66, u32::MAX, u32::MAX),
             ] {
                 while elapsed < deadline {
                     let n = (deadline - elapsed).min(chunk);

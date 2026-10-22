@@ -10,6 +10,7 @@ import { chromium } from "playwright";
 import { rawMode1 } from "./raw-media-fixture.mjs";
 import { videoTransactions } from "./video-transactions.mjs";
 import { busTransactions } from "./bus-transactions.mjs";
+import { scuFringe } from "./scu-fringe.mjs";
 import { dmacBus } from "./dmac-bus.mjs";
 import { sh2BusPipeline } from "./sh2-bus-pipeline.mjs";
 import { sh2ResetBus } from "./sh2-reset-bus.mjs";
@@ -794,6 +795,7 @@ try {
   await videoTransactions(page);
   await abusTiming(page);
   await busTransactions(page);
+  await scuFringe(page);
   await dmacBus(page);
   await sh2BusPipeline(page);
   await sh2ResetBus(page);

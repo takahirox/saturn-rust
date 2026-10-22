@@ -121,6 +121,57 @@ fn direct_dma_all_channels_unaligned_tails_and_b_bus_halfword_strides() {
 }
 
 #[test]
+fn final_sampled_source_unit_can_end_at_the_map_boundary_and_still_drain_to_destination() {
+    // SCU §2.1 fig.2.1: the buffered final unit must be written after its
+    // source pointer advances beyond the last readable byte. It requests no
+    // extra source access. Real framebuffer/work-RAM lanes, not a fake port.
+    for source_end in [0x05cc0000, 0x06100000] {
+        for channel in 0..3 {
+            for count in 1..=8 {
+                for indirect in [false, true] {
+                    let mut s = Scu::default();
+                    let mut b = Bus::default();
+                    let source = source_end - count;
+                    for i in 0..count {
+                        b.write8(source + i, (i * 7 + 3) as u8).unwrap();
+                    }
+                    if indirect {
+                        for (o, v) in [
+                            (0, count),
+                            (4, HIGH_WRAM + 0x1000),
+                            (8, source | 0x80000000),
+                        ] {
+                            b.write32(HIGH_WRAM + o, v).unwrap();
+                        }
+                    }
+                    set_dma(
+                        &mut s,
+                        channel,
+                        source,
+                        if indirect {
+                            HIGH_WRAM
+                        } else {
+                            HIGH_WRAM + 0x1000
+                        },
+                        count,
+                        0x102,
+                        0x00010107 | if indirect { 1 << 24 } else { 0 },
+                    );
+                    drain(&mut s, &mut b);
+                    assert_eq!(s.status, 1 << (11 - channel));
+                    for i in 0..count {
+                        assert_eq!(b.read8(HIGH_WRAM + 0x1000 + i), Ok((i * 7 + 3) as u8));
+                    }
+                    if !indirect {
+                        assert_eq!(s.read32(SCU + channel * 32), Ok(source_end));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn indirect_table_uses_final_spec_order_and_end_in_read_address() {
     let mut s = Scu::default();
     let mut b = Bus::default();

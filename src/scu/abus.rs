@@ -19,6 +19,9 @@ pub(super) struct Abus {
     refresh_remaining: Cell<u32>,
 }
 impl Abus {
+    pub fn width(&self, address: u32) -> Option<usize> {
+        Self::select(address).map(|select| if self.config[select] & 1 != 0 { 1 } else { 2 })
+    }
     pub fn write(&mut self, offset: u32, value: u32) {
         match offset {
             0xB0 | 0xB4 => {

@@ -78,6 +78,12 @@ struct Active {
     transfer: Transfer,
     remaining: u32,
 }
+struct ScuUnit {
+    cycle: crate::scu::DmaCycle,
+    width: usize,
+    offset: usize,
+    sampled: u32,
+}
 #[derive(Default)]
 pub(super) struct Transactions {
     journals: [RefCell<Journal>; 4],
@@ -100,6 +106,9 @@ pub(super) struct Transactions {
     cpu_group: Option<Processor>,
     previous: Option<Processor>,
     scu: Option<crate::scu::DmaCycle>,
+    // Each channel may be preempted between physical beats of its accepted
+    // logical unit. Keep already sampled data and bus width per channel.
+    scu_units: [Option<ScuUnit>; 4],
 }
 
 struct ScheduledMemory<'a>(CpuBus<'a>);
@@ -573,6 +582,7 @@ impl Bus {
             self.transactions.active = None;
         }
         self.transactions.scu = None;
+        self.transactions.scu_units = std::array::from_fn(|_| None);
     }
     pub(crate) fn cancel_cpu_transaction(&mut self, processor: Processor) {
         self.transactions.resetting[processor as usize] = false;
@@ -813,6 +823,39 @@ impl Bus {
         if self.transactions.lock.is_none()
             && let Some(cycle) = self.scu.prepare_dma_cycle()
         {
+            let mut first = true;
+            let mut last = true;
+            let cycle = if cycle.width == 0 {
+                cycle
+            } else {
+                let physical_width = self
+                    .scu
+                    .bus_width(cycle.address)
+                    .unwrap_or_else(|| self.onchip[0].external_bus_width(cycle.address))
+                    .min(cycle.width);
+                let unit = self.transactions.scu_units[cycle.channel].get_or_insert(ScuUnit {
+                    cycle,
+                    width: physical_width,
+                    offset: 0,
+                    sampled: 0,
+                });
+                first = unit.offset == 0;
+                last = unit.offset + unit.width == unit.cycle.width;
+                crate::scu::DmaCycle {
+                    channel: cycle.channel,
+                    address: unit.cycle.address + unit.offset as u32,
+                    width: unit.width,
+                    value: unit.cycle.value.map(|v| {
+                        let shift = (unit.cycle.width - unit.offset - unit.width) * 8;
+                        (v >> shift)
+                            & if unit.width == 4 {
+                                u32::MAX
+                            } else {
+                                (1 << (unit.width * 8)) - 1
+                            }
+                    }),
+                }
+            };
             let mut remaining = 2;
             if cycle.width != 0 {
                 let write = cycle.value.is_some();
@@ -821,7 +864,7 @@ impl Bus {
                 }
                 // SCU accesses are physical, with the master BSC driving
                 // CPU-bus RAM and the SCU driving A/B-bus selects.
-                let base = self.onchip[0].external_access(cycle.address, write, true, true);
+                let base = self.onchip[0].external_access(cycle.address, write, first, last);
                 let mut extra = self.scu.abus_access(cycle.address, cycle.width, write);
                 if (VRAM..VRAM + 0x80000).contains(&cycle.address) {
                     extra = extra.saturating_add(
@@ -841,8 +884,8 @@ impl Bus {
                     address: cycle.address,
                     width: cycle.width,
                     write: cycle.value,
-                    first: true,
-                    last: true,
+                    first,
+                    last,
                     unit_end: 0,
                     locked: false,
                 },
@@ -1136,7 +1179,24 @@ impl Bus {
                 }
             }
             let cycle = self.transactions.scu.take().unwrap();
-            self.scu.complete_dma_cycle(cycle, result)?;
+            if cycle.width == 0 {
+                self.scu.complete_dma_cycle(cycle, result)?;
+            } else {
+                let unit = self.transactions.scu_units[cycle.channel].as_mut().unwrap();
+                if let Ok(value) = result {
+                    unit.sampled = if cycle.width == 4 {
+                        value
+                    } else {
+                        unit.sampled << (cycle.width * 8) | value
+                    };
+                    unit.offset += cycle.width;
+                }
+                if result.is_err() || unit.offset == unit.cycle.width {
+                    let unit = self.transactions.scu_units[cycle.channel].take().unwrap();
+                    self.scu
+                        .complete_dma_cycle(unit.cycle, result.map(|_| unit.sampled))?;
+                }
+            }
         } else {
             if matches!(active.owner, Owner::Cpu(_))
                 && (t.last || result.is_err())
@@ -1401,6 +1461,267 @@ mod tests {
 #[cfg(test)]
 mod dma_tests {
     use super::*;
+    #[test]
+    fn scu_cpu_bus_units_use_programmed_byte_word_and_longword_physical_deadlines() {
+        // H §§7.2.2/7.3.1; SCU §2.1. Reset ordinary CS3 timing:
+        // setup2, N reads of8, N writes of8 plus initial read/write IW=2.
+        for (config, width, expected, completion) in [
+            (0x7c, 1, 0x11bbccdd, 68),
+            (0xbc, 2, 0x1122ccdd, 36),
+            (0xfc, 4, 0x11223344, 20),
+        ] {
+            for index in 0..3 {
+                for chunk in [1, 3, 8, 64] {
+                    let mut b = Bus::default();
+                    b.for_cpu(Processor::Master)
+                        .write32(0xffffffe4, 0xa55a0000 | config)
+                        .unwrap();
+                    b.write32(HIGH_WRAM + 0x100, 0x11223344).unwrap();
+                    channel(&mut b, index, false);
+                    elapse(&mut b, 10, chunk);
+                    b.write32(HIGH_WRAM + 0x100, 0xaabbccdd).unwrap();
+                    let first_write = 12 + (4 / width) * 8;
+                    elapse(&mut b, first_write - 11, chunk);
+                    assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(0));
+                    elapse(&mut b, 1, chunk);
+                    let mask = u32::MAX << ((4 - width) * 8);
+                    assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(expected & mask));
+                    if width < 4 {
+                        assert_eq!(b.read32(SCU + 0xa4), Ok(0));
+                        elapse(&mut b, completion - first_write - 1, chunk);
+                        assert_eq!(b.read32(SCU + 0xa4), Ok(0));
+                        elapse(&mut b, 1, chunk);
+                    }
+                    assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(expected));
+                    assert_eq!(b.read32(SCU + 0xa4), Ok(1 << (11 - index)));
+                }
+            }
+        }
+    }
+    #[test]
+    fn narrow_scu_units_retain_sampled_bytes_across_preemption_and_discard_them_on_reset() {
+        for chunk in [1, 3, 8, 64] {
+            let mut b = Bus::default();
+            b.for_cpu(Processor::Master)
+                .write32(0xffffffe4, 0xa55a007c)
+                .unwrap();
+            b.write32(HIGH_WRAM + 0x100, 0x11223344).unwrap();
+            channel(&mut b, 0, false);
+            elapse(&mut b, 10, chunk);
+            b.write32(HIGH_WRAM + 0x100, 0xaabbccdd).unwrap();
+            b.write32(HIGH_WRAM + 0x300, 0x76543210).unwrap();
+            for (o, v) in [
+                (0, HIGH_WRAM + 0x300),
+                (4, HIGH_WRAM + 0x400),
+                (8, 4),
+                (12, 0x102),
+                (20, 7),
+                (16, 0x101),
+            ] {
+                b.write32(SCU + 0x40 + o, v).unwrap();
+            }
+            elapse(&mut b, 68, chunk);
+            assert_eq!(b.read32(HIGH_WRAM + 0x400), Ok(0x76543210));
+            assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(0));
+            assert_eq!(b.read32(SCU + 0xa4), Ok(0x200));
+            elapse(&mut b, 57, chunk);
+            assert_eq!(b.read32(SCU + 0xa4), Ok(0x200));
+            elapse(&mut b, 1, chunk);
+            assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(0x11bbccdd));
+            assert_eq!(b.read32(SCU + 0xa4), Ok(0xa00));
+
+            for reset_at in [9, 10, 17, 18, 33, 34, 43, 44, 67] {
+                let mut b = Bus::default();
+                b.for_cpu(Processor::Master)
+                    .write32(0xffffffe4, 0xa55a007c)
+                    .unwrap();
+                b.write32(HIGH_WRAM + 0x100, 0x11223344).unwrap();
+                channel(&mut b, 0, false);
+                elapse(&mut b, reset_at, chunk);
+                b.system_reset();
+                b.write32(HIGH_WRAM + 0x200, 0xabcdef01).unwrap();
+                elapse(&mut b, 100, chunk);
+                assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(0xabcdef01));
+                assert_eq!(b.read32(SCU + 0xa4), Ok(0));
+                // Default32-bit width after reset must not resume a stale
+                // narrow beat, sampled prefix, width or destination write.
+                b.write32(HIGH_WRAM + 0x100, 0x76543210).unwrap();
+                channel(&mut b, 0, false);
+                elapse(&mut b, 20, chunk);
+                assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(0x76543210));
+                assert_eq!(b.read32(SCU + 0xa4), Ok(0x800));
+            }
+        }
+    }
+    #[test]
+    fn scu_a_bus_uses_each_selects_physical_width_waits_and_external_address_comparisons() {
+        // ST-097 §3.2 tables3.10–24: NW=3 per physical beat. The
+        // standard board's unpopulated cartridge/dummy selects read high.
+        // H §6.3.4: an external comparison of A+3 distinguishes8-bit
+        // A,A+1,A+2,A+3 from16-bit A,A+2 regardless of copied data.
+        for (source, register, shift) in [
+            (0x02000000, 0xb0, 16),
+            (0x04000000, 0xb0, 0),
+            (0x05000000, 0xb4, 0),
+        ] {
+            for (narrow, completion, flag) in [(0, 34, 0), (1, 56, 0x4000)] {
+                for chunk in [1, 3, 8, 64] {
+                    let mut b = Bus::default();
+                    b.scu
+                        .write32(SCU + register, (0x30 | narrow) << shift)
+                        .unwrap();
+                    b.onchip[0].write32(0xffffff40, source + 3).unwrap();
+                    b.onchip[0].write16(0xffffff48, 0xa4).unwrap();
+                    b.onchip[0].write16(0xffffff78, 0x3000).unwrap();
+                    b.onchip[0].read16(0xffffff78).unwrap();
+                    for (o, v) in [
+                        (0, source),
+                        (4, HIGH_WRAM),
+                        (8, 4),
+                        (12, 0x102),
+                        (20, 7),
+                        (16, 0x101),
+                    ] {
+                        b.scu.write32(SCU + o, v).unwrap();
+                    }
+                    elapse(&mut b, completion - 1, chunk);
+                    assert_eq!(b.read32(HIGH_WRAM), Ok(0));
+                    assert_eq!(b.read32(SCU + 0xa4), Ok(0));
+                    elapse(&mut b, 1, chunk);
+                    assert_eq!(b.read32(HIGH_WRAM), Ok(u32::MAX));
+                    assert_eq!(b.read32(SCU + 0xa4), Ok(0x800));
+                    assert_eq!(b.onchip[0].read16(0xffffff78).unwrap() & 0x4000, flag);
+                }
+            }
+        }
+    }
+    fn sound_channel(b: &mut Bus, index: u32, read_sound: bool) {
+        let (source, destination) = if read_sound {
+            (crate::sound::SOUND_RAM + 0x100, HIGH_WRAM + 0x200)
+        } else {
+            (HIGH_WRAM + 0x100, crate::sound::SOUND_RAM + 0x200)
+        };
+        b.write32(source, 0x11223344).unwrap();
+        for (offset, value) in [
+            (0, source),
+            (4, destination),
+            (8, 4),
+            (12, if read_sound { 0x102 } else { 0x101 }),
+            (20, 7),
+            (16, 0x101),
+        ] {
+            b.write32(SCU + index * 32 + offset, value).unwrap();
+        }
+    }
+    fn elapse(b: &mut Bus, clocks: u32, chunk: u32) {
+        let mut left = clocks;
+        while left != 0 {
+            let n = left.min(chunk);
+            b.advance_clocks(n).unwrap();
+            left -= n;
+        }
+    }
+    #[test]
+    fn scu_b_bus_reads_sample_each_halfword_at_its_deadline_and_hold_the_other_half() {
+        // ST-097 §2.1 / figs.3.6–3.8: setup2, read8+read8,
+        // CPU-bus write8+IW3=2. No word may be sampled before its grant.
+        for index in 0..3 {
+            for chunk in [1, 3, 8, 64] {
+                let mut b = Bus::default();
+                sound_channel(&mut b, index, true);
+                elapse(&mut b, 9, chunk);
+                b.write16(crate::sound::SOUND_RAM + 0x100, 0x5566).unwrap();
+                elapse(&mut b, 1, chunk); // high word sampled now
+                b.write32(crate::sound::SOUND_RAM + 0x100, 0xaabbccdd)
+                    .unwrap();
+                elapse(&mut b, 7, chunk);
+                assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(0));
+                b.write16(crate::sound::SOUND_RAM + 0x102, 0x7788).unwrap();
+                elapse(&mut b, 1, chunk); // low word sampled now
+                b.write32(crate::sound::SOUND_RAM + 0x100, 0xdeadbeef)
+                    .unwrap();
+                elapse(&mut b, 9, chunk);
+                assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(0));
+                assert_eq!(b.read32(SCU + 0xa4).unwrap() & (1 << (11 - index)), 0);
+                elapse(&mut b, 1, chunk);
+                assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(0x55667788));
+                assert_ne!(b.read32(SCU + 0xa4).unwrap() & (1 << (11 - index)), 0);
+            }
+        }
+    }
+    #[test]
+    fn scu_b_bus_writes_publish_separate_halfwords_and_irq_only_after_the_last_one() {
+        for index in 0..3 {
+            for chunk in [1, 3, 8, 64] {
+                let mut b = Bus::default();
+                sound_channel(&mut b, index, false);
+                let destination = crate::sound::SOUND_RAM + 0x200;
+                elapse(&mut b, 19, chunk);
+                assert_eq!(b.read32(destination), Ok(0));
+                elapse(&mut b, 1, chunk);
+                assert_eq!(b.read32(destination), Ok(0x11220000));
+                // The accepted buffered longword, not the changed source,
+                // supplies the second physical write.
+                b.write32(HIGH_WRAM + 0x100, 0xdeadbeef).unwrap();
+                elapse(&mut b, 7, chunk);
+                assert_eq!(b.read32(destination), Ok(0x11220000));
+                assert_eq!(b.read32(SCU + 0xa4).unwrap() & (1 << (11 - index)), 0);
+                elapse(&mut b, 1, chunk);
+                assert_eq!(b.read32(destination), Ok(0x11223344));
+                assert_ne!(b.read32(SCU + 0xa4).unwrap() & (1 << (11 - index)), 0);
+            }
+        }
+    }
+    #[test]
+    fn scu_partial_b_bus_units_survive_priority_preemption_and_are_canceled_by_system_reset() {
+        for chunk in [1, 3, 8, 64] {
+            let mut b = Bus::default();
+            sound_channel(&mut b, 0, true);
+            elapse(&mut b, 10, chunk); // low-priority high word retained
+            b.write32(crate::sound::SOUND_RAM + 0x100, 0xaabbccdd)
+                .unwrap();
+            b.write32(HIGH_WRAM + 0x300, 0x76543210).unwrap();
+            for (o, v) in [
+                (0, HIGH_WRAM + 0x300),
+                (4, HIGH_WRAM + 0x400),
+                (8, 4),
+                (12, 0x102),
+                (20, 7),
+                (16, 0x101),
+            ] {
+                b.write32(SCU + 0x40 + o, v).unwrap();
+            }
+            elapse(&mut b, 20, chunk); // high-priority job completes first
+            assert_eq!(b.read32(HIGH_WRAM + 0x400), Ok(0x76543210));
+            assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(0));
+            assert_eq!(b.read32(SCU + 0xa4).unwrap() & 0xa00, 0x200);
+            elapse(&mut b, 40, chunk);
+            assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(0x1122ccdd));
+            assert_eq!(b.read32(SCU + 0xa4).unwrap() & 0xa00, 0xa00);
+
+            for read_sound in [false, true] {
+                for reset_at in [9, 10, 17, 18, 19, 20, 27] {
+                    let mut b = Bus::default();
+                    sound_channel(&mut b, 0, read_sound);
+                    elapse(&mut b, reset_at, chunk);
+                    b.system_reset();
+                    let destination = if read_sound {
+                        HIGH_WRAM + 0x200
+                    } else {
+                        crate::sound::SOUND_RAM + 0x200
+                    };
+                    b.write32(destination, 0xaabbccdd).unwrap();
+                    elapse(&mut b, 100, chunk);
+                    assert_eq!(b.read32(destination), Ok(0xaabbccdd));
+                    assert_eq!(b.read32(SCU + 0xa4), Ok(0));
+                    sound_channel(&mut b, 0, read_sound);
+                    elapse(&mut b, 28, chunk);
+                    assert_eq!(b.read32(destination), Ok(0x11223344));
+                    assert_eq!(b.read32(SCU + 0xa4), Ok(0x800));
+                }
+            }
+        }
+    }
     fn channel(b: &mut Bus, i: u32, indirect: bool) {
         let base = SCU + i * 32;
         for (offset, value) in [
