@@ -81,6 +81,93 @@ fn fixture(op: u16) -> (M68k, Spy) {
 }
 
 #[test]
+fn unlk_loads_the_frame_register_before_incrementing_the_selected_stack() {
+    // M68000PRM p.4-194: all eight An encodings are legal, including A7.
+    // Source-authored operation-order vectors; wrapping and 2-mod-4 longwords
+    // distinguish an address-register load from a generic stack pop.
+    for reg in 0..8 {
+        for supervisor in [false, true] {
+            for ccr in 0..32 {
+                for loaded in [0x3000u32, 0x3002, 0xFFFF_FFFC] {
+                    let (mut c, mut m) = fixture(0x4E58 | reg as u16);
+                    c.state.sr = ccr | if supervisor { S } else { 0 };
+                    c.state.a[7] = 0x4000;
+                    c.state.a[reg] = 0x2002;
+                    m.ram.write16(0x2002, (loaded >> 16) as u16).unwrap();
+                    m.ram.write16(0x2004, loaded as u16).unwrap();
+                    assert_eq!(c.step(&mut m), 12);
+                    assert_eq!(c.state.sr, ccr | if supervisor { S } else { 0 });
+                    assert_eq!(c.state.instructions, 1);
+                    assert_eq!(c.state.exceptions, 0);
+                    assert_eq!(
+                        c.state.a[7],
+                        if reg == 7 {
+                            loaded.wrapping_add(4)
+                        } else {
+                            0x2006
+                        }
+                    );
+                    if reg != 7 {
+                        assert_eq!(c.state.a[reg], loaded);
+                    }
+                    assert_eq!(
+                        m.operands(),
+                        [Cycle::Read(0x2002, 2), Cycle::Read(0x2004, 2)]
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn unlk_operand_fault_keeps_the_frame_pointer_and_does_not_increment_sp() {
+    // MC68000UM §6.3.9.1/fig6-7: the second word can fault after the
+    // first was read. UNLK cannot publish a partially loaded An or SP+4.
+    for reg in 0..8 {
+        for failed in [0x2002, 0x2004] {
+            for supervisor in [false, true] {
+                let op = 0x4E58 | reg as u16;
+                let (mut c, mut m) = fixture(op);
+                c.state.ssp = 0x4000;
+                c.state.sr = X | Z | if supervisor { S } else { 0 };
+                c.state.a[7] = 0x3000;
+                c.state.a[reg] = 0x2002;
+                m.ram.write32(0x2000, 0xDEADCAFE).unwrap();
+                m.fail = Some((failed, 2));
+                c.step(&mut m);
+                assert_eq!(c.state.last_vector, Some(2));
+                assert_eq!(c.state.instructions, 0);
+                assert!(!c.state.halted);
+                let sp = if supervisor { 0x1FF4 } else { 0x3FF2 };
+                assert_eq!(c.state.a[7], sp);
+                if reg != 7 {
+                    assert_eq!(c.state.a[reg], 0x2002);
+                }
+                if !supervisor {
+                    assert_eq!(c.state.usp, 0x2002);
+                }
+                assert_eq!(m.ram.read16(sp), Ok(if supervisor { 0x15 } else { 0x11 }));
+                assert_eq!(m.ram.read16(sp + 2), Ok(0));
+                assert_eq!(m.ram.read16(sp + 4), Ok(failed as u16));
+                assert_eq!(m.ram.read16(sp + 6), Ok(op));
+                assert_eq!(
+                    m.ram.read16(sp + 8),
+                    Ok(X | Z | if supervisor { S } else { 0 })
+                );
+                assert_eq!(
+                    m.operands()
+                        .iter()
+                        .filter(|cycle| matches!(cycle, Cycle::Read(_, _)))
+                        .count(),
+                    if failed == 0x2002 { 1 } else { 2 }
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn movem_load_reads_the_terminal_word_before_fetching_the_next_instruction() {
     // MC68000UM table8-10: 3+n reads (word), 3+2n (long), independent
     // of list contents. The initial reset/start opcode fetch adds one here.

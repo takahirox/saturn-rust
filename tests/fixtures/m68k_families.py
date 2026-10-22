@@ -79,6 +79,10 @@ CASES = [
     ('line-F/RTE', [0x702A,0xF000], 42, 0),
     ('TRAPV/RTE', [0x702A,0x44FC,2,0x4E76], 42, 2),
     ('CHK fault/RTE', [0x70FF,0x720A,0x4181], 0xFFFFFFFF, None),
+    # M68000PRM p.4-194: UNLK A7 must add four to the value it just loaded.
+    # Save/restore the actual caller stack in D7; no host-written result state.
+    ('UNLK A7', [0x2E0F,0x4FF9,0,0x6100,0x2EBC,0,0x6200,
+                 0x4E5F,0x200F,0x2E47], 0x6204, 0),
 ]
 
 

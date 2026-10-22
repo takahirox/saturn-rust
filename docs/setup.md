@@ -48,7 +48,11 @@ The interrupt/latch ROM additionally exercises SH-2 signed DIV1 sequences,
 ICR auto/external vectors, SCU DMA acknowledgement and both TH/PAD/VDP2 latch
 inputs. The sound family ROM checks twenty-four complete fault frames and partial
 transfers, including MOVEM terminal reads and deferred instruction fetch, plus
-self-modifying instruction prefetch. Both run in native and Wasm.
+self-modifying instruction prefetch. UNLK's A7 alias now has a source-authored
+family case and frame-literal mutation, retaining all other family/fault records.
+Independent native vectors cover every UNLK address register, flags, user/supervisor
+stacks, first/second-word faults and separate four-clock sound-bus sampling.
+Both ROMs run in native and Wasm.
 The sound reset builder also reproduces two original guests: SH-2 changes the
 sound PC vector after SNDON completes, and a traced 68k RESET records its saved
 SR/PC and retained operand from the guest trace handler. The video transaction

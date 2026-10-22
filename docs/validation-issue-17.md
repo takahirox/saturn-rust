@@ -4,6 +4,64 @@
 criterion is complete; #17 must remain open.** Issues #11/#13/#15 are historical,
 administratively closed trackers and must not be reopened.
 
+## MC68EC000 UNLK stack alias and sound-bus evidence (2026-10-22)
+
+Continues PR #18 and preserves all inherited implementation, including local
+commit `55921e9a8295de57dbb2ef359fe7861f3663f371` (scheduled SH-2 startup vectors,
+VBR address errors and compatible/native UBC fetch comparison). Upstream main
+was rechecked as `dbd981b030a46daa6923072ce240680dd2e58ebf`; the PR was Draft
+at head `6ada79cf8f45821d3a0fdb97eb461e884cc9e78e`.
+
+`UNLK A7` now increments the loaded pointer, following Motorola's documented
+operation order. Independent vectors execute all eight address registers,
+both privilege modes, all CCR values, wrapping/word-aligned pointers and both
+operand-fault words. The real sound adapter separately samples the frame words
+at sound clocks60/64, retains the first word across shared-RAM changes and
+publishes no partial register before completion. Four advancement chunks agree.
+The original MIT family guest now contains 74 cases; a changed frame literal
+requires 6304 instead of 6204, with the real caller stack restored and all other
+family/CCR/fault records retained across cold boots. Native and production Wasm
+execute the same original guest instructions and source-authored goldens.
+Primary references, source links and hashes are in the
+[conformance entry](hardware-conformance.md#mc68ec000-unlk-stack-register-alias-and-sound-bus-sampling).
+
+Validation actually performed:
+
+- `cargo fmt --check`, `cargo build --locked`: passed.
+- Complete `CARGO_PROFILE_TEST_OPT_LEVEL=1 cargo test --locked`: **654 passed**
+  (402 unit + 252 integration), zero failed/ignored/filtered; doc tests passed.
+  Debug assertions remain enabled. Native build/tests used Rust/Cargo1.94.0.
+- Native all-target and Wasm Clippy with `-D warnings`: passed using installed
+  rustup stable1.99.0.
+- `sh scripts/build-web.sh`: passed using stable1.99.0 and wasm-bindgen0.2.129.
+- All **66** existing CI guest/media reproducibility commands: passed. The
+  three demonstration media and public licenses remain byte-identical.
+- Complete `npm run test:browser`: passed on Chromium **145.0.7632.6**, Node
+  **24.12.0**, against rebuilt production assets under `/saturn-rust/`.
+  This includes UNLK frame mutations, all 74 family/EA cases and 24 fault
+  records, inherited STARTV/VBRG/IFUBC/RSTBUS guests, all three demonstrations,
+  actual WebAudio/Canvas, input/focus, reset, offline and local-file checks.
+  The concluding log's old literal family count was then replaced by the
+  actual parsed-vector count; `node --check` passed for that logging-only edit.
+- Restoring the former pop deliberately makes the new original-guest mutation
+  test fail (6300 observed, 6304 required). Production source was restored
+  byte-for-byte before the complete native/build/browser checks.
+- Initial `npm ci --ignore-scripts` was interrupted while still running;
+  `npm ci --ignore-scripts --no-audit --no-fund --offline` then installed the
+  existing locked dependencies successfully. Package/lockfiles are unchanged.
+- JavaScript syntax, changed documentation's relative file links and Git
+  whitespace checks: passed. These are local checks; remote CI/deployment
+  results are not inferred from them.
+
+**The full requested Issue #17 resolution remains incomplete.** All mandatory
+CPU/SH7604, MC68EC000 timing/prefetch, board/reset/coherence/scheduling,
+SCU/DSP, VDP1/VDP2, SCSP/DSP/CD-DA, runtime CD/media/HLE, SMPC/input and complete
+per-feature demonstration/coverage findings remain mandatory where marked
+Pending in the inventory. This work does not complete an umbrella checkbox.
+Keep PR #18 Draft with its full #17 target and intended closing reference; do
+not merge, close/replace #17, reopen historical trackers or introduce a human,
+firmware, live-site or external-workflow gate.
+
 ## Review fixes: scheduled sound reset and VDP1 ownership (2026-10-22)
 
 Continues reviewed PR head `d7ddb09d9fa113e5613889bf19238fd8e2a3a837` in the

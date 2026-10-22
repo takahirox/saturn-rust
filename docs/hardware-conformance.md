@@ -1119,7 +1119,7 @@ synthetic sector data. Existing demo discs remain byte-identical.
 
 Related to #17. This implementation does not satisfy the full umbrella checklist.
 
-**FAMG**: [73 source-authored MC68000 vectors](../tests/fixtures/m68k_families.py),
+**FAMG**: [74 source-authored MC68000 vectors](../tests/fixtures/m68k_families.py),
 [reproducible builder](../tests/fixtures/build_m68k_families.py),
 [native sound-bus execution](../tests/m68k_families.rs) and
 [browser Wasm](../scripts/browser-smoke.mjs). The master uploads actual 68k code;
@@ -1129,7 +1129,7 @@ including PC-relative forms, and supplement SNDR/SIOG's decimal, extend, MOVEM
 and MOVEP evidence. Undefined CHK flags are deliberately excluded. Browser mutation
 of ADD.B to SUB.B changes only that computed result/CCR.
 Expanded 512 KiB ROM SHA-256:
-`eab6da01671b529a3e730affce05c7f39dfa51e3008609654f4bd3bc70a1474a`.
+`fdfbc9457de3504e4a979ab29f26a22ae7b5b2f0c1f543d67161dd75f8df6733`.
 The adjacent MIT license covers source and generated ROM/TSV; no SDK or firmware.
 
 [`M68k::ea_clocks/execute/group0/group4/alu/shift/movem`](../src/m68k.rs)
@@ -1642,7 +1642,7 @@ The new original builders are checked in CI. SHA-256 of committed artifacts:
 
 FAMG now selects MEM4MB before its first stack access and again after RESET.
 Its regenerated literal fault-frame records include the relocated code addresses;
-all 73 family/EA vectors and ten fault records remain checked. Star Collector,
+all 74 family/EA vectors and ten fault records remain checked. Star Collector,
 Prism Courier and Hardware Lab disc bytes are unchanged.
 
 ## VDP1 rotated/interlaced readout and rotation start reloads (RSCG)
@@ -1890,7 +1890,7 @@ identifies the build commands. Reproducible hashes:
 | Caller ISO, with embedded MIT license | `6c3b3e4522fbd244e30c54d29f4c70271530ef73c338cf2a22a06b5d71f47727` |
 | Caller CUE | `60386b4595cbd15efb0f8e1665ed35c9354251616e9fc5ca552d88ed5cbe63db` |
 | Original stereo BINARY tracks | `5d1dc5665f447cb6370f674918e0e6042aba8a6e8bc42f0952ddef80a394338e` |
-| Expanded 512 KiB 68BUS synthetic BIOS | `eab6da01671b529a3e730affce05c7f39dfa51e3008609654f4bd3bc70a1474a` |
+| Expanded 512 KiB 68BUS synthetic BIOS | `fdfbc9457de3504e4a979ab29f26a22ae7b5b2f0c1f543d67161dd75f8df6733` |
 
 These are additional implemented contracts, not complete Issue #17 acceptance.
 All remaining CPU/SH7604, shared bus/scheduler/reset, SCU/DSP, video, sound,
@@ -1938,7 +1938,7 @@ Source, generated hexadecimal ROM and TSV vectors use the existing
 [fixture MIT license](../tests/fixtures/LICENSE). Reproduce with
 `python3 tests/fixtures/build_m68k_families.py --check` (already required in CI).
 Expanded ROM SHA-256:
-`eab6da01671b529a3e730affce05c7f39dfa51e3008609654f4bd3bc70a1474a`.
+`fdfbc9457de3504e4a979ab29f26a22ae7b5b2f0c1f543d67161dd75f8df6733`.
 The three demonstration discs and all other guest artifacts are unchanged.
 `movem_following_program_fetch_fault_occurs_after_all_operand_reads` separately
 checks completed loads, the terminal read and subsequent program-fetch failure,
@@ -2399,3 +2399,43 @@ advance IF/MA/multiplier timing and interrupt-transition speculation still requi
 implementation/evidence. These changes do not satisfy the remaining CPU/peripheral,
 68k, board, SCU/DSP, video, audio, CD/HLE, SMPC and comprehensive acceptance findings.
 No umbrella acceptance checkbox is changed.
+
+
+## MC68EC000 UNLK stack-register alias and sound-bus sampling
+
+Primary specifications: [Motorola M68000PRM](https://www.nxp.com/docs/en/reference-manual/M68000PRM.pdf)
+p.4-194 (UNLK operation order), [68UM] §§5.1/6.3.9.1 (word data cycles and
+fault frames), table8-10 (12-clock UNLK). Related to #17.
+
+`M68k::group4` now loads the selected address register before incrementing SP.
+When the selected register is A7, the increment applies to the newly loaded
+pointer; the previous generic pop incremented the old pointer before overwriting
+it. Other An encodings retain their results, flags and cycle budget. A failed
+operand word cannot publish a partial An load or the final stack increment.
+
+| Contract | Implementation | Independent native evidence | Executing guest / production Wasm evidence |
+| --- | --- | --- | --- |
+| All address registers, SP alias, wrapping, flags and privilege modes | `M68k::group4` in [m68k.rs](../src/m68k.rs) | `unlk_loads_the_frame_register_before_incrementing_the_selected_stack` in [bus_tests.rs](../src/m68k/bus_tests.rs): 1536 literal operation-order cases, both operand-word addresses and no extra memory cycle | Original `UNLK A7` program in [m68k_families.py](../tests/fixtures/m68k_families.py) saves/restores its actual caller stack, writes its own frame, executes UNLK and records 6204. [Native](../tests/m68k_families.rs) and [browser Wasm](../scripts/browser-smoke.mjs) change the frame literal and require 6304, with every other family/fault record retained and repeated cold boots |
+| First/second-word faults preserve completed pointer selection | Same checked `M68k::read` and architectural exception entry | `unlk_operand_fault_keeps_the_frame_pointer_and_does_not_increment_sp`: all eight An, both privilege modes, both fault words; vector2, selected/active/user stacks, original CCR, SSW, IR, exact fault address and no retirement | Existing 24 guest-authored fault records remain checked alongside all 74 family/EA cases; the new UNLK fault corpus itself is native evidence |
+| Independent word-completion sampling and retained high half | Existing four-clock sound transaction journal in [transactions.rs](../src/sound/transactions.rs) | `unlk_samples_each_frame_word_at_its_own_sound_bus_completion` in [reset_tests.rs](../src/sound/reset_tests.rs): real MOVEA/UNLK/MOVE/STOP instructions; high word at60 and low at64 sound clocks. A shared-RAM change between them produces 00066304, with no partial register publication at63, identical for chunks1/3/17/10000 | The source-authored family program runs through this same production sound adapter in native/Wasm, retains its caller stack, finishes and produces guest-configured nonzero PCM |
+
+The source, ROM and TSV use the existing [MIT fixture license](../tests/fixtures/LICENSE).
+The already-required `python3 tests/fixtures/build_m68k_families.py --check`
+reproduces the 74 cases and updated fault-PC labels. The fault programs retain
+all instructions, data operands, exception kinds and register expectations; only
+source relocation changes their recorded instruction addresses. No demonstration
+media or public runtime assets change.
+
+Expanded 512 KiB family BIOS SHA-256:
+`fdfbc9457de3504e4a979ab29f26a22ae7b5b2f0c1f543d67161dd75f8df6733`.
+
+- `m68k-families.hex`: `67dc21944dd12c126f5cda5b336e712cdc390bf0267d45a88d633497a7d78d77`.
+- `m68k-families.tsv`: `95ff8106e1c39a7aad792007774dd0b448c12a8269bffe732ebd987ac958d7d5`.
+- `m68k-faults.tsv`: `b48311bbe742a0fa3eff61430437292cd6b92c362e915af3c6780805ae3ad065`.
+
+An intentional restoration of the former pop operation makes the native
+original-guest mutation test return 6300 instead of 6304 and fail. The production
+source was restored before complete validation. This entry addresses the UNLK
+contract; the full mandatory CPU, board, SCU, video, audio, CD/HLE, SMPC and
+comprehensive acceptance findings above remain open on this Draft PR. It does
+not establish full Issue #17 resolution or change an umbrella checkbox.

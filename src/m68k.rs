@@ -1027,7 +1027,14 @@ impl M68k {
         }
         if op & 0xFFF8 == 0x4E58 {
             self.state.a[7] = self.state.a[r];
-            self.state.a[r] = self.pop(memory, Size::Long)?;
+            // M68000PRM p.4-194: An -> SP; (SP) -> An; SP+4 -> SP.
+            // In particular UNLK A7 increments the *loaded* SP. A generic
+            // pop increments the old pointer before assigning An and loses
+            // this final increment when the two registers alias. Do not
+            // publish either the loaded register or increment on a failed
+            // first/second operand word.
+            self.state.a[r] = self.read(memory, self.state.a[7], Size::Long, false)?;
+            self.state.a[7] = self.state.a[7].wrapping_add(4);
             return Ok(12);
         }
         if op & 0xFFF0 == 0x4E60 {

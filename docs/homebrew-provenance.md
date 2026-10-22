@@ -311,3 +311,21 @@ reproducibility command checks the changed artifacts; the shared A-bus helper's
 output and all three demonstration discs are preserved. The
 [conformance entry](hardware-conformance.md#scheduled-sh-2-system-register-write-back-interlocks)
 links manual sections, native/Wasm checks, hashes and remaining limitations.
+
+
+## MC68EC000 UNLK stack-alias diagnostic
+
+The original MIT family guest in `tests/fixtures/m68k_families.py` now has
+74 source-authored cases. The new case saves its own caller SP in D7, constructs
+a frame in sound RAM, executes UNLK A7, records its new pointer and restores the
+caller SP before returning. Native and browser tests change the frame literal,
+require the changed result and retain every other family/fault record. This is
+MC68EC000 instruction execution after ordinary SH-2 upload, with no host service
+or guest-result writes. Fault-PC goldens relocate with the original source;
+the previous fault instructions, operands and results are preserved.
+
+Reproduce with `python3 tests/fixtures/build_m68k_families.py --check`.
+Expanded 512 KiB BIOS SHA-256:
+`fdfbc9457de3504e4a979ab29f26a22ae7b5b2f0c1f543d67161dd75f8df6733`.
+The adjacent `tests/fixtures/LICENSE` covers the source and generated ROM/TSV.
+Star Collector, Prism Courier and Hardware Lab media are unchanged.

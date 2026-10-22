@@ -110,6 +110,42 @@ fn reset_prefetch_uses_24_bit_bus_pins_without_truncating_architectural_pc() {
 }
 
 #[test]
+fn unlk_samples_each_frame_word_at_its_own_sound_bus_completion() {
+    // PRM p.4-194; UM §§5.1/6.3.9.1. Reset/prefetch 0..40;
+    // MOVEA completes its extensions at44/48 and its 12 clocks at52;
+    // UNLK prefetch56, frame-high60, frame-low64. The shared RAM can change
+    // between those cycles, but an already completed read is retained.
+    for chunk in [1, 3, 17, 10000] {
+        let mut sound = fixture();
+        sound.ram[4..8].copy_from_slice(&0x200u32.to_be_bytes());
+        let words: [u16; 11] = [
+            0x2E7C, 0, 0x6000, // MOVEA.L #$6000,A7
+            0x4E5F, // UNLK A7
+            0x23CF, 0, 0x800, // MOVE.L A7,$800
+            0x4E72, 0x2700, 0x4E71, 0x4E71,
+        ];
+        for (i, word) in words.into_iter().enumerate() {
+            sound.ram[0x200 + i * 2..0x202 + i * 2].copy_from_slice(&word.to_be_bytes());
+        }
+        sound.scsp.write16(0x400, 0x200).unwrap(); // Connected full sound RAM.
+        sound.ram[0x6000..0x6004].copy_from_slice(&0x00066200u32.to_be_bytes());
+        sound.set_enabled(true).unwrap();
+        until(&mut sound, 59, chunk);
+        assert_eq!(sound.cpu.state.a[7], 0x6000);
+        until(&mut sound, 60, chunk);
+        sound.ram[0x6000..0x6004].copy_from_slice(&0x00076300u32.to_be_bytes());
+        until(&mut sound, 63, chunk);
+        assert_eq!(sound.cpu.state.a[7], 0x6000); // no partial register load
+        until(&mut sound, 64, chunk);
+        assert_eq!(sound.cpu.state.a[7], 0x00066304);
+        until(&mut sound, 120, chunk);
+        assert_eq!(&sound.ram[0x800..0x804], &0x00066304u32.to_be_bytes());
+        assert!(sound.cpu.state.stopped && !sound.cpu.state.halted);
+        assert_eq!(sound.cpu.state.exceptions, 0);
+    }
+}
+
+#[test]
 fn reset_instruction_holds_devices_for_124_clocks_with_four_clock_tail() {
     for chunk in [1, 7, 10000] {
         let mut sound = fixture();
