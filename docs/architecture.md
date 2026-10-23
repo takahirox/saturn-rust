@@ -84,7 +84,10 @@ complete before waiting for the second operand's multiplier access. IF/MA slot
 splits depend on longword alignment, including cache hits; STS GPR writeback
 keeps its existing independent interlock. Clock observations and local waits
 are journaled with memory effects, so instruction replay neither moves a sampled
-boundary nor repeats an operand. Hardware reset replaces this state; exception
+boundary nor repeats an operand. MACH/MACL memory transfers also journal whether
+the access is synchronous: cache arrays and resident reads wait through MA
+completion, while scheduled transfers supply their own final clock.
+Hardware reset replaces this state; exception
 entry advances time without inventing a multiplier flush. The
 [primary-derived timing table and scope](sh2-multiplier.md) and
 [validation record](validation-issue-31.md) describe independent native and

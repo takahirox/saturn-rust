@@ -58,6 +58,15 @@ contention; clocked fetch tests and the FRT guest additionally exercise alignmen
 
 ## Scope and lifecycle
 
+MACH/MACL memory transfers target the **end** of their MA, including when
+separation removes all extra mm stalls (figs7.63/7.71/7.73). A scheduled bus
+transfer can supply the final clock of that wait. Cache-array accesses and
+resident cache reads complete synchronously in the adapter, so their full wait
+must precede the effect. The adapter journals this latency observation before
+suspending; it does not add a second clock to an already scheduled transfer.
+This completion rule for LDS.L/STS.L does not change MAC operand overlap or the
+producer/consumer execution-state table above.
+
 Availability belongs to each SH-2 and advances in its actual PLL clock domain.
 Fetch, operand and on-chip waits can exhaust an earlier mm tail. Replay must
 retain sampled clock boundaries as well as completed memory effects. A reset

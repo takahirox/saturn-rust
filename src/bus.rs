@@ -163,6 +163,13 @@ pub trait Memory {
     fn sh2_pipeline_wait(&mut self, _clocks: u32) -> Result<(), BusError> {
         Ok(())
     }
+    /// Minimum completion latency of the next operand access: zero for a
+    /// synchronous cache access, one for a scheduled transfer (which may take
+    /// longer). Multiplier MA waits can overlap that first transfer clock.
+    /// Replay adapters journal this observation before suspending the CPU.
+    fn sh2_memory_access_latency(&self, _address: u32, _write: bool) -> u32 {
+        0
+    }
     /// MC68000UM table8-1: internal effective-address calculation clocks
     /// occupy no external data cycle. Clocked adapters suspend before the
     /// following operand access; architectural fixtures need no clock domain.

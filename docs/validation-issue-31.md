@@ -174,6 +174,57 @@ Chromium 145.0.7632.6 with no required skips, including both CPUs, both PLLs,
 multiplier mutations and repeated cold boots. The tested production Wasm has
 SHA-256 `833b9caa5451f6a5b8e5094898d887b0c75f9a1e72e7340ec897a9501a44ba7d`.
 
+## Review correction: synchronous cache transfer boundaries
+
+The previous correction subtracted one clock from every memory-transfer wait,
+assuming the subsequent access would supply it. Cache-array accesses and cache
+hits instead complete immediately in `CpuBus`, allowing LDS.L/STS.L effects one
+clock before MA completion. P §7.7.2 figs7.63/7.71/7.73 require the same MA
+completion boundary regardless of which adapter path supplies the memory data.
+
+The CPU now supplies the transfer address and direction. The replay adapter
+journals whether that access has zero latency or a scheduled transfer's minimum
+one-clock latency, using the same tag/way lookup as cache reads. Only a scheduled
+transfer subtracts that clock from the preceding wait. Existing MAC operand
+overlap, arithmetic, execution-state costs and external/on-chip waits remain
+covered by their original vectors and guest expectations.
+
+Two additional scheduler regressions in
+[`src/multiplier_scheduler_tests.rs`](../src/multiplier_scheduler_tests.rs)
+exercise 30 cases: both MACH/MACL directions, 0–4 separating NOPs, cache-array
+stores/loads and resident cache reads. Their independent boundaries remain 42
+for 0–3 NOPs and 43 for four NOPs. They verify no early memory/register effect,
+unchanged execution-state costs, loads seeing a value changed immediately before
+completion, one address update, no repeated store/sample and peer progress.
+The peer's second code line is warmed so the tests can inspect each exact clock
+without skipping over the boundary during an unrelated fetch wait.
+
+An isolated mutation forcing the observed latency back to at least one clock
+restored the reviewed assumption. Both commands exited 101 because the affected
+instruction completed at clock 41, before the independently required 42:
+
+- `cargo test --locked --lib cache_array_multiplier_stores -- --nocapture`
+- `cargo test --locked --lib cache_backed_multiplier_loads -- --nocapture`
+
+The mutation was restored before final checks. All 16 focused multiplier unit/
+scheduler tests and both original dual-CPU FRT guest tests then passed, including
+both PLL selections, arithmetic/spacing/omitted-operation controls and cold boots.
+
+Final revision checks on 2026-10-24 explicitly selected rustup stable Rust 1.99.0
+in PATH: formatting, locked native build, all 836 native tests (none failed or
+ignored), native all-target and Wasm Clippy with warnings denied, all 78
+registered fixture/media reproduction checks and the production web build passed.
+The first Wasm Clippy attempt selected the host's Homebrew compiler and failed
+to find the Wasm target's `core`; selecting the already installed stable compiler
+and target resolved that tooling mismatch. The complete native checks were also
+rerun with that explicit compiler selection.
+
+The complete extended `npm run test:browser` passed under `/saturn-rust/` in
+Chromium 145.0.7632.6 with no required skips, including the original multiplier
+guest, both CPUs/PLLs, mutations and repeated cold boots, all three demonstration
+discs, audio, backup and privacy checks. The tested production Wasm has SHA-256
+`bc3882bb1fd6687bd359f5ca06d4f010188480af32d4f017fb7a6848dbd80faf`.
+
 ## Remaining limits
 
 The multiplier is clocked within the existing architectural instruction-boundary

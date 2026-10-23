@@ -15,7 +15,6 @@ pub(super) struct Access {
     stall: u32,
     tail: u64,
     pub memory_mac: bool,
-    memory_transfer: bool,
 }
 
 impl Multiplier {
@@ -50,13 +49,17 @@ impl Multiplier {
                     0
                 },
                 memory_mac: mac,
-                memory_transfer: matches!(op & 0xF0FF, 0x4002 | 0x4012 | 0x4006 | 0x4016),
             },
             split,
         ))
     }
 
-    pub fn wait(&self, access: &mut Access, bus: &mut impl Memory) -> Result<(), BusError> {
+    pub fn wait(
+        &self,
+        access: &mut Access,
+        bus: &mut impl Memory,
+        transfer: Option<(u32, bool)>,
+    ) -> Result<(), BusError> {
         if access.memory_mac {
             // The first operand is independent of the multiplier. Any time
             // spent fetching it also advances the older operation.
@@ -65,13 +68,22 @@ impl Multiplier {
                 access.stall = self.ready.saturating_sub(access.end) as u32;
             }
         }
-        let clocks = if access.memory_mac || access.memory_transfer {
+        let clocks = if access.memory_mac || transfer.is_some() {
             // A dependent memory cycle may start in the last mm clock,
             // but must not complete before it. Include its EX/first-MA
             // lead-in even with no extra stall; these clocks are already
-            // in last_clocks (P figs7.63/7.71/7.73).
+            // in last_clocks (P figs7.63/7.71/7.73). Only a scheduled
+            // transfer supplies the last clock; synchronous cache accesses
+            // must wait through the completion boundary before taking effect.
             bus.sh2_clock().map_or(access.stall, |now| {
-                (access.end + u64::from(access.stall) - 1).saturating_sub(now) as u32
+                // MAC's second operand is an input to its multiplication;
+                // retain its existing lead-in/overlap. LDS.L/STS.L instead
+                // transfer MACH/MACL at the MA completion boundary.
+                let latency = transfer.map_or(1, |(address, write)| {
+                    bus.sh2_memory_access_latency(address, write)
+                });
+                (access.end + u64::from(access.stall)).saturating_sub(now + u64::from(latency))
+                    as u32
             })
         } else {
             access.stall

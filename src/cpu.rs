@@ -388,8 +388,14 @@ impl Cpu {
         if let Some(multiplier_access) = &mut multiplier_access
             && !multiplier_access.memory_mac
         {
+            let address = self.state.r[((opcode >> 8) & 15) as usize];
+            let memory = match opcode & 0xF0FF {
+                0x4002 | 0x4012 => Some((address.wrapping_sub(4), true)),
+                0x4006 | 0x4016 => Some((address, false)),
+                _ => None,
+            };
             self.multiplier
-                .wait(multiplier_access, bus)
+                .wait(multiplier_access, bus, memory)
                 .map_err(access)?;
         }
 
@@ -594,7 +600,7 @@ impl Cpu {
                 // Read/increment Rn first, then Rm, including when n == m.
                 let a = read_operand(bus, s.r[n], width).map_err(access)? as i32 as i64;
                 self.multiplier
-                    .wait(multiplier_access.as_mut().unwrap(), bus.inner)
+                    .wait(multiplier_access.as_mut().unwrap(), bus.inner, None)
                     .map_err(access)?;
                 let m_address = s.r[m].wrapping_add(if n == m { width } else { 0 });
                 let b = read_operand(bus, m_address, width).map_err(access)? as i32 as i64;

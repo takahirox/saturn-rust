@@ -136,6 +136,133 @@ fn zero_stall_multiplier_loads_sample_at_the_ma_boundary_and_replay_once() {
     }
 }
 
+// Keep the peer on resident NOPs so every clock near t42 is observable.
+fn cache_boundary_pair(code: &[u16]) -> Machine {
+    let mut m = cached_pair(code, &[9; 64]);
+    m.bus
+        .for_cpu(Processor::Slave)
+        .fetch16(HIGH_WRAM + 0x110)
+        .unwrap();
+    m.bus.cpu_delay(Processor::Slave, 0);
+    m
+}
+
+#[test]
+fn cache_array_multiplier_stores_wait_for_ma_completion_and_replay_once() {
+    // P figs7.63/7.71: the final mm ends at t42. Unlike on-chip
+    // peripheral writes, cache-array writes consume no scheduled bus clock.
+    for (spacing, boundary, clocks) in [(0, 42, 5), (1, 42, 3), (2, 42, 3), (3, 42, 1), (4, 43, 2)]
+    {
+        for (op, value) in [(0x4F02, 0), (0x4F12, 21)] {
+            let address = 0xC0000400;
+            let mut code = vec![0xE103, 0xE207, 0x321D];
+            code.extend(std::iter::repeat_n(9, spacing));
+            code.extend([op, 0x001B, 9]);
+            let mut m = cache_boundary_pair(&code);
+            m.cpu = Cpu::start(HIGH_WRAM, address + 4);
+            m.bus
+                .for_cpu(Processor::Master)
+                .write32(address, 0x12345678)
+                .unwrap();
+            advance_to(&mut m, boundary - 1);
+            assert_eq!(m.clocks, boundary - 1);
+            assert_eq!(
+                m.bus.for_cpu(Processor::Master).read32(address),
+                Ok(0x12345678),
+                "{op:04x}, spacing {spacing}: early cache store"
+            );
+            assert_eq!(m.cpu_state().r[15], address + 4);
+            // Retrying at the same clock must retain the original deadline.
+            assert!(
+                !m.issue_cpu(Processor::Master).unwrap(),
+                "spacing {spacing}, op {op:04x}, at {}, retired {}",
+                m.clocks,
+                m.cpu_state().instructions
+            );
+            advance_to(&mut m, boundary);
+            assert_eq!(m.clocks, boundary);
+            assert!(m.issue_cpu(Processor::Master).unwrap());
+            assert_eq!(m.bus.for_cpu(Processor::Master).read32(address), Ok(value));
+            retired(&mut m, 4 + spacing as u64);
+            assert_eq!(m.cpu.last_clocks(), clocks);
+            assert_eq!(m.cpu_state().r[15], address);
+            m.bus
+                .for_cpu(Processor::Master)
+                .write32(address, 0x87654321)
+                .unwrap();
+            advance_to(&mut m, 64);
+            assert_eq!(
+                m.bus.for_cpu(Processor::Master).read32(address),
+                Ok(0x87654321)
+            );
+            assert_eq!(m.cpu_state().r[15], address);
+            assert_eq!(m.bus.for_cpu(Processor::Master).read32(address - 4), Ok(0));
+            assert!(m.slave_state().instructions >= 8);
+            assert_eq!(m.cpu_state().exceptions, 0);
+        }
+    }
+}
+
+#[test]
+fn cache_backed_multiplier_loads_sample_at_ma_completion_and_replay_once() {
+    // P figs7.63/7.73: cache arrays and resident data lines both complete
+    // synchronously. Sample the value changed just before the final MA.
+    for address in [0xC0000400, HIGH_WRAM + 0x2400] {
+        for (spacing, boundary, clocks) in
+            [(0, 42, 5), (1, 42, 3), (2, 42, 3), (3, 42, 1), (4, 43, 2)]
+        {
+            for op in [0x4F06, 0x4F16] {
+                let mut code = vec![0xE103, 0xE207, 0x321D];
+                code.extend(std::iter::repeat_n(9, spacing));
+                code.extend([op, 0x001B, 9]);
+                let mut m = cache_boundary_pair(&code);
+                m.cpu = Cpu::start(HIGH_WRAM, address);
+                let mut memory = m.bus.for_cpu(Processor::Master);
+                memory.write32(address, 0x12345678).unwrap();
+                assert_eq!(memory.read32(address), Ok(0x12345678)); // warm the data line
+                m.bus.cpu_delay(Processor::Master, 0); // discard setup bus costs
+                advance_to(&mut m, boundary - 1);
+                assert_eq!(m.clocks, boundary - 1);
+                assert_eq!((m.cpu_state().mach, m.cpu_state().macl), (0, 21));
+                assert_eq!(m.cpu_state().r[15], address);
+                assert!(
+                    !m.issue_cpu(Processor::Master).unwrap(),
+                    "spacing {spacing}, op {op:04x}, at {}, retired {}",
+                    m.clocks,
+                    m.cpu_state().instructions
+                );
+                m.bus
+                    .for_cpu(Processor::Master)
+                    .write32(address, 0x87654321)
+                    .unwrap();
+                advance_to(&mut m, boundary);
+                retired(&mut m, 4 + spacing as u64);
+                assert_eq!(m.cpu.last_clocks(), clocks);
+                let result = if op == 0x4F06 {
+                    (0x87654321, 21)
+                } else {
+                    (0, 0x87654321)
+                };
+                assert_eq!(
+                    (m.cpu_state().mach, m.cpu_state().macl),
+                    result,
+                    "{op:04x}, spacing {spacing}, address {address:08x}: early cache sample"
+                );
+                assert_eq!(m.cpu_state().r[15], address + 4);
+                m.bus
+                    .for_cpu(Processor::Master)
+                    .write32(address, 0xDEADBEEF)
+                    .unwrap();
+                advance_to(&mut m, 64);
+                assert_eq!((m.cpu_state().mach, m.cpu_state().macl), result);
+                assert_eq!(m.cpu_state().r[15], address + 4);
+                assert!(m.slave_state().instructions >= 8);
+                assert_eq!(m.cpu_state().exceptions, 0);
+            }
+        }
+    }
+}
+
 #[test]
 fn multiplier_ages_during_external_and_onchip_waits_and_is_cpu_local() {
     for address in [(HIGH_WRAM + 0x2000) | 0x20000000, 0xFFFFFE01] {

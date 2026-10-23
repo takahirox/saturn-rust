@@ -36,7 +36,8 @@ mod vdp2_tests;
 enum Operation {
     Clock(u64),
     PipelineWait(u32),
-    Read(u32, usize, bool, bool), // address, width, instruction, TAS
+    MemoryAccessLatency(u32, bool), // address, write
+    Read(u32, usize, bool, bool),   // address, width, instruction, TAS
     Write(u32, usize, u32),
     DmaRead(u32, bool, bool),
     Sleep,
@@ -143,6 +144,18 @@ impl ScheduledMemory<'_> {
                 journal.pipeline_wait.get_or_insert((clocks, clocks));
                 Err(BusError::Pending)
             }
+            Operation::MemoryAccessLatency(address, write) => {
+                let synchronous = self.0.cached
+                    && if write {
+                        matches!(address >> 29, 2 | 3 | 6)
+                    } else {
+                        matches!(address >> 29, 3 | 6)
+                            || self.0.bus.cache[self.0.processor as usize]
+                                .borrow()
+                                .read_hit(address)
+                    };
+                Ok(u32::from(!synchronous))
+            }
             Operation::DmaRead(a, first, last) => self.0.dma_read32(a, first, last),
             Operation::Read(a, 1, _, true) => self.0.tas_read8(a).map(u32::from),
             Operation::Read(a, 1, _, _) => self.0.read8(a).map(u32::from),
@@ -209,6 +222,12 @@ impl Memory for ReplayMemory<'_> {
     }
     fn sh2_fetch_slots(&self) -> bool {
         true
+    }
+    fn sh2_memory_access_latency(&self, address: u32, write: bool) -> u32 {
+        self.0
+            .borrow_mut()
+            .operation(Operation::MemoryAccessLatency(address, write))
+            .unwrap()
     }
     fn sh2_write_context(&self, pc: u32, vector: Option<u8>) {
         self.0
