@@ -1228,6 +1228,15 @@ impl Memory for Bus {
 }
 
 impl CpuBus<'_> {
+    // ST-210 §3 item32; ST-097 §3.2 figs3.6–3.8. Only passive
+    // memory endpoints are covered: never widen a side-effecting register.
+    fn b_bus_memory(address: u32) -> bool {
+        let physical = Bus::physical(address);
+        (SOUND_RAM..SCSP).contains(&physical)
+            || (vdp1::VRAM..vdp1::REGISTERS).contains(&physical)
+            || (VRAM..crate::vdp2::CRAM + 0x1000).contains(&physical)
+    }
+
     fn external_read<const N: usize>(&self, address: u32) -> Result<[u8; N], BusError> {
         self.external_read_group(address, true, true, false)
     }
@@ -1239,6 +1248,35 @@ impl CpuBus<'_> {
         locked: bool,
     ) -> Result<[u8; N], BusError> {
         let chip = &self.bus.onchip[self.processor as usize];
+        if self.scheduled && self.cached && Self::b_bus_memory(address) {
+            // `cached` selects the CPU adapter (even with CCR.CE=0),
+            // distinguishing it from the on-chip DMAC adapter.
+            // Architectural alignment was checked before reaching the bridge.
+            // Both narrow lanes wait for the entire aligned external longword.
+            // The journal retains each independently completed B-bus word.
+            let base = address & !3;
+            let mut unit = [0; 4];
+            for phase in 0..2 {
+                let value = self.scheduled_transfer(transactions::Transfer {
+                    address: base + phase * 2,
+                    width: 2,
+                    write: None,
+                    first: first && phase == 0,
+                    last: last && phase == 1,
+                    unit_end: base + 4,
+                    locked,
+                    bridge_read: true,
+                })?;
+                unit[phase as usize * 2..phase as usize * 2 + 2]
+                    .copy_from_slice(&(value as u16).to_be_bytes());
+            }
+            let lane = (address & 3) as usize;
+            let mut result: [u8; N] = unit[lane..lane + N].try_into().unwrap();
+            if chip.external_little_endian(Bus::physical(address)) {
+                result.reverse();
+            }
+            return Ok(result);
+        }
         let bus_width = chip.external_bus_width(Bus::physical(address));
         let little = chip.external_little_endian(Bus::physical(address));
         // H §7.3.2 figs.7.5/7.6: addresses/byte strobes do not change.
@@ -1259,6 +1297,7 @@ impl CpuBus<'_> {
                     last,
                     unit_end: address + N as u32,
                     locked,
+                    bridge_read: false,
                 })?;
                 bytes.copy_from_slice(&value.to_be_bytes()[4 - width..]);
             } else {

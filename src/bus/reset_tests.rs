@@ -217,6 +217,11 @@ fn slow_video_cycle_holds_manual_reset_past_watchdog_pulse_without_stopping_peer
         b.advance_clocks(765).unwrap();
         assert_eq!(b.take_cpu_reset(p), None);
         b.advance_clocks(1).unwrap();
+        // ST-210 item32: this narrow read drains its second B-bus word
+        // after the blanking-delayed first word. Reset BSC timing adds
+        // T1/T2 plus six Tw for that newly granted physical phase.
+        assert_eq!(b.take_cpu_reset(p), None);
+        b.advance_clocks(8).unwrap();
         assert_eq!(b.take_cpu_reset(p), Some(ResetRequest::Manual));
         assert!(b.transactions.active.is_none());
     }

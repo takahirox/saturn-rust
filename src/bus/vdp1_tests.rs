@@ -311,6 +311,38 @@ fn command_fetch_and_untextured_drawing_use_independent_local_memories() {
     assert_eq!(bus.read16(FRAMEBUFFER + 24), Ok(0));
 }
 
+#[test]
+fn bridge_both_words_own_the_selected_vdp1_memory_and_release_after_completion() {
+    for p in [Processor::Master, Processor::Slave] {
+        for chunk in [1, 3, 17, 10000] {
+            for framebuffer in [false, true] {
+                let mut b = fixture();
+                b.set_slave_enabled(true);
+                advance(&mut b, 68, chunk);
+                let at = (if framebuffer { FRAMEBUFFER } else { VRAM }) | 0x20000100;
+                assert_eq!(b.replay_cpu(p).read16(at), Err(BusError::Pending));
+                b.grant_bus_transaction();
+                advance(&mut b, 8, chunk);
+                assert_eq!(b.replay_cpu(p).read16(at), Err(BusError::Pending));
+                b.grant_bus_transaction();
+                advance(&mut b, 7, chunk);
+                assert_eq!(b.replay_cpu(p).read16(at), Err(BusError::Pending));
+                assert_eq!(
+                    b.read16(FRAMEBUFFER + 8),
+                    Ok(if framebuffer { 0 } else { 0x801F })
+                );
+                advance(&mut b, 1, chunk);
+                assert_eq!(b.replay_cpu(p).read16(at), Ok(0));
+                b.finish_cpu_transaction(p);
+                advance(&mut b, 1, chunk);
+                assert_eq!(b.read16(FRAMEBUFFER + 8), Ok(0x801F));
+                advance(&mut b, 100, chunk);
+                assert_eq!(b.read16(REGISTERS + 0x10), Ok(2));
+            }
+        }
+    }
+}
+
 fn erase_registers(bus: &mut Bus, values: [u16; 3]) {
     for (offset, value) in [6, 8, 10].into_iter().zip(values) {
         bus.write16(REGISTERS + offset, value).unwrap();

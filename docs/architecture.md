@@ -498,6 +498,17 @@ waits. The original [BSC guest](../tests/fixtures/build_bsc_waits.py) initialize
 width/endian once before accesses outside CS0 and uses its FRT to measure actual
 delays in native/Wasm, with width/endian/data/wait operand changes.
 
+Scheduled SH-2 reads of sound RAM, VDP1 VRAM/draw framebuffer and VDP2 VRAM/CRAM
+now pass through an explicit SCU memory bridge: byte/word operands acquire an
+aligned external longword, with two independently completed downstream halfwords.
+The journal retains the first sample through target waits and replay. CPU-side
+external observations describe the assembled longword, while CPU-local operand
+observations retain their requested lanes and sizes. Cache hits remain local;
+refills preserve their wrap order. The [bridge transaction contract](sh2-b-bus-reads.md)
+records primary corrections, alignment, lane extraction, SCSP byte restrictions,
+reset domains and the distinction between specified granularity and deterministic
+timing conventions. MMIO, A-bus conversion and CPU writes remain separate contracts.
+
 The intercycle state machine also implements IW0–3 using the preceding read's
 area/direction, a minimum one-cycle read/write gap and subtraction of already
 empty clocks (SH7604 §7.9, fig.7.47). Occupancy includes T1/T2 and Tw so busy

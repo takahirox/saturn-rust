@@ -24,6 +24,44 @@ SCU/SH7604 work and review evidence. The full outstanding hardware scope remains
 [historical SH-2 checkpoint](validation-issue-11.md). **Pending** means required
 coverage or integrated validation remains missing, even when a subset passes.
 
+## SH-2 B-bus memory read bridge (Issue #37)
+
+Related to #17. Scheduled reads on both SH-2s now distinguish the architectural
+operand, aligned CPU-facing longword and two separately sampled B-bus halfwords.
+The [primary-derived transaction table](sh2-b-bus-reads.md) defines endpoint
+geometry, lane extraction, completion, SCSP byte restrictions and model timing
+conventions. Production changes are in [the CPU adapter](../src/bus.rs) and
+[transaction journal](../src/bus/transactions.rs).
+
+Independent [bridge vectors](../src/bus/bridge_tests.rs),
+[sound arbitration vectors](../src/bus/sound_tests.rs) and
+[VDP1 ownership vectors](../src/bus/vdp1_tests.rs) cover both processors,
+all operand lanes, mirrors/P1, cache refills/hits, retained samples, separately
+arbitrated phases, competing CPU/SCU progress, power/manual reset and debugger
+inspection with advancement chunks 1/3/17/10000. The external UBC observes an
+assembled longword, rather than the downstream word addresses.
+
+The original [guest source](../tests/fixtures/b-bus-reads.s),
+[builder](../tests/fixtures/build_b_bus_reads.py),
+[ROM bytes](../tests/fixtures/b-bus-reads.hex) and
+[authored records](../tests/fixtures/b-bus-reads.tsv) are covered by the
+[fixture MIT license](../tests/fixtures/LICENSE). Native
+[Machine execution](../tests/b_bus_reads.rs) and production
+[browser Wasm execution](../scripts/b-bus-reads.mjs) run identical guest bytes,
+with guest-written sound/video data, both SH-2s, guest FRT observations, operand
+mutations, replaced-read controls and repeated boots. Timing columns in the
+golden TSV are zero placeholders for independently checked bounds, not injected
+guest results. Expanded ROM SHA-256:
+`d7838e209c8b493aad57b4e572f1f3aba8263dd786bc5c9704923d4363ae2473`.
+
+See [validation #37](validation-issue-37.md) for actual failing inherited-path
+negative controls and executed checks. MMIO/A-bus conversion and CPU writes are
+outside this increment; their device-specific contracts remain required. Exact
+SCU pin timing, comprehensive board arbitration/reset, the remaining CPU and
+peripheral semantics, SCU/DSP, video/audio, CD/media/HLE, SMPC and complete
+integration acceptance remain mandatory under #17. Commercial-game compatibility
+remains unverified. This checkpoint does not complete or close #17.
+
 ## References and evidence keys
 
 - **P**: [Hitachi SH-1/SH-2 Programming Manual][P], §5 encodings, §6 instruction descriptions. Section numbers below refer to this manual; §6.30 is SH-1-only and excluded.

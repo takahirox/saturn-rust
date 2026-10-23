@@ -27,6 +27,87 @@ fn advance(b: &mut Bus, clocks: u32, chunk: u32) {
     }
 }
 #[test]
+fn bridge_read_retains_each_word_across_dsp_pcm_dma_and_refresh_ownership() {
+    for p in [Processor::Master, Processor::Slave] {
+        for chunk in [1, 3, 17, 10000] {
+            for device in [0, 1, 2, 3] {
+                let mut b = if device == 0 {
+                    fixture()
+                } else {
+                    Bus::default()
+                };
+                b.set_slave_enabled(true);
+                b.write16(SCSP + 0x400, 0x20F).unwrap();
+                b.write32(SOUND_RAM + 0x1000, 0x11223344).unwrap();
+                // Literal completion boundaries from the authored SCSP
+                // schedules (ST-077 §3.2 fig3.2), not timing helpers.
+                let (start, high, low) = match device {
+                    0 => (2, 15, 23), // MRD owns ref10..15
+                    1 => {
+                        for (at, value) in
+                            [(2, 0x1000), (6, 4), (12, 0x100), (22, 0xE000), (0, 0x1820)]
+                        {
+                            b.write16(SCSP + at, value).unwrap();
+                        }
+                        (7, 20, 28) // second PCM read owns ref15..20
+                    }
+                    2 => {
+                        for (at, value) in [
+                            (0x700, 0x1230),
+                            (0x702, 0x5678),
+                            (0x704, 0x9AB8),
+                            (0x706, 0xDEF0),
+                            (0x412, 0x2000),
+                            (0x414, 0x700),
+                            (0x416, 0x3008),
+                        ] {
+                            b.write16(SCSP + at, value).unwrap();
+                        }
+                        (2, 24, 32) // DMA's final word releases at24
+                    }
+                    _ => (588, 600, 610), // refresh ref596..600 and605..610 (128*44.1kHz)
+                };
+                advance(&mut b, start, chunk);
+                let at = SOUND_RAM | 0x20001000;
+                assert_eq!(b.replay_cpu(p).read32(at), Err(BusError::Pending));
+                b.grant_bus_transaction();
+                advance(&mut b, high - start - 1, chunk);
+                assert!(
+                    b.transactions.journals[p as usize]
+                        .borrow()
+                        .beats
+                        .is_empty(),
+                    "device={device}"
+                );
+                assert_eq!(b.read32(at), Ok(0x11223344)); // intervening debugger inspection
+                b.write32(at, 0x55667788).unwrap();
+                advance(&mut b, 1, chunk);
+                assert_eq!(
+                    b.transactions.journals[p as usize].borrow().beats.len(),
+                    1,
+                    "device={device} high={high}"
+                );
+                assert_eq!(
+                    b.transactions.journals[p as usize].borrow().beats[0].1,
+                    Ok(0x5566),
+                    "device={device}"
+                );
+                b.write32(at, 0x99AABBCC).unwrap();
+                assert_eq!(b.replay_cpu(p).read32(at), Err(BusError::Pending));
+                advance(&mut b, low - high - 1, chunk);
+                assert_eq!(b.replay_cpu(p).read32(at), Err(BusError::Pending));
+                advance(&mut b, 1, chunk);
+                b.write32(at, 0xDDEEFF00).unwrap();
+                assert_eq!(
+                    b.replay_cpu(p).read32(at),
+                    Ok(0x5566BBCC),
+                    "device={device}"
+                );
+            }
+        }
+    }
+}
+#[test]
 fn both_sh2_and_scu_wait_for_dsp_ram_without_publishing_or_resampling_early() {
     for chunk in [1, 3, 17, 10000] {
         for (channel, owner) in [

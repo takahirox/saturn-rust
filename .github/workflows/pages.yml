@@ -50,6 +50,7 @@ jobs:
           python3 tests/fixtures/build_sh2_reset_bus.py --check
           python3 tests/fixtures/build_cs0.py --check
           python3 tests/fixtures/build_bus_transactions.py --check
+          python3 tests/fixtures/build_b_bus_reads.py --check
           python3 tests/fixtures/build_scu_fringe.py --check
           python3 tests/fixtures/build_dmac_bus.py --check
           python3 tests/fixtures/build_abus.py --check
