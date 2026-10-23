@@ -641,6 +641,94 @@ mov.l r0,@r8
 add #4,r8
 mov.l r6,@r8
 add #4,r8
+load 0xc0000600,r12
+load 0xc0000700,r13
+clrmac
+mov #3,r1
+mov #7,r2
+mov #0,r6
+load 0x7c00,r3
+jsr @r3
+nop
+load 0xc0000600,r12
+load 0xc0000700,r13
+clrmac
+mov #3,r1
+mov #7,r2
+mov #0,r6
+load 0x7c00,r3
+jsr @r3
+nop
+mov.l r0,@r8
+add #4,r8
+mov.l r6,@r8
+add #4,r8
+load 0xc0000600,r12
+load 0xc0000700,r13
+clrmac
+mov #3,r1
+mov #7,r2
+mov #0,r6
+load 0x8000,r3
+jsr @r3
+nop
+load 0xc0000600,r12
+load 0xc0000700,r13
+clrmac
+mov #3,r1
+mov #7,r2
+mov #0,r6
+load 0x8000,r3
+jsr @r3
+nop
+mov.l r0,@r8
+add #4,r8
+mov.l r6,@r8
+add #4,r8
+load 0xc0000600,r12
+load 0xc0000700,r13
+clrmac
+mov #3,r1
+mov #7,r2
+mov #0,r6
+load 0x8400,r3
+jsr @r3
+nop
+load 0xc0000600,r12
+load 0xc0000700,r13
+clrmac
+mov #3,r1
+mov #7,r2
+mov #0,r6
+load 0x8400,r3
+jsr @r3
+nop
+mov.l r0,@r8
+add #4,r8
+mov.l r6,@r8
+add #4,r8
+load 0xc0000600,r12
+load 0xc0000700,r13
+clrmac
+mov #3,r1
+mov #7,r2
+mov #0,r6
+load 0x8800,r3
+jsr @r3
+nop
+load 0xc0000600,r12
+load 0xc0000700,r13
+clrmac
+mov #3,r1
+mov #7,r2
+mov #0,r6
+load 0x8800,r3
+jsr @r3
+nop
+mov.l r0,@r8
+add #4,r8
+mov.l r6,@r8
+add #4,r8
 load 0x600d,r0
 mov.l r0,@r8
 add #4,r8
@@ -1233,6 +1321,186 @@ lds r1,mach
 dmuls.l r1,r2
 lds r1,mach
 sts mach,r6
+nop
+mov.b @r4,r0
+mov.b @r5,r0
+extu.b r0,r0
+rts
+nop
+
+; section 00007C00
+mov #2,r0
+mov.b r0,@r7
+mov #0,r0
+mov.b r0,@r7
+mov.b @r4,r0
+mov.b @r5,r0
+sts.l mach,@-r12
+nop
+sts.l mach,@-r12
+nop
+sts.l mach,@-r12
+nop
+sts.l mach,@-r12
+nop
+sts.l mach,@-r12
+nop
+sts.l mach,@-r12
+nop
+sts.l mach,@-r12
+nop
+sts.l mach,@-r12
+nop
+sts.l mach,@-r12
+nop
+sts.l mach,@-r12
+nop
+sts.l mach,@-r12
+nop
+sts.l mach,@-r12
+nop
+sts.l mach,@-r12
+nop
+sts.l mach,@-r12
+nop
+sts.l mach,@-r12
+nop
+sts.l mach,@-r12
+nop
+mov.b @r4,r0
+mov.b @r5,r0
+extu.b r0,r0
+rts
+nop
+
+; section 00008000
+mov #2,r0
+mov.b r0,@r7
+mov #0,r0
+mov.b r0,@r7
+mov.b @r4,r0
+mov.b @r5,r0
+sts.l macl,@-r12
+nop
+sts.l macl,@-r12
+nop
+sts.l macl,@-r12
+nop
+sts.l macl,@-r12
+nop
+sts.l macl,@-r12
+nop
+sts.l macl,@-r12
+nop
+sts.l macl,@-r12
+nop
+sts.l macl,@-r12
+nop
+sts.l macl,@-r12
+nop
+sts.l macl,@-r12
+nop
+sts.l macl,@-r12
+nop
+sts.l macl,@-r12
+nop
+sts.l macl,@-r12
+nop
+sts.l macl,@-r12
+nop
+sts.l macl,@-r12
+nop
+sts.l macl,@-r12
+nop
+mov.b @r4,r0
+mov.b @r5,r0
+extu.b r0,r0
+rts
+nop
+
+; section 00008400
+mov #2,r0
+mov.b r0,@r7
+mov #0,r0
+mov.b r0,@r7
+mov.b @r4,r0
+mov.b @r5,r0
+lds.l @r12+,mach
+nop
+lds.l @r12+,mach
+nop
+lds.l @r12+,mach
+nop
+lds.l @r12+,mach
+nop
+lds.l @r12+,mach
+nop
+lds.l @r12+,mach
+nop
+lds.l @r12+,mach
+nop
+lds.l @r12+,mach
+nop
+lds.l @r12+,mach
+nop
+lds.l @r12+,mach
+nop
+lds.l @r12+,mach
+nop
+lds.l @r12+,mach
+nop
+lds.l @r12+,mach
+nop
+lds.l @r12+,mach
+nop
+lds.l @r12+,mach
+nop
+lds.l @r12+,mach
+nop
+mov.b @r4,r0
+mov.b @r5,r0
+extu.b r0,r0
+rts
+nop
+
+; section 00008800
+mov #2,r0
+mov.b r0,@r7
+mov #0,r0
+mov.b r0,@r7
+mov.b @r4,r0
+mov.b @r5,r0
+lds.l @r12+,macl
+nop
+lds.l @r12+,macl
+nop
+lds.l @r12+,macl
+nop
+lds.l @r12+,macl
+nop
+lds.l @r12+,macl
+nop
+lds.l @r12+,macl
+nop
+lds.l @r12+,macl
+nop
+lds.l @r12+,macl
+nop
+lds.l @r12+,macl
+nop
+lds.l @r12+,macl
+nop
+lds.l @r12+,macl
+nop
+lds.l @r12+,macl
+nop
+lds.l @r12+,macl
+nop
+lds.l @r12+,macl
+nop
+lds.l @r12+,macl
+nop
+lds.l @r12+,macl
 nop
 mov.b @r4,r0
 mov.b @r5,r0

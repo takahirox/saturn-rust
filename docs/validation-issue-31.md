@@ -225,6 +225,60 @@ guest, both CPUs/PLLs, mutations and repeated cold boots, all three demonstratio
 discs, audio, backup and privacy checks. The tested production Wasm has SHA-256
 `bc3882bb1fd6687bd359f5ca06d4f010188480af32d4f017fb7a6848dbd80faf`.
 
+## Review correction: preserve synchronous transfer overlap
+
+The unconditional MA lead-in preserved memory-effect boundaries but prevented
+the successor's EX from overlapping an aligned LDS.L/STS.L. Table7.2 and
+P §7.7.6 figs7.89/7.91 give these instructions one baseline EX interval;
+retirement at the later MA boundary must not add another issue interval.
+
+The multiplier now retains the permitted successor EX time for synchronous
+transfers whose MA ends later. The scheduler recovers that interval while
+keeping its actual memory-completion clamp. A successor multiplier operation
+uses the retained EX time. IF/MA splits already occupy the interval, a waited
+fetch exhausts it, and exception entry clears it. The original transfer wait,
+memory-effect boundaries and replay journal remain in place.
+
+Two new scheduler regressions check actual clocks: all four MACH/MACL memory
+transfer forms preserve their MA effects while the following NOP and MOV issue
+at the independently required times. Both instruction alignments are checked,
+including an explicit assertion that the unaligned IF/MA split still delays EX.
+A separate cold-fetch control verifies that a waited successor fetch consumes
+the overlap and has the same deadline as an independent NOP control.
+
+Four new original guest kernels extend the reproducible MIT fixture to nineteen
+kernels. Each executes sixteen aligned transfer/NOP pairs, taking 32 clocks
+and measuring FRT floor((6+32)/8)=4. Both CPUs run the same kernels at both PLL
+selections and across repeated cold boots in native and production-browser
+checks. The existing arithmetic, spacing and omitted-operation mutations remain.
+
+Before the fix, `cargo test --locked --lib synchronous_mac_memory_transfers
+-- --nocapture` exited 101 at the successor-issue assertion. The expanded native
+guest command, `cargo test --locked --test sh2_multiplier
+both_guest_cpus_measure_multiplier -- --nocapture`, also exited 101: all four
+new FRT records were 6 rather than the independently authored 4. These failures
+demonstrate why `last_clocks()` assertions alone did not detect the regression.
+
+Revision checks on 2026-10-24 explicitly used rustup stable: `cargo fmt --check`,
+`cargo build --locked`, `cargo test --locked` (838 passed, zero failed or ignored,
+79 result groups), native all-target and Wasm Clippy with warnings denied, and
+all 78 registered fixture/media reproduction checks passed.
+
+`sh scripts/build-web.sh` and the complete extended `npm run test:browser`
+passed against the final production artifact under `/saturn-rust/` in Chromium
+145.0.7632.6, with no required skips. This includes both CPUs/PLLs, all nineteen
+multiplier kernels, arithmetic/spacing/omitted-operation mutations and cold
+boots, the three demonstration discs, audio, backup and privacy checks. The
+tested production Wasm has SHA-256
+`2868ac374fdd9017e8c92386240456c637c58548eef9db111cd4a12634e432ef`.
+
+The expanded 524288-byte BIOS has SHA-256
+`c278a0ee08398cf591df6fa887c165145435d45d0fd4b675e18164389d78996d`.
+Its reproducible `.hex`, `.s` and `.tsv` hashes are respectively
+`4265b9187b07d50d3ce02a9cae0885affedb7138725cd26fd7197963d3adf5f5`,
+`2ff6b59e6382e58477b2cc0d319050fc0ccec7c8653f9685ba6dcafbcd08782e` and
+`6c09e4a3246554dc1256a311af77f7b00e0c095d963087de9512fb9cd7e5aa69`.
+
 ## Remaining limits
 
 The multiplier is clocked within the existing architectural instruction-boundary

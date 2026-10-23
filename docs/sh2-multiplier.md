@@ -67,6 +67,16 @@ suspending; it does not add a second clock to an already scheduled transfer.
 This completion rule for LDS.L/STS.L does not change MAC operand overlap or the
 producer/consumer execution-state table above.
 
+MA completion and successor issue are distinct boundaries: table7.2 and
+figs7.89/7.91 permit the successor's EX to overlap an aligned transfer's MA.
+After a synchronous transfer retires, the CPU retains that successor EX time.
+If its fetch completes without advancing the clock, the scheduler recovers the
+overlapped clock, and any successor multiplier access uses that EX time. An
+IF/MA split already occupies the interval and permits no such recovery; a waited
+fetch or exception entry exhausts it. Effects still complete at MA, and replay
+retains the observed times. The four memory-transfer guest kernels each measure
+sixteen aligned transfer/NOP pairs: 32 clocks, FRT floor((6+32)/8)=4.
+
 Availability belongs to each SH-2 and advances in its actual PLL clock domain.
 Fetch, operand and on-chip waits can exhaust an earlier mm tail. Replay must
 retain sampled clock boundaries as well as completed memory effects. A reset

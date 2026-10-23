@@ -148,6 +148,104 @@ fn cache_boundary_pair(code: &[u16]) -> Machine {
 }
 
 #[test]
+fn synchronous_mac_memory_transfers_overlap_the_successor_in_elapsed_clocks() {
+    // P table7.2, figs7.89/91: EX=t32, MA ends t34, successor
+    // NOP's EX=t33. Retaining effects until MA must not lose that EX slot.
+    // At 4n+2, IF/MA contention instead gives two EX intervals.
+    for (op, unaligned) in [0x4F02, 0x4F12, 0x4F06, 0x4F16]
+        .into_iter()
+        .flat_map(|op| [(op, false), (op, true)])
+    {
+        let store = op & 4 == 0;
+        let address = 0xC0000400;
+        let mut code = vec![];
+        if unaligned {
+            code.push(9);
+        }
+        code.extend([op, 9, 0xE65A, 9]);
+        let mut m = cache_boundary_pair(&code);
+        m.cpu = Cpu::start(HIGH_WRAM, address + if store { 4 } else { 0 });
+        m.bus
+            .for_cpu(Processor::Master)
+            .write32(address, 0x12345678)
+            .unwrap();
+        let offset = u64::from(unaligned);
+        advance_to(&mut m, 33 + offset);
+        assert_eq!(m.cpu_state().instructions, offset);
+        assert_eq!(
+            m.bus.for_cpu(Processor::Master).read32(address),
+            Ok(0x12345678)
+        );
+        if unaligned {
+            advance_to(&mut m, 35);
+            for _ in m.cpu_state().instructions..3 {
+                assert!(m.issue_cpu(Processor::Master).unwrap());
+            }
+            assert!(
+                !m.issue_cpu(Processor::Master).unwrap(),
+                "{op:04x}: IF/MA contention must delay the next EX until t36"
+            );
+        }
+        advance_to(&mut m, 34 + 2 * offset);
+        for _ in m.cpu_state().instructions..3 + offset {
+            assert!(
+                m.issue_cpu(Processor::Master).unwrap(),
+                "{op:04x}: successor EX overlap lost"
+            );
+        }
+        assert_eq!(
+            m.bus.main_clocks,
+            34 + 2 * offset,
+            "{op:04x}: successor EX overlap lost"
+        );
+        assert_eq!(m.cpu_state().r[6], 0x5A);
+        assert_eq!(m.cpu_state().r[15], address + if store { 0 } else { 4 });
+        assert_eq!(
+            m.bus.for_cpu(Processor::Master).read32(address),
+            Ok(if store { 0 } else { 0x12345678 })
+        );
+        assert_eq!(
+            (m.cpu_state().mach, m.cpu_state().macl),
+            match op {
+                0x4F06 => (0x12345678, 0),
+                0x4F16 => (0, 0x12345678),
+                _ => (0, 0),
+            }
+        );
+    }
+}
+
+#[test]
+fn a_waited_successor_fetch_exhausts_synchronous_transfer_overlap() {
+    // Start the same cold MOV fetch at t34, after either an aligned STS.L
+    // (whose successor EX could start at t33) or an independent NOP control.
+    // A real fetch wait consumes that overlap; both deadlines must agree.
+    let mut deadlines = vec![];
+    for first in [0x4F12, 9] {
+        let mut m = cache_boundary_pair(&[first, 0xE65A, 9]);
+        m.cpu = Cpu::start(HIGH_WRAM, 0xC0000404);
+        if m.issue_cpu(Processor::Master).unwrap() {
+            m.bus.advance_clocks(2).unwrap();
+            m.clocks += 2;
+        } else {
+            advance_to(&mut m, 34);
+            assert!(m.issue_cpu(Processor::Master).unwrap());
+        }
+        assert_eq!(m.bus.main_clocks, 34);
+        assert_eq!(m.cpu_state().instructions, 1);
+        let mut memory = m.bus.for_cpu(Processor::Master);
+        memory.write8(cache::CCR, 0x11).unwrap();
+        memory.sh2_discard_prefetch();
+        m.bus.cpu_delay(Processor::Master, 0);
+        retired(&mut m, 2);
+        assert_eq!(m.cpu_state().r[6], 0x5A);
+        assert!(m.bus.main_clocks > 34);
+        deadlines.push((m.bus.main_clocks, m.cpu_ready[0]));
+    }
+    assert_eq!(deadlines[0], deadlines[1]);
+}
+
+#[test]
 fn cache_array_multiplier_stores_wait_for_ma_completion_and_replay_once() {
     // P figs7.63/7.71: the final mm ends at t42. Unlike on-chip
     // peripheral writes, cache-array writes consume no scheduled bus clock.

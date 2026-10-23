@@ -87,6 +87,9 @@ are journaled with memory effects, so instruction replay neither moves a sampled
 boundary nor repeats an operand. MACH/MACL memory transfers also journal whether
 the access is synchronous: cache arrays and resident reads wait through MA
 completion, while scheduled transfers supply their own final clock.
+For synchronous transfers, the CPU also retains the successor's permitted EX
+time. The scheduler recovers its overlap with MA without moving memory effects
+earlier; IF/MA splits, waited fetches and exception entry consume that interval.
 Hardware reset replaces this state; exception
 entry advances time without inventing a multiplier flush. The
 [primary-derived timing table and scope](sh2-multiplier.md) and

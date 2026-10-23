@@ -8,16 +8,34 @@ pub(super) struct Multiplier {
     /// Clock for architectural-only Memory implementations. Clocked adapters
     /// instead supply the PLL's monotonically advancing SH-2 clock count.
     pub clock: u64,
+    /// An aligned synchronous MACH/MACL transfer retires at MA, one clock
+    /// after the successor's EX. Retain that EX boundary for scheduling.
+    next_ex: Option<u64>,
+    pub issue_overlap: u32,
 }
 
 pub(super) struct Access {
     end: u64,
+    successor_ex: u64,
     stall: u32,
     tail: u64,
     pub memory_mac: bool,
+    synchronous_transfer: bool,
 }
 
 impl Multiplier {
+    pub fn issue_clock(&mut self, now: u64) -> u64 {
+        // A waited fetch exhausts the available overlap. Observations are
+        // journaled, so replay consumes the same EX boundary exactly once.
+        self.issue_overlap = u32::from(self.next_ex.take().is_some_and(|ex| now == ex + 1));
+        now - u64::from(self.issue_overlap)
+    }
+
+    pub fn exception(&mut self) {
+        self.next_ex = None;
+        self.issue_overlap = 0;
+    }
+
     pub fn access(&self, op: u16, pc: u32, now: u64, fetch: bool) -> Option<(Access, u32)> {
         let word = matches!(op & 0xF00F, 0x200E | 0x200F);
         let long = matches!(op & 0xF00F, 0x0007 | 0x3005 | 0x300D);
@@ -40,6 +58,7 @@ impl Multiplier {
         Some((
             Access {
                 end,
+                successor_ex: now + 1 + u64::from(split),
                 stall,
                 tail: if word || op & 0xF00F == 0x400F {
                     2
@@ -49,6 +68,7 @@ impl Multiplier {
                     0
                 },
                 memory_mac: mac,
+                synchronous_transfer: false,
             },
             split,
         ))
@@ -71,8 +91,8 @@ impl Multiplier {
         let clocks = if access.memory_mac || transfer.is_some() {
             // A dependent memory cycle may start in the last mm clock,
             // but must not complete before it. Include its EX/first-MA
-            // lead-in even with no extra stall; these clocks are already
-            // in last_clocks (P figs7.63/7.71/7.73). Only a scheduled
+            // lead-in even with no extra stall (P figs7.63/7.71/7.73).
+            // finish retains the successor's EX overlap. Only a scheduled
             // transfer supplies the last clock; synchronous cache accesses
             // must wait through the completion boundary before taking effect.
             bus.sh2_clock().map_or(access.stall, |now| {
@@ -82,6 +102,7 @@ impl Multiplier {
                 let latency = transfer.map_or(1, |(address, write)| {
                     bus.sh2_memory_access_latency(address, write)
                 });
+                access.synchronous_transfer = transfer.is_some() && latency == 0;
                 (access.end + u64::from(access.stall)).saturating_sub(now + u64::from(latency))
                     as u32
             })
@@ -95,6 +116,11 @@ impl Multiplier {
     }
 
     pub fn finish(&mut self, access: Access, bus: &impl Memory) -> u32 {
+        if access.synchronous_transfer && access.successor_ex < access.end {
+            // P table7.2/figs7.89/91: MA completion does not delay the
+            // successor's EX. Keep effects at MA, but recover its overlap.
+            self.next_ex = Some(access.successor_ex + u64::from(access.stall));
+        }
         if access.tail != 0 {
             let end = access.end + u64::from(access.stall);
             self.ready = bus.sh2_clock().map_or(end, |now| end.max(now)) + access.tail;

@@ -704,8 +704,11 @@ impl Machine {
                 // External data phases have already consumed their clocks.
                 // Independent internal states can overlap them, never precede
                 // their completion. On-chip wait states remain CPU-local.
+                // A synchronous MACH/MACL MA can retire after its successor's
+                // EX starts. Recover that slot, retaining the completion clamp.
                 self.cpu_ready[i] = (boundary.started
                     + u64::from(self.bus.cpu_main_delay(processor, states)))
+                .saturating_sub(u64::from(cpu.issue_overlap()))
                 .max(
                     self.bus.main_clocks + u64::from(if states == 0 { CLOCKS_PER_STEP } else { 0 }),
                 );

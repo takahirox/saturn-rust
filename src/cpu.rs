@@ -137,6 +137,10 @@ impl Cpu {
         self.last_clocks
     }
 
+    pub(crate) fn issue_overlap(&self) -> u32 {
+        self.multiplier.issue_overlap
+    }
+
     pub fn start(pc: u32, sp: u32) -> Self {
         let mut state = CpuState {
             pc,
@@ -235,6 +239,7 @@ impl Cpu {
     /// Faults caused by unavailable host bus/device behavior stay sticky until reset.
     pub fn step(&mut self, bus: &mut impl Memory) -> Result<(), CpuError> {
         self.last_clocks = 0;
+        self.multiplier.issue_overlap = 0;
         let pc = self.state.pc;
         if matches!(self.state.status, CpuStatus::Running | CpuStatus::Sleeping)
             && !self.state.address_error_pending
@@ -278,6 +283,7 @@ impl Cpu {
         // bus supplies additional waits independently to the machine scheduler.
         bus.sh2_write_context(self.state.pc, Some(vector));
         self.last_clocks = 8;
+        self.multiplier.exception();
         self.multiplier.clock += 8;
         self.load_pipeline = timing::LoadPipeline::default();
         let s = &mut self.state;
@@ -378,6 +384,7 @@ impl Cpu {
         let now = bus
             .sh2_clock()
             .unwrap_or(self.multiplier.clock + u64::from(interlock));
+        let now = self.multiplier.issue_clock(now);
         let mut multiplier_access = self
             .multiplier
             .access(opcode, pc, now, bus.sh2_fetch_slots())

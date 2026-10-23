@@ -38,6 +38,12 @@ KERNELS = [
     ('mac_long', 'mac.l @r12+,@r13+\n'*16+'sts macl,r6\nnop\n', 68, 336),
     ('mac_separated', ('mac.l @r12+,@r13+\n'+'nop\n'*4)*8+'sts macl,r6\nnop\n', 58, 168),
     ('lds_mach', 'dmuls.l r1,r2\nlds r1,mach\n'*8+'sts mach,r6\nnop\n', 66, 3),
+    # P table7.2/figs7.89/91: aligned memory transfers have one EX
+    # interval; the successor NOP overlaps MA. No older mm operation exists.
+    ('sts_memory_mach', 'sts.l mach,@-r12\nnop\n'*16, 32, 0),
+    ('sts_memory_macl', 'sts.l macl,@-r12\nnop\n'*16, 32, 0),
+    ('lds_memory_mach', 'lds.l @r12+,mach\nnop\n'*16, 32, 0),
+    ('lds_memory_macl', 'lds.l @r12+,macl\nnop\n'*16, 32, 0),
 ]
 
 
