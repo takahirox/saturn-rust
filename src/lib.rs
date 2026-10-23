@@ -389,16 +389,7 @@ impl Machine {
     /// Internal battery-backed RAM survives all boot selections and failed boots.
     /// A rejected BIOS leaves ExternalBios selected and the CPU stopped in Reset.
     pub fn reset(&mut self, boot: Boot<'_>) -> Result<(), MachineError> {
-        self.clocks = 0;
-        self.nmi_pending = false;
-        self.dma_errors = [false; 2];
-        self.cpu_ready = [0; 2];
-        self.cpu_boundary = [None; 2];
-        self.cpu_reset_vectors = [None; 2];
-        self.fault = None;
-        self.cpu = Cpu::default();
-        self.slave = Cpu::default();
-        self.bus.reset_volatile();
+        self.clear_execution();
         match boot {
             Boot::ExternalBios(bytes) => {
                 self.mode = Some(BootMode::ExternalBios);
@@ -407,7 +398,9 @@ impl Machine {
             }
             Boot::HleDisc(image) => {
                 self.mode = Some(BootMode::HleDisc);
-                self.boot_disc(image)?;
+                let media = media::Media::iso(image).map_err(MachineError::Disc)?;
+                self.boot_disc(&media)?;
+                self.bus.cd.mount(media);
             }
             Boot::HlePrototype => {
                 self.mode = Some(BootMode::HlePrototype);
@@ -420,10 +413,32 @@ impl Machine {
         Ok(())
     }
 
+    fn clear_execution(&mut self) {
+        self.clocks = 0;
+        self.nmi_pending = false;
+        self.dma_errors = [false; 2];
+        self.cpu_ready = [0; 2];
+        self.cpu_boundary = [None; 2];
+        self.cpu_reset_vectors = [None; 2];
+        self.fault = None;
+        self.cpu = Cpu::default();
+        self.slave = Cpu::default();
+        self.bus.reset_volatile();
+    }
+
+    /// Restart the retained immutable medium without copying its stored bytes.
+    pub fn reset_loaded_disc(&mut self) -> Result<(), MachineError> {
+        let medium = self.bus.cd.media().cloned();
+        match medium {
+            Some(medium) => self.reset_media(medium),
+            None => self.reset(Boot::HleDisc(&[])),
+        }
+    }
+
     /// HLE bootstrap shared by cold startup and guest SYSRES. Hardware reset
     /// has already selected the reset domain; this only reloads IP/executable.
-    fn boot_disc(&mut self, image: &[u8]) -> Result<(), MachineError> {
-        let boot = disc::parse(image).map_err(MachineError::Disc)?;
+    fn boot_disc(&mut self, medium: &media::Media) -> Result<(), MachineError> {
+        let boot = disc::parse_sectors(medium).map_err(MachineError::Disc)?;
         for (i, byte) in boot.ip.iter().enumerate() {
             self.bus.write8(disc::IP_ADDRESS + i as u32, *byte)?;
         }
@@ -434,9 +449,6 @@ impl Machine {
         // mode. Master and slave execute the same real reset trampoline.
         hle::install(&mut self.bus, boot.aip_entry, boot.slave_stack)?;
         self.cpu = Cpu::start(0x100, boot.stack);
-        self.bus
-            .cd
-            .mount(media::Media::iso(image).map_err(MachineError::Disc)?);
         Ok(())
     }
 
@@ -444,14 +456,9 @@ impl Machine {
     /// No file reference is opened by the emulator. Invalid input stops the old
     /// machine while preserving battery RAM, as with the single-file loader.
     pub fn reset_media(&mut self, media: media::Media) -> Result<(), MachineError> {
-        let image = match media.boot_iso() {
-            Ok(image) => image,
-            Err(error) => {
-                let _ = self.reset(Boot::HleDisc(&[]));
-                return Err(MachineError::Disc(error));
-            }
-        };
-        self.reset(Boot::HleDisc(&image))?;
+        self.clear_execution();
+        self.mode = Some(BootMode::HleDisc);
+        self.boot_disc(&media)?;
         self.bus.cd.mount(media);
         Ok(())
     }
@@ -795,9 +802,7 @@ impl Machine {
                 match self.mode {
                     Some(BootMode::HleDisc) => {
                         if let Some(media) = self.bus.cd.media().cloned() {
-                            let image = media.boot_iso().map_err(MachineError::Disc)?;
-                            self.boot_disc(&image)?;
-                            self.bus.cd.mount(media);
+                            self.boot_disc(&media)?;
                             if let Some(words) = power_clear {
                                 self.bus.write32(hle::POWER_CLEAR, words[0])?;
                                 self.bus.write32(hle::POWER_CLEAR + 4, words[1])?;

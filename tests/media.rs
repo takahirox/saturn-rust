@@ -15,7 +15,7 @@ fn ecma_mode_two_data_preserves_all_2336_bytes_without_xa_parity_or_subheaders()
     let media = Media::cue(cue, &[("data.bin", &raw)]).unwrap();
     assert_eq!(media.raw_sector(150).unwrap(), raw);
     assert_eq!(media.cooked_sector(150).unwrap(), raw[16..]);
-    assert!(media.boot_iso().is_err()); // not a 2048-byte ISO logical sector
+    assert!(saturn_rust::disc::SectorReader::read_sector(&media, 0).is_err()); // not a 2048-byte ISO logical sector
     // An unformatted Mode2 payload may even look like a duplicated XA
     // subheader. Explicit source metadata resolves that ambiguity, and
     // rejected XA is never silently retried as unchecked Mode2 data.
@@ -81,7 +81,10 @@ fn cooked_and_raw_data_have_identical_user_bytes_and_header_addresses() {
     bin.extend(raw);
     let cue = "FILE \"data.bin\" BINARY\n TRACK 01 MODE1/2352\n INDEX 01 00:00:00\n";
     let media = Media::cue(cue, &[("data.bin", &bin)]).unwrap();
-    assert_eq!(media.boot_iso().unwrap(), bytes);
+    assert_eq!(
+        saturn_rust::disc::SectorReader::read_sector(&media, 0).unwrap(),
+        bytes[..2048]
+    );
     assert_eq!(media.cooked_sector(151).unwrap(), bytes[2048..]);
     assert!(media.raw_sector(152).is_err());
     bin[1] = 3;
@@ -264,5 +267,26 @@ fn mode_one_product_code_corrects_every_symbol_position_and_rejects_unrecoverabl
             .unwrap()
             .raw_sector(150)
             .is_err()
+    );
+}
+
+#[test]
+fn resource_policy_retains_broader_runtime_layout_and_checked_owned_ranges() {
+    use saturn_rust::disc::SectorReader;
+    let cue = "FILE \"d\" BINARY\nTRACK 01 MODE1/2048\nINDEX 01 00:00:00\nPOSTGAP 99:59:74\n";
+    let media = Media::cue(cue, &[("d", &[0; 2048])]).unwrap();
+    assert_eq!(media.leadout(), 450150);
+    assert_eq!(media.sector_count(), Ok(1)); // synthesized gap is not bootstrap storage
+    assert!(media.read_sector(1).is_err());
+    assert!(media.read_sector(u32::MAX).is_err());
+    assert!(Media::cue(cue, &[("d", &[0; 4096])]).is_err()); // one frame beyond policy
+    assert!(Media::cue_owned(cue, &[("d", 0..2049)], vec![0; 2048]).is_err());
+    assert!(
+        Media::cue_owned(
+            cue,
+            &[("d", std::ops::Range { start: 8, end: 1 })],
+            vec![0; 2048]
+        )
+        .is_err()
     );
 }

@@ -40,11 +40,12 @@ def build():
     struct.pack_into('>HHHHI',image,0xE80,0xD001,0x402B,9,9,0x06004000)
     struct.pack_into('>I',image,0xEC,0x060FD000)
     record = 20*2048+68
-    image[record+2:record+10] = assembler.both32(31)
-    image[record+1] = 1
+    image[record+2:record+10] = assembler.both32(29)
+    image[record+1] = 2  # Whole attribute unit + gap at 31; data still starts at 32.
     image[record+26:record+28] = bytes([2,1])
     image[21*2048:25*2048] = b'\xa5'*(4*2048)
-    image[31*2048:32*2048] = b'\xbb'*2048
+    image[29*2048:31*2048] = b'\xbb'*(2*2048)
+    image[31*2048:32*2048] = b'\xee'*2048
     image[34*2048:35*2048] = b'\xee'*2048
     for logical in range(4):
         lba = 32 + (logical//2)*3 + logical%2

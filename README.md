@@ -39,10 +39,10 @@ reports playback/blocked/mute/underflow states; Star Collector has no soundtrack
 - [Play/Debug validation and pending deployment verification](docs/validation-issue-9.md)
 
 Open **Load ISO / BIOS & boot settings** and choose **BIOS-less HLE disc** to
-select your own authorized compatible cooked ISO (2048-byte sectors, up to 16 MiB).
-The narrow single-area IP/ISO9660 boot contract
-is documented above; other formats, hardware and runtime BIOS/CD services are
-unsupported. The packaged sample is MIT licensed, including its original visuals
+select your own authorized compatible cooked ISO (2048-byte sectors, up to 450,000 sectors / 921,600,000 bytes).
+The sector-addressed IP/ISO9660 boot contract and local BIN/CUE support are
+documented in [architecture](docs/architecture.md#disc-and-bios-less-hle-boot).
+Full hardware and BIOS/CD-library compatibility remain pending. The packaged sample is MIT licensed, including its original visuals
 and generated disc image. No Sega security objects, SDK libraries or firmware are
 bundled; this is not a stock-console authenticated disc.
 

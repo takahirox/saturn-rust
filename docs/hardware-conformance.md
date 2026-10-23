@@ -577,7 +577,7 @@ no-op CPU/device implementations cannot satisfy those assertions.
 
 | Feature / manual | Current behavior / edge cases | Native | Browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- | --- |
-| Cooked ISO, [Disc Format][DISC] | Bounded multi-area IP/ISO9660 startup; extended-attribute offsets and interleaved first-read/runtime files; XA file metadata, held FID windows and checked LBA/FAD/volume bounds | disc.rs, media.rs, cd.rs, CLAB, filesystem/layout evidence below | SC, CLAB/local ISO, original filesystem/layout Wasm guests below | 16 MiB boot bound, remaining record formats and complete runtime command/timing/error corpus | Pending |
+| Cooked ISO, [Disc Format][DISC] | Bounded multi-area IP/ISO9660 startup; extended-attribute offsets and interleaved first-read/runtime files; XA file metadata, held FID windows and checked LBA/FAD/volume bounds | disc.rs, media.rs, cd.rs, CLAB, filesystem/layout evidence below | SC, CLAB/local ISO, original filesystem/layout Wasm guests below | Remaining record formats and complete runtime command/timing/error corpus | Pending |
 | BIN/CUE/raw/mixed tracks, [DISC] / [CD] §§4/7.2.3 | Caller-resolved files, cooked/2352-byte Mode1/Mode2/audio, shared/separate files, INDEX00–99, gaps and TOC; subindices and PRE/DCP/4CH CONTROL metadata drive TOC/status/Q reporting; malformed/duplicate flags rejected; EDC validation, bounded P/Q correction for Mode1/XA Form1, Form2 EDC and PRE audio processing | [media vectors](../tests/media.rs), [parity-matrix/XA vectors](../src/media/integrity.rs), [directory guest](../tests/cd_drive.rs), CLAB | Directory guest on clean/correctable/uncorrectable raw media; CLAB multi-file CUE, INDEX02/99, malformed ordering, missing-reference/reset/privacy | M2G adds plain 2336-byte Mode2 payloads; complete decode/timing boundaries remain; WAVE/compression absent | Pending |
 | CD command/status/HIRQ, [CD] §§3.1–3.4 | Separate command/response latches; 1075-clock command completion, read-protected responses, CMOK/DRDY/CSCT/end flags, masks, clear-zero HIRQ and SCU A-bus IRQ | `tests/cd.rs`, CLAB | CLAB command/FIFO/DMA/IRQ | Full command-specific timing and register mirrors; BIN/CUE has no R–W stream, with empty FIFO WAIT now tested | Pending |
 | CD drive/TOC/session/track state, [CD] §§4/7/8.2 | TOC/session/Q, bounded seek, data play, CD-DA/repeat/end, media-dependent FAD/track/index reports; timed CDON/OFF, 60 Hz pause reports, programmed standby, scan directions/range/muting, tray/media retention and deterministic virtual close | `tests/cd.rs`, CLAB, CDDRV | CLAB, CDDRV | Remaining initialization/subcode options and full drive/response lifecycle boundary evidence | Pending |
@@ -1820,14 +1820,14 @@ is included, and no host code writes a running guest's results.
 | File information windows | `CdBlock::directory_sector`, commands71/72/73 | [300-child directory](../tests/cd.rs): exactly254 children plus self/parent, ReadDir window256–301 with46 children, absent FID rejection; invalid parameters retain the previous window, while interrupted accepted acquisition invalidates it (Issue #21); uninitialized scope rejects as specified in [CD] §6.2.2 | Existing original directory BIOS still runs cooked and clean/correctable/uncorrectable raw inputs. Browser checks rejection status after failed initialization rather than interpreting undefined response fields as an empty valid table. The large-window boundary corpus is native evidence. |
 | Filesystem selector/partition effects | `CdBlock::prepare_file_filter`, directory/read-file commands | Existing sector/partition/native file tests; selected destination is cleared, true route returns to its own partition, false route disconnects, FAD/file-number filtering is enabled | Filesystem guest starts a second read into the same partition without deleting the first read's stored sectors: resulting count is1, not4. It reads filter mode41, connectors03FF and CD connection0300 through actual commands. Full selector connection constraints and transfer overlap timing remain required. |
 | Multi-area bootstrap and independent stacks | [disc::parse](../src/disc.rs); [hle::install](../src/hle.rs) configures the original reset literal pool from IP metadata | [Disc vectors](../tests/disc.rs) reject duplicate/invalid area strings and misaligned, IP-overlapping or first-read-overlapping slave stacks | [Boot-layout disc](../tests/fixtures/build_boot_layout.py): one/two/four area blocks select AIP at2E20/2E40/2E80; guest master/slave report FF000 and FD000/default1000 stack offsets, respectively. Reordered area symbols, changed fourth-sector data and repeated cold resets run in native and Wasm. Commercial region/authentication behavior is not claimed. |
-| Interleaved first-read bootstrap | `FileExtent::from_record/sector_at/bytes` in [disc.rs](../src/disc.rs) | Checked logical/physical extent bounds; ordinary contiguous files borrow their bytes while interleaved files gather only their data sectors | Boot-layout guest uses unit2/gap1, one extended-attribute sector and four logical data sectors. Real SH-2 loads from the third/fourth loaded sectors compute99999999; a changed disc word changes that sum. The AIP and both processors execute ordinary guest instructions. |
+| Interleaved first-read bootstrap | `FileExtent::from_record/sector_at/bytes` in [disc.rs](../src/disc.rs) | Checked logical/physical extent bounds; contiguous and interleaved files read only their required data sectors; interleaved attributes occupy a whole first unit before its gap | Boot-layout guest uses unit2/gap1, a two-sector attribute unit followed by the initial gap and four logical data sectors. Real SH-2 loads from the third/fourth loaded sectors compute99999999; a changed disc word changes that sum. The AIP and both processors execute ordinary guest instructions. |
 
 | Original artifact | SHA-256 |
 | --- | --- |
 | `bsc-share.hex` | `dcae6692bd0661a8f694d4ebe90351b0bf08f3330f2025ccb0e5f1fe412383bb` |
 | `cd-filesystem.hex` | `4d4659d3fe740a60893340cc86e37279a9e73d4d7473d33f4766f87ebcc67260` |
 | `cd-filesystem.bin` | `5c67809a98b8678a507a5fb5192ae89baca3278a3b9000d72f03c2ff521d8d3b` |
-| `boot-layout.iso` | `a0e7f5d7de82278d586a4520096ff39d40caede59867450cf94b47d3d9384602` |
+| `boot-layout.iso` | `16ccece8c58c3eb8e4620318f6763cc057a84f619eb2d2478b894b20c31c3aed` |
 
 These changes implement specific BSC, filesystem and bootstrap contracts. They
 do not establish the remaining BSC/MCR or board protocols, transaction
@@ -2088,7 +2088,7 @@ function specifications 4.1/5.7–5.8; [DISC] §4.3.
 | DIVU DMA waits on the DMA phase, preserving CPU instruction dependencies | `OnChip::dma_wait_clocks/dma_read32/dma_write32`; `internal_divu_dma_waits_for_division_without_premature_result_irq_or_cpu_waits` checks overflow IRQ at clock 6, internal read at 7 and RAM write at 9, literal quotient 47 and zero CPU waits. [peripheral_tests.rs](../src/onchip/peripheral_tests.rs) checks CPU-only consecutive-instruction dependencies across DMA. | DMABG's independently computed `99/3=33` is transferred by DMA and read by guest code in native/Wasm. |
 | Sound CPU accesses publish at separate four-clock byte/word completions | [sound/transactions.rs](../src/sound/transactions.rs) retains completed MMIO through CPU replay; `Sound::clocks_to_event` includes CPU and MIDI deadlines. [sound/tests.rs](../src/sound/tests.rs) checks normal/predecrement longword order, a main-CPU change between source words, MIDI consumption once, cancellation of a pending word and clock-chunk invariance. | SNDR, SIOG, FAMG, SYNTH, Prism Courier and Hardware Lab execute through these phases, retaining native/Wasm register/fault/stereo assertions and actual WebAudio. SNDR's second IRQ wakes its first STOP after the scheduled SH-2 WB change below: setup23 + IRQ6 + STOP2 + BRA1 = 32; its last saved PC is $182. |
 | CD connection errors preserve both outputs and filter-input exclusivity | `CdBlock::execute` validates both selected output destinations before mutation; `selector_connection_commands_validate_both_outputs_and_exclusive_inputs_atomically` checks indices 24–254, ignored arguments, disconnect/reconnect, ESEL and actual sector routing. | [CD drive guest](../tests/fixtures/build_cd_drive.py), [native](../tests/cd_drive.rs) and [browser](../scripts/browser-smoke.mjs) assert rejection, retained `0304` connections and explicit reconnection. Hex SHA-256: `8203401b2a7d7d76aef396b69bdb7caaf73ee1d8dd26eea4aea7eac39c23da95`. |
-| Compact ISO size validation agrees with the core | [app.js](../web/app.js) accepts complete sectors from 18 sectors to 16 MiB and delegates structural validation to the core. | Offline actual-picker regressions in browser-smoke execute original 19/21-sector AIP instructions (`R0=37`, 100 retired, no exceptions); reject short/partial/oversized files and parse a malformed size-valid 18-sector image. |
+| Compact ISO size validation agrees with the core | [app.js](../web/app.js) accepts complete sectors from 18 to 450,000 sectors and delegates structural validation to the core. | Offline actual-picker regressions in browser-smoke execute original 19/21-sector AIP instructions (`R0=37`, 100 retired, no exceptions); reject short/partial files and oversized metadata probes, and parse a malformed size-valid 18-sector image. Standard-size executable-media evidence is recorded below. |
 
 The four-clock sound bus phases preserve the existing interpreter's access order;
 they do not establish every instruction-specific prefetch sequence, RESET pin
@@ -3150,3 +3150,22 @@ full interrupt-transition speculation, complete board-level timing, video/audio,
 CD/media/HLE and the other still-unmet #17 requirements remain mandatory. This
 bounded multiplier increment does not use firmware, commercial media, physical
 hardware, human testing/approval or live Pages inspection as acceptance evidence.
+
+
+## Sector-addressed standard-size media bootstrap
+
+Related to #17 and #33. This admission/bootstrap increment is implemented;
+umbrella hardware completion and commercial-game compatibility remain pending.
+
+[Validation record](validation-issue-33.md) links the primary sections, resource
+policy, original MIT guest/source and deterministic full-medium hashes.
+[Native evidence](../tests/large_media.rs) and the
+[production browser extension](../scripts/large-media.mjs) execute a 270,000-sector
+volume with first-read sectors 9003/9004/9006 and runtime CD sector 260000.
+The guest drives CD commands, FIFO-to-SCU DMA, interrupt acknowledgement, sum,
+SYSRES and CD-DA; the browser uses real local ISO/CUE selections under the project
+prefix. The focused bootstrap reader trace excludes unrelated payload, and
+independently generated Mode1/XA vectors distinguish unread damage from required
+sector failure. Existing drive/command/sector/DMA timing tests remain registered.
+No full BIOS initialization, HLE CD library, complete drive/error timing or
+commercial compatibility is established by these results.

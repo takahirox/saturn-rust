@@ -4,6 +4,10 @@ const hex = (value) => `0x${value.toString(16).toUpperCase().padStart(8, "0")}`;
 export let emulator;
 let discBytes = null;
 let cueMedia = null;
+let loadedDisc = false;
+// Resource bounds mirror disc.rs, independent of Saturn's recording standards.
+const MAX_ISO_BYTES = 450000 * 2048;
+const MAX_MEDIA_BYTES = 450000 * 2352;
 let playing = false;
 let playAfterLoad = false;
 let buttons = 0;
@@ -145,11 +149,11 @@ function render() {
   const ready = !busy && canExecute(machineStatus);
   $("step").disabled = !ready;
   $("run").disabled = !ready;
-  $("reset").disabled = loadingFile;
+  $("reset").disabled = false;
   const discReady = ready && $("mode").value === "disc";
   $("pause").disabled = !discReady;
   $("pause").textContent = playing ? "Pause" : "Resume";
-  $("restart").disabled = busy || $("mode").value !== "disc" || !(discBytes || cueMedia);
+  $("restart").disabled = busy || $("mode").value !== "disc" || !(discBytes || cueMedia || loadedDisc);
   $("frame").disabled = !discReady || playing;
   $("play-homebrew").disabled = busy;
   $("play-prism").disabled = busy;
@@ -219,7 +223,13 @@ function reset() {
   act(() => {
     if ($("mode").value === "disc") {
       if (cueMedia) emulator.reset_cue(cueMedia.cue, cueMedia.names, cueMedia.lengths, cueMedia.bytes);
-      else emulator.reset_disc(discBytes ?? new Uint8Array());
+      else if (discBytes) emulator.reset_disc(discBytes);
+      else if (loadedDisc) emulator.reset_loaded_disc();
+      else emulator.reset_disc(new Uint8Array());
+      loadedDisc = true;
+      // The retained Wasm medium now owns these bytes; restart needs no upload.
+      discBytes = null;
+      cueMedia = null;
     }
     else if ($("mode").value === "hle") emulator.reset_hle();
     else emulator.reset_bios(biosBytes ?? new Uint8Array());
@@ -278,7 +288,11 @@ try {
       render();
     }
   });
-  $("reset").addEventListener("click", reset);
+  $("reset").addEventListener("click", () => {
+    fileGeneration++;
+    loadingFile = false;
+    reset();
+  });
   $("restart").addEventListener("click", () => {
     reset();
     if ($("mode").value === "disc" && canExecute() && !$("settings").open && view === "play") {
@@ -302,6 +316,7 @@ try {
     biosBytes = null;
     discBytes = null;
     cueMedia = null;
+    loadedDisc = false;
     $("disc").value = "";
     loadingFile = false;
     $("bios").value = "";
@@ -373,16 +388,17 @@ try {
     const files = [...$("disc").files];
     discBytes = null;
     cueMedia = null;
+    loadedDisc = false;
     loadingFile = false;
     reset();
     if (!files.length) return;
     const cueFiles = files.filter((file) => /\.cue$/i.test(file.name));
     const cue = cueFiles.length === 1 ? cueFiles[0] : null;
     const file = files[0];
-    if ((!cue && (files.length !== 1 || file.size < 18 * 2048 || file.size > 16777216 || file.size % 2048 !== 0)) ||
-        cueFiles.length > 1 || files.reduce((total, file) => total + file.size, 0) > 134217728 ||
+    if ((!cue && (files.length !== 1 || file.size < 18 * 2048 || file.size > MAX_ISO_BYTES || file.size % 2048 !== 0)) ||
+        cueFiles.length > 1 || files.filter((file) => file !== cue).reduce((total, file) => total + file.size, 0) > MAX_MEDIA_BYTES ||
         (cue && (cue.size > 1048576 || files.length < 2 || files.length > 100))) {
-      $("error").textContent = "Select one complete 2048-byte-sector ISO (18 sectors to 16 MiB), or one CUE and all its BINARY track files together (up to 128 MiB).";
+      $("error").textContent = "Select one complete 2048-byte-sector ISO (18 to 450000 sectors), or one CUE and all its BINARY track files together (up to 1058400000 data/audio bytes).";
       render();
       return;
     }
@@ -392,13 +408,13 @@ try {
     try {
       if (cue) {
         const tracks = files.filter((file) => file !== cue);
-        const buffers = await Promise.all(tracks.map(async (file) => new Uint8Array(await file.arrayBuffer())));
         const cueText = new TextDecoder("utf-8", { fatal: true }).decode(await cue.arrayBuffer());
         if (generation !== fileGeneration) return;
-        const bytes = new Uint8Array(buffers.reduce((total, buffer) => total + buffer.length, 0));
-        let offset = 0;
-        for (const buffer of buffers) { bytes.set(buffer, offset); offset += buffer.length; }
-        cueMedia = { cue: cueText, names: tracks.map((file) => file.name).join("\0"), lengths: new Uint32Array(buffers.map((buffer) => buffer.length)), bytes };
+        // Blob concatenates the selected local file handles, avoiding retained
+        // per-file ArrayBuffers plus a second complete JS aggregate copy.
+        const bytes = new Uint8Array(await new Blob(tracks).arrayBuffer());
+        if (generation !== fileGeneration) return;
+        cueMedia = { cue: cueText, names: tracks.map((file) => file.name).join("\0"), lengths: new Uint32Array(tracks.map((file) => file.size)), bytes };
       } else {
         const bytes = new Uint8Array(await file.arrayBuffer());
         if (generation !== fileGeneration) return;

@@ -6,7 +6,7 @@ use crate::disc::{DiscError, SECTOR};
 use std::sync::Arc;
 
 pub const RAW_SECTOR: usize = 2352;
-const MAX_FRAMES: u32 = 100 * 60 * 75;
+const MAX_FRAMES: u32 = crate::disc::MAX_SECTORS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrackMode {
@@ -35,7 +35,7 @@ pub struct Track {
     pub index0: u32,
     pub end: u32,
     indices: Vec<(u8, u32)>,
-    bytes: Arc<[u8]>,
+    bytes: Arc<Vec<u8>>,
     offset: usize,
     byte_end: usize,
     stride: usize,
@@ -110,6 +110,10 @@ impl Media {
     }
 
     pub fn iso(bytes: &[u8]) -> Result<Self, DiscError> {
+        Self::check_iso(bytes)?;
+        Self::iso_owned(crate::disc::copy(bytes)?)
+    }
+    fn check_iso(bytes: &[u8]) -> Result<(), DiscError> {
         if bytes.is_empty()
             || !bytes.len().is_multiple_of(SECTOR)
             || bytes.len() / SECTOR > MAX_FRAMES as usize
@@ -118,7 +122,13 @@ impl Media {
                 "ISO must contain whole 2048-byte sectors within disc bounds",
             ));
         }
+        Ok(())
+    }
+    /// Take the Wasm/native caller's allocation without another medium copy.
+    pub fn iso_owned(bytes: Vec<u8>) -> Result<Self, DiscError> {
+        Self::check_iso(&bytes)?;
         let end = 150 + (bytes.len() / SECTOR) as u32;
+        let byte_end = bytes.len();
         Ok(Self {
             tracks: vec![Track {
                 number: 1,
@@ -128,9 +138,9 @@ impl Media {
                 index0: 150,
                 end,
                 indices: vec![(1, 150)],
-                bytes: Arc::from(bytes),
+                bytes: Arc::new(bytes),
                 offset: 0,
-                byte_end: bytes.len(),
+                byte_end,
                 stride: SECTOR,
                 stored_start: 150,
                 mode2_format: Mode2Format::Data,
@@ -146,12 +156,43 @@ impl Media {
         files: &[(&str, &[u8])],
         mode2_format: Mode2Format,
     ) -> Result<Self, DiscError> {
+        Self::cue_storage(cue, files, mode2_format, None)
+    }
+    /// A single owned file-table buffer can back every track without copying
+    /// the medium again. Ranges are validated before any CUE metadata is read.
+    pub fn cue_owned(
+        cue: &str,
+        names: &[(&str, std::ops::Range<usize>)],
+        bytes: Vec<u8>,
+    ) -> Result<Self, DiscError> {
+        if bytes.len() > crate::disc::MAX_MEDIA_BYTES || names.len() > 99 {
+            return Err(invalid("CUE exceeds media limits"));
+        }
+        let storage = Arc::new(bytes);
+        let files = names
+            .iter()
+            .map(|(name, range)| {
+                storage
+                    .get(range.clone())
+                    .map(|b| (*name, b))
+                    .ok_or_else(|| invalid("truncated CUE file table"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let offsets: Vec<_> = names.iter().map(|(_, r)| r.start).collect();
+        Self::cue_storage(cue, &files, Mode2Format::Auto, Some((&storage, &offsets)))
+    }
+    fn cue_storage(
+        cue: &str,
+        files: &[(&str, &[u8])],
+        mode2_format: Mode2Format,
+        storage: Option<(&Arc<Vec<u8>>, &[usize])>,
+    ) -> Result<Self, DiscError> {
         if cue.len() > 1024 * 1024
             || files.len() > 99
             || files
                 .iter()
                 .try_fold(0usize, |n, (_, b)| n.checked_add(b.len()))
-                .is_none_or(|n| n > 512 * 1024 * 1024)
+                .is_none_or(|n| n > crate::disc::MAX_MEDIA_BYTES)
         {
             return Err(invalid("CUE exceeds media limits"));
         }
@@ -296,7 +337,14 @@ impl Media {
         if tracks.is_empty() {
             return Err(invalid("CUE has no tracks"));
         }
-        let owned: Vec<Arc<[u8]>> = files.iter().map(|(_, b)| Arc::from(*b)).collect();
+        let owned: Vec<(Arc<Vec<u8>>, usize)> = files
+            .iter()
+            .enumerate()
+            .map(|(i, (_, b))| match storage {
+                Some((bytes, offsets)) => Ok((Arc::clone(bytes), offsets[i])),
+                None => Ok((Arc::new(crate::disc::copy(b)?), 0)),
+            })
+            .collect::<Result<_, DiscError>>()?;
         let mut result = Vec::new();
         let mut cursor: u32 = 150;
         for (i, t) in tracks.iter().enumerate() {
@@ -304,7 +352,7 @@ impl Media {
                 .index1
                 .ok_or_else(|| invalid("CUE track missing INDEX 01"))?;
             let begin = t.index0.unwrap_or(index);
-            let data = &owned[t.file];
+            let data = files[t.file].1;
             if !data.len().is_multiple_of(t.stride) || data.len() / t.stride > MAX_FRAMES as usize {
                 return Err(invalid(
                     "BIN contains truncated sectors or exceeds disc bounds",
@@ -347,7 +395,7 @@ impl Media {
                 stored_start + index - begin
             };
             let track_end = start + end - index + t.postgap;
-            if track_end > MAX_FRAMES {
+            if track_end > MAX_FRAMES + 150 {
                 return Err(invalid("CUE exceeds disc duration"));
             }
             result.push(Track {
@@ -364,14 +412,15 @@ impl Media {
                             .map(|(number, position)| (*number, start + position - index)),
                     )
                     .collect(),
-                bytes: owned[t.file].clone(),
-                offset: (if i == 0 {
-                    index - (index - begin).min(150)
-                } else {
-                    begin
-                }) as usize
-                    * t.stride,
-                byte_end: end as usize * t.stride,
+                bytes: Arc::clone(&owned[t.file].0),
+                offset: owned[t.file].1
+                    + (if i == 0 {
+                        index - (index - begin).min(150)
+                    } else {
+                        begin
+                    }) as usize
+                        * t.stride,
+                byte_end: owned[t.file].1 + end as usize * t.stride,
                 stride: t.stride,
                 stored_start,
                 mode2_format: if t.mode == TrackMode::Mode2 && mode2_format == Mode2Format::Auto {
@@ -492,29 +541,6 @@ impl Media {
             TrackMode::Audio => Err(invalid("Audio track has no cooked sector")),
         }
     }
-    pub fn boot_iso(&self) -> Result<Vec<u8>, DiscError> {
-        let t = self
-            .tracks
-            .first()
-            .ok_or_else(|| invalid("Disc has no data track"))?;
-        if t.mode == TrackMode::Audio {
-            return Err(invalid("First track is audio"));
-        }
-        if t.end - t.start > (crate::disc::MAX_DISC_SIZE / SECTOR) as u32 {
-            return Err(invalid("Boot data exceeds loader limit"));
-        }
-        let mut image = Vec::new();
-        for fad in t.start
-            ..t.start + ((t.byte_end - t.offset) / t.stride) as u32 - (t.start - t.stored_start)
-        {
-            let data = self.cooked_sector(fad)?;
-            if data.len() != SECTOR {
-                return Err(invalid("Bootstrap requires 2048-byte logical sectors"));
-            }
-            image.extend(data);
-        }
-        Ok(image)
-    }
     pub fn toc(&self) -> Vec<u8> {
         let mut table = vec![255; 408];
         for t in &self.tracks {
@@ -539,4 +565,44 @@ fn mode1_checksums(sector: &mut [u8; RAW_SECTOR]) {
     let crc = integrity::edc(&sector[..2064]);
     sector[2064..2068].copy_from_slice(&crc.to_le_bytes());
     integrity::encode(sector);
+}
+
+/// Bootstrap reads only stored INDEX 01 data, excluding synthesized gaps.
+/// Raw sectors use the strict runtime parser policy (bounded ECC correction,
+/// explicit error if integrity cannot be recovered); no unread sector is decoded.
+impl crate::disc::SectorReader for Media {
+    fn sector_count(&self) -> Result<u32, DiscError> {
+        let t = self
+            .tracks
+            .first()
+            .ok_or_else(|| invalid("Disc has no data track"))?;
+        if t.mode == TrackMode::Audio {
+            return Err(invalid("First track is audio"));
+        }
+        let stored = (t.byte_end - t.offset) / t.stride;
+        u32::try_from(stored)
+            .ok()
+            .and_then(|n| n.checked_sub(t.start - t.stored_start))
+            .ok_or_else(|| invalid("bootstrap track length overflow"))
+    }
+    fn read_sector(&self, lba: u32) -> Result<[u8; SECTOR], DiscError> {
+        if lba >= self.sector_count()? {
+            return Err(invalid("bootstrap sector outside stored data track"));
+        }
+        let t = &self.tracks[0];
+        let fad = t
+            .start
+            .checked_add(lba)
+            .ok_or_else(|| invalid("bootstrap FAD overflow"))?;
+        // Cooked storage needs neither raw synthesis nor EDC/ECC decoding.
+        if t.stride == SECTOR {
+            let offset = t.offset + (fad - t.stored_start) as usize * SECTOR;
+            return self.tracks[0].bytes[offset..offset + SECTOR]
+                .try_into()
+                .map_err(|_| invalid("truncated bootstrap sector"));
+        }
+        self.cooked_sector(fad)?
+            .try_into()
+            .map_err(|_| invalid("Bootstrap requires 2048-byte logical sectors"))
+    }
 }

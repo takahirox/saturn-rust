@@ -87,6 +87,7 @@ jobs:
           python3 tests/fixtures/build_cd_directory_schedule.py --check
           python3 tests/fixtures/build_cd_filesystem.py --check
           python3 tests/fixtures/build_boot_layout.py --check
+          python3 tests/fixtures/build_large_media.py --check --output target/large-media
           python3 tests/fixtures/build_cd_decode.py --check
           python3 tests/fixtures/build_mode2.py --check
           python3 tests/fixtures/build_cdda.py --check
