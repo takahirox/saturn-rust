@@ -1525,6 +1525,8 @@ impl CdBlock {
                 self.scan = None;
                 self.buffer_paused = false;
                 self.fad = next;
+                self.audio_index = 0;
+                self.deemphasis = crate::cd_audio::Deemphasis::default();
                 self.play_start = self.media.as_ref().unwrap().tracks[0].start;
                 self.end = self.media.as_ref().unwrap().leadout;
                 self.repeat = 0;

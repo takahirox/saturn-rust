@@ -222,9 +222,79 @@ fn unreadable_root_acquisition_finishes_at_first_deadline_and_releases_workspace
     }
 }
 #[test]
+fn directory_after_audio_playback_fails_at_its_scheduled_read_and_releases_workspace() {
+    let mut audio = vec![0; 32 * 2352];
+    for frame in audio.as_chunks_mut::<4>().0 {
+        frame[..2].copy_from_slice(&1234i16.to_le_bytes());
+        frame[2..].copy_from_slice(&(-1234i16).to_le_bytes());
+    }
+    let media = Media::cue(
+        "FILE \"a\" BINARY\nTRACK 01 AUDIO\nINDEX 01 00:00:00",
+        &[("a", &audio)],
+    )
+    .unwrap();
+    for speed in [1, 2] {
+        for chunk in [1, 3, 17, 10000] {
+            let mut cd = CdBlock::default();
+            cd.mount(media.clone());
+            issue(
+                &mut cd,
+                [if speed == 1 { 0x0410 } else { 0x0400 }, 0xFFFF, 0, 0],
+            );
+            assert_eq!(issue(&mut cd, [0x1080, 150, 0, 0])[0], 0x0400);
+            advance(&mut cd, 26_875, chunk);
+            for _ in 0..570 {
+                assert_eq!(cd.audio_sample(), [1234, -1234]);
+                advance(&mut cd, 610, chunk);
+            }
+            cd.write16(CD + 8, !512).unwrap();
+            for (i, w) in [0x7000, 0, 0xFF, 0xFFFF].into_iter().enumerate() {
+                cd.write16(CD + 0x18 + i as u32 * 4, w).unwrap();
+            }
+            cd.advance(1075);
+            // Retain the accepted response while SCSP continues sampling. The
+            // previous sector's 570-frame cursor must not skip required FAD166.
+            let accepted: [u16; 3] =
+                std::array::from_fn(|i| cd.read16(CD + 0x18 + i as u32 * 4).unwrap());
+            assert_eq!(accepted[0], 0x0300);
+            assert_eq!(flags(&cd), 0);
+            let mut elapsed = 0;
+            // Audio still uses a 1× deadline even when CdInit selects 2×.
+            while elapsed < 358_321 {
+                cd.audio_sample();
+                let step = 610.min(358_321 - elapsed);
+                advance(&mut cd, step, chunk);
+                elapsed += step;
+                assert_eq!(flags(&cd), 0);
+            }
+            cd.advance(1);
+            assert_eq!(flags(&cd), 512);
+            for (i, word) in accepted.into_iter().enumerate() {
+                assert_eq!(cd.read16(CD + 0x18 + i as u32 * 4).unwrap(), word);
+            }
+            cd.read16(CD + 0x24).unwrap();
+            let status = issue(&mut cd, [0, 0, 0, 0]);
+            assert_eq!((status[0], status[3]), (0x0900, 166));
+            assert_eq!(cd.audio_sample(), [0, 0]);
+            assert!(!table(&mut cd));
+            assert_eq!(free(&mut cd), 200);
+            cd.write16(CD + 8, !512).unwrap();
+            for _ in 0..10_000 {
+                assert_eq!(cd.audio_sample(), [0, 0]);
+                advance(&mut cd, 610, chunk);
+            }
+            assert_eq!(flags(&cd), 0);
+            assert!(!table(&mut cd));
+            assert_eq!(free(&mut cd), 200);
+            assert_eq!(issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFF])[0], 0x0900);
+            assert_eq!(free(&mut cd), 199); // accepted again, rather than WAIT
+        }
+    }
+}
+#[test]
 fn concurrent_audio_play_preserves_pending_directory_until_its_required_sector_resumes() {
     let mut audio = vec![0; 4 * 2352];
-    for frame in audio.chunks_exact_mut(4) {
+    for frame in audio.as_chunks_mut::<4>().0 {
         frame[..2].copy_from_slice(&1234i16.to_le_bytes());
         frame[2..].copy_from_slice(&(-1234i16).to_le_bytes());
     }
