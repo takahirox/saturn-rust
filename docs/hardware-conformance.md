@@ -454,7 +454,7 @@ edge/transfer coverage are still required. Unsupported registers fail explicitly
 | DMA channels 0–2 direct, [SCU] §§2.1/3.2, [SCUFINAL] #15–24 | Counts, address save/update, individual byte heads/tails, separately sampled B-bus halfwords and strides, all seven edge triggers/GO, end/illegal IRQ and priority preemption; one queued retrigger | SCUV, SCUROM, BUSG, [FRINGE](#scu-byte-fringes-and-separate-b-bus-halfwords-fringe) / SCUROM, BUSG, FRINGE (all three channels) | Exhaustive trigger/device/boundary tests, remaining shared-memory ownership/wait arbitration and prohibited three-channel behavior pending | Pending |
 | DMA indirect, [SCUFINAL] #24/25 | Final-spec count/write/read layout, source bit-31 end marker, separately granted descriptor words, table walking, write-address continuation | SCUV, IDESC, SCUROM / SCUROM | IDESC and BUSG cover descriptor bounds/alignment, all channel count widths, partial table faults/preemption/reset and deferred BSC/VRAM waits; complete device contention and transfer-error/count boundaries remain | Pending |
 | DMA device interactions, [SCU] §2.1 | High-RAM to VDP2 VRAM and executing DSP external RAM transfers, real IRQ handlers | SCUV, SCUROM / SCUROM | CLAB adds CD FIFO to high-RAM fixed-source DMA/IRQ; VDP1 routes and full cross-device arbitration remain | Pending |
-| SCU DSP execution/registers, [SCU] §4.5 pp.91–131/141–158 | ALU logical/arithmetic/shift/rotate, signed multiply, parallel X/Y/D1 moves, immediates, delayed jumps/subroutine control, BTM/LPS, END/ENDI, pause/step and read-cleared E/V | SCUV, SCUROM / SCUROM (product/sum/loop/ENDI); DSPD now executes an MVI-PC entry into DMA-loaded code and its delay-slot write | One-successor PRAM-DMA prefetch has DSPBUS native vectors below; prohibited DMA-bank instruction accesses have explicit native/Wasm diagnostics. Full conditional/DMA timing and ALU overflow/pipeline edge inventory remain | Pending |
+| SCU DSP execution/registers, [SCU] §4.5 pp.91–131/141–158 | ALU logical/arithmetic/shift/rotate, signed multiply, parallel X/Y/D1 moves, immediates, delayed jumps/subroutine control, BTM/LPS, END/ENDI, pause/step, read-cleared E and arithmetic-replaced/read-preserved V ([DSP arithmetic evidence](#scu-dsp-arithmetic-status-lifetime)) | SCUV, SCUROM / SCUROM (product/sum/loop/ENDI); DSPD now executes an MVI-PC entry into DMA-loaded code and its delay-slot write | One-successor PRAM-DMA prefetch has DSPBUS native vectors below; prohibited DMA-bank instruction accesses have explicit native/Wasm diagnostics. The ADD/SUB/AD2 status contract now has independent native/guest/Wasm evidence below; full conditional/DMA timing and the remaining pipeline edge inventory remain | Pending |
 | SCU DSP memory/transfers, [SCU] §§3.3/4.1/4.5 pp.132–140, [SCUFINAL] #16/18/19/26/27, [SOA8] §5.6 | Four 64-word banks, host ports, address counters, bounded asynchronous input/output DMA and HOLD, fixed/incrementing A-bus writes, separately granted B-bus halfwords, retained transfer data, END permits DMA continuation; PRG DMA begins at zero independently of host ports | SCUV, SCUROM, DSPD, DSPBUS / SCUROM + DSPD + DSPBUS; DSPD adds nonzero bootstraps, 256-word PRAM DMA, executed FF→00 wrap and operand/count mutations | Complete cross-device arbitration/waits, physical RAM-port timing and the rest of the pipeline inventory remain | Pending |
 | SCU timers, [SCU] §§2.2/3.4, [SCUFINAL] #30/31 | Raster-driven timer0 clear/compare and timer1 dot countdown, zero=512, no reload while active, compare-line selection | SCUV, TIME, SCUROM / SCUROM | Full television modes and beam-phase conformance pending | Pending |
 
@@ -2982,3 +2982,80 @@ remain separate work. CPU/peripheral, multiprocessor/bus/reset, SCU/DSP,
 video/audio, CD/media/HLE, SMPC and comprehensive acceptance remain outstanding.
 These results do not establish hardware completion or broad commercial-game
 compatibility. Issue #17 remains open; historical #11/#13/#15 are not reopened.
+
+
+## SCU DSP arithmetic status lifetime
+
+Related to #27. Related to #17. This section supersedes the former
+**read-cleared E/V** claim: program-control reads acknowledge **E only**.
+ADD, SUB and AD2 replace V with each operation's signed-overflow result;
+non-overflowing arithmetic clears V. NOP, logical/shift operations and transfers
+preserve V. S/Z/C describe the ALU result even when it is only transferred to
+memory, the accumulator is retained, or CLR A executes in parallel.
+
+Primary contract:
+
+- [SCU DSP Simulator User's Manual Addendum, ST-240-B-SP1-052295, printed p.5, Bugs](https://manualzilla.com/doc/5874469/scu-dsp-assembler-user-s-manual-addendum): hardware replaces V after ADD/SUB/AD2; the simulator's sticky V is a documented defect. The mirror's title says Assembler, but the document cover and footer identify the Simulator addendum.
+- [Sega Technical Bulletin SOA #8, §3 and §5.1](https://antime.kapsi.fi/sega/files/Sattechs.pdf#page=151): E acknowledgement, S/Z/C/V definitions and the instruction flag-effect table. §5.1 (PDF p.153) specifies flags and same-cycle memory results independently of MOV ALU,A; §§5.2–5.5 specify flag-preserving transfers.
+- [SCU User's Manual ST-097-R5, §4.5, ADD/SUB/AD2 and X/Y/D1 transfer descriptions](https://github.com/luckyseoul/saturn-docs/blob/main/files/ST-097-R5-072694.pdf): 32-bit ADD/SUB, 48-bit AD2 and parallel result transfers.
+
+Only [Dsp::control/alu](../src/scu/dsp.rs) changes in production: control reads
+clear END alone; arithmetic opcodes 4/5/6 clear the previous V before assigning
+the new overflow result. Arithmetic widths, carry/borrow, accumulator high-word
+retention and scheduling retain their existing implementation and now have
+additional literal checks. DMA/pipeline design and rendering are outside this
+increment.
+
+| Evidence | Independent expectation and coverage |
+| --- | --- |
+| [Native instruction vectors](../src/scu/dsp/arithmetic_tests.rs) | 17 literal A/P/result/S/Z/C/V rows, each with both initial V values and three accumulator choices (retain, clear, writeback), plus parallel ALL-to-memory. Both signed overflow directions, unsigned carry/borrow without signed overflow, zero/sign boundaries, and 32-bit versus 48-bit sign/zero behavior. No expected result calls a production arithmetic helper. |
+| Arithmetic lifetime | Six two-instruction overflow/non-overflow sequences cover ADD/SUB/AD2 in both directions without an intervening status read. NOP, all logical/shift/rotate ALU operations, immediate, X/Y and D1 transfers preserve V between arithmetic operations. Separate END/ENDI, pause/resume, single-step and repeated-read vectors retain E acknowledgement and emit a new end event once after acknowledgement. |
+| Real 48-bit operand construction | MOV M0,X / MOV M1,Y; MOV MUL,P / CLR A constructs positive/negative 2^46 from signed 65536 × 2^30. Repeated AD2 reaches the 48-bit sign boundary, overflows in both directions, then clears V; literal full 48-bit results and flags are checked each step. |
+| [Original MIT guest builder](../tests/fixtures/build_dsp_arithmetic.py), [SH-2 source](../tests/fixtures/dsp-arithmetic.s), [ROM](../tests/fixtures/dsp-arithmetic.hex), [license](../tests/fixtures/LICENSE) | Guest instructions upload operands/programs via 25FE0080/84/88/8C, execute twelve END kernels and two ENDI kernels, record three halted status reads per END, consume ALL/ALH results, and compute result+1 inside the real DSP-end interrupt handler. E is acknowledged through control reads; CPU interrupt entry acknowledges the SCU request, and the handler returns with RTE. No host result writes or calculations. |
+| [Native Machine guest](../tests/dsp_arithmetic.rs), [production browser Wasm](../scripts/dsp-arithmetic.mjs) | Identical diagnostic ROM bytes and [71 source-authored golden words](../tests/fixtures/dsp-arithmetic.tsv), two operand mutations, an omitted-ADD control and repeated cold boots for every variant. Native step chunks 1/3/17/10000 with paused inspection/resume retain results. Exactly two vector-45 interrupts occur; additional advancement cannot duplicate them. Reset during an unhandled overflowing ENDI cancels V/E and the pending interrupt, then reruns the complete diagnostic. |
+| Existing regression evidence | [SCU instruction/control/DMA vectors](../src/scu/tests.rs), [DMA-bank/prefetch diagnostics](../src/scu/dsp/tests.rs), [SCU guest](../tests/scu.rs), [DSP-DMA guest](../tests/dsp_dma.rs), [DSP bus guest](../tests/dsp_bus.rs) and their complete [browser checks](../scripts/browser-smoke.mjs) remain enabled. |
+
+Expanded 512-KiB diagnostic ROM SHA-256:
+`ac0faa095c2cc0fd8c43c6ff19069ea67163df5148f90780d2be29f7a0d68c1d`.
+Reproduce all three fixture artifacts with
+`python3 tests/fixtures/build_dsp_arithmetic.py --check`; this is mandatory in the
+existing [CI fixture step](../.github/workflows/pages.yml). The shared TSV contains
+literal source expectations, not captured emulator output. Two initial reset
+words are followed by twelve five-word groups (three statuses, ALL, ALH), two
+three-word interrupt-handler groups and interrupt count/pending/done records.
+Status masks keep S/Z/C/V/E and omit the incidental PC.
+
+Inherited-implementation controls were executed on 2026-10-23 by temporarily
+restoring each defect in the same source, running
+`cargo test --locked --lib scu::dsp::arithmetic_tests` and
+`cargo test --locked --test dsp_arithmetic`, then restoring the correction:
+
+| Implementation control | Baseline guest observation versus literal contract | Result |
+| --- | --- | --- |
+| Both inherited defects | Overflowing ADD result is 80000000, but repeated statuses are 00480000/00400000/00400000 rather than three 00480000; the two-ADD result is 80000001 but its first halted status is stale 00480000 rather than 00400000. | All five new unit tests and all three Machine tests fail. |
+| Sticky V only (control reads corrected) | All three two-ADD halted reads retain 00480000 rather than 00400000; SUB/AD2 replacement cases and the second ENDI similarly retain V. | Native unit and Machine suites both fail. |
+| Read-cleared V only (arithmetic corrected) | Second/third halted reads after overflow lose V; second interrupt-handler read loses V while correctly acknowledging E. | Native unit and Machine suites both fail. |
+| Corrected implementation | The two distinguishing ADD results/statuses and every independent record match; E clears once, V survives reads, exactly two end interrupts occur. | Five new unit tests and three Machine tests pass. |
+
+Validation on 2026-10-23 used macOS arm64, installed stable Rust 1.99.0,
+wasm32-unknown-unknown, wasm-bindgen 0.2.129, Node 24.12.0 and Playwright 1.58.2.
+The installed stable toolchain's bin directory was placed first on PATH for the
+final checks and browser build (the default Homebrew compiler lacked Wasm core).
+
+| Required check | Actual result |
+| --- | --- |
+| `cargo fmt --check`, `cargo build --locked` | Pass. |
+| `cargo test --locked` | Pass: 807 tests, zero failures/ignored, including all existing SCU/DSP, games, audio, backup/controller and reset coverage. |
+| `cargo clippy --locked --all-targets -- -D warnings` | Pass. |
+| `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings` | Pass. |
+| `sh scripts/build-web.sh` | Pass: all original media reproduced and release Wasm/bindings built. |
+| All 76 fixture/media `--check` commands in the existing CI workflow | Pass, including the new diagnostic and every existing original guest/media check. |
+| `npm run test:browser` | Pass: complete suite on Chromium 145.0.7632.6, including the new diagnostic, all existing native-equivalent DSP guests, Star Collector, Prism Courier, Hardware Lab, production Canvas/AudioWorklet, backup, both controller ports, resets, offline execution and local-file privacy assertions. |
+
+This is a partial #17 increment: CPU/peripheral, multiprocessor/bus/reset, remaining
+SCU/DSP, video/audio, CD/media/HLE, SMPC and comprehensive integration requirements
+remain mandatory. The remaining DSP pipeline/physical RAM-port/conditional/DMA
+and cross-device timing inventory stays pending. Green CI or these diagnostics
+do not establish hardware completion or broad commercial compatibility. Genuine
+BIOS and commercial-game compatibility remain not independently confirmed.
+Required post-merge verification: none.

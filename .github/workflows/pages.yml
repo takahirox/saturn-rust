@@ -53,6 +53,7 @@ jobs:
           python3 tests/fixtures/build_abus.py --check
           python3 tests/fixtures/build_dsp_dma.py --check
           python3 tests/fixtures/build_dsp_bus.py --check
+          python3 tests/fixtures/build_dsp_arithmetic.py --check
           python3 tests/fixtures/build_intc.py --check
           python3 tests/fixtures/build_hle_system.py --check
           python3 tests/fixtures/build_hle_player.py --check
