@@ -472,11 +472,20 @@ impl Scsp {
             self.output.pop_front();
             self.dropped += 1;
         }
-        // MVOL is a four-bit linear DAC output scale; clipping precedes MVOL.
-        let volume = i64::from(self.common[0] & 15);
+        // Sega sound FAQ Overview: nominal 3 dB steps for all sources.
+        // Model each two steps as binary half amplitude (ST-077 definitions,
+        // p.ii), nearest Q15 coefficient; signed division truncates toward zero.
+        // These are deterministic model coefficients, not measured DAC values.
+        // ST-077 §4.2 p.88: attenuation cannot undo upstream clipping.
+        // Full mapping, error bound and latch convention: docs/scsp-mvol.md.
+        const GAIN: [i64; 16] = [
+            0, 256, 362, 512, 724, 1024, 1448, 2048, 2896, 4096, 5793, 8192, 11585, 16384, 23170,
+            32768,
+        ];
+        let gain = GAIN[(self.common[0] & 15) as usize];
         for value in mix {
             self.output
-                .push_back((value.clamp(-32768, 32767) * volume / 15) as i16);
+                .push_back((value.clamp(-32768, 32767) * gain / 32768) as i16);
         }
         self.generated += 1;
     }

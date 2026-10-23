@@ -102,6 +102,7 @@ jobs:
           python3 tests/fixtures/build_scsp_clock.py --check
           python3 tests/fixtures/build_scsp_dma.py --check
           python3 tests/fixtures/build_scsp_pcm.py --check
+          python3 tests/fixtures/build_scsp_mvol.py --check
           python3 tests/fixtures/build_smpc.py --check
           python3 tests/fixtures/build_smpc_status.py --check
           python3 tests/fixtures/build_controller.py --check

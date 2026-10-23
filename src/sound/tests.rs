@@ -839,3 +839,207 @@ fn slot_monitor_follows_the_fm_waveform_address_without_moving_the_phase_generat
     assert_eq!(scsp.read16(0x408), Ok(0x80));
     assert_eq!(scsp.voices[5].phase, 4096 << 16);
 }
+
+// Primary contract: Sega sound FAQ Overview (MVOL: nominal 3 dB steps),
+// ST-077 §4.2 pp.80–88 (final stage after overflow). These expectations are
+// source-authored; they do not call an implementation gain function.
+#[test]
+fn mvol_all_settings_render_independent_bipolar_pcm_vectors() {
+    let positive = [
+        0, 128, 181, 256, 362, 512, 724, 1024, 1448, 2048, 2896, 4096, 5792, 8192, 11585, 16384,
+    ];
+    for (volume, expected) in positive.into_iter().enumerate() {
+        let mut scsp = Scsp::default();
+        let mut ram = vec![0; SOUND_RAM_SIZE];
+        ram[0x100..0x108].copy_from_slice(&[0x40, 0, 0xc0, 0, 0x40, 0, 0xc0, 0]);
+        direct(&mut scsp, 0, 0x100, 1, false, 0);
+        scsp.write8(0x401, volume as u8).unwrap();
+        scsp.sample(&mut ram).unwrap();
+        scsp.sample(&mut ram).unwrap();
+        assert_eq!(
+            scsp.drain(2),
+            [expected, expected, -expected, -expected],
+            "MVOL={volume}"
+        );
+    }
+}
+
+fn mvol_sources(pcm: bool, effects: bool, external: bool, negative: bool) -> (Scsp, Vec<u8>) {
+    let mut scsp = Scsp::default();
+    let mut ram = vec![0; SOUND_RAM_SIZE];
+    let value: i16 = if negative { -32768 } else { 16384 };
+    for word in ram[0x100..0x108].as_chunks_mut::<2>().0 {
+        word.copy_from_slice(&value.to_be_bytes());
+    }
+    if pcm {
+        direct(&mut scsp, 0, 0x100, 1, false, 0);
+    }
+    scsp.external = if negative {
+        [-32768, 32767]
+    } else {
+        [8192, -16384]
+    };
+    if effects {
+        scsp.write16(0x700, 0x4000).unwrap();
+        for (i, words) in [
+            [0, 0xac00, 2, 0],
+            [0, 0, 0x1002, 0],
+            [0, 0xac40, 2, 0],
+            [0, 0, 0x1102, 0],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for (j, word) in words.into_iter().enumerate() {
+                scsp.write16(0x800 + (i * 8 + j * 2) as u32, word).unwrap();
+            }
+        }
+        // Preserve slot0 dry routing while adding effect left and right.
+        scsp.write16(0x16, if pcm { 0xe0ff } else { 0xff }).unwrap();
+        scsp.write16(0x36, 0xef).unwrap();
+    }
+    if external {
+        scsp.write16(0x216, 0xff).unwrap();
+        scsp.write16(0x236, 0xef).unwrap();
+    }
+    (scsp, ram)
+}
+
+#[test]
+fn mvol_attenuates_pcm_executing_dsp_exts_and_combined_after_clipping() {
+    for (pcm, effects, external, negative, raw) in [
+        (true, false, false, false, [16384, 16384]),
+        (false, true, false, false, [4096, -8192]),
+        (false, false, true, false, [8192, -16384]),
+        (true, true, true, false, [28672, -8192]),
+        // Sum is [-81920,16382]; lowering MVOL cannot recover overflow.
+        (true, true, true, true, [-32768, 16382]),
+        (false, false, false, false, [0, 0]),
+    ] {
+        for (volume, divisor) in [(0, 0), (1, 128), (13, 2), (15, 1)] {
+            let (mut scsp, mut ram) = mvol_sources(pcm, effects, external, negative);
+            scsp.write16(0x400, 0x200 | volume).unwrap();
+            scsp.sample(&mut ram).unwrap();
+            let expected = raw.map(|v| if divisor == 0 { 0 } else { v / divisor });
+            assert_eq!(
+                scsp.drain(1),
+                expected,
+                "sources={pcm}/{effects}/{external}, negative={negative}, MVOL={volume}"
+            );
+            if effects {
+                assert_eq!(
+                    scsp.read16(0xec0).unwrap() as i16,
+                    if negative { -16384 } else { 4096 }
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn mvol_samples_completed_writes_at_output_boundary_and_retains_queued_audio_on_reset() {
+    let (mut scsp, mut ram) = mvol_sources(true, false, false, false);
+    // Write-only MVOL/MEM4MB reads remain zero.
+    scsp.write16(0x400, 0x20f).unwrap();
+    let read = scsp.read16(0x400).unwrap();
+    scsp.write8(0x400, 0).unwrap();
+    assert_eq!(scsp.common[0], 0x000f);
+    scsp.write8(0x400, 2).unwrap();
+    assert_eq!(scsp.common[0], 0x020f);
+    scsp.sample(&mut ram).unwrap();
+    for step in 0..127 {
+        scsp.sample_cycle(step, &mut ram).unwrap();
+    }
+    scsp.write8(0x401, 13).unwrap(); // completed before final output deadline
+    assert_eq!(scsp.common[0], 0x20d);
+    assert_eq!(scsp.read16(0x400).unwrap(), read);
+    scsp.sample_cycle(127, &mut ram).unwrap();
+    scsp.write8(0x401, 0).unwrap(); // only future frames are muted
+    scsp.sample(&mut ram).unwrap();
+    scsp.set_reset(true);
+    assert_eq!(scsp.common[0] & 0x20f, 0);
+    scsp.sample(&mut ram).unwrap();
+    scsp.set_reset(false);
+    scsp.sample(&mut ram).unwrap();
+    assert_eq!(scsp.generated, 5);
+    assert_eq!(scsp.drain(5), [16384, 16384, 8192, 8192, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(Scsp::default().generated, 0);
+}
+
+#[test]
+fn mvol_mute_keeps_pcm_phase_dsp_execution_and_sample_generation_running() {
+    let (mut scsp, mut ram) = mvol_sources(true, true, false, false);
+    ram[0x100..0x108].copy_from_slice(&[0x10, 0, 0x20, 0, 0x30, 0, 0x40, 0]);
+    scsp.write8(0x401, 15).unwrap();
+    scsp.sample(&mut ram).unwrap(); // phase0: PCM4096 + effects4096
+    scsp.write8(0x401, 0).unwrap();
+    for _ in 0..2 {
+        scsp.sample(&mut ram).unwrap();
+    }
+    assert!(scsp.voices[0].active);
+    assert_eq!(scsp.voices[0].phase, 3 << 16);
+    // DSP continues to consume changed input while final output is muted.
+    scsp.external = [-8192, 16384];
+    scsp.sample(&mut ram).unwrap();
+    assert_eq!(scsp.read16(0xec0).unwrap() as i16, -4096);
+    assert_eq!(scsp.read16(0xec2).unwrap() as i16, 8192);
+    scsp.write8(0x401, 13).unwrap();
+    scsp.sample(&mut ram).unwrap(); // wraps naturally to phase0, no key restart
+    assert_eq!(scsp.voices[0].phase, 1 << 16);
+    assert_eq!(scsp.generated, 5);
+    assert_eq!(scsp.drain(5), [8192, -4096, 0, 0, 0, 0, 0, 0, 0, 6144]);
+}
+
+#[test]
+fn mvol_reference_clock_boundaries_are_invariant_across_advance_chunks() {
+    for chunk in [1, 3, 17, 10000] {
+        let mut sound = Sound::default();
+        let (scsp, ram) = mvol_sources(true, false, false, false);
+        sound.scsp = scsp;
+        sound.ram = ram;
+        // The first final output occurs at reference clock ceil(128*ref/DSP).
+        let edge = (128 * REFERENCE_HZ).div_ceil(DSP_HZ);
+        let advance_to = |s: &mut Sound, target| {
+            while s.time < target {
+                s.advance((target - s.time).min(chunk) as u32).unwrap();
+            }
+        };
+        advance_to(&mut sound, edge - 1);
+        sound.scsp.write8(0x401, 13).unwrap();
+        assert_eq!(sound.scsp.generated, 0);
+        advance_to(&mut sound, edge);
+        assert_eq!(sound.scsp.generated, 1);
+        sound.scsp.write8(0x401, 1).unwrap();
+        advance_to(&mut sound, (256 * REFERENCE_HZ).div_ceil(DSP_HZ));
+        sound.scsp.write8(0x401, 0).unwrap();
+        advance_to(&mut sound, (384 * REFERENCE_HZ).div_ceil(DSP_HZ));
+        assert_eq!(sound.scsp.drain(3), [8192, 8192, 128, 128, 0, 0]);
+        assert_eq!(sound.scsp.common[0], 0x200);
+    }
+}
+
+#[test]
+fn mvol_clips_both_polarities_before_gain_and_truncates_signed_fractions() {
+    for (gain, expected) in [
+        (0, [0, 0]),
+        (1, [255, -256]),
+        (13, [16383, -16384]),
+        (14, [23169, -23170]),
+        (15, [32767, -32768]),
+    ] {
+        let (mut scsp, mut ram) = mvol_sources(true, true, true, false);
+        scsp.external = [32767, -32768]; // mixed [65534,-32768]
+        scsp.write8(0x401, gain).unwrap();
+        scsp.sample(&mut ram).unwrap();
+        assert_eq!(scsp.drain(1), expected);
+    }
+    let mut scsp = Scsp::default();
+    let mut ram = vec![0; SOUND_RAM_SIZE];
+    ram[0x100..0x108].copy_from_slice(&[0, 1, 0xff, 0xff, 0x7f, 0xff, 0x80, 1]);
+    direct(&mut scsp, 0, 0x100, 1, false, 0);
+    scsp.write8(0x401, 13).unwrap();
+    for _ in 0..4 {
+        scsp.sample(&mut ram).unwrap();
+    }
+    assert_eq!(scsp.drain(4), [0, 0, 0, 0, 16383, 16383, -16383, -16383]);
+}
