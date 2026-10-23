@@ -4,6 +4,9 @@
 use super::*;
 use std::collections::VecDeque;
 #[cfg(test)]
+#[path = "bridge_tests.rs"]
+mod bridge_tests;
+#[cfg(test)]
 #[path = "cs0_tests.rs"]
 mod cs0_tests;
 #[cfg(test)]
@@ -56,6 +59,9 @@ pub(super) struct Transfer {
     pub(super) last: bool,
     pub(super) unit_end: u32, // byte/word/longword end, independently of burst end
     pub(super) locked: bool,
+    // One of two physical words belonging to an aligned CPU-side longword.
+    // UBC external observations describe that longword, not these words.
+    pub(super) bridge_read: bool,
 }
 #[derive(Default)]
 pub(super) struct Journal {
@@ -876,6 +882,7 @@ impl Bus {
                     last: true,
                     unit_end: 0,
                     locked: false,
+                    bridge_read: false,
                 },
                 remaining,
             });
@@ -965,6 +972,7 @@ impl Bus {
                     last,
                     unit_end: 0,
                     locked: false,
+                    bridge_read: false,
                 },
                 remaining,
             });
@@ -1201,7 +1209,9 @@ impl Bus {
             }
         };
         if let Owner::ResetDrain(processor) = active.owner {
-            if let Ok(value) = result {
+            if let Ok(value) = result
+                && !t.bridge_read
+            {
                 self.for_cpu(processor).observe_external_data(
                     t.address,
                     t.width,
@@ -1301,8 +1311,29 @@ impl Bus {
                 self.transactions.cpu_group = None;
             }
             if let Ok(value) = result {
-                let memory = self.for_cpu(processor);
-                memory.observe_external_data(t.address, t.width, value, t.write.is_some());
+                if !t.bridge_read {
+                    self.for_cpu(processor).observe_external_data(
+                        t.address,
+                        t.width,
+                        value,
+                        t.write.is_some(),
+                    );
+                } else if t.address & 2 != 0 {
+                    let (previous, high) = *self.transactions.journals[processor as usize]
+                        .borrow()
+                        .beats
+                        .last()
+                        .expect("bridge high word");
+                    assert!(previous.bridge_read && previous.address + 2 == t.address);
+                    if let Ok(high) = high {
+                        self.for_cpu(processor).observe_external_data(
+                            t.address - 2,
+                            4,
+                            high << 16 | value,
+                            false,
+                        );
+                    }
+                }
             }
             let index = processor as usize
                 + if matches!(active.owner, Owner::Dmac(_)) {
@@ -1350,6 +1381,7 @@ impl CpuBus<'_> {
                     last: (i + 1) * width == N,
                     unit_end: address + N as u32,
                     locked: false,
+                    bridge_read: false,
                 })
                 .collect()
         });
@@ -1375,6 +1407,7 @@ impl CpuBus<'_> {
             last,
             unit_end: address + width as u32,
             locked,
+            bridge_read: false,
         };
         self.scheduled_transfer(transfer)
     }
