@@ -606,10 +606,14 @@ impl Cpu {
                 let width = if opcode & 0x4000 == 0 { 4 } else { 2 };
                 // Read/increment Rn first, then Rm, including when n == m.
                 let a = read_operand(bus, s.r[n], width).map_err(access)? as i32 as i64;
-                self.multiplier
-                    .wait(multiplier_access.as_mut().unwrap(), bus.inner, None)
-                    .map_err(access)?;
                 let m_address = s.r[m].wrapping_add(if n == m { width } else { 0 });
+                self.multiplier
+                    .wait(
+                        multiplier_access.as_mut().unwrap(),
+                        bus.inner,
+                        Some((m_address, false)),
+                    )
+                    .map_err(access)?;
                 let b = read_operand(bus, m_address, width).map_err(access)? as i32 as i64;
                 s.r[n] = s.r[n].wrapping_add(width);
                 s.r[m] = s.r[m].wrapping_add(width);

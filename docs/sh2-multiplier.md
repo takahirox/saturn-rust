@@ -64,18 +64,26 @@ transfer can supply the final clock of that wait. Cache-array accesses and
 resident cache reads complete synchronously in the adapter, so their full wait
 must precede the effect. The adapter journals this latency observation before
 suspending; it does not add a second clock to an already scheduled transfer.
-This completion rule for LDS.L/STS.L does not change MAC operand overlap or the
-producer/consumer execution-state table above.
+MAC.W/MAC.L also journal the second operand's address-dependent latency after
+the first read. Figures7.64/7.65 extend that second MA until the older mm ends;
+a synchronous cache read must wait through that boundary before sampling.
+The first operand remains independent and its completed read is retained on
+replay. The producer/consumer execution-state table above is unchanged.
 
 MA completion and successor issue are distinct boundaries: table7.2 and
 figs7.89/7.91 permit the successor's EX to overlap an aligned transfer's MA.
-After a synchronous transfer retires, the CPU retains that successor EX time.
+After a memory transfer retires, the CPU retains that successor EX time,
+including scheduled stores with a one-clock peripheral access. MAC likewise
+retains its successor EX boundary using two baseline intervals (figs7.23/7.34),
+so delaying the second operand until MA completion preserves consecutive-MAC
+overlap.
 If its fetch completes without advancing the clock, the scheduler recovers the
 overlapped clock, and any successor multiplier access uses that EX time. An
 IF/MA split already occupies the interval and permits no such recovery; a waited
-fetch or exception entry exhausts it. Effects still complete at MA, and replay
-retains the observed times. The four memory-transfer guest kernels each measure
-sixteen aligned transfer/NOP pairs: 32 clocks, FRT floor((6+32)/8)=4.
+fetch, a longer operand wait or exception entry exhausts it. Effects still
+complete at MA, and replay retains the observed times. The four memory-transfer
+guest kernels each measure sixteen aligned transfer/NOP pairs: 32 clocks,
+FRT floor((6+32)/8)=4.
 
 Availability belongs to each SH-2 and advances in its actual PLL clock domain.
 Fetch, operand and on-chip waits can exhaust an earlier mm tail. Replay must

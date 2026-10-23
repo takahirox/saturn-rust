@@ -279,6 +279,73 @@ Its reproducible `.hex`, `.s` and `.tsv` hashes are respectively
 `2ff6b59e6382e58477b2cc0d319050fc0ccec7c8653f9685ba6dcafbcd08782e` and
 `6c09e4a3246554dc1256a311af77f7b00e0c095d963087de9512fb9cd7e5aa69`.
 
+## Review correction: MAC operand latency and scheduled store overlap
+
+Review identified two additional access-boundary defects. MAC.W/MAC.L assumed
+that their second operand supplied one scheduled clock, even when a cache hit
+or array read completed synchronously. P §7.7.2 figs7.64/7.65 instead extend
+that second MA through the older multiply's final mm. The CPU now passes the
+second operand address (including the aliased-register increment) to the
+existing journaled latency observation before waiting. Replay retains the first
+operand and the observed latency; cache reads cannot sample the second early.
+
+Successor EX overlap was also restricted to synchronous MACH/MACL transfers.
+P table7.2 and §7.7.6 figs7.89/7.91 permit the same overlap when a scheduled
+one-clock store supplies the final MA clock. The multiplier now retains that
+permitted EX boundary for memory transfers independently of access latency.
+The existing exact-clock check still exhausts overlap after longer operand or
+fetch waits, and IF/MA splits retain their issue cost.
+
+The new `mac_second_operands_sample_at_the_multiplier_boundary_and_replay_once`
+scheduler regression covers MAC.W and MAC.L through arrays and resident data
+lines, plus a scheduled MAC.L peripheral-read control. The long multiply starts
+at 34 and its final mm ends at 42. At 41, the first operand changes from 3 to 5
+and the second from 7 to 11. Cache-backed MACs must finish at 42 with
+21 + 3×11 = 54; the two-clock peripheral read completes at 43. Repeated issue
+attempts and later operand mutations verify first-read retention, second-read
+sampling, one address update and independent peer progress.
+
+The expanded `mac_memory_transfers_overlap_the_successor_in_elapsed_clocks`
+regression adds scheduled MACH/MACL stores through DMAC SAR0 at both instruction
+alignments to its existing synchronous transfer vectors. For an aligned store
+at 32, its MA effect completes at 34 and the following NOP overlaps MA, allowing
+the third instruction's MOV at 34. The unaligned IF/MA split still delays MOV
+to 36. Effects remain at MA completion.
+
+Before the production fixes, both regression commands exited 101 at their
+intended assertions: `cargo test --locked --lib mac_second_operands
+-- --nocapture` allowed the MAC to retire on an issue attempt at 41, and
+`cargo test --locked --lib mac_memory_transfers_overlap -- --nocapture` lost
+the scheduled store's successor EX overlap. After the fixes, all 20 focused
+multiplier instruction/scheduler tests passed. All 78 registered fixture/media
+reproduction checks also passed; no fixture expectations were changed.
+
+The first full native run exposed a consequence of the corrected MAC sampling:
+waiting until MA completion also consumed MAC's independently permitted
+successor EX interval. Both existing multiplier guest tests rejected the
+consecutive-MAC.W timing (FRT 8 versus the authored 7). The same retained-EX
+mechanism now covers MAC, with its two baseline intervals from figs7.23/7.34.
+`mac_operand_completion_preserves_successor_ex_overlap` adds elapsed-clock
+vectors for both MAC widths and alignments: MA completes at 36 while the
+third instruction issues at 36 or 37. The unchanged original guest tests then
+passed on both CPUs/PLLs with their controls and repeated cold boots.
+
+Final revision checks on 2026-10-24 explicitly used rustup stable Rust 1.99.0:
+`cargo fmt --check`, `cargo build --locked`, `cargo test --locked` (840 passed,
+zero failed or ignored, 79 result groups), native all-target and Wasm Clippy
+with warnings denied, and all 78 registered fixture/media reproduction checks
+passed. `npm ci --ignore-scripts` also passed with no reported vulnerabilities.
+
+`sh scripts/build-web.sh` and the complete extended `npm run test:browser`
+passed against the final production artifact under `/saturn-rust/` in Chromium
+145.0.7632.6 with no required skips. This includes both CPUs/PLLs, all original
+multiplier kernels and mutation controls, repeated cold boots, the three
+demonstration discs, sound/audio, backup and privacy checks. The tested
+production Wasm has SHA-256
+`9c3cf14fe826277ede01dc9884c15e08a86ed85353c3e28e3d285fdfa43b64af`.
+Local Markdown links and Git whitespace checks passed. No push, merge, Issue
+closure or required post-merge verification is part of this correction.
+
 ## Remaining limits
 
 The multiplier is clocked within the existing architectural instruction-boundary

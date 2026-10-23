@@ -148,16 +148,129 @@ fn cache_boundary_pair(code: &[u16]) -> Machine {
 }
 
 #[test]
-fn synchronous_mac_memory_transfers_overlap_the_successor_in_elapsed_clocks() {
+fn mac_second_operands_sample_at_the_multiplier_boundary_and_replay_once() {
+    // P figs7.64/65: DMUL's final mm ends at t42. The second MAC
+    // operand's MA must extend through t42, even for a zero-clock cache hit.
+    for (address, op, width, boundary) in [
+        (0xC0000400, 0x0FFF, 4, 42),
+        (0xC0000400, 0x4FFF, 2, 42),
+        (HIGH_WRAM + 0x2400, 0x0FFF, 4, 42),
+        (HIGH_WRAM + 0x2400, 0x4FFF, 2, 42),
+        // Peripheral reads take two clocks; retain that real wait as well.
+        (onchip::DMAC, 0x0FFF, 4, 43),
+    ] {
+        let mut m = cache_boundary_pair(&[0xE103, 0xE207, 0x321D, op, 0x001B, 9]);
+        m.cpu = Cpu::start(HIGH_WRAM, address);
+        let write = |m: &mut Machine, offset, value| {
+            let mut memory = m.bus.for_cpu(Processor::Master);
+            if width == 4 {
+                memory.write32(address + offset, value).unwrap();
+            } else {
+                memory.write16(address + offset, value as u16).unwrap();
+            }
+        };
+        write(&mut m, 0, 3);
+        write(&mut m, width, 7);
+        // Warm both data operands; reads from the array are synchronous too.
+        let memory = m.bus.for_cpu(Processor::Master);
+        if width == 4 {
+            assert_eq!(memory.read32(address), Ok(3));
+            assert_eq!(memory.read32(address + width), Ok(7));
+        } else {
+            assert_eq!(memory.read16(address), Ok(3));
+            assert_eq!(memory.read16(address + width), Ok(7));
+        }
+        m.bus.cpu_delay(Processor::Master, 0);
+        advance_to(&mut m, 41);
+        assert_eq!(m.clocks, 41);
+        assert_eq!(
+            m.cpu_state().instructions,
+            3,
+            "{op:04x} at {address:08x}: early MAC"
+        );
+        assert_eq!((m.cpu_state().mach, m.cpu_state().macl), (0, 21));
+        assert_eq!(m.cpu_state().r[15], address);
+        assert!(!m.issue_cpu(Processor::Master).unwrap());
+        // The first read has completed; replay must retain 3. Only the
+        // second value may change, giving 21 + 3*11 = 54, not 42 or 76.
+        write(&mut m, 0, 5);
+        write(&mut m, width, 11);
+        assert!(!m.issue_cpu(Processor::Master).unwrap());
+        advance_to(&mut m, 42);
+        if boundary == 43 {
+            assert!(!m.issue_cpu(Processor::Master).unwrap());
+            advance_to(&mut m, boundary);
+        }
+        assert!(m.issue_cpu(Processor::Master).unwrap());
+        assert_eq!(m.bus.main_clocks, boundary, "{op:04x} at {address:08x}");
+        assert_eq!((m.cpu_state().mach, m.cpu_state().macl), (0, 54));
+        assert_eq!(m.cpu_state().r[15], address + 2 * width);
+        write(&mut m, width, 13);
+        advance_to(&mut m, 64);
+        assert_eq!((m.cpu_state().mach, m.cpu_state().macl), (0, 54));
+        assert_eq!(m.cpu_state().r[15], address + 2 * width);
+        assert_eq!(m.cpu_state().exceptions, 0);
+        assert!(m.slave_state().instructions >= 8);
+    }
+}
+
+#[test]
+fn mac_operand_completion_preserves_successor_ex_overlap() {
+    // P figs7.23/34: MAC's two baseline EX intervals plus the IF split
+    // give three issue clocks. At 4n, second-MA completion is one clock
+    // later than the successor EX; at 4n+2 it coincides with that EX.
+    for (op, width) in [(0x0FFF, 4), (0x4FFF, 2)] {
+        for unaligned in [false, true] {
+            let mut code = vec![];
+            if unaligned {
+                code.push(9);
+            }
+            code.extend([op, 9, 0xE65A, 9]);
+            let mut m = cache_boundary_pair(&code);
+            let address = 0xC0000400;
+            m.cpu = Cpu::start(HIGH_WRAM, address);
+            let mut memory = m.bus.for_cpu(Processor::Master);
+            if width == 4 {
+                memory.write32(address, 3).unwrap();
+                memory.write32(address + width, 7).unwrap();
+            } else {
+                memory.write16(address, 3).unwrap();
+                memory.write16(address + width, 7).unwrap();
+            }
+            advance_to(&mut m, 35);
+            assert_eq!(m.cpu_state().instructions, u64::from(unaligned));
+            assert_eq!(m.cpu_state().macl, 0);
+            assert!(!m.issue_cpu(Processor::Master).unwrap());
+            advance_to(&mut m, 36);
+            assert!(m.issue_cpu(Processor::Master).unwrap()); // MAC, at MA end
+            assert_eq!(m.cpu_state().macl, 21);
+            assert_eq!(m.cpu_state().r[15], address + 2 * width);
+            assert!(m.issue_cpu(Processor::Master).unwrap()); // successor NOP
+            if unaligned {
+                assert!(!m.issue_cpu(Processor::Master).unwrap());
+                advance_to(&mut m, 37);
+            }
+            assert!(m.issue_cpu(Processor::Master).unwrap()); // third MOV
+            assert_eq!(m.bus.main_clocks, 36 + u64::from(unaligned));
+            assert_eq!(m.cpu_state().r[6], 0x5A);
+        }
+    }
+}
+
+#[test]
+fn mac_memory_transfers_overlap_the_successor_in_elapsed_clocks() {
     // P table7.2, figs7.89/91: EX=t32, MA ends t34, successor
     // NOP's EX=t33. Retaining effects until MA must not lose that EX slot.
     // At 4n+2, IF/MA contention instead gives two EX intervals.
-    for (op, unaligned) in [0x4F02, 0x4F12, 0x4F06, 0x4F16]
+    for (op, unaligned, address) in [0x4F02, 0x4F12, 0x4F06, 0x4F16]
         .into_iter()
         .flat_map(|op| [(op, false), (op, true)])
+        .flat_map(|(op, unaligned)| {
+            [0xC0000400, onchip::DMAC].map(|address| (op, unaligned, address))
+        })
+        .filter(|(op, _, address)| *address != onchip::DMAC || op & 4 == 0)
     {
         let store = op & 4 == 0;
-        let address = 0xC0000400;
         let mut code = vec![];
         if unaligned {
             code.push(9);
@@ -190,7 +303,9 @@ fn synchronous_mac_memory_transfers_overlap_the_successor_in_elapsed_clocks() {
         for _ in m.cpu_state().instructions..3 + offset {
             assert!(
                 m.issue_cpu(Processor::Master).unwrap(),
-                "{op:04x}: successor EX overlap lost"
+                "{op:04x} at {address:08x}: successor EX overlap lost at {} (ready {})",
+                m.bus.main_clocks,
+                m.cpu_ready[0]
             );
         }
         assert_eq!(
