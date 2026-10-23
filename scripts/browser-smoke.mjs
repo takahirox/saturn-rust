@@ -16,6 +16,7 @@ import { sh2BusPipeline } from "./sh2-bus-pipeline.mjs";
 import { sh2ResetBus } from "./sh2-reset-bus.mjs";
 import { cs0Transfers } from "./cs0.mjs";
 import { abusTiming } from "./abus.mjs";
+import { dspArithmetic } from "./dsp-arithmetic.mjs";
 import { hardwareBoundaries } from "./hardware-boundaries.mjs";
 import { refreshArbitration } from "./refresh.mjs";
 import { hlePlayer } from "./hle-player.mjs";
@@ -837,6 +838,7 @@ try {
   await vdp2Status(page);
   await videoTransactions(page);
   await abusTiming(page);
+  await dspArithmetic(page);
   await busTransactions(page);
   await scuFringe(page);
   await dmacBus(page);

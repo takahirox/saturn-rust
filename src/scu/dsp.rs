@@ -5,6 +5,8 @@ use crate::bus::{BusError, Memory};
 use std::cell::Cell;
 
 #[cfg(test)]
+mod arithmetic_tests;
+#[cfg(test)]
 mod tests;
 
 const MASK48: u64 = 0xFFFF_FFFF_FFFF;
@@ -107,7 +109,8 @@ impl Dsp {
             | u32::from(self.dma.is_some()) << 23
             | u32::from(self.executing) << 16
             | u32::from(self.pc);
-        self.flags.set(self.flags.get() & !(OVERFLOW | END));
+        // ST-210 item 36 clears V on reads; SOA #8 §3 acknowledges E.
+        self.flags.set(self.flags.get() & !(END | OVERFLOW));
         result
     }
     pub(super) fn set_control(&mut self, value: u32) {
@@ -315,7 +318,11 @@ impl Dsp {
         if carry {
             flags |= CARRY;
         }
-        // V latches until read, while logical/shift instructions leave it alone.
+        // ST-240-B-SP1 p.5 (Bugs): arithmetic replaces V on every result.
+        // SOA #8 §5.1: NOP, logical, shifts and transfers preserve V.
+        if matches!(op, 4..=6) {
+            flags &= !OVERFLOW;
+        }
         if overflow {
             flags |= OVERFLOW;
         }
