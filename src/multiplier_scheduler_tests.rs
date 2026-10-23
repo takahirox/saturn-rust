@@ -268,7 +268,6 @@ fn mac_memory_transfers_overlap_the_successor_in_elapsed_clocks() {
         .flat_map(|(op, unaligned)| {
             [0xC0000400, onchip::DMAC].map(|address| (op, unaligned, address))
         })
-        .filter(|(op, _, address)| *address != onchip::DMAC || op & 4 == 0)
     {
         let store = op & 4 == 0;
         let mut code = vec![];
@@ -283,6 +282,7 @@ fn mac_memory_transfers_overlap_the_successor_in_elapsed_clocks() {
             .write32(address, 0x12345678)
             .unwrap();
         let offset = u64::from(unaligned);
+        let operand_wait = u64::from(!store && address == onchip::DMAC);
         advance_to(&mut m, 33 + offset);
         assert_eq!(m.cpu_state().instructions, offset);
         assert_eq!(
@@ -290,16 +290,20 @@ fn mac_memory_transfers_overlap_the_successor_in_elapsed_clocks() {
             Ok(0x12345678)
         );
         if unaligned {
-            advance_to(&mut m, 35);
+            advance_to(&mut m, 35 + operand_wait);
             for _ in m.cpu_state().instructions..3 {
                 assert!(m.issue_cpu(Processor::Master).unwrap());
             }
             assert!(
                 !m.issue_cpu(Processor::Master).unwrap(),
-                "{op:04x}: IF/MA contention must delay the next EX until t36"
+                "{op:04x}: IF/MA contention must delay the next EX"
             );
         }
-        advance_to(&mut m, 34 + 2 * offset);
+        // P §7.2.3 stretches the entire shared MA/EX slot for a two-clock
+        // peripheral read. It adds one clock at 4n; at 4n+2 the IF/MA split
+        // also retains that operand wait (§7.4.1).
+        let boundary = 34 + 2 * offset + operand_wait;
+        advance_to(&mut m, boundary);
         for _ in m.cpu_state().instructions..3 + offset {
             assert!(
                 m.issue_cpu(Processor::Master).unwrap(),
@@ -309,8 +313,7 @@ fn mac_memory_transfers_overlap_the_successor_in_elapsed_clocks() {
             );
         }
         assert_eq!(
-            m.bus.main_clocks,
-            34 + 2 * offset,
+            m.bus.main_clocks, boundary,
             "{op:04x}: successor EX overlap lost"
         );
         assert_eq!(m.cpu_state().r[6], 0x5A);
@@ -331,33 +334,90 @@ fn mac_memory_transfers_overlap_the_successor_in_elapsed_clocks() {
 }
 
 #[test]
-fn a_waited_successor_fetch_exhausts_synchronous_transfer_overlap() {
-    // Start the same cold MOV fetch at t34, after either an aligned STS.L
-    // (whose successor EX could start at t33) or an independent NOP control.
-    // A real fetch wait consumes that overlap; both deadlines must agree.
-    let mut deadlines = vec![];
-    for first in [0x4F12, 9] {
-        let mut m = cache_boundary_pair(&[first, 0xE65A, 9]);
-        m.cpu = Cpu::start(HIGH_WRAM, 0xC0000404);
-        if m.issue_cpu(Processor::Master).unwrap() {
-            m.bus.advance_clocks(2).unwrap();
-            m.clocks += 2;
+fn multi_clock_mac_loads_preserve_shared_ma_ex_slot_and_replay_once() {
+    // P §7.2.3 and fig7.89, independent of production timing helpers:
+    // LDS.L EX starts at 32; its two-clock SAR0 read stretches MA to 35.
+    // NOP shares that MA slot, so the third instruction's EX starts at 35.
+    for op in [0x4F06, 0x4F16] {
+        let mut m = cache_boundary_pair(&[op, 9, 0xE65A, 0x001B, 9]);
+        m.cpu = Cpu::start(HIGH_WRAM, onchip::DMAC);
+        m.bus
+            .for_cpu(Processor::Master)
+            .write32(onchip::DMAC, 0x12345678)
+            .unwrap();
+        advance_to(&mut m, 34);
+        assert_eq!(m.clocks, 34);
+        assert_eq!(m.cpu_state().instructions, 0);
+        assert_eq!((m.cpu_state().mach, m.cpu_state().macl), (0, 0));
+        assert_eq!(m.cpu_state().r[15], onchip::DMAC);
+        assert!(!m.issue_cpu(Processor::Master).unwrap());
+        m.bus
+            .for_cpu(Processor::Master)
+            .write32(onchip::DMAC, 0x87654321)
+            .unwrap();
+        assert!(!m.issue_cpu(Processor::Master).unwrap());
+        advance_to(&mut m, 35);
+        assert!(m.issue_cpu(Processor::Master).unwrap()); // LDS.L at MA end
+        let result = if op == 0x4F06 {
+            (0x87654321, 0)
         } else {
-            advance_to(&mut m, 34);
-            assert!(m.issue_cpu(Processor::Master).unwrap());
-        }
-        assert_eq!(m.bus.main_clocks, 34);
-        assert_eq!(m.cpu_state().instructions, 1);
-        let mut memory = m.bus.for_cpu(Processor::Master);
-        memory.write8(cache::CCR, 0x11).unwrap();
-        memory.sh2_discard_prefetch();
-        m.bus.cpu_delay(Processor::Master, 0);
-        retired(&mut m, 2);
+            (0, 0x87654321)
+        };
+        assert_eq!((m.cpu_state().mach, m.cpu_state().macl), result);
+        assert_eq!(m.cpu_state().r[15], onchip::DMAC + 4);
+        assert!(m.issue_cpu(Processor::Master).unwrap()); // NOP shares MA
+        assert!(
+            m.issue_cpu(Processor::Master).unwrap(),
+            "{op:04x}: third EX must start at 35 after the shared MA/NOP slot"
+        );
+        assert_eq!(m.clocks, 35);
         assert_eq!(m.cpu_state().r[6], 0x5A);
-        assert!(m.bus.main_clocks > 34);
-        deadlines.push((m.bus.main_clocks, m.cpu_ready[0]));
+        m.bus
+            .for_cpu(Processor::Master)
+            .write32(onchip::DMAC, 0x11223344)
+            .unwrap();
+        advance_to(&mut m, 64);
+        assert_eq!((m.cpu_state().mach, m.cpu_state().macl), result);
+        assert_eq!(m.cpu_state().r[15], onchip::DMAC + 4);
+        assert_eq!(m.cpu_state().exceptions, 0);
+        assert!(m.slave_state().instructions >= 5);
     }
-    assert_eq!(deadlines[0], deadlines[1]);
+}
+
+#[test]
+fn a_waited_successor_fetch_exhausts_memory_transfer_overlap() {
+    // Start the same cold MOV fetch at MA completion, after either an aligned
+    // STS.L/LDS.L or an independent NOP control. Include stretched load MA.
+    // A real fetch wait consumes that overlap; both deadlines must agree.
+    for (transfer, address, boundary) in [
+        (0x4F12, 0xC0000404, 34),
+        (0x4F06, onchip::DMAC, 35),
+        (0x4F16, onchip::DMAC, 35),
+    ] {
+        let mut deadlines = vec![];
+        for first in [transfer, 9] {
+            let mut m = cache_boundary_pair(&[first, 0xE65A, 9]);
+            m.cpu = Cpu::start(HIGH_WRAM, address);
+            if m.issue_cpu(Processor::Master).unwrap() {
+                m.bus.advance_clocks((boundary - 32) as u32).unwrap();
+                m.clocks = boundary;
+            } else {
+                advance_to(&mut m, boundary);
+                assert!(m.issue_cpu(Processor::Master).unwrap());
+            }
+            assert_eq!(m.bus.main_clocks, boundary);
+            assert_eq!(m.cpu_state().instructions, 1);
+            let mut memory = m.bus.for_cpu(Processor::Master);
+            memory.write8(cache::CCR, 0x11).unwrap();
+            memory.sh2_discard_prefetch();
+            m.bus.cpu_delay(Processor::Master, 0);
+            retired(&mut m, 2);
+            assert_eq!(m.cpu_state().r[6], 0x5A);
+            assert!(m.bus.main_clocks > boundary);
+            deadlines.push((m.bus.main_clocks, m.cpu_ready[0]));
+        }
+        assert_eq!(deadlines[0], deadlines[1], "{transfer:04x}");
+    }
 }
 
 #[test]

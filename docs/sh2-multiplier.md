@@ -72,15 +72,19 @@ replay. The producer/consumer execution-state table above is unchanged.
 
 MA completion and successor issue are distinct boundaries: table7.2 and
 figs7.89/7.91 permit the successor's EX to overlap an aligned transfer's MA.
-After a memory transfer retires, the CPU retains that successor EX time,
-including scheduled stores with a one-clock peripheral access. MAC likewise
+After a memory transfer retires, the CPU retains the final clock of that shared
+MA/EX slot, including scheduled peripheral accesses. Section7.2.3 stretches
+the whole slot for multi-clock operands: an aligned LDS.L starting EX at 32
+with a two-clock operand read completes MA at 35; the NOP shares the stretched
+MA slot and the third instruction starts EX at 35. MAC likewise
 retains its successor EX boundary using two baseline intervals (figs7.23/7.34),
 so delaying the second operand until MA completion preserves consecutive-MAC
 overlap.
 If its fetch completes without advancing the clock, the scheduler recovers the
 overlapped clock, and any successor multiplier access uses that EX time. An
 IF/MA split already occupies the interval and permits no such recovery; a waited
-fetch, a longer operand wait or exception entry exhausts it. Effects still
+successor fetch or exception entry exhausts it. Operand waits stretch the shared
+slot without consuming its overlap. Effects still
 complete at MA, and replay retains the observed times. The four memory-transfer
 guest kernels each measure sixteen aligned transfer/NOP pairs: 32 clocks,
 FRT floor((6+32)/8)=4.

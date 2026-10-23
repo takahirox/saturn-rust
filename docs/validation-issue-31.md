@@ -293,8 +293,10 @@ Successor EX overlap was also restricted to synchronous MACH/MACL transfers.
 P table7.2 and §7.7.6 figs7.89/7.91 permit the same overlap when a scheduled
 one-clock store supplies the final MA clock. The multiplier now retains that
 permitted EX boundary for memory transfers independently of access latency.
-The existing exact-clock check still exhausts overlap after longer operand or
-fetch waits, and IF/MA splits retain their issue cost.
+The exact-clock check still exhausts overlap after successor fetch waits, and
+IF/MA splits retain their issue cost. The later multi-clock operand correction
+below supersedes this revision's assumption that longer operand waits also
+consume the shared-slot overlap.
 
 The new `mac_second_operands_sample_at_the_multiplier_boundary_and_replay_once`
 scheduler regression covers MAC.W and MAC.L through arrays and resident data
@@ -345,6 +347,52 @@ production Wasm has SHA-256
 `9c3cf14fe826277ede01dc9884c15e08a86ed85353c3e28e3d285fdfa43b64af`.
 Local Markdown links and Git whitespace checks passed. No push, merge, Issue
 closure or required post-merge verification is part of this correction.
+
+## Review correction: multi-clock operand slot overlap
+
+Related to #31 and #17. The nominal successor EX boundary expired after a
+two-clock operand read, losing the overlap for LDS.L @R15+,MACH/MACL through
+DMAC SAR0. P §7.2.3 (printed p.170) makes every stage in a slot take the longest
+stage's duration; §7.7.6 fig7.89 (p.245) places the successor's EX beside LDS.L
+MA. Therefore an aligned LDS.L starting EX at 32 and completing its two-clock
+operand MA at 35 lets the NOP share that stretched slot, and the third EX
+starts at 35. The previous claim that longer operand waits necessarily consume
+this overlap was incorrect.
+
+`Multiplier::finish` now retains the final shared-slot clock from actual,
+journaled operand completion. It preserves the synchronous fallback and the
+existing waited-fetch, IF/MA split and exception handling. Memory effects
+remain at MA completion.
+
+The new `multi_clock_mac_loads_preserve_shared_ma_ex_slot_and_replay_once`
+regression failed against inherited production code (exit 101: the third EX
+could not issue at 35). Both MACH/MACL opcodes now pass, including no early
+sample, operand mutation before completion, repeated pending issue attempts,
+one postincrement and stable results after a later operand change. The peer
+CPU continues independently. The transfer matrix no longer excludes scheduled
+loads and checks both alignments: aligned third EX at 35, unaligned at 37
+including the IF/MA split (§7.4.1). The waited-successor-fetch regression now
+also compares both two-clock load forms with independent NOP controls; fetch
+waits still consume overlap. All 21 focused multiplier tests passed.
+
+Revision checks on 2026-10-24 passed with the documented explicit rustup stable
+PATH (Rust 1.99.0): `cargo fmt --check`, `cargo build --locked`,
+`cargo test --locked` (841 passed, zero failed or ignored, 79 result groups),
+native all-target and Wasm Clippy with warnings denied, and all 78 registered
+fixture/media reproduction checks. An initial Wasm Clippy attempt selected a
+Homebrew compiler without the Wasm target through a mixed PATH; the complete
+Rust checks passed after selecting the documented stable compiler path.
+`npm ci --ignore-scripts` passed with no reported vulnerabilities.
+
+`sh scripts/build-web.sh` and the complete extended `npm run test:browser`
+passed under `/saturn-rust/` in Chromium 145.0.7632.6, with no required skips.
+This retains the original multiplier kernels on both CPUs/PLLs, mutation
+controls and repeated cold boots, all three demonstration discs, sound/audio,
+controller, backup and privacy checks. The production Wasm SHA-256 is
+`e6187b62634cf0f12948b8b0039ab73c0519622816bae5ea7d0f7d82446ec779`.
+No fixture bytes or authored expectations changed. Git whitespace checks passed.
+No push, merge, Issue closure or required post-merge verification is part of
+this correction; #17 remains open.
 
 ## Remaining limits
 

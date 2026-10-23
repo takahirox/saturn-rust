@@ -8,8 +8,8 @@ pub(super) struct Multiplier {
     /// Clock for architectural-only Memory implementations. Clocked adapters
     /// instead supply the PLL's monotonically advancing SH-2 clock count.
     pub clock: u64,
-    /// An aligned MAC or MACH/MACL memory transfer retires at MA, one clock
-    /// after the successor's EX. Retain that EX boundary for scheduling.
+    /// An aligned MAC or MACH/MACL memory transfer retires after the
+    /// successor's EX starts. Retain its final shared-slot clock for scheduling.
     next_ex: Option<u64>,
     pub issue_overlap: u32,
 }
@@ -121,7 +121,13 @@ impl Multiplier {
         if access.memory_access && access.successor_ex < access.end {
             // P table7.2/figs7.23/34/89/91: MA completion does not delay the
             // successor's EX. Keep effects at MA, but recover its overlap.
-            self.next_ex = Some(access.successor_ex + u64::from(access.stall));
+            // §7.2.3 stretches the shared slot when the operand takes longer:
+            // retain its final clock, rather than expiring at nominal MA end.
+            let successor_ex = access.successor_ex + u64::from(access.stall);
+            self.next_ex = Some(
+                bus.sh2_clock()
+                    .map_or(successor_ex, |now| successor_ex.max(now.saturating_sub(1))),
+            );
         }
         if access.tail != 0 {
             let end = access.end + u64::from(access.stall);

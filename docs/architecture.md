@@ -90,8 +90,10 @@ resident reads wait through MA completion, while scheduled transfers supply
 their own final clock.
 For MAC and memory transfers, the CPU also retains the successor's permitted EX
 time. The scheduler recovers its overlap with MA without moving memory effects
-earlier, including one-clock scheduled peripheral stores; IF/MA splits, longer
-operand waits, waited fetches and exception entry consume that interval.
+earlier, including scheduled peripheral reads and writes. Multi-clock operand
+reads stretch the shared MA/EX slot while preserving its overlap (P §7.2.3,
+fig7.89); IF/MA splits, waited successor fetches and exception entry consume
+that interval.
 Hardware reset replaces this state; exception
 entry advances time without inventing a multiplier flush. The
 [primary-derived timing table and scope](sh2-multiplier.md) and
