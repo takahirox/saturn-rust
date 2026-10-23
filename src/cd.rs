@@ -574,6 +574,11 @@ impl CdBlock {
             return;
         };
         if self.fad >= self.end || self.fad >= media.leadout {
+            if self.directory_read.is_some() {
+                self.status = 9;
+                self.finish_directory(false);
+                return;
+            }
             self.playing = false;
             self.status = 1;
             self.raise(PEND);
@@ -583,6 +588,12 @@ impl CdBlock {
             .track(self.fad)
             .is_some_and(|t| t.mode == TrackMode::Audio);
         if audio {
+            if self.directory_read.is_some() {
+                // Audio cannot supply a filesystem sector. Fail at this read
+                // deadline instead of leaving the workspace owned indefinitely.
+                self.status = 9;
+                self.finish_directory(false);
+            }
             return;
         } // CD-DA advances exactly every 588 sample frames.
         if self

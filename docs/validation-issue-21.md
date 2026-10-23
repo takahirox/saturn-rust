@@ -27,6 +27,8 @@ periods. Terminal decoding/record errors produce drive ERROR, unavailable scope
 and EFLS. They never fabricate a REJECT by overwriting an accepted response.
 A later status query reports the current error. A retained command response is
 unchanged by asynchronous completion/error.
+Acquisition at leadout or on an audio track also ends with ERROR and EFLS at the
+scheduled read deadline, releasing workspace instead of leaving the job pending.
 
 Invalid selectors, unavailable current tables and unknown navigation identifiers
 reject before mutation. A busy directory engine or unavailable workspace returns
@@ -81,6 +83,12 @@ and release. AbortFile, tray open, software reset, disable and replacement are
 covered before the first read, between directory sectors and one clock before
 completion. They check resource release and no later stale EFLS/table. Concurrent
 status/pause/resume, host FIFO and selector copies retain payload canaries.
+Unreadable-root regressions use a 16-sector ISO whose first descriptor is at
+leadout and a 32-sector audio-only disc. At both speed settings and all four
+advancement chunks they distinguish acceptance from the first read deadline,
+check retained responses, ERROR, unavailable scope, released workspace, no stale
+EFLS and acceptance of a subsequent ChgDir. Audio retains the drive model's 1×
+deadline even when 2× is selected.
 
 The original [MIT-licensed builder](../tests/fixtures/build_cd_directory_schedule.py)
 reproduces the [SH-2 ROM](../tests/fixtures/cd-directory-schedule.hex) and
@@ -121,10 +129,14 @@ Checks executed in this worktree on 2026-10-23:
 - `cargo fmt --check`, `cargo build --locked` and native all-target
   `cargo clippy --locked --all-targets -- -D warnings`: passed with Homebrew
   Rust 1.94.0.
-- Complete `cargo test --locked`: **773 passed** (483 unit, 290 integration),
+- Complete `cargo test --locked`: **774 passed** (483 unit, 291 integration),
   zero failures, ignored or filtered tests, plus passing doc tests. Subsequent
   focused directory checks also pass the exact finite-retry edge and literal
   concurrent-transfer trace assertions.
+- The unreadable-root regression passed all short-ISO/audio-only, speed and
+  chunk combinations. Against the pre-fix `src/cd.rs`, it failed as expected at
+  the first read deadline: EFLS was 0, expected 512. The fixed implementation
+  was restored before the complete native and production Wasm checks.
 - All **73** CI fixture/media reproduction commands: passed. The final updated
   scheduled guest/media additionally passed its builder's `--check` again.
 - `sh scripts/build-web.sh` and Wasm Clippy with `-D warnings`: passed using

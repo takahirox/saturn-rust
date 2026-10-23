@@ -160,6 +160,68 @@ fn acquired_raw_sectors_use_correction_retry_deadlines_and_keep_accepted_respons
     }
 }
 #[test]
+fn unreadable_root_acquisition_finishes_at_first_deadline_and_releases_workspace() {
+    let audio = vec![0; 32 * 2352];
+    let media = [
+        // PVD FAD166 is at leadout; no data-track flag is reported there.
+        (Media::iso(&[0; 16 * 2048]).unwrap(), 0x0180, 179_161),
+        (
+            Media::cue(
+                "FILE \"a\" BINARY\nTRACK 01 AUDIO\nINDEX 01 00:00:00",
+                &[("a", &audio)],
+            )
+            .unwrap(),
+            0x0100,
+            358_322, // Audio tracks always run at 1×, including with CdInit 2×.
+        ),
+    ];
+    for (media, response, double_speed_deadline) in media {
+        for (speed, deadline) in [(1, 358_322), (2, double_speed_deadline)] {
+            for chunk in [1, 3, 17, 10000] {
+                let mut cd = CdBlock::default();
+                cd.mount(media.clone());
+                issue(
+                    &mut cd,
+                    [if speed == 1 { 0x0410 } else { 0x0400 }, 0xFFFF, 0, 0],
+                );
+                cd.write16(CD + 8, !512).unwrap();
+                for (i, w) in [0x7000, 0, 0xFF, 0xFFFF].into_iter().enumerate() {
+                    cd.write16(CD + 0x18 + i as u32 * 4, w).unwrap();
+                }
+                cd.advance(1075);
+                // Keep CR4 unread so asynchronous completion must preserve the
+                // accepted response, independently of the current drive status.
+                let retained = |cd: &CdBlock| -> [u16; 3] {
+                    std::array::from_fn(|i| cd.read16(CD + 0x18 + i as u32 * 4).unwrap())
+                };
+                let accepted = retained(&cd);
+                assert_eq!(accepted[0], response);
+                assert_eq!(flags(&cd), 0);
+                advance(&mut cd, deadline - 1, chunk);
+                assert_eq!(flags(&cd), 0);
+                assert_eq!(retained(&cd), accepted);
+                cd.advance(1);
+                assert_eq!(flags(&cd), 512);
+                assert_eq!(retained(&cd), accepted);
+                advance(&mut cd, 1_000_000, chunk);
+                assert_eq!(retained(&cd), accepted);
+                cd.read16(CD + 0x24).unwrap();
+                assert_eq!(issue(&mut cd, [0, 0, 0, 0])[0], 0x0900);
+                assert!(!table(&mut cd));
+                assert_eq!(free(&mut cd), 200);
+                cd.write16(CD + 8, !512).unwrap();
+                cd.advance(1_000_000);
+                assert_eq!(flags(&cd), 0); // no stale completion
+                assert!(!table(&mut cd));
+                assert_eq!(free(&mut cd), 200);
+                // A new command is accepted rather than stranded in WAIT.
+                assert_eq!(issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFF])[0], 0x0900);
+                assert_eq!(free(&mut cd), 199);
+            }
+        }
+    }
+}
+#[test]
 fn workspace_shares_pool_with_host_reservations_and_never_overallocates() {
     for count in [199, 200] {
         let mut cd = mount();

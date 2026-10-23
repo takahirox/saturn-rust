@@ -2902,6 +2902,9 @@ Scope remains unavailable until all records validate. Invalid command parameters
 reject before mutation; acquired-media failures end with drive ERROR and EFLS
 without changing a retained command response. AbortFile invalidates interrupted
 acquisition and preserves partition data/selector settings.
+The unreadable-root vectors cover first-descriptor leadout and audio-only media:
+both terminate at the first scheduled read with ERROR/EFLS, unavailable scope
+and released workspace, preserving acceptance and allowing another ChgDir.
 
 The [new vectors and original guest](../tests/cd_directory_schedule.rs) cover
 literal event ordering at 1×/2× with chunks 1/3/17/10000, retries, pool capacity,
