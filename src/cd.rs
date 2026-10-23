@@ -573,8 +573,12 @@ impl CdBlock {
             self.status = 7;
             return;
         };
+        let acquiring_directory = self
+            .directory_read
+            .as_ref()
+            .is_some_and(|j| j.next == self.fad);
         if self.fad >= self.end || self.fad >= media.leadout {
-            if self.directory_read.is_some() {
+            if acquiring_directory {
                 self.status = 9;
                 self.finish_directory(false);
                 return;
@@ -588,20 +592,16 @@ impl CdBlock {
             .track(self.fad)
             .is_some_and(|t| t.mode == TrackMode::Audio);
         if audio {
-            if self.directory_read.is_some() {
+            if acquiring_directory {
                 // Audio cannot supply a filesystem sector. Fail at this read
-                // deadline instead of leaving the workspace owned indefinitely.
+                // deadline only when acquiring the job's required sector;
+                // concurrent CD Play may have moved to an unrelated audio track.
                 self.status = 9;
                 self.finish_directory(false);
             }
             return;
         } // CD-DA advances exactly every 588 sample frames.
-        if self
-            .directory_read
-            .as_ref()
-            .is_none_or(|j| j.next != self.fad)
-            && self.used() >= POOL
-        {
+        if !acquiring_directory && self.used() >= POOL {
             self.buffer_paused = true;
             self.status = 1;
             self.raise(BFUL);
@@ -627,7 +627,9 @@ impl CdBlock {
                     if self.retry & 0x40 == 0 {
                         self.playing = false;
                         self.status = 9;
-                        self.finish_directory(false);
+                        if acquiring_directory {
+                            self.finish_directory(false);
+                        }
                         return;
                     }
                 }
@@ -635,11 +637,7 @@ impl CdBlock {
                 self.status = 3;
                 // Drive commands remain executable and may obstruct the
                 // filesystem by moving away from its next required sector.
-                if self
-                    .directory_read
-                    .as_ref()
-                    .is_some_and(|j| j.next == self.fad)
-                {
+                if acquiring_directory {
                     match self.directory_sector(&raw) {
                         Some(true) => self.finish_directory(true),
                         Some(false) => (),
@@ -678,7 +676,9 @@ impl CdBlock {
             Err(_) => {
                 self.playing = false;
                 self.status = 9;
-                self.finish_directory(false);
+                if acquiring_directory {
+                    self.finish_directory(false);
+                }
             }
         }
     }

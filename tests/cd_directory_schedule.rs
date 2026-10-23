@@ -222,6 +222,63 @@ fn unreadable_root_acquisition_finishes_at_first_deadline_and_releases_workspace
     }
 }
 #[test]
+fn concurrent_audio_play_preserves_pending_directory_until_its_required_sector_resumes() {
+    let mut audio = vec![0; 4 * 2352];
+    for frame in audio.chunks_exact_mut(4) {
+        frame[..2].copy_from_slice(&1234i16.to_le_bytes());
+        frame[2..].copy_from_slice(&(-1234i16).to_le_bytes());
+    }
+    let media = Media::cue(
+        "FILE \"d\" BINARY\nTRACK 01 MODE1/2048\nINDEX 01 00:00:00\n\
+         FILE \"a\" BINARY\nTRACK 02 AUDIO\nINDEX 01 00:00:00",
+        &[("d", ISO), ("a", &audio)],
+    )
+    .unwrap();
+    // Interrupt before the first descriptor or between directory sectors.
+    for (elapsed, required_fad) in [(0, 166), (537_600, 171)] {
+        for chunk in [1, 3, 17, 10000] {
+            for directory in [false, true] {
+                let mut cd = CdBlock::default();
+                cd.mount(media.clone());
+                cd.write16(CD + 8, 0).unwrap();
+                if directory {
+                    start(&mut cd);
+                    advance(&mut cd, elapsed, chunk);
+                }
+                assert_eq!(issue(&mut cd, [0x1080, 182, 0, 0])[0], 0x0400);
+                advance(&mut cd, 400_000, chunk);
+                assert_eq!(issue(&mut cd, [0, 0, 0, 0])[0], 0x0300);
+                assert_eq!(cd.read16(CD + 8).unwrap() & 0x210, 0); // EFLS/PEND
+                assert!(!table(&mut cd));
+                assert_eq!(free(&mut cd), if directory { 199 } else { 200 });
+                for sector in 0..4 {
+                    for _ in 0..588 {
+                        assert_eq!(cd.audio_sample(), [1234, -1234]);
+                        advance(&mut cd, 610, chunk);
+                    }
+                    assert_eq!(flags(&cd), 0);
+                    assert_eq!(
+                        issue(&mut cd, [0, 0, 0, 0])[0],
+                        if sector == 3 { 0x0100 } else { 0x0300 }
+                    );
+                }
+                assert_eq!(cd.audio_sample(), [0, 0]);
+                assert_eq!(cd.read16(CD + 8).unwrap() & 0x210, 0x10);
+                assert!(!table(&mut cd));
+                assert_eq!(free(&mut cd), if directory { 199 } else { 200 });
+                if directory {
+                    cd.write16(CD + 8, !0x210).unwrap();
+                    issue(&mut cd, [0x1080, required_fad, 0, 0]);
+                    advance(&mut cd, 1_000_000, chunk);
+                    assert_eq!(flags(&cd), 512);
+                    assert_eq!(issue(&mut cd, [0x7200, 0, 0, 0])[1..], [3, 0x100, 2]);
+                    assert_eq!(free(&mut cd), 200);
+                }
+            }
+        }
+    }
+}
+#[test]
 fn workspace_shares_pool_with_host_reservations_and_never_overallocates() {
     for count in [199, 200] {
         let mut cd = mount();
