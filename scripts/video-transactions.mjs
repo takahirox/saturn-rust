@@ -37,6 +37,40 @@ async function run(page, bytes, base, count, pixels = false) {
   }, { bytes: [...bytes], base, count, pixels });
 }
 export async function videoTransactions(page) {
+  const eraseLatch = await rom("vdp1-erase-latch");
+  for (const [a,b,left,right,write] of [[0x801F,0x83E0,0x0402,0x0803,1],
+    [0xFC00,0xFFFF,0x0202,0x0603,1],[0x801F,0x83E0,0x0402,0x0803,0]]) {
+    const image=Buffer.from(eraseLatch);
+    [a,b,left,right,write].forEach((word,i)=>image.writeUInt16BE(word,0x100+i*2));
+    // Independently authored ST-013 ch.4/§4.4 literals, shared guest bytes
+    // with native tests. The host only loads the ROM and inspects results.
+    const first=[208*0x8000+32*a,0x8000,a,a,0x8000,a,0x8000,0x8000,0x8000];
+    const second=!write?first:left===0x0402?
+      [208*0x8000+32*b,0x8000,0x8000,b,b,b,b,0x8000,0x8000]:
+      [208*0x8000+32*b,0x8000,0x8000,b,0x8000,b,0x8000,0x8000,0x8000];
+    const expected=[...first,...second,0x1010,0,0,0,0x600D];
+    const rows=Array.from({length:6},(_,y)=>Array.from({length:40},(_,x)=>{
+      const inside=!write?x>=8&&x<24&&y>=1&&y<3:
+        x>=(left===0x0402?16:8)&&x<(left===0x0402?32:24)&&y>=2&&y<4;
+      return !inside?[0,0,0,255]:!write?[255,0,0,255]:b===0x83E0?[0,255,0,255]:[255,255,255,255];
+    }).flat());
+    for(let repeat=0;repeat<2;repeat++) {
+      const result=await page.evaluate(async image=>{
+        const {emulator,advanceFrame}=await import("./app.js");
+        emulator.set_pal(false);emulator.reset_bios(Uint8Array.from(image));
+        for(let i=0;i<100&&emulator.read_long(0x0600E758)!==0x600D;i++)emulator.run_steps(5000);
+        const records=Array.from({length:23},(_,i)=>emulator.read_long(0x0600E700+i*4));
+        advanceFrame();
+        const f=emulator.framebuffer(),ctx=document.getElementById("screen").getContext("2d");
+        return {records,exceptions:emulator.exception_count(),
+          rows:Array.from({length:6},(_,y)=>Array.from(f.slice(y*320*4,y*320*4+160))),
+          canvas:Array.from({length:6},(_,y)=>Array.from(ctx.getImageData(0,y,40,1).data))};
+      },[...image]);
+      assert.deepEqual(result.records,expected);assert.equal(result.exceptions,"0");
+      assert.deepEqual(result.rows,rows);assert.deepEqual(result.canvas,rows);
+    }
+  }
+  console.log("VDP1 erase capture passed: guest MMIO A/B sequence, physical-buffer checksums, literal framebuffer/Canvas pixels, color/coordinate changes, omitted writes and repeated cold boots.");
   const cycleSlots = await rom("vdp2-cycle-slots");
   for (const slot of [0,7]) for (let repeat=0;repeat<2;repeat++) for (const initial of [0x1111,0x3333]) {
     for (const [threshold,write] of [[826,true],[700,true],[826,false]]) {

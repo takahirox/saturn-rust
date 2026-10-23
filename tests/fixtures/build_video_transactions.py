@@ -40,8 +40,12 @@ def draw_source():
     # result or an injected host framebuffer, determines the last two.
     for word in [0, 58811, 58812]:
         s += put16(0x25C80000 + word * 2, 0xFFFF)
+    # Ch.4 capture timing: write the intended erase before the publishing
+    # change, then enable VBE. Keep all original partial-budget goldens.
+    for at, value in [(6, 0x1234), (8, 0), (10, 64 << 9 | 255)]:
+        s += put16(0x25D00000 + at, value)
     s += put16(0x25D00002, 3) + blank('publish')
-    for at, value in [(6, 0x1234), (8, 0), (10, 64 << 9 | 255), (0, 8), (2, 3)]:
+    for at, value in [(0, 8), (2, 3)]:
         s += put16(0x25D00000 + at, value)
     s += blank('erase')
     for word in [0, 58811, 58812]:

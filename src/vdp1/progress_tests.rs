@@ -95,9 +95,6 @@ fn erase_setup(mode: u16) -> Bus {
     let mut bus = Bus::default();
     reg(&mut bus, 0, mode);
     bus.vdp1.draw_buffer_mut().fill(255);
-    reg(&mut bus, 2, 3);
-    bus.vdp1.vblank_out(); // publish the authored pre-existing framebuffer
-    reg(&mut bus, 2, 2);
     reg(&mut bus, 6, 0x1234);
     reg(&mut bus, 8, 0);
     reg(
@@ -105,6 +102,11 @@ fn erase_setup(mode: u16) -> Bus {
         10,
         (if mode & 1 == 0 { 64 } else { 32 }) << 9 | 255,
     );
+    // Ch.4: initialize erase registers before the change that captures them.
+    // Keep the original pixels, budget, scanline and cancellation assertions.
+    reg(&mut bus, 2, 3);
+    bus.vdp1.vblank_out(); // publish framebuffer and capture erase parameters
+    reg(&mut bus, 2, 2);
     bus
 }
 #[test]

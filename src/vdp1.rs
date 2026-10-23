@@ -170,6 +170,7 @@ pub struct Vdp1 {
     fb_request: bool,
     ptmr: u16,
     erase: [u16; 3],
+    erase_latched: [u16; 3],
     edsr: u16,
     lopr: u16,
     copr: u16,
@@ -203,6 +204,7 @@ impl Default for Vdp1 {
             fb_request: false,
             ptmr: 0,
             erase: [0; 3],
+            erase_latched: [0; 3],
             edsr: 0,
             lopr: 0,
             copr: 0,
@@ -265,7 +267,7 @@ impl Vdp1 {
             0x10 => Ok(self.edsr),
             0x12 => Ok(self.lopr),
             0x14 => Ok(self.copr),
-            // MODR: version 1, latched mode bits (ST-013 §4.9).
+            // MODR reports written settings, not internal latches (§4.9).
             0x16 => Ok(0x1000 | (self.ptmr & 2) << 7 | (self.fbcr & 0x1E) << 3 | self.tvmr & 0xF),
             _ => Err(BusError::UnsupportedDevice { address, width: 2 }),
         }
@@ -344,6 +346,9 @@ impl Vdp1 {
             // ST-013 §4, p.35/43/44: EOS/DIE/DIL apply to drawing
             // only after a framebuffer change, not on the CPU write.
             self.draw_control = self.fbcr & 0x1C;
+            // ST-013-R3 ch.4: EWDR/EWLR/EWRR take effect only at
+            // framebuffer switching, including manual erase/change mode.
+            self.erase_latched = self.erase;
             self.lopr = self.copr;
             self.edsr = (self.edsr >> 1) & 1;
         }
@@ -361,7 +366,7 @@ impl Vdp1 {
     }
     fn erase_area(&self, buffer: usize) -> EraseArea {
         let (width, height, bytes) = self.geometry();
-        let [color, left, right] = self.erase;
+        let [color, left, right] = self.erase_latched;
         let x1 = usize::from(left >> 9 & 63) * 16 / bytes;
         let x2 = (usize::from(right >> 9 & 127) * 16 / bytes).min(width);
         let y1 = usize::from(left & 511).min(height);
@@ -1006,6 +1011,8 @@ impl Vdp1 {
     }
 }
 
+#[cfg(test)]
+mod erase_tests;
 #[cfg(test)]
 mod preclip_tests;
 #[cfg(test)]
