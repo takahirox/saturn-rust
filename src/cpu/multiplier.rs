@@ -16,6 +16,7 @@ pub(super) struct Multiplier {
 
 pub(super) struct Access {
     end: u64,
+    first_end: u64,
     successor_ex: u64,
     stall: u32,
     tail: u64,
@@ -58,6 +59,7 @@ impl Multiplier {
         Some((
             Access {
                 end,
+                first_end: now + 2,
                 // MAC has two baseline EX intervals (P figs7.23/34),
                 // while LDS.L/STS.L has one (figs7.89/91).
                 successor_ex: now + 1 + u64::from(mac) + u64::from(split),
@@ -76,6 +78,23 @@ impl Multiplier {
         ))
     }
 
+    pub fn first_operand(
+        &self,
+        access: &Access,
+        bus: &mut impl Memory,
+        address: u32,
+    ) -> Result<(), BusError> {
+        if let Some(now) = bus.sh2_clock() {
+            // P figs7.23/34: the independent first MA follows EX. A
+            // scheduled read starts at MA; a synchronous read samples at
+            // its end. Its actual completion is observed in wait() below.
+            let scheduled = bus.sh2_schedule_memory_access(address, false, access.first_end);
+            let boundary = access.first_end - u64::from(scheduled);
+            bus.sh2_pipeline_wait(boundary.saturating_sub(now) as u32)?;
+        }
+        Ok(())
+    }
+
     pub fn wait(
         &self,
         access: &mut Access,
@@ -86,7 +105,12 @@ impl Multiplier {
             // The first operand is independent of the multiplier. Any time
             // spent fetching it also advances the older operation.
             if let Some(now) = bus.sh2_clock() {
-                access.end = access.end.max(now + 1);
+                // §7.2.3 stretches the first MA's slot by its actual
+                // latency. Preserve any following IF half of that split
+                // slot before the second MA and successor EX can start.
+                let elapsed = now.saturating_sub(access.first_end);
+                access.end += elapsed;
+                access.successor_ex += elapsed;
                 access.stall = self.ready.saturating_sub(access.end) as u32;
             }
         }

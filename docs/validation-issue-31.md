@@ -457,6 +457,63 @@ Wasm SHA-256 is
 No push, merge, Issue closure or required post-merge verification is part of
 this correction; all remaining #17 requirements remain open.
 
+## Review correction: first MAC operand MA boundary and browser runner
+
+Related to #31 and #17. The first MAC operand was read at instruction issue,
+before its permitted MA. P §7.2.3 (printed p.170) and §7.7.2 figs7.23/7.34
+(pp.196/204) place that MA after EX and stretch its slot for actual operand
+latency. The following IF half of a split slot must still precede the second
+MA. The [timing contract](sh2-multiplier.md#scope-and-lifecycle) now records
+independent first/second sample, third EX and multiplier-ready boundaries.
+
+`Multiplier::first_operand` schedules the first read at its MA start, or waits
+until MA completion before a synchronous read. `Multiplier::wait` carries
+the journaled first-read latency into second-MA and successor-EX boundaries,
+preserving the IF split and aging the older multiplier operation. The tail
+still starts after actual second-MA completion. Completed reads remain retained
+on replay, with one pair of address updates.
+
+Before the production fix, both regression commands exited 101 at their
+intended assertions:
+
+- `cargo test --locked --lib mac_first_operand -- --nocapture` produced 42
+  instead of 56. DMUL EX=34, MAC EX=37: SAR0's two-clock first read must sample
+  at 40, observing a 3→5 mutation at 39. Changing it again after 40 must retain
+  5 through second-MA replay; with DAR0=7, the result is 21+5×7=56 at 42.
+- `cargo test --locked --lib mac_operand_completion -- --nocapture` allowed
+  peripheral MAC completion one clock early. Expanded vectors cover both
+  MAC.W/MAC.L and both instruction alignments: two-clock operands finish at 38,
+  and the third instruction starts at 38/39. The original synchronous vectors
+  retain completion at 36 and third EX at 36/37. A subsequent peripheral
+  STS.L after MAC.L must wait until 42, demonstrating the actual mm tail.
+
+The Browser Pages build job now pins `ubuntu-24.04`. The committed Playwright
+1.58.2 [platform selection source](https://github.com/microsoft/playwright/blob/v1.58.2/packages/playwright-core/src/server/utils/hostPlatform.ts)
+supports that runner and rejects Ubuntu 26.04; moving `ubuntu-latest` caused
+the reported browser-install failure. The browser version and complete test
+command remain unchanged. This node is explicitly forbidden to push or merge,
+so a successful GitHub Actions workflow for this revision remains pending after
+publication. Local checks do not establish hosted workflow success.
+
+Revision checks on 2026-10-24 used the explicit rustup stable compiler PATH
+(Rust 1.99.0). `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`
+(845 passed: 540 unit and 305 integration; zero failed or ignored, 79 result
+groups including doc tests), native all-target and Wasm Clippy with warnings
+denied, all 78 registered fixture/media reproduction checks, and
+`sh scripts/build-web.sh` passed. All 24 focused multiplier tests passed,
+including the final exact-clock STS.L assertion. `npm ci --ignore-scripts`
+passed with no reported vulnerabilities. Relative file links in the changed
+documentation and Git whitespace checks passed.
+
+The complete extended `npm run test:browser` passed under `/saturn-rust/` in
+Chromium 145.0.7632.6 with no required skips. This includes both CPUs/PLLs,
+the unchanged original multiplier kernels and mutation controls, repeated cold
+boots, all three demonstration discs, sound/audio, controller, backup and
+privacy checks. The tested production Wasm SHA-256 is
+`24d3eb12d1f0888643afbda083e4594f0e80f98327ef44e93307e875d641e976`.
+No fixture bytes or authored guest expectations changed. No push, merge or
+Issue closure is part of this correction; #17 remains open.
+
 ## Remaining limits
 
 The multiplier is clocked within the existing architectural instruction-boundary

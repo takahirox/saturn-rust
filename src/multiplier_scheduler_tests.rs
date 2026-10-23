@@ -150,6 +150,50 @@ fn cache_boundary_pair(code: &[u16]) -> Machine {
 }
 
 #[test]
+fn mac_first_operand_samples_after_ex_and_is_retained_during_second_ma_replay() {
+    // P §7.2.3, figs7.34/64: DMUL EX=34, MAC EX=37. Its first
+    // MA starts at 38, so the two-clock SAR0 read samples at 40, not 39.
+    // The second MA then spans 40..42, overlapping the older mm tail.
+    let mut m = cache_boundary_pair(&[0xE103, 0xE207, 0x321D, 0x0FFF, 0x001B, 9]);
+    m.cpu = Cpu::start(HIGH_WRAM, onchip::DMAC);
+    for (offset, value) in [(0, 3), (4, 7)] {
+        m.bus
+            .for_cpu(Processor::Master)
+            .write32(onchip::DMAC + offset, value)
+            .unwrap();
+    }
+    advance_to(&mut m, 39);
+    assert_eq!(m.clocks, 39);
+    assert_eq!(m.cpu_state().instructions, 3);
+    assert!(!m.issue_cpu(Processor::Master).unwrap());
+    m.bus
+        .for_cpu(Processor::Master)
+        .write32(onchip::DMAC, 5)
+        .unwrap();
+    advance_to(&mut m, 40);
+    assert!(!m.issue_cpu(Processor::Master).unwrap());
+    // The completed first read must retain 5 while the second is pending.
+    m.bus
+        .for_cpu(Processor::Master)
+        .write32(onchip::DMAC, 9)
+        .unwrap();
+    assert!(!m.issue_cpu(Processor::Master).unwrap());
+    advance_to(&mut m, 42);
+    assert!(m.issue_cpu(Processor::Master).unwrap());
+    assert_eq!((m.cpu_state().mach, m.cpu_state().macl), (0, 56));
+    assert_eq!(m.cpu_state().r[15], onchip::DMAC + 8);
+    m.bus
+        .for_cpu(Processor::Master)
+        .write32(onchip::DMAC + 4, 11)
+        .unwrap();
+    advance_to(&mut m, 64);
+    assert_eq!((m.cpu_state().mach, m.cpu_state().macl), (0, 56));
+    assert_eq!(m.cpu_state().r[15], onchip::DMAC + 8);
+    assert_eq!(m.cpu_state().exceptions, 0);
+    assert!(m.slave_state().instructions >= 8);
+}
+
+#[test]
 fn mac_second_operands_sample_at_the_multiplier_boundary_and_replay_once() {
     // P figs7.64/65: DMUL's final mm ends at t42. The second MAC
     // operand's MA must extend through t42, even for a zero-clock cache hit.
@@ -328,15 +372,29 @@ fn mac_operand_completion_preserves_successor_ex_overlap() {
     // P figs7.23/34: MAC's two baseline EX intervals plus the IF split
     // give three issue clocks. At 4n, second-MA completion is one clock
     // later than the successor EX; at 4n+2 it coincides with that EX.
-    for (op, width) in [(0x0FFF, 4), (0x4FFF, 2)] {
+    for (op, width, address, extra) in [
+        (0x0FFF, 4, 0xC0000400, 0),
+        (0x4FFF, 2, 0xC0000400, 0),
+        // Each two-clock peripheral MA stretches its slot by one clock.
+        // First MA starts after EX; its IF split precedes the second MA.
+        (0x0FFF, 4, onchip::DMAC, 2),
+        (0x4FFF, 2, onchip::VCRB, 2),
+    ] {
         for unaligned in [false, true] {
             let mut code = vec![];
             if unaligned {
                 code.push(9);
             }
-            code.extend([op, 9, 0xE65A, 9]);
+            let check_tail = width == 4 && address == onchip::DMAC;
+            code.extend([
+                op,
+                9,
+                0xE65A,
+                if check_tail { 0x4F12 } else { 9 },
+                0x001B,
+                9,
+            ]);
             let mut m = cache_boundary_pair(&code);
-            let address = 0xC0000400;
             m.cpu = Cpu::start(HIGH_WRAM, address);
             let mut memory = m.bus.for_cpu(Processor::Master);
             if width == 4 {
@@ -346,22 +404,40 @@ fn mac_operand_completion_preserves_successor_ex_overlap() {
                 memory.write16(address, 3).unwrap();
                 memory.write16(address + width, 7).unwrap();
             }
-            advance_to(&mut m, 35);
+            advance_to(&mut m, 35 + extra);
             assert_eq!(m.cpu_state().instructions, u64::from(unaligned));
             assert_eq!(m.cpu_state().macl, 0);
             assert!(!m.issue_cpu(Processor::Master).unwrap());
-            advance_to(&mut m, 36);
+            advance_to(&mut m, 36 + extra);
             assert!(m.issue_cpu(Processor::Master).unwrap()); // MAC, at MA end
             assert_eq!(m.cpu_state().macl, 21);
             assert_eq!(m.cpu_state().r[15], address + 2 * width);
             assert!(m.issue_cpu(Processor::Master).unwrap()); // successor NOP
             if unaligned {
                 assert!(!m.issue_cpu(Processor::Master).unwrap());
-                advance_to(&mut m, 37);
+                advance_to(&mut m, 37 + extra);
             }
             assert!(m.issue_cpu(Processor::Master).unwrap()); // third MOV
-            assert_eq!(m.bus.main_clocks, 36 + u64::from(unaligned));
+            assert_eq!(m.bus.main_clocks, 36 + extra + u64::from(unaligned));
             assert_eq!(m.cpu_state().r[6], 0x5A);
+            if check_tail {
+                // The long tail begins at actual second-MA completion=38,
+                // so the dependent STS.L must not write DAR0 before 42.
+                advance_to(&mut m, 41);
+                assert_eq!(
+                    m.bus.for_cpu(Processor::Master).read32(onchip::DMAC + 4),
+                    Ok(7)
+                );
+                assert_eq!(m.cpu_state().r[15], address + 8);
+                advance_to(&mut m, 42);
+                retired(&mut m, 4 + u64::from(unaligned));
+                assert_eq!(m.clocks, 42);
+                assert_eq!(
+                    m.bus.for_cpu(Processor::Master).read32(onchip::DMAC + 4),
+                    Ok(21)
+                );
+                assert_eq!(m.cpu_state().r[15], address + 4);
+            }
         }
     }
 }

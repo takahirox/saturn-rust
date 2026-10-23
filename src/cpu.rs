@@ -605,6 +605,9 @@ impl Cpu {
             _ if matches!(opcode & 0xF00F, 0x000F | 0x400F) => {
                 let width = if opcode & 0x4000 == 0 { 4 } else { 2 };
                 // Read/increment Rn first, then Rm, including when n == m.
+                self.multiplier
+                    .first_operand(multiplier_access.as_ref().unwrap(), bus.inner, s.r[n])
+                    .map_err(access)?;
                 let a = read_operand(bus, s.r[n], width).map_err(access)? as i32 as i64;
                 let m_address = s.r[m].wrapping_add(if n == m { width } else { 0 });
                 self.multiplier

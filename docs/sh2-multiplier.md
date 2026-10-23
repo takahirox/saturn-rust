@@ -70,9 +70,32 @@ ordinary duration and the remaining multiplier wait. Sampling still occurs at
 completion; arbitration and longer bus waits can postpone it further. STS.L
 retains its one-clock admission after the accumulator wait before supplying
 data to the write buffer.
-MAC.W/MAC.L schedule the second operand's completion after the independent
-first read; that completed first read is retained on replay. The
+MAC.W/MAC.L start their independent first operand MA after EX, with synchronous
+reads sampling at its nominal end (EX+2). A scheduled read starts at EX+1 and
+samples after its actual latency. Any excess over one clock stretches that
+first MA slot, including the successor's ID stall; an IF half of a split slot
+still follows it before the second MA starts (§§7.2.3/7.4, figs7.23/7.34).
+The second operand's completion and successor EX retain that elapsed time;
+the multiplier tail begins after actual second-MA completion. Both completed
+reads and clock observations are retained on replay. The
 producer/consumer execution-state table above is unchanged.
+
+For MAC/NOP/MOV with no older multiplier operation, cached code and no other
+arbitration, these literal boundaries follow from those stage/slot rules:
+
+| MAC EX / alignment | Each operand MA | First sample | Second sample | Third instruction EX |
+| --- | --- | --- | --- | --- |
+| 32 / 4n | One clock | 34 | 36 | 36 |
+| 33 / 4n+2 | One clock | 35 | 36 | 37 |
+| 32 / 4n | Two clocks | 35 | 38 | 38 |
+| 33 / 4n+2 | Two clocks | 36 | 38 | 39 |
+
+At 4n, IF splits the first MA slot; at 4n+2 it splits the second. A MAC.L
+with the two-clock operands above becomes multiplier-ready at 42 (38+4),
+independent of alignment. After DMULS.L EX=34, an adjacent MAC.L EX=37
+instead reads its first operand during 38..40 and its second during 40..42;
+the older mm ends at 42. A first-operand mutation at 39 must therefore be
+observed, while changes after 40 must not replace that retained sample.
 
 For the scheduler regression's DMULS.L EX at 34, final MA at 38 and final mm
 at 42, LDS.L's MA starts at 38/39/40/41/42 with 0/1/2/3/4 separating NOPs.
