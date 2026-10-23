@@ -21,6 +21,7 @@ pub(crate) struct DisplayFetch {
     scheduled: bool,
     pub prepared_line: Option<usize>,
     planning: bool,
+    group: (usize, usize),
     request: Option<(usize, usize)>,
     pixels: Vec<[[Option<Acquired>; 3]; 4]>,
     samples: Vec<[Option<NormalSample>; 4]>,
@@ -42,6 +43,7 @@ pub(crate) struct DisplayRead {
 
 #[derive(Clone, Copy)]
 struct Acquired {
+    group: (usize, usize),
     address: usize,
     bytes: usize,
     words: [u16; 2],
@@ -78,6 +80,7 @@ impl Vdp2 {
         }
         if fetch.planning {
             if let Some(held) = fetch.retained[layer][path]
+                && held.group == fetch.group
                 && let Some(value) = held.word(address)
             {
                 fetch.pixels[x][layer][path] = Some(held);
@@ -86,6 +89,16 @@ impl Vdp2 {
             fetch.request = Some((path, address));
         }
         None
+    }
+
+    // Identify the source group before address wrapping or character-number
+    // lookup. Repeated characters in later groups must issue fresh transfers;
+    // enlargement may consume one group's packed data across multiple cycles.
+    pub(super) fn fetch_group(&self, group: (usize, usize)) {
+        let mut fetch = self.display_fetch.borrow_mut();
+        if fetch.planning {
+            fetch.group = group;
+        }
     }
 
     pub(super) fn fetch_byte(&self, layer: usize, address: usize) -> Option<u8> {
@@ -241,6 +254,7 @@ impl Vdp2 {
                     };
                     let address = if path == 1 { address & !3 } else { address };
                     let acquired = Acquired {
+                        group: self.display_fetch.borrow().group,
                         address,
                         bytes,
                         words: [
@@ -313,6 +327,166 @@ mod tests {
     fn pixel(v: &Vdp2, x: usize, y: usize) -> [u8; 4] {
         let at = (y * 320 + x) * 4;
         v.scanning[at..at + 4].try_into().unwrap()
+    }
+
+    #[test]
+    fn repeated_characters_refetch_per_source_group_and_retain_each_groups_packed_dots() {
+        // ST-058-R2 §3.3 tables3.2/3.3: one name and one 32-bit
+        // character access per eight source dots at 1x/16 colors, even
+        // when adjacent names select the same character. Table3.4 permits
+        // NBG0/1 T0 characters with T0 names; all layers permit T4.
+        for layer in 0..4 {
+            for one in [true, false] {
+                for enlarged in [false, true] {
+                    if layer >= 2 && enlarged {
+                        continue;
+                    }
+                    let mut v = setup(0);
+                    let character_slot = if layer < 2 { 0 } else { 4 };
+                    for (at, value) in [
+                        (0xE, 0x300),
+                        (0x20, 1 << layer),
+                        (0x28, 0),
+                        (0x10, (layer as u16) << 12 | 0xFFF),
+                        (0x12, 0xFFFF),
+                        (
+                            0x18,
+                            if character_slot == 0 {
+                                (4 + layer as u16) << 12 | 0xFFF
+                            } else {
+                                0xFFFF
+                            },
+                        ),
+                        (
+                            0x1A,
+                            if character_slot == 4 {
+                                (4 + layer as u16) << 12 | 0xFFF
+                            } else {
+                                0xFFFF
+                            },
+                        ),
+                        (0x30 + layer * 2, if one { 0x8008 } else { 0 }),
+                        (0xF8 + layer / 2 * 2, 1 << (layer % 2 * 8)),
+                    ] {
+                        v.write16(VDP2 + at as u32, value).unwrap();
+                    }
+                    if layer < 2 {
+                        v.write16(
+                            VDP2 + 0x78 + layer as u32 * 0x10,
+                            if enlarged { 0 } else { 1 },
+                        )
+                        .unwrap();
+                        v.write16(
+                            VDP2 + 0x7A + layer as u32 * 0x10,
+                            if enlarged { 0x8000 } else { 0 },
+                        )
+                        .unwrap();
+                    }
+                    if !one {
+                        for at in [2, 6] {
+                            v.vram[at..at + 2].copy_from_slice(&0x2000u16.to_be_bytes());
+                        }
+                    }
+                    v.vram[0x40000..0x40004].fill(0x11);
+                    let dots = if enlarged { 16 } else { 8 };
+                    let next_phase = if enlarged { 64 } else { 32 };
+                    for phase in (0..next_phase).step_by(4) {
+                        v.acquire_display(0, 0, phase, (phase / 4 % 8) as usize);
+                        if phase == character_slot * 4 {
+                            v.vram[0x40000..0x40004].fill(0x22);
+                        }
+                    }
+                    for phase in (next_phase..next_phase * 2).step_by(4) {
+                        v.acquire_display(0, 0, phase, (phase / 4 % 8) as usize);
+                        if phase == next_phase + character_slot * 4 {
+                            v.vram[0x40000..0x40004].fill(0x33);
+                        }
+                    }
+                    let chars: Vec<_> = v
+                        .display_fetch
+                        .borrow()
+                        .trace
+                        .iter()
+                        .filter(|r| r.path == 1)
+                        .map(|r| (r.phase, r.address, r.words))
+                        .collect();
+                    assert_eq!(
+                        chars,
+                        [
+                            (character_slot * 4, 0x40000, [0x1111; 2]),
+                            (next_phase + character_slot * 4, 0x40000, [0x2222; 2]),
+                        ],
+                        "layer={layer}, one={one}, enlarged={enlarged}"
+                    );
+                    v.vram[0x40000..0x40004].fill(0x33);
+                    v.scan_to(&Vdp1::default(), 0, dots * 2);
+                    for x in 0..dots * 2 {
+                        assert_eq!(
+                            pixel(&v, x, 0),
+                            if x < dots {
+                                [255, 0, 0, 255]
+                            } else {
+                                [0, 255, 0, 255]
+                            },
+                            "layer={layer}, one={one}, enlarged={enlarged}, x={x}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reduction_refetches_repeated_characters_within_the_same_output_packet() {
+        // ST-058-R2 §3.3 tables3.2/3.3: 1/2 and 1/4 reduction
+        // need respectively two/four name and 16-color character accesses
+        // per cycle, even if every name selects the same physical address.
+        for (reduction, dx, pattern) in [(1, 2, 0x00FF), (3, 4, 0x0000)] {
+            let mut v = setup(0);
+            for (at, value) in [
+                (0xE, 0x300),
+                (0x20, 1),
+                (0x28, 0),
+                (0x30, 0x8008),
+                (0x10, pattern),
+                (0x12, 0xFFFF),
+                (0x18, pattern | 0x4444),
+                (0x1A, 0xFFFF),
+                (0x78, dx),
+                (0x98, reduction),
+            ] {
+                v.write16(VDP2 + at, value).unwrap();
+            }
+            let mut expected = Vec::new();
+            for slot in 0..dx {
+                let word = if slot % 2 == 0 { 0x1111u16 } else { 0x2222 };
+                v.vram[0x40000..0x40004]
+                    .copy_from_slice(&[word.to_be_bytes(), word.to_be_bytes()].concat());
+                v.acquire_display(0, 0, u32::from(slot) * 4, usize::from(slot));
+                expected.push((u32::from(slot) * 4, 0x40000, [word; 2]));
+            }
+            let chars: Vec<_> = v
+                .display_fetch
+                .borrow()
+                .trace
+                .iter()
+                .filter(|r| r.path == 1)
+                .map(|r| (r.phase, r.address, r.words))
+                .collect();
+            assert_eq!(chars, expected, "reduction={reduction}");
+            v.scan_to(&Vdp1::default(), 0, 8);
+            for x in 0..8 {
+                assert_eq!(
+                    pixel(&v, x, 0),
+                    if (x / (8 / usize::from(dx))) % 2 == 0 {
+                        [255, 0, 0, 255]
+                    } else {
+                        [0, 255, 0, 255]
+                    },
+                    "reduction={reduction}, x={x}"
+                );
+            }
+        }
     }
 
     #[test]

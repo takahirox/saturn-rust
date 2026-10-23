@@ -501,6 +501,7 @@ impl Vdp2 {
             if !self.cell_access(layer, address) {
                 return None;
             }
+            self.fetch_group((x / cell_size, 0));
             let value = u32::from(self.fetch_word(layer, 2, address)?) << 16
                 | u32::from(self.fetch_word(layer, 2, address + 2)?);
             sy += u64::from(value & 0x7FFFF00);
@@ -674,6 +675,7 @@ impl Vdp2 {
                 y + usize::from(self.word(0x92 + (layer - 2) * 4) & 0x7FF),
             )
         };
+        self.fetch_group((sx / 8, sy));
         let (base, pixel, palette, special) = if layer < 2 && ctl & 2 != 0 {
             let width = if ctl & 8 == 0 { 512 } else { 1024 };
             let height = if ctl & 4 == 0 { 256 } else { 512 };

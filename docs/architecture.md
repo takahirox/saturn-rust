@@ -223,8 +223,10 @@ start, otherwise accumulating the current vertical delta. Active-line writes
 cannot replace that line's latched origins. Normal-background names, characters,
 bitmaps and vertical-cell operands now acquire at hardware-time cycle-slot events,
 using independent retained paths and packet address metadata. Rendering cannot
-fill a missing normal fetch. The explicit two-cycle horizontal lead and its
-unmeasured physical phase are documented in the
+fill a missing normal fetch. Retained transfers are keyed by source group as
+well as physical address, so repeated characters in later groups refetch while
+enlargement preserves packed data within a group. The explicit two-cycle
+horizontal lead and its unmeasured physical phase are documented in the
 [Issue #19 record](validation-issue-19.md#explicit-phase-convention). Rotation
 acquisition timing, other table/window strobes, complete physical bank arbitration
 and half-line interlace phase remain required. Exclusive monitors select 480

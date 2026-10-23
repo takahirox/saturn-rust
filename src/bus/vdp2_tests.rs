@@ -53,6 +53,74 @@ fn retained(b: &Bus, address: usize) -> u16 {
 }
 
 #[test]
+fn repeated_tile_addresses_refetch_after_cpu_publication_before_the_next_packet() {
+    // ST-058-R2 §3.3 tables3.2–3.4: legal NBG0/16-color T0 name
+    // and T0 character accesses in separate banks. The explicit two-cycle
+    // lead primes line1 at1644 and its next packet at1676. A CPU write
+    // beginning at1650 publishes at1658, between those acquisitions.
+    for p in [Processor::Master, Processor::Slave] {
+        for chunk in [1, 3, 17, 10000] {
+            let mut b = board();
+            for (at, value) in [
+                (0xE, 0x300),
+                (0x10, 0x0EEE),
+                (0x28, 0),
+                (0x30, 0x8008),
+                (0x18, 0x4EEE),
+                (0x1A, 0xEEEE),
+            ] {
+                b.write16(VDP2 + at, value).unwrap();
+            }
+            for at in (0..160).step_by(2) {
+                b.write16(VRAM + at, 0).unwrap();
+            }
+            b.write32(VRAM + 0x40000, 0x11111111).unwrap();
+            advance(&mut b, 1650, chunk);
+            assert_eq!(retained(&b, 0x40000), 0x1111);
+            assert_eq!(
+                b.replay_cpu(p).write16(0x25E40000, 0x2222),
+                Err(BusError::Pending)
+            );
+            b.grant_bus_transaction();
+            advance(&mut b, 7, chunk);
+            assert_eq!(b.read16(VRAM + 0x40000), Ok(0x1111));
+            advance(&mut b, 1, chunk);
+            assert_eq!(b.read16(VRAM + 0x40000), Ok(0x2222));
+            assert!(b.take_cpu_transaction_completion(p));
+            assert_eq!(b.replay_cpu(p).write16(0x25E40000, 0x2222), Ok(()));
+            b.finish_cpu_transaction(p);
+            advance(&mut b, 18, chunk);
+            let chars: Vec<_> = b
+                .vdp2
+                .display_fetch
+                .borrow()
+                .trace
+                .iter()
+                .filter(|r| r.path == 1)
+                .map(|r| (r.phase, r.address, r.words))
+                .collect();
+            assert_eq!(
+                chars,
+                [(0, 0x40000, [0x1111; 2]), (32, 0x40000, [0x2222, 0x1111]),]
+            );
+            advance(&mut b, 1708 + 1280 - 1676, chunk);
+            for x in 0..16 {
+                let at = (320 + x) * 4;
+                assert_eq!(
+                    &b.vdp2.scanning[at..at + 4],
+                    if (8..12).contains(&x) {
+                        [0, 255, 0, 255]
+                    } else {
+                        [255, 0, 0, 255]
+                    },
+                    "processor={p:?}, chunk={chunk}, x={x}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn cpu_writes_publish_before_at_or_after_a_display_access_on_both_processors() {
     // The unprimed reset line reads x8..15 (VRAM+4) at T0=32.
     // Eight-state physical writes beginning at22/24/25 finish30/32/33.

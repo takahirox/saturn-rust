@@ -139,6 +139,38 @@ bug was fixed, and the complete 60-mode native test passed without changing its
 fixture or assertions. Earlier failing runs are not reported as passes.
 Historical records elsewhere remain historical.
 
+## Repeated-address review fix
+
+The review reproduction found that address-only serializer reuse suppressed the
+next character access when adjacent tiles selected the same character. Retained
+transfers now also carry the source eight-dot group and row, established before
+character lookup or bitmap address wrapping. Vertical-cell reads use their own
+cell group. Enlargement still consumes the acquired group's packed data across
+output packets; later source groups issue new transfers even at the same address.
+This implements the per-cycle quantities in §3.3 tables 3.2/3.3 without changing
+the phase convention above.
+
+New [device regressions](../src/vdp2/fetch.rs) check exact transfers and literal
+pixels for repeated characters on NBG0–3, one/two-word names, enlargement and
+1/2 or 1/4 reduction. The [board regression](../src/bus/vdp2_tests.rs) runs both
+SH-2 transaction adapters with chunks 1, 3, 17 and 10000: line1 acquires red at
+clock1644, a real CPU write begins at1650 and publishes green at1658, then the
+same character address refetches at1676. Pixels0–7 remain red; pixels8–11 turn
+green, while the untouched second packed word keeps pixels12–15 red. Both the
+device and board trace regressions failed on the reviewed implementation because
+the second character transfer was absent, then passed with this fix.
+
+Review-fix validation on 2026-10-23 (separate from the implementation results
+above): `cargo fmt --check`, `cargo build --locked`, native all-target and Wasm
+Clippy with `-D warnings`, `sh scripts/build-web.sh`, and all **72** CI fixture/media
+reproduction commands passed. Complete `cargo test --locked`: **766 passed**
+(483 unit, 283 integration), zero failed, ignored or filtered, with passing doc
+tests. Complete `npm run test:browser` passed against the rebuilt production Wasm
+on Chromium **145.0.7632.6** under `/saturn-rust/`, with no required skips,
+including the cycle-slot guest's exact framebuffer/Canvas pixels and the existing
+demonstration, audio, controller, backup and privacy checks. No guest fixtures or
+previous test assertions changed.
+
 ## Remaining scope
 
 The horizontal phase convention and startup policy above remain explicit model
