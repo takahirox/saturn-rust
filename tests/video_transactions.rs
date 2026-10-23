@@ -351,3 +351,93 @@ fn color_depth_disables_only_the_documented_companion_layers_even_when_transpare
         );
     }
 }
+
+#[test]
+fn guest_erase_register_capture_survives_pending_writes_and_cold_boots() {
+    let original = load(include_str!("fixtures/vdp1-erase-latch.hex"));
+    let mut m = Machine::new();
+    for (a, b, left, right, write) in [
+        (0x801Fu16, 0x83E0u16, 0x0402u16, 0x0803u16, 1u16),
+        (0xFC00, 0xFFFF, 0x0202, 0x0603, 1),
+        (0x801F, 0x83E0, 0x0402, 0x0803, 0),
+    ] {
+        let mut image = original.clone();
+        for (i, word) in [a, b, left, right, write].into_iter().enumerate() {
+            image[0x100 + i * 2..0x102 + i * 2].copy_from_slice(&word.to_be_bytes());
+        }
+        // Literal ST-013 §4.4 rectangles: A x8..24/y1..3; B either
+        // x16..32/y2..4 or x8..24/y2..4. Omitted writes leave A captured.
+        let second = if write == 0 { a } else { b };
+        let expected_a = [
+            208 * 0x8000 + 32 * u32::from(a),
+            0x8000,
+            u32::from(a),
+            u32::from(a),
+            0x8000,
+            u32::from(a),
+            0x8000,
+            0x8000,
+            0x8000,
+        ];
+        let samples_b = if write == 0 {
+            expected_a
+        } else if left == 0x0402 {
+            [
+                208 * 0x8000 + 32 * u32::from(b),
+                0x8000,
+                0x8000,
+                u32::from(b),
+                u32::from(b),
+                u32::from(b),
+                u32::from(b),
+                0x8000,
+                0x8000,
+            ]
+        } else {
+            [
+                208 * 0x8000 + 32 * u32::from(b),
+                0x8000,
+                0x8000,
+                u32::from(b),
+                0x8000,
+                u32::from(b),
+                0x8000,
+                0x8000,
+                0x8000,
+            ]
+        };
+        let mut expected = expected_a.to_vec();
+        expected.extend(samples_b);
+        expected.extend([0x1010, 0, 0, 0, 0x600D]);
+        for _ in 0..2 {
+            assert_eq!(run(&mut m, &image, 0x0600E700, 23), expected);
+            m.advance_frame().unwrap();
+            let f = m.framebuffer().unwrap();
+            for y in 0..6 {
+                for x in 0..40 {
+                    let inside = if write == 0 {
+                        (8..24).contains(&x) && (1..3).contains(&y)
+                    } else {
+                        (if left == 0x0402 { 16..32 } else { 8..24 }).contains(&x)
+                            && (2..4).contains(&y)
+                    };
+                    let rgb = if !inside {
+                        [0, 0, 0, 255]
+                    } else {
+                        match second {
+                            0x801F => [255, 0, 0, 255],
+                            0x83E0 => [0, 255, 0, 255],
+                            0xFFFF => [255; 4],
+                            _ => unreachable!(),
+                        }
+                    };
+                    assert_eq!(
+                        &f[(y * 320 + x) * 4..(y * 320 + x) * 4 + 4],
+                        &rgb,
+                        "x{x}, y{y}"
+                    );
+                }
+            }
+        }
+    }
+}

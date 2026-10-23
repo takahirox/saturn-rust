@@ -1749,7 +1749,7 @@ References: [VDP1] §2 (VRAM wrap and pixel clocks), §§4.2/4.4–4.8 (field ch
 erase, ENDR and status); [VDP2] §2.1 p.13, tables2.1/2.3/2.4, §3.3 figs.3.2/3.6/3.7
 and table3.5, §4.5 p.60 and table8.1. Expanded synthetic BIOS SHA-256:
 
-- VDP1 progress: `de2d252298ed6dfb5a198eac3ad9f0787c3e785ecb48f67680948456a32694c6`.
+- VDP1 progress (setup corrected for [Issue #25 capture timing](validation-issue-25.md)): `30e75e2872651275421b093131c235332fae45673940c71b300c15bf7a0b54bf`.
 - Exclusive monitor: `65f0df1a183eb1dfea1ba024f0cd2f1d30d87247aaae50370126e5bd5efc7730`.
 - VRAM grants: `4e984c634b4f5e600f003aad552676769921dd0a2e8081be4ae54d9c23679ea4`.
 
@@ -2954,3 +2954,31 @@ remaining CPU/peripheral, SCU/DSP, video/audio, CD/media/HLE and SMPC acceptance
 remain outstanding under #17. These synthetic contracts establish neither
 umbrella completion nor broad commercial-game compatibility. No personal firmware,
 physical console, human approval or live Pages inspection is required.
+
+
+## VDP1 erase-parameter capture (Issue #25)
+
+Related to #25. Related to #17. [ST-013-R3 chapter 4 register update timing](https://www.infochunk.com/saturn/segahtml_en/hard/vdp1/hon/p04_10.htm)
+places EWDR/EWLR/EWRR capture at framebuffer switching; [§4.2](https://www.infochunk.com/saturn/segahtml_en/hard/vdp1/hon/p04_12.htm)
+distinguishes automatic changes, manual erase and manual change. [§4.4](https://www.infochunk.com/saturn/segahtml_en/hard/vdp1/hon/p04_14.htm)
+defines sixteen-byte X units, inclusive lower Y, packed erase bytes and budgets.
+[§4.9](https://www.infochunk.com/saturn/segahtml_en/hard/vdp1/hon/p04_19.htm)
+requires MODR to report written register settings, independently of internal state.
+This supersedes earlier evidence that did not separate written erase settings
+from the settings captured before an erase was accepted.
+
+| Contract | Implementation | Independent evidence |
+| --- | --- | --- |
+| Written versus captured erase settings | `Vdp1::erase/erase_latched`, `vblank_out/erase_area` in [vdp1.rs](../src/vdp1.rs); automatic/manual changes copy all three, held/manual-erase fields do not | [erase_tests.rs](../src/vdp1/erase_tests.rs): explicit overlapping A/B/C rectangles, repeated pending writes, automatic and manual sequences, 16-bit and both supported 8-bit geometries, distinct even/odd bytes, edges and canaries |
+| Accepted erase retains color, bounds and destination; field end/reset cancels work | Existing retained `EraseArea/Erasing`; [progress_tests.rs](../src/vdp1/progress_tests.rs) retains exact partial budgets and scanline assertions | New erase vectors change registers during accepted jobs and check both physical buffers; [bus tests](../src/bus/vdp1_tests.rs) reset unfinished A plus pending B and physically in-flight C, then explicitly initialize D without stale writes |
+| Register completion/capture ordering | Existing [Bus raster-before-data order](../src/bus.rs), with no new timing phase | Both SH-2 replay adapters write each of EWDR/EWLR/EWRR at completion edges -1/0/+1, chunks 1/3/17/10000, with/without debugger reads. Physical acceptance is distinguished from external completion. Equal-edge capture-before-write is an emulator convention |
+| Real MMIO guest and browser pixels | [Original MIT builder](../tests/fixtures/build_vdp1_erase_latch.py), [source](../tests/fixtures/vdp1-erase-latch.s), [ROM](../tests/fixtures/vdp1-erase-latch.hex), adjacent [license](../tests/fixtures/LICENSE) | [Native Machine](../tests/video_transactions.rs) and [production Wasm/Canvas](../scripts/video-transactions.mjs) execute identical bytes. Guest initializes both buffers, synchronizes A/B capture, computes whole-region checksums, reads edge pixels/status and publishes output. Colors/coordinates mutate, B writes can be omitted, and every variant repeats cold boots |
+
+[Actual checks, inherited-implementation negative controls, fixture corrections
+and artifact hashes](validation-issue-25.md) document this partial #17 increment.
+The new builder's `--check` is required by existing CI. VBE sampling-phase
+correction, half-line timing, additional display modes and rasterizer changes
+remain separate work. CPU/peripheral, multiprocessor/bus/reset, SCU/DSP,
+video/audio, CD/media/HLE, SMPC and comprehensive acceptance remain outstanding.
+These results do not establish hardware completion or broad commercial-game
+compatibility. Issue #17 remains open; historical #11/#13/#15 are not reopened.

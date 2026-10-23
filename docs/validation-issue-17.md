@@ -4316,3 +4316,18 @@ acceptance remain outstanding under #17. #17 stays open; no successful test,
 checkpoint or intermediate merge proves hardware completion or commercial-game
 compatibility. No human approval/testing, personal firmware, live Pages check or
 post-merge verification is required.
+
+
+## Issue #25: VDP1 erase-parameter capture validation
+
+Related to #25 and #17. The [focused validation record](validation-issue-25.md)
+and [conformance entry](hardware-conformance.md#vdp1-erase-parameter-capture-issue-25)
+describe written/captured EWDR/EWLR/EWRR separation at framebuffer changes,
+retained erase jobs and cancellation, both SH-2 physical completion boundaries,
+and the original MMIO guest in native Machine and production Wasm/Canvas.
+The record includes actual checks, inherited-implementation negative controls,
+independent literal expectations, reproducible artifacts and corrections to
+historical erase fixture setup without weakening their budget assertions.
+This is a partial #17 increment. All other outstanding umbrella criteria remain
+open; no successful checkpoint or intermediate validation demonstrates hardware
+completion or commercial-game compatibility.

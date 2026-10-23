@@ -191,6 +191,15 @@ dots. ENDR stops within thirty clocks without synthesizing END or its IRQ. CEF/C
 SCU source 13/DMA trigger 6 reflect actual command progress. Cyclic lists stay
 busy; malformed/prohibited commands produce bounded machine diagnostics.
 TVMR/FBCR/EWDR/EWLR/EWRR control buffer formats, field changes and erase rectangles.
+EWDR/EWLR/EWRR retain separate written and captured copies. An actual automatic
+or manual framebuffer change captures all three together; manual erase requests
+and held manual fields keep the previous capture. Both display and VBlank erase
+consume that capture, and each accepted operation retains its color, bounds,
+geometry and physical destination until completion or cancellation. MODR still
+reports written mode settings. At equal raster/data-completion edges the existing
+scheduler captures before the external register write completes; this is an
+emulator convention, since ST-013 does not specify an electrical phase. See the
+[erase-capture validation](validation-issue-25.md) for independent evidence.
 Normal erase follows each displayed scanline; VBlank erase executes word writes
 with the manual's 200-clock per-raster overhead, stops at the field boundary, and
 retains unfinished pixels. Manual drawing retains its cursor across a buffer change;

@@ -310,3 +310,147 @@ fn command_fetch_and_untextured_drawing_use_independent_local_memories() {
     assert_eq!(bus.read16(FRAMEBUFFER + 22), Ok(0x801F));
     assert_eq!(bus.read16(FRAMEBUFFER + 24), Ok(0));
 }
+
+fn erase_registers(bus: &mut Bus, values: [u16; 3]) {
+    for (offset, value) in [6, 8, 10].into_iter().zip(values) {
+        bus.write16(REGISTERS + offset, value).unwrap();
+    }
+}
+fn advance_inspected(bus: &mut Bus, clocks: u32, chunk: u32, inspect: bool) {
+    let mut left = clocks;
+    while left != 0 {
+        let n = left.min(chunk);
+        bus.advance_clocks(n).unwrap();
+        if inspect {
+            for offset in [0x10, 0x12, 0x14, 0x16] {
+                bus.read16(REGISTERS + offset).unwrap();
+            }
+            let _ = bus.vdp1.display_pixel(8, 1);
+            let _ = bus.read16(FRAMEBUFFER).unwrap();
+        }
+        left -= n;
+    }
+}
+
+#[test]
+fn both_sh2_adapters_capture_only_physically_completed_erase_writes_at_field_change() {
+    // Emulator equal-edge convention: raster capture precedes external data
+    // completion. ST-013 ch.4 specifies the boundary, not an electrical phase.
+    const FIELD: u32 = 1708 * 263;
+    for processor in [Processor::Master, Processor::Slave] {
+        for chunk in [1, 3, 17, 10000] {
+            for inspect in [false, true] {
+                for (offset, value) in [(6, 0x5678), (8, 0x0402), (10, 0x0803)] {
+                    for completion in [FIELD - 1, FIELD, FIELD + 1] {
+                        let mut bus = Bus::default();
+                        bus.set_slave_enabled(true);
+                        bus.write16(REGISTERS, 8).unwrap();
+                        bus.write16(REGISTERS + 4, 0).unwrap();
+                        erase_registers(&mut bus, [0x1234, 0x0201, 0x0602]);
+                        bus.write16(REGISTERS + 2, 3).unwrap();
+                        bus.vdp1.vblank_out(); // initialize captured A
+                        bus.vdp1.draw_buffer_mut().fill(0xEE);
+                        bus.write16(REGISTERS + 2, 3).unwrap();
+                        advance_inspected(&mut bus, completion - 8, chunk, inspect);
+                        let address = (REGISTERS + offset) | 0x20000000;
+                        assert_eq!(
+                            bus.replay_cpu(processor).write16(address, value),
+                            Err(BusError::Pending)
+                        );
+                        bus.grant_bus_transaction();
+                        assert_eq!(bus.transactions.active.as_ref().unwrap().remaining, 8);
+                        advance_inspected(&mut bus, 7, chunk, inspect);
+                        let active = bus.transactions.active.as_ref().unwrap();
+                        assert_eq!(active.remaining, 1);
+                        assert_eq!(active.transfer.address, address);
+                        assert_eq!(active.transfer.write, Some(u32::from(value)));
+                        // SH-2 write-buffer acceptance already completed, but
+                        // the physical register write still has one clock left.
+                        assert_eq!(bus.replay_cpu(processor).write16(address, value), Ok(()));
+                        bus.finish_cpu_transaction(processor);
+                        advance_inspected(&mut bus, 1, chunk, inspect);
+                        assert!(bus.transactions.active.is_none());
+                        advance_inspected(
+                            &mut bus,
+                            FIELD + 224 * 1708 + 300 - completion,
+                            chunk,
+                            inspect,
+                        );
+                        let captured = completion < FIELD;
+                        for y in 0..5 {
+                            for x in [7, 8, 15, 16, 23, 24, 31, 32] {
+                                let left = if captured && offset == 8 { 16 } else { 8 };
+                                let right = if captured && offset == 10 { 32 } else { 24 };
+                                let top = if captured && offset == 8 { 2 } else { 1 };
+                                let bottom = if captured && offset == 10 { 4 } else { 3 };
+                                let color = if captured && offset == 6 {
+                                    0x5678
+                                } else {
+                                    0x1234
+                                };
+                                let expected =
+                                    if (left..right).contains(&x) && (top..bottom).contains(&y) {
+                                        color
+                                    } else {
+                                        0xEEEE
+                                    };
+                                assert_eq!(
+                                    bus.vdp1.display_pixel(x, y),
+                                    expected,
+                                    "processor={processor:?} chunk={chunk} inspect={inspect} reg={offset} completion={completion} x{x} y{y}"
+                                );
+                            }
+                        }
+                        // CPU-visible destination is the other physical buffer.
+                        assert_eq!(bus.read16(FRAMEBUFFER + 1040), Ok(0x1234));
+                        assert_eq!(bus.read16(FRAMEBUFFER + 1038), Ok(0));
+                        assert_eq!(bus.read16(REGISTERS + 0x16), Ok(0x1018));
+                        assert_eq!(bus.read16(REGISTERS + 0x10), Ok(0));
+                        assert_eq!(bus.read32(SCU + 0xA4).unwrap() & 0x2000, 0);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn reset_cancels_pending_erase_register_transactions_and_unfinished_captured_erase() {
+    for processor in [Processor::Master, Processor::Slave] {
+        for chunk in [1, 3, 17, 10000] {
+            let mut bus = Bus::default();
+            bus.set_slave_enabled(true);
+            bus.write16(REGISTERS, 8).unwrap();
+            erase_registers(&mut bus, [0x1234, 0, 0x8000 | 255]);
+            bus.write16(REGISTERS + 2, 3).unwrap();
+            bus.vdp1.vblank_out();
+            erase_registers(&mut bus, [0x5678, 0x0402, 0x0803]); // pending B
+            bus.vdp1.vblank_in(1708);
+            advance(&mut bus, 201, chunk); // unfinished accepted A job
+            assert_eq!(bus.vdp1.display_pixel(0, 0), 0x1234);
+            let address = (REGISTERS + 6) | 0x20000000;
+            assert_eq!(
+                bus.replay_cpu(processor).write16(address, 0x9ABC),
+                Err(BusError::Pending)
+            );
+            advance(&mut bus, 4, chunk); // C is still physically in flight
+            assert!(bus.transactions.active.is_some());
+            bus.system_reset();
+            bus.write16(REGISTERS, 8).unwrap();
+            erase_registers(&mut bus, [0x2468, 0x0201, 0x0401]); // new run D
+            bus.vdp1.draw_buffer_mut().fill(0xEE);
+            bus.write16(REGISTERS + 2, 3).unwrap();
+            bus.vdp1.vblank_out();
+            bus.vdp1.vblank_in(1708);
+            advance(&mut bus, 1708, chunk);
+            assert_eq!(bus.vdp1.display_pixel(7, 1), 0xEEEE);
+            assert_eq!(bus.vdp1.display_pixel(8, 1), 0x2468);
+            assert_eq!(bus.vdp1.display_pixel(15, 1), 0x2468);
+            assert_eq!(bus.vdp1.display_pixel(16, 1), 0xEEEE);
+            assert_eq!(bus.vdp1.display_pixel(0, 0), 0xEEEE);
+            assert_eq!(bus.read16(FRAMEBUFFER), Ok(0));
+            assert_eq!(bus.read16(REGISTERS + 0x10), Ok(0));
+            assert_eq!(bus.read32(SCU + 0xA4).unwrap() & 0x2000, 0);
+        }
+    }
+}
