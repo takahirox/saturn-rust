@@ -1820,14 +1820,14 @@ is included, and no host code writes a running guest's results.
 | File information windows | `CdBlock::directory_sector`, commands71/72/73 | [300-child directory](../tests/cd.rs): exactly254 children plus self/parent, ReadDir window256–301 with46 children, absent FID rejection; invalid parameters retain the previous window, while interrupted accepted acquisition invalidates it (Issue #21); uninitialized scope rejects as specified in [CD] §6.2.2 | Existing original directory BIOS still runs cooked and clean/correctable/uncorrectable raw inputs. Browser checks rejection status after failed initialization rather than interpreting undefined response fields as an empty valid table. The large-window boundary corpus is native evidence. |
 | Filesystem selector/partition effects | `CdBlock::prepare_file_filter`, directory/read-file commands | Existing sector/partition/native file tests; selected destination is cleared, true route returns to its own partition, false route disconnects, FAD/file-number filtering is enabled | Filesystem guest starts a second read into the same partition without deleting the first read's stored sectors: resulting count is1, not4. It reads filter mode41, connectors03FF and CD connection0300 through actual commands. Full selector connection constraints and transfer overlap timing remain required. |
 | Multi-area bootstrap and independent stacks | [disc::parse](../src/disc.rs); [hle::install](../src/hle.rs) configures the original reset literal pool from IP metadata | [Disc vectors](../tests/disc.rs) reject duplicate/invalid area strings and misaligned, IP-overlapping or first-read-overlapping slave stacks | [Boot-layout disc](../tests/fixtures/build_boot_layout.py): one/two/four area blocks select AIP at2E20/2E40/2E80; guest master/slave report FF000 and FD000/default1000 stack offsets, respectively. Reordered area symbols, changed fourth-sector data and repeated cold resets run in native and Wasm. Commercial region/authentication behavior is not claimed. |
-| Interleaved first-read bootstrap | `FileExtent::from_record/sector_at/bytes` in [disc.rs](../src/disc.rs) | Checked logical/physical extent bounds; ordinary contiguous files borrow their bytes while interleaved files gather only their data sectors | Boot-layout guest uses unit2/gap1, one extended-attribute sector and four logical data sectors. Real SH-2 loads from the third/fourth loaded sectors compute99999999; a changed disc word changes that sum. The AIP and both processors execute ordinary guest instructions. |
+| Interleaved first-read bootstrap | `FileExtent::from_record/sector_at/bytes` in [disc.rs](../src/disc.rs) | Checked logical/physical extent bounds; contiguous and interleaved files read only their required data sectors; interleaved attributes occupy a whole first unit before its gap | Boot-layout guest uses unit2/gap1, a two-sector attribute unit followed by the initial gap and four logical data sectors. Real SH-2 loads from the third/fourth loaded sectors compute99999999; a changed disc word changes that sum. The AIP and both processors execute ordinary guest instructions. |
 
 | Original artifact | SHA-256 |
 | --- | --- |
 | `bsc-share.hex` | `dcae6692bd0661a8f694d4ebe90351b0bf08f3330f2025ccb0e5f1fe412383bb` |
 | `cd-filesystem.hex` | `4d4659d3fe740a60893340cc86e37279a9e73d4d7473d33f4766f87ebcc67260` |
 | `cd-filesystem.bin` | `5c67809a98b8678a507a5fb5192ae89baca3278a3b9000d72f03c2ff521d8d3b` |
-| `boot-layout.iso` | `a0e7f5d7de82278d586a4520096ff39d40caede59867450cf94b47d3d9384602` |
+| `boot-layout.iso` | `16ccece8c58c3eb8e4620318f6763cc057a84f619eb2d2478b894b20c31c3aed` |
 
 These changes implement specific BSC, filesystem and bootstrap contracts. They
 do not establish the remaining BSC/MCR or board protocols, transaction
@@ -3161,7 +3161,7 @@ umbrella hardware completion and commercial-game compatibility remain pending.
 policy, original MIT guest/source and deterministic full-medium hashes.
 [Native evidence](../tests/large_media.rs) and the
 [production browser extension](../scripts/large-media.mjs) execute a 270,000-sector
-volume with first-read sectors 9001/9002/9004 and runtime CD sector 260000.
+volume with first-read sectors 9003/9004/9006 and runtime CD sector 260000.
 The guest drives CD commands, FIFO-to-SCU DMA, interrupt acknowledgement, sum,
 SYSRES and CD-DA; the browser uses real local ISO/CUE selections under the project
 prefix. The focused bootstrap reader trace excludes unrelated payload, and

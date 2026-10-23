@@ -7,7 +7,7 @@ use saturn_rust::{
 };
 use std::cell::RefCell;
 const SEED: &[u8] = include_bytes!("fixtures/large-media.seed");
-const FIRST: usize = 9001;
+const FIRST: usize = 9003;
 const LATE: usize = 260000;
 const SIZE: usize = 0x1400;
 fn image(count: usize) -> Vec<u8> {
@@ -144,7 +144,7 @@ fn bootstrap_reads_only_metadata_and_interleaved_file_not_the_medium() {
     assert_eq!(boot.executable, SEED[24 * SECTOR..24 * SECTOR + SIZE]);
     assert_eq!(
         *reader.reads.borrow(),
-        [0, 0, 1, 16, 17, 20, 21, 9001, 9002, 9004]
+        [0, 0, 1, 16, 17, 20, 21, 9003, 9004, 9006]
     );
     // Reader capacity can exceed actual available storage; required reads fail.
     let truncated = Observed {
@@ -168,7 +168,7 @@ fn bootstrap_reads_only_metadata_and_interleaved_file_not_the_medium() {
 fn declared_volume_overflow_cross_sector_directory_and_first_read_load_area_vectors() {
     let original = image(9100);
     for (at, value) in [
-        (16 * SECTOR + 80, 9004),
+        (16 * SECTOR + 80, 9006),
         (21 * SECTOR + 2, u32::MAX),
         (21 * SECTOR + 10, u32::MAX),
     ] {
@@ -228,7 +228,7 @@ fn original_raw_mode1_and_xa_ignore_unread_damage_but_reject_required_damage() {
     ] {
         let mut raw = vec![0; 270000 * 2352];
         // Sparse input intentionally has invalid raw sectors everywhere else.
-        for (i, lba) in [0, 1, 16, 17, 20, 21, 9001, 9002, 9004]
+        for (i, lba) in [0, 1, 16, 17, 20, 21, 9003, 9004, 9006]
             .into_iter()
             .enumerate()
         {
@@ -247,13 +247,13 @@ fn original_raw_mode1_and_xa_ignore_unread_damage_but_reject_required_damage() {
         // Keep the declared volume fully present so failure must come from the
         // damaged required sector, rather than an earlier capacity check.
         let mut raw = vec![0; 270000 * 2352];
-        for (i, lba) in [0, 1, 16, 17, 20, 21, 9001, 9002, 9004]
+        for (i, lba) in [0, 1, 16, 17, 20, 21, 9003, 9004, 9006]
             .into_iter()
             .enumerate()
         {
             raw[lba * 2352..(lba + 1) * 2352].copy_from_slice(&vectors[i * 2352..(i + 1) * 2352]);
         }
-        raw[9001 * 2352 + 32..9001 * 2352 + 2048].fill(0xB7);
+        raw[9003 * 2352 + 32..9003 * 2352 + 2048].fill(0xB7);
         let media = Media::cue_owned(&cue, &[("r", 0..raw.len())], raw).unwrap();
         let mut m = Machine::new();
         assert!(m.reset_media(media).is_err());

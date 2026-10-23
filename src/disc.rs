@@ -128,17 +128,28 @@ impl FileExtent {
         self.sector.checked_add(offset)
     }
     fn from_record(record: &[u8], count: u32) -> Result<Self, DiscError> {
-        let file = Self {
-            sector: dual32(record, 2)?
-                .checked_add(u32::from(record[1]))
-                .ok_or_else(|| invalid("ISO extended-attribute extent overflow"))?,
-            size: dual32(record, 10)?,
-            unit: record[26],
-            gap: record[27],
-        };
-        if (file.unit == 0 && file.gap != 0) || (record[25] & 2 != 0 && file.unit != 0) {
+        let attributes = record[1];
+        let unit = record[26];
+        let gap = record[27];
+        if (unit == 0 && gap != 0) || (record[25] & 2 != 0 && unit != 0) {
             return Err(invalid("invalid ISO9660 interleave unit/gap"));
         }
+        // ECMA-119 §§6.4.3.4–6.4.3.5: attributes occupy the whole
+        // first unit; file data starts in the second unit, after its gap.
+        if unit != 0 && attributes != 0 && attributes != unit {
+            return Err(invalid(
+                "ISO interleaved extended-attribute length must equal file unit size",
+            ));
+        }
+        let file = Self {
+            sector: dual32(record, 2)?
+                .checked_add(u32::from(attributes))
+                .and_then(|s| s.checked_add(if attributes != 0 { u32::from(gap) } else { 0 }))
+                .ok_or_else(|| invalid("ISO extended-attribute extent overflow"))?,
+            size: dual32(record, 10)?,
+            unit,
+            gap,
+        };
         let end = if file.size == 0 {
             file.sector
         } else {

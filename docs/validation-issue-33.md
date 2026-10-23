@@ -58,12 +58,15 @@ The [manifest](../tests/fixtures/large-media.json) records complete hashes:
 
 | Artifact | SHA-256 |
 | --- | --- |
-| ISO | `aca08a87944b5e3e1c05150a65499358f7567b70e33787725b6c37a7ce65b714` |
+| ISO | `47949ba9ce5b90fa0dd24578cb264d3bbd6fdcd9e1c6ef56fac6753d4087d41c` |
 | Original stereo audio | `853d1e997e0f5bcb12f7a5430e38990ac434727e809913f4ccb66c23b2a29a90` |
 | CUE | `ec3ca1c604d095ae2e76aeb00c8d4b92af4eafcdd3a00174ca153fa3b4d445be` |
 
-The root spans LBAs 20–21. File ID2 begins after one extended-attribute sector
-at LBA 9001, with unit=2/gap=1, placing its 0x1400 bytes at 9001/9002/9004.
+The root spans LBAs 20–21. File ID2 has extent LBA 9000, with a two-sector
+extended-attribute unit at 9000–9001 and a one-sector gap at 9002. With
+unit=2/gap=1, its 0x1400 file bytes occupy LBAs 9003/9004/9006. This follows
+ECMA-119 §§6.4.3.4–6.4.3.5: attribute length equals unit size, and file data
+begins in the second unit. A nonzero unequal attribute length is rejected.
 The separately authored runtime sector is LBA 260000 (FAD 260150). Its 512
 big-endian words are `3*(i+1)`; the SH-2 DMA/FIFO sum plus literal 7 is 393991.
 The mixed CUE's data postgap is FAD 270150–270299, audio pregap
@@ -80,7 +83,7 @@ change literal 7 to 11 (393995), first runtime word 3 to 9 (393997), or omit
 the late Play command (no completion/result).
 
 The observed bootstrap trace is exactly
-`0,0,1,16,17,20,21,9001,9002,9004`: header/IP, descriptors, root and selected
+`0,0,1,16,17,20,21,9003,9004,9006`: header/IP, descriptors, root and selected
 first-read units. Scratch does not grow with the full medium. Both original raw
 Mode1 and XA Form1 vectors bootstrap with deliberately invalid unread sectors;
 a required damaged executable sector fails before execution, with Reset state.
@@ -121,3 +124,43 @@ selecting rustup's compiler and Cargo together, as documented in setup, resolved
 that toolchain mismatch. Initial focused browser test assertions were corrected
 for the existing mode label and for loading the AudioWorklet before going offline;
 no emulator behavior was bypassed. No required checks are intentionally skipped.
+
+
+## Combined attribute/interleave review correction
+
+The review found that the bootstrap skipped attribute blocks but omitted the
+initial interleave gap. The large-media and older boot-layout builders also used
+an invalid one-block attribute length with unit size two. The checked mapping
+now includes that initial gap and rejects unequal nonzero attribute/unit lengths
+under ECMA-119 §§6.4.3.4–6.4.3.5. Contiguous attributes and interleaving without
+attributes retain their respective mappings.
+
+The [independent regression](../tests/disc.rs) authors distinct sector bytes and
+record fields without either layout builder. It checks file bytes at
+9003/9004/9006, both preserved mappings, mismatched attribute lengths, the last
+physical sector's declared-volume bound, and overflow caused by the initial gap.
+It failed against the original parser and passes with the correction.
+
+Both affected builders and compact media were regenerated. The older
+boot-layout now places its two-block attribute unit at 29–30 and gap at 31,
+preserving data at 32/33/35/36 and its native/browser guest expectations.
+Large-media native read traces, raw damage probes and browser mutation offsets
+now use 9003/9004/9006. Complete ISO/audio/CUE hashes are recorded above and in
+the manifest; corrected compact SHA-256 values are:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `large-media.seed` | `55b1a36e9632f54672716ad4bd4d21f85837532412ae45b1a4a414511283c7fc` |
+| `large-media-mode1.raw` | `63b56416a43e8edb12c49bd4f7c81d35978633b073e959bc93be09919f2fe8aa` |
+| `large-media-xa.raw` | `2ef158139c0ebb5e52d2e04bce7fae1b696adc23442c49d77695f30fa5e8c8ba` |
+| `boot-layout.iso` | `16ccece8c58c3eb8e4620318f6763cc057a84f619eb2d2478b894b20c31c3aed` |
+
+Revalidation of this correction on 2026-10-24 passed `cargo fmt --check`,
+`cargo build --locked`, all **853 native tests** (none failed or ignored), native
+and Wasm Clippy with warnings denied, all **79 registered fixture reproduction
+commands**, and `sh scripts/build-web.sh`. The complete extended
+`npm run test:browser` passed in Chromium **145.0.7632.6**, including both corrected
+layout guests, actual standard-size ISO/CUE selections, late-sector DMA/IRQ/sum,
+SYSRES/reset/backup retention, CD-DA/AudioWorklet, cancellation/rejection and all
+three input mutations. No required checks were skipped. Relative documentation
+link targets, recorded compact hashes and Git whitespace checks also pass.

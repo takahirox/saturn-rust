@@ -141,6 +141,78 @@ fn malformed_inputs_never_panic_even_with_corrupt_directory_bytes() {
 }
 
 #[test]
+fn independent_attribute_and_interleave_vectors_select_only_file_data() {
+    // Hand-authored sectors and metadata, independent of both layout builders.
+    // ECMA-119 §§6.4.3.4–6.4.3.5: extent 9000 contains attributes at
+    // 9000/9001, gap 9002, then data at 9003/9004, gap 9005, data 9006.
+    fn dual(bytes: &mut [u8], at: usize, value: u32) {
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        bytes[at + 4..at + 8].copy_from_slice(&value.to_be_bytes());
+    }
+    let mut original = ISO.to_vec();
+    original.resize(9100 * SECTOR, 0);
+    dual(&mut original, 16 * SECTOR + 80, 9100);
+    let record = 20 * SECTOR + 68;
+    dual(&mut original, record + 2, 9000);
+    dual(&mut original, record + 10, (2 * SECTOR + 17) as u32);
+    for (lba, value) in [
+        (9000, 0xA0),
+        (9001, 0xA1),
+        (9002, 0xA2),
+        (9003, 0xA3),
+        (9004, 0xA4),
+        (9005, 0xA5),
+        (9006, 0xA6),
+    ] {
+        original[lba * SECTOR..(lba + 1) * SECTOR].fill(value);
+    }
+    // Also preserve interleaving without attributes and contiguous attributes.
+    for (attributes, unit, gap, sectors) in [
+        (2, 2, 1, [0xA3, 0xA4, 0xA6]),
+        (0, 2, 1, [0xA0, 0xA1, 0xA3]),
+        (2, 0, 0, [0xA2, 0xA3, 0xA4]),
+    ] {
+        let mut image = original.clone();
+        image[record + 1] = attributes;
+        image[record + 26..record + 28].copy_from_slice(&[unit, gap]);
+        let expected = [
+            vec![sectors[0]; SECTOR],
+            vec![sectors[1]; SECTOR],
+            vec![sectors[2]; 17],
+        ]
+        .concat();
+        assert_eq!(parse(&image).unwrap().executable, expected);
+    }
+    original[record + 1] = 2;
+    original[record + 26..record + 28].copy_from_slice(&[2, 1]);
+    for attributes in [1, 3] {
+        let mut image = original.clone();
+        image[record + 1] = attributes;
+        assert!(parse(&image).err().unwrap().0.contains("length must equal"));
+    }
+    // The last data sector must remain inside the declared volume even when
+    // the preceding attributes and first two data sectors fit.
+    let mut image = original.clone();
+    dual(&mut image, 16 * SECTOR + 80, 9006);
+    assert!(
+        parse(&image)
+            .err()
+            .unwrap()
+            .0
+            .contains("truncated ISO file/interleave extent")
+    );
+    // Adding the initial gap can itself overflow after attributes fit.
+    dual(&mut original, record + 2, u32::MAX - 2);
+    assert!(
+        parse(&original)
+            .err()
+            .unwrap()
+            .0
+            .contains("extended-attribute extent overflow")
+    );
+}
+
+#[test]
 fn first_read_name_and_destination_are_metadata_not_game_specific_hooks() {
     let mut image = ISO.to_vec();
     image[20 * SECTOR + 68 + 33..20 * SECTOR + 68 + 43].copy_from_slice(b"ELSE.BIN;1");

@@ -20,7 +20,7 @@ def store(address, value, width='w'):
 HERE = Path(__file__).resolve().parent
 SECTOR = 2048
 COUNT = 270000
-FIRST = 9001
+FIRST = 9003
 LATE = 260000
 AUDIO_FAD = 270450
 SIZE = 0x1400
@@ -81,8 +81,8 @@ def build():
     image[pvd+156:pvd+190] = root
     image[20*SECTOR:20*SECTOR+34] = root
     image[20*SECTOR+34:20*SECTOR+68] = a.record(b'\1', 20, 4096, True)
-    record = bytearray(a.record(b'LATE.BIN;1', FIRST-1, SIZE))
-    record[1] = 1  # extended attributes precede first file unit
+    record = bytearray(a.record(b'LATE.BIN;1', 9000, SIZE))
+    record[1] = 2  # ECMA-119: whole attribute unit, then gap, then data
     record[26:28] = bytes([2, 1])
     image[21*SECTOR:21*SECTOR+len(record)] = record
     for i in range(512):

@@ -101,7 +101,7 @@ export async function largeMedia(browser, url) {
     // Mutations change actual standard-size guest input, with the same picker.
     for(const mutation of ["literal", "sector", "omit"]) {
       const file = await open(iso, "r+");
-      const at = mutation==="sector" ? 260000*2048+3 : 9001*2048+(mutation==="literal" ? 0x267 : 0x100);
+      const at = mutation==="sector" ? 260000*2048+3 : 9003*2048+(mutation==="literal" ? 0x267 : 0x100);
       const original = Buffer.alloc(mutation==="omit" ? 2 : 1);
       await file.read(original, 0, original.length, at);
       await file.write(mutation==="omit" ? Buffer.from([0,9]) : Buffer.from([mutation==="literal" ? 11 : 9]), 0, original.length, at);
