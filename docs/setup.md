@@ -148,6 +148,7 @@ python3 tests/fixtures/build_cd_directory.py --check
 python3 tests/fixtures/build_cd_directory_schedule.py --check
 python3 tests/fixtures/build_cd_filesystem.py --check
 python3 tests/fixtures/build_boot_layout.py --check
+python3 tests/fixtures/build_large_media.py --check --output target/large-media
 python3 tests/fixtures/build_cd_decode.py --check
 python3 tests/fixtures/build_cdda.py --check
 python3 tests/fixtures/build_sprite_effects.py --check
@@ -201,9 +202,15 @@ Rust or guest source. Opening `index.html` as a `file:` URL will not work. The c
    a local authorized ISO to use the same loader without fetching the sample.
    Local images load paused; close settings and use Resume to play.
    Startup supports Saturn IP area groups and ISO9660 first-read files,
-   including file-unit/gap interleaving and extended-attribute offsets, up to
-   16 MiB. Select a cooked ISO alone, or select one CUE and all its
-   BINARY data/audio track files together (up to 128 MiB). Cooked and raw Mode1,
+   including file-unit/gap interleaving and extended-attribute offsets. Select a
+   cooked ISO alone (18–450,000 sectors, at most 921,600,000 bytes), or one CUE
+   and all its BINARY data/audio track files together (at most 1,058,400,000
+   data/audio bytes plus a 1 MiB CUE). These are application resource bounds,
+   separate from hardware recording limits. Large selections require enough
+   browser memory for the local input buffer and the retained Wasm medium.
+   Reset cancels pending reads; restart reuses the retained medium without a
+   second upload. Bootstrap reads only metadata and the selected executable.
+   See the [standard-size validation record](validation-issue-33.md). Cooked and raw Mode1,
    raw Mode2, audio, shared/separate files and track gaps/indices are supported.
    Runtime CD commands retain and read the actual medium; CD-DA passes through
    SCSP. Compressed images and generic game compatibility remain unsupported. Malformed or unsupported media

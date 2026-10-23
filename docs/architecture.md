@@ -348,7 +348,7 @@ exercise real SH-2 loads/stores and port-2 reads natively and in Chromium/Wasm.
 
 [Star Collector's build and layout](../homebrew/star-collector/README.md) specify
 the supported self-contained guest contract. The parser accepts cooked
-2048-byte-sector ISO files, 18 sectors to 16 MiB, with a Saturn hardware identifier,
+2048-byte-sector ISO files, 18 to 450,000 sectors, with a Saturn hardware identifier,
 distinct J/T/U/E area symbols, IP size 1000–8000 hex and aligned stack/first-read destination in high
 RAM. It scans the descriptor set starting at sector 16 for primary and terminator descriptors, checking matching
 little/big-endian volume/extent values, 2048-byte blocks, root directory records,
@@ -362,10 +362,33 @@ retains all 2336 payload bytes without interpreting XA subheaders/parity. CUE do
 not encode the XA/plain distinction; bounded repeated-subheader detection is the
 default, with `Media::cue_with_mode2_format` for explicit source metadata. A failed
 XA decode is never retried as unchecked plain data. Bootstrap requires 2048-byte
-logical sectors; other lengths remain available through runtime CD transfers. The boot loader extracts
-its first data track through this same validated ISO contract; the runtime CD
-block retains the complete medium, including tracks, indices and gaps.
-Compressed images and large/general ISO boot layouts remain unsupported.
+logical sectors; other lengths remain available through runtime CD transfers.
+`disc::SectorReader` supplies checked INDEX-01-relative logical sectors from the
+retained medium. Cold boot and HLE SYSRES use `parse_sectors` with that same
+medium; neither extracts a cooked track nor mounts a duplicate ISO. Cooked
+sectors are copied directly; required raw Mode1/XA Form1 sectors use the strict
+four-pass ECC/EDC policy and fail explicitly when unrecoverable. Unread raw
+sectors are never decoded. Scratch storage is bounded by a 32 KiB IP, a
+128 KiB root directory, one descriptor at a time, and the legal first-read file.
+The reader checks descriptor, declared-volume, extent/interleave and stored-track
+bounds before reading. Zero first-read, descriptor scanning and area groups
+retain their existing behavior. Bulletin #35 excludes `060FF000..060FFFFF` from
+first-read destinations, independently of medium capacity.
+
+Resource policy preserves the broader runtime model: at most 450,000 stored
+ISO sectors (921,600,000 bytes), or 1,058,400,000 aggregate CUE BINARY bytes
+(450,000 × 2352), plus 1 MiB CUE text and at most 99 files/tracks. CUE leadout
+must fit FAD 450150. These are implementation resource bounds, not a new
+63-minute hardware rejection. Major native allocations use fallible reservation;
+JS file/Blob reads and Wasm marshaling failures stop the prior machine and report
+an error. Browser admission uses one aggregate Blob buffer, transfers ownership
+of the Wasm input vector to shared immutable track storage, then releases JS
+input buffers. Restart and SYSRES share stored bytes through `Arc<Vec<u8>>`.
+Native borrowed constructors make one retained owned copy; owned constructors
+transfer allocation ownership. No streaming/compression framework is introduced.
+The runtime CD block retains the complete medium, including tracks, indices and
+gaps. Compressed media and unsupported ISO record formats remain unsupported.
+See [Issue #33 validation](validation-issue-33.md) for generated media and limits.
 
 HLE copies the IP system area to 06002000, loads the first-read file at the header's
 F0 destination, initializes the master stack from E8 (zero means 06002000) and

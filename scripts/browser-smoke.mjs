@@ -27,6 +27,7 @@ import { scspClock, scspEffects } from "./scsp-clock.mjs";
 import { scspPcm } from "./scsp-pcm.mjs";
 import { scspMvol } from "./scsp-mvol.mjs";
 import { scspDma } from "./scsp-dma.mjs";
+import { largeMedia } from "./large-media.mjs";
 import { cdCopy } from "./cd-copy.mjs";
 import { vdp2Status } from "./vdp2-status.mjs";
 
@@ -2801,11 +2802,23 @@ try {
     assert.equal(compactState.retired, "100");
     assert.equal(compactState.exceptions, "0");
   }
-  // Size-valid malformed media reaches the core parser; incomplete sectors
-  // and oversized images remain picker errors and cannot keep an old CPU alive.
-  for (const size of [17 * 2048, 18 * 2048 + 1, 16777216 + 2048]) {
+  // Size-valid malformed media reaches the parser; incomplete sectors fail at
+  // the picker. Oversized metadata probes below avoid allocating a gigabyte.
+  for (const size of [17 * 2048, 18 * 2048 + 1]) {
     await page.locator("#disc").setInputFiles({ name:"invalid-size.iso", mimeType:"application/octet-stream", buffer:Buffer.alloc(size) });
-    assert.match(await value("error"), /18 sectors to 16 MiB/);
+    assert.match(await value("error"), /18 to 450000 sectors/);
+    assert.equal(await page.locator("#run").isDisabled(), true);
+  }
+  for (const cue of [false, true]) {
+    await page.evaluate((cue) => {
+      const input = document.getElementById("disc");
+      const file = new File([new Uint8Array(1)], "oversized.iso");
+      Object.defineProperty(file, "size", {value:cue ? 1058400001 : 921602048});
+      Object.defineProperty(input, "files", {configurable:true, value:cue ? [new File([""], "oversized.cue"), file] : [file]});
+      input.dispatchEvent(new Event("change"));
+      delete input.files;
+    }, cue);
+    assert.match(await value("error"), /450000 sectors/);
     assert.equal(await page.locator("#run").isDisabled(), true);
   }
   await page.locator("#disc").setInputFiles({ name:"invalid-structure.iso", mimeType:"application/octet-stream", buffer:Buffer.alloc(18 * 2048) });
@@ -3233,6 +3246,7 @@ try {
   assert.match(rejected.state,/Reset/);assert.equal(rejected.retired,"0");
   assert(labRequests.every(r=>r.method==="GET"&&!r.body&&r.url.startsWith(address+prefix)));
   await lab.close();
+  await largeMedia(browser, address+prefix);
   // IEC 60908 PRE changes actual CD PCM, driven only by an original SH-2
   // routing/play guest. Compare the real Wasm buffer to the transfer function,
   // including impulses on both sides of a sector boundary, then play that PCM.

@@ -577,7 +577,7 @@ no-op CPU/device implementations cannot satisfy those assertions.
 
 | Feature / manual | Current behavior / edge cases | Native | Browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- | --- |
-| Cooked ISO, [Disc Format][DISC] | Bounded multi-area IP/ISO9660 startup; extended-attribute offsets and interleaved first-read/runtime files; XA file metadata, held FID windows and checked LBA/FAD/volume bounds | disc.rs, media.rs, cd.rs, CLAB, filesystem/layout evidence below | SC, CLAB/local ISO, original filesystem/layout Wasm guests below | 16 MiB boot bound, remaining record formats and complete runtime command/timing/error corpus | Pending |
+| Cooked ISO, [Disc Format][DISC] | Bounded multi-area IP/ISO9660 startup; extended-attribute offsets and interleaved first-read/runtime files; XA file metadata, held FID windows and checked LBA/FAD/volume bounds | disc.rs, media.rs, cd.rs, CLAB, filesystem/layout evidence below | SC, CLAB/local ISO, original filesystem/layout Wasm guests below | Remaining record formats and complete runtime command/timing/error corpus | Pending |
 | BIN/CUE/raw/mixed tracks, [DISC] / [CD] §§4/7.2.3 | Caller-resolved files, cooked/2352-byte Mode1/Mode2/audio, shared/separate files, INDEX00–99, gaps and TOC; subindices and PRE/DCP/4CH CONTROL metadata drive TOC/status/Q reporting; malformed/duplicate flags rejected; EDC validation, bounded P/Q correction for Mode1/XA Form1, Form2 EDC and PRE audio processing | [media vectors](../tests/media.rs), [parity-matrix/XA vectors](../src/media/integrity.rs), [directory guest](../tests/cd_drive.rs), CLAB | Directory guest on clean/correctable/uncorrectable raw media; CLAB multi-file CUE, INDEX02/99, malformed ordering, missing-reference/reset/privacy | M2G adds plain 2336-byte Mode2 payloads; complete decode/timing boundaries remain; WAVE/compression absent | Pending |
 | CD command/status/HIRQ, [CD] §§3.1–3.4 | Separate command/response latches; 1075-clock command completion, read-protected responses, CMOK/DRDY/CSCT/end flags, masks, clear-zero HIRQ and SCU A-bus IRQ | `tests/cd.rs`, CLAB | CLAB command/FIFO/DMA/IRQ | Full command-specific timing and register mirrors; BIN/CUE has no R–W stream, with empty FIFO WAIT now tested | Pending |
 | CD drive/TOC/session/track state, [CD] §§4/7/8.2 | TOC/session/Q, bounded seek, data play, CD-DA/repeat/end, media-dependent FAD/track/index reports; timed CDON/OFF, 60 Hz pause reports, programmed standby, scan directions/range/muting, tray/media retention and deterministic virtual close | `tests/cd.rs`, CLAB, CDDRV | CLAB, CDDRV | Remaining initialization/subcode options and full drive/response lifecycle boundary evidence | Pending |
@@ -2088,7 +2088,7 @@ function specifications 4.1/5.7–5.8; [DISC] §4.3.
 | DIVU DMA waits on the DMA phase, preserving CPU instruction dependencies | `OnChip::dma_wait_clocks/dma_read32/dma_write32`; `internal_divu_dma_waits_for_division_without_premature_result_irq_or_cpu_waits` checks overflow IRQ at clock 6, internal read at 7 and RAM write at 9, literal quotient 47 and zero CPU waits. [peripheral_tests.rs](../src/onchip/peripheral_tests.rs) checks CPU-only consecutive-instruction dependencies across DMA. | DMABG's independently computed `99/3=33` is transferred by DMA and read by guest code in native/Wasm. |
 | Sound CPU accesses publish at separate four-clock byte/word completions | [sound/transactions.rs](../src/sound/transactions.rs) retains completed MMIO through CPU replay; `Sound::clocks_to_event` includes CPU and MIDI deadlines. [sound/tests.rs](../src/sound/tests.rs) checks normal/predecrement longword order, a main-CPU change between source words, MIDI consumption once, cancellation of a pending word and clock-chunk invariance. | SNDR, SIOG, FAMG, SYNTH, Prism Courier and Hardware Lab execute through these phases, retaining native/Wasm register/fault/stereo assertions and actual WebAudio. SNDR's second IRQ wakes its first STOP after the scheduled SH-2 WB change below: setup23 + IRQ6 + STOP2 + BRA1 = 32; its last saved PC is $182. |
 | CD connection errors preserve both outputs and filter-input exclusivity | `CdBlock::execute` validates both selected output destinations before mutation; `selector_connection_commands_validate_both_outputs_and_exclusive_inputs_atomically` checks indices 24–254, ignored arguments, disconnect/reconnect, ESEL and actual sector routing. | [CD drive guest](../tests/fixtures/build_cd_drive.py), [native](../tests/cd_drive.rs) and [browser](../scripts/browser-smoke.mjs) assert rejection, retained `0304` connections and explicit reconnection. Hex SHA-256: `8203401b2a7d7d76aef396b69bdb7caaf73ee1d8dd26eea4aea7eac39c23da95`. |
-| Compact ISO size validation agrees with the core | [app.js](../web/app.js) accepts complete sectors from 18 sectors to 16 MiB and delegates structural validation to the core. | Offline actual-picker regressions in browser-smoke execute original 19/21-sector AIP instructions (`R0=37`, 100 retired, no exceptions); reject short/partial/oversized files and parse a malformed size-valid 18-sector image. |
+| Compact ISO size validation agrees with the core | [app.js](../web/app.js) accepts complete sectors from 18 to 450,000 sectors and delegates structural validation to the core. | Offline actual-picker regressions in browser-smoke execute original 19/21-sector AIP instructions (`R0=37`, 100 retired, no exceptions); reject short/partial files and oversized metadata probes, and parse a malformed size-valid 18-sector image. Standard-size executable-media evidence is recorded below. |
 
 The four-clock sound bus phases preserve the existing interpreter's access order;
 they do not establish every instruction-specific prefetch sequence, RESET pin
@@ -3150,3 +3150,22 @@ full interrupt-transition speculation, complete board-level timing, video/audio,
 CD/media/HLE and the other still-unmet #17 requirements remain mandatory. This
 bounded multiplier increment does not use firmware, commercial media, physical
 hardware, human testing/approval or live Pages inspection as acceptance evidence.
+
+
+## Sector-addressed standard-size media bootstrap
+
+Related to #17 and #33. This admission/bootstrap increment is implemented;
+umbrella hardware completion and commercial-game compatibility remain pending.
+
+[Validation record](validation-issue-33.md) links the primary sections, resource
+policy, original MIT guest/source and deterministic full-medium hashes.
+[Native evidence](../tests/large_media.rs) and the
+[production browser extension](../scripts/large-media.mjs) execute a 270,000-sector
+volume with first-read sectors 9001/9002/9004 and runtime CD sector 260000.
+The guest drives CD commands, FIFO-to-SCU DMA, interrupt acknowledgement, sum,
+SYSRES and CD-DA; the browser uses real local ISO/CUE selections under the project
+prefix. The focused bootstrap reader trace excludes unrelated payload, and
+independently generated Mode1/XA vectors distinguish unread damage from required
+sector failure. Existing drive/command/sector/DMA timing tests remain registered.
+No full BIOS initialization, HLE CD library, complete drive/error timing or
+commercial compatibility is established by these results.

@@ -27,8 +27,18 @@ impl Emulator {
             .reset(Boot::ExternalBios(bytes))
             .map_err(js_error)
     }
-    pub fn reset_disc(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
-        self.machine.reset(Boot::HleDisc(bytes)).map_err(js_error)
+    pub fn reset_disc(&mut self, bytes: Vec<u8>) -> Result<(), JsValue> {
+        let media = crate::media::Media::iso_owned(bytes);
+        match media {
+            Ok(media) => self.machine.reset_media(media).map_err(js_error),
+            Err(error) => {
+                let _ = self.machine.reset(Boot::HleDisc(&[]));
+                Err(JsValue::from_str(&error.to_string()))
+            }
+        }
+    }
+    pub fn reset_loaded_disc(&mut self) -> Result<(), JsValue> {
+        self.machine.reset_loaded_disc().map_err(js_error)
     }
     /// A NUL-separated name table, lengths and concatenated local file bytes
     /// marshal a complete CUE selection in one call. No path is opened here.
@@ -37,7 +47,7 @@ impl Emulator {
         cue: &str,
         names: &str,
         lengths: &[u32],
-        bytes: &[u8],
+        bytes: Vec<u8>,
     ) -> Result<(), JsValue> {
         let result = cue_media(cue, names, lengths, bytes);
         match result {
@@ -55,16 +65,16 @@ impl Emulator {
         cue: &str,
         names: &str,
         lengths: &[u32],
-        bytes: &[u8],
+        bytes: Vec<u8>,
     ) -> Result<(), JsValue> {
         let media = cue_media(cue, names, lengths, bytes)
             .map_err(|error| JsValue::from_str(&error.to_string()))?;
         self.machine.mount_media(media);
         Ok(())
     }
-    pub fn mount_disc(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+    pub fn mount_disc(&mut self, bytes: Vec<u8>) -> Result<(), JsValue> {
         let media =
-            crate::media::Media::iso(bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            crate::media::Media::iso_owned(bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
         self.machine.mount_media(media);
         Ok(())
     }
@@ -229,10 +239,13 @@ fn cue_media(
     cue: &str,
     names: &str,
     lengths: &[u32],
-    bytes: &[u8],
+    bytes: Vec<u8>,
 ) -> Result<crate::media::Media, crate::disc::DiscError> {
     let names = names.split('\0');
-    if lengths.len() > 99 || bytes.len() > 134_217_728 || names.clone().count() != lengths.len() {
+    if lengths.len() > 99
+        || bytes.len() > crate::disc::MAX_MEDIA_BYTES
+        || names.clone().count() != lengths.len()
+    {
         return Err(crate::disc::DiscError(
             "Invalid local CUE file table".into(),
         ));
@@ -243,12 +256,10 @@ fn cue_media(
         let end = offset
             .checked_add(*length as usize)
             .ok_or_else(|| crate::disc::DiscError("CUE file length overflow".into()))?;
-        files.push((
-            name,
-            bytes
-                .get(offset..end)
-                .ok_or_else(|| crate::disc::DiscError("Truncated CUE file table".into()))?,
-        ));
+        if end > bytes.len() {
+            return Err(crate::disc::DiscError("Truncated CUE file table".into()));
+        }
+        files.push((name, offset..end));
         offset = end;
     }
     if offset != bytes.len() {
@@ -256,5 +267,5 @@ fn cue_media(
             "Unexpected bytes after CUE file table".into(),
         ));
     }
-    crate::media::Media::cue(cue, &files)
+    crate::media::Media::cue_owned(cue, &files, bytes)
 }

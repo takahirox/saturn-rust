@@ -102,7 +102,7 @@ fn malformed_and_unsupported_discs_fail_before_execution_without_stale_state() {
     rejects(|b| {
         b.pop();
     });
-    rejects(|b| b.resize(MAX_DISC_SIZE + SECTOR, 0));
+    rejects(|b| b[16 * SECTOR + 80..16 * SECTOR + 88].fill(255));
     rejects(|b| b[0] = 0);
     rejects(|b| b[0x41] = b'U'); // duplicate area, rather than valid multi-area
     rejects(|b| b[0xE0..0xE4].copy_from_slice(&0xFFFFu32.to_be_bytes()));
