@@ -294,10 +294,16 @@ impl Vdp2 {
         )
     }
     pub(super) fn rotation(&self, x: usize, y: usize, sprite_window: bool) -> Option<Layer> {
-        self.rotation_screen(false, x, y, sprite_window)
+        self.display_fetch.borrow().rotation.set(true);
+        let result = self.rotation_screen(false, x, y, sprite_window);
+        self.display_fetch.borrow().rotation.set(false);
+        result
     }
     pub(super) fn rotation1(&self, x: usize, y: usize, sprite_window: bool) -> Option<Layer> {
-        self.rotation_screen(true, x, y, sprite_window)
+        self.display_fetch.borrow().rotation.set(true);
+        let result = self.rotation_screen(true, x, y, sprite_window);
+        self.display_fetch.borrow().rotation.set(false);
+        result
     }
     fn rotation_screen(
         &self,

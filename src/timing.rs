@@ -143,6 +143,54 @@ impl Raster {
             self.line_clocks() - self.phase
         }
     }
+    // A two-cycle horizontal lead is an emulator phase convention. §3.3
+    // establishes slot order/bandwidth, not a measured display-pipeline delay.
+    fn display_lead(&self) -> u32 {
+        2 * if self.mode & 6 == 0 { 8 } else { 4 } * if self.mode & 4 == 0 { 4 } else { 2 }
+    }
+    fn next_display_line(&self) -> Option<(u64, u16)> {
+        let next = self.line + 1;
+        if next >= self.field_lines() {
+            Some((self.fields + 1, 0))
+        } else if next < self.display_lines() {
+            Some((self.fields, next))
+        } else {
+            None
+        }
+    }
+    /// The last two cycles of horizontal blank prime the following line.
+    /// Subsequent accesses share the line-relative CPU VRAM slot phase.
+    pub(crate) fn display_slot(&self) -> Option<(u64, u16, u32, usize)> {
+        let clocks = if self.mode & 4 == 0 { 4 } else { 2 };
+        let lead = self.display_lead();
+        let start = self.line_clocks() - lead;
+        let (field, line, phase) = if self.phase >= start {
+            let (field, line) = self.next_display_line()?;
+            (field, line, self.phase - start)
+        } else if self.line < self.display_lines() && self.phase < self.hblank_clock() {
+            (self.fields, self.line, self.phase + lead)
+        } else {
+            return None;
+        };
+        if !phase.is_multiple_of(clocks) {
+            return None;
+        }
+        let count = if self.mode & 6 == 0 { 8 } else { 4 };
+        Some((field, line, phase, ((phase / clocks) % count) as usize))
+    }
+    pub(crate) fn clocks_to_display_slot(&self) -> u32 {
+        let clocks = if self.mode & 4 == 0 { 4 } else { 2 };
+        let start = self.line_clocks() - self.display_lead();
+        if self.line < self.display_lines() && self.phase < self.hblank_clock()
+            || self.phase >= start && self.next_display_line().is_some()
+        {
+            clocks - self.phase % clocks
+        } else if self.next_display_line().is_some() {
+            start - self.phase
+        } else {
+            u32::MAX
+        }
+    }
     /// Wait until a CPU VRAM grant, or horizontal blank if the display owns
     /// every slot. Normal/hi-res cycles use main-clock groups of four;
     /// exclusive monitor cycles run at twice that rate (ST-058 §3.3).

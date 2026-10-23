@@ -220,20 +220,27 @@ density updates alternate rows and retains the other field; published dimensions
 stay paired with their pixels. Before the first completed field, the debugger may
 inspect current state. Xst/Yst/KAst have independent A/B RPRCTL reloads at line
 start, otherwise accumulating the current vertical delta. Active-line writes
-cannot replace that line's latched origins. Mid-line fetches, other table/window
-strobes, complete VRAM-cycle/bank arbitration and half-line interlace phase remain
-required. Exclusive monitors select 480 active lines, 525/562-line fields and
-852/848-clock rasters. Exclusive high resolution multiplexes NBG0/NBG1 even/odd
-pixels, following the guest's paired scroll/zoom setup. Monitor window and counter
+cannot replace that line's latched origins. Normal-background names, characters,
+bitmaps and vertical-cell operands now acquire at hardware-time cycle-slot events,
+using independent retained paths and packet address metadata. Rendering cannot
+fill a missing normal fetch. The explicit two-cycle horizontal lead and its
+unmeasured physical phase are documented in the
+[Issue #19 record](validation-issue-19.md#explicit-phase-convention). Rotation
+acquisition timing, other table/window strobes, complete physical bank arbitration
+and half-line interlace phase remain required. Exclusive monitors select 480
+active lines, 525/562-line fields and 852/848-clock rasters. Exclusive high
+resolution multiplexes NBG0/NBG1 even/odd pixels, following the guest's paired scroll/zoom setup. Monitor window and counter
 bit layouts differ from standard TV. Color-depth resource sharing disables the
 specified companion normal layers. All eight cycle-pattern words drive the CPU
 VRAM grant mask, including split-bank matching, idle lead/linked grants, disabled
 screen release, rotation-bank ownership and high-resolution slot limits. Denied CPU
 requests accumulate waits until a grant or HBlank; cache hits issue no request.
-These waits still join the fixed CPU turn: transaction retirement, SCU DMA grants,
-and display-fetch bandwidth are not a complete arbitration model. BDCLMD selects the back
-screen during display blanking (the lowermost line for a line back table), or
-opaque black. Reserved display encodings and 256-line mode on NTSC fail.
+CPU/on-chip DMAC/SCU transactions publish through their resumable physical bus
+beats. Display deadlines split advancement independently of presentation, and
+acquisition precedes a simultaneous data-phase completion. This functional
+schedule does not establish all physical arbitration or rotation-fetch timing.
+BDCLMD selects the back screen during display blanking (the lowermost line for a
+line back table), or opaque black. Reserved display encodings and 256-line mode on NTSC fail.
 Unsupported enabled effects still fail explicitly. Register readback for
 implemented write-only VDP2 controls remains a debugger convenience.
 

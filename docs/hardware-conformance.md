@@ -2691,11 +2691,13 @@ Related to #17. Primary references: [VDP1] §6.3 p.83/fig.6.6 (pre-clipping),
 | --- | --- | --- | --- |
 | DISP=0 forces TVSTAT.VBLANK=1; raster events continue independently | `Vdp2::read16` in [vdp2.rs](../src/vdp2.rs) derives the status bit without changing `Raster` or SCU signaling | [vdp2_status.rs](../tests/vdp2_status.rs): exact clock100 reproduction, HBlank, before/at VBlank-in/out, two fields, four advancement sizes, matching counters and SCU interrupt edges | Original [builder](../tests/fixtures/build_vdp2_status.py), [native](../tests/vdp2_status.rs) and [Wasm](../scripts/vdp2-status.mjs): guest compares display-on/off status with actual SCU status, polls VCNT during forced blank, changes the DISP operand and repeats cold boots |
 | Pre-clipping rejects separated raster lines, truncates horizontal/vertical traversal and may invert its direction | `Drawing::clip`, `RasterLine::preclip`, `Vdp1::raster_line/texture_address/draw_dot` in [vdp1.rs](../src/vdp1.rs); UV/shading endpoints follow inversion, interpolation retains the original denominator, rejected lines acquire neither character nor framebuffer memory | [preclip_tests.rs](../src/vdp1/preclip_tests.rs): -4096/4095 endpoints in four directions, exact modeled completion, unchanged visible pixels, four separated diagonals, user/system intersection, hidden end-code pair and independently authored Gouraud pixels. [Bus vector](../src/bus/vdp1_tests.rs) checks earlier END/IRQ after a newly captured XC=0 | `vdp1-preclip` from the existing [video builder](../tests/fixtures/build_video_transactions.py), [native](../tests/video_transactions.rs) and [Wasm](../scripts/video-transactions.mjs): hidden end codes, four literal visible pixels, clipped separate command, EDSR/COPR/draw IRQ, Pclp operand mutation and cold resets |
-| Fetched packed words survive subsequent VRAM writes | `display_word/display_byte` in [fetch.rs](../src/vdp2/fetch.rs), used by normal/rotation names, character/bitmap decoding and vertical-cell data; independent layer/path latches reset at line start | Four-/eight-bit packed-dot mutations at each interior word boundary, unfetched neighbour, next-line reload, debugger snapshot independence, separate name/character/cell/layer paths and mirrored address in [fetch vectors](../src/vdp2/fetch.rs) | `vdp2-word-retention` from the existing [fetch builder](../tests/fixtures/build_vdp2_fetch.py), [native](../tests/vdp2_fetch.rs) and [production Wasm](../scripts/video-transactions.mjs): guest writes VRAM on line16 during 256× enlargement; all old packed dots remain, line17 reads the new word; changed original texture and cold resets |
+| Fetched packed words survive subsequent VRAM writes | `fetch_word/fetch_byte` and scheduled normal packets in [fetch.rs](../src/vdp2/fetch.rs); rotation retains its independent first-use serializers; layer/path latches reset at line start | Four-/eight-bit packed-dot mutations at each interior word boundary, unfetched neighbour, next-line reload, debugger snapshot independence, separate name/character/cell/layer paths and mirrored address in [fetch vectors](../src/vdp2/fetch.rs) | `vdp2-word-retention` from the existing [fetch builder](../tests/fixtures/build_vdp2_fetch.py), [native](../tests/vdp2_fetch.rs) and [production Wasm](../scripts/video-transactions.mjs): guest writes VRAM on line16 during 256× enlargement; all old packed dots remain, line17 reads the new word; changed original texture and cold resets |
 
-The retained-word model samples two-word serializers on first display use.
-It does not yet schedule advance reads at individual cycle-pattern slots, so it
-does not complete display-fetch ownership or all raster/bank transition contracts.
+The historical retained-word increment sampled on first display use. Normal
+backgrounds now acquire through scheduled slots, as recorded in
+[Issue #19 validation](validation-issue-19.md); rotation keeps the historical
+serializer path. This does not complete all physical display-fetch ownership or
+raster/bank transition contracts.
 The existing functional VDP1 pixel/word cadence is retained: rejected lines take
 one decision clock; these vectors do not claim measured pre-clipping overhead
 or complete sloped/repeated-edge coverage. Other review findings and mandatory
@@ -2867,3 +2869,22 @@ production sources. The original exact CLAB wet/dry vectors remain required.
 
 This corrects EWT storage, not the full DSP converter/pipeline, synthesis,
 physical sound-interface timing or other mandatory Issue #17 contracts.
+
+
+## Scheduled normal-background VRAM acquisition (Issue #19)
+
+Related to #19. Related to #17. [Implementation, exact manual references,
+phase convention, native vectors, guest provenance/hashes and actual validation](validation-issue-19.md)
+replace the previously recorded normal-background first-use acquisition gap.
+
+| Contract | Implementation and evidence |
+| --- | --- |
+| T0–T7 / T0–T3 hardware-time acquisition | [Raster deadlines](../src/timing.rs), [Bus ordering](../src/bus.rs), [normal packets/serializers](../src/vdp2/fetch.rs); no render-time miss filling |
+| NBG0–3 names/characters, supported bitmaps and vertical-cell reads | Independent address/data vectors for formats, name widths, dependencies, bank modes, scrolling/reduction and separate layers/paths in [fetch.rs](../src/vdp2/fetch.rs) and [access.rs](../src/vdp2/access.rs) |
+| CPU, on-chip DMAC and SCU completion boundaries | [Board vectors](../src/bus/vdp2_tests.rs): both CPUs/DMACs, all three SCU channels, before/equal/after publication, IRQ order, separate banks, reset, chunk/inspection invariance |
+| Writes after acquisition but before consumption | Original MIT [guest](../tests/fixtures/vdp2-cycle-slots.s), [native Machine](../tests/vdp2_fetch.rs), [production Wasm/Canvas](../scripts/video-transactions.mjs); source/slot mutations, omitted store, cold resets, whole-row literal pixels, failing inherited-implementation control |
+
+The two-cycle horizontal lead is an explicit emulator convention. Rotation
+acquisition timing and the other mandatory #17 hardware/comprehensive acceptance
+criteria remain open. This entry does not claim full hardware completion or
+commercial-game compatibility and does not reopen historical trackers.

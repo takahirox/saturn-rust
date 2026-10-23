@@ -21,7 +21,7 @@ pub struct Vdp2 {
     odd: bool,
     latched_counters: Cell<(u16, u16)>,
     external_latched: Cell<bool>,
-    scanning: Vec<u8>,
+    pub(crate) scanning: Vec<u8>,
     completed: Option<Result<Vec<u8>, String>>,
     scan_error: Option<String>,
     scan_size: (usize, usize),
@@ -32,8 +32,9 @@ pub struct Vdp2 {
     // Static debugger decoding remains useful for inspecting an unfinished
     // register setup. Only beam-driven output consumes display bus grants.
     beam_rendering: bool,
+    clocked: bool,
     line_tables: tables::LineTables,
-    display_fetch: RefCell<fetch::DisplayFetch>,
+    pub(crate) display_fetch: RefCell<fetch::DisplayFetch>,
 }
 impl Default for Vdp2 {
     fn default() -> Self {
@@ -57,6 +58,7 @@ impl Default for Vdp2 {
             scan_x: 0,
             scan_history: [[0; 3]; 2],
             beam_rendering: false,
+            clocked: false,
             line_tables: tables::LineTables::default(),
             display_fetch: RefCell::default(),
         }
@@ -169,6 +171,9 @@ impl Vdp2 {
         Self::validate_value(address, value)?;
         let offset = (address - VDP2) as usize;
         self.registers[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+        if offset <= 0xA6 {
+            self.reconfigure_display();
+        }
         Ok(())
     }
     pub fn framebuffer(&self) -> Result<Vec<u8>, String> {
@@ -186,7 +191,9 @@ impl Vdp2 {
             .unwrap_or_else(|| self.composite(sprites))
     }
     pub(crate) fn begin_scanline(&mut self, line: usize) {
-        *self.display_fetch.get_mut() = fetch::DisplayFetch::default();
+        if self.display_fetch.borrow().prepared_line != Some(line) {
+            *self.display_fetch.get_mut() = fetch::DisplayFetch::default();
+        }
         self.scan_x = 0;
         self.scan_history = [[0; 3]; 2];
         let y = if self.word(0) & 0xC0 == 0xC0 {
@@ -204,8 +211,9 @@ impl Vdp2 {
         self.scan_to(sprites, line, self.dimensions().0);
     }
     /// Sample only dots already passed by the beam. Bus writes flush this
-    /// prefix before changing VRAM/CRAM/registers; later pixels retain live
-    /// state. Horizontal gradation history survives successive flushes.
+    /// prefix before changing VRAM/CRAM/registers. Normal-screen operands
+    /// were acquired by the clock; palette/effect state remains live.
+    /// Horizontal gradation history survives successive flushes.
     pub(crate) fn scan_to(&mut self, sprites: &Vdp1, line: usize, end: usize) {
         let size = self.dimensions();
         if size != self.scan_size {
@@ -235,7 +243,6 @@ impl Vdp2 {
         // The initial reset field, or a density change inside a line, has no
         // matching line-start latch and initializes here.
         if !self.rotation_line_ready(y) || self.line_tables.line != Some(y) {
-            *self.display_fetch.get_mut() = fetch::DisplayFetch::default();
             self.read_line_tables(y);
             self.beam_rendering = true;
             self.read_rotation_line(y, line == 0);
@@ -494,8 +501,8 @@ impl Vdp2 {
             if !self.cell_access(layer, address) {
                 return None;
             }
-            let value = u32::from(self.display_word(layer, 2, address)) << 16
-                | u32::from(self.display_word(layer, 2, address + 2));
+            let value = u32::from(self.fetch_word(layer, 2, address)?) << 16
+                | u32::from(self.fetch_word(layer, 2, address + 2)?);
             sy += u64::from(value & 0x7FFFF00);
         }
         Some((
@@ -561,7 +568,7 @@ impl Vdp2 {
         let name = if over {
             self.word(0xB8 + parameter.unwrap() * 2)
         } else {
-            self.display_word(layer, 0, at)
+            self.fetch_word(layer, 0, at)?
         };
         let (character, palette, flip) = if one || over {
             let aux = pnc & 0x4000 != 0;
@@ -581,7 +588,7 @@ impl Vdp2 {
             (character, palette, if aux { 0 } else { name >> 10 & 3 })
         } else {
             (
-                usize::from(self.display_word(layer, 0, at + 2) & 0x7FFF),
+                usize::from(self.fetch_word(layer, 0, at + 2)? & 0x7FFF),
                 usize::from(name & 0x7F) * 16,
                 name >> 14 & 3,
             )
@@ -613,13 +620,7 @@ impl Vdp2 {
         };
         Some((base, (cy & 7) * 8 + (cx & 7), palette, special))
     }
-    fn background(
-        &self,
-        layer: usize,
-        mut x: usize,
-        mut y: usize,
-        sprite_window: bool,
-    ) -> Option<Layer> {
+    fn background(&self, layer: usize, x: usize, y: usize, sprite_window: bool) -> Option<Layer> {
         if self.word(0x20) & 0x20 != 0
             || self.word(0x20) & (1 << layer) == 0
             || !self.normal_layer_available(layer)
@@ -631,6 +632,23 @@ impl Vdp2 {
             )
         {
             return None;
+        }
+        let (base, pixel, palette, special, format) = self.normal_sample(layer, x, y)?;
+        let opaque = self.word(0x20) & (0x100 << layer) != 0;
+        let offset = usize::from(self.word(0xE4) >> (layer * 4) & 7) * 256;
+        let pixel = self.color(layer, format, base, pixel, offset, palette, opaque)?;
+        self.scroll_layer(layer, format, pixel, special)
+    }
+    // Address generation is shared by acquisition and scanout. It does not
+    // depend on windows, priority, palette contents or framebuffer requests.
+    fn normal_sample(
+        &self,
+        layer: usize,
+        mut x: usize,
+        mut y: usize,
+    ) -> Option<fetch::NormalSample> {
+        if let Some(sample) = self.scheduled_sample(layer) {
+            return sample;
         }
         // ST-058 §2.1 p.13: exclusive high resolution alternates the two
         // normal screens. Guest increments of two and NBG1's +1 scroll
@@ -674,10 +692,7 @@ impl Vdp2 {
                 return None;
             }
         }
-        let opaque = self.word(0x20) & (0x100 << layer) != 0;
-        let offset = usize::from(self.word(0xE4) >> (layer * 4) & 7) * 256;
-        let pixel = self.color(layer, format, base, pixel, offset, palette, opaque)?;
-        self.scroll_layer(layer, format, pixel, special)
+        Some((base, pixel, palette, special, format))
     }
     /// ST-058 §4.5 p.60: the color decoder shares resources across layers.
     /// Raising NBG0/1's color depth disables the documented companion layer,
@@ -705,7 +720,7 @@ impl Vdp2 {
     ) -> Option<Pixel> {
         let (rgb, code, color_msb) = match format {
             0 => {
-                let byte = self.display_byte(layer, base + pixel / 2);
+                let byte = self.fetch_byte(layer, base + pixel / 2)?;
                 let index = usize::from(if pixel & 1 == 0 { byte >> 4 } else { byte & 15 });
                 if index == 0 && !opaque {
                     return None;
@@ -718,7 +733,7 @@ impl Vdp2 {
                 )
             }
             1 => {
-                let index = usize::from(self.display_byte(layer, base + pixel));
+                let index = usize::from(self.fetch_byte(layer, base + pixel)?);
                 if index == 0 && !opaque {
                     return None;
                 }
@@ -730,7 +745,7 @@ impl Vdp2 {
                 )
             }
             2 => {
-                let index = usize::from(self.display_word(layer, 1, base + pixel * 2) & 2047);
+                let index = usize::from(self.fetch_word(layer, 1, base + pixel * 2)? & 2047);
                 if index == 0 && !opaque {
                     return None;
                 }
@@ -741,15 +756,15 @@ impl Vdp2 {
                 )
             }
             3 => {
-                let color = self.display_word(layer, 1, base + pixel * 2);
+                let color = self.fetch_word(layer, 1, base + pixel * 2)?;
                 if color & 0x8000 == 0 && !opaque {
                     return None;
                 }
                 (rgb555(color), 0, true)
             }
             _ => {
-                let a = self.display_word(layer, 1, base + pixel * 4);
-                let b = self.display_word(layer, 1, base + pixel * 4 + 2);
+                let a = self.fetch_word(layer, 1, base + pixel * 4)?;
+                let b = self.fetch_word(layer, 1, base + pixel * 4 + 2)?;
                 if a & 0x8000 == 0 && !opaque {
                     return None;
                 }
@@ -831,6 +846,7 @@ impl Vdp2 {
                 ))
             };
             for x in columns.clone() {
+                self.display_fetch.borrow_mut().pixel = x;
                 if self.word(0) & 0x8000 == 0 {
                     pixels[((y - first) * width + x - columns.start) * 4..][..4]
                         .copy_from_slice(&[rgb555(back)[0], rgb555(back)[1], rgb555(back)[2], 255]);

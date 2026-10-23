@@ -88,6 +88,39 @@ def build():
              'load 0x2600df04,r1\nload 0x600d,r0\nmov.l r0,@r1\nheld_park:\nsleep\nbra held_park\nnop\n')
     new_files, _ = encode('vdp2-word-retention',held,[(0x100,0x1111)])
     files.update(new_files)
+    # Original slot-acquisition regression. The first word of line16 is
+    # acquired during the last two display cycles of line15's blank. A real
+    # SH-2 word store after that access but before line16 cannot replace it.
+    # The H-counter threshold is source data: 700 is before acquisition,
+    # 826 is after it. Neither host nor test writes running guest results.
+    timed = ''
+    for at,value in [(0x20,1),(0x28,2),
+                     (0x78,0),(0x7A,0x100),(0x7C,0),(0x7E,0x100),(0xF8,1)]:
+        timed += put16(0x25F80000+at,value)
+    for index,value in [(1,0x801F),(2,0x83E0),(3,0xFC00)]:
+        timed += put16(0x25F00000+index*2,value)
+    timed += ('load 0x106,r1\nmov.w @r1,r0\nload 0x25f80010,r1\nmov.w r0,@r1\n'
+              'load 0x108,r1\nmov.w @r1,r0\nload 0x25f80012,r1\nmov.w r0,@r1\n')
+    timed += ('load 0x100,r1\nmov.w @r1,r0\nload 0x25e00000,r1\nmov.w r0,@r1\n')
+    timed += put16(0x25F80000,0x8000)
+    timed += ('load 0x25f80004,r1\ntimed_blank_in:\nmov.w @r1,r0\ntst #8,r0\nbt timed_blank_in\n'
+              'timed_blank_out:\nmov.w @r1,r0\ntst #8,r0\nbf timed_blank_out\n')
+    timed += 'load 0xfffffe92,r1\nmov #1,r0\nmov.b r0,@r1\n'
+    timed += line(15)
+    timed += ('load 0x25e00000,r5\nload 0x2222,r6\nload 0x102,r1\nmov.w @r1,r3\n'
+              'load 0x104,r1\nmov.w @r1,r0\nload 0x25f80008,r4\ntst #1,r0\nbt timed_omit_wait\n'
+              'timed_horizontal:\nload 0x25f80002,r1\nmov.w @r1,r0\nmov.w @r4,r0\n'
+              'cmp/hs r3,r0\nbf timed_horizontal\nmov.w r6,@r5\nbra timed_record\nmov r0,r8\n'
+              'timed_omit_wait:\nload 0x25f80002,r1\nmov.w @r1,r0\nmov.w @r4,r0\n'
+              'cmp/hs r3,r0\nbf timed_omit_wait\nmov r0,r8\ntimed_record:\n'
+              'load 0x25f80002,r1\nmov.w @r1,r0\nmov.w @r4,r0\n'
+              'load 0x2600df08,r1\nmov.l r8,@r1\n'
+              'load 0x25f8000a,r1\nmov.w @r1,r0\nload 0x2600df0c,r1\nmov.l r0,@r1\n'
+              'mov.w @r5,r0\nload 0x2600df10,r1\nmov.l r0,@r1\n'
+              'load 0x2600df14,r1\nload 0x600d,r0\nmov.l r0,@r1\n'
+              'timed_park:\nsleep\nbra timed_park\nnop\n')
+    timed_files,_ = encode('vdp2-cycle-slots',timed,[(0x100,0x1111),(0x102,826),(0x104,1),(0x106,0x4EEE),(0x108,0xEEEE)])
+    files.update(timed_files)
     return files,hashlib.sha256(rom).hexdigest()
 
 
