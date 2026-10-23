@@ -1,5 +1,6 @@
 //! Literal oracles from ST-097 §4.5 ADD/SUB/AD2 and SOA #8 §§3/5.1.
 //! V replacement: ST-240-B-SP1-052295 printed p.5, Bugs.
+//! V read-clear: ST-210-110194 item 36, printed p.10.
 use super::*;
 use crate::scu::SCU;
 
@@ -65,7 +66,7 @@ fn arithmetic_literal_width_flags_and_parallel_result_do_not_require_writeback()
                 assert_eq!(d.data[3][0], (d.a >> 16) as u32);
                 d.step().unwrap();
                 assert_eq!(d.control() & 0x7c0000, flags);
-                assert_eq!(d.control() & 0x7c0000, flags);
+                assert_eq!(d.control() & 0x7c0000, flags & !OVERFLOW);
             }
         }
     }
@@ -161,7 +162,7 @@ fn actual_multiply_and_transfers_construct_48_bit_overflow_in_both_directions() 
 }
 
 #[test]
-fn halted_reads_acknowledge_only_e_and_pause_step_end_events_remain_distinct() {
+fn halted_reads_clear_v_acknowledge_e_and_pause_step_end_events_remain_distinct() {
     for end in [0xf0000000, 0xf8000000] {
         let mut d = program(0x7fffffff, 1, &[0x10040000, end, 0xf8000000]);
         d.set_control(0x2010000);
@@ -177,15 +178,29 @@ fn halted_reads_acknowledge_only_e_and_pause_step_end_events_remain_distinct() {
             0x480000 | if end == 0xf8000000 { END } else { 0 }
         );
         for _ in 0..3 {
-            assert_eq!(d.control() & 0x7c0000, 0x480000);
+            assert_eq!(d.control() & 0x7c0000, 0x400000);
             assert!(!d.step().unwrap());
         }
         d.set_control(0x20000);
         assert!(d.step().unwrap()); // E was acknowledged; a new ENDI emits once
         assert!(!d.step().unwrap());
-        assert_eq!(d.control() & 0x7c0000, 0x4c0000);
+        assert_eq!(d.control() & 0x7c0000, 0x440000);
         d = Dsp::default();
         assert_eq!(d.control(), 0);
         assert!(!d.step().unwrap());
     }
+}
+
+#[test]
+fn running_control_reads_clear_v_without_changing_other_alu_flags() {
+    // Item 36 applies during execution too. Use END, avoiding the documented
+    // interrupt hazard of reading program control while an ENDI kernel runs.
+    let mut d = program(0x7fffffff, 1, &[0x10040000, 0, 0xf0000000]);
+    d.step().unwrap();
+    assert_eq!(d.control() & 0x7f0000, 0x490000);
+    assert_eq!(d.control() & 0x7f0000, 0x410000);
+    d.step().unwrap(); // NOP preserves the read-cleared V.
+    assert_eq!(d.flags.get(), 0x400000);
+    assert!(!d.step().unwrap());
+    assert_eq!(d.control() & 0x7f0000, 0x400000);
 }

@@ -15,7 +15,7 @@ export async function dspArithmetic(page) {
     if (variant === 1) {
       image.writeUInt32BE(0x7ffffffe, 0x1f000);
       expected.splice(2, 5, 0, 0, 0, 0x7fffffff, 0x7fff);
-      expected.splice(7, 5, 0x480000, 0x480000, 0x480000, 0x80000000, 0x8000);
+      expected.splice(7, 5, 0x480000, 0x400000, 0x400000, 0x80000000, 0x8000);
     } else if (variant === 2) {
       image.writeUInt32BE(0x80000000, 0x1f000);
       expected.splice(2, 5, 0x400000, 0x400000, 0x400000, 0x80000001, 0xffff8000);
@@ -55,5 +55,5 @@ export async function dspArithmetic(page) {
       assert.equal(trace.status, "Sleeping — waiting for an interrupt");
     }
   }
-  console.log("SCU DSP arithmetic guest passed: ADD/SUB/48-bit AD2 overflow replacement, repeated halted reads, parallel results, two end interrupts/RTE acknowledgements, operand mutations, omitted-ADD control and repeated cold boots in production Wasm.");
+  console.log("SCU DSP arithmetic guest passed: ADD/SUB/48-bit AD2 overflow replacement, read-cleared V on repeated halted reads, parallel results, two end interrupts/RTE acknowledgements, operand mutations, omitted-ADD control and repeated cold boots in production Wasm.");
 }

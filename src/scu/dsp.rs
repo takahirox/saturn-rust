@@ -109,8 +109,8 @@ impl Dsp {
             | u32::from(self.dma.is_some()) << 23
             | u32::from(self.executing) << 16
             | u32::from(self.pc);
-        // SOA #8 §3: only E is acknowledged by a program-control read.
-        self.flags.set(self.flags.get() & !END);
+        // ST-210 item 36 clears V on reads; SOA #8 §3 acknowledges E.
+        self.flags.set(self.flags.get() & !(END | OVERFLOW));
         result
     }
     pub(super) fn set_control(&mut self, value: u32) {

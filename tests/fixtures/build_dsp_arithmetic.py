@@ -2,6 +2,7 @@
 """Original MIT SH-2/SCU DSP arithmetic diagnostic; adjacent LICENSE.
 
 ST-097 §4.5, SOA #8 §§3/5.1 and ST-240-B-SP1 printed p.5 (Bugs).
+V read-clear: ST-210-110194 item 36, printed p.10.
 Golden records are literal, source-authored arithmetic, never emulator captures.
 """
 import argparse
@@ -56,20 +57,22 @@ def build():
             s += ('load 0x1f000,r1\nmov.l @r1,r0\n'
                   'load 0x25fe008c,r1\nmov.l r0,@r1\n')
         s += data(64, [p])
-        # END permits status polling; keep the final read and repeat twice.
+        # Wait beyond these short kernels without reading program control:
+        # polling EX would clear V before the halted result could be sampled.
+        # Include EX in the status mask to require that the wait reached END.
         code = words+[0x0000330a, 0xf0000000]
         s += start(code)
-        s += (f'load 0x25fe0080,r1\nload 0x10000,r2\n{label}:\n'
-              f'mov.l @r1,r0\ntst r2,r0\nbf {label}\n'
-              'load 0x7c0000,r2\nand r2,r0\n') + record()
+        s += (f'load 100,r2\n{label}:\ndt r2\nbf {label}\n'
+              'load 0x25fe0080,r1\nmov.l @r1,r0\n'
+              'load 0x7d0000,r2\nand r2,r0\n') + record()
         for _ in range(2):
             s += 'mov.l @r1,r0\nand r2,r0\n' + record()
         s += store(0x25fe0088, 128) + read(0x25fe008c)
         s += store(0x25fe0088, 192) + read(0x25fe008c)
-        golden += [flags]*3+[low, high]
+        golden += [flags, flags & ~0x080000, flags & ~0x080000, low, high]
     # ENDI with overflow and then ENDI with replacement. No control-port polls
     # while running: main waits for handler's count. Handler reads status twice,
-    # consumes the result and computes result+1. Control reads acknowledge E;
+    # consumes the result and computes result+1. Control reads clear V and acknowledge E;
     # CPU interrupt entry acknowledges the SCU request.
     for i, words in enumerate([LOAD+[0x10043209], LOAD+[0x10040000, 0x10043209]]):
         s += data(0, [0x7fffffff])+data(64, [1])+start(words+[0xf8000000])
@@ -77,7 +80,7 @@ def build():
               f'mov #{i+1},r2\ncmp/eq r2,r0\nbf irq_wait{i}\n')
         for addr in [0x2600f004, 0x2600f008, 0x2600f00c]:
             s += read(addr)
-        golden += [[0x4c0000, 0x480000, 0x80000001], [0x440000, 0x400000, 0x80000002]][i]
+        golden += [[0x4c0000, 0x400000, 0x80000001], [0x440000, 0x400000, 0x80000002]][i]
     # Give a stale/duplicate end event ample time to arrive before counting.
     s += 'load 100,r2\nsettle:\ndt r2\nbf settle\n'
     s += read(0x2600f000)
@@ -88,7 +91,7 @@ def build():
     pop = 'mov.l @r15,r2\nadd #-4,r15\nmov.l @r15,r1\nadd #-4,r15\nmov.l @r15,r0\nadd #12,r15\nrte\nnop\n'
     handler = push
     for dest in [0x2600f004, 0x2600f008]:
-        handler += ('load 0x25fe0080,r1\nmov.l @r1,r0\nload 0x7c0000,r2\nand r2,r0\n'
+        handler += ('load 0x25fe0080,r1\nmov.l @r1,r0\nload 0x7d0000,r2\nand r2,r0\n'
                     f'load {dest:#x},r1\nmov.l r0,@r1\n')
     handler += store(0x25fe0088, 128)
     handler += ('load 0x25fe008c,r1\nmov.l @r1,r0\nadd #1,r0\n'

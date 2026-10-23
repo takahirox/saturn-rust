@@ -59,13 +59,13 @@ mov.l r0,@r1
 load 0x25fe0080,r1
 load 0x18000,r0
 mov.l r0,@r1
-load 0x25fe0080,r1
-load 0x10000,r2
+load 100,r2
 add_overflow:
-mov.l @r1,r0
-tst r2,r0
+dt r2
 bf add_overflow
-load 0x7c0000,r2
+load 0x25fe0080,r1
+mov.l @r1,r0
+load 0x7d0000,r2
 and r2,r0
 mov.l r0,@r8
 add #4,r8
@@ -137,13 +137,13 @@ mov.l r0,@r1
 load 0x25fe0080,r1
 load 0x18000,r0
 mov.l r0,@r1
-load 0x25fe0080,r1
-load 0x10000,r2
+load 100,r2
 add_replace:
-mov.l @r1,r0
-tst r2,r0
+dt r2
 bf add_replace
-load 0x7c0000,r2
+load 0x25fe0080,r1
+mov.l @r1,r0
+load 0x7d0000,r2
 and r2,r0
 mov.l r0,@r8
 add #4,r8
@@ -211,13 +211,13 @@ mov.l r0,@r1
 load 0x25fe0080,r1
 load 0x18000,r0
 mov.l r0,@r1
-load 0x25fe0080,r1
-load 0x10000,r2
+load 100,r2
 sub_positive:
-mov.l @r1,r0
-tst r2,r0
+dt r2
 bf sub_positive
-load 0x7c0000,r2
+load 0x25fe0080,r1
+mov.l @r1,r0
+load 0x7d0000,r2
 and r2,r0
 mov.l r0,@r8
 add #4,r8
@@ -288,13 +288,13 @@ mov.l r0,@r1
 load 0x25fe0080,r1
 load 0x18000,r0
 mov.l r0,@r1
-load 0x25fe0080,r1
-load 0x10000,r2
+load 100,r2
 sub_positive_replace:
-mov.l @r1,r0
-tst r2,r0
+dt r2
 bf sub_positive_replace
-load 0x7c0000,r2
+load 0x25fe0080,r1
+mov.l @r1,r0
+load 0x7d0000,r2
 and r2,r0
 mov.l r0,@r8
 add #4,r8
@@ -362,13 +362,13 @@ mov.l r0,@r1
 load 0x25fe0080,r1
 load 0x18000,r0
 mov.l r0,@r1
-load 0x25fe0080,r1
-load 0x10000,r2
+load 100,r2
 sub_negative:
-mov.l @r1,r0
-tst r2,r0
+dt r2
 bf sub_negative
-load 0x7c0000,r2
+load 0x25fe0080,r1
+mov.l @r1,r0
+load 0x7d0000,r2
 and r2,r0
 mov.l r0,@r8
 add #4,r8
@@ -439,13 +439,13 @@ mov.l r0,@r1
 load 0x25fe0080,r1
 load 0x18000,r0
 mov.l r0,@r1
-load 0x25fe0080,r1
-load 0x10000,r2
+load 100,r2
 sub_negative_replace:
-mov.l @r1,r0
-tst r2,r0
+dt r2
 bf sub_negative_replace
-load 0x7c0000,r2
+load 0x25fe0080,r1
+mov.l @r1,r0
+load 0x7d0000,r2
 and r2,r0
 mov.l r0,@r8
 add #4,r8
@@ -519,13 +519,13 @@ mov.l r0,@r1
 load 0x25fe0080,r1
 load 0x18000,r0
 mov.l r0,@r1
-load 0x25fe0080,r1
-load 0x10000,r2
+load 100,r2
 ad2_positive:
-mov.l @r1,r0
-tst r2,r0
+dt r2
 bf ad2_positive
-load 0x7c0000,r2
+load 0x25fe0080,r1
+mov.l @r1,r0
+load 0x7d0000,r2
 and r2,r0
 mov.l r0,@r8
 add #4,r8
@@ -602,13 +602,13 @@ mov.l r0,@r1
 load 0x25fe0080,r1
 load 0x18000,r0
 mov.l r0,@r1
-load 0x25fe0080,r1
-load 0x10000,r2
+load 100,r2
 ad2_positive_replace:
-mov.l @r1,r0
-tst r2,r0
+dt r2
 bf ad2_positive_replace
-load 0x7c0000,r2
+load 0x25fe0080,r1
+mov.l @r1,r0
+load 0x7d0000,r2
 and r2,r0
 mov.l r0,@r8
 add #4,r8
@@ -685,13 +685,13 @@ mov.l r0,@r1
 load 0x25fe0080,r1
 load 0x18000,r0
 mov.l r0,@r1
-load 0x25fe0080,r1
-load 0x10000,r2
+load 100,r2
 ad2_negative:
-mov.l @r1,r0
-tst r2,r0
+dt r2
 bf ad2_negative
-load 0x7c0000,r2
+load 0x25fe0080,r1
+mov.l @r1,r0
+load 0x7d0000,r2
 and r2,r0
 mov.l r0,@r8
 add #4,r8
@@ -771,13 +771,13 @@ mov.l r0,@r1
 load 0x25fe0080,r1
 load 0x18000,r0
 mov.l r0,@r1
-load 0x25fe0080,r1
-load 0x10000,r2
+load 100,r2
 ad2_negative_replace:
-mov.l @r1,r0
-tst r2,r0
+dt r2
 bf ad2_negative_replace
-load 0x7c0000,r2
+load 0x25fe0080,r1
+mov.l @r1,r0
+load 0x7d0000,r2
 and r2,r0
 mov.l r0,@r8
 add #4,r8
@@ -845,13 +845,13 @@ mov.l r0,@r1
 load 0x25fe0080,r1
 load 0x18000,r0
 mov.l r0,@r1
-load 0x25fe0080,r1
-load 0x10000,r2
+load 100,r2
 parallel_no_writeback:
-mov.l @r1,r0
-tst r2,r0
+dt r2
 bf parallel_no_writeback
-load 0x7c0000,r2
+load 0x25fe0080,r1
+mov.l @r1,r0
+load 0x7d0000,r2
 and r2,r0
 mov.l r0,@r8
 add #4,r8
@@ -928,13 +928,13 @@ mov.l r0,@r1
 load 0x25fe0080,r1
 load 0x18000,r0
 mov.l r0,@r1
-load 0x25fe0080,r1
-load 0x10000,r2
+load 100,r2
 logical_preserve:
-mov.l @r1,r0
-tst r2,r0
+dt r2
 bf logical_preserve
-load 0x7c0000,r2
+load 0x25fe0080,r1
+mov.l @r1,r0
+load 0x7d0000,r2
 and r2,r0
 mov.l r0,@r8
 add #4,r8
@@ -1108,13 +1108,13 @@ add #4,r15
 mov.l r2,@r15
 load 0x25fe0080,r1
 mov.l @r1,r0
-load 0x7c0000,r2
+load 0x7d0000,r2
 and r2,r0
 load 0x2600f004,r1
 mov.l r0,@r1
 load 0x25fe0080,r1
 mov.l @r1,r0
-load 0x7c0000,r2
+load 0x7d0000,r2
 and r2,r0
 load 0x2600f008,r1
 mov.l r0,@r1

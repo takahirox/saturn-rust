@@ -77,7 +77,7 @@ fn guest_operand_mutations_and_omitted_arithmetic_change_the_authored_records() 
                 // First ADD no longer overflows; second ADD now overflows.
                 image[0x1f000..0x1f004].copy_from_slice(&0x7ffffffeu32.to_be_bytes());
                 golden[2..7].copy_from_slice(&[0, 0, 0, 0x7fffffff, 0x7fff]);
-                golden[7..12].copy_from_slice(&[0x480000, 0x480000, 0x480000, 0x80000000, 0x8000]);
+                golden[7..12].copy_from_slice(&[0x480000, 0x400000, 0x400000, 0x80000000, 0x8000]);
             }
             2 => {
                 image[0x1f000..0x1f004].copy_from_slice(&0x80000000u32.to_be_bytes());
@@ -121,6 +121,7 @@ fn cold_reset_cancels_overflow_and_an_unhandled_end_event() {
         }
     }
     assert!(found, "guest ENDI must request an actual SCU interrupt");
-    assert_ne!(m.bus().read32(0x05fe0080).unwrap() & 0x080000, 0);
+    // The first ENDI kernel overflows. Leave its status unread so reset,
+    // rather than a destructive control-port read, must cancel V and E.
     assert_eq!(run(&mut m, &image, 3), expected());
 }
