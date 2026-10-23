@@ -55,6 +55,88 @@ fn multiplier_wait_replays_before_a_dependent_store_without_blocking_peer_or_dma
 }
 
 #[test]
+fn separated_multiplier_stores_complete_at_the_ma_boundary_even_without_extra_stalls() {
+    // P figs7.63/7.71: EX=t34, final MA=t38, final mm=t42.
+    // Two NOPs still need one extra stall; three need none. Both stores
+    // complete at t42. A fourth NOP moves the ordinary MA boundary to t43.
+    for (spacing, boundary, clocks) in [(2, 42, 3), (3, 42, 1), (4, 43, 2)] {
+        for (op, value) in [(0x4F02, 0), (0x4F12, 21)] {
+            let mut code = vec![0xE103, 0xE207, 0x321D];
+            code.extend(std::iter::repeat_n(9, spacing));
+            code.extend([op, 0x001B, 9]);
+            let mut m = cached_pair(&code, &[9; 64]);
+            // On-chip SAR0 exposes the actual completion clock without an
+            // external write buffer or bus wait hiding an early transfer.
+            m.cpu = Cpu::start(HIGH_WRAM, onchip::DMAC + 4);
+            m.bus
+                .for_cpu(Processor::Master)
+                .write32(onchip::DMAC, 0x12345678)
+                .unwrap();
+            advance_to(&mut m, boundary - 1);
+            assert_eq!(
+                m.bus.for_cpu(Processor::Master).read32(onchip::DMAC),
+                Ok(0x12345678),
+                "{op:04x}, spacing {spacing}: early store"
+            );
+            assert_eq!(m.cpu_state().r[15], onchip::DMAC + 4);
+            advance_to(&mut m, boundary);
+            assert_eq!(
+                m.bus.for_cpu(Processor::Master).read32(onchip::DMAC),
+                Ok(value),
+                "{op:04x}, spacing {spacing}: missing store"
+            );
+            retired(&mut m, 4 + spacing as u64);
+            assert_eq!(m.cpu.last_clocks(), clocks);
+            assert_eq!(m.cpu_state().r[15], onchip::DMAC);
+            advance_to(&mut m, 60);
+            assert_eq!(m.cpu_state().r[15], onchip::DMAC);
+            assert_eq!(
+                m.bus.for_cpu(Processor::Master).read32(onchip::DMAC),
+                Ok(value)
+            );
+            assert!(m.slave_state().instructions >= 8);
+            assert_eq!(m.cpu_state().exceptions, 0);
+        }
+    }
+}
+
+#[test]
+fn zero_stall_multiplier_loads_sample_at_the_ma_boundary_and_replay_once() {
+    // P figs7.63/7.73: three independent NOPs permit an unextended MA
+    // ending at t42, even though the instruction has no extra mm stall.
+    for op in [0x4F06, 0x4F16] {
+        let code = [0xE103, 0xE207, 0x321D, 9, 9, 9, op, 0x001B, 9];
+        let mut m = cached_pair(&code, &[9; 64]);
+        m.cpu = Cpu::start(HIGH_WRAM, onchip::DMAC);
+        m.bus
+            .for_cpu(Processor::Master)
+            .write32(onchip::DMAC, 0x12345678)
+            .unwrap();
+        advance_to(&mut m, 41);
+        assert_eq!((m.cpu_state().mach, m.cpu_state().macl), (0, 21));
+        assert_eq!(m.cpu_state().r[15], onchip::DMAC);
+        m.bus
+            .for_cpu(Processor::Master)
+            .write32(onchip::DMAC, 0x87654321)
+            .unwrap();
+        advance_to(&mut m, 42);
+        retired(&mut m, 7);
+        assert_eq!(m.cpu.last_clocks(), 1);
+        let result = if op == 0x4F06 {
+            (0x87654321, 21)
+        } else {
+            (0, 0x87654321)
+        };
+        assert_eq!((m.cpu_state().mach, m.cpu_state().macl), result);
+        assert_eq!(m.cpu_state().r[15], onchip::DMAC + 4);
+        advance_to(&mut m, 60);
+        assert_eq!((m.cpu_state().mach, m.cpu_state().macl), result);
+        assert_eq!(m.cpu_state().r[15], onchip::DMAC + 4);
+        assert_eq!(m.cpu_state().exceptions, 0);
+    }
+}
+
+#[test]
 fn multiplier_ages_during_external_and_onchip_waits_and_is_cpu_local() {
     for address in [(HIGH_WRAM + 0x2000) | 0x20000000, 0xFFFFFE01] {
         // DMUL; MOV operand; STS. The external read exhausts all four mm

@@ -65,17 +65,18 @@ impl Multiplier {
                 access.stall = self.ready.saturating_sub(access.end) as u32;
             }
         }
-        if access.stall != 0 {
-            let clocks = if access.memory_mac || access.memory_transfer {
-                // A dependent memory cycle may start in the last mm clock,
-                // but must not complete before it. Include its EX/first-MA
-                // lead-in here; these clocks are already in last_clocks.
-                bus.sh2_clock().map_or(access.stall, |now| {
-                    (access.end + u64::from(access.stall) - 1).saturating_sub(now) as u32
-                })
-            } else {
-                access.stall
-            };
+        let clocks = if access.memory_mac || access.memory_transfer {
+            // A dependent memory cycle may start in the last mm clock,
+            // but must not complete before it. Include its EX/first-MA
+            // lead-in even with no extra stall; these clocks are already
+            // in last_clocks (P figs7.63/7.71/7.73).
+            bus.sh2_clock().map_or(access.stall, |now| {
+                (access.end + u64::from(access.stall) - 1).saturating_sub(now) as u32
+            })
+        } else {
+            access.stall
+        };
+        if clocks != 0 {
             bus.sh2_pipeline_wait(clocks)?;
         }
         Ok(())

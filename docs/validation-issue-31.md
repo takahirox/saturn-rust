@@ -141,6 +141,39 @@ address-error/reset, bus/DMA, sound, controller, backup, local-file and privacy
 checks. All required checks and the final artifact recheck passed, with no
 required skips or outstanding failures. No post-merge check is required.
 
+## Review correction: zero-stall memory boundaries
+
+Review found that `Multiplier::wait` skipped the EX/MA lead-in when the extra
+multiplier stall was zero. This let a separated STS.L complete one clock before
+the older multiplier's final mm boundary. The fix schedules memory access from
+its MA boundary independently of extra instruction stalls, keeping the existing
+instruction cost and overlap rules. Primary references are P §7.7.2,
+figs7.63/7.71 (STS.L) and 7.73 (LDS.L).
+
+Two new real-scheduler regressions in
+[`src/multiplier_scheduler_tests.rs`](../src/multiplier_scheduler_tests.rs)
+cover MACH and MACL stores and loads through on-chip DMAC SAR0. With DMULS.L
+starting at clock 34 and its tail ending at 42, stores after two and three NOPs
+must both complete at 42; four NOPs put completion at 43. The corresponding
+instruction costs remain 3/1/2 clocks, including IF contention. Three-NOP loads
+must sample at 42, observing a memory change made at 41. Tests also assert single
+address updates across replay, retained arithmetic results and peer progress.
+
+Before the fix, the store regression failed at its three-NOP early-store
+assertion (SAR0 was already zero at 41), and the load regression observed the
+old `0x12345678` rather than the boundary-time `0x87654321`. Both commands exited
+101 at the intended assertions. After the fix all 14 focused multiplier tests
+passed.
+
+Revision checks on 2026-10-23 passed with rustup stable: `cargo fmt --check`,
+`cargo build --locked`, `cargo test --locked` (834 tests, none failed or ignored),
+native all-target and Wasm Clippy with warnings denied, all 78 registered
+fixture/media reproduction checks, and `sh scripts/build-web.sh`.
+The complete extended `npm run test:browser` passed under `/saturn-rust/` in
+Chromium 145.0.7632.6 with no required skips, including both CPUs, both PLLs,
+multiplier mutations and repeated cold boots. The tested production Wasm has
+SHA-256 `833b9caa5451f6a5b8e5094898d887b0c75f9a1e72e7340ec897a9501a44ba7d`.
+
 ## Remaining limits
 
 The multiplier is clocked within the existing architectural instruction-boundary
