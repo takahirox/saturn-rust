@@ -265,6 +265,9 @@ load 0x25f8000a,r1
 mov.w @r1,r0
 cmp/hs r3,r0
 bf line_127
+load 0x25e10000,r1
+load 0x800000,r0
+mov.l r0,@r1
 load 0x25f800b2,r1
 load 0x1,r0
 mov.w r0,@r1
@@ -276,8 +279,17 @@ load 0x25f8000a,r1
 mov.w @r1,r0
 cmp/hs r3,r0
 bf line_191
+load 0x25e10000,r1
+load 0x0,r0
+mov.l r0,@r1
 load 0x25e10004,r1
 load 0x800000,r0
+mov.l r0,@r1
+load 0x25e1000c,r1
+load 0x10000,r0
+mov.l r0,@r1
+load 0x25e10010,r1
+load 0x10000,r0
 mov.l r0,@r1
 load 0x25f800b2,r1
 load 0x3,r0

@@ -1712,7 +1712,7 @@ These are additional diagnostics; they do not replace either required demonstrat
 | Required behavior | Implementation | Independent native evidence | Actual browser evidence |
 | --- | --- | --- | --- |
 | Rotation16/Rotation8 sprite framebuffer readout | `Vdp2::sprite_data` uses A Xst/Yst, vertical deltas and horizontal deltas; signed 20/12-bit Q9 link precision, transparent out-of-buffer coordinates. The matrix, coefficients and parameter B do not move sprites. Sprite windows use the same transformed data. | [video_scanout.rs](../tests/video_scanout.rs): identity/quarter-turn, negative and last/outside row/column, ignored matrix/B/coefficients, discarded fractional bits, signed delta widths and rotated sprite-window pixels | [sprite_rotation.rs](../tests/sprite_rotation.rs)'s two identical [guest ROMs](../tests/fixtures/build_sprite_rotation.py) execute through [browser-smoke.mjs](../scripts/browser-smoke.mjs); authored Wasm/production Canvas boundary pixels and guest operand mutations |
-| Independent start reloads | `Bus::advance_main_clocks` invokes `Vdp2::begin_scanline`; `read_rotation_line/rotation_start` hold Xst/Yst/KAst independently for A/B, accumulate current vertical deltas when disabled, reload on RxSTRE and reset each field. Reserved RPRCTL bits fail. | [rotation unit vectors](../src/vdp2/rotation.rs) cover all eight bit combinations for each parameter, changed deltas, field reload, real coefficient table selection and reset; RSCG guests change table RAM without reload, then enable X/Y reload ahead of rows128/192 | Both depth guests poll real beam counters and change MMIO after line starts. All 71,680 native pixels and browser row/column boundary pixels match authored colors; writing a start during a line does not change that line's latched origin. Blank-period writes cannot repaint the completed field. |
+| Independent start reloads | `Bus::advance_main_clocks` invokes `Vdp2::begin_scanline`; `read_rotation_line/rotation_start` hold Xst/Yst/KAst independently for A/B and accumulate current deltas. Issue #35 adds consumption of all six one-shot requests at the parameter read, including field initialization. Reserved RPRCTL bits fail. | [Rotation unit vectors](../src/vdp2/rotation.rs) now cover all 64 A/B combinations, automatic clear without a host clear, rearming, different/current deltas, signed widths, both field parities, debugger inspection and reset. RSCG guests retain no-request table writes and X/Y requests ahead of rows128/192, followed by accumulation. | Both depth guests poll real beam counters and change MMIO after line starts. All native pixels and extended browser boundary pixels use the corrected one-shot oracle. Blank-period writes cannot repaint a completed field. See [Issue #35 validation](validation-issue-35.md). |
 | Double-density drawing and physical RAM | `Vdp1::plot` selects logical even/odd rows and packs Y/2 into physical framebuffer rows. CPU/erase addresses remain physical. `Vdp2::sprite_data` reads Y/2 while historical scanout retains the opposite field. | [video.rs](../tests/video.rs): both pixel depths, logical rows430–437 versus physical215–218, untouched guards and pending controls. [sprite_interlace.rs](../tests/sprite_interlace.rs) compares every pixel of the actual 320×448 guest frame and the next field. | [Original guest](../tests/fixtures/build_sprite_interlace.py) draws alternating texture rows into both buffers. Browser Wasm and production Canvas check both fields, 448-line dimensions, reset, changed DIL and the subsequent field. |
 | EOS/DIE/DIL buffer-change latches | `Vdp1::vblank_out` captures draw controls only on a framebuffer change; register writes remain readable in MODR. Prohibited DIL-only settings fail atomically. | Existing HSS vectors now explicitly change buffers before drawing. Updated [HSS guest](../tests/fixtures/build_sprite_shrink.py) waits for field changes; all 28 original samples, MODR, flipped/scaled/distorted and mutation records are retained. | The existing full HSS native/Wasm/Canvas path now waits for its real latch, retaining all expected pixels and changed-HSS assertions. |
 
@@ -1731,12 +1731,49 @@ No umbrella criterion is marked complete by RSCG.
 
 | Reproducible artifact | SHA-256 |
 | --- | --- |
-| `sprite-rotation16.hex` | `cb1f0d083f27b486294ceb22f15972e2458ed2279eb51c57244deb6def218ee2` |
+| `sprite-rotation16.hex` | `77d5f055037cb4ad6f90ae967497eed54178e8fe577fdec1c3aa710b0013e599` |
 | `sprite-rotation16.tsv` | `81e30f69e8093bc349c452dbf75c6b2ab7504ab389b8369537a32a8033522748` |
-| `sprite-rotation8.hex` | `ee738e873bf105058576a5b5658c75843869e6dc02e5230932ecf272ca5a8d9e` |
+| `sprite-rotation8.hex` | `553b8c1a1c3571bcf5f5a45894b405f8fbd32341cc0b6b68369f8b2f6b36da4f` |
 | `sprite-rotation8.tsv` | `946db30774561bdcea9ddd6c93766c7dafd21cfc8b9542e459efd49c77e94b25` |
 | `sprite-interlace.hex` | `8d6d795024a9c28ef2a9c7539e5aa29a0682f7991934b40d3d0720734a8642ec` |
 | `sprite-interlace.tsv` | `65e193f1c8a01ce19c412c614f3de652cc12a7f8fa2eebb2e87f3ebce1184b00` |
+
+
+## One-shot RPRCTL request consumption (Issue #35)
+
+Primary contract: [ST-058-R2][VDP2] §6.3 printed pp.157–159 and the
+[later HTML RPRCTL description/final paragraph](https://www.infochunk.com/saturn/segahtml_en/hard/vdp2/hon/p06_31.htm).
+A request is consumed at the next parameter read; repeated line reloads require
+repeated guest writes. Historical RSCG evidence above did not establish this
+lifetime: its unit test manually cleared requests and its sprite oracle assumed
+sticky requests. Those tests/guests now follow the primary contract while
+retaining their substantive coverage. The sprite hashes above are the corrected
+artifacts; interlace/record hashes and the three demonstration media are unchanged.
+
+| Required behavior | Implementation | Independent native evidence | Production Wasm/Canvas evidence |
+| --- | --- | --- | --- |
+| Six independent one-shot requests | [read_rotation_line](../src/vdp2/rotation.rs) clears bits 0/1/2/8/9/10 at the existing raster latch, shared by backgrounds and sprites | Literal 10→100→101; all 64 A/B masks; table mutations, different/current deltas, consecutive accumulation/rearming, signed wraps, first line, both field parities, initial fallback/reset | [Original A/B guests](../tests/fixtures/build_rotation_reload.py) exercise no request, one request, changed operands/deltas and successive-line reissues; [browser extension](../scripts/rotation-reload.mjs) checks ten real guest records and every framebuffer/Canvas pixel for each cold boot and delta mutation |
+| Request boundary ordering and debugger independence | [Bus](../src/bus.rs) keeps raster reads before equal-edge transaction completion; an emulator convention, not measured electrical timing | Both SH-2 scheduled adapters complete writes before/at/after a line read, chunks 1/3/17/10000, with/without debugger inspection; starts/pixels match; reset cancels queued/accepted writes before fresh accumulation | Guests poll actual raster counters and write real tables/MMIO; debugger-only paths never supply guest results or consume requests |
+| KAst addresses and rotated sprite progression | §6.4 coefficients use latched KAst; §6.3 p.159 sprite readout uses A starts/deltas | [rotation_reload.rs](../tests/rotation_reload.rs) checks all 71,680 A/B background pixels; [sprite_rotation.rs](../tests/sprite_rotation.rs) checks both depths and all pixels after each X/Y request | Same diagnostic bytes, literal records and independently authored framebuffer/production Canvas expectations in [browser-smoke.mjs](../scripts/browser-smoke.mjs), repeated cold boots and ROM delta mutations |
+| Distinguishing negative controls | No production test switch or alternate renderer | Actual unchanged-implementation failures: second Xst stays100 instead of101; guest sprite pixel(0,129) stays green instead of red | Production browser checks use the fixed core; actual native/guest negative-control details and commands are in [validation-issue-35.md](validation-issue-35.md) |
+
+New text-fixture hashes:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `rotation-reload-0.hex` | `285e6978f9b492e8e6e3d98b75a9a0fe1df6079c1f0c3e7b4855059ad18bfd5c` |
+| `rotation-reload-1.hex` | `745a1cbf0dccbf128511864cd099d5a13fd36703fedf158bc267e2ceba270ac0` |
+| Both `rotation-reload-*.tsv` | `0480eec1f3650982f8b1fb52e1b22f26093b020e8a5e83b627fe9d777f3c1114` |
+
+Validation on 2026-10-24 passed formatting, locked build, all **858 native tests**
+(none failed/ignored), native and Wasm Clippy with warnings denied, all **80
+registered reproduction commands**, production web build, and the complete
+extended browser suite in Chromium **145.0.7632.6**. No required regressions were
+skipped. See [validation record](validation-issue-35.md) for the actual negative
+controls, fixture reproduction and the precise historical sprite-oracle correction.
+Full rotation VRAM acquisition timing, general VDP2 register-read semantics and
+all other unmet #17 requirements remain mandatory. Issue #17 stays open; this
+increment does not establish hardware completion or commercial compatibility.
 
 
 ## Clocked video transactions and exclusive monitors
