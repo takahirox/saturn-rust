@@ -24,14 +24,23 @@ fn run(m: &mut Machine, image: &[u8]) {
     panic!("guest never completed: {:?}", m.cpu_state());
 }
 fn expected(x: usize, y: usize, changed: bool) -> [u8; 4] {
-    let column = if changed { 0 } else { x };
-    match (column, y) {
-        (256.., _) => [0, 0, 0, 255],
-        (0..=127, 0..=127) => [0, 255, 0, 255],
-        (_, 0..=127) => [255; 4],
-        (0..=127, 128..=191) => [255, 0, 0, 255],
-        (_, 128..=191) | (0..=127, 192..) => [0, 0, 255, 255],
-        _ => [0, 0, 0, 255],
+    // Independent polygon coordinates, §6.3 p.159. Requests on rows127/191
+    // affect 128/192 once; the CURRENT vertical deltas then accumulate.
+    let (sx, sy) = if y < 128 {
+        (255 - y, if changed { 0 } else { x })
+    } else if y < 192 {
+        (256 - y, if changed { 0 } else { x })
+    } else {
+        (y - 192, 128 + y - 192 + if changed { 0 } else { x })
+    };
+    if sx >= 256 || sy >= 256 {
+        return [0, 0, 0, 255];
+    }
+    match (sx < 128, sy < 128) {
+        (true, true) => [255, 0, 0, 255],
+        (false, true) => [0, 255, 0, 255],
+        (true, false) => [0, 0, 255, 255],
+        (false, false) => [255; 4],
     }
 }
 #[test]

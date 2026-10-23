@@ -672,7 +672,9 @@ impl Bus {
             let (h, v) = self.raster.counters();
             self.vdp2.counters(h, v);
             self.vdp2.scan_field(self.raster.odd());
-            // Display samples precede transaction completion at equal edges.
+            // Display samples (including rotation-parameter request reads)
+            // precede transaction completion at equal edges. This is the
+            // emulator's ordering convention, not measured electrical timing.
             self.acquire_display();
             // Complete the granted data phase before contenders at this edge.
             self.advance_bus_transaction(delta)?;

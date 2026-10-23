@@ -48,8 +48,12 @@ def build():
         s+=blank('setup_blank',True)+blank('start_field',False)
         # Table writes without RxSTRE must leave the running origin alone.
         s+=line(64)+store(0x25e10000,0)
-        s+=line(127)+put16(0x25f800b2,1)
-        s+=line(191)+store(0x25e10004,128<<16)+put16(0x25f800b2,3)
+        s+=line(127)+store(0x25e10000,128<<16)+put16(0x25f800b2,1)
+        # ST-058-R2 §6.3 pp.157–159 / later HTML p06_31 final paragraph:
+        # requests clear at the read. Keep vertical accumulation after each
+        # reload visible: x=128 on row128,127 on129; y=128 on192,129 on193.
+        s+=line(191)+store(0x25e10000,0)+store(0x25e10004,128<<16)
+        s+=store(0x25e1000c,1<<16)+store(0x25e10010,1<<16)+put16(0x25f800b2,3)
         s+=blank('completed',True)
         # Later table writes cannot retroactively repaint the published field.
         s+=store(0x25e10000,511<<16)+store(0x25e10004,511<<16)

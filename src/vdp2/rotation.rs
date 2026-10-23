@@ -1,6 +1,6 @@
 //! Independent fixed-point rotation equations from ST-058-R2 §6.1, p.147;
 //! table layout/widths: §6.3 figs.6.2/6.3; coefficient modes: §6.4 fig.6.7.
-//! RPRCTL start-coordinate/coefficient reloads: §6.3 pp.152/158–159.
+//! RPRCTL one-shot start/coefficient requests: §6.3 pp.157–159.
 //! Sprite readout uses A's start/deltas, not its matrix or coefficients (p.159).
 use super::{Layer, Vdp2};
 use crate::vdp1::Vdp1;
@@ -33,7 +33,7 @@ impl Vdp2 {
     }
     /// Capture each line's start values. With RxSTRE clear the previous
     /// value advances by the current delta; changing table RAM alone cannot
-    /// reload it. Each of Xst, Yst and KAst has an independent reload strobe.
+    /// reload it. Each of Xst, Yst and KAst has an independent one-shot request.
     pub(super) fn read_rotation_line(&mut self, y: usize, first: bool) {
         let distance = self
             .rotation_read
@@ -64,6 +64,11 @@ impl Vdp2 {
                 };
             }
         }
+        // ST-058-R2 §6.3 pp.157–158: each request clears simultaneously
+        // with the next parameter read (including field initialization).
+        // Only raster reads enter here; writes and debugger renders do not.
+        self.registers[0xB2] &= !7;
+        self.registers[0xB3] &= !7;
         self.rotation_read.previous = Some(y);
         self.rotation_read.line = Some(y);
         for parameter in 0..2 {
@@ -87,8 +92,9 @@ impl Vdp2 {
         if self.rotation_read.line == Some(y) {
             return self.rotation_read.starts[parameter][index];
         }
-        // Direct debugger renders evaluate a static table, including a reload
-        // on every row when enabled. Beam-driven output uses the latches above.
+        // Debugger renders preview static table operands. A pending request
+        // previews the table start; otherwise use the nominal row delta.
+        // Neither path participates in the raster latch or consumes requests.
         let raw = self.rotation_long(parameter, [0, 4, 0x54][index]);
         let start = if index == 2 {
             i64::from(raw & 0xFFFFFFC0)
@@ -484,7 +490,6 @@ mod tests {
                     ]
                 );
                 v.rotation_read.line = None;
-                v.write16(VDP2 + 0xB2, 0).unwrap();
                 // Delta changes apply at the next line, without reloading starts.
                 put(&mut v, base + 0xC, 2 << 16);
                 let old = v.rotation_read.starts[parameter];
@@ -502,6 +507,341 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn single_x_request_10_100_101_including_initial_scanout_fallback() {
+        let mut v = Vdp2::default();
+        v.write16(VDP2 + 0xBE, 0x8000).unwrap();
+        put(&mut v, 0, 10 << 16);
+        put(&mut v, 0xC, 1 << 16);
+        v.write16(VDP2 + 0xB2, 1).unwrap();
+        v.framebuffer().unwrap();
+        assert_eq!(v.word(0xB2), 1); // debugger inspection is not a read event
+        let sprites = Vdp1::default();
+        v.scan_to(&sprites, 0, 16); // initial field has no line-start event
+        assert_eq!(v.rotation_read.starts[0][0], 10 << 16);
+        put(&mut v, 0, 100 << 16);
+        v.write16(VDP2 + 0xB2, 1).unwrap();
+        v.framebuffer().unwrap();
+        v.scan_to(&sprites, 0, 32);
+        v.scan_to(&sprites, 0, 32);
+        assert_eq!(v.rotation_read.starts[0][0], 10 << 16);
+        assert_eq!(v.word(0xB2), 1);
+        v.begin_scanline(1);
+        assert_eq!(v.rotation_read.starts[0][0], 100 << 16);
+        v.begin_scanline(2);
+        assert_eq!(v.rotation_read.starts[0][0], 101 << 16);
+    }
+
+    #[test]
+    fn one_shot_requests_accumulate_mutate_and_rearm_all_six_starts() {
+        // Independent §6.3 sequence oracle: no production math helpers.
+        // The A-X vector includes the literal 10 -> 100 -> 101 distinction.
+        for a in 0..8u16 {
+            for b in 0..8u16 {
+                let mut v = Vdp2::default();
+                v.write16(VDP2 + 0xBE, 0x8000).unwrap();
+                for (parameter, base) in [0, 0x80].into_iter().enumerate() {
+                    for (off, value) in [(0, 10), (4, 20), (0x54, 30)] {
+                        put(&mut v, base + off, value << 16);
+                    }
+                    for (i, off) in [0xC, 0x10, 0x58].into_iter().enumerate() {
+                        let delta = [[1i32, 2, 3], [-1, 3, -2]][parameter][i];
+                        put(&mut v, base + off, (delta as u32) << 16);
+                    }
+                }
+                v.begin_scanline(0);
+                assert_eq!(v.rotation_read.starts, [[10 << 16, 20 << 16, 30 << 16]; 2]);
+                v.write16(VDP2 + 0xB2, a | b << 8).unwrap();
+                for base in [0, 0x80] {
+                    for (off, value) in [(0, 100), (4, 200), (0x54, 300)] {
+                        put(&mut v, base + off, value << 16);
+                    }
+                }
+                // Neither a write nor static debugger rendering consumes a request.
+                let before = v.rotation_read.starts;
+                v.framebuffer().unwrap();
+                assert_eq!(v.rotation_read.starts, before);
+                v.begin_scanline(1);
+                let mut expected = [[0; 3]; 2];
+                for (parameter, mask) in [a, b].into_iter().enumerate() {
+                    for i in 0..3 {
+                        expected[parameter][i] = if mask & (1 << i) != 0 {
+                            [100, 200, 300][i] << 16
+                        } else {
+                            [[11, 22, 33], [9, 23, 28]][parameter][i] << 16
+                        };
+                    }
+                }
+                assert_eq!(v.rotation_read.starts, expected);
+                v.begin_scanline(2);
+                for (parameter, row) in expected.iter_mut().enumerate() {
+                    for (i, value) in row.iter_mut().enumerate() {
+                        *value += [[1, 2, 3], [-1, 3, -2]][parameter][i] << 16;
+                    }
+                }
+                assert_eq!(v.rotation_read.starts, expected, "a={a}, b={b}");
+                for (parameter, base) in [0, 0x80].into_iter().enumerate() {
+                    for (off, value) in [(0, 400), (4, 500), (0x54, 600)] {
+                        put(&mut v, base + off, value << 16);
+                    }
+                    for (i, off) in [0xC, 0x10, 0x58].into_iter().enumerate() {
+                        let delta = [[-1i32, 3, -2], [2, -2, 1]][parameter][i];
+                        put(&mut v, base + off, (delta as u32) << 16);
+                    }
+                }
+                for line in 3..=5 {
+                    v.begin_scanline(line);
+                    for (parameter, row) in expected.iter_mut().enumerate() {
+                        for (i, value) in row.iter_mut().enumerate() {
+                            *value += [[-1, 3, -2], [2, -2, 1]][parameter][i] << 16;
+                        }
+                    }
+                    assert_eq!(v.rotation_read.starts, expected);
+                }
+                // Arm after the read; repeatedly sampling this same row must
+                // leave the new request pending for the NEXT line.
+                v.write16(VDP2 + 0xB2, a | b << 8).unwrap();
+                let sprites = Vdp1::default();
+                v.scan_to(&sprites, 5, 16);
+                v.framebuffer().unwrap();
+                v.scan_to(&sprites, 5, 32);
+                assert_eq!(v.rotation_read.starts, expected);
+                v.begin_scanline(6);
+                for (parameter, mask) in [a, b].into_iter().enumerate() {
+                    for i in 0..3 {
+                        expected[parameter][i] = if mask & (1 << i) != 0 {
+                            [400, 500, 600][i] << 16
+                        } else {
+                            expected[parameter][i] + ([[-1, 3, -2], [2, -2, 1]][parameter][i] << 16)
+                        };
+                    }
+                }
+                assert_eq!(v.rotation_read.starts, expected);
+                v.begin_scanline(7);
+                for (parameter, row) in expected.iter_mut().enumerate() {
+                    for (i, value) in row.iter_mut().enumerate() {
+                        *value += [[-1, 3, -2], [2, -2, 1]][parameter][i] << 16;
+                    }
+                }
+                assert_eq!(v.rotation_read.starts, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn requests_on_first_line_fields_signed_wrap_and_reset() {
+        for odd in [true, false] {
+            let mut v = Vdp2::default();
+            v.write16(VDP2, 0x80C0).unwrap();
+            v.write16(VDP2 + 0xBE, 0x8000).unwrap();
+            v.scan_field(odd);
+            for base in [0, 0x80] {
+                for (off, value) in [
+                    (0, 0x0FFFFFC0),
+                    (4, 0x10000000),
+                    (0x54, 0xFFFFFFC0),
+                    (0xC, 64),
+                    (0x10, 0xFFFFFFC0),
+                    (0x58, 64),
+                ] {
+                    put(&mut v, base + off, value);
+                }
+            }
+            v.write16(VDP2 + 0xB2, 0x707).unwrap();
+            v.begin_scanline(0);
+            let first = if odd {
+                [0x0FFFFFC0, -0x10000000, 0xFFFFFFC0]
+            } else {
+                [-0x10000000, 0x0FFFFFC0, 0]
+            };
+            assert_eq!(v.rotation_read.starts, [first; 2]);
+            // Mutate every table start. A first-line request was consumed too.
+            for base in [0, 0x80] {
+                for off in [0, 4, 0x54] {
+                    put(&mut v, base + off, 0);
+                }
+            }
+            v.begin_scanline(1);
+            let next = if odd {
+                [-0x0FFFFFC0, 0x0FFFFF80, 64]
+            } else {
+                [-0x0FFFFF80, 0x0FFFFF40, 128]
+            };
+            assert_eq!(v.rotation_read.starts, [next; 2]);
+            // The next field unconditionally initializes, including even y=1.
+            v.begin_scanline(0);
+            assert_eq!(
+                v.rotation_read.starts,
+                [if odd { [0; 3] } else { [64, -64, 64] }; 2]
+            );
+            v.write16(VDP2 + 0xB2, 0x707).unwrap();
+            v = Vdp2::default();
+            assert_eq!(v.word(0xB2), 0);
+            assert_eq!(v.rotation_read.previous, None);
+            assert_eq!(v.rotation_read.starts, [[0; 3]; 2]);
+        }
+    }
+
+    #[test]
+    fn scheduled_requests_respect_line_read_edges_on_both_sh2_adapters() {
+        use crate::bus::{Bus, BusError, Memory, Processor};
+        fn advance(b: &mut Bus, clocks: u32, chunk: u32, inspect: bool) {
+            let mut left = clocks;
+            while left != 0 {
+                let n = left.min(chunk);
+                b.advance_clocks(n).unwrap();
+                left -= n;
+                if inspect {
+                    b.vdp2.framebuffer().unwrap();
+                    b.vdp2.scanout(&b.vdp1).unwrap();
+                }
+            }
+        }
+        for processor in [Processor::Master, Processor::Slave] {
+            // Establish the adapter's actual buffered physical write duration;
+            // acceptance is not register publication. This probe is outside any
+            // raster edge, and observes private state, not guest readback.
+            let mut probe = Bus::default();
+            probe.set_slave_enabled(true);
+            assert_eq!(
+                probe
+                    .replay_cpu(processor)
+                    .write16(VDP2 | 0x200000B2, 0x707),
+                Err(BusError::Pending)
+            );
+            let mut latency = 0;
+            while probe.vdp2.word(0xB2) == 0 {
+                probe.advance_clocks(1).unwrap();
+                latency += 1;
+                assert!(latency < 64);
+            }
+            for parameter in 0..2 {
+                for edge in [-1i32, 0, 1] {
+                    for chunk in [1, 3, 17, 10000] {
+                        for inspect in [false, true] {
+                            let mut b = Bus::default();
+                            b.set_slave_enabled(true);
+                            for (at, value) in [
+                                (0, 0x8000),
+                                (0xE, 3),
+                                (0x20, 0x10),
+                                (0x2A, 0x3200),
+                                (0xFC, 4),
+                                (0xBE, 0x8000),
+                                (0xB0, parameter as u16),
+                            ] {
+                                b.vdp2.write16(VDP2 + at, value).unwrap();
+                            }
+                            for y in 0..6 {
+                                for x in 0..256 {
+                                    let color = 0x8000u16 | (x as u16 & 31) | (y as u16) << 5;
+                                    let at = (y * 512 + x) * 2;
+                                    b.vdp2.vram[at..at + 2].copy_from_slice(&color.to_be_bytes());
+                                }
+                            }
+                            for (p, x, k) in [(0, 10, 30), (1, 20, 60)] {
+                                for (off, value) in [
+                                    (0, x),
+                                    (0x54, k),
+                                    (0xC, 1),
+                                    (0x10, 1),
+                                    (0x58, 1),
+                                    (0x14, 1),
+                                    (0x1C, 1),
+                                    (0x2C, 1),
+                                    (0x4C, 1),
+                                    (0x50, 1),
+                                ] {
+                                    put(&mut b.vdp2, p * 0x80 + off, value << 16);
+                                }
+                            }
+                            b.vdp2.begin_scanline(0);
+                            for (p, x, y, k) in [(0, 100, 2, 40), (1, 200, 3, 80)] {
+                                for (off, value) in [(0, x), (4, y), (0x54, k)] {
+                                    put(&mut b.vdp2, p * 0x80 + off, value << 16);
+                                }
+                            }
+                            let period = b.raster.line_clocks();
+                            let issue = (period as i32 + edge) as u32 - latency;
+                            // Inspection is deliberately interleaved only near
+                            // the boundary; doing it once per clock for a whole
+                            // field would repeatedly allocate full debug images.
+                            advance(&mut b, issue - 2, chunk, false);
+                            advance(&mut b, 2, chunk, inspect);
+                            assert_eq!(
+                                b.replay_cpu(processor).write16(VDP2 | 0x200000B2, 0x707),
+                                Err(BusError::Pending)
+                            );
+                            advance(&mut b, latency + 2, chunk, inspect);
+                            let now = issue + latency + 2;
+                            let mut expected = if edge < 0 {
+                                [[100, 2, 40], [200, 3, 80]]
+                            } else {
+                                [[11, 1, 31], [21, 1, 61]]
+                            };
+                            let mut rows = vec![expected[parameter]];
+                            assert_eq!(
+                                b.vdp2.rotation_read.starts,
+                                expected.map(|r| r.map(|n| n << 16))
+                            );
+                            let mut time = now;
+                            for line in 2..=3 {
+                                let deadline = period * line + 2;
+                                advance(&mut b, deadline - time - 2, chunk, false);
+                                advance(&mut b, 2, chunk, inspect);
+                                time = deadline;
+                                expected = if line == 2 && edge >= 0 {
+                                    [[100, 2, 40], [200, 3, 80]]
+                                } else {
+                                    expected.map(|r| r.map(|n| n + 1))
+                                };
+                                rows.push(expected[parameter]);
+                                assert_eq!(
+                                    b.vdp2.rotation_read.starts,
+                                    expected.map(|r| r.map(|n| n << 16)),
+                                    "{processor:?} edge={edge} chunk={chunk} inspect={inspect}"
+                                );
+                            }
+                            advance(&mut b, period * 4 - time, chunk, false);
+                            for (i, [sx, sy, _]) in rows.into_iter().enumerate() {
+                                let red = (sx & 31) as u8;
+                                let green = sy as u8;
+                                assert_eq!(
+                                    &b.vdp2.scanning[((i + 1) * 320) * 4..][..4],
+                                    [red << 3 | red >> 2, green << 3 | green >> 2, 0, 255]
+                                );
+                            }
+                            // A queued or already accepted request must not
+                            // survive system reset and later change a new field.
+                            b.finish_cpu_transaction(processor);
+                            assert_eq!(
+                                b.replay_cpu(processor).write16(VDP2 | 0x200000B2, 0x707),
+                                Err(BusError::Pending)
+                            );
+                            if inspect {
+                                b.advance_clocks(1).unwrap();
+                            }
+                            b.system_reset();
+                            b.vdp2.write16(VDP2 + 0xBE, 0x8000).unwrap();
+                            for base in [0, 0x80] {
+                                put(&mut b.vdp2, base, 10 << 16);
+                                put(&mut b.vdp2, base + 0xC, 1 << 16);
+                            }
+                            b.vdp2.begin_scanline(0);
+                            for base in [0, 0x80] {
+                                put(&mut b.vdp2, base, 100 << 16);
+                            }
+                            advance(&mut b, 10000, chunk, false);
+                            assert_eq!(b.raster.line, 5);
+                            assert_eq!(b.vdp2.word(0xB2), 0);
+                            assert_eq!(b.vdp2.rotation_read.starts, [[15 << 16, 0, 0]; 2]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn coefficient_reload_changes_executed_table_address_and_reset_clears_latches() {
         let mut v = Vdp2::default();

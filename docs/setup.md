@@ -110,6 +110,7 @@ python3 tests/fixtures/build_display_modes.py --check
 python3 tests/fixtures/build_vdp2_status.py --check
 python3 tests/fixtures/build_sprite_shrink.py --check
 python3 tests/fixtures/build_sprite_rotation.py --check
+python3 tests/fixtures/build_rotation_reload.py --check
 python3 tests/fixtures/build_sprite_interlace.py --check
 python3 tests/fixtures/build_vdp1_erase_latch.py --check
 python3 tests/fixtures/build_video_transactions.py --check
