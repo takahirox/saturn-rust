@@ -26,16 +26,16 @@ fn master_uploads_starts_sound_cpu_and_observes_scsp_irq_guest_computation_and_s
     let mut m = Machine::new();
     for _ in 0..2 {
         m.reset(Boot::ExternalBios(&rom)).unwrap();
-        let mut timer_edge_before_first_acknowledgement = false;
+        let mut timer_edge_before_second_acknowledgement = false;
         for _ in 0..100000 {
             m.step().unwrap();
-            if (0x300..=0x306).contains(&m.sound_state().pc) && m.sound_state().exceptions == 1 {
-                timer_edge_before_first_acknowledgement |=
+            if (0x300..=0x306).contains(&m.sound_state().pc) && m.sound_state().exceptions == 2 {
+                timer_edge_before_second_acknowledgement |=
                     m.bus().read16(SCSP + 0x418).unwrap() & 255 == 255
                         && m.bus().read16(SCSP + 0x420).unwrap() & 0x40 != 0;
             }
         }
-        assert!(timer_edge_before_first_acknowledgement);
+        assert!(timer_edge_before_second_acknowledgement);
         assert_eq!(m.bus().read32(0x06007000).unwrap(), 1);
         assert_eq!(m.bus().read32(0x06007004).unwrap(), 0x600D);
         assert_eq!(m.bus().read32(SOUND_RAM + 0x4000).unwrap(), 0x1000F000);
@@ -44,16 +44,17 @@ fn master_uploads_starts_sound_cpu_and_observes_scsp_irq_guest_computation_and_s
         assert_eq!(m.sound_state().a[7], 0x7FF00);
         assert!(m.sound_state().stopped);
         assert!(!m.sound_state().halted);
-        // Scheduled cold reset advances the fixed SCSP sample phase before
-        // upload starts. The FE->FF edge coalesces with the already-pending
-        // power-on timer bit before the first handler acknowledges it. IRQs
-        // are latched bits, not an edge queue. The frame saves STOP at $17E;
-        // independently count setup23 + IRQ3 handler + STOP1 = 27 instructions.
-        // The master separately latched the first result.
-        assert_eq!(m.bus().read32(SOUND_RAM + 0x804), Ok(1));
-        assert_eq!(m.sound_state().exceptions, 1);
-        assert_eq!(m.bus().read32(SOUND_RAM + 0x7FEFC), Ok(0x17E));
-        assert_eq!(m.sound_state().instructions, 27);
+        // Four reset word beats and two-word ROM upload reads shift the
+        // fixed SCSP phase. The pre-existing power-on request is serviced
+        // first; FE->FF arrives after that acknowledgement and wakes STOP
+        // for a second IRQ. Each handler has ADDQ, acknowledgement and RTE.
+        // setup23 + 2*handler3 + STOP2 + BRA1 = 32 instructions; the second
+        // frame saves the STOP successor at $182. The master's first latch
+        // remains one, independently of the later interrupt.
+        assert_eq!(m.bus().read32(SOUND_RAM + 0x804), Ok(2));
+        assert_eq!(m.sound_state().exceptions, 2);
+        assert_eq!(m.bus().read32(SOUND_RAM + 0x7FEFC), Ok(0x182));
+        assert_eq!(m.sound_state().instructions, 32);
         assert_eq!(m.bus().read16(SCSP + 0x420).unwrap() & 0x40, 0);
         let audio = m.drain_audio(8192);
         let nonzero = audio.iter().position(|v| *v != 0).unwrap();

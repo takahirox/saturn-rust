@@ -14,6 +14,7 @@ import { scuFringe } from "./scu-fringe.mjs";
 import { dmacBus } from "./dmac-bus.mjs";
 import { sh2BusPipeline } from "./sh2-bus-pipeline.mjs";
 import { sh2ResetBus } from "./sh2-reset-bus.mjs";
+import { cs0Transfers } from "./cs0.mjs";
 import { abusTiming } from "./abus.mjs";
 import { hardwareBoundaries } from "./hardware-boundaries.mjs";
 import { refreshArbitration } from "./refresh.mjs";
@@ -841,6 +842,7 @@ try {
   await dmacBus(page);
   await sh2BusPipeline(page);
   await sh2ResetBus(page);
+  await cs0Transfers(page);
   const shrinkRom=Buffer.alloc(524288);
   for(const line of (await readFile("tests/fixtures/sprite-shrink.hex","utf8")).split(/\r?\n/)) {
     if(!line||line.startsWith("#"))continue;
@@ -1164,7 +1166,7 @@ try {
     assert.deepEqual(actual.exceptions, ["0", "0"]);
     for (const [cpu, trace] of actual.traces.entries()) {
       const expected = [cpu ? 0x83F0 : 0x3F0, 0xAAFF];
-      waitVectors.forEach((ticks, i) => expected.push(before === 0xA55AAA40 && i === 1 ? 9 : 7 + 2 * (4 / width - 1) + (ticks - 7) * 4 / width,
+      waitVectors.forEach((ticks, i) => expected.push(before === 0xA55AAA40 && i === 1 ? 10 : 8 + 2 * (4 / width - 1) + (ticks - 8) * 4 / width,
         before === 0x13579BDF ? after : 0x13579BDF));
       expected.push(...(little ? endianVectors : [0x11223344,0x1122,0x3344,0x11,0xA1B2C3D4,0x1234C3D4,0x5634C3D4]), 0x600D);
       assert.deepEqual(trace, expected);
@@ -1971,9 +1973,9 @@ try {
   assert.deepEqual(soundFinished.mailbox, [1, 0x600D]);
   assert.deepEqual(soundFinished.waveform, [0x1000F000, 0xE0002000]);
   assert.deepEqual(soundFinished.samples, [256,4096,-256,-4096,-512,-8192,512,8192,256,4096,-256,-4096,-512,-8192,512,8192]);
-  assert.equal(soundFinished.irqs,1);
-  assert.equal(soundFinished.irqReturn,0x17E); // cold vector clocks coalesce timer requests before the first STOP
-  assert.equal(BigInt(soundFinished.count),27n); // setup23 + IRQ3 handler + STOP1
+  assert.equal(soundFinished.irqs,2);
+  assert.equal(soundFinished.irqReturn,0x182); // FE->FF wakes STOP after the first acknowledgement
+  assert.equal(BigInt(soundFinished.count),32n); // setup23 + two IRQ3 handlers + two STOPs + BRA
   assert.equal(soundFinished.dropped, "0");
   await page.locator("#reset").click();
   assert.deepEqual(await soundResult(), soundFinished);

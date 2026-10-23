@@ -17,11 +17,14 @@ HERE = Path(__file__).resolve().parent
 
 def build():
     rom = bytearray(524288)
-    struct.pack_into('>II', rom, 0, 0x200, 0x060ff000)
+    struct.pack_into('>II', rom, 0, 0x1d0, 0x060ff000)
     struct.pack_into('>I', rom, 12 * 4, 0x60000)
     for channel in range(3):
         struct.pack_into('>I', rom, (0x4b-channel)*4, 0x60100)
     s = 'load 0x2600d000,r8\nload 0xfffffee0,r1\nmov #1,r0\nmov.w r0,@r1\n' + store(0xffffffe4,0xa55a00bc)
+    # Manual framebuffer change, no FCT: VBlank must not erase a DMA
+    # source while this long diagnostic crosses multiple fields.
+    setup = 'load 0x25d00002,r1\nmov #2,r0\nmov.w r0,@r1\nload 0x200,r1\njmp @r1\nnop\n'
     # Source-authored data, also used by operand-mutation controls.
     for source_base in [0x06008000,0x05a08000,0x060ffff8,0x05cbfff8]:
         s += store(source_base | 0x20000000, 0x12345678) + store((source_base+4) | 0x20000000, 0x9abcdef0)
@@ -68,7 +71,7 @@ def build():
                  'mov.l @r15+,r1\nmov.l @r15+,r0\nrte\nnop\n'),
         0x60100: 'add #1,r11\nrte\nnop\n',
     }
-    for at, text in [(0x200, s), *handlers.items()]:
+    for at, text in [(0x1d0, setup), (0x200, s), *handlers.items()]:
         code = assembler.assemble(text, base=at)
         assert len(code) < (0x5fe00 if at == 0x200 else 0x100)
         rom[at:at+len(code)] = code

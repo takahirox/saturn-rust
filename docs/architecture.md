@@ -122,9 +122,13 @@ NMI and can wake SLEEP independently of SR.I. A fault on either CPU stops the
 entire machine until reset and identifies the slave when applicable.
 
 The watchdog implements power/manual reset selection, a 512-clock CPU hold,
-physical vector pairs 0/4 or 8/12, and retained RAM/backup/cause. CPU-local
+physical vector pairs 0/4 or 8/12, and retained RAM/backup/cause. On both
+processors each vector longword uses two 16-bit CS0 phases; cold PC/SP words
+sample at clocks 8, 16, 24 and 32 under reset waits. The journal publishes PC
+and SP together after all four words, before any instruction. These controlled
+bus-vector deadlines are not measured console startup latency. CPU-local
 write-through caches implement software coherence and mapped arrays. BSC ordinary
-software waits, narrow CS1-CS3 transfers and CS2 endian conversion have guest
+software waits, fixed 16-bit CS0, narrow CS1-CS3 transfers and CS2 endian conversion have guest
 evidence. Full BSC memory/arbitration, UBC/standby timing, external reset
 signals and hardware cycle scheduling remain outstanding. Missing bus/device implementations and exception-entry failures
 remain explicit, sticky host diagnostics.
@@ -440,9 +444,28 @@ CPUs' IW3=0/1/2 through their FRTs in native and Wasm execution.
 
 Tw/turnaround clocks now delay only the CPU that issued the access. External
 T1/T2 occupancy bounds that CPU’s instruction interval; pipeline overlap, external WAIT sampling,
-refresh/CPU/DMA bus ownership, burst memories and all board lanes remain required. CS0 retains
-the existing 32-bit external adapter. Unsupported changed BSC configurations
-raise errors, including reserved bus widths and little-endian byte buses.
+complete refresh/CPU/DMA arbitration and all board lanes remain required.
+The [VA0.5 board drawing](https://consolemods.org/wiki/images/1/1b/Sega_saturn_va0.5_schematics.pdf),
+sheet 1, identifies MD4=0/MD3=1 on both CPUs and a word-output boot ROM.
+[SH7604](https://antime.kapsi.fi/sega/files/sh7604.pdf) §3.3/table3.9 maps
+those fixed pins to 16-bit CS0. BCR2 and MCR configure other areas independently;
+construction, system/watchdog resets and slave stop/start cannot change CS0.
+
+`Bsc::access_timing` implements §7.8/figs.7.44–46: an eligible longword read
+has T1+Tw+T2 on its first word and Tw+T2 on its second. With zero software
+waits both words retain T1+T2. Byte/word reads and writes are ordinary accesses.
+Cache fills and 16-byte DMAC reads restart at each of their four longwords.
+Phase identity comes from the current transfer's width, first marker and word
+address; there is no retained nibble-address state to survive cancellation or
+ownership changes. Existing journals retain sampled words, the BSC write buffer
+publishes each word separately, and CPU-group ownership excludes peers/refresh
+until the accepted operand completes. Self-refresh inhibits new groups after
+an already accepted narrow CPU operand drains. Narrow device contracts, SMPC
+byte accesses, backup odd-byte lanes, mirrors and ROM protection remain intact;
+SCU routes to CS0 remain prohibited. See the
+[CS0 conformance evidence](hardware-conformance.md#fixed-cs0-word-bus-and-burst-rom-issue-23).
+Unsupported changed BSC configurations raise errors, including reserved bus
+widths and little-endian byte buses.
 The game media are unchanged; startup/restart tests allow their executed VRAM
 clears to take the additional bus time and still assert gameplay and pixels.
 

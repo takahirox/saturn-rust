@@ -64,7 +64,15 @@ fn direct_and_indirect_guest_dma_exposes_byte_cycles_to_ubc_and_both_irq_handler
             let actual: Vec<_> = (0..expected.len())
                 .map(|i| m.bus().read32(0x0600d000 + i as u32 * 4).unwrap())
                 .collect();
-            assert_eq!(actual, expected, "state={:?}", m.cpu_state());
+            for (i, (a, e)) in actual.iter().zip(&expected).enumerate() {
+                assert_eq!(
+                    a,
+                    e,
+                    "record {i}, scene {}, field {}, mutate {mutate}",
+                    i / 5,
+                    i % 5
+                );
+            }
             assert_eq!(m.cpu_state().status, CpuStatus::Sleeping);
             assert_eq!(m.cpu_state().exceptions, 480);
             assert_eq!(m.cpu_state().r[15], 0x060ff000);

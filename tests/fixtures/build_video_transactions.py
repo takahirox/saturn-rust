@@ -164,6 +164,9 @@ def character_source():
     # keeps that word selected while the guest changes it. The later command
     # must reload the changed character data. All writes/polls are SH-2 code.
     s = 'load 0x0600e500,r8\n' + put16(0x25D00002, 2)
+    # Keep this relative rewrite window at eight clocks per IF longword:
+    # two word phases, each T1 + two Tw + T2. No timing snapshot is changed.
+    s += 'load 0xffffffe8,r1\nload 0xa55aaafe,r0\nmov.l r0,@r1\n'
     for at, value in [(0, 9), (20, 511), (22, 255),
                       (32, 1), (36, 0xC8), (38, 0x200), (40, 0x100), (42, 0x101),
                       (52, 4095), (54, 0),

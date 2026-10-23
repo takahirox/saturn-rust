@@ -1,0 +1,44 @@
+; Original MIT CS0 guest; adjacent LICENSE.
+mov #2,r0
+mov.b r0,@r7
+mov #0,r0
+mov.b r0,@r7
+mov.b @r4,r0
+mov.b @r5,r0
+mov.l @r10,r6
+mov.l @r10,r6
+mov.l @r10,r6
+mov.l @r10,r6
+mov.l @r10,r6
+mov.l @r10,r6
+mov.l @r10,r6
+mov.l @r10,r6
+mov.l @r10,r6
+mov.l @r10,r6
+mov.l @r10,r6
+mov.l @r10,r6
+mov.l @r10,r6
+mov.l @r10,r6
+mov.l @r10,r6
+mov.l @r10,r6
+mov.l @r11,r9
+mov.l @r11,r9
+mov.l @r11,r9
+mov.l @r11,r9
+mov.l @r11,r9
+mov.l @r11,r9
+mov.l @r11,r9
+mov.l @r11,r9
+mov.l @r11,r9
+mov.l @r11,r9
+mov.l @r11,r9
+mov.l @r11,r9
+mov.l @r11,r9
+mov.l @r11,r9
+mov.l @r11,r9
+mov.l @r11,r9
+mov.b @r4,r0
+mov.b @r5,r0
+extu.b r0,r0
+rts
+nop

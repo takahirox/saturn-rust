@@ -92,6 +92,7 @@ python3 tests/fixtures/build_smpc_boundaries.py --check
 python3 tests/fixtures/build_sh2_timing.py --check
 python3 tests/fixtures/build_sh2_bus_pipeline.py --check
 python3 tests/fixtures/build_sh2_reset_bus.py --check
+python3 tests/fixtures/build_cs0.py --check
 python3 tests/fixtures/build_bus_transactions.py --check
 python3 tests/fixtures/build_scu_fringe.py --check
 python3 tests/fixtures/build_dmac_bus.py --check

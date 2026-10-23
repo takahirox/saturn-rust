@@ -1404,7 +1404,7 @@ guest result is involved.
 | Software-visible contract | Implementation and objective evidence | Remaining limits |
 | --- | --- | --- |
 | WCR software waits and BCR1 AnLW | `Bsc::software_waits` decodes zero/one/two Tw or long waits of three through six, independently for CS0–3; CS2/3 share AHLW. Register vectors cover every area/selection, keys and atomic rejection. BWAIT measures eight uncached CS3 reads with each CPU's own FRT, comparing seven literal expected deltas | Tw clocks delay the issuing CPU’s independent opcode deadline; base T1/T2 overlap, external WAIT and full bus arbitration remain required; IDLEG below adds intercycle turnaround |
-| BCR2 byte/word/long interfaces | `CpuBus::external_read/external_write` split larger operands and cache-refill requests into ordered physical beats. Bus vectors check exact per-beat wait sums, data, write-through/cache hits and actual sequential external UBC observations | CS0 retains the existing 32-bit board adapter; BCMEM below adds MCR-selected SDRAM/DRAM/pseudo-SRAM widths and burst timing. Complete board lane/bridge behavior, WAIT/mode-register cycles and arbitration remain required |
+| BCR2 byte/word/long interfaces | `CpuBus::external_read/external_write` split larger operands and cache-refill requests into ordered physical beats. Bus vectors check exact per-beat wait sums, data, write-through/cache hits and actual sequential external UBC observations | CS0 now has the fixed 16-bit board strap (Issue #23 below); BCMEM below adds MCR-selected SDRAM/DRAM/pseudo-SRAM widths and burst timing. Complete board lane/bridge behavior, WAIT/mode-register cycles and arbitration remain required |
 | BCR1 CS2 endian | `Bsc::little_endian` selects per-CPU CS2 conversion. Actual transfers reverse operand bytes, leave byte addresses/strobes unchanged and transfer low words first on word-wide buses. Literal native vectors assert physical bytes, both word offsets, all byte lanes, writes and the other CPU's independent view | Cache-through use follows §7.3.2; this does not establish all cache/MMIO/board-width combinations |
 | Register programming rules | Wrong keys do not change registers; reserved bus widths and unsupported little-endian byte buses are rejected atomically. Reserved IWn=11 is rejected atomically; valid IWn=0/1/2 have transaction effects (IDLEG below). BCR1 memory/partial-share/BSTROM selections and MCR timing now have behavior (BCMEM below). Reserved memory selections, TRAS/AMX and prohibited self-refresh settings reject atomically | Complete initialization/mode-register and WAIT behavior remain required; accepted configuration alone is not conformance |
 | Cache/TAS and reset | Waits apply to actual refill beats, cache-through accesses, TAS external reads and write-through hits. Cache hits/arrays incur none; cold reset restores six software waits | CPU/DMA contention, TAS bus locks, refresh ownership and complete reset-cycle timing remain required |
@@ -1814,7 +1814,7 @@ is included, and no host code writes a running guest's results.
 
 | Behavior | Implementation | Independent native evidence | Same guest in browser Wasm |
 | --- | --- | --- | --- |
-| Valid BSTROM/PSHR initialization | [Bsc::write/shared_access/monitors_external_bus](../src/onchip/bsc.rs); [CpuBus::observe_external](../src/bus.rs); [OnChip::observe_access](../src/onchip.rs) | All four bit combinations and both MD5 pin states; private turnaround survives another shared owner; key/lane/reset tests retained | [BSC sharing guest](../tests/fixtures/build_bsc_share.py), [native integration](../tests/bsc.rs), [browser suite](../scripts/browser-smoke.mjs): both CPUs exchange real RAM writes, test external versus local UBC matches, and repeat reset. Changing only PSHR changes both external flags from 3000 to 7000; local flags stay 9000. BSTROM cannot shorten a single beat on the existing 32-bit CS0 adapter; narrow-ROM nibble protocols are not established by this evidence. |
+| Valid BSTROM/PSHR initialization | [Bsc::write/shared_access/monitors_external_bus](../src/onchip/bsc.rs); [CpuBus::observe_external](../src/bus.rs); [OnChip::observe_access](../src/onchip.rs) | All four bit combinations and both MD5 pin states; private turnaround survives another shared owner; key/lane/reset tests retained | [BSC sharing guest](../tests/fixtures/build_bsc_share.py), [native integration](../tests/bsc.rs), [browser suite](../scripts/browser-smoke.mjs): both CPUs exchange real RAM writes, test external versus local UBC matches, and repeat reset. Changing only PSHR changes both external flags from 3000 to 7000; local flags stay 9000. This sharing fixture alone does not establish nibble sequencing; Issue #23 below adds fixed 16-bit CS0 and independently timed longword groups. |
 | XA and extended-attribute metadata | [File::from_record](../src/cd.rs) | Authored unit/gap/file-number/attribute bytes, checked data-start offset and physical volume/track bounds; hidden ISO flags do not become reserved public attribute bits | [Filesystem guest/media](../tests/fixtures/build_cd_filesystem.py), [native execution](../tests/cd_filesystem.rs), browser: reads 12 actual FIFO bytes identifying FAD172, size6144 and metadata02020728. The authored raw XA Form1 disc includes EDC/P/Q, attribute block and independently numbered gap sectors. |
 | Runtime interleaved data and offsets | `File::sector`, `CdBlock::drive_frame`, ReadFile in [cd.rs](../src/cd.rs) | [120 unit/gap/size combinations](../tests/cd.rs) include empty files, invalid unit=0/gap>0, last physical sector and out-of-volume gaps | Guest sums all payload words through real commands/HIRQ/FIFO; BB attributes and EE gap bytes are excluded. Changing MOV #0,R6 to MOV #1,R6 selects two sectors and removes exactly 1111×1024 from the checksum. Both reset repetitions agree. |
 | File information windows | `CdBlock::directory_sector`, commands71/72/73 | [300-child directory](../tests/cd.rs): exactly254 children plus self/parent, ReadDir window256–301 with46 children, absent FID rejection; invalid parameters retain the previous window, while interrupted accepted acquisition invalidates it (Issue #21); uninitialized scope rejects as specified in [CD] §6.2.2 | Existing original directory BIOS still runs cooked and clean/correctable/uncorrectable raw inputs. Browser checks rejection status after failed initialization rather than interpreting undefined response fields as an empty valid table. The large-window boundary corpus is native evidence. |
@@ -2367,7 +2367,8 @@ statements; it does not change the broader Pending CPU/bus acceptance status.
 | Local cache update and diagnostic/reset provenance | `CpuBus::write`, buffer context retained separately from instruction journals; `Cpu::deferred_write_fault`, `Machine::step_hardware_boundary` | `accepting_a_write_updates_only_the_issuing_cache_before_external_memory`; `deferred_diagnostics_keep_the_issuer_pc_and_exception_context_and_reset_discards_them`; existing sticky slave exception-entry and cold-reset tests | Existing browser BIOS faults keep the issuing PC and CPU identity after buffered retirement; external BIOS remains separate from HLE |
 
 FRT oracles were revised from phase arithmetic, without changing guest operands:
-BWAIT's retained IF removes redundant word fetches/turnarounds (7+Tw ticks).
+BWAIT's retained IF removes redundant fetches/turnarounds; fixed 16-bit CS0
+now requires two words per IF longword (8+Tw ticks; Issue #23 below).
 BCMEM's write kernel overlaps ADD/acceptance with external work; the final latch
 is at `10 + 7*max(2, external-write-states)` clocks, including the initial
 low-byte load's WB/EXTU interlock. Read/data records and all three demo media
@@ -2920,3 +2921,36 @@ boots are controls. The inherited synchronous implementation fails the guest's
 EFLS-at-CMOK assertion (512 versus 0). Existing malformed/media/window/XA tests
 retain their substance with separate CMOK/EFLS waits. These results do not
 establish Issue #17 completion or commercial-game compatibility.
+
+
+## Fixed CS0 word bus and burst ROM (Issue #23)
+
+Related to #17. The independent [VA0.5 board drawing](https://consolemods.org/wiki/images/1/1b/Sega_saturn_va0.5_schematics.pdf),
+sheet 1, shows MD4=0/MD3=1 for both processors and a word-output boot ROM.
+[SH7604][H] §3.3/table3.9 specifies the strap; §7.3.1/fig.7.3 specifies the
+big-endian word phases; §7.8/figs.7.44–46 specifies nibble grouping and its
+zero-wait exception; §§7.11.1–2 specifies reset, IF/cache and buffering boundaries.
+This supersedes earlier 32-bit CS0 adapter claims and two-phase reset oracles.
+
+| Contract | Implementation | Independent evidence |
+| --- | --- | --- |
+| Fixed 16-bit CS0, other areas independent | [Bsc::bus_width](../src/onchip/bsc.rs), physical splitting in [bus.rs](../src/bus.rs) and [transactions.rs](../src/bus/transactions.rs) | [CS0 vectors](../src/bus/cs0_tests.rs) on both CPUs: literal byte/word/longword addresses and values, P1, ROM/low-RAM, mirrors, SMPC bytes, backup odd lanes and ROM protection; existing BSC mode matrix still checks independently configurable CS1–3 |
+| BSTROM longword pairs, including zero waits | `Bsc::access_timing` receives actual beat width; request flags/address identify the second word without persistent burst state | CS0 vectors require ordinary reset-wait longword deadlines 8/16, BSTROM one-Tw 3/5, two-Tw 4/7, and zero-Tw 2/4. Independent adjacent words each restart T1. Eight-word fills require 3/5/8/10/13/15/18/20 with one Tw. Mutation between word phases proves retention and future sampling; every listed board trace repeats with chunks 1/3/17/10000 |
+| IF/refill, buffering, DMA and ownership | Existing replay journals, per-CPU successor retention, single-entry BSC buffer and indivisible CPU groups; self-refresh checked after accepted CPU groups | Both IF word entries, retained successors, complete refills and changed unsampled data; both DMACs and channels, ROM/low-RAM longword and 16-byte reads, per-longword pair restarts, retained writes, SAR/DAR/TCR/TE/IRQ ordering; low-RAM TAS/peer exclusion and refresh six-state grant after the two-word operand. Existing SCU prohibited-route checks remain unchanged |
+| Four sampled reset words, cancellation and reset kinds | Existing Machine reset journal and physical manual-reset drains | [Machine reset tests](../src/reset_tests.rs) require cold clocks 8/16/24/32, no early PC/SP/instruction publication, cancellation/new boots at every vector word, external-BIOS SYSRES and SSHON/SSHOFF; [scheduler vectors](../src/lib.rs) mutate each watchdog vector word on both CPUs while the cached peer advances. CS0 vectors exercise both watchdog kinds at every affected refill/16-byte read word and buffered-write boundaries; manual reset drains the current longword, power reset cancels it, no partial line is installed and no late destination write survives |
+| Actual dual-SH-2 guest timing/computation | [Original MIT builder](../tests/fixtures/build_cs0.py), generated sources `cs0-*.s` and [ROM](../tests/fixtures/cs0.hex), adjacent [license](../tests/fixtures/LICENSE) | [Native Machine](../tests/cs0.rs), [production Wasm](../scripts/cs0.mjs): both CPUs read ROM/low-RAM, XOR their payloads, record FRT and exchange 51/A3 synchronization. W0=0/1/2 gives 16/20/28 ticks; omitted-ROM-read controls give 10/12/16. Two payloads and two cold boots per variant. The inherited four-byte selection fails the real guest with FRT=8 instead of 16 |
+
+Expanded 512-KiB CS0 BIOS SHA-256:
+`5ae737dece64b91d567a917fef0f33c67ade43cad27d5cefdbf398ab94a025a0`.
+Generated hex SHA-256:
+`b63fe096b9ac4dfbfe7aab10b74b46657d9e55cb40e28966c67ed5aa7f2bbf79`.
+The [validation record](validation-issue-17.md#issue-23-fixed-cs0-and-bstrom-validation)
+records trace-derived historical fixture corrections, additional hashes and actual checks.
+
+The fixed strap models the standard console represented by the independent board
+drawing; it adds no configurable board variants or electrical pin simulation.
+External WAIT pin input, exhaustive board bridges, full arbitration/reset and the
+remaining CPU/peripheral, SCU/DSP, video/audio, CD/media/HLE and SMPC acceptance
+remain outstanding under #17. These synthetic contracts establish neither
+umbrella completion nor broad commercial-game compatibility. No personal firmware,
+physical console, human approval or live Pages inspection is required.

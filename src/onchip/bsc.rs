@@ -247,12 +247,20 @@ impl Bsc {
     /// satisfy the requirement. Only actual external beats enter this history.
     #[cfg(test)]
     pub fn access_waits(&self, address: u32, write: bool) -> u32 {
-        self.access_timing(address, write, true, true).1
+        self.access_timing(address, self.bus_width(address), write, true, true)
+            .1
     }
     /// (base states, inserted states) for one physical data beat. `first`
     /// and `last` delimit an operand or an entire cache-line read. SDRAM
     /// always completes its 16-byte burst, including discarded read data.
-    pub fn access_timing(&self, address: u32, write: bool, first: bool, last: bool) -> (u32, u32) {
+    pub fn access_timing(
+        &self,
+        address: u32,
+        width: usize,
+        write: bool,
+        first: bool,
+        last: bool,
+    ) -> (u32, u32) {
         if address >= 0x0800_0000 {
             return (0, 0);
         }
@@ -272,7 +280,22 @@ impl Bsc {
         let trp = 1 + u32::from(mcr >> 15);
         let rcd = 1 + u32::from(mcr >> 14 & 1);
         let mut clocks = match interface {
-            Interface::Ordinary => 2 + self.software_waits(address),
+            Interface::Ordinary => {
+                let waits = self.software_waits(address);
+                // H §7.8 figs.7.44–46: on the Saturn's 16-bit CS0,
+                // only halves of ONE longword share a nibble group. A refill
+                // or 16-byte DMA restarts T1 at every longword; independent
+                // words have first=true. With zero Tw, T1 is never omitted.
+                // Derive phase from the request, never remembered addresses:
+                // cancellation/ownership changes cannot leave a burst armed.
+                let second = area == 0
+                    && self.registers[0] & 0x800 != 0
+                    && !write
+                    && width == 2
+                    && !first
+                    && address & 3 == 2;
+                2 + waits - u32::from(second && waits != 0)
+            }
             Interface::Sdram => {
                 let (bank, row) = self.row(address, true);
                 let mut rows = self.rows.get();
@@ -407,14 +430,15 @@ impl Bsc {
     pub fn monitors_external_bus(&self) -> bool {
         self.slave || self.registers[0] & 0x400 == 0
     }
-    /// H §§7.2.2/7.3.1: ordinary CS1-CS3 narrow buses divide larger
-    /// operand/refill requests into separate external byte/word transactions.
-    /// CS0 retains this board model's existing 32-bit external adapter.
+    /// VA0.5 sheet 1 and H §3.3 table3.9: both CPUs have MD4=0,
+    /// MD3=1, fixing CS0 at 16 bits independently of BCR2/MCR. H
+    /// §§7.2.2/7.3.1: other ordinary areas retain programmable widths.
     pub fn bus_width(&self, address: u32) -> usize {
         if self.interface(address) != Interface::Ordinary {
             return if self.registers[3] & 0x40 == 0 { 2 } else { 4 };
         }
         match address >> 25 {
+            0 => 2,
             area @ 1..=3 => 1 << (((self.registers[1] >> (area * 2)) & 3) - 1),
             _ => 4,
         }
@@ -501,7 +525,7 @@ mod tests {
     use super::*;
     #[test]
     fn burst_rom_and_partial_sharing_are_valid_initializations_with_pin_specific_effects() {
-        // H §§7.8/7.10.3: a 32-bit CS0 adapter needs no nibble cycles;
+        // H §§7.8/7.10.3: standalone reads do not use nibble cycles;
         // PSHR affects master-mode arbitration/monitoring, never the MD5 pin.
         for slave in [false, true] {
             for bits in [0, 0x400, 0x800, 0xC00] {
@@ -522,7 +546,7 @@ mod tests {
                         b.access_waits(area << 25, false),
                         if area == 0 { 6 } else { 8 }
                     );
-                    assert_eq!(b.bus_width(area << 25), 4);
+                    assert_eq!(b.bus_width(area << 25), if area == 0 { 2 } else { 4 });
                 }
             }
         }
@@ -745,7 +769,7 @@ mod memory_tests {
         b
     }
     fn cycle(b: &Bsc, address: u32, write: bool, first: bool, last: bool) -> u32 {
-        let (base, waits) = b.access_timing(address, write, first, last);
+        let (base, waits) = b.access_timing(address, b.bus_width(address), write, first, last);
         base + waits
     }
 
@@ -766,7 +790,7 @@ mod memory_tests {
                     let mut b = configured(mode, sz, 0);
                     b.set_slave(slave);
                     b.write(BSC + 4, 0xA55A_0054).unwrap();
-                    assert_eq!(b.bus_width(0), 4);
+                    assert_eq!(b.bus_width(0), 2);
                     assert_eq!(b.bus_width(0x0200_0000), 1);
                     for (area, selected) in [(2, special[0]), (3, special[1])] {
                         assert_eq!(b.bus_width(area << 25), if selected { width } else { 1 });
@@ -918,7 +942,7 @@ mod mode_tests {
                     b.write(BSC + 12, 0xA55A0200 | size | trp).unwrap();
                     for code in codes {
                         for a0 in [0, 1] {
-                            b.access_timing(0x06000000, true, true, true);
+                            b.access_timing(0x06000000, b.bus_width(0x06000000), true, true, true);
                             assert!(b.rows.get().iter().any(Option::is_some));
                             let address = 0xFFFF8000 | code | a0;
                             assert_eq!(b.mode_states(address), Ok(2 + (trp >> 15)));
