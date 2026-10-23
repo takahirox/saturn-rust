@@ -2,7 +2,7 @@
 use super::Vdp2;
 
 impl Vdp2 {
-    fn display_bank(&self, address: usize) -> usize {
+    pub(super) fn display_bank(&self, address: usize) -> usize {
         let bank = (address & 0x7FFFF) >> 17;
         if self.word(0xE) & (0x100 << (bank / 2)) == 0 {
             bank & !1
@@ -90,11 +90,21 @@ impl Vdp2 {
         if names == 0 {
             return false;
         }
-        let permitted: [u8; 8] = if self.word(0) & 6 == 0 {
+        let mut permitted: [u8; 8] = if self.word(0) & 6 == 0 {
             [0xF7, 0xEF, 0xCF, 0x8F, 0x0F, 0x0E, 0x0C, 0x08]
         } else {
             [0x07, 0x0E, 0x0D, 0x0B, 0, 0, 0, 0]
         };
+        // Table3.4's high-resolution 2x2-cell row differs at T2/T3.
+        if self.word(0) & 6 != 0 && self.character_control(layer).0 & 1 != 0 {
+            permitted[2] = 0x0C;
+            permitted[3] = 0x08;
+        }
+        // §3.3 text immediately before table3.3: NBG0/1 names at T0
+        // remove the character-timing restriction (including T3).
+        if layer < 2 {
+            permitted[0] = if self.word(0) & 6 == 0 { 255 } else { 15 };
+        }
         // Each required name fetch must feed enough character reads.
         (0..8)
             .filter(|slot| names & (1 << slot) != 0)
@@ -115,7 +125,7 @@ impl Vdp2 {
                     || (0..3).any(|s| slots & (1 << s) != 0 && other & ((1 << s) - 1) != 0))
         }
     }
-    fn access_command(&self, bank: usize, slot: usize) -> u16 {
+    pub(super) fn access_command(&self, bank: usize, slot: usize) -> u16 {
         let word = self.word(0x10 + bank * 4 + slot / 4 * 2);
         word >> ((3 - slot % 4) * 4) & 15
     }
@@ -127,7 +137,7 @@ impl Vdp2 {
             _ => false,
         }
     }
-    fn rotation_bank(&self, bank: usize) -> bool {
+    pub(super) fn rotation_bank(&self, bank: usize) -> bool {
         // RBG1 owns B0/B1 independently of the programmable cycle words.
         (self.word(0x20) & 0x20 != 0 && bank >= 2)
             || (self.word(0x20) & 0x10 != 0 && self.word(0xE) >> (bank * 2) & 3 != 0)
@@ -255,8 +265,8 @@ mod tests {
     #[test]
     fn name_to_character_pipeline_uses_table_three_four_and_reduction_enable() {
         for (mode, allowed) in [
-            (0x8000, [0xF7u8, 0xEF, 0xCF, 0x8F, 0x0F, 0x0E, 0x0C, 0x08]),
-            (0x8002, [0x07, 0x0E, 0x0D, 0x0B, 0, 0, 0, 0]),
+            (0x8000, [0xFFu8, 0xEF, 0xCF, 0x8F, 0x0F, 0x0E, 0x0C, 0x08]),
+            (0x8002, [0x0F, 0x0E, 0x0D, 0x0B, 0, 0, 0, 0]),
         ] {
             for (name, &mask) in allowed
                 .iter()
@@ -291,6 +301,30 @@ mod tests {
         assert!(!v.character_access(0, 0, 0, Some(0), false));
         patterns(&mut v, 0, 0x0000, 0x4444);
         assert!(v.character_access(0, 0, 0, Some(0), false));
+    }
+    #[test]
+    fn large_cells_in_four_timing_modes_use_their_own_table_three_four_row() {
+        for layer in [2usize, 3] {
+            for (name, allowed) in [(2, 0x0C), (3, 0x08)] {
+                for character in 0..4 {
+                    let mut v = Vdp2::default();
+                    reg(&mut v, 0, 0x8002);
+                    reg(&mut v, 0x20, 1 << layer);
+                    reg(&mut v, 0xE, 0x300);
+                    reg(&mut v, 0x2A, 1 << ((layer - 2) * 4));
+                    let n = !(15u32 << ((7 - name) * 4)) | (layer as u32) << ((7 - name) * 4);
+                    let c = !(15u32 << ((7 - character) * 4))
+                        | (4 + layer as u32) << ((7 - character) * 4);
+                    patterns(&mut v, 0, (n >> 16) as u16, n as u16);
+                    patterns(&mut v, 2, (c >> 16) as u16, c as u16);
+                    v.beam_rendering = true;
+                    assert_eq!(
+                        v.character_access(layer, 0x40000, 0, Some(0), false),
+                        allowed & (1 << character) != 0
+                    );
+                }
+            }
+        }
     }
     #[test]
     fn cell_scroll_ports_require_early_slots_and_nbg0_before_nbg1_in_the_same_bank() {

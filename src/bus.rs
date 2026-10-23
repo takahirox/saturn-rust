@@ -290,7 +290,7 @@ impl Default for Bus {
             bios: None,
             low: vec![0; WRAM_SIZE],
             high: vec![0; WRAM_SIZE],
-            vdp2: Vdp2::default(),
+            vdp2: Vdp2::clocked(),
             vdp1: Vdp1::default(),
             sound: Sound::default(),
             cd: crate::cd::CdBlock::default(),
@@ -533,12 +533,22 @@ impl Bus {
                 .scan_to(&self.vdp1, usize::from(self.raster.line), end);
         }
     }
+    fn acquire_display(&mut self) {
+        if let Some((field, line, phase, slot)) = self.raster.display_slot() {
+            self.vdp2.acquire_display(field, line, phase, slot);
+        }
+    }
     fn main_deadline(&self) -> u32 {
         self.onchip[0]
             .clocks_to_event()
             .min(self.bus_main_deadline())
             .min(self.onchip[1].clocks_to_event())
             .min(self.raster.clocks_to_event())
+            .min(if self.vdp2.display_active() {
+                self.raster.clocks_to_display_slot()
+            } else {
+                u32::MAX
+            })
             .min(self.scu.clocks_to_event())
             .min(self.vdp1.clocks_to_event())
     }
@@ -571,6 +581,7 @@ impl Bus {
         let mut reference_clocks = Some(reference_clocks);
         let mut command = None;
         while remaining != 0 {
+            self.acquire_display();
             self.grant_bus_transaction();
             let delta = remaining.min(self.main_deadline());
             self.onchip[0].advance_clocks(delta);
@@ -634,6 +645,8 @@ impl Bus {
             let (h, v) = self.raster.counters();
             self.vdp2.counters(h, v);
             self.vdp2.scan_field(self.raster.odd());
+            // Display samples precede transaction completion at equal edges.
+            self.acquire_display();
             // Complete the granted data phase before contenders at this edge.
             self.advance_bus_transaction(delta)?;
             for processor in [Processor::Master, Processor::Slave] {
@@ -652,7 +665,7 @@ impl Bus {
         self.system_clock.select(fast);
         self.raster.select_clock(fast);
         self.vdp1 = Vdp1::default();
-        self.vdp2 = Vdp2::default();
+        self.vdp2 = Vdp2::clocked();
         self.vdp2.pal = self.raster.pal;
         self.raster.configure(0);
         self.scu = Scu::default();
@@ -2302,7 +2315,10 @@ mod raster_write_tests {
             let expected = match x {
                 0..64 => [255, 0, 0, 255],
                 64..128 => [0, 255, 0, 255],
-                128..192 => [0, 255, 31, 255],
+                // §3.3 table3.3: on the initial unprimed reset line,
+                // the 32-bit 8bpp T0 access at phase768 has retained
+                // x192..195. The T1 access at772 has not happened.
+                128..196 => [0, 255, 31, 255],
                 _ => [0, 0, 31, 255],
             };
             assert_eq!(&frame[x * 4..][..4], expected, "x={x}");

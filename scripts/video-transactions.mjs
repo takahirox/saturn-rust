@@ -37,6 +37,37 @@ async function run(page, bytes, base, count, pixels = false) {
   }, { bytes: [...bytes], base, count, pixels });
 }
 export async function videoTransactions(page) {
+  const cycleSlots = await rom("vdp2-cycle-slots");
+  for (const slot of [0,7]) for (let repeat=0;repeat<2;repeat++) for (const initial of [0x1111,0x3333]) {
+    for (const [threshold,write] of [[826,true],[700,true],[826,false]]) {
+      const image=Buffer.from(cycleSlots);
+      image.writeUInt16BE(initial,0x100);image.writeUInt16BE(threshold,0x102);
+      image.writeUInt16BE(Number(write),0x104);
+      if(slot===7) {image.writeUInt16BE(0xEEEE,0x106);image.writeUInt16BE(0xEEE4,0x108);}
+      const result=await page.evaluate(async image=>{
+        const {emulator,advanceFrame}=await import("./app.js");
+        emulator.reset_bios(Uint8Array.from(image));
+        for(let i=0;i<100 && emulator.read_long(0x0600DF14)!==0x600D;i++)emulator.run_steps(5000);
+        const records=Array.from({length:4},(_,i)=>emulator.read_long(0x0600DF08+i*4));
+        // This is production presentation. The guest parks during active
+        // display; advanceFrame completes that field and presents its pixels.
+        advanceFrame();
+        const f=emulator.framebuffer(),ctx=document.getElementById("screen").getContext("2d");
+        return {records,exceptions:emulator.exception_count(),
+          rows:[0,15,16,17,223].map(y=>Array.from(f.slice(y*320*4,(y+1)*320*4))),
+          canvas:[0,15,16,17,223].map(y=>Array.from(ctx.getImageData(0,y,320,1).data))};
+      },[...image]);
+      const [h,v,word,done]=result.records;
+      assert(h<842 && (threshold===700?h<822:h>822),`HCNT ${h}`);
+      assert(v>=15 && v<=16);assert.equal(word,write?0x2222:initial);assert.equal(done,0x600D);
+      assert.equal(result.exceptions,"0");
+      const old=initial===0x1111?[255,0,0,255]:[0,0,255,255],green=[0,255,0,255];
+      const rows=[0,15,16,17,223].map(y=>Array.from({length:320},()=>
+        write && (y>16 || y===16 && threshold===700)?green:old).flat());
+      assert.deepEqual(result.rows,rows);assert.deepEqual(result.canvas,rows);
+    }
+  }
+  console.log("VDP2 cycle slots passed: pre/post-acquisition guest writes, source mutations, omitted writes, cold resets and production Canvas pixels.");
   const heldWord = await rom("vdp2-word-retention");
   for (const initial of [0x1111,0x1111,0x3333,0x3333]) {
     const image = Buffer.from(heldWord);image.writeUInt16BE(initial,0x100);

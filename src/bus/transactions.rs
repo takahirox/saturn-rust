@@ -25,6 +25,10 @@ mod vdp1_tests;
 #[path = "write_buffer_tests.rs"]
 mod write_buffer_tests;
 
+#[cfg(test)]
+#[path = "vdp2_tests.rs"]
+mod vdp2_tests;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Operation {
     PipelineWait(u32),

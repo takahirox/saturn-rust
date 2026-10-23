@@ -3832,8 +3832,10 @@ bus vector for a newly captured XC=0 now expects pre-clipping's earlier END/IRQ.
 Tests intentionally requiring offscreen traversal explicitly disable pre-clipping.
 The initial failures are not counted as passing runs.
 
-The full Issue #17 objective is **not complete**. The new VDP2 serializers are
-demand sampled, without an advance cycle-slot fetch pipeline; VDP1's physical
+The full Issue #17 objective is **not complete**. At this historical checkpoint,
+VDP2 serializers were demand sampled without advance cycle-slot acquisition;
+normal-background acquisition is superseded by the [Issue #19 record](validation-issue-19.md).
+VDP1's physical
 pre-clipping overhead and complete sloped/repeated coverage are not established.
 The other CPU/peripheral, MC68EC000, board ownership/reset, SCU/DSP, audio,
 CD/media/HLE, SMPC and comprehensive acceptance findings remain unresolved.
@@ -4162,3 +4164,15 @@ SMPC and comprehensive conformance/guest acceptance work remains required.
 No umbrella checkbox is newly claimed complete. Keep PR #18 Draft and retain
 the full target and intended `Closes #17`; no merge, Issue closure/replacement,
 historical reopening or human/firmware/live-site/external-workflow gate.
+
+
+## Issue #19 normal-background acquisition continuation
+
+Related to #17. Related to #19. Normal-background VRAM acquisition now runs at
+cycle-slot deadlines independently of rendering/debugger inspection. The
+[Issue #19 record](validation-issue-19.md) contains the primary specifications,
+explicit phase assumptions, native/board vectors, original MIT guest provenance,
+ROM hashes, inherited-implementation failure and current validation results.
+Earlier first-use-only descriptions above are historical evidence. Rotation
+acquisition timing and the remaining mandatory hardware/comprehensive acceptance
+scope remain required; no campaign policy or tracker state is changed.
