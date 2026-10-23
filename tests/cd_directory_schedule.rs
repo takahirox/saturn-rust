@@ -1,0 +1,372 @@
+//! Original scheduled directory vectors: ST-162 §§3.2/6.2/8.2.8.
+use saturn_rust::{
+    Boot, Machine,
+    bus::{BIOS_SIZE, Memory},
+    cd::{CdBlock, DATA, REGISTERS as CD},
+    media::Media,
+};
+const ISO: &[u8] = include_bytes!("fixtures/cd-directory-schedule.iso");
+fn issue(cd: &mut CdBlock, words: [u16; 4]) -> [u16; 4] {
+    for (i, w) in words.into_iter().enumerate() {
+        cd.write16(CD + 0x18 + i as u32 * 4, w).unwrap();
+    }
+    cd.advance(1075);
+    std::array::from_fn(|i| cd.read16(CD + 0x18 + i as u32 * 4).unwrap())
+}
+fn mount() -> CdBlock {
+    let mut cd = CdBlock::default();
+    cd.mount(Media::iso(ISO).unwrap());
+    cd.write16(CD + 8, 0).unwrap();
+    cd
+}
+fn advance(cd: &mut CdBlock, mut n: u32, chunk: u32) {
+    while n > 0 {
+        let step = n.min(chunk);
+        cd.advance(step);
+        n -= step;
+    }
+}
+fn free(cd: &mut CdBlock) -> u16 {
+    issue(cd, [0x5000, 0, 0, 0])[1]
+}
+fn table(cd: &mut CdBlock) -> bool {
+    issue(cd, [0x7200, 0, 0, 0])[0] != 0xFF00
+}
+fn flags(cd: &CdBlock) -> u16 {
+    cd.read16(CD + 8).unwrap() & 512
+}
+fn start(cd: &mut CdBlock) {
+    cd.write16(CD + 8, !512).unwrap();
+    assert_eq!(issue(cd, [0x7000, 0, 0xFF, 0xFFFF])[0], 0x0180);
+    assert_eq!(flags(cd), 0);
+}
+#[test]
+fn literal_sector_trace_and_table_publication_are_chunk_and_speed_invariant() {
+    for (speed, deadlines) in [
+        (2, [179161, 358322, 537482, 716643, 895804]),
+        (1, [358322, 716643, 1074964, 1433286, 1791607]),
+    ] {
+        for chunk in [1, 3, 17, 10000] {
+            let mut cd = mount();
+            issue(
+                &mut cd,
+                [if speed == 1 { 0x0410 } else { 0x0400 }, 0xFFFF, 0, 0],
+            );
+            start(&mut cd);
+            let mut elapsed = 0;
+            let mut trace = Vec::new();
+            for (i, deadline) in deadlines.into_iter().enumerate() {
+                advance(&mut cd, deadline - elapsed - 1, chunk);
+                assert_eq!(flags(&cd), 0);
+                cd.advance(1);
+                let f = flags(&cd);
+                let r = issue(&mut cd, [0, 0, 0, 0]);
+                let scope = issue(&mut cd, [0x7200, 0, 0, 0]);
+                trace.push((r[0], r[3], f, scope[0] != 0xFF00));
+                if i == 4 {
+                    assert_eq!(scope[1..], [3, 0x100, 2]);
+                }
+                elapsed = deadline + 2150;
+            }
+            assert_eq!(
+                trace,
+                [
+                    (0x0380, 167, 0, false),
+                    (0x0400, 170, 0, false),
+                    (0x0380, 171, 0, false),
+                    (0x0380, 172, 0, false),
+                    (0x0180, 173, 512, true)
+                ]
+            );
+            assert_eq!(free(&mut cd), 200);
+            assert_ne!(issue(&mut cd, [0x7000, 0, 0, 2])[0], 0xFF00);
+            assert!(!table(&mut cd));
+            cd.advance(400_000);
+            assert_eq!(issue(&mut cd, [0x7200, 0, 0, 0])[1], 1);
+            assert_ne!(issue(&mut cd, [0x7000, 0, 0, 1])[0], 0xFF00);
+            cd.advance(1_100_000);
+            assert_eq!(issue(&mut cd, [0x7200, 0, 0, 0])[1], 3);
+        }
+    }
+}
+#[test]
+fn acquired_raw_sectors_use_correction_retry_deadlines_and_keep_accepted_response() {
+    let media = Media::iso(ISO).unwrap();
+    for sector in [16, 21] {
+        for (damage, ecc, retry, success) in [
+            (0, 0, 0, true),
+            (1, 0, 0, true),
+            (1, 0x80, 2, false),
+            (1, 0x80, 0x40, true),
+            (2, 0, 2, false),
+        ] {
+            let mut raw = Vec::new();
+            for fad in 150..182 {
+                raw.extend(media.raw_sector(fad).unwrap());
+            }
+            if damage == 1 {
+                raw[sector * 2352 + 16 + 100] ^= 0x5A;
+            }
+            if damage == 2 {
+                raw[sector * 2352 + 16..sector * 2352 + 2064].fill(0xB7);
+            }
+            let mut cd = CdBlock::default();
+            cd.mount(
+                Media::cue(
+                    "FILE \"d\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00",
+                    &[("d", &raw)],
+                )
+                .unwrap(),
+            );
+            issue(&mut cd, [0x0400, 0xFFFF, 0, ecc << 8 | retry]);
+            cd.write16(CD + 8, !512).unwrap();
+            // Leave CR4 unread, retaining command response throughout completion.
+            for (i, w) in [0x7000, 0, 0xFF, 0xFFFF].into_iter().enumerate() {
+                cd.write16(CD + 0x18 + i as u32 * 4, w).unwrap();
+            }
+            cd.advance(1075);
+            assert_eq!(cd.read16(CD + 0x18).unwrap(), 0x0180);
+            assert_eq!(flags(&cd), 0);
+            let attempt = if sector == 16 { 1 } else { 4 };
+            cd.advance((26_874_100u64 * attempt).div_ceil(150) as u32);
+            if !success {
+                assert_eq!(flags(&cd), 0); // two retries have yet to expire
+                // Query RETRY without releasing the response latch at CR4.
+                for (i, w) in [0, 0, 0, 0].into_iter().enumerate() {
+                    cd.write16(CD + 0x18 + i as u32 * 4, w).unwrap();
+                }
+                cd.advance(1075);
+                assert_eq!(cd.read16(CD + 0x18).unwrap(), 0x0880);
+                let first = (26_874_100u64 * attempt).div_ceil(150) as u32;
+                let terminal = (26_874_100u64 * (attempt + 2)).div_ceil(150) as u32;
+                cd.advance(terminal - first - 1075 - 1);
+                assert_eq!(flags(&cd), 0); // second failed read still owns workspace
+                cd.advance(1);
+                assert_eq!(flags(&cd), 512); // third failed read exhausts exactly two retries
+            }
+            cd.advance(1_000_000);
+            assert_ne!(flags(&cd), 0);
+            assert_eq!(
+                cd.read16(CD + 0x18).unwrap(),
+                if success { 0x0180 } else { 0x0880 }
+            );
+            assert_eq!(
+                issue(&mut cd, [0, 0, 0, 0])[0],
+                if success { 0x0180 } else { 0x0980 }
+            );
+            assert_eq!(table(&mut cd), success);
+            assert_eq!(free(&mut cd), 200);
+        }
+    }
+}
+#[test]
+fn workspace_shares_pool_with_host_reservations_and_never_overallocates() {
+    for count in [199, 200] {
+        let mut cd = mount();
+        issue(&mut cd, [0x6400, 0, 0x0400, count]);
+        cd.write16(DATA, 0x1357).unwrap();
+        let r = issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFF]);
+        assert_eq!(r[0] & 0x8000, if count == 200 { 0x8000 } else { 0 });
+        assert_eq!(free(&mut cd), 0);
+        issue(&mut cd, [0x0600, 0, 0, 0]);
+        assert_eq!(free(&mut cd), 0);
+        if count == 200 {
+            assert_ne!(issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFF])[0] & 0x8000, 0);
+        }
+        assert_ne!(issue(&mut cd, [0x6400, 0, 0x0500, 1])[0] & 0x8000, 0);
+        cd.advance(1_000_000);
+        assert_eq!(table(&mut cd), count == 199);
+        assert_eq!(free(&mut cd), 200 - count);
+        assert_eq!(issue(&mut cd, [0x5100, 0, 0x0400, 0])[3], count);
+        issue(&mut cd, [0x6100, 0, 0x0400, 1]);
+        assert_eq!(cd.read16(DATA).unwrap(), 0x1357);
+    }
+}
+#[test]
+fn every_cancellation_boundary_releases_workspace_and_prevents_stale_completion() {
+    for boundary in [0u32, 537_600, 895_803] {
+        for cancel in 0..5 {
+            let mut cd = mount();
+            issue(&mut cd, [0x6400, 0, 0x0400, 1]);
+            cd.write16(DATA, 0x2468).unwrap();
+            issue(&mut cd, [0x0600, 0, 0, 0]);
+            start(&mut cd);
+            cd.advance(if boundary == 895_803 && cancel < 3 {
+                boundary - 1075
+            } else {
+                boundary
+            });
+            assert_eq!(flags(&cd), 0);
+            match cancel {
+                0 => {
+                    issue(&mut cd, [0x7500, 0, 0, 0]);
+                }
+                1 => {
+                    issue(&mut cd, [0x0500, 0, 0, 0]);
+                }
+                2 => {
+                    issue(&mut cd, [0x0401, 0, 0, 0]);
+                }
+                3 => {
+                    cd.set_enabled(false);
+                    cd.set_enabled(true);
+                }
+                _ => cd.mount(Media::iso(ISO).unwrap()),
+            }
+            cd.write16(CD + 8, !512).unwrap();
+            cd.advance(2_000_000);
+            assert_eq!(flags(&cd), 0);
+            assert!(!table(&mut cd));
+            assert_eq!(
+                free(&mut cd),
+                if matches!(cancel, 2 | 3) { 200 } else { 199 }
+            );
+            if !matches!(cancel, 2 | 3) {
+                issue(&mut cd, [0x6100, 0, 0x0400, 1]);
+                assert_eq!(cd.read16(DATA).unwrap(), 0x2468);
+                issue(&mut cd, [0x0600, 0, 0, 0]);
+            }
+            if cancel == 0 {
+                assert_eq!(issue(&mut cd, [0x4500, 0, 0, 0])[0] & 0x7F, 0x40);
+                assert_eq!(issue(&mut cd, [0, 0, 0, 0])[0], 0x0180);
+            }
+        }
+    }
+}
+#[test]
+fn drive_pause_obstructs_directory_while_independent_host_copy_and_status_run() {
+    let mut cd = mount();
+    issue(&mut cd, [0x6400, 0, 0x0400, 1]);
+    cd.write16(DATA, 0xCAFE).unwrap();
+    issue(&mut cd, [0x0600, 0, 0, 0]);
+    start(&mut cd);
+    assert_ne!(issue(&mut cd, [0x7100, 0, 0, 2])[0] & 0x8000, 0);
+    assert_eq!(free(&mut cd), 198); // stored canary plus one workspace
+    cd.write16(CD + 8, !0x380).unwrap();
+    let event = |cd: &CdBlock| cd.read16(CD + 8).unwrap() & 0x380;
+    let mut trace = vec![event(&cd)];
+    issue(&mut cd, [0x65_05, 0, 0x0400, 1]);
+    trace.push(event(&cd));
+    issue(&mut cd, [0x6100, 0, 0x0400, 1]);
+    trace.push(event(&cd));
+    cd.advance(1277); // copy deadline2352 after its accepted response plus GET1075
+    trace.push(event(&cd));
+    assert_eq!(cd.read16(DATA).unwrap(), 0xCAFE);
+    issue(&mut cd, [0x11FF, 0xFFFF, 0, 0]);
+    trace.push(event(&cd));
+    cd.advance(1_000_000);
+    assert_eq!(flags(&cd), 0);
+    assert_eq!(issue(&mut cd, [0, 0, 0, 0])[0], 0x0180);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0x0500, 0])[3], 1);
+    issue(&mut cd, [0x0600, 0, 0, 0]);
+    trace.push(event(&cd));
+    assert_eq!(trace, [0, 0, 0, 0x100, 0x100, 0x180]);
+    issue(&mut cd, [0x61_00, 0, 0x0500, 1]);
+    assert_eq!(cd.read16(DATA).unwrap(), 0xCAFE);
+    issue(&mut cd, [0x0600, 0, 0, 0]);
+    issue(&mut cd, [0x10FF, 0xFFFF, 0, 0]);
+    cd.advance(1_000_000);
+    assert!(table(&mut cd));
+    // Invalid parameters reject without destroying an existing table.
+    assert_eq!(issue(&mut cd, [0x7000, 0, 0x1800, 0])[0], 0xFF00);
+    assert!(table(&mut cd));
+    assert_eq!(issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFE])[0], 0xFF00);
+    assert!(table(&mut cd));
+}
+fn rom() -> Vec<u8> {
+    let mut rom = vec![0; BIOS_SIZE];
+    for line in include_str!("fixtures/cd-directory-schedule.hex")
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+    {
+        let mut words = line.split_whitespace();
+        let at = usize::from_str_radix(words.next().unwrap(), 16).unwrap();
+        for (i, w) in words.enumerate() {
+            rom[at + i * 2..at + i * 2 + 2]
+                .copy_from_slice(&u16::from_str_radix(w, 16).unwrap().to_be_bytes());
+        }
+    }
+    rom
+}
+#[test]
+fn guest_measures_directory_progress_receives_scu_irq_and_controls_navigation_and_abort() {
+    for (fid, command, abort) in [
+        (2u16, 0x7000u16, 0u16),
+        (0, 0x7000, 0),
+        (0, 0x7000, 1),
+        (2, 0, 0),
+    ] {
+        let mut rom = rom();
+        for (at, value) in [(0x100, fid), (0x102, command), (0x104, abort)] {
+            rom[at..at + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        for _ in 0..2 {
+            let mut m = Machine::new();
+            m.reset(Boot::ExternalBios(&rom)).unwrap();
+            m.mount_media(Media::iso(ISO).unwrap());
+            for _ in 0..100 {
+                m.run_steps(10000).unwrap();
+                if m.bus().read32(0x0600C014) == Ok(0x600D) {
+                    break;
+                }
+            }
+            let read = |at: u32| m.bus().read32(0x0600C000 + at).unwrap();
+            assert_eq!(m.cpu_state().exceptions, if command == 0 { 0 } else { 1 });
+            if command == 0 {
+                assert_eq!(read(0x14), 0);
+                continue;
+            }
+            assert_eq!(read(0), 0); // inherited synchronous implementation fails here
+            assert!((6900..7200).contains(&read(4)), "FRT elapsed={}", read(4));
+            assert_eq!(read(8), 0x10000); // masked SCU completion was latched
+            assert_eq!(read(0x1C), 0); // CD-masked EFLS did not reach SCU
+            assert_eq!(read(0x18), 0); // guest handler acknowledged HIRQ
+            assert_eq!(read(12), 1); // handler executed after unmask and acknowledged CD
+            assert_eq!(read(0x24), 3);
+            assert_eq!(read(0x14), 0x600D);
+            if abort != 0 {
+                assert_eq!(read(0x40), 0xFF00);
+                assert_eq!(read(0x10), u32::MAX);
+            } else {
+                assert_eq!(read(0x44), if fid == 2 { 1 } else { 3 });
+                assert_eq!(read(0x10), if fid == 2 { 178 } else { 174 });
+            }
+        }
+    }
+}
+
+#[test]
+fn infinite_directory_retry_is_bounded_per_tick_and_abort_releases_workspace() {
+    for chunk in [1, 3, 17, 10000] {
+        let media = Media::iso(ISO).unwrap();
+        let mut raw = Vec::new();
+        for fad in 150..182 {
+            raw.extend(media.raw_sector(fad).unwrap());
+        }
+        raw[16 * 2352 + 100] ^= 0x5A;
+        let mut cd = CdBlock::default();
+        cd.mount(
+            Media::cue(
+                "FILE \"d\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00",
+                &[("d", &raw)],
+            )
+            .unwrap(),
+        );
+        issue(&mut cd, [0x0400, 0xFFFF, 0, 0x8080]);
+        start(&mut cd);
+        advance(&mut cd, 2_000_000, chunk);
+        let retry = issue(&mut cd, [0, 0, 0, 0]);
+        assert_eq!((retry[0], retry[3]), (0x0880, 166));
+        assert_eq!(flags(&cd), 0);
+        assert_eq!(free(&mut cd), 199);
+        assert!(!table(&mut cd));
+        issue(&mut cd, [0x7500, 0, 0, 0]);
+        assert_eq!(flags(&cd), 512);
+        assert_eq!(free(&mut cd), 200);
+        cd.write16(CD + 8, !512).unwrap();
+        advance(&mut cd, 2_000_000, chunk);
+        assert_eq!(flags(&cd), 0);
+        assert!(!table(&mut cd));
+        assert_eq!(issue(&mut cd, [0, 0, 0, 0])[0], 0x0180);
+    }
+}

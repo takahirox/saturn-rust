@@ -136,6 +136,19 @@ pub struct CdBlock {
     volume_end: u32,
     files: Vec<File>,
     file_read: Option<FileRead>,
+    directory_read: Option<DirectoryRead>,
+}
+// One reserved pool sector is reused at each drive deadline. Only the bounded
+// 256-entry public table and a parsed primary record survive a sector read.
+struct DirectoryRead {
+    selector: usize,
+    extent: Option<File>,
+    volume_end: u32,
+    primary: Option<(File, u32)>,
+    next: u32,
+    first: u32,
+    fid: u32,
+    files: Vec<File>,
 }
 struct FileRead {
     file: File,
@@ -280,11 +293,14 @@ impl Default for CdBlock {
             volume_end: 0,
             files: Vec::new(),
             file_read: None,
+            directory_read: None,
         }
     }
 }
 impl CdBlock {
     pub fn mount(&mut self, media: Media) {
+        self.directory_read = None;
+        self.pending = None;
         self.copying = None;
         self.copy_error = 0;
         self.retry_attempts = 0;
@@ -569,7 +585,12 @@ impl CdBlock {
         if audio {
             return;
         } // CD-DA advances exactly every 588 sample frames.
-        if self.used() >= POOL {
+        if self
+            .directory_read
+            .as_ref()
+            .is_none_or(|j| j.next != self.fad)
+            && self.used() >= POOL
+        {
             self.buffer_paused = true;
             self.status = 1;
             self.raise(BFUL);
@@ -595,11 +616,29 @@ impl CdBlock {
                     if self.retry & 0x40 == 0 {
                         self.playing = false;
                         self.status = 9;
+                        self.finish_directory(false);
                         return;
                     }
                 }
                 self.retry_attempts = 0;
                 self.status = 3;
+                // Drive commands remain executable and may obstruct the
+                // filesystem by moving away from its next required sector.
+                if self
+                    .directory_read
+                    .as_ref()
+                    .is_some_and(|j| j.next == self.fad)
+                {
+                    match self.directory_sector(&raw) {
+                        Some(true) => self.finish_directory(true),
+                        Some(false) => (),
+                        None => {
+                            self.status = 9;
+                            self.finish_directory(false);
+                        }
+                    }
+                    return;
+                }
                 let selected = self
                     .file_read
                     .as_ref()
@@ -628,6 +667,7 @@ impl CdBlock {
             Err(_) => {
                 self.playing = false;
                 self.status = 9;
+                self.finish_directory(false);
             }
         }
     }
@@ -646,6 +686,7 @@ impl CdBlock {
     }
     fn used(&self) -> usize {
         self.partitions.iter().map(Vec::len).sum::<usize>()
+            + usize::from(self.directory_read.is_some())
             + self
                 .transfer
                 .borrow()
@@ -936,6 +977,7 @@ impl CdBlock {
                 self.seeking = 0;
                 self.audio_index = 0;
                 self.deemphasis = crate::cd_audio::Deemphasis::default();
+                self.finish_directory(false);
                 self.file_read = None;
                 self.retry_attempts = 0;
                 self.speed = if self.init_flags & 0x10 != 0 { 1 } else { 2 };
@@ -970,6 +1012,7 @@ impl CdBlock {
                 }
             }
             0x05 => {
+                self.finish_directory(false);
                 self.retry_attempts = 0;
                 self.files.clear();
                 self.directory = None;
@@ -1424,48 +1467,62 @@ impl CdBlock {
                 r[0] = (r[0] & 0xFF00) | self.copy_error;
                 self.response.set(r);
             }
-            0x70 => {
-                if selector >= SELECTORS {
+            0x70 | 0x71 => {
+                if selector >= SELECTORS || self.media.is_none() || self.tray_open {
                     return false;
                 }
-                if !self.load_directory(field2, 2) {
-                    return false;
+                if self.directory_read.is_some() {
+                    return self.wait();
                 }
-                let directory = self.directory.as_ref().unwrap();
-                self.prepare_file_filter(
-                    selector,
-                    directory.fad,
-                    directory.size.div_ceil(2048),
-                    None,
-                );
-                self.file_read = None;
-                self.playing = false;
-                self.status = 1;
-                self.raise(EFLS);
-            }
-            0x71 => {
-                if selector >= SELECTORS {
-                    return false;
-                }
-                let first = if field2 == 0xFF_FFFF {
+                let id = if command == 0x70 { field2 } else { 0 };
+                let first = if command == 0x70 || field2 == 0xFF_FFFF {
                     2
                 } else {
                     field2.max(2)
                 };
-                if !self.load_directory(0, first) {
-                    return false;
+                let extent = if id == 0xFF_FFFF {
+                    None
+                } else {
+                    let Some(file) = self.files.iter().find(|f| f.id == id && f.is_directory)
+                    else {
+                        return false;
+                    };
+                    Some(file.clone())
+                };
+                // Clearing the work partition can free a sector, but a full
+                // pool owned by other selectors/host reservations returns WAIT
+                // without changing either table or selector settings.
+                if self.used() - self.partitions[selector].len() >= POOL {
+                    return self.wait();
                 }
-                let directory = self.directory.as_ref().unwrap();
-                self.prepare_file_filter(
+                let next = extent.as_ref().map_or(166, |f| f.fad);
+                let count = extent.as_ref().map_or(1, |f| f.size.div_ceil(2048));
+                self.prepare_file_filter(selector, next, count, None);
+                self.directory_read = Some(DirectoryRead {
                     selector,
-                    directory.fad,
-                    directory.size.div_ceil(2048),
-                    None,
-                );
+                    extent,
+                    volume_end: self.volume_end,
+                    primary: None,
+                    next,
+                    first,
+                    fid: 0,
+                    files: Vec::new(),
+                });
+                self.files.clear();
+                self.directory = None;
                 self.file_read = None;
-                self.playing = false;
-                self.status = 1;
-                self.raise(EFLS);
+                self.scan = None;
+                self.buffer_paused = false;
+                self.fad = next;
+                self.play_start = self.media.as_ref().unwrap().tracks[0].start;
+                self.end = self.media.as_ref().unwrap().leadout;
+                self.repeat = 0;
+                self.repeats = 0;
+                self.phase = 0;
+                self.seeking = 26_875;
+                self.playing = true;
+                self.retry_attempts = 0;
+                self.status = 4;
             }
             0x72 => {
                 if self.directory.is_none() {
@@ -1539,6 +1596,9 @@ impl CdBlock {
                 self.status = 3;
             }
             0x75 => {
+                self.finish_directory(false);
+                self.seeking = 0;
+                self.scan = None;
                 self.retry_attempts = 0;
                 self.file_read = None;
                 self.playing = false;
@@ -1561,112 +1621,120 @@ impl CdBlock {
         self.partitions[selector].clear();
         self.connection = selector as u8;
     }
-    fn load_directory(&mut self, id: u32, first: u32) -> bool {
-        let Some(media) = &self.media else {
-            return false;
+    fn finish_directory(&mut self, success: bool) {
+        let Some(job) = self.directory_read.take() else {
+            return;
         };
-        let (extent, volume_end) = if id == 0xFF_FFFF {
-            // ST-040 §3.2.1: runtime file services use the same primary
-            // namespace as bootstrap, including boot/supplementary descriptors.
-            let Some(track) = media.track(166) else {
-                return false;
-            };
-            let mut primary = None;
-            let mut descriptors_end = None;
-            for fad in 166..track.end {
-                let Ok(descriptor) = media.cooked_sector(fad) else {
-                    return false;
-                };
-                if descriptor.len() != 2048 || &descriptor[1..7] != b"CD001\x01" {
-                    return false;
-                }
-                match descriptor[0] {
-                    0 | 2 | 3 => (),
-                    1 if primary.is_none() => primary = Some(descriptor),
-                    255 => {
-                        descriptors_end = Some(fad + 1);
-                        break;
+        if success {
+            self.files = job.files;
+            self.directory = job.extent;
+            self.volume_end = job.volume_end;
+            self.status = 1;
+        }
+        self.playing = false;
+        self.seeking = 0;
+        self.retry_attempts = 0;
+        // Never replace a retained command response with an asynchronous result.
+        self.raise(EFLS);
+    }
+    fn directory_sector(&mut self, raw: &[u8; RAW_SECTOR]) -> Option<bool> {
+        let media = self.media.as_ref()?;
+        let job = self.directory_read.as_mut()?;
+        let bytes = match raw[15] {
+            1 => &raw[16..2064],
+            2 if raw[18] & 0x20 == 0 => &raw[24..2072],
+            _ => return None,
+        };
+        if job.extent.is_none() {
+            let track = media.track(job.next)?;
+            if job.next >= track.end || &bytes[1..7] != b"CD001\x01" {
+                return None;
+            }
+            match bytes[0] {
+                0 | 2 | 3 => (),
+                1 if job.primary.is_none() => {
+                    if bytes[128..132] != [0, 8, 8, 0]
+                        || bytes[156] != 34
+                        || bytes[181] != 2
+                        || bytes[188..190] != [1, 0]
+                    {
+                        return None;
                     }
-                    _ => return false,
+                    let blocks = u32::from_le_bytes(bytes[80..84].try_into().ok()?);
+                    if blocks != u32::from_be_bytes(bytes[84..88].try_into().ok()?) {
+                        return None;
+                    }
+                    let limit = blocks.checked_add(150).filter(|&n| n <= media.leadout)?;
+                    let root = File::from_record(&bytes[156..190], media, limit, 0)?;
+                    job.primary = Some((root, limit));
                 }
+                255 => {
+                    let (root, limit) = job.primary.take()?;
+                    if limit <= job.next
+                        || root.fad <= job.next
+                        || root.size == 0
+                        || root.size > 1024 * 1024
+                    {
+                        return None;
+                    }
+                    job.next = root.fad;
+                    self.filters[job.selector].start = root.fad;
+                    self.filters[job.selector].count = root.size.div_ceil(2048);
+                    job.extent = Some(root);
+                    job.volume_end = limit;
+                    self.fad = job.next;
+                    // Same deterministic seek policy as CD play/seek. No claim
+                    // of measured head movement or console seek timing.
+                    self.seeking = 26_875;
+                    self.status = 4;
+                    return Some(false);
+                }
+                _ => return None,
             }
-            let (Some(pvd), Some(descriptors_end)) = (primary, descriptors_end) else {
-                return false;
-            };
-            if pvd[128..132] != [0, 8, 8, 0]
-                || pvd[156] != 34
-                || pvd[181] != 2
-                || pvd[188..190] != [1, 0]
-            {
-                return false;
+            job.next += 1;
+            if job.next >= track.end {
+                return None;
             }
-            let blocks = u32::from_le_bytes(pvd[80..84].try_into().unwrap());
-            if blocks != u32::from_be_bytes(pvd[84..88].try_into().unwrap()) {
-                return false;
-            }
-            let Some(limit) = blocks
-                .checked_add(150)
-                .filter(|&end| end >= descriptors_end && end <= media.leadout)
-            else {
-                return false;
-            };
-            let Some(root) = File::from_record(&pvd[156..190], media, limit, 0) else {
-                return false;
-            };
-            if root.fad < descriptors_end {
-                return false;
-            }
-            (root, limit)
         } else {
-            let Some(f) = self.files.iter().find(|f| f.id == id && f.is_directory) else {
-                return false;
-            };
-            (f.clone(), self.volume_end)
-        };
-        if extent.size == 0 || extent.size > 1024 * 1024 {
-            return false;
+            let extent = job.extent.as_ref()?;
+            if extent.size == 0 || extent.size > 1024 * 1024 {
+                return None;
+            }
+            let remaining = extent.size.checked_sub((job.next - extent.fad) * 2048)?;
+            let length = remaining.min(2048) as usize;
+            let mut offset = 0;
+            while offset < length {
+                let len = bytes[offset] as usize;
+                if len == 0 {
+                    break;
+                }
+                if len < 34 || offset + len > length {
+                    return None;
+                }
+                let r = &bytes[offset..offset + len];
+                let file = File::from_record(r, media, job.volume_end, job.fid)?;
+                if job.fid < 2 && (r[32..34] != [1, job.fid as u8] || !file.is_directory) {
+                    return None;
+                }
+                if job.fid == 0 && (file.fad != extent.fad || file.size != extent.size) {
+                    return None;
+                }
+                if job.fid < 2 || (job.fid >= job.first && job.files.len() < 256) {
+                    job.files.push(file);
+                }
+                job.fid += 1;
+                offset += len;
+            }
+            job.next += 1;
+            if remaining <= 2048 {
+                if job.fid < 2 || (job.first > 2 && job.first >= job.fid) {
+                    return None;
+                }
+                self.fad = job.next;
+                return Some(true);
+            }
         }
-        let mut bytes = Vec::new();
-        for i in 0..extent.size.div_ceil(2048) {
-            let Ok(sector) = media.cooked_sector(extent.fad + i) else {
-                return false;
-            };
-            bytes.extend(sector);
-        }
-        let mut files = Vec::new();
-        let mut offset = 0;
-        let mut fid = 0;
-        while offset < extent.size as usize {
-            let len = bytes[offset] as usize;
-            if len == 0 {
-                offset = (offset / 2048 + 1) * 2048;
-                continue;
-            }
-            if len < 34 || offset + len > extent.size as usize || offset % 2048 + len > 2048 {
-                return false;
-            }
-            let r = &bytes[offset..offset + len];
-            let Some(file) = File::from_record(r, media, volume_end, fid) else {
-                return false;
-            };
-            if fid < 2 && (r[32..34] != [1, fid as u8] || !file.is_directory) {
-                return false;
-            }
-            if fid == 0 && (file.fad != extent.fad || file.size != extent.size) {
-                return false;
-            }
-            if fid < 2 || (fid >= first && files.len() < 256) {
-                files.push(file);
-            }
-            fid += 1;
-            offset += len;
-        }
-        if fid < 2 || (first > 2 && first >= fid) {
-            return false;
-        }
-        self.files = files;
-        self.directory = Some(extent);
-        self.volume_end = volume_end;
-        true
+        self.fad = job.next;
+        Some(false)
     }
 }

@@ -459,16 +459,52 @@ try {
       try {
         emulator.reset_bios(Uint8Array.from(rom));
         emulator.mount_disc(Uint8Array.from(image));
-        emulator.run_steps(3000);
+        for (let i=0; i<100 && emulator.read_long(0x06009030)!==0x600D; i++) emulator.run_steps(10000);
         return [0, 0x10, 0x20, 0x24, 0x30].map((offset) => emulator.read_long(0x06009000 + offset));
       } finally { emulator.free(); }
     }, { rom: [...directoryRom], image: [...image] });
     if (typeof offset !== "number") {
       assert.deepEqual(trace, [0x0180, 0x0180, 0x0180, 2, 0x600D]);
     } else {
-      assert.deepEqual([trace[0], trace[1], trace[2], trace[4]], [0xFF00, 0xFF00, 0xFF00, 0x600D]);
+      assert.deepEqual([trace[0], trace[1], trace[2], trace[4]], [0x0180, 0xFF00, 0xFF00, 0x600D]);
     }
   }
+  // Original scheduled-directory diagnostic: guest FRT, masked SCU pending,
+  // unmasked IRQ handler, changed directory operands, omitted command and abort.
+  const scheduledRom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/cd-directory-schedule.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [at, ...words] = line.trim().split(/\s+/).map(v => parseInt(v, 16));
+    words.forEach((v, i) => scheduledRom.writeUInt16BE(v, at+i*2));
+  }
+  const scheduledIso = await readFile("tests/fixtures/cd-directory-schedule.iso");
+  for (const [fid, command, abort] of [[2,0x7000,0],[0,0x7000,0],[0,0x7000,1],[2,0,0]]) {
+    const rom = Buffer.from(scheduledRom);
+    rom.writeUInt16BE(fid,0x100); rom.writeUInt16BE(command,0x102); rom.writeUInt16BE(abort,0x104);
+    const traces = await page.evaluate(async ({rom, image}) => {
+      const {Emulator} = await import("./pkg/saturn_rust.js");
+      const emulator = new Emulator(), traces = [];
+      try {
+        for (let boot=0; boot<2; boot++) {
+          emulator.reset_bios(Uint8Array.from(rom)); emulator.mount_disc(Uint8Array.from(image));
+          for (let i=0; i<100 && emulator.read_long(0x0600C014)!==0x600D; i++) emulator.run_steps(10000);
+          traces.push([0,4,8,12,0x10,0x14,0x24,0x40,0x44,0x18,0x1C].map(at => emulator.read_long(0x0600C000+at)));
+        }
+      } finally { emulator.free(); }
+      return traces;
+    }, {rom:[...rom], image:[...scheduledIso]});
+    assert.deepEqual(traces[0],traces[1]);
+    const trace=traces[0];
+    if (!command) { assert.equal(trace[5],0); continue; }
+    assert.equal(trace[0],0); // synchronous inherited implementation fails
+    assert(trace[1]>=6900 && trace[1]<7200, `directory FRT=${trace[1]}`);
+    assert.deepEqual(trace.slice(2,4),[0x10000,1]);
+    assert.deepEqual(trace.slice(9),[0,0]);
+    assert.equal(trace[5],0x600D); assert.equal(trace[6],3);
+    if (abort) { assert.equal(trace[7],0xFF00); assert.equal(trace[4],0xFFFFFFFF); }
+    else { assert.equal(trace[8],fid===2?1:3); assert.equal(trace[4],fid===2?178:174); }
+  }
+  console.log("Scheduled directory guest passed: FRT sector progress, CD/SCU masking, guest EFLS acknowledgement, directory operands, omitted command, mid-operation abort and cold boots in production Wasm.");
   // Original interleaved XA disc: actual SH-2 commands/FIFO reads, independent
   // metadata/checksum goldens, logical-offset mutation and repeated cold reset.
   const filesystemRom = Buffer.alloc(524288);
@@ -884,12 +920,12 @@ try {
           throw new Error("Malformed CUE mount must reject without resetting the BIOS");
         }
         emulator.mount_cue('FILE "d" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00', "d", new Uint32Array([raw.length]), Uint8Array.from(raw));
-        emulator.run_steps(3000);
+        for (let i=0; i<100 && emulator.read_long(0x06009030)!==0x600D; i++) emulator.run_steps(10000);
         return [0, 0x10, 0x20, 0x24, 0x30].map((offset) => emulator.read_long(0x06009000 + offset));
       } finally { emulator.free(); }
     }, { rom: [...directoryRom], raw: [...raw] });
     if (damage === "uncorrectable") {
-      assert.deepEqual([trace[0], trace[1], trace[2], trace[4]], [0xFF00, 0xFF00, 0xFF00, 0x600D]);
+      assert.deepEqual([trace[0], trace[1], trace[2], trace[4]], [0x0180, 0xFF00, 0xFF00, 0x600D]);
     } else {
       assert.deepEqual(trace, [0x0180, 0x0180, 0x0180, 2, 0x600D]);
     }
