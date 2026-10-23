@@ -1,4 +1,7 @@
 ; Original MIT: adjacent LICENSE.
+load 0xffffffe8,r4
+load 0xa55aaafe,r0
+mov.l r0,@r4
 load 0x2000,r1
 load 0x25a00000,r2
 load 0x140,r3

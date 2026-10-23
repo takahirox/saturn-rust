@@ -4176,3 +4176,143 @@ ROM hashes, inherited-implementation failure and current validation results.
 Earlier first-use-only descriptions above are historical evidence. Rotation
 acquisition timing and the remaining mandatory hardware/comprehensive acceptance
 scope remain required; no campaign policy or tracker state is changed.
+
+
+## Issue #23: fixed CS0 and BSTROM validation
+
+Related to #17. Source Issue: [#23](https://github.com/takahirox/saturn-rust/issues/23),
+selected from `e76cb2b8e3e9d0c44855d40ab94d026b644853f6`. Implemented and
+validated in the assigned GitWeave worktree on 2026-10-23. No tracker
+administration, push, PR, merge or comment is part of this task.
+
+The independent [VA0.5 drawing](https://consolemods.org/wiki/images/1/1b/Sega_saturn_va0.5_schematics.pdf),
+sheet 1, identifies both processors' MD4=0/MD3=1 straps and a word-output ROM.
+[Hitachi SH7604 Rev.4](https://antime.kapsi.fi/sega/files/sh7604.pdf)
+§3.3/table3.9 maps those pins to 16-bit CS0. §7.3.1/fig.7.3 defines
+big-endian word transfers; §7.8/figs.7.44–46 defines longword nibble groups,
+T1 omission after the first word and the zero-Tw exception; §§7.11.1–2
+defines reset and instruction/refill/buffering boundaries. The
+[conformance entry](hardware-conformance.md#fixed-cs0-word-bus-and-burst-rom-issue-23)
+links implementation and individual native/guest tests.
+
+The new independently authored [board vectors](../src/bus/cs0_tests.rs) use
+literal addresses, widths, values and phase lengths. Both CPUs, both DMAC
+channels, ROM/low-RAM and P1 paths run with advancement chunks 1/3/17/10000.
+Ordinary reset-wait longwords sample at 8/16; cold PC/SP acquire four words at
+8/16/24/32, then publish the registers together before any instruction.
+One-Tw BSTROM longwords sample at 3/5; two-Tw at 4/7; zero-Tw at 2/4. A one-Tw
+cache fill restarts each pair at 3/5/8/10/13/15/18/20. Independent words each
+start T1. Mutation between beats proves sampled-word retention, future-word
+sampling and no early line/register publication. Debugger reads do not age a
+phase. Manual reset drains the current longword, power reset cancels it, and
+both reset kinds are exercised at every affected refill/16-byte-DMA word.
+Tests preserve peer progress, TAS exclusion, refresh ownership, write buffering,
+backup odd lanes, SMPC bytes, mirrors, ROM protection and SCU route restrictions.
+Cold/SYSRES boot selection is canceled at each vector-word boundary; SSHON and
+SSHOFF retain their independently executing peer and cancellation checks.
+
+The original MIT [CS0 guest builder](../tests/fixtures/build_cs0.py) reproduces
+four assembly sources and the sparse ROM. The
+[native test](../tests/cs0.rs) and [production Wasm test](../scripts/cs0.mjs)
+load the BIOS and inspect results; all reads, XORs, FRT measurements and low-RAM
+51/A3 synchronization execute on the real guest CPUs. Six states outside the
+32 timed longword reads give final FRT latch clocks `6+32*4/5/7`, hence
+16/20/28 ticks for W0=0/1/2. Replacing the sixteen ROM reads with NOPs gives
+`6+16+16*4/5/7`, hence 10/12/16 ticks. Two ROM payloads, all wait operands,
+the omitted-read control and two cold boots per variant pass on both CPUs.
+The master executes a cached delay while the slave measures, avoiding an
+uncontrolled competing mailbox poll during its FRT interval.
+
+Two isolated negative experiments restored only `Bsc::bus_width`'s inherited
+CS0 result from two to four bytes, then restored the corrected source in a
+`finally` block. The new physical vector failed with `(00000100,width4,8)`
+versus its literal expected `(00000100,width2,8)`. More substantively, the
+executing native guest failed at W0=0 with FRT 8 versus independently expected
+FRT 16, while its ROM/low-RAM/XOR payloads still matched. The corrected source
+subsequently passed the complete native suite. This is a controlled regression
+experiment, not a replacement snapshot or a claim to have tested old binaries.
+
+Historical expectations were retained or corrected from the affected phases:
+
+- BWAIT still executes eight uncached CS3 reads and all endian/data mutations.
+  Four aligned CS0 IF longwords each gain one two-clock word phase under its
+  zero-Tw setting: `56+8*Tw` becomes `64+8*Tw`, so the FRT oracle is 8+Tw.
+  Narrow CS3 operands still add `(2+Tw)` for each additional physical data beat.
+  Its source bytes are unchanged; native/Wasm expected arithmetic and generated
+  TSV are updated together.
+- The original sound guest's longer reset/upload shifts the fixed SCSP sample
+  phase. Its power-on pending timer request is serviced first; FE->FF now
+  arrives after acknowledgement and wakes STOP for a second IRQ. The first
+  master mailbox remains 1; the final sound counter is 2, the second frame saves
+  STOP's successor `$182`, and independently counted setup23 + two three-op
+  handlers + two STOPs + BRA gives 32 retired instructions. The test still
+  observes terminal-count/pending before the second acknowledgement, checks
+  the cleared flag, guest PCM arithmetic and exact stereo; native/Wasm use the
+  same derived expectations. No sound ROM operand was changed.
+- The DIVU/DIVS trace-vector rewrite and VDP1 character-word rewrite guests
+  now explicitly set W0=2 before their windows. Two four-state CS0 word phases
+  preserve their authored eight-clock IF/literal longword intervals. Their
+  quotient/remainder, SR/PC, omitted-write control, partial texture retention,
+  pixels, IRQs, operand mutations and reset expectations remain unchanged.
+- The long SCU fringe diagnostic now selects manual framebuffer change without
+  FCT in a separate bootstrap before its unchanged main code. VBlank cannot
+  erase its framebuffer DMA source when slower CS0 execution crosses fields.
+  All 240 copy cases, 1200 field records, 480 real handlers, UBC comparisons,
+  source mutations and expected bytes remain unchanged. Native mismatch output
+  now identifies one record instead of dumping the full array.
+- The SCSP DMA guest clears pre-measurement saturated timer A/B/C pending bits
+  after upload. Its measured interval still admits only DMA/sample flags and
+  retains its transferred coefficient, count/progress, computed stereo,
+  omitted-DEXE control, cold boots and production AudioWorklet checks.
+- Existing self-refresh vectors now require both low-RAM words at 2/4 instead of
+  atomic publication at 2. The arbiter drains an already accepted narrow CPU
+  group before self-refresh inhibits a new group.
+
+Expanded 512-KiB BIOS SHA-256 values (the adjacent fixture MIT license applies):
+
+| Fixture | SHA-256 |
+| --- | --- |
+| CS0 | `5ae737dece64b91d567a917fef0f33c67ade43cad27d5cefdbf398ab94a025a0` |
+| DIVU retirement | `7ebf2bbee74b3c807a2ff97060241cbe2661259f59c7572c73cc8ed21fce887a` |
+| DIVS retirement | `36ed809bbcb5b90172d5a06dec3b470df9a23313785e06b644c0820e5ff9b17b` |
+| SCSP DMA | `cd91945b854834eaf6f642e1d6e97767d896f308a40f2b1ae81c9693ea71978b` |
+| SCU fringe | `7a4dc22736d1f1a1b0a58087b030c55b62425480ccf85752fc542d0d15b0146c` |
+| VDP1 character fetch | `c14d11ae6d3719e9563926ccc045420c60c5edd60121813e44bc3b5fd8b880f8` |
+
+The CS0 sparse hex hash is
+`b63fe096b9ac4dfbfe7aab10b74b46657d9e55cb40e28966c67ed5aa7f2bbf79`;
+the changed BWAIT TSV hash is
+`59c4898867bb002774f994f902c702b026db22df69871a32513a2e4f0cda56ee`.
+The source builders reproduce all artifacts; no snapshot was obtained by
+recording emulator output. All three demonstration media are unchanged.
+
+Performed checks:
+
+- `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`: passed,
+  **791 tests** (495 unit + 296 integration), zero failed/ignored, plus doc tests.
+- Native all-target and wasm32 Clippy with `-D warnings`: passed.
+- `sh scripts/build-web.sh`: passed, rebuilt production Wasm. Homebrew
+  Rust/Cargo 1.94.0 runs native builds/tests; rustup stable 1.99.0 and matching
+  wasm-bindgen 0.2.129 build/check Wasm. The first Wasm attempt selected the
+  Homebrew compiler without its target; prepending rustup stable's sysroot/bin
+  as documented in setup resolved it. No usage allowance or provider changed.
+- All **74** CI fixture/media reproduction commands passed, including the new
+  CS0 builder. The final compact SCU bootstrap and CS0 artifacts were rechecked.
+- JavaScript syntax and Git whitespace checks passed. Relative documentation
+  links are checked before commit.
+- The complete extended `npm run test:browser` passed on Chromium 145.0.7632.6,
+  Node 24.12.0 and Playwright 1.58.2 under `/saturn-rust/`, using the rebuilt
+  production Wasm. No required skips. CS0, #19/#21 scheduled video/CD,
+  all existing guests, Star Collector, Prism Courier, Hardware Lab, Canvas,
+  AudioWorklet, controllers, input release, backup, reset and local-file privacy
+  checks passed. A complete final repeat with the strengthened 32-clock reset
+  assertion also passed with no required skips.
+
+This completes the bounded #23 CS0 increment. The standard-board strap is
+supported by the cited VA0.5 evidence; other board variants and electrical pins
+are not modeled. External WAIT input and comprehensive arbitration/reset,
+remaining CPU/peripheral semantics, SCU/DSP, video/audio, CD/media/HLE and SMPC
+acceptance remain outstanding under #17. #17 stays open; no successful test,
+checkpoint or intermediate merge proves hardware completion or commercial-game
+compatibility. No human approval/testing, personal firmware, live Pages check or
+post-merge verification is required.

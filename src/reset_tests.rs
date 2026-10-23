@@ -25,19 +25,67 @@ fn cold_vectors_sample_separately_and_publish_together_before_any_instruction() 
         .unwrap();
     assert_eq!(m.cpu_state(), &CpuState::default());
     assert_eq!(m.clocks, 0);
-    m.step_hardware_boundary().unwrap(); // PC data phase completes at t8
-    assert_eq!(m.clocks, 8);
-    assert_eq!(m.cpu_state(), &CpuState::default());
-    m.bus.load_bios(&rom(0x300, 0x060FE000)).unwrap();
-    m.step_hardware_boundary().unwrap(); // SP data phase completes at t16
-    assert_eq!(m.clocks, 16);
-    assert_eq!(m.cpu_state(), &CpuState::default());
+    // H fig.7.3: each vector is two separately sampled big-endian words.
+    // Reset W0=3/A0LW=3 gives T1+six Tw+T2=8 per word.
+    for (clock, pc, sp) in [
+        (8, 0x11110200, 0x060FF000),
+        (16, 0x22220300, 0x060FF000),
+        (24, 0x33330400, 0x060ED000),
+        (32, 0x44440500, 0x060DC000),
+    ] {
+        m.step_hardware_boundary().unwrap();
+        assert_eq!(m.clocks, clock);
+        assert_eq!(m.cpu_state(), &CpuState::default());
+        m.bus.load_bios(&rom(pc, sp)).unwrap();
+    }
     assert!(!m.issue_cpu(Processor::Master).unwrap());
-    assert_eq!((m.cpu_state().pc, m.cpu_state().r[15]), (0x200, 0x060FE000));
+    assert_eq!((m.cpu_state().pc, m.cpu_state().r[15]), (0x200, 0x060FD000));
     assert_eq!(m.cpu_state().instructions, 0);
     assert!(!m.reset_in_progress());
+    // The first instruction issues only after both acquired registers publish.
     m.step().unwrap();
     assert_eq!(m.cpu_state().instructions, 1);
+}
+
+#[test]
+fn every_cold_and_sysres_vector_word_boundary_cancels_cleanly_on_new_boot_selection() {
+    for sysres in [false, true] {
+        for words in 0..=4 {
+            let mut m = Machine::new();
+            m.reset(Boot::ExternalBios(&rom(0x200, 0x060FF000)))
+                .unwrap();
+            if sysres {
+                m.step().unwrap();
+                command(&mut m, 0x0D);
+                while m.cpu_reset_vectors[0].is_none() {
+                    m.step_hardware_boundary().unwrap();
+                }
+            }
+            for _ in 0..words {
+                m.step_hardware_boundary().unwrap();
+                assert_eq!(m.cpu_state(), &CpuState::default());
+            }
+            m.reset(Boot::ExternalBios(&rom(0x300, 0x060FD000)))
+                .unwrap();
+            assert_eq!(m.cpu_state(), &CpuState::default());
+            for clock in [8, 16, 24, 32] {
+                m.step_hardware_boundary().unwrap();
+                assert_eq!(m.clocks, clock);
+                assert_eq!(m.cpu_state(), &CpuState::default());
+            }
+            assert!(!m.issue_cpu(Processor::Master).unwrap());
+            assert_eq!(
+                (
+                    m.cpu_state().pc,
+                    m.cpu_state().r[15],
+                    m.cpu_state().instructions
+                ),
+                (0x300, 0x060FD000, 0)
+            );
+            m.step().unwrap();
+            assert_eq!(m.cpu_state().instructions, 1);
+        }
+    }
 }
 
 #[test]

@@ -217,15 +217,26 @@ mod scheduling_tests {
                     m.slave = Cpu::default();
                 }
                 m.cpu_reset_vectors[i] = Some(reset);
-                while m.clocks < 34 {
-                    m.step_hardware_boundary().unwrap();
-                }
-                // The completed PC cannot change; the unstarted SP read can.
-                rom[vector..vector + 4].copy_from_slice(&0x06005000u32.to_be_bytes());
-                rom[vector + 4..vector + 8].copy_from_slice(&0x06006000u32.to_be_bytes());
-                m.bus.load_bios(&rom).unwrap();
-                while m.clocks < 36 {
-                    m.step_hardware_boundary().unwrap();
+                // Zero-wait controlled bus vector: PC high/low at34/36,
+                // SP high/low at38/40. Mutate each unsampled successor.
+                for (clock, pc, sp) in [
+                    (34, 0x12345000u32, 0x06004000u32),
+                    (36, 0xEEEE6000, 0x06007000),
+                    (38, 0xFFFF9000, 0x11118000),
+                    (40, 0x0000A000, 0x2222B000),
+                ] {
+                    while m.clocks < clock {
+                        m.step_hardware_boundary().unwrap();
+                    }
+                    let cpu = if p == Processor::Master {
+                        m.cpu_state()
+                    } else {
+                        m.slave_state()
+                    };
+                    assert_eq!(cpu, &CpuState::default());
+                    rom[vector..vector + 4].copy_from_slice(&pc.to_be_bytes());
+                    rom[vector + 4..vector + 8].copy_from_slice(&sp.to_be_bytes());
+                    m.bus.load_bios(&rom).unwrap();
                 }
                 assert!(!m.issue_cpu(p).unwrap());
                 let (cpu, peer) = if p == Processor::Master {
@@ -235,10 +246,10 @@ mod scheduling_tests {
                 };
                 assert_eq!(
                     (cpu.pc, cpu.r[15], cpu.instructions),
-                    (0x06003000, 0x06006000, 0)
+                    (0x06005000, 0x06008000, 0)
                 );
                 assert_eq!((cpu.vbr, cpu.sr), (0, 0xF0));
-                assert_eq!(peer.instructions, 4);
+                assert_eq!(peer.instructions, 8);
                 assert_eq!(m.cpu_reset_vectors[i], None);
             }
         }

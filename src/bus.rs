@@ -1304,6 +1304,7 @@ impl CpuBus<'_> {
                 // Address decoding may mirror the RAM backing store, but
                 // BSC row/bank comparators see the actual A26-A0 pins.
                 address & 0x1FFF_FFFF,
+                width,
                 write,
                 first,
                 last,

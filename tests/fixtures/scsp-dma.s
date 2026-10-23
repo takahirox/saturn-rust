@@ -23,6 +23,9 @@ wait_smpc6:
 mov.b @r1,r0
 tst #1,r0
 bf wait_smpc6
+load 0x25b00422,r1
+load 0x1c0,r0
+mov.w r0,@r1
 load 0x25b00412,r1
 load 0x2000,r0
 mov.w r0,@r1

@@ -142,11 +142,14 @@ impl OnChip {
     pub(crate) fn external_access(
         &self,
         physical_address: u32,
+        width: usize,
         write: bool,
         first: bool,
         last: bool,
     ) -> u32 {
-        let (base, waits) = self.bsc.access_timing(physical_address, write, first, last);
+        let (base, waits) = self
+            .bsc
+            .access_timing(physical_address, width, write, first, last);
         self.wait_clocks
             .set(self.wait_clocks.get().saturating_add(waits));
         base

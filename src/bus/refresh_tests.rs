@@ -294,7 +294,9 @@ fn self_refresh_holds_peer_bus_requests_while_cache_and_local_exit_execute() {
             assert_eq!(b.read32(LOW_WRAM), Ok(0));
             advance(&mut b, 1, chunk);
             assert_eq!(b.read32(LOW_WRAM), Ok(0));
-            advance(&mut b, 1, chunk);
+            advance(&mut b, 1, chunk); // high word only (zero)
+            assert_eq!(b.read32(LOW_WRAM), Ok(0));
+            advance(&mut b, 2, chunk); // low word completes the CS0 longword
             assert_eq!(b.read32(LOW_WRAM), Ok(42));
         }
     }
@@ -309,7 +311,9 @@ fn entering_self_refresh_does_not_cancel_an_already_accepted_bus_cycle() {
     );
     b.advance_clocks(1).unwrap();
     b.onchip[0].write32(BSC + 12, 0xA55A_004C).unwrap();
-    b.advance_clocks(1).unwrap();
+    b.advance_clocks(1).unwrap(); // first word completes at t2
+    assert_eq!(b.read32(LOW_WRAM), Ok(0));
+    b.advance_clocks(2).unwrap(); // retained operand completes at t4
     assert_eq!(b.read32(LOW_WRAM), Ok(42));
     b.finish_cpu_transaction(Processor::Slave);
     assert_eq!(

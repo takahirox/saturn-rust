@@ -36,6 +36,9 @@ def build():
             'mov.l @r1,r0\nmov.l r0,@r2\nadd #4,r1\nadd #4,r2\ndt r3\nbf copy\n'
             'load 0x25b00400,r1\nload 0x20f,r0\nmov.w r0,@r1\n')
     host += smpc(6)
+    # Discard pre-measurement timer A/B/C requests after the long upload.
+    # Timers saturate; only the DMA/sample flags belong to this interval.
+    host += 'load 0x25b00422,r1\nload 0x1c0,r0\nmov.w r0,@r1\n'
     host += ('load 0x25b00412,r1\nload 0x2000,r0\nmov.w r0,@r1\n'
              'add #2,r1\nload 0x700,r0\nmov.w r0,@r1\n'
              'load 0xfffffe92,r1\nmov #19,r0\nmov.b r0,@r1\n'

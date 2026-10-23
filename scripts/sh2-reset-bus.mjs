@@ -57,8 +57,8 @@ export async function sh2ResetBus(page) {
           m.reset_bios(Uint8Array.from(image));
           assertReset();
           m.step();
-          if (Number(m.peripheral_clocks()) < 16 || m.registers()[15] !== new DataView(Uint8Array.from(image).buffer).getUint32(4))
-            throw new Error("Both reset-vector bus cycles must finish before the first instruction");
+          if (Number(m.peripheral_clocks()) < 32 || m.registers()[15] !== new DataView(Uint8Array.from(image).buffer).getUint32(4))
+            throw new Error("All four reset-vector word phases must finish before the first instruction");
           m.run_steps(3000);
           traces.push({words: [0x0601F000, 0x0601F100].map(base => Array.from({length: 9}, (_, i) => m.read_long(base + i * 4))),
             exceptions: [m.exception_count(), m.slave_exception_count()], sp: [m.registers()[15], m.slave_registers()[15]]});

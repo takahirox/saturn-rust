@@ -838,16 +838,16 @@ fn manual_reset_retains_sdram_row_and_ubc_registers_while_power_reset_initialize
             chip.write32(0xFFFFFFEC, 0xA55A0240).unwrap();
             chip.write32(0xFFFFFF40, 0x06001234).unwrap();
             chip.write32(0xFFFFFF60, 0x00205678).unwrap();
-            assert_eq!(chip.external_access(0x06000000, true, true, true), 2);
+            assert_eq!(chip.external_access(0x06000000, 4, true, true, true), 2);
             chip.take_wait_clocks();
             chip.advance_clocks(16);
             chip.reset_from_watchdog(reset);
             if reset == ResetRequest::Manual {
-                assert_eq!(chip.external_access(0x06000004, true, true, true), 1);
+                assert_eq!(chip.external_access(0x06000004, 4, true, true, true), 1);
                 assert_eq!(chip.read32(0xFFFFFF40), Ok(0x06001234));
                 assert_eq!(chip.read32(0xFFFFFF60), Ok(0x00205678));
             } else {
-                assert_eq!(chip.external_access(0x06000004, true, true, true), 2);
+                assert_eq!(chip.external_access(0x06000004, 4, true, true, true), 2);
                 assert_eq!(chip.read32(0xFFFFFF40), Ok(0));
                 assert_eq!(chip.read32(0xFFFFFF60), Ok(0));
             }

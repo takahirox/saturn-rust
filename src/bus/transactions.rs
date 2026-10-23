@@ -4,6 +4,9 @@
 use super::*;
 use std::collections::VecDeque;
 #[cfg(test)]
+#[path = "cs0_tests.rs"]
+mod cs0_tests;
+#[cfg(test)]
 #[path = "fetch_tests.rs"]
 mod fetch_tests;
 #[cfg(test)]
@@ -773,10 +776,6 @@ impl Bus {
             }
             return;
         }
-        if self.onchip[0].inhibits_external_bus() {
-            self.grant_cpu_internal();
-            return;
-        }
         if let Some(processor) = self.transactions.cpu_group {
             if self.transactions.writes[processor as usize].is_some() {
                 if !self.external_monitor_waits_for_internal() {
@@ -794,6 +793,12 @@ impl Bus {
             {
                 self.grant_cpu_beat(processor, transfer, false);
             }
+            self.grant_cpu_internal();
+            return;
+        }
+        // A narrow operand already accepted by the BSC finishes before
+        // self-refresh can inhibit a new external request (§§7.5.7/7.10).
+        if self.onchip[0].inhibits_external_bus() {
             self.grant_cpu_internal();
             return;
         }
@@ -880,7 +885,8 @@ impl Bus {
                 }
                 // SCU accesses are physical, with the master BSC driving
                 // CPU-bus RAM and the SCU driving A/B-bus selects.
-                let base = self.onchip[0].external_access(cycle.address, write, first, last);
+                let base =
+                    self.onchip[0].external_access(cycle.address, cycle.width, write, first, last);
                 let mut extra = self.scu.abus_access(cycle.address, cycle.width, write);
                 if (VRAM..VRAM + 0x80000).contains(&cycle.address) {
                     extra = extra.saturating_add(

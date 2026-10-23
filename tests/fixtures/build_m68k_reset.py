@@ -156,6 +156,9 @@ def retirement_fixture(signed=False):
         struct.pack_into('>' + 'H' * len(words), sound, entry, *words)
     host = ('load 0x2000,r1\nload 0x25a00000,r2\nload 0x140,r3\ncopy:\n'
             'mov.l @r1,r0\nmov.l r0,@r2\nadd #4,r1\nadd #4,r2\ndt r3\nbf copy\n')
+    # CS0 is two words: W0=2 gives two four-state phases (eight per
+    # IF/literal longword), preserving the authored DIV/vector-write window.
+    host = 'load 0xffffffe8,r4\nload 0xa55aaafe,r0\nmov.l r0,@r4\n' + host
     host += smpc(6)
     host += ('load 0xfffffe12,r1\nload 0xfffffe13,r3\nmov #0,r0\nmov.b r0,@r1\nmov.b r0,@r3\n'
              'wait_divide:\nmov.b @r1,r0\nmov.b @r3,r0\nextu.b r0,r0\nmov #32,r2\n'

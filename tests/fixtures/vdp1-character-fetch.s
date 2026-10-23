@@ -2,6 +2,9 @@ load 0x0600e500,r8
 load 0x25d00002,r1
 load 0x2,r0
 mov.w r0,@r1
+load 0xffffffe8,r1
+load 0xa55aaafe,r0
+mov.l r0,@r1
 load 0x25c00000,r1
 load 0x9,r0
 mov.w r0,@r1
