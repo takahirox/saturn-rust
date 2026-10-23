@@ -34,6 +34,7 @@ mod vdp2_tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Operation {
+    Clock(u64),
     PipelineWait(u32),
     Read(u32, usize, bool, bool), // address, width, instruction, TAS
     Write(u32, usize, u32),
@@ -136,6 +137,7 @@ impl ScheduledMemory<'_> {
             journal.beat_cursor = 0;
         }
         let result = match op {
+            Operation::Clock(_) => unreachable!("clock observations are journaled directly"),
             Operation::PipelineWait(clocks) => {
                 let mut journal = self.0.bus.transactions.journals[i].borrow_mut();
                 journal.pipeline_wait.get_or_insert((clocks, clocks));
@@ -186,6 +188,28 @@ impl ScheduledMemory<'_> {
 // a resumed interpreter uses exactly the same checked Memory boundary.
 pub(crate) struct ReplayMemory<'a>(RefCell<ScheduledMemory<'a>>);
 impl Memory for ReplayMemory<'_> {
+    fn sh2_clock(&self) -> Option<u64> {
+        let memory = self.0.borrow_mut();
+        let mut journal = memory.0.bus.transactions.journals[memory.0.journal_index()].borrow_mut();
+        let cursor = journal.cursor;
+        let clock = if let Some(&(Operation::Clock(clock), _)) = journal.operations.get(cursor) {
+            clock
+        } else {
+            assert_eq!(
+                cursor,
+                journal.operations.len(),
+                "replay lost a clock observation"
+            );
+            let clock = memory.0.bus.main_clocks;
+            journal.operations.push((Operation::Clock(clock), Ok(0)));
+            clock
+        };
+        journal.cursor += 1;
+        Some(clock)
+    }
+    fn sh2_fetch_slots(&self) -> bool {
+        true
+    }
     fn sh2_write_context(&self, pc: u32, vector: Option<u8>) {
         self.0
             .borrow_mut()

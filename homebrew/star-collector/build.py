@@ -105,6 +105,14 @@ def assemble(source, base=BASE):
                 word((0xE000 if op == 'mov' else 0x7000) | reg(a[1]) << 8 | num(a[0]) & 255)
             elif op == 'sts':
                 word({'mach':0x000A,'macl':0x001A,'pr':0x002A}[a[0]] | reg(a[1]) << 8)
+            elif op == 'sts.l':
+                assert a[1].startswith('@-')
+                word({'mach':0x4002,'macl':0x4012,'pr':0x4022}[a[0]] | reg(a[1][2:]) << 8)
+            elif op in ('muls.w', 'mulu.w', 'dmuls.l', 'dmulu.l'):
+                word({'muls.w':0x200F, 'mulu.w':0x200E, 'dmuls.l':0x300D, 'dmulu.l':0x3005}[op] | reg(a[1]) << 8 | reg(a[0]) << 4)
+            elif op in ('mac.w', 'mac.l'):
+                assert all(arg.startswith('@') and arg.endswith('+') for arg in a)
+                word((0x400F if op == 'mac.w' else 0x000F) | reg(a[1][1:-1]) << 8 | reg(a[0][1:-1]) << 4)
             elif op in ('mov', 'add', 'sub', 'cmp/eq', 'cmp/hs', 'subc', 'addc', 'and', 'or', 'xor', 'div0s', 'div1', 'mul.l'):
                 word({'mov': 0x6003, 'add': 0x300C, 'sub': 0x3008, 'cmp/eq': 0x3000, 'cmp/hs': 0x3002, 'subc':0x300A, 'addc':0x300E, 'and':0x2009, 'or':0x200B, 'xor':0x200A, 'div0s':0x2007, 'div1':0x3004, 'mul.l':0x0007}[op] | reg(a[1]) << 8 | reg(a[0]) << 4)
             elif op in ('mov.b', 'mov.w', 'mov.l'):

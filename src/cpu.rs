@@ -3,6 +3,7 @@ use crate::bus::{BusError, Memory};
 use std::fmt;
 
 mod memory;
+mod multiplier;
 mod timing;
 use memory::Operands;
 
@@ -124,6 +125,7 @@ pub struct Cpu {
     /// external bus waits. Sleeping polls issue no instruction and report zero.
     last_clocks: u32,
     load_pipeline: timing::LoadPipeline,
+    multiplier: multiplier::Multiplier,
 }
 
 impl Cpu {
@@ -148,6 +150,7 @@ impl Cpu {
             address_error_inhibited: false,
             last_clocks: 0,
             load_pipeline: timing::LoadPipeline::default(),
+            multiplier: multiplier::Multiplier::default(),
         }
     }
 
@@ -275,6 +278,7 @@ impl Cpu {
         // bus supplies additional waits independently to the machine scheduler.
         bus.sh2_write_context(self.state.pc, Some(vector));
         self.last_clocks = 8;
+        self.multiplier.clock += 8;
         self.load_pipeline = timing::LoadPipeline::default();
         let s = &mut self.state;
         let access = |source| CpuError::ExceptionEntry {
@@ -370,6 +374,23 @@ impl Cpu {
         self.last_clocks = timing::execution_states(opcode, self.state.sr & T != 0) + interlock;
         if interlock != 0 {
             bus.sh2_pipeline_wait(interlock).map_err(access)?;
+        }
+        let now = bus
+            .sh2_clock()
+            .unwrap_or(self.multiplier.clock + u64::from(interlock));
+        let mut multiplier_access = self
+            .multiplier
+            .access(opcode, pc, now, bus.sh2_fetch_slots())
+            .map(|(access, split)| {
+                self.last_clocks += split;
+                access
+            });
+        if let Some(multiplier_access) = &mut multiplier_access
+            && !multiplier_access.memory_mac
+        {
+            self.multiplier
+                .wait(multiplier_access, bus)
+                .map_err(access)?;
         }
 
         // Invalid operand cycles latch vector 9, allowing the instruction to
@@ -572,6 +593,9 @@ impl Cpu {
                 let width = if opcode & 0x4000 == 0 { 4 } else { 2 };
                 // Read/increment Rn first, then Rm, including when n == m.
                 let a = read_operand(bus, s.r[n], width).map_err(access)? as i32 as i64;
+                self.multiplier
+                    .wait(multiplier_access.as_mut().unwrap(), bus.inner)
+                    .map_err(access)?;
                 let m_address = s.r[m].wrapping_add(if n == m { width } else { 0 });
                 let b = read_operand(bus, m_address, width).map_err(access)? as i32 as i64;
                 s.r[n] = s.r[n].wrapping_add(width);
@@ -741,6 +765,10 @@ impl Cpu {
         self.interrupt_inhibited = inhibit;
         self.address_error_inhibited =
             next_branch.is_some() || matches!(opcode & 0xFF00, 0x8D00 | 0x8F00);
+        if let Some(access) = multiplier_access {
+            self.last_clocks += self.multiplier.finish(access, operands.inner);
+        }
+        self.multiplier.clock += u64::from(self.last_clocks);
         Ok(())
     }
 }
@@ -790,5 +818,7 @@ fn set_special(s: &mut CpuState, control: bool, index: u16, value: u32) {
 
 #[cfg(test)]
 mod address_tests;
+#[cfg(test)]
+mod multiplier_tests;
 #[cfg(test)]
 mod tests;

@@ -10,6 +10,8 @@ pub mod disc;
 mod hle;
 pub mod m68k;
 pub mod media;
+#[cfg(test)]
+mod multiplier_scheduler_tests;
 pub mod onchip;
 #[cfg(test)]
 mod reset_tests;
@@ -48,7 +50,7 @@ pub enum BootMode {
 mod scheduling_tests {
     use super::*;
 
-    fn cached_pair(master: &[u16], slave: &[u16]) -> Machine {
+    pub(super) fn cached_pair(master: &[u16], slave: &[u16]) -> Machine {
         let mut m = Machine::new();
         for (base, words) in [(HIGH_WRAM, master), (HIGH_WRAM + 0x100, slave)] {
             for (i, word) in words.iter().enumerate() {
@@ -173,23 +175,24 @@ mod scheduling_tests {
         // P §7.7.6 fig7.90: STS's WB conflicts with MOV's EX.
         let mut m = cached_pair(&[0xE02A, 0x401A, 0x001A, 0x2F00, 9], &[9; 8]);
         m.cpu = Cpu::start(HIGH_WRAM, 0xFFFFFE01); // SCI BRR
-        for _ in 0..3 {
+        // P §7.4.3/fig7.88: LDS at 4n+2 adds an IF/MA split.
+        while m.cpu_state().instructions < 3 {
             m.step().unwrap();
         }
-        assert_eq!(m.clocks(), 35);
+        assert_eq!(m.clocks(), 36);
         assert_eq!(m.cpu_state().instructions, 3);
         assert!(!m.issue_cpu(Processor::Master).unwrap());
         m.bus.grant_bus_transaction();
         assert_eq!(m.bus.for_cpu(Processor::Master).read8(0xFFFFFE01), Ok(255));
-        // Only the local WB wait expires at t36. The dependent write has
+        // Only the local WB wait expires at t37. The dependent write has
         // not even requested the peripheral bus, and peer NOPs still retire.
         m.step_hardware_boundary().unwrap();
-        assert_eq!(m.clocks(), 36);
+        assert_eq!(m.clocks(), 37);
         assert_eq!(m.cpu_state().instructions, 3);
-        assert_eq!(m.slave_state().instructions, 4);
+        assert_eq!(m.slave_state().instructions, 5);
         assert_eq!(m.bus.for_cpu(Processor::Master).read8(0xFFFFFE01), Ok(255));
         m.step_hardware_boundary().unwrap();
-        assert_eq!(m.clocks(), 37);
+        assert_eq!(m.clocks(), 38);
         assert_eq!(m.bus.for_cpu(Processor::Master).read8(0xFFFFFE01), Ok(42));
         m.step_hardware_boundary().unwrap();
         assert_eq!(m.cpu_state().instructions, 4);
@@ -568,7 +571,7 @@ impl Machine {
             Processor::Slave => self.slave = Cpu::default(),
         }
         self.dma_errors[i] = false;
-        self.cpu_ready[i] = self.clocks;
+        self.cpu_ready[i] = self.bus.main_clocks;
         self.cpu_boundary[i] = None;
         self.cpu_reset_vectors[i] = Some(reset);
     }
@@ -585,10 +588,10 @@ impl Machine {
             } else {
                 self.cpu = Cpu::default();
             }
-            self.cpu_ready[i] = self.clocks + u64::from(CLOCKS_PER_STEP);
+            self.cpu_ready[i] = self.bus.main_clocks + u64::from(CLOCKS_PER_STEP);
             return Ok(true);
         }
-        if self.cpu_ready[i] > self.clocks {
+        if self.cpu_ready[i] > self.bus.main_clocks {
             return Ok(false);
         }
         if let Some(reset) = self.cpu_reset_vectors[i] {
@@ -633,7 +636,7 @@ impl Machine {
             dma: self.dma_errors[i],
             nmi: !slave && self.nmi_pending && self.bus.nmi_ready(processor),
             irq: self.bus.interrupt(processor),
-            started: self.clocks,
+            started: self.bus.main_clocks,
         });
         // Keep the architectural state at its previous boundary until all bus
         // cycles have completed. The journal reuses their sampled data and
@@ -702,8 +705,10 @@ impl Machine {
                 // Independent internal states can overlap them, never precede
                 // their completion. On-chip wait states remain CPU-local.
                 self.cpu_ready[i] = (boundary.started
-                    + u64::from(self.bus.cpu_delay(processor, states)))
-                .max(self.clocks + u64::from(if states == 0 { CLOCKS_PER_STEP } else { 0 }));
+                    + u64::from(self.bus.cpu_main_delay(processor, states)))
+                .max(
+                    self.bus.main_clocks + u64::from(if states == 0 { CLOCKS_PER_STEP } else { 0 }),
+                );
                 if slave {
                     self.slave = cpu;
                 } else {
@@ -739,20 +744,20 @@ impl Machine {
         } else {
             self.cpu_ready[0]
         };
-        if committed && next <= self.clocks {
+        if committed && next <= self.bus.main_clocks {
             return Ok(true);
         }
         let elapsed = next
-            .saturating_sub(self.clocks)
+            .saturating_sub(self.bus.main_clocks)
             .min(u64::from(self.bus.bus_transaction_deadline()))
             .max(1)
             .min(u64::from(CLOCKS_PER_STEP)) as u32;
-        self.clocks += u64::from(elapsed);
-        match self
+        let (reference, command) = self
             .bus
-            .advance_clocks(elapsed)
-            .map_err(MachineError::Scu)?
-        {
+            .advance_cpu_clocks(elapsed)
+            .map_err(MachineError::Scu)?;
+        self.clocks += u64::from(reference);
+        match command {
             Some(0x02) if !self.bus.slave_enabled => {
                 self.bus.set_slave_enabled(true);
                 self.schedule_cpu_reset(Processor::Slave, onchip::ResetRequest::PowerOn);
@@ -781,7 +786,7 @@ impl Machine {
                 self.slave = Cpu::default();
                 self.nmi_pending = false;
                 self.dma_errors = [false; 2];
-                self.cpu_ready = [self.clocks; 2];
+                self.cpu_ready = [self.bus.main_clocks; 2];
                 self.cpu_boundary = [None; 2];
                 self.cpu_reset_vectors = [None; 2];
                 match self.mode {
@@ -808,7 +813,7 @@ impl Machine {
             Some(0x0E | 0x0F) => {
                 self.slave = Cpu::default();
                 self.dma_errors[1] = false;
-                self.cpu_ready = [self.clocks; 2];
+                self.cpu_ready = [self.bus.main_clocks; 2];
                 self.cpu_boundary = [None; 2];
                 self.cpu_reset_vectors[1] = None;
             }
@@ -844,7 +849,7 @@ impl Machine {
                 });
             }
             if self.bus.take_cpu_transaction_completion(processor) {
-                self.cpu_ready[processor as usize] = self.clocks;
+                self.cpu_ready[processor as usize] = self.bus.main_clocks;
             }
         }
         Ok(committed)

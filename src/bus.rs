@@ -140,6 +140,16 @@ impl std::error::Error for BusError {}
 
 /// The interpreter fetches through this boundary; it owns no memory pointers.
 pub trait Memory {
+    /// Elapsed SH-2 clocks, when this adapter has a clock domain. Replay
+    /// adapters journal each observation just like an operand read.
+    fn sh2_clock(&self) -> Option<u64> {
+        None
+    }
+    /// Architectural fixtures omit IF/MA contention; the clocked adapter
+    /// models the longword IF / retained-word if pairing (P §7.4).
+    fn sh2_fetch_slots(&self) -> bool {
+        false
+    }
     /// Diagnostic provenance for a deferred SH-2 write. This does not make
     /// the BSC buffer part of the architectural exception mechanism.
     fn sh2_write_context(&self, _pc: u32, _vector: Option<u8>) {}
@@ -274,6 +284,8 @@ pub struct Bus {
     pub(crate) raster: Raster,
     cpu_dma_errors: [bool; 2],
     cpu_bus_clocks: [Cell<u32>; 2],
+    pub(crate) main_clocks: u64,
+    pending_main_clocks: u32,
     system_clock: SystemClock,
     pub(crate) backup: BackupRam,
     onchip: [OnChip; 2],
@@ -299,6 +311,8 @@ impl Default for Bus {
             raster: Raster::default(),
             cpu_dma_errors: [false; 2],
             cpu_bus_clocks: [Cell::new(0), Cell::new(0)],
+            main_clocks: 0,
+            pending_main_clocks: 0,
             system_clock: SystemClock::default(),
             backup: BackupRam::default(),
             onchip: std::array::from_fn(|i| {
@@ -470,12 +484,16 @@ impl Bus {
             self.system_clock.deadline(clocks)
         }
     }
+    #[cfg(test)]
     pub(crate) fn cpu_delay(&self, processor: Processor, states: u32) -> u32 {
+        self.system_clock
+            .deadline(self.cpu_main_delay(processor, states))
+            .max(1)
+    }
+    pub(crate) fn cpu_main_delay(&self, processor: Processor, states: u32) -> u32 {
         let waits = self.onchip[processor as usize].take_wait_clocks();
         let external = self.cpu_bus_clocks[processor as usize].replace(0);
-        self.system_clock
-            .deadline(states.max(external).saturating_add(waits))
-            .max(1)
+        states.max(external).saturating_add(waits).max(1)
     }
     pub(crate) fn take_dma_errors(&mut self) -> [bool; 2] {
         std::mem::take(&mut self.cpu_dma_errors)
@@ -584,6 +602,7 @@ impl Bus {
             self.acquire_display();
             self.grant_bus_transaction();
             let delta = remaining.min(self.main_deadline());
+            self.main_clocks = self.main_clocks.wrapping_add(u64::from(delta));
             self.onchip[0].advance_clocks(delta);
             if self.slave_enabled {
                 self.onchip[1].advance_clocks(delta);
@@ -695,6 +714,35 @@ impl Bus {
             remaining -= delta;
         }
         Ok(command)
+    }
+    /// Stop at a main-clock boundary even when two PLL ticks share one
+    /// reference tick. The CPU can issue between them; fixed domains advance
+    /// once. Longer idle intervals retain the existing batched fast path.
+    pub(crate) fn advance_cpu_clocks(&mut self, main: u32) -> Result<(u32, Option<u8>), ScuError> {
+        if self.pending_main_clocks == 0 {
+            if self.system_clock.is_reference() {
+                return self.advance_clocks(main).map(|command| (main, command));
+            }
+            let reference = self.system_clock.deadline(main).saturating_sub(1);
+            if reference > 0 {
+                return self
+                    .advance_clocks(reference)
+                    .map(|command| (reference, command));
+            }
+            self.pending_main_clocks = self.system_clock.advance(1);
+            if self.pending_main_clocks == 0 {
+                return self.advance_main_clocks(0, 1).map(|command| (1, command));
+            }
+            self.pending_main_clocks -= 1;
+            let command = self.advance_main_clocks(1, 1)?;
+            if let Some(completed @ (0x0E | 0x0F)) = command {
+                self.change_system_clock(completed == 0x0E);
+                self.pending_main_clocks = 0;
+            }
+            return Ok((1, command));
+        }
+        self.pending_main_clocks -= 1;
+        self.advance_main_clocks(1, 0).map(|command| (0, command))
     }
     /// Replaces ROM atomically. Machine reset separately discards old ROM first.
     pub fn load_bios(&mut self, bytes: &[u8]) -> Result<(), BusError> {

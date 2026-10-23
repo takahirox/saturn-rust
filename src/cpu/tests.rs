@@ -1291,7 +1291,7 @@ fn all_65536_encodings_match_the_independent_manual_inventory() {
     }
 }
 
-struct FlatMemory(Vec<u8>);
+pub(super) struct FlatMemory(pub(super) Vec<u8>);
 impl Memory for FlatMemory {
     fn read8(&self, a: u32) -> Result<u8, BusError> {
         Ok(self.0[a as usize])

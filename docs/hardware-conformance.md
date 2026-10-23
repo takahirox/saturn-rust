@@ -3106,3 +3106,44 @@ Envelope rates, 18-bit DAC operation, other sound timing gaps and remaining
 CPU/peripheral, multiprocessor/bus/reset, SCU/DSP, video/audio, CD/media/HLE,
 SMPC and comprehensive integration criteria remain mandatory under open #17.
 Commercial-game compatibility remains unverified.
+
+## Clocked SH-2 multiplier and MACH/MACL interlocks (#31)
+
+Related to #31 and #17. This increment supersedes the earlier multiplier-hazard
+limitation for the instruction families and boundaries below. It does not mark
+#17 complete or establish complete speculative pipeline or commercial-game
+compatibility. The [timing contract](sh2-multiplier.md) was authored from primary
+SH-2 diagrams before implementation output was used as evidence; the
+[validation record](validation-issue-31.md) records actual checks and controls.
+
+| Primary behavior | Implementation | Independent evidence |
+| --- | --- | --- |
+| [P] §7.7.2 figs7.23/34/53/63: two/four-clock mm after final MA; contention until mm ends | `src/cpu/multiplier.rs::Multiplier::{access,wait,finish}`, retained per `Cpu` | `multiplier_all_producer_consumer_families_and_progressive_spacing`: every multiply/MAC and MACH/MACL transfer class, 0–3 separating NOPs; literal timing vectors exclude production timing helpers |
+| [P] figs7.24/27/54/55/58: second-MA access overlaps short multiply; figs7.35/38/39/64–66: longer tails stall | Distinct first/second MA boundaries, first MAC operand precedes wait | Native consecutive MAC and saturation vectors; guest word/long MAC streams and separated MAC.L, computed products and FRT records |
+| [P] figs7.88–91: CLRMAC, LDS and STS register/memory access the multiplier; STS GPR retains WB | Shared accumulator-port interlocks, existing `LoadPipeline` retained | Signed/unsigned product and transfer-direction vectors, MACH preservation, flag preservation, predecrement/postincrement, saturation; inherited all-register STS WB tests retained |
+| [P] §§7.4.1–3, figs7.6–8 and explicit contention diagrams listed in the contract | Alignment-dependent multiplier IF/MA splits, even with warmed cache; first split delays second MA | `multiplier_if_ma_alignment_splits_and_documented_consecutive_mac_overlap`, aligned/unaligned original guest kernels; corrected inherited STS-separated FRT expectation retains its dependency coverage |
+| [P] §7.2.3 and Renesas Rev.5 §7.2.3: multiplier advances in cycles, not slots | `Bus::main_clocks`, journaled `Operation::Clock`, main-clock CPU deadlines and sub-reference PLL boundaries | FRT guest on both SH-2s at both PLL selections; external/on-chip/cold-fetch wait regressions; peer CPU and DMA progress during local stalls |
+| Suspended operand effects complete once at the permitted bus boundary | Existing instruction clone/journal plus local pipeline wait before dependent memory transfer | Dependent LDS samples changed memory after wait and increments once; STS.L leaves old SP/data until wait, publishes once, leaves preceding address untouched; slave-local DMA completes independently |
+| Hardware resets replace local state; exception entry preserves MAC registers while time advances | Existing cold/SMPC/WDT reset paths replace `Cpu`; eight-clock exception entry ages retained work | Pending-transfer cold boot, actual SSHOFF/SSHON, both WDT reset selections on both CPUs, direct reset-boundary vectors, IRQ/NMI stack/handler/RTE checks |
+
+The new original MIT fixture is `tests/fixtures/build_sh2_multiplier.py`, with
+reproducible `.s`, `.hex`, `.tsv` artifacts. Native `tests/sh2_multiplier.rs` and
+production-browser `scripts/sh2-multiplier.mjs` execute the same bytes and check
+both CPU records across repeated cold boots. Operand, spacing and omitted-
+producer controls distinguish computed results from timing. Disabling only the
+multiplier interlocks causes both the independent native sequence assertion and
+the FRT guest assertion to fail; arithmetic alone still succeeds.
+
+The inherited constant-three MAC cost represented a fetch split rather than the
+no-contention EX minimum. Fig7.23/34 gives the two-slot baseline; the clocked
+adapter supplies alignment-dependent IF/MA splits. The inherited STS-separated
+kernel has four unaligned STS MAs, adding four clocks (28 rather than 24);
+its final FRT latch is floor((6+28)/8)=4. The inherited LDS→STS→MMIO scheduler
+vector includes an unaligned LDS, adding one IF split before its unchanged WB
+hazard. Both corrections cite §§7.4.1–3/7.7.6 and retain substantive coverage.
+
+General speculative IF/ID/EX/MA/WB completion, arbitrary future fetch latency,
+full interrupt-transition speculation, complete board-level timing, video/audio,
+CD/media/HLE and the other still-unmet #17 requirements remain mandatory. This
+bounded multiplier increment does not use firmware, commercial media, physical
+hardware, human testing/approval or live Pages inspection as acceptance evidence.
