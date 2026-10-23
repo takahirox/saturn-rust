@@ -467,6 +467,96 @@ fn sound_memory_manual_reset_drains_admitted_words_and_power_reset_cancels_unpub
 }
 
 #[test]
+fn sound_memory_reset_releases_canceled_request_before_admitting_waiting_peer() {
+    use crate::onchip::{ResetRequest, WDT};
+    use crate::sound::memory::Owner as Dram;
+    for p in [Processor::Master, Processor::Slave] {
+        let peer = if p == Processor::Master {
+            Processor::Slave
+        } else {
+            Processor::Master
+        };
+        for manual in [false, true] {
+            // Before a DRAM grant, during a grant, and at each word's
+            // completion. Watchdog assertion follows arming by two clocks.
+            for assertion in [4, 7, 10, 15] {
+                for chunk in [1, 3, 17, 10000] {
+                    let mut b = Bus::default();
+                    b.set_slave_enabled(true);
+                    let original = SOUND_RAM | 0x20001000;
+                    let replacement = SOUND_RAM | 0x20002000;
+                    assert_eq!(
+                        b.replay_cpu(p).write32(original, 0x12345678),
+                        Err(BusError::Pending)
+                    );
+                    advance(&mut b, assertion - 2, chunk);
+                    assert_eq!(
+                        b.replay_cpu(peer).write32(replacement, 0x9ABCDEF0),
+                        Err(BusError::Pending)
+                    );
+                    let chip = &mut b.onchip[p as usize];
+                    chip.write16(WDT + 2, if manual { 0x5A7F } else { 0x5A5F })
+                        .unwrap();
+                    chip.write16(WDT, 0xA578).unwrap();
+                    chip.write16(WDT, 0x5AFF).unwrap();
+                    advance(&mut b, 600 - assertion + 2, chunk);
+                    let expected = if manual || assertion >= 15 {
+                        0x12345678
+                    } else if assertion >= 10 {
+                        0x12340000
+                    } else {
+                        0
+                    };
+                    assert_eq!(
+                        b.read32(original),
+                        Ok(expected),
+                        "{p:?} manual{manual} t{assertion} chunk{chunk}"
+                    );
+                    assert_eq!(b.read32(replacement), Ok(0x9ABCDEF0));
+                    assert_eq!(
+                        b.take_cpu_reset(p),
+                        Some(if manual {
+                            ResetRequest::Manual
+                        } else {
+                            ResetRequest::PowerOn
+                        })
+                    );
+                    // Replaying the peer acknowledges its accepted write;
+                    // neither it nor canceled work may publish again later.
+                    assert_eq!(b.replay_cpu(peer).write32(replacement, 0x9ABCDEF0), Ok(()));
+                    b.finish_cpu_transaction(peer);
+                    assert!(b.transactions.active.is_none());
+                    assert!(b.reset_drain_complete(p));
+                    let main_trace = |b: &Bus| {
+                        b.sound
+                            .memory_trace()
+                            .iter()
+                            .copied()
+                            .filter(|e| e.1 == Dram::Main)
+                            .collect::<Vec<_>>()
+                    };
+                    let trace = main_trace(&b);
+                    let completed = if manual || assertion >= 15 {
+                        4
+                    } else if assertion >= 10 {
+                        3
+                    } else {
+                        2
+                    };
+                    assert_eq!(trace.iter().filter(|e| e.2).count(), completed);
+                    b.write32(original, 0x11223344).unwrap();
+                    b.write32(replacement, 0x55667788).unwrap();
+                    advance(&mut b, 1000, chunk);
+                    assert_eq!(b.read32(original), Ok(0x11223344));
+                    assert_eq!(b.read32(replacement), Ok(0x55667788));
+                    assert_eq!(main_trace(&b), trace);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn memory_completed_read_is_retained_until_the_later_cpu_acknowledgement() {
     for p in [Processor::Master, Processor::Slave] {
         let mut b = Bus::default();

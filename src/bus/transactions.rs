@@ -789,6 +789,9 @@ impl Bus {
         }
     }
     pub(crate) fn grant_bus_transaction(&mut self) {
+        // Drop canceled DRAM work before allocating a replacement bus beat.
+        // A retained manual-reset drain is still active and keeps its grant.
+        self.sound.main_ram_request(self.sound_ram_request());
         self.allocate_bus_transaction();
         self.sound.main_ram_request(self.sound_ram_request());
     }

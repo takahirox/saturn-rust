@@ -159,6 +159,41 @@ The three demonstration discs keep their original bytes. Prism Courier and
 Hardware Lab, the existing PCM/DSP/refresh guests, sound/MMIO/reset vectors and
 all other registered fixtures remain in the mandatory suites.
 
+## Review correction: cancellation before replacement admission
+
+Related to #41 and #17. The [bus allocator](../src/bus/transactions.rs)
+now synchronizes retained sound-memory state before allocating a replacement
+bus transaction, as well as afterward. This cancels an aborted request before
+a waiting peer can submit different operands; an active manual-reset drain
+retains its existing DRAM operation.
+
+The [new regression](../src/bus/sound_tests.rs),
+`sound_memory_reset_releases_canceled_request_before_admitting_waiting_peer`,
+reproduced `request changed before acknowledgement` at `src/sound/memory.rs:77`
+before the allocator fix. Afterward, all 64 combinations passed: either SH-2
+with a waiting peer, power/manual watchdog reset, assertion ticks 4/7/10/15,
+and advancement chunks 1/3/17/10000. Tick 7 includes the reported peer request
+at tick 5. Literal expected words and DRAM completion counts check canceled
+publication, completed-lane retention, manual drains and independent peer
+completion. Later host mutations and another 1000 clocks verify that neither
+write is repeated and no further main-interface DRAM operation appears.
+
+Review-fix checks on 2026-10-24 used Rust 1.99.0 and wasm-bindgen 0.2.129:
+
+- `cargo fmt --check`, `cargo build --locked` and `cargo test --locked` passed:
+  898 tests (577 unit, 321 integration), zero failed/ignored.
+- Native `cargo clippy --locked --all-targets -- -D warnings` and Wasm
+  `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings` passed.
+- All 83 registered Browser Pages fixture/media reproduction checks passed.
+- `sh scripts/build-web.sh` and `npm ci --ignore-scripts` passed.
+- Complete extended `npm run test:browser` passed in Chromium 145.0.7632.6
+  under `/saturn-rust/`, with no required skips, including the CPU sound-memory
+  guest, production AudioWorklet and all three demonstration discs.
+- Git whitespace checks and all 14 local file links in this record passed.
+
+Rebuilt production Wasm SHA-256:
+`65a50b440d78f61bf555390f8a282015c2564e6e7ce7a0c6dba3575ccc6069d2`.
+
 ## Remaining limits
 
 This increment implements CPU sound-memory participation and its autonomous
