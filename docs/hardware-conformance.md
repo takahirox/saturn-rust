@@ -2902,6 +2902,10 @@ Scope remains unavailable until all records validate. Invalid command parameters
 reject before mutation; acquired-media failures end with drive ERROR and EFLS
 without changing a retained command response. AbortFile invalidates interrupted
 acquisition and preserves partition data/selector settings.
+Bounded CD Play retains normal range-end PEND and finite/infinite repeat handling
+while directory sectors are acquired. A selected range ending obstructs an
+unfinished job without reporting a media error; resuming at its required FAD
+continues acquisition with the same workspace and partial records.
 The unreadable-root vectors cover first-descriptor leadout and audio-only media:
 both terminate at the first scheduled read with ERROR/EFLS, unavailable scope
 and released workspace, preserving acceptance and allowing another ChgDir.

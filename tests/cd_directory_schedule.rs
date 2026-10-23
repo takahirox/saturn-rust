@@ -349,6 +349,101 @@ fn concurrent_audio_play_preserves_pending_directory_until_its_required_sector_r
     }
 }
 #[test]
+fn bounded_play_pauses_at_each_directory_sector_and_keeps_unfinished_work_resumable() {
+    for deadlines in [
+        [179_161, 358_322, 537_482, 716_643, 895_804],
+        [358_322, 716_643, 1_074_964, 1_433_286, 1_791_607],
+    ] {
+        for chunk in [1, 3, 17, 10000] {
+            for (i, (required, next)) in
+                [(166, 167), (167, 170), (170, 171), (171, 172), (172, 173)]
+                    .into_iter()
+                    .enumerate()
+            {
+                let mut cd = mount();
+                issue(
+                    &mut cd,
+                    [
+                        if deadlines[0] == 179_161 {
+                            0x0400
+                        } else {
+                            0x0410
+                        },
+                        0xFFFF,
+                        0,
+                        0,
+                    ],
+                );
+                start(&mut cd);
+                let before = if i == 0 { 0 } else { deadlines[i - 1] };
+                advance(&mut cd, before, chunk);
+                // Retain Play's response across its range end and later ticks.
+                for (j, word) in [0x1080, required, 0x0080, 1].into_iter().enumerate() {
+                    cd.write16(CD + 0x18 + j as u32 * 4, word).unwrap();
+                }
+                cd.advance(1075);
+                assert_eq!(cd.read16(CD + 0x18).unwrap(), 0x0400);
+                advance(&mut cd, deadlines[i] - before - 1075 - 1, chunk);
+                assert_eq!(cd.read16(CD + 8).unwrap() & 0x210, 0);
+                cd.advance(1);
+                let completed = i == 4;
+                assert_eq!(
+                    cd.read16(CD + 8).unwrap() & 0x210,
+                    if completed { 0x210 } else { 0x10 }
+                );
+                advance(&mut cd, 1_000_000, chunk);
+                assert_eq!(cd.read16(CD + 0x18).unwrap(), 0x0400);
+                cd.read16(CD + 0x24).unwrap();
+                let status = issue(&mut cd, [0, 0, 0, 0]);
+                assert_eq!((status[0], status[3]), (0x0180, next));
+                assert_eq!(table(&mut cd), completed);
+                assert_eq!(free(&mut cd), if completed { 200 } else { 199 });
+                cd.write16(CD + 8, !0x210).unwrap();
+                if !completed {
+                    issue(&mut cd, [0x1080, next, 0, 0]);
+                    advance(&mut cd, 2_000_000, chunk);
+                    assert_eq!(flags(&cd), 512);
+                    assert_eq!(free(&mut cd), 200);
+                }
+                assert_eq!(issue(&mut cd, [0x7200, 0, 0, 0])[1..], [3, 0x100, 2]);
+            }
+        }
+    }
+}
+#[test]
+fn bounded_play_repeats_normally_while_directory_waits_for_the_next_sector() {
+    for repeat in [1, 15] {
+        for chunk in [1, 3, 17, 10000] {
+            let mut cd = mount();
+            start(&mut cd);
+            issue(&mut cd, [0x1080, 166, (repeat << 8) | 0x80, 1]);
+            advance(&mut cd, 179_161 - 1075, chunk);
+            let status = issue(&mut cd, [0, 0, 0, 0]);
+            assert_eq!((status[0], status[3]), (0x0381, 166));
+            assert_eq!(cd.read16(CD + 8).unwrap() & 0x210, 0);
+            assert!(!table(&mut cd));
+            assert_eq!(free(&mut cd), 199);
+            advance(&mut cd, 179_161 - 3 * 1075, chunk);
+            let status = issue(&mut cd, [0, 0, 0, 0]);
+            assert_eq!(
+                (status[0], status[3], cd.read16(CD + 8).unwrap() & 0x210),
+                if repeat == 1 {
+                    (0x0181, 167, 0x10)
+                } else {
+                    (0x0382, 166, 0)
+                }
+            );
+            assert!(!table(&mut cd));
+            assert_eq!(free(&mut cd), 198); // workspace and normally routed repeat
+            issue(&mut cd, [0x1080, 167, 0, 0]);
+            advance(&mut cd, 1_000_000, chunk);
+            assert_eq!(flags(&cd), 512);
+            assert_eq!(issue(&mut cd, [0x7200, 0, 0, 0])[1..], [3, 0x100, 2]);
+            assert_eq!(free(&mut cd), 199); // repeated payload remains stored
+        }
+    }
+}
+#[test]
 fn workspace_shares_pool_with_host_reservations_and_never_overallocates() {
     for count in [199, 200] {
         let mut cd = mount();

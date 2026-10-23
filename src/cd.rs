@@ -577,7 +577,7 @@ impl CdBlock {
             .directory_read
             .as_ref()
             .is_some_and(|j| j.next == self.fad);
-        if self.fad >= self.end || self.fad >= media.leadout {
+        if self.fad >= media.leadout {
             if acquiring_directory {
                 self.status = 9;
                 self.finish_directory(false);
@@ -586,6 +586,12 @@ impl CdBlock {
             self.playing = false;
             self.status = 1;
             self.raise(PEND);
+            return;
+        }
+        if self.fad >= self.end {
+            // A host-selected play range can obstruct filesystem progress
+            // without making its next required sector unreadable.
+            self.finish_play();
             return;
         }
         let audio = media
@@ -639,8 +645,14 @@ impl CdBlock {
                 // filesystem by moving away from its next required sector.
                 if acquiring_directory {
                     match self.directory_sector(&raw) {
-                        Some(true) => self.finish_directory(true),
-                        Some(false) => (),
+                        Some(done) => {
+                            // Directory workspace replaces stream routing, but
+                            // retains normal CD Play range/repeat processing.
+                            self.finish_play();
+                            if done {
+                                self.finish_directory(true);
+                            }
+                        }
                         None => {
                             self.status = 9;
                             self.finish_directory(false);

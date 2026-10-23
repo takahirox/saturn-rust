@@ -168,6 +168,37 @@ expectations: the selector copy period starts at command acceptance, and a raw
 sector's user-data offset is 16 bytes after its header. Those were corrected;
 none of those failing runs is reported as a pass.
 
+## Bounded Play review correction
+
+Related to #21. Directory acquisition now runs normal `finish_play` range/repeat
+processing after each successfully acquired sector. Reaching a host-selected
+range end pauses with PEND and retains unfinished directory work; actual leadout
+or unreadable-media failures still terminate with ERROR/EFLS. Completing the
+directory releases its workspace and publishes EFLS independently of PEND.
+This follows ST-162 §6.2.3(3), which preserves drive-command behavior during file
+access, using the deterministic timing policy above.
+
+The two `bounded_play_*` [native regressions](../tests/cd_directory_schedule.rs)
+failed against the pre-correction implementation: PEND was absent after the
+first acquired descriptor, and a requested repeat left FAD167/PLAY instead of
+FAD166/PLAY with repeat count one. They pass with the correction. Literal
+single-sector ranges cover both descriptors and all three directory sectors at
+1×/2× and advancement chunks 1/3/17/10000, including retained Play responses,
+PAUSE/PEND, table availability, workspace retention/release and resumed table
+completion. Finite/infinite repeat vectors also verify ordinary stream routing
+of a repeated sector while the directory waits for its next required FAD.
+
+Correction validation on 2026-10-23: `cargo fmt --check`, `cargo build --locked`,
+the complete `cargo test --locked` suite (including all twelve scheduled-directory
+tests), native all-target Clippy with warnings denied and all 73 CI fixture/media
+reproduction checks passed. `sh scripts/build-web.sh` and Wasm Clippy with
+warnings denied passed using installed rustup stable Rust 1.99.0 and
+wasm-bindgen 0.2.129. The complete `npm run test:browser` suite passed against
+that rebuilt production Wasm under `/saturn-rust/` on Chromium 145.0.7632.6 and
+Node 24.12.0, with no required skips. `npm ci --ignore-scripts`, edited-document
+relative links and Git whitespace checks also passed. Native checks used
+Homebrew Rust 1.94.0.
+
 ## Remaining scope
 
 Physical seek timing is the explicit deterministic policy above. Remaining CD
