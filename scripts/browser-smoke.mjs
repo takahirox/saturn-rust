@@ -24,6 +24,7 @@ import { scspMonitor } from "./scsp-monitor.mjs";
 import { m68kReset } from "./m68k-reset.mjs";
 import { scspClock, scspEffects } from "./scsp-clock.mjs";
 import { scspPcm } from "./scsp-pcm.mjs";
+import { scspMvol } from "./scsp-mvol.mjs";
 import { scspDma } from "./scsp-dma.mjs";
 import { cdCopy } from "./cd-copy.mjs";
 import { vdp2Status } from "./vdp2-status.mjs";
@@ -2191,6 +2192,7 @@ try {
   await scspEffects(page);
   await scspDma(page);
   await scspPcm(page);
+  await scspMvol(page);
   // Source-authored MC68000 family/EA/exception vectors, executed from sound
   // RAM after SH-2 upload. The host reads results; it never writes CPU state.
   const familyRom=Buffer.alloc(524288);

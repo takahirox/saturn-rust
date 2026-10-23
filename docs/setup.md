@@ -140,6 +140,7 @@ python3 tests/fixtures/build_m68k_reset.py --check
 python3 tests/fixtures/build_scsp_clock.py --check
 python3 tests/fixtures/build_scsp_dma.py --check
 python3 tests/fixtures/build_scsp_pcm.py --check
+python3 tests/fixtures/build_scsp_mvol.py --check
 python3 tests/fixtures/build_cd_drive.py --check
 python3 tests/fixtures/build_cd_copy.py --check
 python3 tests/fixtures/build_cd_directory.py --check
@@ -425,3 +426,9 @@ checks include three operand pairs, an omitted-store control, cold resets and
 production AudioWorklet delivery. The [effect-store conformance entry](hardware-conformance.md#scsp-effect-register-store-semantics)
 links the primary rule, source, license, hash and deadline vectors for all sixteen
 registers.
+
+The original MVOL fixture builder also reproduces mixed data/audio media outside
+`web/`. Its SH-2/68k guest and executing DSP run natively and in production browser
+Wasm, with independent stereo expectations for isolated and combined sources,
+intermediate global gains, mute/resume continuity and AudioWorklet delivery.
+See the [numerical contract](scsp-mvol.md) and [validation record](validation-issue-29.md).

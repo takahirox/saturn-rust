@@ -494,3 +494,55 @@ fn irq_arriving_during_division_waits_for_retirement_and_its_own_exception_clock
         assert!(sound.cpu.state.stopped && !sound.cpu.state.halted);
     }
 }
+
+#[test]
+fn real_68k_mvol_byte_stores_and_queued_samples_are_chunk_invariant() {
+    let mut baseline = None;
+    for chunk in [1, 3, 17, 10000] {
+        let mut sound = fixture();
+        sound.scsp.write16(0x400, 0x20f).unwrap();
+        // Original 68k code: complete low-byte MVOL writes while a direct
+        // constant voice runs, with long DBRA dwells across sample deadlines.
+        let mut words = Vec::new();
+        for gain in [13, 0, 1, 15] {
+            words.extend([0x13fcu16, gain, 0x10, 0x401, 0x303c, 127, 0x51c8, 0xfffe]);
+        }
+        words.extend([0x4e72, 0x2700]);
+        for (i, word) in words.into_iter().enumerate() {
+            sound.ram[0x100 + i * 2..0x102 + i * 2].copy_from_slice(&word.to_be_bytes());
+        }
+        sound.ram[0x1000..0x1008].copy_from_slice(&[0x40, 0, 0x40, 0, 0x40, 0, 0x40, 0]);
+        for (offset, value) in [(2, 0x1000), (6, 4), (12, 0x100), (22, 0xe000), (0, 0x1820)] {
+            sound.scsp.write16(offset, value).unwrap();
+        }
+        sound.set_enabled(true).unwrap();
+        until(&mut sound, 8000, chunk);
+        assert!(sound.cpu.state.stopped);
+        assert_eq!(sound.scsp.common[0], 0x20f);
+        assert_eq!(sound.scsp.read16(0x400), Ok(0));
+        let samples = sound.scsp.drain(8192);
+        let left: Vec<_> = samples
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|p| {
+                assert_eq!(p[0], p[1]);
+                p[0]
+            })
+            .collect();
+        let runs: Vec<_> = left
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &v)| (i == 0 || left[i - 1] != v).then_some(v))
+            .collect();
+        // Initial setup completes before the first output; none of these
+        // queued samples is retroactively changed by the later unity store.
+        assert_eq!(runs, [8192, 0, 128, 16384]);
+        let trace = (samples, sound.scsp.generated, sound.cpu.state.instructions);
+        if let Some(ref previous) = baseline {
+            assert_eq!(&trace, previous);
+        } else {
+            baseline = Some(trace);
+        }
+    }
+}

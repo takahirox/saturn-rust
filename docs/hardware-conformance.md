@@ -3078,3 +3078,31 @@ Green CI or these diagnostics
 do not establish hardware completion or broad commercial compatibility. Genuine
 BIOS and commercial-game compatibility remain not independently confirmed.
 Required post-merge verification: none.
+
+## Shared SCSP master-volume attenuation
+
+Related to #29 and #17. `Scsp::push_output` in `src/sound.rs` now applies one
+nominal 3 dB staircase after clipping the combined direct PCM, executing effects
+DSP and EXTS/CD-DA mix. The [MVOL contract](scsp-mvol.md) gives all sixteen
+coefficients, primary references (Sega sound FAQ Overview, SCSP §1.3,
+ST-077-R2 pp.ii/35/80–88), deterministic Q15 conversion, signed truncation,
+error bound and the unmeasured output-deadline latch convention.
+
+`src/sound/tests.rs` covers all gains with literal bipolar PCM vectors and
+independent source sums, asymmetric stereo, silence, pre-attenuation clipping,
+continued muted PCM/DSP execution, byte lanes/MEM4MB/write-only reads, queued
+samples, reset and 1/3/17/10000 reference-clock chunks. The original MIT
+`tests/fixtures/build_scsp_mvol.py` guest/media runs through native Machine and
+production browser Wasm in `tests/scsp_mvol.rs` and `scripts/scsp-mvol.mjs`:
+real SH-2/68k byte writes, source-isolated PCM/DSP/runtime mixed-track CD-DA,
+combined amplitudes at 0/1/D/E/F, waveform/coefficient/audio mutations, omitted
+volume-write control, repeated boots and exact mute/resume progress. Production
+AudioWorklet peak/render/underflow/drop and observable mute/blocked checks run
+under `/saturn-rust/`. See the [validation record](validation-issue-29.md) for
+artifact hashes, actual results and the inherited-linear negative control.
+
+This is a numerical output-stage increment, with no analog/bit-exact DAC claim.
+Envelope rates, 18-bit DAC operation, other sound timing gaps and remaining
+CPU/peripheral, multiprocessor/bus/reset, SCU/DSP, video/audio, CD/media/HLE,
+SMPC and comprehensive integration criteria remain mandatory under open #17.
+Commercial-game compatibility remains unverified.
