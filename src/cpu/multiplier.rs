@@ -91,22 +91,26 @@ impl Multiplier {
             }
         }
         let clocks = if access.memory_mac || transfer.is_some() {
-            // A dependent memory cycle may start in the last mm clock,
-            // but must not complete before it. Include its EX/first-MA
-            // lead-in even with no extra stall (P figs7.63/7.71/7.73).
-            // finish retains the successor's EX overlap. Only a scheduled
-            // transfer supplies the last clock; synchronous cache accesses
-            // must wait through the completion boundary before taking effect.
+            // P §7.2.3, figs7.64/65/73: the operand cycle and multiplier
+            // wait occupy the same extended MA. Start a scheduled cycle at
+            // its ordinary MA boundary and constrain its completion, rather
+            // than serializing its remaining latency after the mm wait.
             bus.sh2_clock().map_or(access.stall, |now| {
-                // MAC's second operand and LDS.L/STS.L effects must all
-                // reach their MA completion boundary (P figs7.64/65/89/91).
-                // Journal the addressed access's latency before the wait.
-                let latency = transfer.map_or(0, |(address, write)| {
-                    bus.sh2_memory_access_latency(address, write)
+                let completion = access.end + u64::from(access.stall);
+                let scheduled = transfer.is_some_and(|(address, write)| {
+                    bus.sh2_schedule_memory_access(address, write, completion)
                 });
                 access.memory_access = transfer.is_some();
-                (access.end + u64::from(access.stall)).saturating_sub(now + u64::from(latency))
-                    as u32
+                let boundary = if scheduled && transfer.is_some_and(|(_, write)| write) {
+                    // STS supplies its accumulator value to the write buffer
+                    // at MA completion; preserve its one-clock admission.
+                    completion - 1
+                } else if scheduled {
+                    access.end - 1
+                } else {
+                    completion
+                };
+                boundary.saturating_sub(now) as u32
             })
         } else {
             access.stall

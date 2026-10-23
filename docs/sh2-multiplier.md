@@ -59,16 +59,37 @@ contention; clocked fetch tests and the FRT guest additionally exercise alignmen
 ## Scope and lifecycle
 
 MACH/MACL memory transfers target the **end** of their MA, including when
-separation removes all extra mm stalls (figs7.63/7.71/7.73). A scheduled bus
-transfer can supply the final clock of that wait. Cache-array accesses and
-resident cache reads complete synchronously in the adapter, so their full wait
-must precede the effect. The adapter journals this latency observation before
-suspending; it does not add a second clock to an already scheduled transfer.
-MAC.W/MAC.L also journal the second operand's address-dependent latency after
-the first read. Figures7.64/7.65 extend that second MA until the older mm ends;
-a synchronous cache read must wait through that boundary before sampling.
-The first operand remains independent and its completed read is retained on
-replay. The producer/consumer execution-state table above is unchanged.
+separation removes all extra mm stalls (figs7.63/7.71/7.73). Cache-array accesses
+and resident cache reads complete synchronously, so their full wait precedes
+the effect. Scheduled reads start at the ordinary MA start, after the EX/first-MA
+lead-in; their bus cycle extends until both its memory latency and the older mm
+have finished (§7.2.3, figs7.64/7.65/7.73). These waits overlap in full.
+The adapter journals the access classification and earliest completion before
+suspending. At bus grant, the final beat's duration is the maximum of its
+ordinary duration and the remaining multiplier wait. Sampling still occurs at
+completion; arbitration and longer bus waits can postpone it further. STS.L
+retains its one-clock admission after the accumulator wait before supplying
+data to the write buffer.
+MAC.W/MAC.L schedule the second operand's completion after the independent
+first read; that completed first read is retained on replay. The
+producer/consumer execution-state table above is unchanged.
+
+For the scheduler regression's DMULS.L EX at 34, final MA at 38 and final mm
+at 42, LDS.L's MA starts at 38/39/40/41/42 with 0/1/2/3/4 separating NOPs.
+Combining §7.2.3 with fig7.73 gives the following independently derived
+completion clocks, assuming no additional arbitration. H §7.3's ordinary
+32-bit reads take T1/T2 plus the selected WCR1 waits.
+
+| Operand latency | 0 NOPs | 1 NOP | 2 NOPs | 3 NOPs | 4 NOPs |
+| --- | --- | --- | --- | --- | --- |
+| Synchronous cache read (nominal MA end retained) | 42 | 42 | 42 | 42 | 43 |
+| Two clocks (peripheral or ordinary external read) | 42 | 42 | 42 | 43 | 44 |
+| Three clocks (one external Tw) | 42 | 42 | 43 | 44 | 45 |
+| Four clocks (two external Tw) | 42 | 43 | 44 | 45 | 46 |
+| Eight clocks (six external Tw) | 46 | 47 | 48 | 49 | 50 |
+
+An adjacent MAC.L's second MA likewise ends at 42 for a synchronous read or
+two-clock peripheral read (figs7.64/7.65); the latter does not add a clock after mm.
 
 MA completion and successor issue are distinct boundaries: table7.2 and
 figs7.89/7.91 permit the successor's EX to overlap an aligned transfer's MA.

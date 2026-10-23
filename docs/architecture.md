@@ -86,8 +86,11 @@ keeps its existing independent interlock. Clock observations and local waits
 are journaled with memory effects, so instruction replay neither moves a sampled
 boundary nor repeats an operand. The second MAC operand and MACH/MACL memory
 transfers also journal whether the access is synchronous: cache arrays and
-resident reads wait through MA completion, while scheduled transfers supply
-their own final clock.
+resident reads wait through MA completion. Scheduled reads begin at their
+ordinary MA start; the bus scheduler extends the final beat through the
+journaled multiplier boundary. Operand latency and mm contention overlap in
+full, with data sampled at the later completion. STS.L keeps its existing
+one-clock admission after the accumulator wait before supplying write data.
 For MAC and memory transfers, the CPU also retains the successor's permitted EX
 time. The scheduler recovers its overlap with MA without moving memory effects
 earlier, including scheduled peripheral reads and writes. Multi-clock operand

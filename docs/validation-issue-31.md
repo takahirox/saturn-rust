@@ -303,7 +303,9 @@ scheduler regression covers MAC.W and MAC.L through arrays and resident data
 lines, plus a scheduled MAC.L peripheral-read control. The long multiply starts
 at 34 and its final mm ends at 42. At 41, the first operand changes from 3 to 5
 and the second from 7 to 11. Cache-backed MACs must finish at 42 with
-21 + 3×11 = 54; the two-clock peripheral read completes at 43. Repeated issue
+21 + 3×11 = 54. This revision incorrectly expected the two-clock peripheral
+read at 43; the full operand-latency correction below supersedes that expectation
+with completion at 42. Repeated issue
 attempts and later operand mutations verify first-read retention, second-read
 sampling, one address update and independent peer progress.
 
@@ -393,6 +395,67 @@ controller, backup and privacy checks. The production Wasm SHA-256 is
 No fixture bytes or authored expectations changed. Git whitespace checks passed.
 No push, merge, Issue closure or required post-merge verification is part of
 this correction; #17 remains open.
+
+## Review correction: overlap the complete scheduled read with multiplier contention
+
+Related to #31 and #17. The inherited latency observation distinguished only
+synchronous access from a scheduled access supplying one clock. It delayed
+the start of a dependent scheduled read until one clock before the older mm
+ended, then incurred the entire read latency. Consequently an adjacent MAC.L
+or LDS.L through two-clock DMAC reads finished at 43 instead of 42.
+
+P §7.2.3 (printed p.170) gives a slot the duration of its longest stage;
+§7.7.2 figs7.64/7.65 (p.231) and fig7.73 (p.237) extend the operand's MA
+through the older mm. Operand latency and multiplier contention therefore
+overlap. The earlier clock-43 peripheral MAC expectation above was wrong.
+The [timing contract](sh2-multiplier.md#scope-and-lifecycle) now includes an
+independently derived completion table for 0–4 NOPs and 2/3/4/8-clock reads.
+
+`Multiplier::wait` schedules reads at their ordinary MA start after the
+EX/first-MA lead-in. `Operation::MemoryAccess` journals the access classification
+and earliest completion together. Internal reads and the final external beat
+use the later of their ordinary completion and that boundary, retaining actual
+completion-time sampling and all longer operand/arbitration waits. Completed
+reads remain journaled, and transaction retirement/reset clears the bound.
+Synchronous accesses still wait before taking effect; STS.L preserves its
+accumulator-to-write-buffer admission timing and existing reset behavior.
+
+Before the production fix, both focused regression commands exited 101 at
+their intended clock-42 assertions:
+
+- `cargo test --locked --lib mac_second_operands -- --nocapture`
+- `cargo test --locked --lib dependent_scheduled_lds -- --nocapture`
+
+After the fix, all 23 focused multiplier instruction/scheduler tests and the
+new `operand_completion_bounds_are_cpu_local_replayed_and_canceled_by_reset`
+bus test passed. The corrected MAC test retains first-operand sampling at 3
+and observes the second operand's change to 11 at 42, producing 54. The two
+new LDS regressions cover MACH/MACL with 0–4 NOPs: DMAC reads and ordinary
+external reads with 0/1/2/6 Tw (2/3/4/8 total clocks). They assert both latency
+hidden by mm and operand latency outlasting mm, mutation immediately before
+completion, no early register effect, one postincrement and stable replayed
+results. The bus test checks both CPUs, independent peer writes, retained
+samples, and cancellation of a future completion bound by CPU/system reset.
+All 78 registered fixture/media reproduction checks passed without changing
+fixture bytes or authored guest expectations.
+
+Revision checks on 2026-10-24 used the explicit rustup stable compiler PATH
+(Rust 1.99.0). `cargo fmt --check`, `cargo build --locked`, `cargo test --locked`
+(844 passed: 539 unit and 305 integration, zero failed or ignored, 79 result
+groups including doc tests), native all-target and Wasm Clippy with warnings
+denied, and `sh scripts/build-web.sh` passed. `npm ci --ignore-scripts` passed
+with no reported vulnerabilities. All 734 local documentation links and Git
+whitespace checks passed.
+
+The complete extended `npm run test:browser` passed under `/saturn-rust/`
+in Chromium 145.0.7632.6 with no required skips. This includes the original
+multiplier kernels on both CPUs/PLLs, arithmetic/spacing/omitted-operation
+controls, repeated cold boots, Star Collector, Prism Courier, Hardware Lab,
+sound/audio, controller, backup and privacy checks. The tested production
+Wasm SHA-256 is
+`882aca4614490d8bc4eb29d80810ab247725863917baaeb723cf7df47637ac1f`.
+No push, merge, Issue closure or required post-merge verification is part of
+this correction; all remaining #17 requirements remain open.
 
 ## Remaining limits
 

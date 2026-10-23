@@ -136,13 +136,15 @@ fn zero_stall_multiplier_loads_sample_at_the_ma_boundary_and_replay_once() {
     }
 }
 
-// Keep the peer on resident NOPs so every clock near t42 is observable.
+// Keep the peer on resident NOPs so every clock near MA completion is observable.
 fn cache_boundary_pair(code: &[u16]) -> Machine {
     let mut m = cached_pair(code, &[9; 64]);
-    m.bus
-        .for_cpu(Processor::Slave)
-        .fetch16(HIGH_WRAM + 0x110)
-        .unwrap();
+    for offset in [0x110, 0x120] {
+        m.bus
+            .for_cpu(Processor::Slave)
+            .fetch16(HIGH_WRAM + offset)
+            .unwrap();
+    }
     m.bus.cpu_delay(Processor::Slave, 0);
     m
 }
@@ -156,8 +158,8 @@ fn mac_second_operands_sample_at_the_multiplier_boundary_and_replay_once() {
         (0xC0000400, 0x4FFF, 2, 42),
         (HIGH_WRAM + 0x2400, 0x0FFF, 4, 42),
         (HIGH_WRAM + 0x2400, 0x4FFF, 2, 42),
-        // Peripheral reads take two clocks; retain that real wait as well.
-        (onchip::DMAC, 0x0FFF, 4, 43),
+        // Both peripheral-read clocks fit inside the extended second MA.
+        (onchip::DMAC, 0x0FFF, 4, 42),
     ] {
         let mut m = cache_boundary_pair(&[0xE103, 0xE207, 0x321D, op, 0x001B, 9]);
         m.cpu = Cpu::start(HIGH_WRAM, address);
@@ -197,10 +199,6 @@ fn mac_second_operands_sample_at_the_multiplier_boundary_and_replay_once() {
         write(&mut m, width, 11);
         assert!(!m.issue_cpu(Processor::Master).unwrap());
         advance_to(&mut m, 42);
-        if boundary == 43 {
-            assert!(!m.issue_cpu(Processor::Master).unwrap());
-            advance_to(&mut m, boundary);
-        }
         assert!(m.issue_cpu(Processor::Master).unwrap());
         assert_eq!(m.bus.main_clocks, boundary, "{op:04x} at {address:08x}");
         assert_eq!((m.cpu_state().mach, m.cpu_state().macl), (0, 54));
@@ -211,6 +209,117 @@ fn mac_second_operands_sample_at_the_multiplier_boundary_and_replay_once() {
         assert_eq!(m.cpu_state().r[15], address + 2 * width);
         assert_eq!(m.cpu_state().exceptions, 0);
         assert!(m.slave_state().instructions >= 8);
+    }
+}
+
+#[test]
+fn dependent_scheduled_lds_overlaps_its_full_operand_latency_with_mm() {
+    // P §7.2.3, figs7.63/73/89: DMUL EX=34, mm ends=42.
+    // LDS starts MA at 38/39/40/41/42 for 0/1/2/3/4 NOPs.
+    // Its two-clock SAR0 read ends at max(MA start + 2, 42).
+    // Thus contention hides both clocks for 0–2 NOPs; with 3–4 NOPs
+    // the operand, rather than the multiplier, determines completion.
+    for (spacing, boundary) in [(0, 42), (1, 42), (2, 42), (3, 43), (4, 44)] {
+        for op in [0x4F06, 0x4F16] {
+            let mut code = vec![0xE103, 0xE207, 0x321D];
+            code.extend(std::iter::repeat_n(9, spacing));
+            code.extend([op, 0x001B, 9]);
+            let mut m = cache_boundary_pair(&code);
+            m.cpu = Cpu::start(HIGH_WRAM, onchip::DMAC);
+            m.bus
+                .for_cpu(Processor::Master)
+                .write32(onchip::DMAC, 0x12345678)
+                .unwrap();
+            advance_to(&mut m, boundary - 1);
+            assert_eq!(m.clocks, boundary - 1);
+            assert_eq!(m.cpu_state().instructions, 3 + spacing as u64);
+            assert_eq!((m.cpu_state().mach, m.cpu_state().macl), (0, 21));
+            assert_eq!(m.cpu_state().r[15], onchip::DMAC);
+            assert!(!m.issue_cpu(Processor::Master).unwrap());
+            m.bus
+                .for_cpu(Processor::Master)
+                .write32(onchip::DMAC, 0x87654321)
+                .unwrap();
+            assert!(!m.issue_cpu(Processor::Master).unwrap());
+            advance_to(&mut m, boundary);
+            assert!(
+                m.issue_cpu(Processor::Master).unwrap(),
+                "{op:04x}, spacing {spacing}: operand and mm waits must overlap"
+            );
+            assert_eq!(m.bus.main_clocks, boundary);
+            let result = if op == 0x4F06 {
+                (0x87654321, 21)
+            } else {
+                (0, 0x87654321)
+            };
+            assert_eq!((m.cpu_state().mach, m.cpu_state().macl), result);
+            assert_eq!(m.cpu_state().r[15], onchip::DMAC + 4);
+            m.bus
+                .for_cpu(Processor::Master)
+                .write32(onchip::DMAC, 0x11223344)
+                .unwrap();
+            advance_to(&mut m, 64);
+            assert_eq!((m.cpu_state().mach, m.cpu_state().macl), result);
+            assert_eq!(m.cpu_state().r[15], onchip::DMAC + 4);
+            assert_eq!(m.cpu_state().exceptions, 0);
+            assert!(m.slave_state().instructions >= 8);
+        }
+    }
+}
+
+#[test]
+fn dependent_external_lds_overlaps_short_and_long_bus_latencies_with_mm() {
+    // P §7.2.3/fig7.73: complete at max(operand end, mm end).
+    // H §7.3: a 32-bit ordinary read is T1/T2 plus WCR1's 0/1/2/6 Tw.
+    // The MA begins at 38 + spacing; mm ends at 42. Literal boundaries
+    // below cover both a hidden operand wait and an operand outlasting mm.
+    for (wait_control, boundaries) in [
+        (0x00, [42, 42, 42, 43, 44]),
+        (0x40, [42, 42, 43, 44, 45]),
+        (0x80, [42, 43, 44, 45, 46]),
+        (0xC0, [46, 47, 48, 49, 50]),
+    ] {
+        for (spacing, boundary) in boundaries.into_iter().enumerate() {
+            for op in [0x4F06, 0x4F16] {
+                let address = (HIGH_WRAM + 0x2400) | 0x20000000;
+                let mut code = vec![0xE103, 0xE207, 0x321D];
+                code.extend(std::iter::repeat_n(9, spacing));
+                code.extend([op, 0x001B, 9]);
+                let mut m = cache_boundary_pair(&code);
+                m.cpu = Cpu::start(HIGH_WRAM, address);
+                m.bus
+                    .for_cpu(Processor::Master)
+                    .write32(0xFFFFFFE8, 0xA55A0000 | wait_control)
+                    .unwrap();
+                m.bus.write32(address, 0x12345678).unwrap();
+                advance_to(&mut m, boundary - 1);
+                assert_eq!(m.clocks, boundary - 1);
+                assert_eq!(m.cpu_state().instructions, 3 + spacing as u64);
+                assert_eq!((m.cpu_state().mach, m.cpu_state().macl), (0, 21));
+                assert_eq!(m.cpu_state().r[15], address);
+                assert!(!m.issue_cpu(Processor::Master).unwrap());
+                m.bus.write32(address, 0x87654321).unwrap();
+                assert!(!m.issue_cpu(Processor::Master).unwrap());
+                advance_to(&mut m, boundary);
+                assert!(
+                    m.issue_cpu(Processor::Master).unwrap(),
+                    "{op:04x}, WCR1={wait_control:02x}, spacing {spacing}: late operand"
+                );
+                let result = if op == 0x4F06 {
+                    (0x87654321, 21)
+                } else {
+                    (0, 0x87654321)
+                };
+                assert_eq!((m.cpu_state().mach, m.cpu_state().macl), result);
+                assert_eq!(m.cpu_state().r[15], address + 4);
+                m.bus.write32(address, 0x11223344).unwrap();
+                advance_to(&mut m, 64);
+                assert_eq!((m.cpu_state().mach, m.cpu_state().macl), result);
+                assert_eq!(m.cpu_state().r[15], address + 4);
+                assert_eq!(m.cpu_state().exceptions, 0);
+                assert!(m.slave_state().instructions >= 8);
+            }
+        }
     }
 }
 
