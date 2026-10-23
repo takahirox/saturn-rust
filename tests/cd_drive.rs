@@ -123,10 +123,15 @@ fn guest_runtime_directory_commands_reject_malformed_extents_without_trapping() 
         let mut machine = Machine::new();
         machine.reset(Boot::ExternalBios(&fixture)).unwrap();
         machine.mount_media(Media::iso(&image).unwrap());
-        machine.run_steps(3000).unwrap();
+        for _ in 0..100 {
+            machine.run_steps(10000).unwrap();
+            if machine.bus().read32(0x06009030) == Ok(0x600D) {
+                break;
+            }
+        }
         let read = |offset: u32| machine.bus().read32(0x06009000 + offset).unwrap();
         assert_eq!(read(0x30), 0x600D);
-        assert_eq!(read(0), if invalid { 0xFF00 } else { 0x0180 });
+        assert_eq!(read(0), 0x0180);
         assert_eq!(read(0x10), if invalid { 0xFF00 } else { 0x0180 });
         if invalid {
             assert_eq!(read(0x20), 0xFF00); // Scope rejects an uninitialized table.

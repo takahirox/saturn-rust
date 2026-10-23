@@ -8,15 +8,20 @@ import argparse
 import hashlib
 from pathlib import Path
 import struct
-from build_cd_drive import command
+from build_cd_drive import command, store
 from build_scu import assembler
 
 HERE = Path(__file__).resolve().parent
 
 
 def build():
-    source = command([0x7000, 0, 0xFF, 0xFFFF], 'change_directory', 0x06009000)
+    def wait(name):
+        return f'load 0x25890008,r1\nload 0x200,r2\n{name}:\nmov.w @r1,r0\ntst r2,r0\nbt {name}\n'
+    source = store(0x25890008, 0xFDFF) + command([0x7000, 0, 0xFF, 0xFFFF], 'change_directory', 0x06009000)
+    source += wait('root_efls') + store(0x25890008, 0xFDFF)
     source += command([0x7100, 0, 0xFF, 0xFFFF], 'read_directory', 0x06009010)
+    source += 'load 0x06009010,r1\nmov.l @r1,r0\nload 0xFF00,r2\ncmp/eq r2,r0\nbt no_table\n'
+    source += wait('read_efls') + 'no_table:\n'
     source += command([0x7200, 0, 0, 0], 'scope', 0x06009020)
     source += 'load 0x06009030,r1\nload 0x600d,r0\nmov.l r0,@r1\nsleep\n'
     rom = bytearray(524288)

@@ -81,7 +81,8 @@ def build():
     def save(reg, offset): return f'load {0x2600B000+offset:#x},r2\nmov.l r{reg},@r2\n'
     def eof(name):
         return f'load 0x25890008,r1\nload 0x200,r2\n{name}:\nmov.w @r1,r0\ntst r2,r0\nbt {name}\n'
-    s = cmd([0x7000, 0, 0x00FF, 0xFFFF], 'root')
+    s = store(0x25890008, 0xFDFF) + cmd([0x7000, 0, 0x00FF, 0xFFFF], 'root')
+    s += eof('root_eof')
     s += cmd([0x7300, 0, 0, 2], 'info', 0x10)
     s += 'load 0x25818000,r1\n'
     for offset in [0, 4, 8]:

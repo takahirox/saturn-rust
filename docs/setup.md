@@ -140,6 +140,7 @@ python3 tests/fixtures/build_scsp_pcm.py --check
 python3 tests/fixtures/build_cd_drive.py --check
 python3 tests/fixtures/build_cd_copy.py --check
 python3 tests/fixtures/build_cd_directory.py --check
+python3 tests/fixtures/build_cd_directory_schedule.py --check
 python3 tests/fixtures/build_cd_filesystem.py --check
 python3 tests/fixtures/build_boot_layout.py --check
 python3 tests/fixtures/build_cd_decode.py --check
