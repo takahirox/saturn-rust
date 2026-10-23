@@ -45,13 +45,28 @@ struct ResetSequence {
     high: u16,
 }
 impl Transactions {
-    pub fn ram_pending(&self, pc: u32) -> bool {
-        self.reset.as_ref().is_some_and(|reset| {
-            reset.word < 4
-                || (pc.wrapping_add((reset.word as u32 - 4) * 2) & 0xFF_FFFF)
-                    < SOUND_RAM_SIZE as u32
-        }) || matches!(self.waiting, Some(Operation::Read(a, _) | Operation::Write(a, _, _))
-                if a < SOUND_RAM_SIZE as u32)
+    pub fn ram_request(&self, pc: u32) -> Option<memory::Request> {
+        let (address, width, write) = if let Some(reset) = &self.reset {
+            let address = if reset.word < 4 {
+                reset.word as u32 * 2
+            } else {
+                pc.wrapping_add((reset.word as u32 - 4) * 2) & 0xFF_FFFF
+            };
+            (address, 2, None)
+        } else {
+            match self.waiting? {
+                Operation::Read(a, width) => (a, width, None),
+                Operation::Write(a, width, value) => (a, width, Some(value)),
+                _ => return None,
+            }
+        };
+        (address < SOUND_RAM_SIZE as u32 && (width == 1 || address & 1 == 0)).then_some(
+            memory::Request {
+                address: address as usize,
+                width,
+                write,
+            },
+        )
     }
     pub fn stall(&mut self, clocks: u64) {
         if self.cpu.is_some() {
@@ -127,11 +142,18 @@ impl Sound {
             } else {
                 self.cpu.state.pc.wrapping_add((reset.word as u32 - 4) * 2)
             };
-            let value = SoundBus {
-                ram: &mut self.ram,
-                scsp: &mut self.scsp,
-            }
-            .read16(address & 0xFF_FFFF);
+            let value = if (address & 0xFF_FFFF) < SOUND_RAM_SIZE as u32 && address & 1 == 0 {
+                Ok(self
+                    .memory
+                    .take(memory::Owner::Cpu)
+                    .expect("reset read completed") as u16)
+            } else {
+                SoundBus {
+                    ram: &mut self.ram,
+                    scsp: &mut self.scsp,
+                }
+                .read16(address & 0xFF_FFFF)
+            };
             let Ok(value) = value else {
                 // §5.4.2/§5.5: BERR during reset halts, without a stack frame.
                 self.cpu.state.halted = true;
@@ -155,12 +177,23 @@ impl Sound {
             }
             self.transactions.reset = None;
         }
+        let ram_result = self.memory.take(memory::Owner::Cpu);
+        assert_eq!(
+            ram_result.is_some(),
+            self.transactions.ram_request(self.cpu.state.pc).is_some(),
+            "every scheduled RAM access must consume exactly one admitted completion"
+        );
         let journal = &mut self.transactions;
         if let Some(operation) = journal.waiting.take() {
-            let result = operation.complete(&mut SoundBus {
-                ram: &mut self.ram,
-                scsp: &mut self.scsp,
-            });
+            let result = ram_result.map_or_else(
+                || {
+                    operation.complete(&mut SoundBus {
+                        ram: &mut self.ram,
+                        scsp: &mut self.scsp,
+                    })
+                },
+                Ok,
+            );
             journal.completed.push((operation, result));
         } else {
             journal.start = self.cpu_ticks;

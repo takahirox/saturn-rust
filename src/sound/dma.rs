@@ -41,18 +41,25 @@ impl Scsp {
         Ok(())
     }
     pub(super) fn memory_cycle(&mut self, step: usize) -> Result<bool, BusError> {
+        self.memory_owner = None;
         if self.reset_held {
             return Ok(false);
         }
         if matches!(step, 124 | 126) {
             self.refresh_pending = self.refresh_pending.saturating_add(1);
         }
-        if self.grant_pcm(step) || (self.frame_active && self.dsp.memory_access(step)) {
+        if self.grant_pcm(step) {
+            self.memory_owner = Some(memory::Owner::Pcm);
+            return Ok(true);
+        }
+        if self.frame_active && self.dsp.memory_access(step) {
+            self.memory_owner = Some(memory::Owner::Dsp);
             return Ok(true);
         }
         // Two refresh requests/Fs. PCM/DSP may defer them; retain a
         // request across frame edges rather than stealing an active PCM read.
         if self.refresh_pending != 0 {
+            self.memory_owner = Some(memory::Owner::Refresh);
             self.refresh_pending -= 1;
             return Ok(true);
         }
@@ -64,6 +71,7 @@ impl Scsp {
         if (0x412..=0x416).contains(&register) {
             return Err(Self::error(register));
         }
+        self.memory_owner = Some(memory::Owner::Dma);
         self.dma_word = Some(Word {
             address: (usize::from(self.common[10] & 0xF000) << 4) | usize::from(self.common[9]),
             register,

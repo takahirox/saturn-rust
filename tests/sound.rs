@@ -45,8 +45,8 @@ fn master_uploads_starts_sound_cpu_and_observes_scsp_irq_guest_computation_and_s
         assert!(m.sound_state().stopped);
         assert!(!m.sound_state().halted);
         // Four reset word beats and two-word ROM upload reads shift the
-        // fixed SCSP phase. The pre-existing power-on request is serviced
-        // first; FE->FF arrives after that acknowledgement and wakes STOP
+        // fixed SCSP phase. FD guarantees two sample edges before overflow,
+        // after acknowledging the power-on request, and wakes STOP
         // for a second IRQ. Each handler has ADDQ, acknowledgement and RTE.
         // setup23 + 2*handler3 + STOP2 + BRA1 = 32 instructions; the second
         // frame saves the STOP successor at $182. The master's first latch

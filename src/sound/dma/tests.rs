@@ -181,7 +181,11 @@ fn reset_prefetch_of_internal_scsp_registers_does_not_request_dram() {
     s.advance((32 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ) as u32)
         .unwrap();
     assert_eq!(s.cpu.state.pc, 0x100000);
-    s.main_ram_request(true);
+    s.main_ram_request(Some(memory::Request {
+        address: 0x1000,
+        width: 2,
+        write: None,
+    }));
     s.advance((48 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ) as u32)
         .unwrap();
     assert!(s.cpu.state.instructions > 0);

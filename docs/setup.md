@@ -143,6 +143,7 @@ python3 tests/fixtures/build_m68k_reset.py --check
 python3 tests/fixtures/build_scsp_clock.py --check
 python3 tests/fixtures/build_scsp_dma.py --check
 python3 tests/fixtures/build_scsp_pcm.py --check
+python3 tests/fixtures/build_scsp_cpu_memory.py --check
 python3 tests/fixtures/build_scsp_mvol.py --check
 python3 tests/fixtures/build_cd_drive.py --check
 python3 tests/fixtures/build_cd_copy.py --check
@@ -442,3 +443,12 @@ The original MVOL fixture builder also reproduces mixed data/audio media outside
 Wasm, with independent stereo expectations for isolated and combined sources,
 intermediate global gains, mute/resume continuity and AudioWorklet delivery.
 See the [numerical contract](scsp-mvol.md) and [validation record](validation-issue-29.md).
+
+
+The original CPU sound-memory fixture also runs natively and in production Wasm
+under `/saturn-rust/`. A real SH-2 DMAC fills sound RAM subject to an independently
+bounded 512-cycle DRAM budget; a separately executing 68k reads the shared data,
+changes PCM waveform words and runs a half-gain DSP. Tests assert guest records,
+three operand pairs, omitted DMA start, repeat boots and actual AudioWorklet
+rendering/underflow/blocked feedback. See the
+[transaction contract](scsp-cpu-memory.md) and [validation](validation-issue-41.md).

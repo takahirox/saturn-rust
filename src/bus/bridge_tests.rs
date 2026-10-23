@@ -51,7 +51,11 @@ fn bridge_all_endpoints_lanes_processors_and_aliases_sample_two_words() {
                         b.write32(at, 0xAABBCCDD).unwrap();
                         assert_eq!(operand(&mut b, p, at + lane, width), Err(BusError::Pending));
                         b.grant_bus_transaction();
-                        advance(&mut b, 7, chunk);
+                        advance(
+                            &mut b,
+                            if endpoint == SOUND_RAM + 0x1000 { 9 } else { 7 },
+                            chunk,
+                        );
                         assert!(
                             b.transactions.journals[p as usize]
                                 .borrow()
@@ -67,7 +71,11 @@ fn bridge_all_endpoints_lanes_processors_and_aliases_sample_two_words() {
                         b.write32(at, 0x55667788).unwrap(); // at boundary, after sampling
                         assert_eq!(operand(&mut b, p, at + lane, width), Err(BusError::Pending));
                         b.grant_bus_transaction();
-                        advance(&mut b, 7, chunk);
+                        advance(
+                            &mut b,
+                            if endpoint == SOUND_RAM + 0x1000 { 9 } else { 7 },
+                            chunk,
+                        );
                         assert_eq!(operand(&mut b, p, at + lane, width), Err(BusError::Pending));
                         advance(&mut b, 1, chunk);
                         b.write32(at, 0x99AABBCC).unwrap(); // after second completion
@@ -112,7 +120,7 @@ fn bridge_narrow_operand_occupies_both_phases_before_competing_cpu_and_scu() {
                 ] {
                     b.write32(SCU + off, value).unwrap();
                 }
-                advance(&mut b, 8, chunk);
+                advance(&mut b, if at == SOUND_RAM + 0x1000 { 10 } else { 8 }, chunk);
                 assert_eq!(operand(&mut b, p, at + 3, 1), Err(BusError::Pending));
                 b.grant_bus_transaction();
                 assert!(
@@ -123,7 +131,7 @@ fn bridge_narrow_operand_occupies_both_phases_before_competing_cpu_and_scu() {
                             && a.transfer.address == (at & !3) + 2
                             && a.transfer.width == 2)
                 );
-                advance(&mut b, 8, chunk);
+                advance(&mut b, if at == SOUND_RAM + 0x1000 { 10 } else { 8 }, chunk);
                 assert_eq!(operand(&mut b, p, at + 3, 1), Ok(0));
                 b.finish_cpu_transaction(p);
                 for _ in 0..100 {
@@ -180,7 +188,13 @@ fn bridge_cache_refills_wrap_in_longwords_and_hits_retain_private_data() {
                     let t = b.transactions.active.as_ref().unwrap().transfer;
                     sequence.push((t.address, t.width));
                     assert_eq!(t.address, expected_at);
-                    advance(&mut b, 8, 3);
+                    // B(2),B(4),...,B(16), independently enumerated.
+                    let elapsed = [10, 10, 9, 10, 9, 10, 9, 10][sequence.len() - 1];
+                    advance(
+                        &mut b,
+                        if at == SOUND_RAM + 0x1000 { elapsed } else { 8 },
+                        3,
+                    );
                 }
                 assert_eq!(
                     sequence,
@@ -343,10 +357,10 @@ fn bridge_longword_retains_first_word_until_second_completion() {
             let mut b = board();
             b.write32(at, 0x11223344).unwrap();
             assert_eq!(operand(&mut b, p, at, 4), Err(BusError::Pending));
-            advance(&mut b, 8, 3);
+            advance(&mut b, if at == SOUND_RAM + 0x1000 { 10 } else { 8 }, 3);
             b.write32(at, 0x55667788).unwrap();
             assert_eq!(operand(&mut b, p, at, 4), Err(BusError::Pending));
-            advance(&mut b, 8, 3);
+            advance(&mut b, if at == SOUND_RAM + 0x1000 { 10 } else { 8 }, 3);
             b.write32(at, 0x99AABBCC).unwrap();
             assert_eq!(operand(&mut b, p, at, 4), Ok(0x11227788));
         }
@@ -417,9 +431,9 @@ fn bridge_alignment_and_unpopulated_sound_geometry_remain_checked() {
         b.write32(SOUND_RAM, 0x11223344).unwrap();
         let at = 0x25A80000;
         assert_eq!(operand(&mut b, p, at, 4), Err(BusError::Pending));
-        advance(&mut b, 8, 3);
+        advance(&mut b, 10, 3);
         assert_eq!(operand(&mut b, p, at, 4), Err(BusError::Pending));
-        advance(&mut b, 8, 3);
+        advance(&mut b, 10, 3);
         assert_eq!(operand(&mut b, p, at, 4), Ok(0xFFFFFFFF));
     }
 }

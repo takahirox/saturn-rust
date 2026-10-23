@@ -34,6 +34,7 @@ def build():
     words.extend([0x303c, 1023])  # MOVE.W #1023,D0
     loop = 0x100 + len(words) * 2
     write(0x1000, 0x2000)
+    words.append(0x4e71)  # NOP: vary the write phase under CPU DRAM allocation
     write(0x1000, 0x6000)
     dbra = 0x100 + len(words) * 2
     words.extend([0x51c8, (loop - (dbra + 2)) & 65535])

@@ -25,6 +25,7 @@ import { hlePlayer } from "./hle-player.mjs";
 import { scspMonitor } from "./scsp-monitor.mjs";
 import { m68kReset } from "./m68k-reset.mjs";
 import { scspClock, scspEffects } from "./scsp-clock.mjs";
+import { scspCpuMemory } from "./scsp-cpu-memory.mjs";
 import { scspPcm } from "./scsp-pcm.mjs";
 import { scspMvol } from "./scsp-mvol.mjs";
 import { scspDma } from "./scsp-dma.mjs";
@@ -1985,7 +1986,7 @@ try {
   assert.deepEqual(soundFinished.waveform, [0x1000F000, 0xE0002000]);
   assert.deepEqual(soundFinished.samples, [256,4096,-256,-4096,-512,-8192,512,8192,256,4096,-256,-4096,-512,-8192,512,8192]);
   assert.equal(soundFinished.irqs,2);
-  assert.equal(soundFinished.irqReturn,0x182); // FE->FF wakes STOP after the first acknowledgement
+  assert.equal(soundFinished.irqReturn,0x182); // FD->FF wakes STOP after the first acknowledgement
   assert.equal(BigInt(soundFinished.count),32n); // setup23 + two IRQ3 handlers + two STOPs + BRA
   assert.equal(soundFinished.dropped, "0");
   await page.locator("#reset").click();
@@ -2200,6 +2201,7 @@ try {
   await scspEffects(page);
   await scspDma(page);
   await scspPcm(page);
+  await scspCpuMemory(page);
   await scspMvol(page);
   // Source-authored MC68000 family/EA/exception vectors, executed from sound
   // RAM after SH-2 upload. The host reads results; it never writes CPU state.

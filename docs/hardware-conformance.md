@@ -385,7 +385,7 @@ CPU/scheduler acceptance criteria.
 The [instruction completion vectors and original DIV trace guests](#mc68ec000-instruction-completion-and-tracereset-boundaries)
 add timed retirement, post-computation trace entry and reset retention of a
 completed result while trace stacking is in flight. Physical DIV timing,
-instruction-specific microsequences and shared sound-bus ownership remain pending.
+instruction-specific microsequences and SCSP register-bus/physical interface phases remain pending; CPU DRAM allocation is covered below.
 
 | Family | Manual entry (68, MC68000 subset) | Implementation | Native / browser | Status |
 | --- | --- | --- | --- | --- |
@@ -440,7 +440,7 @@ instruction-specific microsequences and shared sound-bus ownership remain pendin
 | OR | OR instruction description | `M68k::alu` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
 | ORI | ORI instruction description | `M68k::group0` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
 | PEA | PEA instruction description | `M68k::group4 / exception` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
-| RESET | RESET instruction description; [68UM] §5.5 | `M68k::group4`, sound transaction journal | m68k/tests.rs; [reset/trace guest, native + Wasm](#scheduled-68k-resetiack-and-vdp1-local-memory-ownership) | Scheduled 124-clock output and trace deferral; sound-memory arbitration and general instruction timing pending |
+| RESET | RESET instruction description; [68UM] §5.5 | `M68k::group4`, sound transaction journal | m68k/tests.rs; [reset/trace guest, native + Wasm](#scheduled-68k-resetiack-and-vdp1-local-memory-ownership) | Scheduled 124-clock output and trace deferral; CPU DRAM allocation below; physical interface phases and general instruction timing pending |
 | ROL | ROL instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
 | ROR | ROR instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
 | ROXL | ROXL instruction description | `M68k::shift` | m68k/tests.rs semantic vectors / FAMG native + browser | Functional vectors; timing pending |
@@ -590,7 +590,7 @@ Implementation: [shared sound bus, PCM and clock domain](../src/sound.rs),
 
 | Feature / manual | Implemented behavior | Native / browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- |
-| Sound RAM / SCSP mapping, [SCSP] §§1.2/4.1 | 512 KiB RAM shared by SH-2 and independent 68k; big-endian byte/word/long cycles; SCSP byte lanes; SNDON/OFF reset vectors and RAM retention; RESET output resets SCSP controls | SNDV, SNDR / SNDR | MEMG adds MEM4MB geometry for CPU/PCM/DMA/DSP and absent chip selection; exact reset pulse and bus timing remain | Pending |
+| Sound RAM / SCSP mapping, [SCSP] §§1.2/4.1 | 512 KiB RAM shared by SH-2 and independent 68k; big-endian byte/word/long cycles; SCSP byte lanes; SNDON/OFF reset vectors and RAM retention; RESET output resets SCSP controls | SNDV, SNDR / SNDR | MEMG adds MEM4MB geometry for CPU/PCM/DMA/DSP and absent chip selection; [CPU cycle allocation](#cpu-sound-memory-allocation) adds retained grants/completions and cancellation; physical bus phase remains a convention | Pending |
 | 32 slots, PCM8/16, [SCSP] §4.2 table 4.14 | Guest key-on/off, signed PCM, source bit controls, all 32 slots, no/forward/reverse/alternative loops, Q16 OCT/FNS pitch, signed first-order PCM8/16 interpolation for all loop directions, sound stack | SNDV, SNDR (including guest half-pitch vectors) / SNDR (half-pitch vectors) | Exact hardware fractional boundary rounding and complete envelope-controlled playback | Pending |
 | Slot monitor, [SCSP] fig.4.3 / §4.2 p.89 | MSLC selects all 32 voices; CA[10:7] reports the current output address in 4K samples; byte lanes and loop normalization | SCMON (below) native / SCMON Wasm + AudioWorklet and mutations | Inactive/noise-source values and within-sample read phases remain uncorroborated; complete sound timing is required | Pending |
 | Envelope, [SCSP] §4.2 pp.40–44 | Attack/decay1/decay2/release, zero-rate holds, EGHOLD, decay level, key scaling, loop-start transitions and release retrigger; EG multiplies waveform before TL/ALFO, modulation stack and DSP send | SNDV, ENV / ENV + operand mutations + WebAudio | Numeric slope/key-scaling/attenuation policy is functional, not corroborated chip timing; complete synthesis/pipeline conformance remains | Pending |
@@ -598,16 +598,16 @@ Implementation: [shared sound bus, PCM and clock domain](../src/sound.rs),
 | Levels/pan/external inputs, [SCSP] §4.2 tables 4.27/28 | Binary total-level attenuation, direct send and fixed-point stereo pan, clipping, master output control; independently expected full-volume stereo buffers | SNDV, SNDR / SNDR | Intermediate master gain conformance and complete routing boundary corpus | Pending |
 | Timers/interrupts, [SCSP] §4.2 tables 4.33–38 | Three sample-clock prescaled counters; sound/main pending/enables/clear; programmed autovector levels, 68k IRQ/RTE, SCU source 6 | SNDV, SNDR / SNDR | Complete cross-device contention/timer reset edge evidence | Pending |
 | MIDI registers, [SCSP] §4.2 figs.4.59–61 | Four-byte input/output FIFOs, status/overflow, byte lanes, serial-paced 8-N-1 output, independent main/sound empty IRQs and reset cancellation | SNDV, SIOG / SIOG | Serial bit-level input/external wiring; the standard console has no MIDI connector (fig.4.59) | Pending |
-| SCSP DMA, [SCSP] §3.2/§4.2 fig.4.66/tables4.39–40 | Separately granted/completed DRAM-cycle words in both directions, zero gate, retained address/direction/geometry, count/address progress, DEXE=0 preserves busy and completion IRQ; DSP/refresh priority and main/sound CPU waits; prohibited DMA-register target diagnosed | SNDV, SIOG, [DMA/refresh vectors](../src/sound/dma/tests.rs), [board vectors](../src/bus/sound_tests.rs), [original timed guest](../tests/scsp_dma.rs) / SIOG, [DMA Wasm/WebAudio](../scripts/scsp-dma.mjs) | PCM-slot ownership, complete physical grant phases and full boundary/route corpus remain; [functional timing policy](#scsp-shared-dram-dma-refresh-and-cpu-request-priority) | Pending |
-| SCSP effects DSP, [SCSP] §§4.1/4.3/5; [ST-228][SCDSPASM] Reference 1/2 | Individually scheduled 128-instruction/sample multiply/add pipeline; COEF/MADRS/MPRO/TEMP/MEMS/MIXS/EFREG, slot and EXTS inputs, ring/table RAM reads/writes, linear/float conversion, stereo effect routing | DSPV, CLAB, [DSP clock vectors](../src/sound/dsp/clock_tests.rs), [board contention](../src/bus/sound_tests.rs), [68k/DSP guest](../tests/scsp_clock.rs) / CLAB and [SCSP clock Wasm/WebAudio](../scripts/scsp-clock.mjs) | Full field/pipeline/converter corpus, PCM ownership and complete physical CPU/memory grant phases remain; DMA/refresh and buffered main-before-sound requests are covered below | Pending |
+| SCSP DMA, [SCSP] §3.2/§4.2 fig.4.66/tables4.39–40 | Separately granted/completed DRAM-cycle words in both directions, zero gate, retained address/direction/geometry, count/address progress, DEXE=0 preserves busy and completion IRQ; DSP/refresh priority and main/sound CPU waits; prohibited DMA-register target diagnosed | SNDV, SIOG, [DMA/refresh vectors](../src/sound/dma/tests.rs), [board vectors](../src/bus/sound_tests.rs), [original timed guest](../tests/scsp_dma.rs) / SIOG, [DMA Wasm/WebAudio](../scripts/scsp-dma.mjs) | PCM-slot ownership is implemented below; [CPU allocation](#cpu-sound-memory-allocation) adds all scheduled clients; complete physical phases and synthesis corpus remain; [functional timing policy](#scsp-shared-dram-dma-refresh-and-cpu-request-priority) | Pending |
+| SCSP effects DSP, [SCSP] §§4.1/4.3/5; [ST-228][SCDSPASM] Reference 1/2 | Individually scheduled 128-instruction/sample multiply/add pipeline; COEF/MADRS/MPRO/TEMP/MEMS/MIXS/EFREG, slot and EXTS inputs, ring/table RAM reads/writes, linear/float conversion, stereo effect routing | DSPV, CLAB, [DSP clock vectors](../src/sound/dsp/clock_tests.rs), [board contention](../src/bus/sound_tests.rs), [68k/DSP guest](../tests/scsp_clock.rs) / CLAB and [SCSP clock Wasm/WebAudio](../scripts/scsp-clock.mjs) | Full field/pipeline/converter corpus and physical interface phases remain; PCM and [CPU memory allocation](#cpu-sound-memory-allocation) are implemented; DMA/refresh and buffered main-before-sound requests are covered below | Pending |
 | Browser audio output | Bounded 8192-frame producer/ring, stereo sample-rate adaptation, explicit gesture enable, pause/mute/blocked/underflow/drop states; worklet renders nonzero guest PCM | SNDV / SNDR WebAudio instrumentation | Full synthesis/DSP/CD-DA validation depends on missing hardware | Pending |
 | CD-DA, [CD] §§3/4/8 / [SCSP] table 4.31 | Guest play/repeat, signed stereo BINARY tracks; PRE 50/15 µs de-emphasis with continuous sector history; unchanged-start pause/resume retains the sample/filter state; EXTS0/1 EFSDL/EFPAN, mixed with 68k PCM at sample deadlines | [CD-DA vectors](../tests/cd.rs), [original CD-DA guest](../tests/cdda.rs), CLAB / CD-DA guest reference buffers + AudioWorklet, CLAB changed audio track | Full effects pipeline/subcode and complete synthesis remain; scan attenuation/muting has native vectors | Pending |
 
 The sound CPU has an independent 11.2896 MHz domain and SCSP has a 44.1 kHz
 sample domain relative to the fixed 26.8741 MHz reference. Native traces match
 across 1/3/8/17/611/10000-clock advancement chunks. These deadlines do not make
-the approximate 68k opcode budgets or one-word-per-sample SCSP DMA electrically
-accurate. Unsupported synthesis and invalid DSP instructions/ports fail explicitly. Original guest arithmetic
+the instruction-boundary 68k model or interface phase conventions electrically
+accurate. DMA and CPU requests now use separately admitted DRAM words. Unsupported synthesis and invalid DSP instructions/ports fail explicitly. Original guest arithmetic
 changes alter both RAM waveform and exact native/Wasm PCM; canned buffers and
 no-op CPU/device implementations cannot satisfy those assertions.
 
@@ -1863,7 +1863,7 @@ in [browser-smoke.mjs](../scripts/browser-smoke.mjs). The primary references are
 Clock-transition checks bound actual emulated time (two 100 ms transitions plus
 setup), then scan complete fields before inspecting historical video. The sound
 fixture's new cross-clock phase separates its power-on pending timer from the
-programmed FE→FF edge: it executes two three-instruction IRQ handlers before
+programmed FD→FF edge (basic sound guest updated in #41): it executes two three-instruction IRQ handlers before
 STOP (30 retired instructions), with separate guest IRQ counter=2 and unchanged
 master first-result=1, waveform and exact stereo samples. No media/demo source
 or generated demo bytes are changed by this scheduler revision.
@@ -2839,7 +2839,7 @@ internal DMA implementation. It preserves the independently scheduled DSP.
 | --- | --- | --- | --- |
 | DMA grants and completion are separate DRAM-cycle boundaries; a word retains its address, direction, gate and RAM geometry; source data remains live until completion | `Scsp::memory_cycle`, `Word` in [dma.rs](../src/sound/dma.rs); `Sound::scsp_deadline/advance_domain` in [sound.rs](../src/sound.rs) | [DMA vectors](../src/sound/dma/tests.rs): four word deadlines, both directions, zero gate, source changes, address/geometry crossing and separate sound/main interrupt acknowledgement | [Original builder](../tests/fixtures/build_scsp_dma.py), [native guest](../tests/scsp_dma.rs), [Wasm/WebAudio](../scripts/scsp-dma.mjs): real SH-2 FRT times a 64-word RAM-to-COEF transfer; real 68k reads transferred COEF0, computes positive/negative PCM and configures its voice |
 | DSP and refresh precede DMA; accepted words finish before the following owner; transfer progress/DEXE/IRQ publish only after completion | `Scsp::memory_cycle`, `Sound::ram_busy` | Literal DSP123/refresh124/DMA125/refresh126/DMA127 ordering; retained DSP read/IWT; exactly two refresh reservations per frame; no drift over four frames; reset cancels only unfinished work; SNDOFF leaves DMA running; a step127 word completes before the next PCM source capture | Guest data/coefficient changes alter the computed bipolar stereo. Omitting the actual guest DEXE store leaves the 68k polling, with no completion or sound. The guest rejects the old sample-paced DMA baseline (FRT=4864, outside the authored 32–99 interval) |
-| SH-2/SCU beats wait while internal DMA owns DRAM; buffered main-interface requests precede simultaneous SCPU data phases | `Bus::sound_ram_requested/advance_fixed_clocks`, [board transaction completion](../src/bus/transactions.rs), `Sound::main_ram_request`, [68k pending-cycle classification](../src/sound/transactions.rs) | [Board vectors](../src/bus/sound_tests.rs): both SH-2s, all SCU channels, retained writes, last-word/IRQ boundary; main write at ref48 delays SCPU reset sampling to ref50 and retains that high word through the later low read. Internal SCSP reset prefetches do not request DRAM | Existing SIOG, bus, sound, reset, DSP, demonstration and audio guests continue executing actual memory/MMIO and IRQ handlers |
+| SH-2/SCU beats wait while internal DMA owns DRAM; buffered main-interface requests precede simultaneous SCPU data phases | `Bus::sound_ram_request/advance_fixed_clocks`, [board transaction completion](../src/bus/transactions.rs), `Sound::main_ram_request`, [68k pending-cycle classification](../src/sound/transactions.rs) | [Board vectors](../src/bus/sound_tests.rs): both SH-2s, all SCU channels, retained writes, last-word/IRQ boundary; main grant43/completion48 precedes SCPU grant48/completion53 and retains that high word through the later low read. Internal SCSP reset prefetches do not request DRAM | Existing SIOG, bus, sound, reset, DSP, demonstration and audio guests continue executing actual memory/MMIO and IRQ handlers |
 
 The original synthetic BIOS and generated SH-2 source use the adjacent
 [MIT license](../tests/fixtures/LICENSE). Reproduce with
@@ -2863,7 +2863,8 @@ Refresh requests originate at cycles124/126; PCM/DSP can defer them, including
 across frame edges. Exact physical CPU-interface request/grant phases, complete
 synthesis/envelope/DSP/converter vectors and the other mandatory CPU, board,
 SCU, video, CD/HLE, SMPC and per-feature demonstration/acceptance evidence
-remain required. The DMA tests alone do not establish those contracts.
+remain required. The DMA tests alone do not establish those contracts. CPU cycle admission and
+retention are now implemented in the [CPU allocation increment](#cpu-sound-memory-allocation).
 
 
 ## Separately retained PCM operands and sound-memory ownership
@@ -2887,7 +2888,7 @@ is used.
 
 Expanded 512-KiB ROM SHA-256:
 
-- PCM read guest: `a9b537f0c025d01c4fe010b0ab5b60886e15a08a92f6650ab5e92b62b84a2495`.
+- PCM read guest: `d604f2162e8611354e160ee0bbc5ac767045b5055030add104b8b30b8d161ade`.
 - PCM/EG/noise arbitration guest: `2c6ff0ef8edabb8c140c2342c9f95cf192d693ce3cfd3b10a0d72d0f37653841`.
 
 Both are wholly original under the adjacent [MIT fixture license](../tests/fixtures/LICENSE).
@@ -3274,3 +3275,42 @@ latency; coefficient/other table acquisition timing remains outside this
 increment. Full CPU/peripheral/board/reset, SCU/DSP, video/audio, CD/media/HLE,
 SMPC and comprehensive integration acceptance remain mandatory. #17 remains
 open; genuine BIOS/commercial compatibility is not independently confirmed.
+
+
+## CPU sound-memory allocation
+
+Related to #41 and #17. [SCSP] §3.1 pp.18–19 and §3.2 pp.20–21,
+figs.3.1–3.2 require buffered interface completion and priority PCM/DSP,
+refresh, internal DMA, main CPU, sound CPU. The
+[transaction table and independent deadlines](scsp-cpu-memory.md) explicitly
+separate those requirements from oscillator origin, request eligibility and
+interface edge conventions. Existing PCM acquisition is retained; older rows
+listing PCM ownership as absent are superseded by the PCM and CPU entries.
+
+| Contract | Implementation | Independent evidence |
+| --- | --- | --- |
+| Finite CPU requests, admitted per-word payload/geometry, memory completion, retained read and later acknowledgement | [CPU controller](../src/sound/memory.rs), [sound scheduler](../src/sound.rs), [68k journal](../src/sound/transactions.rs), [board bridge](../src/bus/transactions.rs) | [Allocation vectors](../src/sound/memory/tests.rs): literal grants/completions, all owner priorities, before/at/after arrival, late higher priority, finite traffic, byte lanes, split longwords and geometry |
+| Both SH-2s, both DMACs, three SCU channels and SCU-DSP DMA preserve operands and publication order | [Board vectors](../src/bus/sound_tests.rs), [bridge vectors](../src/bus/bridge_tests.rs), SCU halfword vectors in transactions.rs | Chunks1/3/17/10000, both PLLs, debugger invariance, retained reads through later CPU acknowledgement, SCU IRQ after final destination and repeated real guest cold boots |
+| Queued/admitted cancellation does not replay completed words | Controller cancellation and retained partial external requests; existing volatile reset domains | SNDOFF, SCSP RESET queued/granted/partial-longword vectors, both SH-2 manual/power reset drains; existing SYSRES/cold/reset suites |
+| Guest main traffic consumes actual memory cycles while 68k/PCM/DSP execute | [Original builder](../tests/fixtures/build_scsp_cpu_memory.py), [native guest](../tests/scsp_cpu_memory.rs), [production browser guest](../scripts/scsp-cpu-memory.mjs) | 512-cycle minimum independent of emulation output, shared-RAM records, three operand pairs, omitted initiating operation, repeat cold boots, exact PCM/DSP stereo and production AudioWorklet rendering/underflow/blocked checks |
+
+Original content uses the adjacent [MIT license](../tests/fixtures/LICENSE).
+Expanded 512 KiB CPU allocation ROM SHA-256:
+`188649564bbf678b1fd97cdd1bec829e5234a7d28b4bf88661e5cbfa71b27b24`.
+Reproduce with `python3 tests/fixtures/build_scsp_cpu_memory.py --check` (registered
+in CI). The [validation record](validation-issue-41.md) records actual check
+outcomes, the inherited-admission negative controls, production Wasm hash and
+remaining deviations. Electrical interface timing, general 68k sequencing,
+envelope calibration, DAC modes and full synthesis/DSP corpus remain required.
+All other unmet CPU/peripheral, board/reset, SCU/DSP, video/audio, CD/media/HLE,
+SMPC and comprehensive #17 integration criteria remain open. Green CI or this
+increment does not establish hardware completion or commercial compatibility.
+
+
+The basic sound diagnostic now explicitly selects timer A startFD so its second
+IRQ cannot merge with the power-on request during acknowledgement. Its exact
+IRQ count, STOP saved PC and stereo assertions are preserved. Current expanded
+ROM SHA-256: `0cea305717c24d7a62118bc9291c1609b4724c503b16d70c52e74df3be6d0994`.
+Other sound guests and demonstration-disc bytes are unchanged. The PCM read
+guest adds one phase NOP while preserving every arithmetic midpoint assertion;
+its current hash is recorded in the PCM entry and the #41 validation record.

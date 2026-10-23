@@ -600,3 +600,23 @@ DMA data bank fails with a bounded diagnostic under SOA #8 §4.1's programming
 restriction, before changing architectural state. This does not model a physical
 result for a prohibited access. Full DSP pipeline, physical RAM-port timing and bus arbitration remain
 required in the [conformance inventory](hardware-conformance.md).
+
+
+SCSP CPU sound-memory operations now participate in the same 128-cycle/sample
+allocation as PCM/DSP, refresh and internal DMA. The
+[transaction contract](scsp-cpu-memory.md) separates bus eligibility, memory
+admission, memory completion and later interface acknowledgement. The
+[controller](../src/sound/memory.rs) retains addresses, byte lanes, write payloads,
+per-word geometry and completed reads independently of SH-2/SCU and 68k journals.
+A CPU-side main longword uses two memory cycles; SH-2 read bridging still samples
+its two external halfwords independently. Main-interface and 68k pending requests
+wake idle memory scheduling, and an admitted operation cannot be preempted.
+SCU completion follows the final destination publication. Debugger inspection is
+passive. SCSP RESET drops unfinished grants but retains a still-selected external
+request and its completed halves, re-admitting only unfinished words after release; SNDOFF cancels only the
+sound CPU. Manual SH-2 reset preserves the accepted operand drain. These are
+functional interface/phase conventions, not measured electrical console timing.
+See the [Issue #41 validation record](validation-issue-41.md) for native traces,
+original guest computation/audio, production Wasm and negative controls. This is
+a partial #17 increment; full hardware completion and commercial compatibility
+remain unestablished.

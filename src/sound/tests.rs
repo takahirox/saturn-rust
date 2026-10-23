@@ -474,6 +474,11 @@ fn sound_off_on_reloads_vectors_without_discarding_shared_ram_or_running_scsp() 
     sound
         .advance((32 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ) as u32)
         .unwrap();
+    assert_eq!(sound.cpu.state.pc, 0);
+    // Origin20000: vector word2 completes20068, word3 completes20077;
+    // CPU edges acknowledge at29/33, so the PC is unavailable at32.
+    let deadline = 20000 + (33 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
+    sound.advance((deadline - sound.time) as u32).unwrap();
     assert_eq!(sound.cpu.state.pc, 0x100);
     assert_eq!(sound.cpu.state.d[0], retained);
 }
