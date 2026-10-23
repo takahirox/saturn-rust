@@ -3244,3 +3244,33 @@ independently generated Mode1/XA vectors distinguish unread damage from required
 sector failure. Existing drive/command/sector/DMA timing tests remain registered.
 No full BIOS initialization, HLE CD library, complete drive/error timing or
 commercial compatibility is established by these results.
+
+
+## Scheduled rotation image acquisition
+
+Related to #39 and #17. The [transaction contract](vdp2-rotation-fetch.md) records
+ST-058-R2 §§3.3/4.4–4.9/6.1–6.3, later HTML sections, applicable Sega bulletins
+and the separate unmeasured rotation phase assumptions. This supersedes the
+rotation-image deferral in the historical [#19 record](validation-issue-19.md).
+The [#35 one-shot request evidence](validation-issue-35.md) remains applicable.
+
+| Scope | Implementation and independent evidence |
+| --- | --- |
+| RBG0 tile/bitmap, RBG1 tile | [Dedicated acquisition](../src/vdp2/fetch.rs), [shared address decoder](../src/vdp2/rotation.rs), [bank roles](../src/vdp2/access.rs), [raster deadlines](../src/timing.rs) and [board event ordering](../src/bus.rs) |
+| Retained names, raw words and address interpretation | [Literal vectors](../src/vdp2/rotation_fetch_tests.rs): both name widths, 8/16-dot characters, all five color formats, backwards tile crossing, address revisits, bitmap data, split/unsplit geometry, dual rotation, an independent normal companion and NBG0/RBG1 storage isolation across display switches. RAM/register mutation cannot change acquired dots; misses cannot read live RAM. High-resolution RGB888 is rejected per §4.5. |
+| Publication/waits/reset | [Board vectors](../src/bus/vdp2_tests.rs): both SH-2 adapters and on-chip DMACs, all SCU DMA channels, before/equal/after deadlines, independent B progress, blanking release, last-write/IRQ ordering, cancellation and identical traces/pixels across chunks1/3/17/10000 and debugger previews |
+| Guest/native/Wasm/Canvas | Original MIT [builder](../tests/fixtures/build_rotation_fetch.py), [tile](../tests/fixtures/rotation-fetch-tile.s), [bitmap](../tests/fixtures/rotation-fetch-bitmap.s), [RBG1](../tests/fixtures/rotation-fetch-rbg1.s), [native tests](../tests/rotation_fetch.rs), [production browser checks](../scripts/rotation-fetch.mjs), adjacent [license](../tests/fixtures/LICENSE). All setup, timed writes and computed records execute as guest instructions. |
+
+Expanded 512 KiB ROM SHA-256 (also retained beside each fixture):
+
+- RBG0 tile: `a4081a6b1ef862fdd95aa2b577f947449d2af187e7ed812a7fe132a13ba36348`.
+- RBG0 bitmap: `ca195df7e55a66a22f3d4a844672f69e16916fc6b219cd9497b991c32dd859b8`.
+- RBG1 tile: `e6125f186eef4ec7262971fe10088237b8f09aeb7d9b86220143fc10a3592782`.
+
+[Actual validation and negative controls](validation-issue-39.md) record the
+commands and results. Acquired image operands now progress independently of
+rendering. This is a deterministic functional phase, not measured console
+latency; coefficient/other table acquisition timing remains outside this
+increment. Full CPU/peripheral/board/reset, SCU/DSP, video/audio, CD/media/HLE,
+SMPC and comprehensive integration acceptance remain mandatory. #17 remains
+open; genuine BIOS/commercial compatibility is not independently confirmed.

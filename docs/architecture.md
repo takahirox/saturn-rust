@@ -268,12 +268,19 @@ start, otherwise accumulating the current vertical delta. Active-line writes
 cannot replace that line's latched origins. Normal-background names, characters,
 bitmaps and vertical-cell operands now acquire at hardware-time cycle-slot events,
 using independent retained paths and packet address metadata. Rendering cannot
-fill a missing normal fetch. Retained transfers are keyed by source group as
+fill a missing scheduled image fetch. Retained transfers are keyed by source group as
 well as physical address, so repeated characters in later groups refetch while
 enlargement preserves packed data within a group. The explicit two-cycle
 horizontal lead and its unmeasured physical phase are documented in the
-[Issue #19 record](validation-issue-19.md#explicit-phase-convention). Rotation
-acquisition timing, other table/window strobes, complete physical bank arbitration
+[Issue #19 record](validation-issue-19.md#explicit-phase-convention). Rotation image
+ports now acquire complete names and aligned character/bitmap words at separate
+per-dot deadlines, after the existing line-start parameter latch. Each output dot
+retains address/format/name/coefficient-selection inputs; repeated addresses issue
+fresh acquisitions. RBG0 follows split/unsplit RAMCTL roles; RBG1 fixes names to
+B1 and characters to B0, independently of normal cycle commands. The
+[rotation transaction contract](vdp2-rotation-fetch.md) distinguishes documented
+bank/layout requirements from the assumed atomic per-dot phase. Physical rotation
+latency, separate coefficient/table strobes, complete physical bank arbitration
 and half-line interlace phase remain required. Exclusive monitors select 480
 active lines, 525/562-line fields and 852/848-clock rasters. Exclusive high
 resolution multiplexes NBG0/NBG1 even/odd pixels, following the guest's paired scroll/zoom setup. Monitor window and counter
@@ -285,7 +292,7 @@ requests accumulate waits until a grant or HBlank; cache hits issue no request.
 CPU/on-chip DMAC/SCU transactions publish through their resumable physical bus
 beats. Display deadlines split advancement independently of presentation, and
 acquisition precedes a simultaneous data-phase completion. This functional
-schedule does not establish all physical arbitration or rotation-fetch timing.
+schedule does not establish measured physical arbitration or rotation-fetch latency.
 BDCLMD selects the back screen during display blanking (the lowermost line for a
 line back table), or opaque black. Reserved display encodings and 256-line mode on NTSC fail.
 Unsupported enabled effects still fail explicitly. Register readback for

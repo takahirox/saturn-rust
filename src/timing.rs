@@ -194,6 +194,31 @@ impl Raster {
             u32::MAX
         }
     }
+    /// Rotation phase convention: acquire at the start of each output dot,
+    /// after that line's parameter latch, without normal-screen prefetch.
+    pub(crate) fn rotation_display_slot(&self) -> Option<(u64, u16, u32, usize)> {
+        let clocks = if self.mode & 2 == 0 { 4 } else { 2 };
+        (self.mode & 4 == 0
+            && self.line < self.display_lines()
+            && self.phase < self.hblank_clock()
+            && self.phase.is_multiple_of(clocks))
+        .then_some((
+            self.fields,
+            self.line,
+            self.phase,
+            (self.phase / clocks) as usize,
+        ))
+    }
+    pub(crate) fn clocks_to_rotation_slot(&self) -> u32 {
+        if self.mode & 4 != 0
+            || self.line >= self.display_lines()
+            || self.phase >= self.hblank_clock()
+        {
+            return u32::MAX;
+        }
+        let clocks = if self.mode & 2 == 0 { 4 } else { 2 };
+        clocks - self.phase % clocks
+    }
     /// Wait until a CPU VRAM grant, or horizontal blank if the display owns
     /// every slot. Normal/hi-res cycles use main-clock groups of four;
     /// exclusive monitor cycles run at twice that rate (ST-058 §3.3).
@@ -246,6 +271,51 @@ impl Raster {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rotation_dot_deadlines_have_no_normal_prefetch_lead_and_stop_at_blank() {
+        for (mode, fast, width, clocks, line_clocks) in [
+            (0, false, 320, 4, 1708),
+            (1, true, 352, 4, 1820),
+            (2, false, 640, 2, 1708),
+            (3, true, 704, 2, 1820),
+        ] {
+            let mut r = Raster {
+                mode,
+                fast,
+                fields: 2,
+                line: 1,
+                ..Raster::default()
+            };
+            assert_eq!(r.rotation_display_slot(), Some((2, 1, 0, 0)));
+            assert_eq!(r.clocks_to_rotation_slot(), clocks);
+            r.phase = clocks - 1;
+            assert_eq!(r.rotation_display_slot(), None);
+            assert_eq!(r.clocks_to_rotation_slot(), 1);
+            r.phase = clocks;
+            assert_eq!(r.rotation_display_slot(), Some((2, 1, clocks, 1)));
+            r.phase = width * clocks - clocks;
+            assert_eq!(
+                r.rotation_display_slot(),
+                Some((2, 1, width * clocks - clocks, (width - 1) as usize))
+            );
+            for phase in [width * clocks, line_clocks - 64, line_clocks - 1] {
+                r.phase = phase;
+                assert_eq!(r.rotation_display_slot(), None);
+                assert_eq!(r.clocks_to_rotation_slot(), u32::MAX);
+            }
+            r.line = 224;
+            r.phase = 0;
+            assert_eq!(r.rotation_display_slot(), None);
+        }
+        for mode in 4..8 {
+            let r = Raster {
+                mode,
+                ..Raster::default()
+            };
+            assert_eq!(r.rotation_display_slot(), None);
+            assert_eq!(r.clocks_to_rotation_slot(), u32::MAX);
+        }
+    }
     #[test]
     fn vertical_counter_uses_v0_except_for_double_density_field_parity() {
         // ST-058 §2.5 table2.4: all ten V bits in non/single interlace

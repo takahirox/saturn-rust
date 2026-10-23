@@ -1,16 +1,17 @@
 //! ST-058-R2 §3.3 tables3.2–3.5: name, character and cell-scroll
 //! accesses use independent display paths. A fetched physical word is held
 //! while its packed dots are consumed, independently of later CPU VRAM writes.
-use super::Vdp2;
+use super::{Vdp2, rotation::RotationSample};
+use crate::vdp1::Vdp1;
 use std::cell::Cell;
 
 pub(super) type NormalSample = (usize, usize, usize, u16, u16);
 
 type Words = [Option<(usize, u16)>; 2];
 
-// Rotation and standalone decoder tests keep their two-word serializers.
-// Clocked normal backgrounds have separate acquisition cursors, retained
-// physical transfers and per-dot operands, so scanout cannot fill a miss.
+// Standalone decoder tests keep their two-word serializers.
+// Clocked backgrounds retain physical transfers and per-dot address inputs.
+// Normal ports have separate acquisition cursors; rotation uses per-dot edges.
 #[derive(Default)]
 pub(crate) struct DisplayFetch {
     words: [[Words; 3]; 5],
@@ -20,14 +21,20 @@ pub(crate) struct DisplayFetch {
     pub rotation: Cell<bool>,
     scheduled: bool,
     pub prepared_line: Option<usize>,
+    prepared_field: Option<u64>,
     planning: bool,
     group: (usize, usize),
     request: Option<(usize, usize)>,
-    pixels: Vec<[[Option<Acquired>; 3]; 4]>,
+    // Slot 5 is RBG1: it shares composition/register id0 with NBG0,
+    // but must not replace NBG0 operands already in the normal pipeline.
+    pixels: Vec<[[Option<Acquired>; 3]; 6]>,
     samples: Vec<[Option<NormalSample>; 4]>,
     cursor: [[usize; 3]; 4],
     retained: [[Option<Acquired>; 3]; 4],
     edge: Option<(u64, u16, u32)>,
+    rotation_edge: Option<(u64, u16, u32)>,
+    acquiring_rotation: bool,
+    rotation_samples: Vec<[Option<RotationSample>; 2]>,
 }
 
 #[cfg(test)]
@@ -56,27 +63,72 @@ impl Acquired {
 }
 
 impl Vdp2 {
-    /// Only the hardware scheduler may fill the normal-screen serializers.
-    /// Snapshot decoding and rotation keep their existing independent paths.
+    /// Only hardware deadlines may fill clocked image serializers.
+    /// Snapshot decoding keeps an independent, non-mutating live-memory path.
     pub(super) fn fetch_word(&self, layer: usize, path: usize, address: usize) -> Option<u16> {
         let address = address & 0x7FFFE;
         let mut fetch = self.display_fetch.borrow_mut();
-        if !self.beam_rendering
-            || !(self.clocked || fetch.scheduled)
-            || layer == 4
-            || fetch.rotation.get()
-        {
+        if !self.beam_rendering || !(self.clocked || fetch.scheduled) {
             drop(fetch);
             return Some(self.display_word(layer, path, address));
         }
         let x = fetch.pixel;
+        let storage = if fetch.rotation.get() && layer == 0 {
+            5
+        } else {
+            layer
+        };
         if let Some(value) = fetch
             .pixels
             .get(x)
-            .and_then(|p| p[layer][path])
+            .and_then(|p| p[storage][path])
             .and_then(|v| v.word(address))
         {
             return Some(value);
+        }
+        if fetch.rotation.get() {
+            if fetch.acquiring_rotation {
+                let requested = address;
+                let bytes = if path == 0 && self.word(0x30 + layer * 2) & 0x8000 != 0 {
+                    2
+                } else {
+                    4
+                };
+                let address = if path == 1 { address & !3 } else { address };
+                let role = if path == 0 { 2 } else { 3 };
+                if !self.rotation_access(layer, address, role)
+                    || !self.rotation_access(layer, address + bytes - 2, role)
+                {
+                    return None;
+                }
+                let acquired = Acquired {
+                    group: (x, 0),
+                    address,
+                    bytes,
+                    words: [
+                        self.vword(address),
+                        if bytes == 4 {
+                            self.vword(address + 2)
+                        } else {
+                            0
+                        },
+                    ],
+                };
+                #[cfg(test)]
+                let phase = fetch.rotation_edge.unwrap().2;
+                #[cfg(test)]
+                fetch.trace.push(DisplayRead {
+                    phase,
+                    slot: x,
+                    layer,
+                    path,
+                    address,
+                    words: acquired.words,
+                });
+                fetch.pixels[x][storage][path] = Some(acquired);
+                return acquired.word(requested);
+            }
+            return None;
         }
         if fetch.planning {
             if let Some(held) = fetch.retained[layer][path]
@@ -127,7 +179,11 @@ impl Vdp2 {
     }
 
     pub(crate) fn display_active(&self) -> bool {
-        self.word(0) & 0x8000 != 0 && self.word(0x20) & 15 != 0
+        self.word(0) & 0x8000 != 0 && self.word(0x20) & 0x3F != 0
+    }
+
+    pub(crate) fn rotation_display_active(&self) -> bool {
+        self.word(0) & 0x8000 != 0 && self.word(0x20) & 0x30 != 0
     }
 
     pub(crate) fn clocked() -> Self {
@@ -141,6 +197,7 @@ impl Vdp2 {
         *self.display_fetch.get_mut() = DisplayFetch {
             scheduled: true,
             prepared_line: Some(line),
+            prepared_field: Some(field),
             ..DisplayFetch::default()
         };
         let y = if self.word(0) & 0xC0 == 0xC0 {
@@ -163,7 +220,9 @@ impl Vdp2 {
         if self.display_fetch.borrow().edge == Some(edge) {
             return;
         }
-        if self.display_fetch.borrow().prepared_line != Some(usize::from(line)) {
+        if self.display_fetch.borrow().prepared_line != Some(usize::from(line))
+            || self.display_fetch.borrow().prepared_field != Some(field)
+        {
             self.prepare_display_line(field, usize::from(line));
         }
         let width = self.dimensions().0;
@@ -171,7 +230,7 @@ impl Vdp2 {
             let fetch = self.display_fetch.get_mut();
             fetch.scheduled = true;
             fetch.edge = Some(edge);
-            fetch.pixels.resize(width, [[None; 3]; 4]);
+            fetch.pixels.resize(width, [[None; 3]; 6]);
             fetch.samples.resize(width, [None; 4]);
         }
         let y = if self.word(0) & 0xC0 == 0xC0 {
@@ -280,6 +339,96 @@ impl Vdp2 {
             }
         }
         self.beam_rendering = false;
+    }
+
+    pub(super) fn scheduled_rotation_sample(&self, rbg1: bool) -> Option<Option<RotationSample>> {
+        let fetch = self.display_fetch.borrow();
+        if self.beam_rendering && (self.clocked || fetch.scheduled) && !fetch.acquiring_rotation {
+            Some(
+                fetch
+                    .rotation_samples
+                    .get(fetch.pixel)
+                    .and_then(|p| p[usize::from(rbg1)]),
+            )
+        } else {
+            None
+        }
+    }
+
+    /// Dedicated rotation ports use per-dot deadlines, independently of normal
+    /// cycle commands and the normal pipeline lead. See the transaction contract.
+    pub(crate) fn acquire_rotation_display(
+        &mut self,
+        sprites: &Vdp1,
+        field: u64,
+        line: u16,
+        phase: u32,
+        x: usize,
+    ) {
+        if !self.rotation_display_active() || self.validate().is_err() {
+            return;
+        }
+        let edge = (field, line, phase);
+        if self.display_fetch.borrow().rotation_edge == Some(edge) {
+            return;
+        }
+        if self.display_fetch.borrow().prepared_line != Some(usize::from(line))
+            || self.display_fetch.borrow().prepared_field != Some(field)
+        {
+            self.prepare_display_line(field, usize::from(line));
+        }
+        let y = if self.word(0) & 0xC0 == 0xC0 {
+            usize::from(line) * 2 + usize::from(!field.is_multiple_of(2))
+        } else {
+            usize::from(line)
+        };
+        // Initial reset line uses the same latch as scanout. Subsequent lines
+        // have already latched at LineStart. Image reads never rearm requests.
+        if !self.rotation_line_ready(y) {
+            self.read_line_tables(y);
+            self.beam_rendering = true;
+            self.read_rotation_line(y, line == 0);
+            self.beam_rendering = false;
+        }
+        let width = self.dimensions().0;
+        if x >= width {
+            return;
+        }
+        {
+            let fetch = self.display_fetch.get_mut();
+            fetch.scheduled = true;
+            fetch.rotation_edge = Some(edge);
+            fetch.pixels.resize(width, [[None; 3]; 6]);
+            fetch.rotation_samples.resize(width, [None; 2]);
+            fetch.pixel = x;
+            fetch.acquiring_rotation = true;
+            fetch.rotation.set(true);
+        }
+        self.rotation_read.line = Some(y);
+        self.beam_rendering = true;
+        let sprite_window = self.sprite_window(Some(sprites), x, y);
+        for (rbg1, layer, enable) in [(false, 4, 0x10), (true, 0, 0x20)] {
+            if self.word(0x20) & enable == 0 {
+                continue;
+            }
+            self.display_fetch.get_mut().pixels[x][if rbg1 { 5 } else { 4 }] = [None; 3];
+            self.display_fetch.get_mut().rotation_samples[x][usize::from(rbg1)] = None;
+            if let Some(sample) = self.rotation_sample(rbg1, x, y, sprite_window) {
+                let (base, pixel, _, _, format) = sample.image;
+                let at = Self::dot_address(base, pixel, format);
+                if self.fetch_word(layer, 1, at).is_some()
+                    && (format != 4 || self.fetch_word(layer, 1, at + 2).is_some())
+                {
+                    self.display_fetch.get_mut().rotation_samples[x][usize::from(rbg1)] =
+                        Some(sample);
+                }
+            }
+        }
+        self.beam_rendering = false;
+        self.rotation_read.line = None;
+        let fetch = self.display_fetch.get_mut();
+        fetch.acquiring_rotation = false;
+        fetch.rotation.set(false);
     }
 
     pub(super) fn display_word(&self, layer: usize, path: usize, address: usize) -> u16 {
