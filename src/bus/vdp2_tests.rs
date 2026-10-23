@@ -288,3 +288,204 @@ fn a_busy_display_bank_does_not_stall_the_other_cpu_port() {
             .any(|r| r.path == 1 && r.address == 8)
     );
 }
+
+fn rotation_board() -> Bus {
+    let mut b = board();
+    for (at, value) in [
+        (0x20, 0x10),
+        (0xE, 3),
+        (0x2A, 0x0200),
+        (0x3E, 1),
+        (0xFC, 2),
+        (0xBC, 3),
+        (0xBE, 0x8000),
+    ] {
+        b.write16(VDP2 + at, value).unwrap();
+    }
+    for (off, value) in [
+        (0x1C, 0x10000),
+        (0x2C, 0x10000),
+        (0x4C, 0x10000),
+        (0x50, 0x10000),
+    ] {
+        b.write32(VRAM + 0x70000 + off, value).unwrap();
+    }
+    b.write32(VRAM + 0x20000, 0x11111111).unwrap();
+    b
+}
+fn rotation_word(b: &Bus, phase: u32) -> u16 {
+    b.vdp2
+        .display_fetch
+        .borrow()
+        .trace
+        .iter()
+        .find(|r| r.layer == 4 && r.path == 1 && r.phase == phase)
+        .unwrap()
+        .words[0]
+}
+
+#[test]
+fn rotation_cpu_publication_before_equal_after_first_dot_and_blanking_release() {
+    // Line1 begins at1708. Physical stores granted during blank take8;
+    // a simultaneous display read precedes publication. A dedicated image
+    // bank cannot grant a NEW CPU beat during display, but an active beat
+    // retains its grant. Every dot reacquires the repeated address.
+    for p in [Processor::Master, Processor::Slave] {
+        for (start, old) in [(1698, false), (1700, true), (1701, true)] {
+            for chunk in [1, 3, 17, 10000] {
+                let mut b = rotation_board();
+                advance(&mut b, start, chunk);
+                assert_eq!(
+                    b.replay_cpu(p).write16(0x25E20000, 0x2222),
+                    Err(BusError::Pending)
+                );
+                b.grant_bus_transaction();
+                advance(&mut b, 7, chunk);
+                assert_eq!(b.read16(VRAM + 0x20000), Ok(0x1111));
+                advance(&mut b, 1, chunk);
+                assert_eq!(b.read16(VRAM + 0x20000), Ok(0x2222));
+                assert!(b.take_cpu_transaction_completion(p));
+                assert_eq!(b.replay_cpu(p).write16(0x25E20000, 0x2222), Ok(()));
+                b.finish_cpu_transaction(p);
+                advance(&mut b, 1716 - start - 8, chunk);
+                assert_eq!(rotation_word(&b, 0), if old { 0x1111 } else { 0x2222 });
+                assert_eq!(rotation_word(&b, 4), 0x2222);
+                // New requests wait for HBlank; unrelated B remains eligible.
+                assert_eq!(b.vdp2.cpu_access_slots(VRAM), 0);
+                assert_eq!(b.vdp2.cpu_access_slots(VRAM + 0x40000), 255);
+                assert_eq!(
+                    b.replay_cpu(p).write16(0x25E20000, 0x3333),
+                    Err(BusError::Pending)
+                );
+                advance(&mut b, 2988 - 1716, chunk);
+                assert_eq!(b.read16(VRAM + 0x20000), Ok(0x2222));
+                advance(&mut b, 8, chunk);
+                assert_eq!(b.read16(VRAM + 0x20000), Ok(0x3333));
+                let at = 320 * 4;
+                assert_eq!(
+                    &b.vdp2.scanning[at..at + 4],
+                    if old {
+                        &[255, 0, 0, 255]
+                    } else {
+                        &[0, 255, 0, 255]
+                    }
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn rotation_dmac_acceptance_irq_and_scu_final_write_follow_image_deadlines() {
+    for p in [Processor::Master, Processor::Slave] {
+        for (start, old) in [(1695, false), (1697, true), (1698, true)] {
+            for chunk in [1, 3, 17, 10000] {
+                let mut b = rotation_board();
+                advance(&mut b, start, chunk);
+                for (at, value) in [
+                    (0xFFFFFF80, HIGH_WRAM + 0x100),
+                    (0xFFFFFF84, 0x25E20000),
+                    (0xFFFFFF88, 1),
+                    (0xFFFFFF8C, 0x5605),
+                    (0xFFFFFFA0, 0x44),
+                    (0xFFFFFFB0, 1),
+                ] {
+                    b.onchip[p as usize].write32(at, value).unwrap();
+                }
+                b.onchip[p as usize]
+                    .write16(crate::onchip::IPRA, 0x600)
+                    .unwrap();
+                advance(&mut b, 3, chunk);
+                assert_eq!(b.onchip[p as usize].interrupt(), Some((6, 0x44)));
+                assert_eq!(b.read16(VRAM + 0x20000), Ok(0x1111));
+                advance(&mut b, 8, chunk);
+                assert_eq!(b.read16(VRAM + 0x20000), Ok(0x2222));
+                advance(&mut b, 1716 - start - 11, chunk);
+                assert_eq!(rotation_word(&b, 0), if old { 0x1111 } else { 0x2222 });
+                assert_eq!(rotation_word(&b, 4), 0x2222);
+            }
+        }
+    }
+    for channel in 0..3 {
+        for (start, old) in [(1693, false), (1695, true), (1696, true)] {
+            for chunk in [1, 3, 17, 10000] {
+                let mut b = rotation_board();
+                advance(&mut b, start, chunk);
+                let base = SCU + channel * 0x20;
+                for (at, value) in [
+                    (0, HIGH_WRAM + 0x100),
+                    (4, VRAM + 0x20000),
+                    (8, 4),
+                    (12, 0x102),
+                    (20, 7),
+                    (16, 0x101),
+                ] {
+                    b.write32(base + at, value).unwrap();
+                }
+                advance(&mut b, 13, chunk);
+                assert_eq!(b.read16(VRAM + 0x20000), Ok(0x2222));
+                assert_eq!(
+                    b.read32(SCU + 0xA4).map(|v| v & (1 << (11 - channel))),
+                    Ok(0)
+                );
+                // A second beat granted before display retains its grant; at/after
+                // line start it waits for blank before its final publication.
+                let finish = if old { 2996 } else { 1714 };
+                advance(&mut b, finish - 1 - start - 13, chunk);
+                assert_eq!(
+                    b.read32(SCU + 0xA4).map(|v| v & (1 << (11 - channel))),
+                    Ok(0)
+                );
+                advance(&mut b, 1, chunk);
+                assert_eq!(
+                    b.read32(SCU + 0xA4).map(|v| v & (1 << (11 - channel))),
+                    Ok(1 << (11 - channel))
+                );
+                assert_eq!(rotation_word(&b, 0), if old { 0x1111 } else { 0x2222 });
+                assert_eq!(rotation_word(&b, 4), 0x2222);
+            }
+        }
+    }
+}
+
+#[test]
+fn rotation_chunks_previews_independent_bank_and_reset_have_identical_retained_streams() {
+    let mut reference = None;
+    for chunk in [1, 3, 17, 10000] {
+        for inspect in [false, true] {
+            let mut b = rotation_board();
+            advance(&mut b, 1801, chunk);
+            if inspect {
+                for _ in 0..2 {
+                    b.vdp2.framebuffer().unwrap();
+                }
+            }
+            assert_eq!(
+                b.replay_cpu(Processor::Slave).write16(0x25E40000, 0x1234),
+                Err(BusError::Pending)
+            );
+            advance(&mut b, 8, chunk);
+            assert_eq!(b.read16(VRAM + 0x40000), Ok(0x1234));
+            advance(&mut b, 2988 - 1809, chunk);
+            let actual = (
+                b.vdp2.display_fetch.borrow().trace.clone(),
+                b.vdp2.scanning.clone(),
+            );
+            if let Some(expected) = &reference {
+                assert_eq!(&actual, expected);
+            } else {
+                reference = Some(actual);
+            }
+            // Reset cancels a queued/active write and all retained image operands.
+            assert_eq!(
+                b.replay_cpu(Processor::Master).write16(0x25E20000, 0x3333),
+                Err(BusError::Pending)
+            );
+            b.grant_bus_transaction();
+            b.reset_volatile();
+            advance(&mut b, 1800, chunk);
+            assert_eq!(b.read16(VRAM + 0x20000), Ok(0));
+            assert!(b.vdp2.display_fetch.borrow().trace.is_empty());
+        }
+    }
+}

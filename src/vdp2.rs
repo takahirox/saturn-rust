@@ -6,6 +6,8 @@ use std::cell::{Cell, RefCell};
 mod access;
 mod fetch;
 mod rotation;
+#[cfg(test)]
+mod rotation_fetch_tests;
 mod sprite;
 mod tables;
 

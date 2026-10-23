@@ -563,6 +563,10 @@ impl Bus {
         if let Some((field, line, phase, slot)) = self.raster.display_slot() {
             self.vdp2.acquire_display(field, line, phase, slot);
         }
+        if let Some((field, line, phase, x)) = self.raster.rotation_display_slot() {
+            self.vdp2
+                .acquire_rotation_display(&self.vdp1, field, line, phase, x);
+        }
     }
     fn main_deadline(&self) -> u32 {
         self.onchip[0]
@@ -571,7 +575,13 @@ impl Bus {
             .min(self.onchip[1].clocks_to_event())
             .min(self.raster.clocks_to_event())
             .min(if self.vdp2.display_active() {
-                self.raster.clocks_to_display_slot()
+                self.raster
+                    .clocks_to_display_slot()
+                    .min(if self.vdp2.rotation_display_active() {
+                        self.raster.clocks_to_rotation_slot()
+                    } else {
+                        u32::MAX
+                    })
             } else {
                 u32::MAX
             })

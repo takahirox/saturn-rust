@@ -5,6 +5,12 @@
 use super::{Layer, Vdp2};
 use crate::vdp1::Vdp1;
 
+#[derive(Clone, Copy)]
+pub(super) struct RotationSample {
+    pub image: super::fetch::NormalSample,
+    pub coefficient_color: Option<u16>,
+}
+
 #[derive(Default)]
 pub(super) struct RotationRead {
     pub line: Option<usize>,
@@ -158,6 +164,11 @@ impl Vdp2 {
         let ctl = self.word(0x2A) >> 8;
         if ctl >> 4 & 7 > 4 {
             return Err("Unsupported VDP2 rotation color format".into());
+        }
+        // §4.5 N0CHCN/R0CHCN tables: RGB888 is prohibited in high
+        // resolution for both rotation images (RBG1 reuses NBG0 controls).
+        if self.word(0) & 6 != 0 && (ctl >> 4 & 7 == 4 || (rbg1 && self.word(0x28) >> 4 & 7 == 4)) {
+            return Err("VDP2 RGB888 rotation requires normal display mode".into());
         }
         self.validate_special(4, ctl >> 4 & 7)?;
         if rbg1 {
@@ -314,7 +325,7 @@ impl Vdp2 {
     fn rotation_screen(
         &self,
         rbg1: bool,
-        mut x: usize,
+        x: usize,
         y: usize,
         sprite_window: bool,
     ) -> Option<Layer> {
@@ -330,6 +341,33 @@ impl Vdp2 {
         {
             return None;
         }
+        let sample = if let Some(sample) = self.scheduled_rotation_sample(rbg1) {
+            sample?
+        } else {
+            self.rotation_sample(rbg1, x, y, sprite_window)?
+        };
+        let (base, pixel, palette, special, format) = sample.image;
+        let pixel = self.color(
+            id,
+            format,
+            base,
+            pixel,
+            usize::from(self.word(if rbg1 { 0xE4 } else { 0xE6 }) & 7) * 256,
+            palette,
+            self.word(0x20) & (0x100 << id) != 0,
+        )?;
+        let mut layer = self.scroll_layer(id, format, pixel, special)?;
+        layer.coefficient_color = sample.coefficient_color;
+        Some(layer)
+    }
+    pub(super) fn rotation_sample(
+        &self,
+        rbg1: bool,
+        mut x: usize,
+        y: usize,
+        sprite_window: bool,
+    ) -> Option<RotationSample> {
+        let id = if rbg1 { 0 } else { 4 };
         if self.word(0x22) & (1 << id) != 0 {
             x -= x % (usize::from(self.word(0x22) >> 8 & 15) + 1);
         }
@@ -408,25 +446,15 @@ impl Vdp2 {
         if bitmap && !self.rotation_access(id, Self::dot_address(base, pixel, format), 3) {
             return None;
         }
-        let pixel = self.color(
-            id,
-            format,
-            base,
-            pixel,
-            usize::from(self.word(if rbg1 { 0xE4 } else { 0xE6 }) & 7) * 256,
-            palette,
-            self.word(0x20) & (0x100 << id) != 0,
-        )?;
-        let mut layer = self.scroll_layer(id, format, pixel, special)?;
-        // §6.4 fig.6.6: mode 2 and dual rotation use A's line data
-        // even when the displayed image uses parameter B.
-        layer.coefficient_color = if mode == 2 || self.word(0x20) & 0x20 != 0 {
-            ca
-        } else {
-            coefficient
-        }
-        .and_then(|c| c.line_color);
-        Some(layer)
+        Some(RotationSample {
+            image: (base, pixel, palette, special, format),
+            coefficient_color: if mode == 2 || self.word(0x20) & 0x20 != 0 {
+                ca
+            } else {
+                coefficient
+            }
+            .and_then(|c| c.line_color),
+        })
     }
 }
 

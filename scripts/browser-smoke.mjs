@@ -31,6 +31,7 @@ import { scspDma } from "./scsp-dma.mjs";
 import { largeMedia } from "./large-media.mjs";
 import { cdCopy } from "./cd-copy.mjs";
 import { vdp2Status } from "./vdp2-status.mjs";
+import { rotationFetch } from "./rotation-fetch.mjs";
 import { rotationReload } from "./rotation-reload.mjs";
 
 // Fail before upload if web/ includes anything beyond the public runtime assets.
@@ -1614,6 +1615,7 @@ try {
     }
   }
   await rotationReload(page);
+  await rotationFetch(page);
   const interlaceImage=Buffer.alloc(524288);
   for(const line of (await readFile("tests/fixtures/sprite-interlace.hex","utf8")).split(/\r?\n/)) {
     if(!line||line.startsWith("#"))continue;
