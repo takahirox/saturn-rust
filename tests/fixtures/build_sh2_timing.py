@@ -2,7 +2,8 @@
 """Original MIT SH-2 execution-state diagnostic, Programming Manual table7.2.
 
 Both real CPUs warm each kernel, reset their own FRT divider using module stop,
-then measure cached no-contention instruction sequences with phi/8 FRC.
+then measure cached instruction sequences with phi/8 FRC. Multiplier-register
+transfers include alignment-dependent IF/MA splits (P §7.4).
 Expectations are authored from states, not collected from an emulator.
 """
 import argparse
@@ -34,7 +35,8 @@ KERNELS = [
     # one-successor interlock. PR is an implicit source of STS PR.
     ('sts_macl', 'sts macl,r6\nadd #1,r6\n' * 16, 48, 1),
     ('sts_mach', 'sts mach,r6\nadd #1,r6\n' * 16, 48, 1),
-    ('sts_separated', 'sts macl,r6\nnop\nadd #1,r6\n' * 8, 24, 1),
+    # P §§7.4.2–3: four STS at 4n+2 add four IF/MA split clocks.
+    ('sts_separated', 'sts macl,r6\nnop\nadd #1,r6\n' * 8, 28, 1),
     ('pr_use', 'lds.l @r12+,pr\nsts pr,r6\n' * 16, 48, 0),
     ('pr_separated', 'lds.l @r12+,pr\nnop\nsts pr,r6\n' * 8, 24, 0),
 ]
@@ -44,8 +46,8 @@ def kernel(body, preserve_pr=False):
     # The caller preloads FRC high/low into R4/R5 and SBYCR into R7.
     # The resume write completes while the FRT is stopped, starting phase zero.
     # High latch(2), low read(2), body(N), final latch(2): H §7.11.2
-    # gives floor((6+N)/8) at the final high-byte read. All N are multiples
-    # of eight, so this is exactly N/8.
+    # gives floor((6+N)/8) at the final high-byte read. The STS-separated
+    # case includes four alignment splits and is not a multiple of eight.
     save = 'sts pr,r14\n' if preserve_pr else ''
     restore = 'lds r14,pr\n' if preserve_pr else ''
     return (save + 'mov #2,r0\nmov.b r0,@r7\nmov #0,r0\nmov.b r0,@r7\n'
@@ -91,7 +93,7 @@ def build():
     for at in range(0, len(rom), 16):
         if any(rom[at:at+16]):
             lines.append(f'{at:04X} ' + ' '.join(f'{w:04X}' for w in struct.unpack('>8H', rom[at:at+16])))
-    expected = [v for _, _, clocks, result in KERNELS for v in [clocks//8, result]] + [0x600D]
+    expected = [v for _, _, clocks, result in KERNELS for v in [(clocks+6)//8, result]] + [0x600D]
     return {'sh2-timing.hex': ('\n'.join(lines)+'\n').encode(),
             'sh2-timing.tsv': ''.join(f'{v:08X}\n' for v in expected).encode()}
 

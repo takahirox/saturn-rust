@@ -34,7 +34,9 @@ mod vdp2_tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Operation {
+    Clock(u64),
     PipelineWait(u32),
+    MemoryAccess(u32, bool, u64), // address, write, earliest MA completion
     Read(u32, usize, bool, bool), // address, width, instruction, TAS
     Write(u32, usize, u32),
     DmaRead(u32, bool, bool),
@@ -64,6 +66,7 @@ pub(super) struct Journal {
     waiting: Option<Transfer>,
     completed: bool,
     pipeline_wait: Option<(u32, u32)>, // requested clocks, remaining clocks
+    operand_completion: Option<u64>,
     pending_write: Option<VecDeque<Transfer>>,
     write_accepted: bool,
     write_context: (u32, Option<u8>),
@@ -136,10 +139,28 @@ impl ScheduledMemory<'_> {
             journal.beat_cursor = 0;
         }
         let result = match op {
+            Operation::Clock(_) => unreachable!("clock observations are journaled directly"),
             Operation::PipelineWait(clocks) => {
                 let mut journal = self.0.bus.transactions.journals[i].borrow_mut();
                 journal.pipeline_wait.get_or_insert((clocks, clocks));
                 Err(BusError::Pending)
+            }
+            Operation::MemoryAccess(address, write, completion) => {
+                let synchronous = self.0.cached
+                    && if write {
+                        matches!(address >> 29, 2 | 3 | 6)
+                    } else {
+                        matches!(address >> 29, 3 | 6)
+                            || self.0.bus.cache[self.0.processor as usize]
+                                .borrow()
+                                .read_hit(address)
+                    };
+                if !synchronous && !write {
+                    self.0.bus.transactions.journals[i]
+                        .borrow_mut()
+                        .operand_completion = Some(completion);
+                }
+                Ok(u32::from(!synchronous))
             }
             Operation::DmaRead(a, first, last) => self.0.dma_read32(a, first, last),
             Operation::Read(a, 1, _, true) => self.0.tas_read8(a).map(u32::from),
@@ -186,6 +207,35 @@ impl ScheduledMemory<'_> {
 // a resumed interpreter uses exactly the same checked Memory boundary.
 pub(crate) struct ReplayMemory<'a>(RefCell<ScheduledMemory<'a>>);
 impl Memory for ReplayMemory<'_> {
+    fn sh2_clock(&self) -> Option<u64> {
+        let memory = self.0.borrow_mut();
+        let mut journal = memory.0.bus.transactions.journals[memory.0.journal_index()].borrow_mut();
+        let cursor = journal.cursor;
+        let clock = if let Some(&(Operation::Clock(clock), _)) = journal.operations.get(cursor) {
+            clock
+        } else {
+            assert_eq!(
+                cursor,
+                journal.operations.len(),
+                "replay lost a clock observation"
+            );
+            let clock = memory.0.bus.main_clocks;
+            journal.operations.push((Operation::Clock(clock), Ok(0)));
+            clock
+        };
+        journal.cursor += 1;
+        Some(clock)
+    }
+    fn sh2_fetch_slots(&self) -> bool {
+        true
+    }
+    fn sh2_schedule_memory_access(&self, address: u32, write: bool, completion: u64) -> bool {
+        self.0
+            .borrow_mut()
+            .operation(Operation::MemoryAccess(address, write, completion))
+            .unwrap()
+            != 0
+    }
     fn sh2_write_context(&self, pc: u32, vector: Option<u8>) {
         self.0
             .borrow_mut()
@@ -546,10 +596,13 @@ impl Bus {
             transfer.last,
         );
         let i = processor as usize;
-        let remaining = self.cpu_bus_clocks[i]
+        let mut remaining = self.cpu_bus_clocks[i]
             .replace(0)
             .saturating_add(self.onchip[i].take_wait_clocks())
             .max(1);
+        if !dmac && transfer.last {
+            remaining = remaining.max(self.operand_completion_wait(processor));
+        }
         self.transactions.active = Some(Active {
             owner: if dmac {
                 Owner::Dmac(processor)
@@ -580,6 +633,7 @@ impl Bus {
         journal.waiting = None;
         journal.completed = false;
         journal.pipeline_wait = None;
+        journal.operand_completion = None;
         journal.pending_write = None;
         journal.write_accepted = false;
         if self.transactions.lock == Some(processor) {
@@ -710,12 +764,13 @@ impl Bus {
                     transfer,
                     // CPU reads first determine the cycle on the cache bus;
                     // writes and DMAC cycles need no such extra state.
-                    remaining: (if transfer.write.is_some() { 1 } else { 2 })
+                    remaining: ((if transfer.write.is_some() { 1 } else { 2 })
                         + self.onchip[i].cpu_peripheral_wait(
                             transfer.address,
                             transfer.width,
                             transfer.write.is_some(),
-                        ),
+                        ))
+                    .max(self.operand_completion_wait(processor)),
                 });
             }
         }
@@ -983,6 +1038,13 @@ impl Bus {
             self.transactions.dmac_yield = false;
             self.grant_dmac();
         }
+    }
+    fn operand_completion_wait(&self, processor: Processor) -> u32 {
+        self.transactions.journals[processor as usize]
+            .borrow()
+            .operand_completion
+            .unwrap_or(0)
+            .saturating_sub(self.main_clocks) as u32
     }
     pub(crate) fn bus_transaction_deadline(&self) -> u32 {
         self.system_clock.deadline(self.bus_main_deadline()).max(1)
@@ -1392,6 +1454,60 @@ mod tests {
             b.system_reset();
             b.advance_clocks(20).unwrap();
             assert!(!b.take_cpu_transaction_completion(p));
+        }
+    }
+    #[test]
+    fn operand_completion_bounds_are_cpu_local_replayed_and_canceled_by_reset() {
+        use crate::onchip;
+
+        fn bounded_read(b: &mut Bus, p: Processor, end: u64) -> Result<u32, BusError> {
+            let memory = b.replay_cpu(p);
+            assert!(memory.sh2_schedule_memory_access(onchip::DMAC, false, end));
+            memory.read32(onchip::DMAC)
+        }
+        for p in [Processor::Master, Processor::Slave] {
+            let other = if p == Processor::Master {
+                Processor::Slave
+            } else {
+                Processor::Master
+            };
+            let mut b = Bus::default();
+            b.set_slave_enabled(true);
+            b.for_cpu(p).write32(onchip::DMAC, 3).unwrap();
+            assert_eq!(bounded_read(&mut b, p, 5), Err(BusError::Pending));
+            assert_eq!(
+                write(&mut b, other, 0xFFFFFE01, 0x5A),
+                Err(BusError::Pending)
+            );
+            b.advance_clocks(1).unwrap();
+            assert_eq!(write(&mut b, other, 0xFFFFFE01, 0x5A), Ok(()));
+            b.finish_cpu_transaction(other);
+            b.advance_clocks(3).unwrap();
+            assert!(!b.take_cpu_transaction_completion(p));
+            assert_eq!(bounded_read(&mut b, p, 5), Err(BusError::Pending));
+            b.for_cpu(p).write32(onchip::DMAC, 7).unwrap();
+            b.advance_clocks(1).unwrap();
+            assert_eq!(bounded_read(&mut b, p, 5), Ok(7));
+            b.for_cpu(p).write32(onchip::DMAC, 11).unwrap();
+            assert_eq!(bounded_read(&mut b, p, 5), Ok(7));
+            b.finish_cpu_transaction(p);
+
+            assert_eq!(bounded_read(&mut b, p, 100), Err(BusError::Pending));
+            b.advance_clocks(1).unwrap();
+            b.cancel_cpu_transaction(p);
+            b.advance_clocks(20).unwrap();
+            assert!(!b.take_cpu_transaction_completion(p));
+            assert_eq!(b.replay_cpu(p).read32(onchip::DMAC), Err(BusError::Pending));
+            b.advance_clocks(2).unwrap();
+            assert_eq!(b.replay_cpu(p).read32(onchip::DMAC), Ok(11));
+            b.finish_cpu_transaction(p);
+
+            assert_eq!(bounded_read(&mut b, p, 100), Err(BusError::Pending));
+            b.system_reset();
+            b.set_slave_enabled(true);
+            assert_eq!(b.replay_cpu(p).read32(onchip::DMAC), Err(BusError::Pending));
+            b.advance_clocks(2).unwrap();
+            assert_eq!(b.replay_cpu(p).read32(onchip::DMAC), Ok(0));
         }
     }
     #[test]

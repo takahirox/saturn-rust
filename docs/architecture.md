@@ -39,10 +39,14 @@ volatile RAM, devices, ROM, counters, delay state and faults before attempting t
 boot. Invalid input leaves that mode selected and CPU in Reset, with no stale
 media or fallback. Battery-backed bytes are retained. `step()` issues only CPUs
 whose independent opcode/wait deadlines have arrived (master first on ties),
-then advances to the next CPU deadline. SH-2 base execution states follow the
+then advances to the next CPU deadline in the PLL main-clock domain. CPU issue
+can occur between two main ticks sharing one reference tick, so single-state
+instructions do not accumulate per-instruction PLL rounding. Public elapsed
+time and sound/CD/RTC advancement remain in reference ticks. SH-2 base execution
+states follow the
 Programming Manual table7.2; actual external beats occupy T1/T2 and add BSC,
 VRAM and DIVU waits only to the issuing CPU. Sleeping polling is bounded at eight
-reference clocks and retires no instruction. `run_steps(n)` accepts 1–10000
+main clocks and retires no instruction. `run_steps(n)` accepts 1–10000
 scheduler boundaries. `advance_frame()` waits for a raster field with a bounded
 turn limit and aborts on the first fault. Raster, SCU timer/DSP and on-chip DMA
 deadlines split peripheral advancement. Both on-chip DMACs progress without
@@ -71,6 +75,34 @@ An exhaustive decoder test checks every 16-bit value against a separate,
 manual-derived encoding inventory; semantic tests separately cover operands,
 flags, addressing, aliases, multiplication/division, saturation and control flow.
 Decoder coverage alone is not a claim of full processor conformance.
+
+`src/cpu/multiplier.rs` retains CPU-local multiplier availability. MULS/MULU,
+MUL.L/DMUL, MAC.W/MAC.L and both directions of MACH/MACL LDS/STS (including
+CLRMAC) interlock at their MA access stage. The two/four-clock mm tails advance
+through actual fetch, operand and on-chip waits. The first MAC operand can
+complete before waiting for the second operand's multiplier access. IF/MA slot
+splits depend on longword alignment, including cache hits; STS GPR writeback
+keeps its existing independent interlock. Clock observations and local waits
+are journaled with memory effects, so instruction replay neither moves a sampled
+boundary nor repeats an operand. The second MAC operand and MACH/MACL memory
+transfers also journal whether the access is synchronous: cache arrays and
+resident reads wait through MA completion. Scheduled reads begin at their
+ordinary MA start; the bus scheduler extends the final beat through the
+journaled multiplier boundary. Operand latency and mm contention overlap in
+full, with data sampled at the later completion. STS.L keeps its existing
+one-clock admission after the accumulator wait before supplying write data.
+For MAC and memory transfers, the CPU also retains the successor's permitted EX
+time. The scheduler recovers its overlap with MA without moving memory effects
+earlier, including scheduled peripheral reads and writes. Multi-clock operand
+reads stretch the shared MA/EX slot while preserving its overlap (P §7.2.3,
+fig7.89); IF/MA splits, waited successor fetches and exception entry consume
+that interval.
+Hardware reset replaces this state; exception
+entry advances time without inventing a multiplier flush. The
+[primary-derived timing table and scope](sh2-multiplier.md) and
+[validation record](validation-issue-31.md) describe independent native and
+production Wasm guest evidence. Full speculative pipeline completion remains
+separate #17 work.
 
 General illegal instructions dispatch vector 4; instructions that rewrite PC or
 undefined opcodes in a taken delayed branch's slot dispatch vector 6. A slot

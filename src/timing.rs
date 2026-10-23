@@ -16,6 +16,9 @@ pub(crate) struct SystemClock {
     phase: u64,
 }
 impl SystemClock {
+    pub fn is_reference(&self) -> bool {
+        self.frequency() == Self::REFERENCE
+    }
     const REFERENCE: u64 = 26_874_100;
     fn frequency(&self) -> u64 {
         match (self.pal, self.fast) {

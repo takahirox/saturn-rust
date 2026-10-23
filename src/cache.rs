@@ -68,6 +68,17 @@ impl Cache {
         // H §8.5.4: ways 0/1 are RAM in TW mode, never tag matches.
         if self.control & 8 != 0 { 2 } else { 0 }
     }
+    fn hit_way(&self, address: u32) -> Option<usize> {
+        let (set, tag, _) = Self::parts(address);
+        self.lines[set]
+            .iter()
+            .enumerate()
+            .skip(self.first_cache_way())
+            .find_map(|(way, line)| (line.valid && line.tag == tag).then_some(way))
+    }
+    pub fn read_hit(&self, address: u32) -> bool {
+        address < 0x2000_0000 && self.control & 1 != 0 && self.hit_way(address).is_some()
+    }
     pub fn read<const N: usize>(
         &mut self,
         address: u32,
@@ -78,12 +89,7 @@ impl Cache {
             return Ok(None);
         }
         let (set, tag, offset) = Self::parts(address);
-        let way = if let Some(way) = self.lines[set]
-            .iter()
-            .enumerate()
-            .skip(self.first_cache_way())
-            .find_map(|(way, line)| (line.valid && line.tag == tag).then_some(way))
-        {
+        let way = if let Some(way) = self.hit_way(address) {
             way
         } else {
             let disable = if instruction { 2 } else { 4 };

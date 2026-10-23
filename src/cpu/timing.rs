@@ -1,7 +1,7 @@
 //! SH-1/SH-2 Programming Manual §7.3/table7.2: EX-to-EX execution
 //! states without contention. SH-1-only instructions are excluded by execute.
 //! Fetch/operand waits belong to the CPU-local bus. Load WB/EX interlocks
-//! are tracked per CPU below; multiplier and IF/MA overlap remain separate.
+//! are tracked per CPU below; multiplier access is in multiplier.rs.
 
 pub(super) fn execution_states(op: u16, t: bool) -> u32 {
     match op {
@@ -23,7 +23,7 @@ pub(super) fn execution_states(op: u16, t: bool) -> u32 {
         }
         _ if matches!(op & 0xFF00, 0xCC00 | 0xCD00 | 0xCE00 | 0xCF00) => 3,
         _ if op & 0xF0FF == 0x401B => 4,                  // TAS.B
-        _ if matches!(op & 0xF00F, 0x000F | 0x400F) => 3, // MAC.L/MAC.W
+        _ if matches!(op & 0xF00F, 0x000F | 0x400F) => 2, // MAC.L/MAC.W, fig7.23/34
         _ if matches!(op & 0xF00F, 0x0007 | 0x3005 | 0x300D) => 2, // MUL.L/DMUL
         _ if matches!(op & 0xF0FF, 0x4007 | 0x4017 | 0x4027) => 3, // LDC.L
         _ if matches!(op & 0xF0FF, 0x4003 | 0x4013 | 0x4023) => 2, // STC.L
@@ -53,8 +53,8 @@ mod tests {
             (0xCE80, 3),
             (0xCF01, 3),
             (0x4A1B, 4),
-            (0x013F, 3),
-            (0x4EDF, 3),
+            (0x013F, 2),
+            (0x4EDF, 2),
             (0x0217, 2),
             (0x37E5, 2),
             (0x3F0D, 2),

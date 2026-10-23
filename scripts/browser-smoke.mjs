@@ -12,6 +12,7 @@ import { videoTransactions } from "./video-transactions.mjs";
 import { busTransactions } from "./bus-transactions.mjs";
 import { scuFringe } from "./scu-fringe.mjs";
 import { dmacBus } from "./dmac-bus.mjs";
+import { sh2Multiplier } from "./sh2-multiplier.mjs";
 import { sh2BusPipeline } from "./sh2-bus-pipeline.mjs";
 import { sh2ResetBus } from "./sh2-reset-bus.mjs";
 import { cs0Transfers } from "./cs0.mjs";
@@ -1241,6 +1242,7 @@ try {
   // Original cached instruction-state kernels run independently on both
   // SH-2s. Each resets its FRT divider and measures table7.2 states. Changing
   // only guest ADDs to real BRA/NOP pairs changes time and computed results.
+  await sh2Multiplier(page);
   const timingRom = Buffer.alloc(524288);
   for (const line of (await readFile("tests/fixtures/sh2-timing.hex", "utf8")).split(/\r?\n/)) {
     if (!line || line.startsWith("#")) continue;
