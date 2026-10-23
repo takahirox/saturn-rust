@@ -2993,17 +2993,18 @@ non-overflowing arithmetic clears V. NOP, logical/shift operations and transfers
 preserve V. S/Z/C describe the ALU result even when it is only transferred to
 memory, the accumulator is retained, or CLR A executes in parallel.
 
-The read-preserved-V criterion in #27 conflicts with
-[SCU Final Specifications: Precautions, ST-210-110194, item 36, printed p.10](https://antime.kapsi.fi/sega/files/ST-210-110194.pdf#page=14),
-which explicitly requires read-cleared V. The same rule appears in
+The corrected [Issue #27 criteria](https://github.com/takahirox/saturn-rust/issues/27)
+supersede the original read-preserved-V requirement with documented read-cleared V.
+[SCU Final Specifications: Precautions, ST-210-110194, item 36, printed p.10](https://antime.kapsi.fi/sega/files/ST-210-110194.pdf#page=14)
+explicitly requires read-cleared V. The same rule appears in
 [Sega Technical Bulletin #10, item 36, PDF p.33](https://antime.kapsi.fi/sega/files/Sattechs.pdf#page=33).
 SOA #8 §3 describes E acknowledgement without revoking this V rule, and the
 simulator addendum describes arithmetic flag replacement without specifying
-control-port reads. No authoritative superseding read-preservation rule was
-found in these references. The implementation follows the explicit read-clear
-rule. Tests verify that chosen documented contract; they are not independent
-measurements of physical hardware. #27's read-preservation criterion therefore
-remains unmet, and this revision must not claim full Issue completion.
+control-port reads. The implementation and repeated-read vectors satisfy the
+corrected read-clear contract. This evidence-backed correction resolves the
+technical-contract conflict; it is not a human test result or a waiver of review
+or CI. Tests verify the documented contract, not independent measurements of
+physical hardware.
 
 Primary contract:
 
@@ -3065,8 +3066,8 @@ final checks and browser build (the default Homebrew compiler lacked Wasm core).
 | All 76 fixture/media `--check` commands in the existing CI workflow | Pass, including the new diagnostic and every existing original guest/media check. |
 | `npm run test:browser` | Pass: complete suite on Chromium 145.0.7632.6, including the new diagnostic, all existing native-equivalent DSP guests, Star Collector, Prism Courier, Hardware Lab, production Canvas/AudioWorklet, backup, both controller ports, resets, offline execution and local-file privacy assertions. |
 
-This is a partial #27 and #17 increment because #27's requested read preservation
-contradicts the explicit final specification. CPU/peripheral, multiprocessor/bus/reset,
+The implementation and validation above satisfy #27's corrected arithmetic/status
+criteria. This remains a partial #17 increment. CPU/peripheral, multiprocessor/bus/reset,
 remaining
 SCU/DSP, video/audio, CD/media/HLE, SMPC and comprehensive integration requirements
 remain mandatory. The remaining DSP pipeline/physical RAM-port/conditional/DMA
