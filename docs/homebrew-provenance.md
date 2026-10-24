@@ -72,6 +72,7 @@ command, disc layout and HLE boot contract are in the
 | web/prism-courier.iso and prism-courier-LICENSE.txt | Deterministic original guest disc including LICENSE.TXT, plus an exact public license copy; no SDK/firmware/recorded audio |
 | src/hle/system.s, system.bin and build.py | Original SH-2 system-service routines and build output under src/hle/LICENSE; manual-defined ABI, no SDK routine or instruction hook |
 | tests/fixtures/build_hle_system.py, hle-system.iso and hle-system.tsv | Original SH-2 diagnostic, ISO/AIP and authored expectations under tests/fixtures/LICENSE; disc includes LICENSE.TXT; no external assets |
+| tests/fixtures/build_hle_dual.py, hle-dual.s, hle-dual.iso and hle-dual.tsv | Original SH-2 HLE startup/communication/raster diagnostic and authored records under tests/fixtures/LICENSE; disc includes LICENSE.TXT; no SDK/firmware/core or captured results |
 | Python 3 | External build tool under the PSF license, standard library only; no Python code/runtime embedded in disc |
 | wasm-bindgen and Playwright | Existing Wasm/browser infrastructure dependencies; retain their package licenses and lockfiles; no guest linkage |
 

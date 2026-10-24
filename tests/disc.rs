@@ -32,7 +32,7 @@ fn original_multi_area_disc_loads_interleaved_first_read_and_executes_both_stack
         let mut m = Machine::new();
         for _ in 0..2 {
             m.reset(Boot::HleDisc(&image)).unwrap();
-            for _ in 0..32 {
+            for _ in 0..200 {
                 if m.cpu_state().pc == boot.aip_entry {
                     break;
                 }
@@ -70,7 +70,7 @@ fn boot_uses_saturn_metadata_iso_first_file_and_original_aip_instructions() {
     assert_eq!(m.cpu_state().r[15], parsed.stack);
     assert_eq!(m.bus().read32(IP_ADDRESS), Ok(0x53454741));
     assert_eq!(m.bus().read32(0), Ok(0x100)); // original independent HLE reset trampoline
-    for _ in 0..32 {
+    for _ in 0..200 {
         if m.cpu_state().pc == AIP_ENTRY {
             break;
         }
@@ -248,7 +248,7 @@ fn descriptor_sets_padding_and_hidden_first_read_preserve_guest_boot() {
     image.resize(image.len() + SECTOR * 2, 0xA5); // outside logical volume
     let mut m = Machine::new();
     m.reset(Boot::HleDisc(&image)).unwrap();
-    for _ in 0..32 {
+    for _ in 0..200 {
         if m.cpu_state().pc == AIP_ENTRY {
             break;
         }
@@ -305,5 +305,5 @@ fn zero_first_read_address_executes_original_aip_without_loading_a_file() {
     assert_eq!(m.cpu_state().status, CpuStatus::Sleeping);
     assert_eq!(m.bus().read32(0x06008000), Ok(42));
     assert_eq!(m.bus().read32(0x06004000), Ok(0));
-    assert_eq!(m.cpu_state().instructions, 27); // 23 reset + four original AIP instructions
+    assert_eq!(m.cpu_state().instructions, 71); // 67 reset + four original AIP instructions
 }

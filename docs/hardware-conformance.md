@@ -3411,7 +3411,32 @@ DCC sampling uses the existing raster event phase and CPU boundary journal;
 no synchronizer/noise-canceler latency or measured electrical phase is claimed.
 Normal IRL autovectors are supported. Slave VECMD=1 board-vector acquisition
 remains unsupported; no D7–D0 value is invented and no raster vector is delivered
-in that mode. Half-line interlace and HLE interrupt initialization remain separate
-requirements. Full CPU/peripheral, bus/reset/timing, SCU/DSP, video/audio, CD/media,
+in that mode. Half-line interlace remains outstanding; HLE interrupt initialization
+now has the separate [#49 contract](hle-dual-startup.md) and evidence below. Full CPU/peripheral, bus/reset/timing, SCU/DSP, video/audio, CD/media,
 SMPC and integration conformance remains pending. Commercial compatibility is
 unverified and #17 remains open.
+
+
+## HLE dual-CPU interrupt startup (HLEDUAL)
+
+Related to #49 and #17. [The primary-derived contract](hle-dual-startup.md)
+reconciles System Program/STN-28 initialization with SH7604 register encodings,
+widths and acknowledgement. Later entry94/capture priority15 supersede the older
+ST-202-R1 printed p.3 entry164/level1; entry registration is distinct from slave
+capture-handler registration at master index164.
+
+| Contract | Implementation | Independent evidence |
+| --- | --- | --- |
+| CPU-local capture enable, priority15/vector64; other internal priorities zero; no phantom request | Original guest [trampoline](../src/hle/boot.s), [reproducible ROM](../src/hle/build.py); hardware reset and external BIOS untouched | [Literal boundary checks](../src/hle/startup_tests.rs), including reset values before/after installation, masked pending capture, unmask, frame, guest read-before-clear, RTE and reassertion; both CPUs' entry register records |
+| Master external SCU vectors, slave normal raster autovectors41/43 | Separate ICR writes in the trampoline; existing board/interrupt mechanism unchanged | [Original HLE disc](../tests/fixtures/build_hle_dual.py), [native Machine](../tests/hle_dual.rs), [browser Wasm](../scripts/hle-dual.mjs): bidirectional SLEEP/handler/RTE arithmetic, two successive captures, H/V level re-entry, SR masks, master SCU masking, independent raster-only entry |
+| Retained vectors/shared SDRAM and metadata stacks across slave/clock restarts | SSHON reruns guest initialization without reinstalling work-RAM vectors | Full 512-byte slave table compared at four entries; changed entry operand; default/custom SP and stacked SP; restarts after both clock selections; SYSRES/cold power-clear and backup retention |
+| Independent reproduction and controls | Original MIT source/disc/TSV, registered in existing CI | Changed master/slave/request/raster operands, omitted-strobe and masked-raster controls, repeated boots, native chunks1/3/17/10000 with/without inspection; same authored records under production Wasm at `/saturn-rust/` |
+
+[Validation #49](validation-issue-49.md) records actual full-suite results and
+independent failures against the inherited bootstrap. Existing #47 board timing,
+SCU-independence and reset/journal assertions remain intact. Slave VECMD=0 is the
+HLE configuration that provides the specified vectors, not a Sega ROM register
+dump. Slave external board-vector acquisition, physical synchronizer timing,
+half-line interlace, full BIOS/CD-library initialization and all other unmet #17
+requirements remain outstanding. This is a partial #17 increment; hardware
+completion and genuine BIOS/commercial-game compatibility are not established.
