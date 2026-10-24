@@ -705,6 +705,11 @@ impl OnChip {
             vector & 0x7F
         }
     }
+    /// DCC raster inputs are supported in normal IRL autovector mode.
+    /// No slave board-vector acquisition cycle is specified/implemented.
+    pub(crate) fn autovector(&self, level: u8) -> Option<u8> {
+        (self.icr & 1 == 0).then(|| self.external_vector(level, 0))
+    }
     /// Board NMI electrical input. Repeated levels do not create new edges;
     /// NMIL is read-only and NMIE selects the edge independently of SR.I.
     pub fn set_nmi_pin(&mut self, high: bool) -> bool {

@@ -19,9 +19,10 @@ def program(data, mailbox):
     s = f'load {mailbox:#x},r8\n'
     s += store(0xFFFFFFE0, 0xA55A0000) + store(0xFFFFFFE8, 0xA55A0080)
     s += 'load 0xfffffe92,r1\nmov #17,r0\nmov.b r0,@r1\n'  # enable/purge cache
-    s += 'load 0xfffffee2,r1\nload 0x600,r0\nmov.w r0,@r1\n'
+    s += 'load 0xfffffee2,r1\nload 0x700,r0\nmov.w r0,@r1\n'
     s += store(0xFFFFFFA0, 0x44)
-    s += 'mov #0,r0\nldc r0,sr\n'
+    # Accept only level-7 DMAC above live DCC raster inputs.
+    s += 'mov #96,r0\nldc r0,sr\n'
     for i, value in enumerate([0x11223344, 0x55667788, 0x99AABBCC, 0xDDEEFF00, 0x13579BDF]):
         s += store(data + i * 4, value)
     record = mailbox + 8

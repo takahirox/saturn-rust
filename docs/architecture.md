@@ -149,7 +149,24 @@ from the shared BIOS and SSHOFF resets only the slave CPU/FRT, preserving shared
 RAM and master state. Both CPUs execute the same original interpreter with
 independent registers, stacks, delay/fault state and on-chip registers. The
 original diagnostic guest uses a guest-written shared flag to select setup;
-BCR1 identifies each physical processor. SMPC NMIREQ latches a master
+BCR1 identifies each physical processor. The DCC supplies slave HBlank IRL2
+(vector `0x41`) and VBlank IRL6 (vector `0x43`) as live levels, independently of master
+SCU masks/status/acknowledgement. `Bus::interrupt` uses physical blanking flags,
+so DISP=0's TVSTAT readback override cannot create a permanent request. The
+existing INTC arbitration gives external inputs priority over equal-level
+internal sources, except UBC; CPU SR.I and branch/control-transfer deferral
+still apply. Acceptance does not clear either raster level. An eligible RTE
+can therefore re-enter within the same blank. Normal slave autovectors are
+supported; slave VECMD=1 board-vector acquisition remains unsupported.
+
+Raster events update levels before CPU issue at the next hardware boundary.
+An issued CPU-boundary journal retains its sampled request through pending
+stack/vector accesses; replay publishes one exception and no retired instruction.
+Reset cancels that journal. SSHON starts with reset SR.I=15 and subsequently
+unmasked software observes current live levels. DCC synchronizer latency and
+measured electrical phase are unspecified here; the inherited raster phase and
+whole-line interlace conventions remain. See [slave raster evidence](validation-issue-47.md).
+SMPC NMIREQ latches a master
 NMI and can wake SLEEP independently of SR.I. A fault on either CPU stops the
 entire machine until reset and identifies the slave when applicable.
 

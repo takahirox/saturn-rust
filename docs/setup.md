@@ -79,6 +79,7 @@ python3 homebrew/star-collector/build.py --check
 python3 homebrew/prism-courier/build.py --check
 python3 src/hle/build.py --check
 python3 homebrew/hardware-lab/build.py --check
+python3 tests/fixtures/build_slave_raster.py --check
 python3 tests/fixtures/build_dual_sh2.py --check
 python3 tests/fixtures/build_sh7604.py --check
 python3 tests/fixtures/build_divu.py --check
@@ -463,3 +464,11 @@ red/green. Changed operands, omitted writes, repeated cold boots, native
 advancement chunks and actual Canvas pixels are checked. Reproduce it with
 `python3 tests/fixtures/build_video_writes.py --check`; see the
 [transaction contract](sh2-video-writes.md) and [validation](validation-issue-43.md).
+
+
+The original slave-raster diagnostic starts the slave with SMPC, installs normal
+IRL autovectors and computes separate HBlank/VBlank records through actual
+SLEEP/exception/RTE execution. Native and production Wasm checks include re-entry
+within a blank, changed arithmetic, SR masking, omitted startup and repeated cold
+boots. The fixture reproduction command above is registered in CI; see
+[Issue #47 validation](validation-issue-47.md).

@@ -132,7 +132,8 @@ def overrun_build():
         source += 'load 0xffffff48,r1\nmov #86,r0\nmov.w r0,@r1\n'
         # A source-authored literal is intentionally distinct for mutation tests.
         source += ('load 0xffffff78,r1\nload 0x00001000,r0\n'  # native mode; test also clears UBC mode bit
-                   'mov.w r0,@r1\nmov.w @r1,r0\nmov #0,r0\nldc r0,sr\n'
+                   # UBC remains accepted with DCC raster levels masked.
+                   'mov.w r0,@r1\nmov.w @r1,r0\nmov #96,r0\nldc r0,sr\n'
                    'mov #0,r12\nload 0x5002,r7\njsr @r7\nnop\n')
         source += f'load {mailbox+0x20:#x},r8\n' + record(12) + 'load 0x600d,r0\n' + record()
         if master:

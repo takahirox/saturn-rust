@@ -11,6 +11,8 @@ use std::cell::{Cell, RefCell};
 use std::fmt;
 #[cfg(test)]
 mod dmac_tests;
+#[cfg(test)]
+mod slave_raster_tests;
 mod transactions;
 
 pub const BIOS_SIZE: usize = 512 * 1024;
@@ -423,7 +425,20 @@ impl Bus {
                 .interrupt()
                 .map(|(level, vector)| (level, self.onchip[0].external_vector(level, vector)))
         } else {
-            None
+            // STN-28 attachment §2.3: DCC supplies live blanking levels,
+            // independently of SCU IMS/IST and TVMD.DISP's status override.
+            let level = if self.vdp2.vblank {
+                Some(6)
+            } else if self.vdp2.hblank {
+                Some(2)
+            } else {
+                None
+            };
+            level.and_then(|level| {
+                self.onchip[1]
+                    .autovector(level)
+                    .map(|vector| (level, vector))
+            })
         };
         match (internal, external) {
             // H table 5.4: UBC precedes IRL15; all other internal sources

@@ -64,7 +64,8 @@ def build():
             s += store(0xffffff14 if width == 64 else 0xffffff04, low)
             s += read(0xffffff04) + read(0xffffff10) + read(0xffffff08)
             expected += [quotient, remainder, control | 1]
-    s += put16(0xffffff0a, 2) + 'mov #0,r0\nldc r0,sr\n'
+    # Keep unused DCC raster inputs masked while accepting DIVU level10.
+    s += put16(0xffffff0a, 2) + 'mov #96,r0\nldc r0,sr\n'
     s += store(0xffffff00, 0) + store(0xffffff04, 1)
     s += ('wait_irq:\nmov.l @r10,r0\ntst r0,r0\nbt wait_irq\n'
           'mov #-16,r0\nldc r0,sr\n')
@@ -76,7 +77,7 @@ def build():
     s += ('load 0xffffff40,r1\nmov.l r11,@r1\n')
     s += put16(0xffffff48, 0x6b) + put16(0xffffff78, 0x1000)
     s += read(0xffffff78, 2)
-    s += ('mov #0,r0\nldc r0,sr\nload 0xaa,r0\nmov.l r0,@r11\n'
+    s += ('mov #96,r0\nldc r0,sr\nload 0xaa,r0\nmov.l r0,@r11\n'
           'mov #-16,r0\nldc r0,sr\nmov.l @r11,r0\n') + record()
     s += read(0xffffff78, 2)
     s += 'load 0x600d,r0\n' + record()

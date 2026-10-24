@@ -61,7 +61,8 @@ mov.l r0,@r1
 load 0xfffffff0,r1
 load 0xa55a0050,r0
 mov.l r0,@r1
-mov #0,r0
+; Mask DCC HBlank while retaining the level-5 refresh IRQ.
+mov #0x20,r0
 ldc r0,sr
 nop
 mov r8,r2
@@ -81,6 +82,10 @@ load 0x2010001f,r1
 mov #2,r0
 mov.b r0,@r1
 finished:
+; No more IRQs are used by this diagnostic.
+mov #-16,r0
+ldc r0,sr
+nop
 mov r8,r2
 add #28,r2
 load 0x600d,r0

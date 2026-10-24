@@ -34,6 +34,7 @@ jobs:
           python3 homebrew/prism-courier/build.py --check
           python3 src/hle/build.py --check
           python3 homebrew/hardware-lab/build.py --check
+          python3 tests/fixtures/build_slave_raster.py --check
           python3 tests/fixtures/build_dual_sh2.py --check
           python3 tests/fixtures/build_sh7604.py --check
           python3 tests/fixtures/build_divu.py --check

@@ -4331,3 +4331,19 @@ historical erase fixture setup without weakening their budget assertions.
 This is a partial #17 increment. All other outstanding umbrella criteria remain
 open; no successful checkpoint or intermediate validation demonstrates hardware
 completion or commercial-game compatibility.
+
+
+## Issue #47 continuation: slave raster inputs
+
+The earlier dual-CPU/FRT guest establishes communication IRQs, not the DCC raster
+path. [Issue #47 validation](validation-issue-47.md) adds independent slave IRL2/0x41
+and IRL6/0x43 levels, native edge/arbitration/replay/reset vectors and the original
+executing raster guest in native and production browser Wasm. The DUAL guest now
+uses level7 FRT with SR.I=6 to mask unused raster inputs; BSC/DIVU/DMAC guests also
+mask those inputs explicitly while retaining their substantive IRQ assertions.
+The historical DUAL hash above describes its earlier bytes; the current expanded
+ROM hash is `fdd1302400b98b911ac32f257f1ff7aa4170d096f4044af1e2026446100f2896`.
+Normal slave autovectors are covered; unsupported slave external-vector mode,
+HLE interrupt initialization and half-line raster timing remain outstanding.
+This remains a partial #17 increment and does not establish commercial-game or
+umbrella hardware completion.
