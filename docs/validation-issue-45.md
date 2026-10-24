@@ -20,9 +20,10 @@ source Issue was necessary, and the execution instruction prohibits Issue mutati
 records the distinct Seek Home origin. A current-position PAUSE from home seeks
 to 150, while ordinary standby and ERROR recover their retained positions. Home
 recovery also restarts the audio sample offset and de-emphasis history. Explicit
-movement clears the home marker, including file/directory drive paths; mounting
-new media resets its repeat/range origin. An unchanged maximum repeat preserves
-its finite limit and notification count. Changing range or maximum clears the
+movement clears the home marker, including file/directory drive paths. Replacement
+media preserves both play-range bounds, maximum repeat and notification count;
+only cold initialization or software reset initializes this host information.
+An unchanged maximum repeat preserves its finite limit and notification count. Changing range or maximum clears the
 notification count. Q returns a five-word transfer in OPEN/NODISC and other
 supported states, shares validity/track metadata with reports, and identifies
 track-AA lead-out at disc-end completion. Command payloads and startup signature
@@ -39,7 +40,7 @@ additionally requires PAUSE recovery to the previously failed FAD.
 
 ## Independent native vectors
 
-Nine [register/Machine tests](../tests/cd_reports.rs) use literal expected words
+Twelve [register/Machine tests](../tests/cd_reports.rs) use literal expected words
 and Q data, never production report/position helpers to generate expected values:
 
 - Startup signature and every generated drive state: PAUSE, STANDBY, PLAY, SEEK,
@@ -48,7 +49,11 @@ and Q data, never production report/position helpers to generate expected values
   each state. Existing CUE vectors retain audio, track/index and CONTROL coverage.
 - Nonzero repeat notifications 1/2 survive timeout, home, open/close and seek.
   Unchanged maximum/range retain the finite limit: playback stops after the
-  second repeat rather than looping indefinitely. ERROR masks a noninitial 182
+  second repeat rather than looping indefinitely. Replacement media with a
+  different lead-out retains both bounds and the repeat maximum/count. Canceling
+  PAUSE after home at 150 stays paused outside the retained [181,183) range;
+  independent vectors cover 150/180/181/182/183/184 and PEND. ERROR masks a
+  noninitial 182
   and a nonzero count 1, then PAUSE restores both on the same damaged medium.
 - Literal before/equal/after seek, command and periodic publication boundaries;
   command completion wins a coincident periodic deadline, pending queries
@@ -58,9 +63,12 @@ and Q data, never production report/position helpers to generate expected values
 - Software reset drops Q transfers and home state, power cancellation before/at/
   after query completion prevents stale data, and cold defaults retain the
   signature. Existing executing SMPC CDOFF/CDON tests remain in the full suite.
-- Chunks 1/3/17/10000 agree with passive CR4/FIFO peeks; dedicated recovery vectors
-  compare both with/without passive reads. `CdBlock::peek16` neither consumes Q
-  words nor releases CR4; architectural reads retain both protocol side effects.
+- Chunks 1/3/17/10000 agree with passive CR4/FIFO previews through the Bus
+  debugger API used by Machine and production Wasm. Dedicated FIFO vectors
+  preview two successive words (including the final word padded with FFFF),
+  exercise physical/P1 aliases and verify CR4 protection across periodic updates.
+  Architectural reads still consume the five Q words and release CR4. Other
+  devices retain their existing debugger behavior; this evidence concerns CD.
 - Disc-end PAUSE and Q identify `41AA 0100 00FA`; home recovery on audio media
   starts at sample 0/FAD 150 instead of retaining an old within-sector offset.
 
@@ -84,15 +92,18 @@ exhausted retries at 173 and read a good sector at 174. Hosts load ROM/media,
 advance execution and read records only; they never supply running records or
 substitute command results. FAD operands 181/187, media words 6969/A6A6 and an
 omitted-home opcode produce independently predicted changed reports/Q/data.
-Each variant runs twice on cold resets, with identical complete records.
+Each variant runs twice on cold resets without previews and twice with actual
+Machine/Wasm debugger previews between 17-step guest chunks. Previews read CR4
+and FIFO longwords, must observe pending guest Q data, and leave all complete
+records identical to execution without previews.
 The omitted-home control retains 181 rather than 150, distinguishing actual guest
 command execution from a canned result. Native and browser checks assert full
 home/OPEN/ERROR reports, recovered positions, every Q word, guest sums and actual
 sector data/counts. The browser runs rebuilt release Wasm at `/saturn-rust/`.
 
-## Executed negative controls
+## Initial implementation negative controls
 
-Final production source bytes were saved and restored in `finally` blocks. Negative
+The initial implementation source bytes were saved and restored in `finally` blocks. Negative
 modules were generated into separate static-site copies; production `web/pkg`
 was never overwritten by a negative module. Both tests retain the positive guest
 bytes and literal expected assertions.
@@ -118,7 +129,7 @@ validation. Restoring the final source reproduced the identical positive Wasm
 hash below, and all nine positive CD tests passed again. The positive focused probe is `node scripts/cd-reports-probe.mjs`;
 the required complete browser suite remains `npm run test:browser`.
 
-## Required checks
+## Initial implementation checks
 
 Early focused
 native checks used Homebrew Rust 1.94; final checks put rustup stable Rust 1.99.0
@@ -147,9 +158,10 @@ switch occurred.
 | Complete extended `npm run test:browser` | Passed in Chromium 145.0.7632.6 under `/saturn-rust/`, final rebuilt production module, no required skips |
 | JavaScript syntax, local documentation links and Git whitespace | Passed |
 
-All mandatory checks passed. No required check remains pending or skipped.
+All mandatory checks passed for the initial implementation. Review-revision
+results are recorded below.
 
-Production Wasm SHA-256:
+Initial implementation production Wasm SHA-256:
 `2b40b47154e2f8b3ce3fabbaf81fa2c09d29c69aac865a40c1799ab516704feb`.
 
 The complete native suite preserves Star Collector, Prism Courier, Hardware Lab,
@@ -157,6 +169,64 @@ scheduled directory acquisition, selectors/transfers, ECC/retries, CD-DA, audio,
 backup, controllers, CPU/bus/reset, SCU/DSP and video regression assertions.
 The complete browser suite includes those demonstrations, actual AudioWorklet,
 large-media handling, offline/input/backup and local-file privacy assertions.
+
+## Review revision: pause bounds, replacement media and debugger access
+
+The three blocking PR #46 findings are addressed in this worktree. PAUSE
+cancellation checks both retained bounds and reports PAUSE/PEND outside the range,
+including the direct Home → current PAUSE → unchanged Play sequence. Mounting
+replacement media retains host play information. Bus/Machine debugger APIs now
+provide passive CD word/longword inspection; Wasm `read_long` uses that route and
+`read_word` previews CR4 without releasing it. CPU/DMA architectural reads retain
+their consuming protocol behavior.
+
+The error-recovery vector now explicitly performs software reset and then applies
+its retry configuration before starting its separate damaged-media scenario;
+mounting media no longer implicitly clears its previous notification count 2.
+The audio sample-offset test retains a play range containing 150, seeks to 181,
+then uses unchanged-position Play after home recovery, preserving its original
+sample-offset assertion while respecting the range rule.
+
+Three temporary negative controls were executed independently and restored:
+
+| Restored defect | Actual regression failure (exit 101) |
+| --- | --- |
+| Unconditionally enter PLAY when canceling PAUSE | Range vector reports `0381 4101 0100 0096`, requires `0181 4101 0100 0096` |
+| Clear range/repeats on replacement-media mount | Replacement vector reports `0180 4101 0100 0096`, requires notification `0181` |
+| Route debugger FIFO longwords through consuming `Bus::read32` | Executing Machine guest preview changes `41010100` to `001F0000` on the second inspection |
+
+All twelve positive CD tests passed after restoration. Register vectors now use
+the Bus debugger API, and the executing guest uses the actual Machine API.
+The same browser guest runs two cold boots without previews and two with Wasm
+previews for each original/changed/omitted-operation variant; hosts continue to
+load fixtures, advance execution and inspect results only.
+
+During revision checks, Wasm compilation caught a word-read error-adapter type
+mismatch; it was corrected before successful Wasm Clippy/build. The first web
+build could not find the already installed matching wasm-bindgen CLI on PATH;
+adding the documented Cargo bin directory resolved that without installation.
+No failure or required check was waived.
+
+| Revision check | Actual result |
+| --- | --- |
+| `cargo fmt --check`, `cargo build --locked` | Passed |
+| `cargo test --locked --no-fail-fast` | Passed: 924 tests (589 library, 335 integration), zero failed/ignored |
+| Final `cargo test --locked --test cd_reports` | Passed: twelve tests, including the direct home/pause/cancel regression |
+| Native and Wasm Clippy with `-D warnings` | Passed |
+| All registered fixture/media reproduction checks | All 85 passed |
+| `npm ci --ignore-scripts` | Passed, zero reported vulnerabilities |
+| `sh scripts/build-web.sh` | Passed with matching wasm-bindgen 0.2.129 |
+| `node scripts/cd-reports-probe.mjs` | Passed against rebuilt production Wasm |
+| Complete extended `npm run test:browser` | Passed in Chromium 145.0.7632.6 under `/saturn-rust/`, no required skips; fullscreen entered/exited and denied/unavailable feedback passed |
+| JavaScript syntax, updated local documentation links and Git whitespace | Passed |
+
+All revision checks passed. No required check remains pending or skipped. The
+complete suites retain Star Collector, Prism Courier, Hardware Lab, directory
+acquisition, selector transfers, ECC/retries, CD-DA/audio, backup, controllers,
+CPU/bus/reset, SCU/DSP, video, UI and privacy regressions.
+
+Revision production Wasm SHA-256:
+`c365c6f86de83d7e499c08e91225121405fc111a1f3f497ef5807fd7f92625db`.
 
 ## Remaining hardware scope
 

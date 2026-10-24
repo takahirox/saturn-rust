@@ -45,9 +45,16 @@ Startup remains the separate `0043 4442 4C4F 434B` signature.
 - ERROR hides the report without destroying the last position, range or repeat
   count. PAUSE recovers the retained position. A new explicit play/seek can
   recover on the same media. Invalid query bytes never enter this internal state.
+- Canceling PAUSE with an unchanged start resumes only when the current FAD
+  lies within the retained play range (inclusive start, exclusive internal end).
+  Outside either bound it stays paused and raises PEND, without reading a sector
+  or starting a repeat (ST-162 §4.2 p.37). This includes PAUSE at 150 after home
+  when the retained range begins later.
 - Repeat notifications survive seek and tray transitions. Explicitly changing
   the play range or maximum repeat clears the notification count; the unchanged
-  maximum encoding preserves it.
+  maximum encoding preserves it. Replacement-media attachment preserves both
+  range bounds, maximum repeat and notification count; cold initialization and
+  software reset initialize them (ST-162 §5.5 p.49).
 - Q acquisition returns five words without CRC. Its control/track/index and
   absolute position follow report validity. For valid ADR=1 data the relative
   address is distance from track start; in invalid states position fields are
@@ -70,3 +77,8 @@ HIRQ acknowledgement and masks remain independent. Reset/power cancellation
 must discard pending home/error/query publications. Tests inspect before, at
 and after deadlines, compare advancement chunks 1/3/17/10000 and passive reads,
 and use literal register/Q expectations rather than production report helpers.
+CD previews use the Bus/Machine debugger route also called by Wasm `read_long`
+and `read_word`. FIFO longwords preview two successive words without consuming
+either; word previews of CR4 leave publication protection set. Architectural
+reads still consume FIFO words and release CR4. Other devices retain their
+existing inspection behavior; this increment establishes CD-read invariance.

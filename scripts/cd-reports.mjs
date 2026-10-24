@@ -18,15 +18,26 @@ export async function cdReports(page) {
     const traces = await page.evaluate(async ({ image, raw, cue }) => {
       const { emulator } = await import('./app.js');
       const traces = [];
-      for (let boot = 0; boot < 2; boot++) {
+      for (const preview of [false, false, true, true]) {
         emulator.reset_bios(Uint8Array.from(image));
         emulator.mount_cue(cue, 'cd-reports.bin', new Uint32Array([raw.length]), Uint8Array.from(raw));
-        for (let i = 0; i < 150 && emulator.read_long(0x0600EFFC) !== 0x600D; i++) emulator.run_steps(10000);
+        const steps = preview ? 17 : 10000;
+        let qPreviews = 0;
+        for (let i = 0; i < 1500000 / steps && emulator.read_long(0x0600EFFC) !== 0x600D; i++) {
+          if (preview) {
+            emulator.read_word(0x05890024); // Must not release CR4.
+            const value = emulator.read_long(0x05818000);
+            if (value !== emulator.read_long(0x25818000)) throw new Error('Debugger consumed CD FIFO');
+            if (value === 0x41010100) qPreviews++;
+          }
+          emulator.run_steps(steps);
+        }
+        if (preview && qPreviews === 0) throw new Error('No pending guest Q transfer previewed');
         traces.push({ records: Array.from({ length: 1024 }, (_, i) => emulator.read_long(0x0600E000 + i * 4)), exceptions: emulator.exception_count() });
       }
       return traces;
     }, { image: [...image], raw: [...raw], cue });
-    assert.deepEqual(traces[0], traces[1]);
+    traces.slice(1).forEach(trace => assert.deepEqual(trace, traces[0]));
     assert.equal(traces[0].exceptions, '0');
     const read = at => traces[0].records[at / 4];
     const report = slot => Array.from({ length: 4 }, (_, i) => read(slot * 16 + i * 4));
@@ -47,5 +58,5 @@ export async function cdReports(page) {
     assert.equal(read(0xFE0), changed ? 0xA6A6 : 0x6969);
     assert.equal(report(28)[1], 1);
   }
-  console.log('CD reports passed: guest commands/home/error recovery/Q transfers and sums, changed FAD/media, omitted stop and repeated cold boots.');
+  console.log('CD reports passed: guest commands/home/error recovery/Q transfers and sums, changed FAD/media, omitted stop, passive Machine/Wasm debugger reads and repeated cold boots.');
 }

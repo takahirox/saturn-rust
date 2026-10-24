@@ -1,35 +1,36 @@
 //! Literal ST-162 §7.2.4/5 and later §7.2.5/4 vectors; see docs/cd-drive-reports.md.
 use saturn_rust::{
-    cd::{CdBlock, DATA, REGISTERS as CD},
+    bus::{Bus, Memory},
+    cd::{DATA, REGISTERS as CD},
     media::Media,
 };
 
-fn advance(cd: &mut CdBlock, mut clocks: u32, chunk: u32, preview: bool) {
+fn advance(cd: &mut Bus, mut clocks: u32, chunk: u32, preview: bool) {
     while clocks != 0 {
         let n = clocks.min(chunk);
-        cd.advance(n);
+        cd.cd.advance(n);
         clocks -= n;
         if preview {
             // Debugger reads are passive; CR4's protocol read is intentional
             // only in response(), never in a preview.
-            cd.peek16(CD + 0x24).unwrap();
-            cd.peek16(DATA).unwrap();
+            cd.debug_read16(CD + 0x24).unwrap();
+            cd.debug_read32(DATA).unwrap();
         }
     }
 }
-fn response(cd: &CdBlock) -> [u16; 4] {
+fn response(cd: &Bus) -> [u16; 4] {
     std::array::from_fn(|i| cd.read16(CD + 0x18 + i as u32 * 4).unwrap())
 }
-fn peek(cd: &CdBlock) -> [u16; 4] {
-    std::array::from_fn(|i| cd.peek16(CD + 0x18 + i as u32 * 4).unwrap())
+fn peek(cd: &Bus) -> [u16; 4] {
+    std::array::from_fn(|i| cd.debug_read16(CD + 0x18 + i as u32 * 4).unwrap())
 }
-fn start(cd: &mut CdBlock, cmd: [u16; 4]) {
+fn start(cd: &mut Bus, cmd: [u16; 4]) {
     cd.write16(CD + 8, !1).unwrap();
     for (i, word) in cmd.into_iter().enumerate() {
         cd.write16(CD + 0x18 + i as u32 * 4, word).unwrap();
     }
 }
-fn issue(cd: &mut CdBlock, cmd: [u16; 4], chunk: u32) -> [u16; 4] {
+fn issue(cd: &mut Bus, cmd: [u16; 4], chunk: u32) -> [u16; 4] {
     start(cd, cmd);
     advance(cd, 1074, chunk, true);
     assert_eq!(cd.read16(CD + 8).unwrap() & 1, 0);
@@ -37,28 +38,28 @@ fn issue(cd: &mut CdBlock, cmd: [u16; 4], chunk: u32) -> [u16; 4] {
     assert_eq!(cd.read16(CD + 8).unwrap() & 1, 1);
     response(cd)
 }
-fn q(cd: &mut CdBlock, expected_status: u16, expected: [u16; 5], chunk: u32) {
+fn q(cd: &mut Bus, expected_status: u16, expected: [u16; 5], chunk: u32) {
     assert_eq!(
         issue(cd, [0x2000, 0, 0, 0], chunk),
         [expected_status, 5, 0, 0]
     );
     for word in expected {
-        assert_eq!(cd.peek16(DATA).unwrap(), word);
+        assert_eq!(cd.debug_read16(DATA).unwrap(), word);
         assert_eq!(cd.read16(DATA).unwrap(), word);
     }
     assert_eq!(cd.read16(DATA).unwrap(), 0xFFFF);
     assert_eq!(issue(cd, [0x0600, 0, 0, 0], chunk)[1], 5);
 }
-fn mounted() -> CdBlock {
-    let mut cd = CdBlock::default();
-    cd.mount(Media::iso(&vec![0x69; 2048 * 100]).unwrap());
+fn mounted() -> Bus {
+    let mut cd = Bus::default();
+    cd.cd.mount(Media::iso(&vec![0x69; 2048 * 100]).unwrap());
     cd
 }
 
 #[test]
 fn reports_and_q_follow_every_supported_state_and_both_standby_origins() {
     for chunk in [1, 3, 17, 10000] {
-        let mut cd = CdBlock::default();
+        let mut cd = Bus::default();
         assert_eq!(response(&cd), [0x0043, 0x4442, 0x4C4F, 0x434B]);
         assert_eq!(
             issue(&mut cd, [0, 0, 0, 0], chunk),
@@ -70,7 +71,7 @@ fn reports_and_q_follow_every_supported_state_and_both_standby_origins() {
             [0xFFFF, 0xFFFF, 0xFFFF, 0x00FF, 0xFFFF],
             chunk,
         );
-        cd.mount(Media::iso(&vec![0; 2048 * 100]).unwrap());
+        cd.cd.mount(Media::iso(&vec![0; 2048 * 100]).unwrap());
         issue(&mut cd, [0x0400, 1, 0, 0], chunk);
         assert_eq!(
             issue(&mut cd, [0x1180, 181, 0, 0], chunk),
@@ -193,13 +194,16 @@ fn home_open_error_and_queries_keep_repeat_range_and_recovery_information() {
             .flat_map(|fad| cooked.raw_sector(fad).unwrap())
             .collect();
         raw[32 * 2352 + 16] ^= 0x5A;
-        cd.mount(
+        cd.cd.mount(
             Media::cue(
                 "FILE \"d\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00",
                 &[("d", &raw)],
             )
             .unwrap(),
         );
+        // Start a separate error-recovery scenario with an explicit software
+        // reset: replacement media correctly preserves the previous count 2.
+        issue(&mut cd, [0x0401, 0, 0, 0], chunk);
         issue(&mut cd, [0x0400, 1, 0, 0x8001], chunk);
         issue(&mut cd, [0x1080, 181, 0x0280, 2], chunk);
         advance(&mut cd, 358_322, chunk, true);
@@ -260,18 +264,18 @@ fn publication_edges_cr4_scdq_masks_and_reset_cancel_invalid_responses() {
             start(&mut cd, [0x1100, 0, 0, 0]);
             advance(&mut cd, 1074, chunk, true);
             assert_eq!(peek(&cd), [0x0180, 0x4101, 0x0100, 150]);
-            cd.advance(1);
+            cd.cd.advance(1);
             let home = [0x02FF, 0xFFFF, 0xFFFF, 0xFFFF];
             assert_eq!(peek(&cd), home);
-            assert!(!cd.interrupt());
+            assert!(!cd.cd.interrupt());
             // First stopped periodic deadline = ceil(26874100 / 60).
             advance(&mut cd, (447_902 - 1075) - 1, chunk, true);
             assert_eq!(cd.read16(CD + 8).unwrap() & 1024, 0);
             if edge == -1 {
                 cd.read16(CD + 0x24).unwrap();
             }
-            cd.advance(1);
-            assert!(cd.interrupt());
+            cd.cd.advance(1);
+            assert!(cd.cd.interrupt());
             assert_eq!(
                 peek(&cd),
                 if edge == -1 {
@@ -283,14 +287,14 @@ fn publication_edges_cr4_scdq_masks_and_reset_cancel_invalid_responses() {
             if edge == 0 {
                 cd.read16(CD + 0x24).unwrap();
             }
-            cd.advance(1);
+            cd.cd.advance(1);
             if edge == 1 {
                 cd.read16(CD + 0x24).unwrap();
             }
             cd.write16(CD + 8, !1024).unwrap();
-            assert!(!cd.interrupt());
+            assert!(!cd.cd.interrupt());
             advance(&mut cd, 447_901, chunk, true);
-            assert!(cd.interrupt());
+            assert!(cd.cd.interrupt());
             assert_eq!(peek(&cd), [0x22FF, 0xFFFF, 0xFFFF, 0xFFFF]);
             // A query pending across the periodic edge protects registers;
             // completion publishes its own payload, not a generic report.
@@ -309,10 +313,10 @@ fn publication_edges_cr4_scdq_masks_and_reset_cancel_invalid_responses() {
             assert_eq!(cd.read16(DATA).unwrap(), 0xFFFF);
             start(&mut cd, [0x1100, 0, 0, 0]);
             advance(&mut cd, 1074, chunk, true);
-            cd.set_enabled(false);
+            cd.cd.set_enabled(false);
             advance(&mut cd, 1_000_000, chunk, true);
             assert_eq!(peek(&cd), [0x0043, 0x4442, 0x4C4F, 0x434B]);
-            cd.set_enabled(true);
+            cd.cd.set_enabled(true);
             assert_eq!(response(&cd), [0x0180, 0x4101, 0x0100, 150]);
             advance(&mut cd, 447_902, chunk, true);
             assert_eq!(response(&cd), [0x2180, 0x4101, 0x0100, 150]);
@@ -358,7 +362,7 @@ fn executing_guest_transfers_q_computes_sums_and_recovers_from_home_and_error() 
             include_bytes!("fixtures/cd-reports.bin").as_slice()
         };
         let mut previous = None;
-        for _ in 0..2 {
+        for preview in [false, false, true, true] {
             machine.reset(Boot::ExternalBios(&image)).unwrap();
             machine.mount_media(
                 Media::cue(
@@ -367,13 +371,26 @@ fn executing_guest_transfers_q_computes_sums_and_recovers_from_home_and_error() 
                 )
                 .unwrap(),
             );
-            for _ in 0..150 {
-                machine.run_steps(10000).unwrap();
+            let steps = if preview { 17 } else { 10000 };
+            let mut q_previews = 0;
+            for _ in 0..(1_500_000 / steps) {
+                if preview {
+                    machine.debug_read16(CD + 0x24).unwrap();
+                    let value = machine.debug_read32(DATA).unwrap();
+                    assert_eq!(machine.debug_read32(DATA).unwrap(), value);
+                    if value == 0x4101_0100 {
+                        q_previews += 1;
+                    }
+                }
+                machine.run_steps(steps).unwrap();
                 if machine.bus().read32(0x0600EFFC) == Ok(0x600D) {
                     break;
                 }
             }
-            let read = |at| machine.bus().read32(0x0600E000 + at).unwrap();
+            if preview {
+                assert!(q_previews > 0, "must inspect a pending guest Q transfer");
+            }
+            let read = |at| machine.debug_read32(0x0600E000 + at).unwrap();
             assert_eq!(read(0xFFC), 0x600D);
             let report = |slot: u32| {
                 std::array::from_fn::<_, 4, _>(|word| read(slot * 16 + word as u32 * 4))
@@ -469,9 +486,9 @@ fn command_completion_wins_periodic_coincidence_and_reset_cancels_at_each_edge()
             start(&mut cd, [0x1100, 0, 0, 0]);
             advance(&mut cd, 1074, chunk, true);
             assert_eq!(peek(&cd), [0x0180, 0x4101, 0x0100, 150]);
-            cd.advance(1);
+            cd.cd.advance(1);
             assert_eq!(peek(&cd), [0x02FF, 0xFFFF, 0xFFFF, 0xFFFF]);
-            cd.advance(1);
+            cd.cd.advance(1);
             assert_eq!(cd.read16(CD + 8).unwrap() & 1025, 1025);
             assert_eq!(peek(&cd), [0x02FF, 0xFFFF, 0xFFFF, 0xFFFF]);
             // An invalid Q transfer must disappear at software reset, before
@@ -482,18 +499,18 @@ fn command_completion_wins_periodic_coincidence_and_reset_cancels_at_each_edge()
                 start(&mut cd, [0x2000, 0, 0, 0]);
                 advance(&mut cd, (1075i32 + edge) as u32, chunk, true);
                 if power {
-                    cd.set_enabled(false);
-                    cd.advance(1_000_000);
-                    cd.set_enabled(true);
+                    cd.cd.set_enabled(false);
+                    cd.cd.advance(1_000_000);
+                    cd.cd.set_enabled(true);
                 } else {
                     // A pending command must finish before another command
                     // can be submitted; software reset then cancels DATATRNS.
                     if edge < 0 {
-                        cd.advance(1);
+                        cd.cd.advance(1);
                     }
                     issue(&mut cd, [0x0401, 0, 0, 0], chunk);
                 }
-                assert_eq!(cd.peek16(DATA).unwrap(), 0xFFFF);
+                assert_eq!(cd.debug_read16(DATA).unwrap(), 0xFFFF);
                 assert_eq!(
                     issue(&mut cd, [0, 0, 0, 0], chunk),
                     [0x0180, 0x4101, 0x0100, 150]
@@ -513,28 +530,32 @@ fn audio_position_restarts_at_disc_start_after_seek_home_pause() {
         frame[..2].copy_from_slice(&sample.to_le_bytes());
         frame[2..].copy_from_slice(&(-sample).to_le_bytes());
     }
-    let mut cd = CdBlock::default();
-    cd.mount(
+    let mut cd = Bus::default();
+    cd.cd.mount(
         Media::cue(
             "FILE \"a\" BINARY\nTRACK 01 AUDIO\nINDEX 01 00:00:00",
             &[("a", &audio)],
         )
         .unwrap(),
     );
-    issue(&mut cd, [0x1080, 181, 0, 0], 17);
-    cd.advance(26_875);
+    // Retain a range containing 150 so canceling PAUSE after home is valid.
+    issue(&mut cd, [0x1080, 150, 0, 0], 17);
+    cd.cd.advance(26_875);
+    issue(&mut cd, [0x1180, 181, 0, 0], 17);
+    cd.cd.advance(26_875);
+    issue(&mut cd, [0x10FF, 0xFFFF, 0x7FFF, 0xFFFF], 17);
     for _ in 0..13 {
-        cd.audio_sample();
+        cd.cd.audio_sample();
     }
     issue(&mut cd, [0x1100, 0, 0, 0], 17);
     issue(&mut cd, [0x11FF, 0xFFFF, 0, 0], 17);
-    cd.advance(26_875);
+    cd.cd.advance(26_875);
     assert_eq!(
         issue(&mut cd, [0, 0, 0, 0], 17),
         [0x0100, 0x0101, 0x0100, 150]
     );
     issue(&mut cd, [0x10FF, 0xFFFF, 0x7FFF, 0xFFFF], 17);
-    assert_eq!(cd.audio_sample(), [100, -100]);
+    assert_eq!(cd.cd.audio_sample(), [100, -100]);
 }
 
 #[test]
@@ -569,15 +590,15 @@ fn scdq_acknowledgement_and_mask_changes_before_at_and_after_the_deadline() {
             cd.write16(CD + 8, 0).unwrap();
             cd.write16(CD + 12, 0).unwrap();
             advance(&mut cd, (447_902i32 + edge) as u32, chunk, true);
-            assert!(!cd.interrupt()); // A mask never suppresses flag generation.
+            assert!(!cd.cd.interrupt()); // A mask never suppresses flag generation.
             assert_eq!(
                 cd.read16(CD + 8).unwrap() & 1024,
                 if edge < 0 { 0 } else { 1024 }
             );
             cd.write16(CD + 12, 1024).unwrap();
-            assert_eq!(cd.interrupt(), edge >= 0);
+            assert_eq!(cd.cd.interrupt(), edge >= 0);
             cd.write16(CD + 8, !1024).unwrap();
-            assert!(!cd.interrupt());
+            assert!(!cd.cd.interrupt());
             // Finish at deadline+2. An acknowledgement before the edge cannot
             // erase that future event; at/after acknowledgements clear it.
             advance(&mut cd, (2 - edge) as u32, chunk, true);
@@ -585,17 +606,164 @@ fn scdq_acknowledgement_and_mask_changes_before_at_and_after_the_deadline() {
                 cd.read16(CD + 8).unwrap() & 1024,
                 if edge < 0 { 1024 } else { 0 }
             );
-            assert_eq!(cd.interrupt(), edge < 0);
+            assert_eq!(cd.cd.interrupt(), edge < 0);
             cd.write16(CD + 12, 0).unwrap();
-            assert!(!cd.interrupt());
+            assert!(!cd.cd.interrupt());
             cd.write16(CD + 8, !1024).unwrap();
             advance(&mut cd, 895_804 - 447_904 - 1, chunk, true);
             assert_eq!(cd.read16(CD + 8).unwrap() & 1024, 0);
-            cd.advance(1);
+            cd.cd.advance(1);
             assert_eq!(cd.read16(CD + 8).unwrap() & 1024, 1024);
-            assert!(!cd.interrupt());
+            assert!(!cd.cd.interrupt());
             cd.write16(CD + 12, 1024).unwrap();
-            assert!(cd.interrupt());
+            assert!(cd.cd.interrupt());
         }
+    }
+}
+
+#[test]
+fn pause_cancellation_requires_both_retained_bounds_after_home() {
+    // ST-162 §4.2 pp.37–38: home retains [181,183), but PAUSE moves to 150.
+    for chunk in [1, 3, 17, 10000] {
+        let mut cd = mounted();
+        issue(&mut cd, [0x1080, 181, 0x0280, 2], chunk);
+        advance(&mut cd, 358_322, chunk, true);
+        issue(&mut cd, [0x1100, 0, 0, 0], chunk);
+        issue(&mut cd, [0x11FF, 0xFFFF, 0, 0], chunk);
+        advance(&mut cd, 26_875, chunk, true);
+        assert_eq!(
+            issue(&mut cd, [0, 0, 0, 0], chunk),
+            [0x0181, 0x4101, 0x0100, 150]
+        );
+        for position in [150, 180, 181, 182, 183, 184] {
+            // The first cancellation is directly from Home -> current PAUSE.
+            if position != 150 {
+                issue(&mut cd, [0x1180, position, 0, 0], chunk);
+                advance(&mut cd, 26_875, chunk, true);
+            }
+            cd.write16(CD + 8, !16).unwrap();
+            let inside = (181..183).contains(&position);
+            assert_eq!(
+                issue(&mut cd, [0x10FF, 0xFFFF, 0x7FFF, 0xFFFF], chunk),
+                [
+                    if inside { 0x0381 } else { 0x0181 },
+                    0x4101,
+                    0x0100,
+                    position
+                ]
+            );
+            assert_eq!(cd.read16(CD + 8).unwrap() & 16, if inside { 0 } else { 16 });
+            if !inside {
+                advance(&mut cd, 537_483, chunk, true);
+                assert_eq!(
+                    issue(&mut cd, [0, 0, 0, 0], chunk),
+                    [0x0181, 0x4101, 0x0100, position]
+                );
+                q(
+                    &mut cd,
+                    0x4181,
+                    [0x4101, 0x0100, position - 150, 0, position],
+                    chunk,
+                );
+            }
+        }
+        // A valid cancellation still uses the original lower bound and finite
+        // repeat maximum: one remaining repeat, then stop at the exclusive end.
+        issue(&mut cd, [0x1180, 182, 0, 0], chunk);
+        advance(&mut cd, 26_875, chunk, true);
+        issue(&mut cd, [0x10FF, 0xFFFF, 0x7FFF, 0xFFFF], chunk);
+        advance(&mut cd, 179_161, chunk, true);
+        assert_eq!(
+            issue(&mut cd, [0, 0, 0, 0], chunk),
+            [0x0382, 0x4101, 0x0100, 181]
+        );
+        advance(&mut cd, 358_322, chunk, true);
+        assert_eq!(
+            issue(&mut cd, [0, 0, 0, 0], chunk),
+            [0x0182, 0x4101, 0x0100, 183]
+        );
+    }
+}
+
+#[test]
+fn replacement_media_retains_host_play_information_until_software_reset() {
+    // ST-162 §5.5 p.49: attaching media is not a software reset. Use different
+    // contents AND lead-out so resetting either retained range bound is visible.
+    for chunk in [1, 3, 17, 10000] {
+        let mut cd = mounted();
+        issue(&mut cd, [0x1080, 181, 0x0280, 2], chunk);
+        advance(&mut cd, 358_322, chunk, true);
+        issue(&mut cd, [0x11FF, 0xFFFF, 0, 0], chunk);
+        advance(&mut cd, 26_875, chunk, true);
+        assert_eq!(
+            issue(&mut cd, [0, 0, 0, 0], chunk),
+            [0x0181, 0x4101, 0x0100, 181]
+        );
+        issue(&mut cd, [0x0500, 0, 0, 0], chunk);
+        cd.cd.mount(Media::iso(&vec![0xA6; 2048 * 120]).unwrap());
+        assert_eq!(response(&cd), [0x0181, 0x4101, 0x0100, 150]);
+        // Remain outside the old lower bound, despite the new disc's start.
+        assert_eq!(
+            issue(&mut cd, [0x10FF, 0xFFFF, 0x7FFF, 0xFFFF], chunk),
+            [0x0181, 0x4101, 0x0100, 150]
+        );
+        issue(&mut cd, [0x1180, 182, 0, 0], chunk);
+        advance(&mut cd, 26_875, chunk, true);
+        assert_eq!(
+            issue(&mut cd, [0x10FF, 0xFFFF, 0x7FFF, 0xFFFF], chunk),
+            [0x0381, 0x4101, 0x0100, 182]
+        );
+        advance(&mut cd, 179_161, chunk, true);
+        assert_eq!(
+            issue(&mut cd, [0, 0, 0, 0], chunk),
+            [0x0382, 0x4101, 0x0100, 181]
+        );
+        advance(&mut cd, 358_322, chunk, true);
+        assert_eq!(
+            issue(&mut cd, [0, 0, 0, 0], chunk),
+            [0x0182, 0x4101, 0x0100, 183]
+        );
+        // Software reset deliberately clears notifications and installs the new
+        // disc end, unlike media replacement. Play now crosses the old end.
+        issue(&mut cd, [0x0401, 0, 0, 0], chunk);
+        assert_eq!(
+            issue(&mut cd, [0x10FF, 0xFFFF, 0x7FFF, 0xFFFF], chunk),
+            [0x0380, 0x4101, 0x0100, 183]
+        );
+        advance(&mut cd, 179_161, chunk, true);
+        assert_eq!(
+            issue(&mut cd, [0, 0, 0, 0], chunk),
+            [0x0380, 0x4101, 0x0100, 184]
+        );
+    }
+}
+
+#[test]
+fn debugger_fifo_longwords_preserve_each_word_and_cr4_publication_protection() {
+    for chunk in [1, 3, 17, 10000] {
+        let mut cd = mounted();
+        issue(&mut cd, [0x1180, 181, 0, 0], chunk);
+        advance(&mut cd, 26_875, chunk, true);
+        start(&mut cd, [0x2000, 0, 0, 0]);
+        advance(&mut cd, 1075, chunk, true);
+        for _ in 0..3 {
+            assert_eq!(cd.debug_read16(CD + 0x24).unwrap(), 0);
+            assert_eq!(cd.debug_read32(DATA).unwrap(), 0x4101_0100);
+            assert_eq!(cd.debug_read32(DATA + 0x2000_0000).unwrap(), 0x4101_0100);
+        }
+        // Previewing CR4 must not release this command-specific payload at the
+        // next periodic edge, though SCDQ still rises.
+        advance(&mut cd, 447_902, chunk, true);
+        assert_eq!(peek(&cd), [0x4180, 5, 0, 0]);
+        assert_ne!(cd.read16(CD + 8).unwrap() & 1024, 0);
+        assert_eq!(cd.read32(DATA).unwrap(), 0x4101_0100);
+        assert_eq!(cd.debug_read32(DATA).unwrap(), 0x001F_0000);
+        assert_eq!(cd.read32(DATA).unwrap(), 0x001F_0000);
+        assert_eq!(cd.debug_read32(DATA).unwrap(), 0x00B5_FFFF);
+        assert_eq!(cd.read16(DATA).unwrap(), 181);
+        assert_eq!(cd.debug_read32(DATA).unwrap(), 0xFFFF_FFFF);
+        assert_eq!(issue(&mut cd, [0x0600, 0, 0, 0], chunk)[1], 5);
+        advance(&mut cd, 447_902, chunk, true);
+        assert_eq!(peek(&cd), [0x2180, 0x4101, 0x0100, 181]);
     }
 }

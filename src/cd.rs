@@ -303,6 +303,7 @@ impl Default for CdBlock {
 }
 impl CdBlock {
     pub fn mount(&mut self, media: Media) {
+        let cold = self.media.is_none();
         self.directory_read = None;
         self.pending = None;
         self.copying = None;
@@ -323,10 +324,12 @@ impl CdBlock {
         self.pause_clocks = 0;
         self.fad = media.tracks[0].start;
         self.at_home = false;
-        self.play_start = self.fad;
-        self.repeat = 0;
-        self.repeats = 0;
-        self.end = media.leadout;
+        // ST-162 §5.5: tray changes retain host play information. A fresh
+        // block still needs the initial disc range; resets create a new block.
+        if cold {
+            self.play_start = self.fad;
+            self.end = media.leadout;
+        }
         self.media = Some(media);
         self.status = 1;
         self.report(false);
@@ -484,15 +487,7 @@ impl CdBlock {
             return Err(BusError::Unaligned { address, width: 2 });
         }
         if address == DATA || address == DATA + 2 {
-            let transfer = self.transfer.borrow();
-            let Some(t) = transfer.as_ref().filter(|t| t.put.is_none()) else {
-                return Ok(0xFFFF);
-            };
-            if t.position + 2 > t.bytes.len() {
-                return Ok(0xFFFF);
-            }
-            let value = u16::from_be_bytes([t.bytes[t.position], t.bytes[t.position + 1]]);
-            return Ok(value);
+            return Ok(self.peek_data(0));
         }
         match address.wrapping_sub(REGISTERS) {
             8 => Ok(self.hirq.get()),
@@ -500,6 +495,20 @@ impl CdBlock {
             n @ (0x18 | 0x1C | 0x20 | 0x24) => Ok(self.response.get()[((n - 0x18) / 4) as usize]),
             _ => Err(Self::error(address, 2)),
         }
+    }
+    fn peek_data(&self, offset: usize) -> u16 {
+        let transfer = self.transfer.borrow();
+        let Some(t) = transfer.as_ref().filter(|t| t.put.is_none()) else {
+            return 0xFFFF;
+        };
+        let position = t.position + offset;
+        t.bytes
+            .get(position..position + 2)
+            .map_or(0xFFFF, |word| u16::from_be_bytes([word[0], word[1]]))
+    }
+    /// Preview the next two FIFO words without advancing the transfer.
+    pub(crate) fn peek_data32(&self) -> u32 {
+        u32::from(self.peek_data(0)) << 16 | u32::from(self.peek_data(2))
     }
     pub fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
         if address & 1 != 0 {
@@ -1163,7 +1172,7 @@ impl CdBlock {
                     };
                     end
                 };
-                if start < 150 || start >= end || end > m.leadout {
+                if start < 150 || (field1 != 0xFF_FFFF && start >= end) || end > m.leadout {
                     return false;
                 }
                 self.tray_open = false;
@@ -1194,14 +1203,25 @@ impl CdBlock {
                     self.audio_index = 0;
                     self.deemphasis = crate::cd_audio::Deemphasis::default();
                 }
-                self.playing = true;
+                // ST-162 §4.2 p.37: canceling pause outside either retained
+                // range bound stays paused; it must not read or repeat a sector.
+                self.playing = (self.play_start..self.end).contains(&start);
+                if !self.playing {
+                    self.raise(PEND);
+                }
                 self.retry_attempts = 0;
-                self.seeking = if field1 == 0xFF_FFFF && !from_home {
+                self.seeking = if !self.playing || (field1 == 0xFF_FFFF && !from_home) {
                     0
                 } else {
                     26_875
                 };
-                self.status = if self.seeking == 0 { 3 } else { 4 };
+                self.status = if self.seeking != 0 {
+                    4
+                } else if self.playing {
+                    3
+                } else {
+                    1
+                };
                 self.repeat = repeat;
                 self.report(false);
             }
