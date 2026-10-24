@@ -78,3 +78,6 @@ pub(crate) fn install(bus: &mut Bus, aip_entry: u32, slave_stack: u32) -> Result
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod startup_tests;

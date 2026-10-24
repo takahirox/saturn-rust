@@ -10,6 +10,7 @@ import { chromium } from "playwright";
 import { rawMode1 } from "./raw-media-fixture.mjs";
 import { videoTransactions } from "./video-transactions.mjs";
 import { busTransactions } from "./bus-transactions.mjs";
+import { hleDual } from "./hle-dual.mjs";
 import { slaveRaster } from "./slave-raster.mjs";
 import { videoWrites } from "./video-writes.mjs";
 import { bBusReads } from "./b-bus-reads.mjs";
@@ -570,7 +571,7 @@ try {
     return image;
   })()].map(b=>[...b]));
   assert.equal(startup[0][1],directoryIso.readUInt32BE(21*2048));
-  assert.deepEqual(startup[1],[42,0,27]); // 23 original reset + four AIP instructions
+  assert.deepEqual(startup[1],[42,0,71]); // 67 original reset + four AIP instructions
   const layoutIso = await readFile("tests/fixtures/boot-layout.iso");
   const layoutGolden = (await readFile("tests/fixtures/boot-layout.tsv","utf8")).trim().split(/\r?\n/).map(v=>parseInt(v,16));
   for (const [areas, stack, value] of [["U",0,0x87654321],["JT",0x060FD000,0x87654321],["EUJT",0x060FD000,0x76543210]]) {
@@ -584,7 +585,7 @@ try {
       try {
         for (let repeat=0;repeat<2;repeat++) {
           m.reset_disc(Uint8Array.from(image));
-          for (let i=0;i<32 && m.special_registers()[0] !== 0x06002000+entry;i++) m.step();
+          for (let i=0;i<200 && m.special_registers()[0] !== 0x06002000+entry;i++) m.step();
           const aip = m.special_registers()[0]; m.run_steps(1000);
           results.push({aip,trace:Array.from({length:6},(_,i)=>m.read_long(0x0600A000+i*4)),
             exceptions:[m.exception_count(),m.slave_exception_count()]});
@@ -853,6 +854,7 @@ try {
   await bBusReads(page);
   await videoWrites(page);
   await slaveRaster(page);
+  await hleDual(page);
   await scuFringe(page);
   await dmacBus(page);
   await sh2BusPipeline(page);
@@ -2956,7 +2958,7 @@ try {
   await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
   const samplePad = () => page.evaluate(async () => {
     const { emulator } = await import("./app.js");
-    emulator.run_steps(123); // Include the original 23-instruction HLE reset.
+    emulator.run_steps(167); // Include the original 67-instruction HLE reset.
     return emulator.read_long(0x06001004);
   });
   await settings.click(); // Close settings; local discs remain paused.

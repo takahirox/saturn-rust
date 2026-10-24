@@ -57,7 +57,7 @@ at `06000000`, slave vectors at `06000400`, semaphores at `06000A00`, callback
 and copied priority tables at `06000B00`/`06000B80`, and power-clear bytes at
 `06000C00`. Reset discards callback, priority and semaphore state. HLE startup
 executes the original reset trampoline before entering the original disc AIP;
-these 23 additional retired instructions are visible in diagnostics.
+these 67 additional retired instructions are visible in diagnostics.
 
 Run `python3 src/hle/build.py --check` and
 `python3 tests/fixtures/build_hle_system.py --check` to reproduce both ROM
@@ -75,6 +75,25 @@ MIT license; the synthetic BIOS has no HLE installation.
 
 CD-library services and full system/boot conformance remain tracked by
 [Issue #17](https://github.com/takahirox/saturn-rust/issues/17).
+
+## Dual-CPU capture and raster startup
+
+[boot.s](boot.s) executes CPU-local FRT initialization on both processors,
+including each slave restart. Capture is enabled at priority15/vector64;
+unrelated internal priorities stay disabled. Master ICR selects external SCU
+vectors and slave ICR selects the supported raster autovectors41/43. The
+[primary-derived contract](../../docs/hle-dual-startup.md) documents register
+widths/encodings, ordering, acknowledgement and the older manual discrepancies.
+Slave entry index94 and capture-handler index164 (when registered from master)
+are distinct. SSHOFF/SSHON and both clock restarts retain application RAM vectors.
+
+The original MIT [HLE dual diagnostic](../../tests/fixtures/build_hle_dual.py)
+performs both directions of capture communication without application writes to
+TIER/IPRA/IPRB/VCRC/VCRD/ICR, runs raster handlers, and checks default/custom stacks,
+retained vector bytes and reset domains. [Native](../../tests/hle_dual.rs) and
+[production browser Wasm](../../scripts/hle-dual.mjs) compare the same authored
+records. [Validation](../../docs/validation-issue-49.md) records the checks and
+negative controls. Full BIOS initialization remains outside this increment.
 
 ## Original guest CD player
 

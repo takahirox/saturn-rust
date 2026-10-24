@@ -104,6 +104,7 @@ python3 tests/fixtures/build_dsp_bus.py --check
 python3 tests/fixtures/build_dsp_arithmetic.py --check
 python3 tests/fixtures/build_intc.py --check
 python3 tests/fixtures/build_hle_system.py --check
+python3 tests/fixtures/build_hle_dual.py --check
 python3 tests/fixtures/build_hle_player.py --check
 python3 tests/fixtures/build_hle_backup.py --check
 python3 tests/fixtures/build_clock.py --check
