@@ -1654,30 +1654,29 @@ all other mandatory review findings and Issue #17 criteria remain in force.
 
 ## VDP1 high-speed shrink and EOS (HSSG)
 
-[VDP1] §6.3/fig.6.5 and §4.2 define HSS and EOS. `Vdp1::line` now
-selects even/odd original X coordinates on reduced scaled/distorted sprite
-raster rows, after horizontal flip; unchanged-size and enlarged rows retain
-ordinary sampling. HSS ignores end codes at every magnification. EOS is accepted
-in FBCR and reported in MODR; prohibited HSS command kinds remain rejected.
+[VDP1] §6.3/fig.6.5 and §4.2 define HSS and EOS. The current
+[sampling contract](vdp1-sampling.md) and [Issue #57 validation](validation-issue-57.md)
+supersede the initial endpoint-interpolation oracle. The original HSSG checkpoint
+implemented EOS register capture and original-source parity, plus HSS's
+all-magnification end-code rule, but its ordinary scaling and post-interpolation
+parity adjustment did not reproduce every Figure 6.5 row.
 
-[Native pixel vectors](../tests/video.rs) independently expect four samples
-from an eight-dot texture for ordinary, even/odd and both flipped cases;
-additional unchanged-size/enlarged vectors include real end-code texels.
-The original MIT [builder](../tests/fixtures/build_sprite_shrink.py),
+Current [literal framebuffer vectors](../tests/vdp1_sampling.rs) cover all ratios
+3/8 through 10/8, both EOS selections, flips and both command kinds. The extended
+MIT [builder](../tests/fixtures/build_sprite_shrink.py),
 [source](../tests/fixtures/sprite-shrink.s) and
-[ROM](../tests/fixtures/sprite-shrink.hex) execute seven scaled/distorted/flipped
-draws, poll CEF, read twenty-eight actual framebuffer words and MODR.
-[Native integration](../tests/sprite_shrink.rs) and
-[browser Wasm/Canvas](../scripts/browser-smoke.mjs) compare authored records,
-pixels and restart. Clearing only six HSS operands in the guest changes the
-sample coordinates while EOS alone becomes ineffective. Expanded ROM SHA-256:
-`f21ddc6c195a0202cf6e77469225a8e5a878a728d0da26fc6932e23286b1c79b`.
-The guest now waits for each EOS framebuffer-change latch before drawing; all
-original sample, mutation and MODR expectations remain unchanged.
+[ROM](../tests/fixtures/sprite-shrink.hex) execute twelve real draws, poll CEF,
+record 53 framebuffer words and compute a checksum. [Native integration](../tests/sprite_shrink.rs)
+and [browser Wasm/Canvas](../scripts/sprite-shrink.mjs) retain the HSS-clear
+operand control and add changed-texture/omitted-draw controls with cold boots.
+Current hashes and actual check results are in the #57 validation record.
+The earlier seven-draw/28-pixel ROM hash
+`f21ddc6c195a0202cf6e77469225a8e5a878a728d0da26fc6932e23286b1c79b`
+is historical and no longer identifies the current fixture.
 
-This implements the shrink sampling/end-code controls, not measured VDP1 bus or
-raster execution speed. Transfer-over, progressive erase timing and complete edge rules remain required;
-RSCG below adds interlaced/rotated scanout and the EOS framebuffer-change latch. The original
+Physical source-walk bandwidth, skipped-texel end-code acquisition, vertical
+scaling and complete edge rules remain required under #17. RSCG below adds
+interlaced/rotated scanout and the EOS framebuffer-change latch. The original
 Issue #17 acceptance criteria remain unchanged and incomplete.
 
 
@@ -3520,3 +3519,31 @@ are not modeled. Remaining CPU/peripheral, multiprocessor/bus/reset, SCU/DSP,
 video/audio, CD/media/HLE, SMPC and comprehensive integration requirements remain
 mandatory. Genuine BIOS and broad commercial-game compatibility remain unverified;
 Issue #17 remains open and historical trackers remain administratively closed.
+
+## VDP1 scaled/distorted horizontal sampling
+
+Related to #57 and #17. The [sampling contract](vdp1-sampling.md) reconciles
+ST-013-R3 pp.44/81–82, the later Japanese/English §6.3 Figure 6.5, §4.2 EOS,
+§§7.5–7.6 and Chapter 9, plus the version-0 supplement and STN-15 Clip/Cmod
+correction. All illustrated 3/8 through 10/8 rows now match, including ordinary
+8→4 `[1,3,5,7]`, 8→3 `[1,4,6]`, and HSS/EOS=0 8→3 `[0,4,6]`.
+HSS first selects a half-width parity source on reduced lines, then scales that
+source. Unchanged/enlarged lines retain all source pixels. HSS ignores end codes
+at every magnification despite the conflicting ECD summary row.
+
+| Contract | Independent native evidence | Guest/browser evidence |
+| --- | --- | --- |
+| All three Figure 6.5 panels, EOS independence with HSS clear, both directions and command flips | [Literal framebuffer vectors](../tests/vdp1_sampling.rs), both command kinds; source widths 8/16/24/504, single-dot and enlargement cases, distorted rows with different spans, vertical flip | Extended [MIT guest builder](../tests/fixtures/build_sprite_shrink.py) executes twelve scaled/distorted/flipped draws and reads 53 actual framebuffer samples |
+| Six texture formats, packed-word crossings, lookup data, transparency, ECD/HSS, mesh, Gouraud and clipping | Original authored nibbles/bytes/RGB/LUT words; original phase retained through pre-clipping reversal and user clipping | Guest constructs texture/command words through SH-2 MMIO, polls drawing, computes its checksum and publishes a distinguishing 8→4 row |
+| Acquisition/retention, VRAM/framebuffer ownership, passive inspection, cancellation and publication | [Scaled transaction vectors](../src/vdp1/sampling_tests.rs), chunks 1/3/17/10000, writes before/during/after acquisition, retained packed samples, ENDR/PTMR/system reset and fresh drawing | [Native Machine](../tests/sprite_shrink.rs) and [production Wasm/Canvas](../scripts/sprite-shrink.mjs) use identical ROM bytes and literal records, changed-texture, omitted-draw and retained HSS-clear controls, two cold boots each |
+
+[Validation #57](validation-issue-57.md) records hashes, actual complete-suite
+results and the independent native/browser failures of the inherited sampler.
+Generalization to ratios beyond the illustrated rows is explicitly inferred;
+physical source-walk bandwidth, skipped-texel end-code acquisition, vertical
+scaling and polygon coverage remain outside this horizontal-selection increment.
+Existing two-clock texture acquisition and framebuffer publication timing are
+emulator conventions. All unmet CPU/peripheral, multiprocessor/bus/reset timing,
+SCU/DSP, video/audio, CD/media/HLE, SMPC and integrated acceptance requirements
+remain mandatory under #17. This partial #17 improvement establishes neither
+hardware completion nor commercial compatibility; historical trackers remain closed.

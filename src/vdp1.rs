@@ -843,17 +843,38 @@ impl Vdp1 {
     fn texture_coordinates(c: &[u16; 16], line: &RasterLine, control: u16) -> (usize, bool) {
         let w = usize::from(c[5] >> 8 & 63) * 8;
         let h = usize::from(c[5] & 255);
-        let mut u = lerp(line.uv0.0, line.uv1.0, line.dot, line.a.distance(line.b)) as usize;
+        let steps = line.a.distance(line.b) as usize;
+        // Pre-clipping can reverse traversal. Evaluate the original line's
+        // sample in reverse order, retaining its full span and phase.
+        let dot = if line.uv0.0 > line.uv1.0 {
+            steps - line.dot as usize
+        } else {
+            line.dot as usize
+        };
+        let high_speed = c[2] & 0x1000 != 0;
+        let filtered = high_speed && steps + 1 < w;
+        let source = if filtered { w / 2 } else { w };
+        // 1997 manual §6.3 fig.6.5: reduction selects source-bin centers;
+        // expansion distributes repeats between the endpoints (half ties
+        // retain the earlier sample). HSS first forms the half-width source,
+        // then scales it, rather than quantizing ordinary samples to parity.
+        // See docs/vdp1-sampling.md for literal rows and generalization limits.
+        let mut u = if source > steps + 1 {
+            (2 * dot + 1) * source / (2 * (steps + 1))
+        } else if steps == 0 {
+            0
+        } else {
+            (2 * dot * (source - 1) + steps - 1) / (2 * steps)
+        };
         let mut v = lerp(line.uv0.1, line.uv1.1, line.dot, line.a.distance(line.b)) as usize;
         if c[0] & 0x10 != 0 {
-            u = w - 1 - u;
+            u = source - 1 - u;
         }
         if c[0] & 0x20 != 0 {
             v = h - 1 - v;
         }
-        let high_speed = c[2] & 0x1000 != 0;
-        if high_speed && line.a.distance(line.b) < (line.uv1.0 - line.uv0.0).abs() {
-            u = (u & !1) | usize::from(control & 0x10 != 0);
+        if filtered {
+            u = 2 * u + usize::from(control & 0x10 != 0);
         }
         (v * w + u, high_speed)
     }
@@ -1017,5 +1038,7 @@ mod erase_tests;
 mod preclip_tests;
 #[cfg(test)]
 mod progress_tests;
+#[cfg(test)]
+mod sampling_tests;
 #[cfg(test)]
 mod table_tests;

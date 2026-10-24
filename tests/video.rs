@@ -617,11 +617,11 @@ fn palette_msb_calculation_uses_cram_metadata_in_both_color_formats() {
 
 #[test]
 fn high_speed_shrink_selects_original_x_parity_and_ignores_end_codes() {
-    // ST-013 §6.3/fig.6.5, §4.2 EOS. Four reduced destination pixels
+    // 1997 §6.3/fig.6.5 row 4/8, §4.2 EOS. Four destination pixels
     // sample literal source coordinates; flip occurs before parity selection.
     for kind in [1, 2] {
         for (hss, eos, flip, indices) in [
-            (false, false, false, [0, 2, 4, 7]),
+            (false, false, false, [1, 3, 5, 7]),
             (true, false, false, [0, 2, 4, 6]),
             (true, true, false, [1, 3, 5, 7]),
             (true, false, true, [6, 4, 2, 0]),
