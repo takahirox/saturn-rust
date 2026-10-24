@@ -637,9 +637,7 @@ impl CdBlock {
                 self.finish_directory(false);
                 return;
             }
-            self.playing = false;
-            self.status = 1;
-            self.raise(PEND);
+            self.finish_play();
             return;
         }
         if self.fad >= self.end {
@@ -749,8 +747,9 @@ impl CdBlock {
         }
     }
     fn finish_play(&mut self) {
-        if self.fad >= self.end {
-            if self.repeats < self.repeat || self.repeat == 15 {
+        let end = self.play_end();
+        if self.fad >= end {
+            if self.play_start < end && (self.repeats < self.repeat || self.repeat == 15) {
                 self.repeats = (self.repeats + 1).min(14);
                 // Start is separately preserved in the play range, not the filter.
                 self.fad = self.play_start;
@@ -760,6 +759,13 @@ impl CdBlock {
                 self.raise(PEND);
             }
         }
+    }
+    fn play_end(&self) -> u32 {
+        // ST-162 §5.5 / §7.2.6: retain host settings across tray changes,
+        // but bound their effective end to the currently inserted disc.
+        self.media
+            .as_ref()
+            .map_or(self.end, |m| self.end.min(m.leadout))
     }
     fn used(&self) -> usize {
         self.partitions.iter().map(Vec::len).sum::<usize>()
@@ -1074,7 +1080,7 @@ impl CdBlock {
                     self.copy_error = 0;
                     self.copying = None;
                     self.last = 255;
-                    self.play_start = self.fad;
+                    self.play_start = 150;
                     self.end = self.media.as_ref().map_or(self.fad, |m| m.leadout);
                     self.repeat = 0;
                     self.repeats = 0;
@@ -1172,7 +1178,10 @@ impl CdBlock {
                     };
                     end
                 };
-                if start < 150 || (field1 != 0xFF_FFFF && start >= end) || end > m.leadout {
+                if start < 150
+                    || (field1 != 0xFF_FFFF && start >= end.min(m.leadout))
+                    || (field2 != 0xFF_FFFF && end > m.leadout)
+                {
                     return false;
                 }
                 self.tray_open = false;
@@ -1205,7 +1214,7 @@ impl CdBlock {
                 }
                 // ST-162 §4.2 p.37: canceling pause outside either retained
                 // range bound stays paused; it must not read or repeat a sector.
-                self.playing = (self.play_start..self.end).contains(&start);
+                self.playing = (self.play_start..self.play_end()).contains(&start);
                 if !self.playing {
                     self.raise(PEND);
                 }

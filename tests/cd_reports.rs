@@ -739,6 +739,97 @@ fn replacement_media_retains_host_play_information_until_software_reset() {
 }
 
 #[test]
+fn software_reset_restores_whole_disc_range_at_a_noninitial_pickup() {
+    // ST-162 §5.5 p.49 and §7.2.6 pp.65–69: reset initializes the play
+    // range to the whole disc independently of the retained pickup position.
+    for chunk in [1, 3, 17, 10000] {
+        let mut cd = mounted();
+        issue(&mut cd, [0x1180, 181, 0, 0], chunk);
+        advance(&mut cd, 26_875, chunk, true);
+        assert_eq!(
+            issue(&mut cd, [0x0401, 0, 0, 0], chunk),
+            [0x0180, 0x4101, 0x0100, 181]
+        );
+        issue(&mut cd, [0x1180, 150, 0, 0], chunk);
+        advance(&mut cd, 26_875, chunk, true);
+        assert_eq!(
+            issue(&mut cd, [0x10FF, 0xFFFF, 0x7FFF, 0xFFFF], chunk),
+            [0x0380, 0x4101, 0x0100, 150]
+        );
+        advance(&mut cd, 17_916_067, chunk, true); // 100 sectors
+        assert_eq!(
+            issue(&mut cd, [0, 0, 0, 0], chunk),
+            [0x0180, 0x41AA, 0x0100, 250]
+        );
+    }
+}
+
+#[test]
+fn shorter_replacement_bounds_play_without_overwriting_retained_settings() {
+    // ST-162 §5.5 p.49 retains host settings across tray changes; §7.2.6
+    // pp.65–69 bounds the effective end to the disc end. A longer third disc
+    // distinguishes bounding playback from overwriting the retained end.
+    for chunk in [1, 3, 17, 10000] {
+        let mut cd = mounted();
+        issue(&mut cd, [0x0500, 0, 0, 0], chunk);
+        cd.cd.mount(Media::iso(&vec![0xA6; 2048 * 50]).unwrap());
+        assert_eq!(
+            issue(&mut cd, [0x10FF, 0xFFFF, 0x7FFF, 0xFFFF], chunk),
+            [0x0380, 0x4101, 0x0100, 150]
+        );
+        advance(&mut cd, 8_958_034, chunk, true); // 50 sectors
+        assert_eq!(
+            issue(&mut cd, [0, 0, 0, 0], chunk),
+            [0x0180, 0x41AA, 0x0100, 200]
+        );
+        assert_ne!(cd.read16(CD + 8).unwrap() & 16, 0);
+        q(&mut cd, 0x4180, [0x41AA, 0x0100, 0, 0, 200], chunk);
+        assert_eq!(
+            issue(&mut cd, [0x10FF, 0xFFFF, 0x7FFF, 0xFFFF], chunk),
+            [0x0180, 0x41AA, 0x0100, 200]
+        );
+        // Establish a nondefault range and finite repeat on the original disc.
+        cd.cd.mount(Media::iso(&vec![0x69; 2048 * 100]).unwrap());
+        issue(&mut cd, [0x1080, 198, 0x0280, 52], chunk);
+        issue(&mut cd, [0x0500, 0, 0, 0], chunk);
+        cd.cd.mount(Media::iso(&vec![0xA6; 2048 * 50]).unwrap());
+        assert_eq!(
+            issue(&mut cd, [0x10FF, 0xFFFF, 0x7FFF, 0xFFFF], chunk),
+            [0x0180, 0x4101, 0x0100, 150]
+        );
+        issue(&mut cd, [0x1180, 198, 0, 0], chunk);
+        advance(&mut cd, 26_875, chunk, true);
+        assert_eq!(
+            issue(&mut cd, [0x10FF, 0xFFFF, 0x7FFF, 0xFFFF], chunk),
+            [0x0380, 0x4101, 0x0100, 198]
+        );
+        advance(&mut cd, 358_322, chunk, true); // repeat at the shorter disc end
+        assert_eq!(
+            issue(&mut cd, [0, 0, 0, 0], chunk),
+            [0x0381, 0x4101, 0x0100, 198]
+        );
+        issue(&mut cd, [0x0500, 0, 0, 0], chunk);
+        cd.cd.mount(Media::iso(&vec![0x69; 2048 * 120]).unwrap());
+        issue(&mut cd, [0x1180, 249, 0, 0], chunk);
+        advance(&mut cd, 26_875, chunk, true);
+        assert_eq!(
+            issue(&mut cd, [0x10FF, 0xFFFF, 0x7FFF, 0xFFFF], chunk),
+            [0x0381, 0x4101, 0x0100, 249]
+        );
+        advance(&mut cd, 179_161, chunk, true);
+        assert_eq!(
+            issue(&mut cd, [0, 0, 0, 0], chunk),
+            [0x0382, 0x4101, 0x0100, 198]
+        );
+        advance(&mut cd, 9_316_355, chunk, true); // retained 52-sector range
+        assert_eq!(
+            issue(&mut cd, [0, 0, 0, 0], chunk),
+            [0x0182, 0x4101, 0x0100, 250]
+        );
+    }
+}
+
+#[test]
 fn debugger_fifo_longwords_preserve_each_word_and_cr4_publication_protection() {
     for chunk in [1, 3, 17, 10000] {
         let mut cd = mounted();

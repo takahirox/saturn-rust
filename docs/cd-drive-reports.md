@@ -54,7 +54,12 @@ Startup remains the separate `0043 4442 4C4F 434B` signature.
   the play range or maximum repeat clears the notification count; the unchanged
   maximum encoding preserves it. Replacement-media attachment preserves both
   range bounds, maximum repeat and notification count; cold initialization and
-  software reset initialize them (ST-162 §5.5 p.49).
+  software reset initialize them (ST-162 §5.5 p.49). The reset range is the whole
+  disc, starting at FAD 150 independently of the pickup position (§7.2.6
+  pp.65–69). On shorter replacement media, playback and repeats use the earlier
+  of the retained end and current lead-out, without overwriting the retained
+  end or clearing repeat information. A later larger disc can use that retained
+  end again; unchanged Play outside the effective range stays paused.
 - Q acquisition returns five words without CRC. Its control/track/index and
   absolute position follow report validity. For valid ADR=1 data the relative
   address is distance from track start; in invalid states position fields are
