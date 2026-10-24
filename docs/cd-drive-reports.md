@@ -64,7 +64,12 @@ Startup remains the separate `0043 4442 4C4F 434B` signature.
   end again; unchanged Play outside the effective range stays paused.
 - Scan movement uses the same effective end, stopping at its last sector and
   raising PEND. Its effective lower bound also stays on the current medium if
-  the retained start lies beyond lead-out. These bounds never overwrite host
+  the retained start lies beyond lead-out. An empty retained range ending at
+  FAD 150 clamps both scan bounds to 150, never 149. Non-playing ranges and
+  retained play modes are permitted by ST-162 §7.2.6 pp.66–69; §8.2.2 p.84
+  leaves the exact pause position after exceeding the scan range undefined.
+  This clamp is a functional convention within the medium, not a claim about
+  the exact hardware pause position. These bounds never overwrite host
   settings or repeat information. The ten-frame scan step remains the existing
   functional timing convention, rather than a measured mechanical rate.
 - Q acquisition returns five words without CRC. Its control/track/index and

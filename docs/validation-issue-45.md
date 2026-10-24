@@ -311,6 +311,52 @@ selectors, ECC/retries, CD-DA/audio, backup, controllers and privacy regressions
 Power/scan follow-up production Wasm SHA-256:
 `5523bc9b88bd79d70c0ed9eb2722000f1f46c6eaffaa9ef36992ec99edba4131`.
 
+## Follow-up review: scans with empty retained ranges
+
+Related to #45 and #17. The PR #46 finding was reproduced with a new literal
+register vector before changing production code (exit 101): after unchanged-start
+Play with zero sectors and a forward scan, status returned
+`0100 FFFF FF00 0095` (FAD 149) instead of the bounded PAUSE report
+`0180 4101 0100 0096` (FAD 150).
+
+The scan's effective upper bound now has a floor of FAD 150, so subtracting one
+from an empty range's exclusive end cannot move the pickup into lead-in. The
+retained range and repeat settings are untouched. ST-162 §7.2.6 pp.66–69 permits
+non-playing retained ranges; §8.2.2 p.84 leaves the exact out-of-range scan pause
+position undefined. FAD 150 is this implementation's bounded convention, not an
+assertion of an exact mechanical pause position.
+
+The new vector covers both scan directions, chunks 1/3/17/10000, and advancement
+with/without passive debugger reads. It checks every report and Q word, PEND,
+and unchanged-start Play after scanning to prove the empty end survives. A
+configured variant retains start 181 and maximum repeat two while changing
+only the end: it stays paused at 150, then completes two repeats of `[181,185)`
+with literal notification count two and Q at 185. No guest/media bytes changed.
+
+| Empty-range scan follow-up check | Actual result |
+| --- | --- |
+| `cargo fmt --check`, `cargo build --locked` | Passed |
+| `cargo test --locked --no-fail-fast` | Passed: 929 tests, zero failed/ignored |
+| `cargo test --locked --test cd_reports` | Passed: all seventeen tests |
+| Native and Wasm Clippy with `-D warnings` | Passed |
+| All registered fixture/media reproduction checks | All 85 passed |
+| `npm ci --ignore-scripts` | Passed, zero reported vulnerabilities |
+| `sh scripts/build-web.sh` | Passed with matching wasm-bindgen 0.2.129 |
+| Complete extended `npm run test:browser` | Passed in Chromium 145.0.7632.6 under `/saturn-rust/`, rebuilt production Wasm, no required skips |
+| Local documentation link targets and Git whitespace | Passed |
+
+The initial web build and Wasm Clippy selected Homebrew Rust, which lacks the
+Wasm target. Selecting the documented rustup stable toolchain with its already
+installed target resolved both checks; no failure was waived.
+
+No required follow-up check remains pending. The complete suites preserve the
+original CD report guest, Star Collector, Prism Courier, Hardware Lab, directory
+acquisition, selectors, ECC/retries, CD-DA/audio, backup, controllers and privacy
+regressions. This remains partial #17 hardware work.
+
+Empty-range scan follow-up production Wasm SHA-256:
+`01f431e65bb0c6e4bfe0a3532d0cbb27428d94ca169c2db6af2b9656be387e96`.
+
 ## Remaining hardware scope
 
 This is partial #17 work. Full mechanical timing, R–W decoding, additional media

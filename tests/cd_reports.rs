@@ -937,6 +937,77 @@ fn shorter_replacement_bounds_scan_and_q_without_changing_retained_range() {
 }
 
 #[test]
+fn empty_retained_range_scans_stay_on_disc_and_preserve_play_settings() {
+    for chunk in [1, 3, 17, 10000] {
+        for preview in [false, true] {
+            for direction in [0x1200, 0x1201] {
+                for configured in [false, true] {
+                    let mut cd = mounted();
+                    if configured {
+                        issue(&mut cd, [0x1080, 181, 0x0280, 2], chunk);
+                        advance(&mut cd, 358_322, chunk, preview);
+                        assert_eq!(issue(&mut cd, [0, 0, 0, 0], chunk)[0], 0x0381);
+                        issue(&mut cd, [0x1180, 150, 0, 0], chunk);
+                        advance(&mut cd, 26_875, chunk, preview);
+                    }
+                    // ST-162 §7.2.6 pp.66–69 permits non-playing retained
+                    // ranges. With unchanged start, zero sectors makes the
+                    // exclusive end 150; changing it clears the notification
+                    // count but can preserve the configured maximum repeat.
+                    assert_eq!(
+                        issue(
+                            &mut cd,
+                            [0x10FF, 0xFFFF, if configured { 0x7F80 } else { 0x0080 }, 0],
+                            chunk,
+                        ),
+                        [0x0180, 0x4101, 0x0100, 150]
+                    );
+                    cd.write16(CD + 8, !16).unwrap();
+                    assert_eq!(
+                        issue(&mut cd, [direction, 0, 0, 0], chunk),
+                        [0x0500, 0x4101, 0x0100, 150]
+                    );
+                    advance(&mut cd, 400_000, chunk, preview);
+                    // §8.2.2 p.84 leaves the out-of-range pause position
+                    // undefined. This implementation bounds it to disc start.
+                    assert_eq!(
+                        issue(&mut cd, [0, 0, 0, 0], chunk),
+                        [0x0180, 0x4101, 0x0100, 150]
+                    );
+                    assert_ne!(cd.read16(CD + 8).unwrap() & 16, 0);
+                    q(&mut cd, 0x4180, [0x4101, 0x0100, 0, 0, 150], chunk);
+                    // Neither scan direction may repair the empty saved end.
+                    assert_eq!(
+                        issue(&mut cd, [0x10FF, 0xFFFF, 0x7FFF, 0xFFFF], chunk),
+                        [0x0180, 0x4101, 0x0100, 150]
+                    );
+                    if configured {
+                        // Extend only the end to 185. The retained start 181
+                        // still excludes 150, and maximum repeat stays two.
+                        assert_eq!(
+                            issue(&mut cd, [0x10FF, 0xFFFF, 0x7F80, 35], chunk),
+                            [0x0180, 0x4101, 0x0100, 150]
+                        );
+                        issue(&mut cd, [0x1180, 181, 0, 0], chunk);
+                        advance(&mut cd, 26_875, chunk, preview);
+                        assert_eq!(
+                            issue(&mut cd, [0x10FF, 0xFFFF, 0x7FFF, 0xFFFF], chunk),
+                            [0x0380, 0x4101, 0x0100, 181]
+                        );
+                        advance(&mut cd, 2_149_928, chunk, preview);
+                        assert_eq!(
+                            issue(&mut cd, [0, 0, 0, 0], chunk),
+                            [0x0182, 0x4101, 0x0100, 185]
+                        );
+                        q(&mut cd, 0x4182, [0x4101, 0x0100, 35, 0, 185], chunk);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn debugger_fifo_longwords_preserve_each_word_and_cr4_publication_protection() {
     for chunk in [1, 3, 17, 10000] {
         let mut cd = mounted();

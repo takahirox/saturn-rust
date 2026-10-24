@@ -573,7 +573,9 @@ impl CdBlock {
                     // without overwriting retained host settings. The old
                     // lower bound can also be beyond the new disc's end.
                     let end = self.play_end();
-                    let upper = end.saturating_sub(1);
+                    // An empty retained range can end at disc start. Its
+                    // exclusive end must not put either scan bound in lead-in.
+                    let upper = end.saturating_sub(1).max(150);
                     let lower = self.play_start.max(150).min(upper);
                     let next = if reverse {
                         self.fad.saturating_sub(10)
