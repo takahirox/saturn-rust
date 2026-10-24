@@ -357,6 +357,7 @@ impl Vdp2 {
 
     /// Dedicated rotation ports use per-dot deadlines, independently of normal
     /// cycle commands and the normal pipeline lead. See the transaction contract.
+    /// X is an output dot: high-resolution picture pairs still acquire twice.
     pub(crate) fn acquire_rotation_display(
         &mut self,
         sprites: &Vdp1,

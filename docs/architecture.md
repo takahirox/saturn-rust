@@ -296,8 +296,14 @@ retains address/format/name/coefficient-selection inputs; repeated addresses iss
 fresh acquisitions. RBG0 follows split/unsplit RAMCTL roles; RBG1 fixes names to
 B1 and characters to B0, independently of normal cycle commands. The
 [rotation transaction contract](vdp2-rotation-fetch.md) distinguishes documented
-bank/layout requirements from the assumed atomic per-dot phase. Physical rotation
-latency, separate coefficient/table strobes, complete physical bank arbitration
+bank/layout requirements from the assumed atomic per-dot phase. In standard-TV
+640/704-dot modes, both rotation pictures use `floor(output_x/2)` for matrix and
+horizontal coefficient increments, covering the normal 320/352 picture dots.
+Parameter/layer windows, normal screens and VDP1 composition keep independent
+output-dot coordinates. The same mapping serves debugger decoding and scheduled
+address generation; paired coordinates still issue separate two-clock
+acquisitions. See [high-resolution evidence](validation-issue-53.md). Physical
+rotation latency, separate coefficient/table strobes, complete physical bank arbitration
 and half-line interlace phase remain required. Exclusive monitors select 480
 active lines, 525/562-line fields and 852/848-clock rasters. Exclusive high
 resolution multiplexes NBG0/NBG1 even/odd pixels, following the guest's paired scroll/zoom setup. Monitor window and counter
