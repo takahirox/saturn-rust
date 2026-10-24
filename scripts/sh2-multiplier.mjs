@@ -22,10 +22,10 @@ export async function sh2Multiplier(page) {
     } else if (variant === "spacing") {
       image.copyWithin(start+128,start+64,start+74);
       for(let i=0;i<16;i++)image.set([0x22,0x1F,0,9,0,9,0x06,0x1A],start+i*8);
-      expected[0]=10;
+      expected[0]=11;
     } else if (variant === "omitted") {
       for(let i=0;i<16;i++)image.set([0,9],start+i*4);
-      expected[0]=6;expected[1]=0;
+      expected[0]=7;expected[1]=0;
     }
     await page.locator("#bios").setInputFiles({name:`original-sh2-multiplier-${variant}.bin`,mimeType:"application/octet-stream",buffer:image});
     await page.waitForFunction(()=>document.getElementById("status").textContent.startsWith("Resetting"));

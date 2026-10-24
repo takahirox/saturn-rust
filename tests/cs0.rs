@@ -50,12 +50,12 @@ fn dual_guest_computes_cs0_payloads_timing_and_low_ram_synchronization() {
                         m.run_steps(10000).unwrap();
                     }
                     let ticks = match (waits, omit) {
-                        (0, false) => 16,
-                        (1, false) => 20,
-                        (2, false) => 28,
-                        (0, true) => 10,
-                        (1, true) => 12,
-                        (2, true) => 16,
+                        (0, false) => 19,
+                        (1, false) => 23,
+                        (2, false) => 31,
+                        (0, true) => 12,
+                        (1, true) => 14,
+                        (2, true) => 18,
                         _ => unreachable!(),
                     };
                     for (cpu, at) in [(m.cpu_state(), 0x0601C000), (m.slave_state(), 0x0601C100)] {

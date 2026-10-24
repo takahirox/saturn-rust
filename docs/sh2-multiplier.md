@@ -131,7 +131,8 @@ successor fetch or exception entry exhausts it. Operand waits stretch the shared
 slot without consuming its overlap. Effects still
 complete at MA, and replay retains the observed times. The four memory-transfer
 guest kernels each measure sixteen aligned transfer/NOP pairs: 32 clocks,
-FRT floor((6+32)/8)=4.
+FRT floor((8+32)/8)=5. The ordinary MOV MA lead-ins in the
+wrapper are derived in [the load pipeline contract](sh2-load-pipeline.md).
 
 Availability belongs to each SH-2 and advances in its actual PLL clock domain.
 Fetch, operand and on-chip waits can exhaust an earlier mm tail. Replay must

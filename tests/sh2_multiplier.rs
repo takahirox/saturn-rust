@@ -81,13 +81,13 @@ fn multiplier_guest_operand_spacing_and_omitted_operation_controls() {
                     image[start + i * 8..start + i * 8 + 8]
                         .copy_from_slice(&[0x22, 0x1F, 0, 9, 0, 9, 0x06, 0x1A]);
                 }
-                changed[0] = 10; // floor((6+80)/8)
+                changed[0] = 11; // floor((8+80)/8)
             }
             _ => {
                 for i in 0..16 {
                     image[start + i * 4..start + i * 4 + 2].copy_from_slice(&[0, 9]);
                 }
-                changed[0] = 6; // floor((6+16*3)/8)
+                changed[0] = 7; // floor((8+16*3)/8)
                 changed[1] = 0;
             }
         }

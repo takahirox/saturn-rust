@@ -16,6 +16,7 @@ import { videoWrites } from "./video-writes.mjs";
 import { bBusReads } from "./b-bus-reads.mjs";
 import { scuFringe } from "./scu-fringe.mjs";
 import { dmacBus } from "./dmac-bus.mjs";
+import { sh2Load } from "./sh2-load.mjs";
 import { sh2Multiplier } from "./sh2-multiplier.mjs";
 import { sh2BusPipeline } from "./sh2-bus-pipeline.mjs";
 import { sh2ResetBus } from "./sh2-reset-bus.mjs";
@@ -1185,7 +1186,7 @@ try {
     assert.deepEqual(actual.exceptions, ["0", "0"]);
     for (const [cpu, trace] of actual.traces.entries()) {
       const expected = [cpu ? 0x83F0 : 0x3F0, 0xAAFF];
-      waitVectors.forEach((ticks, i) => expected.push(before === 0xA55AAA40 && i === 1 ? 10 : 8 + 2 * (4 / width - 1) + (ticks - 8) * 4 / width,
+      waitVectors.forEach((ticks, i) => expected.push(before === 0xA55AAA40 && i === 1 ? 11 : 9 + 2 * (4 / width - 1) + (ticks - 9) * 4 / width,
         before === 0x13579BDF ? after : 0x13579BDF));
       expected.push(...(little ? endianVectors : [0x11223344,0x1122,0x3344,0x11,0xA1B2C3D4,0x1234C3D4,0x5634C3D4]), 0x600D);
       assert.deepEqual(trace, expected);
@@ -1257,6 +1258,7 @@ try {
   // Original cached instruction-state kernels run independently on both
   // SH-2s. Each resets its FRT divider and measures table7.2 states. Changing
   // only guest ADDs to real BRA/NOP pairs changes time and computed results.
+  await sh2Load(page);
   await sh2Multiplier(page);
   const timingRom = Buffer.alloc(524288);
   for (const line of (await readFile("tests/fixtures/sh2-timing.hex", "utf8")).split(/\r?\n/)) {
@@ -1275,7 +1277,7 @@ try {
         if(image.readUInt32BE(at)===pattern) {image.writeUInt16BE(sts ? 0x7901 : 0xE600,at+2);changes++;}
       }
       assert.equal(changes,16);
-      expected[sts ? 24 : 30]=4;
+      expected[sts ? 24 : 30]=5;
       expected[sts ? 25 : 31]=0;
     } else if(mutation === "peripheral") {
       let changes=0;
@@ -1288,7 +1290,7 @@ try {
       const at=image.indexOf(Buffer.from([0x76,1,0x76,1]));
       assert(at>=0);
       for(let i=0;i<8;i++)image.set([0xA0,0,0,9],at+i*4);
-      expected[0]=5;expected[1]=16;
+      expected[0]=6;expected[1]=16;
     }
     await page.locator("#bios").setInputFiles({name:"original-sh2-timing.bin",mimeType:"application/octet-stream",buffer:image});
     await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));

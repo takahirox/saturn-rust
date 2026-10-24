@@ -8,6 +8,8 @@ pub mod cpu;
 pub mod devices;
 pub mod disc;
 mod hle;
+#[cfg(test)]
+mod load_scheduler_tests;
 pub mod m68k;
 pub mod media;
 #[cfg(test)]
@@ -119,7 +121,7 @@ mod scheduling_tests {
             .write32(0xFFFFFFE8, 0xA55A0080)
             .unwrap();
         m.step().unwrap();
-        assert_eq!(m.cpu_ready, [u64::MAX, 33]); // data phase has not completed
+        assert_eq!(m.cpu_ready, [33, 33]); // EX lead-in; MA starts at 33
         assert_eq!(m.cpu.state().instructions, 0);
         for _ in 0..3 {
             m.step().unwrap();
@@ -134,8 +136,17 @@ mod scheduling_tests {
         );
         m.step().unwrap();
         assert_eq!(
+            (
+                m.clocks(),
+                m.cpu.state().instructions,
+                m.slave.state().instructions
+            ),
+            (37, 0, 5)
+        );
+        m.step().unwrap();
+        assert_eq!(
             (m.cpu.state().instructions, m.slave.state().instructions),
-            (1, 5)
+            (1, 6)
         );
         m.reset(Boot::HlePrototype).unwrap();
         assert_eq!(m.cpu_ready, [0; 2]);
@@ -719,7 +730,7 @@ impl Machine {
                 // External data phases have already consumed their clocks.
                 // Independent internal states can overlap them, never precede
                 // their completion. On-chip wait states remain CPU-local.
-                // A MACH/MACL memory MA can retire after its successor's
+                // A MOV or multiplier memory MA can retire after its successor's
                 // EX starts. Recover that slot, retaining the completion clamp.
                 self.cpu_ready[i] = (boundary.started
                     + u64::from(self.bus.cpu_main_delay(processor, states)))

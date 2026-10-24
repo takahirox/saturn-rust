@@ -14,7 +14,7 @@ from build_hle_system import record, smpc
 from build_sh2_timing import kernel
 
 HERE = Path(__file__).resolve().parent
-# name, guest body, clocks, final MACL. FRC final latch = floor((6+clocks)/8).
+# name, guest body, clocks, final MACL. FRC final latch = floor((8+clocks)/8).
 # A word multiply at 4n has no IF split, its adjacent STS at 4n+2
 # adds one mm wait and one IF split: 1+3 = 4 clocks per pair.
 KERNELS = [
@@ -81,7 +81,7 @@ def build():
     for at in range(0,len(rom),16):
         if any(rom[at:at+16]):
             lines.append(f'{at:04X} '+' '.join(f'{w:04X}' for w in struct.unpack('>8H',rom[at:at+16])))
-    expected=[v for _,_,clocks,result in KERNELS for v in [(6+clocks)//8,result]]+[0x600D]
+    expected=[v for _,_,clocks,result in KERNELS for v in [(8+clocks)//8,result]]+[0x600D]
     source='; Original MIT SH-2 multiplier guest; see adjacent LICENSE.\n'+'\n'.join(f'; section {at:08X}\n{body}' for at,body in sections.items())
     return {'sh2-multiplier.hex': ('\n'.join(lines)+'\n').encode(),
             'sh2-multiplier.tsv': ''.join(f'{v:08X}\n' for v in expected).encode(),

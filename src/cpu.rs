@@ -138,7 +138,7 @@ impl Cpu {
     }
 
     pub(crate) fn issue_overlap(&self) -> u32 {
-        self.multiplier.issue_overlap
+        self.load_pipeline.issue_overlap
     }
 
     pub fn start(pc: u32, sp: u32) -> Self {
@@ -239,7 +239,7 @@ impl Cpu {
     /// Faults caused by unavailable host bus/device behavior stay sticky until reset.
     pub fn step(&mut self, bus: &mut impl Memory) -> Result<(), CpuError> {
         self.last_clocks = 0;
-        self.multiplier.issue_overlap = 0;
+        self.load_pipeline.issue_overlap = 0;
         let pc = self.state.pc;
         if matches!(self.state.status, CpuStatus::Running | CpuStatus::Sleeping)
             && !self.state.address_error_pending
@@ -283,7 +283,6 @@ impl Cpu {
         // bus supplies additional waits independently to the machine scheduler.
         bus.sh2_write_context(self.state.pc, Some(vector));
         self.last_clocks = 8;
-        self.multiplier.exception();
         self.multiplier.clock += 8;
         self.load_pipeline = timing::LoadPipeline::default();
         let s = &mut self.state;
@@ -376,15 +375,23 @@ impl Cpu {
             return Ok(());
         }
 
+        let clock = bus.sh2_clock().unwrap_or(self.multiplier.clock);
+        let ex = self.load_pipeline.issue_clock(clock);
         let interlock = self.load_pipeline.issue(opcode);
         self.last_clocks = timing::execution_states(opcode, self.state.sr & T != 0) + interlock;
-        if interlock != 0 {
-            bus.sh2_pipeline_wait(interlock).map_err(access)?;
+        // A dependency consumes a retained MA/EX clock before adding a wait.
+        let wait = interlock.saturating_sub(self.load_pipeline.issue_overlap);
+        if wait != 0 {
+            bus.sh2_pipeline_wait(wait).map_err(access)?;
         }
-        let now = bus
-            .sh2_clock()
-            .unwrap_or(self.multiplier.clock + u64::from(interlock));
-        let now = self.multiplier.issue_clock(now);
+        let now = ex + u64::from(interlock);
+        let load_access = timing::mov_load_address(opcode, &self.state)
+            .map(|address| timing::LoadAccess::start(bus, address, pc, now))
+            .transpose()
+            .map_err(access)?;
+        if let Some(load) = &load_access {
+            self.last_clocks += load.split();
+        }
         let mut multiplier_access = self
             .multiplier
             .access(opcode, pc, now, bus.sh2_fetch_slots())
@@ -786,7 +793,12 @@ impl Cpu {
         self.address_error_inhibited =
             next_branch.is_some() || matches!(opcode & 0xFF00, 0x8D00 | 0x8F00);
         if let Some(access) = multiplier_access {
-            self.last_clocks += self.multiplier.finish(access, operands.inner);
+            self.last_clocks +=
+                self.multiplier
+                    .finish(access, operands.inner, &mut self.load_pipeline);
+        }
+        if let Some(load) = load_access {
+            load.finish(&mut self.load_pipeline, operands.inner);
         }
         self.multiplier.clock += u64::from(self.last_clocks);
         Ok(())
@@ -838,6 +850,8 @@ fn set_special(s: &mut CpuState, control: bool, index: u16, value: u32) {
 
 #[cfg(test)]
 mod address_tests;
+#[cfg(test)]
+mod load_tests;
 #[cfg(test)]
 mod multiplier_tests;
 #[cfg(test)]
