@@ -135,10 +135,14 @@ impl Emulator {
     }
     /// Read-only debugger access, also used to assert guest-written diagnostics.
     pub fn read_long(&self, address: u32) -> Result<u32, JsValue> {
-        use crate::bus::Memory;
         self.machine
-            .bus()
-            .read32(address)
+            .debug_read32(address)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+    /// Word-width debugger access, including CD response registers.
+    pub fn read_word(&self, address: u32) -> Result<u16, JsValue> {
+        self.machine
+            .debug_read16(address)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
     pub fn frames(&self) -> String {

@@ -859,6 +859,26 @@ impl Bus {
         }
     }
 
+    /// Debugger word access bypasses CD CR4-release and FIFO-consume effects.
+    /// Other devices retain their existing bus inspection behavior.
+    pub fn debug_read16(&self, address: u32) -> Result<u16, BusError> {
+        let physical = Self::physical(address);
+        if (crate::cd::REGISTERS..crate::cd::REGISTERS + 0x2C).contains(&physical)
+            || (crate::cd::DATA..crate::cd::DATA + 4).contains(&physical)
+        {
+            return self.cd.peek16(physical);
+        }
+        self.read16(address)
+    }
+    /// Preview both CD FIFO words, including a final odd word padded with FFFF.
+    /// Architectural Memory reads continue to consume words normally.
+    pub fn debug_read32(&self, address: u32) -> Result<u32, BusError> {
+        if Self::physical(address) == crate::cd::DATA {
+            return Ok(self.cd.peek_data32());
+        }
+        self.read32(address)
+    }
+
     // SH7604 §2.3: P1 cache-through accesses share the external physical bus.
     fn physical(address: u32) -> u32 {
         let address = if (0x2000_0000..0x4000_0000).contains(&address) {

@@ -385,6 +385,14 @@ impl Machine {
         &self.bus
     }
 
+    /// Debugger inspection uses passive CD register/FIFO access.
+    pub fn debug_read16(&self, address: u32) -> Result<u16, bus::BusError> {
+        self.bus.debug_read16(address)
+    }
+    pub fn debug_read32(&self, address: u32) -> Result<u32, bus::BusError> {
+        self.bus.debug_read32(address)
+    }
+
     /// Cold reset clears volatile RAM, prior ROM, counters, delay state and faults.
     /// Internal battery-backed RAM survives all boot selections and failed boots.
     /// A rejected BIOS leaves ExternalBios selected and the CPU stopped in Reset.

@@ -86,6 +86,7 @@ jobs:
           python3 tests/fixtures/build_gradation.py --check
           python3 tests/fixtures/build_sprite_effects.py --check
           python3 tests/fixtures/build_cd_drive.py --check
+          python3 tests/fixtures/build_cd_reports.py --check
           python3 tests/fixtures/build_cd_copy.py --check
           python3 tests/fixtures/build_cd_directory.py --check
           python3 tests/fixtures/build_cd_directory_schedule.py --check

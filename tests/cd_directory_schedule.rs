@@ -1,3 +1,5 @@
+//! ERROR report bytes follow ST-162 §7.2.4(4), later §7.2.5(4); retained
+//! acquisition/retry/sector/workspace assertions are unchanged (Issue #45).
 //! Original scheduled directory vectors: ST-162 §§3.2/6.2/8.2.8.
 use saturn_rust::{
     Boot, Machine,
@@ -152,7 +154,7 @@ fn acquired_raw_sectors_use_correction_retry_deadlines_and_keep_accepted_respons
             );
             assert_eq!(
                 issue(&mut cd, [0, 0, 0, 0])[0],
-                if success { 0x0180 } else { 0x0980 }
+                if success { 0x0180 } else { 0x09FF }
             );
             assert_eq!(table(&mut cd), success);
             assert_eq!(free(&mut cd), 200);
@@ -206,7 +208,7 @@ fn unreadable_root_acquisition_finishes_at_first_deadline_and_releases_workspace
                 advance(&mut cd, 1_000_000, chunk);
                 assert_eq!(retained(&cd), accepted);
                 cd.read16(CD + 0x24).unwrap();
-                assert_eq!(issue(&mut cd, [0, 0, 0, 0])[0], 0x0900);
+                assert_eq!(issue(&mut cd, [0, 0, 0, 0])[0], 0x09FF);
                 assert!(!table(&mut cd));
                 assert_eq!(free(&mut cd), 200);
                 cd.write16(CD + 8, !512).unwrap();
@@ -215,7 +217,7 @@ fn unreadable_root_acquisition_finishes_at_first_deadline_and_releases_workspace
                 assert!(!table(&mut cd));
                 assert_eq!(free(&mut cd), 200);
                 // A new command is accepted rather than stranded in WAIT.
-                assert_eq!(issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFF])[0], 0x0900);
+                assert_eq!(issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFF])[0], 0x09FF);
                 assert_eq!(free(&mut cd), 199);
             }
         }
@@ -274,7 +276,7 @@ fn directory_after_audio_playback_fails_at_its_scheduled_read_and_releases_works
             }
             cd.read16(CD + 0x24).unwrap();
             let status = issue(&mut cd, [0, 0, 0, 0]);
-            assert_eq!((status[0], status[3]), (0x0900, 166));
+            assert_eq!((status[0], status[3]), (0x09FF, 0xFFFF));
             assert_eq!(cd.audio_sample(), [0, 0]);
             assert!(!table(&mut cd));
             assert_eq!(free(&mut cd), 200);
@@ -286,7 +288,7 @@ fn directory_after_audio_playback_fails_at_its_scheduled_read_and_releases_works
             assert_eq!(flags(&cd), 0);
             assert!(!table(&mut cd));
             assert_eq!(free(&mut cd), 200);
-            assert_eq!(issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFF])[0], 0x0900);
+            assert_eq!(issue(&mut cd, [0x7000, 0, 0xFF, 0xFFFF])[0], 0x09FF);
             assert_eq!(free(&mut cd), 199); // accepted again, rather than WAIT
         }
     }

@@ -52,8 +52,9 @@ fn guest_observes_retry_error_received_and_corrected_data_and_cancels_infinite_r
             }
             let read = |offset: u32| m.bus().read32(0x0600_A000 + offset).unwrap();
             assert_eq!(read(0x190), 0x600D);
-            assert_eq!(read(0x30), 0x0980);
-            assert_eq!(read(0x3C), 150);
+            assert_eq!(read(0x30), 0x09FF);
+            // ST-162 §7.2.4(4): invalid ERROR position, retained internally.
+            assert_eq!(read(0x3C), 0xFFFF);
             assert_eq!(read(0x4C), 0);
             for offset in [0x7C, 0xCC, 0x13C] {
                 assert_eq!(read(offset), 1);
