@@ -16,6 +16,9 @@ mod dma_startup_tests;
 #[path = "fetch_tests.rs"]
 mod fetch_tests;
 #[cfg(test)]
+#[path = "load_tests.rs"]
+mod load_tests;
+#[cfg(test)]
 #[path = "monitor_tests.rs"]
 mod monitor_tests;
 #[cfg(test)]

@@ -77,11 +77,12 @@ def build():
     vectors = ['# name BCR1 MCR WCR read-ticks read-data write-ticks write-data final-data marker']
     for name,bcr,mcr,wcr,reads,writes in CONFIGS:
         # One ADD and one internal acceptance per write. The first external
-        # write starts at clock7 after FRT resume, and the final latch is two
+        # write starts at clock8 after FRT resume, and the final latch is three
         # clocks after the eighth acceptance. EXTU after the first low-byte
-        # load includes its WB/EX interlock: 10+7*max(2, external-cycle).
+        # load combines WB/EX with the existing IF split. Explicit MOV MA
+        # lead-ins give 11+7*max(2, external-cycle); see docs/sh2-load-pipeline.md.
         # External-cycle = writes-1 from H figs7.26/7.31/7.34/7.38/7.41.
-        buffered_ticks = (10 + 7 * max(2, writes - 1)) // 8
+        buffered_ticks = (11 + 7 * max(2, writes - 1)) // 8
         values = [bcr,mcr,wcr,reads+1,0x13579BDF,buffered_ticks,0x12345608,0x12345608,0x600D]
         vectors.append(name+' '+' '.join(f'{v:08X}' for v in values))
     return {'bsc-memory.hex': ('\n'.join(lines)+'\n').encode(),

@@ -100,15 +100,36 @@ mod tests {
 #[derive(Debug, Default, Clone)]
 pub(super) struct LoadPipeline {
     destination: Option<u8>,
+    /// The previous MOV's real IF already split its MA/EX slot.
+    fetch_split: bool,
+    /// Shared by MOV and multiplier memory phases. A waited successor fetch
+    /// consumes this final MA/EX clock; replay journals the observed clock.
+    next_ex: Option<u64>,
+    pub issue_overlap: u32,
 }
 impl LoadPipeline {
+    pub fn issue_clock(&mut self, now: u64) -> u64 {
+        self.issue_overlap = u32::from(self.next_ex.take().is_some_and(|ex| now == ex + 1));
+        now - u64::from(self.issue_overlap)
+    }
+
+    pub fn retain_ex(&mut self, ex: u64) {
+        self.next_ex = Some(ex);
+    }
+
+    pub fn load_split(&mut self, split: bool) {
+        self.fetch_split = split;
+    }
+
     pub fn issue(&mut self, opcode: u16) -> u32 {
         let load = load_destination(opcode);
-        let hazard = self.destination.is_some_and(|register| {
-            load != Some(register)
-                && !matches!(opcode & 0xF00F, 0x000F | 0x400F)
-                && register_uses(opcode) & (1 << register) != 0
-        });
+        let hazard = !self.fetch_split
+            && self.destination.is_some_and(|register| {
+                load != Some(register)
+                    && !matches!(opcode & 0xF00F, 0x000F | 0x400F)
+                    && register_uses(opcode) & (1 << register) != 0
+            });
+        self.fetch_split = false;
         self.destination = load;
         u32::from(hazard)
     }
@@ -253,6 +274,68 @@ mod load_pipeline_tests {
                 pipeline.issue(load);
                 assert_eq!(pipeline.issue(next), expected, "{load:04X}->{next:04X}");
             }
+        }
+    }
+}
+
+/// Ordinary MOV operand phase (P fig7.11). Address decoding is shared by all
+/// widths; execution retains the existing sign extension and update semantics.
+pub(super) fn mov_load_address(op: u16, s: &super::CpuState) -> Option<u32> {
+    let m = (op >> 4 & 15) as usize;
+    let imm = u32::from(op as u8);
+    let pc = s
+        .delay_target
+        .map_or(s.pc.wrapping_add(4), |t| t.wrapping_add(2));
+    match op >> 12 {
+        0 if matches!(op & 15, 0xC..=0xE) => Some(s.r[m].wrapping_add(s.r[0])),
+        5 => Some(s.r[m].wrapping_add(u32::from(op & 15) * 4)),
+        6 if matches!(op & 15, 0..=2 | 4..=6) => Some(s.r[m]),
+        8 if matches!(op >> 8 & 15, 4 | 5) => {
+            Some(s.r[m].wrapping_add(u32::from(op & 15) * (1 << (op >> 8 & 1))))
+        }
+        9 => Some(pc.wrapping_add(imm * 2)),
+        0xC if matches!(op >> 8 & 15, 4..=6) => {
+            Some(s.gbr.wrapping_add(imm * (1 << (op >> 8 & 3))))
+        }
+        0xD => Some((pc & !3).wrapping_add(imm * 4)),
+        _ => None,
+    }
+}
+
+pub(super) struct LoadAccess {
+    end: u64,
+    split: bool,
+}
+impl LoadAccess {
+    pub fn start(
+        bus: &mut impl crate::bus::Memory,
+        address: u32,
+        pc: u32,
+        ex: u64,
+    ) -> Result<Self, crate::bus::BusError> {
+        let end = ex + 2;
+        if let Some(now) = bus.sh2_clock() {
+            let scheduled = bus.sh2_schedule_memory_access(address, false, end);
+            let boundary = end - u64::from(scheduled);
+            bus.sh2_pipeline_wait(boundary.saturating_sub(now) as u32)?;
+        }
+        Ok(Self {
+            end,
+            split: bus.sh2_fetch_slots() && pc & 2 != 0,
+        })
+    }
+
+    pub fn split(&self) -> u32 {
+        u32::from(self.split)
+    }
+
+    pub fn finish(self, pipeline: &mut LoadPipeline, bus: &impl crate::bus::Memory) {
+        // A real IF and a dependency cause the same split (P figs7.6/7.9).
+        // With retained if, recover the final clock of the shared MA/EX slot.
+        pipeline.load_split(self.split);
+        if !self.split {
+            let end = bus.sh2_clock().unwrap_or(self.end).max(self.end);
+            pipeline.retain_ex(end - 1);
         }
     }
 }

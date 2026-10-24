@@ -54,8 +54,15 @@ def build():
         # four-clock interval. The extra video-setup word phases can move
         # this loop within that interval. Publish at/after first-dot acquisition
         # while remaining before the second dot, without changing the oracle.
+        # P fig7.11 now places both counter reads at MA. Retain the
+        # H=844 test point: DT/BF iterations cost four clocks (two H units).
+        # Tile/RBG1 remove one iteration and restore two clocks here;
+        # bitmap removes four iterations. BRA adds one clock before the
+        # slot store while keeping the complete hot path within 16 bytes.
+        if mode != 'bitmap':
+            s += 'nop\nnop\n'
         s += ('timed_wait:\nmov.w @r1,r0\nmov.w @r4,r0\n'
-              'cmp/hs r3,r0\nbf timed_wait\nnop\nmov.w r6,@r5\n'
+              'cmp/hs r3,r0\nbf timed_wait\nbra store_done\nmov.w r6,@r5\nstore_done:\n'
               'mov r0,r8\nbra record\nnop\n'
               'omit_wait:\nmov.w @r1,r0\nmov.w @r4,r0\n'
               'cmp/hs r3,r0\nbf omit_wait\nmov r0,r8\nrecord:\n'
@@ -66,7 +73,7 @@ def build():
         s += line(20)
         s += ('load 0x2600dc0c,r1\nload 0x600d,r0\nmov.l r0,@r1\n'
               'park:\nsleep\nbra park\nnop\n')
-        output,digest = encode('rotation-fetch-'+mode,s,[(0x100,0x1111),(0x102,842),(0x104,1),(0x106,7 if mode == 'bitmap' else 3)])
+        output,digest = encode('rotation-fetch-'+mode,s,[(0x100,0x1111),(0x102,842),(0x104,1),(0x106,3 if mode == 'bitmap' else 2)])
         files.update(output)
         # Independently authored default guest records: latched H=844,
         # published word=2222, SH-2 sum1111+2222, completion marker.

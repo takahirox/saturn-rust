@@ -8,10 +8,6 @@ pub(super) struct Multiplier {
     /// Clock for architectural-only Memory implementations. Clocked adapters
     /// instead supply the PLL's monotonically advancing SH-2 clock count.
     pub clock: u64,
-    /// An aligned MAC or MACH/MACL memory transfer retires after the
-    /// successor's EX starts. Retain its final shared-slot clock for scheduling.
-    next_ex: Option<u64>,
-    pub issue_overlap: u32,
 }
 
 pub(super) struct Access {
@@ -25,18 +21,6 @@ pub(super) struct Access {
 }
 
 impl Multiplier {
-    pub fn issue_clock(&mut self, now: u64) -> u64 {
-        // A waited fetch exhausts the available overlap. Observations are
-        // journaled, so replay consumes the same EX boundary exactly once.
-        self.issue_overlap = u32::from(self.next_ex.take().is_some_and(|ex| now == ex + 1));
-        now - u64::from(self.issue_overlap)
-    }
-
-    pub fn exception(&mut self) {
-        self.next_ex = None;
-        self.issue_overlap = 0;
-    }
-
     pub fn access(&self, op: u16, pc: u32, now: u64, fetch: bool) -> Option<(Access, u32)> {
         let word = matches!(op & 0xF00F, 0x200E | 0x200F);
         let long = matches!(op & 0xF00F, 0x0007 | 0x3005 | 0x300D);
@@ -145,14 +129,19 @@ impl Multiplier {
         Ok(())
     }
 
-    pub fn finish(&mut self, access: Access, bus: &impl Memory) -> u32 {
+    pub fn finish(
+        &mut self,
+        access: Access,
+        bus: &impl Memory,
+        pipeline: &mut super::timing::LoadPipeline,
+    ) -> u32 {
         if access.memory_access && access.successor_ex < access.end {
             // P table7.2/figs7.23/34/89/91: MA completion does not delay the
             // successor's EX. Keep effects at MA, but recover its overlap.
             // §7.2.3 stretches the shared slot when the operand takes longer:
             // retain its final clock, rather than expiring at nominal MA end.
             let successor_ex = access.successor_ex + u64::from(access.stall);
-            self.next_ex = Some(
+            pipeline.retain_ex(
                 bus.sh2_clock()
                     .map_or(successor_ex, |now| successor_ex.max(now.saturating_sub(1))),
             );

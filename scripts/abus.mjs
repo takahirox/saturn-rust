@@ -14,7 +14,7 @@ export async function abusTiming(page) {
     if(changed) {
       const needle=Buffer.from([0,0x30,0,0]),at=image.indexOf(needle);
       assert(at>=0 && image.indexOf(needle,at+1)<0);
-      image.writeUInt32BE(0x00400000,at); golden[2]=12;
+      image.writeUInt32BE(0x00400000,at); golden[2]=14;
     }
     const actual=await page.evaluate(async image=>{
       const {emulator}=await import("./app.js");

@@ -74,11 +74,12 @@ def build():
     # H §§7.3.1/7.11.2: IF is an aligned longword. Every second
     # instruction is retained, including the repeated MOV.L sequence. Pairing
     # removes four IF cycles and their CS0/CS3 turnarounds. Enumerating the
-    # remaining IF, operand and peripheral phases gives 64+8*Tw clocks,
-    # hence 8+Tw FRT ticks. Four aligned CS0 IF longwords now each
+    # remaining IF, operand and peripheral phases, including EX/MA lead-ins,
+    # gives 72+8*Tw clocks, hence 9+Tw FRT ticks. Four aligned CS0 IF
+    # longwords now each
     # need two word beats, adding eight clocks to the inherited 32-bit trace.
     # Narrow operands add 2+Tw per extra physical data beat.
-    expected = [8+w for w in range(7)]
+    expected = [9+w for w in range(7)]
     return {'bsc-waits.hex': ('\n'.join(lines)+'\n').encode(),
             'bsc-waits.tsv': ''.join(f'{v:08X}\n' for v in expected).encode(),
             'bsc-endian.tsv': ''.join(f'{v:08X}\n' for v in

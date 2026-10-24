@@ -63,7 +63,7 @@ fn changed_guest_control_flow_changes_elapsed_time_and_computation() {
         .map(|s| u32::from_str_radix(s, 16).unwrap())
         .collect();
     let mut changed = expected;
-    changed[0] = 5;
+    changed[0] = 6;
     changed[1] = 16;
     for trace in run(&mut Machine::new(), &image) {
         assert_eq!(trace, changed);
@@ -114,7 +114,7 @@ fn removing_system_register_dependencies_removes_only_their_guest_measured_stall
             .lines()
             .map(|s| u32::from_str_radix(s, 16).unwrap())
             .collect();
-        expected[time_index] = 4; // 16×2 states /8, rather than 16×3 /8.
+        expected[time_index] = 5; // (8 + 16×2)/8, rather than (8 + 16×3)/8.
         expected[time_index + 1] = 0;
         let mut m = Machine::new();
         for _ in 0..2 {

@@ -725,7 +725,7 @@ fn cache_backed_multiplier_loads_sample_at_ma_completion_and_replay_once() {
 fn multiplier_ages_during_external_and_onchip_waits_and_is_cpu_local() {
     for address in [(HIGH_WRAM + 0x2000) | 0x20000000, 0xFFFFFE01] {
         // DMUL; MOV operand; STS. The external read exhausts all four mm
-        // clocks. The one-clock internal read removes part of the hazard.
+        // clocks. EX/MA lead-in and the internal read now exhaust it too.
         let mut m = cached_pair(&[0xE103, 0xE207, 0x321D, 0x60F0, 0x061A, 9], &[9; 64]);
         m.cpu = Cpu::start(HIGH_WRAM, address);
         m.bus
@@ -735,10 +735,7 @@ fn multiplier_ages_during_external_and_onchip_waits_and_is_cpu_local() {
         retired(&mut m, 4);
         retired(&mut m, 5);
         assert_eq!(m.cpu_state().r[6], 21);
-        assert_eq!(
-            m.cpu.last_clocks(),
-            if address == 0xFFFFFE01 { 2 } else { 1 }
-        );
+        assert_eq!(m.cpu.last_clocks(), 1);
         assert!(m.slave_state().instructions > m.cpu_state().instructions);
         assert_eq!((m.slave_state().mach, m.slave_state().macl), (0, 0));
     }

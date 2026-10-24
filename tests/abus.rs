@@ -47,7 +47,7 @@ fn guest_measures_normal_narrow_burst_boundary_and_precharge_cycles() {
     assert_eq!(at.len(), 1);
     changed[at[0]..at[0] + 4].copy_from_slice(&0x00400000u32.to_be_bytes());
     let mut new = expected;
-    new[2] = 12;
+    new[2] = 14;
     assert_eq!(run(&changed), new);
 }
 #[test]

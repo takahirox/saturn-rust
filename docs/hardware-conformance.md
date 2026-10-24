@@ -24,6 +24,38 @@ SCU/SH7604 work and review evidence. The full outstanding hardware scope remains
 [historical SH-2 checkpoint](validation-issue-11.md). **Pending** means required
 coverage or integrated validation remains missing, even when a subset passes.
 
+## Ordinary SH-2 MOV load pipeline (Issue #55)
+
+Related to #17. [The independent stage/clock table](sh2-load-pipeline.md)
+connects P §§7.2–7.5 and fig7.11 to
+[operand scheduling and shared-slot recovery](../src/cpu/timing.rs),
+[CPU execution](../src/cpu.rs) and the existing
+[transaction journal/arbiter](../src/bus/transactions.rs).
+All ordinary memory-load forms preserve byte/word sign extension, aliases,
+postincrement and delayed-branch PC-relative addressing.
+
+[Literal CPU vectors](../src/cpu/load_tests.rs),
+[both-CPU scheduling vectors](../src/load_scheduler_tests.rs) and
+[executing bus vectors](../src/bus/load_tests.rs) cover alignment, combined
+IF/dependency contention, resident cache/cache RAM/peripheral/external sampling,
+wait states, refill retention, FIFO replay, CPU reset cancellation, existing
+peer/DMAC/SCU grants, advancement chunks 1/3/17/10000 and passive inspection.
+The original MIT [guest source](../tests/fixtures/sh2-load.s),
+[builder](../tests/fixtures/build_sh2_load.py),
+[hashes](../tests/fixtures/sh2-load.sha256) and
+[authored records](../tests/fixtures/sh2-load.tsv) execute in
+[native Machine](../tests/sh2_load.rs) and
+[production browser Wasm](../scripts/sh2-load.mjs), including alignment,
+operand and dependency controls and repeated cold boots. CI checks reproducibility
+and runs the extended browser suite. See [actual validation](validation-issue-55.md).
+
+Precise pipeline claims apply to warmed instruction-cache execution. Demand-driven
+uncached/refill fetches continue to execute; speculative IF/ID completion and
+ordinary stores remain incomplete. Remaining CPU/peripheral, bus/reset/arbitration,
+SCU/DSP, video/audio, CD/media/HLE, SMPC and comprehensive integration acceptance
+remain mandatory. Genuine BIOS and commercial-game compatibility are unverified.
+This is partial #17 progress and does not close #17.
+
 ## SH-2 B-bus memory read bridge (Issue #37)
 
 Related to #17. Scheduled reads on both SH-2s now distinguish the architectural

@@ -76,6 +76,18 @@ manual-derived encoding inventory; semantic tests separately cover operands,
 flags, addressing, aliases, multiplication/division, saturation and control flow.
 Decoder coverage alone is not a claim of full processor conformance.
 
+Ordinary memory-to-GPR MOV instructions schedule MA independently of their
+addressing form. Synchronous cache and cache-array reads sample at MA completion;
+scheduled peripheral/external reads enter the existing arbiter after EX. The
+CPU-local load pipeline retains MA/EX overlap for aligned cached instructions.
+A real IF splits that slot; a dependent successor consumes the same split,
+including destination-only hazards and the documented load/MAC exceptions.
+Clock observations and completed effects survive journal replay; reset replaces
+both dependency and overlap state. [The stage table](sh2-load-pipeline.md) and
+[Issue #55 validation](validation-issue-55.md) identify precise scope, original
+native/browser guests and remaining speculative-fetch limitations. Ordinary
+store pipeline completion remains separate mandatory #17 work.
+
 `src/cpu/multiplier.rs` retains CPU-local multiplier availability. MULS/MULU,
 MUL.L/DMUL, MAC.W/MAC.L and both directions of MACH/MACL LDS/STS (including
 CLRMAC) interlock at their MA access stage. The two/four-clock mm tails advance

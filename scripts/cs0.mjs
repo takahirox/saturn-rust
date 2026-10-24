@@ -36,12 +36,12 @@ export async function cs0Transfers(page) {
         });
       } finally {m.free();}
     },[...image]);
-    // high(2)+low(2)+32 long reads+high(2). Each grouped read costs
+    // high(3)+low(2)+32 long reads+high(3). Sixteen IF/MA splits add sixteen clocks. Each grouped read costs
     // 4/5/7 states for W0=0/1/2. NOP control costs one state per ROM read.
-    const ticks=(omit?[10,12,16]:[16,20,28])[waits];
+    const ticks=(omit?[12,14,18]:[19,23,31])[waits];
     const value=omit?0:payload;
     const common=[ticks,value,0x13579BDF,(value^0x13579BDF)>>>0];
     for(const trace of traces) assert.deepEqual(trace,{words:[[...common,0x600D],[...common,0x51,0x600D]],sync:0xA3,exceptions:["0","0"]});
   }
-  console.log("CS0 guest passed: both CPUs computed ROM/low-RAM payloads, BSTROM FRT 16/20/28, omitted-read 10/12/16, synchronization, operand mutations and repeated cold boots in production Wasm.");
+  console.log("CS0 guest passed: both CPUs computed ROM/low-RAM payloads, BSTROM FRT 19/23/31, omitted-read 12/14/18, synchronization, operand mutations and repeated cold boots in production Wasm.");
 }
