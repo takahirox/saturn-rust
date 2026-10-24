@@ -144,3 +144,16 @@ media, CD-DA controls and the guest player. Earlier complete
 browser runs were superseded during final review by the final-artifact run after
 gating the extra dot deadlines on rotation enable and isolating RBG1 storage; those interrupted runs are
 not counted as completed validation. No required check is intentionally skipped.
+
+
+### Later video-write synchronization correction
+
+The #43 memory-write increment adds one cached NOP before the timed word store
+in all three original guests. Serialized setup longwords change the raster
+phase at which the polling loop begins; normal HCNT discards bit0 and therefore
+does not identify a single main-clock edge. The NOP restores the intended
+at/after-first-dot, before-second-dot test while retaining every original record,
+all pixel expectations, early/omitted-write controls and cold/chunk comparisons.
+See the [#43 validation](validation-issue-43.md#historical-timing-assertion-correction)
+and [current fixture hashes](hardware-conformance.md#scheduled-rotation-image-acquisition).
+Historical hashes/results above describe the pre-correction bytes.

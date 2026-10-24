@@ -49,8 +49,13 @@ def build():
         # line. Instruction fetch misses must not postpone the store's grant.
         pc = 0x200 + len(assembler.assemble(s+'omit_wait:\nnop\n',base=0x200))-2
         s += 'nop\n' * ((-pc % 16)//2)
+        # One cached execution state separates the counter test from the
+        # store: HCNT normal-mode bit0 is fixed, so its latch quantizes a
+        # four-clock interval. The extra video-setup word phases can move
+        # this loop within that interval. Publish at/after first-dot acquisition
+        # while remaining before the second dot, without changing the oracle.
         s += ('timed_wait:\nmov.w @r1,r0\nmov.w @r4,r0\n'
-              'cmp/hs r3,r0\nbf timed_wait\nmov.w r6,@r5\n'
+              'cmp/hs r3,r0\nbf timed_wait\nnop\nmov.w r6,@r5\n'
               'mov r0,r8\nbra record\nnop\n'
               'omit_wait:\nmov.w @r1,r0\nmov.w @r4,r0\n'
               'cmp/hs r3,r0\nbf omit_wait\nmov r0,r8\nrecord:\n'

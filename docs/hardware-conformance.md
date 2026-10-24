@@ -3262,11 +3262,12 @@ The [#35 one-shot request evidence](validation-issue-35.md) remains applicable.
 | Publication/waits/reset | [Board vectors](../src/bus/vdp2_tests.rs): both SH-2 adapters and on-chip DMACs, all SCU DMA channels, before/equal/after deadlines, independent B progress, blanking release, last-write/IRQ ordering, cancellation and identical traces/pixels across chunks1/3/17/10000 and debugger previews |
 | Guest/native/Wasm/Canvas | Original MIT [builder](../tests/fixtures/build_rotation_fetch.py), [tile](../tests/fixtures/rotation-fetch-tile.s), [bitmap](../tests/fixtures/rotation-fetch-bitmap.s), [RBG1](../tests/fixtures/rotation-fetch-rbg1.s), [native tests](../tests/rotation_fetch.rs), [production browser checks](../scripts/rotation-fetch.mjs), adjacent [license](../tests/fixtures/LICENSE). All setup, timed writes and computed records execute as guest instructions. |
 
-Expanded 512 KiB ROM SHA-256 (also retained beside each fixture):
+Expanded 512 KiB ROM SHA-256 (also retained beside each fixture; includes the
+[#43 cached-NOP synchronization correction](validation-issue-43.md#historical-timing-assertion-correction)):
 
-- RBG0 tile: `a4081a6b1ef862fdd95aa2b577f947449d2af187e7ed812a7fe132a13ba36348`.
-- RBG0 bitmap: `ca195df7e55a66a22f3d4a844672f69e16916fc6b219cd9497b991c32dd859b8`.
-- RBG1 tile: `e6125f186eef4ec7262971fe10088237b8f09aeb7d9b86220143fc10a3592782`.
+- RBG0 tile: `2d6c5891f3af1d897158e739cd5b1647bc641e9595e04b81dddea08d4b9ee069`.
+- RBG0 bitmap: `4abe71651329aaf5b5e07eac7272b424cccf16a59f58a0407aec9171f4a981e0`.
+- RBG1 tile: `8180ae8a81f1be6722bde22a27007c933adb37d25e97a137c6ba671a6687dc3c`.
 
 [Actual validation and negative controls](validation-issue-39.md) record the
 commands and results. Acquired image operands now progress independently of
@@ -3314,3 +3315,36 @@ ROM SHA-256: `0cea305717c24d7a62118bc9291c1609b4724c503b16d70c52e74df3be6d0994`.
 Other sound guests and demonstration-disc bytes are unchanged. The PCM read
 guest adds one phase NOP while preserving every arithmetic midpoint assertion;
 its current hash is recorded in the PCM entry and the #41 validation record.
+
+## Scheduled SH-2 video-memory write phases (#43)
+
+Related to #43 and #17. [The transaction contract](sh2-video-writes.md) reconciles
+SCU ST-097-R5 §3.2 printed pp.43–45/figs3.6–3.8 (32-bit bridge, 16-bit device),
+ST-210 §3 item32 (requested CPU write size) and item03 (VDP1 register restriction),
+SH7604 §7.11.2 pp.210–211 (buffer acceptance/drain), VDP1 §2.1 ownership and
+VDP2 §3.3 display access allocation. Ascending words, per-word BSC envelopes and
+equal-edge display-before-publication ordering are explicit model conventions;
+they are not measured CPU-write waveforms or full board timing.
+
+| Requirement | Implementation | Independent evidence |
+| --- | --- | --- |
+| Retained longword, separate device-word publication | [Buffered transfers](../src/bus/transactions.rs) split only scoped video memory; retain original payload and CPU-facing external UBC unit; [adapter](../src/bus.rs) keeps endian/alignment/cache policy | [Native vectors](../src/bus/video_write_tests.rs) observe1122CCDD at8 then11223344 at16; change completed high word to prove no replay; byte lanes, words, little endian, narrow BSC, every endpoint/mirror/P0/P1 and both processors |
+| Both SH-2 DMACs, both channels, byte/word/longword/16-byte units | Existing early buffer acceptance/TE/IRQ remains independent of final publication; sound allocation and SCU/DSP paths unchanged | Literal source/destination/payload/deadline vectors, internal-source queued backpressure, TE before final word, retained source changes and P1 byte lanes |
+| Target ownership and display acquisition | Each downstream word independently reserves the existing target | VDP1 selected-memory ownership with independent untextured drawing; VDP2 denied/revoked grants, delayed second word, before/equal/after acquisition at32, identical retained traces/pixels across chunks1/3/17/10000 and previews |
+| Reset and replay | Accepted manual-reset longword drains in existing reset domain; power reset cancels pending words; system reset clears volatile state | Both CPUs/DMACs, queued/accepted/partly completed writes, peer retention, no delayed canceled publication, completed-word retention and existing sound/reset regressions |
+| Executing guest and rendering | Original [MIT](../tests/fixtures/LICENSE) [builder](../tests/fixtures/build_video_writes.py), [assembly](../tests/fixtures/video-writes.s), [ROM](../tests/fixtures/video-writes.hex) | [Native Machine](../tests/video_writes.rs) and [production browser Wasm/Canvas](../scripts/video-writes.mjs): both CPUs/DMACs compute readback/FRT; two-dot black interval between separately published CRAM words, changed operands, omitted-write controls and repeated cold boots |
+
+Expanded ROM SHA-256: `3c885b12e0b8a8a5f810e65a5f8f9b6bf56875349fb73be26ac5781256354803`.
+[Validation](validation-issue-43.md) records actual positive/negative checks and
+the historical timing corrections. The original guest's pixels and
+records are never supplied by host code. Existing memory geometry/aliases and
+MMIO compatibility remain unchanged: this conversion does not make forbidden
+VDP1 register sizes hardware-conforming. Sound-memory allocation evidence from
+[#41](validation-issue-41.md) remains in force.
+
+This completes a scoped video-write increment only. Comprehensive CPU/peripheral,
+multiprocessor and board timing/reset, SCU/DSP, video/audio, CD/media/HLE, SMPC
+and full integration acceptance remain mandatory under #17, which stays open.
+Commercial-game compatibility and physical hardware timing equivalence remain
+unverified. No personal firmware, commercial media, human testing/approval,
+live Pages inspection or external Issue closure investigation is required.

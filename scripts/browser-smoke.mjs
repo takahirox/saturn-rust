@@ -10,6 +10,7 @@ import { chromium } from "playwright";
 import { rawMode1 } from "./raw-media-fixture.mjs";
 import { videoTransactions } from "./video-transactions.mjs";
 import { busTransactions } from "./bus-transactions.mjs";
+import { videoWrites } from "./video-writes.mjs";
 import { bBusReads } from "./b-bus-reads.mjs";
 import { scuFringe } from "./scu-fringe.mjs";
 import { dmacBus } from "./dmac-bus.mjs";
@@ -848,6 +849,7 @@ try {
   await dspArithmetic(page);
   await busTransactions(page);
   await bBusReads(page);
+  await videoWrites(page);
   await scuFringe(page);
   await dmacBus(page);
   await sh2BusPipeline(page);

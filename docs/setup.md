@@ -115,6 +115,7 @@ python3 tests/fixtures/build_rotation_fetch.py --check
 python3 tests/fixtures/build_sprite_interlace.py --check
 python3 tests/fixtures/build_vdp1_erase_latch.py --check
 python3 tests/fixtures/build_video_transactions.py --check
+python3 tests/fixtures/build_video_writes.py --check
 python3 tests/fixtures/build_vdp2_fetch.py --check
 python3 tests/fixtures/build_digital_timing.py --check
 python3 tests/fixtures/build_ubc.py --check
@@ -452,3 +453,13 @@ changes PCM waveform words and runs a half-gain DSP. Tests assert guest records,
 three operand pairs, omitted DMA start, repeat boots and actual AudioWorklet
 rendering/underflow/blocked feedback. See the
 [transaction contract](scsp-cpu-memory.md) and [validation](validation-issue-41.md).
+
+
+The original video-write guest runs the same bytes on both SH-2s and their
+on-chip DMACs in native Machine tests and production browser Wasm. It computes
+readback/FRT records and performs a timed CRAM longword whose separately
+published words render a two-dot black interval between old blue and new
+red/green. Changed operands, omitted writes, repeated cold boots, native
+advancement chunks and actual Canvas pixels are checked. Reproduce it with
+`python3 tests/fixtures/build_video_writes.py --check`; see the
+[transaction contract](sh2-video-writes.md) and [validation](validation-issue-43.md).
