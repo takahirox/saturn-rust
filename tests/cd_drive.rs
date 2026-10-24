@@ -47,7 +47,7 @@ fn guest_scans_reverses_pauses_waits_and_reopens_same_disc_without_reading_secto
             (0x50, 0x0400),
             (0x60, 0x0180),
             (0x70, 0x8180),
-            (0x80, 0x0600),
+            (0x80, 0x06FF), // ST-162 §7.2.4(4): OPEN report invalid.
             (0x90, 0x0180),
             (0xA0, 0x4180),
         ] {

@@ -97,6 +97,9 @@ pub struct CdBlock {
     pending: Option<([u16; 4], u32)>,
     status: u8,
     fad: u32,
+    // Seek Home has no public position. Keep its origin separate from the
+    // retained pickup/range/repeat state (ST-162 §4.2, §7.2.4(5)).
+    at_home: bool,
     end: u32,
     play_start: u32,
     repeat: u8,
@@ -256,6 +259,7 @@ impl Default for CdBlock {
             pending: None,
             status: 7,
             fad: 150,
+            at_home: false,
             end: 150,
             play_start: 150,
             repeat: 0,
@@ -318,6 +322,10 @@ impl CdBlock {
         self.buffer_paused = false;
         self.pause_clocks = 0;
         self.fad = media.tracks[0].start;
+        self.at_home = false;
+        self.play_start = self.fad;
+        self.repeat = 0;
+        self.repeats = 0;
         self.end = media.leadout;
         self.media = Some(media);
         self.status = 1;
@@ -406,14 +414,18 @@ impl CdBlock {
         if periodic && self.response_latched.get() {
             return;
         }
-        let (ctrl, track, index) = self
-            .media
-            .as_ref()
-            .filter(|_| !self.tray_open)
-            .and_then(|m| m.track(self.fad))
-            .map_or((255u8, 255u8, 255u8), |t| {
-                (t.control_adr(), t.number, t.index_at(self.fad))
-            });
+        // Invalid public bytes must never replace retained recovery state.
+        // ST-162 §7.2.4(4), later manual §7.2.5(4).
+        if self.invalid_report() {
+            self.response.set([
+                u16::from(self.status | if periodic { 0x20 } else { 0 }) << 8 | 0xFF,
+                0xFFFF,
+                0xFFFF,
+                0xFFFF,
+            ]);
+            return;
+        }
+        let (ctrl, track, index, _) = self.track_report().unwrap_or((255, 255, 255, 0));
         let flags = if ctrl != 255 && ctrl & 0x40 != 0 && self.status != 4 && self.scan.is_none() {
             0x80
         } else {
@@ -428,31 +440,64 @@ impl CdBlock {
             self.fad as u16,
         ]);
     }
+    fn invalid_report(&self) -> bool {
+        matches!(self.status, 6 | 7 | 9) || (self.status == 2 && self.at_home)
+    }
+    fn track_report(&self) -> Option<(u8, u8, u8, u32)> {
+        let media = self.media.as_ref().filter(|_| !self.tray_open)?;
+        if self.fad == media.leadout {
+            // §4.2: completion at disc end reports the lead-out area.
+            // §7.2.5: TNO=AA, relative time starts at the lead-out boundary.
+            return Some((media.tracks.last()?.control_adr(), 0xAA, 1, 0));
+        }
+        let track = media.track(self.fad)?;
+        Some((
+            track.control_adr(),
+            track.number,
+            track.index_at(self.fad),
+            self.fad.abs_diff(track.start),
+        ))
+    }
+    fn pause_position(&self) -> u32 {
+        if self.at_home { 150 } else { self.fad }
+    }
     pub fn read16(&self, address: u32) -> Result<u16, BusError> {
+        let value = self.peek16(address)?;
+        if address == DATA || address == DATA + 2 {
+            if let Some(t) = self
+                .transfer
+                .borrow_mut()
+                .as_mut()
+                .filter(|t| t.put.is_none())
+                && t.position + 2 <= t.bytes.len()
+            {
+                t.position += 2;
+            }
+        } else if address == REGISTERS + 0x24 {
+            self.response_latched.set(false);
+        }
+        Ok(value)
+    }
+    /// Passive debugger word access: neither release CR4 nor consume DATATRNS.
+    pub fn peek16(&self, address: u32) -> Result<u16, BusError> {
         if address & 1 != 0 {
             return Err(BusError::Unaligned { address, width: 2 });
         }
         if address == DATA || address == DATA + 2 {
-            let mut transfer = self.transfer.borrow_mut();
-            let Some(t) = transfer.as_mut().filter(|t| t.put.is_none()) else {
+            let transfer = self.transfer.borrow();
+            let Some(t) = transfer.as_ref().filter(|t| t.put.is_none()) else {
                 return Ok(0xFFFF);
             };
             if t.position + 2 > t.bytes.len() {
                 return Ok(0xFFFF);
             }
             let value = u16::from_be_bytes([t.bytes[t.position], t.bytes[t.position + 1]]);
-            t.position += 2;
             return Ok(value);
         }
         match address.wrapping_sub(REGISTERS) {
             8 => Ok(self.hirq.get()),
             12 => Ok(self.mask),
-            n @ (0x18 | 0x1C | 0x20 | 0x24) => {
-                if n == 0x24 {
-                    self.response_latched.set(false);
-                }
-                Ok(self.response.get()[((n - 0x18) / 4) as usize])
-            }
+            n @ (0x18 | 0x1C | 0x20 | 0x24) => Ok(self.response.get()[((n - 0x18) / 4) as usize]),
             _ => Err(Self::error(address, 2)),
         }
     }
@@ -936,7 +981,7 @@ impl CdBlock {
             r[3] = d;
             this.response.set(r);
         };
-        if self.tray_open && matches!(command, 0x02 | 0x03 | 0x20) {
+        if self.tray_open && matches!(command, 0x02 | 0x03) {
             return false;
         }
         match command {
@@ -993,6 +1038,8 @@ impl CdBlock {
                     self.standby_seconds = if c[1] == 0 { 180 } else { c[1] };
                 }
                 self.pause_clocks = 0;
+                self.fad = self.pause_position();
+                self.at_home = false;
                 self.tray_open = false;
                 self.scan = None;
                 self.buffer_paused = false;
@@ -1101,7 +1148,7 @@ impl CdBlock {
                 let Some(m) = &self.media else {
                     return false;
                 };
-                let Some(start) = self.position(field1, self.fad) else {
+                let Some(start) = self.position(field1, self.pause_position()) else {
                     return false;
                 };
                 let end = if field2 == 0xFF_FFFF {
@@ -1123,21 +1170,39 @@ impl CdBlock {
                 self.scan = None;
                 self.buffer_paused = false;
                 self.pause_clocks = 0;
+                let from_home = self.at_home;
+                self.at_home = false;
+                let repeat = if c[2] >> 8 & 0x7F == 0x7F {
+                    self.repeat
+                } else {
+                    (c[2] >> 8 & 15) as u8
+                };
+                if (field1 != 0xFF_FFFF && start != self.play_start)
+                    || end != self.end
+                    || repeat != self.repeat
+                {
+                    self.repeats = 0;
+                }
                 self.fad = start;
                 self.end = end;
                 // ST-162 §8.2.2: an unchanged start cancels pause without
                 // replaying the current sector or restarting the loop range.
                 if field1 != 0xFF_FFFF {
                     self.play_start = start;
+                }
+                if field1 != 0xFF_FFFF || from_home {
                     self.audio_index = 0;
                     self.deemphasis = crate::cd_audio::Deemphasis::default();
-                    self.repeats = 0;
                 }
                 self.playing = true;
                 self.retry_attempts = 0;
-                self.seeking = if field1 == 0xFF_FFFF { 0 } else { 26_875 };
+                self.seeking = if field1 == 0xFF_FFFF && !from_home {
+                    0
+                } else {
+                    26_875
+                };
                 self.status = if self.seeking == 0 { 3 } else { 4 };
-                self.repeat = ((c[2] >> 8) & 15) as u8;
+                self.repeat = repeat;
                 self.report(false);
             }
             0x11 => {
@@ -1149,15 +1214,21 @@ impl CdBlock {
                     self.playing = false;
                     self.retry_attempts = 0;
                     self.scan = None;
+                    self.buffer_paused = false;
                     self.seeking = 0;
+                    self.at_home = true;
                     self.status = 2;
                     self.report(false);
                     return true;
                 }
-                let Some(fad) = self.position(field1, self.fad) else {
+                let Some(fad) = self.position(field1, self.pause_position()) else {
                     return false;
                 };
-                if self.media.as_ref().is_none_or(|m| fad >= m.leadout) {
+                if self
+                    .media
+                    .as_ref()
+                    .is_none_or(|m| fad > m.leadout || (fad == m.leadout && field1 != 0xFF_FFFF))
+                {
                     return false;
                 }
                 self.tray_open = false;
@@ -1167,10 +1238,11 @@ impl CdBlock {
                 self.fad = fad;
                 self.playing = false;
                 self.retry_attempts = 0;
-                if field1 != 0xFF_FFFF {
+                if field1 != 0xFF_FFFF || self.at_home {
                     self.audio_index = 0;
                     self.deemphasis = crate::cd_audio::Deemphasis::default();
                 }
+                self.at_home = false;
                 self.status = 4;
                 self.seeking = 26_875;
                 self.report(false);
@@ -1181,6 +1253,8 @@ impl CdBlock {
                 }
                 let audible = self.scan.map_or(self.playing, |(_, audible)| audible);
                 self.scan = Some((c[0] & 1 != 0, audible));
+                self.fad = self.pause_position();
+                self.at_home = false;
                 self.tray_open = false;
                 self.playing = false;
                 self.buffer_paused = false;
@@ -1194,17 +1268,21 @@ impl CdBlock {
                 if c[0] & 255 == 1 {
                     return self.wait();
                 }
-                let Some(t) = self.media.as_ref().and_then(|m| m.track(self.fad)) else {
-                    return false;
-                };
                 if c[0] & 255 != 0 {
                     return false;
                 }
-                let relative = self.fad.abs_diff(t.start);
-                let ctrl = t.control_adr();
-                let mut bytes = vec![ctrl, t.number, t.index_at(self.fad), 0, 0, 0, 0, 0, 0, 0];
-                bytes[3..6].copy_from_slice(&relative.to_be_bytes()[1..]);
-                bytes[7..10].copy_from_slice(&self.fad.to_be_bytes()[1..]);
+                // §4.3 allows Q in every drive state, including OPEN/NODISC.
+                // §7.2.5 applies report validity to Q too. Invalid ADR=FF has
+                // no meaningful position; preserve the fixed separator byte.
+                let mut bytes = vec![0xFF; 10];
+                bytes[6] = 0;
+                if !self.invalid_report()
+                    && let Some((ctrl, track, index, relative)) = self.track_report()
+                {
+                    bytes[..3].copy_from_slice(&[ctrl, track, index]);
+                    bytes[3..6].copy_from_slice(&relative.to_be_bytes()[1..]);
+                    bytes[7..10].copy_from_slice(&self.fad.to_be_bytes()[1..]);
+                }
                 response(self, 5, 0, 0);
                 return self.begin_get(bytes, None, false);
             }
@@ -1537,6 +1615,7 @@ impl CdBlock {
                 self.scan = None;
                 self.buffer_paused = false;
                 self.fad = next;
+                self.at_home = false;
                 self.audio_index = 0;
                 self.deemphasis = crate::cd_audio::Deemphasis::default();
                 self.play_start = self.media.as_ref().unwrap().tracks[0].start;
@@ -1614,6 +1693,7 @@ impl CdBlock {
                     selector: selector as u8,
                 });
                 self.fad = start;
+                self.at_home = false;
                 self.end = end;
                 self.play_start = start;
                 self.playing = true;
@@ -1622,6 +1702,8 @@ impl CdBlock {
             }
             0x75 => {
                 self.finish_directory(false);
+                self.fad = self.pause_position();
+                self.at_home = false;
                 self.seeking = 0;
                 self.scan = None;
                 self.retry_attempts = 0;

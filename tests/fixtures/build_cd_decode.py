@@ -2,7 +2,7 @@
 """Original SH-2 runtime ECC/retry diagnostic. MIT: adjacent LICENSE.
 
 ST-162 §8.2.1 CDC_CdInit and §§4.2/4.3: guest code observes RETRY/ERROR,
-compares no-ECC error output with corrected data, and escapes infinite retry
+uses invalid ERROR fields per §7.2.4(4), compares no-ECC error output with corrected data, and escapes infinite retry
 by playing a good sector. The test supplies original two-sector raw media.
 """
 import argparse
@@ -39,7 +39,7 @@ def build():
     s += cmd([0x3000, 0, 0, 0], 'connect', 0x10)
     s += cmd([0x1080, 150, 0x80, 1], 'play_retry', 0x20)
     s += 'mov #0,r3\nretry:\n' + cmd([0, 0, 0, 0], 'retry_command', 0x30)
-    s += f'load {BASE + 0x30:#x},r1\nmov.l @r1,r0\nload 0x0980,r2\ncmp/eq r2,r0\nbt failed\n'
+    s += f'load {BASE + 0x30:#x},r1\nmov.l @r1,r0\nload 0x09FF,r2\ncmp/eq r2,r0\nbt failed\n'
     s += 'load 0x0880,r2\ncmp/eq r2,r0\nbf retry_again\nadd #1,r3\nretry_again:\nbra retry\nnop\nfailed:\n'
     s += f'load {BASE + 0x18C:#x},r1\nmov.l r3,@r1\n'
     s += cmd([0x5100, 0, 0, 0], 'failed_count', 0x40)

@@ -1087,7 +1087,7 @@ fn uncorrectable_runtime_sector_stops_drive_without_publishing_corrupt_data() {
     sectors(&mut cd, 2);
     let response = issue(&mut cd, [0, 0, 0, 0]);
     assert_eq!(response[0] >> 8, 9); // ST-162 table 4.3: ERROR until a drive command.
-    assert_eq!(response[3], 150); // The bad sector is not consumed or replaced by zeros.
+    assert_eq!(response, [0x09FF, 0xFFFF, 0xFFFF, 0xFFFF]); // ST-162 §7.2.4(4).
     assert_eq!(cd.read16(CD + 8).unwrap() & 4, 0); // No sector-stored interrupt.
     assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 0);
     assert_ne!(issue(&mut cd, [0x6100, 0, 0, 1])[0] & 0x8000, 0);
@@ -1167,7 +1167,15 @@ fn finite_retries_hold_fad_and_publish_only_after_the_configured_last_attempt() 
                     assert_eq!(cd.read16(CD + 8).unwrap() & 4, 0);
                 } else {
                     assert_eq!(status[0] >> 8, if output { 1 } else { 9 });
-                    assert_eq!(status[3], if output { 151 } else { 150 });
+                    // ST-162 §7.2.4(4): ERROR serializes invalid fields;
+                    // the failed pickup is retained for recovery, not exposed.
+                    assert_eq!(status[3], if output { 151 } else { 0xFFFF });
+                    if !output {
+                        assert_eq!(status, [0x09FF, 0xFFFF, 0xFFFF, 0xFFFF]);
+                        issue(&mut cd, [0x11FF, 0xFFFF, 0, 0]);
+                        cd.advance(26_875);
+                        assert_eq!(issue(&mut cd, [0, 0, 0, 0]), [0x0180, 0x4101, 0x0100, 150]);
+                    }
                 }
             }
             assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], u16::from(output));

@@ -31,6 +31,7 @@ import { scspPcm } from "./scsp-pcm.mjs";
 import { scspMvol } from "./scsp-mvol.mjs";
 import { scspDma } from "./scsp-dma.mjs";
 import { largeMedia } from "./large-media.mjs";
+import { cdReports } from "./cd-reports.mjs";
 import { cdCopy } from "./cd-copy.mjs";
 import { vdp2Status } from "./vdp2-status.mjs";
 import { rotationFetch } from "./rotation-fetch.mjs";
@@ -974,8 +975,8 @@ try {
     assert.deepEqual(traces[0], traces[1]);
     const read = (offset) => traces[0][offset / 4];
     assert.equal(read(0x190), 0x600D);
-    assert.equal(read(0x30), 0x0980);
-    assert.equal(read(0x3C), 150);
+    assert.equal(read(0x30), 0x09FF);
+    assert.equal(read(0x3C), 0xFFFF);
     assert.equal(read(0x4C), 0);
     for (const offset of [0x7C, 0xCC, 0x13C]) assert.equal(read(offset), 1);
     assert.equal(read(0x180), raw.readUInt32BE(16));
@@ -1497,6 +1498,7 @@ try {
   }
   // Original CD guest issues every command and polls real HIRQ/CR registers.
   await cdCopy(page);
+  await cdReports(page);
   // ISO bytes are original zero-filled sectors; no browser writes to mailboxes.
   const driveRom=Buffer.alloc(524288);
   for (const line of (await readFile("tests/fixtures/cd-drive.hex","utf8")).split(/\r?\n/)) {
@@ -1519,7 +1521,7 @@ try {
     });
     assert.equal(result[0xF0/4],0x600D);
     for (const [offset,status] of [[0,0x0180],[0x10,0x0500],[0x30,0x0500],[0x50,0x0400],
-      [0x60,0x0180],[0x70,0x8180],[0x80,0x0600],[0x90,0x0180],[0xA0,0x4180]]) {
+      [0x60,0x0180],[0x70,0x8180],[0x80,0x06FF],[0x90,0x0180],[0xA0,0x4180]]) {
       assert.equal(result[offset/4],status,`CD guest offset ${offset.toString(16)}`);
     }
     assert(result[0x2C/4]>=170 && result[0x2C/4]<250);
