@@ -3278,6 +3278,29 @@ SMPC and comprehensive integration acceptance remain mandatory. #17 remains
 open; genuine BIOS/commercial compatibility is not independently confirmed.
 
 
+### High-resolution rotation pictures
+
+Related to #53 and #17. The [primary-derived coordinate contract](vdp2-rotation-fetch.md#high-resolution-picture-coordinates-53)
+reconciles the 1997 Japanese/English §2.1, §§6.1/6.3/6.4, §8.1 table8.1,
+STN-24 and the STN-13/22/37 corrections. RBG0 A/B and RBG1 now advance matrix and
+coefficient X once per output pair in standard-TV 640/704 modes. Output windows,
+normal screens and VDP1 composition retain their independent coordinates.
+Two-clock image acquisitions remain an explicit deterministic convention.
+
+| Evidence | Coverage |
+| --- | --- |
+| [Literal pixel/address vectors](../src/vdp2/rotation_fetch_tests.rs) | Complete 320/352 source spans and 640/704 output rows; both RBG0 sets, tile/bitmap, fixed-bank RBG1; all four legal formats, both name sizes, 8/16-dot cells; signed/fractional image and coefficient increments, RBG1 coefficient MSB, odd-output parameter/layer windows, missing reads, field tags, independent NBG0/VDP1 priorities and coordinates |
+| [Board vectors](../src/bus/vdp2_tests.rs) | Both SH-2s publish before/equal/after paired two-clock acquisitions; retained pixels, reset cancellation, passive previews and identical traces across chunks 1/3/17/10000 |
+| Original MIT guests | [Builder](../tests/fixtures/build_rotation_high_resolution.py), adjacent [license](../tests/fixtures/LICENSE), tile/bitmap/RBG1/coefficient `.s`, `.hex`, `.tsv` and expanded-ROM `.sha256` artifacts; correct PLL/display setup, guest-created operands and arithmetic/readback records; CI reproduction registration |
+| [Native](../tests/rotation_high_resolution.rs) and [browser](../scripts/rotation-high-resolution.mjs) | Identical bytes; both widths, every diagnostic pixel, guest records, changed source/translation/table-start operands, RBG0 A/B selection, omitted enables, repeated cold boots; actual production Wasm/Canvas under `/saturn-rust/` |
+
+[Actual results and inherited-behavior negative controls](validation-issue-53.md)
+record validation separately from specification and phase conventions. This is
+partial under #17: physical rotation latency/coefficient bus scheduling,
+half-line interlace and all other unresolved umbrella requirements remain open.
+No hardware-completion or commercial compatibility claim is made.
+
+
 ## CPU sound-memory allocation
 
 Related to #41 and #17. [SCSP] §3.1 pp.18–19 and §3.2 pp.20–21,

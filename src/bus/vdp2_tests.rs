@@ -489,3 +489,65 @@ fn rotation_chunks_previews_independent_bank_and_reset_have_identical_retained_s
         }
     }
 }
+
+#[test]
+fn high_resolution_rotation_pairs_reacquire_at_two_clock_edges_and_reset_cancels() {
+    for p in [Processor::Master, Processor::Slave] {
+        for (start, old) in [(1698, false), (1700, true), (1701, true)] {
+            let mut reference = None;
+            for chunk in [1, 3, 17, 10000] {
+                for inspect in [false, true] {
+                    let mut b = rotation_board();
+                    b.write16(VDP2, 0x8002).unwrap();
+                    advance(&mut b, start, chunk);
+                    assert_eq!(
+                        b.replay_cpu(p).write16(0x25E20000, 0x2222),
+                        Err(BusError::Pending)
+                    );
+                    b.grant_bus_transaction();
+                    advance(&mut b, 8, chunk);
+                    assert!(b.take_cpu_transaction_completion(p));
+                    assert_eq!(b.replay_cpu(p).write16(0x25E20000, 0x2222), Ok(()));
+                    b.finish_cpu_transaction(p);
+                    if inspect {
+                        let before = b.vdp2.display_fetch.borrow().trace.clone();
+                        b.vdp2.framebuffer().unwrap();
+                        b.vdp2.framebuffer().unwrap();
+                        assert_eq!(b.vdp2.display_fetch.borrow().trace, before);
+                    }
+                    advance(&mut b, 2988 - start - 8, chunk);
+                    assert_eq!(rotation_word(&b, 0), if old { 0x1111 } else { 0x2222 });
+                    assert_eq!(rotation_word(&b, 2), 0x2222);
+                    // Both dots share picture X=0, but have separate transfers.
+                    let at = 640 * 4;
+                    assert_eq!(
+                        &b.vdp2.scanning[at..at + 8],
+                        if old {
+                            &[255, 0, 0, 255, 0, 255, 0, 255]
+                        } else {
+                            &[0, 255, 0, 255, 0, 255, 0, 255]
+                        }
+                    );
+                    let actual = (
+                        b.vdp2.display_fetch.borrow().trace.clone(),
+                        b.vdp2.scanning.clone(),
+                    );
+                    if let Some(expected) = &reference {
+                        assert_eq!(&actual, expected);
+                    } else {
+                        reference = Some(actual);
+                    }
+                    // Reset before granting the queued bank write.
+                    assert_eq!(
+                        b.replay_cpu(p).write16(0x25E20000, 0x3333),
+                        Err(BusError::Pending)
+                    );
+                    b.reset_volatile();
+                    advance(&mut b, 1800, chunk);
+                    assert_eq!(b.read16(VRAM + 0x20000), Ok(0));
+                    assert!(b.vdp2.display_fetch.borrow().trace.is_empty());
+                }
+            }
+        }
+    }
+}

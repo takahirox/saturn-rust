@@ -84,3 +84,75 @@ in exclusive monitors. Acquisition preserves these restrictions (and now rejects
 high-resolution RGB888 for rotation, matching the existing NBG0 validation).
 No Issue acceptance criterion needed weakening or external Issue changes.
 Community emulator output is never an address, timing or pixel oracle.
+
+## High-resolution picture coordinates (#53)
+
+Related to #53 and #17. The 1997 [Japanese §2.1, high-resolution mode](https://github.com/luckyseoul/saturn-docs/blob/main/files/ssddv25/segahtml/hard/vdp2/hon/p02_10_j.htm)
+and [English §2.1](https://www.infochunk.com/saturn/segahtml_en/hard/vdp2/hon/p02_10.htm)
+agree that both rotation pictures retain normal-mode horizontal resolution.
+[STN-24, high-resolution precautions](https://github.com/luckyseoul/saturn-docs/blob/main/files/ssddv25/segahtml/info/hon/stn24.htm)
+independently gives that same rule. Consequently the shared address decoder uses
+`h = floor(output_x / 2)` in standard-TV HRESO=010/011; in normal modes it uses
+`h = output_x`. No completed framebuffer is resized. The normal/high mode pairs
+cover respectively 320/640 and 352/704 output dots, with the final high-resolution
+pair addressing picture coordinate 319 or 351. This changes both RBG0 parameter
+sets, tile/bitmap addressing and RBG1's parameter-B fixed-bank tile path.
+
+Apply `h` to the horizontal terms of [§6.3's equations](https://www.infochunk.com/saturn/segahtml_en/hard/vdp2/hon/p06_30.htm):
+
+- `Sx = latched_Xst + delta_X * h`, and similarly for `Sy`;
+- `KA = latched_KAst + delta_KAx * h`, with integer truncation after addition;
+- feed those screen coordinates and the selected coefficient into the
+  [§6.1 transform](https://www.infochunk.com/saturn/segahtml_en/hard/vdp2/hon/p06_10.htm).
+
+Signed/fractional increments are applied in fixed point before truncation;
+dividing a transformed integer address or halving the increment loses fractional
+phase. [§6.4](https://www.infochunk.com/saturn/segahtml_en/hard/vdp2/hon/p06_40.htm)
+coefficient modes, transparency-driven parameter selection and RBG1's ignored
+coefficient MSB keep their meanings. Horizontal coefficient indices repeat with
+picture coordinates, including positive/negative fractional delta_KAx.
+
+Windows use an independent output coordinate. [§8.1 and table8.1](https://www.infochunk.com/saturn/segahtml_en/hard/vdp2/hon/p08_10.htm)
+define window registers in TV coordinates; all ten horizontal bits are valid in
+standard-TV high resolution. Layer windows and RPMD=3's parameter window can
+therefore change between output dots 2 and 3 even though both have `h=1`.
+Normal-screen sampling, VDP1 readout, priorities, palette interpretation and
+composition remain in their existing output-coordinate domain. Existing mosaic
+snapping precedes the image-coordinate conversion; mosaic behavior is otherwise
+unchanged. Exclusive-monitor rotation remains unsupported.
+
+Picture spacing does **not** specify a physical read/retention phase. No inspected
+primary reference establishes a different high-resolution image acquisition
+cadence. Retain the deterministic convention above: one fresh logical acquisition
+per output dot, at main-clock phases `2*x` in high resolution (`4*x` in normal).
+Adjacent paired dots can thus acquire different words if memory changes between
+those edges. A simultaneous physical publication follows acquisition. Scheduled
+name/image/address/format/coefficient-selection operands remain retained until
+consumption; unavailable or absent acquisitions stay absent. Debugger rendering
+uses the same picture equations against current memory, without advancing clocks,
+consuming reload requests, adding acquisitions or repairing scheduled misses.
+Field tags, new-line discard and reset cancellation remain unchanged. Coefficient
+bus scheduling and internal physical subaccess phases remain unspecified here.
+
+### Correction reconciliation
+
+The [1997 correction history](https://github.com/luckyseoul/saturn-docs/blob/main/files/ssddv25/segahtml/hard/vdp2/history.htm)
+(and its [Japanese original](https://github.com/luckyseoul/saturn-docs/blob/main/files/ssddv25/segahtml/hard/vdp2/history_j.htm))
+incorporates STN-13 name-location restrictions and STN-37 VBLANK, V-counter and
+normal-cell timing corrections; it supplies no replacement rotation-picture rule.
+The archive's [STN-13](https://github.com/luckyseoul/saturn-docs/blob/main/files/ssddv25/segahtml/info/hon/stn13.htm)
+and [STN-37](https://github.com/luckyseoul/saturn-docs/blob/main/files/ssddv25/segahtml/info/hon/stn37.htm)
+redirect to the amended manual sections. The tests keep legal A0/B1 names and
+A1/B0 characters, the corrected window layouts and existing RGB888 restrictions.
+STN-37's resolution link points to [§2.4 HRESO](https://www.infochunk.com/saturn/segahtml_en/hard/vdp2/hon/p02_40.htm#HRESO_),
+including safe A/B clock selection and the allowed VDP1/VDP2 combinations.
+[STN-22](https://github.com/luckyseoul/saturn-docs/blob/main/files/ssddv25/segahtml/info/hon/stn22.htm)
+permits normal and rotated VDP1 readout with high-resolution VDP2. These rules do
+not make VDP1's coordinate path a rotation-background picture coordinate.
+
+The new guests issue and wait for the appropriate SMPC CKCHG command before video
+setup (graphic A slow PLL, B fast PLL), then construct their own operands and
+enable the display. They never switch an active A/B display. No BOOT-ROM routine
+or proprietary firmware is needed for this original diagnostic. No source-Issue
+criterion was changed, and no physical acquisition timing is claimed from spatial
+resolution. See [executed validation](validation-issue-53.md).

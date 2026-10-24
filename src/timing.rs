@@ -196,6 +196,7 @@ impl Raster {
     }
     /// Rotation phase convention: acquire at the start of each output dot,
     /// after that line's parameter latch, without normal-screen prefetch.
+    /// Paired high-resolution picture coordinates do not change this cadence.
     pub(crate) fn rotation_display_slot(&self) -> Option<(u64, u16, u32, usize)> {
         let clocks = if self.mode & 2 == 0 { 4 } else { 2 };
         (self.mode & 4 == 0

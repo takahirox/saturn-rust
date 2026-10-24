@@ -371,8 +371,13 @@ impl Vdp2 {
         if self.word(0x22) & (1 << id) != 0 {
             x -= x % (usize::from(self.word(0x22) >> 8 & 15) + 1);
         }
+        // §2.1: RBG0/RBG1 keep normal horizontal picture resolution in
+        // standard-TV high resolution. §6.3's image/coefficient increments
+        // therefore use one coordinate per pair of output dots. Windows
+        // (§8.1 table8.1), composition and acquisition retain output-dot X.
+        let image_x = if self.word(0) & 6 == 2 { x / 2 } else { x };
         let mode = self.word(0xB0) & 3;
-        let ca = self.coefficient(0, x, y);
+        let ca = self.coefficient(0, image_x, y);
         let parameter = if rbg1 {
             1
         } else {
@@ -386,13 +391,13 @@ impl Vdp2 {
         let coefficient = if parameter == 0 {
             ca
         } else {
-            self.coefficient(1, x, y)
+            self.coefficient(1, image_x, y)
         };
         // ST-058 §6.4 p.166: the coefficient MSB is ignored for RBG1.
         if !rbg1 && coefficient.is_some_and(|c| c.transparent) && !(mode == 2 && parameter == 0) {
             return None;
         }
-        let (sx, sy) = self.rotation_coordinates(parameter, x, y, coefficient);
+        let (sx, sy) = self.rotation_coordinates(parameter, image_x, y, coefficient);
         let ctl = if rbg1 {
             self.word(0x28)
         } else {
