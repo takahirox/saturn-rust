@@ -54,6 +54,7 @@ jobs:
           python3 tests/fixtures/build_b_bus_reads.py --check
           python3 tests/fixtures/build_video_writes.py --check
           python3 tests/fixtures/build_scu_fringe.py --check
+          python3 tests/fixtures/build_dma_startup.py --check
           python3 tests/fixtures/build_dmac_bus.py --check
           python3 tests/fixtures/build_abus.py --check
           python3 tests/fixtures/build_dsp_dma.py --check

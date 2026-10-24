@@ -97,6 +97,7 @@ python3 tests/fixtures/build_sh2_reset_bus.py --check
 python3 tests/fixtures/build_cs0.py --check
 python3 tests/fixtures/build_bus_transactions.py --check
 python3 tests/fixtures/build_scu_fringe.py --check
+python3 tests/fixtures/build_dma_startup.py --check
 python3 tests/fixtures/build_dmac_bus.py --check
 python3 tests/fixtures/build_abus.py --check
 python3 tests/fixtures/build_dsp_dma.py --check
@@ -473,3 +474,11 @@ SLEEP/exception/RTE execution. Native and production Wasm checks include re-entr
 within a blank, changed arithmetic, SR masking, omitted startup and repeated cold
 boots. The fixture reproduction command above is registered in CI; see
 [Issue #47 validation](validation-issue-47.md).
+
+The original DMA-startup mixed-disc diagnostic runs natively and in production
+Wasm under `/saturn-rust/`. Its SH-2 performs finite overlapping bitmap writes
+while Timer0 requests CD-FIFO-to-video DMA, computes source/readback records and
+executes the DMA-end handler. Tests include changed operands, omitted trigger,
+repeated cold boots and actual Canvas output. Reproduce its source and media with
+`python3 tests/fixtures/build_dma_startup.py --check`; see the
+[startup contract](scu-dma-startup.md) and [validation](validation-issue-51.md).

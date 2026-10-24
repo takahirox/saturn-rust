@@ -86,10 +86,13 @@ impl Memory for Completed {
     }
 }
 impl Scu {
-    pub(crate) fn prepare_dma_cycle(&mut self) -> Option<DmaCycle> {
+    pub(crate) fn prepare_dma_cycle(&mut self, cpu_ab_write_pending: bool) -> Option<DmaCycle> {
         let channel = (0..3)
             .rev()
-            .find(|i| self.channels[*i].pending())
+            .find(|i| {
+                self.channels[*i].pending()
+                    && !(cpu_ab_write_pending && self.channels[*i].awaiting_abus_start())
+            })
             .or_else(|| self.dsp.dma_pending().then_some(3))?;
         let mut probe = Probe {
             cycle: Cell::new(DmaCycle {
@@ -105,7 +108,14 @@ impl Scu {
             self.dsp.grant_dma_cycle();
             let _ = self.dsp.clone().dma_beat(&mut probe);
         }
-        Some(probe.cycle.get())
+        let cycle = probe.cycle.get();
+        if channel < 3 && cycle.width != 0 {
+            // Preparation is immediately followed by a physical grant. Latch
+            // before any part of the first source unit can be sampled; a later
+            // CPU write must not requalify its retained bytes or next beats.
+            self.channels[channel].grant_data_start();
+        }
+        Some(cycle)
     }
     pub(crate) fn complete_dma_cycle(
         &mut self,

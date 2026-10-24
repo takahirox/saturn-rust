@@ -34,6 +34,7 @@ import { scspMvol } from "./scsp-mvol.mjs";
 import { scspDma } from "./scsp-dma.mjs";
 import { largeMedia } from "./large-media.mjs";
 import { cdReports } from "./cd-reports.mjs";
+import { dmaStartup } from "./dma-startup.mjs";
 import { cdCopy } from "./cd-copy.mjs";
 import { vdp2Status } from "./vdp2-status.mjs";
 import { rotationFetch } from "./rotation-fetch.mjs";
@@ -1502,6 +1503,7 @@ try {
   }
   // Original CD guest issues every command and polls real HIRQ/CR registers.
   await cdCopy(page);
+  await dmaStartup(page);
   await cdReports(page);
   // ISO bytes are original zero-filled sectors; no browser writes to mailboxes.
   const driveRom=Buffer.alloc(524288);
