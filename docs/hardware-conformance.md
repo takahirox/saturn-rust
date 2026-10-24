@@ -3440,3 +3440,28 @@ dump. Slave external board-vector acquisition, physical synchronizer timing,
 half-line interlace, full BIOS/CD-library initialization and all other unmet #17
 requirements remain outstanding. This is a partial #17 increment; hardware
 completion and genuine BIOS/commercial-game compatibility are not established.
+
+## SCU A-to-B startup interlock
+
+Related to #51 and #17. The [startup contract](scu-dma-startup.md) implements
+ST-210 §3 item12 (printed p.5) through the existing transaction scheduler:
+pending writes from either SH-2 defer A-to-B data activation; active transfers
+retain qualification across physical words, preemption and indirect descriptors.
+Other routes and descending DMA-level priority retain existing arbitration.
+Eight [native transaction tests](../src/bus/dma_startup_tests.rs), including a
+72-combination publication/source-count matrix, cover startup, continuity,
+isolation, cancellation and advancement/inspection repeatability. An original
+[MIT](../tests/fixtures/LICENSE) mixed-disc
+[guest](../tests/fixtures/build_dma_startup.py) runs in
+[native integration](../tests/dma_startup.rs) and the production
+[Wasm/browser suite](../scripts/dma-startup.mjs), with Timer0/CD FIFO/video DMA,
+real DMA-end handler, guest sums/counts, changed operands, omitted trigger,
+repeated cold boots and actual Canvas output. The ISO SHA-256 is
+`d04cf218087823c9a2d35c63b720c204f6e3bb14d575f10a2c71bf9b2749fd05`.
+[Validation](validation-issue-51.md) records actual results and negative controls.
+Equal-edge/continuous-write and descriptor boundaries are documented emulator
+conventions. Electrical hang behavior and prohibited transfer/concurrency modes
+are not modeled. Remaining CPU/peripheral, multiprocessor/bus/reset, SCU/DSP,
+video/audio, CD/media/HLE, SMPC and comprehensive integration requirements remain
+mandatory. Genuine BIOS and broad commercial-game compatibility remain unverified;
+Issue #17 remains open and historical trackers remain administratively closed.

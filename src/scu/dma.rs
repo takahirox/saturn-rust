@@ -25,6 +25,8 @@ pub(super) struct Channel {
     enabled: bool,
     requested: bool,
     retrigger: bool,
+    // Item12 qualifies activation once, independently of descriptors/beats.
+    abus_started: bool,
     active: Option<Transfer>,
     table: Option<Table>,
 }
@@ -93,6 +95,7 @@ impl Default for Channel {
             enabled: false,
             requested: false,
             retrigger: false,
+            abus_started: false,
             active: None,
             table: None,
         }
@@ -144,11 +147,23 @@ impl Channel {
             }
         }
     }
+    pub(super) fn awaiting_abus_start(&self) -> bool {
+        !self.abus_started
+            && self.active.as_ref().is_some_and(|t| {
+                (0x0200_0000..0x0590_0000).contains(&t.source) && b_bus(t.destination)
+            })
+    }
+    pub(super) fn grant_data_start(&mut self) {
+        if self.awaiting_abus_start() {
+            self.abus_started = true;
+        }
+    }
     pub(super) fn cancel(&mut self) {
         self.active = None;
         self.table = None;
         self.requested = false;
         self.retrigger = false;
+        self.abus_started = false;
         self.enabled = false;
     }
     pub(super) fn beat(
@@ -267,6 +282,7 @@ impl Channel {
                 self.destination = t.destination;
             }
         }
+        self.abus_started = false;
         // External factors remain armed for repeated transfers; GO is a one-shot.
         self.requested = std::mem::take(&mut self.retrigger);
         Ok(true)

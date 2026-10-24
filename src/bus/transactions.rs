@@ -10,6 +10,9 @@ mod bridge_tests;
 #[path = "cs0_tests.rs"]
 mod cs0_tests;
 #[cfg(test)]
+#[path = "dma_startup_tests.rs"]
+mod dma_startup_tests;
+#[cfg(test)]
 #[path = "fetch_tests.rs"]
 mod fetch_tests;
 #[cfg(test)]
@@ -924,7 +927,7 @@ impl Bus {
             return;
         }
         if self.transactions.lock.is_none()
-            && let Some(cycle) = self.scu.prepare_dma_cycle()
+            && let Some(cycle) = self.scu.prepare_dma_cycle(self.cpu_ab_write_pending())
         {
             let mut first = true;
             let mut last = true;
@@ -1067,6 +1070,28 @@ impl Bus {
             self.transactions.dmac_yield = false;
             self.grant_dmac();
         }
+    }
+    fn cpu_ab_write_pending(&self) -> bool {
+        // ST-210 §3 item12. Inspect both SH-2 queues at this arbitration
+        // opportunity, including a second write waiting for buffer admission.
+        // SCU registers, CPU-bus RAM and SH-2 DMAC writes do not qualify.
+        let qualifies = |t: &Transfer| {
+            t.write.is_some() && (0x0200_0000..0x05FC_0000).contains(&Self::physical(t.address))
+        };
+        (0..2).any(|i| {
+            self.transactions.writes[i]
+                .as_ref()
+                .is_some_and(|w| !w.dmac && w.beats.iter().any(qualifies))
+                || self.transactions.reset_drains[i].iter().any(qualifies)
+                || {
+                    let journal = self.transactions.journals[i].borrow();
+                    journal.waiting.as_ref().is_some_and(qualifies)
+                        || journal
+                            .pending_write
+                            .as_ref()
+                            .is_some_and(|w| w.iter().any(qualifies))
+                }
+        })
     }
     fn operand_completion_wait(&self, processor: Processor) -> u32 {
         self.transactions.journals[processor as usize]
