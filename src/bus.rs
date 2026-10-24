@@ -594,7 +594,7 @@ impl Bus {
         if self.cd.interrupt() {
             self.scu.signal(16);
         }
-        self.sound.main_ram_request(self.sound_ram_requested());
+        self.sound.main_ram_request(self.sound_ram_request());
         self.sound.advance_with_cd(clocks, &mut self.cd)?;
         if self.sound.scsp.main_interrupt() {
             self.scu.signal(6);
@@ -719,6 +719,7 @@ impl Bus {
         let mut remaining = clocks;
         let mut command = None;
         while remaining != 0 {
+            self.grant_bus_transaction();
             let delta = remaining
                 .min(self.system_clock.deadline(self.main_deadline()).max(1))
                 .min(self.cd.clocks_to_event())

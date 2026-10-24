@@ -4,6 +4,7 @@
 mod dma;
 mod dsp;
 mod envelope;
+pub(crate) mod memory;
 mod pcm;
 mod synthesis;
 mod transactions;
@@ -108,6 +109,7 @@ pub struct Scsp {
     pcm_word: Option<pcm::Word>,
     pcm_clocked: bool,
     refresh_pending: u32,
+    memory_owner: Option<memory::Owner>,
     external: [i16; 2],
     frame_mix: [i64; 2],
     frame_active: bool,
@@ -139,6 +141,7 @@ impl Default for Scsp {
             pcm_word: None,
             pcm_clocked: false,
             refresh_pending: 0,
+            memory_owner: None,
             external: [0; 2],
             frame_mix: [0; 2],
             frame_active: false,
@@ -514,8 +517,9 @@ pub struct Sound {
     cpu_ticks: u64,
     cpu_origin: u64,
     next_cpu: u64,
+    first_cpu_request: Option<u64>,
     ram_busy_until: u64,
-    main_ram_requested: bool,
+    memory: memory::Controller,
     scsp_tick: u64,
     reset_output_start: Option<u64>,
     reset_output_end: Option<u64>,
@@ -532,8 +536,9 @@ impl Default for Sound {
             cpu_ticks: 0,
             cpu_origin: 0,
             next_cpu: u64::MAX,
+            first_cpu_request: None,
             ram_busy_until: 0,
-            main_ram_requested: false,
+            memory: memory::Controller::default(),
             scsp_tick: 0,
             reset_output_start: None,
             reset_output_end: None,
@@ -640,9 +645,6 @@ impl Scsp {
     }
 }
 impl Sound {
-    pub(crate) fn main_ram_request(&mut self, pending: bool) {
-        self.main_ram_requested = pending;
-    }
     /// Main CPU/SCU and sound CPU use the same SCSP DRAM controller.
     pub fn read_ram8(&self, address: usize) -> u8 {
         self.scsp.ram_config().read8(&self.ram, address)
@@ -652,6 +654,7 @@ impl Sound {
     }
     /// ST-077 §3.2/fig3.2: PCM, DSP, refresh and internal DMA precede the
     /// main and sound CPU. Each owns one of the 128 DRAM cycles/Fs.
+    #[cfg(test)]
     pub(crate) fn ram_busy(&self) -> bool {
         self.time < self.ram_busy_until
     }
@@ -670,6 +673,8 @@ impl Sound {
             && !self.scsp.dma_active()
             && !self.scsp.pcm_clocked
             && self.scsp.refresh_pending == 0
+            && !self.memory.pending()
+            && self.scsp.memory_owner.is_none()
         {
             // Frame edges, two refresh requests and output remain clocked
             // even when no effects program or internal DMA is running.
@@ -687,6 +692,7 @@ impl Sound {
         (self
             .scsp_deadline(self.time)
             .min(self.next_cpu)
+            .min(self.first_cpu_request.unwrap_or(u64::MAX))
             .min(self.reset_output_start.unwrap_or(u64::MAX))
             .min(self.reset_output_end.unwrap_or(u64::MAX))
             - self.time)
@@ -695,17 +701,21 @@ impl Sound {
     pub fn set_enabled(&mut self, enabled: bool) -> Result<(), BusError> {
         if enabled && !self.enabled {
             self.cpu.assert_reset();
+            self.memory.cancel(memory::Owner::Cpu);
             self.transactions = transactions::Transactions::reset();
             // MC68000UM §5.5 fig.5-30/table8-14: sixteen internal clocks,
             // then six distinct four-clock reads (SSP, PC, two prefetches).
             // No vector is sampled until its bus cycle completes.
+            self.first_cpu_request = Some(self.time + (16 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ));
             self.cpu_ticks = 20;
             self.cpu_origin = self.time;
             self.next_cpu = self.time + (20 * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
         } else if !enabled {
             self.cpu.assert_reset();
+            self.memory.cancel(memory::Owner::Cpu);
             self.transactions = transactions::Transactions::default();
             self.next_cpu = u64::MAX;
+            self.first_cpu_request = None;
             // An already asserted RESET output finishes its external pulse;
             // canceling the CPU must not strand the devices in reset.
         }
@@ -735,6 +745,7 @@ impl Sound {
             let deadline = self
                 .next_cpu
                 .min(next_scsp)
+                .min(self.first_cpu_request.unwrap_or(u64::MAX))
                 .min(next_midi)
                 .min(self.reset_output_start.unwrap_or(u64::MAX))
                 .min(self.reset_output_end.unwrap_or(u64::MAX));
@@ -749,6 +760,8 @@ impl Sound {
             }
             now = deadline;
             if Some(deadline) == self.reset_output_start {
+                self.memory.reset_main();
+                self.memory.cancel(memory::Owner::Cpu);
                 self.scsp.set_reset(true);
                 self.ram_busy_until = 0;
                 self.reset_output_start = None;
@@ -762,22 +775,45 @@ impl Sound {
                 if step == 0 {
                     self.scsp.external = cd.as_mut().map_or([0; 2], |cd| cd.audio_sample());
                 }
-                if self.scsp.sample_cycle(step, &mut self.ram)? {
+                self.memory.complete(&mut self.ram, tick);
+                if let Some(owner) = self.scsp.memory_owner.take() {
+                    self.memory.record(tick, owner, true);
+                }
+                let internal = self.scsp.sample_cycle(step, &mut self.ram)?;
+                let owner = if internal {
+                    let owner = self.scsp.memory_owner.unwrap();
+                    self.memory.record(tick, owner, false);
+                    Some(owner)
+                } else if !self.scsp.reset_held {
+                    self.memory.grant(self.scsp.ram_config(), tick)
+                } else {
+                    None
+                };
+                if owner.is_some() {
                     self.ram_busy_until = ((tick + 1) * REFERENCE_HZ).div_ceil(DSP_HZ);
                 }
+            } else if Some(deadline) == self.first_cpu_request {
+                self.first_cpu_request = None;
+                if let Some(request) = self.transactions.ram_request(self.cpu.state.pc) {
+                    self.memory.submit(memory::Owner::Cpu, request);
+                }
             } else if deadline == self.next_cpu {
-                if self.transactions.ram_pending(self.cpu.state.pc)
-                    && (deadline < self.ram_busy_until || self.main_ram_requested)
+                if let Some(request) = self.transactions.ram_request(self.cpu.state.pc) {
+                    self.memory.submit(memory::Owner::Cpu, request);
+                }
+                if self.transactions.ram_request(self.cpu.state.pc).is_some()
+                    && !self.memory.ready(memory::Owner::Cpu)
                 {
-                    // Translate wait states into the independently clocked CPU
-                    // domain without retiring, repeating or publishing a cycle.
-                    let release = self.ram_busy_until.max(deadline + 1);
-                    let end = ((release - self.cpu_origin) * SOUND_CPU_HZ).div_ceil(REFERENCE_HZ);
-                    self.transactions.stall(end - self.cpu_ticks);
-                    self.cpu_ticks = end;
+                    // Interface wait states stay on the sound-CPU clock. An
+                    // external request is never itself a DRAM grant.
+                    self.transactions.stall(1);
+                    self.cpu_ticks += 1;
                 } else {
                     self.advance_cpu_cycle();
                     self.cpu.reset_output = false;
+                    if let Some(request) = self.transactions.ram_request(self.cpu.state.pc) {
+                        self.memory.submit(memory::Owner::Cpu, request);
+                    }
                 }
                 self.next_cpu =
                     self.cpu_origin + (self.cpu_ticks * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);

@@ -199,11 +199,13 @@ fn dsp_dram_ownership_defers_a_simultaneous_sound_cpu_reset_read_without_samplin
         let mut s = setup();
         s.ram[..8].copy_from_slice(&[0, 7, 0xFF, 0, 0, 0, 2, 0]);
         s.ram[0x200..0x204].copy_from_slice(&[0x4E, 0x72, 0x27, 0]);
-        // DSP instruction9 and the first reset read both finish at reference48.
+        // CPU origin5 makes its first request eligible44; DSP9 wins48.
+        // CPU grants53/completes58; acknowledgement is CPU clock22.
         program(&mut s, 9, [0, 0, 0xA002, 0x8000]);
+        s.advance(5).unwrap(); // explicit CPU/interface origin, DSP origin unchanged
         s.set_enabled(true).unwrap();
         let cpu_until = |s: &mut Sound, clock: u64| {
-            let target = (clock * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
+            let target = s.cpu_origin + (clock * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
             while s.time < target {
                 s.advance((target - s.time).min(chunk) as u32).unwrap();
             }
@@ -212,11 +214,11 @@ fn dsp_dram_ownership_defers_a_simultaneous_sound_cpu_reset_read_without_samplin
         assert!(s.ram_busy());
         assert_eq!(s.cpu.state.a[7], 0);
         s.ram[..2].copy_from_slice(&6u16.to_be_bytes());
-        cpu_until(&mut s, 23); // first read has now completed after three waits
+        cpu_until(&mut s, 23); // high word retained after two CPU waits
         s.ram[..4].copy_from_slice(&0x00051234u32.to_be_bytes());
-        cpu_until(&mut s, 26);
+        cpu_until(&mut s, 25);
         assert_eq!(s.cpu.state.a[7], 0);
-        cpu_until(&mut s, 27);
+        cpu_until(&mut s, 26);
         assert_eq!(s.cpu.state.a[7], 0x00061234); // retained high, later low
         cpu_until(&mut s, 80);
         assert!(s.cpu.state.stopped && !s.cpu.state.halted);
@@ -231,25 +233,26 @@ fn dsp_wait_states_extend_instruction_retirement_without_replaying_operand_reads
         s.ram[..8].copy_from_slice(&[0, 7, 0xFF, 0, 0, 0, 2, 0]);
         s.ram[0x200..0x206].copy_from_slice(&[0xC0, 0xD0, 0x4E, 0x72, 0x27, 0]);
         s.ram[0x800..0x802].copy_from_slice(&3u16.to_be_bytes());
-        // The first data read, at sound clock44, coincides with DSP21 MRD.
+        // CPU origin5: request101, DSP21 wins105, CPU110..115.
         program(&mut s, 21, [0, 0, 0xA002, 0x8000]);
+        s.advance(5).unwrap(); // explicit CPU/interface origin, DSP origin unchanged
         s.set_enabled(true).unwrap();
         s.cpu.state.a[0] = 0x800;
         s.cpu.state.d[0] = 7;
         let cpu_until = |s: &mut Sound, clock: u64| {
-            let target = (clock * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
+            let target = s.cpu_origin + (clock * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
             while s.time < target {
                 s.advance((target - s.time).min(chunk) as u32).unwrap();
             }
         };
-        cpu_until(&mut s, 47); // operand sampled after three wait states
+        cpu_until(&mut s, 47); // operand retained after two wait states
         s.ram[0x800..0x802].copy_from_slice(&5u16.to_be_bytes());
         // UM table8-4: MULU(source3)38 +2*2 +EA4 =46 clocks.
-        // Reset40 +MUL46 +three sound-memory waits =89.
-        cpu_until(&mut s, 88);
+        // Reset40 +MUL46 +two sound-memory waits =88.
+        cpu_until(&mut s, 87);
         assert_eq!(s.cpu.state.d[0], 7);
         assert_eq!(s.cpu.state.instructions, 0);
-        cpu_until(&mut s, 89);
+        cpu_until(&mut s, 88);
         assert_eq!(s.cpu.state.d[0], 21);
         assert_eq!(s.cpu.state.instructions, 1);
         cpu_until(&mut s, 120);
@@ -266,29 +269,30 @@ fn reset_output_after_a_dsp_stalled_prefetch_starts_after_the_wait_and_remains_b
             s.ram[..8].copy_from_slice(&[0, 7, 0xFF, 0, 0, 0, 2, 0]);
             s.ram[0x200..0x208].copy_from_slice(&[0x4E, 0x71, 0x4E, 0x70, 0x4E, 0x72, 0x27, 0]);
             program(&mut s, 23, [0, 0, 0xA002, 0x8000]);
+            s.advance(5).unwrap(); // explicit CPU/interface origin, DSP origin unchanged
             s.set_enabled(true).unwrap();
             let cpu_until = |s: &mut Sound, clock: u64| {
-                let target = (clock * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
+                let target = s.cpu_origin + (clock * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
                 while s.time < target {
                     s.advance((target - s.time).min(chunk) as u32).unwrap();
                 }
             };
-            cpu_until(&mut s, 50);
+            cpu_until(&mut s, 49);
             assert!(!s.scsp.reset_held);
             assert_eq!(s.cpu.state.instructions, 1);
             if cancel {
                 s.set_enabled(false).unwrap();
             }
-            cpu_until(&mut s, 51);
+            cpu_until(&mut s, 50);
+            assert_eq!(s.scsp.reset_held, !cancel);
+            cpu_until(&mut s, 173);
             assert_eq!(s.scsp.reset_held, !cancel);
             cpu_until(&mut s, 174);
-            assert_eq!(s.scsp.reset_held, !cancel);
-            cpu_until(&mut s, 175);
             assert!(!s.scsp.reset_held);
             if !cancel {
-                cpu_until(&mut s, 178);
+                cpu_until(&mut s, 177);
                 assert_eq!(s.cpu.state.instructions, 1);
-                cpu_until(&mut s, 179);
+                cpu_until(&mut s, 178);
                 assert_eq!(s.cpu.state.instructions, 2);
             }
             assert_eq!(&s.ram[0x1000..0x1002], &[0x12, 0x34]);

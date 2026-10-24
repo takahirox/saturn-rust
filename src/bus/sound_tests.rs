@@ -42,14 +42,14 @@ fn bridge_read_retains_each_word_across_dsp_pcm_dma_and_refresh_ownership() {
                 // Literal completion boundaries from the authored SCSP
                 // schedules (ST-077 §3.2 fig3.2), not timing helpers.
                 let (start, high, low) = match device {
-                    0 => (2, 15, 23), // MRD owns ref10..15
+                    0 => (7, 20, 29), // MRD10..15; main15..20,24..29
                     1 => {
                         for (at, value) in
                             [(2, 0x1000), (6, 4), (12, 0x100), (22, 0xE000), (0, 0x1820)]
                         {
                             b.write16(SCSP + at, value).unwrap();
                         }
-                        (7, 20, 28) // second PCM read owns ref15..20
+                        (12, 24, 34) // PCM15..20; main20..24,29..34
                     }
                     2 => {
                         for (at, value) in [
@@ -63,9 +63,9 @@ fn bridge_read_retains_each_word_across_dsp_pcm_dma_and_refresh_ownership() {
                         ] {
                             b.write16(SCSP + at, value).unwrap();
                         }
-                        (2, 24, 32) // DMA's final word releases at24
+                        (2, 29, 39) // DMA ends24; main24..29,34..39
                     }
-                    _ => (588, 600, 610), // refresh ref596..600 and605..610 (128*44.1kHz)
+                    _ => (592, 605, 615), // refresh ref596..600 and605..610 (128*44.1kHz)
                 };
                 advance(&mut b, start, chunk);
                 let at = SOUND_RAM | 0x20001000;
@@ -119,7 +119,7 @@ fn both_sh2_and_scu_wait_for_dsp_ram_without_publishing_or_resampling_early() {
         ] {
             let mut b = fixture();
             if owner == Owner::Scu {
-                advance(&mut b, 2, chunk);
+                advance(&mut b, 7, chunk);
                 b.write32(HIGH_WRAM + 0x100, 0x56789ABC).unwrap();
                 for (at, value) in [
                     (0, HIGH_WRAM + 0x100),
@@ -131,7 +131,7 @@ fn both_sh2_and_scu_wait_for_dsp_ram_without_publishing_or_resampling_early() {
                 ] {
                     b.write32(SCU + channel * 32 + at, value).unwrap();
                 }
-                // Setup2, source8, destination8: target would finish at18.
+                // Setup2 and source8 make the destination eligible17.
                 // Move the DSP MRD to instruction3 at20 for this case.
                 b.write16(SCSP + 0x80C, 2).unwrap();
                 b.write16(SCSP + 0x81A, 0).unwrap();
@@ -142,21 +142,21 @@ fn both_sh2_and_scu_wait_for_dsp_ram_without_publishing_or_resampling_early() {
                 if p == Processor::Slave {
                     b.set_slave_enabled(true);
                 }
-                advance(&mut b, 2, chunk);
+                advance(&mut b, 7, chunk);
                 assert_eq!(
                     b.replay_cpu(p).write16(SOUND_RAM | 0x20001000, 0x5678),
                     Err(BusError::Pending)
                 );
                 b.grant_bus_transaction();
             }
-            let target = if owner == Owner::Scu { 20 } else { 10 };
+            let target = if owner == Owner::Scu { 24 } else { 15 };
             // Use the actual granted beat's deadline; the SCU setup/source
             // phases are retained and may already be in progress.
-            advance(&mut b, target - 2, chunk);
+            advance(&mut b, target - 7, chunk);
             assert_eq!(b.read16(SOUND_RAM + 0x1000), Ok(0x1234));
             assert!(b.sound.ram_busy());
             b.write16(SOUND_RAM + 0x1000, 0xABCD).unwrap(); // independent debugger mutation
-            advance(&mut b, if owner == Owner::Scu { 3 } else { 4 }, chunk);
+            advance(&mut b, 4, chunk);
             assert_eq!(
                 b.read16(SOUND_RAM + 0x1000),
                 Ok(0xABCD),
@@ -192,13 +192,13 @@ fn main_interface_owns_sound_ram_before_simultaneous_sound_cpu_reset_sampling() 
                 Err(BusError::Pending)
             );
             b.grant_bus_transaction();
-            advance(&mut b, 8, chunk); // first SCPU read and main write at ref48
+            advance(&mut b, 8, chunk); // main completes48, SCPU grants48 and completes53
             assert_eq!(b.read16(SOUND_RAM), Ok(6));
             assert_eq!(b.sound.cpu.state.a[7], 0);
             b.write16(SOUND_RAM, 5).unwrap();
-            advance(&mut b, 2, chunk); // delayed SCPU high samples5 at ref50
+            advance(&mut b, 5, chunk); // admitted SCPU word samples5 at ref53
             b.write16(SOUND_RAM, 4).unwrap();
-            advance(&mut b, 10, chunk); // low completes at ref60
+            advance(&mut b, 9, chunk); // independent low completes at ref62
             assert_eq!(b.sound.cpu.state.a[7], 0x0005FF00);
             advance(&mut b, 100, chunk);
             assert!(b.sound.cpu.state.stopped && !b.sound.cpu.state.halted);
@@ -252,7 +252,9 @@ fn internal_dma_holds_both_cpu_and_all_scu_word_phases_until_its_final_word() {
             advance(&mut b, 13, chunk);
             assert_eq!(b.read16(SOUND_RAM + 0x1000), Ok(0x1230));
             assert_eq!(b.read16(SCSP + 0x420).unwrap() & 16, 0);
-            advance(&mut b, 1, chunk); // last DMA word, release and main write
+            advance(&mut b, 1, chunk); // final DMA publication, main grant
+            assert_eq!(b.read16(SOUND_RAM + 0x1000), Ok(0x1230));
+            advance(&mut b, 5, chunk); // admitted main publication at29
             assert_eq!(
                 b.read16(SOUND_RAM + 0x1000),
                 Ok(0xABCD),
@@ -268,8 +270,8 @@ fn internal_dma_holds_both_cpu_and_all_scu_word_phases_until_its_final_word() {
 #[test]
 fn pcm_second_read_holds_both_sh2_and_all_scu_channels_until_the_read_completes() {
     // ST-077 §3.2/fig3.2. Slot0 occupies ref5..10 and15..20.
-    // The main-interface beat would finish at15 (CPU) or18 (SCU),
-    // but cannot publish while that second PCM cycle owns sound memory.
+    // Requests eligible12 contend with the second PCM grant15.
+    // Main grants20 and publishes at24, in its own memory cycle.
     for chunk in [1, 3, 17, 10000] {
         for (channel, owner) in [
             (0, Owner::Cpu(Processor::Master)),
@@ -292,13 +294,14 @@ fn pcm_second_read_holds_both_sh2_and_all_scu_channels_until_the_read_completes(
             }
             b.write16(SOUND_RAM + 0x1000, 0x1234).unwrap();
             if let Owner::Cpu(p) = owner {
-                advance(&mut b, 7, chunk);
+                advance(&mut b, 12, chunk);
                 assert_eq!(
                     b.replay_cpu(p).write16(SOUND_RAM | 0x20001000, 0x5678),
                     Err(BusError::Pending)
                 );
                 b.grant_bus_transaction();
             } else {
+                advance(&mut b, 2, chunk);
                 b.write32(HIGH_WRAM + 0x100, 0x56789ABC).unwrap();
                 for (at, value) in [
                     (0, HIGH_WRAM + 0x100),
@@ -310,15 +313,282 @@ fn pcm_second_read_holds_both_sh2_and_all_scu_channels_until_the_read_completes(
                 ] {
                     b.write32(SCU + channel * 32 + at, value).unwrap();
                 }
-                advance(&mut b, 7, chunk);
+                advance(&mut b, 10, chunk);
             }
-            advance(&mut b, 12, chunk); // ref19, pending access not published
+            advance(&mut b, 11, chunk); // ref23, pending access not published
             assert!(b.sound.ram_busy());
             assert_eq!(b.read16(SOUND_RAM + 0x1000), Ok(0x1234));
-            advance(&mut b, 1, chunk); // PCM completes before main publication
+            advance(&mut b, 1, chunk); // admitted main completes at24
             assert_eq!(b.read16(SOUND_RAM + 0x1000), Ok(0x5678));
             advance(&mut b, 610, chunk);
             assert_eq!(&b.sound.scsp.drain(1), &[0x1234; 2]);
         }
+    }
+}
+
+#[test]
+fn both_dmacs_and_all_scu_routes_allocate_two_distinct_sound_halfwords() {
+    use crate::sound::memory::Owner as Dram;
+    for fast in [false, true] {
+        for route in 0..6 {
+            for read in [false, true] {
+                let mut previous = None;
+                for chunk in [1, 3, 17, 10000] {
+                    let mut b = Bus::default();
+                    b.system_clock.select(fast);
+                    b.set_slave_enabled(true);
+                    b.write16(SCSP + 0x400, 0x20F).unwrap();
+                    let (source, destination) = if read {
+                        (SOUND_RAM + 0x1000, HIGH_WRAM + 0x100)
+                    } else {
+                        (HIGH_WRAM + 0x100, SOUND_RAM + 0x1000)
+                    };
+                    b.write32(source, 0x12345678).unwrap();
+                    if route < 2 {
+                        let chip = &mut b.onchip[route];
+                        for (at, value) in [
+                            (0, source),
+                            (4, destination),
+                            (8, 1),
+                            (12, 0x5A15),
+                            (0x30, 1),
+                        ] {
+                            chip.write32(0xFFFFFF80 + at, value).unwrap();
+                        }
+                    } else if route < 5 {
+                        for (at, value) in [
+                            (0, source),
+                            (4, destination),
+                            (8, 4),
+                            (12, if read { 0x102 } else { 0x101 }),
+                            (20, 7),
+                            (16, 0x101),
+                        ] {
+                            b.write32(SCU + (route as u32 - 2) * 32 + at, value)
+                                .unwrap();
+                        }
+                    } else {
+                        // ST-097 §4.5: load one word into M0 using RA0,
+                        // then output it through WA0. Real SCU DSP DMA, not a
+                        // host-injected sound request or ordinary SCU channel.
+                        b.write32(SCU + 0x80, 0x8000).unwrap();
+                        for instruction in [
+                            0x98000000 | (source >> 2),
+                            if read { 0xC0010001 } else { 0xC0008001 },
+                            0xD3400002,
+                            0,
+                            0x00001C00,
+                            0x9C000000 | (destination >> 2),
+                            0xC0009001,
+                            0xD3400007,
+                            0,
+                            0xF8000000,
+                        ] {
+                            b.write32(SCU + 0x84, instruction).unwrap();
+                        }
+                        b.write32(SCU + 0x80, 0x18000).unwrap();
+                    }
+                    advance(&mut b, 500, chunk);
+                    assert_eq!(
+                        b.read32(destination),
+                        Ok(0x12345678),
+                        "route{route} read{read}"
+                    );
+                    let trace: Vec<_> = b
+                        .sound
+                        .memory_trace()
+                        .iter()
+                        .copied()
+                        .filter(|e| e.1 == Dram::Main)
+                        .collect();
+                    assert_eq!(trace.len(), 4, "route{route} read{read}: {trace:?}");
+                    for pair in trace.as_chunks::<2>().0 {
+                        assert!(!pair[0].2 && pair[1].2);
+                        assert_eq!(pair[1].0, pair[0].0 + 1);
+                    }
+                    let result = (
+                        b.read32(destination).unwrap(),
+                        trace,
+                        b.sound.scsp.drain(1),
+                        b.read32(SCU + 0xA4).unwrap(),
+                    );
+                    if let Some(old) = &previous {
+                        assert_eq!(
+                            &result, old,
+                            "route{route} read{read} fast{fast} chunk{chunk}"
+                        );
+                    }
+                    previous = Some(result);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn sound_memory_manual_reset_drains_admitted_words_and_power_reset_cancels_unpublished_lanes() {
+    use crate::onchip::WDT;
+    for p in [Processor::Master, Processor::Slave] {
+        for manual in [false, true] {
+            for assertion in [4, 5, 9, 10, 14, 15] {
+                for chunk in [1, 3, 17, 10000] {
+                    let mut b = Bus::default();
+                    b.set_slave_enabled(true);
+                    b.write16(SCSP + 0x400, 0x20F).unwrap();
+                    assert_eq!(
+                        b.replay_cpu(p).write32(SOUND_RAM | 0x20001000, 0x12345678),
+                        Err(BusError::Pending)
+                    );
+                    advance(&mut b, assertion - 2, chunk);
+                    let chip = &mut b.onchip[p as usize];
+                    chip.write16(WDT + 2, if manual { 0x5A7F } else { 0x5A5F })
+                        .unwrap();
+                    chip.write16(WDT, 0xA578).unwrap();
+                    chip.write16(WDT, 0x5AFF).unwrap();
+                    advance(&mut b, 600 - assertion + 2, chunk);
+                    let expected = if manual || assertion >= 15 {
+                        0x12345678
+                    } else if assertion >= 10 {
+                        0x12340000
+                    } else {
+                        0
+                    };
+                    assert_eq!(
+                        b.read32(SOUND_RAM + 0x1000),
+                        Ok(expected),
+                        "{p:?} manual{manual} t{assertion} chunk{chunk}"
+                    );
+                    assert!(b.take_cpu_reset(p).is_some());
+                    assert!(b.transactions.active.is_none());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn sound_memory_reset_releases_canceled_request_before_admitting_waiting_peer() {
+    use crate::onchip::{ResetRequest, WDT};
+    use crate::sound::memory::Owner as Dram;
+    for p in [Processor::Master, Processor::Slave] {
+        let peer = if p == Processor::Master {
+            Processor::Slave
+        } else {
+            Processor::Master
+        };
+        for manual in [false, true] {
+            // Before a DRAM grant, during a grant, and at each word's
+            // completion. Watchdog assertion follows arming by two clocks.
+            for assertion in [4, 7, 10, 15] {
+                for chunk in [1, 3, 17, 10000] {
+                    let mut b = Bus::default();
+                    b.set_slave_enabled(true);
+                    let original = SOUND_RAM | 0x20001000;
+                    let replacement = SOUND_RAM | 0x20002000;
+                    assert_eq!(
+                        b.replay_cpu(p).write32(original, 0x12345678),
+                        Err(BusError::Pending)
+                    );
+                    advance(&mut b, assertion - 2, chunk);
+                    assert_eq!(
+                        b.replay_cpu(peer).write32(replacement, 0x9ABCDEF0),
+                        Err(BusError::Pending)
+                    );
+                    let chip = &mut b.onchip[p as usize];
+                    chip.write16(WDT + 2, if manual { 0x5A7F } else { 0x5A5F })
+                        .unwrap();
+                    chip.write16(WDT, 0xA578).unwrap();
+                    chip.write16(WDT, 0x5AFF).unwrap();
+                    advance(&mut b, 600 - assertion + 2, chunk);
+                    let expected = if manual || assertion >= 15 {
+                        0x12345678
+                    } else if assertion >= 10 {
+                        0x12340000
+                    } else {
+                        0
+                    };
+                    assert_eq!(
+                        b.read32(original),
+                        Ok(expected),
+                        "{p:?} manual{manual} t{assertion} chunk{chunk}"
+                    );
+                    assert_eq!(b.read32(replacement), Ok(0x9ABCDEF0));
+                    assert_eq!(
+                        b.take_cpu_reset(p),
+                        Some(if manual {
+                            ResetRequest::Manual
+                        } else {
+                            ResetRequest::PowerOn
+                        })
+                    );
+                    // Replaying the peer acknowledges its accepted write;
+                    // neither it nor canceled work may publish again later.
+                    assert_eq!(b.replay_cpu(peer).write32(replacement, 0x9ABCDEF0), Ok(()));
+                    b.finish_cpu_transaction(peer);
+                    assert!(b.transactions.active.is_none());
+                    assert!(b.reset_drain_complete(p));
+                    let main_trace = |b: &Bus| {
+                        b.sound
+                            .memory_trace()
+                            .iter()
+                            .copied()
+                            .filter(|e| e.1 == Dram::Main)
+                            .collect::<Vec<_>>()
+                    };
+                    let trace = main_trace(&b);
+                    let completed = if manual || assertion >= 15 {
+                        4
+                    } else if assertion >= 10 {
+                        3
+                    } else {
+                        2
+                    };
+                    assert_eq!(trace.iter().filter(|e| e.2).count(), completed);
+                    b.write32(original, 0x11223344).unwrap();
+                    b.write32(replacement, 0x55667788).unwrap();
+                    advance(&mut b, 1000, chunk);
+                    assert_eq!(b.read32(original), Ok(0x11223344));
+                    assert_eq!(b.read32(replacement), Ok(0x55667788));
+                    assert_eq!(main_trace(&b), trace);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn memory_completed_read_is_retained_until_the_later_cpu_acknowledgement() {
+    for p in [Processor::Master, Processor::Slave] {
+        let mut b = Bus::default();
+        b.set_slave_enabled(true);
+        b.write32(SOUND_RAM + 0x1000, 0x12345678).unwrap();
+        assert_eq!(
+            b.replay_cpu(p).read32(SOUND_RAM | 0x20001000),
+            Err(BusError::Pending)
+        );
+        b.transactions.journals[p as usize]
+            .borrow_mut()
+            .operand_completion = Some(30);
+        advance(&mut b, 10, 3); // first retained word
+        assert_eq!(
+            b.replay_cpu(p).read32(SOUND_RAM | 0x20001000),
+            Err(BusError::Pending)
+        );
+        advance(&mut b, 10, 3); // second memory completion, CPU bus bound still30
+        let trace = b.sound.memory_trace().to_vec();
+        b.write32(SOUND_RAM + 0x1000, 0xABCD9876).unwrap();
+        assert_eq!(b.read32(SOUND_RAM + 0x1000), Ok(0xABCD9876));
+        assert_eq!(b.sound.memory_trace(), trace); // debugger never acquires RAM
+        advance(&mut b, 9, 3);
+        assert_eq!(
+            b.replay_cpu(p).read32(SOUND_RAM | 0x20001000),
+            Err(BusError::Pending)
+        );
+        advance(&mut b, 1, 1);
+        assert_eq!(
+            b.replay_cpu(p).read32(SOUND_RAM | 0x20001000),
+            Ok(0x12345678)
+        );
+        assert_eq!(b.sound.memory_trace(), trace);
     }
 }

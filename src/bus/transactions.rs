@@ -342,11 +342,18 @@ impl Memory for ReplayMemory<'_> {
 impl Bus {
     // ST-077 §3.1/§3.2: a buffered main-interface request precedes SCPU
     // memory access. Device/DMA/refresh ownership can still delay this beat.
-    pub(super) fn sound_ram_requested(&self) -> bool {
-        self.transactions.active.as_ref().is_some_and(|active| {
-            let address = active.transfer.address & 0x1FFF_FFFF;
-            !matches!(active.owner, Owner::WriteAccept(_, _))
-                && (crate::sound::SOUND_RAM..crate::sound::SCSP).contains(&address)
+    pub(super) fn sound_ram_request(&self) -> Option<crate::sound::memory::Request> {
+        let active = self.transactions.active.as_ref()?;
+        let address = active.transfer.address & 0x1FFF_FFFF;
+        if matches!(active.owner, Owner::WriteAccept(_, _))
+            || !(crate::sound::SOUND_RAM..crate::sound::SCSP).contains(&address)
+        {
+            return None;
+        }
+        Some(crate::sound::memory::Request {
+            address: (address - crate::sound::SOUND_RAM) as usize,
+            width: active.transfer.width,
+            write: active.transfer.write,
         })
     }
     /// H §§4.2.3/7.11.1: power-on reset aborts; manual reset completes
@@ -782,6 +789,13 @@ impl Bus {
         }
     }
     pub(crate) fn grant_bus_transaction(&mut self) {
+        // Drop canceled DRAM work before allocating a replacement bus beat.
+        // A retained manual-reset drain is still active and keeps its grant.
+        self.sound.main_ram_request(self.sound_ram_request());
+        self.allocate_bus_transaction();
+        self.sound.main_ram_request(self.sound_ram_request());
+    }
+    fn allocate_bus_transaction(&mut self) {
         for processor in [Processor::Master, Processor::Slave] {
             let i = processor as usize;
             if self.onchip[i].reset_active()
@@ -1117,9 +1131,9 @@ impl Bus {
                 let physical = active.transfer.address & 0x1FFF_FFFF;
                 (crate::sound::SOUND_RAM..crate::sound::SCSP).contains(&physical)
             });
-            if sound_memory && self.sound.ram_busy() {
+            if sound_memory && !self.sound.main_ram_ready() {
                 // Keep the accepted beat and sampled halves intact until the
-                // SCSP releases DRAM. Recheck on the next main-clock edge;
+                // retained memory result is ready. Recheck on the next main-clock edge;
                 // PLL selection must not convert a reference wait into an
                 // incorrect number of main clocks.
                 self.transactions.active.as_mut().unwrap().remaining = 1;
@@ -1150,7 +1164,11 @@ impl Bus {
             Owner::WriteAccept(_, _) => unreachable!(),
             Owner::Scu | Owner::Refresh => Processor::Master,
         };
-        let result = if matches!(active.owner, Owner::Cpu(_)) && t.address >= 0xFFFF_FE00 {
+        let result = if (crate::sound::SOUND_RAM..crate::sound::SCSP)
+            .contains(&(t.address & 0x1FFF_FFFF))
+        {
+            self.sound.complete_main_ram()
+        } else if matches!(active.owner, Owner::Cpu(_)) && t.address >= 0xFFFF_FE00 {
             let mut memory = self.for_cpu(processor);
             if let Some(value) = t.write {
                 match t.width {
@@ -1806,8 +1824,9 @@ mod dma_tests {
     }
     #[test]
     fn scu_b_bus_reads_sample_each_halfword_at_its_deadline_and_hold_the_other_half() {
-        // ST-097 §2.1 / figs.3.6–3.8: setup2, read8+read8,
-        // CPU-bus write8+IW3=2. No word may be sampled before its grant.
+        // ST-097 §2.1 / figs.3.6–3.8 and ST-077 §3.2:
+        // setup2, main DRAM5..10 and15..20, destination20..28.
+        // Memory waits already satisfy the intercycle idle requirement.
         for index in 0..3 {
             for chunk in [1, 3, 8, 64] {
                 let mut b = Bus::default();
@@ -1817,13 +1836,13 @@ mod dma_tests {
                 elapse(&mut b, 1, chunk); // high word sampled now
                 b.write32(crate::sound::SOUND_RAM + 0x100, 0xaabbccdd)
                     .unwrap();
-                elapse(&mut b, 7, chunk);
+                elapse(&mut b, 9, chunk);
                 assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(0));
                 b.write16(crate::sound::SOUND_RAM + 0x102, 0x7788).unwrap();
                 elapse(&mut b, 1, chunk); // low word sampled now
                 b.write32(crate::sound::SOUND_RAM + 0x100, 0xdeadbeef)
                     .unwrap();
-                elapse(&mut b, 9, chunk);
+                elapse(&mut b, 7, chunk);
                 assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(0));
                 assert_eq!(b.read32(SCU + 0xa4).unwrap() & (1 << (11 - index)), 0);
                 elapse(&mut b, 1, chunk);
@@ -1846,7 +1865,7 @@ mod dma_tests {
                 // The accepted buffered longword, not the changed source,
                 // supplies the second physical write.
                 b.write32(HIGH_WRAM + 0x100, 0xdeadbeef).unwrap();
-                elapse(&mut b, 7, chunk);
+                elapse(&mut b, 8, chunk);
                 assert_eq!(b.read32(destination), Ok(0x11220000));
                 assert_eq!(b.read32(SCU + 0xa4).unwrap() & (1 << (11 - index)), 0);
                 elapse(&mut b, 1, chunk);
@@ -1874,7 +1893,7 @@ mod dma_tests {
             ] {
                 b.write32(SCU + 0x40 + o, v).unwrap();
             }
-            elapse(&mut b, 20, chunk); // high-priority job completes first
+            elapse(&mut b, 30, chunk); // already granted low halfword drains before priority switch
             assert_eq!(b.read32(HIGH_WRAM + 0x400), Ok(0x76543210));
             assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(0));
             assert_eq!(b.read32(SCU + 0xa4).unwrap() & 0xa00, 0x200);
@@ -1898,7 +1917,7 @@ mod dma_tests {
                     assert_eq!(b.read32(destination), Ok(0xaabbccdd));
                     assert_eq!(b.read32(SCU + 0xa4), Ok(0));
                     sound_channel(&mut b, 0, read_sound);
-                    elapse(&mut b, 28, chunk);
+                    elapse(&mut b, if read_sound { 30 } else { 29 }, chunk);
                     assert_eq!(b.read32(destination), Ok(0x11223344));
                     assert_eq!(b.read32(SCU + 0xa4), Ok(0x800));
                 }
