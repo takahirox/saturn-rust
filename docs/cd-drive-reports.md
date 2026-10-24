@@ -54,12 +54,19 @@ Startup remains the separate `0043 4442 4C4F 434B` signature.
   the play range or maximum repeat clears the notification count; the unchanged
   maximum encoding preserves it. Replacement-media attachment preserves both
   range bounds, maximum repeat and notification count; cold initialization and
-  software reset initialize them (ST-162 §5.5 p.49). The reset range is the whole
-  disc, starting at FAD 150 independently of the pickup position (§7.2.6
+  software/power reset initialize them (ST-162 §5.5 p.49). Power reset retains
+  the medium and initializes its range before any later replacement mount.
+  The reset range spans the whole disc, starting at FAD 150 independently of
+  the pickup position (§7.2.6
   pp.65–69). On shorter replacement media, playback and repeats use the earlier
   of the retained end and current lead-out, without overwriting the retained
   end or clearing repeat information. A later larger disc can use that retained
   end again; unchanged Play outside the effective range stays paused.
+- Scan movement uses the same effective end, stopping at its last sector and
+  raising PEND. Its effective lower bound also stays on the current medium if
+  the retained start lies beyond lead-out. These bounds never overwrite host
+  settings or repeat information. The ten-frame scan step remains the existing
+  functional timing convention, rather than a measured mechanical rate.
 - Q acquisition returns five words without CRC. Its control/track/index and
   absolute position follow report validity. For valid ADR=1 data the relative
   address is distance from track start; in invalid states position fields are

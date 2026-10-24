@@ -830,6 +830,113 @@ fn shorter_replacement_bounds_play_without_overwriting_retained_settings() {
 }
 
 #[test]
+fn power_reset_restores_play_range_before_and_after_replacement_mount() {
+    for chunk in [1, 3, 17, 10000] {
+        for configured in [false, true] {
+            let mut cd = mounted();
+            if configured {
+                issue(&mut cd, [0x1080, 181, 0x0280, 2], chunk);
+                advance(&mut cd, 358_322, chunk, true);
+            }
+            cd.cd.set_enabled(false);
+            cd.cd.set_enabled(true);
+            assert_eq!(response(&cd), [0x0180, 0x4101, 0x0100, 150]);
+            // Power reset retains the medium but initializes whole-disc play
+            // defaults, including the range and repeat settings (ST-162 §5.5).
+            assert_eq!(
+                issue(&mut cd, [0x1080, 150, 0x7FFF, 0xFFFF], chunk),
+                [0x0400, 0x4101, 0x0100, 150]
+            );
+            cd.cd.mount(Media::iso(&vec![0xA6; 2048 * 120]).unwrap());
+            assert_eq!(
+                issue(&mut cd, [0x1080, 150, 0x7FFF, 0xFFFF], chunk),
+                [0x0400, 0x4101, 0x0100, 150]
+            );
+            advance(&mut cd, 26_875, chunk, true);
+            assert_eq!(
+                issue(&mut cd, [0, 0, 0, 0], chunk),
+                [0x0380, 0x4101, 0x0100, 150]
+            );
+            // Mounting the replacement retains the initialized end (250),
+            // rather than the empty reset default (150) or new lead-out (270).
+            advance(&mut cd, 17_916_067, chunk, true);
+            assert_eq!(
+                issue(&mut cd, [0, 0, 0, 0], chunk),
+                [0x0180, 0x4101, 0x0100, 250]
+            );
+        }
+    }
+}
+
+#[test]
+fn shorter_replacement_bounds_scan_and_q_without_changing_retained_range() {
+    for chunk in [1, 3, 17, 10000] {
+        let mut cd = mounted();
+        cd.cd.mount(Media::iso(&vec![0xA6; 2048 * 50]).unwrap());
+        assert_eq!(
+            issue(&mut cd, [0x1200, 0, 0, 0], chunk),
+            [0x0500, 0x4101, 0x0100, 150]
+        );
+        advance(&mut cd, 2_200_000, chunk, true);
+        assert_eq!(
+            issue(&mut cd, [0, 0, 0, 0], chunk),
+            [0x0180, 0x4101, 0x0100, 199]
+        );
+        assert_ne!(cd.read16(CD + 8).unwrap() & 16, 0);
+        q(&mut cd, 0x4180, [0x4101, 0x0100, 49, 0, 199], chunk);
+        issue(&mut cd, [0x1201, 0, 0, 0], chunk);
+        advance(&mut cd, 2_200_000, chunk, true);
+        assert_eq!(
+            issue(&mut cd, [0, 0, 0, 0], chunk),
+            [0x0180, 0x4101, 0x0100, 150]
+        );
+        q(&mut cd, 0x4180, [0x4101, 0x0100, 0, 0, 150], chunk);
+        cd.cd.mount(Media::iso(&vec![0x69; 2048 * 120]).unwrap());
+        issue(&mut cd, [0x1200, 0, 0, 0], chunk);
+        advance(&mut cd, 4_000_000, chunk, true);
+        assert_eq!(
+            issue(&mut cd, [0, 0, 0, 0], chunk),
+            [0x0180, 0x4101, 0x0100, 249]
+        );
+        q(&mut cd, 0x4180, [0x4101, 0x0100, 99, 0, 249], chunk);
+        // Even the retained lower bound can lie beyond a shorter medium.
+        // Scanning must stay on that medium without erasing either bound or
+        // the finite repeat maximum/notification count (ST-162 §5.5).
+        issue(&mut cd, [0x1080, 225, 0x0280, 2], chunk);
+        advance(&mut cd, 358_322, chunk, true);
+        assert_eq!(issue(&mut cd, [0, 0, 0, 0], chunk)[0], 0x0381);
+        cd.cd.mount(Media::iso(&vec![0xA6; 2048 * 50]).unwrap());
+        for direction in [0x1200, 0x1201] {
+            issue(&mut cd, [direction, 0, 0, 0], chunk);
+            advance(&mut cd, 400_000, chunk, true);
+            assert_eq!(
+                issue(&mut cd, [0, 0, 0, 0], chunk),
+                [0x0181, 0x4101, 0x0100, 199]
+            );
+            q(&mut cd, 0x4181, [0x4101, 0x0100, 49, 0, 199], chunk);
+        }
+        cd.cd.mount(Media::iso(&vec![0x69; 2048 * 120]).unwrap());
+        issue(&mut cd, [0x1180, 225, 0, 0], chunk);
+        advance(&mut cd, 26_875, chunk, true);
+        issue(&mut cd, [0x1200, 0, 0, 0], chunk);
+        advance(&mut cd, 400_000, chunk, true);
+        assert_eq!(
+            issue(&mut cd, [0, 0, 0, 0], chunk),
+            [0x0181, 0x4101, 0x0100, 226]
+        );
+        assert_eq!(
+            issue(&mut cd, [0x10FF, 0xFFFF, 0x7FFF, 0xFFFF], chunk),
+            [0x0381, 0x4101, 0x0100, 226]
+        );
+        advance(&mut cd, 179_161, chunk, true);
+        assert_eq!(
+            issue(&mut cd, [0, 0, 0, 0], chunk),
+            [0x0382, 0x4101, 0x0100, 225]
+        );
+    }
+}
+
+#[test]
 fn debugger_fifo_longwords_preserve_each_word_and_cr4_publication_protection() {
     for chunk in [1, 3, 17, 10000] {
         let mut cd = mounted();

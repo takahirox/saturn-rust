@@ -270,6 +270,47 @@ Follow-up production Wasm SHA-256:
 `e4d7ad974e6d902949ef725c905cf273bb73199ed80709368c5aeb69d53f5e32`.
 No guest or media fixture bytes changed.
 
+## Follow-up review: power-reset range and replacement-media scans
+
+Both PR #46 findings were reproduced with new literal register tests before
+changing production code (exit 101): power reset left an empty retained range,
+so Play at 150 with unchanged end returned `FF00 4101 0100 0096` instead of SEEK
+`0400 4101 0100 0096`; scanning a 50-sector replacement after a 100-sector disc
+returned `0500 FFFF FF00 00D2` instead of PAUSE `0180 4101 0100 00C7`.
+
+CD power reset now initializes the retained medium's whole-disc end alongside
+the other defaults. A later mount preserves this usable range, just as it
+preserves genuinely configured tray-change settings. Scan movement and
+termination use the effective end bounded by current lead-out; the effective
+lower bound also stays within that end when the saved start is beyond the
+replacement disc. Neither bound overwrites the retained range or repeat state.
+
+The new register vectors run with advancement chunks 1/3/17/10000 and passive
+debugger reads. They cover power cycling with default and configured repeat
+settings, Play before and after a larger replacement mount, forward/reverse
+scans and complete Q words on shorter media, a saved lower bound beyond
+lead-out, and a later larger disc restoring use of both saved bounds and the
+finite repeat count. No guest or media fixture bytes changed.
+
+| Power/scan follow-up check | Actual result |
+| --- | --- |
+| `cargo fmt --check`, `cargo build --locked` | Passed |
+| `cargo test --locked --no-fail-fast` | Passed: 928 tests, zero failed/ignored |
+| `cargo test --locked --test cd_reports` | Passed: all sixteen tests |
+| Native and Wasm Clippy with `-D warnings` | Passed |
+| All registered fixture/media reproduction checks | All 85 passed |
+| `npm ci --ignore-scripts` | Passed, zero reported vulnerabilities |
+| `sh scripts/build-web.sh` | Passed with matching wasm-bindgen 0.2.129 |
+| Complete extended `npm run test:browser` | Passed in Chromium 145.0.7632.6 under `/saturn-rust/`, rebuilt production Wasm, no skips |
+| Local documentation link targets and Git whitespace | Passed |
+
+No required check remains pending. The complete suites preserve the CD report
+guest, Star Collector, Prism Courier, Hardware Lab, directory acquisition,
+selectors, ECC/retries, CD-DA/audio, backup, controllers and privacy regressions.
+
+Power/scan follow-up production Wasm SHA-256:
+`5523bc9b88bd79d70c0ed9eb2722000f1f46c6eaffaa9ef36992ec99edba4131`.
+
 ## Remaining hardware scope
 
 This is partial #17 work. Full mechanical timing, R–W decoding, additional media

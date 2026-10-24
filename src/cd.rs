@@ -325,7 +325,8 @@ impl CdBlock {
         self.fad = media.tracks[0].start;
         self.at_home = false;
         // ST-162 §5.5: tray changes retain host play information. A fresh
-        // block still needs the initial disc range; resets create a new block.
+        // block still needs the initial disc range; power reset initializes
+        // its retained medium's range separately.
         if cold {
             self.play_start = self.fad;
             self.end = media.leadout;
@@ -342,6 +343,7 @@ impl CdBlock {
         if self.enabled && !enabled {
             let media = self.media.take();
             *self = Self {
+                end: media.as_ref().map_or(150, |m| m.leadout),
                 media,
                 enabled: false,
                 ..Self::default()
@@ -567,16 +569,21 @@ impl CdBlock {
             while self.phase >= HZ {
                 self.phase -= HZ;
                 if let Some((reverse, _)) = self.scan {
-                    let lower = self.play_start.max(150);
+                    // As with playback, replacement media bounds movement
+                    // without overwriting retained host settings. The old
+                    // lower bound can also be beyond the new disc's end.
+                    let end = self.play_end();
+                    let upper = end.saturating_sub(1);
+                    let lower = self.play_start.max(150).min(upper);
                     let next = if reverse {
                         self.fad.saturating_sub(10)
                     } else {
                         self.fad.saturating_add(10)
                     };
-                    self.fad = next.clamp(lower, self.end.saturating_sub(1).max(lower));
+                    self.fad = next.clamp(lower, upper);
                     self.audio_index = 0;
                     self.deemphasis = crate::cd_audio::Deemphasis::default();
-                    if next < lower || next >= self.end {
+                    if next < lower || next >= end {
                         self.scan = None;
                         self.status = 1;
                         self.raise(PEND);
