@@ -124,7 +124,7 @@ add #1,r1
 mov #0x78,r0
 mov.b r0,@r1
 load 0xfffffe60,r1
-load 0x0600,r0
+load 0x0700,r0
 mov.w r0,@r1
 load 0xfffffe66,r1
 load 0x4243,r0
@@ -132,7 +132,8 @@ mov.w r0,@r1
 load 0xfffffe10,r1
 mov #-127,r0
 mov.b r0,@r1
-mov #0,r0
+; DCC raster levels are live; accept only our level-7 FRT above them.
+mov #0x60,r0
 ldc r0,sr
 nop
 load 0x06002004,r1
