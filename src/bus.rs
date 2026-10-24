@@ -1243,8 +1243,11 @@ impl CpuBus<'_> {
     // memory endpoints are covered: never widen a side-effecting register.
     fn b_bus_memory(address: u32) -> bool {
         let physical = Bus::physical(address);
-        (SOUND_RAM..SCSP).contains(&physical)
-            || (vdp1::VRAM..vdp1::REGISTERS).contains(&physical)
+        (SOUND_RAM..SCSP).contains(&physical) || Self::video_memory(address)
+    }
+    fn video_memory(address: u32) -> bool {
+        let physical = Bus::physical(address);
+        (vdp1::VRAM..vdp1::REGISTERS).contains(&physical)
             || (VRAM..crate::vdp2::CRAM + 0x1000).contains(&physical)
     }
 
@@ -1277,6 +1280,7 @@ impl CpuBus<'_> {
                     unit_end: base + 4,
                     locked,
                     bridge_read: true,
+                    bridge_write: None,
                 })?;
                 unit[phase as usize * 2..phase as usize * 2 + 2]
                     .copy_from_slice(&(value as u16).to_be_bytes());
@@ -1309,6 +1313,7 @@ impl CpuBus<'_> {
                     unit_end: address + N as u32,
                     locked,
                     bridge_read: false,
+                    bridge_write: None,
                 })?;
                 bytes.copy_from_slice(&value.to_be_bytes()[4 - width..]);
             } else {

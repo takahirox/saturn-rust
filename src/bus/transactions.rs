@@ -28,6 +28,9 @@ mod sound_tests;
 #[path = "vdp1_tests.rs"]
 mod vdp1_tests;
 #[cfg(test)]
+#[path = "video_write_tests.rs"]
+mod video_write_tests;
+#[cfg(test)]
 #[path = "write_buffer_tests.rs"]
 mod write_buffer_tests;
 
@@ -62,6 +65,8 @@ pub(super) struct Transfer {
     // One of two physical words belonging to an aligned CPU-side longword.
     // UBC external observations describe that longword, not these words.
     pub(super) bridge_read: bool,
+    // Retain the CPU-facing longword while publishing its device words.
+    pub(super) bridge_write: Option<u32>,
 }
 #[derive(Default)]
 pub(super) struct Journal {
@@ -897,6 +902,7 @@ impl Bus {
                     unit_end: 0,
                     locked: false,
                     bridge_read: false,
+                    bridge_write: None,
                 },
                 remaining,
             });
@@ -987,6 +993,7 @@ impl Bus {
                     unit_end: 0,
                     locked: false,
                     bridge_read: false,
+                    bridge_write: None,
                 },
                 remaining,
             });
@@ -1230,12 +1237,7 @@ impl Bus {
             if let Ok(value) = result
                 && !t.bridge_read
             {
-                self.for_cpu(processor).observe_external_data(
-                    t.address,
-                    t.width,
-                    value,
-                    t.write.is_some(),
-                );
+                self.for_cpu(processor).observe_write_phase(t, value);
             }
             // No architectural instruction or next burst unit resumes on reset.
             if let Err(source) = result {
@@ -1276,8 +1278,7 @@ impl Bus {
                     return Ok(());
                 }
             };
-            self.for_cpu(processor)
-                .observe_external_data(t.address, t.width, value, true);
+            self.for_cpu(processor).observe_write_phase(t, value);
             let i = processor as usize;
             let write = self.transactions.writes[i].as_mut().unwrap();
             assert_eq!(write.beats.pop_front(), Some(t));
@@ -1371,6 +1372,15 @@ impl Bus {
     }
 }
 impl CpuBus<'_> {
+    fn observe_write_phase(&self, t: Transfer, value: u32) {
+        if let Some(payload) = t.bridge_write {
+            if t.address + t.width as u32 == t.unit_end {
+                self.observe_external_data(t.unit_end - 4, 4, payload, true);
+            }
+        } else {
+            self.observe_external_data(t.address, t.width, value, t.write.is_some());
+        }
+    }
     pub(super) fn buffered_write_locked(&self) -> bool {
         self.bus.transactions.lock == Some(self.processor)
     }
@@ -1384,9 +1394,14 @@ impl CpuBus<'_> {
             journal.write_accepted = false;
             return Ok(());
         }
-        let width = self.bus.onchip[self.processor as usize]
+        let cpu_width = self.bus.onchip[self.processor as usize]
             .external_bus_width(Bus::physical(address))
             .min(N);
+        // ST-097 §3.2: memory devices transfer at most one word per phase.
+        // ST-210 item32 preserves narrow strobes; item03 excludes VDP1 MMIO.
+        let bridge = cpu_width == 4 && Self::video_memory(address);
+        let width = if bridge { 2 } else { cpu_width };
+        let payload = bridge.then(|| bytes.iter().fold(0, |v, b| v << 8 | u32::from(*b)));
         journal.pending_write.get_or_insert_with(|| {
             bytes
                 .chunks(width)
@@ -1400,6 +1415,7 @@ impl CpuBus<'_> {
                     unit_end: address + N as u32,
                     locked: false,
                     bridge_read: false,
+                    bridge_write: payload,
                 })
                 .collect()
         });
@@ -1426,6 +1442,7 @@ impl CpuBus<'_> {
             unit_end: address + width as u32,
             locked,
             bridge_read: false,
+            bridge_write: None,
         };
         self.scheduled_transfer(transfer)
     }
