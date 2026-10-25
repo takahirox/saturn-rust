@@ -40,6 +40,7 @@ import { cdCopy } from "./cd-copy.mjs";
 import { vdp2Status } from "./vdp2-status.mjs";
 import { rotationHighResolution } from "./rotation-high-resolution.mjs";
 import { rotationFetch } from "./rotation-fetch.mjs";
+import { spriteShrink } from "./sprite-shrink.mjs";
 import { rotationReload } from "./rotation-reload.mjs";
 
 // Fail before upload if web/ includes anything beyond the public runtime assets.
@@ -863,43 +864,7 @@ try {
   await sh2BusPipeline(page);
   await sh2ResetBus(page);
   await cs0Transfers(page);
-  const shrinkRom=Buffer.alloc(524288);
-  for(const line of (await readFile("tests/fixtures/sprite-shrink.hex","utf8")).split(/\r?\n/)) {
-    if(!line||line.startsWith("#"))continue;
-    const [address,...words]=line.split(/\s+/);let at=parseInt(address,16);
-    for(const word of words){shrinkRom.writeUInt16BE(parseInt(word,16),at);at+=2;}
-  }
-  const shrinkExpected=(await readFile("tests/fixtures/sprite-shrink.tsv","utf8")).trim().split(/\r?\n/).map(v=>parseInt(v,16));
-  const shrinkTraces=await page.evaluate(async ({rom,count})=>{
-    const {emulator,advanceFrame}=await import("./app.js");
-    const traces=[];
-    for(let repeat=0;repeat<2;repeat++) {
-      emulator.reset_bios(Uint8Array.from(rom));
-      for(let i=0;i<300 && emulator.read_long(0x0600D074)!==0x600D;i++)emulator.run_steps(5000);
-      emulator.advance_frame();
-      advanceFrame();
-      const f=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
-      traces.push({words:Array.from({length:count},(_,i)=>emulator.read_long(0x0600D000+i*4)),
-        pixels:Array.from(f.slice((20*320+10)*4,(20*320+15)*4)),
-        canvas:Array.from(canvas.getImageData(10,20,5,1).data)});
-    }
-    // Only the six guest HSS mode-word operands change. The same guest
-    // commands still draw; EOS alone must have no effect when HSS is clear.
-    const changed=Uint8Array.from(rom);let patches=0;
-    for(let i=0x200;i<changed.length-4;i+=4) {
-      if(changed[i]===0&&changed[i+1]===0&&changed[i+2]===0x10&&changed[i+3]===0x68){changed[i+2]=0;patches++;}
-    }
-    if(patches!==6)throw new Error(`HSS operand count ${patches}`);
-    emulator.reset_bios(changed);
-    for(let i=0;i<300 && emulator.read_long(0x0600D074)!==0x600D;i++)emulator.run_steps(5000);
-    traces.push({changed:Array.from({length:count},(_,i)=>emulator.read_long(0x0600D000+i*4))});
-    return traces;
-  },{rom:[...shrinkRom],count:shrinkExpected.length});
-  const shrinkPixels=[57,0,0,255,41,0,0,255,24,0,0,255,8,0,0,255,0,0,0,255];
-  const shrinkTrace={words:shrinkExpected,pixels:shrinkPixels,canvas:shrinkPixels};
-  const ordinaryShrink=[0,2,4,7].map(x=>0x8000+x),flippedShrink=[7,5,3,0].map(x=>0x8000+x);
-  assert.deepEqual(shrinkTraces,[shrinkTrace,shrinkTrace,{changed:[...ordinaryShrink,...ordinaryShrink,
-    ...ordinaryShrink,...ordinaryShrink,...ordinaryShrink,...flippedShrink,...flippedShrink,0x1090,0x600D]}]);
+  await spriteShrink(page);
   const digitalRom=Buffer.alloc(524288);
   for(const line of (await readFile("tests/fixtures/digital-timing.hex","utf8")).split(/\r?\n/)) {
     if(!line || line.startsWith("#"))continue;
