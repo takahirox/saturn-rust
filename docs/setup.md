@@ -234,48 +234,92 @@ and results. Nonzero exit means failure.
 The [Browser Pages workflow](../.github/workflows/pages.yml) uses stable Rust,
 the committed Cargo/npm lockfiles, matching `wasm-bindgen-cli 0.2.129`, and
 `scripts/build-web.sh`. The independent `native` job checks every registered
-fixture and runs formatting, build, tests and native Clippy. The `build` job
-builds Wasm once, runs Wasm Clippy, runner regression tests and the complete
-Chromium suite, then retains exactly that tested `web/` directory. Both jobs
-must pass. On main pushes only, `site` downloads that immutable artifact and
-uploads it through the Pages artifact action; `deploy` depends on `site`.
-PRs validate without Pages deployment permissions. Main runs are serialized so
-deployments cannot overtake each other, and the current-main check rejects old
-reruns. Superseded PR validation can be canceled. No `gh-pages` branch is used.
+fixture and runs formatting, build, tests and native Clippy. The test profile
+uses optimization level 3 while retaining debug assertions and overflow checks.
+The independent `wasm` job builds Wasm once, runs Wasm Clippy and retains the immutable
+`web-build` artifact. Its bindgen CLI cache has one exact version/OS/architecture
+key, no fallback keys, and the existing build always verifies CLI version 0.2.129.
+A cold cache performs the original locked install. Two `browser` matrix jobs
+download that same artifact:
+`shared` runs the original dependent UI trace (30 groups), and `scenarios` runs
+34 modules in fresh browser contexts, one at a time. Both jobs use Chromium and
+all the original assertions. Runner regression tests execute once in `shared`.
+The retained `build` status depends on native, Wasm and **both** browser jobs.
+Its always-run first step explicitly fails on any failed, skipped or cancelled
+dependency, so a skipped aggregate cannot appear as a green required check.
+It then rejects missing/duplicate/failed groups or shard reports, stale revision IDs,
+and a SHA-256 digest that does not match every tested artifact byte and path.
+On main pushes only, `site` waits for all those jobs and uploads that same
+artifact; `deploy` still checks current main. PRs cannot publish. Main runs are
+serialized and superseded PR validation can be canceled.
 
-Every browser invocation still runs all 64 registered groups, in their original
-order and with their original assertions. The default lossless numeric-array
-transport reduces Playwright protocol overhead; it does not change Saturn
-execution, clock counts, fixtures, timeouts, Canvas pixels or audio samples.
-No browser workers or shared writable pages were added. CI runs at most two
-validation jobs per revision; the browser job uses one Chromium and retains the
-existing scenario/page lifecycle, including the standard-size media checks.
-
-Timings are always printed, including on failure. `BROWSER_TIMING` records group
-segments; `BROWSER_MANIFEST` aggregates every group and `BROWSER_TOTAL` verifies
-the expected count. `BROWSER_OPERATIONS` separates page loading/initialization,
-polling wall time, assertion-method time and evaluate wall/browser time. The difference between evaluate
-wall and browser time includes protocol serialization/transport and Node work.
-These are inclusive measurements, not additive CPU percentages. `BROWSER_WASM`
-measures guest stepping, frame advancement, resets, media mounting and frame/audio
-reads on the integration page. `CI_TIMING` covers command stages; native harness
-`test result` lines and `NATIVE_TIMING` identify test-binary durations.
-
-To profile or debug a complete suite with the original protocol representation:
+The direct `npm run test:browser` command runs **all 64 original groups** with
+at most two independent Node/Chromium process trees. Each owns its loopback
+server, page state, media and backup RAM. The scenario shard creates a fresh
+context for each module and closes it before the next; the shared UI trace
+retains its original order and page lifecycle. No callbacks run concurrently on
+a shared page. CI uses separate Ubuntu 24.04 runners for the two browser shards;
+at most three validation runners overlap (native plus two browsers). Each shard
+has a 20-minute failure timeout (60 minutes for raw transport), with no retries
+or performance pass threshold.
 
 ```sh
-BROWSER_TRANSPORT=raw npm run test:browser
+# Complete parallel suite (default), with coverage/artifact aggregation:
+npm run test:browser
+# Complete original single-process order, useful for parity and fallback:
+npm run test:browser -- --serial
+# Reproduce one independent module, including all of its assertions:
+npm run test:browser -- --group=scspMvol
+# Shared UI groups have ordering dependencies; reproduce the whole trace:
+npm run test:browser -- --shard=shared
+# Run the independent modules, each in a fresh context:
+npm run test:browser -- --shard=scenarios
+# Original lossless/raw protocol fallback, also running the complete suite:
+BROWSER_TRANSPORT=raw npm run test:browser -- --serial
+# Repeat both complete modes with raw logs, CPU time and sampled tree RSS:
+python3 scripts/measure-browser.py target/ci-profile/comparison 3
 python3 scripts/ci-time.py native-tests cargo test --locked
 ```
 
-`BROWSER_TRANSPORT=compact` (the default) selects the optimized representation.
-Both modes run the same complete suite; there is no subset or retry mode. Alternate
-raw/compact runs at least three times on the same idle machine for new performance
-claims. No rebuild is needed when changing this test-only transport setting.
-To roll back CI job separation, restore the serial workflow, keeping every
-mandatory command and the tested-build/current-main deployment gates.
-See the [performance evidence and coverage audit](ci-performance.md) for measured
-results, resource bounds, remaining costs and validation limits.
+`BROWSER_TRANSPORT=compact` remains the default lossless numeric-array transport.
+Neither mode changes emulation, guest clocks, operands, expected pixels/PCM or
+fixture data. `scripts/browser-groups.json` is the unchanged original inventory;
+`scripts/browser-shards.json` maps every original group to exactly one shard.
+Unknown selections fail. Single-group selection is available for the 34
+independent modules; dependent UI groups deliberately stay in `shared`.
+
+Timings are always printed, including on failure. `BROWSER_GROUP_START` identifies
+the active group even if a worker crashes or times out; `BROWSER_TIMING` reports
+group segments, `BROWSER_MANIFEST` aggregates them, and `BROWSER_TOTAL` reports
+shard duration and required group count. Replicated startup is marked `setup`
+in the scenario worker and is excluded from coverage, but its assertions still
+run and its duration is included. `BROWSER_SUITE` measures the executed parallel
+wall time. `BROWSER_OPERATIONS` separates page initialization, polling, assertion
+methods and evaluate wall/browser time; these inclusive measurements must not be
+summed as CPU percentages. `BROWSER_WASM` measures guest stepping, frames, reset,
+media and frame/audio reads on each instrumented page. `CI_TIMING` records stage
+commands and `NATIVE_TIMING` records each native harness's duration.
+
+To reproduce the CI report barrier locally:
+
+```sh
+npm run test:browser -- --shard=shared --report=target/browser-results/shared.json
+npm run test:browser -- --shard=scenarios --report=target/browser-results/scenarios.json
+node scripts/browser-suite.mjs --verify target/browser-results
+```
+
+Reports are written only after successful coverage validation and cleanup, and
+bind the run to its Git revision and exact `web/` content. A previous report is
+removed before a worker starts. No rebuild or asset modification is allowed
+between validation and aggregation. When running native fixture checks and
+`build-web.sh` concurrently, use separate source checkouts as CI does: both
+commands access generated homebrew media, so different Cargo target directories
+alone do not isolate them. The default full command uses a new temporary
+report directory so stale local results cannot satisfy it. Worker exit codes,
+rejections, signals, timeouts and absent reports all fail the full command.
+The Pages dependency barrier also fails closed on required job cancellation.
+See [performance evidence](ci-performance.md) for actual measurements, resource
+cost, remaining bottlenecks and the unexecuted hosted verification requirement.
 
 One-time administrator setup may be required: **Settings → Pages → Build and
 deployment → Source: GitHub Actions**, with Actions and deployments permitted.

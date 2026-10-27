@@ -22,7 +22,7 @@ def main():
                               stderr=subprocess.STDOUT, text=True, bufsize=1) as child:
             for line in child.stdout:
                 print(line, end="", flush=True)
-                if cargo_tests and line.lstrip().startswith("Running "):
+                if cargo_tests and line.lstrip().startswith(("Running ", "Doc-tests ")):
                     binary = line.strip()
                 if cargo_tests and line.startswith("test result:"):
                     print("NATIVE_TIMING " + json.dumps({"binary": binary, "result": line.strip()}), flush=True)

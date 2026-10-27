@@ -1,6 +1,8 @@
 // Runs the actual static UI and Wasm in Chromium. Synthetic vectors are original
 // test data; no Sega firmware or game data is used.
 import nodeAssert from "node:assert/strict";
+import { selection } from "./browser-selection.mjs";
+import { siteDigest } from "./browser-results.mjs";
 import { BrowserTimings } from "./browser-timings.mjs";
 import { instrumentBrowser } from "./browser-transport.mjs";
 import { spawn } from "node:child_process";
@@ -45,10 +47,14 @@ import { rotationFetch } from "./rotation-fetch.mjs";
 import { spriteShrink } from "./sprite-shrink.mjs";
 import { rotationReload } from "./rotation-reload.mjs";
 
-const timings = new BrowserTimings();
+const selected = selection(process.argv.slice(2));
+if (selected.report) await rm(selected.report, { force: true });
+const timings = new BrowserTimings(selected.groups, selected.mode);
+const includeScenarios = selected.mode === "serial";
+const setup = name => selected.mode === "scenarios" ? timings.setup(name) : timings.group(name);
 const assert = timings.instrumentAssertions(nodeAssert);
 
-timings.group("assets");
+setup("assets");
 // Fail before upload if web/ includes anything beyond the public runtime assets.
 const assets = ["audio.js", "audio-worklet.js", "app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt", "prism-courier.iso", "prism-courier-LICENSE.txt", "hardware-lab.iso", "hardware-lab-audio.bin", "hardware-lab.cue", "hardware-lab-LICENSE.txt"];
 assert.deepEqual((await readdir("web", { recursive: true })).sort(), [...assets, "pkg"].sort());
@@ -57,8 +63,9 @@ for (const asset of assets) {
   const stat = await lstat(join("web", asset));
   assert(stat.isFile() && stat.size > 0, `Expected a nonempty regular file: ${asset}`);
 }
+const testedDigest = await siteDigest();
 
-timings.group("server-and-launch");
+setup("server-and-launch");
 // Mount exactly web/ beneath the project-page prefix, with no repository fallback.
 const mount = await mkdtemp(join(tmpdir(), "saturn-rust-browser-"));
 const prefix = "/saturn-rust/";
@@ -78,7 +85,7 @@ try {
   });
   browser = await chromium.launch({ headless: true, ...(process.env.BROWSER_CHANNEL ? { channel: process.env.BROWSER_CHANNEL } : {}) });
   instrumentBrowser(browser, timings);
-  timings.group("page-init-and-assets");
+  setup("page-init-and-assets");
   const context = await browser.newContext();
   const page = await context.newPage();
   const pageErrors = [];
@@ -103,6 +110,46 @@ try {
     }
   }
   assert(await page.evaluate(() => [...document.styleSheets].some((sheet) => sheet.href?.endsWith("/saturn-rust/style.css") && sheet.cssRules.length > 0)));
+  if (selected.mode === "scenarios") {
+    const scenarios = { vdp2Status, videoTransactions, abusTiming, dspArithmetic,
+      busTransactions, bBusReads, videoWrites, slaveRaster, hleDual, scuFringe,
+      dmacBus, sh2BusPipeline, sh2ResetBus, cs0Transfers, spriteShrink,
+      hardwareBoundaries, refreshArbitration, sh2Load, sh2Multiplier,
+      cdCopy, dmaStartup, cdReports, rotationReload, rotationFetch,
+      rotationHighResolution, scspMonitor, m68kReset, scspClock, scspEffects,
+      scspDma, scspPcm, scspCpuMemory, scspMvol };
+    timings.wasmReport = null;
+    await context.close();
+    // Every module receives a fresh tab/context, including its own emulator,
+    // media, backup RAM and audio state. Never share a page between workers.
+    for (const name of selected.groups) {
+      await timings.measure(name, async () => {
+        if (name === "largeMedia") {
+          await largeMedia(browser, address + prefix);
+          return;
+        }
+        const isolated = await browser.newContext();
+        try {
+          const fresh = await isolated.newPage();
+          const errors = [];
+          fresh.on("pageerror", error => errors.push(error.message));
+          await fresh.goto(address + prefix);
+          await fresh.waitForFunction(() => document.getElementById("status").textContent === "Ready");
+          await timings.instrument(fresh);
+          await fresh.locator("#view-debug").click();
+          await fresh.locator("#settings > summary").click();
+          await fresh.locator("#mode").selectOption("bios");
+          await scenarios[name](fresh);
+          assert.deepEqual(errors, [], `${name}: unhandled page error`);
+          await timings.wasmReport();
+          timings.wasmReport = null;
+        } finally {
+          timings.wasmReport = null;
+          await isolated.close();
+        }
+      });
+    }
+  } else {
   timings.group("ui-bios-and-exceptions");
   const value = (id) => page.locator(`#${id}`).textContent();
   const showView = (name) => page.locator(`#view-${name}`).click();
@@ -869,49 +916,49 @@ try {
     assert.deepEqual(points,[...row,...row,...(width>=640?[[255,0,255,255],[255,0,0,255]]:[])]);
   }
   assert.deepEqual(displayTraces.at(-1),{canvas:[704,480],edge:[0,255,0,255]});
-  await timings.measure("vdp2Status", async () => {
+  if (includeScenarios) await timings.measure("vdp2Status", async () => {
     await vdp2Status(page);
   });
-  await timings.measure("videoTransactions", async () => {
+  if (includeScenarios) await timings.measure("videoTransactions", async () => {
     await videoTransactions(page);
   });
-  await timings.measure("abusTiming", async () => {
+  if (includeScenarios) await timings.measure("abusTiming", async () => {
     await abusTiming(page);
   });
-  await timings.measure("dspArithmetic", async () => {
+  if (includeScenarios) await timings.measure("dspArithmetic", async () => {
     await dspArithmetic(page);
   });
-  await timings.measure("busTransactions", async () => {
+  if (includeScenarios) await timings.measure("busTransactions", async () => {
     await busTransactions(page);
   });
-  await timings.measure("bBusReads", async () => {
+  if (includeScenarios) await timings.measure("bBusReads", async () => {
     await bBusReads(page);
   });
-  await timings.measure("videoWrites", async () => {
+  if (includeScenarios) await timings.measure("videoWrites", async () => {
     await videoWrites(page);
   });
-  await timings.measure("slaveRaster", async () => {
+  if (includeScenarios) await timings.measure("slaveRaster", async () => {
     await slaveRaster(page);
   });
-  await timings.measure("hleDual", async () => {
+  if (includeScenarios) await timings.measure("hleDual", async () => {
     await hleDual(page);
   });
-  await timings.measure("scuFringe", async () => {
+  if (includeScenarios) await timings.measure("scuFringe", async () => {
     await scuFringe(page);
   });
-  await timings.measure("dmacBus", async () => {
+  if (includeScenarios) await timings.measure("dmacBus", async () => {
     await dmacBus(page);
   });
-  await timings.measure("sh2BusPipeline", async () => {
+  if (includeScenarios) await timings.measure("sh2BusPipeline", async () => {
     await sh2BusPipeline(page);
   });
-  await timings.measure("sh2ResetBus", async () => {
+  if (includeScenarios) await timings.measure("sh2ResetBus", async () => {
     await sh2ResetBus(page);
   });
-  await timings.measure("cs0Transfers", async () => {
+  if (includeScenarios) await timings.measure("cs0Transfers", async () => {
     await cs0Transfers(page);
   });
-  await timings.measure("spriteShrink", async () => {
+  if (includeScenarios) await timings.measure("spriteShrink", async () => {
     await spriteShrink(page);
   });
   timings.group("digital-and-cd-decode");
@@ -1164,10 +1211,10 @@ try {
   // The same independent both-CPU wait diagnostic as native tests. FRT measures
   // real external read delays. Changing only WCR or the source data must change
   // the corresponding computed guest records, excluding canned timing/results.
-  await timings.measure("hardwareBoundaries", async () => {
+  if (includeScenarios) await timings.measure("hardwareBoundaries", async () => {
     await hardwareBoundaries(page);
   });
-  await timings.measure("refreshArbitration", async () => {
+  if (includeScenarios) await timings.measure("refreshArbitration", async () => {
     await refreshArbitration(page);
   });
   timings.group("bsc-waits-share-idle");
@@ -1279,10 +1326,10 @@ try {
   // Original cached instruction-state kernels run independently on both
   // SH-2s. Each resets its FRT divider and measures table7.2 states. Changing
   // only guest ADDs to real BRA/NOP pairs changes time and computed results.
-  await timings.measure("sh2Load", async () => {
+  if (includeScenarios) await timings.measure("sh2Load", async () => {
     await sh2Load(page);
   });
-  await timings.measure("sh2Multiplier", async () => {
+  if (includeScenarios) await timings.measure("sh2Multiplier", async () => {
     await sh2Multiplier(page);
   });
   timings.group("sh2-timing-dsp-ubc-reset");
@@ -1532,13 +1579,13 @@ try {
     for(const trace of result)assert.deepEqual(trace,{done:0x600D,words:1168,count:0,sum,data});
   }
   // Original CD guest issues every command and polls real HIRQ/CR registers.
-  await timings.measure("cdCopy", async () => {
+  if (includeScenarios) await timings.measure("cdCopy", async () => {
     await cdCopy(page);
   });
-  await timings.measure("dmaStartup", async () => {
+  if (includeScenarios) await timings.measure("dmaStartup", async () => {
     await dmaStartup(page);
   });
-  await timings.measure("cdReports", async () => {
+  if (includeScenarios) await timings.measure("cdReports", async () => {
     await cdReports(page);
   });
   timings.group("cd-drive");
@@ -1663,13 +1710,13 @@ try {
       assert(result.next.every((v,i)=>v===(i%4===3?255:0)));
     }
   }
-  await timings.measure("rotationReload", async () => {
+  if (includeScenarios) await timings.measure("rotationReload", async () => {
     await rotationReload(page);
   });
-  await timings.measure("rotationFetch", async () => {
+  if (includeScenarios) await timings.measure("rotationFetch", async () => {
     await rotationFetch(page);
   });
-  await timings.measure("rotationHighResolution", async () => {
+  if (includeScenarios) await timings.measure("rotationHighResolution", async () => {
     await rotationHighResolution(page);
   });
   timings.group("interlace-video-composition-scu");
@@ -2253,28 +2300,28 @@ try {
   assert(dmaOperandAt>=0 && changedSoundIo.indexOf(dmaOperand,dmaOperandAt+1)===-1);
   changedSoundIo.writeUInt16BE(0x5AA5,dmaOperandAt+2);
   assert.equal((await soundIoResults(changedSoundIo)).words[4],0x5AA51234);
-  await timings.measure("scspMonitor", async () => {
+  if (includeScenarios) await timings.measure("scspMonitor", async () => {
     await scspMonitor(page);
   });
-  await timings.measure("m68kReset", async () => {
+  if (includeScenarios) await timings.measure("m68kReset", async () => {
     await m68kReset(page);
   });
-  await timings.measure("scspClock", async () => {
+  if (includeScenarios) await timings.measure("scspClock", async () => {
     await scspClock(page);
   });
-  await timings.measure("scspEffects", async () => {
+  if (includeScenarios) await timings.measure("scspEffects", async () => {
     await scspEffects(page);
   });
-  await timings.measure("scspDma", async () => {
+  if (includeScenarios) await timings.measure("scspDma", async () => {
     await scspDma(page);
   });
-  await timings.measure("scspPcm", async () => {
+  if (includeScenarios) await timings.measure("scspPcm", async () => {
     await scspPcm(page);
   });
-  await timings.measure("scspCpuMemory", async () => {
+  if (includeScenarios) await timings.measure("scspCpuMemory", async () => {
     await scspCpuMemory(page);
   });
-  await timings.measure("scspMvol", async () => {
+  if (includeScenarios) await timings.measure("scspMvol", async () => {
     await scspMvol(page);
   });
   timings.group("m68k-families-synthesis");
@@ -3333,7 +3380,7 @@ try {
   assert.match(rejected.state,/Reset/);assert.equal(rejected.retired,"0");
   assert(labRequests.every(r=>r.method==="GET"&&!r.body&&r.url.startsWith(address+prefix)));
   await lab.close();
-  await timings.measure("largeMedia", async () => {
+  if (includeScenarios) await timings.measure("largeMedia", async () => {
     await largeMedia(browser, address+prefix);
   });
   timings.group("cdda");
@@ -3404,8 +3451,9 @@ try {
   }));
   await playerPage.close();
   assert.deepEqual(pageErrors,[]);
+  }
   timings.assertComplete();
-  console.log(`Browser smoke passed (${await browser.version()}): Play-first, responsive desktop/tablet/mobile, keyboard settings/navigation, state/diagnostic preservation, input release, fullscreen ${fullscreenResult} + denied/unavailable feedback; /saturn-rust/ assets/MIME/Wasm, fixture trace, Step/Reset/bounded Run, local BIOS validation/vectors/fault, guest address-error PC/SR traces and RTE recovery, pending-error reset, SH7604 DIVU/DMA/IRQ/SCI/watchdog reset/cache coherence and bounded stacking errors, dual-CPU DIVU overflow intermediates/UBC acknowledgement and dividend mutations, all eight SMPC area codes and independent CD/sound reset reports, dual-SH-2 computation/capture IRQs/slave restart/master NMI and sticky slave faults, BCR1 processor identity/refresh IRQ/module stops/reset repeatability, UBC before/after/slot/data/DMAC saved-PC vectors, software standby/timed NMI wake, SYSRES volatile/battery retention, four-layer VDP2 tile guest/palette mutation/Wasm and production Canvas presentation, original rotation/coefficient/line-scroll/line-window guest and mutated matrix pixels, original RBG0/RBG1 guest with B0/B1 data and changed parameter-B pixels/Canvas, SCU DSP product/sum/external DMA/direct+indirect DMA/raster timer IRQs/reset/illegal-DSP faults, original CD scan/reverse/pause/tray/TOC guest, malformed runtime ISO root/child rejection and bounded raw-sector correction/failure responses, CD-DA PRE reference stereo/sector continuity and AudioWorklet, sprite-window/shadow/palette-MSB guest and Canvas mutations, 68k BCD/MOVEM/MOVEP/arithmetic/partial-fault/trap guest plus timed MIDI/SCSP DMA and three interrupt levels; SH-2-uploaded MC68EC000 PCM computation/SCSP timer IRQ/stereo samples and WebAudio worklet delivery/underflow/mute/blocked states, SCSP FM recent/past stack pipeline, TL gain, ALFO/PLFO and timed-envelope guest mutations and AudioWorklet; ${familyVectors.length} original 68k family/EA/CCR/exception vectors, twenty-four guest access-frame/partial-transfer/prefetch records, MOVEM terminal reads and operand-width mutation, ADD-to-SUB, UNLK A7 frame-literal and RMW-to-write mutations; ICR auto/external vectors, signed DIV1 sequences and both-port SMPC-to-SCU/VDP2 latching with control mutation, DACK armed waiting/reset, two-way cache RAM isolation and operand mutation, gradation top/second filtering and changed controls/Wasm/Canvas, descriptor-set runtime/startup and zero-first-read AIP; guest-executed HLE backup library expansion/relocation, 158 ABI records, full-capacity allocation, prefixes/compaction, Gregorian dates, corruption and persistent raw import/export, changed guest XOR operand; BIOS/HLE PLL transitions and reset domains, rational FRT/raster clocks, 352-dot Canvas output, 60 standard TV-mode/PAL/interlace guests with INTBACK/field/counter/pixel vectors and 704x480 Canvas, VDP1 Rotation16/Rotation8 Q9 readout, one-shot A/B X/Y/KAst reloads, consecutive rearming, table/delta mutations, double-interlace/DIL buffer traces and 448-line Wasm/Canvas fields, latched HSS/EOS scaled/distorted/flipped guest pixels and changed HSS operands, two-port digital settling/operand mutations; SMPC RTC/SMEM/INTBACK IRQs and synthetic digital+ID15/ID16 analog Gamepad/focus release, timed both-port direct analog handshake guest, mode switching, offline execution, no local-file transmission; actual ISO gameplay, keyboard input, guest state/pixels, scoring, completion, restart, local disc errors/races; guest backup/second-pad ROM and ISO, offline backup import/export/download bytes, reset retention, invalid imports/read races, second-pad keyboard/release, fresh-tab isolation; Prism Courier original disc, VDP1 sprite/polygons + VDP2 composition/Canvas, draw-end IRQ, 68k stereo + actual AudioWorklet, keyboard collision/win/restart, changed-disc texture mutation; Hardware Lab local CUE/mixed tracks, dual CPU, executing SCU DSP, CD FIFO-to-SCU DMA/IRQs/checksum, independent 68k-uploaded SCSP effects DSP, exact wet stereo/coefficient mutations, CD-DA through DSP and AudioWorklet, fourteen rotation/window Canvas pixels, disc matrix/window mutations, full diagnostic/pixel restart checks, backup, sector/audio mutations, CUE subindices and malformed ordering, missing local file rejection.`);
+  console.log(`Browser smoke passed (${await browser.version()}): ${selected.mode}, ${selected.groups.length} required groups`);
   timings.success = true;
 } finally {
   try {
@@ -3421,3 +3469,4 @@ try {
     await rm(mount, { recursive: true, force: true });
   }
 }
+await timings.writeReport(selected.report, selected.mode, testedDigest);
