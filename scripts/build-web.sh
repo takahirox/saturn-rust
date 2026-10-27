@@ -14,4 +14,4 @@ if ! command -v wasm-bindgen >/dev/null 2>&1 || [ "$(wasm-bindgen --version)" !=
   exit 1
 fi
 cargo build --locked --release --target wasm32-unknown-unknown
-wasm-bindgen --target web --out-dir web/pkg --no-typescript target/wasm32-unknown-unknown/release/saturn_rust.wasm
+wasm-bindgen --target web --out-dir web/pkg --no-typescript "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/saturn_rust.wasm"

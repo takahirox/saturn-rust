@@ -1,6 +1,9 @@
 import { performance } from "node:perf_hooks";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import { revision, siteDigest } from "./browser-results.mjs";
 const groups = JSON.parse(readFileSync(new URL("./browser-groups.json", import.meta.url)));
 
 // Timings never swallow failures; the active group is reported by finally.
@@ -10,7 +13,9 @@ export class BrowserTimings {
   started = performance.now();
   operations = {};
 
-  constructor() {
+  constructor(expected = groups, shard = "serial") {
+    this.expected = expected;
+    this.shard = shard;
     // Includes early asset/server failures, before the browser's try/finally.
     process.once("exit", () => { if (!this.reported) this.report(); });
   }
@@ -57,21 +62,24 @@ export class BrowserTimings {
     row.calls++; row.ms += ms; row.browserMs += browserMs ?? 0;
   }
 
-  group(name) {
+  group(name, setup = false) {
     this.finish();
-    this.active = { name, started: performance.now() };
+    this.active = { name, setup, started: performance.now() };
+    if (!setup) console.log(`BROWSER_GROUP_START ${JSON.stringify({ name })}`);
   }
+
+  setup(name) { this.group(name, true); }
 
   finish(status = "passed") {
     if (!this.active) return;
-    const row = { name: this.active.name, ms: Math.round(performance.now() - this.active.started), status };
+    const row = { name: this.active.name, ms: Math.round(performance.now() - this.active.started), status, setup: this.active.setup };
     this.rows.push(row);
     console.log(`BROWSER_TIMING ${JSON.stringify(row)}`);
     this.active = null;
   }
 
   async measure(name, run) {
-    const parent = this.active?.name;
+    const parent = this.active;
     this.group(name);
     try {
       const result = await run();
@@ -81,7 +89,7 @@ export class BrowserTimings {
       this.finish("failed");
       throw error;
     } finally {
-      if (parent) this.group(parent);
+      if (parent) this.group(parent.name, parent.setup);
     }
   }
 
@@ -90,20 +98,31 @@ export class BrowserTimings {
     this.finish(this.success ? "passed" : "failed");
     const totals = new Map();
     for (const row of this.rows) {
+      if (row.setup) continue;
       const total = totals.get(row.name) ?? { name: row.name, ms: 0, status: "passed" };
       total.ms += row.ms;
       if (row.status !== "passed") total.status = row.status;
       totals.set(row.name, total);
     }
-    console.log(`BROWSER_TOTAL ${JSON.stringify({ ms: Math.round(performance.now() - this.started), status: this.success ? "passed" : "failed", groups: totals.size, expected: groups.length })}`);
+    this.totals = [...totals.values()];
+    console.log(`BROWSER_TOTAL ${JSON.stringify({ shard: this.shard, ms: Math.round(performance.now() - this.started), status: this.success ? "passed" : "failed", groups: totals.size, expected: this.expected.length })}`);
     console.log(`BROWSER_MANIFEST ${JSON.stringify([...totals.values()])}`);
     console.log("Slowest browser groups:", [...totals.values()].sort((a, b) => b.ms - a.ms).slice(0, 10));
     console.log(`BROWSER_OPERATIONS ${JSON.stringify(this.operations)}`);
   }
 
   assertComplete() {
-    const names = new Set([...this.rows.map(row => row.name), this.active?.name].filter(Boolean));
-    assert.deepEqual([...names].sort(), [...groups].sort(), "Every registered browser group must execute");
+    const names = new Set([...this.rows, ...(this.active ? [this.active] : [])].filter(row => !row.setup).map(row => row.name));
+    assert.deepEqual([...names].sort(), [...this.expected].sort(), "Every registered browser group must execute");
     assert(this.rows.every(row => row.status === "passed"), "A browser group failed");
+  }
+
+  async writeReport(path, shard, digest) {
+    if (!path) return;
+    assert(this.reported && this.success, "Only a successful complete shard can write a report");
+    assert.equal(await siteDigest(), digest, "Site changed during browser validation");
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, JSON.stringify({ shard, revision: revision(), siteDigest: digest,
+      status: "passed", groups: this.totals, ms: Math.round(performance.now() - this.started) }, null, 2) + "\n");
   }
 }
