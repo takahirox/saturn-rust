@@ -6,10 +6,10 @@ three original licensed discs. It changes orchestration, test compilation and ti
 no emulator, guest, fixture, clock budget, expected result, runtime web asset
 or lockfile changes. The native test compiler moves from optimization level 1
 to 3 with debug assertions and overflow checks still explicitly enabled.
-Related to #17; hardware completion remains tracked there. Issue #61 must remain open until its final PR workflow and hosted
-performance verification have actually run. This node may commit locally but
-is explicitly prohibited from pushing or creating a PR. The workflow has no
-manual-dispatch trigger.
+Related to #17; hardware completion remains tracked there. The published
+implementation head `bdc76623a1fd88649b4b9d4755aba5ce95cee062` has passed
+the complete PR workflow. Hosted timing evidence is recorded below. Keep #61
+open until the final updated PR head passes its pre-merge checks.
 
 ## Current compact-transport diagnosis
 
@@ -105,8 +105,9 @@ cache entry, with no fallback keys. The existing build script still checks its
 exact version on every build and fails on a missing or invalid executable. A
 cold cache runs the same locked install; no test/build/check is conditional on
 the cache. The actual baseline spent 104.479 s compiling this unchanged tool.
-Cache hit rate and restore/save overhead have **not** been measured on GitHub;
-that potential saving is separate from the executed sharding speedup below.
+The first hosted attempt missed the cache and spent 60.128 s installing the
+CLI; its complete repeat restored that exact cache in a two-second Actions step.
+These two observations do not establish a long-term cache hit rate.
 
 ## Executed local comparison
 
@@ -278,35 +279,120 @@ unset the override for the committed level-3 profile. Use separate source
 checkouts for concurrent complete native/web paths and separate empty Cargo
 target directories for cold compile comparisons.
 
-**No new hosted run or hosted speedup is claimed.** The post-#60 hosted baseline
-is real; the local results above are real; a hosted <10-minute result is pending.
-The measured partition removes about half the browser critical path locally.
-Applying the observed partition to the historical hosted stages suggests a
-browser path around 129 + 376 + setup/handoff seconds instead of 939 seconds,
-with the original 527-second native job a competing path before the test-profile
-optimization. Local native gains must not be assumed to equal hosted gains.
-This is an explicit **projection**, not an executed workflow or a CI performance threshold.
-The 8-minute stretch goal cannot be established by this split alone: native
-at level 1 already took 8m47s (10m06s in the preceding PR). The native profile
-change addresses that path locally; its hosted gain is unmeasured. Bindgen
-installation (104.479 s),
-native guests and workflow scheduling/artifact handoffs remain concrete costs.
+## Executed hosted acceptance
 
-Two browser jobs duplicate Node/Chromium setup and add artifact/result handoffs;
-aggregate guest work is retained and fresh-context initialization adds a small
-cost. More concurrent runners trade extra setup/runner minutes for lower latency.
-The exact pinned-tool cache adds one official Actions cache step; no Rust/npm
-dependency, paid service or external backend was added. Its potential warm-cache
-saving is the historical 104.479-second install minus unmeasured cache transfer
-cost, not an executed latency result. Cold-cache CI retains that cost. Native
-execution and scheduling remain the next bottlenecks if the actual PR workflow
-misses the target; do not weaken tests or claim a sum of stages as a hosted run.
+[PR #62 run 40505628711, attempt 1](https://github.com/takahirox/saturn-rust/actions/runs/40505628711/attempts/1)
+completed successfully at implementation head
+`bdc76623a1fd88649b4b9d4755aba5ce95cee062`. Native, Wasm, both browser
+shards and the aggregate `build` gate passed; main-only `site` and `deploy`
+were correctly skipped. All 988 Rust tests passed with zero failed/ignored
+across 92 harnesses, all 90 registered fixture commands succeeded, all 64 browser
+groups passed (30 shared + 34 scenarios), and all 12 runner regressions passed
+with zero failed/skipped. The aggregate log verifies both reports against the
+revision and exact downloaded artifact. The intentionally failing asset/assertion
+probes in regression logs are expected negative controls, not skipped workload.
 
-The PR workflow must run against the final checkpoint and all required jobs must
-pass before merge. This node's no-push/no-PR instruction prevents that operation;
-it is a remaining automated acceptance criterion, not a human, firmware, owner
-investigation, live Pages or hardware approval gate. There is no required
-post-merge verification. Keep #61 and #17 open.
+Attempt 1 ran from **12:40:31 to 12:59:13 UTC**, or **1,122 s (18m42s)**.
+This is **16.03% slower** than the 967-second main baseline, which includes
+publication; comparing only validation, the baseline finished its required
+jobs at 941 s and attempt 1 at 1,122 s (**19.23% slower**). The preceding PR
+baseline was 902 s overall. Do not remove setup time to claim a faster full run.
+
+The shared runner's `chromium-install` command took **694.143 s**, versus
+21.998 s on its scenarios sibling and 33.993 s on the historical main baseline.
+APT's timestamped log records `Fetched 25.6 MB in 11min 12s (38.1 kB/s)` from
+`azure.archive.ubuntu.com`, including a delayed `xfonts-cyrillic` transfer.
+Guest execution was not active during this delay. The required tests eventually
+ran and passed; no retry policy, package/test omission or timeout relaxation was
+introduced. The complete attempt consumed **1,884 job-seconds (31.40 runner-minutes)**,
+versus 1,485 s (24.75 runner-minutes) for the main baseline, including its
+publication jobs, and 1,504 s (25.07 runner-minutes) for the preceding PR.
+These are sums of **executed job intervals**, not an elapsed workflow estimate
+or a bill. The public repository timing API reports zero billable milliseconds;
+no monetary charge or CPU/RSS measurement is inferred from it.
+
+[Attempt 2](https://github.com/takahirox/saturn-rust/actions/runs/40505628711/attempts/2)
+was a deliberately requested **complete workflow repeat**, not a failed-job
+retry or a new source revision. All the same mandatory checks and the aggregate
+artifact gate passed again; publication remained skipped. The actual workflow
+interval was **13:00:22–13:08:17 UTC: 475 s (7m55s)**, including setup,
+scheduling and artifact handoffs. This meets both the <10-minute target and the
+<=8-minute stretch target **for this attempt**. It is **50.88% faster** than the
+publication-inclusive main baseline, **49.52% faster** than that baseline's
+941-second validation interval, and **47.34% faster** than the preceding
+902-second PR workflow. These are executed intervals, not projected stage sums.
+
+| Executed hosted measure | Main baseline | Attempt 1 | Attempt 2 |
+| --- | ---: | ---: | ---: |
+| Full workflow (publication only on main) | 967 s | 1,122 s | 475 s |
+| Validation completion from workflow start | 941 s | 1,122 s | 475 s |
+| Native job | 527 s | 371 s | 320 s |
+| Native tests, including compilation | 497.670 s | 348.065 s | 294.324 s |
+| Native test compilation | 37.540 s | 39.320 s | 39.270 s |
+| Wasm preparation job | part of old build job | 92 s | 47 s |
+| Bindgen cold installation / warm restore | 104.479 s install | 60.128 s install | 2 s restore step |
+| Wasm build | 12.910 s | 7.978 s | 25.031 s |
+| Wasm Clippy | 11.581 s | 6.274 s | 9.612 s |
+| Chromium installation, shared / scenarios | 33.993 s, single runner | 694.143 / 21.998 s | 22.266 / 23.238 s |
+| Runner regressions | 12.108 s | 18.423 s | 18.623 s |
+| Full serial browser command | 740.913 s | two shards below | two shards below |
+| Shared browser command (30 groups) | part of serial | 282.263 s | 296.105 s |
+| Scenarios browser command (34 groups) | part of serial | 364.489 s | 369.302 s |
+| Aggregate build gate job | in old build job | 10 s | 10 s |
+| Executed job-seconds / runner-minutes | 1,485 / 24.75 | 1,884 / 31.40 | 1,128 / 18.80 |
+
+Attempt 2 used **24.04% fewer runner-seconds** than the full main baseline and
+**25.00% fewer** than the preceding PR. Job intervals are summed only for this
+resource-use comparison; they are not the workflow wall time. The CLI cache was
+warm in attempt 2, and cold in attempt 1. Installation and runner-image variance
+also affect the totals: do not attribute the entire observed speedup to sharding
+or subtract an installation duration to invent an executed cold-cache result.
+Both hosted attempts used Rust 1.99.1, Playwright 1.58.2 and Chromium
+145.0.7632.6 on Ubuntu 24.04.5 x86_64. Browser Node/npm were 24.21.0/11.19.0,
+versus 24.22.1/11.19.1 on the main baseline. Hosted image versions varied between
+`20261012.334.1` and `20261025.353.1`; exact job/step timestamps, per-native-binary
+and per-browser-group records are in `issue61.hosted_after` and
+`issue61.hosted_after_repeat` in the measurement JSON.
+
+On the repeat, the actual critical path was Wasm preparation → scenarios
+setup/guest execution → aggregate gate. Native finished at 13:05:48, before
+scenarios at 13:08:03. SCSP MVOL (107.028 s), high-resolution rotation (59.288 s)
+and HLE dual CPU (39.365 s) dominated scenarios; display modes (75.673 s) and
+HLE player (53.066 s) led the shared shard. The two scenario command times
+were close (364.489/369.302 s), while setup dominated the slow first attempt.
+Two successful hosted attempts, three controlled local browser pairs and the
+local full-validation comparison establish a material implemented improvement;
+they **do not guarantee** every hosted run finishes under ten minutes. In
+particular, the first attempt missed that target. Package-mirror delivery,
+guest execution and scheduling/handoffs remain measurable costs; reducing setup
+variance is a concrete follow-up, not a reason to omit dependencies or tests.
+
+To reproduce the hosted evidence independently (the attempt numbers matter):
+
+```sh
+gh api repos/takahirox/saturn-rust/actions/runs/40505628711/attempts/1
+gh api repos/takahirox/saturn-rust/actions/runs/40505628711/attempts/2
+gh api repos/takahirox/saturn-rust/actions/runs/40505628711/attempts/1/jobs --paginate
+gh api repos/takahirox/saturn-rust/actions/runs/40505628711/attempts/2/jobs --paginate
+gh run view 40505628711 --repo takahirox/saturn-rust --attempt 1 --log > hosted-attempt1.log
+gh run view 40505628711 --repo takahirox/saturn-rust --attempt 2 --log > hosted-attempt2.log
+```
+
+`CI_TIMING`, `NATIVE_TIMING`, `BROWSER_TOTAL`, `BROWSER_MANIFEST`,
+`BROWSER_WASM` and the aggregate pass lines record command, harness, group
+and guest-operation timings and verify complete coverage of the tested artifact.
+The JSON retains the regression's intentional negative-control failures alongside
+the complete successful shard manifests.
+The workflow intervals use each attempt's `run_started_at`/`updated_at`, not the
+original run creation time for the repeat. This timing-only documentation update
+follows the verified implementation head; the published final PR head must still
+pass CI before merge.
+
+The hosted runner logs contain no process CPU/RSS samples. Maximum validation
+concurrency remains three runners (native plus two browser jobs), each browser
+runner owning one Chromium process tree. Local CPU/RSS evidence above remains
+local evidence. No required post-merge verification, live Pages inspection,
+human approval or physical-hardware check is added. Keep #61 and #17 open.
 
 The earlier #59 record below describes its historical runner and measurements;
 its statements about one browser/no subsets/two jobs apply to that version.
