@@ -75,95 +75,12 @@ external cross compiler or SDK:
 
 ```sh
 python3 homebrew/star-collector/build.py
-python3 homebrew/star-collector/build.py --check
-python3 homebrew/prism-courier/build.py --check
-python3 src/hle/build.py --check
-python3 homebrew/hardware-lab/build.py --check
-python3 tests/fixtures/build_slave_raster.py --check
-python3 tests/fixtures/build_dual_sh2.py --check
-python3 tests/fixtures/build_sh7604.py --check
-python3 tests/fixtures/build_divu.py --check
-python3 tests/fixtures/build_bsc.py --check
-python3 tests/fixtures/build_bsc_waits.py --check
-python3 tests/fixtures/build_bsc_idle.py --check
-python3 tests/fixtures/build_bsc_share.py --check
-python3 tests/fixtures/build_bsc_memory.py --check
-python3 tests/fixtures/build_refresh.py --check
-python3 tests/fixtures/build_smpc_boundaries.py --check
-python3 tests/fixtures/build_sh2_timing.py --check
-python3 tests/fixtures/build_sh2_load.py --check
-python3 tests/fixtures/build_sh2_multiplier.py --check
-python3 tests/fixtures/build_sh2_bus_pipeline.py --check
-python3 tests/fixtures/build_sh2_reset_bus.py --check
-python3 tests/fixtures/build_cs0.py --check
-python3 tests/fixtures/build_bus_transactions.py --check
-python3 tests/fixtures/build_scu_fringe.py --check
-python3 tests/fixtures/build_dma_startup.py --check
-python3 tests/fixtures/build_dmac_bus.py --check
-python3 tests/fixtures/build_abus.py --check
-python3 tests/fixtures/build_dsp_dma.py --check
-python3 tests/fixtures/build_dsp_bus.py --check
-python3 tests/fixtures/build_dsp_arithmetic.py --check
-python3 tests/fixtures/build_intc.py --check
-python3 tests/fixtures/build_hle_system.py --check
-python3 tests/fixtures/build_hle_dual.py --check
-python3 tests/fixtures/build_hle_player.py --check
-python3 tests/fixtures/build_hle_backup.py --check
-python3 tests/fixtures/build_clock.py --check
-python3 tests/fixtures/build_display_modes.py --check
-python3 tests/fixtures/build_vdp2_status.py --check
-python3 tests/fixtures/build_sprite_shrink.py --check
-python3 tests/fixtures/build_sprite_rotation.py --check
-python3 tests/fixtures/build_rotation_reload.py --check
-python3 tests/fixtures/build_rotation_fetch.py --check
-python3 tests/fixtures/build_rotation_high_resolution.py --check
-python3 tests/fixtures/build_sprite_interlace.py --check
-python3 tests/fixtures/build_vdp1_erase_latch.py --check
-python3 tests/fixtures/build_video_transactions.py --check
-python3 tests/fixtures/build_video_writes.py --check
-python3 tests/fixtures/build_vdp2_fetch.py --check
-python3 tests/fixtures/build_digital_timing.py --check
-python3 tests/fixtures/build_ubc.py --check
-python3 tests/fixtures/build_system_reset.py --check
-python3 tests/fixtures/build_standby.py --check
-python3 tests/fixtures/build_tiles.py --check
-python3 tests/fixtures/build_effects.py --check
-python3 tests/fixtures/build_rbg1.py --check
-python3 tests/fixtures/build_line_color.py --check
-python3 tests/fixtures/build_special_video.py --check
-python3 tests/fixtures/build_gradation.py --check
-python3 tests/fixtures/build_controller.py --check
-python3 tests/fixtures/build_scu.py --check
-python3 tests/fixtures/build_sound.py --check
-python3 tests/fixtures/build_synthesis.py --check
-python3 tests/fixtures/build_envelope.py --check
-python3 tests/fixtures/build_dack.py --check
-python3 tests/fixtures/build_cache.py --check
-python3 tests/fixtures/build_m68k_families.py --check
-python3 tests/fixtures/build_memory_contracts.py --check
-python3 tests/fixtures/build_mode2.py --check
-python3 tests/fixtures/build_raster_history.py --check
-python3 tests/fixtures/build_sound_io.py --check
-python3 tests/fixtures/build_scsp_monitor.py --check
-python3 tests/fixtures/build_m68k_reset.py --check
-python3 tests/fixtures/build_scsp_clock.py --check
-python3 tests/fixtures/build_scsp_dma.py --check
-python3 tests/fixtures/build_scsp_pcm.py --check
-python3 tests/fixtures/build_scsp_cpu_memory.py --check
-python3 tests/fixtures/build_scsp_mvol.py --check
-python3 tests/fixtures/build_cd_drive.py --check
-python3 tests/fixtures/build_cd_copy.py --check
-python3 tests/fixtures/build_cd_directory.py --check
-python3 tests/fixtures/build_cd_directory_schedule.py --check
-python3 tests/fixtures/build_cd_filesystem.py --check
-python3 tests/fixtures/build_boot_layout.py --check
-python3 tests/fixtures/build_large_media.py --check --output target/large-media
-python3 tests/fixtures/build_cd_decode.py --check
-python3 tests/fixtures/build_cdda.py --check
-python3 tests/fixtures/build_sprite_effects.py --check
-python3 tests/fixtures/build_smpc.py --check
-python3 tests/fixtures/build_smpc_status.py --check
+sh scripts/check-fixtures.sh
 ```
+
+This is the complete 90-command CI reproducibility registry, including all three
+homebrew discs, HLE code, hardware guests and standard-size media. Individual
+`python3 ... --check` commands in that script remain usable for focused checks.
 
 ## Build and serve the browser client
 
@@ -270,6 +187,7 @@ After building `web/pkg`:
 ```sh
 npm ci --ignore-scripts
 npx playwright install chromium
+node --test scripts/ci-runner.test.mjs
 npm run test:browser
 ```
 
@@ -315,14 +233,49 @@ and results. Nonzero exit means failure.
 
 The [Browser Pages workflow](../.github/workflows/pages.yml) uses stable Rust,
 the committed Cargo/npm lockfiles, matching `wasm-bindgen-cli 0.2.129`, and
-`scripts/build-web.sh`. It verifies the committed ISO against its source, then runs
-all native checks above, Wasm build/Clippy and
-the Chromium smoke test before uploading only `web/` through GitHub's Pages
-artifact action. Only successful `main` pushes (including merges) deploy through
-the `github-pages` environment; PRs targeting `main` validate without deployment
-permissions. Main runs are serialized so deployments cannot overtake each other,
-and a current-`main` check prevents old reruns from publishing a stale revision.
-Superseded PR validation can be canceled. No `gh-pages` branch is used.
+`scripts/build-web.sh`. The independent `native` job checks every registered
+fixture and runs formatting, build, tests and native Clippy. The `build` job
+builds Wasm once, runs Wasm Clippy, runner regression tests and the complete
+Chromium suite, then retains exactly that tested `web/` directory. Both jobs
+must pass. On main pushes only, `site` downloads that immutable artifact and
+uploads it through the Pages artifact action; `deploy` depends on `site`.
+PRs validate without Pages deployment permissions. Main runs are serialized so
+deployments cannot overtake each other, and the current-main check rejects old
+reruns. Superseded PR validation can be canceled. No `gh-pages` branch is used.
+
+Every browser invocation still runs all 64 registered groups, in their original
+order and with their original assertions. The default lossless numeric-array
+transport reduces Playwright protocol overhead; it does not change Saturn
+execution, clock counts, fixtures, timeouts, Canvas pixels or audio samples.
+No browser workers or shared writable pages were added. CI runs at most two
+validation jobs per revision; the browser job uses one Chromium and retains the
+existing scenario/page lifecycle, including the standard-size media checks.
+
+Timings are always printed, including on failure. `BROWSER_TIMING` records group
+segments; `BROWSER_MANIFEST` aggregates every group and `BROWSER_TOTAL` verifies
+the expected count. `BROWSER_OPERATIONS` separates page loading/initialization,
+polling wall time, assertion-method time and evaluate wall/browser time. The difference between evaluate
+wall and browser time includes protocol serialization/transport and Node work.
+These are inclusive measurements, not additive CPU percentages. `BROWSER_WASM`
+measures guest stepping, frame advancement, resets, media mounting and frame/audio
+reads on the integration page. `CI_TIMING` covers command stages; native harness
+`test result` lines and `NATIVE_TIMING` identify test-binary durations.
+
+To profile or debug a complete suite with the original protocol representation:
+
+```sh
+BROWSER_TRANSPORT=raw npm run test:browser
+python3 scripts/ci-time.py native-tests cargo test --locked
+```
+
+`BROWSER_TRANSPORT=compact` (the default) selects the optimized representation.
+Both modes run the same complete suite; there is no subset or retry mode. Alternate
+raw/compact runs at least three times on the same idle machine for new performance
+claims. No rebuild is needed when changing this test-only transport setting.
+To roll back CI job separation, restore the serial workflow, keeping every
+mandatory command and the tested-build/current-main deployment gates.
+See the [performance evidence and coverage audit](ci-performance.md) for measured
+results, resource bounds, remaining costs and validation limits.
 
 One-time administrator setup may be required: **Settings → Pages → Build and
 deployment → Source: GitHub Actions**, with Actions and deployments permitted.

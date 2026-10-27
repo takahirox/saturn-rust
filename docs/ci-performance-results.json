@@ -1,0 +1,1775 @@
+{
+  "issue": 59,
+  "checked_revision": "5c5deca76f97af23af45fb0fb3941f43156dbb45",
+  "application_revision": "402f9e8c1a2819a1e2f52723c7674f133f470dde",
+  "environment": {
+    "host": "macOS arm64 / Apple M4 Max / 64 GiB",
+    "node": "24.12.0",
+    "rust_stable": "1.99.0",
+    "playwright": "1.58.2",
+    "chromium": "145.0.7632.6",
+    "wasm_bindgen": "0.2.129"
+  },
+  "measurement_limits": [
+    "Suite processes overlapped on the same host, up to four at once, with some short regression probes and native checks.",
+    "First baseline has group timers only; subsequent raw runs also time browser operations and Wasm calls.",
+    "No new GitHub workflow run: pushing/PR creation prohibited; no workflow_dispatch trigger.",
+    "Tool provisioning and artifact upload/deployment are excluded from local pipeline timings."
+  ],
+  "browser": {
+    "before_command": "BROWSER_TRANSPORT=raw npm run test:browser (first run: checked source + group timers only)",
+    "after_command": "npm run test:browser",
+    "before": [
+      {
+        "log": "browser-before-1.log",
+        "seconds": 798.67,
+        "status": "passed",
+        "unique_groups": 64,
+        "group_ms": {
+          "assets": 1,
+          "server-and-launch": 2987,
+          "page-init-and-assets": 939,
+          "ui-bios-and-exceptions": 1368,
+          "cd-directory-cache-dack": 7201,
+          "cd-scheduled-directory": 7096,
+          "cd-filesystem": 2779,
+          "boot-layout": 1043,
+          "hle-system": 1790,
+          "hle-backup": 4931,
+          "clock": 4901,
+          "display-modes": 37121,
+          "vdp2Status": 1154,
+          "videoTransactions": 90576,
+          "abusTiming": 2578,
+          "dspArithmetic": 3506,
+          "busTransactions": 2611,
+          "bBusReads": 5058,
+          "videoWrites": 6060,
+          "slaveRaster": 8175,
+          "hleDual": 16580,
+          "scuFringe": 3756,
+          "dmacBus": 2632,
+          "sh2BusPipeline": 7769,
+          "sh2ResetBus": 12064,
+          "cs0Transfers": 10769,
+          "spriteShrink": 7945,
+          "digital-and-cd-decode": 9930,
+          "sh7604-divu-smpc-bsc": 2955,
+          "hardwareBoundaries": 1212,
+          "refreshArbitration": 9020,
+          "bsc-waits-share-idle": 2236,
+          "sh2Load": 278,
+          "sh2Multiplier": 2257,
+          "sh2-timing-dsp-ubc-reset": 2021,
+          "mode2": 1930,
+          "cdCopy": 233,
+          "dmaStartup": 2673,
+          "cdReports": 4196,
+          "cd-drive": 674,
+          "raster-and-sprite-rotation": 8632,
+          "rotationReload": 11913,
+          "rotationFetch": 70402,
+          "rotationHighResolution": 155146,
+          "interlace-video-composition-scu": 9062,
+          "sound-and-memory": 3433,
+          "intc-sound-io": 3261,
+          "scspMonitor": 2703,
+          "m68kReset": 21463,
+          "scspClock": 6150,
+          "scspEffects": 12344,
+          "scspDma": 7159,
+          "scspPcm": 10633,
+          "scspCpuMemory": 8025,
+          "scspMvol": 84276,
+          "m68k-families-synthesis": 13522,
+          "input-dual-sh2-and-media-races": 984,
+          "star-collector-ui-backup": 21526,
+          "prism-courier": 17435,
+          "missing-build": 355,
+          "hardware-lab": 4549,
+          "largeMedia": 5620,
+          "cdda": 2218,
+          "hle-player": 24845
+        },
+        "selected_evaluate_operations": {},
+        "operation_totals": {},
+        "wasm": null
+      },
+      {
+        "log": "browser-before-2.log",
+        "seconds": 809.296,
+        "status": "passed",
+        "unique_groups": 64,
+        "group_ms": {
+          "assets": 2,
+          "server-and-launch": 644,
+          "page-init-and-assets": 124,
+          "ui-bios-and-exceptions": 1339,
+          "cd-directory-cache-dack": 7107,
+          "cd-scheduled-directory": 7278,
+          "cd-filesystem": 2941,
+          "boot-layout": 1293,
+          "hle-system": 1829,
+          "hle-backup": 4986,
+          "clock": 4955,
+          "display-modes": 37310,
+          "vdp2Status": 1085,
+          "videoTransactions": 91159,
+          "abusTiming": 2566,
+          "dspArithmetic": 3540,
+          "busTransactions": 2575,
+          "bBusReads": 5111,
+          "videoWrites": 6176,
+          "slaveRaster": 8231,
+          "hleDual": 16604,
+          "scuFringe": 3706,
+          "dmacBus": 2575,
+          "sh2BusPipeline": 7802,
+          "sh2ResetBus": 12210,
+          "cs0Transfers": 10966,
+          "spriteShrink": 8036,
+          "digital-and-cd-decode": 10233,
+          "sh7604-divu-smpc-bsc": 3059,
+          "hardwareBoundaries": 1243,
+          "refreshArbitration": 9322,
+          "bsc-waits-share-idle": 2327,
+          "sh2Load": 304,
+          "sh2Multiplier": 2343,
+          "sh2-timing-dsp-ubc-reset": 2111,
+          "mode2": 2056,
+          "cdCopy": 223,
+          "dmaStartup": 2781,
+          "cdReports": 4475,
+          "cd-drive": 676,
+          "raster-and-sprite-rotation": 9538,
+          "rotationReload": 12411,
+          "rotationFetch": 70648,
+          "rotationHighResolution": 166368,
+          "interlace-video-composition-scu": 9055,
+          "sound-and-memory": 6308,
+          "intc-sound-io": 3215,
+          "scspMonitor": 2675,
+          "m68kReset": 21700,
+          "scspClock": 6034,
+          "scspEffects": 12382,
+          "scspDma": 7447,
+          "scspPcm": 10466,
+          "scspCpuMemory": 7971,
+          "scspMvol": 83801,
+          "m68k-families-synthesis": 13464,
+          "input-dual-sh2-and-media-races": 702,
+          "star-collector-ui-backup": 19173,
+          "prism-courier": 17236,
+          "missing-build": 118,
+          "hardware-lab": 3892,
+          "largeMedia": 4587,
+          "cdda": 2092,
+          "hle-player": 24708
+        },
+        "selected_evaluate_operations": {
+          "videoTransactions": {
+            "calls": 93,
+            "ms": 90324.1,
+            "browserMs": 10820.8
+          },
+          "rotationFetch": {
+            "calls": 36,
+            "ms": 69860.849,
+            "browserMs": 6919.1
+          },
+          "rotationHighResolution": {
+            "calls": 48,
+            "ms": 164522.848,
+            "browserMs": 19567.5
+          },
+          "scspMvol": {
+            "calls": 51,
+            "ms": 83374.957,
+            "browserMs": 38437.4
+          },
+          "display-modes": {
+            "calls": 1,
+            "ms": 37300.811,
+            "browserMs": 36426.9
+          }
+        },
+        "operation_totals": {
+          "network-and-init": {
+            "calls": 12,
+            "ms": 487.295,
+            "browserMs": 0
+          },
+          "polling-wall": {
+            "calls": 209,
+            "ms": 4963.789,
+            "browserMs": 0
+          },
+          "evaluate-wall": {
+            "calls": 1204,
+            "ms": 781150.732,
+            "browserMs": 248320.5
+          }
+        },
+        "wasm": {
+          "reset_hle": {
+            "calls": 6,
+            "ms": 0.6000003814697266
+          },
+          "run_steps": {
+            "calls": 34676,
+            "ms": 166341.20002365112
+          },
+          "reset_bios": {
+            "calls": 937,
+            "ms": 76.60000419616699
+          },
+          "advance_frame": {
+            "calls": 483,
+            "ms": 30691.50000476837
+          },
+          "mount_disc": {
+            "calls": 20,
+            "ms": 0.10000038146972656
+          },
+          "mount_cue": {
+            "calls": 78,
+            "ms": 1.9999990463256836
+          },
+          "framebuffer": {
+            "calls": 729,
+            "ms": 30.599997520446777
+          },
+          "audio_samples": {
+            "calls": 2383,
+            "ms": 19.099995613098145
+          }
+        }
+      },
+      {
+        "log": "browser-before-3.log",
+        "seconds": 808.879,
+        "status": "passed",
+        "unique_groups": 64,
+        "group_ms": {
+          "assets": 1,
+          "server-and-launch": 365,
+          "page-init-and-assets": 114,
+          "ui-bios-and-exceptions": 1371,
+          "cd-directory-cache-dack": 7394,
+          "cd-scheduled-directory": 7375,
+          "cd-filesystem": 2905,
+          "boot-layout": 1095,
+          "hle-system": 1845,
+          "hle-backup": 5057,
+          "clock": 5030,
+          "display-modes": 37478,
+          "vdp2Status": 1149,
+          "videoTransactions": 93109,
+          "abusTiming": 2606,
+          "dspArithmetic": 3539,
+          "busTransactions": 2570,
+          "bBusReads": 5087,
+          "videoWrites": 6153,
+          "slaveRaster": 8118,
+          "hleDual": 16599,
+          "scuFringe": 3830,
+          "dmacBus": 2621,
+          "sh2BusPipeline": 7801,
+          "sh2ResetBus": 12497,
+          "cs0Transfers": 17875,
+          "spriteShrink": 8465,
+          "digital-and-cd-decode": 10678,
+          "sh7604-divu-smpc-bsc": 3309,
+          "hardwareBoundaries": 1326,
+          "refreshArbitration": 9993,
+          "bsc-waits-share-idle": 2393,
+          "sh2Load": 295,
+          "sh2Multiplier": 2305,
+          "sh2-timing-dsp-ubc-reset": 2154,
+          "mode2": 2153,
+          "cdCopy": 239,
+          "dmaStartup": 2851,
+          "cdReports": 4578,
+          "cd-drive": 703,
+          "raster-and-sprite-rotation": 9349,
+          "rotationReload": 12602,
+          "rotationFetch": 71772,
+          "rotationHighResolution": 156871,
+          "interlace-video-composition-scu": 9055,
+          "sound-and-memory": 3445,
+          "intc-sound-io": 3105,
+          "scspMonitor": 2658,
+          "m68kReset": 21298,
+          "scspClock": 6050,
+          "scspEffects": 12344,
+          "scspDma": 7388,
+          "scspPcm": 10528,
+          "scspCpuMemory": 7922,
+          "scspMvol": 83082,
+          "m68k-families-synthesis": 13363,
+          "input-dual-sh2-and-media-races": 735,
+          "star-collector-ui-backup": 19518,
+          "prism-courier": 17254,
+          "missing-build": 121,
+          "hardware-lab": 3980,
+          "largeMedia": 4728,
+          "cdda": 2146,
+          "hle-player": 24533
+        },
+        "selected_evaluate_operations": {
+          "videoTransactions": {
+            "calls": 93,
+            "ms": 92195.377,
+            "browserMs": 10761.8
+          },
+          "rotationFetch": {
+            "calls": 36,
+            "ms": 70871.414,
+            "browserMs": 6939.9
+          },
+          "rotationHighResolution": {
+            "calls": 48,
+            "ms": 155446.956,
+            "browserMs": 19456.0
+          },
+          "scspMvol": {
+            "calls": 51,
+            "ms": 82643.258,
+            "browserMs": 38189.7
+          },
+          "display-modes": {
+            "calls": 1,
+            "ms": 37468.741,
+            "browserMs": 36595.5
+          }
+        },
+        "operation_totals": {
+          "network-and-init": {
+            "calls": 12,
+            "ms": 388.776,
+            "browserMs": 0
+          },
+          "polling-wall": {
+            "calls": 209,
+            "ms": 5369.659,
+            "browserMs": 0
+          },
+          "evaluate-wall": {
+            "calls": 1204,
+            "ms": 783028.623,
+            "browserMs": 247890.7
+          }
+        },
+        "wasm": {
+          "reset_hle": {
+            "calls": 6,
+            "ms": 0.5
+          },
+          "run_steps": {
+            "calls": 34676,
+            "ms": 166258.1000099182
+          },
+          "reset_bios": {
+            "calls": 937,
+            "ms": 80.90001964569092
+          },
+          "advance_frame": {
+            "calls": 484,
+            "ms": 30793.799998283386
+          },
+          "mount_disc": {
+            "calls": 20,
+            "ms": 0.09999942779541016
+          },
+          "mount_cue": {
+            "calls": 78,
+            "ms": 2.0999984741210938
+          },
+          "framebuffer": {
+            "calls": 730,
+            "ms": 29.500001907348633
+          },
+          "audio_samples": {
+            "calls": 2384,
+            "ms": 15.600008010864258
+          }
+        }
+      }
+    ],
+    "after": [
+      {
+        "log": "browser-after-1.log",
+        "seconds": 281.408,
+        "status": "passed",
+        "unique_groups": 64,
+        "group_ms": {
+          "assets": 2,
+          "server-and-launch": 453,
+          "page-init-and-assets": 205,
+          "ui-bios-and-exceptions": 1508,
+          "cd-directory-cache-dack": 509,
+          "cd-scheduled-directory": 3469,
+          "cd-filesystem": 692,
+          "boot-layout": 63,
+          "hle-system": 776,
+          "hle-backup": 4365,
+          "clock": 3979,
+          "display-modes": 36667,
+          "vdp2Status": 201,
+          "videoTransactions": 13099,
+          "abusTiming": 113,
+          "dspArithmetic": 198,
+          "busTransactions": 110,
+          "bBusReads": 204,
+          "videoWrites": 1231,
+          "slaveRaster": 1581,
+          "hleDual": 15145,
+          "scuFringe": 443,
+          "dmacBus": 115,
+          "sh2BusPipeline": 342,
+          "sh2ResetBus": 506,
+          "cs0Transfers": 1084,
+          "spriteShrink": 4788,
+          "digital-and-cd-decode": 3762,
+          "sh7604-divu-smpc-bsc": 431,
+          "hardwareBoundaries": 1218,
+          "refreshArbitration": 1831,
+          "bsc-waits-share-idle": 618,
+          "sh2Load": 296,
+          "sh2Multiplier": 2279,
+          "sh2-timing-dsp-ubc-reset": 1900,
+          "mode2": 331,
+          "cdCopy": 214,
+          "dmaStartup": 1479,
+          "cdReports": 769,
+          "cd-drive": 675,
+          "raster-and-sprite-rotation": 1319,
+          "rotationReload": 1831,
+          "rotationFetch": 8455,
+          "rotationHighResolution": 22750,
+          "interlace-video-composition-scu": 6479,
+          "sound-and-memory": 1735,
+          "intc-sound-io": 607,
+          "scspMonitor": 2659,
+          "m68kReset": 2855,
+          "scspClock": 1038,
+          "scspEffects": 2184,
+          "scspDma": 1254,
+          "scspPcm": 2091,
+          "scspCpuMemory": 2061,
+          "scspMvol": 39584,
+          "m68k-families-synthesis": 5885,
+          "input-dual-sh2-and-media-races": 718,
+          "star-collector-ui-backup": 18683,
+          "prism-courier": 17318,
+          "missing-build": 122,
+          "hardware-lab": 3949,
+          "largeMedia": 5194,
+          "cdda": 380,
+          "hle-player": 24603
+        },
+        "selected_evaluate_operations": {
+          "videoTransactions": {
+            "calls": 93,
+            "ms": 12344.716,
+            "browserMs": 9792.5
+          },
+          "rotationFetch": {
+            "calls": 36,
+            "ms": 7765.991,
+            "browserMs": 6731.0
+          },
+          "rotationHighResolution": {
+            "calls": 48,
+            "ms": 21248.879,
+            "browserMs": 19421.0
+          },
+          "scspMvol": {
+            "calls": 51,
+            "ms": 39161.299,
+            "browserMs": 37940.7
+          },
+          "display-modes": {
+            "calls": 1,
+            "ms": 36658.147,
+            "browserMs": 36620.1
+          }
+        },
+        "operation_totals": {
+          "network-and-init": {
+            "calls": 12,
+            "ms": 517.169,
+            "browserMs": 0
+          },
+          "polling-wall": {
+            "calls": 209,
+            "ms": 5641.064,
+            "browserMs": 0
+          },
+          "evaluate-wall": {
+            "calls": 1204,
+            "ms": 255907.975,
+            "browserMs": 243391.0
+          }
+        },
+        "wasm": {
+          "reset_hle": {
+            "calls": 6,
+            "ms": 0.5
+          },
+          "run_steps": {
+            "calls": 34676,
+            "ms": 166856.19998168945
+          },
+          "reset_bios": {
+            "calls": 937,
+            "ms": 54.599989891052246
+          },
+          "advance_frame": {
+            "calls": 484,
+            "ms": 30732.400009155273
+          },
+          "mount_disc": {
+            "calls": 20,
+            "ms": 0.39999961853027344
+          },
+          "mount_cue": {
+            "calls": 78,
+            "ms": 1.8000030517578125
+          },
+          "framebuffer": {
+            "calls": 730,
+            "ms": 31.300009727478027
+          },
+          "audio_samples": {
+            "calls": 2384,
+            "ms": 22.60000991821289
+          }
+        }
+      },
+      {
+        "log": "browser-after-2.log",
+        "seconds": 283.159,
+        "status": "passed",
+        "unique_groups": 64,
+        "group_ms": {
+          "assets": 2,
+          "server-and-launch": 379,
+          "page-init-and-assets": 153,
+          "ui-bios-and-exceptions": 1385,
+          "cd-directory-cache-dack": 555,
+          "cd-scheduled-directory": 3476,
+          "cd-filesystem": 695,
+          "boot-layout": 60,
+          "hle-system": 783,
+          "hle-backup": 4353,
+          "clock": 3934,
+          "display-modes": 36866,
+          "vdp2Status": 212,
+          "videoTransactions": 13519,
+          "abusTiming": 126,
+          "dspArithmetic": 208,
+          "busTransactions": 112,
+          "bBusReads": 205,
+          "videoWrites": 1240,
+          "slaveRaster": 1608,
+          "hleDual": 15464,
+          "scuFringe": 487,
+          "dmacBus": 121,
+          "sh2BusPipeline": 389,
+          "sh2ResetBus": 522,
+          "cs0Transfers": 1104,
+          "spriteShrink": 4782,
+          "digital-and-cd-decode": 3803,
+          "sh7604-divu-smpc-bsc": 445,
+          "hardwareBoundaries": 1319,
+          "refreshArbitration": 1880,
+          "bsc-waits-share-idle": 646,
+          "sh2Load": 296,
+          "sh2Multiplier": 2311,
+          "sh2-timing-dsp-ubc-reset": 1922,
+          "mode2": 368,
+          "cdCopy": 238,
+          "dmaStartup": 1485,
+          "cdReports": 787,
+          "cd-drive": 685,
+          "raster-and-sprite-rotation": 1339,
+          "rotationReload": 1896,
+          "rotationFetch": 8454,
+          "rotationHighResolution": 22587,
+          "interlace-video-composition-scu": 6424,
+          "sound-and-memory": 1732,
+          "intc-sound-io": 601,
+          "scspMonitor": 2653,
+          "m68kReset": 2882,
+          "scspClock": 1034,
+          "scspEffects": 2178,
+          "scspDma": 1242,
+          "scspPcm": 2083,
+          "scspCpuMemory": 2058,
+          "scspMvol": 39873,
+          "m68k-families-synthesis": 5929,
+          "input-dual-sh2-and-media-races": 785,
+          "star-collector-ui-backup": 18864,
+          "prism-courier": 17357,
+          "missing-build": 116,
+          "hardware-lab": 3929,
+          "largeMedia": 5078,
+          "cdda": 370,
+          "hle-player": 24766
+        },
+        "selected_evaluate_operations": {
+          "videoTransactions": {
+            "calls": 93,
+            "ms": 12586.77,
+            "browserMs": 9913.8
+          },
+          "rotationFetch": {
+            "calls": 36,
+            "ms": 7739.915,
+            "browserMs": 6681.2
+          },
+          "rotationHighResolution": {
+            "calls": 48,
+            "ms": 21068.264,
+            "browserMs": 19213.6
+          },
+          "scspMvol": {
+            "calls": 51,
+            "ms": 39312.282,
+            "browserMs": 37962.4
+          },
+          "display-modes": {
+            "calls": 1,
+            "ms": 36856.679,
+            "browserMs": 36812.1
+          }
+        },
+        "operation_totals": {
+          "network-and-init": {
+            "calls": 12,
+            "ms": 500.909,
+            "browserMs": 0
+          },
+          "polling-wall": {
+            "calls": 209,
+            "ms": 5882.371,
+            "browserMs": 0
+          },
+          "evaluate-wall": {
+            "calls": 1204,
+            "ms": 256859.468,
+            "browserMs": 243629.8
+          }
+        },
+        "wasm": {
+          "reset_hle": {
+            "calls": 6,
+            "ms": 0.6999979019165039
+          },
+          "run_steps": {
+            "calls": 34676,
+            "ms": 167050.0000076294
+          },
+          "reset_bios": {
+            "calls": 937,
+            "ms": 62.10002326965332
+          },
+          "advance_frame": {
+            "calls": 484,
+            "ms": 30706.4000082016
+          },
+          "mount_disc": {
+            "calls": 20,
+            "ms": 0.3000001907348633
+          },
+          "mount_cue": {
+            "calls": 78,
+            "ms": 1.6000003814697266
+          },
+          "framebuffer": {
+            "calls": 730,
+            "ms": 62.500014305114746
+          },
+          "audio_samples": {
+            "calls": 2384,
+            "ms": 21.89999771118164
+          }
+        }
+      },
+      {
+        "log": "browser-after-3.log",
+        "seconds": 279.423,
+        "status": "passed",
+        "unique_groups": 64,
+        "group_ms": {
+          "assets": 2,
+          "server-and-launch": 437,
+          "page-init-and-assets": 133,
+          "ui-bios-and-exceptions": 1332,
+          "cd-directory-cache-dack": 535,
+          "cd-scheduled-directory": 3479,
+          "cd-filesystem": 691,
+          "boot-layout": 51,
+          "hle-system": 782,
+          "hle-backup": 4362,
+          "clock": 3961,
+          "display-modes": 36120,
+          "vdp2Status": 203,
+          "videoTransactions": 13067,
+          "abusTiming": 113,
+          "dspArithmetic": 201,
+          "busTransactions": 113,
+          "bBusReads": 209,
+          "videoWrites": 1232,
+          "slaveRaster": 1578,
+          "hleDual": 15062,
+          "scuFringe": 449,
+          "dmacBus": 115,
+          "sh2BusPipeline": 350,
+          "sh2ResetBus": 510,
+          "cs0Transfers": 1105,
+          "spriteShrink": 4787,
+          "digital-and-cd-decode": 3769,
+          "sh7604-divu-smpc-bsc": 430,
+          "hardwareBoundaries": 1243,
+          "refreshArbitration": 1866,
+          "bsc-waits-share-idle": 624,
+          "sh2Load": 297,
+          "sh2Multiplier": 2295,
+          "sh2-timing-dsp-ubc-reset": 1939,
+          "mode2": 372,
+          "cdCopy": 215,
+          "dmaStartup": 1485,
+          "cdReports": 772,
+          "cd-drive": 678,
+          "raster-and-sprite-rotation": 1321,
+          "rotationReload": 1865,
+          "rotationFetch": 8385,
+          "rotationHighResolution": 22714,
+          "interlace-video-composition-scu": 6444,
+          "sound-and-memory": 1789,
+          "intc-sound-io": 599,
+          "scspMonitor": 2671,
+          "m68kReset": 2881,
+          "scspClock": 1035,
+          "scspEffects": 2181,
+          "scspDma": 1242,
+          "scspPcm": 2174,
+          "scspCpuMemory": 2054,
+          "scspMvol": 39301,
+          "m68k-families-synthesis": 5908,
+          "input-dual-sh2-and-media-races": 714,
+          "star-collector-ui-backup": 18565,
+          "prism-courier": 17144,
+          "missing-build": 109,
+          "hardware-lab": 3913,
+          "largeMedia": 4392,
+          "cdda": 373,
+          "hle-player": 24678
+        },
+        "selected_evaluate_operations": {
+          "videoTransactions": {
+            "calls": 93,
+            "ms": 12314.812,
+            "browserMs": 9758
+          },
+          "rotationFetch": {
+            "calls": 36,
+            "ms": 7735.855,
+            "browserMs": 6722.3
+          },
+          "rotationHighResolution": {
+            "calls": 48,
+            "ms": 21261.818,
+            "browserMs": 19372.2
+          },
+          "scspMvol": {
+            "calls": 51,
+            "ms": 38896.761,
+            "browserMs": 37735.3
+          },
+          "display-modes": {
+            "calls": 1,
+            "ms": 36110.153,
+            "browserMs": 36071.4
+          }
+        },
+        "operation_totals": {
+          "assertions-wall": {
+            "calls": 17647,
+            "ms": 1325.63,
+            "browserMs": 0
+          },
+          "network-and-init": {
+            "calls": 12,
+            "ms": 438.332,
+            "browserMs": 0
+          },
+          "polling-wall": {
+            "calls": 209,
+            "ms": 4901.523,
+            "browserMs": 0
+          },
+          "evaluate-wall": {
+            "calls": 1204,
+            "ms": 255011.368,
+            "browserMs": 242449.1
+          }
+        },
+        "wasm": {
+          "reset_hle": {
+            "calls": 6,
+            "ms": 0.4999990463256836
+          },
+          "run_steps": {
+            "calls": 34676,
+            "ms": 166022.3999862671
+          },
+          "reset_bios": {
+            "calls": 937,
+            "ms": 53.90001106262207
+          },
+          "advance_frame": {
+            "calls": 484,
+            "ms": 30631.89999294281
+          },
+          "mount_disc": {
+            "calls": 20,
+            "ms": 0.40000152587890625
+          },
+          "mount_cue": {
+            "calls": 78,
+            "ms": 2.0000009536743164
+          },
+          "framebuffer": {
+            "calls": 730,
+            "ms": 31.30001163482666
+          },
+          "audio_samples": {
+            "calls": 2384,
+            "ms": 17.499993324279785
+          }
+        }
+      }
+    ],
+    "before_median_seconds": 808.879,
+    "after_median_seconds": 281.408,
+    "reduction_percent": 65.21
+  },
+  "source_audit": {
+    "original_integrated_sha256": "da70ed08fea67421a87ee7598779bbbd339fb34488882eff2482aa0bbaf82eda",
+    "original_nonblank_lines_preserved_in_order": 3307,
+    "direct_assertion_call_sites_preserved": 598,
+    "registered_groups": 64,
+    "fixture_commands_identical": 90,
+    "fixture_command_registry_sha256": "7f67f241454d9a176318a99ffb6a45df5a43675b60879a6cc3ab86ab9ce256b2",
+    "unchanged_imported_modules": [
+      {
+        "path": "scripts/raw-media-fixture.mjs",
+        "sha256": "8b4179a44d91622b1fe0887964fb65e6af20a52d54f34e17db08c4934e964265"
+      },
+      {
+        "path": "scripts/video-transactions.mjs",
+        "sha256": "57cc908123e5a335155036ea6414ec1b6277224bf05ad1e56766e4251b2081d9"
+      },
+      {
+        "path": "scripts/bus-transactions.mjs",
+        "sha256": "aa7b966f75f93e65f63f64262954a76c22da1f4698915b8527529ddfeac332bb"
+      },
+      {
+        "path": "scripts/hle-dual.mjs",
+        "sha256": "b94ac643491aaf5d0915a1ce1c86bbdb5b0e65bfb2580f329d8102aebc247252"
+      },
+      {
+        "path": "scripts/slave-raster.mjs",
+        "sha256": "9c3601598258b2f7569253b5fe9c811e3bd75302a54ce47084deb5161aa8ed25"
+      },
+      {
+        "path": "scripts/video-writes.mjs",
+        "sha256": "63ba89a44b72d3747709662d9153d4d67fcab1fb4e4a59644af53ec8a362bd1f"
+      },
+      {
+        "path": "scripts/b-bus-reads.mjs",
+        "sha256": "9afce12d6f6f10b5a71d55f05d39740cb032c4f6213471e5f0a17bd740c3b722"
+      },
+      {
+        "path": "scripts/scu-fringe.mjs",
+        "sha256": "a24f4d2f75bb013a2cdf4d2582c47a8a7459d9d0cd09436486df7c263a825f2f"
+      },
+      {
+        "path": "scripts/dmac-bus.mjs",
+        "sha256": "74215dd2512154b8d49b172648709939339e933cd0ff141129130a24b1cfef80"
+      },
+      {
+        "path": "scripts/sh2-load.mjs",
+        "sha256": "bd97dcef3c1a67a32626657047ccf0271e987f1487db709f90fc0c95d1856b0c"
+      },
+      {
+        "path": "scripts/sh2-multiplier.mjs",
+        "sha256": "dc4210644a8d623b5771b08f54153988caa1597ece89dc0dd7cbcf9772ef744c"
+      },
+      {
+        "path": "scripts/sh2-bus-pipeline.mjs",
+        "sha256": "241bf095aec7984e11238a5378664d3784b4ae6c74a0978b445e3a1c680db2cb"
+      },
+      {
+        "path": "scripts/sh2-reset-bus.mjs",
+        "sha256": "845ef953d4f33746c387d29d2c626ecd455ddf0ab3f53aa31ee8fa355a141e43"
+      },
+      {
+        "path": "scripts/cs0.mjs",
+        "sha256": "43e36353e961cd7513ac8aa0429333486675e3800332b6fd04d6961cc5b1d73b"
+      },
+      {
+        "path": "scripts/abus.mjs",
+        "sha256": "e3b424e13f5be0f9daba387d03337943cab2de4a5d9130092de1b3e1b889c6fc"
+      },
+      {
+        "path": "scripts/dsp-arithmetic.mjs",
+        "sha256": "41238f5669bc1a78498fd74c5eb71b8db5bd15e51e424d0c0e065f163af18467"
+      },
+      {
+        "path": "scripts/hardware-boundaries.mjs",
+        "sha256": "0e20eceedf13163e66ba9cf6c82cd260fd0f3e3aad286d6e72703dd435136720"
+      },
+      {
+        "path": "scripts/refresh.mjs",
+        "sha256": "de19b5ffb67ab3d1172db239ce5a6792a26bfdf5452d6a620e10fe1d5549863c"
+      },
+      {
+        "path": "scripts/hle-player.mjs",
+        "sha256": "a0c096f56e8121b067a8f1412fadda15f1b30a10ce29e3fafe09098dc79b9597"
+      },
+      {
+        "path": "scripts/scsp-monitor.mjs",
+        "sha256": "443956dd724a38b80d460ca9b5cd63ca3271a127a1cb0edc1eee1c060213d5d5"
+      },
+      {
+        "path": "scripts/m68k-reset.mjs",
+        "sha256": "17e004c619f9c5aa0976abf53b69c4fc52681e585ec2950af0d6aa75fa468c50"
+      },
+      {
+        "path": "scripts/scsp-clock.mjs",
+        "sha256": "345ebce9eaa73b50a4f56bcd366b2fd9dfb217b336d6480559d51d65375b8402"
+      },
+      {
+        "path": "scripts/scsp-cpu-memory.mjs",
+        "sha256": "1407992c4361e218666bec952de359444b8bc847888f55e5380a7e6b477391cb"
+      },
+      {
+        "path": "scripts/scsp-pcm.mjs",
+        "sha256": "e11ab7e658c3304f9216d44259251b5580fb900c1042cf46d10913da41759343"
+      },
+      {
+        "path": "scripts/scsp-mvol.mjs",
+        "sha256": "2709c6421bb757c0aa76f23d1929ea11e919ac31f75e5e9ac0976a3f0eff77a8"
+      },
+      {
+        "path": "scripts/scsp-dma.mjs",
+        "sha256": "8469a26f1e59cacf43bad9d0c0dc1267eb7a72dddb2037de7cfc50e7f88cf0cc"
+      },
+      {
+        "path": "scripts/large-media.mjs",
+        "sha256": "d3122c4b9aeaaa0f03e904b06eded515a7cc1fa123296c210c3f3583fbc3761e"
+      },
+      {
+        "path": "scripts/cd-reports.mjs",
+        "sha256": "74eb587f609b9e695cd806d062631b22fb4c54421d591117095fa3b73333292c"
+      },
+      {
+        "path": "scripts/dma-startup.mjs",
+        "sha256": "3ea4383b865cdc5587fa77d05dd40691e8a0ebc3d29441b741503b72e43c4b4d"
+      },
+      {
+        "path": "scripts/cd-copy.mjs",
+        "sha256": "84193c3925ff3b8ab2939b6ea0378156e39f4c515e2769ec23011522a78f7222"
+      },
+      {
+        "path": "scripts/vdp2-status.mjs",
+        "sha256": "78402fdea4f653c1f30b1d48c53c36e18152ee0945ff19329c676d1d0631fd5e"
+      },
+      {
+        "path": "scripts/rotation-high-resolution.mjs",
+        "sha256": "5618c92320a6b802b379ef6e1fdc6828ace1ec1da19d10df87653584dc8fee1c"
+      },
+      {
+        "path": "scripts/rotation-fetch.mjs",
+        "sha256": "88b02a5241845bf2d45e7f7710d7244b03b9f12620c5ad8271c1e3feb494adb1"
+      },
+      {
+        "path": "scripts/sprite-shrink.mjs",
+        "sha256": "3d97724e44f44791b394cbfb86ca9d8e569b8c31ba3bb652064a956e83eb4e55"
+      },
+      {
+        "path": "scripts/rotation-reload.mjs",
+        "sha256": "205265d88fe3de8b5b195f7ff68841a842f2e63413352cc01a25fa096fc2391c"
+      }
+    ]
+  },
+  "native_final": {
+    "passed": 988,
+    "failed": 0,
+    "ignored": 0,
+    "test_binaries_including_docs": 92,
+    "harness_seconds": 192.77,
+    "binaries": [
+      {
+        "binary": "unittests src/lib.rs",
+        "passed": 629,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 14.36
+      },
+      {
+        "binary": "tests/abus.rs",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.01
+      },
+      {
+        "binary": "tests/b_bus_reads.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.02
+      },
+      {
+        "binary": "tests/backup.rs",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.0
+      },
+      {
+        "binary": "tests/boot.rs",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.01
+      },
+      {
+        "binary": "tests/bsc.rs",
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.01
+      },
+      {
+        "binary": "tests/bsc_memory.rs",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.07
+      },
+      {
+        "binary": "tests/bus.rs",
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.0
+      },
+      {
+        "binary": "tests/bus_transactions.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.03
+      },
+      {
+        "binary": "tests/cache.rs",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.0
+      },
+      {
+        "binary": "tests/cd.rs",
+        "passed": 41,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.19
+      },
+      {
+        "binary": "tests/cd_copy.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.08
+      },
+      {
+        "binary": "tests/cd_decode.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 2.88
+      },
+      {
+        "binary": "tests/cd_directory_schedule.rs",
+        "passed": 12,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 3.02
+      },
+      {
+        "binary": "tests/cd_drive.rs",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.56
+      },
+      {
+        "binary": "tests/cd_filesystem.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.53
+      },
+      {
+        "binary": "tests/cd_reports.rs",
+        "passed": 17,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.91
+      },
+      {
+        "binary": "tests/cdda.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.1
+      },
+      {
+        "binary": "tests/clock.rs",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 2.26
+      },
+      {
+        "binary": "tests/cs0.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.61
+      },
+      {
+        "binary": "tests/devices.rs",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.0
+      },
+      {
+        "binary": "tests/digital_timing.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.0
+      },
+      {
+        "binary": "tests/disc.rs",
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.01
+      },
+      {
+        "binary": "tests/display_modes.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 29.73
+      },
+      {
+        "binary": "tests/dma_startup.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 1.21
+      },
+      {
+        "binary": "tests/dmac_bus.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.02
+      },
+      {
+        "binary": "tests/dsp_arithmetic.rs",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.2
+      },
+      {
+        "binary": "tests/dsp_bus.rs",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.01
+      },
+      {
+        "binary": "tests/dsp_dma.rs",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.04
+      },
+      {
+        "binary": "tests/dual_sh2.rs",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.0
+      },
+      {
+        "binary": "tests/game.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 8.79
+      },
+      {
+        "binary": "tests/hardware_lab.rs",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.8
+      },
+      {
+        "binary": "tests/hle_backup.rs",
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 1.24
+      },
+      {
+        "binary": "tests/hle_dual.rs",
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 18.99
+      },
+      {
+        "binary": "tests/hle_player.rs",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 15.76
+      },
+      {
+        "binary": "tests/hle_system.rs",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.59
+      },
+      {
+        "binary": "tests/intc.rs",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.01
+      },
+      {
+        "binary": "tests/large_media.rs",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 1.12
+      },
+      {
+        "binary": "tests/m68k_families.rs",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.22
+      },
+      {
+        "binary": "tests/m68k_reset.rs",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.78
+      },
+      {
+        "binary": "tests/media.rs",
+        "passed": 9,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.08
+      },
+      {
+        "binary": "tests/memory_contracts.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.42
+      },
+      {
+        "binary": "tests/mode2.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.22
+      },
+      {
+        "binary": "tests/prism_courier.rs",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 14.94
+      },
+      {
+        "binary": "tests/raster_history.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.19
+      },
+      {
+        "binary": "tests/rbg1.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.07
+      },
+      {
+        "binary": "tests/refresh.rs",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 1.2
+      },
+      {
+        "binary": "tests/rotation_fetch.rs",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 1.85
+      },
+      {
+        "binary": "tests/rotation_high_resolution.rs",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 15.79
+      },
+      {
+        "binary": "tests/rotation_reload.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 1.28
+      },
+      {
+        "binary": "tests/scsp_clock.rs",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 1.35
+      },
+      {
+        "binary": "tests/scsp_cpu_memory.rs",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 1.35
+      },
+      {
+        "binary": "tests/scsp_dma.rs",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.57
+      },
+      {
+        "binary": "tests/scsp_monitor.rs",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.5
+      },
+      {
+        "binary": "tests/scsp_mvol.rs",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 28.78
+      },
+      {
+        "binary": "tests/scsp_pcm.rs",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 1.32
+      },
+      {
+        "binary": "tests/scu.rs",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.01
+      },
+      {
+        "binary": "tests/scu_fringe.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.26
+      },
+      {
+        "binary": "tests/sh2_address_errors.rs",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.01
+      },
+      {
+        "binary": "tests/sh2_bus_pipeline.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.07
+      },
+      {
+        "binary": "tests/sh2_load.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.04
+      },
+      {
+        "binary": "tests/sh2_multiplier.rs",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.89
+      },
+      {
+        "binary": "tests/sh2_reset_bus.rs",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.04
+      },
+      {
+        "binary": "tests/sh2_system.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.02
+      },
+      {
+        "binary": "tests/sh2_timing.rs",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.02
+      },
+      {
+        "binary": "tests/sh7604.rs",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.03
+      },
+      {
+        "binary": "tests/slave_raster.rs",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 1.18
+      },
+      {
+        "binary": "tests/smpc.rs",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.16
+      },
+      {
+        "binary": "tests/smpc_boundaries.rs",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.69
+      },
+      {
+        "binary": "tests/sound.rs",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.21
+      },
+      {
+        "binary": "tests/sound_io.rs",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.22
+      },
+      {
+        "binary": "tests/sprite_effects.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.33
+      },
+      {
+        "binary": "tests/sprite_interlace.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.53
+      },
+      {
+        "binary": "tests/sprite_rotation.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.63
+      },
+      {
+        "binary": "tests/sprite_shrink.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 3.97
+      },
+      {
+        "binary": "tests/standby.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.0
+      },
+      {
+        "binary": "tests/synthesis.rs",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 1.39
+      },
+      {
+        "binary": "tests/system_reset.rs",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.21
+      },
+      {
+        "binary": "tests/ubc.rs",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.01
+      },
+      {
+        "binary": "tests/vdp1_sampling.rs",
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.0
+      },
+      {
+        "binary": "tests/vdp2_fetch.rs",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 2.58
+      },
+      {
+        "binary": "tests/vdp2_status.rs",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.57
+      },
+      {
+        "binary": "tests/video.rs",
+        "passed": 18,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.11
+      },
+      {
+        "binary": "tests/video_effects.rs",
+        "passed": 19,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.11
+      },
+      {
+        "binary": "tests/video_gradation.rs",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.09
+      },
+      {
+        "binary": "tests/video_line_color.rs",
+        "passed": 9,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.14
+      },
+      {
+        "binary": "tests/video_scanout.rs",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.07
+      },
+      {
+        "binary": "tests/video_special.rs",
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.12
+      },
+      {
+        "binary": "tests/video_tiles.rs",
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.31
+      },
+      {
+        "binary": "tests/video_transactions.rs",
+        "passed": 11,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 1.8
+      },
+      {
+        "binary": "tests/video_writes.rs",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.87
+      },
+      {
+        "binary": "tests/video_writes.rs",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "seconds": 0.0
+      }
+    ]
+  },
+  "validated_web_sha256": {
+    "app.js": "70e9b314040c89bd3da68f1358c7524d5ff040fa7e14d818c690125d5aae7a87",
+    "audio-worklet.js": "5a36bf3f4d583550f7167d6c03da27752ed8378e2ac94104ebc8c6b21423471e",
+    "audio.js": "3705325f87ec9b248dec85a8f073b85c5de7246d122fb124c976950ff3f5343a",
+    "hardware-lab-LICENSE.txt": "76b1736e45bbdf69dbecb5064dd905b18e4f9247c85584239f37e0459753dae9",
+    "hardware-lab-audio.bin": "1c86e2d495e7d745dbfe1e4369afa104fb75eae9f042abb61e8fe56d8c67fd1d",
+    "hardware-lab.cue": "398e70e871f8b3ed6db6033bb9c34f08c9cd62dd59f87195cdb81e4ec3433f7e",
+    "hardware-lab.iso": "f8683e5768b4e68de1192469e4c81532d547e89b570ebe94d8dd4212ea228a83",
+    "index.html": "a362497abbeceb28c0531ec85e8f261d9614a3b47fb056a6e5666925c220b226",
+    "pkg/saturn_rust.js": "dbe15994bc0a8d8814c52b4fbce99eb617939aae06bfe3c29f9627905bd764c6",
+    "pkg/saturn_rust_bg.wasm": "d0fe11c90a5b67da1de538b897f988939dea8b7e11da7ee06576157e143c0971",
+    "prism-courier-LICENSE.txt": "76b1736e45bbdf69dbecb5064dd905b18e4f9247c85584239f37e0459753dae9",
+    "prism-courier.iso": "8427b45677d5fb9b7f401ebc58f6975b689d77c9741745489a3bc660e2d91137",
+    "star-collector-LICENSE.txt": "b3b105400daefcad8d679e23ce7bf3b4b5b82a971ce866ea89452abcf4222793",
+    "star-collector.iso": "a1d85374c7d37b6a547c8504c7c6917d0e1d04b8be23c846f14340f890326150",
+    "style.css": "03c5bb7b626be591c40f32230e18b93463d4cda3043a1d66b6920b679e31874c"
+  },
+  "local_pipeline_after": {
+    "native": [
+      {
+        "command": [
+          "cargo",
+          "fmt",
+          "--check"
+        ],
+        "seconds": 0.595,
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "cargo",
+          "build",
+          "--locked"
+        ],
+        "seconds": 2.055,
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "cargo",
+          "test",
+          "--locked"
+        ],
+        "seconds": 240.697,
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "cargo",
+          "clippy",
+          "--locked",
+          "--all-targets",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "seconds": 3.468,
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "sh",
+          "scripts/check-fixtures.sh"
+        ],
+        "seconds": 3.766,
+        "exit_code": 0
+      }
+    ],
+    "browser": [
+      {
+        "command": [
+          "sh",
+          "scripts/build-web.sh"
+        ],
+        "seconds": 0.384,
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "cargo",
+          "clippy",
+          "--locked",
+          "--target",
+          "wasm32-unknown-unknown",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "seconds": 0.119,
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "node",
+          "--test",
+          "scripts/ci-runner.test.mjs"
+        ],
+        "seconds": 8.309,
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "npm",
+          "run",
+          "test:browser"
+        ],
+        "seconds": 292.989,
+        "exit_code": 0
+      }
+    ],
+    "wall_seconds": 301.803
+  }
+}

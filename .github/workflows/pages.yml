@@ -16,6 +16,25 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  native:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+      - name: Verify all registered fixtures
+        run: python3 scripts/ci-time.py fixtures sh scripts/check-fixtures.sh
+      - name: Check Rust
+        run: |
+          python3 scripts/ci-time.py fmt cargo fmt --check
+          python3 scripts/ci-time.py native-build cargo build --locked
+          python3 scripts/ci-time.py native-tests cargo test --locked
+          python3 scripts/ci-time.py native-clippy cargo clippy --locked --all-targets -- -D warnings
+
   build:
     # Playwright 1.58.2 supports Ubuntu 24.04, but not Ubuntu 26.04.
     runs-on: ubuntu-24.04
@@ -28,127 +47,45 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
           rustup default stable
           rustup target add wasm32-unknown-unknown
-      - name: Verify reproducible homebrew image
-        run: |
-          python3 homebrew/star-collector/build.py --check
-          python3 homebrew/prism-courier/build.py --check
-          python3 src/hle/build.py --check
-          python3 homebrew/hardware-lab/build.py --check
-          python3 tests/fixtures/build_slave_raster.py --check
-          python3 tests/fixtures/build_dual_sh2.py --check
-          python3 tests/fixtures/build_sh7604.py --check
-          python3 tests/fixtures/build_divu.py --check
-          python3 tests/fixtures/build_bsc.py --check
-          python3 tests/fixtures/build_bsc_waits.py --check
-          python3 tests/fixtures/build_bsc_idle.py --check
-          python3 tests/fixtures/build_bsc_share.py --check
-          python3 tests/fixtures/build_bsc_memory.py --check
-          python3 tests/fixtures/build_refresh.py --check
-          python3 tests/fixtures/build_smpc_boundaries.py --check
-          python3 tests/fixtures/build_sh2_timing.py --check
-          python3 tests/fixtures/build_sh2_load.py --check
-          python3 tests/fixtures/build_sh2_multiplier.py --check
-          python3 tests/fixtures/build_sh2_bus_pipeline.py --check
-          python3 tests/fixtures/build_sh2_reset_bus.py --check
-          python3 tests/fixtures/build_cs0.py --check
-          python3 tests/fixtures/build_bus_transactions.py --check
-          python3 tests/fixtures/build_b_bus_reads.py --check
-          python3 tests/fixtures/build_video_writes.py --check
-          python3 tests/fixtures/build_scu_fringe.py --check
-          python3 tests/fixtures/build_dma_startup.py --check
-          python3 tests/fixtures/build_dmac_bus.py --check
-          python3 tests/fixtures/build_abus.py --check
-          python3 tests/fixtures/build_dsp_dma.py --check
-          python3 tests/fixtures/build_dsp_bus.py --check
-          python3 tests/fixtures/build_dsp_arithmetic.py --check
-          python3 tests/fixtures/build_intc.py --check
-          python3 tests/fixtures/build_hle_system.py --check
-          python3 tests/fixtures/build_hle_dual.py --check
-          python3 tests/fixtures/build_hle_player.py --check
-          python3 tests/fixtures/build_hle_backup.py --check
-          python3 tests/fixtures/build_clock.py --check
-          python3 tests/fixtures/build_display_modes.py --check
-          python3 tests/fixtures/build_vdp2_status.py --check
-          python3 tests/fixtures/build_raster_history.py --check
-          python3 tests/fixtures/build_sprite_shrink.py --check
-          python3 tests/fixtures/build_sprite_rotation.py --check
-          python3 tests/fixtures/build_rotation_reload.py --check
-          python3 tests/fixtures/build_rotation_fetch.py --check
-          python3 tests/fixtures/build_rotation_high_resolution.py --check
-          python3 tests/fixtures/build_sprite_interlace.py --check
-          python3 tests/fixtures/build_vdp1_erase_latch.py --check
-          python3 tests/fixtures/build_video_transactions.py --check
-          python3 tests/fixtures/build_vdp2_fetch.py --check
-          python3 tests/fixtures/build_digital_timing.py --check
-          python3 tests/fixtures/build_ubc.py --check
-          python3 tests/fixtures/build_system_reset.py --check
-          python3 tests/fixtures/build_standby.py --check
-          python3 tests/fixtures/build_tiles.py --check
-          python3 tests/fixtures/build_effects.py --check
-          python3 tests/fixtures/build_rbg1.py --check
-          python3 tests/fixtures/build_line_color.py --check
-          python3 tests/fixtures/build_special_video.py --check
-          python3 tests/fixtures/build_gradation.py --check
-          python3 tests/fixtures/build_sprite_effects.py --check
-          python3 tests/fixtures/build_cd_drive.py --check
-          python3 tests/fixtures/build_cd_reports.py --check
-          python3 tests/fixtures/build_cd_copy.py --check
-          python3 tests/fixtures/build_cd_directory.py --check
-          python3 tests/fixtures/build_cd_directory_schedule.py --check
-          python3 tests/fixtures/build_cd_filesystem.py --check
-          python3 tests/fixtures/build_boot_layout.py --check
-          python3 tests/fixtures/build_large_media.py --check --output target/large-media
-          python3 tests/fixtures/build_cd_decode.py --check
-          python3 tests/fixtures/build_mode2.py --check
-          python3 tests/fixtures/build_cdda.py --check
-          python3 tests/fixtures/build_scu.py --check
-          python3 tests/fixtures/build_sound.py --check
-          python3 tests/fixtures/build_synthesis.py --check
-          python3 tests/fixtures/build_envelope.py --check
-          python3 tests/fixtures/build_dack.py --check
-          python3 tests/fixtures/build_cache.py --check
-          python3 tests/fixtures/build_m68k_families.py --check
-          python3 tests/fixtures/build_memory_contracts.py --check
-          python3 tests/fixtures/build_sound_io.py --check
-          python3 tests/fixtures/build_scsp_monitor.py --check
-          python3 tests/fixtures/build_m68k_reset.py --check
-          python3 tests/fixtures/build_scsp_clock.py --check
-          python3 tests/fixtures/build_scsp_dma.py --check
-          python3 tests/fixtures/build_scsp_pcm.py --check
-          python3 tests/fixtures/build_scsp_cpu_memory.py --check
-          python3 tests/fixtures/build_scsp_mvol.py --check
-          python3 tests/fixtures/build_smpc.py --check
-          python3 tests/fixtures/build_smpc_status.py --check
-          python3 tests/fixtures/build_controller.py --check
-      - name: Check Rust
-        run: |
-          cargo fmt --check
-          cargo build --locked
-          cargo test --locked
-          cargo clippy --locked --all-targets -- -D warnings
       - name: Build browser client
         run: |
-          cargo install wasm-bindgen-cli --version 0.2.129 --locked
-          sh scripts/build-web.sh
-          cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings
+          python3 scripts/ci-time.py bindgen cargo install wasm-bindgen-cli --version 0.2.129 --locked
+          python3 scripts/ci-time.py wasm-build sh scripts/build-web.sh
+          python3 scripts/ci-time.py wasm-clippy cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
           package-manager-cache: false
       - name: Validate static assets and browser at /saturn-rust/
         run: |
-          npm ci --ignore-scripts
-          npx playwright install --with-deps chromium
-          npm run test:browser
+          python3 scripts/ci-time.py npm-install npm ci --ignore-scripts
+          python3 scripts/ci-time.py chromium-install npx playwright install --with-deps chromium
+          python3 scripts/ci-time.py runner-tests node --test scripts/ci-runner.test.mjs
+          python3 scripts/ci-time.py browser npm run test:browser
+      - name: Retain the tested web build
+        uses: actions/upload-artifact@v4
+        with:
+          name: validated-web
+          path: web
+          if-no-files-found: error
+
+  site:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [native, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: validated-web
+          path: web
       - name: Upload validated site
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v4
         with:
           path: web
 
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: build
+    needs: site
     runs-on: ubuntu-latest
     permissions:
       contents: read
