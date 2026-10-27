@@ -41,8 +41,9 @@ missing requirements or necessary validation.
 
 Choose checks appropriate to the changed files and the actual repository tooling.
 Use the actual [build, test and browser smoke commands](setup.md) for application
-changes. Do not add scaffolding, dependencies, CI, or tooling merely to document
-a process. Inspect the repository again for future changes and use relevant tooling.
+changes. The [CI performance record](ci-performance.md) documents the complete-suite
+inventory, timing commands and publication dependency graph. Do not add
+scaffolding, dependencies, CI, or tooling merely to document a process. Inspect the repository again for future changes and use relevant tooling.
 
 For templates and documentation, check Markdown and template syntax, relative
 links and anchors, whitespace, and consistency across the files. Use available
