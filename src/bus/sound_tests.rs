@@ -49,7 +49,7 @@ fn bridge_read_retains_each_word_across_dsp_pcm_dma_and_refresh_ownership() {
                         {
                             b.write16(SCSP + at, value).unwrap();
                         }
-                        (12, 24, 34) // PCM15..20; main20..24,29..34
+                        (50, 62, 72) // OP3 PCM53..58; main58..62,67..72
                     }
                     2 => {
                         for (at, value) in [
@@ -269,9 +269,9 @@ fn internal_dma_holds_both_cpu_and_all_scu_word_phases_until_its_final_word() {
 
 #[test]
 fn pcm_second_read_holds_both_sh2_and_all_scu_channels_until_the_read_completes() {
-    // ST-077 §3.2/fig3.2. Slot0 occupies ref5..10 and15..20.
-    // Requests eligible12 contend with the second PCM grant15.
-    // Main grants20 and publishes at24, in its own memory cycle.
+    // ST-077 figs3.2/4.30. Slot0 OP3 occupies ref43..48 and53..58.
+    // Requests eligible50 contend with the second PCM grant53.
+    // Main grants58 and publishes at62, in its own memory cycle.
     for chunk in [1, 3, 17, 10000] {
         for (channel, owner) in [
             (0, Owner::Cpu(Processor::Master)),
@@ -294,14 +294,14 @@ fn pcm_second_read_holds_both_sh2_and_all_scu_channels_until_the_read_completes(
             }
             b.write16(SOUND_RAM + 0x1000, 0x1234).unwrap();
             if let Owner::Cpu(p) = owner {
-                advance(&mut b, 12, chunk);
+                advance(&mut b, 50, chunk);
                 assert_eq!(
                     b.replay_cpu(p).write16(SOUND_RAM | 0x20001000, 0x5678),
                     Err(BusError::Pending)
                 );
                 b.grant_bus_transaction();
             } else {
-                advance(&mut b, 2, chunk);
+                advance(&mut b, 40, chunk);
                 b.write32(HIGH_WRAM + 0x100, 0x56789ABC).unwrap();
                 for (at, value) in [
                     (0, HIGH_WRAM + 0x100),
@@ -315,10 +315,10 @@ fn pcm_second_read_holds_both_sh2_and_all_scu_channels_until_the_read_completes(
                 }
                 advance(&mut b, 10, chunk);
             }
-            advance(&mut b, 11, chunk); // ref23, pending access not published
+            advance(&mut b, 11, chunk); // ref61, pending access not published
             assert!(b.sound.ram_busy());
             assert_eq!(b.read16(SOUND_RAM + 0x1000), Ok(0x1234));
-            advance(&mut b, 1, chunk); // admitted main completes at24
+            advance(&mut b, 1, chunk); // admitted main completes at62
             assert_eq!(b.read16(SOUND_RAM + 0x1000), Ok(0x5678));
             advance(&mut b, 610, chunk);
             assert_eq!(&b.sound.scsp.drain(1), &[0x1234; 2]);

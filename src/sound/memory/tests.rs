@@ -81,15 +81,15 @@ fn simultaneous_priority_and_late_high_priority_request_do_not_replace_a_grant()
 fn internal_pcm_dsp_refresh_and_dma_precede_queued_cpu_clients_then_release_them() {
     for chunk in [1, 3, 17, 10000] {
         let mut s = sound();
-        // PCM at5,15; DSP at10, then two internal DMA words at20,24.
+        // Retain PG/address work, then collide requests at OP3's first read.
+        for (at, value) in [(2, 0x1000), (6, 1), (12, 0x100), (22, 0xE000), (0, 0x1820)] {
+            s.scsp.write16(at, value).unwrap();
+        }
+        advance(&mut s, (8 * REFERENCE_HZ).div_ceil(DSP_HZ), chunk);
+        // PCM ticks9/11; DSP10; internal DMA12/13; CPU clients14/15.
         for (at, value) in [
-            (2, 0x1000),
-            (6, 1),
-            (12, 0x100),
-            (22, 0xE000),
-            (0, 0x1820),
-            (0x80C, 0xA002),
-            (0x80E, 0x8000),
+            (0x84C, 0xA002),
+            (0x84E, 0x8000),
             (0x412, 0x2000),
             (0x414, 0x700),
             (0x416, 0x3004),
@@ -98,7 +98,7 @@ fn internal_pcm_dsp_refresh_and_dma_precede_queued_cpu_clients_then_release_them
         }
         s.main_ram_request(Some(request(0x1000, 2, Some(0x1234))));
         s.memory.submit(Owner::Cpu, request(0x1000, 2, None));
-        advance(&mut s, 39, chunk);
+        advance(&mut s, (16 * REFERENCE_HZ).div_ceil(DSP_HZ), chunk);
         let grants: Vec<_> = s
             .memory
             .trace
@@ -109,13 +109,13 @@ fn internal_pcm_dsp_refresh_and_dma_precede_queued_cpu_clients_then_release_them
         assert_eq!(
             grants,
             [
-                (1, Owner::Pcm),
-                (2, Owner::Dsp),
-                (3, Owner::Pcm),
-                (4, Owner::Dma),
-                (5, Owner::Dma),
-                (6, Owner::Main),
-                (7, Owner::Cpu)
+                (9, Owner::Pcm),
+                (10, Owner::Dsp),
+                (11, Owner::Pcm),
+                (12, Owner::Dma),
+                (13, Owner::Dma),
+                (14, Owner::Main),
+                (15, Owner::Cpu)
             ]
         );
         assert_eq!(s.memory.take(Owner::Cpu), Some(0x1234));
@@ -127,6 +127,9 @@ fn internal_pcm_dsp_refresh_and_dma_precede_queued_cpu_clients_then_release_them
         s.memory
             .submit(Owner::Cpu, request(0x1000, 2, Some(0x5678)));
         advance(&mut s, 615, chunk);
+        // Next sample's OP3 slot0 starts at137, retaining the original
+        // assertion that PCM resumes after both CPU clients are released.
+        advance(&mut s, (137 * REFERENCE_HZ).div_ceil(DSP_HZ), chunk);
         let grants: Vec<_> = s
             .memory
             .trace
@@ -141,7 +144,7 @@ fn internal_pcm_dsp_refresh_and_dma_precede_queued_cpu_clients_then_release_them
                 (126, Owner::Main),
                 (127, Owner::Refresh),
                 (128, Owner::Cpu),
-                (129, Owner::Pcm)
+                (137, Owner::Pcm),
             ]
         );
         assert_eq!(s.complete_main_ram(), Ok(0x1234));

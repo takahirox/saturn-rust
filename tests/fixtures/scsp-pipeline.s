@@ -1,0 +1,111 @@
+; Original MIT, adjacent LICENSE. SH-2 source:
+load 0x4000,r1
+load 0x25a00000,r2
+load 0x600,r3
+copy:
+mov.l @r1,r0
+mov.l r0,@r2
+add #4,r1
+add #4,r2
+dt r3
+bf copy
+load 0x20100063,r1
+mov #1,r0
+mov.b r0,@r1
+load 0x2010001f,r1
+mov #6,r0
+mov.b r0,@r1
+load 0x20100063,r1
+wait_smpc6:
+mov.b @r1,r0
+tst #1,r0
+bf wait_smpc6
+load 0x25a0080c,r1
+wait_sound:
+mov.l @r1,r0
+tst r0,r0
+bt wait_sound
+load 0x25a00800,r1
+load 0x2600ef00,r2
+mov #4,r3
+records:
+mov.l @r1,r0
+mov.l r0,@r2
+add #4,r1
+add #4,r2
+dt r3
+bf records
+finished:
+sleep
+bra finished
+nop
+
+; 68k literal encodings in builder, operations:
+; MOVE.W #020F,$100400
+; MOVE.W #4000,$100700
+; MOVE.W #600D,$100E02
+; MOVE.W #2000,$001000
+; MOVE.W #4000,$001002
+; MOVE.W #1000,$100002
+; MOVE.W #0001,$100006
+; MOVE.W #0100,$10000C
+; MOVE.W #7800,$100010
+; MOVE.W #0007,$100014
+; MOVE.W #0820,$100000
+; MOVE.W #1002,$1003E2
+; MOVE.W #0001,$1003E6
+; MOVE.W #0100,$1003EC
+; MOVE.W #7800,$1003F0
+; MOVE.W #000F,$1003F4
+; MOVE.W #0820,$1003E0
+; MOVE.W #0000,$100016
+; MOVE.W #00EF,$100036
+; MOVE.W #00FF,$100076
+; MOVE.W #0480,$100780
+; MOVE.W #0481,$100782
+; MOVE.W #0482,$100784
+; MOVE.W #0483,$100786
+; MOVE.W #0484,$100788
+; MOVE.W #0000,$1008B0
+; MOVE.W #A800,$1008B2
+; MOVE.W #0002,$1008B4
+; MOVE.W #0000,$1008B6
+; MOVE.W #0000,$1008B8
+; MOVE.W #0000,$1008BA
+; MOVE.W #D002,$1008BC
+; MOVE.W #8000,$1008BE
+; MOVE.W #0000,$1008C0
+; MOVE.W #A800,$1008C2
+; MOVE.W #0002,$1008C4
+; MOVE.W #0000,$1008C6
+; MOVE.W #0000,$1008C8
+; MOVE.W #0000,$1008CA
+; MOVE.W #D102,$1008CC
+; MOVE.W #8004,$1008CE
+; MOVE.W #0000,$100890
+; MOVE.W #A840,$100892
+; MOVE.W #0002,$100894
+; MOVE.W #0000,$100896
+; MOVE.W #0000,$100898
+; MOVE.W #0000,$10089A
+; MOVE.W #D202,$10089C
+; MOVE.W #8008,$10089E
+; MOVE.W #0000,$1008A0
+; MOVE.W #A840,$1008A2
+; MOVE.W #0002,$1008A4
+; MOVE.W #0000,$1008A6
+; MOVE.W #0000,$1008A8
+; MOVE.W #0000,$1008AA
+; MOVE.W #D302,$1008AC
+; MOVE.W #800C,$1008AE
+; MOVE.W #0000,$100B20
+; MOVE.W #A000,$100B22
+; MOVE.W #0002,$100B24
+; MOVE.W #0000,$100B26
+; MOVE.W #0000,$100B28
+; MOVE.W #0000,$100B2A
+; MOVE.W #C002,$100B2C
+; MOVE.W #8010,$100B2E
+; MOVE.W #1820,$100000
+; MOVE.W #255,D0; wait: NOP; DBRA D0,wait
+; Copy DSP-produced RAM records to the SH-2 mailbox; STOP #2700

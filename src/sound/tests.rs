@@ -111,8 +111,10 @@ fn guest_ram_pcm16_loop_pan_key_off_and_all_thirty_two_slots() {
         direct(&mut scsp, slot, 0x100, 1, true, 16);
     }
     scsp.sample(&mut ram).unwrap();
-    assert_eq!(scsp.drain(1), [8192, 8192]);
-    assert_eq!(scsp.stack.data.iter().filter(|v| **v == 256).count(), 27);
+    assert_eq!(scsp.drain(1), [6656, 6656]); // OP7 slots0..25 at cold start
+    assert_eq!(scsp.stack.data.iter().filter(|v| **v == 256).count(), 26);
+    scsp.sample(&mut ram).unwrap();
+    assert_eq!(scsp.drain(1), [1536, 1536]); // prior slots26..31; next PCM byte is zero
 }
 #[test]
 fn pcm8_signed_source_bit_controls_pitch_and_no_loop_stop() {
@@ -295,7 +297,7 @@ fn thirty_two_envelopes_release_retrigger_and_bypass_independently() {
         scsp.write16(slot * 32 + 12, 0).unwrap();
     }
     scsp.sample(&mut ram).unwrap();
-    assert_eq!(scsp.drain(1), [16384, 16384]);
+    assert_eq!(scsp.drain(1), [13312, 13312]); // 26/32 cold-start contributions
     // Registering KEY_OFF alone has no effect until a global KYONEX.
     scsp.write16(0, 0x20).unwrap();
     scsp.sample(&mut ram).unwrap();
@@ -777,6 +779,9 @@ fn slot_monitor_uses_documented_ca_bits_all_selectors_and_independent_byte_lanes
             scsp.voices[slot as usize].phase = i64::from(slot % 16 * 4096 + 123) << 16;
         }
         scsp.sample(&mut ram).unwrap();
+        // OP2 slot31 crosses the first sample boundary. Do not infer CA
+        // from the PG phase before the address calculation actually runs.
+        scsp.sample_cycle(0, &mut ram).unwrap();
         for slot in 0..32 {
             let expected = ((slot % 16) << 7) as u16;
             scsp.write16(0x408, (slot << 11) as u16).unwrap();

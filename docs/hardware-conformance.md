@@ -3620,3 +3620,38 @@ unestablished. Remaining CPU/peripheral, multiprocessor/bus/reset, SCU/DSP,
 video/audio, CD/media/HLE, SMPC and comprehensive integration requirements are
 mandatory. Genuine BIOS and commercial-game compatibility remain unverified.
 Issue #17 stays open; this is not hardware completion.
+
+
+## SCSP retained synthesis and consumer publication (Issue #67)
+
+Related to #67. Related to #17. The [stage/consumer contract](scsp-synthesis-pipeline.md)
+reconciles ST-077-R2 §3.2/Figure 3.2's 128 cycles/sample with §4.2 printed
+pp.47/55–57/Figures 4.18/4.30–4.31, IMXL/ISEL pp.83–86 and §5/Figure 5.1.
+The output datapath affirmatively places DIRECT and DSP after waveform level
+calculation. Relative latency is documented; absolute interface phase, register
+snapshot and equal-edge conventions are explicitly distinguished from hardware
+latch claims. The later manual Figures 4.24–4.25 confirm the six-/five-interval
+OP1/OP2-to-OP7 relationship.
+
+| Contract | Implementation | Independent evidence |
+| --- | --- | --- |
+| Retain work through PG, modulation/address, separate PCM operands, interpolation/EG/ALFO and both level intervals | [Bounded seven-stage pipeline](../src/sound/pcm.rs), post-level DIRECT/MIXS and existing stack queue; sample clearing preserves in-flight stages | [Deadline vectors](../src/sound/pcm/tests.rs) for slots0/7/31, PCM8/16, signed interpolation, retained data after mutation, exact DSP reads before/at publication, once-only simultaneous sends and wrap |
+| Five-interval stack generations, selectors and STWINH | Existing [stack](../src/sound/synthesis.rs); OP7 supplies its result before OP2's equal-edge read; generation rollover follows OP2 slot31 | Unchanged [standalone all-selector vectors](../src/sound/synthesis/tests.rs), plus actual scheduled DRAM-to-OP7-to-OP2 execution for every carrier and all64 selectors, current/past and distances4/5 across wrap; scheduled STWINH preserves both banks while audio changes |
+| Idle transitions and reset domains | [Sound scheduler](../src/sound.rs) retains distributed idle slot edges and drains in-flight work; generation tags protect later KEYOFF/retrigger | Multiple activation phases, sparse/dense idle LFO/noise/stack parity, reset at every stage and wrap, no stale audio/MIXS/stack, SNDOFF preserves synthesis; existing CPU reset vectors retained |
+| Shared memory ownership and passive inspection | Separate operand grants/completions; existing PCM/DSP/refresh/DMA/main/CPU allocator | [PCM vectors](../src/sound/pcm/tests.rs), [memory vectors](../src/sound/memory/tests.rs), [SH-2/SCU adapter vectors](../src/bus/sound_tests.rs); chunks1/3/17/10000, exact records and stereo with/without passive reads |
+| Original guest and production audio | [MIT builder](../tests/fixtures/build_scsp_pipeline.py), [source](../tests/fixtures/scsp-pipeline.s), [ROM](../tests/fixtures/scsp-pipeline.hex), adjacent [license](../tests/fixtures/LICENSE) | [Native Machine](../tests/scsp_pipeline.rs) and [production Wasm/AudioWorklet](../scripts/scsp-pipeline.mjs): same bytes and arithmetic, two CPUs, uploaded executing DSP, early/late RAM records, slot31 wrap, signed operand changes, omitted voice/send, repeated cold boots, exact stereo and render/underflow/drop/blocked states |
+
+Reproduction is required by `scripts/check-fixtures.sh`; browser coverage runs
+inside the existing required `scspPcm` scenario group. The [validation record](validation-issue-67.md)
+records the independent pre-change deadline failure, unchanged guest oracle's
+failure on inherited main, hashes and actual full-suite results. Timing oracles
+were corrected for stage latency and cold-start ownership; arithmetic, waveform
+mutations and all ownership clients remain tested.
+
+Numeric envelope-rate calibration, exact noise polynomial/seed, unrelated DSP
+instructions, physical pin timing and absolute interface phases remain outside
+this increment. All unmet CPU/peripheral, multiprocessor/bus/reset, SCU/DSP,
+video/audio, CD/media/HLE, SMPC and integrated acceptance remains mandatory under
+#17. This is partial hardware-completion progress; #17 stays open. Historical
+Issues #11/#13/#15 stay administratively closed. No personal firmware, human
+listening/approval, physical console or live Pages inspection is required.

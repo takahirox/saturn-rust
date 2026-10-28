@@ -109,3 +109,14 @@ Artifact hashes, actual commands/results and mutation evidence are recorded in
 [Issue #29 validation](validation-issue-29.md). Envelope rates, 18-bit output,
 other sound timing gaps and all remaining umbrella hardware requirements remain
 mandatory; commercial-game compatibility is unverified.
+
+
+The guest DSP now reads MIXS0 at instruction24 and stores EFREG0 at25,
+after OP4 interpolation and both OP5/OP6 level intervals (ST-077
+Figures4.18/4.30). This preserves every original MVOL, wet/dry, clipping and
+mute/resume arithmetic assertion. The previous instruction4 read depended on
+premature synthesis publication. Current expanded ROM SHA-256:
+`a76f32429a220b50c89aca7ab13dda35cd5e402cad45a97fd21d34a7ca08472e`.
+See [Issue #67 validation](validation-issue-67.md) for the retained pipeline,
+current fixture hashes and complete regression results; the #29 record describes
+its historical revision.

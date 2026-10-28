@@ -89,6 +89,7 @@ python3 tests/fixtures/build_m68k_reset.py --check
 python3 tests/fixtures/build_scsp_clock.py --check
 python3 tests/fixtures/build_scsp_dma.py --check
 python3 tests/fixtures/build_scsp_pcm.py --check
+python3 tests/fixtures/build_scsp_pipeline.py --check
 python3 tests/fixtures/build_scsp_cpu_memory.py --check
 python3 tests/fixtures/build_scsp_mvol.py --check
 python3 tests/fixtures/build_smpc.py --check
