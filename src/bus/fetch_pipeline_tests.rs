@@ -1350,14 +1350,17 @@ fn nmi_during_pending_if_waits_for_older_execution_and_discards_younger_decoded_
         while m.bus.main_clocks < arrival {
             tick(&mut m, p);
         }
-        m.nmi_pending = true;
-        m.bus.signal_nmi(p);
+        m.request_nmi();
         trace(&mut m, p, 100, 3, true);
-        assert_eq!(&m.cpu_state().r[6..9], &[1, 0, 1]);
+        // H table5.8: two states of NMI recognition overlap the older IF.
+        // Eligible boundaries after the older instruction are t5, t6, t7.
+        // Arrival t4/t5 needs until t6/t7, allowing one/two successors.
+        let successors = arrival.saturating_sub(3);
+        assert_eq!(&m.cpu_state().r[6..9], &[1, 99 * successors as u32, 1]);
         assert_eq!(m.cpu_state().exceptions, 1);
         assert_eq!(
             m.cpu_state().last_exception.as_ref().unwrap().saved_pc,
-            0x26000002
+            0x26000002 + 2 * successors as u32
         );
         assert_eq!(m.cpu_state().status, crate::cpu::CpuStatus::Sleeping);
     }

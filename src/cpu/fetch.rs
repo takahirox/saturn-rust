@@ -16,6 +16,14 @@ pub(super) struct Fetch {
 }
 
 impl Fetch {
+    pub fn handler(&mut self, bus: &mut impl Memory, pc: u32) -> Result<(), BusError> {
+        if bus.sh2_clock().is_some() {
+            let start = bus.sh2_clock().unwrap();
+            self.decoded = Some(Self::word(bus, pc)?);
+            Self::finish_slot(bus, start)?;
+        }
+        Ok(())
+    }
     pub fn clear(&mut self) {
         *self = Self::default();
     }

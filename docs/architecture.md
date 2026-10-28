@@ -179,6 +179,25 @@ turn without retiring an instruction; device flags require guest acknowledgement
 DMA address errors use vector 10 independently of SR.I. External IRL/ICR,
 refresh and UBC sources are implemented; full bus arbitration remains missing.
 
+[Interrupt entry phases](sh2-interrupt-entry.md) now run as resumable work in
+both CPU journals. Source detection precedes the Table 5.8 recognition interval
+(two states for NMI, five for peripheral/IRL); recognition overlaps an executing
+instruction. Acceptance still waits for delayed branches and protected successors.
+Journaled decode/internal waits separate SR push, PC push, mask update, vector
+selection, vector-table read and the first handler IF. Stack writes complete
+synchronously through the arbiter; cache RAM accesses occupy at least one state.
+NMI request clear occurs in the first E after decode, independently of entry
+completion, so a later edge cannot be erased by replay or completion.
+
+Master external-vector acquisition owns a distinct two-state bus transaction.
+It outputs the accepted level, samples the SCU endpoint at completion and ignores
+BSC programmable waits and memory/cache decoding. Other levels stay pending.
+The acquisition result and acknowledgement are journaled together; autovector
+acknowledgement retains the accepted source identity. Same-level source order,
+autovector acknowledgement and the exact SCU clear edge are documented board
+conventions whose SCU-specific primary evidence remains incomplete. This is a
+partial #17 increment; see the [Issue #81 validation](validation-issue-81.md).
+
 CPU address errors dispatch vector 9 with next-PC/SR stacking, operand completion
 and delayed-branch deferral (SH7604 §§4.3/4.6/4.7). `src/cpu/memory.rs` checks
 alignment, on-chip widths and PC-relative/TAS restrictions before device access.
@@ -196,7 +215,7 @@ independent registers, stacks, delay/fault state and on-chip registers. The
 original diagnostic guest uses a guest-written shared flag to select setup;
 BCR1 identifies each physical processor. The DCC supplies slave HBlank IRL2
 (vector `0x41`) and VBlank IRL6 (vector `0x43`) as live levels, independently of master
-SCU masks/status/acknowledgement. `Bus::interrupt` uses physical blanking flags,
+SCU masks/status/acknowledgement. `Bus::interrupt_request` uses physical blanking flags,
 so DISP=0's TVSTAT readback override cannot create a permanent request. The
 existing INTC arbitration gives external inputs priority over equal-level
 internal sources, except UBC; CPU SR.I and branch/control-transfer deferral

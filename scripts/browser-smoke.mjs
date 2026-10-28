@@ -21,6 +21,7 @@ import { bBusReads } from "./b-bus-reads.mjs";
 import { scuFringe } from "./scu-fringe.mjs";
 import { dmacBus } from "./dmac-bus.mjs";
 import { sh2Store } from "./sh2-store.mjs";
+import { interruptEntry } from "./interrupt-entry.mjs";
 import { sh2Fetch } from "./sh2-fetch.mjs";
 import { sh2Load } from "./sh2-load.mjs";
 import { sh2Multiplier } from "./sh2-multiplier.mjs";
@@ -118,7 +119,7 @@ try {
     const scenarios = { vdp2Status, videoTransactions, abusTiming, dspArithmetic,
       busTransactions, bBusReads, videoWrites, slaveRaster, hleDual, scuFringe,
       dmacBus, sh2BusPipeline, sh2ResetBus, cs0Transfers, spriteShrink,
-      hardwareBoundaries, refreshArbitration, sh2Fetch, sh2Store, sh2Load, sh2Multiplier,
+      hardwareBoundaries, refreshArbitration, interruptEntry, sh2Fetch, sh2Store, sh2Load, sh2Multiplier,
       cdCopy, dmaStartup, cdReports, cdRw, rotationReload, rotationFetch,
       rotationHighResolution, mosaic, scspMonitor, m68kReset, scspClock, scspEffects,
       scspDma, scspPcm, scspCpuMemory, scspMvol };
@@ -1359,6 +1360,9 @@ try {
   // Original cached instruction-state kernels run independently on both
   // SH-2s. Each resets its FRT divider and measures table7.2 states. Changing
   // only guest ADDs to real BRA/NOP pairs changes time and computed results.
+  if (includeScenarios) await timings.measure("interruptEntry", async () => {
+    await interruptEntry(page);
+  });
   if (includeScenarios) await timings.measure("sh2Fetch", async () => {
     await sh2Fetch(page);
   });

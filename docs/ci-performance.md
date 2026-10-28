@@ -1,9 +1,9 @@
 # CI validation performance — Issue #61
 
 The timing measurements below are the historical Issue #61 inventory. The
-current registry has 66 browser groups and 96 fixture/media builders, retaining
+current registry has 69 browser groups and 99 fixture/media builders, retaining
 the required suite coverage and publication gates. See
-[Issue #73 validation](validation-issue-73.md) for the latest executed checks;
+[Issue #81 validation](validation-issue-81.md) for the latest executed checks;
 the older counts and measurements below describe their historical checkpoints.
 
 

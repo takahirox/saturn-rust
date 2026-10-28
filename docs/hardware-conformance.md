@@ -573,7 +573,11 @@ Implementation: [SCU ports/interrupts/timers](../src/scu.rs),
 [clock-domain dispatch](../src/bus.rs) and [raster deadlines](../src/timing.rs).
 ST-210 supersedes the earlier indirect-table diagram and removes DSTA/DSTOP;
 these ports and prohibited IST writes raise diagnostics rather than behaving as
-inert registers. SCU pending edges clear on accepted CPU interrupt acknowledgment.
+inert registers. Master external-vector acquisition now uses the accepted IRL
+level and acknowledges only its selected source at acquisition completion;
+autovector mode keeps the accepted source identity. Both are replay-safe. The
+[phase contract and SCU evidence limits](sh2-interrupt-entry.md) distinguish the
+SH-2 specification from deterministic SCU endpoint conventions.
 A-bus requests require AIACK to be armed again after its acknowledge cycle.
 
 The DSP executes every two main clocks. BUSG/DMABG now grant external SCU and
@@ -3837,3 +3841,43 @@ physical mosaic/table/character strobes and switching transients remain outside
 this functional coordinate contract. Genuine BIOS operation and broad commercial
 compatibility remain unverified. Issues #11/#13/#15 remain administratively closed;
 #17 remains open. No post-merge verification is required.
+
+## Scheduled SH-2 interrupt entry (Issue #81)
+
+Related to #17. [Primary-derived phase table and endpoint limitations](sh2-interrupt-entry.md)
+were recorded before implementation. H Rev. 4 §5.5 uses Table **5.8**, not the
+inherited Table 5.9 citation. Implementation is in
+[CPU entry](../src/cpu.rs), [handler IF](../src/cpu/fetch.rs),
+[Machine recognition/acceptance](../src/lib.rs),
+[bus recognition](../src/bus.rs), [transaction journal](../src/bus/transactions.rs)
+and [accepted-level SCU selection](../src/scu.rs).
+
+Independent [ideal memory vectors](../src/cpu/interrupt_tests.rs) reproduce the
+10/13-state response examples with explicit accesses and NMI clear at the first E.
+[Saturn phase vectors](../src/bus/interrupt_tests.rs) establish literal stack,
+vector-table and handler-fetch clocks for NMI, SCI TXI, master autovector/external
+IRL and slave autovector IRL. Both CPU adapters execute the NMI microsequence;
+SMPC wiring remains master-only. Tests cover waits, recognition, SR masks and
+ties (including a peripheral programmed to vector 12), accepted-level and
+same-level competitors, exact acknowledgement, replay, NMI edges before/after
+clear, completed-effect retention, peer CPU/DMAC/refresh contention and reset
+cancellation. Timelines compare chunks 1/3/17/10000 and passive inspection off/on.
+Existing delayed-branch/protected-successor, NMIE/NMIF, SLEEP and standby/clock
+recovery vectors remain required.
+
+The original MIT [builder](../tests/fixtures/build_interrupt_entry.py) installs
+private cache-RAM handlers, stacks and vector tables. The guest computes its FRT
+timestamps, saved PC/SR, accepted mask and post-RTE arithmetic on both CPUs, then
+the master executes SCU DMA and acquires its completion vector. Identical bytes
+run in [native Machine](../tests/interrupt_entry.rs) and the required
+[browser Wasm group](../scripts/interrupt-entry.mjs). Timing/priority/arithmetic
+operands, DMA source operands, omitted FRT/SCU triggers and repeated cold boots
+have independent expectations. Hosts mutate ROM before boot only.
+
+Status remains **Pending**: the cited SCU documents do not affirmatively specify
+same-level factor arbitration, the exact automatic clear edge or autovector
+acknowledgement. Those conventions are explicit, not hardware-conformance claims.
+Full electrical noise filtering, externally asserted WAIT and unestablished slave
+external-vector wiring are not modeled by this increment. See
+[observed validation and inherited-main failure](validation-issue-81.md).
+Issue #17 remains open; BIOS and commercial compatibility remain unverified.

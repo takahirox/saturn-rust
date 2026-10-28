@@ -106,6 +106,20 @@ impl Scu {
             self.status &= !(1 << (vector - 0x40));
         }
     }
+    /// H §5.2.3: A3–A0 identifies the accepted level during IVECF.
+    /// ST-097 table2.1 supplies the corresponding SCU source vectors.
+    /// Same-level ascending-vector arbitration is a deterministic convention.
+    pub(crate) fn interrupt_at_level(&self, level: u8) -> Option<u8> {
+        let unmasked = self.status & !u32::from(self.mask) & 0x3FFF
+            | if self.mask & 0x8000 == 0 {
+                self.status & 0xFFFF_0000
+            } else {
+                0
+            };
+        (0..32)
+            .find(|&bit| unmasked & (1 << bit) != 0 && INTERRUPT_LEVELS[bit] == level)
+            .map(|bit| 0x40 + bit as u8)
+    }
     #[cfg(test)]
     pub(crate) fn dma_pending(&self) -> bool {
         self.dsp.dma_pending() || self.channels.iter().any(|c| c.pending())

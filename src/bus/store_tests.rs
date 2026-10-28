@@ -558,8 +558,7 @@ fn delay_slot_store_finishes_ma_before_target_and_nmi_entry() {
             rom[44..48].copy_from_slice(&(HIGH_WRAM + 0x300).to_be_bytes());
             m.bus.load_bios(&rom).unwrap();
             m.bus.write16(HIGH_WRAM + 0x300, 0x001B).unwrap();
-            m.nmi_pending = true;
-            m.bus.signal_nmi(p);
+            m.request_nmi();
         }
         advance(&mut m, 36);
         assert!(m.issue_cpu(p).unwrap());
@@ -582,10 +581,12 @@ fn delay_slot_store_finishes_ma_before_target_and_nmi_entry() {
                 m.cpu_state().last_exception,
                 Some(crate::cpu::Exception {
                     vector: 11,
-                    saved_pc: base + 8
+                    saved_pc: base + 10
                 })
             );
-            assert_eq!(m.cpu_state().instructions, 2);
+            // NMI arrives at t35; recognition completes at t37, after
+            // the target SLEEP has executed at t36 (H table5.8).
+            assert_eq!(m.cpu_state().instructions, 3);
             assert_eq!(m.bus.read32(a), Ok(a + 4));
         }
     }

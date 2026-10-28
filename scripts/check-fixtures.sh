@@ -102,3 +102,5 @@ python3 tests/fixtures/build_controller.py --check
 python3 tests/fixtures/build_sh2_fetch.py --check
 
 python3 tests/fixtures/build_cd_rw.py --check
+
+python3 tests/fixtures/build_interrupt_entry.py --check

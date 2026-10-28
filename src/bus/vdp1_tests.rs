@@ -68,6 +68,7 @@ fn request(bus: &mut Bus, owner: Owner, address: u32) -> u32 {
             }
         }
         Owner::Refresh
+        | Owner::Vector(_, _)
         | Owner::ResetDrain(_)
         | Owner::WriteAccept(_, _)
         | Owner::WriteBuffer(_, _) => unreachable!(),

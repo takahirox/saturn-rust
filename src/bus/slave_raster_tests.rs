@@ -287,7 +287,10 @@ fn slave_raster_exception_replay_retains_one_sample_after_level_ends() {
     let pending = m.bus.read32(SCU + 0xA4).unwrap();
     assert!(!m.issue_cpu(Processor::Slave).unwrap());
     assert_eq!(m.slave.state().exceptions, 0);
-    assert_eq!(m.cpu_boundary[1].unwrap().irq, Some((2, 0x41)));
+    assert_eq!(
+        m.cpu_boundary[1].unwrap().irq.map(|r| (r.level, r.vector)),
+        Some((2, 0x41))
+    );
     let mut changed_completed_store = false;
     for _ in 0..100 {
         m.step_hardware_boundary().unwrap();
@@ -326,7 +329,7 @@ fn slave_raster_exception_replay_retains_one_sample_after_level_ends() {
 #[test]
 fn slave_raster_pending_exception_is_canceled_by_smpc_and_cold_reset() {
     for command in [3, 0x0D, 0x0E, 0x0F, 0] {
-        let mut m = sleeping_machine(224 * 1708);
+        let mut m = sleeping_machine(224 * 1708 + 5); // Table 5.8 recognition completes before issue
         m.bus.write32(HIGH_WRAM + 0x2000, 0x12345678).unwrap();
         m.bus.write8(BACKUP_RAM + 1, 0xA5).unwrap();
         if command != 0 {
