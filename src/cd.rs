@@ -1311,8 +1311,7 @@ impl CdBlock {
                     }
                 };
                 if self.init_flags & 2 != 0 && self.seeking > crate::cd_rw::PREROLL {
-                    self.rw
-                        .prepare(start, self.play_end(), self.seeking - crate::cd_rw::PREROLL);
+                    self.rw.prepare(start, self.seeking - crate::cd_rw::PREROLL);
                 }
                 self.status = if self.seeking != 0 {
                     4

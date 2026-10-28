@@ -95,7 +95,6 @@ struct Pack {
 
 struct Acquisition {
     first: u32,
-    end: u32,
     elapsed: u64,
     origin: u64,
     next: u64,
@@ -106,8 +105,11 @@ impl Acquisition {
     fn capture(&mut self, media: Option<&Media>) {
         let fad = self.first + self.frames as u32;
         for pack in 0..4 {
+            // Keep real lookahead beyond PLAY's end: an unchanged-start PLAY
+            // may extend the range before these packs reach publication.
+            // The decoder checks the current end before consuming a pack.
             let bytes = media
-                .filter(|m| fad < self.end.min(m.leadout()))
+                .filter(|m| fad < m.leadout())
                 .filter(|m| m.track(fad).is_some_and(|t| t.mode == TrackMode::Audio))
                 .and_then(|m| m.rw_pack(fad, pack));
             self.packs.push_back(bytes);
@@ -138,15 +140,11 @@ impl Decoder {
         if let Some((_, current)) = &mut self.stream {
             *current = end;
         }
-        if let Some(input) = &mut self.input {
-            input.end = end;
-        }
     }
-    pub fn prepare(&mut self, first: u32, end: u32, seek: u32) {
+    pub fn prepare(&mut self, first: u32, seek: u32) {
         self.stream = None;
         self.input = Some(Acquisition {
             first,
-            end,
             elapsed: 0,
             origin: u64::from(seek),
             next: u64::from(seek) + HZ.div_ceil(75),
@@ -162,7 +160,7 @@ impl Decoder {
             .as_ref()
             .is_none_or(|i| i.first != first || i.packs.len() != 8)
         {
-            self.prepare(first, end, 0);
+            self.prepare(first, 0);
             let input = self.input.as_mut().unwrap();
             input.capture(media);
             input.capture(media);
@@ -325,7 +323,7 @@ mod tests {
     #[test]
     fn acquisition_has_two_preroll_deadlines_and_cancellation_discards_the_window() {
         let mut d = Decoder::default();
-        d.prepare(150, 180, 26875);
+        d.prepare(150, 26875);
         assert_eq!(d.clocks(), 385197);
         d.advance(385196, None);
         assert!(d.input.as_ref().unwrap().packs.is_empty());

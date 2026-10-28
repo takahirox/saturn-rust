@@ -291,6 +291,70 @@ const CHANGED: [[u8; 24]; 4] = [
         36,
     ],
 ];
+
+#[test]
+fn extending_active_play_preserves_prefetched_packs_and_publication_times() {
+    fn command(b: &mut Bus, c: [u16; 4]) -> [u16; 4] {
+        for (i, word) in c.into_iter().enumerate() {
+            b.write16(CD + 0x18 + 4 * i as u32, word).unwrap();
+        }
+        b.advance_clocks(1075).unwrap();
+        response(b)
+    }
+    let audio = vec![0; 2352 * 30];
+    let mut sub = companion(150, 30);
+    for (i, pack) in sub[12..].chunks_exact_mut(24).enumerate() {
+        pack.copy_from_slice(&CODEWORDS[(i / 4 + i % 4) % 4]);
+    }
+    let media = Media::cue(
+        "FILE \"a.bin\" BINARY\nTRACK 01 AUDIO\nINDEX 01 00:00:00",
+        &[("a.bin", &audio)],
+    )
+    .unwrap()
+    .with_subchannel(&sub)
+    .unwrap();
+    let trace = |initial_length, end, horizon| {
+        let mut b = Bus::default();
+        b.cd.mount(media.clone());
+        command(&mut b, [0x0402, 0, 0, 0]);
+        command(&mut b, [0x1080, 150, 0x0080, initial_length]);
+        b.advance_clocks(830_000).unwrap();
+        command(&mut b, [0x10ff, 0xffff, 0x0080, end]);
+        b.advance_clocks(horizon).unwrap();
+        command(&mut b, [0x11ff, 0xffff, 0, 0]);
+        let mut packs = Vec::new();
+        loop {
+            let r = command(&mut b, [0x2001, 0, 0, 0]);
+            if r[0] & 0x8000 != 0 {
+                break;
+            }
+            packs.push((r, words(&b)));
+            assert_eq!(command(&mut b, [0x0600, 0, 0, 0])[1], 12);
+            assert!(packs.len() <= 24);
+        }
+        packs
+    };
+    // Pause completes 1075 clocks after each horizon. These three horizons
+    // bracket the second publication after extending (PLAY + 919097 clocks).
+    for (horizon, count) in [(0, 1), (86_946, 1), (86_947, 2), (86_948, 2), (900_000, 11)] {
+        let original = trace(30, 30, horizon);
+        assert_eq!(trace(1, 30, horizon), original, "horizon {horizon}");
+        assert_eq!(original.len(), count, "horizon {horizon}");
+        if horizon == 900_000 {
+            for (i, (r, payload)) in original.iter().enumerate() {
+                assert_eq!(r[1..], [12, 0, 0]);
+                let expected: Vec<_> = CODEWORDS[(i / 4 + i % 4) % 4]
+                    .chunks_exact(2)
+                    .map(|w| u16::from_be_bytes([w[0], w[1]]))
+                    .collect();
+                assert_eq!(*payload, expected, "pack {i}");
+            }
+        }
+    }
+    // Lookahead past the range must never publish unless PLAY is extended.
+    assert_eq!(trace(1, 1, 900_000).len(), 4);
+}
+
 fn guest_media(iso: &[u8], sub: &[u8]) -> Media {
     Media::cue(
         include_str!("fixtures/cd-rw.cue"),
