@@ -34,6 +34,16 @@ this is a scheduler convention, not measured pin timing. Architectural CPU state
 is published at completion, while completed bus effects remain visible during
 entry, following the existing replay boundary.
 
+CPU advancement also yields at CD, SMPC and sound reference-clock deadlines.
+These deadlines bound reference ticks after PLL conversion, separately from
+main-clock device/recognition deadlines. At non-reference PLL rates, bulk
+advancement stops before the reference event and processes that edge through
+the existing single-main-tick path. Fixed devices advance once; CPU issue can
+occur between two main ticks sharing that reference edge. With the slower PAL
+PLL, an edge delivering no main tick still advances fixed devices and returns
+to CPU scheduling. This preserves the board's deterministic cross-domain phase
+convention while allowing recognition to start at the event's actual edge.
+
 ## SCU evidence and limits
 
 [ST-097-R5](https://antime.kapsi.fi/sega/files/ST-097-R5-072694.pdf)

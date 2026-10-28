@@ -149,6 +149,123 @@ fn production_scheduler_accepts_interrupt_detected_during_idle_batch_on_time() {
         }
     }
 }
+#[test]
+fn production_scheduler_accepts_reference_clock_interrupts_on_time() {
+    const REFERENCE: u64 = 26_874_100;
+    for (pal, fast, frequency) in [
+        (false, false, REFERENCE),
+        (false, true, 28_636_400),
+        (true, false, 26_687_500),
+        (true, true, 28_437_500),
+    ] {
+        for phase in [0, 14] {
+            for remaining in 1..=7 {
+                for source in 0..3 {
+                    for external in [false, true] {
+                        for inspect in [false, true] {
+                            let mut m = board(Processor::Master, 1, 0);
+                            m.bus.onchip[0].write8(onchip::SCI + 2, 0).unwrap();
+                            m.set_pal(pal);
+                            m.bus.system_clock.select(fast);
+                            m.bus.raster.select_clock(fast);
+                            m.bus.advance_clocks(phase).unwrap();
+                            m.clocks = u64::from(phase);
+                            m.bus.onchip[0]
+                                .write16(onchip::ICR, u16::from(external))
+                                .unwrap();
+                            let (mask_bit, level, vector) = match source {
+                                0 => {
+                                    m.bus.write8(SMPC + 1, 1).unwrap();
+                                    m.bus.write8(SMPC + 5, 0xF0).unwrap();
+                                    m.bus.write8(SMPC + 0x63, 1).unwrap();
+                                    m.bus.write8(SMPC + 0x1F, 0x10).unwrap();
+                                    let deadline = m.bus.smpc.clocks_to_event();
+                                    m.bus.smpc.advance_clocks(deadline - remaining);
+                                    (7, 8, 0x47)
+                                }
+                                1 => {
+                                    let cd = &mut m.bus.cd;
+                                    let regs = crate::cd::REGISTERS;
+                                    cd.set_enabled(true);
+                                    cd.write16(regs + 8, 0).unwrap(); // clear initial HIRQ
+                                    cd.write16(regs + 12, 1).unwrap(); // CMOK
+                                    for off in [0x18, 0x1C, 0x20, 0x24] {
+                                        cd.write16(regs + off, 0).unwrap(); // Get Status
+                                    }
+                                    cd.advance(1075 - remaining);
+                                    assert!(!cd.interrupt());
+                                    m.bus.scu.write32(SCU + 0xA8, 1).unwrap();
+                                    (15, 7, 0x50)
+                                }
+                                _ => {
+                                    // One MIDI frame: ceil(10 * 26874100 / 31250)
+                                    // = 8600 reference clocks, independent of PLL.
+                                    let sound = &mut m.bus.sound;
+                                    sound.scsp.write16(0x406, 0x90).unwrap();
+                                    sound.scsp.write16(0x42A, 0x200).unwrap();
+                                    sound.advance(8600 - remaining).unwrap();
+                                    assert!(!sound.scsp.main_interrupt());
+                                    (6, 9, 0x46)
+                                }
+                            };
+                            m.bus
+                                .scu
+                                .write32(SCU + 0xA0, 0xBFFF & !(1 << mask_bit))
+                                .unwrap();
+                            let vector = if external { vector } else { 64 + level / 2 };
+                            let mut rom = vec![0; BIOS_SIZE];
+                            rom[vector * 4..vector * 4 + 4]
+                                .copy_from_slice(&0x26002000u32.to_be_bytes());
+                            m.bus.load_bios(&rom).unwrap();
+
+                            // Fixed domains publish on the first main tick of a
+                            // reference edge, or at the current main clock if
+                            // the slower PAL PLL supplies no tick at that edge.
+                            // Derive this from literal frequencies, not Bus's
+                            // conversion/deadline helpers or an observed trace.
+                            let reference_edge = u64::from(phase + remaining);
+                            let detected = ((reference_edge - 1) * frequency / REFERENCE + 1)
+                                .min(reference_edge * frequency / REFERENCE);
+                            let mut accepted = None;
+                            let mut sr_push_completed = None;
+                            while m.bus.main_clocks < detected + 24 {
+                                m.step_hardware_boundary().unwrap();
+                                if inspect {
+                                    let _ = m.debug_read32(HIGH_WRAM);
+                                    let _ = m.cpu_state();
+                                }
+                                if let Some(boundary) = m.cpu_boundary[0]
+                                    && boundary.irq.is_some()
+                                {
+                                    accepted.get_or_insert(boundary.started);
+                                }
+                                let journal = m.bus.transactions.journals[0].borrow();
+                                if journal.beats.iter().any(|(transfer, result)| {
+                                    transfer.address == 0x26000FFC
+                                        && transfer.write == Some(0)
+                                        && result.is_ok()
+                                }) {
+                                    sr_push_completed.get_or_insert(m.bus.main_clocks);
+                                }
+                            }
+                            // H Table 5.8 / Figure 5.7: recognition5, D/E/E3,
+                            // then a two-state WRAM SR push. No polling helper.
+                            assert_eq!(
+                                accepted,
+                                Some(detected + 5),
+                                "source={source} pal={pal} fast={fast} phase={phase} remaining={remaining} external={external} inspect={inspect}"
+                            );
+                            assert_eq!(sr_push_completed, Some(detected + 10));
+                            assert_eq!(m.bus.read32(0x26000FFC), Ok(0));
+                            assert_eq!(m.bus.read32(0x26000FF8), Ok(HIGH_WRAM + 8));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn trace(m: &mut Machine, p: Processor, end: u64, chunk: u32, inspect: bool) -> Trace {
     let mut t = Trace {
         grants: vec![],

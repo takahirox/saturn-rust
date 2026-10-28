@@ -218,3 +218,87 @@ dependency; manifests, lockfiles and generated fixture assets are unchanged.
 
 The expected pre-fix regression failure is the only failed check in this pass.
 Required post-merge verification: none.
+
+## Review follow-up: reference-clock interrupt detection (P1/P3)
+
+`Bus::advance_cpu_clocks` now yields at CD, SMPC and sound deadlines as well as
+main-clock events. A shared `reference_deadline` bounds reference ticks after
+PLL conversion. For non-reference PLL rates, the bulk path stops before the
+fixed-device edge and the existing single-main-tick path processes that edge,
+including zero/two-main-tick cases. This avoids rounding reference deadlines
+into main clocks or advancing through a newly established recognition deadline.
+
+`production_scheduler_accepts_reference_clock_interrupts_on_time` in
+[the production-scheduler vectors](../src/bus/interrupt_tests.rs) exercises actual
+INTBACK completion, CD Get Status/CMOK with A-Bus acknowledgement enabled, and
+SCSP MIDI output completion. It covers all four NTSC/PAL PLL frequencies,
+reference phases 0/14, requests 1–7 reference clocks away, autovector/external
+modes and passive inspection off/on: 672 cases. Expected detection clocks use
+literal frequencies and the documented cross-domain ordering convention;
+acceptance at R+5 and SR push completion at R+10 follow H Table 5.8/Figure 5.7
+and the two-state WRAM access. Saved PC/SR are checked independently. Before the
+fix, the SMPC clock-1 case reproduced acceptance at **8 instead of 6**. All 672
+cases pass with the fix.
+
+The initial full native run exposed two reset tests that assumed one scheduler
+call per vector word. [Those tests](../src/reset_tests.rs) now continue across
+intermediate reference-device events, checking the reset CPU state at each
+return. The literal 8/16/24/32 word-completion clocks, separately sampled vector
+values, atomic register publication and cancellation checks remain intact;
+cancellation is exercised at each actual completed word. No hardware timing
+expectation was changed.
+
+The next full run reached [the SH-2 system guest](../tests/sh2_system.rs) and
+found the same one-sleeping-turn assumption for a pending buffered write.
+The test retains the original **at most eight clocks** first-turn bound, then
+polls final value 35 over bounded additional sleeping turns with CPU-state checks.
+A public `step()` can return past a physical completion edge; bounding all later
+observation clocks by eight also failed and is not a hardware latency oracle.
+The unchanged [write-buffer vectors](../src/bus/write_buffer_tests.rs) still
+check the physical write at every clock through its literal t8 completion and
+the dependent read through t16. Its focused rerun passes. The final native rerun
+uses `--no-fail-fast` so every test binary executes even if another failure appears.
+
+PR #82's Related Issues now says `Related to #81`, with an explicit partial-work
+statement instead of a closing reference. Its draft state and published head
+were unchanged; this node does not push or merge.
+
+### SCU evidence finding (P2 still unresolved)
+
+Rechecked [ST-097-R5](https://antime.kapsi.fi/sega/files/ST-097-R5-072694.pdf)
+§2.2/Table 2.1 (printed p.27) and §3.5/Table 3.8 (pp.57–60), and
+[ST-210](https://antime.kapsi.fi/sega/files/ST-210-110194.pdf) item 7 (p.4).
+Also checked [ST-103-R1 Saturn Overview](https://antime.kapsi.fi/sega/files/ST-103-R1-040194.pdf)
+§3.2 (pp.13–15): it describes the SCU's interrupt-controller role and system
+configuration, without specifying same-level selection, an acquisition-completion
+clear edge or autovector acknowledgement. No affirmative primary evidence for
+those three behaviors, or for a replacement technical contract, was found.
+The existing deterministic conventions remain identified as unverified; no
+criterion is waived and no Issue correction is asserted. P2 remains mandatory
+and unmet. Leave #81/#17 open and PR #82 in draft.
+
+### Reference-clock fix validation
+
+Executed locally with the same native/Wasm toolchains and matching wasm-bindgen
+CLI recorded above. `npm ci --ignore-scripts` restored locked browser dependencies;
+no dependency, lockfile, fixture or generated web asset changes are committed.
+The complete browser run used the final runtime build; the later changes affect
+only native test polling and documentation.
+
+| Check | Observed result |
+| --- | --- |
+| `cargo fmt --check` | Passed |
+| `cargo build --locked` | Passed |
+| `cargo test --locked --no-fail-fast` | Passed: 1,121 tests, zero failed/ignored |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed |
+| Wasm warnings-denied Clippy (command above) | Passed |
+| `sh scripts/check-fixtures.sh` | Passed; all 99 builders |
+| `sh scripts/build-web.sh` (toolchain command above) | Passed |
+| `node --test scripts/ci-runner.test.mjs` | Passed: 12 tests, zero skipped |
+| `npm run test:browser` | Passed: all 69 groups (30 shared + 39 scenarios) |
+| Production reference-clock regression | Failed before the fix (8 vs 6); all 672 cases pass after it |
+| `git diff --check`, changed-document relative links | Passed |
+
+The preceding native failures and host-polling corrections are recorded above;
+only the final complete run is counted as passing. P2 remains unresolved despite
+these checks. Required post-merge verification: none.

@@ -693,6 +693,13 @@ impl Bus {
             .min(self.vdp1.clocks_to_event())
     }
 
+    fn reference_deadline(&self) -> u32 {
+        self.cd
+            .clocks_to_event()
+            .min(self.smpc.clocks_to_event())
+            .min(self.sound.clocks_to_event())
+    }
+
     fn advance_fixed_clocks(&mut self, clocks: u32) -> Result<Option<u8>, ScuError> {
         self.cd.advance(clocks);
         if self.cd.interrupt() {
@@ -831,9 +838,7 @@ impl Bus {
             self.grant_bus_transaction();
             let delta = remaining
                 .min(self.system_clock.deadline(self.main_deadline()).max(1))
-                .min(self.cd.clocks_to_event())
-                .min(self.smpc.clocks_to_event())
-                .min(self.sound.clocks_to_event());
+                .min(self.reference_deadline());
             let main_clocks = self.system_clock.advance(delta);
             if let Some(completed) = self.advance_main_clocks(main_clocks, delta)? {
                 if matches!(completed, 0x0E | 0x0F) {
@@ -851,9 +856,20 @@ impl Bus {
     pub(crate) fn advance_cpu_clocks(&mut self, main: u32) -> Result<(u32, Option<u8>), ScuError> {
         if self.pending_main_clocks == 0 {
             if self.system_clock.is_reference() {
-                return self.advance_clocks(main).map(|command| (main, command));
+                let reference = main.min(self.reference_deadline());
+                return self
+                    .advance_clocks(reference)
+                    .map(|command| (reference, command));
             }
-            let reference = self.system_clock.deadline(main).saturating_sub(1);
+            // Fixed-domain events can establish a new recognition deadline.
+            // Yield to Machine at that reference edge, even inside a longer
+            // main-clock idle batch. Bound reference ticks after PLL conversion
+            // so fractional phase and two-main-tick edges remain intact.
+            let reference = self
+                .system_clock
+                .deadline(main)
+                .saturating_sub(1)
+                .min(self.reference_deadline().saturating_sub(1));
             if reference > 0 {
                 return self
                     .advance_clocks(reference)
