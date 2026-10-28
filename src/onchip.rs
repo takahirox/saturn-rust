@@ -414,6 +414,7 @@ impl OnChip {
             // stopped peripheral clocks (H §14.3).
             self.bsc.reset_bus();
             if let Some(remaining) = self.wake_remaining {
+                self.watchdog.advance_settling(clocks.min(remaining));
                 if clocks < remaining {
                     self.wake_remaining = Some(remaining - clocks);
                 } else {

@@ -34,15 +34,27 @@ impl Default for Watchdog {
 impl Watchdog {
     pub fn enter_standby(&mut self) {
         self.control = (self.control & 7) | 0x18;
+        // H §12.2.1: WTCNT retains its preload in standby, even though
+        // WTCSR.TME initializes to zero (§12.2.2).
         self.reset = 0x1F;
         self.observed.set(0);
         self.reset_observed.set(false);
         self.divider = 0;
     }
     pub fn settling_clocks(&self) -> u32 {
-        // H §14.4.2/fig.14.1: oscillator settling uses the selected WDT
-        // overflow interval. This counter is independent of the halted CPU.
-        256 * [2, 64, 128, 256, 512, 1024, 4096, 8192][(self.control & 7) as usize]
+        // H §12.3.3: oscillator settling ends at the retained counter's
+        // overflow. The divider restarts at standby entry in this model.
+        (256 - u32::from(self.counter))
+            * [2, 64, 128, 256, 512, 1024, 4096, 8192][(self.control & 7) as usize]
+            - self.divider
+    }
+    pub fn advance_settling(&mut self, clocks: u32) {
+        // The wake clock counts despite TME=0. Its first overflow ends
+        // settling with WTCNT=0, without an interval IRQ or watchdog reset.
+        let divisor = [2, 64, 128, 256, 512, 1024, 4096, 8192][(self.control & 7) as usize];
+        let total = self.divider + clocks;
+        self.counter = self.counter.wrapping_add((total / divisor) as u8);
+        self.divider = total % divisor;
     }
     pub fn read(&self, offset: u32) -> Option<u8> {
         match offset {

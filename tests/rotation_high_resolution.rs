@@ -35,7 +35,7 @@ fn execute(m: &mut Machine, image: &[u8], chunk: u32) -> (Vec<u32>, Vec<u8>) {
         "guest pc={:x}",
         m.cpu_state().pc
     );
-    assert_eq!(m.cpu_state().exceptions, 0);
+    assert_eq!(m.cpu_state().exceptions, 1);
     let records = (0..8)
         .map(|i| m.bus().read32(0x0600de00 + i * 4).unwrap())
         .collect();

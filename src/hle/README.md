@@ -28,7 +28,7 @@ Arguments use R4–R7, results R0, and callbacks obey the SHC callee-save conven
 | `06000300`, `06000304` | SYS_SETUINT / SYS_GETUINT | Register/retrieve C callbacks independently of architectural vector overrides |
 | `06000340`, `06000344`, `06000348` | SYS_SETSCUIM / SYS_CHGSCUIM / SYS_GETSCUIM | Write-only hardware mask plus RAM shadow; read/modify/publish excludes maskable interrupts; last address contains data |
 | `06000330`, `06000334` | SYS_TASSEM / SYS_CLRSEM | All 256 shared bytes, real SH-2 TAS, uncached accesses on either CPU |
-| `06000320`, `06000324` | SYS_CHGSYSCK / SYS_GETSYSCK | Guest-issued timed CKCHG320/352; return with caller SR and work RAM retained; public clock value is data |
+| `06000320`, `06000324` | SYS_CHGSYSCK / SYS_GETSYSCK | Guest-executed standby/WDT preparation, CKCHG320/352, NMI/RTE and recovery; retained SCU mask restored, hot reset enabled, DMA restart left to caller; public clock value is data |
 | `06000280` | SYS_CHGUIPR | Copy all 32 priority words; later caller writes cannot alter the active table |
 | `06000210` | SYS_PCLRMEM | Pointer to eight bytes; zero on cold boot, retained across NMI and SYSRES |
 | `06000358`, `06000354` | BUP_Init, backup function table | Copy 16 KiB of original SH-2 library into caller RAM, relocate ten public functions, publish the table and three device configurations |
@@ -209,3 +209,5 @@ callee saves, changed guest computation, relocated code and persistent import/
 export. Corrupt metadata/payload probes are read-only and bounded. Native vectors
 add malformed count/size boundaries. Neither suite writes running guest results.
 This evidence does not complete Issue #17's other hardware or service criteria.
+
+See the [clock lifecycle contract](../../docs/clock-standby.md) for hardware versus firmware responsibilities and timing conventions.

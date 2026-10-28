@@ -817,13 +817,24 @@ try {
     for (const word of words) {clockRom.writeUInt16BE(parseInt(word,16),at);at+=2;}
   }
   const clockExpected=(await readFile("tests/fixtures/clock.tsv","utf8")).trim().split(/\r?\n/).map(v=>parseInt(v,16));
-  const clockTraces=await page.evaluate(async ({iso,rom,count})=>{
+  const lifecycleExpected=(await readFile("tests/fixtures/clock-lifecycle.tsv","utf8")).trim().split(/\r?\n/).map(v=>parseInt(v,16));
+  const clockTraces=await page.evaluate(async ({iso,rom,count,lifecycleExpected})=>{
     const {Emulator}=await import("./pkg/saturn_rust.js");
     const m=new Emulator(),traces=[];
     try {
-      for(const hle of [false,true]) for(let repeat=0;repeat<2;repeat++) {
+      for(const pal of [false,true]) for(const hle of [false,true]) for(let repeat=0;repeat<2;repeat++) {
+        m.set_pal(pal);
         if(hle)m.reset_disc(Uint8Array.from(iso));else m.reset_bios(Uint8Array.from(rom));
-        while(Number(m.peripheral_clocks())<6000000)m.run_steps(10000);
+        while(Number(m.peripheral_clocks())<9000000)m.run_steps(10000);
+        if(!hle && [0,1,2,3].some(i=>m.read_long(0x0600E220+i*4)!==1))throw new Error("Guest NMI saved PC/SR checks failed");
+        if(m.read_long(0x0600E240)!==0 || m.read_long(0x0600E244)!==0)throw new Error("Clock firmware must enable hot reset");
+        if(m.registers()[9]!==0x0600E160 || m.registers().slice(10,15).some((v,i)=>v!==0x100A+i))throw new Error("Clock callee saves differ");
+        if(hle && [0,1].some(i=>m.read_long(0x0600E280+i*4)!==m.read_long(0x0600E288+i*4)))throw new Error("Clock caller SR changed");
+        const records=lifecycleExpected.map((_,i)=>m.read_long(0x0600E100+i*4));
+        if(JSON.stringify(records)!==JSON.stringify(lifecycleExpected))throw new Error("Clock standby/NMI/DMA recovery records differ");
+        m.audio_samples(8192);m.advance_frame();
+        const audio=m.audio_samples(8192);
+        if(!audio.length || !audio.every(v=>v===4096))throw new Error("Clock recovery PCM must be deterministic nonzero stereo");
         const slaveResult=m.read_long(0x0600D100);
         if(slaveResult===0 || m.slave_instruction_count()!=="0")throw new Error("Clock transition must stop and reset the executing slave");
         m.run_steps(1000);
@@ -839,25 +850,43 @@ try {
       for(let i=21*2048;i<changed.length-1;i++)if(changed[i]===0xE4 && changed[i+1]===0)positions.push(i);
       if(positions.length!==1)throw new Error("Expected a unique original clock-call argument");
       changed[positions[0]+1]=1;m.reset_disc(changed);
-      while(Number(m.peripheral_clocks())<6000000)m.run_steps(10000);
+      while(Number(m.peripheral_clocks())<9000000)m.run_steps(10000);
       const changedWords=Array.from({length:count},(_,i)=>m.read_long(0x0600E000+i*4));
       if(changedWords[0]!==1 || changedWords[9]!==0x75 || changedWords[count-1]!==0x600D) {
         throw new Error("Changed guest clock argument must change the clock ABI and DOTSEL");
       }
+      // Byte mutations are identical to native controls. The guest alone
+      // computes and publishes results, including the inhibited-DMA record.
+      for(const control of [0,1,2]) {
+        const bytes=Uint8Array.from(rom);
+        const before=control===0?[0x13,0x57,0x9B,0xDF]:control===1?[0,0,0,0xE0]:[0x60,0x12,0xE0,1,0x21,2];
+        const after=control===0?[0x24,0x68,0xAC,0xE0]:control===1?[0,0,0,0x60]:[0x60,0x12,0xE0,3,0x21,2];
+        const positions=[];
+        for(let i=0;i<=bytes.length-before.length;i++)if(before.every((v,j)=>bytes[i+j]===v))positions.push(i);
+        if(positions.length!==2)throw new Error("Expected two original control operands");
+        for(const i of positions)bytes.set(after,i);
+        for(let repeat=0;repeat<2;repeat++) {
+          m.reset_bios(bytes);
+          while(Number(m.peripheral_clocks())<9000000)m.run_steps(10000);
+          if(control===0 && (m.read_long(0x0600E124)!==0x2468ACE0 || m.read_long(0x0600E154)!==0x2468ACE0))throw new Error("Changed DMA data must survive guest restart");
+          if(control===1 && [0x12,0x34,0x17].some((v,i)=>m.read_long(0x0600E100+i*4)!==v))throw new Error("Omitted standby must retain FRT/SCI configuration");
+          if(control===2 && (m.read_long(0x0600D204)!==0 || m.read_long(0x0600E050)!==0))throw new Error("Omitted NMIF clear must prevent guest completion");
+        }
+      }
       // Production draw path must use the emulated dimensions on Canvas.
       const {emulator,advanceFrame}=await import("./app.js");
       emulator.reset_disc(Uint8Array.from(iso));
-      while(Number(emulator.peripheral_clocks())<6000000)emulator.run_steps(10000);
+      while(Number(emulator.peripheral_clocks())<9000000)emulator.run_steps(10000);
       advanceFrame();
       const canvas=document.getElementById("screen");
       traces.push({canvas:[canvas.width,canvas.height],
         edge:Array.from(canvas.getContext("2d").getImageData(351,223,1,1).data)});
       return traces;
     } finally {m.free();}
-  },{iso:[...clockIso],rom:[...clockRom],count:clockExpected.length});
+  },{iso:[...clockIso],rom:[...clockRom],count:clockExpected.length,lifecycleExpected});
   const clockTrace={words:clockExpected,dimensions:[352,224],length:352*224*4,
-    green:true,exceptions:"0",r8:0x0600E054};
-  assert.deepEqual(clockTraces,[clockTrace,clockTrace,clockTrace,clockTrace,
+    green:true,exceptions:"2",r8:0x0600E054};
+  assert.deepEqual(clockTraces,[...Array(8).fill(clockTrace),
     {canvas:[352,224],edge:[0,255,0,255]}]);
   timings.group("display-modes");
   // Original TV-mode BIOS, same guest bytes as tests/display_modes.rs. The

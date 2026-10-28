@@ -149,6 +149,10 @@ def raster_slave():
     s += get(DATA+0x34,10)+get(DATA+0x38,11)
     s += 'load 0x2600e800,r8\nload 0x2600e820,r9\n'
     s += 'load 0x25f80002,r13\nload 0x25f8000a,r14\nload 0x25f80004,r4\nactive:\nmov.w @r4,r0\ntst #4,r0\nbf active\n'
+    # Enter IRQ acceptance from a full active interval, independently of
+    # the clock service's oscillator wait and prior inspection pauses.
+    s += ('hblank_sync:\nmov.w @r4,r0\ntst #4,r0\nbt hblank_sync\n'
+          'hblank_end:\nmov.w @r4,r0\ntst #4,r0\nbf hblank_end\n')
     s += get(DATA+0x3C) + 'ldc r0,sr\nnop\n'
     s += 'raster_wait:\nsleep\nmov.l @r9,r0\nmov #2,r1\ncmp/eq r1,r0\nbf raster_wait\n'
     s += 'load 0x2600e840,r1\nmov r10,r0\nadd r11,r0\nmov.l r0,@r1\nadd #4,r1\nload 0x600d,r0\nmov.l r0,@r1\n'

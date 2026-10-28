@@ -21,9 +21,10 @@ fn run(m: &mut Machine, image: &[u8]) -> [Vec<u32>; 2] {
     for _ in 0..30 {
         m.run_steps(10000).unwrap();
     }
-    for cpu in [m.cpu_state(), m.slave_state()] {
+    let fast = image.windows(4).any(|b| b == [0xEB, 1, 0x2B, 0xB8]);
+    for (i, cpu) in [m.cpu_state(), m.slave_state()].into_iter().enumerate() {
         assert_eq!(cpu.status, CpuStatus::Sleeping);
-        assert_eq!(cpu.exceptions, 0);
+        assert_eq!(cpu.exceptions, u64::from(fast && i == 0));
     }
     [0x0600E900, 0x0600EB00].map(|base| {
         (0..include_str!("fixtures/sh2-multiplier.tsv").lines().count())

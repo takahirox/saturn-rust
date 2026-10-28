@@ -36,7 +36,7 @@ export async function sh2Multiplier(page) {
         exceptions:[emulator.exception_count(),emulator.slave_exception_count()]};
     },vectors.length);
     const actual=await run();
-    assert.deepEqual(actual,{words:[expected,expected],exceptions:["0","0"]},variant);
+    assert.deepEqual(actual,{words:[expected,expected],exceptions:[variant==="fast"?"1":"0","0"]},variant);
     await page.locator("#reset").click();
     assert.deepEqual(await run(),actual,`${variant} cold boot`);
   }

@@ -642,6 +642,12 @@ impl Machine {
         if self.cpu_ready[i] > self.bus.main_clocks {
             return Ok(false);
         }
+        if !self.bus.nmi_ready(processor) {
+            // Software standby gates the entire processor, including external
+            // IRQ and DMA-error entry. NMI becomes eligible after WDT settling.
+            self.cpu_ready[i] = self.bus.main_clocks + u64::from(CLOCKS_PER_STEP);
+            return Ok(true);
+        }
         if let Some(reset) = self.cpu_reset_vectors[i] {
             let result = {
                 let memory = self.bus.replay_cpu(processor);
@@ -861,9 +867,15 @@ impl Machine {
             Some(0x0E | 0x0F) => {
                 self.slave = Cpu::default();
                 self.dma_errors[1] = false;
-                self.cpu_ready = [self.bus.main_clocks; 2];
-                self.cpu_boundary = [None; 2];
+                self.cpu_ready[1] = self.bus.main_clocks;
+                self.cpu_boundary[1] = None;
                 self.cpu_reset_vectors[1] = None;
+                // Clock completion wakes software standby through the same
+                // input, DMAC inhibition and scheduled exception path as NMI.
+                // Preserve a master's in-flight instruction journal: the
+                // command is not a reset of the master SH-2.
+                self.nmi_pending = true;
+                self.bus.signal_nmi(Processor::Master);
             }
             Some(0x18) => {
                 self.nmi_pending = true;

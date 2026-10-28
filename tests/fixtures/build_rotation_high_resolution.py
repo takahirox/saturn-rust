@@ -74,7 +74,7 @@ def build():
         s += read(0x25e70080+(0x54 if coefficient else 0x44))
         s += read(0x25f80000,2) + read(0x25f80020,2) + read(0x25e7005c)
         s += blank('complete') + 'load 0x600d,r0\n' + record() + 'park:\nsleep\nbra park\nnop\n'
-        outputs,digest = encode('rotation-hi-'+mode,s,[(0x100,0x8002),(0x102,1),(0x104,0),(0x106,0x30 if dual else 0x10),(0x108,0)])
+        outputs,digest = encode('rotation-hi-'+mode,s,[(0x100,0x8002),(0x102,1),(0x104,0),(0x106,0x30 if dual else 0x10),(0x108,0)], nmi=True)
         files.update(outputs)
         files['rotation-hi-'+mode+'.sha256'] = (digest+'\n').encode()
         values=[512*(0x8000 if bitmap else 0)+131328, (0x8000 if bitmap else 0)+1,
