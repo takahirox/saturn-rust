@@ -27,9 +27,11 @@ fn variant(operand: u32, omit: Option<u16>) -> Vec<u8> {
     image[0x2202..0x2206].copy_from_slice(&operand.to_be_bytes());
     if let Some(opcode) = omit {
         let stores: Vec<_> = image[..0x2000]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .enumerate()
-            .filter_map(|(i, b)| (b == opcode.to_be_bytes()).then_some(i * 2))
+            .filter_map(|(i, b)| (*b == opcode.to_be_bytes()).then_some(i * 2))
             .collect();
         assert_eq!(stores.len(), if opcode == 0x2461 { 2 } else { 1 });
         let at = *stores.last().unwrap();
