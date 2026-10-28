@@ -339,7 +339,7 @@ Markdown links and PR metadata readback passed. Runtime files are unchanged;
 the native/Wasm/browser suites were not rerun. Their latest observed results
 remain in the preceding validation table. Keep #81/#17 open and PR #82 in draft.
 
-### Publication recurrence at `7097bb0`
+### Publication recurrences
 
 The next publication again replaced the corrected plain reference with a closing
 reference in PR #82's Related Issues section. This review fix changes that section
@@ -358,3 +358,26 @@ evidence. This metadata correction does not satisfy that mandatory criterion.
 Checks for this recurrence fix: PR body readback, `git diff --check` and local
 Markdown links passed. Runtime suites were not rerun because only this validation
 record and PR metadata changed; the existing runtime results above are historical.
+
+The review of published head `3de5dd9250b273d888e2cb6156f041a02cc22ab0`
+found the closing reference reintroduced again. Replaced the Related Issues
+section with `Related to #81.` and a partial-work statement, removing the
+contradictory explanation. Exact GitHub body readback confirms no closing
+reference to #81, an open draft PR and the unchanged published head above.
+Downstream publication must preserve this correction; forwarding the PR identity
+does not authorize regenerating its closing reference.
+
+This pass also inspected the later Sega developer-disc SCU manual
+[§2.2/Table 2.1](https://docs.exodusemulator.com/Archives/SSDDV25/segahtml/hard/scu_/hon/p02_20.htm)
+and [§3.5/Table 3.8](https://docs.exodusemulator.com/Archives/SSDDV25/segahtml/hard/scu_/hon/p03_05.htm).
+They establish source/level/vector assignments and read-only interrupt status,
+including the IST write prohibition, but supply no affirmative rule for
+equal-level selection, the source-clear edge or autovector acknowledgement.
+No runtime change or Issue reconciliation can be justified from those sections.
+The first P2 finding remains unresolved; this record does not replace its
+required evidence or validation. No human result or approval is required or
+claimed. Keep #81/#17 open and PR #82 in draft.
+
+Checks for this pass: exact PR body/state/head readback, `git diff --check` and
+local Markdown links passed. Only PR metadata and this record changed; runtime
+suites were not rerun. No push or merge was performed.
