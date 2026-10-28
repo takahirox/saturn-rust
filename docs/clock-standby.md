@@ -67,8 +67,12 @@ value, without promising a defined post-standby hardware value. Standby preserve
 INTC configuration; HLE's write of TIER=0x81 after wake deliberately re-enables
 its boot capture service. That is firmware recovery, whereas hardware initializes
 TIER to 1. SCI remains initialized until the application configures it. WDT's
-counter/status initialize while its clock selection survives; its counter is
-zero again at the end of settling.
+WTCNT preload and clock selection survive standby (H §§12.2.1–12.2.2, printed
+pages 321–322); its status/control bits initialize. NMI starts counting from the
+retained preload, and the first overflow to zero ends settling (§12.3.3, printed
+page 328). Thus CKS=0 with WTCNT=0x80 settles in 256 clocks, versus 512 clocks
+from zero. The internal divider restarts at standby entry as a deterministic
+phase convention; settling does not set overflow flags or enable normal counting.
 
 SMPC commands 9–10 explicitly retain Work RAM. The System Program guide places
 SDRAM among unaffected devices and DRAM among non-guaranteed contents. Those

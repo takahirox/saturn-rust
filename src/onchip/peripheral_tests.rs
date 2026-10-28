@@ -861,25 +861,38 @@ fn all_watchdog_selected_standby_wake_intervals_are_chunk_invariant() {
         .into_iter()
         .enumerate()
     {
-        for chunk in [1, 3, 17, 10000] {
-            let mut chip = OnChip::default();
-            chip.write16(WDT, 0xA500 | selection as u16).unwrap();
-            chip.write8(SBYCR, 0xE0).unwrap();
-            chip.enter_sleep();
-            chip.advance_clocks(17);
-            chip.signal_nmi();
-            let mut left = 256 * divisor - 1;
-            while left != 0 {
-                let n = left.min(chunk);
-                chip.advance_clocks(n);
-                left -= n;
+        for (preload, increments) in [(0, 256), (1, 255), (0x80, 128), (0xFF, 1)] {
+            for chunk in [1, 3, 17, 10000] {
+                let mut chip = OnChip::default();
+                // H §§12.2.1/12.3.3: preload after clearing TME; standby
+                // retains WTCNT and wake ends at its first overflow.
+                chip.write16(WDT, 0xA518 | selection as u16).unwrap();
+                chip.write16(WDT, 0x5A00 | preload).unwrap();
+                chip.write8(SBYCR, 0xE0).unwrap();
+                chip.enter_sleep();
+                assert_eq!(chip.read8(WDT + 1), Ok(preload as u8));
+                chip.advance_clocks(17);
+                assert_eq!(chip.read8(WDT + 1), Ok(preload as u8));
+                chip.signal_nmi();
+                assert_eq!(chip.clocks_to_event(), increments * divisor);
+                let mut left = increments * divisor - 1;
+                while left != 0 {
+                    let n = left.min(chunk);
+                    chip.advance_clocks(n);
+                    left -= n;
+                }
+                assert!(!chip.nmi_ready());
+                assert_eq!(chip.clocks_to_event(), 1);
+                assert_eq!(chip.read8(WDT + 1), Ok(0xFF));
+                chip.advance_clocks(1);
+                assert!(chip.nmi_ready());
+                assert_eq!(chip.read8(WDT + 1), Ok(0));
+                assert_eq!(chip.read8(WDT), Ok(0x18 | selection as u8));
+                assert_eq!(chip.interrupt(), None);
+                assert_eq!(chip.read32(DMAC + 0x30), Ok(2));
+                chip.advance_clocks(divisor);
+                assert_eq!(chip.read8(WDT + 1), Ok(0)); // TME remains clear.
             }
-            assert!(!chip.nmi_ready());
-            assert_eq!(chip.clocks_to_event(), 1);
-            chip.advance_clocks(1);
-            assert!(chip.nmi_ready());
-            assert_eq!(chip.read8(WDT + 1), Ok(0));
-            assert_eq!(chip.read32(DMAC + 0x30), Ok(2));
         }
     }
 }
