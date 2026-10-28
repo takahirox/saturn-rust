@@ -13,3 +13,10 @@ acceptance policy: no required personal firmware, human testing/approval, live
 Pages inspection or investigation/owner confirmation of external Issue closure.
 Use original licensed guest fixtures and local/CI native+Wasm+browser checks.
 See the [conformance matrix](docs/hardware-conformance.md) for current evidence.
+
+For the partial Issue #81 increment, PR #82 must use `Related to #81` in its
+Related Issues section, including during checkpoint publication. Do not regenerate
+a closing reference from the Run's source Issue. Keep #81 open and PR #82 in draft
+while the mandatory SCU endpoint evidence finding in
+[the validation record](docs/validation-issue-81.md#remaining-acceptance-limits)
+remains unresolved. This publication rule does not waive that finding.

@@ -422,3 +422,24 @@ state for #17.
 Validation: exact PR body/state/head readback, local Markdown links and
 `git diff --check` passed. Runtime suites were not rerun for this record and
 metadata correction. No push or merge was performed.
+
+### Review of published head `e991b83`
+
+Replaced PR #82's premature closing reference with `Related to #81` and removed
+the contradictory publication explanation. Exact GitHub body readback confirms
+the plain reference, open/draft state and unchanged head
+`e991b8399917d59045c3e853fe208876725a1502`. The repository's
+[contributor guidance](../AGENTS.md) now explicitly requires checkpoint
+publication to preserve that reference while the SCU finding remains unresolved.
+
+The SCU evidence finding remains unresolved. Rechecked ST-097-R5 §2.2/Table 2.1
+(printed p.27), §3.5/Table 3.8 (pp.57–60), and ST-210 item 7 (p.4). These do
+not supply an affirmative rule for same-level arbitration, the precise automatic
+source-clear edge or autovector acknowledgement. No evidence-supported runtime
+change or source-Issue correction was established; this publication fix does not
+satisfy that acceptance criterion. No human result is required or claimed.
+
+Validation: exact PR body/state/head readback, changed-document relative links
+and anchors, and `git diff --check` passed. Runtime files are unchanged, so runtime
+suites were not rerun. No push or merge was performed. Downstream publication
+must retain `Related to #81`, leave #81 open and keep PR #82 in draft.
