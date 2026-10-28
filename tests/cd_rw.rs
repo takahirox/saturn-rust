@@ -59,7 +59,9 @@ fn words(b: &Bus) -> Vec<u16> {
 }
 fn expected() -> Vec<u16> {
     CLEAN
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|w| u16::from_be_bytes([w[0], w[1]]))
         .collect()
 }
@@ -303,7 +305,7 @@ fn extending_active_play_preserves_prefetched_packs_and_publication_times() {
     }
     let audio = vec![0; 2352 * 30];
     let mut sub = companion(150, 30);
-    for (i, pack) in sub[12..].chunks_exact_mut(24).enumerate() {
+    for (i, pack) in sub[12..].as_chunks_mut::<24>().0.iter_mut().enumerate() {
         pack.copy_from_slice(&CODEWORDS[(i / 4 + i % 4) % 4]);
     }
     let media = Media::cue(
@@ -344,7 +346,9 @@ fn extending_active_play_preserves_prefetched_packs_and_publication_times() {
             for (i, (r, payload)) in original.iter().enumerate() {
                 assert_eq!(r[1..], [12, 0, 0]);
                 let expected: Vec<_> = CODEWORDS[(i / 4 + i % 4) % 4]
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|w| u16::from_be_bytes([w[0], w[1]]))
                     .collect();
                 assert_eq!(*payload, expected, "pack {i}");
@@ -440,7 +444,9 @@ fn guest_cpu_dma_scdq_irqs_integrity_controls_and_repeated_machine_resets() {
                         code.copy_from_slice(&sub[12..36]);
                     }
                     let expected: Vec<u32> = code
-                        .chunks_exact(2)
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
                         .map(|w| u32::from(u16::from_be_bytes([w[0], w[1]])))
                         .collect();
                     let actual: Vec<_> = (0..12).map(|i| read(k as u32 * 0x80 + i * 4)).collect();
@@ -456,8 +462,10 @@ fn guest_cpu_dma_scdq_irqs_integrity_controls_and_repeated_machine_resets() {
             assert!(samples.len() > 512);
             assert!(
                 samples[samples.len() - 512..]
-                    .chunks_exact(2)
-                    .all(|p| p == [1000, -2000])
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .all(|p| *p == [1000, -2000])
             );
             // Machine reset cancels all queued, timed and outstanding transfer state.
             machine.reset(saturn_rust::Boot::HlePrototype).unwrap();
