@@ -5,6 +5,23 @@ and records remaining SCU evidence gaps; it does not establish hardware completi
 Do not close #17. Do not treat green checks as resolving unverified endpoint
 behavior or as evidence of genuine BIOS or commercial-game compatibility.
 
+**Current publication handoff (reviewed head `0478f86`):** PR #82's Related
+Issues section was corrected to `Related to #81.`. Exact body readback confirmed
+the correction, open/draft state and unchanged published head
+`0478f8636c774fa3378b4a45132d69b4f1c5e9df`. Publication must preserve this
+plain reference and partial-work statement, without generating a closing reference.
+
+The SCU evidence finding remains mandatory and unresolved. Reinspection of
+ST-097-R5 §§2.2/3.5 and ST-210 item 7 supplied no affirmative endpoint rule.
+ST-097-R5 §3.6/Table 3.9 (printed p.61) describes the separate A-Bus
+classification-data acquisition and AIACK rearming; it does not establish
+SCU-to-SH-2 same-level arbitration, the source-clear edge or autovector
+acknowledgement. No runtime or Issue-contract change is justified by this
+investigation, and this record does not satisfy the missing acceptance criterion.
+Checks for this correction: exact PR body/state/head readback, local Markdown
+links and `git diff --check` passed. Runtime suites were not rerun for this
+documentation/metadata-only change. No push or merge was performed.
+
 The [phase contract](sh2-interrupt-entry.md) was recorded before implementation.
 It links the exact primary revisions and separates specified phases from board
 conventions. H Rev. 4 Table 5.8, Figures 5.7/5.10 require recognition before
