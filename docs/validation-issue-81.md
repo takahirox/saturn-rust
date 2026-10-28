@@ -302,3 +302,26 @@ only native test polling and documentation.
 The preceding native failures and host-polling corrections are recorded above;
 only the final complete run is counted as passing. P2 remains unresolved despite
 these checks. Required post-merge verification: none.
+
+## Review follow-up: premature Issue-closing reference
+
+The next review found that PR #82's published body again contained `Closes #81`,
+despite the partial-work statement above. Replaced that reference with
+`Related to #81` and removed the paragraph describing the closing reference as
+contingent. GitHub readback confirms the partial-work statement, draft state and
+unchanged head `fa434b219245eb4f8d9c150138534d28ed9bd988`. Subsequent publication
+must preserve the plain reference while mandatory acceptance remains unmet.
+No push, merge or source Issue change was performed.
+
+Rechecked ST-097-R5 §2.2/Table 2.1 and §3.5/Table 3.8 and ST-210 item 7.
+Also inspected the [ST-202-R1 Dual CPU User's Guide](https://antime.kapsi.fi/sega/files/ST-202-R1-120994.pdf),
+§§1.0/4.4–6.2 (printed pp.1/3–5). It specifies shared external devices, slave
+initialization and FRT communication, but does not establish SCU same-level
+arbitration, source-clear timing or autovector acknowledgement. No affirmative
+evidence for a behavior change or technical reconciliation was found. The SCU
+finding remains unresolved; this metadata correction does not satisfy it.
+
+Validation for this documentation/PR-body correction: `git diff --check`, local
+Markdown links and PR metadata readback passed. Runtime files are unchanged;
+the native/Wasm/browser suites were not rerun. Their latest observed results
+remain in the preceding validation table. Keep #81/#17 open and PR #82 in draft.
