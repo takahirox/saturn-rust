@@ -393,6 +393,60 @@ fn autovector_ack_uses_the_accepted_source_instead_of_the_current_winner() {
     assert_eq!(m.bus.scu.read32(SCU + 0xA4).unwrap() & 5, 5);
 }
 
+fn masked_scu_request_survives_before_execution_break(external: bool) {
+    // H §§5.4/6.3.2: recognition does not imply acceptance. IRL13 is
+    // masked by SR.I=14, while the native before-execution UBC is level15.
+    for chunk in [1, 3, 17, 10000] {
+        for inspect in [false, true] {
+            let p = Processor::Master;
+            let mut m = board(p, if external { 3 } else { 2 }, 0xC0);
+            let mut rom = vec![0; BIOS_SIZE];
+            rom[12 * 4..12 * 4 + 4].copy_from_slice(&0x26002000u32.to_be_bytes());
+            m.bus.load_bios(&rom).unwrap();
+            for (off, word) in [0xE0E0, 0x400E, 9, 9].into_iter().enumerate() {
+                m.bus.write16(HIGH_WRAM + off as u32 * 2, word).unwrap();
+            }
+            let mut c = Cpu::start(HIGH_WRAM, 0x26001000);
+            for _ in 0..3 {
+                c.step(&mut m.bus).unwrap();
+            }
+            let pc = HIGH_WRAM + 6;
+            assert_eq!(c.state().pc, pc);
+            assert_eq!(c.state().sr & 0xF0, 0xE0);
+            m.cpu = c;
+            m.cpu_ready[0] = 5; // allow the masked IRL13 request to be recognized
+            let chip = &mut m.bus.onchip[0];
+            chip.write32(0xFFFFFF40, pc).unwrap();
+            chip.write16(0xFFFFFF48, 0x54).unwrap(); // CPU instruction read
+            chip.write16(0xFFFFFF78, 0x1000).unwrap(); // native, before execution
+            chip.read16(0xFFFFFF78).unwrap(); // configuration barrier
+            assert!(!chip.break_pending());
+            trace(&mut m, p, 5, chunk, inspect);
+            assert_eq!(m.bus.recognized_interrupt(p).unwrap().level, 13);
+            let t = trace(&mut m, p, 70, chunk, inspect);
+            assert!(t.vectors.is_empty(), "UBC must not issue IVECF: {t:?}");
+            assert_eq!(m.cpu_state().exceptions, 1);
+            assert_eq!(m.cpu_state().last_exception.as_ref().unwrap().vector, 12);
+            assert_eq!(m.bus.scu.read32(SCU + 0xA4).unwrap() & 4, 4);
+            assert_eq!(m.bus.read32(0x26000FFC), Ok(0x3E0));
+            assert_eq!(m.bus.read32(0x26000FF8), Ok(pc));
+            assert!(!m.bus.onchip[0].break_pending());
+            assert!(t.grants.iter().any(|&(_, a, _, w)| a == 48 && !w));
+            assert!(t.grants.iter().any(|&(_, a, _, w)| a == 0x26002000 && !w));
+        }
+    }
+}
+
+#[test]
+fn masked_scu_external_vector_request_cannot_supply_a_native_ubc_vector() {
+    masked_scu_request_survives_before_execution_break(true);
+}
+
+#[test]
+fn masked_scu_autovector_request_is_not_acknowledged_by_a_native_ubc() {
+    masked_scu_request_survives_before_execution_break(false);
+}
+
 #[test]
 fn same_level_scu_changes_do_not_restart_irl_recognition_and_external_wins_internal_ties() {
     let p = Processor::Master;

@@ -93,7 +93,7 @@ pub(super) struct Transfer {
 pub(super) struct Journal {
     irq: Option<InterruptRequest>,
     nmi_cleared: bool,
-    vector_waiting: Option<u8>,
+    vector_waiting: Option<(u8, u8)>, // accepted level, architectural vector
     synchronous_stack: bool,
     operations: Vec<(Operation, Result<u32, BusError>)>,
     cursor: usize,
@@ -185,7 +185,7 @@ impl ScheduledMemory<'_> {
                 if irq.is_some_and(|r| r.external) {
                     self.0.bus.transactions.journals[i]
                         .borrow_mut()
-                        .vector_waiting = Some(level);
+                        .vector_waiting = Some((level, vector));
                     Err(BusError::Pending)
                 } else {
                     if let Some(irq) = irq {
@@ -1157,7 +1157,7 @@ impl Bus {
             {
                 continue;
             }
-            if let Some(level) = self.transactions.journals[processor as usize]
+            if let Some((level, _)) = self.transactions.journals[processor as usize]
                 .borrow()
                 .vector_waiting
             {
@@ -1320,9 +1320,10 @@ impl Bus {
                 self.scu.acknowledge(source);
             }
             let journal = self.transactions.journals[processor as usize].get_mut();
-            let irq = journal.irq.unwrap();
+            let (accepted_level, architectural_vector) = journal.vector_waiting.unwrap();
+            assert_eq!(level, accepted_level);
             journal.operations.push((
-                Operation::InterruptVector(level, irq.vector),
+                Operation::InterruptVector(level, architectural_vector),
                 Ok(u32::from(vector)),
             ));
             // This separate journal record distinguishes acquisition from an

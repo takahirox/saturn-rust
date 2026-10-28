@@ -3858,8 +3858,9 @@ Independent [ideal memory vectors](../src/cpu/interrupt_tests.rs) reproduce the
 vector-table and handler-fetch clocks for NMI, SCI TXI, master autovector/external
 IRL and slave autovector IRL. Both CPU adapters execute the NMI microsequence;
 SMPC wiring remains master-only. Tests cover waits, recognition, SR masks and
-ties (including a peripheral programmed to vector 12), accepted-level and
-same-level competitors, exact acknowledgement, replay, NMI edges before/after
+ties (including a peripheral programmed to vector 12), a recognized but masked
+SCU request during native before-execution UBC entry in both vector modes,
+accepted-level and same-level competitors, exact acknowledgement, replay, NMI edges before/after
 clear, completed-effect retention, peer CPU/DMAC/refresh contention and reset
 cancellation. Timelines compare chunks 1/3/17/10000 and passive inspection off/on.
 Existing delayed-branch/protected-successor, NMIE/NMIF, SLEEP and standby/clock

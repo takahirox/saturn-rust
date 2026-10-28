@@ -737,20 +737,32 @@ impl Machine {
         } else {
             self.cpu.clone()
         };
-        self.bus.prepare_interrupt(processor, boundary.irq);
         let result = (|| -> Result<(bool, bool, bool), CpuError> {
-            let mut memory = self.bus.replay_cpu(processor);
-            let dma = boundary.dma && cpu.accept_dma_address_error(&mut memory)?;
-            let nmi = !dma && boundary.nmi && cpu.accept_nmi(&mut memory)?;
-            let irq = !dma
-                && !nmi
-                && if let Some(irq) = boundary.irq {
-                    cpu.accept_interrupt(&mut memory, irq.level, irq.vector)?
+            self.bus.prepare_interrupt(processor, None);
+            let (dma, nmi) = {
+                let mut memory = self.bus.replay_cpu(processor);
+                let dma = boundary.dma && cpu.accept_dma_address_error(&mut memory)?;
+                let nmi = !dma && boundary.nmi && cpu.accept_nmi(&mut memory)?;
+                (dma, nmi)
+            };
+            let irq = !dma && !nmi && {
+                self.bus.prepare_interrupt(processor, boundary.irq);
+                if let Some(irq) = boundary.irq {
+                    cpu.accept_interrupt(
+                        &mut self.bus.replay_cpu(processor),
+                        irq.level,
+                        irq.vector,
+                    )?
                 } else {
                     false
-                };
+                }
+            };
             if !dma && !nmi && !irq {
-                cpu.step(&mut memory)?;
+                // A recognized request may be masked or deferred. It must not
+                // supply a vector or acknowledge a source for an exception
+                // raised by the instruction itself (including native UBC).
+                self.bus.prepare_interrupt(processor, None);
+                cpu.step(&mut self.bus.replay_cpu(processor))?;
             }
             Ok((dma, nmi, irq))
         })();

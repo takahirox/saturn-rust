@@ -110,3 +110,60 @@ Noise pulses, physical external WAIT and slave external-vector wiring are not
 established by these tests. All remaining #17 CPU/peripheral/cache/bus/reset/DMA,
 SCU/DSP, video/audio/CD, BIOS/HLE/SMPC and integrated requirements still apply.
 Required post-merge verification: none.
+
+## Review follow-up: declined IRQ context (P1)
+
+`Machine::issue_cpu` now supplies source context only to the IRQ acceptance
+attempt and removes it before falling back to instruction execution. DMA/NMI
+entry also runs without the unrelated IRQ context. External acquisition retains
+the accepted level and original architectural vector that initiated the transaction
+instead of reconstructing its replay operation from the boundary's IRQ candidate.
+
+The new `masked_scu_external_vector_request_cannot_supply_a_native_ubc_vector`
+and `masked_scu_autovector_request_is_not_acknowledged_by_a_native_ubc` tests in
+[the native phase vectors](../src/bus/interrupt_tests.rs) both failed before the
+fix: external mode replay expected `InterruptVector(15,12)` but recorded
+`InterruptVector(15,66)`; autovector mode cleared the unrelated HBlank status bit.
+Both now pass with stack waits, chunks 1/3/17/10000 and passive inspection off/on.
+They check UBC vector 12, saved PC/SR, first handler fetch, no IVECF transaction,
+UBC acknowledgement and preservation of the masked HBlank request.
+
+### Review-fix validation
+
+Re-executed in the assigned worktree with the native and Wasm toolchains listed
+above. `npm ci` supplied the locked Playwright dependency without changing
+manifests or lockfiles.
+
+| Check | Observed result |
+| --- | --- |
+| `cargo fmt --check` | Passed |
+| `cargo build --locked` | Passed |
+| `cargo test --locked` | Passed: 1,119 tests, zero failed/ignored |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed |
+| Wasm warnings-denied Clippy (command above) | Passed |
+| `sh scripts/check-fixtures.sh` | Passed; all 99 builders |
+| `sh scripts/build-web.sh` (toolchain command above) | Passed |
+| `node --test scripts/ci-runner.test.mjs` | Passed: 12 tests, zero skipped |
+| `npm run test:browser` | Passed: all 69 groups (30 shared + 39 scenarios), 244.236 s |
+| `cargo test --locked --lib interrupt_tests` | Passed: 16 tests |
+| `git diff --check`, changed-document relative links | Passed |
+
+The first CI-runner invocation lacked the local Playwright dependency. After
+`npm ci`, another invocation overlapped web asset generation and timed out waiting
+for browser initialization (11 passed, 1 failed). The final invocation ran against
+the completed web build and passed all 12 tests. Neither earlier invocation is
+counted as passing. The complete browser aggregate used the final immutable build.
+
+### SCU evidence investigation (P2 remains unresolved)
+
+Rechecked ST-097-R5 §2.2/Table 2.1 (printed p.27) and §3.5/Table 3.8
+(pp.57–60), ST-210 item 7 (p.4), and H §§5.2.3/5.6 (pp.83–85/101–102).
+They do not establish the three disputed SCU endpoint behaviors listed above.
+The additional [ST-162-R1 System Program manual](https://antime.kapsi.fi/sega/files/ST-162-R1-092994.pdf),
+pp.2/4/9, describes software interrupt dispatch priorities and mask-service IST
+writes, not SCU hardware tie arbitration or its automatic acknowledgement edge.
+Its IST-writing software description cannot override ST-210's prohibition.
+[Technical Bulletin #15](https://antime.kapsi.fi/sega/files/Sattechs.pdf), item 7,
+also prohibits those writes without specifying that edge. No affirmative primary
+evidence supporting a replacement behavior or a specification reconciliation was
+found. P2 remains an unmet mandatory acceptance criterion; #81 must remain open.

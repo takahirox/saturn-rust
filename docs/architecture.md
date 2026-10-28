@@ -183,6 +183,9 @@ refresh and UBC sources are implemented; full bus arbitration remains missing.
 both CPU journals. Source detection precedes the Table 5.8 recognition interval
 (two states for NMI, five for peripheral/IRL); recognition overlaps an executing
 instruction. Acceptance still waits for delayed branches and protected successors.
+Only the IRQ acceptance attempt receives the recognized source context. If the
+CPU declines it, instruction execution resumes without that context, so a native
+UBC entry cannot acquire the declined request's vector or acknowledge its source.
 Journaled decode/internal waits separate SR push, PC push, mask update, vector
 selection, vector-table read and the first handler IF. Stack writes complete
 synchronously through the arbiter; cache RAM accesses occupy at least one state.
@@ -192,7 +195,8 @@ completion, so a later edge cannot be erased by replay or completion.
 Master external-vector acquisition owns a distinct two-state bus transaction.
 It outputs the accepted level, samples the SCU endpoint at completion and ignores
 BSC programmable waits and memory/cache decoding. Other levels stay pending.
-The acquisition result and acknowledgement are journaled together; autovector
+The transaction retains its accepted level and requested architectural vector;
+the acquisition result and acknowledgement are journaled together. Autovector
 acknowledgement retains the accepted source identity. Same-level source order,
 autovector acknowledgement and the exact SCU clear edge are documented board
 conventions whose SCU-specific primary evidence remains incomplete. This is a
