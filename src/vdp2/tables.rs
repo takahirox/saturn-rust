@@ -23,15 +23,22 @@ impl Vdp2 {
             let control = self.word(0x9A) >> (layer * 8) & 0x3F;
             let interval = 1usize << (control >> 4);
             let fields = (control & 14).count_ones() as usize;
-            tables.scroll_group[layer] = y / interval;
+            let image_y = if self.word(0x22) & (1 << layer) != 0 {
+                let size = usize::from(self.word(0x22) >> 12) + 1;
+                let row = self.mosaic_y(layer, y);
+                row - row % size
+            } else {
+                y
+            };
+            tables.scroll_group[layer] = image_y / interval;
             if y != 0
                 && self.line_tables.line.is_some()
-                && self.line_tables.scroll_group[layer] == y / interval
+                && self.line_tables.scroll_group[layer] == image_y / interval
             {
                 tables.scroll[layer] = self.line_tables.scroll[layer];
                 continue;
             }
-            let mut at = self.table_address(0xA0 + layer * 4) + y / interval * fields * 4;
+            let mut at = self.table_address(0xA0 + layer * 4) + image_y / interval * fields * 4;
             for (field, bit) in [2, 4, 8].into_iter().enumerate() {
                 if control & bit != 0 {
                     tables.scroll[layer][field] = Some(self.vlong(at));

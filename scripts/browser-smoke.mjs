@@ -45,6 +45,7 @@ import { cdReports } from "./cd-reports.mjs";
 import { dmaStartup } from "./dma-startup.mjs";
 import { cdCopy } from "./cd-copy.mjs";
 import { vdp2Status } from "./vdp2-status.mjs";
+import { mosaic } from "./mosaic.mjs";
 import { rotationHighResolution } from "./rotation-high-resolution.mjs";
 import { rotationFetch } from "./rotation-fetch.mjs";
 import { spriteShrink } from "./sprite-shrink.mjs";
@@ -119,7 +120,7 @@ try {
       dmacBus, sh2BusPipeline, sh2ResetBus, cs0Transfers, spriteShrink,
       hardwareBoundaries, refreshArbitration, sh2Fetch, sh2Store, sh2Load, sh2Multiplier,
       cdCopy, dmaStartup, cdReports, cdRw, rotationReload, rotationFetch,
-      rotationHighResolution, scspMonitor, m68kReset, scspClock, scspEffects,
+      rotationHighResolution, mosaic, scspMonitor, m68kReset, scspClock, scspEffects,
       scspDma, scspPcm, scspCpuMemory, scspMvol };
     timings.wasmReport = null;
     await context.close();
@@ -1760,6 +1761,9 @@ try {
   });
   if (includeScenarios) await timings.measure("rotationHighResolution", async () => {
     await rotationHighResolution(page);
+  });
+  if (includeScenarios) await timings.measure("mosaic", async () => {
+    await mosaic(page);
   });
   timings.group("interlace-video-composition-scu");
   const interlaceImage=Buffer.alloc(524288);

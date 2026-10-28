@@ -17,6 +17,10 @@ pub(super) struct RotationRead {
     previous: Option<usize>,
     starts: [[i64; 3]; 2],
     coefficients: [Option<Coefficient>; 2],
+    // The sprite/unaltered picture and mosaic picture can share parameter A.
+    // Retain both progressions from the same line-start table transaction.
+    single_starts: [[i64; 3]; 2],
+    single_coefficients: [Option<Coefficient>; 2],
 }
 
 #[derive(Clone, Copy)]
@@ -41,33 +45,52 @@ impl Vdp2 {
     /// value advances by the current delta; changing table RAM alone cannot
     /// reload it. Each of Xst, Yst and KAst has an independent one-shot request.
     pub(super) fn read_rotation_line(&mut self, y: usize, first: bool) {
-        let distance = self
-            .rotation_read
-            .previous
-            .map_or(y, |old| y.saturating_sub(old));
-        for parameter in 0..2 {
-            let control = self.word(0xB2) >> (parameter * 8);
-            for (i, offset) in [0, 4, 0x54].into_iter().enumerate() {
-                let raw = self.rotation_long(parameter, offset);
-                let start = if i == 2 {
-                    i64::from(raw & 0xFFFFFFC0)
+        for single in [false, true] {
+            let row = |y| {
+                if single && self.word(0) & 0xC0 == 0xC0 {
+                    y / 2
                 } else {
-                    signed(raw & 0x1FFFFFC0, 29)
-                };
-                let step = self.rotation_delta(parameter, i);
-                let value = if first || self.rotation_read.previous.is_none() {
-                    start + step * y as i64
-                } else if control & (1 << i) != 0 {
-                    start
-                } else {
-                    self.rotation_read.starts[parameter][i] + step * distance as i64
-                };
-                // The accumulators have the table's documented width.
-                self.rotation_read.starts[parameter][i] = if i == 2 {
-                    i64::from(value as u32)
-                } else {
-                    signed(value as u32, 29)
-                };
+                    y
+                }
+            };
+            let image_y = row(y);
+            let distance = self
+                .rotation_read
+                .previous
+                .map_or(image_y, |old| image_y.saturating_sub(row(old)));
+            for parameter in 0..2 {
+                let control = self.word(0xB2) >> (parameter * 8);
+                for (i, offset) in [0, 4, 0x54].into_iter().enumerate() {
+                    let raw = self.rotation_long(parameter, offset);
+                    let start = if i == 2 {
+                        i64::from(raw & 0xFFFFFFC0)
+                    } else {
+                        signed(raw & 0x1FFFFFC0, 29)
+                    };
+                    let step = self.rotation_delta(parameter, i);
+                    let old = if single {
+                        self.rotation_read.single_starts[parameter][i]
+                    } else {
+                        self.rotation_read.starts[parameter][i]
+                    };
+                    let value = if first || self.rotation_read.previous.is_none() {
+                        start + step * image_y as i64
+                    } else if control & (1 << i) != 0 {
+                        start
+                    } else {
+                        old + step * distance as i64
+                    };
+                    let value = if i == 2 {
+                        i64::from(value as u32)
+                    } else {
+                        signed(value as u32, 29)
+                    };
+                    if single {
+                        self.rotation_read.single_starts[parameter][i] = value;
+                    } else {
+                        self.rotation_read.starts[parameter][i] = value;
+                    }
+                }
             }
         }
         // ST-058-R2 §6.3 pp.157–158: each request clears simultaneously
@@ -80,7 +103,13 @@ impl Vdp2 {
         for parameter in 0..2 {
             self.rotation_read.coefficients[parameter] =
                 if self.rotation_long(parameter, 0x5C) & 0x03FFFFC0 == 0 {
-                    self.read_coefficient(parameter, 0, y)
+                    self.read_coefficient(parameter, 0, y, false)
+                } else {
+                    None
+                };
+            self.rotation_read.single_coefficients[parameter] =
+                if self.rotation_long(parameter, 0x5C) & 0x03FFFFC0 == 0 {
+                    self.read_coefficient(parameter, 0, y, true)
                 } else {
                     None
                 };
@@ -95,9 +124,21 @@ impl Vdp2 {
         )
     }
     fn rotation_start(&self, parameter: usize, index: usize, y: usize) -> i64 {
+        self.rotation_image_start(parameter, index, y, false)
+    }
+    fn rotation_image_start(&self, parameter: usize, index: usize, y: usize, single: bool) -> i64 {
         if self.rotation_read.line == Some(y) {
-            return self.rotation_read.starts[parameter][index];
+            return if single {
+                self.rotation_read.single_starts[parameter][index]
+            } else {
+                self.rotation_read.starts[parameter][index]
+            };
         }
+        let y = if single && self.word(0) & 0xC0 == 0xC0 {
+            y / 2
+        } else {
+            y
+        };
         // Debugger renders preview static table operands. A pending request
         // previews the table start; otherwise use the nominal row delta.
         // Neither path participates in the raster latch or consumes requests.
@@ -199,18 +240,34 @@ impl Vdp2 {
         // RPTA bit 6 is fixed to 0/1 for A/B, not part of the base.
         (self.table_address(0xBC) & !0x80) | (parameter * 0x80)
     }
-    fn coefficient(&self, parameter: usize, x: usize, y: usize) -> Option<Coefficient> {
+    fn coefficient(
+        &self,
+        parameter: usize,
+        x: usize,
+        y: usize,
+        single: bool,
+    ) -> Option<Coefficient> {
         if self.beam_rendering && self.rotation_long(parameter, 0x5C) & 0x03FFFFC0 == 0 {
-            return self.rotation_read.coefficients[parameter];
+            return if single {
+                self.rotation_read.single_coefficients[parameter]
+            } else {
+                self.rotation_read.coefficients[parameter]
+            };
         }
-        self.read_coefficient(parameter, x, y)
+        self.read_coefficient(parameter, x, y, single)
     }
-    fn read_coefficient(&self, parameter: usize, x: usize, y: usize) -> Option<Coefficient> {
+    fn read_coefficient(
+        &self,
+        parameter: usize,
+        x: usize,
+        y: usize,
+        single: bool,
+    ) -> Option<Coefficient> {
         let control = self.word(0xB4) >> (parameter * 8);
         if control & 1 == 0 {
             return None;
         }
-        let index = (self.rotation_start(parameter, 2, y)
+        let index = (self.rotation_image_start(parameter, 2, y, single)
             + signed(self.rotation_long(parameter, 0x5C) & 0x03FFFFC0, 26) * x as i64)
             >> 16;
         let mode = control >> 2 & 3;
@@ -275,6 +332,7 @@ impl Vdp2 {
         x: usize,
         y: usize,
         coefficient: Option<Coefficient>,
+        single: bool,
     ) -> (i64, i64) {
         let start = |offset| signed(self.rotation_long(parameter, offset) & 0x1FFFFFC0, 29);
         let delta = |offset| signed(self.rotation_long(parameter, offset) & 0x7FFC0, 19);
@@ -293,8 +351,8 @@ impl Vdp2 {
         let cx = point(0x3C);
         let cy = point(0x3E);
         let cz = point(0x40);
-        let sx = self.rotation_start(parameter, 0, y) + delta(0x14) * x as i64 - px;
-        let sy = self.rotation_start(parameter, 1, y) + delta(0x18) * x as i64 - py;
+        let sx = self.rotation_image_start(parameter, 0, y, single) + delta(0x14) * x as i64 - px;
+        let sy = self.rotation_image_start(parameter, 1, y, single) + delta(0x18) * x as i64 - py;
         let sz = start(8) - pz;
         let mut xp =
             multiply(a, px - cx) + multiply(b, py - cy) + multiply(c, pz - cz) + cx + shift(0x44);
@@ -376,7 +434,8 @@ impl Vdp2 {
         sprite_window: bool,
     ) -> Option<RotationSample> {
         let id = if rbg1 { 0 } else { 4 };
-        if self.word(0x22) & (1 << id) != 0 {
+        let mosaic = self.word(0x22) & (1 << id) != 0;
+        if mosaic {
             x -= x % (usize::from(self.word(0x22) >> 8 & 15) + 1);
         }
         // §2.1: RBG0/RBG1 keep normal horizontal picture resolution in
@@ -385,7 +444,7 @@ impl Vdp2 {
         // (§8.1 table8.1), composition and acquisition retain output-dot X.
         let image_x = if self.word(0) & 6 == 2 { x / 2 } else { x };
         let mode = self.word(0xB0) & 3;
-        let ca = self.coefficient(0, image_x, y);
+        let ca = self.coefficient(0, image_x, y, mosaic);
         let parameter = if rbg1 {
             1
         } else {
@@ -399,13 +458,13 @@ impl Vdp2 {
         let coefficient = if parameter == 0 {
             ca
         } else {
-            self.coefficient(1, image_x, y)
+            self.coefficient(1, image_x, y, mosaic)
         };
         // ST-058 §6.4 p.166: the coefficient MSB is ignored for RBG1.
         if !rbg1 && coefficient.is_some_and(|c| c.transparent) && !(mode == 2 && parameter == 0) {
             return None;
         }
-        let (sx, sy) = self.rotation_coordinates(parameter, image_x, y, coefficient);
+        let (sx, sy) = self.rotation_coordinates(parameter, image_x, y, coefficient, mosaic);
         let ctl = if rbg1 {
             self.word(0x28)
         } else {
@@ -892,13 +951,13 @@ mod tests {
         put(&mut v, 0x58, 0x10000);
         v.vram[4..12].copy_from_slice(&[0x04, 0, 0x08, 0, 0x0C, 0, 0x10, 0]);
         v.read_rotation_line(0, true);
-        assert_eq!(v.coefficient(0, 0, 0).unwrap().value, 1 << 16);
+        assert_eq!(v.coefficient(0, 0, 0, false).unwrap().value, 1 << 16);
         put(&mut v, 0x54, 0x50000);
         v.read_rotation_line(1, false);
-        assert_eq!(v.coefficient(0, 0, 1).unwrap().value, 2 << 16);
+        assert_eq!(v.coefficient(0, 0, 1, false).unwrap().value, 2 << 16);
         v.write16(VDP2 + 0xB2, 4).unwrap();
         v.read_rotation_line(2, false);
-        assert_eq!(v.coefficient(0, 0, 2).unwrap().value, 4 << 16);
+        assert_eq!(v.coefficient(0, 0, 2, false).unwrap().value, 4 << 16);
         v = Vdp2::default();
         assert_eq!(v.rotation_read.previous, None);
         assert_eq!(v.rotation_read.line, None);
@@ -921,23 +980,148 @@ mod tests {
         v.begin_scanline(0);
         v.beam_rendering = true;
         v.vram[0x40000..0x40002].copy_from_slice(&0x0800u16.to_be_bytes());
-        assert_eq!(v.coefficient(0, 5, 0).unwrap().value, 1 << 16);
+        assert_eq!(v.coefficient(0, 5, 0, false).unwrap().value, 1 << 16);
         v.beam_rendering = false;
         v.begin_scanline(1);
         v.beam_rendering = true;
-        assert_eq!(v.coefficient(0, 5, 1).unwrap().value, 2 << 16);
+        assert_eq!(v.coefficient(0, 5, 1, false).unwrap().value, 2 << 16);
         // Change the guest rotation table to select per-dot coefficients.
         v.vram[0x2005C..0x20060].copy_from_slice(&0x10000u32.to_be_bytes());
         v.vram[0x40004..0x40006].copy_from_slice(&0x0C00u16.to_be_bytes());
         v.beam_rendering = false;
         v.begin_scanline(2);
         v.beam_rendering = true;
-        assert!(v.coefficient(0, 2, 2).unwrap().transparent); // no coefficient port in B0
+        assert!(v.coefficient(0, 2, 2, false).unwrap().transparent); // no coefficient port in B0
         v.write16(VDP2 + 0xE, 0x310).unwrap();
-        let coefficient = v.coefficient(0, 2, 2).unwrap();
+        let coefficient = v.coefficient(0, 2, 2, false).unwrap();
         assert!(!coefficient.transparent);
         assert_eq!(coefficient.value, 3 << 16);
         v.vram[0x40004..0x40006].copy_from_slice(&0x1000u16.to_be_bytes());
-        assert_eq!(v.coefficient(0, 2, 2).unwrap().value, 4 << 16); // actual per-dot read
+        assert_eq!(v.coefficient(0, 2, 2, false).unwrap().value, 4 << 16); // actual per-dot read
+    }
+}
+
+#[cfg(test)]
+mod mosaic_retention_tests {
+    use super::*;
+    use crate::devices::VDP2;
+
+    fn reg(v: &mut Vdp2, at: u32, value: u16) {
+        v.write16(VDP2 + at, value).unwrap();
+    }
+    fn long(v: &mut Vdp2, at: usize, value: u32) {
+        v.vram[at..at + 4].copy_from_slice(&value.to_be_bytes());
+    }
+    #[test]
+    fn mosaic_density_retains_starts_and_line_dot_coefficients_without_rearming_requests() {
+        for parity in 0..2 {
+            let mut v = Vdp2::default();
+            for (at, value) in [
+                (0, 0x80C0),
+                (0xE, 1),
+                (0xBC, 3),
+                (0xBE, 0x8000),
+                (0xB4, 0x101),
+            ] {
+                reg(&mut v, at, value);
+            }
+            for parameter in 0..2 {
+                let base = 0x70000 + parameter * 0x80;
+                for (off, value) in [
+                    (0, 10 << 16),
+                    (4, 20 << 16),
+                    (0xC, 1 << 16),
+                    (0x10, 2 << 16),
+                    (0x58, 1 << 16),
+                ] {
+                    long(&mut v, base + off, value);
+                }
+            }
+            for index in 0..64 {
+                long(&mut v, index * 4, (index as u32 + 1) << 16);
+            }
+            for l in 0..4 {
+                let y = l * 2 + parity;
+                v.read_line_tables(y);
+                v.beam_rendering = true;
+                v.read_rotation_line(y, l == 0);
+                for parameter in 0..2 {
+                    assert_eq!(v.rotation_start(parameter, 0, y), (10 + y as i64) << 16);
+                    assert_eq!(
+                        v.rotation_image_start(parameter, 0, y, true),
+                        (10 + l as i64) << 16
+                    );
+                    assert_eq!(
+                        v.rotation_image_start(parameter, 1, y, true),
+                        (20 + 2 * l as i64) << 16
+                    );
+                    assert_eq!(
+                        v.coefficient(parameter, 0, y, false).unwrap().value,
+                        (y as i64 + 1) << 16
+                    );
+                    assert_eq!(
+                        v.coefficient(parameter, 0, y, true).unwrap().value,
+                        (l as i64 + 1) << 16
+                    );
+                }
+                // Modify all table starts without a reload. Both retained
+                // progressions must keep accumulating their original values.
+                v.beam_rendering = false;
+                for parameter in 0..2 {
+                    for off in [0, 4, 0x54] {
+                        long(&mut v, 0x70000 + parameter * 0x80 + off, 40 << 16);
+                    }
+                }
+                v.rotation_read.line = None;
+            }
+            // Horizontal coefficients use the same retained, density-selected
+            // KAst. Unselected X and source-row progression remain independent.
+            for parameter in 0..2 {
+                long(&mut v, 0x70000 + parameter * 0x80 + 0x5C, 1 << 16);
+            }
+            let y = 8 + parity;
+            v.read_line_tables(y);
+            v.beam_rendering = true;
+            v.read_rotation_line(y, false);
+            for parameter in 0..2 {
+                assert_eq!(v.coefficient(parameter, 2, y, true).unwrap().value, 7 << 16);
+                assert_eq!(
+                    v.coefficient(parameter, 2, y, false).unwrap().value,
+                    (y as i64 + 3) << 16
+                );
+            }
+            v.beam_rendering = false;
+            // Each request is consumed once by a raster read for both lanes.
+            reg(&mut v, 0xB2, 0x707);
+            let before = v.rotation_read.single_starts;
+            let _ = v.framebuffer();
+            assert_eq!(v.rotation_read.single_starts, before);
+            assert_eq!(v.word(0xB2), 0x707);
+            v.read_line_tables(10 + parity);
+            v.beam_rendering = true;
+            v.read_rotation_line(10 + parity, false);
+            assert_eq!(v.word(0xB2), 0);
+            assert_eq!(v.rotation_read.single_starts, [[40 << 16; 3]; 2]);
+            assert_eq!(v.rotation_read.starts, [[40 << 16; 3]; 2]);
+            v.beam_rendering = false;
+            // Legal field-boundary updates start from the new table, with
+            // parity applied only to the original output-density progression.
+            reg(&mut v, 0x22, 0xF010);
+            v.read_line_tables(parity);
+            v.beam_rendering = true;
+            v.read_rotation_line(parity, true);
+            assert_eq!(v.rotation_read.single_starts[0][0], 40 << 16);
+            assert_eq!(v.rotation_read.starts[0][0], (40 + parity as i64) << 16);
+            v = Vdp2::default();
+            assert_eq!(v.rotation_read.previous, None);
+            assert_eq!(v.rotation_read.single_starts, [[0; 3]; 2]);
+            assert!(
+                v.rotation_read
+                    .single_coefficients
+                    .iter()
+                    .all(Option::is_none)
+            );
+            assert_eq!(v.word(0x22), 0);
+        }
     }
 }

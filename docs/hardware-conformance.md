@@ -626,7 +626,7 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 | Rotation backgrounds, [VDP2] §6.1 p.147, §6.3 figs.6.2–6.4, §6.4 fig.6.7 | RBG0 fixed-point A/B matrices, viewpoint/center/Z/translation/scales, 16-plane tile or bitmap, four screen-over modes, 16/32-bit coefficient modes in VRAM or upper CRAM, coefficient line-color data, per-dot/line indexing, transparency and parameter/window switching; RBG1 parameter B/cells/B0 characters/B1 names, NBG0 effects controls | EFFECTS, R1, LINE | EFFECTS + R1 + LINE (matrix/coefficient/color mutations and Canvas) | RSCG below implements A/B start reloads; complete RBG1 boundaries and cycle/bank arbitration remain required | Pending |
 | Line/vertical-cell scroll, [VDP2] §5.3 figs.5.4–5.8 | Packed enabled X/Y/zoom fields, relative offsets and held line intervals, fractional coordinates, independent NBG0/1, interleaved vertical cell tables and mosaic precedence | EFFECTS | EFFECTS (line X) | Raster-time table reads, cycle/bandwidth arbitration and full guest field/interval corpus remain | Pending |
 | Windows/line windows, [VDP2] §8.1 figs.8.2–8.4 | W0/W1 rectangle or VRAM line tables and SD-bit sprite windows, inside/outside, inclusive edges, empty/inverted ranges, AND/OR on normal/rotation/sprite/color calculation; rotation-parameter windows | VIDEO, EFFECTS, SPRX | EFFECTS, SPRX (Wasm/Canvas and changed guest controls) | Full raster-window update timing and complete independent guest corpus remain | Pending |
-| Mosaic, [VDP2] §5 | NBG0–3 horizontal/vertical grouping | VIDEO | — | All independent vertical/layer/guest vectors | Pending |
+| Mosaic, [VDP2] §4.11 pp.117–119, fig.4.19; later Sega §§2.2/4.11 | NBG0–3 upper-left grouping before scroll/zoom; selected double-density pictures use field-line source rows; RBG0 A/B and RBG1 retain horizontal-only processing and independent density/parameter progressions; NBG0/1 cell-scroll exclusion | [MOSAIC vectors](../src/vdp2/mosaic_tests.rs), [retention](../src/vdp2/rotation.rs), [original guests](../tests/mosaic.rs) | [MOSAIC](../scripts/mosaic.mjs), literal framebuffer/Canvas across both fields and controls | Half-line, physical acquisition strobes and active-line switching phases remain unspecified by this increment | Implemented functional coordinate contract; timing pending |
 | Priority/composition, [VDP2] §§9–11 | Four normal backgrounds, RBG0/RBG1 and VDP1; all sixteen palette sprite types (including shared bits) and mixed RGB; priority-0 disable/ties; SFPRMD character/dot priority from names, supplement or bitmap flags and SFCODE/SFSEL | VIDEO, PRISM, SPRX, SPECIAL | PRISM, SPRX, SPECIAL (guest flag/code mutations and Canvas) | Full display/layer/raster restrictions and complete special-priority boundary corpus | Pending |
 | Color calculation/offset/shadow, [VDP2] §§11–14 | Top/second-image ratio selection, gradation horizontal filtering and priority, additive and three/four-image extended blending; SFCCMD character/dot/palette-MSB conditions; signed offsets, normal/MSB/transparent shadows after blend/offset | VIDEO, SPRX, LINE, SPECIAL, GRAD | SPRX, PRISM, LINE, SPECIAL, GRAD | Gradation border/timing conformance, full guest format/extended-composition corpus and raster timing remain | Pending |
 | Back/line color, [VDP2] §§7.1/11.3 | Back-screen single/per-line VRAM table, signed offset; LNCLEN top-only insertion, single/per-line LCTA palette data and coefficient-derived low seven address bits; CCRLB line/back ratios | VIDEO, LINE | PRISM (back), LINE (two line colors, coefficient mutations, extended calculation, Canvas) | Interlace/display-mode line rules, raster-time fetches and complete guest format corpus remain | Pending |
@@ -3796,3 +3796,44 @@ addresses clock preparation, standby, wake and recovery only. Remaining #17
 CPU/peripheral, bus/cache/reset/arbitration, SCU/DSP, video/audio/CD timing,
 media/HLE/SMPC and integrated evidence requirements remain open. Genuine BIOS
 operation and broad commercial-game compatibility remain unverified.
+
+
+## Mosaic density and source-coordinate evidence (MOSAIC, Issue #79)
+
+Related to #17. The [primary-derived table](vdp2-mosaic.md) reconciles the earlier
+English and later Sega specifications, including the misplaced interlace note.
+The historical VIDEO mosaic claim established horizontal grouping and cell-scroll
+exclusion only; it did not establish interlaced density, all layers or guest
+behavior. The current matrix corrects the former §5 citation to §4.11.
+
+[Vdp2::normal_sample/mosaic_y](../src/vdp2.rs), [line-table acquisition](../src/vdp2/tables.rs)
+and [rotation starts/coefficients](../src/vdp2/rotation.rs) now select image
+coordinates without changing output geometry or hardware mode. [Independent
+native vectors](../src/vdp2/mosaic_tests.rs) cover all sixteen encodings on each
+axis, enabled/disabled layers, both field parities, boundaries, scroll, zoom,
+applicable normal/rotation tile and bitmap color decoders, legal grants,
+retained bytes, line tables and field-boundary updates. Rotation tests exercise
+A/B, independent RBG1 selection, ignored vertical size, retained coefficients,
+shared unmodified sprite operands, one-shot requests and reset.
+
+The original MIT [builder](../tests/fixtures/build_mosaic.py) emits SH-2 source,
+ROM words and SHA-256 files for normal, rotation and RBG1 guests. Guests generate
+64 distinct rows, palette, names, matrices and checksums, program mosaic and
+observe both field transitions before publishing progress. [Native Machine](../tests/mosaic.rs)
+and [production browser Wasm/Canvas](../scripts/mosaic.mjs) execute identical bytes
+and compare literal full images on consecutive fields. Source, size and omitted
+mosaic-enable controls are independent; parameter B, repeated cold boots,
+advancement chunks 1/3/17/10000 and passive inspection are covered. Hosts change
+only ROM input operands before reset. They never supply running guest results,
+VRAM patterns or pixels. Restoring inherited density mapping fails both the normal
+guest oracle and the rotation address oracle. [Validation #79](validation-issue-79.md)
+records exact failures and actual complete-suite results.
+
+This increment does not complete #17. Outstanding scope includes CPU/peripheral
+semantics and timing; multiprocessor, cache/bus arbitration, reset, DMA and
+interrupt interactions; SCU/DSP; complete video/audio/CD timing; BIOS/HLE/SMPC;
+and integrated acceptance across lawful guests. Half-line interlace phase,
+physical mosaic/table/character strobes and switching transients remain outside
+this functional coordinate contract. Genuine BIOS operation and broad commercial
+compatibility remain unverified. Issues #11/#13/#15 remain administratively closed;
+#17 remains open. No post-merge verification is required.
