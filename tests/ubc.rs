@@ -28,7 +28,7 @@ fn guest_instruction_slot_data_and_dmac_breaks_save_architectural_state() {
         // save the next instruction, per H §6.3.5. BRCR identifies the source.
         let expected = [
             0x1000, 0, 0x9000, 0, 0x1102, 22, 0x9400, 0, 0x1206, 33, 0x9000, 0, 0x1288, 33, 0x1088,
-            0, 0x133c, 33, 0x1048, 0, 0x600d,
+            0, 0x133e, 33, 0x1048, 0, 0x600d,
         ];
         for (i, value) in expected.into_iter().enumerate() {
             assert_eq!(

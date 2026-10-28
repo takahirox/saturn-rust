@@ -11,7 +11,9 @@ fn board(p: Processor, address: u32) -> (Bus, Cpu) {
     b.for_cpu(p).fetch16(HIGH_WRAM).unwrap();
     b.cpu_delay(p, 0);
     b.advance_clocks(32).unwrap();
-    (b, Cpu::start(HIGH_WRAM, address))
+    let mut c = Cpu::start(HIGH_WRAM, address);
+    c.prime_fetch(&b.for_cpu(p));
+    (b, c)
 }
 fn attempt(b: &mut Bus, c: &mut Cpu, p: Processor) -> bool {
     let mut next = c.clone();
@@ -131,6 +133,7 @@ fn executing_mov_keeps_existing_peer_dmac_and_scu_bus_priority() {
         if competitor == 0 {
             b.for_cpu(other).write8(CCR, 0x11).unwrap();
             b.for_cpu(other).fetch16(HIGH_WRAM).unwrap();
+            peer.prime_fetch(&b.for_cpu(other));
             b.cpu_delay(other, 0);
             assert!(!attempt(&mut b, &mut peer, other));
         }
@@ -250,6 +253,7 @@ fn executing_mov_fifo_effect_is_retained_on_replay_and_cancelled_load_reset() {
             b.for_cpu(p).write16(HIGH_WRAM, 0x60F5).unwrap(); // MOV.W @R15+,R0
             b.cpu_delay(p, 0);
             let mut c = Cpu::start(HIGH_WRAM, crate::cd::DATA | 0x20000000);
+            c.prime_fetch(&b.for_cpu(p));
             let mut completed = false;
             for _ in 0..64 {
                 let mut next = c.clone();

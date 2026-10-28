@@ -148,7 +148,7 @@ def raster_slave():
     s += 'load 0x0600a000,r1\n' + 'mov.l @r1,r0\nadd #16,r1\n'*16
     s += get(DATA+0x34,10)+get(DATA+0x38,11)
     s += 'load 0x2600e800,r8\nload 0x2600e820,r9\n'
-    s += 'load 0x25f80004,r4\nactive:\nmov.w @r4,r0\ntst #4,r0\nbf active\n'
+    s += 'load 0x25f80002,r13\nload 0x25f8000a,r14\nload 0x25f80004,r4\nactive:\nmov.w @r4,r0\ntst #4,r0\nbf active\n'
     s += get(DATA+0x3C) + 'ldc r0,sr\nnop\n'
     s += 'raster_wait:\nsleep\nmov.l @r9,r0\nmov #2,r1\ncmp/eq r1,r0\nbf raster_wait\n'
     s += 'load 0x2600e840,r1\nmov r10,r0\nadd r11,r0\nmov.l r0,@r1\nadd #4,r1\nload 0x600d,r0\nmov.l r0,@r1\n'
@@ -159,8 +159,8 @@ def raster_handler(label, base, acc, add, mask):
     s = f'mov.l @r{base},r0\nadd #1,r0\nmov.l r0,@r{base}\nadd #{add},r{acc}\n'
     s += f'mov r{base},r2\nadd #4,r2\nmov.l r{acc},@r2\n'
     s += f'mov r0,r3\nshll2 r3\nshll r3\nadd r{base},r3\n'
-    s += 'load 0x25f80002,r1\nmov.w @r1,r2\n'
-    s += 'load 0x25f8000a,r1\nmov.w @r1,r2\nextu.w r2,r2\nmov.l r2,@r3\n'
+    s += 'mov.w @r13,r2\n'
+    s += 'mov.w @r14,r2\nextu.w r2,r2\nmov.l r2,@r3\n'
     s += 'add #4,r3\nload 0x25f80004,r1\nmov.w @r1,r2\nextu.w r2,r2\nmov.l r2,@r3\n'
     s += 'mov #2,r1\ncmp/eq r1,r0\nbf first_'+label+'\n'
     s += f'mov r15,r1\nadd #4,r1\nload {mask:#x},r0\nmov.l r0,@r1\n'

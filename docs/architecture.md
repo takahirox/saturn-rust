@@ -52,7 +52,7 @@ turn limit and aborts on the first fault. Raster, SCU timer/DSP and on-chip DMA
 deadlines split peripheral advancement. Both on-chip DMACs progress without
 CPU issue through distinct source/destination bus grants, shared with CPU and
 SCU transactions. Cycle-steal yields after a unit; bursts retain ownership and
-TAS excludes DMA. Pipeline overlap, speculative fetches and complete refresh,
+TAS excludes DMA. Bounded IF/ID scheduling is described below; complete refresh,
 display, sound and peripheral-bus ownership/timing remain required. See the
 [CPU timing evidence](hardware-conformance.md#independent-sh-2-issue-deadlines-and-clocked-on-chip-dma).
 The browser advances at most one frame per requestAnimationFrame callback,
@@ -76,6 +76,20 @@ manual-derived encoding inventory; semantic tests separately cover operands,
 flags, addressing, aliases, multiplication/division, saturation and control flow.
 Decoder coverage alone is not a claim of full processor conformance.
 
+Both SH-2s retain bounded CPU-local IF/ID state in [fetch.rs](../src/cpu/fetch.rs).
+Real IF advances two instructions ahead of EX through the existing cache, replay
+journal and transaction arbiter. Sampled bytes and decode readiness survive older
+unretired instructions; actual waits stretch slots, and MA wins over real IF.
+Retained-halfword `if` shares MA. Redirects keep only the documented delay slot;
+exceptions/SLEEP/reset discard younger work. Lookahead is limited to side-effect-free
+ROM/RAM/cache routes. MMIO and invalid-address exceptions are deferred until an
+instruction is selected. PLL retains the master stream and resets the slave.
+The [stage/cancellation table and oracle](sh2-fetch-pipeline.md),
+[native grant traces](../src/bus/fetch_pipeline_tests.rs) and original
+[native](../tests/sh2_fetch.rs)/[Wasm guest](../scripts/sh2-fetch.mjs) identify exact
+coverage and deterministic phase conventions. This does not complete unrelated
+EX sequences or establish general compatibility.
+
 Ordinary memory-to-GPR MOV instructions schedule MA independently of their
 addressing form. Synchronous cache and cache-array reads sample at MA completion;
 scheduled peripheral/external reads enter the existing arbiter after EX. The
@@ -85,7 +99,8 @@ including destination-only hazards and the documented load/MAC exceptions.
 Clock observations and completed effects survive journal replay; reset replaces
 both dependency and overlap state. [The stage table](sh2-load-pipeline.md) and
 [Issue #55 validation](validation-issue-55.md) identify precise scope, original
-native/browser guests and remaining speculative-fetch limitations.
+native/browser guests. The newer [IF/ID contract](sh2-fetch-pipeline.md) extends
+fetch overlap to cold and uncached streams.
 
 Ordinary MOV stores use the same MA qualification and aligned successor overlap,
 without creating a WB dependency. A preceding memory load forwards data to store
@@ -99,7 +114,7 @@ published video words retain their existing bus contracts. Invalid operands
 complete MA before publishing register/branch state and latching address error.
 [The store stage/deadline table](sh2-store-pipeline.md) and
 [Issue #63 validation](validation-issue-63.md) record the precise scope and
-native/browser evidence. Full speculative IF/ID and other pipelines remain #17 work.
+native/browser evidence. Other instruction microsequences remain #17 work.
 
 `src/cpu/multiplier.rs` retains CPU-local multiplier availability. MULS/MULU,
 MUL.L/DMUL, MAC.W/MAC.L and both directions of MACH/MACL LDS/STS (including

@@ -136,3 +136,9 @@ Normal-mode display acquisition is every four main clocks and precedes
 equal-edge publication under the established [rotation convention](vdp2-rotation-fetch.md).
 No pixel expectation or computation was relaxed. Fixture source, bytes and
 hashes are reproduced by the existing builder.
+
+
+Issue #69 adds [bounded scheduled IF/ID](sh2-fetch-pipeline.md) for resident,
+cold and uncached streams. Earlier demand-fetch limitations above describe the
+historical increment. Existing MA, dependency, forwarding and multiplier
+resource rules continue to apply; the new contract documents fixture corrections.

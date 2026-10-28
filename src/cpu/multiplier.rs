@@ -20,6 +20,19 @@ pub(super) struct Access {
     memory_access: bool,
 }
 
+impl Access {
+    pub fn stretch_if(&mut self, extra: u64) {
+        self.end += extra;
+        self.successor_ex += extra;
+    }
+
+    pub fn first_if(&mut self, duration: u64) {
+        // wait() observes first-MA stretching and the IF extension together.
+        // Its baseline already includes the first state of a real IF split.
+        self.first_end += duration.min(1);
+    }
+}
+
 impl Multiplier {
     pub fn access(&self, op: u16, pc: u32, now: u64, fetch: bool) -> Option<(Access, u32)> {
         let word = matches!(op & 0xF00F, 0x200E | 0x200F);

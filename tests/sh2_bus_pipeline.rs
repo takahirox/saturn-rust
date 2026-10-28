@@ -50,7 +50,6 @@ fn both_guest_cpus_execute_retained_words_branch_refetch_and_buffered_cpu_and_dm
             }
             assert_eq!(changes, [2, 2]);
             expected[1] = 61;
-            expected[2] = 61;
             expected[6] = 0x52520000;
         }
         let mut m = Machine::new();

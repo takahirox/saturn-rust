@@ -56,7 +56,8 @@ boots. The inherited implementation fails the same guest's timing oracle.
 See [actual checks and limitations](validation-issue-63.md).
 
 This completes only the scoped ordinary-store increment. Warmed instruction-cache
-overlap is covered; full speculative fetch and unrelated instruction pipelines,
+overlap was the original scope; [Issue #69](#scheduled-sh-2-ifid-issue-69) now
+extends bounded IF/ID to cold and uncached streams. Unrelated instruction pipelines,
 CPU/peripheral, bus/reset/arbitration, SCU/DSP, video/audio, CD/media/HLE, SMPC and
 integrated #17 acceptance remain mandatory. Hardware completion and genuine
 BIOS/commercial compatibility remain unverified. #17 remains open.
@@ -86,9 +87,10 @@ The original MIT [guest source](../tests/fixtures/sh2-load.s),
 operand and dependency controls and repeated cold boots. CI checks reproducibility
 and runs the extended browser suite. See [actual validation](validation-issue-55.md).
 
-Precise pipeline claims apply to warmed instruction-cache execution. Demand-driven
-uncached/refill fetches continue to execute; speculative IF/ID completion remains
-incomplete. Ordinary stores are covered by the scoped increment above.
+The original precise claims applied to warmed instruction-cache execution.
+[Issue #69](#scheduled-sh-2-ifid-issue-69) supersedes demand-driven fetch with
+bounded scheduled IF/ID for cold and uncached streams. Ordinary stores are
+covered by the scoped increment above.
 Remaining CPU/peripheral, bus/reset/arbitration,
 SCU/DSP, video/audio, CD/media/HLE, SMPC and comprehensive integration acceptance
 remain mandatory. Genuine BIOS and commercial-game compatibility are unverified.
@@ -396,7 +398,7 @@ not turn those missing hardware paths into supported behavior.
 | DIVU, H §§10.2–10.4/table 10.2 | Signed 32/32 and 64/32 quotient/remainder; six-clock overflow exposes three division steps, saturating only the quotient when OVFIE=0; 39-clock normal completion/interlock; word DVCR/VCRDIV, sticky overflow and IRQ | PERIPH, [DIVG](../tests/sh7604.rs), [independent boundary vectors](../src/onchip/peripheral_tests.rs); `Division::start/overflow_result` | DIVG on both CPUs, normal/overflow signs/zero, aliases, IRQ acknowledgement, repeat boots and changed dividend | The one-clock read-after-write interlock is covered by MEMG below; full CPU bus scheduling remains | Pending |
 | BSC identification/memory/interval timer, H §§7.1.4/7.2/7.5–7.7/7.11.1 | BCR1.MASTER per CPU, read-only word lanes, keyed long writes, RTCNT/RTCOR/RTCSR, all clock divisors, CMF read-before-clear, CMI vector/priority and manual-reset retention; ordinary software waits, intercycle turnaround, narrow transfers, CS2 endian conversion, SDRAM/DRAM/pseudo-SRAM widths and timing, open rows and refresh recovery (BWAIT/IDLEG/BCMEM below) | [BSCG/BWAIT](../tests/bsc.rs), [register/reset vectors](../src/onchip/peripheral_tests.rs), [BSC vectors](../src/onchip/bsc.rs), [bus beats](../src/bus.rs) | BSCG, BWAIT, IDLEG, BCMEM | BUSG below adds all six SDRAM MRS encodings, precharge and command timing; RFSHG below adds retained CPU groups, refresh/DMAC ownership and self-refresh bus inhibition; external WAIT input and full board widths/lanes remain | Pending |
 | Module stop/standby, H §§14.2/14.4, table 14.3 | SBYCR, SCI/FRT reset and gating, preserved INTC/UBC/BSC, retained DMA operands with control reset, WDT-selected NMI settling; `OnChip::enter_sleep/advance_clocks`, `Bus::advance_dma` | [standby/retention vectors](../src/onchip/peripheral_tests.rs), BSCG, PWRG | BSCG, PWRG | Electrical HIZ/pin states, initial five-cycle NMI guard, physical oscillator and clock-switch edges remain unverified; executing stopped MULT instructions is software-prohibited/undefined (H §2.5.2) | Pending |
-| UBC, H §6 | A/B registers, masked address/data/size/master matching, sequential conditions, match flags, before/after fetch breaks and deferred level-15 vector 12; CPU/cache/DMAC and external SCU observation; `Ubc::observe`, `Cpu::step/execute` | UBCG and bus vectors | UBCG | Three-clock propagation, independent successive-write deadlines and last-register read barrier are implemented in `Ubc::advance/read`; DIVG handles data breaks on both CPUs, including slave acknowledgement after exception acceptance. SH7000-compatible unused words of real IF longwords are covered by IFUBC below; complete speculative IF/MA pipeline scheduling remains pending | Pending |
+| UBC, H §6 | A/B registers, masked address/data/size/master matching, sequential conditions, match flags, before/after fetch breaks and deferred level-15 vector 12; CPU/cache/DMAC and external SCU observation; `Ubc::observe`, `Cpu::step/execute` | UBCG and bus vectors | UBCG | Three-clock propagation, independent successive-write deadlines and last-register read barrier are implemented in `Ubc::advance/read`; DIVG handles data breaks on both CPUs, including slave acknowledgement after exception acceptance. SH7000-compatible unused words of real IF longwords are covered by IFUBC below; bounded IF/ID scheduling is covered by Issue #69 below; complete EX/exception and board timing remain pending | Pending |
 | Slave SH-2, [Dual CPU User's Guide][DUALREF] §§1/3/4, [SMPC] table 1.1 | Independent interpreter/registers/stacks/peripherals/cache; shared bus, SSHON/SSHOFF, bidirectional capture IRQs and live DCC HBlank/VBlank levels | DUAL, CACHE, PERIPH, [slave raster vectors](../src/bus/slave_raster_tests.rs) | DUAL, PERIPH, [RASTER](#slave-dcc-raster-interrupts-raster) | BUSG adds deferred round-robin CPU transactions and TAS exclusion; complete IF/MA overlap, on-chip DMAC and display-fetch contention remain; BCR1 identity covered by BSCG | Pending |
 
 ## MC68EC000 instruction families
@@ -3655,3 +3657,33 @@ video/audio, CD/media/HLE, SMPC and integrated acceptance remains mandatory unde
 #17. This is partial hardware-completion progress; #17 stays open. Historical
 Issues #11/#13/#15 stay administratively closed. No personal firmware, human
 listening/approval, physical console or live Pages inspection is required.
+
+## Scheduled SH-2 IF/ID (Issue #69)
+
+Related to #69 and #17. The [primary-derived stage/cancellation contract](sh2-fetch-pipeline.md)
+separates hardware slot rules from emulator edge conventions. Both CPUs retain
+bounded decoded/fetched entries; real IF requests use the existing cache/BSC
+and transaction grants. Waited IF stretches older EX; real IF follows MA, while
+retained `if` shares it. Branch targets, delay slots, exception entry and SLEEP
+use explicit stream cancellation. Speculative MMIO is excluded. Master fetch
+state survives PLL changes; reset domains discard the affected processor's work.
+
+| Evidence | Implementation / reproducible checks |
+| --- | --- |
+| CPU-local IF/ID bytes and readiness | [fetch.rs](../src/cpu/fetch.rs), [Cpu::execute](../src/cpu.rs), [processor boundary](../src/lib.rs) |
+| Actual grants/samples, resident/cold/P1, alignment, waited slots, CS0, MA/dependency | [Literal native vectors](../src/bus/fetch_pipeline_tests.rs); refill order and retained-byte mutations; chunks 1/3/17/10000 with passive inspection |
+| Redirects and asynchronous ownership | Same native vectors: conditional/delayed/call/return/RTE, NMI during pending IF, watchdog power/manual reset, PLL, peer CPU/DMAC/SCU/refresh. Existing [address-error tests](../src/cpu/address_tests.rs), [UBC guest](../tests/ubc.rs), [reset suites](../src/reset_tests.rs), [load](../src/load_scheduler_tests.rs), [store](../src/bus/store_tests.rs) and [multiplier](../src/multiplier_scheduler_tests.rs) remain required |
+| Guest-computed timing and handoff | Original MIT [builder/slot oracle](../tests/fixtures/build_sh2_fetch.py), [source](../tests/fixtures/sh2-fetch.s), [bytes](../tests/fixtures/sh2-fetch.hex), [expectations](../tests/fixtures/sh2-fetch.tsv), [hashes](../tests/fixtures/sh2-fetch.sha256), adjacent [license](../tests/fixtures/LICENSE) |
+| Native and production Wasm | [Native controls/cold boots](../tests/sh2_fetch.rs), [required browser group](../scripts/sh2-fetch.mjs), fixture registry and both browser inventory/shard registries |
+
+The guest has 14 kernels on both CPUs: cached/cold high RAM, P1 with zero/two
+Tw, CS0's fixed word bus, both alignments, register arithmetic and ordinary MOV.
+Data, arithmetic, omitted-load and changed-wait controls retain authored expected
+values. Shared data and NMI acknowledgement are computed by guest instructions.
+The unchanged oracle fails on inherited main, independently reproduced in an
+isolated checkout; details and fixture reconciliation are in the stage contract.
+
+This is partial progress toward #17. Unrelated CPU EX sequences and the remaining
+bus/reset/arbitration, peripherals, SCU/DSP, video/audio, CD/media/HLE, SMPC and
+comprehensive integration criteria remain mandatory. BIOS and commercial-game
+compatibility remain unverified. See [actual validation](validation-issue-69.md).

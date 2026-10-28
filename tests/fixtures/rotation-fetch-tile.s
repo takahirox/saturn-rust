@@ -115,14 +115,11 @@ tst #1,r0
 bt omit_wait
 nop
 nop
-nop
-nop
 timed_wait:
 mov.w @r1,r0
 mov.w @r4,r0
 cmp/hs r3,r0
 bf timed_wait
-nop
 mov.w r6,@r5
 mov r0,r8
 bra record

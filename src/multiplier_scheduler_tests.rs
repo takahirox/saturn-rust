@@ -21,6 +21,7 @@ fn multiplier_wait_replays_before_a_dependent_store_without_blocking_peer_or_dma
     // Its consumer starts at t37 and extends its MA through that final mm.
     let mut m = cached_pair(&[0xE103, 0xE207, 0x321D, 0x4F12, 0x001B, 9], &[9; 64]);
     m.cpu = Cpu::start(HIGH_WRAM, (HIGH_WRAM + 0x2004) | 0x20000000);
+    m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
     retired(&mut m, 3);
     assert_eq!((m.cpu_state().mach, m.cpu_state().macl), (0, 21));
     advance_to(&mut m, 37);
@@ -68,6 +69,7 @@ fn separated_multiplier_stores_complete_at_the_ma_boundary_even_without_extra_st
             // On-chip SAR0 exposes the actual completion clock without an
             // external write buffer or bus wait hiding an early transfer.
             m.cpu = Cpu::start(HIGH_WRAM, onchip::DMAC + 4);
+            m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
             m.bus
                 .for_cpu(Processor::Master)
                 .write32(onchip::DMAC, 0x12345678)
@@ -108,6 +110,7 @@ fn zero_stall_multiplier_loads_sample_at_the_ma_boundary_and_replay_once() {
         let code = [0xE103, 0xE207, 0x321D, 9, 9, 9, op, 0x001B, 9];
         let mut m = cached_pair(&code, &[9; 64]);
         m.cpu = Cpu::start(HIGH_WRAM, onchip::DMAC);
+        m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
         m.bus
             .for_cpu(Processor::Master)
             .write32(onchip::DMAC, 0x12345678)
@@ -156,6 +159,7 @@ fn mac_first_operand_samples_after_ex_and_is_retained_during_second_ma_replay() 
     // The second MA then spans 40..42, overlapping the older mm tail.
     let mut m = cache_boundary_pair(&[0xE103, 0xE207, 0x321D, 0x0FFF, 0x001B, 9]);
     m.cpu = Cpu::start(HIGH_WRAM, onchip::DMAC);
+    m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
     for (offset, value) in [(0, 3), (4, 7)] {
         m.bus
             .for_cpu(Processor::Master)
@@ -207,6 +211,7 @@ fn mac_second_operands_sample_at_the_multiplier_boundary_and_replay_once() {
     ] {
         let mut m = cache_boundary_pair(&[0xE103, 0xE207, 0x321D, op, 0x001B, 9]);
         m.cpu = Cpu::start(HIGH_WRAM, address);
+        m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
         let write = |m: &mut Machine, offset, value| {
             let mut memory = m.bus.for_cpu(Processor::Master);
             if width == 4 {
@@ -270,6 +275,7 @@ fn dependent_scheduled_lds_overlaps_its_full_operand_latency_with_mm() {
             code.extend([op, 0x001B, 9]);
             let mut m = cache_boundary_pair(&code);
             m.cpu = Cpu::start(HIGH_WRAM, onchip::DMAC);
+            m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
             m.bus
                 .for_cpu(Processor::Master)
                 .write32(onchip::DMAC, 0x12345678)
@@ -331,6 +337,7 @@ fn dependent_external_lds_overlaps_short_and_long_bus_latencies_with_mm() {
                 code.extend([op, 0x001B, 9]);
                 let mut m = cache_boundary_pair(&code);
                 m.cpu = Cpu::start(HIGH_WRAM, address);
+                m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
                 m.bus
                     .for_cpu(Processor::Master)
                     .write32(0xFFFFFFE8, 0xA55A0000 | wait_control)
@@ -396,6 +403,7 @@ fn mac_operand_completion_preserves_successor_ex_overlap() {
             ]);
             let mut m = cache_boundary_pair(&code);
             m.cpu = Cpu::start(HIGH_WRAM, address);
+            m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
             let mut memory = m.bus.for_cpu(Processor::Master);
             if width == 4 {
                 memory.write32(address, 3).unwrap();
@@ -462,6 +470,7 @@ fn mac_memory_transfers_overlap_the_successor_in_elapsed_clocks() {
         code.extend([op, 9, 0xE65A, 9]);
         let mut m = cache_boundary_pair(&code);
         m.cpu = Cpu::start(HIGH_WRAM, address + if store { 4 } else { 0 });
+        m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
         m.bus
             .for_cpu(Processor::Master)
             .write32(address, 0x12345678)
@@ -526,6 +535,7 @@ fn multi_clock_mac_loads_preserve_shared_ma_ex_slot_and_replay_once() {
     for op in [0x4F06, 0x4F16] {
         let mut m = cache_boundary_pair(&[op, 9, 0xE65A, 0x001B, 9]);
         m.cpu = Cpu::start(HIGH_WRAM, onchip::DMAC);
+        m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
         m.bus
             .for_cpu(Processor::Master)
             .write32(onchip::DMAC, 0x12345678)
@@ -583,6 +593,7 @@ fn a_waited_successor_fetch_exhausts_memory_transfer_overlap() {
         for first in [transfer, 9] {
             let mut m = cache_boundary_pair(&[first, 0xE65A, 9]);
             m.cpu = Cpu::start(HIGH_WRAM, address);
+            m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
             if m.issue_cpu(Processor::Master).unwrap() {
                 m.bus.advance_clocks((boundary - 32) as u32).unwrap();
                 m.clocks = boundary;
@@ -618,6 +629,7 @@ fn cache_array_multiplier_stores_wait_for_ma_completion_and_replay_once() {
             code.extend([op, 0x001B, 9]);
             let mut m = cache_boundary_pair(&code);
             m.cpu = Cpu::start(HIGH_WRAM, address + 4);
+            m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
             m.bus
                 .for_cpu(Processor::Master)
                 .write32(address, 0x12345678)
@@ -675,6 +687,7 @@ fn cache_backed_multiplier_loads_sample_at_ma_completion_and_replay_once() {
                 code.extend([op, 0x001B, 9]);
                 let mut m = cache_boundary_pair(&code);
                 m.cpu = Cpu::start(HIGH_WRAM, address);
+                m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
                 let mut memory = m.bus.for_cpu(Processor::Master);
                 memory.write32(address, 0x12345678).unwrap();
                 assert_eq!(memory.read32(address), Ok(0x12345678)); // warm the data line
@@ -728,6 +741,7 @@ fn multiplier_ages_during_external_and_onchip_waits_and_is_cpu_local() {
         // clocks. EX/MA lead-in and the internal read now exhaust it too.
         let mut m = cached_pair(&[0xE103, 0xE207, 0x321D, 0x60F0, 0x061A, 9], &[9; 64]);
         m.cpu = Cpu::start(HIGH_WRAM, address);
+        m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
         m.bus
             .for_cpu(Processor::Master)
             .write32(0xFFFFFFE8, 0xA55A00C0)
@@ -748,7 +762,9 @@ fn reset_cancels_multiplier_wait_and_never_publishes_its_suspended_transfer() {
             let code = [0xE103, 0xE207, 0x321D, 0x4F12, 9, 9];
             let mut m = cached_pair(&code, &code);
             m.cpu = Cpu::start(HIGH_WRAM, (HIGH_WRAM + 0x2004) | 0x20000000);
+            m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
             m.slave = Cpu::start(HIGH_WRAM + 0x100, (HIGH_WRAM + 0x3004) | 0x20000000);
+            m.slave.prime_fetch(&m.bus.for_cpu(Processor::Slave));
             advance_to(&mut m, 37);
             assert!(!m.issue_cpu(p).unwrap());
             let mut rom = vec![0; bus::BIOS_SIZE];
@@ -791,8 +807,10 @@ fn watchdog_assertion_during_a_multiplier_interlock_cancels_only_the_affected_cp
             let target = HIGH_WRAM + 0x2000;
             if p == Processor::Master {
                 m.cpu = Cpu::start(HIGH_WRAM, (target + 4) | 0x20000000);
+                m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
             } else {
                 m.slave = Cpu::start(HIGH_WRAM + 0x100, (target + 4) | 0x20000000);
+                m.slave.prime_fetch(&m.bus.for_cpu(Processor::Slave));
             }
             let mut rom = vec![0; bus::BIOS_SIZE];
             for v in [0, 8] {
@@ -854,6 +872,7 @@ fn slave_stop_start_and_cold_boot_cancel_a_suspended_multiplier_transfer() {
     m.bus.write8(devices::SMPC + 0x1F, 3).unwrap();
     advance_to(&mut m, 833); // SSHOFF completes at 32+807=839.
     m.slave = Cpu::start(HIGH_WRAM + 0x200, (HIGH_WRAM + 0x2004) | 0x20000000);
+    m.slave.prime_fetch(&m.bus.for_cpu(Processor::Slave));
     m.cpu_ready[1] = 833;
     advance_to(&mut m, 838);
     assert!(!m.issue_cpu(Processor::Slave).unwrap());
@@ -875,6 +894,7 @@ fn slave_stop_start_and_cold_boot_cancel_a_suspended_multiplier_transfer() {
     // discard both deadline and journal; the new original ROM supplies results.
     let mut m = cached_pair(&code, &peer);
     m.cpu = Cpu::start(HIGH_WRAM, (HIGH_WRAM + 0x2004) | 0x20000000);
+    m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
     advance_to(&mut m, 37);
     assert!(!m.issue_cpu(Processor::Master).unwrap());
     m.reset(Boot::ExternalBios(&rom)).unwrap();
@@ -889,6 +909,7 @@ fn a_dependent_lds_samples_memory_after_the_wait_and_updates_its_address_once() 
     let mut m = cached_pair(&[0xE103, 0xE207, 0x321D, 0x4F16, 0x001B, 9], &[9; 64]);
     let address = HIGH_WRAM + 0x2000;
     m.cpu = Cpu::start(HIGH_WRAM, address | 0x20000000);
+    m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
     m.bus.write32(address, 0xDEADBEEF).unwrap();
     retired(&mut m, 3);
     advance_to(&mut m, 37);

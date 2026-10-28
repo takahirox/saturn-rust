@@ -95,3 +95,5 @@ python3 tests/fixtures/build_scsp_mvol.py --check
 python3 tests/fixtures/build_smpc.py --check
 python3 tests/fixtures/build_smpc_status.py --check
 python3 tests/fixtures/build_controller.py --check
+
+python3 tests/fixtures/build_sh2_fetch.py --check

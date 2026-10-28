@@ -152,6 +152,11 @@ pub trait Memory {
     fn sh2_fetch_slots(&self) -> bool {
         false
     }
+    /// Permit an overrun IF only on a side-effect-free instruction route.
+    /// MMIO is fetched only if selected architecturally, never speculatively.
+    fn sh2_speculative_fetch(&self, _address: u32) -> bool {
+        false
+    }
     /// Diagnostic provenance for a deferred SH-2 write. This does not make
     /// the BSC buffer part of the architectural exception mechanism.
     fn sh2_write_context(&self, _pc: u32, _vector: Option<u8>) {}
@@ -1532,6 +1537,14 @@ impl CpuBus<'_> {
     }
 }
 impl Memory for CpuBus<'_> {
+    fn sh2_speculative_fetch(&self, address: u32) -> bool {
+        let physical = Bus::physical(address);
+        address & 1 == 0
+            && (physical < BIOS_SIZE as u32
+                || (LOW_WRAM..LOW_WRAM + WRAM_SIZE as u32).contains(&physical)
+                || (HIGH_WRAM..HIGH_WRAM + WRAM_SIZE as u32).contains(&physical)
+                || address >> 29 == 6)
+    }
     fn sh2_discard_prefetch(&self) {
         self.bus.instruction_word[self.processor as usize].set(None);
     }

@@ -9,7 +9,7 @@ import hashlib
 import struct
 from pathlib import Path
 from build_scu import assembler
-from build_clock import put16, read
+from build_clock import put16, put8, read
 from build_hle_system import record
 
 HERE = Path(__file__).resolve().parent
@@ -99,7 +99,9 @@ def effects_source():
     # polygons write independent eight-dot rows, so blend/shadow never
     # consume an output pixel from an earlier polygon. The FRT measures
     # table reads and the documented six-clock framebuffer calculations.
-    s = 'load 0x0600e300,r8\n' + put16(0x25D00002, 2)
+    # A resident three-instruction poll bounds FRT quantization independently
+    # of cold CS0 overrun fetches (80 +/- 2 ticks for 640 RMW clocks).
+    s = put8(0xFFFFFE92,17) + 'load 0x0600e300,r8\n' + put16(0x25D00002, 2)
     s += 'load 0x100,r1\nmov.w @r1,r12\n'
     s += 'load 0x102,r1\nmov.w @r1,r13\n'
     s += put16(0x25C00000, 9) + put16(0x25C00014, 511) + put16(0x25C00016, 255)

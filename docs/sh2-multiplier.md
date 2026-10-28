@@ -144,3 +144,9 @@ exception entry does not add them to the architectural stack.
 
 Full speculative IF/ID/EX/MA/WB completion, arbitrary cross-instruction fetch
 scheduling and the remaining #17 conformance requirements are separate work.
+
+
+Issue #69 adds [bounded scheduled IF/ID](sh2-fetch-pipeline.md) for resident,
+cold and uncached streams. Earlier demand-fetch limitations above describe the
+historical increment. Existing MA, dependency, forwarding and multiplier
+resource rules continue to apply; the new contract documents fixture corrections.

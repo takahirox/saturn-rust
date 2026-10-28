@@ -499,3 +499,10 @@ interrupts, FRT measurements, guest framebuffer checksums, changed operands,
 omitted enable, repeated boots and production Canvas output. See the
 [timing reconciliation](vdp1-vbe-timing.md) and
 [Issue #65 validation](validation-issue-65.md).
+
+
+The original [IF/ID guest](sh2-fetch-pipeline.md) is reproduced with
+`python3 tests/fixtures/build_sh2_fetch.py --check` and runs as the required
+`sh2Fetch` browser scenario. The current inventory is 66 groups (30 shared,
+36 independent scenarios), and the fixture registry contains 94 commands;
+older inventory counts above describe earlier records.

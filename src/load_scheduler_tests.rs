@@ -23,7 +23,8 @@ fn board(p: Processor, offset: u32, address: u32, successor: u16) -> Machine {
     } else {
         cached_pair(&[9; 64], &words)
     };
-    let c = Cpu::start(HIGH_WRAM + p as u32 * 0x100 + offset, address);
+    let mut c = Cpu::start(HIGH_WRAM + p as u32 * 0x100 + offset, address);
+    c.prime_fetch(&m.bus.for_cpu(p));
     if p == Processor::Master {
         m.cpu = c;
     } else {

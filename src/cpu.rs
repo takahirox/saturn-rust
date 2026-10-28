@@ -2,6 +2,7 @@
 use crate::bus::{BusError, Memory};
 use std::fmt;
 
+mod fetch;
 mod memory;
 mod multiplier;
 mod timing;
@@ -126,6 +127,8 @@ pub struct Cpu {
     last_clocks: u32,
     load_pipeline: timing::LoadPipeline,
     multiplier: multiplier::Multiplier,
+    fetch: fetch::Fetch,
+    execution_clock: Option<u64>,
 }
 
 impl Cpu {
@@ -137,8 +140,13 @@ impl Cpu {
         self.last_clocks
     }
 
-    pub(crate) fn issue_overlap(&self) -> u32 {
-        self.load_pipeline.issue_overlap
+    pub(crate) fn execution_clock(&self) -> Option<u64> {
+        self.execution_clock
+    }
+
+    #[cfg(test)]
+    pub(crate) fn prime_fetch(&mut self, bus: &impl Memory) {
+        self.fetch.prime(bus, self.state.pc);
     }
 
     pub fn start(pc: u32, sp: u32) -> Self {
@@ -155,6 +163,8 @@ impl Cpu {
             last_clocks: 0,
             load_pipeline: timing::LoadPipeline::default(),
             multiplier: multiplier::Multiplier::default(),
+            fetch: fetch::Fetch::default(),
+            execution_clock: None,
         }
     }
 
@@ -239,6 +249,7 @@ impl Cpu {
     /// Faults caused by unavailable host bus/device behavior stay sticky until reset.
     pub fn step(&mut self, bus: &mut impl Memory) -> Result<(), CpuError> {
         self.last_clocks = 0;
+        self.execution_clock = None;
         self.load_pipeline.issue_overlap = 0;
         let pc = self.state.pc;
         if matches!(self.state.status, CpuStatus::Running | CpuStatus::Sleeping)
@@ -283,6 +294,8 @@ impl Cpu {
         // bus supplies additional waits independently to the machine scheduler.
         bus.sh2_write_context(self.state.pc, Some(vector));
         self.last_clocks = 8;
+        self.execution_clock = bus.sh2_clock();
+        self.fetch.clear();
         self.multiplier.clock += 8;
         self.load_pipeline = timing::LoadPipeline::default();
         let s = &mut self.state;
@@ -352,7 +365,7 @@ impl Cpu {
             self.interrupt_inhibited = false;
             return Ok(());
         }
-        let opcode = bus.fetch16(pc).map_err(access)?;
+        let opcode = self.fetch.select(bus, pc).map_err(access)?;
         // H §6.3.2: a before-execution break requires a successfully fetched
         // instruction. A fetch failure or speculative fill cannot cause it.
         if bus.instruction_break(pc, false)
@@ -384,7 +397,25 @@ impl Cpu {
         if wait != 0 {
             bus.sh2_pipeline_wait(wait).map_err(access)?;
         }
-        let now = ex + u64::from(interlock);
+        // IF of the second successor and ID of the successor share this EX
+        // slot. The real fetch runs through the replay journal and arbiter;
+        // its actual completion stretches the slot, without retiring EX early.
+        let fetch_start = bus.sh2_clock();
+        let successor = self.state.delay_target.unwrap_or(pc.wrapping_add(2));
+        let deferred_if = matches!(opcode & 0xF00F, 0x0007 | 0x3005 | 0x300D | 0x000F | 0x400F);
+        if !deferred_if {
+            self.fetch
+                .advance(bus, successor, ex + u64::from(interlock))
+                .map_err(access)?;
+        }
+        let stretch = fetch_start.map_or(0, |start| {
+            bus.sh2_clock()
+                .unwrap()
+                .saturating_sub(start)
+                .saturating_sub(1)
+        });
+        self.execution_clock = fetch_start.map(|_| ex + stretch);
+        let now = ex + u64::from(interlock) + stretch;
         let mov_access = timing::mov_load_address(opcode, &self.state)
             .map(|address| (address, false))
             .or_else(|| {
@@ -415,6 +446,26 @@ impl Cpu {
             self.multiplier
                 .wait(multiplier_access, bus, memory)
                 .map_err(access)?;
+        }
+        if deferred_if && !multiplier_access.as_ref().unwrap().memory_mac {
+            // The long multiplier's successor ID stalls once. Its IF is
+            // beside MA, with MA first when this is a real longword IF.
+            if let Some(clock) = bus.sh2_clock() {
+                let first_split = u64::from(pc & 2 == 0);
+                bus.sh2_pipeline_wait((now + 1 + first_split).saturating_sub(clock) as u32)
+                    .map_err(access)?;
+                let start = bus.sh2_clock().unwrap();
+                self.fetch
+                    .advance(bus, successor, now + 1)
+                    .map_err(access)?;
+                let extra = bus
+                    .sh2_clock()
+                    .unwrap()
+                    .saturating_sub(start)
+                    .saturating_sub(1);
+                self.last_clocks += extra as u32;
+                multiplier_access.as_mut().unwrap().stretch_if(extra);
+            }
         }
 
         // Invalid operand cycles latch vector 9, allowing the instruction to
@@ -620,6 +671,13 @@ impl Cpu {
                     .first_operand(multiplier_access.as_ref().unwrap(), bus.inner, s.r[n])
                     .map_err(access)?;
                 let a = read_operand(bus, s.r[n], width).map_err(access)? as i32 as i64;
+                if let Some(start) = bus.inner.sh2_clock() {
+                    self.fetch
+                        .advance(bus.inner, successor, start)
+                        .map_err(access)?;
+                    let duration = bus.inner.sh2_clock().unwrap() - start;
+                    multiplier_access.as_mut().unwrap().first_if(duration);
+                }
                 let m_address = s.r[m].wrapping_add(if n == m { width } else { 0 });
                 self.multiplier
                     .wait(
@@ -790,11 +848,25 @@ impl Cpu {
             mov.finish(&mut self.load_pipeline, bus.inner)
                 .map_err(access)?;
         }
-        if s.delay_target.is_some() || direct_branch {
+        if direct_branch || next_branch.is_some() {
+            bus.inner.sh2_discard_prefetch();
+            self.fetch
+                .redirect(
+                    bus.inner,
+                    next_branch.unwrap_or(sequential_pc),
+                    next_branch.is_some(),
+                    now,
+                )
+                .map_err(access)?;
+        } else if s.delay_target.is_some() && bus.inner.sh2_clock().is_none() {
             bus.inner.sh2_discard_prefetch();
         }
         s.pc = s.delay_target.take().unwrap_or(sequential_pc);
         s.delay_target = next_branch;
+        if s.status == CpuStatus::Sleeping {
+            self.fetch.clear();
+            bus.inner.sh2_discard_prefetch();
+        }
         s.instructions += 1;
         s.address_error_pending |= operands.address_error.get();
         self.interrupt_inhibited = inhibit;

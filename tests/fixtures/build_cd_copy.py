@@ -16,7 +16,9 @@ BASE = 0x0600A000
 
 
 def build():
-    s = ''
+    # Keep the CPU command budget below the 32-sector copy job: zero
+    # software IF waits, fixed CS0 longwords still use two physical beats.
+    s = store(0xFFFFFFE8,0xA55A0000).replace("mov.w r0,@r1", "mov.l r0,@r1")
     index = 0
     labels = []
 

@@ -89,7 +89,7 @@ def build():
     for at in range(0,len(rom),16):
         if any(rom[at:at+16]):
             lines.append(f'{at:04X} '+' '.join(f'{w:04X}' for w in struct.unpack('>8H',rom[at:at+16])))
-    expected=[7,42,42,1,0xFFFFFFFF,0x11223344,0x31310000,1,0x600D]
+    expected=[7,42,7,1,0xFFFFFFFF,0x11223344,0x31310000,1,0x600D]
     return {'sh2-bus-pipeline.hex':('\n'.join(lines)+'\n').encode(),
             'sh2-bus-pipeline.tsv':''.join(f'{v:08X}\n' for v in expected).encode()}
 

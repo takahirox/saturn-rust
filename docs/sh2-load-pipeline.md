@@ -116,3 +116,9 @@ without expanding the hot poll/store path across another instruction-cache
 line. Its store executes in the branch slot. The source builder records these
 phase choices, regenerates source/bytes/hashes, and preserves the early-write,
 omitted-write, changed-color and chunk controls.
+
+
+Issue #69 adds [bounded scheduled IF/ID](sh2-fetch-pipeline.md) for resident,
+cold and uncached streams. Earlier demand-fetch limitations above describe the
+historical increment. Existing MA, dependency, forwarding and multiplier
+resource rules continue to apply; the new contract documents fixture corrections.
