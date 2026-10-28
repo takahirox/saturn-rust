@@ -2072,3 +2072,7 @@ mod dma_tests {
         assert_eq!(b.read32(vdp1::VRAM + 0x1000), Ok(0x11223344));
     }
 }
+
+#[cfg(test)]
+#[path = "vbe_tests.rs"]
+mod vbe_tests;

@@ -68,9 +68,6 @@ bf fill_dot_b
 add r6,r4
 dt r3
 bf fill_row_b
-load 0x25d00000,r1
-load 0x8,r0
-mov.w r0,@r1
 load 0x108,r1
 mov.w @r1,r0
 tst r0,r0
@@ -89,6 +86,17 @@ load 0x25d0000a,r1
 mov.w r0,@r1
 omit_b:
 load 0x25f80004,r1
+wait_enable:
+mov.w @r1,r0
+tst #8,r0
+bt wait_enable
+load 0x25d00000,r1
+load 0x8,r0
+mov.w r0,@r1
+load 0x25d00002,r1
+load 0x3,r0
+mov.w r0,@r1
+load 0x25f80004,r1
 in_erase_a:
 mov.w @r1,r0
 tst #8,r0
@@ -100,15 +108,6 @@ bf out_erase_a
 load 0x25d00002,r1
 load 0x3,r0
 mov.w r0,@r1
-load 0x25f80004,r1
-in_capture_b:
-mov.w @r1,r0
-tst #8,r0
-bt in_capture_b
-out_capture_b:
-mov.w @r1,r0
-tst #8,r0
-bf out_capture_b
 load 0x25c80000,r4
 mov #6,r3
 load 944,r6
@@ -168,9 +167,6 @@ mov.w @r1,r0
 extu.w r0,r0
 mov.l r0,@r8
 add #4,r8
-load 0x25d00002,r1
-load 0x3,r0
-mov.w r0,@r1
 load 0x25f80004,r1
 in_inspect_b:
 mov.w @r1,r0
@@ -180,6 +176,12 @@ out_inspect_b:
 mov.w @r1,r0
 tst #8,r0
 bf out_inspect_b
+load 0x25d00000,r1
+load 0x0,r0
+mov.w r0,@r1
+load 0x25d00002,r1
+load 0x3,r0
+mov.w r0,@r1
 load 0x25c80000,r4
 mov #6,r3
 load 944,r6
@@ -239,12 +241,6 @@ mov.w @r1,r0
 extu.w r0,r0
 mov.l r0,@r8
 add #4,r8
-load 0x25d00000,r1
-load 0x0,r0
-mov.w r0,@r1
-load 0x25d00002,r1
-load 0x3,r0
-mov.w r0,@r1
 load 0x25f80004,r1
 in_publish_b:
 mov.w @r1,r0

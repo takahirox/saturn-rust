@@ -614,7 +614,7 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 | Clip/local coordinates, [VDP1] §§7.1–7.3 | System/user inside/outside clips, local offsets | VIDEO | PRISM (system) | Full extreme-coordinate/clip boundary corpus | Pending |
 | Sprite texture/color modes, [VDP1] §§3.1/5.1/5.2/6.3–6.6 | Packed 4-bit bank/LUT, 64/128/256 bank and RGB555, retained 16-word LUT before drawing, separately fetched character words and framebuffer publication, transparent pixels, two end codes per raster row | VIDEO; [table/character vectors](#retained-vdp1-tables-and-characters-68k-ea-waits-and-cd-transfer-completion) | PRISM (RGB555); original lookup/character rewrite guests | Scaling/end-code interaction, wrapping, physical prefetch overlap and all browser formats | Pending |
 | Shading/color calculation, [VDP1] §6.3 | Gouraud vertex-word fetches, mesh, MSB-only, six-clock shadow/transparency, half-luminance and combined Gouraud effects | VIDEO, [VDP1 memory/effect vectors](#vertical-counter-and-vdp1smpc-memory-boundaries) | PRISM; original FRT/pixel effects guest | Subpixel interpolation and duplicate-coverage edges; complete readout/effects corpus | Pending |
-| Draw/erase/swap/status/IRQ, [VDP1] §4 | PTMR; bounded 30-clock ENDR; per-dot draw cursor, manual transfer-over; scanline display erase and word-clock VBlank erase with 200-clock/raster overhead; manual/auto change, persistent VBE, CEF/BEF/COPR/LOPR; SCU IRQ/DMA trigger | VIDEO, VIRQ, PRISM, VTX; [local-memory vectors](#scheduled-68k-resetiack-and-vdp1-local-memory-ownership) | PRISM, VTX; command-fetch/ownership guests | Complete command/effect memory costs, mid-blank enable and half-line/swap phase | Pending |
+| Draw/erase/swap/status/IRQ, [VDP1] §4 | PTMR; bounded 30-clock ENDR; per-dot draw cursor, manual transfer-over; scanline display erase and raster-sampled VBE with capacity-preserving word publication; manual/auto change, persistent VBE, CEF/BEF/COPR/LOPR; SCU IRQ/DMA trigger | VIDEO, VIRQ, PRISM, VTX; [local-memory vectors](#scheduled-68k-resetiack-and-vdp1-local-memory-ownership) | PRISM, VTX; command-fetch/ownership guests | Complete command/effect memory costs, physical erase cadence and half-line/swap phase | Pending |
 | VDP2 VRAM, [VDP2] §3 | Bitmap RAM/bank offsets; all eight cycle words select CPU grants, split-bank matching and idle/linked timing, unused-screen release, rotation ownership and high-resolution slot limits; beam output requires addressed-bank display grants and format/reduction bandwidth | VIDEO, SC, VTX, [FETCHG](#vdp2-display-fetch-grants-and-line-table-latches-fetchg); `access.rs`, `vram_grant_tests.rs` | PRISM, SC, VTX, FETCHG | Per-word display-fetch phase/retention and complete SCU/DMA arbitration remain | Pending |
 | VDP2 CRAM, [VDP2] §3.4 | Modes 0/1 RGB555 and 2 RGB888; mode-0 upper-half mirror; palette offsets | VIDEO | — | Full lane/alias and guest/browser palette corpus | Pending |
 | TVMD/TVSTAT, [VDP2] §2.2 | 320/352/640/704 dots, 224/240/PAL256 lines, noninterlace/single/double density; 480-line exclusive monitors and NBG0/NBG1 pixel multiplexing; border/display enable, PAL/ODD and blanking flags | VIDEO, TIME, TVG, VTX | PRISM, SC, SCUROM, TVG, VTX | Complete raster-time latches, half-line phase and switching transients remain | Pending |
@@ -635,7 +635,8 @@ use four separate VRAM word deadlines; shadow/translucency retain a background
 read through a six-clock dot operation. Replacement advances one dot per clock.
 ENDR has a bounded thirty-clock stop.
 Normal erase follows scanline readout; VBlank erase has clocked word writes and
-per-raster overhead, and leaves unfinished pixels at VBlank-OUT. VTX independently
+the per-raster aggregate capacity deduction, and leaves unfinished pixels at
+VBlank-OUT (see Issue #65 below for sampling and the publication convention). VTX independently
 checks the manual's 58,812-word NTSC budget and manual transfer-over status.
 Color calculations use integer interpolation; full physical edge rounding,
 CPU/VRAM arbitration and command/effect-specific access costs remain required. Native
@@ -1893,14 +1894,14 @@ References: [VDP1] §2 (VRAM wrap and pixel clocks), §§4.2/4.4–4.8 (field ch
 erase, ENDR and status); [VDP2] §2.1 p.13, tables2.1/2.3/2.4, §3.3 figs.3.2/3.6/3.7
 and table3.5, §4.5 p.60 and table8.1. Expanded synthetic BIOS SHA-256:
 
-- VDP1 progress (setup corrected for [Issue #25 capture timing](validation-issue-25.md)): `30e75e2872651275421b093131c235332fae45673940c71b300c15bf7a0b54bf`.
+- VDP1 progress (setup corrected for [Issue #25 capture timing](validation-issue-25.md) and [Issue #65 VBE window](validation-issue-65.md)): `6c996888cc9ac8dfc3cede4aae3865f9d48868b6b4b440e9f1d6a809e72b0ccb`.
 - Exclusive monitor: `65f0df1a183eb1dfea1ba024f0cd2f1d30d87247aaae50370126e5bd5efc7730`.
 - VRAM grants: `4e984c634b4f5e600f003aad552676769921dd0a2e8081be4ae54d9c23679ea4`.
 
 | Contract | Implementation | Independent native evidence | Guest/Wasm evidence and remaining limits |
 | --- | --- | --- | --- |
 | Dot progression, transparent/clipped dots, texture reads and stop | `Vdp1::raster_line/draw_dot/advance` | [progress tests](../src/vdp1/progress_tests.rs): partial pixels, texture changed between dots, 29/30-clock stop boundary, END/status/IRQ ordering, command wrap, reset cancellation | VTX observes a clipped 4096-dot line before it completes, forces stop, and compares computed status/IRQ/LOPR; guest color mutation changes only its pixel record. Full texture/edge/effect bus costs remain. |
-| Erase and transfer-over | `erase_display_line/advance_erase/vblank_in/vblank_out` | Literal one/two-pixel word writes, 200-clock overhead, 58,812-word capacity, unchanged first unfinished word, field stop, both depths, scanline progression, manual cursor retention, reset/backup retention | VTX publishes authored framebuffer words, executes VBE/change, checks last erased/first untouched words, and repeats with a changed guest erase color. Subscanline display erase and late-enable timing remain. |
+| Erase and transfer-over | `erase_display_line/advance_erase/vblank_in/vblank_out` | Literal one/two-pixel word writes, aggregate 200-per-raster deduction, 58,812-word capacity, unchanged first unfinished word, field stop, both depths, scanline progression, manual cursor retention, reset/backup retention | VTX publishes authored framebuffer words, executes VBE/change, checks last erased/first untouched words, and repeats with a changed guest erase color. The legal VBE window is covered by Issue #65 below; subscanline display erase and physical erase cadence remain. |
 | Cycle words and CPU grants | `Vdp2::cpu_access_slots`, `Raster::vram_wait_clocks`, `CpuBus::observe_external` | [bank masks](../src/vdp2/access.rs), [both CPUs/cache/P1/reset](../src/bus/vram_grant_tests.rs), queued-refill waits, raster deadlines, reserved/atomic write vectors | VTX uses FRT to distinguish granted/blocked A/B ports, matching/mismatched split banks and ignored T4–T7 high-resolution slots; disabling screens releases the port. Waits still accumulate after atomic CPU execution; display-fetch bandwidth and SCU/DMA ownership remain unresolved. |
 | Exclusive 320/352/640/704×480 | `Raster`, `Vdp2::background/window`, rotation display gating | Main-clock event vectors for 525/562-line fields and 852/848-clock rasters; counter/window layouts; native pixels at lines 0/479 and NBG1 scroll mutation | VTX verifies all four guest-selected modes, counters, buffer dimensions, exact adjacent RGB pixels, repeat reset and production Canvas. Full mode/effect/bus combinations and switching transient timing remain. |
 | Normal-layer color-depth sharing | `normal_layer_available` | Eleven literal pixel vectors isolate NBG0/NBG1 color depth from priority/transparency and check the affected companion layers | Native decoder-boundary evidence; complete guest/Wasm boundary corpus remains required. |
@@ -3121,9 +3122,10 @@ from the settings captured before an erase was accepted.
 
 [Actual checks, inherited-implementation negative controls, fixture corrections
 and artifact hashes](validation-issue-25.md) document this partial #17 increment.
-The new builder's `--check` is required by existing CI. VBE sampling-phase
-correction, half-line timing, additional display modes and rasterizer changes
-remain separate work. CPU/peripheral, multiprocessor/bus/reset, SCU/DSP,
+The new builder's `--check` is required by existing CI. Issue #65 below adds
+VBE sampling and corrects these guests' programming windows while retaining
+their checksums/pixels. Half-line timing, additional display modes and rasterizer
+changes remain separate work. CPU/peripheral, multiprocessor/bus/reset, SCU/DSP,
 video/audio, CD/media/HLE, SMPC and comprehensive acceptance remain outstanding.
 These results do not establish hardware completion or broad commercial-game
 compatibility. Issue #17 remains open; historical #11/#13/#15 are not reopened.
@@ -3585,3 +3587,36 @@ emulator conventions. All unmet CPU/peripheral, multiprocessor/bus/reset timing,
 SCU/DSP, video/audio, CD/media/HLE, SMPC and integrated acceptance requirements
 remain mandatory under #17. This partial #17 improvement establishes neither
 hardware completion nor commercial compatibility; historical trackers remain closed.
+
+
+## Raster-sampled VDP1 VBlank erase (Issue #65)
+
+Related to #65. Related to #17. The [primary-source reconciliation and event
+table](vdp1-vbe-timing.md) separate written TVMR, raster-effective VBE,
+erase-parameter capture and individual framebuffer publication. ST-013-R3
+printed p.35/§4.1 requires a post-line-display decision; §4.2 requires persistent
+manual erase/change and blank-end interruption. §4.4 tables4.4–4.5 retain full
+blank-field capacity. The implementation uses a documented uniform integer
+publication cadence after the first post-IN HBlank-in, with the existing
+raster-before-physical-write equal-edge order. Neither placement is claimed to
+be a measured electrical subphase or physical erase-bus cadence.
+
+| Contract | Production implementation | Independent evidence |
+| --- | --- | --- |
+| Legal set/clear, multiple completed writes, one decision per blank | `Vdp1::vblank_in/hblank_in`, `vbe_sample_pending/vbe_effective`; CPU writes only update written registers | [Bus vectors](../src/bus/vbe_tests.rs): both normal 16-bit and high-resolution 8-bit, NTSC/PAL, both PLLs, untouched pre-sample pixels and first word; [device vectors](../src/vdp1/vbe_tests.rs): one accepted job, persistent fields, post-OUT disable, unchanged captured color/bounds, both physical buffers and automatic rotation erase |
+| Aggregate capacity, final word and interruption | Retained `Erasing` integer opportunities from the actual remaining blank interval | Literal ten standard-TV table4.5 capacities in both pixel depths, last-before-end/at-end words, untouched suffix and no post-OUT writes; original 58,812-word progress/capture assertions retained with corrected phase setup |
+| Physically completed SH-2 transactions, reset and passive inspection | Existing production replay/BSC adapter and raster scheduler | Both CPUs × set/clear × completion -1/0/+1 × chunks1/3/17/10000 × debugger reads; queued/accepted writes are distinguished from device completion. Equal/+1 probes are explicitly prohibited-window emulator tests. Real PLL conversion has fixed-reference-horizon chunk parity. SYSRES and [Machine cold reset](../src/reset_tests.rs) cancel both pending samples and accepted work; no stale words or fabricated draw IRQ |
+| Drawing/status isolation | Accepted erase retains display buffer; existing draw cursor/status remain independent | Simultaneous long-running drawing crosses sample and swap with CEF/BEF=0, COPR/LOPR=4, unchanged cursor and no SCU source13; original sampling, video-transaction and demonstration suites remain required |
+| Guest/Wasm/Canvas | [Original MIT builder](../tests/fixtures/build_vdp1_vbe.py), [source](../tests/fixtures/vdp1-vbe.s), [ROM](../tests/fixtures/vdp1-vbe.hex), adjacent [license](../tests/fixtures/LICENSE) | [Native Machine](../tests/video_transactions.rs) and [production browser](../scripts/vdp1-vbe.mjs) run identical bytes: actual SCU IN/OUT handlers, SLEEP/RTE, FRT, legal enable/disable/change, guest checksums and edge readback on both buffers, changed colors/bounds, omitted enable and repeated cold boots. Production Canvas pixels are asserted |
+
+The fixture builder is required by `scripts/check-fixtures.sh`. Browser coverage
+is part of the existing required `videoTransactions` group in the scenario shard;
+the inventory and dependency barrier are unchanged. [Validation and negative
+control results](validation-issue-65.md) record actual commands and artifact hashes.
+
+Physical erase cadence, full display-erase microsequencing, additional monitor
+modes, PTMR changes, rasterizer changes and VDP2 half-line interlace remain
+unestablished. Remaining CPU/peripheral, multiprocessor/bus/reset, SCU/DSP,
+video/audio, CD/media/HLE, SMPC and comprehensive integration requirements are
+mandatory. Genuine BIOS and commercial-game compatibility remain unverified.
+Issue #17 stays open; this is not hardware completion.

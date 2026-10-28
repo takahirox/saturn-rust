@@ -204,3 +204,28 @@ fn sysres_starts_a_new_vector_journal_and_cold_selection_cancels_partial_vectors
     assert_eq!(m.cpu_state(), &CpuState::default());
     assert!(!m.reset_in_progress());
 }
+
+#[test]
+fn cold_boot_selection_discards_pending_vbe_sample_and_accepted_erase_job() {
+    for clocks in [224 * 1708 + 100, 224 * 1708 + 1300] {
+        let mut m = Machine::new();
+        let image = rom(0x200, 0x060FF000);
+        m.reset(Boot::ExternalBios(&image)).unwrap();
+        for (o, v) in [(0, 8), (6, 0x1234), (8, 0), (10, 0x80FF), (2, 3)] {
+            m.bus.write16(vdp1::REGISTERS + o, v).unwrap();
+        }
+        m.bus.vdp1.vblank_out();
+        m.bus.advance_clocks(clocks).unwrap();
+        assert_eq!(
+            m.bus.vdp1.display_pixel(0, 0),
+            if clocks % 1708 < 1280 { 0 } else { 0x1234 }
+        );
+        m.reset(Boot::ExternalBios(&image)).unwrap();
+        m.bus.vdp1.draw_buffer_mut().fill(0xAA);
+        m.run_steps(2000).unwrap();
+        assert!(m.bus.vdp1.draw_buffer().iter().all(|&v| v == 0xAA));
+        assert_eq!(m.bus.vdp1.display_pixel(0, 0), 0);
+        assert_eq!(m.bus.read16(vdp1::REGISTERS + 0x16).unwrap() & 8, 0);
+        assert_eq!(m.bus.read32(scu::SCU + 0xA4).unwrap() & 0x2000, 0);
+    }
+}

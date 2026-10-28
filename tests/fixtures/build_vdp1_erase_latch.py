@@ -46,16 +46,17 @@ def build():
     s += put16(0x25F80000, 0x8000)
     # Display A's initialized buffer and capture A. Manual change does not erase.
     s += put16(0x25D00002, 3) + blank('capture_a') + fill('b')
-    s += put16(0x25D00000, 8)
     s += operand(0x108, 0) + 'tst r0,r0\nbt omit_b\n'
     for offset, address in [(6, 0x102), (8, 0x104), (10, 0x106)]:
         s += operand(address, 0) + f'load {0x25D00000 + offset:#x},r1\nmov.w r0,@r1\n'
-    s += 'omit_b:\n' + blank('erase_a')
-    # Only this subsequent change may capture B. CPU now accesses the A result.
-    s += put16(0x25D00002, 3) + blank('capture_b') + observations('a')
-    s += put16(0x25D00002, 3) + blank('inspect_b') + observations('b')
+    # §4.1/§4.2: legal post-IN enable and erase/change, unchanged TVM.
+    s += 'omit_b:\nload 0x25f80004,r1\nwait_enable:\nmov.w @r1,r0\ntst #8,r0\nbt wait_enable\n'
+    s += put16(0x25D00000, 8) + put16(0x25D00002, 3) + blank('erase_a')
+    # The erase/change captured B at OUT. CPU now accesses the A result.
+    s += put16(0x25D00002, 3) + observations('a') + blank('inspect_b')
+    s += put16(0x25D00000, 0) + put16(0x25D00002, 3) + observations('b')
     # Publish B without further erase; the parked guest leaves stable Canvas data.
-    s += put16(0x25D00000, 0) + put16(0x25D00002, 3) + blank('publish_b')
+    s += blank('publish_b')
     for address in [0x25D00016, 0x25D00010, 0x25D00014]:
         s += read(address, 2)
     s += 'load 0x25fe00a4,r1\nmov.l @r1,r0\nload 0x2000,r2\nand r2,r0\n' + record()

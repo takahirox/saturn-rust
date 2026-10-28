@@ -664,11 +664,15 @@ impl Bus {
                             self.vdp2.dimensions().0,
                         );
                     }
+                    self.vdp1.hblank_in();
                     self.vdp2.hblank = true;
                     self.scu.hblank_in();
                 }
                 Some(RasterEvent::VBlankIn) => {
-                    self.vdp1.vblank_in(self.raster.line_clocks());
+                    self.vdp1.vblank_in(
+                        self.raster.line_clocks(),
+                        u32::from(self.raster.blank_lines()),
+                    );
                     self.vdp2.finish_field();
                     self.vdp2.hblank = false;
                     self.vdp2.vblank = true;
@@ -686,7 +690,6 @@ impl Bus {
                     self.vdp2.begin_scanline(0);
                 }
                 Some(RasterEvent::LineStart) => {
-                    self.vdp1.blank_line_start();
                     self.vdp2.hblank = false;
                     if self.raster.line < self.raster.display_lines() {
                         self.vdp2.begin_scanline(usize::from(self.raster.line));
