@@ -167,3 +167,54 @@ Its IST-writing software description cannot override ST-210's prohibition.
 also prohibits those writes without specifying that edge. No affirmative primary
 evidence supporting a replacement behavior or a specification reconciliation was
 found. P2 remains an unmet mandatory acceptance criterion; #81 must remain open.
+
+## Review follow-up: interrupt detection inside an idle batch (P1)
+
+`Machine::step_hardware_boundary` now bounds advancement by the bus's existing
+`main_deadline`, including device events that can assert a new interrupt. The
+machine returns to CPU scheduling at that edge, before choosing an interval
+using the new request's recognition deadline. Previously the bus could detect
+the request internally and advance through recognition completion before the
+machine issued the CPU again.
+
+`production_scheduler_accepts_interrupt_detected_during_idle_batch_on_time` in
+[the native phase vectors](../src/bus/interrupt_tests.rs) reproduces the finding
+through the production scheduler, without the trace helper's extra issue calls.
+SCI is disabled; FRT compare A=0 and OCIA generate a request at clocks 1–7.
+Both CPUs and passive inspection off/on give 28 cases. H Table 5.8 requires
+acceptance at R+5, and Figure 5.7 plus the two-state WRAM access gives first SR
+push completion at R+10. The test also checks saved PC/SR. Before the fix, the
+clock-1 case failed with acceptance **8 instead of 6**; all cases pass after it.
+
+P2 remains unresolved. Rechecking ST-097-R5 §§2.2/3.5 and ST-210 item 7 did
+not establish the disputed endpoint semantics. The additional
+[ST-135-R4 Program Library User's Guide 3](https://antime.kapsi.fi/sega/files/ST-135-R4-092295.pdf),
+Interrupt Management Library §2.4, printed p.63, describes software status-reset
+and A-Bus acknowledge functions. It does not specify SCU same-level hardware
+arbitration, automatic clearing at acquisition completion or SH-2 autovector
+acknowledgement. That software API is not affirmative evidence for those
+behaviors. No SCU behavior was changed on that basis, and no acceptance criterion
+is waived. #81 and #17 must remain open.
+
+### Idle-batch fix validation
+
+Re-executed in the assigned worktree using the same native/Wasm toolchains and
+matching wasm-bindgen CLI listed above. `npm ci` restored the locked browser
+dependency; manifests, lockfiles and generated fixture assets are unchanged.
+
+| Check | Observed result |
+| --- | --- |
+| `cargo fmt --check` | Passed |
+| `cargo build --locked` | Passed |
+| `cargo test --locked` | Passed: 1,120 tests, zero failed/ignored |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed |
+| Wasm warnings-denied Clippy (command above) | Passed |
+| `sh scripts/check-fixtures.sh` | Passed; all 99 builders |
+| `sh scripts/build-web.sh` (toolchain command above) | Passed |
+| `node --test scripts/ci-runner.test.mjs` | Passed: 12 tests, zero skipped |
+| `npm run test:browser` | Passed: all 69 groups (30 shared + 39 scenarios), 252.797 s |
+| Production-scheduler regression | Failed before the fix, passed after it |
+| `git diff --check`, changed-document relative links | Passed |
+
+The expected pre-fix regression failure is the only failed check in this pass.
+Required post-merge verification: none.

@@ -97,6 +97,58 @@ struct Trace {
     clear: Vec<u64>,
     completed: Vec<u64>,
 }
+
+#[test]
+fn production_scheduler_accepts_interrupt_detected_during_idle_batch_on_time() {
+    for p in [Processor::Master, Processor::Slave] {
+        for request_clock in 1..=7 {
+            for inspect in [false, true] {
+                let mut m = board(p, 1, 0);
+                let chip = &mut m.bus.onchip[p as usize];
+                chip.write8(onchip::SCI + 2, 0).unwrap();
+                chip.write16(onchip::IPRB, 0x0600).unwrap();
+                chip.write16(onchip::VCRC, 0x0060).unwrap();
+                chip.write8(onchip::FRT + 4, 0).unwrap();
+                chip.write8(onchip::FRT + 5, 0).unwrap(); // OCRA=0
+                chip.write8(onchip::FRT, 8).unwrap(); // OCIA enabled
+                chip.advance_clocks(8 - request_clock);
+                assert_eq!(chip.interrupt(), None);
+
+                let mut accepted = None;
+                let mut sr_push_completed = None;
+                while m.bus.main_clocks < 24 {
+                    // Use the production issue/advance path. The trace helper
+                    // polls issue_cpu at extra boundaries and hid this bug.
+                    m.step_hardware_boundary().unwrap();
+                    if inspect {
+                        let _ = m.debug_read32(HIGH_WRAM);
+                        let _ = m.cpu_state();
+                        let _ = m.slave_state();
+                    }
+                    if let Some(boundary) = m.cpu_boundary[p as usize]
+                        && boundary.irq.is_some()
+                    {
+                        accepted.get_or_insert(boundary.started);
+                    }
+                    let journal = m.bus.transactions.journals[p as usize].borrow();
+                    if journal.beats.iter().any(|(transfer, result)| {
+                        transfer.address == 0x26000FFC
+                            && transfer.write == Some(0)
+                            && result.is_ok()
+                    }) {
+                        sr_push_completed.get_or_insert(m.bus.main_clocks);
+                    }
+                }
+                // H Table 5.8: recognition takes five clocks. Figure 5.7:
+                // D,E,E precede the first stack access; WRAM takes two states.
+                assert_eq!(accepted, Some(u64::from(request_clock + 5)), "{p:?}");
+                assert_eq!(sr_push_completed, Some(u64::from(request_clock + 10)));
+                assert_eq!(m.bus.read32(0x26000FFC), Ok(0));
+                assert_eq!(m.bus.read32(0x26000FF8), Ok(HIGH_WRAM + 8));
+            }
+        }
+    }
+}
 fn trace(m: &mut Machine, p: Processor, end: u64, chunk: u32, inspect: bool) -> Trace {
     let mut t = Trace {
         grants: vec![],

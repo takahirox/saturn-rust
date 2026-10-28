@@ -3866,6 +3866,15 @@ cancellation. Timelines compare chunks 1/3/17/10000 and passive inspection off/o
 Existing delayed-branch/protected-successor, NMIE/NMIF, SLEEP and standby/clock
 recovery vectors remain required.
 
+`production_scheduler_accepts_interrupt_detected_during_idle_batch_on_time` in
+the Saturn phase vectors uses `Machine::step_hardware_boundary` throughout;
+it does not use the trace helper's extra CPU polling. For each processor, FRT
+compare requests at clocks 1–7 of an idle batch must be accepted five clocks
+later and complete the first two-state WRAM stack write another five clocks
+later, with passive inspection off/on. The clock-1 case failed on the reviewed
+head (acceptance 8 instead of 6). The scheduler now yields at the device-event
+deadline before choosing another interval.
+
 The original MIT [builder](../tests/fixtures/build_interrupt_entry.py) installs
 private cache-RAM handlers, stacks and vector tables. The guest computes its FRT
 timestamps, saved PC/SR, accepted mask and post-RTE arithmetic on both CPUs, then

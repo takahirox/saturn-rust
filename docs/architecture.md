@@ -191,6 +191,9 @@ selection, vector-table read and the first handler IF. Stack writes complete
 synchronously through the arbiter; cache RAM accesses occupy at least one state.
 NMI request clear occurs in the first E after decode, independently of entry
 completion, so a later edge cannot be erased by replay or completion.
+Machine advancement yields at the next bus/device event as well as CPU readiness.
+A request first detected during an idle interval therefore establishes its
+recognition deadline before the next CPU scheduling interval is chosen.
 
 Master external-vector acquisition owns a distinct two-state bus transaction.
 It outputs the accepted level, samples the SCU endpoint at completion and ignores

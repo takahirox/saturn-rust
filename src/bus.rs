@@ -671,7 +671,7 @@ impl Bus {
                 .acquire_rotation_display(&self.vdp1, field, line, phase, x);
         }
     }
-    fn main_deadline(&self) -> u32 {
+    pub(crate) fn main_deadline(&self) -> u32 {
         self.onchip[0]
             .clocks_to_event()
             .min(self.interrupt_deadline())

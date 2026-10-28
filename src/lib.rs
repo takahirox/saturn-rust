@@ -857,7 +857,10 @@ impl Machine {
         let elapsed = next
             .saturating_sub(self.bus.main_clocks)
             .min(nmi_wait)
-            .min(u64::from(self.bus.interrupt_deadline()))
+            // A device event can assert a new request inside an idle batch.
+            // Return to CPU scheduling at that edge so the newly established
+            // recognition deadline can bound the following advance.
+            .min(u64::from(self.bus.main_deadline()))
             .min(u64::from(self.bus.bus_transaction_deadline()))
             .max(1)
             .min(u64::from(CLOCKS_PER_STEP)) as u32;
