@@ -705,3 +705,12 @@ See the [Issue #41 validation record](validation-issue-41.md) for native traces,
 original guest computation/audio, production Wasm and negative controls. This is
 a partial #17 increment; full hardware completion and commercial compatibility
 remain unestablished.
+
+
+SCSP output now reaches [retained MC68EC000 input](m68k-interrupt-input.md)
+throughout pending computation and bus work. A boundary snapshot consumes its
+accepted request once; completion preserves a new live level7 transition.
+Instruction-boundary entry, separate IACK/stack scheduling and reset cancellation
+remain in the existing transaction scheduler. The original SH-2/68k rearm guest
+and its controls run natively and in production browser Wasm. Electrical IPL
+synchronization and complete CPU/bus timing remain unverified.

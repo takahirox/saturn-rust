@@ -183,11 +183,25 @@ impl M68k {
     pub(crate) fn reset_prefetch(&mut self, address: u32, value: u16) {
         self.prefetch.push_back((address, value));
     }
-    /// Autovectored IRQ pins. Level seven is edge-sensitive, others level-sensitive.
+    /// Autovectored IRQ pins. A lower-to-seven transition also qualifies at I=7;
+    /// a held seven still qualifies by level comparison after software lowers I.
     pub fn set_interrupt(&mut self, level: u8) {
         let level = level.min(7);
         self.level7_edge |= level == 7 && self.irq != 7;
         self.irq = level;
+    }
+    /// Freeze boundary input for deterministic bus replay. Subsequent input
+    /// transitions belong to the live CPU, not this speculative execution.
+    pub(crate) fn begin_replay(&mut self) -> Self {
+        let snapshot = self.clone();
+        self.level7_edge = false;
+        snapshot
+    }
+    /// Keep input received during replay, plus any boundary request that the
+    /// execution did not consume (for example a halted CPU). No event queue.
+    pub(crate) fn finish_replay(&mut self, live: &Self) {
+        self.irq = live.irq;
+        self.level7_edge |= live.level7_edge;
     }
     fn sr(&mut self, value: u16) {
         let value = value & 0xA71F;

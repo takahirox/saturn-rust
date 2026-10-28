@@ -364,9 +364,10 @@ test("CI gates publication on both suites and retains the actually tested assets
   assert.equal(spawnSync("bash", ["-e", "-c", guard], { env: { ...process.env,
     NATIVE_RESULT: "success", WASM_RESULT: "success", BROWSER_RESULT: "success" } }).status, 0);
   assert.equal(JSON.parse(await readFile("package.json", "utf8")).scripts["test:browser"], "node scripts/browser-suite.mjs");
-  // Exact original registry: moving commands must not lose fixtures/options.
+  // Exact registry: moving commands must not lose fixtures/options.
   const fixtures = (await readFile("scripts/check-fixtures.sh", "utf8")).split("\n").filter(s => s.startsWith("python3 "));
-  assert.equal(fixtures.length, 94);
+  assert.equal(fixtures.length, 95);
+  assert(fixtures.includes("python3 tests/fixtures/build_m68k_irq.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_scsp_pipeline.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_vdp1_vbe.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_sh2_store.py --check"));

@@ -3693,3 +3693,22 @@ This is partial progress toward #17. Unrelated CPU EX sequences and the remainin
 bus/reset/arbitration, peripherals, SCU/DSP, video/audio, CD/media/HLE, SMPC and
 comprehensive integration criteria remain mandatory. BIOS and commercial-game
 compatibility remain unverified. See [actual validation](validation-issue-69.md).
+
+
+## Retained SCSP level7 input during MC68EC000 execution
+
+Related to #71 and #17. [Primary contract and reconciliation](m68k-interrupt-input.md)
+cites MC68000UM §§3.5/6.3.2 and ST-077-R2 pp.95–100 against the later Sega
+interrupt-register text. [Input propagation](../src/sound.rs),
+[replay lifetime](../src/m68k.rs) and [transaction completion](../src/sound/transactions.rs)
+preserve a new level7 transition during internal computation and bus waits.
+
+| Evidence | Native | Production browser Wasm | Remaining deviation |
+| --- | --- | --- | --- |
+| Original SH-2 clear/low/reassert inside 68k DIVU at I=7 | [Guest records and transition/boundary observations](../tests/m68k_irq.rs), chunks 1/3/17/10000, inspection on/off, changed operand, omitted clear/assertion, repeated cold boots | [Same bytes and controls](../scripts/m68k-irq.mjs), required `m68kReset` group under `/saturn-rust/` | Electrical synchronization/equal-edge apertures unmeasured |
+| Boundary acceptance and replay/reset lifetime | [Independent vectors](../src/sound/irq_tests.rs): saved SR/PC, autovector 31, separate IACK/stack, held7/lowered I, pending/enable/level changes, timer events, pending RAM, MIDI read once, main/sound independence; [SMPC cancellation](../src/reset_tests.rs) | Existing reset/retirement/held-maskable guests preserved | Complete instruction-specific prefetch, physical bus and DIV timing remain |
+
+[Source, license, expanded-ROM hash and expected records](m68k-interrupt-input.md#independent-oracles);
+[actual validation](validation-issue-71.md). Existing broad CPU, sound and reset
+rows remain **Pending**. This checkpoint does not establish hardware completion,
+genuine BIOS execution or broad commercial-game compatibility; #17 remains open.
