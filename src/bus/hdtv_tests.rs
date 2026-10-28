@@ -88,6 +88,75 @@ fn hdtv_scheduled_words_on_both_sh2s_preserve_mode_readback_geometry_and_widths(
 }
 
 #[test]
+fn hdtv_scheduled_entry_after_vblank_out_cancels_retained_display_erase() {
+    const LINE: u32 = 852;
+    const FIELD: u32 = 525 * LINE;
+    const HBLANK: u32 = 640;
+    for p in [Processor::Master, Processor::Slave] {
+        for chunk in [1, 3, 17, 10000] {
+            for inspect in [false, true] {
+                for completion in [8, HBLANK - 1] {
+                    for mode in [0, 4] {
+                        let mut b = Bus::default();
+                        b.set_slave_enabled(true);
+                        b.raster.configure(4);
+                        // Capture A at an actual VBlank-out in TVM=0, leaving
+                        // a display erase ready for the first two HBlanks.
+                        for (off, value) in [(6, 0x1234), (8, 0), (10, 1 << 9 | 1), (2, 0)] {
+                            reg(&mut b, off, value);
+                        }
+                        b.vdp1.draw_buffer_mut().fill(0xFF);
+                        advance(&mut b, FIELD, chunk, inspect);
+                        b.vdp1.draw_buffer_mut().fill(0xDD);
+                        // B remains pending: canceling display erase must not
+                        // lose A's color, bounds or physical destination.
+                        for (off, value) in [(6, 0x5678), (8, 1 << 9 | 1), (10, 2 << 9 | 2)] {
+                            reg(&mut b, off, value);
+                        }
+                        advance(&mut b, completion - 8, chunk, inspect);
+                        assert_eq!(
+                            b.replay_cpu(p).write16(REGISTERS | 0x20000000, mode),
+                            Err(BusError::Pending)
+                        );
+                        b.grant_bus_transaction();
+                        advance(&mut b, 7, chunk, inspect);
+                        assert_eq!(b.read16(REGISTERS + 0x16).unwrap() & 7, 0);
+                        advance(&mut b, 1, chunk, inspect);
+                        assert_eq!(
+                            b.replay_cpu(p).write16(REGISTERS | 0x20000000, mode),
+                            Ok(())
+                        );
+                        b.finish_cpu_transaction(p);
+                        assert_eq!(b.read16(REGISTERS + 0x16).unwrap() & 0xF, mode);
+                        assert_eq!(b.vdp1.display_pixel(0, 0), 0xFFFF);
+                        // §4.1 permits TVM entry until the first HBlank after
+                        // OUT. Check both that edge and a later display line.
+                        advance(&mut b, HBLANK - completion, chunk, inspect);
+                        let expected = if mode == 4 { 0xFFFF } else { 0x1234 };
+                        assert_eq!(b.vdp1.display_pixel(0, 0), expected);
+                        assert_eq!(b.vdp1.display_pixel(0, 1), 0xFFFF);
+                        advance(&mut b, LINE, chunk, inspect);
+                        assert_eq!(b.vdp1.display_pixel(7, 1), expected);
+                        assert_eq!(b.vdp1.display_pixel(8, 1), 0xFFFF);
+                        // HDTV still automatically erases captured A in the
+                        // next blank with VBE=0, without a framebuffer change.
+                        advance(&mut b, 480 * LINE - HBLANK - LINE, chunk, inspect);
+                        advance(&mut b, HBLANK + 100, chunk, inspect);
+                        for (x, y) in [(0, 0), (7, 0), (0, 1), (7, 1)] {
+                            assert_eq!(b.vdp1.display_pixel(x, y), 0x1234);
+                        }
+                        for (x, y) in [(8, 0), (8, 1), (15, 2)] {
+                            assert_eq!(b.vdp1.display_pixel(x, y), 0xFFFF);
+                        }
+                        assert!(b.vdp1.draw_buffer().iter().all(|&v| v == 0xDD));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn hdtv_automatic_blank_erase_has_literal_capacity_no_display_erase_and_cancels_suffix() {
     // Independent table4.4 arithmetic and table4.5 values. Both VDP2
     // widths for each monitor share one physical raster and erase budget.

@@ -300,7 +300,15 @@ impl Vdp1 {
     pub fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
         Self::validate_write(address, value)?;
         match address - REGISTERS {
-            0 => self.tvmr = value,
+            0 => {
+                self.tvmr = value;
+                // §4.1 permits TVM changes through the first HBlank after
+                // VBlank-out. HDTV must also cancel a display erase captured
+                // in the previous mode, without changing latched operands.
+                if self.exclusive_scanout() {
+                    self.display_erase = None;
+                }
+            }
             2 => {
                 self.fbcr = value;
                 self.fb_request = true;
