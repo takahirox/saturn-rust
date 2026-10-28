@@ -1359,7 +1359,9 @@ try {
         if(image.readUInt32BE(at)===pattern) {image.writeUInt16BE(sts ? 0x7901 : 0xE600,at+2);changes++;}
       }
       assert.equal(changes,16);
-      expected[sts ? 24 : 30]=sts ? 5 : 4;
+      // P figs7.6/7.9: all sixteen 4n+2 LDS.L PRs retain their
+      // IF/MA split without the PR dependency: floor((7+32+16)/8)=6.
+      expected[sts ? 24 : 30]=sts ? 5 : 6;
       expected[sts ? 25 : 31]=0;
     } else if(mutation === "peripheral") {
       let changes=0;

@@ -77,6 +77,8 @@ flags, addressing, aliases, multiplication/division, saturation and control flow
 Decoder coverage alone is not a claim of full processor conformance.
 
 Both SH-2s retain bounded CPU-local IF/ID state in [fetch.rs](../src/cpu/fetch.rs).
+PR memory transfers use ordinary load/store MA scheduling and IF contention
+(Hitachi Figures 7.86–7.87), retaining implicit-PR writeback dependencies.
 Real IF advances two instructions ahead of EX through the existing cache, replay
 journal and transaction arbiter. Sampled bytes and decode readiness survive older
 unretired instructions; actual waits stretch slots, and MA wins over real IF.

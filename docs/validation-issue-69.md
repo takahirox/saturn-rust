@@ -312,3 +312,71 @@ computations and restart assertions. Related to #69 and #17; #17's remaining
 hardware-completion scope stays open. No human result is claimed. No post-merge
 verification is required; broad BIOS/commercial-game compatibility remains
 unverified.
+
+## PR memory-transfer review fix
+
+Related to #69 and #17. LDS.L @Rm+,PR and STS.L PR,@-Rn now use the
+ordinary load/store MA scheduler through `timing::mov_load_address` and
+`mov_store_address`. This fixes an operand request during EX and restores
+completion-byte sampling, IF/MA contention and retained successor overlap.
+The existing implicit-PR dependency scoreboard remains in effect. The
+[stage contract](sh2-fetch-pipeline.md#implementation-and-evidence) derives
+literal edges from Hitachi Figures 7.86–7.87 and the established BSC/write-buffer
+contract; these PR forms require no LDC.L/STC.L or multiplier-resource stalls.
+
+Three [native regressions](../src/bus/fetch_pipeline_tests.rs) cover both PR
+forms, CPUs, alignments, resident/P1 instruction routes, zero/six programmed
+waits, chunks 1/3/17/10000 and passive inspection:
+
+- `pr_memory_transfers_schedule_ma_and_retain_completion_samples_on_both_cpus`
+  asserts resident operand grant at 3 and load completion at 5/11, mutates
+  memory before/after completion, consumes PR with STS PR,R8, and checks
+  once-only store publication and auto-update.
+- `pr_memory_transfers_preserve_p1_ma_if_overlap_on_both_cpus` asserts P1
+  operand grants at 5/17 and subsequent IF at load completion 7/25. Stores
+  preserve the read-to-write gap and read fence, publishing at 8/26 for
+  aligned entry or 7/25 for entry at 4n+2, followed by IF at that edge.
+- `repeated_pr_loads_derive_guest_splits_and_implicit_dependency_overlap`
+  checks literal retirement edges for repeated resident loads, separated
+  consumers and independent replacements, without external waits hiding states.
+
+Both new oracles failed before production changes: resident LDS.L granted at
+2 instead of 3, and aligned P1 LDS.L did not grant the required IF at 7.
+The unchanged load expectations pass after the fix. The store oracle was
+reconciled with SH7604 §7.9: a preceding read requires a one-state gap before
+writing, while a preceding write requires no turnaround before reading.
+
+The first complete native/browser runs exposed TIMING's old separated-PR
+expectation (3 ticks) and dependency-removed PR control (4 ticks). The repeated
+stage oracle independently establishes four real IF/MA splits in eight triples
+(24+4=28 states) and sixteen splits in sixteen independent pairs (32+16=48
+states). Including the existing seven-state wrapper gives 4 and 6 ticks.
+The builder, generated TSV and native/browser mutation literal now use those
+expectations. Guest ROM bytes, arithmetic/readback, other controls and repeated
+cold boots are preserved; hashes are in the conformance matrix. The original
+full native run also included an obsolete store-oracle assertion while that
+test was being reconciled; final checks use the corrected literal stage oracle.
+
+Validation results below apply to this review fix. Native build/tests use
+Homebrew Rust 1.94.0; Clippy and rebuilt production Wasm use rustup stable
+1.99.0 and wasm-bindgen 0.2.129 on macOS arm64.
+
+| Check | Actual result |
+| --- | --- |
+| `cargo fmt --check` | Passed |
+| `cargo build --locked` | Passed |
+| `cargo test --locked --no-fail-fast` | Passed: 1,051 tests across 95 harnesses, including 688 library tests; zero failed/ignored |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed |
+| `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings` | Passed |
+| `sh scripts/check-fixtures.sh` | Passed: all 94 reproduction commands |
+| `sh scripts/build-web.sh` | Passed: rebuilt production Wasm with bindgen 0.2.129 |
+| Complete `npm run test:browser` | Passed: 30 shared + 36 independent groups; 198.624 s parallel wall time, including report/coverage verification |
+| `node --test scripts/ci-runner.test.mjs` | Passed: all 12 regressions |
+| Unstaged/staged whitespace checks | Passed |
+
+No final required check was skipped. The complete browser suite retains Star
+Collector, Prism Courier and Hardware Lab gameplay, graphics, sound, diagnostics
+and restart assertions. Related to #69 and #17; #17's remaining hardware scope
+stays open. No push or merge was performed. No human result is claimed, and no
+post-merge verification is required. BIOS/commercial-game compatibility remains
+unverified.

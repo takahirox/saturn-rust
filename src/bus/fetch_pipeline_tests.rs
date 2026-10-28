@@ -1658,3 +1658,231 @@ fn repeated_tas_grants_derive_the_cached_bsc_guest_period_on_both_cpus() {
         }
     }
 }
+
+// P figs7.86/7.87: PR memory transfers use ordinary MA, not the
+// LDC.L/STC.L ID stalls or the MACH/MACL resource scheduler. Resident
+// IF/ID occupy 0..1/1..2, EX=2, and external MA grants at 3, sampling
+// at 5 (11 with six Tw). Both entry alignments have the same MA edge.
+#[test]
+fn pr_memory_transfers_schedule_ma_and_retain_completion_samples_on_both_cpus() {
+    for p in [Processor::Master, Processor::Slave] {
+        for offset in [0, 2] {
+            for (waits, sample) in [(0, 5), (0xC0, 11)] {
+                for opcode in [0x4F26, 0x4F22] {
+                    for chunk in [1, 3, 17, 10000] {
+                        for inspect in [false, true] {
+                            let mut m = board(p, offset, Some(true), waits);
+                            let address = 0x26004000;
+                            let load = opcode == 0x4F26;
+                            for (at, op) in [(0, opcode), (2, 0x082A), (4, 0x001B), (6, 0x7763)] {
+                                m.bus
+                                    .for_cpu(p)
+                                    .write16(HIGH_WRAM + offset + at, op)
+                                    .unwrap();
+                            }
+                            m.bus.write32(address, 42).unwrap();
+                            m.bus.cpu_delay(p, 0);
+                            let stack = address + if load { 0 } else { 4 };
+                            let cpu = Cpu::start(HIGH_WRAM + offset, stack);
+                            if p == Processor::Master {
+                                m.cpu = cpu;
+                            } else {
+                                m.slave = cpu;
+                            }
+                            let (grants, retired) = trace(&mut m, p, sample - 1, chunk, inspect);
+                            assert_eq!(
+                                grants,
+                                [(3, address, 4)],
+                                "{p:?} {opcode:X} offset={offset} Tw={waits:X}"
+                            );
+                            assert_eq!(m.bus.read32(address), Ok(42));
+                            if load {
+                                assert!(retired.is_empty());
+                                assert!(m.bus.transactions.active.as_ref().is_some_and(
+                                    |a| a.owner == Owner::Cpu(p)
+                                        && a.transfer.address == address
+                                        && a.remaining == 1
+                                ));
+                                m.bus.write32(address, 43).unwrap();
+                            }
+                            trace(&mut m, p, sample, chunk, inspect);
+                            assert_eq!(m.bus.read32(address), Ok(if load { 43 } else { 0 }));
+                            // A later mutation cannot change the journaled read or
+                            // be overwritten by a replay of the completed store.
+                            m.bus.write32(address, 44).unwrap();
+                            trace(&mut m, p, 100, chunk, inspect);
+                            let c = if p == Processor::Master {
+                                m.cpu_state()
+                            } else {
+                                m.slave_state()
+                            };
+                            assert_eq!((c.pr, c.r[8]), if load { (43, 43) } else { (0, 0) });
+                            assert_eq!(c.r[15], if load { address + 4 } else { address });
+                            assert_eq!((c.instructions, c.exceptions, c.r[7]), (3, 0, 0));
+                            assert_eq!(c.status, crate::cpu::CpuStatus::Sleeping);
+                            assert_eq!(m.bus.read32(address), Ok(44));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// P figs7.6/7.7/7.86/7.87: P1 IF stretches EX, then MA precedes
+// the next bus-using IF. Entry at 4n has IF=3..5, MA=5..7;
+// entry at 4n+2 has ID/IF=2..4, EX=4, MA=5..7. Six Tw gives
+// MA=17..25 in both cases. The following real IF grants at 7/25.
+// STS.L additionally preserves BSC's one-state read/write gap and
+// write-buffer read fence: aligned entry publishes at 8/26;
+// 4n+2 has an empty EX bus state, publishing at 7/25. The next IF
+// grants at publication: a preceding write needs no BSC turnaround.
+#[test]
+fn pr_memory_transfers_preserve_p1_ma_if_overlap_on_both_cpus() {
+    for p in [Processor::Master, Processor::Slave] {
+        for (offset, waits, first_if, ma, load_sample, store_sample) in [
+            (0, 0, 3, 5, 7, 8),
+            (2, 0, 2, 5, 7, 7),
+            (0, 0xC0, 9, 17, 25, 26),
+            (2, 0xC0, 8, 17, 25, 25),
+        ] {
+            for opcode in [0x4F26, 0x4F22] {
+                for chunk in [1, 3, 17, 10000] {
+                    for inspect in [false, true] {
+                        let mut m = board(p, offset, None, waits);
+                        let address = 0x26004000;
+                        for (at, op) in [(0, opcode), (2, 9), (4, 0xE82A), (6, 0x001B), (8, 0x7763)]
+                        {
+                            m.bus.write16(HIGH_WRAM + offset + at, op).unwrap();
+                        }
+                        m.bus.write32(address, 42).unwrap();
+                        let load = opcode == 0x4F26;
+                        let sample = if load { load_sample } else { store_sample };
+                        let cpu =
+                            Cpu::start(0x26000000 + offset, address + if load { 0 } else { 4 });
+                        if p == Processor::Master {
+                            m.cpu = cpu;
+                        } else {
+                            m.slave = cpu;
+                        }
+                        let (grants, _) = trace(&mut m, p, sample - 1, chunk, inspect);
+                        assert_eq!(
+                            grants,
+                            [
+                                (0, 0x26000000, 4),
+                                (first_if, 0x26000004, 4),
+                                (ma, address, 4)
+                            ],
+                            "{p:?} {opcode:X} offset={offset} Tw={waits:X}"
+                        );
+                        assert_eq!(m.bus.read32(address), Ok(42));
+                        if load {
+                            m.bus.write32(address, 43).unwrap();
+                        }
+                        trace(&mut m, p, sample, chunk, inspect);
+                        assert_eq!(
+                            m.bus.read32(address),
+                            Ok(if load { 43 } else { 0 }),
+                            "{p:?} {opcode:X} offset={offset} Tw={waits:X} sample={sample}"
+                        );
+                        m.bus.write32(address, 44).unwrap();
+                        let (grants, _) = trace(&mut m, p, sample + 1, chunk, inspect);
+                        assert_eq!(grants, [(sample, 0x26000008, 4)]);
+                        trace(&mut m, p, 100, chunk, inspect);
+                        let c = if p == Processor::Master {
+                            m.cpu_state()
+                        } else {
+                            m.slave_state()
+                        };
+                        assert_eq!(c.pr, if load { 43 } else { 0 });
+                        assert_eq!(
+                            (c.r[8], c.r[7], c.instructions, c.exceptions),
+                            (42, 0, 4, 0)
+                        );
+                        assert_eq!(c.r[15], if load { address + 4 } else { address });
+                        assert_eq!(c.status, crate::cpu::CpuStatus::Sleeping);
+                        assert_eq!(m.bus.read32(address), Ok(44));
+                    }
+                }
+            }
+        }
+    }
+}
+
+// P figs7.6/7.9/7.86: the timing guest's first LDS.L is at 4n+2.
+// Sixteen LDS.L/STS PR pairs each have one real IF split, which also
+// satisfies the PR WB dependency: 48 states, including with independent
+// MOV #0 replacing STS PR. Eight LDS.L/NOP/STS triples alternate the
+// IF alignment, adding four splits to 24 base states: 28 states.
+#[test]
+fn repeated_pr_loads_derive_guest_splits_and_implicit_dependency_overlap() {
+    for p in [Processor::Master, Processor::Slave] {
+        for (separated, independent, sleep) in
+            [(false, false, 50), (false, true, 50), (true, false, 30)]
+        {
+            for chunk in [1, 3, 17, 10000] {
+                for inspect in [false, true] {
+                    let mut m = board(p, 2, Some(true), 0);
+                    let mut words = Vec::new();
+                    for _ in 0..if separated { 8 } else { 16 } {
+                        words.push(0x4F26);
+                        if separated {
+                            words.push(9);
+                        }
+                        words.push(if independent { 0xE600 } else { 0x062A });
+                    }
+                    words.push(0x001B);
+                    for (i, op) in words.iter().enumerate() {
+                        m.bus
+                            .for_cpu(p)
+                            .write16(HIGH_WRAM + 2 + i as u32 * 2, *op)
+                            .unwrap();
+                    }
+                    // A synchronous cache-array operand models the guest's
+                    // warmed data. No bus grant can hide an extra state.
+                    for at in (0..64).step_by(4) {
+                        m.bus.for_cpu(p).write32(0xC0000400 + at, 42).unwrap();
+                    }
+                    m.bus.cpu_delay(p, 0);
+                    let cpu = Cpu::start(HIGH_WRAM + 2, 0xC0000400);
+                    if p == Processor::Master {
+                        m.cpu = cpu;
+                    } else {
+                        m.slave = cpu;
+                    }
+                    let (grants, retired) = trace(&mut m, p, sleep + 1, chunk, inspect);
+                    assert!(grants.is_empty());
+                    let mut expected = Vec::new();
+                    if separated {
+                        for group in 0..4 {
+                            for clock in [4, 4, 5, 8, 8, 8] {
+                                expected.push((clock + group * 7, expected.len() as u64 + 1));
+                            }
+                        }
+                    } else {
+                        for pair in 0..16 {
+                            expected.push((4 + pair * 3, pair * 2 + 1));
+                            expected.push((4 + pair * 3, pair * 2 + 2));
+                        }
+                    }
+                    expected.push((sleep, words.len() as u64));
+                    assert_eq!(
+                        retired, expected,
+                        "{p:?} separated={separated} independent={independent}"
+                    );
+                    let c = if p == Processor::Master {
+                        m.cpu_state()
+                    } else {
+                        m.slave_state()
+                    };
+                    assert_eq!(
+                        (c.pr, c.r[6], c.exceptions),
+                        (42, if independent { 0 } else { 42 }, 0)
+                    );
+                    assert_eq!(c.r[15], 0xC0000400 + if separated { 32 } else { 64 });
+                    assert_eq!(c.status, crate::cpu::CpuStatus::Sleeping);
+                }
+            }
+        }
+    }
+}

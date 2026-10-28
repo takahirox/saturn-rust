@@ -39,7 +39,9 @@ KERNELS = [
     # P §§7.4.2–3: four STS at 4n+2 add four IF/MA split clocks.
     ('sts_separated', 'sts macl,r6\nnop\nadd #1,r6\n' * 8, 28, 1),
     ('pr_use', 'lds.l @r12+,pr\nsts pr,r6\n' * 16, 48, 0),
-    ('pr_separated', 'lds.l @r12+,pr\nnop\nsts pr,r6\n' * 8, 24, 0),
+    # P figs7.6/7.86: first LDS.L is at 4n+2. Eight six-byte
+    # triples alternate alignment, adding four real IF/MA splits to 24 states.
+    ('pr_separated', 'lds.l @r12+,pr\nnop\nsts pr,r6\n' * 8, 28, 0),
 ]
 
 

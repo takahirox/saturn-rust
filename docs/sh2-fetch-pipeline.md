@@ -32,6 +32,7 @@ Primary references:
 | Cold miss/line crossing | Finish the existing ordered refill with actual grants. Younger stages cannot escape its stretched slot. |
 | Cache disabled/P1 | Fetch through BSC, including CS0's fixed word bus and programmed waits. No backing-memory shortcut. |
 | IF versus MA | MA wins; bus-using IF follows it. A retained `if` shares MA. Do not add the same dependency/split twice (Figures 7.6/7.8/7.9). |
+| PR memory transfers | LDS.L @Rm+,PR uses ordinary load EX/MA/WB; STS.L PR,@-Rn uses ordinary store EX/MA (Figures 7.86–7.87, printed p.244). Apply ordinary IF/MA contention and waited-slot overlap, retaining the implicit-PR WB dependency. These forms do not use the LDC.L/STC.L ID stalls or the MACH/MACL resource interlock. |
 | Byte-memory logic / TAS | Hold successor ID and younger IF for two / three slots respectively (Figures 7.75–7.76). Logic resumes IF beside second EX; TAS resumes beside final MA, with MA first for real IF. |
 | Waited slot | IF/ID/EX availability advances at the longest participating stage's completion (Figure 7.4). |
 | Untaken conditional | Keep sequential IF/ID. |
@@ -86,6 +87,40 @@ Ordinary MOV MA precedes a contending real IF; retained `if` recovers the existi
 MA/EX overlap. Long multiply and MAC defer advancement through their documented
 successor ID stall. The existing multiplier and dependency scoreboards remain
 responsible for their own resource interlocks.
+
+LDS.L PR and STS.L PR enter the same operand scheduler through
+`timing::mov_load_address` / `mov_store_address` (Figures 7.86–7.87).
+The [PR transfer vectors](../src/bus/fetch_pipeline_tests.rs) assert literal
+grants and completion sampling on both CPUs and alignments, with zero/six Tw,
+chunks 1/3/17/10000 and passive inspection. Resident entry has IF/ID at
+0..1/1..2, EX at 2, and operand grant at 3; external load completion is 5/11.
+Changing the operand one state before completion must update PR, while changing
+it after completion must not. The successor STS PR,R8 exercises implicit PR
+writeback dependency handling. Stores publish once and retain predecrement.
+
+For P1 entry, aligned EX overlaps IF at 3..5 (9..17 with six Tw),
+putting operand grant at 5/17. Entry at 4n+2 instead overlaps ID with real IF
+at 2..4 (8..16), then has EX at 4/16 and the same operand grant at 5/17.
+Loads sample at 7/25; the next real IF grants at that edge. STS.L also obeys
+SH7604 §7.9's minimum one-state read-to-write gap: aligned entry publishes at
+8/26, while 4n+2's empty EX bus state satisfies the gap and gives 7/25.
+The next IF waits for the write-buffer drain and grants at publication; a
+preceding write introduces no BSC turnaround. These edges use the existing
+bus phase conventions described above, rather than extra PR-specific stalls.
+
+The existing TIMING guest starts its PR kernels' bodies at 4n+2. In eight
+LDS.L/NOP/STS PR triples, six-byte spacing alternates the LDS.L alignment;
+four real IF/MA splits add to 24 base states, giving 28. With the established
+seven-state FRT wrapper, `floor((7+28)/8)=4` ticks replaces the earlier 3.
+Sixteen LDS.L/STS PR pairs all load at 4n+2, so all sixteen require real IF
+splits. Removing the PR dependency by replacing STS PR with MOV #0 retains
+those splits: 32+16=48 states, `floor((7+48)/8)=6` ticks replaces 4.
+Figure 7.9's WB dependency shares the IF split and adds no second delay.
+`repeated_pr_loads_derive_guest_splits_and_implicit_dependency_overlap` checks
+every retirement edge of the triples and both dependent/independent pairs,
+with synchronous resident operands and no external grant to hide a state.
+Guest bytes, computed data, operand/control mutations and cold resets remain
+unchanged; only these two manual-derived expectations are reconciled.
 
 `Cpu::execution_clock` reports the representative EX clock to Machine instead
 of applying execution states to the earlier demand-fetch boundary. This avoids
