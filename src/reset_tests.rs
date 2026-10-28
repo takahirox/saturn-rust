@@ -229,3 +229,76 @@ fn cold_boot_selection_discards_pending_vbe_sample_and_accepted_erase_job() {
         assert_eq!(m.bus.read32(scu::SCU + 0xA4).unwrap() & 0x2000, 0);
     }
 }
+
+#[test]
+fn sndoff_completion_cancels_a_rearmed_sound_input_before_division_retires() {
+    fn until(m: &mut Machine, predicate: impl Fn(&Machine) -> bool) {
+        for _ in 0..5000 {
+            if predicate(m) {
+                return;
+            }
+            m.step().unwrap();
+        }
+        panic!(
+            "SMPC phase did not complete: clocks={} enabled={} sound={:?}",
+            m.clocks(),
+            m.bus.sound.enabled,
+            m.sound_state()
+        );
+    }
+    let mut m = Machine::new();
+    m.reset(Boot::ExternalBios(&rom(0x200, 0x060ff000)))
+        .unwrap();
+    for line in include_str!("../tests/fixtures/m68k-irq.hex")
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+    {
+        let mut words = line.split_whitespace();
+        let at = usize::from_str_radix(words.next().unwrap(), 16).unwrap();
+        if !(0x2000..0x3000).contains(&at) {
+            continue;
+        }
+        for (i, word) in words.enumerate() {
+            m.bus
+                .write16(
+                    sound::SOUND_RAM + (at - 0x2000 + i * 2) as u32,
+                    u16::from_str_radix(word, 16).unwrap(),
+                )
+                .unwrap();
+        }
+    }
+    for offset in [0x41e, 0x424, 0x426, 0x428] {
+        m.bus.write16(sound::SCSP + offset, 32).unwrap();
+    }
+    command(&mut m, 6);
+    until(&mut m, |m| m.bus.sound.enabled && m.sound_state().stopped);
+    command(&mut m, 7);
+    let off_start = m.clocks();
+    // SMPC's 807-reference-clock command delay is independent of CPU work.
+    // Start the interrupt late enough that SNDOFF lands inside DIVU.
+    until(&mut m, |m| m.clocks() >= off_start + 200);
+    m.bus.write16(sound::SCSP + 0x420, 32).unwrap();
+    until(&mut m, |m| m.sound_state().pc == 0x320);
+    assert!(m.bus.sound.enabled);
+    assert_eq!(m.sound_state().exceptions, 1);
+    m.bus.write16(sound::SCSP + 0x422, 32).unwrap();
+    let low = m.clocks();
+    until(&mut m, |m| m.clocks() >= low + 80);
+    m.bus.write16(sound::SCSP + 0x420, 32).unwrap();
+    until(&mut m, |m| !m.bus.sound.enabled);
+    assert_eq!(
+        m.sound_state().d[0],
+        7,
+        "SNDOFF must precede DIVU retirement"
+    );
+    m.bus.write16(sound::SCSP + 0x422, 32).unwrap();
+    m.bus.write32(sound::SOUND_RAM + 4, 0x400).unwrap();
+    m.bus.write16(sound::SOUND_RAM + 0x400, 0x4e72).unwrap();
+    m.bus.write16(sound::SOUND_RAM + 0x402, 0x2700).unwrap();
+    command(&mut m, 6);
+    until(&mut m, |m| m.bus.sound.enabled && m.sound_state().stopped);
+    m.run_steps(1000).unwrap();
+    assert_eq!(m.sound_state().exceptions, 0);
+    assert_eq!(m.sound_state().pc, 0x404);
+    assert_eq!(m.sound_state().d[0], 7);
+}

@@ -731,6 +731,8 @@ impl Sound {
         clocks: u32,
         mut cd: Option<&mut crate::cd::CdBlock>,
     ) -> Result<(), BusError> {
+        // Main-CPU MMIO may have changed output since the previous advance.
+        self.sample_interrupt_input();
         let target = self.time + u64::from(clocks);
         let mut now = self.time;
         loop {
@@ -747,6 +749,8 @@ impl Sound {
                 break;
             }
             self.scsp.advance_midi((deadline - now) as u32);
+            // Serial output can change before a CPU boundary at this deadline.
+            self.sample_interrupt_input();
             if deadline < next_scsp {
                 // Empty slots elapsed before this CPU/MIDI/reset event. A
                 // first MPRO write at the edge must not execute them again.
@@ -812,11 +816,19 @@ impl Sound {
                 self.next_cpu =
                     self.cpu_origin + (self.cpu_ticks * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
             }
+            // Device events and completed CPU MMIO update pins during replay.
+            self.sample_interrupt_input();
         }
         self.scsp.advance_midi((target - now) as u32);
+        self.sample_interrupt_input();
         self.scsp_tick = target * DSP_HZ / REFERENCE_HZ;
         self.time = target;
         Ok(())
+    }
+    fn sample_interrupt_input(&mut self) {
+        if self.enabled {
+            self.cpu.set_interrupt(self.scsp.interrupt_level());
+        }
     }
 }
 #[cfg(test)]

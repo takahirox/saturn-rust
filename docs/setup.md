@@ -504,5 +504,15 @@ omitted enable, repeated boots and production Canvas output. See the
 The original [IF/ID guest](sh2-fetch-pipeline.md) is reproduced with
 `python3 tests/fixtures/build_sh2_fetch.py --check` and runs as the required
 `sh2Fetch` browser scenario. The current inventory is 66 groups (30 shared,
-36 independent scenarios), and the fixture registry contains 94 commands;
+36 independent scenarios), and the fixture registry contains 95 commands;
 older inventory counts above describe earlier records.
+
+
+The original level7 rearm fixture is reproduced with
+`python3 tests/fixtures/build_m68k_irq.py --check`, registered in
+`scripts/check-fixtures.sh`. Its native Machine tests and required `m68kReset`
+browser group run the same SH-2/68k bytes, guest-computed SR/PC/result/count
+records, omitted-clear/assertion controls, changed operands and cold boots. See
+[the retained input contract](m68k-interrupt-input.md) and
+[Issue #71 validation](validation-issue-71.md). The registry now contains 95
+commands; the browser inventory remains 66 groups.

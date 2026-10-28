@@ -1,4 +1,5 @@
 // Original sound-reset guest, MC68000UM §§5.5/6.3.1 and ST-169 SNDON/SNDOFF.
+import { m68kIrq } from "./m68k-irq.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
@@ -12,6 +13,7 @@ async function fixture(name) {
   return image;
 }
 export async function m68kReset(page) {
+  await m68kIrq(page);
   const original = await fixture("m68k-reset");
   const vectors = (await readFile("tests/fixtures/m68k-reset.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v, 16));
   for (const changed of [false, true]) {

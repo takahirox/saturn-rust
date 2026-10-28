@@ -198,8 +198,7 @@ impl Sound {
         } else {
             journal.start = self.cpu_ticks;
             journal.stalls = 0;
-            self.cpu.set_interrupt(self.scsp.interrupt_level());
-            journal.cpu = Some(self.cpu.clone());
+            journal.cpu = Some(self.cpu.begin_replay());
         }
         journal.cursor = 0;
         let mut execution = journal.cpu.as_ref().unwrap().clone();
@@ -234,6 +233,7 @@ impl Sound {
                 self.cpu_ticks += 4;
             }
         } else {
+            execution.finish_replay(&self.cpu);
             self.cpu = execution;
             self.cpu_ticks = self
                 .cpu_ticks
@@ -243,3 +243,7 @@ impl Sound {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "irq_tests.rs"]
+mod irq_tests;
