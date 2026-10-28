@@ -1726,6 +1726,9 @@ impl CdBlock {
                 }
                 let next = extent.as_ref().map_or(166, |f| f.fad);
                 let count = extent.as_ref().map_or(1, |f| f.size.div_ceil(2048));
+                // Directory access interrupts PLAY even during pre-roll, when
+                // acquisition is prepared but rw_active is still false.
+                self.stop_rw();
                 self.prepare_file_filter(selector, next, count, None);
                 self.directory_read = Some(DirectoryRead {
                     selector,
@@ -1829,6 +1832,7 @@ impl CdBlock {
                 self.status = 3;
             }
             0x75 => {
+                self.stop_rw();
                 self.finish_directory(false);
                 self.fad = self.pause_position();
                 self.at_home = false;

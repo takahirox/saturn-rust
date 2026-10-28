@@ -373,6 +373,60 @@ fn guest_media(iso: &[u8], sub: &[u8]) -> Media {
     )
     .unwrap()
 }
+
+#[test]
+fn filesystem_commands_cancel_preroll_acquisition_without_stale_publication() {
+    let first = 26_875 + u64::from(HZ).div_ceil(75) as u32;
+    let second = 26_875 + (2 * u64::from(HZ)).div_ceil(75) as u32;
+    for command in [
+        [0x7000, 0, 0x00ff, 0xffff], // ChangeDirectory: volume scan
+        [0x7100, 0, 0x00ff, 0xffff], // ReadDirectory: retained root
+        [0x7500, 0, 0, 0],           // AbortFile also interrupts CD-DA
+    ] {
+        for completion in [
+            1075,
+            first - 1,
+            first,
+            first + 1,
+            second - 1,
+            second,
+            second + 1,
+        ] {
+            let mut b = Bus::default();
+            b.cd.mount(guest_media(
+                include_bytes!("fixtures/cd-rw.iso"),
+                include_bytes!("fixtures/cd-rw.srw"),
+            ));
+            if command[0] == 0x7100 {
+                // ReadDirectory needs an existing root entry to accept the command.
+                assert_ne!(issue(&mut b, [0x7000, 0, 0x00ff, 0xffff])[0], 0xff00);
+                b.cd.advance(2_000_000);
+                assert_ne!(issue(&mut b, [0x7200, 0, 0, 0])[0], 0xff00);
+            }
+            issue(&mut b, [0x0402, 0, 0, 0]);
+            issue(&mut b, [0x1080, 214, 0, 0]);
+            // Complete the interrupting command before/at/after both input
+            // deadlines, including the prepared-but-not-yet-active interval.
+            b.cd.advance(completion - 1075);
+            let r = issue(&mut b, command);
+            assert_ne!(r[0], 0xff00, "{command:x?} at {completion}");
+            b.cd.advance(1_500_000); // Uncanceled input would exceed its eight-pack bound.
+            for _ in 0..3 {
+                let r = issue(&mut b, [0x2001, 0, 0, 0]);
+                assert_ne!(r[0] & 0x8000, 0, "{command:x?} at {completion}: {r:x?}");
+                assert_eq!(b.read16(DATA).unwrap(), 0xffff);
+                assert_eq!(b.read16(CD + 8).unwrap() & 2, 0); // No stale DRDY.
+                b.cd.advance(1_500_000);
+            }
+            // A new PLAY must acquire its own first pack and still transfer normally.
+            issue(&mut b, [0x1080, 214, 0, 0]);
+            b.cd.advance(second + (u64::from(HZ) * 32).div_ceil(10000) as u32);
+            assert_eq!(issue(&mut b, [0x2001, 0, 0, 0])[1..], [12, 0, 0]);
+            assert_eq!(words(&b), expected());
+        }
+    }
+}
+
 #[test]
 fn guest_cpu_dma_scdq_irqs_integrity_controls_and_repeated_machine_resets() {
     use saturn_rust::Machine;

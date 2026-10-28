@@ -146,3 +146,30 @@ integrated acceptance requirements remain mandatory. Genuine BIOS operation and
 broad commercial-game compatibility remain unverified. A green local suite and
 this checkpoint are not evidence of umbrella hardware completion. Required
 post-merge verification: None.
+
+## Review fix: filesystem interruption during R–W pre-roll
+
+Related to #75 and #17. ChangeDirectory/ReadDirectory and AbortFile now call
+`stop_rw` when they interrupt PLAY, including the prepared acquisition interval
+before `rw_active` becomes true. This cancels input deadlines and discards the
+lookahead window while retaining the decoded ring as before. Previously, input
+could accumulate without a consuming decoder, panicking at the eight-pack bound
+in checked builds and growing without bound in release builds.
+
+The original committed mixed-media fixture drives a new command-level regression
+for all three commands. Each interrupts immediately or one clock before, at or
+after either acquisition deadline. ReadDirectory first acquires the root so its
+command is accepted. Continued advancement checks empty-pack WAIT, empty DATATRNS
+and no stale DRDY; a fresh PLAY must transfer the independently expected first
+pack. The regression failed at the reported eight-pack assertion before the fix
+and passed afterward. No fixture bytes or acceptance gates changed.
+
+Review-fix checks passed: `cargo fmt --check`, `cargo build --locked`, native
+and Wasm Clippy with warnings denied, `cargo test --locked` (1083 passed,
+zero failed/ignored, including all 11 CD R–W integration tests), all 97 fixture
+reproduction commands,
+`sh scripts/build-web.sh`, all 12 CI-runner tests and all 67 browser groups
+(201694 ms, two workers). An initial CI-runner execution started before the
+Wasm assets were built and timed out waiting for Ready; the rerun after the
+completed build passed. The rebuilt production Wasm SHA-256 is
+`17baeb14da12ca36392620b102c02066b97db21217fea17aa6c8bd2cf7e9b0e5`.
