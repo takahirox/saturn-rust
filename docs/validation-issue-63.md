@@ -70,7 +70,9 @@ The same guest bytes and oracle were copied into an isolated inherited worktree.
 `cargo test --locked --test sh2_store` failed there (exit 101): records were
 `5,3,5,3,5,3,7,3,5,7,5,3,12345679,600D` (hex for the last two), against authored
 `5,3,7,3,7,3,9,3,7,7,7,3,12345679,600D`. The final implementation passes the
-same oracle and controls. These diagnostic captures did not define expectations.
+same original oracle and controls. These diagnostic captures did not define
+expectations. The forwarding correction below supersedes the original dependent
+kernel's timer expectation of 9 with 7; the guest source and ROM bytes are unchanged.
 
 The existing peripheral-store/PR-wrapper timer records and rotation-fetch guest
 are reconciled using the [independent derivation](sh2-store-pipeline.md#existing-guest-timing-reconciliation).
@@ -123,6 +125,56 @@ Correction validation passed: formatting, locked build, all 1003 native tests
 all 65 browser groups (zero required skips), and all 12 browser-runner tests.
 Browser aggregate elapsed 155.866 seconds; rebuilt production Wasm SHA-256:
 `b8c7faf6a43b0e92169101af5b68a913f62eccab436e8aab4362dea3a031d21b`.
+
+## Load-to-store forwarding review correction
+
+Renesas Software Manual Rev.5.00 §7.2.2, printed p.419/Figure 7.14,
+explicitly permits a memory load's WB and the following store's data MA in the
+same cycle through internal-bus forwarding. The original table incorrectly
+applied the address interlock to data-only dependencies. The corrected
+[table and guest derivation](sh2-store-pipeline.md) distinguish data-only uses
+from base/index uses, including aliases, and extend the derivation to waited
+loads. No alternate SH7604 rule is asserted.
+
+The CPU dependency mask now excludes ordinary-store data only after a memory
+load. Address/index uses retain their EX interlock; multiplier/system-register
+writeback retains its established schedule. The exhaustive CPU vector covers
+all ordinary store forms/widths, all loaded and source/address registers,
+aliases, and both retained/real IF cases. Both-CPU scheduler vectors now require
+the aligned data-forwarded store at clock 35, with address/index stores still at
+36. These vectors failed before the production correction (exit 101).
+
+Sixteen data-only load/store pairs take N=48 and record FRT=7, matching
+independent data. The native/browser guest controls now also load the address
+pointer, preserving N=64/FRT=9 and the same readback, arithmetic and shared-data
+handoff records. The corrected guest oracle failed before the production fix
+(exit 101, original dependent record 9 versus expected 7). Native checks retain
+chunks 1/3/17/10000 and repeated boots; browser checks retain both CPUs and
+repeated boots. Fixture source/ROM bytes are unchanged; the builder, literal
+oracle and oracle hash are updated reproducibly.
+
+The first complete native run exposed the shared tracker's STS MACL-to-MMIO
+interlock; restricting forwarding to memory loads preserves that existing
+regression. Local browser setup required `npm ci`. The initial web build could
+not locate the installed rustup linker's `libLLVM.dylib`; the final build uses
+a temporary linker wrapper setting `DYLD_LIBRARY_PATH` to that same toolchain's
+`lib` directory. No repository build settings or dependencies were changed.
+
+Final forwarding-correction validation passed:
+
+- `cargo fmt --check`, `cargo build --locked` and complete `cargo test --locked`:
+  1004 native tests in 93 result groups, zero failures and zero ignored tests.
+- `cargo clippy --locked --all-targets -- -D warnings` and
+  `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings`.
+- All 91 fixture/media reproduction commands in `sh scripts/check-fixtures.sh`.
+- `sh scripts/build-web.sh` and complete extended `npm run test:browser`:
+  all 65 groups, zero required skips; aggregate elapsed 147.573 seconds.
+- All 12 tests in `node --test scripts/ci-runner.test.mjs`, zero skips.
+- Changed documentation file links and `git diff --check`.
+
+Native checks use Homebrew rustc 1.94.0; Wasm checks/build use rustup rustc
+1.99.0 and wasm-bindgen 0.2.129. Final production Wasm SHA-256:
+`55c779dfb51318782903955d637c4c9ff9f89bdf17e0d1045dcf97451c04e204`.
 
 ## Remaining scope
 

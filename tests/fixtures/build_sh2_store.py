@@ -17,7 +17,7 @@ KERNELS = [
     ('aligned', 'mov.l r6,@r12\nnop\n'*16, 32, 3),
     ('offset', 'nop\n'+'mov.l r6,@r12\nnop\n'*16, 49, 3),
     ('repeat', 'mov.l r6,@r12\n'*32, 48, 3),
-    ('dependent', 'mov.l @r13,r6\nmov.l r6,@r12\n'*16, 64, 3),
+    ('dependent', 'mov.l @r13,r6\nmov.l r6,@r12\n'*16, 48, 3),
     ('independent', 'mov.l @r13,r6\nmov.l r9,@r12\n'*16, 48, 7),
     ('peripheral', 'mov.b r6,@r10\n'*32, 48, 3),
 ]

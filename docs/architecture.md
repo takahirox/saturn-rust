@@ -88,7 +88,10 @@ both dependency and overlap state. [The stage table](sh2-load-pipeline.md) and
 native/browser guests and remaining speculative-fetch limitations.
 
 Ordinary MOV stores use the same MA qualification and aligned successor overlap,
-without creating a WB dependency. EX prepares address/data from the retained
+without creating a WB dependency. A preceding memory load forwards data to store
+MA (Renesas Rev.5.00 §7.2.2, p.419/fig7.14); address/base and R0-index
+uses still interlock in EX. Multiplier/system-register writeback retains its
+existing timing. The interpreter resolves address/data from the retained
 instruction snapshot; scheduled writes request at MA start, synchronous cache
 arrays mutate at MA end, and the BSC owns accepted external payloads until their
 physical publication. The one-entry buffer, external-read fence and separately

@@ -23,7 +23,7 @@ fn both_sh2s_execute_store_alignment_operand_dependency_and_omission_controls_ac
         .lines()
         .map(|s| u32::from_str_radix(s, 16).unwrap())
         .collect();
-    for variant in 0..5 {
+    for variant in 0..6 {
         let mut image = image();
         let mut expected = vectors.clone();
         match variant {
@@ -39,7 +39,7 @@ fn both_sh2s_execute_store_alignment_operand_dependency_and_omission_controls_ac
                 }
             }
             2 => {
-                // Fourth kernel stores independent R9 rather than loaded R6.
+                // Independent data has the same timing as forwarded data.
                 for i in 0..16 {
                     image[0x4C0E + i * 4..0x4C10 + i * 4].copy_from_slice(&[0x2C, 0x92]);
                 }
@@ -57,6 +57,18 @@ fn both_sh2s_execute_store_alignment_operand_dependency_and_omission_controls_ac
                 }
                 expected[2] = 5; // (8+33)/8
                 expected[3] = u32::MAX; // sentinel survives omitted stores
+            }
+            5 => {
+                // Load a pointer into the store address register instead of data.
+                for at in (0x200..0x3000).step_by(2) {
+                    if image[at..at + 4] == [0xE0, 3, 0x2D, 2] {
+                        image[at..at + 2].copy_from_slice(&[0x60, 0xC3]); // MOV R12,R0
+                    }
+                }
+                for i in 0..16 {
+                    image[0x4C0C + i * 4..0x4C0E + i * 4].copy_from_slice(&[0x6C, 0xD2]);
+                }
+                expected[6] = 9; // (8+16*4)/8: address interlock remains
             }
             _ => (),
         }

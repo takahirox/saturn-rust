@@ -19,8 +19,9 @@ Primary references:
 
 ## Stage and deadline table
 
-Set store EX start E=32. Address and source are prepared in EX, MA starts at
-33. L is the CPU-facing MA duration, including contention/backpressure, not the
+Set store EX start E=32. Address preparation is in EX; data is required in
+MA, including the forwarding case below. MA starts at 33.
+L is the CPU-facing MA duration, including contention/backpressure, not the
 external device's write duration. On-chip memory/cache IFs fetch two words.
 An aligned store pairs MA with retained `if`; a word-offset store pairs it with
 real IF, splitting the slot with MA first (§7.4). Stores introduce no WB hazard.
@@ -48,16 +49,26 @@ D is the programmed BSC/device cycle duration (ordinary 32-bit RAM with no Tw:
 word publications; CPU MA does not replace those device deadlines. External
 bus ownership and acceptance can overlap; acceptance is not a publication fence.
 
-A preceding load at EX=32 has MA at 33..33+L. If it supplies the store's
-address, R0 index, or data, store EX follows load completion at 33+L; a real
-IF split already supplies this dependency split. An independent store shares
-the load's MA slot, with its own MA in the next slot. For one-clock operands:
+A preceding load at EX=32 has MA at 33..33+L. Renesas Rev.5.00
+§7.2.2, printed p.419, Figure 7.14 explicitly allows the load's WB and a
+following store's data MA in the same cycle: the loaded data is forwarded on
+the internal bus without contention. This is a CPU-core rule, not a DSP-only
+exception. A data-only dependency therefore uses the independent-store schedule.
+A dependency on the address base or R0 index still splits MA/EX (§7.2.2,
+pp.417–418, Figures 7.9–7.10); a real IF split already supplies that split.
+For one-clock load and store operands:
 
 | Preceding load alignment | Store dependency | Store EX | Store MA | Store completion |
 | --- | --- | --- | --- | --- |
-| 4n | Independent | 33 | 34 | 35 |
-| 4n | Address/data/index dependency | 34 | 35 | 36 |
-| 4n+2 | Either | 34 | 35 | 36 |
+| 4n | Independent or data-only | 33 | 34 | 35 |
+| 4n | Address/index (including data aliases) | 34 | 35 | 36 |
+| 4n+2 | Any | 34 | 35 | 36 |
+
+For a waited preceding load with MA duration L, the aligned independent/data-only
+store shares the final load MA clock: EX=32+L, MA=33+L, completion=34+L.
+Address/index dependencies and offset loads instead use EX=33+L, MA=34+L,
+completion=35+L. These completion expressions assume a one-clock store MA;
+store waits and write-buffer backpressure extend its acceptance separately.
 
 Predecrement uses the old source even when source and address register alias;
 only the address register changes, once. Invalid operand cycles still complete
@@ -69,7 +80,9 @@ published architecturally. IRQ arrival cannot replace a partially replayed store
 
 The instruction interpreter retains its pre-instruction CPU snapshot during
 replay, so address/data preparation is stable without a second architectural
-register update. Scheduled writes request at MA start; synchronous cache-array
+register update. The preceding load has resolved the snapshot's source value;
+retaining its final MA/EX clock models store data forwarding without exposing
+an early architectural store effect. Scheduled writes request at MA start; synchronous cache-array
 writes mutate at MA end. Classification, clocks and waits are journaled.
 Architectural retirement waits for acceptance, not external publication. Aligned
 successors recover the final shared MA/EX clock; stretched EX is represented by
@@ -89,8 +102,9 @@ The existing stopped/resumed FRT wrapper measures `floor((8+N)/8)`; the resume
 store is at 4n+2 and completes before the first timer load. Sixteen aligned
 store/NOP pairs take N=32. A leading NOP and sixteen offset pairs take N=49.
 Thirty-two consecutive stores take N=48. A one-clock local load followed by a
-dependent word-offset store takes four clocks per pair (N=64); an independent
-store takes three (N=48). In each pair the store's own MA/IF split adds a clock
+data-dependent word-offset store takes three clocks per pair (N=48), just like
+an independent store. Loading the address pointer instead takes four (N=64).
+In each pair the store's own MA/IF split adds a clock
 to the preceding load's dependency schedule. Peripheral writes have one-clock
 CPU-facing MA, independently of
 external buffering. Replacing stores with NOPs removes MA/IF splits while

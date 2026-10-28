@@ -36,7 +36,8 @@ publication are distinct. No WB stage or uniform external-write delay is added.
 [CPU vectors](../src/cpu/store_tests.rs) cover every ordinary store form/width,
 source/predecrement aliases, lanes, flags and register-only exclusions.
 [Executing scheduler/bus vectors](../src/bus/store_tests.rs) cover both CPUs,
-alignment, preceding-load data/base/index dependencies, cache RAM/arrays/purge,
+alignment, preceding-load data forwarding versus base/index interlocks (Renesas
+Rev.5.00 §7.2.2, p.419/fig7.14), cache RAM/arrays/purge,
 write-through and cache-through RAM, on-chip MMIO, programmed waits, retained
 video halves, buffer backpressure, external-read fencing, real peer/DMAC/SCU
 arbitration, reset, delay slots, NMI, invalid operands, chunking and inspection.

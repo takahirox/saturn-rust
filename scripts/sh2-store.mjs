@@ -10,7 +10,7 @@ export async function sh2Store(page) {
     words.forEach((word,i)=>rom.writeUInt16BE(word,at+i*2));
   }
   const vectors=(await readFile("tests/fixtures/sh2-store.tsv","utf8")).trim().split(/\r?\n/).map(v=>parseInt(v,16));
-  for(const variant of ["original","operand","dependency","alignment","omitted"]) {
+  for(const variant of ["original","operand","dependency","alignment","omitted","address"]) {
     const image=Buffer.from(rom),expected=[...vectors];
     if(variant==="operand") {
       for(let at=0x200;at<0x3000;at++) {
@@ -20,6 +20,13 @@ export async function sh2Store(page) {
     } else if(variant==="dependency") {
       for(let i=0;i<16;i++)image.set([0x2C,0x92],0x4C0E+i*4);
       expected[6]=7;expected[7]=7;
+    } else if(variant==="address") {
+      // Forwarding data does not remove the EX dependency on an address pointer.
+      for(let at=0x200;at<0x3000;at+=2) {
+        if(image.subarray(at,at+4).equals(Buffer.from([0xE0,3,0x2D,2])))image.set([0x60,0xC3],at);
+      }
+      for(let i=0;i<16;i++)image.set([0x6C,0xD2],0x4C0C+i*4);
+      expected[6]=9;
     } else if(variant==="alignment") {
       image.copyWithin(0x400E,0x400C,0x40F0);image.set([0,9],0x400C);expected[0]=7;
     } else if(variant==="omitted") {

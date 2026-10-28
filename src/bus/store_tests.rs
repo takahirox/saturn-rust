@@ -629,12 +629,12 @@ fn invalid_store_finishes_ma_and_auto_update_then_dispatches_address_error_once(
 }
 
 #[test]
-fn preceding_load_forwards_store_data_base_and_r0_index_after_one_combined_split() {
+fn preceding_load_forwards_store_data_without_the_address_or_r0_index_interlock() {
     for p in [Processor::Master, Processor::Slave] {
         for offset in [0u32, 2] {
             for (store, loaded, destination, payload, dependent) in [
                 (0x2FF2, 0x100, 0xC0000400, 0xC0000400, false),
-                (0x2F02, 0x100, 0xC0000400, 0x100, true),
+                (0x2F02, 0x100, 0xC0000400, 0x100, false),
                 (0x20F2, 0xC0000600, 0xC0000600, 0xC0000400, true),
                 (0x0FF6, 0x100, 0xC0000500, 0xC0000400, true),
             ] {
