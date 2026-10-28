@@ -296,3 +296,48 @@ golden, result, mutation control or pixel assertion changes:
   starts at 476532; acquisition precedes equal-edge publication, preserving the
   old first dot and new following dots. These observed edges validate the stage
   derivation; the unchanged authored pixel oracle remains the expectation.
+
+### STC.L successor stalls and redirected multiplier contention
+
+Hitachi Figure 7.85 (printed pp.243–244) and Renesas Rev.5 Figure 7.85
+(printed p.491) stall successor ID during STC.L's initial EX. This applies to
+SR/GBR/VBR; the SH-DSP-only registers are excluded. Third-instruction IF resumes
+beside MA, with MA before a bus-using IF (Figures 7.6–7.7). A retained `if`
+does not add a bus request. Actual operand completion, write-buffer read fencing
+and IF waits stretch that slot; total-cycle adjustments cannot replace these
+ordered requests.
+
+For aligned P1 entry and a synchronous cache-array stack, the independent edges
+are:
+
+| Software waits | Initial IF | ID | Initial EX (younger IF held) | MA | PC+4 IF |
+| --- | --- | --- | --- | --- | --- |
+| Zero | 0..2 | 2..3 | 3..4 | 4..5 | 5..7 |
+| Six | 0..8 | 8..9 | 9..10 | 10..11 | 11..19 |
+
+For an external high-RAM stack, the existing buffered-store contract admits
+internally in one state while starting external drain at MA start (4 or 10).
+The drain takes 2+Tw states; the BSC write-to-read turnaround then precedes the
+fenced IF, which grants at 7 or 19 and samples at 9 or 27. These are the existing
+write-buffer phase conventions, not an additional silicon STC.L rule.
+The `stc_long_holds_younger_if_through_ex_and_retains_completion_bytes_on_both_cpus`
+and `stc_long_ma_if_contention_preserves_retained_and_buffered_routes_on_both_cpus`
+[native vectors](../src/bus/fetch_pipeline_tests.rs) check these literal grants,
+both entry alignments, resident/retained paths, SR/GBR/VBR, completion-byte
+mutations and once-only predecrement/store effects.
+
+Figures 7.6–7.7, 7.63 and 7.82 also require multiplier MA/IF pairing to follow
+the redirected successor stream. After resident JMP EX at 2, a zero-wait P1
+target IF occupies 3..5 and delay-slot MUL.L/DMUL EX starts at 5. For target
+4n+2, the first MA is 6..7 and target+2 needs real IF at 7..9. For target 4n,
+that halfword is retained beside first MA; target ADD EX at 8 requests target+4
+at 8..10. Six software waits stretch the initial target IF to 3..11, moving
+those later IF edges to 13..21 or 14..22. Moving JMP between 4n and 4n+2
+cannot change either target stream's schedule. Both the multiplier scoreboard's
+split and its deferred IF boundary use this successor alignment.
+
+The `delay_slot_multiplier_uses_target_alignment_for_grants_and_samples_on_both_cpus`
+[native vector](../src/bus/fetch_pipeline_tests.rs) crosses both branch and target
+alignments for MUL.L/DMULU.L/DMULS.L. It checks literal grants and bytes changed
+before/after completion. All three new vectors exercise both CPUs and advancement
+chunks 1/3/17/10000; the sampling vectors also compare passive inspection on/off.

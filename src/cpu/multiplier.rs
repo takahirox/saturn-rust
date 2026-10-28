@@ -34,7 +34,7 @@ impl Access {
 }
 
 impl Multiplier {
-    pub fn access(&self, op: u16, pc: u32, now: u64, fetch: bool) -> Option<(Access, u32)> {
+    pub fn access(&self, op: u16, successor: u32, now: u64, fetch: bool) -> Option<(Access, u32)> {
         let word = matches!(op & 0xF00F, 0x200E | 0x200F);
         let long = matches!(op & 0xF00F, 0x0007 | 0x3005 | 0x300D);
         let mac = matches!(op & 0xF00F, 0x000F | 0x400F);
@@ -47,12 +47,13 @@ impl Multiplier {
             return None;
         }
         let two = long || mac;
-        // The one-slot ID stall puts IF(PC+4) beside the first MA.
+        // The one-slot ID stall puts IF(successor+2) beside the first MA.
+        // A delay slot's successor is the redirected target, not PC+2.
         // Its split delays the second MA, but not the first MA itself.
-        let first_split = u64::from(fetch && two && pc & 2 == 0);
+        let first_split = u64::from(fetch && two && successor & 2 != 0);
         let end = now + if two { 3 + first_split } else { 2 };
         let stall = self.ready.saturating_sub(end) as u32;
-        let split = u32::from(fetch && (two || pc & 2 != 0));
+        let split = u32::from(fetch && (two || successor & 2 == 0));
         Some((
             Access {
                 end,

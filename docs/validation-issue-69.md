@@ -200,3 +200,53 @@ above passed. No final required check was skipped. The full browser run retained
 Star Collector, Prism Courier and Hardware Lab gameplay, graphics, sound,
 diagnostic computations and restart assertions. No post-merge verification is
 required; broad BIOS/commercial-game compatibility remains unverified.
+
+## STC.L and redirected multiplier review-fix validation
+
+Both subsequent agent-fixable findings are corrected. STC.L to memory holds
+successor ID and younger IF through initial EX, then schedules MA before a
+contending IF. The multiplier scoreboard and deferred IF boundary now derive
+splits from the redirected successor stream. The [primary-derived deadlines](sh2-fetch-pipeline.md#stcl-successor-stalls-and-redirected-multiplier-contention)
+and [three native regressions](../src/bus/fetch_pipeline_tests.rs) cover both
+CPUs, STC.L SR/GBR/VBR, MUL.L/DMULU.L/DMULS.L, both branch/target alignments,
+resident and retained paths, synchronous and buffered stores, zero/six software
+waits, actual grant ownership, retained completion bytes, once-only effects and
+chunks 1/3/17/10000. The byte-sampling vectors compare passive inspection on/off.
+
+Before production changes, the new literal oracles failed: aligned P1 STC.L
+requested PC+4 at 3 during EX; the crossed JMP/MUL.L case requested target+2
+at 6 instead of 7. After the fixes, synchronous-stack STC.L grants PC+4 at 5
+and samples at 7 (six waits: 11/19). A JMP at either branch alignment targeting
+P1 4n+2 grants the first target IF at 3 and the later contending IF at 7
+(six waits: 13). Completion-byte changes prove actual retained sampling.
+
+The additional buffered-store table initially placed external drain one clock
+after internal acceptance began. The existing write-buffer implementation admits
+internally and starts external drain together at MA start. The table and its
+stage derivation were corrected to that established phase convention; its IF
+deadlines remain unchanged. An initial complete native invocation stopped on
+that new table expectation. No guest bytes, timing goldens or existing assertions
+changed in this revision.
+
+Final checks on macOS arm64 (Rust 1.94.0 for the native build/tests; rustup
+stable 1.99.0 for Clippy, final formatting and production Wasm):
+
+| Check | Actual result |
+| --- | --- |
+| `cargo fmt --check` | Passed |
+| `cargo build --locked` | Passed |
+| `cargo test --locked` | Passed: 1,045 tests across 95 harnesses, including 682 library tests; zero failed/ignored |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed |
+| `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings` | Passed |
+| `sh scripts/check-fixtures.sh` | Passed: all 94 reproduction commands |
+| `sh scripts/build-web.sh` | Passed: rebuilt production Wasm with bindgen 0.2.129 |
+| Complete `npm run test:browser` | Passed: 30 shared + 36 independent groups; 195.760 s parallel wall time, with report/coverage verification |
+| `node --test scripts/ci-runner.test.mjs` | Passed: all 12 regressions |
+| Unstaged/staged whitespace checks | Passed |
+
+No final required check was skipped. The complete browser suite retained Star
+Collector, Prism Courier and Hardware Lab gameplay, graphics, sound, diagnostic
+computations and restart assertions. Related to #69 and #17; the remaining #17
+scope stays open. No push or merge was performed and no human result is claimed.
+No post-merge verification is required; broad BIOS/commercial-game compatibility
+remains unverified.

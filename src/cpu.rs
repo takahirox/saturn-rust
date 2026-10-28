@@ -399,11 +399,12 @@ impl Cpu {
         let successor = self.state.delay_target.unwrap_or(pc.wrapping_add(2));
         let deferred_if = matches!(opcode & 0xF00F, 0x0007 | 0x3005 | 0x300D | 0x000F | 0x400F);
         let ldc_long = matches!(opcode & 0xF0FF, 0x4007 | 0x4017 | 0x4027);
+        let stc_long = matches!(opcode & 0xF0FF, 0x4003 | 0x4013 | 0x4023);
         // P fig7.94: SLEEP permits IF of its immediate successor (already
         // selected above), but no IF of the second successor in its EX slot.
         if unconditional_branch {
             self.fetch.hold_delay_slot(bus, ex + u64::from(interlock));
-        } else if !deferred_if && !ldc_long && opcode != 0x001B {
+        } else if !deferred_if && !ldc_long && !stc_long && opcode != 0x001B {
             self.fetch
                 .advance(bus, successor, ex + u64::from(interlock))
                 .map_err(access)?;
@@ -437,7 +438,7 @@ impl Cpu {
         }
         let mut multiplier_access = self
             .multiplier
-            .access(opcode, pc, now, bus.sh2_fetch_slots())
+            .access(opcode, successor, now, bus.sh2_fetch_slots())
             .map(|(access, split)| {
                 self.last_clocks += split;
                 access
@@ -459,7 +460,7 @@ impl Cpu {
             // The long multiplier's successor ID stalls once. Its IF is
             // beside MA, with MA first when this is a real longword IF.
             if let Some(clock) = bus.sh2_clock() {
-                let first_split = u64::from(pc & 2 == 0);
+                let first_split = u64::from(successor & 2 != 0);
                 bus.sh2_pipeline_wait((now + 1 + first_split).saturating_sub(clock) as u32)
                     .map_err(access)?;
                 let start = bus.sh2_clock().unwrap();
@@ -821,8 +822,38 @@ impl Cpu {
             ) =>
             {
                 let address = s.r[n].wrapping_sub(4);
+                // P fig7.85 / Rev.5 p.491: hold successor ID in EX.
+                // Resume younger IF beside MA, with the operand first when
+                // IF needs the bus. Actual MA/IF waits stretch this slot once.
+                let ma_end = now + 2;
+                if stc_long && let Some(clock) = bus.inner.sh2_clock() {
+                    let scheduled = bus.inner.sh2_schedule_memory_access(address, true, ma_end);
+                    let boundary = ma_end - u64::from(scheduled);
+                    bus.inner
+                        .sh2_pipeline_wait(boundary.saturating_sub(clock) as u32)
+                        .map_err(access)?;
+                }
                 bus.write32(address, special(s, opcode & 1 != 0, (opcode >> 4) & 3))
                     .map_err(access)?;
+                if stc_long && let Some(clock) = bus.inner.sh2_clock() {
+                    bus.inner
+                        .sh2_pipeline_wait(ma_end.saturating_sub(clock) as u32)
+                        .map_err(access)?;
+                    let ma_completion = clock.max(ma_end);
+                    self.fetch
+                        .advance(bus.inner, successor, now + 1)
+                        .map_err(access)?;
+                    let if_stretch = bus
+                        .inner
+                        .sh2_clock()
+                        .unwrap()
+                        .saturating_sub(ma_completion)
+                        .saturating_sub(1);
+                    self.last_clocks +=
+                        u32::from(bus.inner.sh2_fetch_slots() && successor & 2 != 0);
+                    self.execution_clock =
+                        fetch_start.map(|_| ex + (ma_completion - ma_end) + if_stretch);
+                }
                 s.r[n] = address;
                 inhibit = true;
             }
