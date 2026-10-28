@@ -9,7 +9,8 @@ Primary references:
   §§7.1–7.5, printed pp.168–176, Figures 7.1, 7.4, 7.6–7.9:
   distinct IF/ID/EX stages, longest-stage slot stretching, MA before bus-using
   IF, and one-state retained-halfword `if`. Figure 7.7 distinguishes entry
-  at 4n from entry at 4n+2. Figures 7.78–7.82 and 7.92–7.97 govern redirects.
+  at 4n from entry at 4n+2. Figures 7.78–7.82 and 7.92–7.97 govern redirects;
+  Figures 7.92 and 7.94 are on printed pp.247–248.
 - [Renesas Software Manual Rev.5.00](https://www.renesas.com/en/document/mah/sh-1sh-2sh-dsp-software-manual),
   §§7.1–7.4, printed pp.409 onward, Figures 7.1–7.9: the common/SH-2 rules
   retain these constraints. Section 7.2.2, Figure 7.14 permits forwarding
@@ -35,9 +36,9 @@ Primary references:
 | Untaken conditional | Keep sequential IF/ID. |
 | Taken conditional | Discard both following instructions, including a sequential-address target (Figure 7.78). |
 | Delayed branch/call/return | Preserve the slot, discard younger sequential work; target fetch follows branch EX (Figures 7.80/7.82). |
-| RTE | Preserve its slot with restored SR; discard the old stream (Figure 7.92). |
+| RTE | Preserve its slot with restored SR; discard the old stream. Target IF follows completion of both MA stages, including waits; the slot's ID stalls for three slots (Figure 7.92). |
 | Exception/IRQ/NMI/UBC | Keep existing acceptance/deferral boundaries. Clear younger decoded bytes; fetch observations are not execution breaks (§6.3.2). |
-| SLEEP/wake | Stop issuing after SLEEP; discard the sleeping stream before handler entry. |
+| SLEEP/wake | Fetch only SLEEP's immediate successor, never its second successor during SLEEP EX (Figure 7.94). Discard the sleeping stream before handler entry. |
 | Reset/SSH reset/PLL transition | Use the established reset domains: reset/SSH reset cancels the affected CPU; PLL retains the master stream and resets the slave. Manual reset retains the accepted physical longword drain, not its instruction. |
 | Discarded fault | Never dispatch an architectural exception for discarded bytes. Invalid fetch addresses are checked only for the instruction selected to execute. |
 
@@ -129,11 +130,48 @@ MOV/NOP gives 9 instead of 7 ticks; waited aligned ADD and CS0 aligned ADD give
 12 instead of 11; cold aligned ADD gives 8 instead of 9 and cold offset MOV/NOP
 10 instead of 11. Guest readback/arithmetic is still correct, isolating timing.
 
+### RTE and SLEEP boundary regressions
+
+Figure 7.92 places target IF after RTE's second MA, rather than immediately
+after its EX as for an ordinary delayed branch. Each stack read uses the existing
+MA scheduling/classification hook; synchronous reads occupy one slot and real
+transactions stretch it. The resulting completion edge supplies `Fetch::redirect`'s
+target IF boundary. With resident RTE IF at 0, ID at 1 and EX at 2, the literal
+oracle is:
+
+| Stack route | First MA | Second MA | P1 target IF grant/completion |
+| --- | --- | --- | --- |
+| Synchronous cache array | 3–4 | 4–5 | 5 / 7 |
+| P1 high RAM, no Tw | 3–5 | 5–7 | 7 / 9 |
+| P1 high RAM, six Tw | 3–11 | 11–19 | 19 / 27 |
+
+The native `rte_target_if_follows_both_ma_slots_and_retains_completion_bytes_on_both_cpus`
+vector changes the target immediate before and after completion. Both CPUs must
+execute 43, preserving the delay slot, restored SR and updated stack pointer.
+The inherited code granted the synchronous-stack target at 3 instead of 5.
+
+Figure 7.94 stops IF at SLEEP's immediate successor. `Cpu::execute` therefore
+skips second-successor advancement for SLEEP; `Fetch::select` still supplies its
+immediate successor. The native `sleep_fetches_only_its_immediate_successor_with_waits_on_both_cpus`
+vector requires one aligned fetch for entry at 4n, or two for entry at 4n+2,
+with zero and six Tw. The inherited aligned case granted an extra PC+4 fetch
+at 3. `sleep_irq_wake_discards_the_prefetched_successor_on_both_cpus` then uses
+an actual FRT capture IRQ to wake each CPU and execute a handler without retiring
+the old stream. All three vectors compare advancement chunks 1/3/17/10000 with
+passive inspection and assert actual grants, rather than inferred cycle totals.
+
 ## Existing fixture reconciliation
 
 These changes retain substantive guest computations, mutation controls and
 pixel assertions:
 
+- The system exception ROM retains its complete 19-instruction PC/register/
+  exception trace and stored result 35. Its last MOV can remain in the write
+  buffer when SLEEP publishes: SH7604 §7.11.2 separates CPU acceptance from
+  external completion, and Figure 7.94 supplies no second-successor IF to fence
+  that write. The native test now advances one sleeping hardware step, bounded
+  by the high-RAM write's two states plus six default Tw, before asserting the
+  stored result and unchanged sleeping CPU state. No guest bytes change.
 - The uncached BSC eight-read window formerly summed an EX state after each of
   eight real IFs. Figure 7.4 overlaps those states: `72+8*Tw` becomes
   `64+8*Tw`, or `8+Tw` FRT ticks. Narrow-data beats still add `2+Tw` each.

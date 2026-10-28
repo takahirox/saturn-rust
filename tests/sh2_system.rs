@@ -68,6 +68,14 @@ fn synthetic_rom_executes_guest_trap_illegal_slot_handlers_and_sleep() {
             saved_pc: 0x114
         })
     );
+    // H §7.11.2: store acceptance precedes external completion. SLEEP's
+    // retained successor supplies no real IF to fence the preceding write.
+    // One sleeping step finishes the remaining part of the high-RAM write
+    // (two bus states plus six default Tw), without changing CPU state.
+    let slept_at = machine.clocks();
+    machine.step().unwrap();
+    assert!(machine.clocks() - slept_at <= 8);
+    assert_eq!(machine.cpu_state(), &sleeping);
     assert_eq!(machine.bus().read32(0x06001000), Ok(35));
     machine.run_steps(10_000).unwrap();
     machine.advance_frame().unwrap();

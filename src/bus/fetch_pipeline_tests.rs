@@ -319,6 +319,177 @@ fn fixed_word_cs0_fetch_samples_each_half_at_its_own_grant_and_retains_the_resul
     }
 }
 
+// P fig7.92: resident IF=0, ID=1, EX=2; the two MA slots end
+// at 4/5 for a synchronous stack. External MA takes two states plus Tw,
+// stretching each slot before target IF. Expected edges are literal.
+#[test]
+fn rte_target_if_follows_both_ma_slots_and_retains_completion_bytes_on_both_cpus() {
+    for p in [Processor::Master, Processor::Slave] {
+        for (stack, waits, expected_grants, sample) in [
+            (0xC0000400, 0, vec![(5, 0x26000100, 4)], 7),
+            (
+                0x26004000,
+                0,
+                vec![(3, 0x26004000, 4), (5, 0x26004004, 4), (7, 0x26000100, 4)],
+                9,
+            ),
+            (
+                0x26004000,
+                0xC0,
+                vec![(3, 0x26004000, 4), (11, 0x26004004, 4), (19, 0x26000100, 4)],
+                27,
+            ),
+        ] {
+            for chunk in [1, 3, 17, 10000] {
+                let mut m = board(p, 0, Some(true), waits);
+                for (at, op) in [(0, 0x002B), (2, 0x7601), (4, 0x7763)] {
+                    m.bus.for_cpu(p).write16(HIGH_WRAM + at, op).unwrap();
+                }
+                m.bus.for_cpu(p).write32(stack, 0x26000100).unwrap();
+                m.bus.for_cpu(p).write32(stack + 4, 1).unwrap();
+                m.bus.write32(HIGH_WRAM + 0x100, 0xE82A001B).unwrap();
+                m.bus.cpu_delay(p, 0);
+                let cpu = Cpu::start(HIGH_WRAM, stack);
+                if p == Processor::Master {
+                    m.cpu = cpu;
+                } else {
+                    m.slave = cpu;
+                }
+                let (grants, _) = trace(&mut m, p, sample - 1, chunk, true);
+                assert_eq!(grants, expected_grants, "{p:?} stack={stack:X}");
+                assert_eq!(
+                    if p == Processor::Master {
+                        m.cpu_state()
+                    } else {
+                        m.slave_state()
+                    }
+                    .instructions,
+                    0
+                );
+                assert_eq!(
+                    m.bus
+                        .transactions
+                        .active
+                        .as_ref()
+                        .map(|a| (a.transfer.address, a.remaining)),
+                    Some((0x26000100, 1))
+                );
+                // Change the target while its IF still owns the bus, then
+                // again at completion. Only the value sampled at completion
+                // may execute; the second write must not snoop retained bytes.
+                m.bus.write16(HIGH_WRAM + 0x100, 0xE82B).unwrap();
+                trace(&mut m, p, sample, chunk, true);
+                assert!(m.bus.transactions.active.is_none());
+                m.bus.write16(HIGH_WRAM + 0x100, 0xE82C).unwrap();
+                trace(&mut m, p, 100, chunk, true);
+                let c = if p == Processor::Master {
+                    m.cpu_state()
+                } else {
+                    m.slave_state()
+                };
+                assert_eq!(
+                    &c.r[6..9],
+                    &[1, 0, 43],
+                    "{p:?} stack={stack:X} waits={waits:X} chunk={chunk}"
+                );
+                assert_eq!((c.r[15], c.sr & 1), (stack + 8, 1));
+                assert_eq!(c.exceptions, 0);
+                assert_eq!(c.status, crate::cpu::CpuStatus::Sleeping);
+            }
+        }
+    }
+}
+
+// P fig7.94 permits only the immediate successor's IF. At 4n it is
+// retained from the initial longword; at 4n+2 it needs one additional IF.
+#[test]
+fn sleep_fetches_only_its_immediate_successor_with_waits_on_both_cpus() {
+    for p in [Processor::Master, Processor::Slave] {
+        for (offset, waits, expected_grants, retirement) in [
+            (0, 0, vec![(0, 0x26000000, 4)], 3),
+            (2, 0, vec![(0, 0x26000000, 4), (2, 0x26000004, 4)], 4),
+            (0, 0xC0, vec![(0, 0x26000000, 4)], 9),
+            (2, 0xC0, vec![(0, 0x26000000, 4), (8, 0x26000004, 4)], 16),
+        ] {
+            for chunk in [1, 3, 17, 10000] {
+                let mut m = board(p, offset, None, waits);
+                m.bus.write16(HIGH_WRAM + offset, 0x001B).unwrap();
+                m.bus.write16(HIGH_WRAM + offset + 2, 0x7663).unwrap();
+                m.bus.write16(HIGH_WRAM + offset + 4, 0x7763).unwrap();
+                let (grants, retired) = trace(&mut m, p, 40, chunk, true);
+                assert_eq!(
+                    grants, expected_grants,
+                    "{p:?} offset={offset} waits={waits:X}"
+                );
+                assert_eq!(retired[0], (retirement, 1));
+                let c = if p == Processor::Master {
+                    m.cpu_state()
+                } else {
+                    m.slave_state()
+                };
+                assert_eq!(c.status, crate::cpu::CpuStatus::Sleeping);
+                assert_eq!((c.instructions, &c.r[6..9]), (1, &[0, 0, 0][..]));
+            }
+        }
+    }
+}
+
+#[test]
+fn sleep_irq_wake_discards_the_prefetched_successor_on_both_cpus() {
+    for p in [Processor::Master, Processor::Slave] {
+        for (waits, successor_grant) in [(0, 3), (0xC0, 9)] {
+            for chunk in [1, 3, 17, 10000] {
+                let mut m = board(p, 0, None, waits);
+                // LDC R0,SR; NOP; SLEEP; ADD #99,R6; ADD #99,R7.
+                // Unmask IRQs and finish LDC's inhibited successor before sleep.
+                for (i, op) in [0x400E, 9, 0x001B, 0x7663, 0x7763].into_iter().enumerate() {
+                    m.bus.write16(HIGH_WRAM + i as u32 * 2, op).unwrap();
+                }
+                // Wake through a real FRT input-capture IRQ. The handler
+                // computes a value and sleeps without executing the old stream.
+                let mut rom = vec![0; BIOS_SIZE];
+                rom[0x45 * 4..0x46 * 4].copy_from_slice(&0x26000300u32.to_be_bytes());
+                m.bus.load_bios(&rom).unwrap();
+                m.bus.write32(HIGH_WRAM + 0x300, 0xE82A001B).unwrap();
+                m.bus
+                    .for_cpu(p)
+                    .write16(crate::onchip::IPRB, 0x0B00)
+                    .unwrap();
+                m.bus
+                    .for_cpu(p)
+                    .write16(crate::onchip::VCRC, 0x4500)
+                    .unwrap();
+                m.bus.for_cpu(p).write8(crate::onchip::FRT, 0x80).unwrap();
+                let (grants, _) = trace(&mut m, p, 80, chunk, true);
+                assert_eq!(
+                    grants,
+                    [(0, 0x26000000, 4), (successor_grant, 0x26000004, 4)]
+                );
+                let c = if p == Processor::Master {
+                    m.cpu_state()
+                } else {
+                    m.slave_state()
+                };
+                assert_eq!((c.instructions, c.exceptions, c.sr), (3, 0, 0));
+                assert_eq!(c.status, crate::cpu::CpuStatus::Sleeping);
+                m.bus.onchip[p as usize].capture_strobe();
+                let (grants, _) = trace(&mut m, p, 280, chunk, true);
+                assert!(grants.iter().any(|&(_, address, _)| address == 0x26000300));
+                assert!(!grants.iter().any(|&(_, address, _)| address == 0x26000008));
+                let c = if p == Processor::Master {
+                    m.cpu_state()
+                } else {
+                    m.slave_state()
+                };
+                assert_eq!(&c.r[6..9], &[0, 0, 42]);
+                assert_eq!(c.exceptions, 1);
+                assert_eq!(c.last_exception.as_ref().unwrap().saved_pc, 0x26000006);
+                assert_eq!(c.status, crate::cpu::CpuStatus::Sleeping);
+            }
+        }
+    }
+}
+
 #[test]
 fn taken_untaken_delayed_call_return_and_rte_discard_only_the_documented_instructions() {
     for p in [Processor::Master, Processor::Slave] {

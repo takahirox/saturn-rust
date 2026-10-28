@@ -94,14 +94,15 @@ impl Fetch {
         bus: &mut impl Memory,
         target: u32,
         delayed: bool,
-        ex: u64,
+        target_if: u64,
     ) -> Result<(), BusError> {
         let Some(now) = bus.sh2_clock() else {
             self.clear();
             return Ok(());
         };
-        // P figs7.78/80/82: target IF is in the slot following branch EX.
-        bus.sh2_pipeline_wait((ex + 1).saturating_sub(now) as u32)?;
+        // The caller supplies the target IF boundary: after branch EX
+        // (P figs7.78/80/82), or after both RTE MAs (fig7.92).
+        bus.sh2_pipeline_wait(target_if.saturating_sub(now) as u32)?;
         if delayed {
             // The slot is already decoded. Replace only its younger IF.
             self.fetched = Some(Self::lookahead(bus, target)?);

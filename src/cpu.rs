@@ -403,7 +403,9 @@ impl Cpu {
         let fetch_start = bus.sh2_clock();
         let successor = self.state.delay_target.unwrap_or(pc.wrapping_add(2));
         let deferred_if = matches!(opcode & 0xF00F, 0x0007 | 0x3005 | 0x300D | 0x000F | 0x400F);
-        if !deferred_if {
+        // P fig7.94: SLEEP permits IF of its immediate successor (already
+        // selected above), but no IF of the second successor in its EX slot.
+        if !deferred_if && opcode != 0x001B {
             self.fetch
                 .advance(bus, successor, ex + u64::from(interlock))
                 .map_err(access)?;
@@ -482,6 +484,7 @@ impl Cpu {
         let mut sequential_pc = pc.wrapping_add(2);
         let mut direct_branch = false;
         let mut inhibit = false;
+        let mut target_if = now + 1;
         let operand_pc = s
             .delay_target
             .map_or(pc.wrapping_add(4), |target| target.wrapping_add(2));
@@ -501,9 +504,34 @@ impl Cpu {
                 bus.inner.enter_sleep();
             }
             0x002B => {
-                // RTE: restore SR before executing the slot.
-                let target = bus.read32(s.r[15]).map_err(access)?;
-                let sr = bus.read32(s.r[15].wrapping_add(4)).map_err(access)?;
+                // P fig7.92: EX, MA, MA, then target IF. Each MA occupies
+                // at least one slot, including synchronous cache-array reads;
+                // a real bus access stretches that slot until completion.
+                let mut restored = [0; 2];
+                let mut ma_start = now + 1;
+                for (i, value) in restored.iter_mut().enumerate() {
+                    let address = s.r[15].wrapping_add(i as u32 * 4);
+                    let end = ma_start + 1;
+                    if let Some(clock) = bus.inner.sh2_clock() {
+                        let scheduled = bus.inner.sh2_schedule_memory_access(address, false, end);
+                        let boundary = end - u64::from(scheduled);
+                        bus.inner
+                            .sh2_pipeline_wait(boundary.saturating_sub(clock) as u32)
+                            .map_err(access)?;
+                    }
+                    *value = bus.read32(address).map_err(access)?;
+                    ma_start = if let Some(clock) = bus.inner.sh2_clock() {
+                        bus.inner
+                            .sh2_pipeline_wait(end.saturating_sub(clock) as u32)
+                            .map_err(access)?;
+                        clock.max(end)
+                    } else {
+                        end
+                    };
+                }
+                target_if = ma_start;
+                // Restore SR before executing the preserved delay slot.
+                let [target, sr] = restored;
                 s.r[15] = s.r[15].wrapping_add(8);
                 s.sr = sr & SR_MASK;
                 next_branch = Some(target);
@@ -855,7 +883,7 @@ impl Cpu {
                     bus.inner,
                     next_branch.unwrap_or(sequential_pc),
                     next_branch.is_some(),
-                    now,
+                    target_if,
                 )
                 .map_err(access)?;
         } else if s.delay_target.is_some() && bus.inner.sh2_clock().is_none() {

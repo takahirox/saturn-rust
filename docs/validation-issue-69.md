@@ -55,3 +55,48 @@ was removed to obtain a passing suite.
 No push, PR, merge, Issue comment or Issue closure was performed. No post-merge
 verification is required. Issue #17 remains open with its unmet scope; this
 checkpoint does not establish BIOS or commercial-game compatibility.
+
+## Review-fix validation
+
+Both agent-fixable review findings are corrected. RTE now schedules both stack
+MA stages and starts target IF at their completion; SLEEP stops IF at its
+immediate successor. The [manual-derived deadlines](sh2-fetch-pipeline.md#rte-and-sleep-boundary-regressions)
+and [native regressions](../src/bus/fetch_pipeline_tests.rs) cover both CPUs,
+synchronous and waited external RTE stacks, target-byte changes before/after
+sampling, SLEEP alignment/waits and actual FRT IRQ wake. All three new vectors
+pass with advancement chunks 1/3/17/10000 and passive inspection.
+
+Before the production fixes, the new literal grant oracles failed: RTE's
+synchronous-stack target granted at 3 instead of 5, and aligned SLEEP granted
+an unsupported PC+4 fetch at 3. The fixed RTE target samples at 7, executing
+the immediate 43 written at 6 and retaining it across a later write of 44.
+
+The initial complete native run exposed an existing system-guest assumption:
+SLEEP's unsupported fetch had fenced its preceding buffered store. The
+[native system test](../tests/sh2_system.rs) now allows one sleeping hardware
+step, bounded by eight clocks, to finish that write. Its full 19-instruction
+PC/register/exception trace, stored result 35 and unchanged sleeping state
+remain asserted. The [write-buffer rationale](sh2-fetch-pipeline.md#existing-fixture-reconciliation)
+records the primary contract. No fixture bytes or FRT timing goldens changed.
+
+Final checks on macOS arm64, Rust 1.99.0 stable and Chromium 145.0.7632.6:
+
+| Check | Actual result |
+| --- | --- |
+| `cargo fmt --check` | Passed |
+| `cargo build --locked` | Passed |
+| `cargo test --locked` | Passed: 1,036 tests across 95 harnesses, including 673 library tests; zero failed/ignored |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed |
+| `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings` | Passed |
+| `sh scripts/check-fixtures.sh` | Passed: all 94 reproduction commands |
+| `sh scripts/build-web.sh` | Passed: rebuilt production Wasm with bindgen 0.2.129 |
+| Complete `npm run test:browser` | Passed: 30 shared + 36 independent groups, 181.254 s parallel wall time; coverage and artifact reports verified |
+| `node --test scripts/ci-runner.test.mjs` | Passed: all 12 regressions |
+| Unstaged/staged whitespace checks | Passed |
+
+An initial runner invocation preceded the web build and failed four tests because
+`web/pkg` was absent. After the required build, all runner tests passed. No final
+required check was skipped. The complete browser run preserved Star Collector,
+Prism Courier and Hardware Lab assertions. This revision addresses the two
+review findings; the remaining #17 scope stays open. No push or merge was
+performed and no human result is claimed.
