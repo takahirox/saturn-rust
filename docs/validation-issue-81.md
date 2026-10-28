@@ -381,3 +381,27 @@ claimed. Keep #81/#17 open and PR #82 in draft.
 Checks for this pass: exact PR body/state/head readback, `git diff --check` and
 local Markdown links passed. Only PR metadata and this record changed; runtime
 suites were not rerun. No push or merge was performed.
+
+### Review of published head `7dc009d`
+
+Corrected PR #82's Related Issues section from a closing reference to
+`Related to #81.` again. Exact GitHub body readback confirms the replacement,
+open/draft state and unchanged head
+`7dc009d7aef490e1e1ffc4300b629a37f9161e16`. Publication must preserve that
+plain reference; it must not regenerate a closing reference for partial work.
+
+The SCU finding remains unresolved. Reinspection of ST-097-R5 §2.2/Table 2.1
+(printed p.27), §3.5/Table 3.8 (pp.57–60) and ST-210 item 7 (p.4) supplies
+no affirmative evidence for equal-level arbitration, acquisition-completion
+clearing or autovector acknowledgement. No runtime change or Issue-contract
+reconciliation was justified. This metadata fix does not satisfy that criterion;
+keep #81/#17 open and PR #82 in draft. No human confirmation is pending.
+
+Issue-state readback found #81 open but #17 already closed (GitHub reports
+2026-10-22). Neither Issue state was changed by this findings-only pass; the
+instruction above expresses the required tracker policy, not an observed open
+state for #17.
+
+Validation: exact PR body/state/head readback, local Markdown links and
+`git diff --check` passed. Runtime suites were not rerun for this record and
+metadata correction. No push or merge was performed.
