@@ -38,6 +38,10 @@ def build():
         s += put16(0x25e00000,0) + put16(0x25e60000,0)
         s += 'load 0x100,r1\nmov.w @r1,r0\n' + f'load {image:#x},r1\nmov.w r0,@r1\n'
         s += 'load 0xfffffe92,r1\nmov #1,r0\nmov.b r0,@r1\n'
+        # Bitmap's setup/poll phase needs both IF lookahead lines resident
+        # before synchronization. Tile/RBG1 use the original entry phase.
+        if mode == 'bitmap':
+            s += 'load timed_wait,r2\nmov.l @r2,r0\nadd #16,r2\nmov.l @r2,r0\n'
         s += put16(0x25f80000,0x8000) + blank('rotation_start') + line(15)
         s += 'load 0x106,r1\nmov.w @r1,r2\ndelay:\ndt r2\nbf delay\n'
         # Legal write: physical grant begins during horizontal blank. An
@@ -47,20 +51,22 @@ def build():
               'load 0x25f80008,r4\nload 0x25f80002,r1\ntst #1,r0\nbt omit_wait\n')
         # Keep the complete poll/store path within one warm 16-byte I-cache
         # line. Instruction fetch misses must not postpone the store's grant.
-        pc = 0x200 + len(assembler.assemble(s+'omit_wait:\nnop\n',base=0x200))-2
+        # IF is two instructions ahead: warm the following line as well,
+        # so the final poll/lead/store cannot introduce a cold overrun refill.
+        pc = 0x200 + len(assembler.assemble(s+'timed_wait:\nomit_wait:\nnop\n',base=0x200))-2
         s += 'nop\n' * ((-pc % 16)//2)
-        # Counter loads retain H=844: P fig7.11, four-clock DT/BF
-        # iterations (two H units), and the original mode-dependent phase.
-        # P fig7.12 now adds the store EX-to-MA clock. Replace the previous
-        # two-state BRA with one NOP for tile/RBG1. Bitmap needs no intervening
-        # state, compensating its setup/poll phase and the new MA lead-in.
-        # Keep the whole hot path in one cache line. The independently authored
-        # first-dot-old / all-following-dots-new pixel oracle is unchanged.
-        if mode != 'bitmap':
-            s += 'nop\nnop\n'
-        lead = 'nop\n' if mode != 'bitmap' else ''
+        # P figs7.1/7.4: IF is already ahead when the final untaken BF
+        # falls through. Use the aligned four-instruction poll followed
+        # by store EX/MA (plus the bitmap state below). DT/taken-BF costs four states; one
+        # terminal DT/untaken-BF costs two. With one delay iteration, no
+        # prefix NOPs, and the bitmap lookahead warmed before line sync,
+        # the authored H=844 and first-dot-old image oracle is retained.
+        # Bitmap's earlier cold unconditional transfer no longer performs
+        # the unsupported second-successor IF (P fig7.82). One resident EX
+        # state after the H sample keeps its store on the acquisition edge.
+        store_lead = 'nop\n' if mode == 'bitmap' else ''
         s += ('timed_wait:\nmov.w @r1,r0\nmov.w @r4,r0\n'
-              'cmp/hs r3,r0\nbf timed_wait\n' + lead + 'mov.w r6,@r5\n'
+              'cmp/hs r3,r0\nbf timed_wait\n' + store_lead + 'mov.w r6,@r5\n'
               'mov r0,r8\nbra record\nnop\n'
               'omit_wait:\nmov.w @r1,r0\nmov.w @r4,r0\n'
               'cmp/hs r3,r0\nbf omit_wait\nmov r0,r8\nrecord:\n'
@@ -71,7 +77,7 @@ def build():
         s += line(20)
         s += ('load 0x2600dc0c,r1\nload 0x600d,r0\nmov.l r0,@r1\n'
               'park:\nsleep\nbra park\nnop\n')
-        output,digest = encode('rotation-fetch-'+mode,s,[(0x100,0x1111),(0x102,842),(0x104,1),(0x106,3 if mode == 'bitmap' else 2)])
+        output,digest = encode('rotation-fetch-'+mode,s,[(0x100,0x1111),(0x102,842),(0x104,1),(0x106,1)])
         files.update(output)
         # Independently authored default guest records: latched H=844,
         # published word=2222, SH-2 sum1111+2222, completion marker.

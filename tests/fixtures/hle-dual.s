@@ -969,6 +969,8 @@ load 0x2600b038,r1
 mov.l @r1,r11
 load 0x2600e800,r8
 load 0x2600e820,r9
+load 0x25f80002,r13
+load 0x25f8000a,r14
 load 0x25f80004,r4
 active:
 mov.w @r4,r0
@@ -1007,10 +1009,8 @@ mov r0,r3
 shll2 r3
 shll r3
 add r8,r3
-load 0x25f80002,r1
-mov.w @r1,r2
-load 0x25f8000a,r1
-mov.w @r1,r2
+mov.w @r13,r2
+mov.w @r14,r2
 extu.w r2,r2
 mov.l r2,@r3
 add #4,r3
@@ -1040,10 +1040,8 @@ mov r0,r3
 shll2 r3
 shll r3
 add r9,r3
-load 0x25f80002,r1
-mov.w @r1,r2
-load 0x25f8000a,r1
-mov.w @r1,r2
+mov.w @r13,r2
+mov.w @r14,r2
 extu.w r2,r2
 mov.l r2,@r3
 add #4,r3

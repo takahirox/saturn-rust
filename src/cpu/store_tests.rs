@@ -100,6 +100,7 @@ fn every_store_form_retains_source_lanes_flags_and_predecrement_alias_at_ma() {
             for (scheduled, latency, completion) in [(false, 1, 34), (true, 1, 34), (true, 4, 37)] {
                 let mut memory = memory(pc, op, scheduled, latency);
                 let mut c = Cpu::start(pc, 0xF000);
+                c.prime_fetch(&memory);
                 c.state.r[0] = 4;
                 c.state.r[1] = 0x800;
                 c.state.r[2] = 0x81234567;
@@ -140,6 +141,7 @@ fn register_mov_is_ex_only_and_store_in_delay_slot_publishes_target_after_ma() {
     for op in [0x6213, 0xE281, 0x0229, 0xC703] {
         let mut memory = memory(0x102, op, false, 1);
         let mut c = Cpu::start(0x102, 0xF000);
+        c.prime_fetch(&memory);
         c.step(&mut memory).unwrap();
         assert!(memory.phases.borrow().is_empty());
         assert!(memory.writes.is_empty());
@@ -147,6 +149,7 @@ fn register_mov_is_ex_only_and_store_in_delay_slot_publishes_target_after_ma() {
     }
     let mut memory = memory(0x102, 0x2FF6, true, 4);
     let mut c = Cpu::start(0x102, 0x800);
+    c.prime_fetch(&memory);
     c.state.delay_target = Some(0x400);
     c.step(&mut memory).unwrap();
     assert_eq!(memory.writes, [(0x7FC, 4, 0x800, 37)]);

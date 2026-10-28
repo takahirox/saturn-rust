@@ -71,7 +71,12 @@ def main_source():
     # Wait for real sound-CPU initialization, then log
     # the executing effects-DSP's independently known .5*0x120000 result.
     s+='load 0x25a00800,r1\nsound_wait:\nmov.l @r1,r0\ntst r0,r0\nbt sound_wait\n'
-    s+='load 0x25b00ec2,r1\nmov.w @r1,r0\nextu.w r0,r0\nload 0x06010028,r1\nmov.l r0,@r1\n'
+    # EFREG is cleared at each sample start, then instruction 27 publishes
+    # this constant. Observe a full 44.1-kHz period instead of racing that
+    # clear with a single read. OR preserves the constant and the zero-gain
+    # mutation; no expected DSP value is supplied by the guest.
+    # 128 iterations * at least 5 main clocks > 26,874,100 / 44,100.
+    s+='load 0x25b00ec2,r1\nload 128,r2\nmov #0,r4\neffect_read:\nmov.w @r1,r0\nor r0,r4\ndt r2\nbf effect_read\nextu.w r4,r0\nload 0x06010028,r1\nmov.l r0,@r1\n'
     s+=store(R+0x20,0x600D)
     s+=store(0x20100079,0x60,'b')+store(0x2010007D,1,'b')+store(0x20100075,0x40,'b')
     s+='restart_wait:\nload 0x20100075,r1\nmov.b @r1,r0\ntst #8,r0\nbf restart_wait\nload 0x06004000,r1\njmp @r1\nnop\n'

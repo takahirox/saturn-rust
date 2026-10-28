@@ -92,6 +92,7 @@ fn every_mov_load_addressing_form_samples_at_ma_end_and_preserves_sign_and_updat
                 }
             };
             let mut c = Cpu::start(pc, 0xF000);
+            c.prime_fetch(&memory);
             c.state.r[0] = 4;
             c.state.r[1] = 0x800;
             c.state.gbr = 0x900;
@@ -118,6 +119,7 @@ fn pc_relative_delay_slot_uses_branch_target_and_register_transfers_have_no_ma()
         memory.data.write16(0x102, op).unwrap();
         memory.data.write32(address, 0x12345678).unwrap();
         let mut c = Cpu::start(0x102, 0xF000);
+        c.prime_fetch(&memory);
         c.state.delay_target = Some(0x400);
         c.step(&mut memory).unwrap();
         assert_eq!(&*memory.reads.borrow(), &[(address, 34)]);
@@ -131,6 +133,7 @@ fn pc_relative_delay_slot_uses_branch_target_and_register_transfers_have_no_ma()
         };
         memory.data.write16(0x102, op).unwrap();
         let mut c = Cpu::start(0x102, 0xF000);
+        c.prime_fetch(&memory);
         c.step(&mut memory).unwrap();
         assert!(memory.reads.borrow().is_empty());
         assert_eq!(memory.clock.get(), 32);

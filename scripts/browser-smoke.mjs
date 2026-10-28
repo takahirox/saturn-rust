@@ -21,6 +21,7 @@ import { bBusReads } from "./b-bus-reads.mjs";
 import { scuFringe } from "./scu-fringe.mjs";
 import { dmacBus } from "./dmac-bus.mjs";
 import { sh2Store } from "./sh2-store.mjs";
+import { sh2Fetch } from "./sh2-fetch.mjs";
 import { sh2Load } from "./sh2-load.mjs";
 import { sh2Multiplier } from "./sh2-multiplier.mjs";
 import { sh2BusPipeline } from "./sh2-bus-pipeline.mjs";
@@ -115,7 +116,7 @@ try {
     const scenarios = { vdp2Status, videoTransactions, abusTiming, dspArithmetic,
       busTransactions, bBusReads, videoWrites, slaveRaster, hleDual, scuFringe,
       dmacBus, sh2BusPipeline, sh2ResetBus, cs0Transfers, spriteShrink,
-      hardwareBoundaries, refreshArbitration, sh2Store, sh2Load, sh2Multiplier,
+      hardwareBoundaries, refreshArbitration, sh2Fetch, sh2Store, sh2Load, sh2Multiplier,
       cdCopy, dmaStartup, cdReports, rotationReload, rotationFetch,
       rotationHighResolution, scspMonitor, m68kReset, scspClock, scspEffects,
       scspDma, scspPcm, scspCpuMemory, scspMvol };
@@ -1255,7 +1256,7 @@ try {
     assert.deepEqual(actual.exceptions, ["0", "0"]);
     for (const [cpu, trace] of actual.traces.entries()) {
       const expected = [cpu ? 0x83F0 : 0x3F0, 0xAAFF];
-      waitVectors.forEach((ticks, i) => expected.push(before === 0xA55AAA40 && i === 1 ? 11 : 9 + 2 * (4 / width - 1) + (ticks - 9) * 4 / width,
+      waitVectors.forEach((ticks, i) => expected.push(before === 0xA55AAA40 && i === 1 ? 10 : 8 + 2 * (4 / width - 1) + (ticks - 8) * 4 / width,
         before === 0x13579BDF ? after : 0x13579BDF));
       expected.push(...(little ? endianVectors : [0x11223344,0x1122,0x3344,0x11,0xA1B2C3D4,0x1234C3D4,0x5634C3D4]), 0x600D);
       assert.deepEqual(trace, expected);
@@ -1301,7 +1302,7 @@ try {
   }
   const idleVectors = (await readFile("tests/fixtures/bsc-idle.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v, 16));
   for (const [before, after, index, value] of [[0, 0, 0, 0xAAFF],
-    [0xA55A8000, 0xA55A4000, 3, 11], [0x25, 0x3C, 4, 0xBC]]) {
+    [0xA55A8000, 0xA55A4000, 3, 14], [0x25, 0x3C, 4, 0xBC]]) {
     const changed = Buffer.from(idleRom);
     if (before) {
       const needle = Buffer.alloc(4); needle.writeUInt32BE(before);
@@ -1327,6 +1328,10 @@ try {
   // Original cached instruction-state kernels run independently on both
   // SH-2s. Each resets its FRT divider and measures table7.2 states. Changing
   // only guest ADDs to real BRA/NOP pairs changes time and computed results.
+  if (includeScenarios) await timings.measure("sh2Fetch", async () => {
+    await sh2Fetch(page);
+  });
+
   if (includeScenarios) await timings.measure("sh2Store", async () => {
     await sh2Store(page);
   });
@@ -1354,7 +1359,9 @@ try {
         if(image.readUInt32BE(at)===pattern) {image.writeUInt16BE(sts ? 0x7901 : 0xE600,at+2);changes++;}
       }
       assert.equal(changes,16);
-      expected[sts ? 24 : 30]=sts ? 5 : 4;
+      // P figs7.6/7.9: all sixteen 4n+2 LDS.L PRs retain their
+      // IF/MA split without the PR dependency: floor((7+32+16)/8)=6.
+      expected[sts ? 24 : 30]=sts ? 5 : 6;
       expected[sts ? 25 : 31]=0;
     } else if(mutation === "peripheral") {
       let changes=0;
@@ -1498,7 +1505,7 @@ try {
   });
   const ubcFirst = await ubcTrace();
   assert.deepEqual(ubcFirst.mailbox, [0x1000, 0, 0x9000, 0, 0x1102, 22, 0x9400, 0,
-    0x1206, 33, 0x9000, 0, 0x1288, 33, 0x1088, 0, 0x133C, 33, 0x1048, 0, 0x600D]);
+    0x1206, 33, 0x9000, 0, 0x1288, 33, 0x1088, 0, 0x133E, 33, 0x1048, 0, 0x600D]);
   assert.equal(ubcFirst.exceptions, "5");
   assert.equal(ubcFirst.sp, 0x06100000);
   await page.locator("#reset").click();

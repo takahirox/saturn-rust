@@ -4347,3 +4347,14 @@ Normal slave autovectors are covered; unsupported slave external-vector mode,
 HLE interrupt initialization and half-line raster timing remain outstanding.
 This remains a partial #17 increment and does not establish commercial-game or
 umbrella hardware completion.
+
+## Issue #69 continuation: scheduled instruction fetch/decode
+
+Related to #69 and #17. The [stage/cancellation contract](sh2-fetch-pipeline.md),
+[conformance entry](hardware-conformance.md#scheduled-sh-2-ifid-issue-69) and
+[validation record](validation-issue-69.md) describe bounded IF/ID scheduling on
+both CPUs through the production cache/BSC/transaction arbiter, real waited
+slots, retained bytes, redirects, reset domains and original native/Wasm FRT
+kernels. The unchanged stage and guest oracles fail on inherited main.
+All remaining umbrella requirements stay open. Successful focused checks and
+this checkpoint are not evidence of overall hardware completion or compatibility.

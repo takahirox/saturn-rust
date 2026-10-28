@@ -56,7 +56,10 @@ timer IRQ, two coefficients and eight actual DSP instructions. The DSP routes
 half-gain PCM left, half-gain CD left and quarter-gain CD right; direct EXTS
 outputs are muted. A fourth multiply/output pair computes the diagnostic
 constant in EFREG1 without mixing it into audio. The SH-2 reads that register
-and records the result only after the 68k has initialized the program.
+and records the result only after the 68k has initialized the program. It ORs
+128 actual reads spanning a sound sample period, so the per-sample EFREG clear
+cannot race a single read. The diagnostic constant and zero-coefficient control
+retain their original results.
 JavaScript only supplies files and controller levels and presents pixels/audio.
 
 `tests/hardware_lab.rs` boots the actual mixed disc, asserts computed results,
@@ -82,7 +85,7 @@ including both line-window edges, in native execution, Wasm and Canvas. Separate
 matrix-translation and line-window-start mutations in the actual disc change
 independently expected pixels; complete diagnostic records and video are checked
 again after Start restart. Current data-disc SHA-256:
-`a0ad3c3e357e656052e808eb793b1dafa3827d71096013ba112a81b1d4ee23b9`.
+`be56d5f4caebcf0e36b807b7a9e55bf3b74c0f6f2b98fe528b10f5599b34a2fd`.
 
 The effects program reads MIXS0 at DSP instruction 24, after slot 0's OP4
 interpolation and both OP5/OP6 level intervals finish (ST-077 Figures

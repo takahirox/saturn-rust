@@ -31,6 +31,7 @@
   "hardwareBoundaries",
   "refreshArbitration",
   "bsc-waits-share-idle",
+  "sh2Fetch",
   "sh2Store",
   "sh2Load",
   "sh2Multiplier",

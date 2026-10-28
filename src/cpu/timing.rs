@@ -332,9 +332,12 @@ mod load_pipeline_tests {
     }
 }
 
-/// Ordinary MOV operand phase (P fig7.11). Address decoding is shared by all
-/// widths; execution retains the existing sign extension and update semantics.
+/// Ordinary MOV and LDS.L PR operand phase (P figs7.11/7.86). Address decoding
+/// is shared by all widths; execution retains sign extension and update semantics.
 pub(super) fn mov_load_address(op: u16, s: &super::CpuState) -> Option<u32> {
+    if op & 0xF0FF == 0x4026 {
+        return Some(s.r[(op >> 8 & 15) as usize]);
+    }
     let m = (op >> 4 & 15) as usize;
     let imm = u32::from(op as u8);
     let pc = s
@@ -356,12 +359,16 @@ pub(super) fn mov_load_address(op: u16, s: &super::CpuState) -> Option<u32> {
     }
 }
 
-/// Ordinary stores share the MA/IF slot rules, but introduce no WB hazard.
+/// Ordinary stores, including STS.L PR (P fig7.87), share the MA/IF slot
+/// rules, but introduce no WB hazard.
 /// Address and data remain in the instruction's retained CPU snapshot during
 /// replay. See docs/sh2-store-pipeline.md for acceptance/publication deadlines.
 pub(super) fn mov_store_address(op: u16, s: &super::CpuState) -> Option<u32> {
     let n = (op >> 8 & 15) as usize;
     let m = (op >> 4 & 15) as usize;
+    if op & 0xF0FF == 0x4022 {
+        return Some(s.r[n].wrapping_sub(4));
+    }
     match op >> 12 {
         0 if matches!(op & 15, 4..=6) => Some(s.r[n].wrapping_add(s.r[0])),
         1 => Some(s.r[n].wrapping_add(u32::from(op & 15) * 4)),
@@ -388,7 +395,7 @@ impl MovAccess {
         bus: &mut impl crate::bus::Memory,
         address: u32,
         write: bool,
-        pc: u32,
+        successor: u32,
         ex: u64,
     ) -> Result<Self, crate::bus::BusError> {
         let end = ex + 2;
@@ -399,7 +406,10 @@ impl MovAccess {
         }
         Ok(Self {
             end,
-            split: bus.sh2_fetch_slots() && pc & 2 != 0,
+            // IF beside MA belongs to the successor's second successor.
+            // A delay-slot MOV follows the redirected target stream, so its
+            // own PC no longer determines the IF/retained-if pairing.
+            split: bus.sh2_fetch_slots() && successor & 2 == 0,
         })
     }
 

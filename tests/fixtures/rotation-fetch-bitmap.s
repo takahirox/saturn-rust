@@ -81,6 +81,10 @@ mov.w r0,@r1
 load 0xfffffe92,r1
 mov #1,r0
 mov.b r0,@r1
+load timed_wait,r2
+mov.l @r2,r0
+add #16,r2
+mov.l @r2,r0
 load 0x25f80000,r1
 load 0x8000,r0
 mov.w r0,@r1
@@ -127,6 +131,7 @@ mov.w @r1,r0
 mov.w @r4,r0
 cmp/hs r3,r0
 bf timed_wait
+nop
 mov.w r6,@r5
 mov r0,r8
 bra record

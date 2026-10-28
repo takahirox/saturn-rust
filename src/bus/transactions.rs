@@ -13,6 +13,9 @@ mod cs0_tests;
 #[path = "dma_startup_tests.rs"]
 mod dma_startup_tests;
 #[cfg(test)]
+#[path = "fetch_pipeline_tests.rs"]
+mod fetch_pipeline_tests;
+#[cfg(test)]
 #[path = "fetch_tests.rs"]
 mod fetch_tests;
 #[cfg(test)]
@@ -229,6 +232,9 @@ impl ScheduledMemory<'_> {
 // a resumed interpreter uses exactly the same checked Memory boundary.
 pub(crate) struct ReplayMemory<'a>(RefCell<ScheduledMemory<'a>>);
 impl Memory for ReplayMemory<'_> {
+    fn sh2_speculative_fetch(&self, address: u32) -> bool {
+        self.0.borrow().0.sh2_speculative_fetch(address)
+    }
     fn sh2_clock(&self) -> Option<u64> {
         let memory = self.0.borrow_mut();
         let mut journal = memory.0.bus.transactions.journals[memory.0.journal_index()].borrow_mut();

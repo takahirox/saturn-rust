@@ -515,6 +515,7 @@ fn executing_mov_qualifies_a_to_b_startup_only_after_store_ma_request() {
         b.cpu_delay(p, 0);
         b.advance_clocks(32).unwrap();
         let mut c = Cpu::start(HIGH_WRAM, (destination | 0x20000000) + 4);
+        c.prime_fetch(&b.for_cpu(p));
         assert!(matches!(
             c.clone().step(&mut b.replay_cpu(p)),
             Err(CpuError::Bus {

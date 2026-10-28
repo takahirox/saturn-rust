@@ -269,8 +269,14 @@ mov.l @r1,r0
 tst r0,r0
 bt sound_wait
 load 0x25b00ec2,r1
+load 128,r2
+mov #0,r4
+effect_read:
 mov.w @r1,r0
-extu.w r0,r0
+or r0,r4
+dt r2
+bf effect_read
+extu.w r4,r0
 load 0x06010028,r1
 mov.l r0,@r1
 load 0x6010020,r1

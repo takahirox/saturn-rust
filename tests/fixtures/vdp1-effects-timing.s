@@ -1,3 +1,6 @@
+load 0xfffffe92,r1
+load 0x11,r0
+mov.b r0,@r1
 load 0x0600e300,r8
 load 0x25d00002,r1
 load 0x2,r0

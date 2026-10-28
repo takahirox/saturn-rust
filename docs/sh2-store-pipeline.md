@@ -121,8 +121,13 @@ moving the resume store from 4n+2 to 4n. At resume completion clock zero the
 following timer load can now share the store's final MA clock (representative
 EX=-1). Its high-byte read completes at 2, low-byte read at 5, and body EX at 4;
 the final timer latch adds 3. Thus these two wrappers use `floor((7+N)/8)`:
-PR-use N=48 gives 6, separated N=24 gives 3, and the dependency-removed N=32
-control gives 4. This is overlap of the resume store, not changed PR semantics.
+PR-use N=48 gives 6. With PR memory transfers scheduled through ordinary MA
+(P Figures 7.86–7.87), the separated loop has four IF/MA splits: N=24+4=28
+gives 4. The dependency-removed pairs retain all sixteen real IF splits, so
+N=32+16=48 gives 6. A real IF split already satisfies the implicit-PR WB
+dependency (P Figure 7.9). The seven-state wrapper still reflects resume-store
+overlap. See the literal repeated-PR stage vectors in
+[fetch_pipeline_tests.rs](../src/bus/fetch_pipeline_tests.rs).
 
 The rotation-fetch guest retains its H=844 counter record, first old dot,
 following new dots, all 320×224 pixels, readback/arithmetic and early/omitted-write
@@ -136,3 +141,9 @@ Normal-mode display acquisition is every four main clocks and precedes
 equal-edge publication under the established [rotation convention](vdp2-rotation-fetch.md).
 No pixel expectation or computation was relaxed. Fixture source, bytes and
 hashes are reproduced by the existing builder.
+
+
+Issue #69 adds [bounded scheduled IF/ID](sh2-fetch-pipeline.md) for resident,
+cold and uncached streams. Earlier demand-fetch limitations above describe the
+historical increment. Existing MA, dependency, forwarding and multiplier
+resource rules continue to apply; the new contract documents fixture corrections.

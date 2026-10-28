@@ -96,7 +96,7 @@ fn guest_peripheral_operand_mutation_changes_read_data_on_both_cpus_without_chan
 }
 
 #[test]
-fn removing_system_register_dependencies_removes_only_their_guest_measured_stalls() {
+fn system_register_dependency_controls_preserve_real_if_splits() {
     for (pattern, replacement, time_index) in [
         ([0x06, 0x1A, 0x76, 1], [0x79, 1], 24), // STS MACL,R6; ADD #1,R9
         ([0x4C, 0x26, 0x06, 0x2A], [0xE6, 0], 30), // LDS.L PR; MOV #0,R6
@@ -114,9 +114,11 @@ fn removing_system_register_dependencies_removes_only_their_guest_measured_stall
             .lines()
             .map(|s| u32::from_str_radix(s, 16).unwrap())
             .collect();
-        // Independent pairs take 32 clocks; PR's aligned resume store shares
-        // one wrapper clock, giving floor((7+32)/8) instead of (8+32)/8.
-        expected[time_index] = if time_index == 30 { 4 } else { 5 };
+        // STS MACL's independent pairs take 32 clocks. PR's first LDS.L
+        // is at 4n+2, so all sixteen pairs retain a real IF/MA split:
+        // 32+16=48 clocks, even without a PR dependency (P figs7.6/7.9).
+        // Its seven-state wrapper gives floor((7+48)/8)=6 FRT ticks.
+        expected[time_index] = if time_index == 30 { 6 } else { 5 };
         expected[time_index + 1] = 0;
         let mut m = Machine::new();
         for _ in 0..2 {

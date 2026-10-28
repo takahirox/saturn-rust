@@ -67,14 +67,25 @@ mod scheduling_tests {
             let mut memory = m.bus.for_cpu(processor);
             memory.write32(0xFFFFFFE8, 0xA55A0000).unwrap();
             memory.write8(cache::CCR, 0x11).unwrap();
-            memory.fetch16(address).unwrap();
+            // These stage tests begin with a resident instruction stream;
+            // warm every line, including lookahead across the first boundary.
+            let words = if processor == Processor::Master {
+                master
+            } else {
+                slave
+            };
+            for offset in (0..words.len() * 2 + 4).step_by(16) {
+                memory.fetch16(address + offset as u32).unwrap();
+            }
             m.bus.cpu_delay(processor, 0);
         }
         m.bus.advance_clocks(32).unwrap();
         m.clocks = 32;
         m.cpu_ready = [32; 2];
         m.cpu = Cpu::start(HIGH_WRAM, HIGH_WRAM + 0x1000);
+        m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
         m.slave = Cpu::start(HIGH_WRAM + 0x100, HIGH_WRAM + 0x2000);
+        m.slave.prime_fetch(&m.bus.for_cpu(Processor::Slave));
         m
     }
 
@@ -89,7 +100,7 @@ mod scheduling_tests {
                 m.cpu.state().instructions,
                 m.slave.state().instructions
             ),
-            (33, 1, 1)
+            (33, 1, 0)
         );
         m.step().unwrap();
         assert_eq!(
@@ -116,6 +127,7 @@ mod scheduling_tests {
     fn one_cpu_external_waits_do_not_charge_the_other_cpus_deadline() {
         let mut m = cached_pair(&[0x60F2, 9, 9], &[9; 8]); // MOV.L @R15,R0
         m.cpu = Cpu::start(HIGH_WRAM, (HIGH_WRAM + 0x2000) | 0x20000000);
+        m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
         m.bus
             .for_cpu(Processor::Master)
             .write32(0xFFFFFFE8, 0xA55A0080)
@@ -151,13 +163,15 @@ mod scheduling_tests {
         m.reset(Boot::HlePrototype).unwrap();
         assert_eq!(m.cpu_ready, [0; 2]);
         m.step().unwrap();
-        assert_eq!((m.clocks(), m.cpu.state().instructions), (8, 1));
+        // F=8: cold IF 0..8, ID/if 8..9, EX/IF 9..17.
+        assert_eq!((m.clocks(), m.cpu.state().instructions), (17, 1));
     }
     #[test]
     fn buffered_cpu_write_retires_before_publication_and_reset_cancels_it() {
         let mut m = cached_pair(&[0xE02A, 0x2F02, 0x7101, 0x7101, 9], &[9; 8]);
         let shared = HIGH_WRAM + 0x2000;
         m.cpu = Cpu::start(HIGH_WRAM, shared | 0x20000000);
+        m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
         m.bus
             .for_cpu(Processor::Master)
             .write32(0xFFFFFFE8, 0xA55A00C0)
@@ -188,6 +202,7 @@ mod scheduling_tests {
         // P §7.7.6 fig7.90: STS's WB conflicts with MOV's EX.
         let mut m = cached_pair(&[0xE02A, 0x401A, 0x001A, 0x2F00, 9], &[9; 8]);
         m.cpu = Cpu::start(HIGH_WRAM, 0xFFFFFE01); // SCI BRR
+        m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
         // P §7.4.3/fig7.88: LDS at 4n+2 adds an IF/MA split.
         while m.cpu_state().instructions < 3 {
             m.step().unwrap();
@@ -738,9 +753,8 @@ impl Machine {
                 // their completion. On-chip wait states remain CPU-local.
                 // A MOV or multiplier memory MA can retire after its successor's
                 // EX starts. Recover that slot, retaining the completion clamp.
-                self.cpu_ready[i] = (boundary.started
+                self.cpu_ready[i] = (cpu.execution_clock().unwrap_or(boundary.started)
                     + u64::from(self.bus.cpu_main_delay(processor, states)))
-                .saturating_sub(u64::from(cpu.issue_overlap()))
                 .max(
                     self.bus.main_clocks + u64::from(if states == 0 { CLOCKS_PER_STEP } else { 0 }),
                 );

@@ -51,11 +51,15 @@ def build():
     # Module-stop resets the timer/divider before each warmed-cache interval.
     # After resume completes, high/low reads cost two states each; EXTU
     # includes the load-use interlock (two states), giving phase six.
-    # Each TAS costs max(table7.2=4, two T1/T2 beats=4)+max(1,IW3).
-    # H §7.11.2: the second high read completes two states after the body:
-    # 8+16*(4+max(1,IW3)) = 88/88/104 -> 11/11/13 ticks.
+    # P fig7.76: EX(1), read MA(2), EX(1), write MA(2), then
+    # real IF(1) or retained if sharing final MA(0). Sixteen aligned TAS
+    # alternate eight 7-state and eight 6-state iterations. H fig7.47:
+    # second EX supplies one IW3 state, so IW3=2 adds one wait per TAS.
+    # With the two FRT reads: 8+8*7+8*6+16*max(0,IW3-1)
+    # = 112/112/128 -> 14/14/16 ticks. The native repeated-TAS grant
+    # oracle independently checks all sixteen physical read/write pairs.
     return {'bsc-idle.hex': ('\n'.join(lines)+'\n').encode(),
-            'bsc-idle.tsv': b'0000AAFF\n0000000B\n0000000B\n0000000D\n000000A5\n0000600D\n'}
+            'bsc-idle.tsv': b'0000AAFF\n0000000E\n0000000E\n00000010\n000000A5\n0000600D\n'}
 
 
 if __name__ == '__main__':

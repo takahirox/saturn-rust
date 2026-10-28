@@ -24,7 +24,7 @@ export async function sh2BusPipeline(page) {
         if (image.readUInt32BE(at) === 0xE0312900) { image[at + 1] = 0x52; changes[1]++; }
       }
       assert.deepEqual(changes, [2, 2]);
-      expected[1] = expected[2] = 61;
+      expected[1] = 61;
       expected[6] = 0x52520000;
     }
     const actual = await page.evaluate(async ({image, count}) => {

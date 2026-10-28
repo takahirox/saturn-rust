@@ -28,7 +28,8 @@ fn board(p: Processor, offset: u32, address: u32, successor: u16) -> Machine {
     m.bus.onchip[p as usize]
         .write32(0xFFFFFFEC, 0xA55A0000)
         .unwrap();
-    let c = Cpu::start(HIGH_WRAM + p as u32 * 0x100 + offset, address + 4);
+    let mut c = Cpu::start(HIGH_WRAM + p as u32 * 0x100 + offset, address + 4);
+    c.prime_fetch(&m.bus.for_cpu(p));
     if p == Processor::Master {
         m.cpu = c;
     } else {
@@ -254,6 +255,7 @@ fn ccr_store_changes_control_and_purges_only_at_ma_end_and_replays_once() {
                 m.slave
             };
             let mut bus = m.bus;
+            cpu.prime_fetch(&bus.for_cpu(p));
             assert_eq!(bus.main_clocks, 32);
             // E=32; synchronous MA completes at E+2, regardless of IF alignment.
             // Repeated retries at both earlier edges must leave CCR/tags intact.
@@ -429,6 +431,7 @@ fn real_peer_dmac_and_scu_requests_arbitrate_with_executing_store_ma() {
             b.for_cpu(other).fetch16(HIGH_WRAM + 0x500).unwrap();
             b.cpu_delay(other, 0);
             let mut peer = Cpu::start(HIGH_WRAM + 0x500, 0x26003000);
+            peer.prime_fetch(&b.for_cpu(other));
             if competitor == 0 {
                 assert!(!attempt(&mut b, &mut peer, other));
             }
@@ -532,7 +535,8 @@ fn delay_slot_store_finishes_ma_before_target_and_nmi_entry() {
             cached_pair(&[9; 64], &code)
         };
         let base = HIGH_WRAM + p as u32 * 0x100;
-        let c = Cpu::start(base, a + 4);
+        let mut c = Cpu::start(base, a + 4);
+        c.prime_fetch(&m.bus.for_cpu(p));
         if p == Processor::Master {
             m.cpu = c;
         } else {
@@ -541,6 +545,8 @@ fn delay_slot_store_finishes_ma_before_target_and_nmi_entry() {
         m.bus.onchip[p as usize]
             .write32(0xFFFFFFE8, 0xA55A00C0)
             .unwrap();
+        assert!(!m.issue_cpu(p).unwrap()); // target IF follows branch EX
+        advance(&mut m, 33);
         assert!(m.issue_cpu(p).unwrap());
         assert_eq!(state(&m, p).delay_target, Some(base + 8));
         advance(&mut m, 35);
@@ -645,7 +651,8 @@ fn preceding_load_forwards_store_data_without_the_address_or_r0_index_interlock(
                 } else {
                     cached_pair(&[0xAFFE, 9], &code)
                 };
-                let c = Cpu::start(HIGH_WRAM + p as u32 * 0x100 + offset, 0xC0000400);
+                let mut c = Cpu::start(HIGH_WRAM + p as u32 * 0x100 + offset, 0xC0000400);
+                c.prime_fetch(&m.bus.for_cpu(p));
                 if p == Processor::Master {
                     m.cpu = c;
                 } else {
