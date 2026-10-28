@@ -398,11 +398,12 @@ impl Cpu {
         let fetch_start = bus.sh2_clock();
         let successor = self.state.delay_target.unwrap_or(pc.wrapping_add(2));
         let deferred_if = matches!(opcode & 0xF00F, 0x0007 | 0x3005 | 0x300D | 0x000F | 0x400F);
+        let ldc_long = matches!(opcode & 0xF0FF, 0x4007 | 0x4017 | 0x4027);
         // P fig7.94: SLEEP permits IF of its immediate successor (already
         // selected above), but no IF of the second successor in its EX slot.
         if unconditional_branch {
             self.fetch.hold_delay_slot(bus, ex + u64::from(interlock));
-        } else if !deferred_if && opcode != 0x001B {
+        } else if !deferred_if && !ldc_long && opcode != 0x001B {
             self.fetch
                 .advance(bus, successor, ex + u64::from(interlock))
                 .map_err(access)?;
@@ -428,7 +429,7 @@ impl Cpu {
             .or_else(|| {
                 timing::mov_store_address(opcode, &self.state).map(|address| (address, true))
             })
-            .map(|(address, write)| timing::MovAccess::start(bus, address, write, pc, now))
+            .map(|(address, write)| timing::MovAccess::start(bus, address, write, successor, now))
             .transpose()
             .map_err(access)?;
         if let Some(mov) = &mov_access {
@@ -838,7 +839,36 @@ impl Cpu {
                 0x4007 | 0x4017 | 0x4027 | 0x4006 | 0x4016 | 0x4026
             ) =>
             {
+                // P fig7.84 / Rev.5 p.491: successor ID stalls through
+                // initial EX and MA. Younger IF resumes beside final EX,
+                // after the real operand's completion, including its waits.
+                let ma_end = now + 2;
+                if ldc_long && let Some(clock) = bus.inner.sh2_clock() {
+                    let scheduled = bus.inner.sh2_schedule_memory_access(s.r[n], false, ma_end);
+                    let boundary = ma_end - u64::from(scheduled);
+                    bus.inner
+                        .sh2_pipeline_wait(boundary.saturating_sub(clock) as u32)
+                        .map_err(access)?;
+                }
                 let value = bus.read32(s.r[n]).map_err(access)?;
+                if ldc_long && let Some(clock) = bus.inner.sh2_clock() {
+                    bus.inner
+                        .sh2_pipeline_wait(ma_end.saturating_sub(clock) as u32)
+                        .map_err(access)?;
+                    let final_ex = clock.max(ma_end);
+                    self.fetch
+                        .advance(bus.inner, successor, final_ex)
+                        .map_err(access)?;
+                    let if_stretch = bus
+                        .inner
+                        .sh2_clock()
+                        .unwrap()
+                        .saturating_sub(final_ex)
+                        .saturating_sub(1);
+                    // MA and final EX are distinct slots: stretch each once.
+                    self.execution_clock =
+                        fetch_start.map(|_| ex + (final_ex - ma_end) + if_stretch);
+                }
                 s.r[n] = s.r[n].wrapping_add(4);
                 set_special(s, opcode & 1 != 0, (opcode >> 4) & 3, value);
                 inhibit = true;

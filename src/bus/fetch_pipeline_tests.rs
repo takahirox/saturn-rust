@@ -288,6 +288,263 @@ fn mov_ma_precedes_the_contending_if_and_dependency_is_counted_once() {
     }
 }
 
+// P figs7.6/7.7/7.82: the target stream, not the branch/slot alignment,
+// determines whether IF beside the delay-slot MOV's MA needs a longword.
+#[test]
+fn delay_slot_mov_uses_target_alignment_for_contention_and_dependency_on_both_cpus() {
+    for p in [Processor::Master, Processor::Slave] {
+        for offset in [0, 2] {
+            for target_offset in [0, 2] {
+                for (mov, add, expected_r0) in [
+                    (0x60F2, 0x7601, 42), // load, independent ADD
+                    (0x60F2, 0x7001, 43), // load, dependent ADD
+                    (0x2FF2, 0x7601, 0),  // store, independent ADD
+                ] {
+                    for chunk in [1, 3, 17, 10000] {
+                        for inspect in [false, true] {
+                            let mut m = board(p, offset, Some(true), 0);
+                            let target = HIGH_WRAM + 0x100 + target_offset;
+                            let branch = 0xA000 | ((0x100 + target_offset - offset - 4) / 2) as u16;
+                            m.bus
+                                .for_cpu(p)
+                                .write16(HIGH_WRAM + offset, branch)
+                                .unwrap();
+                            m.bus
+                                .for_cpu(p)
+                                .write16(HIGH_WRAM + offset + 2, mov)
+                                .unwrap();
+                            m.bus.write16(target, add).unwrap();
+                            m.bus.write16(target + 2, 0x001B).unwrap();
+                            m.bus.write16(target + 4, 0x7763).unwrap();
+                            m.bus.for_cpu(p).fetch16(target).unwrap();
+                            let stack = 0xC0000400;
+                            m.bus.for_cpu(p).write32(stack, 42).unwrap();
+                            m.bus.cpu_delay(p, 0);
+                            let cpu = Cpu::start(HIGH_WRAM + offset, stack);
+                            if p == Processor::Master {
+                                m.cpu = cpu;
+                            } else {
+                                m.slave = cpu;
+                            }
+                            // Branch EX=2, target IF=3, slot EX=4, MA=5..6.
+                            // Independent target EX shares MA only with retained
+                            // if (target=4n+2); dependency and real IF split once.
+                            let sleep = if target_offset == 2 && add != 0x7001 {
+                                6
+                            } else {
+                                7
+                            };
+                            let (grants, retired) = trace(&mut m, p, sleep + 1, chunk, inspect);
+                            assert!(grants.is_empty());
+                            assert_eq!(
+                                retired.last(),
+                                Some(&(sleep, 4)),
+                                "{p:?} branch={offset} target={target_offset} mov={mov:X} add={add:X}"
+                            );
+                            let c = if p == Processor::Master {
+                                m.cpu_state()
+                            } else {
+                                m.slave_state()
+                            };
+                            assert_eq!(c.status, crate::cpu::CpuStatus::Sleeping);
+                            assert_eq!(
+                                (c.r[0], c.r[6], c.r[7]),
+                                (expected_r0, u32::from(add == 0x7601), 0)
+                            );
+                            assert_eq!((c.r[15], c.pc, c.exceptions), (stack, target + 4, 0));
+                            assert_eq!(
+                                m.bus.for_cpu(p).read32(stack),
+                                Ok(if mov == 0x2FF2 { stack } else { 42 })
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// P fig7.84 / Rev.5 printed p.491: successor ID stalls during EX and MA.
+// For aligned P1, IF=0..2, ID=2..3, EX=3..4, MA=4..6,
+// final EX/third IF=6..8. Six Tw stretches each real transfer to eight.
+#[test]
+fn ldc_long_stalls_younger_if_until_operand_completion_and_retains_samples_on_both_cpus() {
+    for p in [Processor::Master, Processor::Slave] {
+        for (waits, ma, operand_sample, younger_if, instruction_sample) in
+            [(0, 4, 6, 6, 8), (0xC0, 10, 18, 18, 26)]
+        {
+            for opcode in [0x4F07, 0x4F17, 0x4F27] {
+                for chunk in [1, 3, 17, 10000] {
+                    for inspect in [false, true] {
+                        let mut m = board(p, 0, None, waits);
+                        let stack = 0x26004000;
+                        for (at, op) in [(0, opcode), (2, 9), (4, 0xE82A), (6, 0x001B), (8, 0x7763)]
+                        {
+                            m.bus.write16(HIGH_WRAM + at, op).unwrap();
+                        }
+                        m.bus.write32(stack, 1).unwrap();
+                        let cpu = Cpu::start(0x26000000, stack);
+                        if p == Processor::Master {
+                            m.cpu = cpu;
+                        } else {
+                            m.slave = cpu;
+                        }
+                        let (grants, retired) =
+                            trace(&mut m, p, operand_sample - 1, chunk, inspect);
+                        assert_eq!(
+                            grants,
+                            [(0, 0x26000000, 4), (ma, stack, 4)],
+                            "{p:?} {opcode:X}"
+                        );
+                        assert!(retired.is_empty());
+                        assert!(
+                            m.bus
+                                .transactions
+                                .active
+                                .as_ref()
+                                .is_some_and(|a| a.owner == Owner::Cpu(p)
+                                    && a.transfer.address == stack
+                                    && a.remaining == 1)
+                        );
+                        m.bus.write32(stack, 2).unwrap();
+                        trace(&mut m, p, operand_sample, chunk, inspect);
+                        m.bus.write32(stack, 3).unwrap();
+                        let (grants, retired) =
+                            trace(&mut m, p, instruction_sample - 1, chunk, inspect);
+                        assert_eq!(grants, [(younger_if, 0x26000004, 4)]);
+                        assert!(retired.is_empty());
+                        assert!(
+                            m.bus
+                                .transactions
+                                .active
+                                .as_ref()
+                                .is_some_and(|a| a.owner == Owner::Cpu(p)
+                                    && a.transfer.address == 0x26000004
+                                    && a.remaining == 1)
+                        );
+                        m.bus.write16(HIGH_WRAM + 4, 0xE82B).unwrap();
+                        trace(&mut m, p, instruction_sample, chunk, inspect);
+                        m.bus.write16(HIGH_WRAM + 4, 0xE82C).unwrap();
+                        let (grants, retired) = trace(&mut m, p, 100, chunk, inspect);
+                        assert_eq!(grants, [(instruction_sample + 1, 0x26000008, 4)]);
+                        assert_eq!(retired.iter().filter(|&&(_, n)| n == 1).count(), 1);
+                        let c = if p == Processor::Master {
+                            m.cpu_state()
+                        } else {
+                            m.slave_state()
+                        };
+                        let control = match opcode {
+                            0x4F07 => c.sr,
+                            0x4F17 => c.gbr,
+                            _ => c.vbr,
+                        };
+                        assert_eq!(control, 2);
+                        assert_eq!((c.r[8], c.r[7], c.r[15]), (43, 0, stack + 4));
+                        assert_eq!((c.instructions, c.exceptions), (4, 0));
+                        assert_eq!(c.status, crate::cpu::CpuStatus::Sleeping);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The same two stalled slots apply with resident IF, retained if and a
+// synchronous cache-array operand. Literal edges include external MA stretching
+// and, for P1 entry at 4n+2, the real IF beside the following NOP.
+#[test]
+fn ldc_long_stall_edges_cover_resident_retained_and_synchronous_routes_on_both_cpus() {
+    for p in [Processor::Master, Processor::Slave] {
+        for (resident, offset, stack, waits, expected_grants, sleep) in [
+            (Some(true), 0, 0xC0000400, 0, vec![], 6),
+            (Some(true), 2, 0xC0000400, 0, vec![], 6),
+            (Some(true), 0, 0x26004000, 0, vec![(3, 0x26004000, 4)], 7),
+            (
+                Some(true),
+                2,
+                0x26004000,
+                0xC0,
+                vec![(3, 0x26004000, 4)],
+                13,
+            ),
+            (
+                None,
+                0,
+                0xC0000400,
+                0,
+                vec![(0, 0x26000000, 4), (5, 0x26000004, 4)],
+                8,
+            ),
+            (
+                None,
+                2,
+                0xC0000400,
+                0,
+                vec![(0, 0x26000000, 4), (2, 0x26000004, 4), (7, 0x26000008, 4)],
+                9,
+            ),
+            (
+                None,
+                2,
+                0x26004000,
+                0,
+                vec![
+                    (0, 0x26000000, 4),
+                    (2, 0x26000004, 4),
+                    (5, 0x26004000, 4),
+                    (8, 0x26000008, 4),
+                ],
+                10,
+            ),
+            (
+                None,
+                2,
+                0x26004000,
+                0xC0,
+                vec![
+                    (0, 0x26000000, 4),
+                    (8, 0x26000004, 4),
+                    (17, 0x26004000, 4),
+                    (26, 0x26000008, 4),
+                ],
+                34,
+            ),
+        ] {
+            for chunk in [1, 3, 17, 10000] {
+                let mut m = board(p, offset, resident, waits);
+                for (at, op) in [(0, 0x4F07), (2, 9), (4, 0x001B), (6, 0x7763)] {
+                    m.bus
+                        .for_cpu(p)
+                        .write16(HIGH_WRAM + offset + at, op)
+                        .unwrap();
+                }
+                m.bus.for_cpu(p).write32(stack, 1).unwrap();
+                m.bus.cpu_delay(p, 0);
+                let pc = HIGH_WRAM + offset + if resident.is_some() { 0 } else { 0x20000000 };
+                let cpu = Cpu::start(pc, stack);
+                if p == Processor::Master {
+                    m.cpu = cpu;
+                } else {
+                    m.slave = cpu;
+                }
+                let (grants, retired) = trace(&mut m, p, sleep + 1, chunk, true);
+                assert_eq!(
+                    grants, expected_grants,
+                    "{p:?} resident={resident:?} offset={offset} stack={stack:X}"
+                );
+                assert_eq!(retired.last(), Some(&(sleep, 3)));
+                let c = if p == Processor::Master {
+                    m.cpu_state()
+                } else {
+                    m.slave_state()
+                };
+                assert_eq!((c.sr, c.r[15], c.r[7], c.exceptions), (1, stack + 4, 0, 0));
+                assert_eq!(c.status, crate::cpu::CpuStatus::Sleeping);
+            }
+        }
+    }
+}
+
 #[test]
 fn fixed_word_cs0_fetch_samples_each_half_at_its_own_grant_and_retains_the_result() {
     for p in [Processor::Master, Processor::Slave] {

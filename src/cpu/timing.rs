@@ -388,7 +388,7 @@ impl MovAccess {
         bus: &mut impl crate::bus::Memory,
         address: u32,
         write: bool,
-        pc: u32,
+        successor: u32,
         ex: u64,
     ) -> Result<Self, crate::bus::BusError> {
         let end = ex + 2;
@@ -399,7 +399,10 @@ impl MovAccess {
         }
         Ok(Self {
             end,
-            split: bus.sh2_fetch_slots() && pc & 2 != 0,
+            // IF beside MA belongs to the successor's second successor.
+            // A delay-slot MOV follows the redirected target stream, so its
+            // own PC no longer determines the IF/retained-if pairing.
+            split: bus.sh2_fetch_slots() && successor & 2 == 0,
         })
     }
 

@@ -150,3 +150,53 @@ The final full runs preserved Star Collector, Prism Courier and Hardware Lab
 gameplay, graphics, sound, diagnostic computations and restart assertions. No
 final required check was skipped. No push or merge was performed; no human
 result is claimed. Related to #69 and #17; the remaining #17 scope stays open.
+
+## Redirected MOV and LDC.L review-fix validation
+
+Both subsequent agent-fixable findings are corrected. Delay-slot MOV now derives
+its MA/IF split and retained overlap from the redirected target stream, covering
+both branch/target alignments and the shared dependency split. LDC.L to SR/GBR/VBR
+holds successor ID and younger IF through its initial EX and real operand MA;
+younger IF resumes beside final EX. Operand waits and IF waits stretch their
+respective slots once. The [primary-derived stage table](sh2-fetch-pipeline.md#redirected-mov-contention-and-ldcl-successor-stalls)
+and [three native regressions](../src/bus/fetch_pipeline_tests.rs) document
+the literal edges and both-CPU coverage, including zero/six software waits,
+resident/P1/retained/synchronous routes, completion-byte mutations, once-only
+effects, chunks 1/3/17/10000 and passive inspection.
+
+Before the production fixes, the new branch oracle failed for BRA at 4n targeting
+4n+2: only three instructions had retired at clock 6, rather than four including
+SLEEP. The LDC.L oracle observed PC+4 IF granted at 3 instead of operand MA at 4.
+After the fixes, aligned zero-wait P1 operand MA grants at 4, samples at 6,
+and PC+4 IF grants at 6 and samples at 8. Six software waits move these edges
+to 10/18/18/26. Operand/instruction writes before and after completion prove
+separate retained samples. The crossed branch/target vectors retain the dependent
+ADD's single stall and verify both MOV loads and stores.
+
+No guest bytes, timing goldens or substantive assertions changed in this revision.
+Related to #69 and #17; the remaining #17 scope stays open. No push or merge
+was performed and no human result is claimed.
+
+Final checks on macOS arm64 (Rust 1.94.0 for the complete native test run;
+rustup stable 1.99.0 for the final build, Clippy and Wasm):
+
+| Check | Actual result |
+| --- | --- |
+| `cargo fmt --check` | Passed |
+| `cargo build --locked` | Passed |
+| `cargo test --locked` | Passed: 1,042 tests across 95 harnesses, including 679 library tests; zero failed/ignored |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed |
+| `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings` | Passed |
+| `sh scripts/check-fixtures.sh` | Passed: all 94 reproduction commands |
+| `sh scripts/build-web.sh` | Passed: rebuilt production Wasm with bindgen 0.2.129 |
+| Complete `npm run test:browser` | Passed: all 30 shared + 36 independent groups; 186.902 s parallel wall time, including report/coverage verification |
+| `node --test scripts/ci-runner.test.mjs` | Passed: all 12 regressions |
+| Unstaged/staged whitespace checks | Passed |
+
+The first Wasm Clippy invocation selected Homebrew Rust without its Wasm target;
+the first web build could not find bindgen on PATH. Using the documented rustup
+compiler and Cargo-bin PATH resolved both environment failures; the final checks
+above passed. No final required check was skipped. The full browser run retained
+Star Collector, Prism Courier and Hardware Lab gameplay, graphics, sound,
+diagnostic computations and restart assertions. No post-merge verification is
+required; broad BIOS/commercial-game compatibility remains unverified.

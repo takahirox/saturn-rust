@@ -81,7 +81,10 @@ Real IF advances two instructions ahead of EX through the existing cache, replay
 journal and transaction arbiter. Sampled bytes and decode readiness survive older
 unretired instructions; actual waits stretch slots, and MA wins over real IF.
 Retained-halfword `if` shares MA. Redirects keep only the documented delay slot;
-exceptions/SLEEP/reset discard younger work. Lookahead is limited to side-effect-free
+delay-slot MOV contention follows the target stream's alignment. LDC.L holds
+successor ID through initial EX and actual operand MA, then resumes younger IF
+beside its final EX, stretching each waited slot once.
+Exceptions/SLEEP/reset discard younger work. Lookahead is limited to side-effect-free
 ROM/RAM/cache routes. MMIO and invalid-address exceptions are deferred until an
 instruction is selected. PLL retains the master stream and resets the slave.
 The [stage/cancellation table and oracle](sh2-fetch-pipeline.md),

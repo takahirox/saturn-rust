@@ -210,6 +210,46 @@ pixel assertions:
 Unrelated EX microsequences, full bus/chip conformance and the rest of #17 remain
 open. No BIOS or commercial-game compatibility is established by this increment.
 
+### Redirected MOV contention and LDC.L successor stalls
+
+Hitachi Figures 7.6/7.7 and 7.82 determine the delay-slot MOV's MA/IF
+relationship from the **target stream**. For resident instructions, branch
+EX starts at 2, target IF at 3, delay-slot MOV EX at 4, and synchronous MA
+at 5..6. The IF beside MA is target+4: target 4n needs real IF and splits
+the slot; target 4n+2 uses retained `if` and permits independent target EX
+at 5. Thus target ADD followed by SLEEP reaches SLEEP at 7 or 6 respectively,
+for either branch alignment. A dependent ADD splits once for either target
+alignment and reaches SLEEP at 7. The same IF rule applies to MOV stores.
+The native `delay_slot_mov_uses_target_alignment_for_contention_and_dependency_on_both_cpus`
+vector crosses both branch/target alignments, loads/stores and dependencies.
+
+Hitachi Figure 7.84 (printed p.243) and Renesas Rev.5 Figure 7.84 (printed
+p.491) stall successor ID for the initial EX and MA slots of LDC.L to SR,
+GBR or VBR. Third-instruction IF advances beside the final EX, after actual
+operand completion; it cannot advance during either stalled slot. The Rev.5
+diagram labels the final stage WB while its prose calls it EX; both editions
+agree on the two stalled successor slots. No SH-DSP-only transfer is included.
+
+| Aligned P1 high-RAM LDC.L | Initial IF | ID | Initial EX | Operand MA | Final EX / PC+4 IF | Successor EX |
+| --- | --- | --- | --- | --- | --- | --- |
+| Zero software waits | 0..2 | 2..3 | 3..4 | 4..6 | 6..8 | 8 |
+| Six software waits | 0..8 | 8..9 | 9..10 | 10..18 | 18..26 | 26 |
+
+These are slot derivations, not recorded traces: external high-RAM transfers
+take 2+Tw states; initial EX and ID each take one; the final EX shares the
+real IF's stretched slot. A synchronous operand instead takes one MA state.
+An operand's extra latency stretches MA once, and a real IF's extra latency
+stretches the final EX once. Retained `if` or resident IF takes one state.
+The native `ldc_long_stalls_younger_if_until_operand_completion_and_retains_samples_on_both_cpus`
+vector asserts literal grants for both CPUs and all three LDC.L forms with
+zero/six Tw. It changes operand and instruction bytes immediately before/after
+completion, requiring the separately sampled values, one postincrement and
+once-only retirement. Both vectors cover chunks 1/3/17/10000 and passive
+inspection. The existing equal-edge host-mutation convention applies.
+`ldc_long_stall_edges_cover_resident_retained_and_synchronous_routes_on_both_cpus`
+also checks literal SLEEP edges with resident instructions, P1 entry at 4n+2,
+cache-array operands and external operand waits, retaining the same two stalls.
+
 ### Unconditional branch and TRAPA regressions
 
 Figures 7.82/7.92 hold the unconditional branch/RTE delay slot without a
