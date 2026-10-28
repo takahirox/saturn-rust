@@ -203,7 +203,7 @@ fn changed_idle_and_tas_data_operands_change_actual_guest_timing_and_memory() {
     let rom = load(include_str!("fixtures/bsc-idle.hex"));
     let mut machine = Machine::new();
     let baseline = idle_run(&rom, &mut machine);
-    for (before, after, index, value) in [(0xA55A8000, 0xA55A4000, 3, 11), (0x25, 0x3C, 4, 0xBC)] {
+    for (before, after, index, value) in [(0xA55A8000, 0xA55A4000, 3, 14), (0x25, 0x3C, 4, 0xBC)] {
         let mut changed = rom.clone();
         replace_literal(&mut changed, before, after);
         for (cpu, trace) in idle_run(&changed, &mut machine).iter().enumerate() {

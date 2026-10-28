@@ -1417,3 +1417,244 @@ fn pll_preserves_master_fetch_journal_and_cancels_the_slave_domain() {
     assert_eq!(m.cpu_state().exceptions, 0);
     assert!(!m.bus.slave_enabled);
 }
+
+// Figures 7.75/76: two ID stalls for byte logic, three for TAS.
+// LDC R15,GBR; NOP warms the aligned P1 stream: byte EX=6..7,
+// read=7..9, logic IF=9..11; TAS write=10..12, IF=12..14.
+#[test]
+fn byte_memory_stalls_order_operand_and_younger_if_samples_on_both_cpus() {
+    for p in [Processor::Master, Processor::Slave] {
+        for (waits, ma, read_sample, logic_if, tas_write, tas_if, duration) in
+            [(0, 7, 9, 9, 10, 12, 2), (0xC0, 19, 27, 27, 28, 36, 8)]
+        {
+            for opcode in [0xCC01, 0xCD01, 0xCE01, 0xCF01, 0x4F1B] {
+                let tas = opcode == 0x4F1B;
+                let younger_if = if tas { tas_if } else { logic_if };
+                let sample = younger_if + duration;
+                for chunk in [1, 3, 17, 10000] {
+                    for inspect in [false, true] {
+                        let mut m = board(p, 0, None, waits);
+                        // Real guest setup: LDC R15,GBR; NOP. R0 remains zero.
+                        let operand = HIGH_WRAM + 0x1000;
+                        for (at, op) in [
+                            (0, 0x4F1E),
+                            (2, 9),
+                            (4, opcode),
+                            (6, 9),
+                            (8, 0xE62A),
+                            (10, 0x001B),
+                        ] {
+                            m.bus.write16(HIGH_WRAM + at, op).unwrap();
+                        }
+                        let cpu = Cpu::start(0x26000000, operand);
+                        if p == Processor::Master {
+                            m.cpu = cpu;
+                        } else {
+                            m.slave = cpu;
+                        }
+                        m.bus.write8(operand, 0).unwrap();
+                        let (grants, retired) = trace(&mut m, p, read_sample - 1, chunk, inspect);
+                        let setup_if = if waits == 0 { 3 } else { 9 };
+                        assert_eq!(
+                            grants,
+                            [
+                                (0, 0x26000000, 4),
+                                (setup_if, 0x26000004, 4),
+                                (ma, operand, 1)
+                            ],
+                            "{p:?} {opcode:X}"
+                        );
+                        assert_eq!(retired.last().map(|&(_, n)| n), Some(2));
+                        m.bus.write8(operand, 2).unwrap();
+                        trace(&mut m, p, read_sample, chunk, inspect);
+                        m.bus.write8(operand, 4).unwrap();
+                        let (grants, _) = trace(&mut m, p, sample - 1, chunk, inspect);
+                        let mut expected = vec![];
+                        if tas {
+                            expected.push((tas_write, operand, 1));
+                        }
+                        expected.push((younger_if, 0x26000008, 4));
+                        assert_eq!(grants, expected, "{p:?} {opcode:X}");
+                        assert!(
+                            m.bus
+                                .transactions
+                                .active
+                                .as_ref()
+                                .is_some_and(|a| a.owner == Owner::Cpu(p)
+                                    && a.transfer.address == 0x26000008
+                                    && a.remaining == 1)
+                        );
+                        m.bus.write16(HIGH_WRAM + 8, 0xE62B).unwrap();
+                        trace(&mut m, p, sample, chunk, inspect);
+                        m.bus.write16(HIGH_WRAM + 8, 0xE62C).unwrap();
+                        trace(&mut m, p, 120, chunk, inspect);
+                        let c = if p == Processor::Master {
+                            m.cpu_state()
+                        } else {
+                            m.slave_state()
+                        };
+                        assert_eq!((c.r[6], c.instructions, c.exceptions), (43, 6, 0));
+                        assert_eq!(c.status, crate::cpu::CpuStatus::Sleeping);
+                        let expected = match opcode {
+                            0xCC01 => 4,
+                            0xCD01 => 0,
+                            0xCE01 | 0xCF01 => 3,
+                            _ => 0x82,
+                        };
+                        assert_eq!(m.bus.read8(operand), Ok(expected));
+                        if opcode == 0xCC01 || tas {
+                            assert_eq!(c.sr & 1, u32::from(!tas));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Resident IF still observes two/three ID stalls. Synchronous read MA is
+// one slot; external MA is 2+Tw. Logic's final MA shares successor EX;
+// TAS's final MA precedes real IF (one more slot than retained if).
+#[test]
+fn byte_memory_resident_and_retained_slots_preserve_decode_stalls_on_both_cpus() {
+    for p in [Processor::Master, Processor::Slave] {
+        for offset in [0, 2] {
+            for (operand, waits, logic_sleep, tas_sleep, write_grant) in [
+                (0xC0000400, 0, 9, 0, 0),
+                (0x26001000, 0, 10, 13, 8),
+                (0x26001000, 0xC0, 16, 25, 14),
+            ] {
+                for opcode in [0xCC01, 0xCD01, 0xCE01, 0xCF01, 0x4F1B] {
+                    let tas = opcode == 0x4F1B;
+                    if tas && operand == 0xC0000400 {
+                        continue;
+                    } // TAS cannot address cache arrays.
+                    let sleep = if tas {
+                        tas_sleep - u64::from(offset != 0)
+                    } else {
+                        logic_sleep
+                    };
+                    for chunk in [1, 3, 17, 10000] {
+                        for inspect in [false, true] {
+                            let mut m = board(p, offset, Some(true), waits);
+                            for (at, op) in [
+                                (0, 0x4F1E),
+                                (2, 9),
+                                (4, opcode),
+                                (6, 9),
+                                (8, 0xE62A),
+                                (10, 0x001B),
+                            ] {
+                                m.bus
+                                    .for_cpu(p)
+                                    .write16(HIGH_WRAM + offset + at, op)
+                                    .unwrap();
+                            }
+                            if operand == 0xC0000400 {
+                                m.bus.for_cpu(p).write8(operand, 2).unwrap();
+                            } else {
+                                m.bus.write8(operand, 2).unwrap();
+                            }
+                            m.bus.cpu_delay(p, 0);
+                            // Host cache warming is complete; it leaves no
+                            // outstanding external transfer in this oracle.
+                            m.bus.onchip[p as usize].release_external_bus();
+                            let cpu = Cpu::start(HIGH_WRAM + offset, operand);
+                            if p == Processor::Master {
+                                m.cpu = cpu;
+                            } else {
+                                m.slave = cpu;
+                            }
+                            let (grants, retired) = trace(&mut m, p, sleep + 1, chunk, inspect);
+                            let mut expected = vec![];
+                            if operand != 0xC0000400 {
+                                expected.push((5, operand, 1));
+                                if opcode != 0xCC01 {
+                                    expected.push((write_grant, operand, 1));
+                                }
+                            }
+                            assert_eq!(
+                                grants, expected,
+                                "{p:?} {opcode:X} offset={offset} Tw={waits:X}"
+                            );
+                            assert_eq!(
+                                retired.last(),
+                                Some(&(sleep, 6)),
+                                "{p:?} {opcode:X} offset={offset} Tw={waits:X} retired={retired:?}"
+                            );
+                            trace(&mut m, p, 80, chunk, inspect); // drain a buffered final write
+                            let c = if p == Processor::Master {
+                                m.cpu_state()
+                            } else {
+                                m.slave_state()
+                            };
+                            assert_eq!((c.r[6], c.instructions, c.exceptions), (42, 6, 0));
+                            assert_eq!(c.status, crate::cpu::CpuStatus::Sleeping);
+                            let expected = match opcode {
+                                0xCC01 => 2,
+                                0xCD01 => 0,
+                                0xCE01 | 0xCF01 => 3,
+                                _ => 0x82,
+                            };
+                            assert_eq!(m.bus.for_cpu(p).read8(operand), Ok(expected));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Figure 7.76 + H fig7.47: EX(1), read(2), EX(1), write(2),
+// then real IF(1) or retained if(0). The EX gap supplies one IW3 state;
+// IW3=2 adds one write wait. Sixteen TAS therefore span 104/104/120
+// states, independently of the BSC guest's FRT reads or its output golden.
+#[test]
+fn repeated_tas_grants_derive_the_cached_bsc_guest_period_on_both_cpus() {
+    for p in [Processor::Master, Processor::Slave] {
+        for offset in [0, 2] {
+            for (idle, period) in [(0, 104), (1, 104), (2, 120)] {
+                for chunk in [1, 3, 17, 10000] {
+                    let mut m = board(p, offset, Some(true), 0);
+                    for i in 0..16 {
+                        m.bus
+                            .for_cpu(p)
+                            .write16(HIGH_WRAM + offset + 2 * i, 0x4F1B)
+                            .unwrap();
+                    }
+                    m.bus
+                        .for_cpu(p)
+                        .write16(HIGH_WRAM + offset + 32, 0x001B)
+                        .unwrap();
+                    m.bus
+                        .for_cpu(p)
+                        .write32(0xFFFFFFE8, 0xA55A0000 | idle << 14)
+                        .unwrap();
+                    m.bus.cpu_delay(p, 0);
+                    m.bus.onchip[p as usize].release_external_bus();
+                    let operand = 0x26001000;
+                    m.bus.write8(operand, 0x25).unwrap();
+                    let cpu = Cpu::start(HIGH_WRAM + offset, operand);
+                    if p == Processor::Master {
+                        m.cpu = cpu;
+                    } else {
+                        m.slave = cpu;
+                    }
+                    let mut expected = vec![];
+                    let mut ex = 2;
+                    for i in 0..16 {
+                        expected.push((ex + 1, operand, 1));
+                        expected.push((ex + 4, operand, 1));
+                        let real_if = (offset + i * 2) % 4 == 0;
+                        ex += 6 + u64::from(real_if) + u64::from(idle == 2);
+                    }
+                    assert_eq!(ex, 2 + period);
+                    let (grants, retired) = trace(&mut m, p, ex + 1, chunk, true);
+                    assert_eq!(grants, expected, "{p:?} offset={offset} IW3={idle}");
+                    assert_eq!(retired.last(), Some(&(ex, 17)));
+                    assert_eq!(m.bus.read8(operand), Ok(0xA5));
+                }
+            }
+        }
+    }
+}

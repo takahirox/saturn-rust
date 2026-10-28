@@ -250,3 +250,65 @@ computations and restart assertions. Related to #69 and #17; the remaining #17
 scope stays open. No push or merge was performed and no human result is claimed.
 No post-merge verification is required; broad BIOS/commercial-game compatibility
 remains unverified.
+
+## Byte-memory logic and TAS review-fix validation
+
+The remaining agent-fixable finding is corrected. AND.B/OR.B/XOR.B/TST.B hold
+successor ID and younger IF through initial EX and operand MA, resuming beside
+second EX. TAS.B additionally holds them through second EX and places locked
+write MA before a contending real IF. Actual waits stretch those stages once;
+byte logic retains the final MA/successor-EX overlap. Architectural-only adapters
+retain the same operations and flags.
+
+The [primary-derived stage table and timing reconciliation](sh2-fetch-pipeline.md#byte-memory-logic-and-tas-successor-stalls)
+link Hitachi Figures 7.75–7.76 and Renesas Rev.5 Figures 7.75–7.76 to three
+[native regressions](../src/bus/fetch_pipeline_tests.rs):
+
+- `byte_memory_stalls_order_operand_and_younger_if_samples_on_both_cpus`
+- `byte_memory_resident_and_retained_slots_preserve_decode_stalls_on_both_cpus`
+- `repeated_tas_grants_derive_the_cached_bsc_guest_period_on_both_cpus`
+
+They cover all five instructions, both CPUs, both entry alignments,
+resident/retained/synchronous/P1 routes, zero/six waits, actual grants and
+completion-byte mutations, flags/readback/once-only effects, chunks 1/3/17/10000
+and passive inspection. The new unchanged P1 oracle failed before production
+changes: younger IF granted at 6 instead of operand MA at 7. After the fix,
+operand MA grants/samples at 7/9, followed by logic IF at 9/11 or TAS IF at
+12/14. Six waits give 19/27, 27/35 and 36/44 respectively. Resident test setup
+explicitly releases completed host cache-warming bus history; an initial setup
+omission left synthetic busy time and an extra turnaround state.
+
+The first complete native/browser runs exposed the BSC TAS guest's old collapsed
+cycle-count oracle. An independent stage derivation, checked against every grant
+of sixteen repeated TAS operations, gives 104/104/120 loop states for IW3=0/1/2.
+Including eight FRT setup/read states gives **14/14/16 ticks**, replacing
+11/11/13; changing IW3=2 to 1 gives 14. Only those authored timing expectations
+and the corresponding native/browser mutation literal changed. Guest bytes,
+readback, data mutations, repeat boots and substantive assertions remain intact.
+The stage contract records the unchanged guest hash and corrected TSV hash.
+
+Final checks on macOS arm64 (Rust 1.94.0 for native build/tests; rustup stable
+1.99.0 for native/Wasm Clippy and production Wasm):
+
+| Check | Actual result |
+| --- | --- |
+| `cargo fmt --check` | Passed |
+| `cargo build --locked` | Passed |
+| `cargo test --locked --no-fail-fast` | Passed: 1,048 tests across 95 harnesses, including 685 library tests; zero failed/ignored |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed |
+| `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings` | Passed |
+| `sh scripts/check-fixtures.sh` | Passed: all 94 reproduction commands, including corrected BSC TSV reproduction |
+| `sh scripts/build-web.sh` | Passed: rebuilt production Wasm with bindgen 0.2.129 |
+| Complete `npm run test:browser` | Passed: 30 shared + 36 independent groups; 226.137 s parallel wall time, with report/coverage verification |
+| `node --test scripts/ci-runner.test.mjs` | Passed: all 12 regressions |
+| Unstaged/staged whitespace checks | Passed |
+
+The initial runner invocation preceded generated `web/pkg` artifacts and failed
+its artifact-dependent cases; after the production build the complete runner
+suite passed, including a final run after the browser expectation update.
+No final required check was skipped. The complete browser suite retained Star
+Collector, Prism Courier and Hardware Lab gameplay, graphics, sound, diagnostic
+computations and restart assertions. Related to #69 and #17; #17's remaining
+hardware-completion scope stays open. No human result is claimed. No post-merge
+verification is required; broad BIOS/commercial-game compatibility remains
+unverified.

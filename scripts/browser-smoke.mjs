@@ -1302,7 +1302,7 @@ try {
   }
   const idleVectors = (await readFile("tests/fixtures/bsc-idle.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v, 16));
   for (const [before, after, index, value] of [[0, 0, 0, 0xAAFF],
-    [0xA55A8000, 0xA55A4000, 3, 11], [0x25, 0x3C, 4, 0xBC]]) {
+    [0xA55A8000, 0xA55A4000, 3, 14], [0x25, 0x3C, 4, 0xBC]]) {
     const changed = Buffer.from(idleRom);
     if (before) {
       const needle = Buffer.alloc(4); needle.writeUInt32BE(before);

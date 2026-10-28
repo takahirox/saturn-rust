@@ -400,11 +400,12 @@ impl Cpu {
         let deferred_if = matches!(opcode & 0xF00F, 0x0007 | 0x3005 | 0x300D | 0x000F | 0x400F);
         let ldc_long = matches!(opcode & 0xF0FF, 0x4007 | 0x4017 | 0x4027);
         let stc_long = matches!(opcode & 0xF0FF, 0x4003 | 0x4013 | 0x4023);
+        let byte_memory = matches!(opcode & 0xFF00, 0xCC00..=0xCF00) || opcode & 0xF0FF == 0x401B;
         // P fig7.94: SLEEP permits IF of its immediate successor (already
         // selected above), but no IF of the second successor in its EX slot.
         if unconditional_branch {
             self.fetch.hold_delay_slot(bus, ex + u64::from(interlock));
-        } else if !deferred_if && !ldc_long && !stc_long && opcode != 0x001B {
+        } else if !deferred_if && !ldc_long && !stc_long && !byte_memory && opcode != 0x001B {
             self.fetch
                 .advance(bus, successor, ex + u64::from(interlock))
                 .map_err(access)?;
@@ -749,21 +750,112 @@ impl Cpu {
                 2 => s.r[0] ^= imm,
                 _ => s.r[0] |= imm,
             },
-            _ if matches!(opcode & 0xFF00, 0xCC00..=0xCF00) => {
-                let address = s.gbr.wrapping_add(s.r[0]);
-                let value = bus.read8(address).map_err(access)?;
-                match (opcode >> 8) & 3 {
-                    0 => s.set_t(value & imm as u8 == 0),
-                    1 => bus.write8(address, value & imm as u8).map_err(access)?,
-                    2 => bus.write8(address, value ^ imm as u8).map_err(access)?,
-                    _ => bus.write8(address, value | imm as u8).map_err(access)?,
+            _ if byte_memory => {
+                // P figs7.75/76: hold younger ID/IF through initial EX
+                // and read MA. TAS also holds them through second EX.
+                let tas = opcode & 0xF0FF == 0x401B;
+                let address = if tas {
+                    s.r[n]
+                } else {
+                    s.gbr.wrapping_add(s.r[0])
+                };
+                let read_end = now + 2;
+                if let Some(clock) = bus.inner.sh2_clock() {
+                    // TAS bypasses cache even for a resident operand. Start
+                    // its locked external read at MA, not at cache completion.
+                    let scheduled = tas
+                        || bus
+                            .inner
+                            .sh2_schedule_memory_access(address, false, read_end);
+                    let boundary = read_end - u64::from(scheduled);
+                    bus.inner
+                        .sh2_pipeline_wait(boundary.saturating_sub(clock) as u32)
+                        .map_err(access)?;
                 }
-            }
-            _ if opcode & 0xF0FF == 0x401B => {
-                // TAS.B: one synchronous read/modify/write.
-                let value = bus.tas_read(s.r[n]).map_err(access)?;
-                bus.tas_write(s.r[n], value | 0x80).map_err(access)?;
-                s.set_t(value == 0);
+                let value = if tas {
+                    bus.tas_read(address)
+                } else {
+                    bus.read8(address)
+                }
+                .map_err(access)?;
+                if let Some(clock) = bus.inner.sh2_clock() {
+                    bus.inner
+                        .sh2_pipeline_wait(read_end.saturating_sub(clock) as u32)
+                        .map_err(access)?;
+                }
+                let second_ex = bus.inner.sh2_clock().unwrap_or(read_end).max(read_end);
+                if !tas {
+                    self.fetch
+                        .advance(bus.inner, successor, second_ex)
+                        .map_err(access)?;
+                }
+                let second_end = (second_ex + 1).max(bus.inner.sh2_clock().unwrap_or(second_ex));
+                if let Some(clock) = bus.inner.sh2_clock() {
+                    bus.inner
+                        .sh2_pipeline_wait(second_end.saturating_sub(clock) as u32)
+                        .map_err(access)?;
+                }
+                let write = if tas {
+                    s.set_t(value == 0);
+                    Some(value | 0x80)
+                } else {
+                    match (opcode >> 8) & 3 {
+                        0 => {
+                            s.set_t(value & imm as u8 == 0);
+                            None
+                        }
+                        1 => Some(value & imm as u8),
+                        2 => Some(value ^ imm as u8),
+                        _ => Some(value | imm as u8),
+                    }
+                };
+                let mut write_stretch = 0;
+                if let Some(value) = write {
+                    let write_end = second_end + 1;
+                    if let Some(clock) = bus.inner.sh2_clock() {
+                        let scheduled = bus
+                            .inner
+                            .sh2_schedule_memory_access(address, true, write_end);
+                        let boundary = write_end - u64::from(scheduled);
+                        bus.inner
+                            .sh2_pipeline_wait(boundary.saturating_sub(clock) as u32)
+                            .map_err(access)?;
+                    }
+                    if tas {
+                        bus.tas_write(address, value)
+                    } else {
+                        bus.write8(address, value)
+                    }
+                    .map_err(access)?;
+                    if let Some(clock) = bus.inner.sh2_clock() {
+                        bus.inner
+                            .sh2_pipeline_wait(write_end.saturating_sub(clock) as u32)
+                            .map_err(access)?;
+                        let completion = clock.max(write_end);
+                        write_stretch = completion - write_end;
+                        if tas {
+                            // Final MA wins against real IF; retained if shares
+                            // the same slot. Count the contention only once.
+                            self.fetch
+                                .advance(bus.inner, successor, second_end)
+                                .map_err(access)?;
+                            self.last_clocks +=
+                                u32::from(bus.inner.sh2_fetch_slots() && successor & 2 != 0);
+                            write_stretch += bus
+                                .inner
+                                .sh2_clock()
+                                .unwrap()
+                                .saturating_sub(completion)
+                                .saturating_sub(1);
+                        } else {
+                            // Final MA shares the successor's EX (fig7.75).
+                            self.load_pipeline.retain_ex(completion - 1);
+                        }
+                    }
+                }
+                self.execution_clock = fetch_start.map(|_| {
+                    ex + (second_ex - read_end) + (second_end - second_ex - 1) + write_stretch
+                });
             }
             _ if matches!(
                 opcode & 0xF0FF,

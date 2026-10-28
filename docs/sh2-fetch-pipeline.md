@@ -32,6 +32,7 @@ Primary references:
 | Cold miss/line crossing | Finish the existing ordered refill with actual grants. Younger stages cannot escape its stretched slot. |
 | Cache disabled/P1 | Fetch through BSC, including CS0's fixed word bus and programmed waits. No backing-memory shortcut. |
 | IF versus MA | MA wins; bus-using IF follows it. A retained `if` shares MA. Do not add the same dependency/split twice (Figures 7.6/7.8/7.9). |
+| Byte-memory logic / TAS | Hold successor ID and younger IF for two / three slots respectively (Figures 7.75–7.76). Logic resumes IF beside second EX; TAS resumes beside final MA, with MA first for real IF. |
 | Waited slot | IF/ID/EX availability advances at the longest participating stage's completion (Figure 7.4). |
 | Untaken conditional | Keep sequential IF/ID. |
 | Taken conditional | Discard both following instructions, including a sequential-address target (Figure 7.78). |
@@ -341,3 +342,79 @@ The `delay_slot_multiplier_uses_target_alignment_for_grants_and_samples_on_both_
 alignments for MUL.L/DMULU.L/DMULS.L. It checks literal grants and bytes changed
 before/after completion. All three new vectors exercise both CPUs and advancement
 chunks 1/3/17/10000; the sampling vectors also compare passive inspection on/off.
+
+### Byte-memory logic and TAS successor stalls
+
+Hitachi Figures 7.75–7.76 (printed p.238), cross-checked against Renesas
+Rev.5 Figures 7.75–7.76 (printed pp.484–485), require the following slots.
+The common rules apply to SH7604; there is no applicable SH-DSP correction.
+
+| Instruction | Initial EX | Read MA | Second EX | Final MA | Successor ID / third-instruction IF |
+| --- | --- | --- | --- | --- | --- |
+| AND.B / OR.B / XOR.B / TST.B | Hold | Hold | Resume | Write for modifying forms | Resume beside second EX, after two stalled slots |
+| TAS.B | Hold | Hold | Hold | Locked write | Resume beside final MA, after three stalled slots; MA precedes bus-using IF |
+
+Each MA and EX slot occupies at least one state, with actual operand/IF waits
+stretching that slot once (Figure 7.4). TST.B preserves memory and consumes the
+same two ID stalls. Byte logic's final write can share the successor's EX;
+retain that overlap using the existing completed-MA convention. TAS retains its
+existing locked external read/write and address checks. A retained `if` shares
+TAS's final MA without another external request; a real IF follows the write.
+The emulator publishes completion before equal-edge replay as elsewhere above.
+
+For isolated aligned cold P1 entry, zero waits give initial IF 0..2, ID 2..3,
+EX 3..4, read MA 4..6 and second EX starting at 6. Byte logic grants PC+4 IF
+at 6 and samples at 8. TAS instead spends second EX 6..7, locked write MA
+7..9, then grants PC+4 IF at 9 and samples at 11. With six software waits,
+initial IF is 0..8, ID 8..9, EX 9..10, read MA 10..18. Byte logic's IF is
+18..26; TAS has second EX 18..19, write MA 19..27 and IF 27..35.
+These are stage-derived deadlines, independent of production traces.
+
+The [native vectors](../src/bus/fetch_pipeline_tests.rs)
+`byte_memory_stalls_order_operand_and_younger_if_samples_on_both_cpus` and
+`byte_memory_resident_and_retained_slots_preserve_decode_stalls_on_both_cpus`
+cover all five instructions, both CPUs, zero/six waits, chunks 1/3/17/10000 and
+passive inspection on/off. The former executes the reported `LDC R15,GBR; NOP`
+setup, then the byte operation, NOP, MOV and SLEEP. Its operand grants/samples
+are 7/9 (six waits: 19/27); younger IF grants/samples are 9/11 for logic and
+12/14 for TAS (six waits: 27/35 and 36/44). Writes immediately before/after
+completion require the actual separately retained operand and instruction bytes.
+AND/OR/XOR/TAS readback, TST/TAS flags, retirement count and SLEEP check once-only
+effects. The inherited implementation instead granted younger IF at 6 before
+operand MA; the unchanged new oracle failed there.
+
+Resident instruction vectors use both entry alignments, synchronous cache-array
+operands for logic and external P1 operands for all five instructions. Completed
+host cache warming releases its synthetic external-bus history before execution.
+With the same setup, byte EX starts at 4 and read MA starts at 5. Synchronous
+logic has second EX 6..7 and final MA 7..8 beside successor EX; MOV EX starts at
+8 and SLEEP at 9. External logic reads 5..7 (six waits: 5..13), moving SLEEP
+to 10 (16). TAS reads 5..7, executes 7..8 and writes 8..10 (six waits:
+5..13, 13..14 and 14..22). At aligned entry, real IF then takes one cache
+slot 10..11 (22..23), followed by NOP, MOV and SLEEP at 11/12/13
+(23/24/25). At entry 4n+2, retained `if` shares final MA, so these three
+instructions start one state earlier. Actual external grants assert operand
+ownership and once-only writes; no latency-only fetch can satisfy the P1 vectors.
+
+The cached BSC turnaround guest's old 11/11/13 FRT expectation used
+`max(4, four external states) + max(1,IW3)` per TAS and omitted the distinct EX
+slots and MA/IF split. Figure 7.76 instead gives EX(1), read MA(2), EX(1),
+write MA(2), then a cache IF(1) for alternating aligned instructions; retained
+`if` shares final MA for the other half. Sixteen TAS span eight seven-state
+and eight six-state iterations, or 104 states. SH7604 Figure 7.47's read/write
+turnaround uses the empty second-EX state: IW3=0/1 adds no state, IW3=2 adds
+one state per pair, yielding 104/104/120 states. The unchanged FRT setup/read
+cost adds eight states: 112/112/128, hence **14/14/16 ticks** at divide-by-eight.
+Changing IW3=2 to 1 yields 14. The independent
+`repeated_tas_grants_derive_the_cached_bsc_guest_period_on_both_cpus` vector
+checks every read/write grant and the 104/104/120-state period, both entry
+alignments and CPUs, and all four chunk sizes. It does not read the guest golden
+or derive expectations from production traces.
+
+Only [the authored TSV](../tests/fixtures/bsc-idle.tsv) and its
+[builder's derivation](../tests/fixtures/build_bsc_idle.py), plus the corresponding
+native/browser IW mutation literals, change. Guest bytes remain unchanged
+(`bsc-idle.hex` SHA-256 `520d1c5c7ecbf193e2026b84b9a02ebde9bae333008a5cb5b02cdd29581abce7`).
+The corrected TSV SHA-256 is
+`5bc1b9f5cd635b58b76248a522a57029bf6e8c6455af033a3ec4e4560f505b49`.
+Readback, data mutation, both-CPU, repeat-boot and substantive assertions remain.
