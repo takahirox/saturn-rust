@@ -1,6 +1,7 @@
 // Original synthetic guest execution through the production Wasm and Canvas.
 // Expected pixels/registers are authored from ST-013 §§2/4 and ST-058 §§2–4.
 import { vdp1Vbe } from "./vdp1-vbe.mjs";
+import { vdp1Hdtv } from "./vdp1-hdtv.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
@@ -38,6 +39,7 @@ async function run(page, bytes, base, count, pixels = false) {
   }, { bytes: [...bytes], base, count, pixels });
 }
 export async function videoTransactions(page) {
+  await vdp1Hdtv(page);
   await vdp1Vbe(page);
   const eraseLatch = await rom("vdp1-erase-latch");
   for (const [a,b,left,right,write] of [[0x801F,0x83E0,0x0402,0x0803,1],

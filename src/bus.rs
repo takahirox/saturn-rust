@@ -12,6 +12,8 @@ use std::fmt;
 #[cfg(test)]
 mod dmac_tests;
 #[cfg(test)]
+mod hdtv_tests;
+#[cfg(test)]
 mod slave_raster_tests;
 mod transactions;
 

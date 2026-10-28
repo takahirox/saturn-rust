@@ -516,3 +516,12 @@ records, omitted-clear/assertion controls, changed operands and cold boots. See
 [the retained input contract](m68k-interrupt-input.md) and
 [Issue #71 validation](validation-issue-71.md). The registry now contains 95
 commands; the browser inventory remains 66 groups.
+
+The original HDTV/31 kHz command and automatic-erase diagnostics are reproduced
+by `python3 tests/fixtures/build_vdp1_hdtv.py --check`, registered in
+`scripts/check-fixtures.sh`. Identical native/browser bytes supply real VDP1
+commands, guest checksums/status/IRQ, all four exclusive sprite outputs and exact
+VBE-clear erase boundaries. The required `videoTransactions` group checks
+production Canvas pixels, changed operands, omitted draw and cold boots. The
+registry now has 96 commands; the browser inventory remains 66 groups. See the
+[mode contract](vdp1-hdtv.md) and [executed validation](validation-issue-73.md).

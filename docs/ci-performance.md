@@ -1,9 +1,10 @@
 # CI validation performance — Issue #61
 
-The timing measurements below are the historical Issue #61 inventory. Issue #63
-adds the ordinary MOV store diagnostic: the current registry has 65 browser
-groups and 91 fixture/media builders, with unchanged required-suite coverage.
-See [Issue #63 validation](validation-issue-63.md) for its executed checks.
+The timing measurements below are the historical Issue #61 inventory. The
+current registry has 66 browser groups and 96 fixture/media builders, retaining
+the required suite coverage and publication gates. See
+[Issue #73 validation](validation-issue-73.md) for the latest executed checks;
+the older counts and measurements below describe their historical checkpoints.
 
 
 This continuation preserves PR #60's lossless bulk transport, independent native

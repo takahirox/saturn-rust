@@ -609,7 +609,7 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 
 | Feature / manual | Current behavior / edges | Native | Browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- | --- |
-| VDP1 VRAM/framebuffers/registers, [VDP1] §§2,4 | 512 KiB VRAM, two draw/display buffers, byte/word/long memory; checked paired register writes; MODR | VIDEO | PRISM | All bus lanes/mirrors/waits; exclusive-monitor readout | Pending |
+| VDP1 VRAM/framebuffers/registers, [VDP1] §§2,4 | 512 KiB VRAM, two draw/display buffers, byte/word/long memory; checked paired register writes; MODR; TVM=4 storage, exclusive sprite readout and automatic blank erase | VIDEO, [HDTV vectors](../src/bus/hdtv_tests.rs) | PRISM, [HDTV guest/Canvas](../scripts/vdp1-hdtv.mjs) | Physical bus lanes/mirrors/waits and monitor synchronization | Pending |
 | Command list/control flow, [VDP1] §6.1 | END, next/assign/call/return and skip variants, one return level, invalid links/prohibited commands, bounded cyclic lists | VIDEO, [local-memory vectors](#scheduled-68k-resetiack-and-vdp1-local-memory-ownership) | PRISM; command-fetch guest | Full guest control-flow corpus and command-dependent fetch costs | Pending |
 | Normal/scaled/distorted sprites, [VDP1] §§6.2,7.4–7.6 | Width/height, flips, two-point and nine anchor scales, ruled quadrilateral scan conversion, HSS/EOS source selection | VIDEO, HSSG | PRISM (normal), HSSG | Physical edge/zoom rounding, preclip direction and draw bandwidth | Pending |
 | Polygons/lines/polylines, [VDP1] §§7.7–7.9 | Solid ruled quads and integer line segments | VIDEO | PRISM (polygons) | Full independent sloped-edge and repeated-pixel corpus | Pending |
@@ -1675,7 +1675,7 @@ ROM word100 is a guest-read TVMD operand, not a host write to emulated state.
 
 | Behavior | Implementation | Native / actual browser Wasm evidence | Remaining required behavior |
 | --- | --- | --- | --- |
-| Standard TV graphic dimensions and source rows | `Vdp2::dimensions/validate/render`, `Raster::configure/display_lines` | [display_modes.rs](../tests/display_modes.rs) and [browser-smoke.mjs](../scripts/browser-smoke.mjs) execute all 60 valid NTSC/PAL, A/B normal/high-resolution, line-count and density combinations; eight authored corner colors plus 511/512 wrap pixels; production Canvas 704×480 | Complete exclusive-monitor multiplexing, per-format bank restrictions and VRAM arbitration |
+| Standard TV graphic dimensions and source rows | `Vdp2::dimensions/validate/render`, `Raster::configure/display_lines` | [display_modes.rs](../tests/display_modes.rs) and [browser-smoke.mjs](../scripts/browser-smoke.mjs) execute all 60 valid NTSC/PAL, A/B normal/high-resolution, line-count and density combinations; eight authored corner colors plus 511/512 wrap pixels; production Canvas 704×480 | Physical monitor timing, per-format bank restrictions and VRAM arbitration |
 | Field/status/counter transitions | `Raster::advance/counters/odd`, `Vdp2::scan_field/read16`, bus raster events | Same guest polls successive VBlank transitions and latches VCNT; literal PAL/ODD/double-density counter parity assertions; `tv_modes_have_independent_blank_field_and_counter_vectors` compares chunk-independent event timestamps | Half-line phase and blanking counter discontinuities; RASTG adds historical scanline pixels; full table/window/reload latching remains |
 | INTBACK collection in every tested mode | `Smpc::vblank_out_after`, bus supplies PLL-converted active interval | Guest compares measured first collection and optimized second collection, both digital and ID15 packets; `optimized_intback_uses_selected_display_interval_and_reset_cancels_it` checks deadline−1/deadline/reset cancellation | Complete continue/break/clock/reset/latch boundary integration still required |
 | PAL fixed domains and reset | `SystemClock::set_pal/advance`, `Bus::advance_fixed_clocks/set_pal/reset_volatile/system_reset` | Rational-phase vectors and `pal_reference_ticks_without_main_edges_still_produce_every_audio_sample`; guest checks physical PAL retention on reset | Full transaction scheduling and reset-cycle evidence remain required |
@@ -3712,3 +3712,30 @@ preserve a new level7 transition during internal computation and bus waits.
 [actual validation](validation-issue-71.md). Existing broad CPU, sound and reset
 rows remain **Pending**. This checkpoint does not establish hardware completion,
 genuine BIOS execution or broad commercial-game compatibility; #17 remains open.
+
+## VDP1 HDTV / 31 kHz and exclusive-monitor sprite composition
+
+Related to #73 and #17. [Primary contract](vdp1-hdtv.md) reconciles VDP1
+§§1.2/4.1/4.4, the chapter4 update timing and ST-210 item3 with VDP2 §2.1.
+TVM=4 now uses the existing 512×256×16-bit storage, accepts scheduled SH-2 word
+writes, and composes a 320/352×240 source into all four exclusive outputs.
+TVM 5–7 remain diagnosed. [VDP1](../src/vdp1.rs) suppresses display erase for
+HDTV; [VDP2 readout](../src/vdp2/rotation.rs) repeats Y, and X only in exclusive
+high resolution, without consulting rotation parameters. The existing retained
+erase engine supplies automatic VBlank erase with VBE=0 and unchanged sampled
+VBE behavior for other modes.
+
+| Evidence | Native | Production browser Wasm | Remaining deviation |
+| --- | --- | --- | --- |
+| TVM4 MMIO/MODR, physical storage, prohibited encodings, automatic/manual changes, PTMR/END/status/draw IRQ, transitions and reset | [Bus vectors](../src/bus/hdtv_tests.rs), both SH-2 adapters, chunks 1/3/17/10000 and inspection on/off | [Original command guest](../scripts/vdp1-hdtv.mjs), same bytes as [Machine tests](../tests/video_transactions.rs), repeated cold boots | Prohibited combinations/windows have no hardware guarantees; full physical VDP1 timing remains pending |
+| RGB/palette sprites, transparency and valid priority overlap in 320/352/640/704×480 | Literal pixels on adjacent source columns/rows, both vertical/horizontal repetitions, source row 239 and rightmost visible columns, changed color/X and omitted draw | Actual Wasm RGBA and production Canvas under `/saturn-rust/`, required `videoTransactions` group | Integer raster/publication phases are conventions; unrelated half-line work excluded |
+| Automatic blank erase, VBE=0, no display erase, partial completion and captured destination | Independently derived 29,340/53,136-word capacities, last completed/first untouched, captured A/pending B, both buffers and blank-end suffix cancellation | Original erase guest computes actual framebuffer/status/IRQ records and retained suffix on both monitor timings | Aggregate cadence remains functional, not measured physical arbitration |
+
+[Reproducible MIT source/bytes](../tests/fixtures/build_vdp1_hdtv.py) are required
+by the 96-command fixture registry. [Validation](validation-issue-73.md) records
+inherited rejection and the failing acceptance-only pixel/erase controls, exact
+hashes and executed checks. The 66-group browser inventory and publication gates
+are retained. CPU/peripheral, multiprocessor/bus/reset, SCU/DSP, remaining
+video/audio, CD/media/HLE, SMPC and comprehensive integration acceptance remain
+mandatory under #17. Genuine BIOS and broad commercial-game compatibility remain
+unverified; this scoped mode increment satisfies no umbrella completion criterion.
