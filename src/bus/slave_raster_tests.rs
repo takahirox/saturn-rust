@@ -371,7 +371,8 @@ fn slave_raster_smpc_restarts_unmask_current_live_vblank() {
     let mut rom = vec![0; BIOS_SIZE];
     rom[..4].copy_from_slice(&0x200u32.to_be_bytes());
     rom[4..8].copy_from_slice(&0x26001000u32.to_be_bytes());
-    for vector in [0x41, 0x43] {
+    // CKCHG also delivers master NMI; retain the slave-raster coverage.
+    for vector in [11, 0x41, 0x43] {
         rom[vector * 4..vector * 4 + 4].copy_from_slice(&0x300u32.to_be_bytes());
     }
     // Reset code explicitly unmasks only after its reset-vector acquisition.

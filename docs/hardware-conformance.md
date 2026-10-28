@@ -1458,11 +1458,11 @@ References: [SMPC][SMPC] §§1.1, 2.3.9–10, 2.4.2 and [VDP2][VDP2] §2.4;
 
 | Contract | Implementation | Independent evidence | Remaining scope |
 | --- | --- | --- | --- |
-| CKCHG320/352 commands | `Smpc::write/advance_clocks` accepts 0F/0E, retains SF until 100 ms of reference time, clears sound enable and reports DOTSEL in OREG10 | SMPC unit vectors at deadline−1/deadline across chunks; CLKG issues both commands and INTBACK, compares 35/75 status | Oscillator settling uses the same deterministic 100 ms policy as SYSRES; no analog oscillator accuracy claimed |
-| Reset domains at clock completion | `Bus::change_system_clock` resets VDP1, VDP2, SCU and sound, clears slave state/control, retains master state/cache/on-chip state, work RAM, CD and backup | Native bus vectors cancel/mask SCU IRQs, retain master FRC/cache/CD media and mask, clear slave/video/sound; both guests start an independent slave computation, verify it stops with retained results, return through retained code/stack and compare written sentinel values | Full CPU/access timing and arbitration remain required |
+| CKCHG320/352 commands | `Smpc::write/advance_clocks` accepts 0F/0E, retains SF until 100 ms of reference time, clears sound enable and reports DOTSEL in OREG10 | SMPC unit vectors at deadline−1/deadline across chunks; CLKG issues both commands and INTBACK, compares 35/75 status | Command completion retains the deterministic 100 ms policy; #77 adds a separate WDT-selected wake interval; no analog oscillator accuracy claimed |
+| Reset domains at clock completion | `Bus::change_system_clock` resets VDP1, VDP2, SCU and sound, clears slave state/control, retains master state/cache and controller configuration, work RAM, CD and backup; firmware SLEEP separately initializes selected on-chip state | Native bus vectors cancel/mask SCU IRQs, retain master FRC/cache/CD media and mask, clear slave/video/sound; both guests start an independent slave computation, verify it stops with retained results, return through retained code/stack and compare written sentinel values | Full CPU/access timing and arbitration remain required |
 | Main/reference clock relationship | `SystemClock` carries fractional phase, converts deadlines, and advances FRT/SCU/VDP/raster at 26.8741/28.6364 MHz while sound/CD/SMPC keep reference time | Rational arithmetic/deadline inequalities over varied chunks; FRT counts 33592/35795 in 10 ms, both produce 441 stereo sample frames; first fast HBlank at reference tick1322 | CPU issue still uses fixed turns; this does not resolve the hardware-time CPU/DMA ownership finding |
 | Normal graphic B display | `Vdp2::dimensions/render` accepts TVMD=8001 and emits 352×224 pixels; Wasm exposes dimensions and Canvas resizes/reset clears correctly | CLKG guest writes a green back screen; native/Wasm compare all pixel bytes, production Canvas checks the last visible pixel | TVG below adds standard TV resolutions/interlace; raster latching and cycle-pattern arbitration remain pending |
-| SYS_CHGSYSCK/GETSYSCK | Original SH-2 service at ROM4D00, installed through RAM320, issues SMPC MMIO and publishes data at RAM324; masks/restores SR and synchronizes reset IMS shadow | Same independent HLE disc and separate synthetic BIOS have matching reset-domain records; changing only MOV #0,R4 to MOV #1,R4 changes public value and DOTSEL | SYS_EXECDMP, backup/CD libraries and full startup/service ABI acceptance remain required |
+| SYS_CHGSYSCK/GETSYSCK | Original SH-2 service at ROM4D00, installed through RAM320, issues SMPC MMIO and publishes data at RAM324; masks/restores SR and restores IMS from its retained shadow | Same independent HLE disc and separate synthetic BIOS have matching reset-domain records; changing only MOV #0,R4 to MOV #1,R4 changes public value and DOTSEL | SYS_EXECDMP, backup/CD libraries and full startup/service ABI acceptance remain required |
 
 **DIGG** is the original [digital timing builder](../tests/fixtures/build_digital_timing.py),
 [synthetic BIOS](../tests/fixtures/digital-timing.hex),
@@ -3766,3 +3766,33 @@ This scoped implementation leaves every other mandatory CPU/peripheral,
 bus/cache/reset/arbitration, SCU/DSP, video/audio/CD timing, media/HLE/SMPC and
 integrated #17 acceptance criterion in force. Genuine BIOS operation and broad
 commercial compatibility remain unverified.
+
+## Clock standby and NMI sequencing (#77)
+
+Related to #77 and #17. The [primary-derived stage table](clock-standby.md)
+records firmware actions, hardware reset/retention, deterministic signal/timing
+choices and unresolved electrical/DRAM fidelity. CKCHG now delivers normal NMI
+input and scheduled exception entry after WDT-selected wake. HLE executes SLEEP,
+RTE and recovery in original instructions, restores IMS from SYS_GETSCUIM,
+re-enables its FRT capture service and issues RESENAB. A raw command does not
+implicitly perform that preparation. DMA remains guest-controlled after NMIF.
+
+The [boundary vectors](../src/bus/clock_tests.rs) cover no master retirement or
+new transactions during standby, both PLL directions and TV standards, pending
+master reads/writes, architectural frames and return, internal/external DMA
+cancellation, RTC/RAM/CD retention and cold-reset cancellation. All WDT choices
+have exact wake vectors. Existing SCU and slave cancellation vectors remain.
+The expanded original [clock fixture](../tests/fixtures/build_clock.py) has
+independent FRT/SCI/DMA/SCU/SR records, guest saved-PC/SR comparisons, NMIF
+inhibition and restart, changed data/clock operands and omitted preparation or
+restart controls. [Native](../tests/clock.rs) and [browser](../scripts/browser-smoke.mjs)
+checks use the same bytes and expectations, repeated boots, NTSC/PAL, actual
+Canvas green output and deterministic stereo PCM. Chunks 1/3/17/10000 and passive
+inspection produce identical lifecycle records. The oracle fails inherited main
+for retained FRT/SCI, absent NMIF, premature DMA and incorrect mask recovery.
+
+[Validation #77](validation-issue-77.md) records actual checks. This increment
+addresses clock preparation, standby, wake and recovery only. Remaining #17
+CPU/peripheral, bus/cache/reset/arbitration, SCU/DSP, video/audio/CD timing,
+media/HLE/SMPC and integrated evidence requirements remain open. Genuine BIOS
+operation and broad commercial-game compatibility remain unverified.

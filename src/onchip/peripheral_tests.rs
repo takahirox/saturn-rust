@@ -854,3 +854,32 @@ fn manual_reset_retains_sdram_row_and_ubc_registers_while_power_reset_initialize
         }
     }
 }
+
+#[test]
+fn all_watchdog_selected_standby_wake_intervals_are_chunk_invariant() {
+    for (selection, divisor) in [2, 64, 128, 256, 512, 1024, 4096, 8192]
+        .into_iter()
+        .enumerate()
+    {
+        for chunk in [1, 3, 17, 10000] {
+            let mut chip = OnChip::default();
+            chip.write16(WDT, 0xA500 | selection as u16).unwrap();
+            chip.write8(SBYCR, 0xE0).unwrap();
+            chip.enter_sleep();
+            chip.advance_clocks(17);
+            chip.signal_nmi();
+            let mut left = 256 * divisor - 1;
+            while left != 0 {
+                let n = left.min(chunk);
+                chip.advance_clocks(n);
+                left -= n;
+            }
+            assert!(!chip.nmi_ready());
+            assert_eq!(chip.clocks_to_event(), 1);
+            chip.advance_clocks(1);
+            assert!(chip.nmi_ready());
+            assert_eq!(chip.read8(WDT + 1), Ok(0));
+            assert_eq!(chip.read32(DMAC + 0x30), Ok(2));
+        }
+    }
+}

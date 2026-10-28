@@ -7,6 +7,9 @@ use std::collections::VecDeque;
 #[path = "bridge_tests.rs"]
 mod bridge_tests;
 #[cfg(test)]
+#[path = "clock_tests.rs"]
+mod clock_tests;
+#[cfg(test)]
 #[path = "cs0_tests.rs"]
 mod cs0_tests;
 #[cfg(test)]

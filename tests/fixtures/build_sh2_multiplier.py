@@ -73,6 +73,9 @@ def build():
         sections[0x4000+i*0x400] = kernel(body)
     rom = bytearray(524288)
     struct.pack_into('>IIII',rom,0,0x200,0x060FF000,0x200,0x060FE000)
+    # The optional CKCHG path receives one completion NMI before the kernels.
+    struct.pack_into('>I',rom,44,0x80)
+    rom[0x80:0x84]=bytes.fromhex('002b0009')
     for address, source in sections.items():
         code=assembler.assemble(source,base=address)
         assert len(code)<(0x3e00 if address==0x200 else 0x400)

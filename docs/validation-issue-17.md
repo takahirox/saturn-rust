@@ -4358,3 +4358,8 @@ slots, retained bytes, redirects, reset domains and original native/Wasm FRT
 kernels. The unchanged stage and guest oracles fail on inherited main.
 All remaining umbrella requirements stay open. Successful focused checks and
 this checkpoint are not evidence of overall hardware completion or compatibility.
+
+Clock-change preparation, standby and NMI recovery now have the focused
+[Issue #77 validation record](validation-issue-77.md) and
+[primary-derived lifecycle contract](clock-standby.md). This does not complete
+#17 or replace its remaining acceptance requirements.

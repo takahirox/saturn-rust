@@ -1555,6 +1555,12 @@ impl Memory for CpuBus<'_> {
     }
     fn enter_sleep(&mut self) {
         self.bus.onchip[self.processor as usize].enter_sleep();
+        if !self.bus.onchip[self.processor as usize].nmi_ready() {
+            // Standby initializes DMA controls. Discard unsampled phases as
+            // well as the controller request, so a later guest restart cannot
+            // replay a pre-standby read or buffered write.
+            self.bus.cancel_dmac_transaction(self.processor);
+        }
     }
     fn instruction_break(&self, pc: u32, after: bool) -> bool {
         self.bus.onchip[self.processor as usize].instruction_break(pc, after)

@@ -40,6 +40,9 @@ def build():
     code=assembler.assemble(s,base=0x200)
     rom=bytearray(524288)
     rom[:8]=struct.pack('>II',0x200,0x060ff000)
+    # Clock completion uses the normal NMI path; keep every TV-mode oracle.
+    struct.pack_into('>I',rom,44,0x80)
+    rom[0x80:0x84]=bytes.fromhex('002b0009')
     rom[0x100:0x102]=struct.pack('>H',0x8000)
     rom[0x200:0x200+len(code)]=code
     lines=['# Original MIT TV mode + INTBACK synthetic BIOS. Adjacent LICENSE.']

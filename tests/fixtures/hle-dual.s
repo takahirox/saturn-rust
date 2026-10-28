@@ -976,6 +976,14 @@ active:
 mov.w @r4,r0
 tst #4,r0
 bf active
+hblank_sync:
+mov.w @r4,r0
+tst #4,r0
+bt hblank_sync
+hblank_end:
+mov.w @r4,r0
+tst #4,r0
+bf hblank_end
 load 0x2600b03c,r1
 mov.l @r1,r0
 ldc r0,sr

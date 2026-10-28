@@ -31,7 +31,7 @@ export async function hleDual(page) {
             stacks.push(m.slave_registers()[15]); m.step();
           }
         }
-        const deadline = short ? 700000 : sysres ? 16000000 : 8000000;
+        const deadline = short ? 700000 : sysres ? 22000000 : 8000000;
         while (m.read_long(0x0600E904) !== 0x600D && Number(m.peripheral_clocks()) < deadline) {
           m.run_steps(10000); m.read_word(0x25F80004); // Passive inspection only.
         }
@@ -54,7 +54,7 @@ export async function hleDual(page) {
       raster(result.raster, 3, 5);
       assert.deepEqual(result.stacks, Array(4).fill(stack || 0x06001000));
       for (const table of result.tables) assert.deepEqual(table, result.tables[0], 'retained vector table');
-      assert.deepEqual(result.exceptions, ['5', '0']);
+      assert.deepEqual(result.exceptions, ['7', '0']);
       assert.equal(result.power, 0); assert.equal(result.done, 0x600D); assert(result.backup);
     }
   }

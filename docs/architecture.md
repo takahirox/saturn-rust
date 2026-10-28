@@ -733,3 +733,12 @@ use one CUE parser and explicit selected companion bytes; no path or network
 loader is added. [Validation](validation-issue-75.md) records the original
 MIT guest and inherited-main negative control. Related to #75 and #17; genuine
 BIOS operation and broad commercial-game compatibility remain unverified.
+
+The [clock standby protocol](clock-standby.md) separates instruction-executed
+firmware preparation/recovery from SMPC reset and NMI delivery. Software standby
+stops CPU issue and cancels unfinished on-chip DMA phases; clock completion
+preserves master CPU journals, resets the documented device domains and delivers
+normal NMI input. WDT-selected main clocks precede exception entry. HLE restores
+the retained SCU mask and capture service and enables hot reset through MMIO;
+it leaves DMA restart to the guest. Explicit timing and RAM-retention conventions
+and the stage-by-stage evidence are recorded in that contract.

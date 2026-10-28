@@ -93,7 +93,7 @@ fn identical_guest_records_across_chunks_inspection_and_repeated_cold_boots() {
                     .chain((0..18).map(|i| m.bus().read32(0x0600E800 + i * 4).unwrap()))
                     .collect();
                 assert_eq!(reference.get_or_insert(records.clone()), &records);
-                assert_eq!(m.cpu_state().exceptions, 5);
+                assert_eq!(m.cpu_state().exceptions, 7);
             }
         }
     }
@@ -226,7 +226,7 @@ fn sysres_reexecutes_boot_and_communication_retaining_power_clear_and_backup() {
     for _ in 0..2 {
         m.reset(Boot::HleDisc(&image)).unwrap();
         assert_eq!(m.bus().read32(0x06000C00), Ok(0));
-        while m.clocks() < 16_000_000 && m.bus().read32(0x0600E904) != Ok(0x600D) {
+        while m.clocks() < 22_000_000 && m.bus().read32(0x0600E904) != Ok(0x600D) {
             m.run_steps(10000).unwrap();
         }
         for (address, expected, name) in golden() {

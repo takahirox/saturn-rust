@@ -34,6 +34,7 @@ impl Default for Watchdog {
 impl Watchdog {
     pub fn enter_standby(&mut self) {
         self.control = (self.control & 7) | 0x18;
+        self.counter = 0;
         self.reset = 0x1F;
         self.observed.set(0);
         self.reset_observed.set(false);

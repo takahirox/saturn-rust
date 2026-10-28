@@ -284,11 +284,14 @@ def grants_source():
     return s
 
 
-def encode(name, source, operands=()):
+def encode(name, source, operands=(), nmi=False):
     code = assembler.assemble(source, base=0x200)
     rom = bytearray(524288)
     rom[:8] = struct.pack('>II', 0x200, 0x060FF000)
     rom[0x200:0x200 + len(code)] = code
+    if nmi:
+        struct.pack_into('>I',rom,44,0x80)
+        rom[0x80:0x84]=bytes.fromhex('002b0009')
     for address, value in operands:
         struct.pack_into('>H', rom, address, value)
     lines = [f'# Original MIT {name} synthetic BIOS. Adjacent LICENSE.']
