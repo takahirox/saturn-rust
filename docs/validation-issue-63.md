@@ -106,6 +106,24 @@ runs exposed old peripheral-store/PR-wrapper and rotation-fetch expectations;
 the final records retain the independent arithmetic and substantive checks.
 Focused test-development failures were corrected before final validation.
 
+## CCR timing review correction
+
+The review regression reproduced an early synchronous CCR effect: with warmed
+`MOV.B R15,@R15` (`0x2FF0`), R15=`0xFFFFFE92` and EX=32, CCR changed from
+`0x01` to `0x82` at clock 33. CCR stores now use the synchronous MA classification
+and apply control/purge at clock 34, following the existing stage table.
+The executing vector in `src/bus/store_tests.rs` covers both CPUs and both
+instruction alignments, repeated pending attempts at clocks 32/33, control and
+cache invalidation at 34, and replay at 35 without repeating the purge or losing
+a later refill. It fails against the pre-correction classifier at clock 33.
+
+Correction validation passed: formatting, locked build, all 1003 native tests
+(93 result groups, zero failures/ignored), native all-target and Wasm Clippy with
+`-D warnings`, all 91 fixture/media reproduction commands, production web build,
+all 65 browser groups (zero required skips), and all 12 browser-runner tests.
+Browser aggregate elapsed 155.866 seconds; rebuilt production Wasm SHA-256:
+`b8c7faf6a43b0e92169101af5b68a913f62eccab436e8aab4362dea3a031d21b`.
+
 ## Remaining scope
 
 Precise overlap evidence is for warmed instruction-cache execution. The existing

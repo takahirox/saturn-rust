@@ -236,6 +236,69 @@ fn store_buffer_backpressure_retains_payload_then_external_read_is_a_publication
 }
 
 #[test]
+fn ccr_store_changes_control_and_purges_only_at_ma_end_and_replays_once() {
+    for p in [Processor::Master, Processor::Slave] {
+        for offset in [0, 2] {
+            let mut m = board(p, offset, CCR - 4, 9);
+            let pc = state(&m, p).pc;
+            let data = HIGH_WRAM + 0x2400;
+            m.bus.write16(pc, 0x2FF0).unwrap(); // MOV.B R15,@R15: 0x92 -> CCR
+            m.bus.for_cpu(p).write8(CCR, 0x11).unwrap();
+            m.bus.for_cpu(p).sh2_discard_prefetch();
+            m.bus.for_cpu(p).fetch16(pc).unwrap();
+            m.bus.for_cpu(p).read32(data).unwrap();
+            m.bus.cpu_delay(p, 0);
+            let mut cpu = if p == Processor::Master {
+                m.cpu
+            } else {
+                m.slave
+            };
+            let mut bus = m.bus;
+            assert_eq!(bus.main_clocks, 32);
+            // E=32; synchronous MA completes at E+2, regardless of IF alignment.
+            // Repeated retries at both earlier edges must leave CCR/tags intact.
+            for clock in [32, 33] {
+                for _ in 0..3 {
+                    assert!(!attempt(&mut bus, &mut cpu, p));
+                    let cache = bus.cache[p as usize].borrow();
+                    assert_eq!(cache.control(), 0x01, "{p:?} {offset} {clock}");
+                    assert!(cache.read_hit(data));
+                    assert!(cache.read_hit(pc));
+                    assert_eq!(cpu.state().instructions, 0);
+                }
+                bus.advance_clocks(1).unwrap();
+            }
+            // Keep the journal until after a successful retry to verify the
+            // synchronous write itself cannot be applied twice during replay.
+            let mut completed = cpu.clone();
+            completed.step(&mut bus.replay_cpu(p)).unwrap();
+            {
+                let cache = bus.cache[p as usize].borrow();
+                assert_eq!(cache.control(), 0x82);
+                assert!(!cache.read_hit(data));
+                assert!(!cache.read_hit(pc));
+            }
+            assert_eq!(completed.state().instructions, 1);
+            assert_eq!(completed.state().r[15], CCR);
+            assert_eq!(completed.state().sr, 0xF0);
+            // A later refill/control change would be lost if replay repeated
+            // the accepted CP write. It must survive at the after-MA edge.
+            bus.for_cpu(p).write8(CCR, 0x01).unwrap();
+            assert!(!bus.cache[p as usize].borrow().read_hit(data));
+            assert!(!bus.cache[p as usize].borrow().read_hit(pc));
+            bus.for_cpu(p).read32(data).unwrap();
+            bus.advance_clocks(1).unwrap();
+            assert_eq!(bus.main_clocks, 35);
+            assert!(attempt(&mut bus, &mut cpu, p));
+            assert_eq!(cpu.state(), completed.state());
+            let cache = bus.cache[p as usize].borrow();
+            assert_eq!(cache.control(), 0x01);
+            assert!(cache.read_hit(data));
+        }
+    }
+}
+
+#[test]
 fn store_address_array_ram_and_purge_effects_wait_for_synchronous_ma_end() {
     for p in [Processor::Master, Processor::Slave] {
         for address in [0x60000400, 0xC0000400, 0x46002400] {

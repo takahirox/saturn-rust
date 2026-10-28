@@ -36,7 +36,7 @@ real IF, splitting the slot with MA first (§7.4). Stores introduce no WB hazard
 
 | Destination, otherwise idle | Write request | Local mutation/acceptance | External publication |
 | --- | --- | --- | --- |
-| Cache RAM, data/address arrays, purge | MA boundary 33; synchronous effect at end | 34 | None |
+| Cache RAM, data/address arrays, purge, CCR control/purge | MA boundary 33; synchronous effect at end | 34 | None |
 | Write-through RAM | 33 | Cache update and buffer acceptance 34 | 33+D |
 | Cache-through RAM | 33 | Buffer acceptance 34 | 33+D |
 | On-chip MMIO, one-clock write | 33 | 34 | Device mutation 34 |
