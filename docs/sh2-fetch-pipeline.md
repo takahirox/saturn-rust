@@ -35,8 +35,10 @@ Primary references:
 | Waited slot | IF/ID/EX availability advances at the longest participating stage's completion (Figure 7.4). |
 | Untaken conditional | Keep sequential IF/ID. |
 | Taken conditional | Discard both following instructions, including a sequential-address target (Figure 7.78). |
-| Delayed branch/call/return | Preserve the slot, discard younger sequential work; target fetch follows branch EX (Figures 7.80/7.82). |
-| RTE | Preserve its slot with restored SR; discard the old stream. Target IF follows completion of both MA stages, including waits; the slot's ID stalls for three slots (Figure 7.92). |
+| Delayed conditional branch | Preserve the slot and fetch/discard its successor; target fetch follows branch EX when taken (Figure 7.80). |
+| Unconditional branch/call/return | Preserve the slot with its ID stalled during branch EX; no second-successor IF. Target fetch follows branch EX (Figure 7.82). |
+| RTE | Preserve its slot with restored SR; no second-successor IF. Target IF follows completion of both MA stages, including waits; the slot's ID stalls for three slots (Figure 7.92). |
+| TRAPA | Fetch/discard both following instructions, including second-successor IF during EX, before clearing the stream for exception entry (Renesas Rev.5 Figure 7.93, printed p.497). Use the same side-effect-free lookahead policy as other discarded IF. |
 | Exception/IRQ/NMI/UBC | Keep existing acceptance/deferral boundaries. Clear younger decoded bytes; fetch observations are not execution breaks (§6.3.2). |
 | SLEEP/wake | Fetch only SLEEP's immediate successor, never its second successor during SLEEP EX (Figure 7.94). Discard the sleeping stream before handler entry. |
 | Reset/SSH reset/PLL transition | Use the established reset domains: reset/SSH reset cancels the affected CPU; PLL retains the master stream and resets the slave. Manual reset retains the accepted physical longword drain, not its instruction. |
@@ -194,8 +196,9 @@ pixel assertions:
   arithmetic, counter, mask, same-line and restart assertions remain.
 - The rotation guest retains H=844, every original pixel, readback and mutation
   assertion. The aligned hot path is four poll instructions followed immediately
-  by store EX/MA. It uses one terminal DT/untaken-BF pair (two clocks), with no
-  prefix/lead NOPs. Bitmap warms both IF lookahead lines before line-15
+  by store EX/MA (with one additional bitmap NOP as explained below). It uses
+  one terminal DT/untaken-BF pair (two clocks), with no prefix NOPs.
+  Bitmap warms both IF lookahead lines before line-15
   synchronization; tile/RBG1 retain their entry phase. Taken DT/BF iterations
   cost four clocks, so removing the historical extra iteration(s) compensates
   the frontend transition without changing the measured/pixel oracle.
@@ -206,3 +209,50 @@ pixel assertions:
 
 Unrelated EX microsequences, full bus/chip conformance and the rest of #17 remain
 open. No BIOS or commercial-game compatibility is established by this increment.
+
+### Unconditional branch and TRAPA regressions
+
+Figures 7.82/7.92 hold the unconditional branch/RTE delay slot without a
+second-successor IF during EX. `Fetch::hold_delay_slot` retains that slot;
+conditional branches still use Figure 7.80's discarded IF. The native
+`unconditional_branch_and_rte_hold_the_slot_without_sequential_if_on_both_cpus`
+vector requires these literal target grants from cold P1 high RAM:
+
+| Entry | Tw | BRA/BSR target grant | RTE target grant, synchronous stack |
+| --- | --- | --- | --- |
+| 4n | 0 | 4 | 6 |
+| 4n+2 | 0 | 5 | 7 |
+| 4n | 6 | 10 | 12 |
+| 4n+2 | 6 | 17 | 19 |
+
+Real IF takes 2+Tw states; successor ID/retained `if` takes one, or another
+real IF at 4n+2. Branch EX takes one slot; RTE adds two synchronous MA slots.
+These sums determine the table independently of production traces. The old
+aligned zero-wait BRA instead requested PC+4 at 3 and its target at 5.
+
+Renesas Rev.5 Figure 7.93 (printed p.497) requires TRAPA to fetch/discard both
+successors. Its EX now uses ordinary `Fetch::advance` before exception entry
+clears the stream. The existing EX stretch calculation counts the shared slot
+once. `trapa_samples_and_discards_second_successor_before_exception_accesses_on_both_cpus`
+requires PC+4 grants at 3/9 and completions at 5/17 for zero/six Tw. The physical
+journal must contain the illegal opcode written immediately before completion;
+neither it nor either successor may execute. Stack accesses follow the completed
+IF exactly once. `trapa_discards_an_unavailable_overrun_without_fetching_or_raising_an_address_error`
+checks a deferred overrun beyond CS3, retaining the guard that excludes MMIO.
+Both CPUs, advancement chunks 1/3/17/10000 and passive inspection are covered.
+
+Removing unsupported IF also exposed two guest phase assumptions. No timing
+golden, result, mutation control or pixel assertion changes:
+
+- Hardware Lab's single EFREG1 read could land between the sample clear and
+  DSP instruction 27's constant store. Its guest now ORs 128 real reads of that
+  constant. At a minimum five main clocks per iteration this spans 640 clocks,
+  exceeding one 44.1-kHz period (26,874,100/44,100 < 610). Read spacing is shorter
+  than the 100 remaining DSP instructions' stable window. OR of the constant
+  and cleared zero retains the original result, including the zero-gain control.
+- The bitmap hot path retains the H=844 sample, then executes CMP, untaken BF,
+  one resident NOP, and store EX/MA. The NOP adds one state (Figure 7.1), shifting
+  the eight-state physical write from 476523–476531 to 476524–476532. Line 16
+  starts at 476532; acquisition precedes equal-edge publication, preserving the
+  old first dot and new following dots. These observed edges validate the stage
+  derivation; the unchanged authored pixel oracle remains the expectation.

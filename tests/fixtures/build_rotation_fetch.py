@@ -57,12 +57,16 @@ def build():
         s += 'nop\n' * ((-pc % 16)//2)
         # P figs7.1/7.4: IF is already ahead when the final untaken BF
         # falls through. Use the aligned four-instruction poll followed
-        # immediately by store EX/MA. DT/taken-BF costs four states; one
+        # by store EX/MA (plus the bitmap state below). DT/taken-BF costs four states; one
         # terminal DT/untaken-BF costs two. With one delay iteration, no
-        # prefix/lead NOPs, and the bitmap lookahead warmed before line sync,
+        # prefix NOPs, and the bitmap lookahead warmed before line sync,
         # the authored H=844 and first-dot-old image oracle is retained.
+        # Bitmap's earlier cold unconditional transfer no longer performs
+        # the unsupported second-successor IF (P fig7.82). One resident EX
+        # state after the H sample keeps its store on the acquisition edge.
+        store_lead = 'nop\n' if mode == 'bitmap' else ''
         s += ('timed_wait:\nmov.w @r1,r0\nmov.w @r4,r0\n'
-              'cmp/hs r3,r0\nbf timed_wait\nmov.w r6,@r5\n'
+              'cmp/hs r3,r0\nbf timed_wait\n' + store_lead + 'mov.w r6,@r5\n'
               'mov r0,r8\nbra record\nnop\n'
               'omit_wait:\nmov.w @r1,r0\nmov.w @r4,r0\n'
               'cmp/hs r3,r0\nbf omit_wait\nmov r0,r8\nrecord:\n'

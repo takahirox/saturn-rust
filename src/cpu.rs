@@ -375,19 +375,14 @@ impl Cpu {
             bus.acknowledge_break();
             return Ok(());
         }
-        let rewrites_pc = matches!(opcode & 0xF000, 0xA000 | 0xB000)
-            || matches!(opcode & 0xFF00, 0x8900 | 0x8B00 | 0x8D00 | 0x8F00 | 0xC300)
+        let unconditional_branch = matches!(opcode & 0xF000, 0xA000 | 0xB000)
             || matches!(opcode & 0xF0FF, 0x0003 | 0x0023 | 0x400B | 0x402B)
             || matches!(opcode, 0x000B | 0x002B);
+        let rewrites_pc = unconditional_branch
+            || matches!(opcode & 0xFF00, 0x8900 | 0x8B00 | 0x8D00 | 0x8F00 | 0xC300);
         if rewrites_pc && self.state.delay_target.is_some() {
             return self.illegal(bus);
         }
-        if opcode & 0xFF00 == 0xC300 {
-            self.enter_exception(bus, opcode as u8, pc.wrapping_add(2))?;
-            self.state.instructions += 1;
-            return Ok(());
-        }
-
         let clock = bus.sh2_clock().unwrap_or(self.multiplier.clock);
         let ex = self.load_pipeline.issue_clock(clock);
         let interlock = self.load_pipeline.issue(opcode);
@@ -405,7 +400,9 @@ impl Cpu {
         let deferred_if = matches!(opcode & 0xF00F, 0x0007 | 0x3005 | 0x300D | 0x000F | 0x400F);
         // P fig7.94: SLEEP permits IF of its immediate successor (already
         // selected above), but no IF of the second successor in its EX slot.
-        if !deferred_if && opcode != 0x001B {
+        if unconditional_branch {
+            self.fetch.hold_delay_slot(bus, ex + u64::from(interlock));
+        } else if !deferred_if && opcode != 0x001B {
             self.fetch
                 .advance(bus, successor, ex + u64::from(interlock))
                 .map_err(access)?;
@@ -418,6 +415,14 @@ impl Cpu {
         });
         self.execution_clock = fetch_start.map(|_| ex + stretch);
         let now = ex + u64::from(interlock) + stretch;
+        if opcode & 0xFF00 == 0xC300 {
+            // Rev.5 fig7.93 fetches/discards both successors. Complete its
+            // arbiter-backed IF above before exception entry clears the stream.
+            self.enter_exception(bus, opcode as u8, pc.wrapping_add(2))?;
+            self.execution_clock = fetch_start.map(|_| ex + stretch);
+            self.state.instructions += 1;
+            return Ok(());
+        }
         let mov_access = timing::mov_load_address(opcode, &self.state)
             .map(|address| (address, false))
             .or_else(|| {

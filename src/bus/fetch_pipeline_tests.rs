@@ -319,6 +319,183 @@ fn fixed_word_cs0_fetch_samples_each_half_at_its_own_grant_and_retains_the_resul
     }
 }
 
+// P figs7.82/92: an unconditional branch stalls its slot's ID, with no
+// second-successor IF in EX. RTE adds two synchronous MA slots before target IF.
+#[test]
+fn unconditional_branch_and_rte_hold_the_slot_without_sequential_if_on_both_cpus() {
+    for p in [Processor::Master, Processor::Slave] {
+        for (offset, waits, branch_if, rte_if, initial) in [
+            (0, 0, 4, 6, vec![(0, 0x26000000, 4)]),
+            (2, 0, 5, 7, vec![(0, 0x26000000, 4), (2, 0x26000004, 4)]),
+            (0, 0xC0, 10, 12, vec![(0, 0x26000000, 4)]),
+            (
+                2,
+                0xC0,
+                17,
+                19,
+                vec![(0, 0x26000000, 4), (8, 0x26000004, 4)],
+            ),
+        ] {
+            for branch in [0xA000, 0xB000, 0x002B] {
+                for chunk in [1, 3, 17, 10000] {
+                    for inspect in [false, true] {
+                        let mut m = board(p, offset, None, waits);
+                        let opcode = if branch == 0x002B {
+                            branch
+                        } else {
+                            branch | ((0x100 - offset - 4) / 2) as u16
+                        };
+                        for (at, op) in
+                            [(offset, opcode), (offset + 2, 0x7601), (offset + 4, 0x7763)]
+                        {
+                            m.bus.write16(HIGH_WRAM + at, op).unwrap();
+                        }
+                        let stack = 0xC0000400;
+                        m.bus.for_cpu(p).write32(stack, 0x26000100).unwrap();
+                        m.bus.for_cpu(p).write32(stack + 4, 1).unwrap();
+                        m.bus.write32(HIGH_WRAM + 0x100, 0xE82A001B).unwrap();
+                        let c = Cpu::start(0x26000000 + offset, stack);
+                        if p == Processor::Master {
+                            m.cpu = c;
+                        } else {
+                            m.slave = c;
+                        }
+                        let target_if = if branch == 0x002B { rte_if } else { branch_if };
+                        let mut expected = initial.clone();
+                        expected.push((target_if, 0x26000100, 4));
+                        let (grants, _) = trace(&mut m, p, target_if + 1, chunk, inspect);
+                        assert_eq!(
+                            grants, expected,
+                            "{p:?} op={opcode:X} offset={offset} waits={waits:X}"
+                        );
+                        trace(&mut m, p, 100, chunk, inspect);
+                        let c = if p == Processor::Master {
+                            m.cpu_state()
+                        } else {
+                            m.slave_state()
+                        };
+                        assert_eq!(&c.r[6..9], &[1, 0, 42]);
+                        assert_eq!(c.instructions, 4);
+                        assert_eq!(c.exceptions, 0);
+                        assert_eq!(c.status, crate::cpu::CpuStatus::Sleeping);
+                        if branch == 0x002B {
+                            assert_eq!((c.r[15], c.sr & 1), (stack + 8, 1));
+                        } else if branch == 0xB000 {
+                            assert_eq!(c.pr, 0x26000004 + offset);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Renesas Rev.5 fig7.93: TRAPA fetches both successors but executes neither.
+// A real PC+4 IF in its EX slot must finish through the arbiter before entry.
+#[test]
+fn trapa_samples_and_discards_second_successor_before_exception_accesses_on_both_cpus() {
+    for p in [Processor::Master, Processor::Slave] {
+        for (waits, successor_if, sample) in [(0, 3, 5), (0xC0, 9, 17)] {
+            for chunk in [1, 3, 17, 10000] {
+                for inspect in [false, true] {
+                    let mut m = board(p, 0, None, waits);
+                    m.bus.write32(HIGH_WRAM, 0xC3207663).unwrap();
+                    m.bus.write32(HIGH_WRAM + 4, 0x77637763).unwrap();
+                    m.bus.write32(HIGH_WRAM + 0x100, 0xE82A001B).unwrap();
+                    let mut rom = vec![0; BIOS_SIZE];
+                    rom[0x80..0x84].copy_from_slice(&0x26000100u32.to_be_bytes());
+                    m.bus.load_bios(&rom).unwrap();
+                    let (grants, retired) = trace(&mut m, p, sample - 1, chunk, inspect);
+                    assert_eq!(grants, [(0, 0x26000000, 4), (successor_if, 0x26000004, 4)]);
+                    assert!(retired.is_empty());
+                    assert_eq!(
+                        m.bus
+                            .transactions
+                            .active
+                            .as_ref()
+                            .map(|a| (a.transfer.address, a.remaining)),
+                        Some((0x26000004, 1))
+                    );
+                    // Change bytes before sampling and after completion. Neither
+                    // sampled nor replacement instructions may retire after entry.
+                    // Sample an illegal opcode, which must not raise an exception.
+                    m.bus.write16(HIGH_WRAM + 4, 0xFFFF).unwrap();
+                    trace(&mut m, p, sample, chunk, inspect);
+                    assert!(m.bus.transactions.active.is_none());
+                    assert!(
+                        m.bus.transactions.journals[p as usize]
+                            .borrow()
+                            .beats
+                            .iter()
+                            .any(|(transfer, value)| transfer.address == 0x26000004
+                                && *value == Ok(0xFFFF7763))
+                    );
+                    m.bus.write16(HIGH_WRAM + 4, 0x7863).unwrap();
+                    let (grants, _) = trace(&mut m, p, 200, chunk, inspect);
+                    assert_eq!(grants[0], (sample, HIGH_WRAM + 0xFFC, 4));
+                    assert!(
+                        !grants
+                            .iter()
+                            .any(|&(_, a, _)| a == 0x26000004 || a == 0x26000008)
+                    );
+                    let c = if p == Processor::Master {
+                        m.cpu_state()
+                    } else {
+                        m.slave_state()
+                    };
+                    assert_eq!(&c.r[6..9], &[0, 0, 42]);
+                    assert_eq!((c.instructions, c.exceptions), (3, 1));
+                    assert_eq!(c.last_exception.as_ref().unwrap().vector, 0x20);
+                    assert_eq!(c.last_exception.as_ref().unwrap().saved_pc, 0x26000002);
+                    assert_eq!(c.status, crate::cpu::CpuStatus::Sleeping);
+                    assert_eq!(m.bus.debug_read32(HIGH_WRAM + 0xFF8).unwrap(), 0x26000002);
+                    assert_eq!(m.bus.debug_read32(HIGH_WRAM + 0xFFC).unwrap(), 0xF0);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn trapa_discards_an_unavailable_overrun_without_fetching_or_raising_an_address_error() {
+    for p in [Processor::Master, Processor::Slave] {
+        for chunk in [1, 3, 17, 10000] {
+            let mut m = board(p, 0, None, 0);
+            // High RAM mirrors throughout CS3; use the end of that full route.
+            let pc = 0x27FFFFFC;
+            m.bus.write32(pc, 0xC3207663).unwrap();
+            m.bus.write32(HIGH_WRAM + 0x100, 0xE82A001B).unwrap();
+            let mut rom = vec![0; BIOS_SIZE];
+            rom[0x80..0x84].copy_from_slice(&0x26000100u32.to_be_bytes());
+            m.bus.load_bios(&rom).unwrap();
+            let c = Cpu::start(pc, HIGH_WRAM + 0x1000);
+            if p == Processor::Master {
+                m.cpu = c;
+            } else {
+                m.slave = c;
+            }
+            // PC+4 falls outside the allowed instruction routes. The same
+            // lookahead guard excludes MMIO; exception entry must discard its
+            // deferred word instead of demanding an architectural fetch.
+            assert!(!m.bus.for_cpu(p).sh2_speculative_fetch(pc + 4));
+            let (grants, _) = trace(&mut m, p, 100, chunk, true);
+            assert_eq!(&grants[..2], &[(0, pc, 4), (3, HIGH_WRAM + 0xFFC, 4)]);
+            assert!(!grants.iter().any(|&(_, a, _)| a == pc + 4));
+            let c = if p == Processor::Master {
+                m.cpu_state()
+            } else {
+                m.slave_state()
+            };
+            assert_eq!((c.instructions, c.exceptions), (3, 1));
+            assert_eq!(c.last_exception.as_ref().unwrap().vector, 0x20);
+            assert_eq!(c.last_exception.as_ref().unwrap().saved_pc, pc + 2);
+            assert_eq!(&c.r[6..9], &[0, 0, 42]);
+            assert!(!c.address_error_pending);
+            assert_eq!(c.status, crate::cpu::CpuStatus::Sleeping);
+        }
+    }
+}
+
 // P fig7.92: resident IF=0, ID=1, EX=2; the two MA slots end
 // at 4/5 for a synchronous stack. External MA takes two states plus Tw,
 // stretching each slot before target IF. Expected edges are literal.

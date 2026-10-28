@@ -100,3 +100,53 @@ required check was skipped. The complete browser run preserved Star Collector,
 Prism Courier and Hardware Lab assertions. This revision addresses the two
 review findings; the remaining #17 scope stays open. No push or merge was
 performed and no human result is claimed.
+
+## Unconditional branch and TRAPA review-fix validation
+
+The two subsequent agent-fixable findings are corrected. Unconditional branches
+and RTE preserve their delay slot without second-successor IF during EX. TRAPA
+uses the real fetch/arbiter path for both discarded successors before exception
+entry clears the stream. The [stage table and grant derivation](sh2-fetch-pipeline.md#unconditional-branch-and-trapa-regressions)
+cite Figures 7.82/7.92 and Renesas Rev.5 Figure 7.93. Conditional branches retain
+their distinct discarded-fetch behavior.
+
+Three new [native vectors](../src/bus/fetch_pipeline_tests.rs) cover both CPUs,
+zero/six software waits, both entry alignments for BRA/BSR/RTE, chunks
+1/3/17/10000 and passive inspection. TRAPA checks real completion sampling,
+discard of a sampled illegal opcode, once-only stacking and no architectural
+fetch/error for an unavailable overrun beyond CS3. Before production changes,
+the first two literal grant oracles failed: BRA requested PC+4 at 3 instead of
+its target at 4; TRAPA issued its first stack access at 3 instead of PC+4 IF.
+All three new vectors pass after the fixes.
+
+The first complete native/browser checks exposed two existing guest phase
+assumptions. Hardware Lab read EFREG1 during its per-sample clear; the bitmap
+fixture published its timed write one main clock before the first acquisition.
+The [documented guest corrections](sh2-fetch-pipeline.md#unconditional-branch-and-trapa-regressions)
+retain every expected result, mutation, H=844 record and pixel assertion.
+Hardware Lab now ORs actual constant-register observations across a full sound
+period, including its zero-coefficient control. The bitmap guest adds one
+resident NOP; an isolated physical-grant probe confirmed publication changes
+from 476531 to the equal acquisition edge 476532. Generated source/media/hashes
+were rebuilt; all eight focused Hardware Lab/rotation tests passed. No production
+sound or video behavior changed.
+
+Final checks on macOS arm64 with Rust 1.99.0 stable:
+
+| Check | Actual result |
+| --- | --- |
+| `cargo fmt --check` | Passed |
+| `cargo build --locked` | Passed |
+| `cargo test --locked` | Passed: 1,039 tests across 95 harnesses, including 676 library tests; zero failed/ignored |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed |
+| `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings` | Passed |
+| `sh scripts/check-fixtures.sh` | Passed: all 94 reproduction commands |
+| `sh scripts/build-web.sh` | Passed: rebuilt production Wasm with bindgen 0.2.129 and regenerated media |
+| Complete `npm run test:browser` | Passed: 30 shared + 36 independent groups, 192.592 s parallel wall time; coverage and artifact reports verified |
+| `node --test scripts/ci-runner.test.mjs` | Passed: all 12 regressions |
+| Unstaged/staged whitespace checks | Passed |
+
+The final full runs preserved Star Collector, Prism Courier and Hardware Lab
+gameplay, graphics, sound, diagnostic computations and restart assertions. No
+final required check was skipped. No push or merge was performed; no human
+result is claimed. Related to #69 and #17; the remaining #17 scope stays open.

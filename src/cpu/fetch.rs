@@ -89,6 +89,15 @@ impl Fetch {
         Ok(())
     }
 
+    pub fn hold_delay_slot(&mut self, bus: &impl Memory, ex: u64) {
+        if let Some(clock) = bus.sh2_clock() {
+            // P figs7.82/92: retain the slot without a younger sequential IF.
+            // Redirect will supply its target successor after EX / both MAs.
+            self.decoded = self.fetched.take();
+            self.decode_ready = (ex + 1).max(clock);
+        }
+    }
+
     pub fn redirect(
         &mut self,
         bus: &mut impl Memory,
