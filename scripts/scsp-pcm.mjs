@@ -1,8 +1,10 @@
 // Original ST-077 §3.2/fig3.2 real-guest waveform mutation. MIT: fixture LICENSE.
+import { scspPipeline } from "./scsp-pipeline.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 export async function scspPcm(page) {
+  await scspPipeline(page);
   const original = Buffer.alloc(524288);
   for (const line of (await readFile("tests/fixtures/scsp-pcm.hex", "utf8")).trim().split(/\r?\n/)) {
     if (line.startsWith("#")) continue;

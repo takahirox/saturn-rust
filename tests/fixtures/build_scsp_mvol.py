@@ -38,8 +38,9 @@ def build():
     write(0x100216,0xff,'ext_left')
     write(0x100236,0xef,'ext_right')
     write(0x100700,0x4000,'coef')
-    # First four steps wait for slot0's PCM reads/input send.
-    program = [[0,0,2,0]]*4 + [[0,0xa800,2,0],[0,0,0x1002,0]]
+    # ST-077 figs4.18/4.30: wait through both level intervals; slot0
+    # publishes at OP7, 24 memory steps after OP1. Preserve the wet oracle.
+    program = [[0,0,2,0]]*24 + [[0,0xa800,2,0],[0,0,0x1002,0]]
     for i, step in enumerate(program):
         for j, word in enumerate(step):
             write(0x100800+i*8+j*2,word)

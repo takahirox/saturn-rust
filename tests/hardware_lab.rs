@@ -115,7 +115,7 @@ fn guest_uploaded_effects_program_changes_exact_stereo_samples_and_computed_resu
         machine.reset_media(media(&iso, &silent_cd)).unwrap();
         run(&mut machine);
         assert_eq!(machine.bus().read32(0x06010028), Ok(result));
-        // EFREG is cleared at each sample start and written by instruction7.
+        // EFREG is cleared at each sample start and written by instruction27.
         // Video upload duration can put this host preview in that clear window.
         // Observe the real port over a bounded interval; do not assume a held
         // sample result before its DSP store (ST-077 fig5.1 / ST-228 Ref2).

@@ -79,6 +79,7 @@ fn mix_sample(mix: &mut [i64; 2], sample: i16, send: u16, pan: u16) {
 
 #[derive(Default, Clone, Copy)]
 struct Voice {
+    generation: u64,
     active: bool,
     phase: i64,
     /// ST-077 fig.4.3 / §4.2 p.89: current output address, in 4K samples
@@ -105,14 +106,13 @@ pub struct Scsp {
     lfo: [synthesis::Lfo; 32],
     dma_remaining: u16,
     dma_word: Option<dma::Word>,
-    pcm_slot: Option<pcm::Slot>,
+    // Retained OP1..OP7 work; frame edges never discard late slots.
+    pcm_pipeline: [Option<pcm::Slot>; 7],
     pcm_word: Option<pcm::Word>,
-    pcm_clocked: bool,
     refresh_pending: u32,
     memory_owner: Option<memory::Owner>,
     external: [i16; 2],
     frame_mix: [i64; 2],
-    frame_active: bool,
     pub generated: u64,
     pub dropped: u64,
     output: VecDeque<i16>,
@@ -137,14 +137,12 @@ impl Default for Scsp {
             lfo: std::array::from_fn(synthesis::Lfo::new),
             dma_remaining: 0,
             dma_word: None,
-            pcm_slot: None,
+            pcm_pipeline: std::array::from_fn(|_| None),
             pcm_word: None,
-            pcm_clocked: false,
             refresh_pending: 0,
             memory_owner: None,
             external: [0; 2],
             frame_mix: [0; 2],
-            frame_active: false,
             generated: 0,
             dropped: 0,
             output: VecDeque::with_capacity(BUFFER_FRAMES * 2),
@@ -253,6 +251,7 @@ impl Scsp {
                         if self.slots[i][0] & 0x800 != 0 {
                             if !self.voices[i].active || self.voices[i].envelope.releasing() {
                                 self.voices[i] = Voice {
+                                    generation: self.voices[i].generation.wrapping_add(1),
                                     active: true,
                                     phase: 0,
                                     call_address: 0,
@@ -261,6 +260,7 @@ impl Scsp {
                                 };
                             }
                         } else {
+                            self.voices[i].generation = self.voices[i].generation.wrapping_add(1);
                             self.voices[i]
                                 .envelope
                                 .release(self.slots[i][4] & 0x20 != 0);
@@ -390,32 +390,21 @@ impl Scsp {
     /// Frame edges reset output/effects; PCM operands are captured only by
     /// their individually granted DRAM reads (ST-077 §3.2/fig.3.2).
     fn begin_sample(&mut self) {
-        self.frame_active = !self.reset_held;
         self.frame_mix = [0; 2];
-        self.pcm_clocked = self.frame_active && self.voices.iter().any(|v| v.active);
-        if !self.frame_active {
+        if self.reset_held {
             return;
-        }
-        // An idle generator still clocks its noise/LFO/stack. It need not
-        // wake the scheduler for each empty slot. KEYON becomes visible at
-        // the next frame when the whole generator was idle at this edge.
-        if !self.pcm_clocked {
-            for i in 0..32 {
-                self.begin_slot(i);
-            }
         }
         self.dsp.begin_sample();
     }
     fn dsp_step(&mut self, step: usize, ram: &mut [u8]) -> Result<(), BusError> {
-        if self.frame_active {
+        if !self.reset_held {
             self.dsp
                 .step(step, ram, self.ram_config(), self.common[1], self.external)?;
         }
         Ok(())
     }
     fn end_sample(&mut self) {
-        self.stack.end_frame();
-        if !self.frame_active {
+        if self.reset_held {
             self.push_output([0; 2]);
             return;
         }
@@ -467,7 +456,6 @@ impl Scsp {
                 / 32768;
         }
         self.push_output(mix);
-        self.frame_active = false;
     }
     fn push_output(&mut self, mix: [i64; 2]) {
         if self.output.len() >= BUFFER_FRAMES * 2 {
@@ -671,18 +659,24 @@ impl Sound {
         // MPRO write immediately exposes the next slot at the current phase.
         if !self.scsp.dsp.programmed()
             && !self.scsp.dma_active()
-            && !self.scsp.pcm_clocked
+            && !self.scsp.voices.iter().any(|v| v.active)
+            && !self
+                .scsp
+                .pcm_pipeline
+                .iter()
+                .flatten()
+                .any(|s| s.fetch || s.active)
             && self.scsp.refresh_pending == 0
             && !self.memory.pending()
             && self.scsp.memory_owner.is_none()
         {
-            // Frame edges, two refresh requests and output remain clocked
-            // even when no effects program or internal DMA is running.
+            // Idle OP1/OP2/LFO/stack edges remain distributed. A mid-sample
+            // KEYON joins its next slot without replaying or batching work.
             let frame = (tick - 1) & !127;
             let phase = tick - frame;
             tick = frame
-                + [1, 125, 127, 128]
-                    .into_iter()
+                + (1..=128)
+                    .filter(|t| (t - 1) % 4 == 0 || *t >= 127)
                     .find(|&t| t >= phase)
                     .unwrap();
         }

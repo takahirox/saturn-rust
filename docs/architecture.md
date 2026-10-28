@@ -622,8 +622,18 @@ The SH-2 uploads sound programs and samples into shared 512 KiB sound RAM and
 starts the 68k with SMPC SNDON. SCSP implements 32 direct PCM slots, signed 8/16-bit
 samples, key/loop/pitch/source-bit controls, direct pan/mix, three timers,
 interrupt routing, bounded MIDI FIFOs and a word-at-a-time DMA subset. PCM envelope stages, FM stack modulation, tonal/noise LFO and an executing
-effects DSP also produce real samples. Published numeric envelope-rate and
-converter/pipeline boundary conformance and DMA arbitration remain required.
+effects DSP also produce real samples. Numeric envelope-rate calibration, physical
+converter/interface phases and full DMA arbitration remain required. The
+[seven-stage synthesis pipeline](scsp-synthesis-pipeline.md) retains PG, FM/address,
+two waveform operands and post-interpolation work across sample boundaries.
+DIRECT and DSP MIXS receive a result only after both level intervals; stack
+publication uses the same completed value with the documented five-interval
+OP2-to-OP7 relationship. Idle PG/LFO/stack edges remain distributed, and KEYON
+joins the next eligible slot within a sample. SCSP RESET cancels retained work;
+SNDOFF preserves the running synthesizer. Absolute MPRO/slot phase, OP1 register
+capture and equal-edge consumer ordering are explicit emulator conventions.
+[Native and production Wasm evidence](validation-issue-67.md) includes an original
+68k-uploaded DSP probing early/late input availability and late-slot wrap.
 The original dual-architecture fixture computes its waveform on the 68k,
 programs SCSP, handles a timer IRQ and returns through RTE. Changing its arithmetic
 changes both shared RAM and exact output samples natively and through Wasm.

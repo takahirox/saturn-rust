@@ -52,7 +52,7 @@ impl Scsp {
             self.memory_owner = Some(memory::Owner::Pcm);
             return Ok(true);
         }
-        if self.frame_active && self.dsp.memory_access(step) {
+        if !self.reset_held && self.dsp.memory_access(step) {
             self.memory_owner = Some(memory::Owner::Dsp);
             return Ok(true);
         }
