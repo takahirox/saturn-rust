@@ -274,9 +274,16 @@ reports written mode settings. At equal raster/data-completion edges the existin
 scheduler captures before the external register write completes; this is an
 emulator convention, since ST-013 does not specify an electrical phase. See the
 [erase-capture validation](validation-issue-25.md) for independent evidence.
-Normal erase follows each displayed scanline; VBlank erase executes word writes
-with the manual's 200-clock per-raster overhead, stops at the field boundary, and
-retains unfinished pixels. Manual drawing retains its cursor across a buffer change;
+Normal erase follows each displayed scanline. Written VBE is sampled once at
+the first HBlank-in after VBlank-in; CPU register writes never launch blank
+erase. TVM remains immediate and MODR reports written settings. The retained
+job publishes individual words after sampling, preserves the manual's aggregate
+`(raster clocks - 200) * blank rasters` capacity, and stops before a field-end
+buffer change. A uniform integer cadence reconciles delayed sampling with that
+capacity; it is an explicit functional phase convention, not physical bus timing.
+Rotation retains automatic blank erase with VBE clear. See the
+[event table and capacity reconciliation](vdp1-vbe-timing.md) and
+[Issue #65 validation](validation-issue-65.md). Manual drawing retains its cursor across a buffer change;
 BEF/LOPR capture unfinished work. Full CPU/VRAM arbitration, subpixel edge rounding
 and command/effect-specific fetch costs remain incomplete. Standard-TV normal,
 high-resolution and rotated 16/8-bit framebuffer readout are composed by VDP2.

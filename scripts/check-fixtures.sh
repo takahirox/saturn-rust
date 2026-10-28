@@ -50,6 +50,7 @@ python3 tests/fixtures/build_rotation_fetch.py --check
 python3 tests/fixtures/build_rotation_high_resolution.py --check
 python3 tests/fixtures/build_sprite_interlace.py --check
 python3 tests/fixtures/build_vdp1_erase_latch.py --check
+python3 tests/fixtures/build_vdp1_vbe.py --check
 python3 tests/fixtures/build_video_transactions.py --check
 python3 tests/fixtures/build_vdp2_fetch.py --check
 python3 tests/fixtures/build_digital_timing.py --check

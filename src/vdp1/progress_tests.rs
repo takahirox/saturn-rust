@@ -120,7 +120,7 @@ fn vblank_erase_obeys_raster_budget_and_stops_at_field_end_in_both_pixel_depths(
                 bus.vdp1.display_pixel(0, 0),
                 if mode == 8 { 65535 } else { 255 }
             );
-            advance(&mut bus, 200, chunk);
+            advance(&mut bus, 1281, chunk);
             assert_eq!(
                 bus.vdp1.display_pixel(0, 0),
                 if mode == 8 { 65535 } else { 255 }
@@ -134,7 +134,7 @@ fn vblank_erase_obeys_raster_budget_and_stops_at_field_end_in_both_pixel_depths(
                 bus.vdp1.display_pixel(1, 0),
                 if mode == 8 { 65535 } else { 0x34 }
             );
-            advance(&mut bus, 39 * 1708 - 201, chunk);
+            advance(&mut bus, 39 * 1708 - 1282, chunk);
             let count = 58812 * if mode == 8 { 1 } else { 2 };
             let x = (count - 1) % 512;
             let y = (count - 1) / 512;
@@ -217,7 +217,7 @@ fn reset_cancels_partial_drawing_and_erase_without_later_writes_or_end_irq() {
         };
         bus.write8(0x00180001, 0xA5).unwrap();
         if erase {
-            advance(&mut bus, 224 * 1708 + 205, 1708);
+            advance(&mut bus, 224 * 1708 + 1285, 1708);
         } else {
             line(&mut bus, 128);
             advance(&mut bus, 70, 7);

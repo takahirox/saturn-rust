@@ -404,7 +404,7 @@ fn both_sh2_adapters_capture_only_physically_completed_erase_writes_at_field_cha
                         assert!(bus.transactions.active.is_none());
                         advance_inspected(
                             &mut bus,
-                            FIELD + 224 * 1708 + 300 - completion,
+                            FIELD + 224 * 1708 + 1580 - completion,
                             chunk,
                             inspect,
                         );
@@ -457,8 +457,10 @@ fn reset_cancels_pending_erase_register_transactions_and_unfinished_captured_era
             bus.write16(REGISTERS + 2, 3).unwrap();
             bus.vdp1.vblank_out();
             erase_registers(&mut bus, [0x5678, 0x0402, 0x0803]); // pending B
-            bus.vdp1.vblank_in(1708);
-            advance(&mut bus, 201, chunk); // unfinished accepted A job
+            bus.vdp1.vblank_in(1708, 39);
+            bus.vdp1.advance(1280).unwrap();
+            bus.vdp1.hblank_in();
+            advance(&mut bus, 2, chunk); // unfinished accepted A job
             assert_eq!(bus.vdp1.display_pixel(0, 0), 0x1234);
             let address = (REGISTERS + 6) | 0x20000000;
             assert_eq!(
@@ -473,7 +475,9 @@ fn reset_cancels_pending_erase_register_transactions_and_unfinished_captured_era
             bus.vdp1.draw_buffer_mut().fill(0xEE);
             bus.write16(REGISTERS + 2, 3).unwrap();
             bus.vdp1.vblank_out();
-            bus.vdp1.vblank_in(1708);
+            bus.vdp1.vblank_in(1708, 39);
+            bus.vdp1.advance(1280).unwrap();
+            bus.vdp1.hblank_in();
             advance(&mut bus, 1708, chunk);
             assert_eq!(bus.vdp1.display_pixel(7, 1), 0xEEEE);
             assert_eq!(bus.vdp1.display_pixel(8, 1), 0x2468);

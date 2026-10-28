@@ -25,6 +25,15 @@ fn patch(rom: &mut [u8], before: u32, after: u32) {
     rom[positions[0]..positions[0] + 4].copy_from_slice(&after.to_be_bytes());
 }
 fn run(m: &mut Machine, rom: &[u8], base: u32, count: u32) -> Vec<u32> {
+    run_with_exceptions(m, rom, base, count, 0)
+}
+fn run_with_exceptions(
+    m: &mut Machine,
+    rom: &[u8],
+    base: u32,
+    count: u32,
+    exceptions: u64,
+) -> Vec<u32> {
     m.reset(Boot::ExternalBios(rom)).unwrap();
     for _ in 0..100 {
         m.run_steps(5000).unwrap();
@@ -41,7 +50,7 @@ fn run(m: &mut Machine, rom: &[u8], base: u32, count: u32) -> Vec<u32> {
         "PC={:X}, records={records:X?}",
         m.cpu_state().pc
     );
-    assert_eq!(m.cpu_state().exceptions, 0);
+    assert_eq!(m.cpu_state().exceptions, exceptions);
     records
 }
 #[test]
@@ -435,6 +444,109 @@ fn guest_erase_register_capture_survives_pending_writes_and_cold_boots() {
                         &f[(y * 320 + x) * 4..(y * 320 + x) * 4 + 4],
                         &rgb,
                         "x{x}, y{y}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn guest_raster_interrupts_enable_disable_vbe_and_checksum_both_physical_buffers() {
+    let original = load(include_str!("fixtures/vdp1-vbe.hex"));
+    let mut m = Machine::new();
+    for (a, b, left, right, enable) in [
+        (0x801Fu16, 0x83E0u16, 0x0402u16, 0x0803u16, 8u16),
+        (0xFC00, 0xFFFF, 0x0202, 0x0603, 8),
+        (0x801F, 0x83E0, 0x0402, 0x0803, 0),
+    ] {
+        let mut image = original.clone();
+        for (i, v) in [a, b, left, right, enable].into_iter().enumerate() {
+            image[0x100 + i * 2..0x102 + i * 2].copy_from_slice(&v.to_be_bytes());
+        }
+        let empty = [
+            240 * 0x8000,
+            0x8000,
+            0x8000,
+            0x8000,
+            0x8000,
+            0x8000,
+            0x8000,
+            0x8000,
+            0x8000,
+        ];
+        let first = if enable == 0 {
+            empty
+        } else {
+            [
+                208 * 0x8000 + 32 * u32::from(a),
+                0x8000,
+                u32::from(a),
+                u32::from(a),
+                0x8000,
+                u32::from(a),
+                0x8000,
+                0x8000,
+                0x8000,
+            ]
+        };
+        let second = if enable == 0 {
+            empty
+        } else if left == 0x0402 {
+            [
+                208 * 0x8000 + 32 * u32::from(b),
+                0x8000,
+                0x8000,
+                u32::from(b),
+                u32::from(b),
+                u32::from(b),
+                u32::from(b),
+                0x8000,
+                0x8000,
+            ]
+        } else {
+            [
+                208 * 0x8000 + 32 * u32::from(b),
+                0x8000,
+                0x8000,
+                u32::from(b),
+                0x8000,
+                u32::from(b),
+                0x8000,
+                0x8000,
+                0x8000,
+            ]
+        };
+        let mut expected = first.to_vec();
+        expected.extend(second);
+        expected.extend(first);
+        expected.extend([0x1010, 0, 0, 0, 5, 5]);
+        for _ in 0..2 {
+            let records = run_with_exceptions(&mut m, &image, 0x0600E800, 35, 10);
+            assert_eq!(&records[..33], expected);
+            assert!(
+                (8200..8450).contains(&records[33]),
+                "FRT blank interval {}",
+                records[33]
+            );
+            m.advance_frame().unwrap();
+            let f = m.framebuffer().unwrap();
+            for y in 0..6 {
+                for x in 0..40 {
+                    let inside = enable != 0
+                        && (if left == 0x0402 { 16..32 } else { 8..24 }).contains(&x)
+                        && (2..4).contains(&y);
+                    let rgba = if !inside {
+                        [0, 0, 0, 255]
+                    } else if b == 0x83E0 {
+                        [0, 255, 0, 255]
+                    } else {
+                        [255; 4]
+                    };
+                    assert_eq!(
+                        &f[(y * 320 + x) * 4..(y * 320 + x) * 4 + 4],
+                        &rgba,
+                        "x{x} y{y}"
                     );
                 }
             }

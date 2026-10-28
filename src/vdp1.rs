@@ -156,8 +156,10 @@ struct Erasing {
     area: EraseArea,
     x: usize,
     y: usize,
-    overhead: u32,
-    budget: u32,
+    period: u32,
+    capacity: u32,
+    phase: u32,
+    words_left: u32,
 }
 
 pub struct Vdp1 {
@@ -182,8 +184,10 @@ pub struct Vdp1 {
     command_read: usize,
     stop_remaining: Option<u32>,
     vblank: bool,
-    blank_erase_started: bool,
-    blank_line_clocks: u32,
+    vbe_sample_pending: bool,
+    vbe_effective: bool,
+    blank_capacity: u32,
+    blank_remaining: u32,
     erasing: Option<Erasing>,
     display_erase: Option<EraseArea>,
     drawing: Option<Drawing>,
@@ -216,8 +220,10 @@ impl Default for Vdp1 {
             command_read: 0,
             stop_remaining: None,
             vblank: false,
-            blank_erase_started: false,
-            blank_line_clocks: 1708,
+            vbe_sample_pending: false,
+            vbe_effective: false,
+            blank_capacity: 0,
+            blank_remaining: 0,
             erasing: None,
             display_erase: None,
             drawing: None,
@@ -312,10 +318,6 @@ impl Vdp1 {
             }
             _ => unreachable!(),
         }
-        // Software is allowed to enable VBE just after VBlank-IN (§4.2).
-        if self.vblank && self.tvmr & 8 != 0 && !self.blank_erase_started {
-            self.start_blank_erase();
-        }
         Ok(())
     }
     fn start(&mut self, capture_end: bool) {
@@ -338,7 +340,7 @@ impl Vdp1 {
     pub fn vblank_out(&mut self) {
         // §4.2: erase is interrupted at VBlank-OUT, even if unfinished.
         self.vblank = false;
-        self.blank_erase_started = false;
+        self.vbe_sample_pending = false;
         self.erasing = None;
         let change = self.fbcr & 2 == 0 || self.fb_request && self.fbcr & 1 != 0;
         if change {
@@ -401,53 +403,64 @@ impl Vdp1 {
             }
         }
     }
-    pub(crate) fn vblank_in(&mut self, line_clocks: u32) {
+    /// Ch.4 p.35/§4.1: written VBE is sampled after one line's display,
+    /// not by the CPU write or the VBlank-in edge. See docs/vdp1-vbe-timing.md.
+    pub(crate) fn vblank_in(&mut self, line_clocks: u32, blank_lines: u32) {
         self.vblank = true;
-        self.blank_erase_started = false;
+        self.vbe_sample_pending = true;
         self.display_erase = None;
-        self.blank_line_clocks = line_clocks;
-        if self.tvmr & 0xA != 0 {
+        self.erasing = None;
+        self.blank_capacity = line_clocks.saturating_sub(200) * blank_lines;
+        self.blank_remaining = line_clocks * blank_lines;
+    }
+    pub(crate) fn hblank_in(&mut self) {
+        if !self.vbe_sample_pending {
+            return;
+        }
+        self.vbe_sample_pending = false;
+        self.vbe_effective = self.tvmr & 8 != 0;
+        // §4.4: rotation/HDTV must erase in blank even without VBE.
+        if self.vbe_effective || self.tvmr & 6 != 0 {
             self.start_blank_erase();
         }
     }
     fn start_blank_erase(&mut self) {
-        self.blank_erase_started = true;
         let area = self.erase_area(self.draw ^ 1);
-        if area.left < area.right && area.top < area.bottom {
+        if area.left < area.right
+            && area.top < area.bottom
+            && self.blank_remaining != 0
+            && self.blank_capacity != 0
+        {
+            // Tables4.4–4.5 specify aggregate capacity, not idle-cycle placement.
+            // Uniform word opportunities after sampling preserve that capacity
+            // without claiming a measured physical cadence or a catch-up burst.
             self.erasing = Some(Erasing {
                 area,
                 x: area.left,
                 y: area.top,
-                overhead: 200,
-                budget: self.blank_line_clocks.saturating_sub(200),
+                period: self.blank_remaining,
+                capacity: self.blank_capacity,
+                phase: 0,
+                words_left: self.blank_capacity,
             });
-        }
-    }
-    pub(crate) fn blank_line_start(&mut self) {
-        if let Some(erase) = &mut self.erasing {
-            erase.overhead = 200;
-            erase.budget = self.blank_line_clocks.saturating_sub(200);
         }
     }
     fn erase_deadline(&self) -> u32 {
         self.erasing.as_ref().map_or(u32::MAX, |erase| {
-            if erase.overhead != 0 {
-                erase.overhead
-            } else if erase.budget != 0 {
-                1
-            } else {
-                u32::MAX
-            }
+            (erase.period - erase.phase).div_ceil(erase.capacity)
         })
     }
     fn advance_erase(&mut self, clocks: u32) {
+        if self.vblank {
+            self.blank_remaining = self.blank_remaining.saturating_sub(clocks);
+        }
         let Some(mut erase) = self.erasing.take() else {
             return;
         };
-        if erase.overhead != 0 {
-            erase.overhead -= clocks;
-        } else if erase.budget != 0 && clocks != 0 {
-            // §4.4: a 16-bit write erases one RGB pixel or two 8-bit pixels.
+        erase.phase += clocks * erase.capacity;
+        while erase.phase >= erase.period {
+            erase.phase -= erase.period;
+            // §4.4: retain a complete word (one RGB or two indexed pixels).
             for _ in 0..2 / erase.area.bytes {
                 self.erase_dot(erase.area, erase.x, erase.y);
                 erase.x += 1;
@@ -459,7 +472,10 @@ impl Vdp1 {
                     }
                 }
             }
-            erase.budget -= 1;
+            erase.words_left -= 1;
+            if erase.words_left == 0 {
+                return;
+            }
         }
         self.erasing = Some(erase);
     }
@@ -1042,3 +1058,6 @@ mod progress_tests;
 mod sampling_tests;
 #[cfg(test)]
 mod table_tests;
+
+#[cfg(test)]
+mod vbe_tests;

@@ -50,8 +50,10 @@ fn vblank_erase_uses_captured_a_until_the_next_change_captures_b() {
             reg(&mut v, 2, 2);
             v.vblank_out(); // manual erase/held fields cannot capture B
             v.vblank_out();
-            v.vblank_in(1708);
-            v.advance(201).unwrap();
+            v.vblank_in(1708, 39);
+            v.advance(1280).unwrap();
+            v.hblank_in();
+            v.advance(2).unwrap();
             settings(&mut v, C); // cannot change accepted color/bounds/buffer
             reg(&mut v, 2, change); // request is deferred until VBlank-OUT
             v.advance(100).unwrap();
@@ -67,7 +69,9 @@ fn vblank_erase_uses_captured_a_until_the_next_change_captures_b() {
             assert_eq!(v.draw, 0);
             v.buffers[1].fill(0xEE);
             settings(&mut v, C);
-            v.vblank_in(1708);
+            v.vblank_in(1708, 39);
+            v.advance(1280).unwrap();
+            v.hblank_in();
             v.advance(300).unwrap();
             rectangle(&v.buffers[1], stride, [0x56, 0x78], [32, 64, 2, 4]);
             rectangle(&v.buffers[0], stride, [0x12, 0x34], [16, 48, 1, 3]);
@@ -123,8 +127,10 @@ fn automatic_display_erase_captures_at_change_and_follows_scanlines() {
 #[test]
 fn vblank_out_cancels_partial_a_before_capturing_b_without_late_writes() {
     let mut v = fixture(8, 3);
-    v.vblank_in(1708);
-    v.advance(201).unwrap(); // overhead plus exactly one sixteen-bit pixel
+    v.vblank_in(1708, 39);
+    v.advance(1280).unwrap();
+    v.hblank_in();
+    v.advance(2).unwrap(); // first opportunity: exactly one sixteen-bit pixel
     settings(&mut v, B);
     reg(&mut v, 2, 3);
     v.vblank_out(); // cancel A before switching; capture B
@@ -134,7 +140,9 @@ fn vblank_out_cancels_partial_a_before_capturing_b_without_late_writes() {
     assert_eq!(&v.buffers[0][2064..2068], &[0xEE; 4]);
     assert!(v.buffers[1].iter().all(|&b| b == 0xDD));
     v.buffers[1].fill(0xEE);
-    v.vblank_in(1708);
+    v.vblank_in(1708, 39);
+    v.advance(1280).unwrap();
+    v.hblank_in();
     v.advance(300).unwrap();
     rectangle(&v.buffers[1], 1024, [0x56, 0x78], [32, 64, 2, 4]);
     assert_eq!(&v.buffers[0][1040..1044], &[0x12, 0x34, 0xEE, 0xEE]);
@@ -149,7 +157,9 @@ fn modr_reports_written_settings_while_drawing_and_erase_latches_wait_for_change
     // §4.9: readback is the written mode, even before internal capture.
     assert_eq!(v.read16(REGISTERS + 0x16), Ok(0x11F8));
     assert_eq!(v.draw_control, 0);
-    v.vblank_in(1708);
+    v.vblank_in(1708, 39);
+    v.advance(1280).unwrap();
+    v.hblank_in();
     v.advance(300).unwrap();
     rectangle(&v.buffers[0], 1024, [0x12, 0x34], [16, 48, 1, 3]);
     v.vblank_out();

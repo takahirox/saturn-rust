@@ -146,6 +146,11 @@ out_publish:
 mov.w @r1,r0
 tst #8,r0
 bf out_publish
+load 0x25f80004,r1
+wait_enable:
+mov.w @r1,r0
+tst #8,r0
+bt wait_enable
 load 0x25d00000,r1
 load 0x8,r0
 mov.w r0,@r1

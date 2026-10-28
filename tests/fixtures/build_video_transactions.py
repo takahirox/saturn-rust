@@ -45,6 +45,8 @@ def draw_source():
     for at, value in [(6, 0x1234), (8, 0), (10, 64 << 9 | 255)]:
         s += put16(0x25D00000 + at, value)
     s += put16(0x25D00002, 3) + blank('publish')
+    # §4.1: VBE changes immediately after VBlank-IN, before HBlank-IN.
+    s += 'load 0x25f80004,r1\nwait_enable:\nmov.w @r1,r0\ntst #8,r0\nbt wait_enable\n'
     for at, value in [(0, 8), (2, 3)]:
         s += put16(0x25D00000 + at, value)
     s += blank('erase')

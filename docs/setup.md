@@ -489,3 +489,13 @@ Reproduce its source/bytes/hashes with
 `python3 tests/fixtures/build_sh2_store.py --check`; see the
 [store stage contract](sh2-store-pipeline.md) and
 [Issue #63 validation](validation-issue-63.md).
+
+
+The original sampled-VBE fixture is reproduced by
+`python3 tests/fixtures/build_vdp1_vbe.py --check` (registered in
+`scripts/check-fixtures.sh`). The existing required `videoTransactions` browser
+group executes the same bytes as native Machine, including actual SCU raster
+interrupts, FRT measurements, guest framebuffer checksums, changed operands,
+omitted enable, repeated boots and production Canvas output. See the
+[timing reconciliation](vdp1-vbe-timing.md) and
+[Issue #65 validation](validation-issue-65.md).

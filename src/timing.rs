@@ -97,6 +97,9 @@ impl Raster {
         let base = if self.pal { 313 } else { 263 };
         base - u16::from(self.mode & 0xC0 != 0 && !self.odd())
     }
+    pub(crate) fn blank_lines(&self) -> u16 {
+        self.field_lines().saturating_sub(self.display_lines())
+    }
     fn hblank_clock(&self) -> u32 {
         if self.mode & 4 != 0 {
             if self.mode & 1 == 0 { 640 } else { 704 }
