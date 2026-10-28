@@ -102,7 +102,7 @@ pub(super) struct LoadPipeline {
     destination: Option<u8>,
     /// The previous MOV's real IF already split its MA/EX slot.
     fetch_split: bool,
-    /// Shared by MOV and multiplier memory phases. A waited successor fetch
+    /// Shared by MOV loads/stores and multiplier memory phases. A waited successor fetch
     /// consumes this final MA/EX clock; replay journals the observed clock.
     next_ex: Option<u64>,
     pub issue_overlap: u32,
@@ -302,20 +302,44 @@ pub(super) fn mov_load_address(op: u16, s: &super::CpuState) -> Option<u32> {
     }
 }
 
-pub(super) struct LoadAccess {
+/// Ordinary stores share the MA/IF slot rules, but introduce no WB hazard.
+/// Address and data remain in the instruction's retained CPU snapshot during
+/// replay. See docs/sh2-store-pipeline.md for acceptance/publication deadlines.
+pub(super) fn mov_store_address(op: u16, s: &super::CpuState) -> Option<u32> {
+    let n = (op >> 8 & 15) as usize;
+    let m = (op >> 4 & 15) as usize;
+    match op >> 12 {
+        0 if matches!(op & 15, 4..=6) => Some(s.r[n].wrapping_add(s.r[0])),
+        1 => Some(s.r[n].wrapping_add(u32::from(op & 15) * 4)),
+        2 if matches!(op & 15, 0..=2 | 4..=6) => {
+            Some(s.r[n].wrapping_sub(if op & 4 != 0 { 1 << (op & 3) } else { 0 }))
+        }
+        8 if matches!(op >> 8 & 15, 0 | 1) => {
+            Some(s.r[m].wrapping_add(u32::from(op & 15) * (1 << (op >> 8 & 1))))
+        }
+        0xC if matches!(op >> 8 & 15, 0..=2) => Some(
+            s.gbr
+                .wrapping_add(u32::from(op as u8) * (1 << (op >> 8 & 3))),
+        ),
+        _ => None,
+    }
+}
+
+pub(super) struct MovAccess {
     end: u64,
     split: bool,
 }
-impl LoadAccess {
+impl MovAccess {
     pub fn start(
         bus: &mut impl crate::bus::Memory,
         address: u32,
+        write: bool,
         pc: u32,
         ex: u64,
     ) -> Result<Self, crate::bus::BusError> {
         let end = ex + 2;
         if let Some(now) = bus.sh2_clock() {
-            let scheduled = bus.sh2_schedule_memory_access(address, false, end);
+            let scheduled = bus.sh2_schedule_memory_access(address, write, end);
             let boundary = end - u64::from(scheduled);
             bus.sh2_pipeline_wait(boundary.saturating_sub(now) as u32)?;
         }
@@ -329,13 +353,22 @@ impl LoadAccess {
         u32::from(self.split)
     }
 
-    pub fn finish(self, pipeline: &mut LoadPipeline, bus: &impl crate::bus::Memory) {
+    pub fn finish(
+        self,
+        pipeline: &mut LoadPipeline,
+        bus: &mut impl crate::bus::Memory,
+    ) -> Result<(), crate::bus::BusError> {
+        let now = bus.sh2_clock().unwrap_or(self.end);
+        // Invalid operand cycles suppress the device access, but still occupy
+        // MA. They must not publish auto-update/branch state during EX.
+        bus.sh2_pipeline_wait(self.end.saturating_sub(now) as u32)?;
         // A real IF and a dependency cause the same split (P figs7.6/7.9).
         // With retained if, recover the final clock of the shared MA/EX slot.
         pipeline.load_split(self.split);
         if !self.split {
-            let end = bus.sh2_clock().unwrap_or(self.end).max(self.end);
+            let end = now.max(self.end);
             pipeline.retain_ex(end - 1);
         }
+        Ok(())
     }
 }

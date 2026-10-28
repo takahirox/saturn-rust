@@ -49,20 +49,18 @@ def build():
         # line. Instruction fetch misses must not postpone the store's grant.
         pc = 0x200 + len(assembler.assemble(s+'omit_wait:\nnop\n',base=0x200))-2
         s += 'nop\n' * ((-pc % 16)//2)
-        # One cached execution state separates the counter test from the
-        # store: HCNT normal-mode bit0 is fixed, so its latch quantizes a
-        # four-clock interval. The extra video-setup word phases can move
-        # this loop within that interval. Publish at/after first-dot acquisition
-        # while remaining before the second dot, without changing the oracle.
-        # P fig7.11 now places both counter reads at MA. Retain the
-        # H=844 test point: DT/BF iterations cost four clocks (two H units).
-        # Tile/RBG1 remove one iteration and restore two clocks here;
-        # bitmap removes four iterations. BRA adds one clock before the
-        # slot store while keeping the complete hot path within 16 bytes.
+        # Counter loads retain H=844: P fig7.11, four-clock DT/BF
+        # iterations (two H units), and the original mode-dependent phase.
+        # P fig7.12 now adds the store EX-to-MA clock. Replace the previous
+        # two-state BRA with one NOP for tile/RBG1. Bitmap needs no intervening
+        # state, compensating its setup/poll phase and the new MA lead-in.
+        # Keep the whole hot path in one cache line. The independently authored
+        # first-dot-old / all-following-dots-new pixel oracle is unchanged.
         if mode != 'bitmap':
             s += 'nop\nnop\n'
+        lead = 'nop\n' if mode != 'bitmap' else ''
         s += ('timed_wait:\nmov.w @r1,r0\nmov.w @r4,r0\n'
-              'cmp/hs r3,r0\nbf timed_wait\nbra store_done\nmov.w r6,@r5\nstore_done:\n'
+              'cmp/hs r3,r0\nbf timed_wait\n' + lead + 'mov.w r6,@r5\n'
               'mov r0,r8\nbra record\nnop\n'
               'omit_wait:\nmov.w @r1,r0\nmov.w @r4,r0\n'
               'cmp/hs r3,r0\nbf omit_wait\nmov r0,r8\nrecord:\n'

@@ -24,6 +24,42 @@ SCU/SH7604 work and review evidence. The full outstanding hardware scope remains
 [historical SH-2 checkpoint](validation-issue-11.md). **Pending** means required
 coverage or integrated validation remains missing, even when a subset passes.
 
+## Ordinary SH-2 MOV store pipeline (Issue #63)
+
+Related to #17. The [independent stage/deadline contract](sh2-store-pipeline.md)
+applies P §§7.2–7.5/fig7.12, Renesas Rev.5.00 fig7.21 (p.438), and H
+§§7.3.1/7.11.2. Both SH-2s qualify ordinary memory stores through
+[MOV phases](../src/cpu/timing.rs) in [CPU execution](../src/cpu.rs).
+Address/data preparation, synchronous mutation, internal acceptance and external
+publication are distinct. No WB stage or uniform external-write delay is added.
+
+[CPU vectors](../src/cpu/store_tests.rs) cover every ordinary store form/width,
+source/predecrement aliases, lanes, flags and register-only exclusions.
+[Executing scheduler/bus vectors](../src/bus/store_tests.rs) cover both CPUs,
+alignment, preceding-load data/base/index dependencies, cache RAM/arrays/purge,
+write-through and cache-through RAM, on-chip MMIO, programmed waits, retained
+video halves, buffer backpressure, external-read fencing, real peer/DMAC/SCU
+arbitration, reset, delay slots, NMI, invalid operands, chunking and inspection.
+[SCU startup vectors](../src/bus/dma_startup_tests.rs) also exercise the executing
+store's MA qualification before CD-FIFO-to-video DMA and its completion IRQ.
+
+The original MIT [source](../tests/fixtures/sh2-store.s),
+[builder](../tests/fixtures/build_sh2_store.py),
+[hashes](../tests/fixtures/sh2-store.sha256) and
+[oracle](../tests/fixtures/sh2-store.tsv) run in
+[native Machine](../tests/sh2_store.rs) and
+[production browser Wasm](../scripts/sh2-store.mjs). Both CPUs produce timing,
+readback and shared-data handoff records without host-generated completion.
+Controls change data, dependency, alignment and store omission, and repeat cold
+boots. The inherited implementation fails the same guest's timing oracle.
+See [actual checks and limitations](validation-issue-63.md).
+
+This completes only the scoped ordinary-store increment. Warmed instruction-cache
+overlap is covered; full speculative fetch and unrelated instruction pipelines,
+CPU/peripheral, bus/reset/arbitration, SCU/DSP, video/audio, CD/media/HLE, SMPC and
+integrated #17 acceptance remain mandatory. Hardware completion and genuine
+BIOS/commercial compatibility remain unverified. #17 remains open.
+
 ## Ordinary SH-2 MOV load pipeline (Issue #55)
 
 Related to #17. [The independent stage/clock table](sh2-load-pipeline.md)
@@ -50,8 +86,9 @@ operand and dependency controls and repeated cold boots. CI checks reproducibili
 and runs the extended browser suite. See [actual validation](validation-issue-55.md).
 
 Precise pipeline claims apply to warmed instruction-cache execution. Demand-driven
-uncached/refill fetches continue to execute; speculative IF/ID completion and
-ordinary stores remain incomplete. Remaining CPU/peripheral, bus/reset/arbitration,
+uncached/refill fetches continue to execute; speculative IF/ID completion remains
+incomplete. Ordinary stores are covered by the scoped increment above.
+Remaining CPU/peripheral, bus/reset/arbitration,
 SCU/DSP, video/audio, CD/media/HLE, SMPC and comprehensive integration acceptance
 remain mandatory. Genuine BIOS and commercial-game compatibility are unverified.
 This is partial #17 progress and does not close #17.

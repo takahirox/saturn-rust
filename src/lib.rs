@@ -164,8 +164,10 @@ mod scheduling_tests {
             .unwrap();
         m.step().unwrap();
         assert_eq!(m.clocks(), 33);
-        m.step_hardware_boundary().unwrap(); // write admitted at t34
+        m.step_hardware_boundary().unwrap(); // store EX33, MA request at34
         assert_eq!(m.clocks(), 34);
+        m.step_hardware_boundary().unwrap(); // acceptance ends at35
+        assert_eq!(m.clocks(), 35);
         m.step_hardware_boundary().unwrap(); // writer retires independently
         assert_eq!(m.cpu_state().instructions, 2);
         assert_eq!(m.bus.read32(shared), Ok(0));
@@ -204,6 +206,10 @@ mod scheduling_tests {
         assert_eq!(m.bus.for_cpu(Processor::Master).read8(0xFFFFFE01), Ok(255));
         m.step_hardware_boundary().unwrap();
         assert_eq!(m.clocks(), 38);
+        assert_eq!(m.bus.for_cpu(Processor::Master).read8(0xFFFFFE01), Ok(255));
+        // MOV EX37, MA request38, peripheral publication39.
+        m.step_hardware_boundary().unwrap();
+        assert_eq!(m.clocks(), 39);
         assert_eq!(m.bus.for_cpu(Processor::Master).read8(0xFFFFFE01), Ok(42));
         m.step_hardware_boundary().unwrap();
         assert_eq!(m.cpu_state().instructions, 4);

@@ -385,12 +385,16 @@ impl Cpu {
             bus.sh2_pipeline_wait(wait).map_err(access)?;
         }
         let now = ex + u64::from(interlock);
-        let load_access = timing::mov_load_address(opcode, &self.state)
-            .map(|address| timing::LoadAccess::start(bus, address, pc, now))
+        let mov_access = timing::mov_load_address(opcode, &self.state)
+            .map(|address| (address, false))
+            .or_else(|| {
+                timing::mov_store_address(opcode, &self.state).map(|address| (address, true))
+            })
+            .map(|(address, write)| timing::MovAccess::start(bus, address, write, pc, now))
             .transpose()
             .map_err(access)?;
-        if let Some(load) = &load_access {
-            self.last_clocks += load.split();
+        if let Some(mov) = &mov_access {
+            self.last_clocks += mov.split();
         }
         let mut multiplier_access = self
             .multiplier
@@ -782,6 +786,10 @@ impl Cpu {
             }
             _ => return self.illegal(bus.inner),
         }
+        if let Some(mov) = mov_access {
+            mov.finish(&mut self.load_pipeline, bus.inner)
+                .map_err(access)?;
+        }
         if s.delay_target.is_some() || direct_branch {
             bus.inner.sh2_discard_prefetch();
         }
@@ -796,9 +804,6 @@ impl Cpu {
             self.last_clocks +=
                 self.multiplier
                     .finish(access, operands.inner, &mut self.load_pipeline);
-        }
-        if let Some(load) = load_access {
-            load.finish(&mut self.load_pipeline, operands.inner);
         }
         self.multiplier.clock += u64::from(self.last_clocks);
         Ok(())
@@ -854,5 +859,7 @@ mod address_tests;
 mod load_tests;
 #[cfg(test)]
 mod multiplier_tests;
+#[cfg(test)]
+mod store_tests;
 #[cfg(test)]
 mod tests;

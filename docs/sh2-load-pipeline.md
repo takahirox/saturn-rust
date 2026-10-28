@@ -52,8 +52,9 @@ This ordering is not a claim about analog setup/hold timing.
 The required precise scope is resident instruction-cache execution. The existing
 fetch/refill path remains demand driven; it does not speculatively issue future
 IF cycles alongside older instructions. Cold/uncached fetch waits exhaust any
-retained overlap. Arbitrary branch/refill IF/ID scheduling, ordinary stores and
-other instruction families remain mandatory #17 work. Genuine BIOS and
+retained overlap. Arbitrary branch/refill IF/ID scheduling and other instruction families remain
+mandatory #17 work. Ordinary stores now have a separate
+[stage/deadline contract](sh2-store-pipeline.md). Genuine BIOS and
 commercial-game compatibility remain unverified.
 
 ## Existing timing fixtures

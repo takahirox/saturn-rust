@@ -144,13 +144,14 @@ test("shared versus fresh contexts retain complete guest clock, DMAC, Canvas and
 test("complete-suite inventory covers all original groups and missing groups fail", async () => {
   const source = await readFile(new URL("./browser-smoke.mjs", import.meta.url), "utf8");
   const registered = [...source.matchAll(/(?:timings\.(?:group|measure)|setup)\("([^"]+)"/g)].map(m => m[1]);
-  assert.equal(groups.length, 64);
+  assert.equal(groups.length, 65);
+  assert(groups.includes("sh2Store"));
   assert.deepEqual([...new Set(registered)], groups);
   assert.deepEqual(shards.scenarios, [...source.matchAll(/timings.measure\("([^"]+)"/g)].map(m => m[1]));
   assert.deepEqual(shards.shared, groups.filter(g => !shards.scenarios.includes(g)));
   const scenarioRegistry = source.match(/const scenarios = \{ ([^}]+) \}/)[1].split(/,\s+/);
   assert.deepEqual([...scenarioRegistry, "largeMedia"].sort(), [...shards.scenarios].sort());
-  assert.equal((source.match(/if \(includeScenarios\) await timings.measure/g) ?? []).length, 34);
+  assert.equal((source.match(/if \(includeScenarios\) await timings.measure/g) ?? []).length, 35);
   assert.deepEqual(selection([]).groups, groups);
   for (const args of [["--shard=missing"], ["--group=missing"], ["--shard=shared", "--group=scspMvol"], ["--typo"]]) {
     assert.throws(() => selection(args));
@@ -364,7 +365,8 @@ test("CI gates publication on both suites and retains the actually tested assets
   assert.equal(JSON.parse(await readFile("package.json", "utf8")).scripts["test:browser"], "node scripts/browser-suite.mjs");
   // Exact original registry: moving commands must not lose fixtures/options.
   const fixtures = (await readFile("scripts/check-fixtures.sh", "utf8")).split("\n").filter(s => s.startsWith("python3 "));
-  assert.equal(fixtures.length, 90);
+  assert.equal(fixtures.length, 91);
+  assert(fixtures.includes("python3 tests/fixtures/build_sh2_store.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_large_media.py --check --output target/large-media"));
   assert(fixtures.every(s => s.includes("--check")));
 });

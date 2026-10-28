@@ -502,3 +502,95 @@ fn actual_system_reset_cancels_pending_and_partially_completed_startup_work() {
         }
     }
 }
+
+#[test]
+fn executing_mov_qualifies_a_to_b_startup_only_after_store_ma_request() {
+    use crate::cpu::{Cpu, CpuError};
+    for p in [Processor::Master, Processor::Slave] {
+        let mut b = board();
+        let destination = 0x05e01000;
+        b.write16(HIGH_WRAM, 0x2FF6).unwrap(); // MOV.L R15,@-R15
+        b.for_cpu(p).write8(CCR, 0x11).unwrap();
+        b.for_cpu(p).fetch16(HIGH_WRAM).unwrap();
+        b.cpu_delay(p, 0);
+        b.advance_clocks(32).unwrap();
+        let mut c = Cpu::start(HIGH_WRAM, (destination | 0x20000000) + 4);
+        assert!(matches!(
+            c.clone().step(&mut b.replay_cpu(p)),
+            Err(CpuError::Bus {
+                source: BusError::Pending,
+                ..
+            })
+        ));
+        assert!(!b.cpu_ab_write_pending()); // address/data prepared, EX incomplete
+        b.advance_clocks(1).unwrap();
+        assert!(matches!(
+            c.clone().step(&mut b.replay_cpu(p)),
+            Err(CpuError::Bus {
+                source: BusError::Pending,
+                ..
+            })
+        ));
+        assert!(b.cpu_ab_write_pending()); // MA qualified, not yet accepted
+        channel(&mut b, 0, false, false, destination);
+        b.grant_bus_transaction();
+        // SCU can initialize its channel in a width-zero reservation; the
+        // startup interlock must prevent its first physical source request.
+        let active = b.transactions.active.as_ref().unwrap();
+        assert!(
+            matches!(active.owner,Owner::WriteBuffer(cpu,false) if cpu==p)
+                || active.owner == Owner::Scu && active.transfer.width == 0
+        );
+        assert_eq!(b.debug_read32(DATA), Ok(0x11223344));
+        let mut publications = Vec::new();
+        let mut previous = [0u16; 4];
+        for _ in 0..500 {
+            b.advance_clocks(1).unwrap();
+            if c.state().instructions == 0 {
+                let mut next = c.clone();
+                match next.step(&mut b.replay_cpu(p)) {
+                    Ok(()) => {
+                        c = next;
+                        b.finish_cpu_transaction(p);
+                    }
+                    Err(CpuError::Bus {
+                        source: BusError::Pending,
+                        ..
+                    }) => (),
+                    other => panic!("store replay: {other:?}"),
+                }
+            }
+            let current = std::array::from_fn(|i| b.read16(destination + i as u32 * 2).unwrap());
+            for i in 0..4 {
+                if current[i] != previous[i] {
+                    publications.push((i, current[i]));
+                }
+            }
+            previous = current;
+            if publications.len() < 2 {
+                assert_eq!(b.debug_read32(DATA), Ok(0x11223344));
+            }
+            if publications.len() < 6 {
+                assert_eq!(b.read32(SCU + 0xA4).unwrap() & (1 << 11), 0);
+            } else {
+                break;
+            }
+        }
+        assert_eq!(c.state().instructions, 1);
+        assert_eq!(c.state().r[15], destination | 0x20000000);
+        assert_eq!(
+            publications,
+            [
+                (0, 0x25e0),
+                (1, 0x1004),
+                (0, 0x1122),
+                (1, 0x3344),
+                (2, 0x5566),
+                (3, 0x7788)
+            ]
+        );
+        b.advance_clocks(20).unwrap();
+        assert_ne!(b.read32(SCU + 0xA4).unwrap() & (1 << 11), 0);
+        assert_eq!(b.debug_read32(DATA), Ok(0x99aabbcc));
+    }
+}

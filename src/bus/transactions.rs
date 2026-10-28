@@ -31,6 +31,9 @@ mod reset_tests;
 #[path = "sound_tests.rs"]
 mod sound_tests;
 #[cfg(test)]
+#[path = "store_tests.rs"]
+mod store_tests;
+#[cfg(test)]
 #[path = "vdp1_tests.rs"]
 mod vdp1_tests;
 #[cfg(test)]

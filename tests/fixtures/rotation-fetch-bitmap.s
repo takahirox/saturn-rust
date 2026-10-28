@@ -127,9 +127,7 @@ mov.w @r1,r0
 mov.w @r4,r0
 cmp/hs r3,r0
 bf timed_wait
-bra store_done
 mov.w r6,@r5
-store_done:
 mov r0,r8
 bra record
 nop

@@ -114,7 +114,9 @@ fn removing_system_register_dependencies_removes_only_their_guest_measured_stall
             .lines()
             .map(|s| u32::from_str_radix(s, 16).unwrap())
             .collect();
-        expected[time_index] = 5; // (8 + 16×2)/8, rather than (8 + 16×3)/8.
+        // Independent pairs take 32 clocks; PR's aligned resume store shares
+        // one wrapper clock, giving floor((7+32)/8) instead of (8+32)/8.
+        expected[time_index] = if time_index == 30 { 4 } else { 5 };
         expected[time_index + 1] = 0;
         let mut m = Machine::new();
         for _ in 0..2 {
