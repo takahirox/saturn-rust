@@ -381,6 +381,7 @@ fn filesystem_commands_cancel_preroll_acquisition_without_stale_publication() {
     for command in [
         [0x7000, 0, 0x00ff, 0xffff], // ChangeDirectory: volume scan
         [0x7100, 0, 0x00ff, 0xffff], // ReadDirectory: retained root
+        [0x7400, 0, 0, 2],           // ReadFile: first file in the retained root
         [0x7500, 0, 0, 0],           // AbortFile also interrupts CD-DA
     ] {
         for completion in [
@@ -397,8 +398,8 @@ fn filesystem_commands_cancel_preroll_acquisition_without_stale_publication() {
                 include_bytes!("fixtures/cd-rw.iso"),
                 include_bytes!("fixtures/cd-rw.srw"),
             ));
-            if command[0] == 0x7100 {
-                // ReadDirectory needs an existing root entry to accept the command.
+            if matches!(command[0], 0x7100 | 0x7400) {
+                // ReadDirectory/ReadFile need the root table to accept the command.
                 assert_ne!(issue(&mut b, [0x7000, 0, 0x00ff, 0xffff])[0], 0xff00);
                 b.cd.advance(2_000_000);
                 assert_ne!(issue(&mut b, [0x7200, 0, 0, 0])[0], 0xff00);

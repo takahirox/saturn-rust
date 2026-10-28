@@ -173,3 +173,22 @@ reproduction commands,
 Wasm assets were built and timed out waiting for Ready; the rerun after the
 completed build passed. The rebuilt production Wasm SHA-256 is
 `17baeb14da12ca36392620b102c02066b97db21217fea17aa6c8bd2cf7e9b0e5`.
+
+## Review fix: ReadFile interruption during R–W pre-roll
+
+Related to #75 and #17. Accepted ReadFile commands (`0x74`) now cancel prepared
+R–W acquisition before starting data-track playback. The filesystem interruption
+regression includes ReadFile after acquiring the root table, with completion
+immediately or one clock before, at or after both acquisition deadlines. It
+checks continued advancement without stale packs/DRDY and a fresh PLAY returning
+the independently expected first pack. The extended regression reproduced the
+eight-pack assertion failure before the fix and passed afterward. Rejected
+commands still return before acquisition cancellation.
+
+Checks passed after this fix: `cargo fmt --check`, `cargo build --locked`,
+`cargo test --locked` (1083 passed, zero failed/ignored, including all 11 R–W
+integration tests), native and Wasm Clippy with warnings denied, all 97 fixture
+reproduction commands, `sh scripts/build-web.sh`, all 12 CI-runner tests,
+all 67 browser groups (204563 ms, two workers), and `git diff --check`.
+The rebuilt production Wasm SHA-256 is
+`f73a563efe9dbad1ed52432edc82097e3f71e192ece89f8d7a9d95d02b9463c9`.

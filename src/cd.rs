@@ -1817,6 +1817,9 @@ impl CdBlock {
                     return false;
                 }
                 let file = f.clone();
+                // ReadFile interrupts PLAY even while pre-roll acquisition is
+                // prepared and rw_active has not become true yet.
+                self.stop_rw();
                 self.prepare_file_filter(selector, start, end - start, Some(file.number));
                 self.file_read = Some(FileRead {
                     file,
