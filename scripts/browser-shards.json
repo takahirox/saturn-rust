@@ -55,6 +55,7 @@
     "sh2Multiplier",
     "cdCopy",
     "dmaStartup",
+    "cdRw",
     "cdReports",
     "rotationReload",
     "rotationFetch",

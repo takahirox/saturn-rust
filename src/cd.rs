@@ -77,6 +77,7 @@ struct Transfer {
     // ST-162 §3.2 table3.2: EHST belongs to sector-buffer I/O, not
     // TOC, subcode or file-information transfers of a coincident byte count.
     host_io: bool,
+    rw: Option<u64>,
 }
 
 struct SelectorTransfer {
@@ -110,6 +111,8 @@ pub struct CdBlock {
     pause_clocks: u64,
     standby_seconds: u16,
     init_flags: u8,
+    rw: crate::cd_rw::Decoder,
+    rw_active: bool,
     ecc: u8,
     retry: u8,
     retry_attempts: u8,
@@ -270,6 +273,8 @@ impl Default for CdBlock {
             pause_clocks: 0,
             standby_seconds: 180,
             init_flags: 0,
+            rw: crate::cd_rw::Decoder::default(),
+            rw_active: false,
             ecc: 0,
             retry: 0,
             retry_attempts: 0,
@@ -303,6 +308,9 @@ impl Default for CdBlock {
 }
 impl CdBlock {
     pub fn mount(&mut self, media: Media) {
+        self.cancel_rw_transfer();
+        self.rw = crate::cd_rw::Decoder::default();
+        self.rw_active = false;
         let cold = self.media.is_none();
         self.directory_read = None;
         self.pending = None;
@@ -388,6 +396,7 @@ impl CdBlock {
             .min(standby)
             .min(self.pending.map_or(u32::MAX, |(_, n)| n))
             .min(self.copying.as_ref().map_or(u32::MAX, |job| job.clocks))
+            .min(self.rw.clocks())
             .min(if self.seeking == 0 {
                 u32::MAX
             } else {
@@ -504,7 +513,8 @@ impl CdBlock {
             return 0xFFFF;
         };
         let position = t.position + offset;
-        t.bytes
+        let bytes: &[u8] = t.rw.map_or(t.bytes.as_slice(), |seq| self.rw.bytes(seq));
+        bytes
             .get(position..position + 2)
             .map_or(0xFFFF, |word| u16::from_be_bytes([word[0], word[1]]))
     }
@@ -549,7 +559,9 @@ impl CdBlock {
             return;
         }
         while clocks != 0 {
+            self.sync_rw();
             let delta = clocks.min(self.clocks_to_event());
+            self.rw.advance(delta, self.media.as_ref());
             let speed = self.drive_speed();
             let report_hz = self.report_hz();
             if self.status == 1 && !self.playing {
@@ -628,7 +640,43 @@ impl CdBlock {
                 }
             }
             clocks -= delta;
+            self.sync_rw();
         }
+    }
+    fn cancel_rw_transfer(&mut self) {
+        if self
+            .transfer
+            .get_mut()
+            .as_ref()
+            .is_some_and(|t| t.rw.is_some())
+        {
+            *self.transfer.get_mut() = None;
+            self.hirq.set(self.hirq.get() & !DRDY);
+        }
+    }
+    fn stop_rw(&mut self) {
+        self.rw.stop();
+        self.rw_active = false;
+    }
+    fn sync_rw(&mut self) {
+        let active = self.init_flags & 2 != 0
+            && self.playing
+            && self.seeking == 0
+            && self.scan.is_none()
+            && !self.tray_open
+            && self
+                .media
+                .as_ref()
+                .and_then(|m| m.track(self.fad))
+                .is_some_and(|t| t.mode == TrackMode::Audio);
+        if active && !self.rw_active {
+            self.cancel_rw_transfer();
+            self.rw
+                .start(self.fad, self.play_end(), self.media.as_ref());
+        } else if !active && self.rw_active {
+            self.rw.stop();
+        }
+        self.rw_active = active;
     }
     fn drive_frame(&mut self) {
         let Some(media) = &self.media else {
@@ -762,6 +810,7 @@ impl CdBlock {
                 self.repeats = (self.repeats + 1).min(14);
                 // Start is separately preserved in the play range, not the filter.
                 self.fad = self.play_start;
+                self.stop_rw();
             } else {
                 self.playing = false;
                 self.status = 1;
@@ -947,6 +996,7 @@ impl CdBlock {
             put: None,
             delete,
             host_io,
+            rw: None,
         });
         let mut r = self.response.get();
         r[0] |= 0x4000;
@@ -1062,6 +1112,7 @@ impl CdBlock {
                     self.standby_seconds = if c[1] == 0 { 180 } else { c[1] };
                 }
                 self.pause_clocks = 0;
+                self.stop_rw();
                 self.fad = self.pause_position();
                 self.at_home = false;
                 self.tray_open = false;
@@ -1076,6 +1127,7 @@ impl CdBlock {
                 self.retry_attempts = 0;
                 self.speed = if self.init_flags & 0x10 != 0 { 1 } else { 2 };
                 if software_reset {
+                    self.rw = crate::cd_rw::Decoder::default();
                     self.filters = std::array::from_fn(Filter::reset);
                     for p in &mut self.partitions {
                         p.clear();
@@ -1106,6 +1158,9 @@ impl CdBlock {
                 }
             }
             0x05 => {
+                self.stop_rw();
+                self.rw = crate::cd_rw::Decoder::default();
+                self.cancel_rw_transfer();
                 self.finish_directory(false);
                 self.retry_attempts = 0;
                 self.files.clear();
@@ -1132,7 +1187,13 @@ impl CdBlock {
                     self.response.set(r);
                     return true;
                 };
-                let words = t.position / 2;
+                // CD I/F §8.2.1 DataEnd: an interrupted GET reports more
+                // CD-side words than host-consumed words. R–W keeps one next
+                // word offered to DATATRNS; cap prefetch at the 12-word pack.
+                let words = (t.position / 2 + usize::from(t.rw.is_some())).min(t.bytes.len() / 2);
+                if let Some(sequence) = t.rw {
+                    self.rw.end(sequence);
+                }
                 if let Some((partition, ids)) = t.delete {
                     // Another engine may move/remove earlier sectors while
                     // DATATRNS is active. Never delete a shifted neighbour.
@@ -1198,6 +1259,12 @@ impl CdBlock {
                 self.buffer_paused = false;
                 self.pause_clocks = 0;
                 let from_home = self.at_home;
+                let continuing = field1 == 0xFF_FFFF && self.rw_active && !from_home;
+                if continuing {
+                    self.rw.set_end(end);
+                } else {
+                    self.stop_rw();
+                }
                 self.at_home = false;
                 let repeat = if c[2] >> 8 & 0x7F == 0x7F {
                     self.repeat
@@ -1231,8 +1298,22 @@ impl CdBlock {
                 self.seeking = if !self.playing || (field1 == 0xFF_FFFF && !from_home) {
                     0
                 } else {
-                    26_875
+                    if self.init_flags & 2 != 0
+                        && self
+                            .media
+                            .as_ref()
+                            .and_then(|m| m.track(start))
+                            .is_some_and(|t| t.mode == TrackMode::Audio)
+                    {
+                        crate::cd_rw::PREROLL + 26_875
+                    } else {
+                        26_875
+                    }
                 };
+                if self.init_flags & 2 != 0 && self.seeking > crate::cd_rw::PREROLL {
+                    self.rw
+                        .prepare(start, self.play_end(), self.seeking - crate::cd_rw::PREROLL);
+                }
                 self.status = if self.seeking != 0 {
                     4
                 } else if self.playing {
@@ -1249,6 +1330,7 @@ impl CdBlock {
                         return false;
                     }
                     self.tray_open = false;
+                    self.stop_rw();
                     self.playing = false;
                     self.retry_attempts = 0;
                     self.scan = None;
@@ -1270,6 +1352,7 @@ impl CdBlock {
                     return false;
                 }
                 self.tray_open = false;
+                self.stop_rw();
                 self.scan = None;
                 self.buffer_paused = false;
                 self.pause_clocks = 0;
@@ -1290,6 +1373,7 @@ impl CdBlock {
                     return false;
                 }
                 let audible = self.scan.map_or(self.playing, |(_, audible)| audible);
+                self.stop_rw();
                 self.scan = Some((c[0] & 1 != 0, audible));
                 self.fad = self.pause_position();
                 self.at_home = false;
@@ -1301,10 +1385,16 @@ impl CdBlock {
                 self.report(false);
             }
             0x20 => {
-                // ISO/BIN/CUE carries no R–W pack stream. An empty pack FIFO
-                // returns WAIT, not a fabricated all-zero pack (ST-162 §4.3).
                 if c[0] & 255 == 1 {
-                    return self.wait();
+                    let Some((sequence, flags)) = self.rw.front() else {
+                        return self.wait();
+                    };
+                    response(self, 12, 0, flags);
+                    if !self.begin_get(vec![0; 24], None, false) {
+                        return false;
+                    }
+                    self.transfer.get_mut().as_mut().unwrap().rw = Some(sequence);
+                    return true;
                 }
                 if c[0] & 255 != 0 {
                     return false;
@@ -1595,6 +1685,7 @@ impl CdBlock {
                     put: Some((selector, n, self.put_length)),
                     delete: None,
                     host_io: true,
+                    rw: None,
                 });
                 self.raise(DRDY);
                 let mut r = self.response.get();

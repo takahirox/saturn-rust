@@ -40,6 +40,7 @@ import { scspPcm } from "./scsp-pcm.mjs";
 import { scspMvol } from "./scsp-mvol.mjs";
 import { scspDma } from "./scsp-dma.mjs";
 import { largeMedia } from "./large-media.mjs";
+import { cdRw } from "./cd-rw.mjs";
 import { cdReports } from "./cd-reports.mjs";
 import { dmaStartup } from "./dma-startup.mjs";
 import { cdCopy } from "./cd-copy.mjs";
@@ -117,7 +118,7 @@ try {
       busTransactions, bBusReads, videoWrites, slaveRaster, hleDual, scuFringe,
       dmacBus, sh2BusPipeline, sh2ResetBus, cs0Transfers, spriteShrink,
       hardwareBoundaries, refreshArbitration, sh2Fetch, sh2Store, sh2Load, sh2Multiplier,
-      cdCopy, dmaStartup, cdReports, rotationReload, rotationFetch,
+      cdCopy, dmaStartup, cdReports, cdRw, rotationReload, rotationFetch,
       rotationHighResolution, scspMonitor, m68kReset, scspClock, scspEffects,
       scspDma, scspPcm, scspCpuMemory, scspMvol };
     timings.wasmReport = null;
@@ -1596,6 +1597,7 @@ try {
   if (includeScenarios) await timings.measure("dmaStartup", async () => {
     await dmaStartup(page);
   });
+  if (includeScenarios) await timings.measure("cdRw", async () => { await cdRw(page); });
   if (includeScenarios) await timings.measure("cdReports", async () => {
     await cdReports(page);
   });

@@ -525,3 +525,16 @@ VBE-clear erase boundaries. The required `videoTransactions` group checks
 production Canvas pixels, changed operands, omitted draw and cold boots. The
 registry now has 96 commands; the browser inventory remains 66 groups. See the
 [mode contract](vdp1-hdtv.md) and [executed validation](validation-issue-73.md).
+
+
+The original timed R–W diagnostic is reproduced with
+`python3 tests/fixtures/build_cd_rw.py --check`, registered in
+`scripts/check-fixtures.sh`. Its guest enables decoding, handles SCDQ/A-bus and
+DMA-end interrupts and computes pack word/checksum/sequence/error records using
+CPU and SCU DMA transfers. Native and the required production `cdRw` browser
+group execute identical media, changed/omitted/corrected/error controls and cold
+boots. Local CUE selections can include an explicit `.srw` companion using
+`REM SATURN_RW "filename.srw"`; select it with all track files.
+See the [representation and timing contract](cd-rw.md) and
+[validation](validation-issue-75.md). The current inventory is 97 fixture commands
+and 67 browser groups (30 shared, 37 scenarios); no publication gate is removed.

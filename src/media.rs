@@ -70,6 +70,7 @@ impl Track {
 pub struct Media {
     pub(crate) tracks: Vec<Track>,
     pub(crate) leadout: u32,
+    rw: Option<(u32, Arc<Vec<u8>>)>,
 }
 fn invalid(message: &str) -> DiscError {
     DiscError(message.into())
@@ -102,6 +103,46 @@ struct CueTrack {
     postgap: u32,
 }
 impl Media {
+    /// Attach SRW1: magic, big-endian first FAD and frame count, then 96
+    /// bytes/frame (four packs, symbols 0..23, R in bit5 through W in bit0).
+    /// Symbols are already disc-deinterleaved, but NOT P/Q corrected. See
+    /// docs/cd-rw.md. Validation is atomic and never opens a path.
+    pub fn with_subchannel(mut self, bytes: &[u8]) -> Result<Self, DiscError> {
+        if self.rw.is_some() || bytes.len() < 12 || &bytes[..4] != b"SRW1" {
+            return Err(invalid("Missing, duplicate or invalid SRW1 header"));
+        }
+        let first = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
+        let count = u32::from_be_bytes(bytes[8..12].try_into().unwrap());
+        let end = first.checked_add(count);
+        if count == 0
+            || count > MAX_FRAMES
+            || end.is_none_or(|end| end > self.leadout)
+            || (count as usize)
+                .checked_mul(96)
+                .and_then(|n| n.checked_add(12))
+                != Some(bytes.len())
+            || bytes[12..].iter().any(|b| b & 0xC0 != 0)
+        {
+            return Err(invalid("SRW1 size, FAD or symbol outside bounds"));
+        }
+        let end = end.unwrap();
+        if !(first..end).all(|fad| {
+            self.track(fad)
+                .is_some_and(|t| t.mode == TrackMode::Audio && self.has_stored_sector(t, fad))
+        }) {
+            return Err(invalid("SRW1 must map to stored audio frames"));
+        }
+        self.rw = Some((first, Arc::new(crate::disc::copy(&bytes[12..])?)));
+        Ok(self)
+    }
+    pub(crate) fn rw_pack(&self, fad: u32, pack: usize) -> Option<[u8; 24]> {
+        let (first, bytes) = self.rw.as_ref()?;
+        let offset = usize::try_from(fad.checked_sub(*first)?)
+            .ok()?
+            .checked_mul(96)?
+            .checked_add(pack.checked_mul(24)?)?;
+        bytes.get(offset..offset + 24)?.try_into().ok()
+    }
     pub fn tracks(&self) -> &[Track] {
         &self.tracks
     }
@@ -146,6 +187,7 @@ impl Media {
                 mode2_format: Mode2Format::Data,
             }],
             leadout: end,
+            rw: None,
         })
     }
     pub fn cue(cue: &str, files: &[(&str, &[u8])]) -> Result<Self, DiscError> {
@@ -198,6 +240,7 @@ impl Media {
         }
         let mut tracks: Vec<CueTrack> = Vec::new();
         let mut file = None;
+        let mut rw_file = None;
         for line in cue.trim_start_matches('\u{feff}').lines() {
             let line = line.trim();
             let Some((op, rest)) = line.split_once(char::is_whitespace) else {
@@ -208,7 +251,23 @@ impl Media {
             };
             let rest = rest.trim();
             match op.to_ascii_uppercase().as_str() {
-                "REM" | "TITLE" | "PERFORMER" | "SONGWRITER" | "CATALOG" | "ISRC" => (),
+                "REM" => {
+                    let (key, value) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                    if key.eq_ignore_ascii_case("SATURN_RW") {
+                        let name = value
+                            .trim()
+                            .strip_prefix('"')
+                            .and_then(|s| s.strip_suffix('"'))
+                            .filter(|s| !s.is_empty() && !s.contains('"'))
+                            .ok_or_else(|| {
+                                invalid("SATURN_RW requires one quoted companion name")
+                            })?;
+                        if rw_file.replace(name).is_some() {
+                            return Err(invalid("Duplicate SATURN_RW companion"));
+                        }
+                    }
+                }
+                "TITLE" | "PERFORMER" | "SONGWRITER" | "CATALOG" | "ISRC" => (),
                 "FILE" => {
                     let (name, kind) = if let Some(rest) = rest.strip_prefix('"') {
                         rest.split_once('"')
@@ -444,10 +503,23 @@ impl Media {
             });
             cursor = track_end;
         }
-        Ok(Self {
+        let media = Self {
             tracks: result,
             leadout: cursor,
-        })
+            rw: None,
+        };
+        if let Some(name) = rw_file {
+            let mut matches = files.iter().enumerate().filter(|(_, (n, _))| *n == name);
+            let (i, (_, bytes)) = matches
+                .next()
+                .ok_or_else(|| invalid("Missing SRW1 companion"))?;
+            if matches.next().is_some() || tracks.iter().any(|t| t.file == i) {
+                return Err(invalid("Ambiguous SRW1 companion"));
+            }
+            media.with_subchannel(bytes)
+        } else {
+            Ok(media)
+        }
     }
     pub fn track(&self, fad: u32) -> Option<&Track> {
         self.tracks
