@@ -690,8 +690,8 @@ no-op CPU/device implementations cannot satisfy those assertions.
 | --- | --- | --- | --- | --- | --- |
 | Cooked ISO, [Disc Format][DISC] | Bounded multi-area IP/ISO9660 startup; extended-attribute offsets and interleaved first-read/runtime files; XA file metadata, held FID windows and checked LBA/FAD/volume bounds | disc.rs, media.rs, cd.rs, CLAB, filesystem/layout evidence below | SC, CLAB/local ISO, original filesystem/layout Wasm guests below | Remaining record formats and complete runtime command/timing/error corpus | Pending |
 | BIN/CUE/raw/mixed tracks, [DISC] / [CD] §§4/7.2.3 | Caller-resolved files, cooked/2352-byte Mode1/Mode2/audio, shared/separate files, INDEX00–99, gaps and TOC; subindices and PRE/DCP/4CH CONTROL metadata drive TOC/status/Q reporting; malformed/duplicate flags rejected; EDC validation, bounded P/Q correction for Mode1/XA Form1, Form2 EDC and PRE audio processing | [media vectors](../tests/media.rs), [parity-matrix/XA vectors](../src/media/integrity.rs), [directory guest](../tests/cd_drive.rs), CLAB | Directory guest on clean/correctable/uncorrectable raw media; CLAB multi-file CUE, INDEX02/99, malformed ordering, missing-reference/reset/privacy | M2G adds plain 2336-byte Mode2 payloads; complete decode/timing boundaries remain; WAVE/compression absent | Pending |
-| CD command/status/HIRQ, [CD] §§3.1–3.4 | Separate command/response latches; 1075-clock command completion, read-protected responses, CMOK/DRDY/CSCT/end flags, masks, clear-zero HIRQ and SCU A-bus IRQ | `tests/cd.rs`, CLAB | CLAB command/FIFO/DMA/IRQ | Full command-specific timing and register mirrors; BIN/CUE has no R–W stream, with empty FIFO WAIT now tested | Pending |
-| CD drive/TOC/session/track state, [CD] §§4/7/8.2 | TOC/session/Q, bounded seek, data play, CD-DA/repeat/end, media-dependent FAD/track/index reports; timed CDON/OFF, 60 Hz pause reports, programmed standby, scan directions/range/muting, tray/media retention and deterministic virtual close; state-valid reports/Q, distinct Seek Home recovery and retained repeat/error position, lead-out reports | `tests/cd.rs`, CLAB, CDDRV, [CDRPT](#cd-report-validity-and-retained-position) | CLAB, CDDRV, CDRPT | Full mechanical/drive timing, remaining initialization/subcode options and R–W decoding | Pending |
+| CD command/status/HIRQ, [CD] §§3.1–3.4 | Separate command/response latches; 1075-clock command completion, read-protected responses, CMOK/DRDY/CSCT/end flags, masks, clear-zero HIRQ and SCU A-bus IRQ | `tests/cd.rs`, CLAB | CLAB command/FIFO/DMA/IRQ | Full command-specific timing and register mirrors; [R–W](#timed-rw-subcode-and-host-transfers) now adds an explicit companion stream and preserves empty FIFO WAIT | Pending |
+| CD drive/TOC/session/track state, [CD] §§4/7/8.2 | TOC/session/Q, bounded seek, data play, CD-DA/repeat/end, media-dependent FAD/track/index reports; timed CDON/OFF, 60 Hz pause reports, programmed standby, scan directions/range/muting, tray/media retention and deterministic virtual close; state-valid reports/Q, distinct Seek Home recovery and retained repeat/error position, lead-out reports | `tests/cd.rs`, CLAB, CDDRV, [CDRPT](#cd-report-validity-and-retained-position) | CLAB, CDDRV, CDRPT | Full mechanical/drive timing and remaining initialization/subcode options; [R–W](#timed-rw-subcode-and-host-transfers) has separate scoped evidence | Pending |
 | CD buffers/transfers, [CD] §§3.2/3.4/5.3/5.4/8.2 | 200-sector pool, 24 partitions, get/delete/get-delete/put, early-ended writes retain all reserved sectors and their accepted length, use filter routing and sector-I/O EHST; independent selector/host command classes, identity-safe GET/DELETE, size/info/search, FIFO word/long and fixed-source SCU DMA | `tests/cd.rs`, CLAB; [transfer vectors](#retained-vdp1-tables-and-characters-68k-ea-waits-and-cd-transfer-completion) | CLAB actual DMA/IRQ/checksum, sector mutation; extended CD drive guest checks early end, routing, capacity, IRQ and changed payload | Pool-full pause/resume at the blocked FAD has native data vectors; complete transfer overlap and timing/error inventory remain | Pending |
 | Filters/selectors/partitions, [CD] §§5.2/5.3/8.2.5 | FAD and masked subheader comparisons, reverse conditions, true/false routes, reset, copy/move through destination filter | `tests/cd.rs::selectors_fad_range_connections_copy_move_and_size`, Mode2 reverse vectors | CLAB default filter/partition route | [CDSEL](#scheduled-cd-selector-transfers-and-independent-command-classes-cdsel) adds asynchronous raw copy/move, full-buffer WAIT/move, retained partial failures and concurrent host/selector commands; remaining command-specific connection/timing boundaries stay mandatory | Pending |
 | Scheduled directory acquisition, [CD] §§3.2/6.2/8.2.8 | ChgDir/ReadDir acquire descriptors and directory sectors through drive deadlines, runtime ECC/retries and one reserved shared-pool workspace; atomic publication, cancellation invalidation, independent command engines | [Scheduled vectors/guest](../tests/cd_directory_schedule.rs), existing malformed/XA/window corpus | Same original guest/media, FRT progress, SCU masked/unmasked EFLS handler, navigation/omission/abort controls and cold boots | Deterministic seek policy; remaining filesystem/drive/media/HLE contracts stay required; see [Issue #21 validation](validation-issue-21.md) | Increment covered; umbrella pending |
@@ -1265,7 +1265,7 @@ Implementation: [`CdBlock::execute/drive_frame`](../src/cd.rs),
 | ECC settings 00–05, 80 and FF | Runtime executes one through six P/Q pairs, disables correction or retains the prior setting. A source-authored parity graph joins P0 to Q0/Q2 and P2 to Q2/Q50: one pass fails, two through six restore the exact sector. Unit vectors and `tests/cd.rs` check received bytes and configuration atomicity. | Individual decoder-clock latency and physical reread timing are not modeled. Strict boot/parser reads retain their separate bounded four-pass policy. |
 | Finite retries 0–15, error output and infinite retry | Every failed attempt consumes a drive deadline. RETRY holds FAD and publishes no sector/CSCT; exhaustion yields ERROR or routes the erroneous sector according to bit6. Infinite retries remain interruptible by drive commands and bounded by machine execution. Register vectors assert each attempt, pool counts, FAD, bytes, cancellation and chunk invariance. | Immutable media reproduce the same defect on reread; stochastic optical recovery is not claimed. Retry deadlines use the selected 75/150 Hz virtual sector cadence. |
 | XA Form2 retry and confirmation flags | Form2 error data are delivered immediately unless Form2 retry is enabled; the ordinary retry/output policy then applies. Subheader confirmation can be disabled for decode while selector matching still uses the first subheader. Independent EDC golden vectors isolate the controls. Failed XA correction restores the received header. | M2G below adds plain Mode2; a complete subcode/error-boundary corpus remains required. |
-| Initialization retention/reset | Independent no-change fields; rejected settings are atomic. Software reset ignores other arguments, cancels unfinished transfer, resets host/selector/play information and invalidates file caches. Tray open invalidates file information; tests check observable DRDY/pool/FIFO/scope changes. | R–W stream decoding and remaining command-specific lifecycle/timing coverage remain required. |
+| Initialization retention/reset | Independent no-change fields; rejected settings are atomic. Software reset ignores other arguments, cancels unfinished transfer, resets host/selector/play information and invalidates file caches. Tray open invalidates file information; tests check observable DRDY/pool/FIFO/scope changes. | [R–W stream decoding](#timed-rw-subcode-and-host-transfers) now has separate evidence; remaining command-specific lifecycle/timing coverage is still required. |
 
 [Original MIT SH-2 source builder](../tests/fixtures/build_cd_decode.py),
 [generated guest ROM](../tests/fixtures/cd-decode.hex) and
@@ -3473,7 +3473,7 @@ older validation records/hashes describe historical artifacts.
 BUSY transitional validity and FATAL contents are not assigned invented exact
 values. Functional timing envelopes, PAUSE flag conventions and invalid Q
 serialization are explicitly bounded in the contract. Full mechanical timing,
-R–W decoding, additional formats, remaining CD/HLE and all other #17 hardware
+Additional formats, remaining CD/HLE and all other #17 hardware
 requirements remain open; this increment demonstrates no commercial compatibility.
 
 
@@ -3739,3 +3739,30 @@ are retained. CPU/peripheral, multiprocessor/bus/reset, SCU/DSP, remaining
 video/audio, CD/media/HLE, SMPC and comprehensive integration acceptance remain
 mandatory under #17. Genuine BIOS and broad commercial-game compatibility remain
 unverified; this scoped mode increment satisfies no umbrella completion criterion.
+
+
+## Timed R–W subcode and host transfers
+
+Related to #75 and #17. [The primary-derived contract](cd-rw.md) reconciles
+Sega's later 24-pack ring with its separate 23-pack recovery threshold, the old
+ST-162 23-pack description, figure4.5 startup and the IEC 60908 parity matrices
+and figures20–24. Input is explicitly after disc deinterleaving, before P/Q
+correction. SRW1 is bounded, FAD-mapped, caller supplied and available through
+native Media, production Wasm CUE loading and the local file UI.
+
+| Behavior | Independent evidence | Scope |
+| --- | --- | --- |
+| P/Q integrity and bit layout | Frozen nonzero codewords; all single-symbol positions/magnitudes, all pairs of error locations; header/payload failures and P-valid/Q-invalid input in `src/cd_rw.rs` | GF(64) RS P(24,20), Q(4,2), separate from CD-ROM ECC and channel Q |
+| Acquisition and publication | Two scheduled pre-roll captures, bounded eight-pack window, separate decoder deadlines; 100 before/at/after publications, chunks1/3/17/10000 and passive inspection | Exact mechanical latency and unassigned phases use the documented deterministic conventions |
+| Ring and host transfer | 24 slots, 23-pack recovery, overwrite during partial DATATRNS, CPU/SCU DMA, flags, empty WAIT, partial/excess/DataEnd and contention | Delayed reads observe the overwritten physical slot; no promise of optical-controller prefetch precision |
+| Lifecycle | Enable/no-change/disable, new PLAY/unchanged start, pause/seek/scan, data/audio boundaries, repeat, software reset, CDON/OFF, tray/replacement and Machine reset | Queued, pre-roll/decode and partial-transfer cancellation covered |
+| Original guest | `tests/cd_rw.rs`, `scripts/cd-rw.mjs`, MIT source/media from `tests/fixtures/build_cd_rw.py` | Real SCDQ/A-bus and DMA-end exceptions; all 12 words, checksums, sequences, flags and DataEnd counts originate in SH-2 execution |
+| Controls and production client | Changed payload, omitted enable, corrected header/payload, uncorrectable header/payload, repeated native/browser boots, exact stereo, local-file missing companion/privacy | Required `cdRw` browser group under `/saturn-rust/`; fixture registry and complete publication gate include it |
+
+The unchanged inherited-main decoder fails the nonempty-pack guest oracle on
+`3b2f8038ec8769b446274f8166f7e2d9917695ac`: the guest completes but retrieves zero
+packs instead of four. See [executed validation and artifact hashes](validation-issue-75.md).
+This scoped implementation leaves every other mandatory CPU/peripheral,
+bus/cache/reset/arbitration, SCU/DSP, video/audio/CD timing, media/HLE/SMPC and
+integrated #17 acceptance criterion in force. Genuine BIOS operation and broad
+commercial compatibility remain unverified.

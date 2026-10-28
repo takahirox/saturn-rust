@@ -16,8 +16,8 @@ automated local/CI checks; live Pages inspection is not a completion gate.
 | src/backup.rs | Packed battery RAM, atomic import and odd-byte storage with word/long bus lanes |
 | src/disc.rs | Bounded ISO9660 and Saturn IP validation, first-read executable selection |
 | src/hle.rs, src/hle/ | HLE boot tables and original guest-executed vector, callback, mask, semaphore, priority, clock and backup-library services |
-| src/media.rs | Retained cooked/raw/BIN/CUE data/audio media and track indices/gaps |
-| src/cd.rs | Timed runtime CD commands, selector/sector pool, FIFO and CD-DA |
+| src/media.rs | Retained cooked/raw/BIN/CUE data/audio media, track indices/gaps and bounded caller-supplied SRW1 companions |
+| src/cd.rs, src/cd_rw.rs | Timed runtime CD commands, selector/sector pool, shared FIFO, CD-DA and scheduled R–W acquisition/parity/ring |
 | src/devices.rs | Shared device constants and compatibility exports |
 | src/vdp1.rs | Clock-driven command lists, primitive/texture drawing and framebuffers |
 | src/vdp2.rs | NBG0–3 tile/bitmap, RBG0/RBG1, line/window/effect tables and sprite/background composition |
@@ -719,3 +719,17 @@ Instruction-boundary entry, separate IACK/stack scheduling and reset cancellatio
 remain in the existing transaction scheduler. The original SH-2/68k rearm guest
 and its controls run natively and in production browser Wasm. Electrical IPL
 synchronization and complete CPU/bus timing remain unverified.
+
+
+R–W media enters after disc deinterleaving and before GF(64) P/Q correction.
+The reference-clock scheduler independently advances two pre-roll acquisition
+frames, a bounded eight-pack input window and four decoder publications/frame.
+Decoded data occupies a 24-slot ring; DATATRNS pins its physical slot until
+DataEnd and shares arbitration with all existing CD transfer users. Audio
+output draining cannot advance acquisition. The [R–W contract](cd-rw.md)
+specifies FAD/symbol layout, parity matrices, revision reconciliation, timing
+conventions, overwrite recovery and reset domains. Native and production Wasm
+use one CUE parser and explicit selected companion bytes; no path or network
+loader is added. [Validation](validation-issue-75.md) records the original
+MIT guest and inherited-main negative control. Related to #75 and #17; genuine
+BIOS operation and broad commercial-game compatibility remain unverified.

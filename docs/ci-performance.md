@@ -611,3 +611,16 @@ and Wasm timing interpretation and the deployment dependency graph. CI uses at
 most two concurrent validation runners per revision; publishing jobs follow the
 validation barrier. Never roll back by removing mandatory commands or allowing
 Pages to publish a rebuilt/untested directory.
+
+## Issue #75 R–W acceptance inventory
+
+The required inventories now contain **97 fixture reproduction commands** and
+**67 browser groups** (30 shared, 37 scenarios). The new `cdRw` scenario executes
+the original MIT mixed-disc SH-2 guest, CPU/SCU DMA pack transfers, SCDQ/A-bus
+handlers, literal integrity/control oracles, stereo and local-file privacy checks.
+`build_cd_rw.py --check` reproduces its source and media. CI-runner assertions
+cover both additions explicitly; both browser shards and retained site-digest
+verification still gate publication without skips. See the
+[executed validation](validation-issue-75.md) for complete-suite results and
+inherited-main native/Wasm failures of the nonempty-pack oracle. Historical
+inventory counts elsewhere in this record describe earlier checkpoints.
