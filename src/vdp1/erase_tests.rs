@@ -41,7 +41,7 @@ fn rectangle(buffer: &[u8], stride: usize, color: [u8; 2], bounds: [usize; 4]) {
 
 #[test]
 fn vblank_erase_uses_captured_a_until_the_next_change_captures_b() {
-    for mode in [8, 9, 11] {
+    for mode in [4, 8, 9, 11, 12] {
         for change in [0, 3] {
             // automatic and manual change
             let mut v = fixture(mode, change);
@@ -58,7 +58,7 @@ fn vblank_erase_uses_captured_a_until_the_next_change_captures_b() {
             reg(&mut v, 2, change); // request is deferred until VBlank-OUT
             v.advance(100).unwrap();
             let stride = match mode {
-                8 | 9 => 1024,
+                4 | 8 | 9 | 12 => 1024,
                 11 => 512,
                 _ => unreachable!(),
             };

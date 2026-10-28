@@ -115,6 +115,14 @@ impl Vdp2 {
             }
     }
     pub(super) fn sprite_data(&self, sprites: &Vdp1, x: usize, y: usize) -> u16 {
+        if sprites.exclusive_scanout() && self.word(0) & 4 != 0 {
+            // VDP1 §1.2: 320/352x240 source colors occupy physical 2x2
+            // blocks. VDP2 §2.1 exposes 320/352 dots in exclusive normal,
+            // 640/704 in exclusive high resolution; only the latter repeats X.
+            // This readout never uses rotation parameters or larger storage.
+            let column = if self.word(0) & 2 != 0 { x / 2 } else { x };
+            return sprites.display_pixel(column, y / 2);
+        }
         if !sprites.rotated_scanout() {
             // Each double-density field reads one 256-line buffer. VDP2's
             // historical scanout retains the opposite field's output rows.

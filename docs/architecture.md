@@ -301,7 +301,12 @@ job publishes individual words after sampling, preserves the manual's aggregate
 `(raster clocks - 200) * blank rasters` capacity, and stops before a field-end
 buffer change. A uniform integer cadence reconciles delayed sampling with that
 capacity; it is an explicit functional phase convention, not physical bus timing.
-Rotation retains automatic blank erase with VBE clear. See the
+Rotation and HDTV retain automatic blank erase with VBE clear. HDTV never
+erases during display. TVM=4 retains 512×256×16-bit storage; exclusive normal
+320/352×480 output reads `(x,y/2)`, exclusive high 640/704×480 reads
+`(x/2,y/2)`, with integer division and no rotation parameters. Encodings 5–7
+remain diagnosed. See the [mode contract and primary mapping](vdp1-hdtv.md),
+[Issue #73 validation](validation-issue-73.md), the
 [event table and capacity reconciliation](vdp1-vbe-timing.md) and
 [Issue #65 validation](validation-issue-65.md). Manual drawing retains its cursor across a buffer change;
 BEF/LOPR capture unfinished work. Full CPU/VRAM arbitration, subpixel edge rounding

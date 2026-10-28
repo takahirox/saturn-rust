@@ -553,3 +553,126 @@ fn guest_raster_interrupts_enable_disable_vbe_and_checksum_both_physical_buffers
         }
     }
 }
+
+#[test]
+fn guest_hdtv_commands_compose_rgb_palette_transparency_priority_and_last_source_row() {
+    let original = load(include_str!("fixtures/vdp1-hdtv.hex"));
+    let mut m = Machine::new();
+    for (mode, width) in [
+        (0x8004u16, 320usize),
+        (0x8005, 352),
+        (0x8006, 640),
+        (0x8007, 704),
+    ] {
+        for (color, x, draw) in [(0x801Fu16, 0u16, 1u16), (0x83E0, 8, 1), (0x801F, 0, 0)] {
+            let mut rom = original.clone();
+            for (i, v) in [color, x, draw, mode].into_iter().enumerate() {
+                rom[0x100 + i * 2..0x102 + i * 2].copy_from_slice(&v.to_be_bytes());
+            }
+            let texture = [
+                color, 0x83E0, 0, 1, 0x4001, 0xFFFF, 0xFC1F, 0xFFE0, 0x83FF, 0xFC00, 1, 0, 0x4001,
+                0x801F, 0xFFFF, 0x83E0,
+            ];
+            let words: Vec<u32> = texture
+                .into_iter()
+                .map(|v| if draw != 0 && x == 0 { u32::from(v) } else { 0 })
+                .collect();
+            let mut expected = words.clone();
+            expected.push(words.iter().sum());
+            expected.extend(if draw != 0 {
+                [0xFFE0, 0x83E0, 0xFFE0, 0x83E0]
+            } else {
+                [0; 4]
+            });
+            expected.extend([
+                0xABCD,
+                0x1014,
+                if draw != 0 { 2 } else { 0 },
+                if draw != 0 { 16 } else { 0 },
+                if draw != 0 { 0x2000 } else { 0 },
+                0x600D,
+            ]);
+            for _ in 0..2 {
+                assert_eq!(run(&mut m, &rom, 0x0600EA00, 27), expected);
+                m.advance_frame().unwrap();
+                assert_eq!(m.video_dimensions(), (width, 480));
+                let f = m.framebuffer().unwrap();
+                let scale = if width >= 640 { 2 } else { 1 };
+                // Explicit RGBA oracles authored from RGB555/SPCTL type0,
+                // priority0=4, priority1=2, background=3; no renderer helpers.
+                let first = if color == 0x801F {
+                    [255, 0, 0, 255]
+                } else {
+                    [0, 255, 0, 255]
+                };
+                let rows = [
+                    [
+                        first,
+                        [0, 255, 0, 255],
+                        [0, 0, 255, 255],
+                        [255, 0, 255, 255],
+                        [0, 0, 255, 255],
+                        [255; 4],
+                        [255, 0, 255, 255],
+                        [0, 255, 255, 255],
+                    ],
+                    [
+                        [255, 255, 0, 255],
+                        [0, 0, 255, 255],
+                        [255, 0, 255, 255],
+                        [0, 0, 255, 255],
+                        [0, 0, 255, 255],
+                        [255, 0, 0, 255],
+                        [255; 4],
+                        [0, 255, 0, 255],
+                    ],
+                ];
+                for y in [0, 1, 2, 3, 4, 476, 477, 478, 479] {
+                    for sx in [
+                        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 311, 312, 313, 318, 319, 320, 343,
+                        344, 350, 351,
+                    ] {
+                        if sx >= width / scale {
+                            continue;
+                        }
+                        for dx in 0..scale {
+                            let sample = if draw == 0 {
+                                None
+                            } else if y < 4 && (usize::from(x)..usize::from(x) + 8).contains(&sx) {
+                                Some((y / 2, sx - usize::from(x)))
+                            } else if y >= 476
+                                && ((312..320).contains(&sx) || (344..352).contains(&sx))
+                            {
+                                Some(((y - 476) / 2, sx % 8))
+                            } else {
+                                None
+                            };
+                            let rgba = sample.map_or([0, 0, 255, 255], |(row, dot)| rows[row][dot]);
+                            let at = (y * width + sx * scale + dx) * 4;
+                            assert_eq!(&f[at..at + 4], &rgba, "mode{mode:X}, x{sx} dx{dx} y{y}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn guest_hdtv_vbe_clear_erase_retains_a_and_exact_monitor_capacity() {
+    let original = load(include_str!("fixtures/vdp1-hdtv-erase.hex"));
+    let mut m = Machine::new();
+    for mode in [0x8004u16, 0x8005, 0x8006, 0x8007] {
+        let mut rom = original.clone();
+        rom[0x100..0x102].copy_from_slice(&mode.to_be_bytes());
+        let mut expected = if mode & 1 == 0 {
+            vec![0x1234, 0x1234, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF]
+        } else {
+            vec![0x1234, 0x1234, 0x1234, 0x1234, 0xFFFF, 0xFFFF]
+        };
+        expected.extend([0x1014, 0, 0, 0, 0xFFFF, 0x600D]);
+        for _ in 0..2 {
+            assert_eq!(run(&mut m, &rom, 0x0600EB00, 12), expected);
+        }
+    }
+}

@@ -61,8 +61,9 @@ change. For NTSC 320×224, first publication is S+2 and last is B*L.
 Rotation needs automatic blank erase even with VBE=0 (§4.4); it uses the
 same sample/start phase and aggregate capacity convention. The automatic-mode
 predicate also includes HDTV bit2, as §4.4 requires. The inherited checked TVMR
-write API still rejects TVM=4 (HDTV); this increment does not newly expose that
-monitor mode. Existing VDP2 exclusive-monitor regressions remain. Complete
+write API rejected TVM=4 (HDTV) at the #65 checkpoint. The subsequent
+[HDTV increment](vdp1-hdtv.md) accepts it, suppresses display erase and composes
+exclusive-monitor sprites using this same blank-erase convention. Complete
 monitor/half-line timing remains outside this increment.
 
 | Event / legal written sequence | Effective decision / publication |

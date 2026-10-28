@@ -247,6 +247,9 @@ impl Vdp1 {
     pub(crate) fn rotated_scanout(&self) -> bool {
         self.tvmr & 2 != 0
     }
+    pub(crate) fn exclusive_scanout(&self) -> bool {
+        self.tvmr & 7 == 4
+    }
     fn geometry(&self) -> (usize, usize, usize) {
         match self.tvmr & 7 {
             1 => (1024, 256, 1),
@@ -280,8 +283,8 @@ impl Vdp1 {
     }
     pub fn validate_write(address: u32, value: u16) -> Result<(), BusError> {
         let valid = match address - REGISTERS {
-            // HDTV/exclusive monitors remain separate from standard TV modes.
-            0 => value & !0xF == 0 && matches!(value & 7, 0..=3),
+            // ST-013 §4.1 table4.2: HDTV/31kHz is 16-bit, non-rotating.
+            0 => value & !0xF == 0 && matches!(value & 7, 0..=4),
             2 => value & !0x1F == 0 && value & 0xC != 4,
             4 => value <= 2,
             6 | 8 | 10 => true,
@@ -297,7 +300,15 @@ impl Vdp1 {
     pub fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
         Self::validate_write(address, value)?;
         match address - REGISTERS {
-            0 => self.tvmr = value,
+            0 => {
+                self.tvmr = value;
+                // §4.1 permits TVM changes through the first HBlank after
+                // VBlank-out. HDTV must also cancel a display erase captured
+                // in the previous mode, without changing latched operands.
+                if self.exclusive_scanout() {
+                    self.display_erase = None;
+                }
+            }
             2 => {
                 self.fbcr = value;
                 self.fb_request = true;
@@ -354,7 +365,7 @@ impl Vdp1 {
             self.lopr = self.copr;
             self.edsr = (self.edsr >> 1) & 1;
         }
-        self.display_erase = if self.tvmr & 0xA == 0
+        self.display_erase = if self.tvmr & 0xE == 0
             && (self.fbcr & 2 == 0 || self.fb_request && self.fbcr & 1 == 0)
         {
             Some(self.erase_area(self.draw ^ 1))
