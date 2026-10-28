@@ -338,3 +338,23 @@ Validation for this documentation/PR-body correction: `git diff --check`, local
 Markdown links and PR metadata readback passed. Runtime files are unchanged;
 the native/Wasm/browser suites were not rerun. Their latest observed results
 remain in the preceding validation table. Keep #81/#17 open and PR #82 in draft.
+
+### Publication recurrence at `7097bb0`
+
+The next publication again replaced the corrected plain reference with a closing
+reference in PR #82's Related Issues section. This review fix changes that section
+back to `Related to #81.`. GitHub readback verifies the exact body replacement,
+open/draft state and unchanged head
+`7097bb0cabe0c77e5b51c627aee5d7b256a4d835`. No push or merge was performed.
+
+**Publication handoff:** preserve `Related to #81` when publishing this checkpoint;
+do not regenerate a closing reference. Keep PR #82 in draft and Issues #81/#17
+open. The SCU evidence finding is still unresolved and is not a human question.
+Reinspection of ST-097-R5 §§2.2/3.5, ST-210 item 7 and the later SCU manual
+§3.5 supplied no affirmative evidence for the three disputed behaviors. Neither
+runtime behavior nor the Issue contract was changed on the basis of absent
+evidence. This metadata correction does not satisfy that mandatory criterion.
+
+Checks for this recurrence fix: PR body readback, `git diff --check` and local
+Markdown links passed. Runtime suites were not rerun because only this validation
+record and PR metadata changed; the existing runtime results above are historical.
