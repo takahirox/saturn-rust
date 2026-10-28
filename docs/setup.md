@@ -78,7 +78,7 @@ python3 homebrew/star-collector/build.py
 sh scripts/check-fixtures.sh
 ```
 
-This is the complete 90-command CI reproducibility registry, including all three
+This is the complete 91-command CI reproducibility registry, including all three
 homebrew discs, HLE code, hardware guests and standard-size media. Individual
 `python3 ... --check` commands in that script remain usable for focused checks.
 
@@ -481,3 +481,11 @@ executes the DMA-end handler. Tests include changed operands, omitted trigger,
 repeated cold boots and actual Canvas output. Reproduce its source and media with
 `python3 tests/fixtures/build_dma_startup.py --check`; see the
 [startup contract](scu-dma-startup.md) and [validation](validation-issue-51.md).
+
+The original ordinary MOV store guest runs on both SH-2s in native Machine and
+production browser Wasm. It measures warmed alignment/dependency kernels, checks
+readback and exchanges a shared-data acknowledgement through guest stores/loads.
+Reproduce its source/bytes/hashes with
+`python3 tests/fixtures/build_sh2_store.py --check`; see the
+[store stage contract](sh2-store-pipeline.md) and
+[Issue #63 validation](validation-issue-63.md).

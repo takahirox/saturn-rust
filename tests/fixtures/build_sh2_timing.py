@@ -30,7 +30,8 @@ KERNELS = [
     ('load_separated', 'mov.l @r12,r6\nnop\nadd #1,r6\n' * 8, 28, 1),
     # H §7.11.2: determine-cycle state plus internal peripheral read.
     ('peripheral_read', 'mov.b @r10,r6\n' * 32, 80, 0xffffffff),
-    ('peripheral_write', 'mov.b r6,@r10\n' * 32, 32, 0),
+    # P fig7.12: sixteen word-offset MAs add sixteen IF splits.
+    ('peripheral_write', 'mov.b r6,@r10\n' * 32, 48, 0),
     # §7.7.6 figs7.86/7.90: system transfers with WB use the same
     # one-successor interlock. PR is an implicit source of STS PR.
     ('sts_macl', 'sts macl,r6\nadd #1,r6\n' * 16, 48, 1),
@@ -49,6 +50,9 @@ def kernel(body, preserve_pr=False):
     # final latch(3): P fig7.11 and H §7.11.2 give floor((8+N)/8)
     # at the final high-byte read. The STS-separated
     # case includes four alignment splits and is not a multiple of eight.
+    # With preserve_pr the resume store is aligned, so the first timer load
+    # shares its MA clock: the wrapper is seven clocks, rather than eight.
+    # See docs/sh2-store-pipeline.md for the independent stage enumeration.
     save = 'sts pr,r14\n' if preserve_pr else ''
     restore = 'lds r14,pr\n' if preserve_pr else ''
     return (save + 'mov #2,r0\nmov.b r0,@r7\nmov #0,r0\nmov.b r0,@r7\n'
@@ -94,7 +98,8 @@ def build():
     for at in range(0, len(rom), 16):
         if any(rom[at:at+16]):
             lines.append(f'{at:04X} ' + ' '.join(f'{w:04X}' for w in struct.unpack('>8H', rom[at:at+16])))
-    expected = [v for _, _, clocks, result in KERNELS for v in [(clocks+8)//8, result]] + [0x600D]
+    expected = [v for name, _, clocks, result in KERNELS
+                for v in [(clocks + (7 if name.startswith("pr_") else 8)) // 8, result]] + [0x600D]
     return {'sh2-timing.hex': ('\n'.join(lines)+'\n').encode(),
             'sh2-timing.tsv': ''.join(f'{v:08X}\n' for v in expected).encode()}
 

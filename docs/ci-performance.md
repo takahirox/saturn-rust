@@ -1,5 +1,11 @@
 # CI validation performance — Issue #61
 
+The timing measurements below are the historical Issue #61 inventory. Issue #63
+adds the ordinary MOV store diagnostic: the current registry has 65 browser
+groups and 91 fixture/media builders, with unchanged required-suite coverage.
+See [Issue #63 validation](validation-issue-63.md) for its executed checks.
+
+
 This continuation preserves PR #60's lossless bulk transport, independent native
 validation, all 64 browser groups, 988 Rust tests, 90 fixture builders and all
 three original licensed discs. It changes orchestration, test compilation and timing/reporting;
@@ -72,7 +78,7 @@ concurrently invoking callbacks against the original shared page.
   Large-media tests retain their original private contexts and standard-size
   inputs. No two callbacks use the same page concurrently.
 - The default full command launches those two independent Node/Chromium/server
-  process trees and verifies the combined inventory. `--serial` runs all 64 groups
+  process trees and verifies the combined inventory. `--serial` runs all 65 current groups
   in the original single-process order. Individual modules and either shard have
   deterministic reproduction commands; dependent UI groups remain together.
 - `wasm` uploads one immutable `web-build`. Each CI browser job downloads it,

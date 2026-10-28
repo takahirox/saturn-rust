@@ -100,9 +100,12 @@ mod tests {
 #[derive(Debug, Default, Clone)]
 pub(super) struct LoadPipeline {
     destination: Option<u8>,
+    /// Only memory loads use the store-data forwarding rule; multiplier/system
+    /// register writeback retains its separate, established interlocks.
+    forward_store_data: bool,
     /// The previous MOV's real IF already split its MA/EX slot.
     fetch_split: bool,
-    /// Shared by MOV and multiplier memory phases. A waited successor fetch
+    /// Shared by MOV loads/stores and multiplier memory phases. A waited successor fetch
     /// consumes this final MA/EX clock; replay journals the observed clock.
     next_ex: Option<u64>,
     pub issue_overlap: u32,
@@ -127,10 +130,12 @@ impl LoadPipeline {
             && self.destination.is_some_and(|register| {
                 load != Some(register)
                     && !matches!(opcode & 0xF00F, 0x000F | 0x400F)
-                    && register_uses(opcode) & (1 << register) != 0
+                    && ex_register_uses(opcode, self.forward_store_data) & (1 << register) != 0
             });
         self.fetch_split = false;
         self.destination = load;
+        self.forward_store_data =
+            load.is_some() && !matches!(opcode & 0xF0FF, 0x000A | 0x001A | 0x4026);
         u32::from(hazard)
     }
 }
@@ -153,7 +158,10 @@ fn load_destination(op: u16) -> Option<u8> {
         _ => None,
     }
 }
-fn register_uses(op: u16) -> u32 {
+// Ordinary store data is needed only in MA and can forward from load WB
+// (Renesas Rev.5.00 §7.2.2, p.419/fig7.14). Keep address/index uses in EX,
+// including aliases where the data register also supplies the address.
+fn ex_register_uses(op: u16, forward_store_data: bool) -> u32 {
     let n = 1 << (op >> 8 & 15);
     let m = 1 << (op >> 4 & 15);
     let pr = 1 << 16;
@@ -169,17 +177,22 @@ fn register_uses(op: u16) -> u32 {
     match op >> 12 {
         0 => match op & 0xFF {
             0x02 | 0x12 | 0x22 | 0x0A | 0x1A | 0x2A | 0x29 | 0x03 | 0x23 => n,
+            _ if forward_store_data && matches!(op & 15, 4..=6) => n | 1,
             _ if matches!(op & 15, 4..=6 | 0xC..=0xE) => n | m | 1,
             _ if matches!(op & 15, 7 | 15) => n | m,
             _ => 0,
         },
+        1 if forward_store_data => n,
+        2 if forward_store_data && matches!(op & 15, 0..=2 | 4..=6) => n,
         1 | 2 | 3 | 5 | 6 => n | m,
         4 | 7 | 9 | 0xD | 0xE => n,
         8 => match op >> 8 & 15 {
+            0 | 1 if forward_store_data => m,
             0 | 1 | 4 | 5 => m | 1,
             8 => 1,
             _ => 0,
         },
+        0xC if forward_store_data && matches!(op >> 8 & 15, 0..=2) => 0,
         0xC => 1, // GBR displacements, MOVA and immediate R0 logic
         _ => 0,
     }
@@ -198,6 +211,7 @@ mod load_pipeline_tests {
                 for (successor, expected) in [
                     (0x7001 | n << 8, 1),
                     (0x6003 | n << 4, 1),
+                    (0x2F02 | n << 4, 1), // multiplier WB retains its interlock
                     (0xE000 | n << 8, 1),
                     (0x0009, 0),
                     (0xB000 | n << 8, 0), // BSR displacement is not Rn
@@ -260,6 +274,46 @@ mod load_pipeline_tests {
         }
     }
     #[test]
+    fn ordinary_store_data_forwards_but_address_and_index_still_interlock() {
+        // Renesas Rev.5.00 §7.2.2, p.419/fig7.14: load WB and store MA
+        // forward data in the same cycle. Address operands are needed in EX.
+        for n in 0..16 {
+            for m in 0..16 {
+                for width in 0..3 {
+                    let mut stores = vec![
+                        (0x2000 | n << 8 | m << 4 | width, 1 << n),
+                        (0x2004 | n << 8 | m << 4 | width, 1 << n),
+                        (0x0004 | n << 8 | m << 4 | width, (1 << n) | 1),
+                        (0xC0FF | width << 8, 0),
+                    ];
+                    if width < 2 {
+                        stores.push((0x800F | width << 8 | n << 4, 1 << n));
+                    } else {
+                        stores.push((0x100F | n << 8 | m << 4, 1 << n));
+                    }
+                    for (store, address_registers) in stores {
+                        for loaded in 0..16 {
+                            for split in [false, true] {
+                                let mut pipeline = LoadPipeline::default();
+                                pipeline.issue(0x60F2 | loaded << 8);
+                                pipeline.load_split(split);
+                                let expected =
+                                    u32::from(!split && address_registers & (1 << loaded) != 0);
+                                assert_eq!(
+                                    pipeline.issue(store),
+                                    expected,
+                                    "R{loaded}->{store:04X}, split={split}"
+                                );
+                                assert_eq!(pipeline.issue(store), 0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn displacement_and_gbr_loads_target_r0_without_treating_displacements_as_registers() {
         for load in [0x84FF, 0x85FF, 0xC4FF, 0xC5FF, 0xC6FF] {
             for (next, expected) in [
@@ -302,20 +356,44 @@ pub(super) fn mov_load_address(op: u16, s: &super::CpuState) -> Option<u32> {
     }
 }
 
-pub(super) struct LoadAccess {
+/// Ordinary stores share the MA/IF slot rules, but introduce no WB hazard.
+/// Address and data remain in the instruction's retained CPU snapshot during
+/// replay. See docs/sh2-store-pipeline.md for acceptance/publication deadlines.
+pub(super) fn mov_store_address(op: u16, s: &super::CpuState) -> Option<u32> {
+    let n = (op >> 8 & 15) as usize;
+    let m = (op >> 4 & 15) as usize;
+    match op >> 12 {
+        0 if matches!(op & 15, 4..=6) => Some(s.r[n].wrapping_add(s.r[0])),
+        1 => Some(s.r[n].wrapping_add(u32::from(op & 15) * 4)),
+        2 if matches!(op & 15, 0..=2 | 4..=6) => {
+            Some(s.r[n].wrapping_sub(if op & 4 != 0 { 1 << (op & 3) } else { 0 }))
+        }
+        8 if matches!(op >> 8 & 15, 0 | 1) => {
+            Some(s.r[m].wrapping_add(u32::from(op & 15) * (1 << (op >> 8 & 1))))
+        }
+        0xC if matches!(op >> 8 & 15, 0..=2) => Some(
+            s.gbr
+                .wrapping_add(u32::from(op as u8) * (1 << (op >> 8 & 3))),
+        ),
+        _ => None,
+    }
+}
+
+pub(super) struct MovAccess {
     end: u64,
     split: bool,
 }
-impl LoadAccess {
+impl MovAccess {
     pub fn start(
         bus: &mut impl crate::bus::Memory,
         address: u32,
+        write: bool,
         pc: u32,
         ex: u64,
     ) -> Result<Self, crate::bus::BusError> {
         let end = ex + 2;
         if let Some(now) = bus.sh2_clock() {
-            let scheduled = bus.sh2_schedule_memory_access(address, false, end);
+            let scheduled = bus.sh2_schedule_memory_access(address, write, end);
             let boundary = end - u64::from(scheduled);
             bus.sh2_pipeline_wait(boundary.saturating_sub(now) as u32)?;
         }
@@ -329,13 +407,22 @@ impl LoadAccess {
         u32::from(self.split)
     }
 
-    pub fn finish(self, pipeline: &mut LoadPipeline, bus: &impl crate::bus::Memory) {
+    pub fn finish(
+        self,
+        pipeline: &mut LoadPipeline,
+        bus: &mut impl crate::bus::Memory,
+    ) -> Result<(), crate::bus::BusError> {
+        let now = bus.sh2_clock().unwrap_or(self.end);
+        // Invalid operand cycles suppress the device access, but still occupy
+        // MA. They must not publish auto-update/branch state during EX.
+        bus.sh2_pipeline_wait(self.end.saturating_sub(now) as u32)?;
         // A real IF and a dependency cause the same split (P figs7.6/7.9).
         // With retained if, recover the final clock of the shared MA/EX slot.
         pipeline.load_split(self.split);
         if !self.split {
-            let end = bus.sh2_clock().unwrap_or(self.end).max(self.end);
+            let end = now.max(self.end);
             pipeline.retain_ex(end - 1);
         }
+        Ok(())
     }
 }

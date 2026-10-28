@@ -85,8 +85,21 @@ including destination-only hazards and the documented load/MAC exceptions.
 Clock observations and completed effects survive journal replay; reset replaces
 both dependency and overlap state. [The stage table](sh2-load-pipeline.md) and
 [Issue #55 validation](validation-issue-55.md) identify precise scope, original
-native/browser guests and remaining speculative-fetch limitations. Ordinary
-store pipeline completion remains separate mandatory #17 work.
+native/browser guests and remaining speculative-fetch limitations.
+
+Ordinary MOV stores use the same MA qualification and aligned successor overlap,
+without creating a WB dependency. A preceding memory load forwards data to store
+MA (Renesas Rev.5.00 §7.2.2, p.419/fig7.14); address/base and R0-index
+uses still interlock in EX. Multiplier/system-register writeback retains its
+existing timing. The interpreter resolves address/data from the retained
+instruction snapshot; scheduled writes request at MA start, synchronous cache
+arrays mutate at MA end, and the BSC owns accepted external payloads until their
+physical publication. The one-entry buffer, external-read fence and separately
+published video words retain their existing bus contracts. Invalid operands
+complete MA before publishing register/branch state and latching address error.
+[The store stage/deadline table](sh2-store-pipeline.md) and
+[Issue #63 validation](validation-issue-63.md) record the precise scope and
+native/browser evidence. Full speculative IF/ID and other pipelines remain #17 work.
 
 `src/cpu/multiplier.rs` retains CPU-local multiplier availability. MULS/MULU,
 MUL.L/DMUL, MAC.W/MAC.L and both directions of MACH/MACL LDS/STS (including

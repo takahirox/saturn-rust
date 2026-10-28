@@ -165,10 +165,10 @@ pub trait Memory {
     fn sh2_pipeline_wait(&mut self, _clocks: u32) -> Result<(), BusError> {
         Ok(())
     }
-    /// Constrain the next read's completion to this SH-2 clock boundary.
+    /// Classify an operand's MA phase at this SH-2 completion boundary.
     /// Returns true for a scheduled access whose bus latency can overlap the
-    /// pipeline wait. Synchronous accesses wait before their effect; writes
-    /// wait before supplying the accumulator value to the write buffer.
+    /// pipeline wait. Synchronous accesses wait before their effect; scheduled
+    /// writes supply retained data to the write buffer at MA start.
     /// Replay adapters journal the boundary and access classification together.
     fn sh2_schedule_memory_access(&self, _address: u32, _write: bool, _completion: u64) -> bool {
         false

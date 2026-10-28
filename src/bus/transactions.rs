@@ -31,6 +31,9 @@ mod reset_tests;
 #[path = "sound_tests.rs"]
 mod sound_tests;
 #[cfg(test)]
+#[path = "store_tests.rs"]
+mod store_tests;
+#[cfg(test)]
 #[path = "vdp1_tests.rs"]
 mod vdp1_tests;
 #[cfg(test)]
@@ -165,7 +168,9 @@ impl ScheduledMemory<'_> {
             Operation::MemoryAccess(address, write, completion) => {
                 let synchronous = self.0.cached
                     && if write {
-                        matches!(address >> 29, 2 | 3 | 6)
+                        // CpuBus applies CCR control/purge writes immediately,
+                        // just like cache-array writes: wait until MA completes.
+                        address == CCR || matches!(address >> 29, 2 | 3 | 6)
                     } else {
                         matches!(address >> 29, 3 | 6)
                             || self.0.bus.cache[self.0.processor as usize]
