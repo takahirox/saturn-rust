@@ -48,6 +48,7 @@ python3 tests/fixtures/build_sprite_rotation.py --check
 python3 tests/fixtures/build_rotation_reload.py --check
 python3 tests/fixtures/build_rotation_fetch.py --check
 python3 tests/fixtures/build_rotation_high_resolution.py --check
+python3 tests/fixtures/build_mosaic.py --check
 python3 tests/fixtures/build_sprite_interlace.py --check
 python3 tests/fixtures/build_vdp1_erase_latch.py --check
 python3 tests/fixtures/build_vdp1_vbe.py --check

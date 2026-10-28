@@ -46,6 +46,7 @@
   "rotationReload",
   "rotationFetch",
   "rotationHighResolution",
+  "mosaic",
   "interlace-video-composition-scu",
   "sound-and-memory",
   "intc-sound-io",

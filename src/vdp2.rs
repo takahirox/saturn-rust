@@ -5,6 +5,8 @@ use std::cell::{Cell, RefCell};
 
 mod access;
 mod fetch;
+#[cfg(test)]
+mod mosaic_tests;
 mod rotation;
 #[cfg(test)]
 mod rotation_fetch_tests;
@@ -666,6 +668,9 @@ impl Vdp2 {
             let mx = usize::from(self.word(0x22) >> 8 & 15) + 1;
             let my = usize::from(self.word(0x22) >> 12) + 1;
             x -= x % mx;
+            // §4.11: selected screens use a single-density picture. Y is
+            // still an output row here; quantize in field-line units.
+            y = self.mosaic_y(layer, y);
             y -= y % my;
         }
         let (ctl, format) = self.character_control(layer);
@@ -697,6 +702,15 @@ impl Vdp2 {
             }
         }
         Some((base, pixel, palette, special, format))
+    }
+    // Keep output geometry and unaffected screens in the hardware TV mode.
+    // See docs/vdp2-mosaic.md for the field/output/source coordinate table.
+    fn mosaic_y(&self, layer: usize, y: usize) -> usize {
+        if self.word(0) & 0xC0 == 0xC0 && self.word(0x22) & (1 << layer) != 0 {
+            y / 2
+        } else {
+            y
+        }
     }
     /// ST-058 §4.5 p.60: the color decoder shares resources across layers.
     /// Raising NBG0/1's color depth disables the documented companion layer,

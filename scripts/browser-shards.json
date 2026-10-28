@@ -60,6 +60,7 @@
     "rotationReload",
     "rotationFetch",
     "rotationHighResolution",
+    "mosaic",
     "scspMonitor",
     "m68kReset",
     "scspClock",

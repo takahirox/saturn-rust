@@ -330,6 +330,16 @@ single-density or double-density images. Double density exposes both image
 fields in a full-height framebuffer. TVSTAT reports the separate physical PAL
 strap and current odd/even field; EXLTFG still clears on read. `set_pal` configures
 the physical standard independently of SMPC area codes and survives resets.
+[Mosaic coordinates](vdp2-mosaic.md) follow VDP2 §4.11: selected NBG0–3
+quantize in field-line units before scroll/zoom; selected RBG0 A/B and RBG1
+quantize only X. Double-density mosaic selects a single-density image row for
+that screen, preserving TVMD, output rows, windows, sprites and unselected
+screens. Both snapshot decoding and scheduled address generation use this rule.
+Line-scroll operands follow the selected normal image row; cell-scroll exclusion
+remains per selected NBG0/NBG1. Rotation retains separate single-density and
+output-density Xst/Yst/KAst progressions from the same captured table operands
+and one-shot requests, so a mosaic picture cannot change shared sprite starts.
+See [native/guest/browser evidence](validation-issue-79.md).
 The PLL uses ST-169 table1.1's PAL 26.6875/28.4375 MHz frequencies; sound/CD/RTC
 keep their fixed clocks, including reference ticks without a main-clock edge.
 
