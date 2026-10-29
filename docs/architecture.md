@@ -784,12 +784,23 @@ and the stage-by-stage evidence are recorded in that contract.
 ## Synthetic external-firmware media startup
 
 The original MIT [external-startup firmware and contract](external-startup.md)
-executes reset vectors, SMPC status/control, SCU interrupt/DMA setup, CD TOC and
-two-sector FIFO DMA, then jumps into its original first-read executable. The
-executing disc guest checks its context, loaded bytes and device/IRQ effects.
+executes reset vectors, SMPC status/control, SCU interrupt/DMA setup and CD TOC.
+Its SH-2 instructions then read and validate Saturn IP, a bounded ISO9660 PVD/
+root directory, and first-read file identifier 2 through scheduled CD/FIFO DMA.
+It derives file extent/length and IP destination/stacks from actual transferred
+bytes, copies the exact file length (including partial final sectors), and enters
+the loaded AIP. The original AIP owns the jump to the loaded program. One ROM
+boots three original discs with different layouts; native and production Wasm
+compare full bytes, command/status/IRQ records, context and chunk equivalence.
+
 ExternalBios cold resets retain the selected physical medium while clearing CD
 transactions and all volatile execution state. Native/Wasm mount APIs and both
 local browser file pickers preserve this mode; changing mode clears selections.
-No HLE installation, first-read host copy or host result write occurs. This
-bounded scenario establishes neither stock Sega BIOS boot nor commercial game
-compatibility. See [Issue #83 validation](validation-issue-83.md).
+No HLE installation, first-read host copy or host result write occurs. The
+independent HLE parser remains unchanged; firmware supports a narrower bounded
+subset without XAR/interleaving/multi-extent files. Unsupported metadata and I/O
+errors park before AIP, including after a partial copy. See
+[Issue #85 validation](validation-issue-85.md) and the historical
+[Issue #83 fixed-layout evidence](validation-issue-83.md). This synthetic boot
+increment establishes neither stock Sega BIOS boot, authenticated retail media,
+broad homebrew support nor commercial-game compatibility.

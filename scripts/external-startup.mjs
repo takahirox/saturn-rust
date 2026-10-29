@@ -13,28 +13,38 @@ export async function externalStartup(page) {
   const requests=[];
   const observe=request=>requests.push({method:request.method(),body:request.postData()});
   page.on("request",observe);
-  const expected=[0x06004004,0x060FE000,0x06000000,48,1,1,1,0x5353,0x8000,2048,0x41000096,0xB0000009];
+  const expected=[0x06004004,0x060FE000,0x06000000,48,1,7,1,0x5353,0x8000,1024,0x41000096,0xB0000009];
   const trace=[
     [0x0401,0,0,0,0x0180,0x4101,0x0100,150],
     [0,0,0,0,0x0180,0x4101,0x0100,150],
     [0x0200,0,0,0,0x4180,204,0,0],
     [0x0600,0,0,0,0x0100,204,0x0100,150],
     [0x3000,0,0,0,0x0180,0x4101,0x0100,150],
-    [0x1080,171,0x0080,2,0x0400,0x4101,0x0100,171],
-    [0x5100,0,0,0,0x0180,0,0,2],
-    [0x6300,0,0,2,0x4180,0x4101,0x0100,173],
-    [0x0600,0,0,0,0x0100,2048,0x0100,173],
+    ...[0,1,16,17,20,21,22].flatMap(lba=>[
+      [0x1080,lba+150,0x80,1,0x0400,0x4101,0x0100,lba+150],
+      [0x5100,0,0,0,0x0180,0,0,1],
+      [0x6300,0,0,1,0x4180,0x4101,0x0100,lba+151],
+      [0x0600,0,0,0,0x0100,1024,0x0100,lba+151],
+    ]),
   ].flat();
-  const run=async()=>page.evaluate(async()=>{
+  const capture=async()=>page.evaluate(async()=>{
     const {emulator:m,advanceFrame}=await import("./app.js");
     for(let i=0;i<200 && m.read_long(0x060100FC)===0;i++)m.run_steps(10000);
     advanceFrame(); advanceFrame();
     return {records:Array.from({length:12},(_,i)=>m.read_long(0x06010000+i*4)),
-      trace:Array.from({length:72},(_,i)=>m.read_long(0x06010400+i*4)),
+      trace:Array.from({length:264},(_,i)=>m.read_long(0x06010400+i*4)),
       marker:m.read_long(0x060100FC),mode:m.mode(),exceptions:m.exception_count(),
       smpc:[0x248,0x25C,0x264,0x260,0x218].map(off=>m.read_long(0x06010000+off)),
-      hle:m.read_long(0x06000320),pixel:[...document.getElementById("screen").getContext("2d").getImageData(0,0,1,1).data]};
+      hle:m.read_long(0x06000320),frame:[...document.getElementById("screen").getContext("2d").getImageData(0,0,320,224).data],
+      pixel:[...document.getElementById("screen").getContext("2d").getImageData(0,0,1,1).data]};
   });
+  const green=Buffer.from(Array.from({length:320*224*4},(_,i)=>[0,255,0,255][i%4]));
+  const run=async()=>{
+    const got=await capture();
+    assert.deepEqual(Buffer.from(got.frame),green,"complete Canvas back-screen RGBA");
+    delete got.frame;
+    return got;
+  };
   // Both orders of actual local File selections; Restart/Reset retain both.
   for(const discFirst of [false,true]) {
     await page.locator("#mode").selectOption("hle");
@@ -45,7 +55,7 @@ export async function externalStartup(page) {
     await page.waitForFunction(()=>document.getElementById("error").textContent==="");
     for(let boot=0;boot<2;boot++) {
       const got=await run();
-      assert.deepEqual(got,{records:expected,trace,marker:0x600D,mode:"User-provided BIOS",exceptions:"3",smpc:[2,7,9,8,0x35],hle:0,pixel:[0,255,0,255]},`local order ${discFirst}, boot ${boot}`);
+      assert.deepEqual(got,{records:expected,trace,marker:0x600D,mode:"User-provided BIOS",exceptions:"9",smpc:[2,7,9,8,0x35],hle:0,pixel:[0,255,0,255]},`local order ${discFirst}, boot ${boot}`);
       if(boot===0)await page.locator(discFirst?"#restart":"#reset").click();
     }
   }
@@ -82,7 +92,7 @@ export async function externalStartup(page) {
       await page.evaluate(name => window.pendingBootReads[name](), finishDiscFirst ? "overlap.bin" : "overlap.iso");
       await page.waitForFunction(() => !document.getElementById("restart").disabled);
       assert.equal(await page.locator("#error").textContent(), "");
-      const expectedBoot={records:expected,trace,marker:0x600D,mode:"User-provided BIOS",exceptions:"3",smpc:[2,7,9,8,0x35],hle:0,pixel:[0,255,0,255]};
+      const expectedBoot={records:expected,trace,marker:0x600D,mode:"User-provided BIOS",exceptions:"9",smpc:[2,7,9,8,0x35],hle:0,pixel:[0,255,0,255]};
       assert.deepEqual(await run(), expectedBoot, `overlap: disc selected first ${discFirst}, finished first ${finishDiscFirst}`);
       await page.locator("#restart").click();
       assert.deepEqual(await run(), expectedBoot, "overlapping selections must survive restart");
@@ -93,7 +103,7 @@ export async function externalStartup(page) {
   for(let control=0;control<6;control++) {
     const bytes=Buffer.from(image),firmware=Buffer.from(rom);
     if(control===1)bytes[21*2048+0xF03]=8;
-    if(control===2)bytes[21*2048]^=1;
+    if(control===2)bytes[21*2048+0xF07]=12;
     if(control===3) {
       let count=0;
       for(let at=0x200;at<firmware.length-4;at+=2)if(firmware.readUInt32BE(at)===0x3000){firmware.writeUInt32BE(0x3100,at);count++;}
@@ -112,7 +122,7 @@ export async function externalStartup(page) {
       return {marker:m.read_long(0x060100FC),entry:m.read_long(0x06010000),backup:m.export_backup_ram()[0],mode:m.mode()};
     },{rom:[...firmware],image:[...bytes],control});
     if(control===5){assert.match(got.error,/512 KiB/);assert.equal(got.marker,0);assert.equal(got.mode,"User-provided BIOS");}
-    else assert.deepEqual(got,{marker:control===4?0x600D:control===1||control===2?0xE002:0xE001,entry:control===4?0x06004004:0,backup:control===4?0x5A:0,mode:"User-provided BIOS"},`negative/reset control ${control}`);
+    else assert.deepEqual(got,{marker:control===4?0x600D:control===1||control===2?0xBAD:control===3?0xE003:0xE001,entry:[1,2,4].includes(control)?0x06004004:0,backup:control===4?0x5A:0,mode:"User-provided BIOS"},`negative/reset control ${control}`);
   }
   // The existing HLE path still installs its own services; no external ROM survives.
   const star=await readFile("web/star-collector.iso");

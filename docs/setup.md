@@ -253,7 +253,7 @@ On main pushes only, `site` waits for all those jobs and uploads that same
 artifact; `deploy` still checks current main. PRs cannot publish. Main runs are
 serialized and superseded PR validation can be canceled.
 
-The direct `npm run test:browser` command runs **all 69 registered groups** with
+The direct `npm run test:browser` command runs **all 71 registered groups** with
 at most two independent Node/Chromium process trees. Each owns its loopback
 server, page state, media and backup RAM. The scenario shard creates a fresh
 context for each module and closes it before the next; the shared UI trace

@@ -51,6 +51,7 @@
     "refreshArbitration",
     "interruptEntry",
     "externalStartup",
+    "externalDiscovery",
     "sh2Fetch",
     "sh2Store",
     "sh2Load",

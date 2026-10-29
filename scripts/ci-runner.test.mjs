@@ -144,16 +144,18 @@ test("shared versus fresh contexts retain complete guest clock, DMAC, Canvas and
 test("complete-suite inventory covers all original groups and missing groups fail", async () => {
   const source = await readFile(new URL("./browser-smoke.mjs", import.meta.url), "utf8");
   const registered = [...source.matchAll(/(?:timings\.(?:group|measure)|setup)\("([^"]+)"/g)].map(m => m[1]);
-  assert.equal(groups.length, 70);
+  assert.equal(groups.length, 71);
   assert(groups.includes("sh2Store"));
   assert(groups.includes("sh2Fetch"));
   assert(groups.includes("cdRw"));
+  assert(groups.includes("externalStartup"));
+  assert(groups.includes("externalDiscovery"));
   assert.deepEqual([...new Set(registered)], groups);
   assert.deepEqual(shards.scenarios, [...source.matchAll(/timings.measure\("([^"]+)"/g)].map(m => m[1]));
   assert.deepEqual(shards.shared, groups.filter(g => !shards.scenarios.includes(g)));
   const scenarioRegistry = source.match(/const scenarios = \{ ([^}]+) \}/)[1].split(/,\s+/);
   assert.deepEqual([...scenarioRegistry, "largeMedia"].sort(), [...shards.scenarios].sort());
-  assert.equal((source.match(/if \(includeScenarios\) await timings.measure/g) ?? []).length, 40);
+  assert.equal((source.match(/if \(includeScenarios\) await timings.measure/g) ?? []).length, 41);
   assert.deepEqual(selection([]).groups, groups);
   for (const args of [["--shard=missing"], ["--group=missing"], ["--shard=shared", "--group=scspMvol"], ["--typo"]]) {
     assert.throws(() => selection(args));
@@ -217,6 +219,29 @@ test("a real isolated guest assertion fails through the supervisor and removes s
     assert.match(child.stderr, /AssertionError/);
     assert.match(child.stderr, /Browser worker .*failed: code=1/);
     assert.match(child.stdout, /BROWSER_TIMING .*"name":"vdp2Status".*"status":"failed"/);
+    assert.match(child.stdout, /BROWSER_TOTAL .*"status":"failed"/);
+    await assert.rejects(access(report), /ENOENT/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("a real firmware discovery oracle failure prevents a success artifact", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "saturn-discovery-failure-"));
+  const report = join(directory, "discovery.json");
+  try {
+    await writeFile(report, '{"status":"passed"}');
+    const preload = `import assert from 'node:assert/strict';
+      const original = assert.deepEqual;
+      assert.deepEqual = (actual, expected, ...rest) => {
+        if (Array.isArray(actual) && actual.length === 12 && actual[0] === 0x06004004) actual[3] ^= 1;
+        return original(actual, expected, ...rest);
+      };`;
+    const source = `import { runWorker } from './scripts/browser-suite.mjs';
+      await runWorker(${JSON.stringify(["--group=externalDiscovery", `--report=${report}`])},
+        { nodeArgs: ['--import', ${JSON.stringify(`data:text/javascript,${encodeURIComponent(preload)}`)}] });`;
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", source], { encoding: "utf8" });
+    assert.equal(child.status, 1);
+    assert.match(child.stderr, /AssertionError/);
+    assert.match(child.stdout, /BROWSER_TIMING .*"name":"externalDiscovery".*"status":"failed"/);
     assert.match(child.stdout, /BROWSER_TOTAL .*"status":"failed"/);
     await assert.rejects(access(report), /ENOENT/);
   } finally { await rm(directory, { recursive: true, force: true }); }

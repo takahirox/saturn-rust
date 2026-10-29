@@ -3921,3 +3921,34 @@ bus arbitration, SCU electrical endpoint, general firmware services, region/
 security, optical-drive corner cases or commercial-game requirements. Hardware
 conformance status remains **Pending**; #81/#82's endpoint evidence limitation
 and publication rule are unchanged.
+
+## Firmware-executed boot-file discovery (Issue #85)
+
+Related to #85 and #17. The [primary-derived contract](external-startup.md)
+reconciles ST-040-R4's CD-ignored first-read size, file identifier 2 semantics,
+AIP entry and apparent destination-address typo with its own linkage example,
+CD I/F ST-162-062094 and ECMA-119 second edition. Original SH-2 firmware reads
+IP/PVD/root records through scheduled CD commands and SCU DMA, derives file
+extent/length and IP destination/stacks, copies the exact byte length, then
+enters the loaded original AIP. It supplies no host HLE parser or private port.
+Existing Rust hardware and UI code suffice unchanged.
+
+One original MIT 512 KiB ROM boots three different original discs (LBA21/35/48,
+4096/4093/6145 bytes; relocated roots/descriptor sequence, directory padding,
+different destinations/stacks/area counts). [Native](../tests/external_startup.rs)
+and [production Wasm](../scripts/external-discovery.mjs) independently compare
+all executable/IP bytes, literal CD requests/responses, DMA/IRQ/context records,
+partial-sector bounds, chunk/inspection equivalence, actual instruction/extent
+mutations, metadata rejection, read errors, abort/reset and retained-medium
+restarts. The existing UI/privacy/Canvas scenario remains registered. A frozen
+inherited-main ROM succeeds on its old disc and fails the unchanged moved-file
+oracle by reading its old FAD171. The CI registry retains the entire 70-group
+lineage and adds discovery as group 71; failure-propagation checks reject its
+failed oracle and stale success report. See [actual checks/hashes](validation-issue-85.md).
+
+This is a bounded synthetic firmware increment. XAR/interleaving/multi-extent
+first reads, complete BIOS ABI/security/region handling, stock Sega BIOS,
+commercial-title support and full chip/optical/bus conformance remain unverified.
+#17 remains open; #81/#82's SCU endpoint evidence and draft-publication rule remain
+unchanged. No successful checkpoint, green CI or intermediate merge establishes
+hardware completion.
