@@ -40,6 +40,9 @@ impl Emulator {
     pub fn reset_loaded_disc(&mut self) -> Result<(), JsValue> {
         self.machine.reset_loaded_disc().map_err(js_error)
     }
+    pub fn clear_media(&mut self) {
+        self.machine.clear_media();
+    }
     /// A NUL-separated name table, lengths and concatenated local file bytes
     /// marshal a complete CUE selection in one call. No path is opened here.
     pub fn reset_cue(

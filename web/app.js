@@ -42,8 +42,12 @@ export function pollGamepads() {
 let lastFrame = 0;
 const context = $("screen").getContext("2d");
 let biosBytes = null;
-let fileGeneration = 0;
-let loadingFile = false;
+// BIOS and disc reads may overlap; only a replacement of the same image cancels it.
+let biosGeneration = 0;
+let discGeneration = 0;
+let loadingBios = false;
+let loadingDisc = false;
+const loadingFile = () => loadingBios || loadingDisc;
 let backupGeneration = 0;
 let loadingBackup = false;
 let view = "play";
@@ -145,23 +149,23 @@ function render() {
     rows($("special"), ["PC", "SR", "PR", "GBR", "VBR", "MACH", "MACL"], emulator.special_registers());
     $("frames").textContent = emulator.frames();
   }
-  const busy = loadingFile || loadingBackup;
+  const busy = loadingFile() || loadingBackup;
   const ready = !busy && canExecute(machineStatus);
   $("step").disabled = !ready;
   $("run").disabled = !ready;
   $("reset").disabled = false;
-  const discReady = ready && $("mode").value === "disc";
+  const discReady = ready && ["disc", "bios"].includes($("mode").value);
   $("pause").disabled = !discReady;
   $("pause").textContent = playing ? "Pause" : "Resume";
-  $("restart").disabled = busy || $("mode").value !== "disc" || !(discBytes || cueMedia || loadedDisc);
+  $("restart").disabled = busy || ($("mode").value === "bios" ? !biosBytes : $("mode").value !== "disc" || !(discBytes || cueMedia || loadedDisc));
   $("frame").disabled = !discReady || playing;
   $("play-homebrew").disabled = busy;
   $("play-prism").disabled = busy;
   $("backup-export").disabled = busy;
-  const state = loadingFile ? "Loading image…" : loadingBackup ? "Reading backup RAM…" : $("error").textContent ? "Stopped — see error below" :
+  const state = loadingFile() ? "Loading image…" : loadingBackup ? "Reading backup RAM…" : $("error").textContent ? "Stopped — see error below" :
     playing ? "Running" : discReady ? "Paused — Resume to play" : "Ready — Play Star Collector or open Debug";
   setText("player-status", `${state} · ${mode}`);
-  $("recovery").hidden = !$("error").textContent || loadingFile;
+  $("recovery").hidden = !$("error").textContent || loadingFile();
 }
 
 // Navigation is presentational: preserve the machine, file generations and errors.
@@ -232,7 +236,14 @@ function reset() {
       cueMedia = null;
     }
     else if ($("mode").value === "hle") emulator.reset_hle();
-    else emulator.reset_bios(biosBytes ?? new Uint8Array());
+    else {
+      emulator.reset_bios(biosBytes ?? new Uint8Array());
+      if (cueMedia) emulator.mount_cue(cueMedia.cue, cueMedia.names, cueMedia.lengths, cueMedia.bytes);
+      else if (discBytes) emulator.mount_disc(discBytes);
+      loadedDisc = loadedDisc || Boolean(cueMedia || discBytes);
+      discBytes = null;
+      cueMedia = null;
+    }
   });
   canvas.width = emulator.video_width();
   canvas.height = emulator.video_height();
@@ -289,13 +300,15 @@ try {
     }
   });
   $("reset").addEventListener("click", () => {
-    fileGeneration++;
-    loadingFile = false;
+    biosGeneration++;
+    discGeneration++;
+    loadingBios = false;
+    loadingDisc = false;
     reset();
   });
   $("restart").addEventListener("click", () => {
     reset();
-    if ($("mode").value === "disc" && canExecute() && !$("settings").open && view === "play") {
+    if (["disc", "bios"].includes($("mode").value) && canExecute() && !$("settings").open && view === "play") {
       playing = true;
       lastFrame = 0;
       $("screen").focus();
@@ -312,23 +325,26 @@ try {
   }));
   $("mode").addEventListener("change", () => {
     // Invalidate pending file reads and discard bytes on every mode change.
-    fileGeneration++;
+    biosGeneration++;
+    discGeneration++;
     biosBytes = null;
     discBytes = null;
     cueMedia = null;
     loadedDisc = false;
+    emulator.clear_media();
     $("disc").value = "";
-    loadingFile = false;
+    loadingBios = false;
+    loadingDisc = false;
     $("bios").value = "";
-    $("disc-controls").hidden = $("mode").value !== "disc";
+    $("disc-controls").hidden = !["disc", "bios"].includes($("mode").value);
     $("bios-controls").hidden = $("mode").value !== "bios";
     reset();
   });
   $("bios").addEventListener("change", async () => {
-    const generation = ++fileGeneration;
+    const generation = ++biosGeneration;
     const file = $("bios").files[0];
     biosBytes = null;
-    loadingFile = false;
+    loadingBios = false;
     reset(); // Immediately stop the old machine, even if reading the new file fails.
     if (!file) return;
     if (file.size !== 524288) {
@@ -336,18 +352,18 @@ try {
       render();
       return;
     }
-    loadingFile = true;
+    loadingBios = true;
     $("error").textContent = "";
     render();
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
-      if (generation !== fileGeneration) return;
+      if (generation !== biosGeneration) return;
       biosBytes = bytes;
-      loadingFile = false;
+      loadingBios = false;
       reset();
     } catch (error) {
-      if (generation !== fileGeneration) return;
-      loadingFile = false;
+      if (generation !== biosGeneration) return;
+      loadingBios = false;
       act(() => { throw new Error(`Could not read BIOS locally: ${error}. Select the file again.`); });
     }
   });
@@ -364,8 +380,8 @@ try {
   for (const [button, image] of [["play-homebrew", "star-collector.iso"], ["play-prism", "prism-courier.iso"]]) $(button).addEventListener("click", async () => {
     $("mode").value = "disc";
     $("mode").dispatchEvent(new Event("change"));
-    const generation = ++fileGeneration;
-    loadingFile = true;
+    const generation = ++discGeneration;
+    loadingDisc = true;
     playAfterLoad = true;
     $("error").textContent = "";
     render();
@@ -373,23 +389,24 @@ try {
       const response = await fetch(`./${image}`);
       if (!response.ok) throw new Error(`Sample ISO HTTP ${response.status}; rebuild or select the ISO locally.`);
       const bytes = new Uint8Array(await response.arrayBuffer());
-      if (generation !== fileGeneration) return;
+      if (generation !== discGeneration) return;
       discBytes = bytes;
-      loadingFile = false;
+      loadingDisc = false;
       beginDisc();
     } catch (error) {
-      if (generation !== fileGeneration) return;
-      loadingFile = false;
+      if (generation !== discGeneration) return;
+      loadingDisc = false;
       act(() => { throw error; });
     }
   });
   $("disc").addEventListener("change", async () => {
-    const generation = ++fileGeneration;
+    const generation = ++discGeneration;
     const files = [...$("disc").files];
     discBytes = null;
     cueMedia = null;
     loadedDisc = false;
-    loadingFile = false;
+    emulator.clear_media();
+    loadingDisc = false;
     reset();
     if (!files.length) return;
     const cueFiles = files.filter((file) => /\.cue$/i.test(file.name));
@@ -402,29 +419,29 @@ try {
       render();
       return;
     }
-    loadingFile = true;
+    loadingDisc = true;
     $("error").textContent = "";
     render();
     try {
       if (cue) {
         const tracks = files.filter((file) => file !== cue);
         const cueText = new TextDecoder("utf-8", { fatal: true }).decode(await cue.arrayBuffer());
-        if (generation !== fileGeneration) return;
+        if (generation !== discGeneration) return;
         // Blob concatenates the selected local file handles, avoiding retained
         // per-file ArrayBuffers plus a second complete JS aggregate copy.
         const bytes = new Uint8Array(await new Blob(tracks).arrayBuffer());
-        if (generation !== fileGeneration) return;
+        if (generation !== discGeneration) return;
         cueMedia = { cue: cueText, names: tracks.map((file) => file.name).join("\0"), lengths: new Uint32Array(tracks.map((file) => file.size)), bytes };
       } else {
         const bytes = new Uint8Array(await file.arrayBuffer());
-        if (generation !== fileGeneration) return;
+        if (generation !== discGeneration) return;
         discBytes = bytes;
       }
-      loadingFile = false;
+      loadingDisc = false;
       beginDisc();
     } catch (error) {
-      if (generation !== fileGeneration) return;
-      loadingFile = false;
+      if (generation !== discGeneration) return;
+      loadingDisc = false;
       act(() => { throw new Error(`Could not read disc locally: ${error}. Select the file again.`); });
     }
   });
@@ -440,7 +457,7 @@ try {
     window.addEventListener(eventName, (event) => {
       const mask = keys[event.key];
       const port2Mask = port2Keys[event.code];
-      if ((!mask && !port2Mask) || $("mode").value !== "disc" || loadingFile || loadingBackup || document.activeElement !== $("screen")) return;
+      if ((!mask && !port2Mask) || !["disc", "bios"].includes($("mode").value) || loadingFile() || loadingBackup || document.activeElement !== $("screen")) return;
       event.preventDefault();
       if (eventName === "keydown") { buttons |= mask ?? 0; port2Buttons |= port2Mask ?? 0; }
       else { buttons &= ~(mask ?? 0); port2Buttons &= ~(port2Mask ?? 0); }

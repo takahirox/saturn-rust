@@ -430,11 +430,21 @@ impl Machine {
     /// Cold reset clears volatile RAM, prior ROM, counters, delay state and faults.
     /// Internal battery-backed RAM survives all boot selections and failed boots.
     /// A rejected BIOS leaves ExternalBios selected and the CPU stopped in Reset.
+    /// External firmware resets retain the physical medium, but reset every CD
+    /// command, selector, FIFO and interrupt. Use clear_media to change selection.
     pub fn reset(&mut self, boot: Boot<'_>) -> Result<(), MachineError> {
+        let medium = if matches!(boot, Boot::ExternalBios(_)) {
+            self.bus.cd.media().cloned()
+        } else {
+            None
+        };
         self.clear_execution();
         match boot {
             Boot::ExternalBios(bytes) => {
                 self.mode = Some(BootMode::ExternalBios);
+                if let Some(medium) = medium {
+                    self.bus.cd.mount(medium);
+                }
                 self.bus.load_bios(bytes)?;
                 self.schedule_cpu_reset(Processor::Master, onchip::ResetRequest::PowerOn);
             }
@@ -510,6 +520,12 @@ impl Machine {
     /// state or invoking HLE. Also useful for synthetic boot ROM acceptance.
     pub fn mount_media(&mut self, media: media::Media) {
         self.bus.cd.mount(media);
+    }
+
+    /// Discard a local media selection before cold reset. This host selection
+    /// operation is separate from the guest's timed tray/drive commands.
+    pub fn clear_media(&mut self) {
+        self.bus.cd = cd::CdBlock::default();
     }
 
     pub fn sound_state(&self) -> &m68k::State {

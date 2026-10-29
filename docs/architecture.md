@@ -780,3 +780,16 @@ normal NMI input. WDT-selected main clocks precede exception entry. HLE restores
 the retained SCU mask and capture service and enables hot reset through MMIO;
 it leaves DMA restart to the guest. Explicit timing and RAM-retention conventions
 and the stage-by-stage evidence are recorded in that contract.
+
+## Synthetic external-firmware media startup
+
+The original MIT [external-startup firmware and contract](external-startup.md)
+executes reset vectors, SMPC status/control, SCU interrupt/DMA setup, CD TOC and
+two-sector FIFO DMA, then jumps into its original first-read executable. The
+executing disc guest checks its context, loaded bytes and device/IRQ effects.
+ExternalBios cold resets retain the selected physical medium while clearing CD
+transactions and all volatile execution state. Native/Wasm mount APIs and both
+local browser file pickers preserve this mode; changing mode clears selections.
+No HLE installation, first-read host copy or host result write occurs. This
+bounded scenario establishes neither stock Sega BIOS boot nor commercial game
+compatibility. See [Issue #83 validation](validation-issue-83.md).

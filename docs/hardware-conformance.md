@@ -3899,3 +3899,25 @@ Full electrical noise filtering, externally asserted WAIT and unestablished slav
 external-vector wiring are not modeled by this increment. See
 [observed validation and inherited-main failure](validation-issue-81.md).
 Issue #17 remains open; BIOS and commercial compatibility remain unverified.
+
+## Synthetic external-firmware startup (Issue #83)
+
+Related to #83 and the outstanding #17 hardware scope. The
+[executable contract](external-startup.md) reconciles the primary revisions,
+register sequence, reset ownership, transaction fences and deterministic timing
+conventions. An original MIT 512 KiB ROM issues real SMPC/SCU/CD accesses and
+loads its original two-sector ISO9660 first-read file through scheduled FIFO DMA.
+The executing disc guest checks entry/stack, device state, IRQs, transferred
+bytes and arithmetic; native and production browser Wasm compare literal logs,
+negative controls, reset/SYSRES and Canvas. External cold reset now retains the
+medium while canceling CD/CPU/DMA state. Browser BIOS mode accepts both local
+firmware and media without fallback or uploads.
+
+The inherited code already executed the first handoff; the unchanged inherited-
+main regression exposes medium loss at cold restart. No missing port was stubbed
+to accommodate this fixture. [Validation](validation-issue-83.md) records exact
+results and publication limits. The bounded trace does not resolve full reset,
+bus arbitration, SCU electrical endpoint, general firmware services, region/
+security, optical-drive corner cases or commercial-game requirements. Hardware
+conformance status remains **Pending**; #81/#82's endpoint evidence limitation
+and publication rule are unchanged.

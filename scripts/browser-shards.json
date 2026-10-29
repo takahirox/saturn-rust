@@ -50,6 +50,7 @@
     "hardwareBoundaries",
     "refreshArbitration",
     "interruptEntry",
+    "externalStartup",
     "sh2Fetch",
     "sh2Store",
     "sh2Load",
