@@ -120,6 +120,20 @@ and guest SYSRES controls, checks empty browser storage, and then runs existing
 HLE Star Collector with HLE services present. The complete suite retains Star
 Collector, Prism Courier and Hardware Lab assertions and all existing groups.
 
+## Review regression: overlapping local selections
+
+The browser regression holds both local file reads pending, then exercises both
+selection orders and both completion orders. It checks that execution controls
+stay disabled until both reads finish, then verifies the literal guest records,
+Canvas pixel and a second boot through Restart. Against the pre-fix UI the test
+failed: the disc selection invalidated the pending BIOS read, so Restart stayed
+disabled after both completed. Independent BIOS/disc generations and loading
+flags make the unchanged regression pass; Reset and mode changes still cancel
+both pending reads. After this fix, the production Wasm build, focused browser
+group, all 12 CI runner tests, JS syntax and whitespace checks passed. The full
+browser suite also passed all 70 groups (30 shared + 40 scenarios) in 320.738 s,
+including the existing stale-read/mode-change checks and all homebrew runs.
+
 ## Final local checks, 2026-10-29
 
 Toolchain: rustup stable rustc 1.99.0, cargo 1.99.0; Wasm target

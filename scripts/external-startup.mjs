@@ -49,6 +49,47 @@ export async function externalStartup(page) {
       if(boot===0)await page.locator(discFirst?"#restart":"#reset").click();
     }
   }
+  // Hold both actual File reads pending: neither picker may cancel the other,
+  // and finishing only one must leave execution disabled until both settle.
+  for(const discFirst of [false,true]) for(const finishDiscFirst of [false,true]) {
+    await page.locator("#mode").selectOption("hle");
+    await page.locator("#mode").selectOption("bios");
+    await page.evaluate(() => {
+      const original = File.prototype.arrayBuffer;
+      window.pendingBootReads = {};
+      File.prototype.arrayBuffer = function () {
+        const file = this;
+        return new Promise((resolve, reject) => {
+          window.pendingBootReads[file.name] = async () => {
+            try { resolve(await original.call(file)); } catch(error) { reject(error); }
+          };
+        });
+      };
+      window.restoreBootReads = () => { File.prototype.arrayBuffer = original; };
+    });
+    try {
+      const loadRom=()=>page.locator("#bios").setInputFiles({name:"overlap.bin",mimeType:"application/octet-stream",buffer:rom});
+      const loadDisc=()=>page.locator("#disc").setInputFiles({name:"overlap.iso",mimeType:"application/octet-stream",buffer:image});
+      if(discFirst) {await loadDisc();await loadRom();} else {await loadRom();await loadDisc();}
+      await page.waitForFunction(() => Object.keys(window.pendingBootReads).length === 2);
+      const assertLoading = async () => {
+        assert.match(await page.locator("#player-status").textContent(), /Loading image/);
+        for(const id of ["step","run","restart","frame"]) assert(await page.locator(`#${id}`).isDisabled(), `${id} must wait for both files`);
+      };
+      await assertLoading();
+      await page.evaluate(name => window.pendingBootReads[name](), finishDiscFirst ? "overlap.iso" : "overlap.bin");
+      await assertLoading();
+      await page.evaluate(name => window.pendingBootReads[name](), finishDiscFirst ? "overlap.bin" : "overlap.iso");
+      await page.waitForFunction(() => !document.getElementById("restart").disabled);
+      assert.equal(await page.locator("#error").textContent(), "");
+      const expectedBoot={records:expected,trace,marker:0x600D,mode:"User-provided BIOS",exceptions:"3",smpc:[2,7,9,8,0x35],hle:0,pixel:[0,255,0,255]};
+      assert.deepEqual(await run(), expectedBoot, `overlap: disc selected first ${discFirst}, finished first ${finishDiscFirst}`);
+      await page.locator("#restart").click();
+      assert.deepEqual(await run(), expectedBoot, "overlapping selections must survive restart");
+    } finally {
+      await page.evaluate(() => { window.restoreBootReads(); delete window.pendingBootReads; delete window.restoreBootReads; });
+    }
+  }
   for(let control=0;control<6;control++) {
     const bytes=Buffer.from(image),firmware=Buffer.from(rom);
     if(control===1)bytes[21*2048+0xF03]=8;
@@ -83,5 +124,5 @@ export async function externalStartup(page) {
   assert(requests.every(r=>r.method==="GET" && r.body===null),"local images must not be uploaded");
   assert.equal(await page.evaluate(()=>localStorage.length+sessionStorage.length),0);
   page.off("request",observe);
-  console.log("External startup passed: both local selection orders, reset retention, literal CD/IRQ/DMA/entry records, Canvas, sector/command/no-media/invalid-ROM controls, guest SYSRES and HLE isolation.");
+  console.log("External startup passed: sequential and overlapping local selections in both selection/completion orders, loading controls, reset retention, literal CD/IRQ/DMA/entry records, Canvas, sector/command/no-media/invalid-ROM controls, guest SYSRES and HLE isolation.");
 }
