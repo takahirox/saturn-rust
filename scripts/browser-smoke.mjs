@@ -2272,6 +2272,8 @@ try {
       guest.reset_bios(Uint8Array.from(rom));
       guest.run_steps(10000);
       const start=Array.from({length:4},(_,i)=>guest.read_long(0x06009000+i*4));
+      const pendingDma0=guest.read_long(0x25FE00A4)&0x800;
+      const entryRecords=Array.from({length:3},(_,i)=>guest.read_long(0x06009020+i*4));
       const quotients=Array.from({length:divisionWords},(_,i)=>guest.read_long(0x06009100+i*4));
       const traces=[];
       if(start[3]===0x600D) for(const port of [0,1,0]) {
@@ -2285,7 +2287,7 @@ try {
         guest.run_steps(500);
         traces.push({words,expected,count:guest.read_long(0x06009010)});
       }
-      return {start,quotients,traces,exceptions:guest.exception_count()};
+      return {start,quotients,traces,exceptions:guest.exception_count(),pendingDma0,entryRecords};
     } finally {guest.free();}
   },{rom:[...rom],divisionWords:divisions.length});
   const intc=await intcResult(intcRom);
@@ -2298,14 +2300,19 @@ try {
     assert.equal(words[3]&0x202,2);
     assert.equal(count,i+1);
   });
-  assert.equal(intc.exceptions,"5");
+  assert.equal(intc.exceptions,"6");
+  assert.equal(intc.pendingDma0,0);
+  assert.deepEqual(intc.entryRecords,[0x800,0,2]);
   assert.deepEqual(await intcResult(intcRom),intc);
   const changedIntc=Buffer.from(intcRom);
   const vectorMode=Buffer.from([0xE0,1,0x21,1]);
   const vectorModeAt=changedIntc.indexOf(vectorMode);
   assert(vectorModeAt>=0 && changedIntc.indexOf(vectorMode,vectorModeAt+1)===-1);
   changedIntc[vectorModeAt+1]=0;
-  assert.deepEqual((await intcResult(changedIntc)).start,[0xFFFF8000,0x42,0,0]);
+  const autovectorIntc=await intcResult(changedIntc);
+  assert.deepEqual(autovectorIntc.start,[0xFFFF8000,0x42,0,0]);
+  assert.equal(autovectorIntc.pendingDma0,0x800);
+  assert.deepEqual(autovectorIntc.entryRecords,[0x800,0,0]);
   const soundIoRom=Buffer.alloc(524288);
   for (const line of (await readFile("tests/fixtures/sound-io.hex","utf8")).split(/\r?\n/)) {
     if (!line || line.startsWith("#")) continue;

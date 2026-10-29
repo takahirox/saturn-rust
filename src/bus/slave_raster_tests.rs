@@ -133,14 +133,16 @@ fn slave_levels_ignore_scu_acknowledgement_and_arbitrate_internal_frt() {
         b.write32(SCU + 0xA0, mask).unwrap();
         let pending = b.read32(SCU + 0xA4).unwrap();
         for _ in 0..3 {
-            b.acknowledge_interrupt(Processor::Slave, (2, 0x41));
+            b.complete_interrupt_vector(Processor::Slave, (2, 0x41));
         }
         assert_eq!(b.read32(SCU + 0xA4), Ok(pending));
         assert_eq!(b.interrupt(Processor::Slave), Some((2, 0x41)));
     }
     b.write32(SCU + 0xA0, 0).unwrap();
     assert_eq!(b.interrupt(Processor::Master), Some((13, 0x46)));
-    b.acknowledge_interrupt(Processor::Master, (13, 0x46));
+    b.onchip[0].write16(0xFFFFFEE0, 1).unwrap();
+    b.complete_interrupt_vector(Processor::Master, (13, 0x42));
+    assert_eq!(b.read32(SCU + 0xA4).unwrap() & 4, 0);
 
     assert_eq!(b.interrupt(Processor::Slave), Some((2, 0x41)));
     b.advance_clocks(224 * 1708 + 1280 - 1280).unwrap();

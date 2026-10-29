@@ -1,9 +1,11 @@
 //! Golden vectors are authored from ST-097 §§2–4, corrected by ST-210.
+//! Endpoint consumption/order tests describe the functional model where those
+//! references leave electrical behavior unspecified; see sh2-interrupt-entry.md.
 use super::*;
 use crate::bus::{Bus, HIGH_WRAM};
 
 #[test]
-fn interrupt_priority_mask_ack_and_external_gate_match_table_2_1() {
+fn interrupt_mapping_and_gate_with_model_equal_level_order_and_consumption() {
     let mut scu = Scu::default();
     for bit in [11, 10, 9, 8, 7, 5, 4, 3, 2, 1, 0] {
         scu.signal(bit);
@@ -43,6 +45,57 @@ fn interrupt_priority_mask_ack_and_external_gate_match_table_2_1() {
     }
     assert!(scu.write32(SCU + 0xA4, 0).is_err()); // ST-210 #7
     assert!(scu.read32(SCU + 0xA0).is_err()); // IMS write-only
+}
+
+#[test]
+fn endpoint_model_consumes_only_unmasked_sources_at_requested_level() {
+    // Literal source sets from ST-097 table2.1, independent of INTERRUPT_LEVELS.
+    // Membership/IMS follow the documented map. Draining one selected source
+    // per acquisition is a model invariant, not evidence of the silicon edge
+    // or of any particular equal-level order.
+    for (level, sources) in [
+        (0, 0),
+        (1, 0xFF00_0000),
+        (2, 0x2000),
+        (3, 0x1000),
+        (4, 0x00F0_0000),
+        (5, 0x800),
+        (6, 0x600),
+        (7, 0x000F_0000),
+        (8, 0x180),
+        (9, 0x40),
+        (10, 0x20),
+        (11, 0x10),
+        (12, 8),
+        (13, 4),
+        (14, 2),
+        (15, 1),
+    ] {
+        for mask in [0u32, 0x3FFF, 0x8000, 0x0180, 0xBFFF] {
+            let mut scu = Scu::default();
+            scu.write32(SCU + 0xA0, mask).unwrap();
+            for bit in 0..32 {
+                scu.write32(SCU + 0xA8, 1).unwrap();
+                scu.signal(bit);
+            }
+            let enabled = !mask & 0x3FFF | if mask & 0x8000 == 0 { 0xFFFF_0000 } else { 0 };
+            let mut eligible = sources & enabled;
+            loop {
+                let before = scu.read32(SCU + 0xA4).unwrap();
+                let vector = scu.acquire_vector(level);
+                if eligible == 0 {
+                    assert_eq!(vector, 0x7F); // undriven-data model convention
+                    assert_eq!(scu.read32(SCU + 0xA4).unwrap(), before);
+                    break;
+                }
+                assert!((0x40..=0x5F).contains(&vector));
+                let selected = 1 << (vector - 0x40);
+                assert_ne!(eligible & selected, 0, "level={level}, mask={mask:X}");
+                assert_eq!(scu.read32(SCU + 0xA4).unwrap(), before & !selected);
+                eligible &= !selected;
+            }
+        }
+    }
 }
 
 fn set_dma(

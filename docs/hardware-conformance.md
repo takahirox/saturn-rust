@@ -575,7 +575,8 @@ ST-210 supersedes the earlier indirect-table diagram and removes DSTA/DSTOP;
 these ports and prohibited IST writes raise diagnostics rather than behaving as
 inert registers. Master external-vector acquisition now uses the accepted IRL
 level and acknowledges only its selected source at acquisition completion;
-autovector mode keeps the accepted source identity. Both are replay-safe. The
+autovector mode generates no endpoint acknowledgement and preserves requests.
+The external acquisition is replay-safe. The
 [phase contract and SCU evidence limits](sh2-interrupt-entry.md) distinguish the
 SH-2 specification from deterministic SCU endpoint conventions.
 A-bus requests require AIACK to be armed again after its acknowledge cycle.
@@ -3860,7 +3861,7 @@ IRL and slave autovector IRL. Both CPU adapters execute the NMI microsequence;
 SMPC wiring remains master-only. Tests cover waits, recognition, SR masks and
 ties (including a peripheral programmed to vector 12), a recognized but masked
 SCU request during native before-execution UBC entry in both vector modes,
-accepted-level and same-level competitors, exact acknowledgement, replay, NMI edges before/after
+accepted-level and same-level competitors, modeled consumption, replay, NMI edges before/after
 clear, completed-effect retention, peer CPU/DMAC/refresh contention and reset
 cancellation. Timelines compare chunks 1/3/17/10000 and passive inspection off/on.
 Existing delayed-branch/protected-successor, NMIE/NMIF, SLEEP and standby/clock
@@ -3884,9 +3885,16 @@ run in [native Machine](../tests/interrupt_entry.rs) and the required
 operands, DMA source operands, omitted FRT/SCU triggers and repeated cold boots
 have independent expectations. Hosts mutate ROM before boot only.
 
-Status remains **Pending**: the cited SCU documents do not affirmatively specify
-same-level factor arbitration, the exact automatic clear edge or autovector
-acknowledgement. Those conventions are explicit, not hardware-conformance claims.
+Status remains **Pending** for hardware conformance: the cited SCU documents do
+not establish equal-level arbitration, the exact automatic clear edge or undriven
+data. These functional conventions remain unverified under #17. The
+[CPU/endpoint reconciliation](sh2-interrupt-entry.md#reconciled-cpuendpoint-boundary)
+removes fabricated autovector acknowledgement and distinguishes documented
+protocol/mapping from derived isolation invariants and unspecified endpoint
+details. An exhaustive level/mask model test checks eligible-source membership
+and preservation of all other sources without imposing tie order. The autovector
+regression checks absent acquisition and retained requests across waited entry,
+all four advancement chunks and inspection off/on; it failed before the fix.
 Full electrical noise filtering, externally asserted WAIT and unestablished slave
 external-vector wiring are not modeled by this increment. See
 [observed validation and inherited-main failure](validation-issue-81.md).

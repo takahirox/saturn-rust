@@ -199,11 +199,13 @@ Master external-vector acquisition owns a distinct two-state bus transaction.
 It outputs the accepted level, samples the SCU endpoint at completion and ignores
 BSC programmable waits and memory/cache decoding. Other levels stay pending.
 The transaction retains its accepted level and requested architectural vector;
-the acquisition result and acknowledgement are journaled together. Autovector
-acknowledgement retains the accepted source identity. Same-level source order,
-autovector acknowledgement and the exact SCU clear edge are documented board
-conventions whose SCU-specific primary evidence remains incomplete. This is a
-partial #17 increment; see the [Issue #81 validation](validation-issue-81.md).
+the acquisition result and endpoint consumption are journaled together.
+`Scu::acquire_vector(level)` confines the functional endpoint policy to that
+handshake. IRL context carries no SCU factor identity. Internal autovectors
+perform no external acquisition and preserve SCU pending requests. Equal-level
+order, completion-edge consumption and undriven data are functional conventions,
+not established SCU electrical behavior; see the [primary boundary reconciliation](sh2-interrupt-entry.md#reconciled-cpuendpoint-boundary).
+This is a partial #17 increment; see the [Issue #81 validation](validation-issue-81.md).
 
 CPU address errors dispatch vector 9 with next-PC/SR stacking, operand completion
 and delayed-branch deferral (SH7604 §§4.3/4.6/4.7). `src/cpu/memory.rs` checks

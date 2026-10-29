@@ -5,22 +5,96 @@ and records remaining SCU evidence gaps; it does not establish hardware completi
 Do not close #17. Do not treat green checks as resolving unverified endpoint
 behavior or as evidence of genuine BIOS or commercial-game compatibility.
 
-**Current publication handoff (reviewed head `0478f86`):** PR #82's Related
-Issues section was corrected to `Related to #81.`. Exact body readback confirmed
-the correction, open/draft state and unchanged published head
-`0478f8636c774fa3378b4a45132d69b4f1c5e9df`. Publication must preserve this
-plain reference and partial-work statement, without generating a closing reference.
+## Current correction: CPU/SCU endpoint boundary
 
-The SCU evidence finding remains mandatory and unresolved. Reinspection of
-ST-097-R5 §§2.2/3.5 and ST-210 item 7 supplied no affirmative endpoint rule.
-ST-097-R5 §3.6/Table 3.9 (printed p.61) describes the separate A-Bus
-classification-data acquisition and AIACK rearming; it does not establish
-SCU-to-SH-2 same-level arbitration, the source-clear edge or autovector
-acknowledgement. No runtime or Issue-contract change is justified by this
-investigation, and this record does not satisfy the missing acceptance criterion.
-Checks for this correction: exact PR body/state/head readback, local Markdown
-links and `git diff --check` passed. Runtime suites were not rerun for this
-documentation/metadata-only change. No push or merge was performed.
+The [primary-reference reconciliation](sh2-interrupt-entry.md#reconciled-cpuendpoint-boundary)
+addresses the P2 finding through #81's authorized technical-correction path.
+H Figure 5.2 places the vector generator outside the CPU; H §5.6 permits
+fetch-detected clearing without defining SCU arbitration or a mandatory edge.
+ST-097 defines mappings/masks and ST-210 prohibits IST writes. Treating these
+as an affirmative specification of every endpoint choice was the mistaken
+architectural assumption. Exact printed/PDF pages and the separate A-Bus
+interface are recorded in the phase contract. No affirmative silicon evidence
+has been invented.
+
+The implementation now confines external selection/consumption to
+`Scu::acquire_vector(level)`, removes SCU factor identity from CPU request
+context, and removes hidden SCU acknowledgement during internal autovector
+selection. Without a modeled IVECF handshake, pending requests survive.
+Equal-level order, the model completion edge and undriven data remain explicit
+functional choices and #17 conformance limits.
+
+The new autovector regression failed before the fix: IST was `1` instead of
+`5`, proving that CPU-internal selection had consumed HBlank. It now covers
+waited entry, saved PC/SR, a competing level, no IVECF, chunks 1/3/17/10000 and
+inspection off/on. An independent literal Table 2.1 source-set oracle covers
+every level under five masks without asserting a particular tie winner.
+The existing tie test is explicitly named as a model-convention test.
+Native and browser INTC controls execute identical rebuilt guest bytes. The first
+DMA0 interrupt deliberately uses autovector `42`; its guest handler records
+IST.DMA0=`800` and masks the source so main can switch VECMD. Main unmasks and
+waits for external acquisition of that retained request before starting the
+second DMA. External handlers record IST.DMA0=`0` and count two acquisitions.
+Thus the intended total is three initial entries (then three PAD entries), rather
+than the old two initial entries which assumed autovector consumption. Disabling
+VECMD gives two autovector entries, no acquisition and retained IST.DMA0=`800`;
+the second DMA never starts. This is an independent interface expectation, not
+an emulator-generated timing replacement. DSP arithmetic now explicitly enables
+VECMD so ENDI requests are consumed through the external endpoint. Its literal
+arithmetic/status records are unchanged.
+
+Two older device tests needed setup corrections: PAD endpoint cleanup now
+unmasks PAD before acquisition; VDP1 acknowledgement now enables external-vector
+mode and expects vector `4D` rather than internally generated `41`. Their device
+edge, DMA deadline and repeated-edge assertions remain. A clock-reset cleanup
+also uses the explicit endpoint instead of a private status-clear function.
+The slave raster vector now performs an actual master external acquisition
+before asserting that slave IRL persists. The test helper schedules that two-state
+transaction instead of treating it as an immediate CPU-internal selection.
+
+The source [Issue #81](https://github.com/takahirox/saturn-rust/issues/81) was
+updated under its explicit specification-reconciliation authority: the SCU
+outcome, SCU paragraph and acquisition criterion now separate specified/derived/unspecified
+behavior and require the stronger isolation/eligibility and no-hidden-ack tests.
+Exact body readback matched the prepared correction, all eight acceptance
+criteria remain, and the Issue remains open. The CPU/guest/negative-oracle and
+full-suite requirements were retained. No PR metadata was changed by this fix.
+
+Rebuilt expanded-ROM SHA-256:
+
+- INTC: `1ec8e2f778c37b36e06a15371dd9e41a9bf1bff1d36f7db1696f3c4ffbab8b2e`.
+- DSP arithmetic: `c3b9a929139b1a800ffd4b0eb662941721bd5ca9536d91f008ae9f068d0d41a0`.
+
+### Correction validation (2026-10-29)
+
+Executed in the assigned worktree with the native/Wasm toolchains recorded
+below. The first full runs exposed the device-test setup and guest autovector
+assumptions described above; those failed runs are not counted as passing.
+The final native and browser runs used the corrected fixtures and unchanged
+literal DSP arithmetic/status expectations. No required checks were skipped.
+
+| Check | Final observed result |
+| --- | --- |
+| `cargo fmt --check`, `cargo build --locked` | Passed |
+| `cargo test --locked` | Passed: 1,122 tests (739 library + 383 integration), zero failed/ignored |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed |
+| Wasm warnings-denied Clippy | Passed |
+| `sh scripts/check-fixtures.sh` | Passed: all 99 builders, including rebuilt INTC/DSP fixtures |
+| `sh scripts/build-web.sh` | Passed with installed rustup Wasm compiler and matching CLI |
+| `node --test scripts/ci-runner.test.mjs` | Passed: 12 tests, zero skipped |
+| `npm run test:browser` | Passed: shared 30 + scenarios 39 = all 69 groups, 287.427 s |
+| `node --check scripts/browser-smoke.mjs`, changed-document relative links/new anchor, `git diff --check` | Passed |
+| Source Issue reconciliation | Exact readback matched; eight acceptance criteria retained; #81 open |
+
+The existing Issue #81 interrupt guest, phase oracles and inherited-main
+negative-oracle evidence remain intact. Browser validation includes Star
+Collector, Prism Courier and Hardware Lab. These are local results, not a claim
+about remote CI for the unpublished correction or about SCU silicon behavior.
+
+Publication must retain `Related to #81`, leave #81 open and keep PR #82 draft
+for review of this correction. No push or merge is authorized here. Earlier
+checkpoints below are historical; their unresolved-finding statements describe
+the pre-reconciliation implementation and contract, not the current correction.
 
 The [phase contract](sh2-interrupt-entry.md) was recorded before implementation.
 It links the exact primary revisions and separates specified phases from board
@@ -112,16 +186,14 @@ uses immutable final build output; no failed run is counted as passing.
 
 ## Remaining acceptance limits
 
-The cited ST-097/ST-210 documents establish source/level/vector mappings and
-prohibit IST writes. H establishes accepted-level output and permits clearing
-on external acquisition. They do not affirmatively establish SCU same-level
-arbitration, its exact source-clear edge or acknowledgement without IVECF in
-SH-2 autovector mode. Ascending-vector selection, completion-edge consumption
-and accepted-source autovector acknowledgement are explicit deterministic
-conventions. The Issue #81 requirement for affirmative SCU-specific evidence
-therefore remains unmet; leave #81 open rather than claiming this checkpoint
-fully resolves it. No Issue edits or comments were made under this node's
-local-files/commit-only authorization.
+SCU equal-level arbitration, its exact automatic clear edge and undriven-data
+behavior remain unverified hardware-conformance limits under #17. The corrected
+#81 contract distinguishes these functional choices from the documented CPU
+interface and board mapping. It requires isolation/eligibility and replay
+invariants and prohibits fabricated endpoint acknowledgement during internal
+autovector selection. This correction does not prove undocumented silicon
+behavior. Keep #81 open and PR #82 draft pending publication/review, with plain
+`Related to #81` references.
 
 Noise pulses, physical external WAIT and slave external-vector wiring are not
 established by these tests. All remaining #17 CPU/peripheral/cache/bus/reset/DMA,

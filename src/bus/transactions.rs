@@ -188,14 +188,10 @@ impl ScheduledMemory<'_> {
                         .vector_waiting = Some((level, vector));
                     Err(BusError::Pending)
                 } else {
-                    if let Some(irq) = irq {
-                        match irq.source {
-                            // Legacy board convention in auto-vector mode; see
-                            // docs/sh2-interrupt-entry.md for the evidence limit.
-                            InterruptSource::Scu(source) => self.0.bus.scu.acknowledge(source),
-                            InterruptSource::Break => self.0.acknowledge_break(),
-                            _ => (),
-                        }
+                    if let Some(irq) = irq
+                        && irq.source == InterruptSource::Break
+                    {
+                        self.0.acknowledge_break();
                     }
                     Ok(u32::from(vector))
                 }
@@ -1313,12 +1309,9 @@ impl Bus {
     }
     fn complete_bus_transaction(&mut self, active: Active) -> Result<(), ScuError> {
         if let Owner::Vector(processor, level) = active.owner {
-            let source = self.scu.interrupt_at_level(level);
-            // Absent endpoint data is pulled high, then masked to seven bits.
-            let vector = source.unwrap_or(0x7F);
-            if let Some(source) = source {
-                self.scu.acknowledge(source);
-            }
+            // Only an IVECF transaction reaches the board endpoint. Internal
+            // autovector selection supplies no acknowledgement to the SCU.
+            let vector = self.scu.acquire_vector(level);
             let journal = self.transactions.journals[processor as usize].get_mut();
             let (accepted_level, architectural_vector) = journal.vector_waiting.unwrap();
             assert_eq!(level, accepted_level);

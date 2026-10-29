@@ -101,24 +101,32 @@ impl Scu {
             .map(|bit| (INTERRUPT_LEVELS[bit], 0x40 + bit as u8))
             .max_by_key(|(level, vector)| (*level, 255 - *vector))
     }
-    pub(crate) fn acknowledge(&mut self, vector: u8) {
+    fn acknowledge(&mut self, vector: u8) {
         if (0x40..=0x5F).contains(&vector) {
             self.status &= !(1 << (vector - 0x40));
         }
     }
-    /// H §5.2.3: A3–A0 identifies the accepted level during IVECF.
-    /// ST-097 table2.1 supplies the corresponding SCU source vectors.
-    /// Same-level ascending-vector arbitration is a deterministic convention.
-    pub(crate) fn interrupt_at_level(&self, level: u8) -> Option<u8> {
+    /// Functional SCU endpoint for H §5.2.3's IVECF/A3–A0 interface.
+    /// ST-097 table2.1 defines the level/vector map, not the clear edge or
+    /// equal-level arbitration. This model selects ascending vectors and
+    /// consumes the selected source at acquisition completion (H §5.6 allows
+    /// fetch-detected clearing). Neither choice proves the SCU silicon rule.
+    /// No endpoint call is made for SH-2 autovectors; see the phase contract.
+    pub(crate) fn acquire_vector(&mut self, level: u8) -> u8 {
         let unmasked = self.status & !u32::from(self.mask) & 0x3FFF
             | if self.mask & 0x8000 == 0 {
                 self.status & 0xFFFF_0000
             } else {
                 0
             };
-        (0..32)
+        let source = (0..32)
             .find(|&bit| unmasked & (1 << bit) != 0 && INTERRUPT_LEVELS[bit] == level)
-            .map(|bit| 0x40 + bit as u8)
+            .map(|bit| 0x40 + bit as u8);
+        if let Some(vector) = source {
+            self.acknowledge(vector);
+        }
+        // Undriven data is modeled high; this is not a specified SCU vector.
+        source.unwrap_or(0x7F)
     }
     #[cfg(test)]
     pub(crate) fn dma_pending(&self) -> bool {

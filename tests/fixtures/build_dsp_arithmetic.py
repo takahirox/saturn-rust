@@ -44,7 +44,10 @@ def read(address):
 
 def build():
     # Only DSP-end IRQ enabled. Each ENDI is observed by a real RTE handler.
-    s = ('load 0x2600ec00,r8\nmov #0,r0\nldc r0,sr\n'
+    # SCU consumption requires an external-vector acquisition, not an
+    # internally generated autovector that happens to have the same number.
+    s = ('load 0x2600ec00,r8\nload 0xfffffee0,r1\nmov #1,r0\nmov.w r0,@r1\n'
+         'mov #0,r0\nldc r0,sr\n'
          + store(0x25fe00a0, 0xbfdf))
     # Record cold-reset flags and interrupt status before executing any DSP work.
     s += read(0x25fe0080)
@@ -73,7 +76,7 @@ def build():
     # ENDI with overflow and then ENDI with replacement. No control-port polls
     # while running: main waits for handler's count. Handler reads status twice,
     # consumes the result and computes result+1. Control reads clear V and acknowledge E;
-    # CPU interrupt entry acknowledges the SCU request.
+    # The external-vector acquisition consumes the modeled SCU request.
     for i, words in enumerate([LOAD+[0x10043209], LOAD+[0x10040000, 0x10043209]]):
         s += data(0, [0x7fffffff])+data(64, [1])+start(words+[0xf8000000])
         s += (f'load 0x2600f000,r1\nirq_wait{i}:\nmov.l @r1,r0\n'

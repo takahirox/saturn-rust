@@ -323,7 +323,8 @@ pub struct Bus {
 pub(crate) enum InterruptSource {
     Internal,
     Break,
-    Scu(u8),
+    // IRL carries a level, not an SCU factor identity (H figs5.2/5.3).
+    Scu,
     Slave,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -491,7 +492,7 @@ impl Bus {
                 InterruptSource::Internal
             }
         } else if processor == Processor::Master {
-            InterruptSource::Scu(self.scu.interrupt().unwrap().1)
+            InterruptSource::Scu
         } else {
             InterruptSource::Slave
         };
@@ -499,7 +500,7 @@ impl Bus {
             level: selected.0,
             vector: selected.1,
             source,
-            external: matches!(source, InterruptSource::Scu(_))
+            external: matches!(source, InterruptSource::Scu)
                 && self.onchip[0].autovector(selected.0).is_none(),
         })
     }
@@ -509,8 +510,8 @@ impl Bus {
             let request = self.interrupt_request(p);
             let observed = &mut self.irq_observed[p as usize];
             if let (Some((old, since)), Some(new)) = (*observed, request)
-                && matches!(old.source, InterruptSource::Scu(_))
-                && matches!(new.source, InterruptSource::Scu(_))
+                && matches!(old.source, InterruptSource::Scu)
+                && matches!(new.source, InterruptSource::Scu)
                 && old.level == new.level
                 && old.external == new.external
             {
@@ -527,10 +528,19 @@ impl Bus {
         (self.main_clocks >= since + 5).then_some(r)
     }
     #[cfg(test)]
-    fn acknowledge_interrupt(&mut self, processor: Processor, irq: (u8, u8)) {
+    fn complete_interrupt_vector(&mut self, processor: Processor, irq: (u8, u8)) {
         let request = self.interrupt_request(processor).unwrap();
         assert_eq!((request.level, request.vector), irq);
         self.prepare_interrupt(processor, Some(request));
+        if request.external {
+            assert_eq!(
+                self.replay_cpu(processor)
+                    .sh2_interrupt_vector(irq.0, irq.1),
+                Err(BusError::Pending)
+            );
+            self.grant_bus_transaction();
+            self.advance_clocks(2).unwrap();
+        }
         assert_eq!(
             self.replay_cpu(processor)
                 .sh2_interrupt_vector(irq.0, irq.1),
@@ -2047,7 +2057,9 @@ mod scu_timing_tests {
         assert_eq!(b.read16(VDP2 + 4), Ok(0x20A));
         assert_eq!(b.read16(VDP2 + 4), Ok(10)); // read clears EXLTFG only
         assert_eq!(b.read32(SCU + 0xA4).unwrap() & 0x100, 0x100);
-        b.scu.acknowledge(0x48);
+        b.write32(SCU + 0xA0, 0xBEFF).unwrap(); // expose PAD to vector endpoint
+        assert_eq!(b.scu.acquire_vector(8), 0x48);
+        b.write32(SCU + 0xA0, 0xBFFF).unwrap();
         b.advance_clocks(40).unwrap();
         b.set_peripheral_th(0, false); // no second edge
         assert_eq!(b.read32(SCU + 0xA4).unwrap() & 0x100, 0);
@@ -2128,7 +2140,7 @@ mod scu_timing_tests {
         bus.scu.write32(SCU + 0xA0, 0xBFFE).unwrap();
         bus.scu.signal(0); // VBlank-in asserts external level 15.
         assert_eq!(bus.interrupt(Processor::Master), Some((15, 12)));
-        bus.acknowledge_interrupt(Processor::Master, (15, 12));
+        bus.complete_interrupt_vector(Processor::Master, (15, 12));
         assert_eq!(bus.interrupt(Processor::Master), Some((15, 71)));
     }
     #[test]
@@ -2172,6 +2184,7 @@ mod scu_timing_tests {
     fn vdp1_end_interrupt_and_draw_end_dma_trigger_obey_clock_deadlines() {
         for chunk in [1, 3, 8, 17, 32] {
             let mut b = Bus::default();
+            b.onchip[0].write16(crate::onchip::ICR, 1).unwrap(); // IVECF acknowledges SCU
             b.write32(HIGH_WRAM, 0x12345678).unwrap();
             b.write16(vdp1::VRAM, 0x8000).unwrap();
             for (off, value) in [
@@ -2196,7 +2209,7 @@ mod scu_timing_tests {
             assert_eq!(b.interrupt(Processor::Master), None);
             assert_eq!(b.read16(vdp1::REGISTERS + 0x10).unwrap(), 0);
             b.advance_clocks(1).unwrap();
-            assert_eq!(b.interrupt(Processor::Master), Some((2, 65)));
+            assert_eq!(b.interrupt(Processor::Master), Some((2, 0x4D)));
             assert_eq!(b.read16(vdp1::REGISTERS + 0x10).unwrap(), 2);
             // Setup2 + RAM read8 + read-to-write turnaround2 + write8.
             b.advance_clocks(19).unwrap();
@@ -2205,7 +2218,7 @@ mod scu_timing_tests {
             assert_eq!(b.read32(VRAM).unwrap(), 0x12340000);
             b.advance_clocks(8).unwrap();
             assert_eq!(b.read32(VRAM).unwrap(), 0x12345678);
-            b.acknowledge_interrupt(Processor::Master, (2, 65));
+            b.complete_interrupt_vector(Processor::Master, (2, 0x4D));
             assert_eq!(b.interrupt(Processor::Master), None);
             b.reset_volatile();
             assert_eq!(b.read32(vdp1::VRAM).unwrap(), 0);
@@ -2376,7 +2389,7 @@ mod system_clock_tests {
         assert_eq!(bus.scu.interrupt(), None); // reset masks DMA IRQ
         bus.scu.write32(SCU + 0xA0, 0).unwrap();
         assert_eq!(bus.scu.interrupt(), Some((5, 0x4B)));
-        bus.scu.acknowledge(0x4B);
+        assert_eq!(bus.scu.acquire_vector(5), 0x4B);
         assert_eq!(bus.vdp1.vram[0], 0);
         assert_eq!(bus.vdp2.vram[0], 0);
         assert_eq!(bus.sound.ram[0], 0);

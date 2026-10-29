@@ -1,6 +1,9 @@
 # Original SCU DSP arithmetic guest. SPDX-License-Identifier: MIT; see LICENSE.
 # Main at 0x200.
 load 0x2600ec00,r8
+load 0xfffffee0,r1
+mov #1,r0
+mov.w r0,@r1
 mov #0,r0
 ldc r0,sr
 load 0x25fe00a0,r1

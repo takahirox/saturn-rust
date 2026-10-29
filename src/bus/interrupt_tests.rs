@@ -408,7 +408,7 @@ fn nmi_edges_on_either_side_of_clear_are_coalesced_or_retained_during_waited_ent
 }
 
 #[test]
-fn external_acquisition_uses_accepted_level_and_acknowledges_once_at_completion() {
+fn external_acquisition_uses_accepted_level_and_consumes_once_at_model_completion() {
     for chunk in [1, 3, 17, 10000] {
         for inspect in [false, true] {
             let p = Processor::Master;
@@ -440,10 +440,10 @@ fn external_acquisition_uses_accepted_level_and_acknowledges_once_at_completion(
 }
 
 #[test]
-fn accepted_level_selects_a_live_same_level_source_and_keeps_other_levels_pending() {
+fn scu_endpoint_convention_selects_live_lowest_same_level_vector() {
     let p = Processor::Master;
     let mut m = board(p, 3, 0);
-    m.bus.scu.acknowledge(0x42);
+    assert_eq!(m.bus.scu.acquire_vector(13), 0x42);
     m.bus.scu.write32(SCU + 0xA0, 0xBE7F).unwrap();
     m.bus.scu.signal(8); // PAD level8
     // Install the independent level8 vectors in the physical vector table.
@@ -547,19 +547,27 @@ fn completed_stack_effects_are_not_repeated_and_other_hardware_keeps_advancing()
 }
 
 #[test]
-fn autovector_ack_uses_the_accepted_source_instead_of_the_current_winner() {
-    let p = Processor::Master;
-    let mut m = board(p, 2, 0xC0);
-    trace(&mut m, p, 12, 1, false);
-    m.bus.scu.write32(SCU + 0xA0, 0xBFFA).unwrap();
-    m.bus.scu.signal(0);
-    trace(&mut m, p, 26, 1, false);
-    assert_eq!(m.bus.scu.read32(SCU + 0xA4).unwrap() & 5, 1);
-    m.bus.scu.signal(2);
-    m.bus.scu.write32(SCU + 0xA0, 0xBFFF).unwrap();
-    trace(&mut m, p, 42, 1, false);
-    assert_eq!(m.cpu_state().last_exception.as_ref().unwrap().vector, 0x46);
-    assert_eq!(m.bus.scu.read32(SCU + 0xA4).unwrap() & 5, 5);
+fn autovector_entry_has_no_external_acquisition_and_preserves_scu_requests() {
+    for chunk in [1, 3, 17, 10000] {
+        for inspect in [false, true] {
+            let p = Processor::Master;
+            let mut m = board(p, 2, 0xC0);
+            assert!(trace(&mut m, p, 12, chunk, inspect).vectors.is_empty());
+            m.bus.scu.write32(SCU + 0xA0, 0xBFFA).unwrap();
+            m.bus.scu.signal(0);
+            assert!(trace(&mut m, p, 26, chunk, inspect).vectors.is_empty());
+            // H §5.2.3 figs5.2/5.3: an internally generated autovector does
+            // not perform the IVECF handshake with the external endpoint.
+            assert_eq!(m.bus.scu.read32(SCU + 0xA4).unwrap() & 5, 5);
+            m.bus.scu.write32(SCU + 0xA0, 0xBFFF).unwrap();
+            assert!(trace(&mut m, p, 42, chunk, inspect).vectors.is_empty());
+            assert_eq!(m.cpu_state().last_exception.as_ref().unwrap().vector, 0x46);
+            assert_eq!(m.cpu_state().sr & 0xF0, 0xD0);
+            assert_eq!(m.bus.read32(0x26000FFC), Ok(0));
+            assert_eq!(m.bus.read32(0x26000FF8), Ok(HIGH_WRAM + 8));
+            assert_eq!(m.bus.scu.read32(SCU + 0xA4).unwrap() & 5, 5);
+        }
+    }
 }
 
 fn masked_scu_request_survives_before_execution_break(external: bool) {
@@ -630,10 +638,7 @@ fn same_level_scu_changes_do_not_restart_irl_recognition_and_external_wins_inter
     m.bus.sample_interrupts(); // still IRL6
     m.bus.advance_clocks(1).unwrap();
     let r = m.bus.recognized_interrupt(p).unwrap();
-    assert_eq!(
-        (r.level, r.vector, r.source),
-        (6, 67, InterruptSource::Scu(0x49))
-    );
+    assert_eq!((r.level, r.vector, r.source), (6, 67, InterruptSource::Scu));
 }
 
 #[test]
@@ -781,6 +786,6 @@ fn peripheral_vector_twelve_is_not_mistaken_for_the_user_break_source() {
     m.bus.scu.signal(0);
     assert_eq!(
         m.bus.interrupt_request(p).unwrap().source,
-        InterruptSource::Scu(0x40)
+        InterruptSource::Scu
     );
 }
