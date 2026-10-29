@@ -78,7 +78,7 @@ python3 homebrew/star-collector/build.py
 sh scripts/check-fixtures.sh
 ```
 
-This is the complete 91-command CI reproducibility registry, including all three
+This is the complete 100-command CI reproducibility registry, including all three
 homebrew discs, HLE code, hardware guests and standard-size media. Individual
 `python3 ... --check` commands in that script remain usable for focused checks.
 

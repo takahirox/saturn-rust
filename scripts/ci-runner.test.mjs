@@ -144,7 +144,7 @@ test("shared versus fresh contexts retain complete guest clock, DMAC, Canvas and
 test("complete-suite inventory covers all original groups and missing groups fail", async () => {
   const source = await readFile(new URL("./browser-smoke.mjs", import.meta.url), "utf8");
   const registered = [...source.matchAll(/(?:timings\.(?:group|measure)|setup)\("([^"]+)"/g)].map(m => m[1]);
-  assert.equal(groups.length, 69);
+  assert.equal(groups.length, 70);
   assert(groups.includes("sh2Store"));
   assert(groups.includes("sh2Fetch"));
   assert(groups.includes("cdRw"));
@@ -153,7 +153,7 @@ test("complete-suite inventory covers all original groups and missing groups fai
   assert.deepEqual(shards.shared, groups.filter(g => !shards.scenarios.includes(g)));
   const scenarioRegistry = source.match(/const scenarios = \{ ([^}]+) \}/)[1].split(/,\s+/);
   assert.deepEqual([...scenarioRegistry, "largeMedia"].sort(), [...shards.scenarios].sort());
-  assert.equal((source.match(/if \(includeScenarios\) await timings.measure/g) ?? []).length, 39);
+  assert.equal((source.match(/if \(includeScenarios\) await timings.measure/g) ?? []).length, 40);
   assert.deepEqual(selection([]).groups, groups);
   for (const args of [["--shard=missing"], ["--group=missing"], ["--shard=shared", "--group=scspMvol"], ["--typo"]]) {
     assert.throws(() => selection(args));
@@ -367,8 +367,9 @@ test("CI gates publication on both suites and retains the actually tested assets
   assert.equal(JSON.parse(await readFile("package.json", "utf8")).scripts["test:browser"], "node scripts/browser-suite.mjs");
   // Exact registry: moving commands must not lose fixtures/options.
   const fixtures = (await readFile("scripts/check-fixtures.sh", "utf8")).split("\n").filter(s => s.startsWith("python3 "));
-  assert.equal(fixtures.length, 99);
+  assert.equal(fixtures.length, 100);
   assert(fixtures.includes("python3 tests/fixtures/build_interrupt_entry.py --check"));
+  assert(fixtures.includes("python3 tests/fixtures/build_external_startup.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_vdp1_hdtv.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_mosaic.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_cd_rw.py --check"));

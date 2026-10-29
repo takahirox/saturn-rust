@@ -66,14 +66,14 @@
               <div id="disc-controls" hidden>
                 <label for="disc">Local homebrew ISO or CUE with its track files</label>
                 <input id="disc" type="file" accept=".iso,.cue,.bin,.srw" multiple>
-                <p>Select one cooked ISO (up to 921,600,000 bytes), or select a CUE and all its BINARY data/audio files together (up to 1,058,400,000 data/audio bytes). Boot uses the first data track’s Saturn IP / ISO9660 executable. Runtime CD reads and CD-DA use the emulated CD block; compressed discs remain unsupported.</p>
+                <p>Select one cooked ISO (up to 921,600,000 bytes), or select a CUE and all its BINARY data/audio files together (up to 1,058,400,000 data/audio bytes). HLE loads the first data track’s Saturn IP / ISO9660 executable. BIOS mode mounts media for the selected firmware to read through hardware; Restart retains both selections. Compressed discs remain unsupported.</p>
               </div>
               <div id="bios-controls" hidden>
                 <label for="bios">Local raw BIOS (512 KiB / 524288 bytes)</label>
                 <input id="bios" type="file">
                 <p>Use a legally obtained BIOS. Correct size validates layout, not authenticity or region. Its real reset vectors are used; native Sega BIOS boot/game support is incomplete and often stops on unimplemented device or bus behavior. BIOS mode never redirects to HLE.</p>
               </div>
-              <p id="boot-warning">Changing mode or file cold-resets the machine and clears the previous selection. Opening or closing settings does not reset; opening pauses playback. Use Resume to continue.</p>
+              <p id="boot-warning">Changing mode clears both images. Changing a file cold-resets the machine and replaces that selection; BIOS and disc can be selected together. Opening or closing settings does not reset; opening pauses playback. Use Resume to continue.</p>
               <p class="privacy">Local images and backup data stay in this tab's memory unless you export backup RAM. No uploads, browser storage or analytics. No Sega BIOS is bundled.</p>
             </fieldset>
             <fieldset id="backup-controls" disabled>

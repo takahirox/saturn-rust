@@ -150,10 +150,10 @@ function render() {
   $("step").disabled = !ready;
   $("run").disabled = !ready;
   $("reset").disabled = false;
-  const discReady = ready && $("mode").value === "disc";
+  const discReady = ready && ["disc", "bios"].includes($("mode").value);
   $("pause").disabled = !discReady;
   $("pause").textContent = playing ? "Pause" : "Resume";
-  $("restart").disabled = busy || $("mode").value !== "disc" || !(discBytes || cueMedia || loadedDisc);
+  $("restart").disabled = busy || ($("mode").value === "bios" ? !biosBytes : $("mode").value !== "disc" || !(discBytes || cueMedia || loadedDisc));
   $("frame").disabled = !discReady || playing;
   $("play-homebrew").disabled = busy;
   $("play-prism").disabled = busy;
@@ -232,7 +232,14 @@ function reset() {
       cueMedia = null;
     }
     else if ($("mode").value === "hle") emulator.reset_hle();
-    else emulator.reset_bios(biosBytes ?? new Uint8Array());
+    else {
+      emulator.reset_bios(biosBytes ?? new Uint8Array());
+      if (cueMedia) emulator.mount_cue(cueMedia.cue, cueMedia.names, cueMedia.lengths, cueMedia.bytes);
+      else if (discBytes) emulator.mount_disc(discBytes);
+      loadedDisc = loadedDisc || Boolean(cueMedia || discBytes);
+      discBytes = null;
+      cueMedia = null;
+    }
   });
   canvas.width = emulator.video_width();
   canvas.height = emulator.video_height();
@@ -295,7 +302,7 @@ try {
   });
   $("restart").addEventListener("click", () => {
     reset();
-    if ($("mode").value === "disc" && canExecute() && !$("settings").open && view === "play") {
+    if (["disc", "bios"].includes($("mode").value) && canExecute() && !$("settings").open && view === "play") {
       playing = true;
       lastFrame = 0;
       $("screen").focus();
@@ -317,10 +324,11 @@ try {
     discBytes = null;
     cueMedia = null;
     loadedDisc = false;
+    emulator.clear_media();
     $("disc").value = "";
     loadingFile = false;
     $("bios").value = "";
-    $("disc-controls").hidden = $("mode").value !== "disc";
+    $("disc-controls").hidden = !["disc", "bios"].includes($("mode").value);
     $("bios-controls").hidden = $("mode").value !== "bios";
     reset();
   });
@@ -389,6 +397,7 @@ try {
     discBytes = null;
     cueMedia = null;
     loadedDisc = false;
+    emulator.clear_media();
     loadingFile = false;
     reset();
     if (!files.length) return;
@@ -440,7 +449,7 @@ try {
     window.addEventListener(eventName, (event) => {
       const mask = keys[event.key];
       const port2Mask = port2Keys[event.code];
-      if ((!mask && !port2Mask) || $("mode").value !== "disc" || loadingFile || loadingBackup || document.activeElement !== $("screen")) return;
+      if ((!mask && !port2Mask) || !["disc", "bios"].includes($("mode").value) || loadingFile || loadingBackup || document.activeElement !== $("screen")) return;
       event.preventDefault();
       if (eventName === "keydown") { buttons |= mask ?? 0; port2Buttons |= port2Mask ?? 0; }
       else { buttons &= ~(mask ?? 0); port2Buttons &= ~(port2Mask ?? 0); }
