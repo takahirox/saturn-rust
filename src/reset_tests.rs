@@ -33,7 +33,12 @@ fn cold_vectors_sample_separately_and_publish_together_before_any_instruction() 
         (24, 0x33330400, 0x060ED000),
         (32, 0x44440500, 0x060DC000),
     ] {
-        m.step_hardware_boundary().unwrap();
+        // Reference-device events may yield inside a waited vector word.
+        // Preserve the literal word deadlines and inspect before each yield.
+        while m.clocks < clock {
+            assert_eq!(m.cpu_state(), &CpuState::default());
+            m.step_hardware_boundary().unwrap();
+        }
         assert_eq!(m.clocks, clock);
         assert_eq!(m.cpu_state(), &CpuState::default());
         m.bus.load_bios(&rom(pc, sp)).unwrap();
@@ -61,15 +66,23 @@ fn every_cold_and_sysres_vector_word_boundary_cancels_cleanly_on_new_boot_select
                     m.step_hardware_boundary().unwrap();
                 }
             }
-            for _ in 0..words {
-                m.step_hardware_boundary().unwrap();
+            let started = m.clocks;
+            for word in 1..=words {
+                while m.clocks < started + word * 8 {
+                    m.step_hardware_boundary().unwrap();
+                    assert_eq!(m.cpu_state(), &CpuState::default());
+                }
+                assert_eq!(m.clocks, started + word * 8);
                 assert_eq!(m.cpu_state(), &CpuState::default());
             }
             m.reset(Boot::ExternalBios(&rom(0x300, 0x060FD000)))
                 .unwrap();
             assert_eq!(m.cpu_state(), &CpuState::default());
             for clock in [8, 16, 24, 32] {
-                m.step_hardware_boundary().unwrap();
+                while m.clocks < clock {
+                    assert_eq!(m.cpu_state(), &CpuState::default());
+                    m.step_hardware_boundary().unwrap();
+                }
                 assert_eq!(m.clocks, clock);
                 assert_eq!(m.cpu_state(), &CpuState::default());
             }

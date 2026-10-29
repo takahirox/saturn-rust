@@ -144,6 +144,12 @@ impl std::error::Error for BusError {}
 
 /// The interpreter fetches through this boundary; it owns no memory pointers.
 pub trait Memory {
+    /// Journaled interrupt-controller effects at the entry microsequence's
+    /// defined phases. Architectural fixtures have no board endpoint.
+    fn sh2_clear_nmi(&mut self) {}
+    fn sh2_interrupt_vector(&mut self, _level: u8, vector: u8) -> Result<u8, BusError> {
+        Ok(vector)
+    }
     /// Elapsed SH-2 clocks, when this adapter has a clock domain. Replay
     /// adapters journal each observation just like an operand read.
     fn sh2_clock(&self) -> Option<u64> {
@@ -310,6 +316,23 @@ pub struct Bus {
     instruction_word: [Cell<Option<(u32, u16)>>; 2],
     external_owner: Cell<Option<Processor>>,
     pub(crate) slave_enabled: bool,
+    irq_observed: [Option<(InterruptRequest, u64)>; 2],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InterruptSource {
+    Internal,
+    Break,
+    // IRL carries a level, not an SCU factor identity (H figs5.2/5.3).
+    Scu,
+    Slave,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct InterruptRequest {
+    pub level: u8,
+    pub vector: u8,
+    pub source: InterruptSource,
+    pub external: bool,
 }
 
 impl Default for Bus {
@@ -341,6 +364,7 @@ impl Default for Bus {
             instruction_word: std::array::from_fn(|_| Cell::new(None)),
             external_owner: Cell::new(None),
             slave_enabled: false,
+            irq_observed: [None; 2],
         }
     }
 }
@@ -425,8 +449,15 @@ impl Bus {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn interrupt(&self, processor: Processor) -> Option<(u8, u8)> {
+        self.interrupt_request(processor)
+            .map(|r| (r.level, r.vector))
+    }
+
+    fn interrupt_request(&self, processor: Processor) -> Option<InterruptRequest> {
         let internal = self.onchip[processor as usize].interrupt();
+        let user_break = self.onchip[processor as usize].break_pending();
         let external = if processor == Processor::Master {
             self.scu
                 .interrupt()
@@ -447,26 +478,86 @@ impl Bus {
                     .map(|vector| (level, vector))
             })
         };
-        match (internal, external) {
+        let selected = match (internal, external) {
             // H table 5.4: UBC precedes IRL15; all other internal sources
             // follow an equal-priority external request.
-            (Some(i), Some(e)) => Some(if i == (15, 12) || i.0 > e.0 { i } else { e }),
+            (Some(i), Some(e)) => Some(if user_break || i.0 > e.0 { i } else { e }),
             (i, e) => i.or(e),
-        }
+        }?;
+        let is_internal = internal == Some(selected) && (external != Some(selected) || user_break);
+        let source = if is_internal {
+            if user_break {
+                InterruptSource::Break
+            } else {
+                InterruptSource::Internal
+            }
+        } else if processor == Processor::Master {
+            InterruptSource::Scu
+        } else {
+            InterruptSource::Slave
+        };
+        Some(InterruptRequest {
+            level: selected.0,
+            vector: selected.1,
+            source,
+            external: matches!(source, InterruptSource::Scu)
+                && self.onchip[0].autovector(selected.0).is_none(),
+        })
     }
 
-    pub(crate) fn acknowledge_interrupt(&mut self, processor: Processor, irq: (u8, u8)) {
-        if irq == (15, 12) && self.onchip[processor as usize].interrupt() == Some(irq) {
-            self.onchip[processor as usize].acknowledge_break();
-            return;
+    pub(crate) fn sample_interrupts(&mut self) {
+        for p in [Processor::Master, Processor::Slave] {
+            let request = self.interrupt_request(p);
+            let observed = &mut self.irq_observed[p as usize];
+            if let (Some((old, since)), Some(new)) = (*observed, request)
+                && matches!(old.source, InterruptSource::Scu)
+                && matches!(new.source, InterruptSource::Scu)
+                && old.level == new.level
+                && old.external == new.external
+            {
+                // SCU source identity is not encoded on IRL pins. A different
+                // same-level factor cannot restart the level's recognition.
+                *observed = Some((new, since));
+            } else if observed.map(|(r, _)| r) != request {
+                *observed = request.map(|r| (r, self.main_clocks));
+            }
         }
-        if processor == Processor::Master
-            && let Some((level, vector)) = self.scu.interrupt()
-            && irq == (level, self.onchip[0].external_vector(level, vector))
-        {
-            // Acknowledge the actual SCU source, even in SH-2 auto-vector mode.
-            self.scu.acknowledge(vector);
+    }
+    pub(crate) fn recognized_interrupt(&self, processor: Processor) -> Option<InterruptRequest> {
+        let (r, since) = self.irq_observed[processor as usize]?;
+        (self.main_clocks >= since + 5).then_some(r)
+    }
+    #[cfg(test)]
+    fn complete_interrupt_vector(&mut self, processor: Processor, irq: (u8, u8)) {
+        let request = self.interrupt_request(processor).unwrap();
+        assert_eq!((request.level, request.vector), irq);
+        self.prepare_interrupt(processor, Some(request));
+        if request.external {
+            assert_eq!(
+                self.replay_cpu(processor)
+                    .sh2_interrupt_vector(irq.0, irq.1),
+                Err(BusError::Pending)
+            );
+            self.grant_bus_transaction();
+            self.advance_clocks(2).unwrap();
         }
+        assert_eq!(
+            self.replay_cpu(processor)
+                .sh2_interrupt_vector(irq.0, irq.1),
+            Ok(irq.1)
+        );
+        self.finish_cpu_transaction(processor);
+    }
+    pub(crate) fn interrupt_deadline(&self) -> u32 {
+        self.irq_observed
+            .iter()
+            .flatten()
+            .filter_map(|(_, since)| {
+                let remaining = (since + 5).saturating_sub(self.main_clocks);
+                (remaining != 0).then_some(remaining as u32)
+            })
+            .min()
+            .unwrap_or(u32::MAX)
     }
     #[cfg(test)]
     pub(crate) fn advance_scu_dma(&mut self) -> Result<(), ScuError> {
@@ -590,9 +681,10 @@ impl Bus {
                 .acquire_rotation_display(&self.vdp1, field, line, phase, x);
         }
     }
-    fn main_deadline(&self) -> u32 {
+    pub(crate) fn main_deadline(&self) -> u32 {
         self.onchip[0]
             .clocks_to_event()
+            .min(self.interrupt_deadline())
             .min(self.bus_main_deadline())
             .min(self.onchip[1].clocks_to_event())
             .min(self.raster.clocks_to_event())
@@ -609,6 +701,13 @@ impl Bus {
             })
             .min(self.scu.clocks_to_event())
             .min(self.vdp1.clocks_to_event())
+    }
+
+    fn reference_deadline(&self) -> u32 {
+        self.cd
+            .clocks_to_event()
+            .min(self.smpc.clocks_to_event())
+            .min(self.sound.clocks_to_event())
     }
 
     fn advance_fixed_clocks(&mut self, clocks: u32) -> Result<Option<u8>, ScuError> {
@@ -639,6 +738,7 @@ impl Bus {
         let mut reference_clocks = Some(reference_clocks);
         let mut command = None;
         while remaining != 0 {
+            self.sample_interrupts();
             self.acquire_display();
             self.grant_bus_transaction();
             let delta = remaining.min(self.main_deadline());
@@ -713,6 +813,7 @@ impl Bus {
             self.acquire_display();
             // Complete the granted data phase before contenders at this edge.
             self.advance_bus_transaction(delta)?;
+            self.sample_interrupts();
             for processor in [Processor::Master, Processor::Slave] {
                 if self.cpu_reset_active(processor) {
                     self.hold_cpu_reset(processor);
@@ -747,9 +848,7 @@ impl Bus {
             self.grant_bus_transaction();
             let delta = remaining
                 .min(self.system_clock.deadline(self.main_deadline()).max(1))
-                .min(self.cd.clocks_to_event())
-                .min(self.smpc.clocks_to_event())
-                .min(self.sound.clocks_to_event());
+                .min(self.reference_deadline());
             let main_clocks = self.system_clock.advance(delta);
             if let Some(completed) = self.advance_main_clocks(main_clocks, delta)? {
                 if matches!(completed, 0x0E | 0x0F) {
@@ -767,9 +866,20 @@ impl Bus {
     pub(crate) fn advance_cpu_clocks(&mut self, main: u32) -> Result<(u32, Option<u8>), ScuError> {
         if self.pending_main_clocks == 0 {
             if self.system_clock.is_reference() {
-                return self.advance_clocks(main).map(|command| (main, command));
+                let reference = main.min(self.reference_deadline());
+                return self
+                    .advance_clocks(reference)
+                    .map(|command| (reference, command));
             }
-            let reference = self.system_clock.deadline(main).saturating_sub(1);
+            // Fixed-domain events can establish a new recognition deadline.
+            // Yield to Machine at that reference edge, even inside a longer
+            // main-clock idle batch. Bound reference ticks after PLL conversion
+            // so fractional phase and two-main-tick edges remain intact.
+            let reference = self
+                .system_clock
+                .deadline(main)
+                .saturating_sub(1)
+                .min(self.reference_deadline().saturating_sub(1));
             if reference > 0 {
                 return self
                     .advance_clocks(reference)
@@ -1551,7 +1661,7 @@ impl Memory for CpuBus<'_> {
         self.bus.instruction_word[self.processor as usize].set(None);
     }
     fn break_pending(&self) -> bool {
-        self.bus.onchip[self.processor as usize].interrupt() == Some((15, 12))
+        self.bus.onchip[self.processor as usize].break_pending()
     }
     fn enter_sleep(&mut self) {
         self.bus.onchip[self.processor as usize].enter_sleep();
@@ -1947,7 +2057,9 @@ mod scu_timing_tests {
         assert_eq!(b.read16(VDP2 + 4), Ok(0x20A));
         assert_eq!(b.read16(VDP2 + 4), Ok(10)); // read clears EXLTFG only
         assert_eq!(b.read32(SCU + 0xA4).unwrap() & 0x100, 0x100);
-        b.scu.acknowledge(0x48);
+        b.write32(SCU + 0xA0, 0xBEFF).unwrap(); // expose PAD to vector endpoint
+        assert_eq!(b.scu.acquire_vector(8), 0x48);
+        b.write32(SCU + 0xA0, 0xBFFF).unwrap();
         b.advance_clocks(40).unwrap();
         b.set_peripheral_th(0, false); // no second edge
         assert_eq!(b.read32(SCU + 0xA4).unwrap() & 0x100, 0);
@@ -2028,7 +2140,7 @@ mod scu_timing_tests {
         bus.scu.write32(SCU + 0xA0, 0xBFFE).unwrap();
         bus.scu.signal(0); // VBlank-in asserts external level 15.
         assert_eq!(bus.interrupt(Processor::Master), Some((15, 12)));
-        bus.acknowledge_interrupt(Processor::Master, (15, 12));
+        bus.complete_interrupt_vector(Processor::Master, (15, 12));
         assert_eq!(bus.interrupt(Processor::Master), Some((15, 71)));
     }
     #[test]
@@ -2072,6 +2184,7 @@ mod scu_timing_tests {
     fn vdp1_end_interrupt_and_draw_end_dma_trigger_obey_clock_deadlines() {
         for chunk in [1, 3, 8, 17, 32] {
             let mut b = Bus::default();
+            b.onchip[0].write16(crate::onchip::ICR, 1).unwrap(); // IVECF acknowledges SCU
             b.write32(HIGH_WRAM, 0x12345678).unwrap();
             b.write16(vdp1::VRAM, 0x8000).unwrap();
             for (off, value) in [
@@ -2096,7 +2209,7 @@ mod scu_timing_tests {
             assert_eq!(b.interrupt(Processor::Master), None);
             assert_eq!(b.read16(vdp1::REGISTERS + 0x10).unwrap(), 0);
             b.advance_clocks(1).unwrap();
-            assert_eq!(b.interrupt(Processor::Master), Some((2, 65)));
+            assert_eq!(b.interrupt(Processor::Master), Some((2, 0x4D)));
             assert_eq!(b.read16(vdp1::REGISTERS + 0x10).unwrap(), 2);
             // Setup2 + RAM read8 + read-to-write turnaround2 + write8.
             b.advance_clocks(19).unwrap();
@@ -2105,7 +2218,7 @@ mod scu_timing_tests {
             assert_eq!(b.read32(VRAM).unwrap(), 0x12340000);
             b.advance_clocks(8).unwrap();
             assert_eq!(b.read32(VRAM).unwrap(), 0x12345678);
-            b.acknowledge_interrupt(Processor::Master, (2, 65));
+            b.complete_interrupt_vector(Processor::Master, (2, 0x4D));
             assert_eq!(b.interrupt(Processor::Master), None);
             b.reset_volatile();
             assert_eq!(b.read32(vdp1::VRAM).unwrap(), 0);
@@ -2276,7 +2389,7 @@ mod system_clock_tests {
         assert_eq!(bus.scu.interrupt(), None); // reset masks DMA IRQ
         bus.scu.write32(SCU + 0xA0, 0).unwrap();
         assert_eq!(bus.scu.interrupt(), Some((5, 0x4B)));
-        bus.scu.acknowledge(0x4B);
+        assert_eq!(bus.scu.acquire_vector(5), 0x4B);
         assert_eq!(bus.vdp1.vram[0], 0);
         assert_eq!(bus.vdp2.vram[0], 0);
         assert_eq!(bus.sound.ram[0], 0);

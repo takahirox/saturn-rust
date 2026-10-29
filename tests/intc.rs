@@ -46,7 +46,13 @@ fn guest_changes_external_vector_mode_acknowledges_dma_and_handles_both_latch_po
                 );
             }
         }
-        assert_eq!(m.cpu_state().exceptions, 2);
+        // One autovector, acquisition of its retained request, then the second DMA's
+        // external-vector entry. Guest handlers record status and count.
+        assert_eq!(m.cpu_state().exceptions, 3);
+        for (at, expected) in [(0x06009020, 0x800), (0x06009024, 0), (0x06009028, 2)] {
+            assert_eq!(m.bus().read32(at), Ok(expected));
+        }
+        assert_eq!(m.bus().read32(0x25FE00A4).unwrap() & 0x800, 0);
         for (i, port) in [0, 1, 0].into_iter().enumerate() {
             m.set_peripheral_th(port, true);
             let time = m.clocks();
@@ -64,7 +70,7 @@ fn guest_changes_external_vector_mode_acknowledges_dma_and_handles_both_latch_po
             m.run_steps(500).unwrap();
             assert_eq!(m.bus().read32(0x06009010), Ok(i as u32 + 1));
         }
-        assert_eq!(m.cpu_state().exceptions, 5);
+        assert_eq!(m.cpu_state().exceptions, 6);
     }
 }
 
@@ -86,4 +92,10 @@ fn disabling_external_vectors_changes_guest_handler_and_prevents_the_next_stage(
     assert_eq!(m.bus().read32(0x06009008), Ok(0));
     assert_eq!(m.bus().read32(0x0600900C), Ok(0));
     assert_eq!(m.cpu_state().exceptions, 2);
+    // With VECMD=0 both entries use the internal vector, leaving the original
+    // DMA0 request pending and preventing the subsequent DMA from starting.
+    assert_eq!(m.bus().read32(0x25FE00A4).unwrap() & 0x800, 0x800);
+    for (at, expected) in [(0x06009020, 0x800), (0x06009024, 0), (0x06009028, 0)] {
+        assert_eq!(m.bus().read32(at), Ok(expected));
+    }
 }

@@ -22,6 +22,9 @@ mod fetch_pipeline_tests;
 #[path = "fetch_tests.rs"]
 mod fetch_tests;
 #[cfg(test)]
+#[path = "interrupt_tests.rs"]
+mod interrupt_tests;
+#[cfg(test)]
 #[path = "load_tests.rs"]
 mod load_tests;
 #[cfg(test)]
@@ -55,11 +58,14 @@ mod vdp2_tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Operation {
+    ClearNmi,
+    InterruptVector(u8, u8), // accepted level, architectural vector
     Clock(u64),
     PipelineWait(u32),
     MemoryAccess(u32, bool, u64), // address, write, earliest MA completion
     Read(u32, usize, bool, bool), // address, width, instruction, TAS
     Write(u32, usize, u32),
+    StackWrite(u32, usize, u32),
     DmaRead(u32, bool, bool),
     Sleep,
     BreakPending,
@@ -85,6 +91,10 @@ pub(super) struct Transfer {
 }
 #[derive(Default)]
 pub(super) struct Journal {
+    irq: Option<InterruptRequest>,
+    nmi_cleared: bool,
+    vector_waiting: Option<(u8, u8)>, // accepted level, architectural vector
+    synchronous_stack: bool,
     operations: Vec<(Operation, Result<u32, BusError>)>,
     cursor: usize,
     beats: Vec<(Transfer, Result<u32, BusError>)>,
@@ -99,6 +109,7 @@ pub(super) struct Journal {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Owner {
+    Vector(Processor, u8),
     Cpu(Processor),
     Dmac(Processor),
     Scu,
@@ -165,6 +176,26 @@ impl ScheduledMemory<'_> {
             journal.beat_cursor = 0;
         }
         let result = match op {
+            Operation::ClearNmi => {
+                self.0.bus.transactions.journals[i].borrow_mut().nmi_cleared = true;
+                Ok(0)
+            }
+            Operation::InterruptVector(level, vector) => {
+                let irq = self.0.bus.transactions.journals[i].borrow().irq;
+                if irq.is_some_and(|r| r.external) {
+                    self.0.bus.transactions.journals[i]
+                        .borrow_mut()
+                        .vector_waiting = Some((level, vector));
+                    Err(BusError::Pending)
+                } else {
+                    if let Some(irq) = irq
+                        && irq.source == InterruptSource::Break
+                    {
+                        self.0.acknowledge_break();
+                    }
+                    Ok(u32::from(vector))
+                }
+            }
             Operation::Clock(_) => unreachable!("clock observations are journaled directly"),
             Operation::PipelineWait(clocks) => {
                 let mut journal = self.0.bus.transactions.journals[i].borrow_mut();
@@ -199,6 +230,20 @@ impl ScheduledMemory<'_> {
             Operation::Write(a, 1, v) => self.0.write8(a, v as u8).map(|_| 0),
             Operation::Write(a, 2, v) => self.0.write16(a, v as u16).map(|_| 0),
             Operation::Write(a, _, v) => self.0.write32(a, v).map(|_| 0),
+            Operation::StackWrite(a, width, value) => {
+                self.0.bus.transactions.journals[i]
+                    .borrow_mut()
+                    .synchronous_stack = true;
+                let result = if width == 1 {
+                    self.0.write8(a, value as u8)
+                } else {
+                    self.0.write32(a, value)
+                };
+                self.0.bus.transactions.journals[i]
+                    .borrow_mut()
+                    .synchronous_stack = false;
+                result.map(|_| 0)
+            }
             Operation::Sleep => {
                 self.0.enter_sleep();
                 Ok(0)
@@ -235,6 +280,32 @@ impl ScheduledMemory<'_> {
 // a resumed interpreter uses exactly the same checked Memory boundary.
 pub(crate) struct ReplayMemory<'a>(RefCell<ScheduledMemory<'a>>);
 impl Memory for ReplayMemory<'_> {
+    fn exception_write32(&mut self, address: u32, value: u32) -> Result<(), BusError> {
+        if address & 3 == 0 {
+            self.0
+                .get_mut()
+                .operation(Operation::StackWrite(address, 4, value))
+                .map(|_| ())
+        } else {
+            for (i, byte) in value.to_be_bytes().into_iter().enumerate() {
+                self.0.get_mut().operation(Operation::StackWrite(
+                    address.wrapping_add(i as u32),
+                    1,
+                    u32::from(byte),
+                ))?;
+            }
+            Ok(())
+        }
+    }
+    fn sh2_clear_nmi(&mut self) {
+        self.0.get_mut().operation(Operation::ClearNmi).unwrap();
+    }
+    fn sh2_interrupt_vector(&mut self, level: u8, vector: u8) -> Result<u8, BusError> {
+        self.0
+            .get_mut()
+            .operation(Operation::InterruptVector(level, vector))
+            .map(|v| v as u8)
+    }
     fn sh2_speculative_fetch(&self, address: u32) -> bool {
         self.0.borrow().0.sh2_speculative_fetch(address)
     }
@@ -365,6 +436,20 @@ impl Memory for ReplayMemory<'_> {
     }
 }
 impl Bus {
+    pub(crate) fn prepare_interrupt(
+        &mut self,
+        processor: Processor,
+        irq: Option<InterruptRequest>,
+    ) {
+        self.transactions.journals[processor as usize].get_mut().irq = irq;
+    }
+    pub(crate) fn take_nmi_clear(&mut self, processor: Processor) -> bool {
+        std::mem::take(
+            &mut self.transactions.journals[processor as usize]
+                .get_mut()
+                .nmi_cleared,
+        )
+    }
     // ST-077 §3.1/§3.2: a buffered main-interface request precedes SCPU
     // memory access. Device/DMA/refresh ownership can still delay this beat.
     pub(super) fn sound_ram_request(&self) -> Option<crate::sound::memory::Request> {
@@ -505,6 +590,7 @@ impl Bus {
                     | Owner::WriteBuffer(p, _)
                     | Owner::ResetDrain(p) => p != processor,
                     Owner::WriteAccept(_, _) => false,
+                    Owner::Vector(p, _) => p != processor,
                     Owner::Scu => true,
                     Owner::Refresh => false,
                 })
@@ -674,6 +760,9 @@ impl Bus {
         journal.operand_completion = None;
         journal.pending_write = None;
         journal.write_accepted = false;
+        journal.irq = None;
+        journal.nmi_cleared = false;
+        journal.vector_waiting = None;
         if self.transactions.lock == Some(processor) {
             self.transactions.lock = None;
         }
@@ -710,7 +799,7 @@ impl Bus {
             self.transactions.internal[processor as usize] = None;
         }
         if self.transactions.active.as_ref().is_some_and(
-            |a| matches!(a.owner, Owner::Cpu(p) | Owner::WriteBuffer(p, false) | Owner::ResetDrain(p) if p == processor),
+            |a| matches!(a.owner, Owner::Cpu(p) | Owner::Vector(p, _) | Owner::WriteBuffer(p, false) | Owner::ResetDrain(p) if p == processor),
         ) {
             self.transactions.active = None;
         }
@@ -1064,6 +1153,31 @@ impl Bus {
             {
                 continue;
             }
+            if let Some((level, _)) = self.transactions.journals[processor as usize]
+                .borrow()
+                .vector_waiting
+            {
+                // H §5.2.3 fig5.4: no CS, no programmable waits or cache
+                // accesses. The Saturn endpoint does not assert WAIT.
+                self.release_external_bus();
+                self.transactions.active = Some(Active {
+                    owner: Owner::Vector(processor, level),
+                    transfer: Transfer {
+                        address: u32::from(level),
+                        width: 0,
+                        write: None,
+                        first: true,
+                        last: true,
+                        unit_end: 0,
+                        locked: false,
+                        bridge_read: false,
+                        bridge_write: None,
+                    },
+                    remaining: 2,
+                });
+                self.transactions.previous = Some(processor);
+                return;
+            }
             let Some(transfer) = self.transactions.journals[processor as usize]
                 .borrow()
                 .waiting
@@ -1194,6 +1308,23 @@ impl Bus {
         Ok(())
     }
     fn complete_bus_transaction(&mut self, active: Active) -> Result<(), ScuError> {
+        if let Owner::Vector(processor, level) = active.owner {
+            // Only an IVECF transaction reaches the board endpoint. Internal
+            // autovector selection supplies no acknowledgement to the SCU.
+            let vector = self.scu.acquire_vector(level);
+            let journal = self.transactions.journals[processor as usize].get_mut();
+            let (accepted_level, architectural_vector) = journal.vector_waiting.unwrap();
+            assert_eq!(level, accepted_level);
+            journal.operations.push((
+                Operation::InterruptVector(level, architectural_vector),
+                Ok(u32::from(vector)),
+            ));
+            // This separate journal record distinguishes acquisition from an
+            // ordinary memory read without inventing a memory-mapped address.
+            journal.vector_waiting = None;
+            journal.completed = true;
+            return Ok(());
+        }
         if active.owner == Owner::Refresh {
             return Ok(());
         }
@@ -1210,7 +1341,7 @@ impl Bus {
         let t = active.transfer;
         let processor = match active.owner {
             Owner::Cpu(p) | Owner::Dmac(p) | Owner::WriteBuffer(p, _) | Owner::ResetDrain(p) => p,
-            Owner::WriteAccept(_, _) => unreachable!(),
+            Owner::WriteAccept(_, _) | Owner::Vector(_, _) => unreachable!(),
             Owner::Scu | Owner::Refresh => Processor::Master,
         };
         let result = if (crate::sound::SOUND_RAM..crate::sound::SCSP)
@@ -1425,6 +1556,9 @@ impl CpuBus<'_> {
     }
     pub(super) fn buffered_write_locked(&self) -> bool {
         self.bus.transactions.lock == Some(self.processor)
+            || self.bus.transactions.journals[self.journal_index()]
+                .borrow()
+                .synchronous_stack
     }
     pub(super) fn buffered_external_write<const N: usize>(
         &self,

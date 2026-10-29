@@ -21,6 +21,7 @@ import { bBusReads } from "./b-bus-reads.mjs";
 import { scuFringe } from "./scu-fringe.mjs";
 import { dmacBus } from "./dmac-bus.mjs";
 import { sh2Store } from "./sh2-store.mjs";
+import { interruptEntry } from "./interrupt-entry.mjs";
 import { sh2Fetch } from "./sh2-fetch.mjs";
 import { sh2Load } from "./sh2-load.mjs";
 import { sh2Multiplier } from "./sh2-multiplier.mjs";
@@ -118,7 +119,7 @@ try {
     const scenarios = { vdp2Status, videoTransactions, abusTiming, dspArithmetic,
       busTransactions, bBusReads, videoWrites, slaveRaster, hleDual, scuFringe,
       dmacBus, sh2BusPipeline, sh2ResetBus, cs0Transfers, spriteShrink,
-      hardwareBoundaries, refreshArbitration, sh2Fetch, sh2Store, sh2Load, sh2Multiplier,
+      hardwareBoundaries, refreshArbitration, interruptEntry, sh2Fetch, sh2Store, sh2Load, sh2Multiplier,
       cdCopy, dmaStartup, cdReports, cdRw, rotationReload, rotationFetch,
       rotationHighResolution, mosaic, scspMonitor, m68kReset, scspClock, scspEffects,
       scspDma, scspPcm, scspCpuMemory, scspMvol };
@@ -1359,6 +1360,9 @@ try {
   // Original cached instruction-state kernels run independently on both
   // SH-2s. Each resets its FRT divider and measures table7.2 states. Changing
   // only guest ADDs to real BRA/NOP pairs changes time and computed results.
+  if (includeScenarios) await timings.measure("interruptEntry", async () => {
+    await interruptEntry(page);
+  });
   if (includeScenarios) await timings.measure("sh2Fetch", async () => {
     await sh2Fetch(page);
   });
@@ -2268,6 +2272,8 @@ try {
       guest.reset_bios(Uint8Array.from(rom));
       guest.run_steps(10000);
       const start=Array.from({length:4},(_,i)=>guest.read_long(0x06009000+i*4));
+      const pendingDma0=guest.read_long(0x25FE00A4)&0x800;
+      const entryRecords=Array.from({length:3},(_,i)=>guest.read_long(0x06009020+i*4));
       const quotients=Array.from({length:divisionWords},(_,i)=>guest.read_long(0x06009100+i*4));
       const traces=[];
       if(start[3]===0x600D) for(const port of [0,1,0]) {
@@ -2281,7 +2287,7 @@ try {
         guest.run_steps(500);
         traces.push({words,expected,count:guest.read_long(0x06009010)});
       }
-      return {start,quotients,traces,exceptions:guest.exception_count()};
+      return {start,quotients,traces,exceptions:guest.exception_count(),pendingDma0,entryRecords};
     } finally {guest.free();}
   },{rom:[...rom],divisionWords:divisions.length});
   const intc=await intcResult(intcRom);
@@ -2294,14 +2300,19 @@ try {
     assert.equal(words[3]&0x202,2);
     assert.equal(count,i+1);
   });
-  assert.equal(intc.exceptions,"5");
+  assert.equal(intc.exceptions,"6");
+  assert.equal(intc.pendingDma0,0);
+  assert.deepEqual(intc.entryRecords,[0x800,0,2]);
   assert.deepEqual(await intcResult(intcRom),intc);
   const changedIntc=Buffer.from(intcRom);
   const vectorMode=Buffer.from([0xE0,1,0x21,1]);
   const vectorModeAt=changedIntc.indexOf(vectorMode);
   assert(vectorModeAt>=0 && changedIntc.indexOf(vectorMode,vectorModeAt+1)===-1);
   changedIntc[vectorModeAt+1]=0;
-  assert.deepEqual((await intcResult(changedIntc)).start,[0xFFFF8000,0x42,0,0]);
+  const autovectorIntc=await intcResult(changedIntc);
+  assert.deepEqual(autovectorIntc.start,[0xFFFF8000,0x42,0,0]);
+  assert.equal(autovectorIntc.pendingDma0,0x800);
+  assert.deepEqual(autovectorIntc.entryRecords,[0x800,0,0]);
   const soundIoRom=Buffer.alloc(524288);
   for (const line of (await readFile("tests/fixtures/sound-io.hex","utf8")).split(/\r?\n/)) {
     if (!line || line.startsWith("#")) continue;

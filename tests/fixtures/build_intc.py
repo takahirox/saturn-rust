@@ -33,9 +33,17 @@ def program():
     for stage in range(2):
         if stage:
             s += 'load 0xfffffee0,r1\nmov #1,r0\nmov.w r0,@r1\n'
+            # The first autovector handler masked DMA0 without consuming it.
+            # Re-enable it and wait for its explicit external acquisition before
+            # starting the second DMA, so coalescing cannot conceal a lost IRQ.
+            s += store(0x25FE00A0, 0xB7FF)
+            s += 'load 0x06009028,r8\nwait_acquisition:\nmov.l @r8,r0\nmov #1,r2\ncmp/eq r2,r0\nbf wait_acquisition\n'
         for offset, value in [(0,0x06004000),(4,0x06005000+stage*4),(8,4),(12,0x102),(20,7),(16,0x101)]:
             s += store(0x25FE0000+offset,value)
-        s += f'load {0x06009004+stage*4:#x},r8\nwait{stage}:\nmov.l @r8,r0\ntst #255,r0\nbt wait{stage}\n'
+        if stage:
+            s += 'load 0x06009028,r8\nwait_second_dma:\nmov.l @r8,r0\nmov #2,r2\ncmp/eq r2,r0\nbf wait_second_dma\n'
+        else:
+            s += 'load 0x06009004,r8\nwait0:\nmov.l @r8,r0\ntst #255,r0\nbt wait0\n'
     # Enable the PAD IRQ, both EXLE inputs and external counter latching.
     s += store(0x25FE00A0, 0xBEFF)
     for offset, value in [(0x79,0),(0x7B,0),(0x7D,3),(0x7F,3)]:
@@ -53,7 +61,16 @@ def build():
     # Scratch R12–R14 belong to interrupt handlers; main uses R0/R1/R8.
     for vector, at, result, value in [(66,0x3000,0x06009004,0x42),(0x4B,0x3100,0x06009008,0x4B)]:
         struct.pack_into('>I',rom,vector*4,at)
-        sections[at] = f'load {result:#x},r12\nmov #{value},r13\nmov.l r13,@r12\nrte\nnop\n'
+        handler = f'load {result:#x},r12\nmov #{value},r13\nmov.l r13,@r12\n'
+        # Guest-computed evidence: auto entry retains DMA0; IVECF consumes it.
+        handler += ('load 0x25fe00a4,r12\nmov.l @r12,r13\n'
+                    'load 0x800,r14\nand r14,r13\n'
+                    f'load {0x06009020 if vector == 66 else 0x06009024:#x},r12\nmov.l r13,@r12\n')
+        if vector == 66:
+            handler += 'load 0x25fe00a0,r12\nload 0xbfff,r13\nmov.l r13,@r12\n'
+        else:
+            handler += 'load 0x06009028,r12\nmov.l @r12,r13\nadd #1,r13\nmov.l r13,@r12\n'
+        sections[at] = handler + 'rte\nnop\n'
     struct.pack_into('>I',rom,0x48*4,0x3200)
     sections[0x3200] = '''load 0x06009010,r12
 mov.l @r12,r13

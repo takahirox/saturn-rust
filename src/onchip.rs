@@ -493,6 +493,9 @@ impl OnChip {
 
     /// Level-sensitive until guest software reads/clears FTCSR. Exception
     /// acceptance itself does not acknowledge the peripheral flag (§11.5).
+    pub(crate) fn break_pending(&self) -> bool {
+        !self.standby && self.ubc.borrow().pending()
+    }
     pub fn interrupt(&self) -> Option<(u8, u8)> {
         if self.standby {
             return None;

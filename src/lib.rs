@@ -367,7 +367,7 @@ impl From<CpuError> for MachineError {
 struct CpuBoundary {
     dma: bool,
     nmi: bool,
-    irq: Option<(u8, u8)>,
+    irq: Option<bus::InterruptRequest>,
     started: u64,
 }
 
@@ -379,6 +379,7 @@ pub struct Machine {
     mode: Option<BootMode>,
     clocks: u64,
     nmi_pending: bool,
+    nmi_detected: Option<u64>,
     dma_errors: [bool; 2],
     cpu_ready: [u64; 2],
     cpu_boundary: [Option<CpuBoundary>; 2],
@@ -457,6 +458,7 @@ impl Machine {
     fn clear_execution(&mut self) {
         self.clocks = 0;
         self.nmi_pending = false;
+        self.nmi_detected = None;
         self.dma_errors = [false; 2];
         self.cpu_ready = [0; 2];
         self.cpu_boundary = [None; 2];
@@ -525,9 +527,13 @@ impl Machine {
 
     pub fn set_reset_button(&mut self, pressed: bool) {
         if self.bus.set_reset_button(pressed) {
-            self.nmi_pending = true;
-            self.bus.signal_nmi(Processor::Master);
+            self.request_nmi();
         }
+    }
+    fn request_nmi(&mut self) {
+        self.nmi_pending = true;
+        self.nmi_detected.get_or_insert(self.bus.main_clocks);
+        self.bus.signal_nmi(Processor::Master);
     }
     pub fn set_pal(&mut self, pal: bool) {
         self.bus.set_pal(pal);
@@ -627,6 +633,32 @@ impl Machine {
     fn issue_cpu(&mut self, processor: Processor) -> Result<bool, MachineError> {
         let i = processor as usize;
         let slave = processor == Processor::Slave;
+        self.bus.sample_interrupts();
+        if self.nmi_pending {
+            self.nmi_detected.get_or_insert(self.bus.main_clocks);
+        } else {
+            self.nmi_detected = None;
+        }
+        let nmi_recognized = !slave
+            && self.nmi_pending
+            && self
+                .nmi_detected
+                .is_some_and(|r| self.bus.main_clocks >= r + 2);
+        let state = if slave {
+            self.slave.state()
+        } else {
+            self.cpu.state()
+        };
+        if state.status == cpu::CpuStatus::Sleeping
+            && self.cpu_boundary[i].is_none()
+            && (nmi_recognized
+                || self
+                    .bus
+                    .recognized_interrupt(processor)
+                    .is_some_and(|r| u32::from(r.level) > (state.sr >> 4) & 15))
+        {
+            self.cpu_ready[i] = self.cpu_ready[i].min(self.bus.main_clocks);
+        }
         if self.bus.cpu_reset_active(processor) {
             self.bus.hold_cpu_reset(processor);
             self.cpu_boundary[i] = None;
@@ -688,8 +720,13 @@ impl Machine {
         }
         let boundary = *self.cpu_boundary[i].get_or_insert_with(|| CpuBoundary {
             dma: self.dma_errors[i],
-            nmi: !slave && self.nmi_pending && self.bus.nmi_ready(processor),
-            irq: self.bus.interrupt(processor),
+            nmi: !slave
+                && self.nmi_pending
+                && self.bus.nmi_ready(processor)
+                && self
+                    .nmi_detected
+                    .is_some_and(|r| self.bus.main_clocks >= r + 2),
+            irq: self.bus.recognized_interrupt(processor),
             started: self.bus.main_clocks,
         });
         // Keep the architectural state at its previous boundary until all bus
@@ -701,21 +738,38 @@ impl Machine {
             self.cpu.clone()
         };
         let result = (|| -> Result<(bool, bool, bool), CpuError> {
-            let mut memory = self.bus.replay_cpu(processor);
-            let dma = boundary.dma && cpu.accept_dma_address_error(&mut memory)?;
-            let nmi = !dma && boundary.nmi && cpu.accept_nmi(&mut memory)?;
-            let irq = !dma
-                && !nmi
-                && if let Some((level, vector)) = boundary.irq {
-                    cpu.accept_interrupt(&mut memory, level, vector)?
+            self.bus.prepare_interrupt(processor, None);
+            let (dma, nmi) = {
+                let mut memory = self.bus.replay_cpu(processor);
+                let dma = boundary.dma && cpu.accept_dma_address_error(&mut memory)?;
+                let nmi = !dma && boundary.nmi && cpu.accept_nmi(&mut memory)?;
+                (dma, nmi)
+            };
+            let irq = !dma && !nmi && {
+                self.bus.prepare_interrupt(processor, boundary.irq);
+                if let Some(irq) = boundary.irq {
+                    cpu.accept_interrupt(
+                        &mut self.bus.replay_cpu(processor),
+                        irq.level,
+                        irq.vector,
+                    )?
                 } else {
                     false
-                };
+                }
+            };
             if !dma && !nmi && !irq {
-                cpu.step(&mut memory)?;
+                // A recognized request may be masked or deferred. It must not
+                // supply a vector or acknowledge a source for an exception
+                // raised by the instruction itself (including native UBC).
+                self.bus.prepare_interrupt(processor, None);
+                cpu.step(&mut self.bus.replay_cpu(processor))?;
             }
             Ok((dma, nmi, irq))
         })();
+        if self.bus.take_nmi_clear(processor) {
+            self.nmi_pending = false;
+            self.nmi_detected = None;
+        }
         match result {
             Err(
                 CpuError::Bus {
@@ -743,16 +797,9 @@ impl Machine {
                     MachineError::Cpu(error)
                 })
             }
-            Ok((dma, nmi, irq)) => {
+            Ok((dma, _, _)) => {
                 if dma {
                     self.dma_errors[i] = false;
-                }
-                if nmi {
-                    self.nmi_pending = false;
-                }
-                if irq {
-                    self.bus
-                        .acknowledge_interrupt(processor, boundary.irq.unwrap());
                 }
                 let states = cpu.last_clocks();
                 // External data phases have already consumed their clocks.
@@ -803,8 +850,17 @@ impl Machine {
         if committed && next <= self.bus.main_clocks {
             return Ok(true);
         }
+        let nmi_wait = self.nmi_detected.map_or(u64::MAX, |r| {
+            let remaining = (r + 2).saturating_sub(self.bus.main_clocks);
+            if remaining == 0 { u64::MAX } else { remaining }
+        });
         let elapsed = next
             .saturating_sub(self.bus.main_clocks)
+            .min(nmi_wait)
+            // A device event can assert a new request inside an idle batch.
+            // Return to CPU scheduling at that edge so the newly established
+            // recognition deadline can bound the following advance.
+            .min(u64::from(self.bus.main_deadline()))
             .min(u64::from(self.bus.bus_transaction_deadline()))
             .max(1)
             .min(u64::from(CLOCKS_PER_STEP)) as u32;
@@ -874,12 +930,10 @@ impl Machine {
                 // input, DMAC inhibition and scheduled exception path as NMI.
                 // Preserve a master's in-flight instruction journal: the
                 // command is not a reset of the master SH-2.
-                self.nmi_pending = true;
-                self.bus.signal_nmi(Processor::Master);
+                self.request_nmi();
             }
             Some(0x18) => {
-                self.nmi_pending = true;
-                self.bus.signal_nmi(Processor::Master);
+                self.request_nmi();
             }
             _ => (),
         }

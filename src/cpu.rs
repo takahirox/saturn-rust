@@ -3,6 +3,8 @@ use crate::bus::{BusError, Memory};
 use std::fmt;
 
 mod fetch;
+#[cfg(test)]
+mod interrupt_tests;
 mod memory;
 mod multiplier;
 mod timing;
@@ -197,7 +199,7 @@ impl Cpu {
         if !(1..=15).contains(&level) || level as u32 <= (self.state.sr >> 4) & 15 {
             return Ok(false);
         }
-        self.interrupt(bus, vector, level)
+        self.interrupt(bus, vector, level, false)
     }
 
     /// DMA address errors use vector 10 and cannot be masked by SR.I.
@@ -219,7 +221,7 @@ impl Cpu {
 
     /// NMI has vector 11 and raises the interrupt mask to 15.
     pub fn accept_nmi(&mut self, bus: &mut impl Memory) -> Result<bool, CpuError> {
-        self.interrupt(bus, 11, 15)
+        self.interrupt(bus, 11, 15, true)
     }
 
     fn interrupt(
@@ -227,6 +229,7 @@ impl Cpu {
         bus: &mut impl Memory,
         vector: u8,
         level: u8,
+        nmi: bool,
     ) -> Result<bool, CpuError> {
         if !matches!(self.state.status, CpuStatus::Running | CpuStatus::Sleeping)
             || self.state.delay_target.is_some()
@@ -236,7 +239,7 @@ impl Cpu {
             return Ok(false);
         }
         let pc = self.state.pc;
-        let result = self.enter_exception(bus, vector, pc);
+        let result = self.enter_exception_sequence(bus, vector, pc, Some((level, nmi)));
         if let Err(error) = result {
             self.state.status = CpuStatus::Faulted(error.clone());
             return Err(error);
@@ -256,7 +259,7 @@ impl Cpu {
             && !self.state.address_error_pending
             && bus.break_pending()
             && 15 > (self.state.sr >> 4) & 15
-            && self.interrupt(bus, 12, 15)?
+            && self.interrupt(bus, 12, 15, false)?
         {
             bus.acknowledge_break();
             return Ok(());
@@ -289,7 +292,17 @@ impl Cpu {
         vector: u8,
         saved_pc: u32,
     ) -> Result<(), CpuError> {
-        // H §5.5 table5.9: acceptance to handler fetch is 5+m1+m2+m3;
+        self.enter_exception_sequence(bus, vector, saved_pc, None)
+    }
+
+    fn enter_exception_sequence(
+        &mut self,
+        bus: &mut impl Memory,
+        mut vector: u8,
+        saved_pc: u32,
+        interrupt: Option<(u8, bool)>,
+    ) -> Result<(), CpuError> {
+        // H Rev4 §5.5 table5.8: acceptance to handler fetch is 5+m1+m2+m3;
         // the three single-state memory operations are included here. The
         // bus supplies additional waits independently to the machine scheduler.
         bus.sh2_write_context(self.state.pc, Some(vector));
@@ -304,15 +317,58 @@ impl Cpu {
             vector,
             source,
         };
+        if let Some((_, nmi)) = interrupt {
+            // H figs5.7/5.10: D, then E,E before the first stack MA.
+            bus.sh2_pipeline_wait(1).map_err(access)?;
+            if nmi {
+                bus.sh2_clear_nmi();
+            }
+            bus.sh2_pipeline_wait(2).map_err(access)?;
+        }
         // Bus operations are ordered SR push, PC push, vector fetch (SH7604 §4.1.2).
         // A failed entry is a bounded diagnostic, not recursive host exception dispatch.
         let sp = s.r[15].wrapping_sub(8);
+        let start = bus.sh2_clock();
         bus.exception_write32(sp.wrapping_add(4), s.sr)
             .map_err(access)?;
+        if interrupt.is_some()
+            && let Some(start) = start
+        {
+            bus.sh2_pipeline_wait((start + 1).saturating_sub(bus.sh2_clock().unwrap()) as u32)
+                .map_err(access)?;
+        }
+        let start = bus.sh2_clock();
         bus.exception_write32(sp, saved_pc).map_err(access)?;
+        if interrupt.is_some()
+            && let Some(start) = start
+        {
+            bus.sh2_pipeline_wait((start + 1).saturating_sub(bus.sh2_clock().unwrap()) as u32)
+                .map_err(access)?;
+        }
+        if let Some((level, nmi)) = interrupt {
+            s.sr = (s.sr & !0xF0) | u32::from(level) << 4;
+            bus.sh2_pipeline_wait(1).map_err(access)?;
+            if !nmi {
+                vector = bus.sh2_interrupt_vector(level, vector).map_err(access)?;
+            }
+        }
+        let entry_pc = s.pc;
+        let access = |source| CpuError::ExceptionEntry {
+            pc: entry_pc,
+            vector,
+            source,
+        };
+        let start = bus.sh2_clock();
         let target = bus
             .exception_read32(s.vbr.wrapping_add(vector as u32 * 4))
             .map_err(access)?;
+        if interrupt.is_some() {
+            if let Some(start) = start {
+                bus.sh2_pipeline_wait((start + 1).saturating_sub(bus.sh2_clock().unwrap()) as u32)
+                    .map_err(access)?;
+            }
+            bus.sh2_pipeline_wait(1).map_err(access)?;
+        }
         // Accept a stacking/vector alignment error after this entry completes.
         // Vector 9 must not recursively re-enter forever (§§4.8.2–3).
         if (sp | s.vbr) & 3 != 0 && vector != 9 {
@@ -327,6 +383,11 @@ impl Cpu {
         self.interrupt_inhibited = false;
         self.address_error_inhibited = false;
         bus.sh2_discard_prefetch();
+        if interrupt.is_some() {
+            // Begin the handler IF at its specified boundary, retaining the
+            // fetched instruction for the ordinary IF/ID pipeline.
+            self.fetch.handler(bus, target).map_err(access)?;
+        }
         Ok(())
     }
 
@@ -370,7 +431,7 @@ impl Cpu {
         // instruction. A fetch failure or speculative fill cannot cause it.
         if bus.instruction_break(pc, false)
             && 15 > (self.state.sr >> 4) & 15
-            && self.interrupt(bus, 12, 15)?
+            && self.interrupt(bus, 12, 15, false)?
         {
             bus.acknowledge_break();
             return Ok(());
