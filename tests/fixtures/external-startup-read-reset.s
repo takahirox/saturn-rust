@@ -1,0 +1,7 @@
+load 0x401,r4
+load 0x0,r5
+load 0x0,r6
+load 0x0,r7
+load command,r0
+jsr @r0
+nop

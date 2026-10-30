@@ -31,7 +31,7 @@ load 0x26010204,r1
 mov.l @r1,r0
 load 0x26010014,r1
 mov.l r0,@r1
-load 0x1,r2
+load 0x7,r2
 cmp/eq r2,r0
 bf.l failed
 load 0x26010208,r1
@@ -60,7 +60,7 @@ load 0x26010210,r1
 mov.l @r1,r0
 load 0x26010024,r1
 mov.l r0,@r1
-load 0x800,r2
+load 0x400,r2
 cmp/eq r2,r0
 bf.l failed
 load 0x26010214,r1
