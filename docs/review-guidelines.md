@@ -40,6 +40,8 @@ the changed files and uses actual repository tooling. Confirm that claims match
 checks actually performed, including failures, skipped checks, and unperformed
 checks with reasons.
 
+Review user-facing interface changes against the [UI/UX principles](../README.md#uiux).
+
 As described in the [development flow](development-flow.md#2-implement-the-smallest-complete-change),
 use the applicable [native, Wasm and browser checks](setup.md) for application
 changes. For documentation and templates, inspect Markdown/template syntax,
