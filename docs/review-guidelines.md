@@ -40,6 +40,12 @@ the changed files and uses actual repository tooling. Confirm that claims match
 checks actually performed, including failures, skipped checks, and unperformed
 checks with reasons.
 
+Apply the [test and CI principles](ci-performance.md#test-and-ci-principles):
+assess the additional defects detected, overlap with existing coverage, and
+execution and maintenance cost of new or expanded checks. Ask:
+
+> Does this change provide sufficient confidence with the lightest appropriate validation, without redundant execution?
+
 Review user-facing interface changes against the [UI/UX principles](../README.md#uiux).
 
 As described in the [development flow](development-flow.md#2-implement-the-smallest-complete-change),

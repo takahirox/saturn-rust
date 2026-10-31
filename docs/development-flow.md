@@ -39,7 +39,8 @@ extra policies or configuration without a demonstrated need tied to the Issue.
 Added complexity is not automatically beneficial; simplicity does not excuse
 missing requirements or necessary validation.
 
-Choose checks appropriate to the changed files and the actual repository tooling.
+Choose checks appropriate to the changed files and the actual repository tooling,
+following the [test and CI principles](ci-performance.md#test-and-ci-principles).
 Use the actual [build, test and browser smoke commands](setup.md) for application
 changes. The [CI performance record](ci-performance.md) documents the complete-suite
 inventory, timing commands and publication dependency graph. Do not add
