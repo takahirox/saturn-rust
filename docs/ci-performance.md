@@ -1,4 +1,73 @@
-# CI validation performance — Issue #61
+# CI validation performance
+
+## Test and CI principles
+
+**Detect the required failures at the lightest appropriate layer, without
+redundant execution.** Preserve required correctness, regressions and meaningful
+integration coverage when redistributing checks.
+
+1. **Prefer the lightest meaningful layer.** Use Rust unit/component tests for
+   calculations, instruction branches and broad data combinations. Use native
+   guest integration tests for CPU/device interactions, and Wasm/Chromium tests
+   for boundaries requiring bindings, Canvas, AudioWorklet, Play/Debug controls
+   or local-media privacy. Each test should catch a concrete defect rather than
+   mirror the implementation. Retain original licensed fixtures and independent
+   expected results.
+2. **Choose combinations deliberately.** Cover distinct CPU/device, ISO/CUE,
+   display and controller processing paths with representative cases. Do not
+   automatically cross every media format, display mode, input state and browser
+   path. Use exhaustive combinations where interactions require them; preserve
+   required regressions and native/Wasm boundary coverage.
+3. **Match validation to the change.** Use focused checks for fast feedback, then
+   applicable complete regression validation before merge. Documentation needs
+   Markdown, link/anchor, consistency and whitespace checks. UI changes need
+   relevant browser checks; core/runtime changes need native tests, fixture
+   reproducibility and affected Wasm/browser boundaries. CI/build changes need
+   affected builds plus runner failure-propagation, coverage and artifact-gate
+   checks. Use the commands in [setup](setup.md) and preserve the
+   [workflow](../.github/workflows/pages.yml)'s mandatory `build` barrier over
+   native, Wasm and both browser shards; focused runs do not replace it. The
+   workflow currently runs on all PRs to `main`, including documentation changes.
+   Serial/raw comparisons and performance probes are optional diagnostics unless
+   the Issue requires them. Main-only Pages publication follows validation and
+   reuses its tested artifact; record genuinely required post-merge verification
+   separately, as in the [development flow](development-flow.md#1-start-with-an-issue).
+4. **Reuse work and avoid duplicate execution.** Reuse builds, generated fixtures
+   and downloads with keys covering relevant versions/inputs and platform, while
+   keeping mutable state isolated. Preserve the single immutable `web-build` and
+   exact-version bindgen cache checks. Use separate checkouts when fixture checks
+   and web generation would race. Avoid equivalent push/PR validation for the
+   same revision when designing triggers; current main publication remains
+   necessary. Preserve superseded-PR cancellation and serialized main deployment
+   ordering. Parallelize independent work only with measured elapsed, CPU/runner
+   and memory costs; more workers are not automatically faster or cheaper.
+5. **Review value and cost together.** State the additional defect a new or
+   expanded test detects, whether existing coverage supplies that assurance, and
+   its execution and maintenance cost. Watch repeated compiler/browser/context
+   setup, large media, long guest-clock loops and Cartesian-product growth.
+   Remove redundant execution while retaining meaningful assertions and required
+   coverage.
+6. **Maintain an execution-time budget.** Use the existing Issue #61 normal-CI
+   target of under 10 minutes (8 minutes or less as a stretch target) for
+   investigation, not a new merge gate or timeout. The
+   [hosted record](#executed-hosted-acceptance) measured 475 s and 1,122 s on the
+   same historical revision; neither guarantees today's larger suite latency.
+   Re-establish a comparable current-suite baseline during performance work and
+   monitor growth using existing stage/group/harness timings. Separate elapsed
+   feedback time, summed runner time or measured CPU time, and queue delay;
+   report queue delay separately when measured, without inferring CPU use from
+   job intervals. Investigate target overruns and duplication without weakening
+   required tests or assertions.
+
+Review question:
+
+> Does this change provide sufficient confidence with the lightest appropriate validation, without redundant execution?
+
+Changes to triggers, selection, caches, timeouts, worker counts or tests require
+separately scoped implementation and applicable validation. These principles add
+no benchmark, hardware, human-approval or post-merge gate.
+
+## Issue #61 performance record
 
 The timing measurements below are the historical Issue #61 inventory. The
 current registry has 71 browser groups and 100 fixture/media builders, retaining

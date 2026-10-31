@@ -78,6 +78,7 @@ Contributor and AI agent guidance:
 
 - [Development flow and English collaboration convention](docs/development-flow.md)
 - [Review and merge guidelines](docs/review-guidelines.md)
+- [Test and CI principles](docs/ci-performance.md#test-and-ci-principles)
 - [Issue template](.github/ISSUE_TEMPLATE/issue.md)
 - [Pull request template](.github/pull_request_template.md)
 
