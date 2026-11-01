@@ -31,8 +31,8 @@ export async function cdCopy(page) {
     for (const [command, expected] of [[4,255],[7,0],[19,255],[20,0],[30,255],[32,1],[37,0],[43,1]]) {
       assert.equal(read(command) & 255, expected, `CD selector status${command}`);
     }
-    for (const [command, word, expected] of [[8,3,32],[9,1,1],[12,1,1],[14,1,1],[21,3,0],
-      [22,3,32],[23,1,0],[25,1,1],[33,3,32],[38,3,0],[45,1,0]]) {
+    for (const [command, word, expected] of [[8,3,32],[9,1,1],[12,1,2],[14,1,2],[21,3,0],
+      [22,3,32],[23,1,0],[25,1,2],[33,3,32],[38,3,0],[45,1,0]]) {
       assert.equal(read(command, word), expected, `CD selector response${command}:${word}`);
     }
     assert.equal(read(17) & 0x8000, 0x8000);

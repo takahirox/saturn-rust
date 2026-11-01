@@ -26,7 +26,7 @@ export async function dmaStartup(page) {
         return {records,exceptions,frame,canvas};
       },{cue,media:[...media],lengths:[iso.length,audio.length]});
       const first=trigger?source:cpu,second=trigger?0x33332222:0;
-      assert.deepEqual(r.records,[Number(trigger),first,second,(first+second)>>>0,trigger?4:0,0x600D]);
+      assert.deepEqual(r.records,[Number(trigger),first,second,(first+second)>>>0,trigger?5:1,0x600D]);
       assert.equal(r.exceptions,trigger?'1':'0');
       const palette=[[0,0,0,255],[255,0,0,255],[0,255,0,255],[0,0,255,255],[255,255,255,255]];
       const expected=Array.from({length:8},(_,x)=>palette[(first>>>((7-x)*4))&15]).flat();

@@ -804,3 +804,22 @@ errors park before AIP, including after a partial copy. See
 [Issue #83 fixed-layout evidence](validation-issue-83.md). This synthetic boot
 increment establishes neither stock Sega BIOS boot, authenticated retail media,
 broad homebrew support nor commercial-game compatibility.
+
+## Application-executed runtime CD reader
+
+The [runtime CD contract](cd-runtime.md) adds an original MIT application after
+#85's unchanged firmware/IP/AIP handoff. It resolves ISO names and identifiers,
+keeps two independent byte-cursor handles, and reads partial/cross-sector ranges
+through ChangeDir/ReadFile, selectors, GetDelete FIFO and DataEnd. Directory
+bytes use actual SCU DMA and the existing guest interrupt handlers. There is no
+host CD-library interception or HLE installation in ExternalBios.
+
+DataEnd now counts an offered FIFO word for every interrupted GET, bounded by
+its accepted payload, while PUT counts host-consumed words. This corrects the
+primary manual's GET/PUT count distinction without advancing the guest cursor
+or altering sector deletion/IRQ ownership. Independent native and production
+Wasm tests compare all file/canary bytes, handle state, command/IRQ/DMA records,
+asset-derived arithmetic and Canvas, errors, cold reset and SYSRES on two
+layouts. The private test API is CDC/GFS-like software, not Sega SDK binary ABI
+compatibility. Genuine BIOS, commercial games, authenticated media and complete
+CD/controller timing remain unverified. See [Issue #91 validation](validation-issue-91.md).

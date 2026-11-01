@@ -56,7 +56,7 @@ fn guest_scans_reverses_pauses_waits_and_reopens_same_disc_without_reading_secto
         assert!(read(0x2C) >= 170 && read(0x2C) < 250);
         assert!(read(0x4C) < 160 && read(0x4C) >= 150);
         assert_eq!(read(0xA4), 204);
-        assert_eq!(read(0xB4), 2); // Two TOC words transferred by actual guest MOV.L.
+        assert_eq!(read(0xB4), 3); // Two host TOC words plus one CD-side prefetched word.
         assert_eq!(read(0xCC), 0); // Scan never routes data to a partition.
         assert_eq!(read(0xE0), 0x41000096);
         for offset in [0x110, 0x120, 0x140, 0x150] {
@@ -71,7 +71,7 @@ fn guest_scans_reverses_pauses_waits_and_reopens_same_disc_without_reading_secto
             (0x24C, 0),
             (0x25C, 2),
             (0x264, 198),
-            (0x284, 1025),
+            (0x284, 1026),
             (0x294, 200),
             (0x300, u32::from(payload)),
             (0x304, 0),

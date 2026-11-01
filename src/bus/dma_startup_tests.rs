@@ -146,7 +146,8 @@ fn queued_cpu_ab_writes_publish_before_first_dma_source_read_all_routes_and_leve
                         advance(&mut b, 20, 3, true);
                         assert_ne!(b.read32(SCU + 0xa4).unwrap() & (1 << (11 - level)), 0);
                         assert_eq!(b.debug_read32(DATA), Ok(0x99aabbcc));
-                        assert_eq!(command(&mut b, [0x0600, 0, 0, 0])[1], 4);
+                        // Four DMA-consumed words plus the CD-side offered FIFO word.
+                        assert_eq!(command(&mut b, [0x0600, 0, 0, 0])[1], 5);
                     }
                 }
             }
@@ -387,7 +388,7 @@ fn active_indirect_chain_is_one_startup_and_hardware_retrigger_is_only_one_deep(
         assert_eq!(b.read32(destination + 8), Ok(0x99aabbcc));
         advance(&mut b, 100, chunk, true);
         assert_eq!(b.read32(destination), Ok(0xdeadbeef));
-        assert_eq!(command(&mut b, [0x0600, 0, 0, 0])[1], 6);
+        assert_eq!(command(&mut b, [0x0600, 0, 0, 0])[1], 7);
 
         let mut b = board();
         pending(&mut b, Processor::Master, destination);
@@ -397,7 +398,7 @@ fn active_indirect_chain_is_one_startup_and_hardware_retrigger_is_only_one_deep(
         }
         advance(&mut b, 1000, chunk, true);
         // Original request plus one queued request, never five more.
-        assert_eq!(command(&mut b, [0x0600, 0, 0, 0])[1], 8);
+        assert_eq!(command(&mut b, [0x0600, 0, 0, 0])[1], 9);
         assert_ne!(b.read32(SCU + 0xa4).unwrap() & 0x800, 0);
     }
 }
@@ -427,7 +428,7 @@ fn running_a_to_b_can_be_preempted_by_level_two_without_restarting_its_source_un
         assert_eq!(b.read32(low), Ok(0x1122bbcc)); // retained high halfword
         assert_eq!(b.read32(low + 4), Ok(0));
         assert_eq!(b.read32(SCU + 0xa4).unwrap() & 0xa00, 0xa00);
-        assert_eq!(command(&mut b, [0x0600, 0, 0, 0])[1], 8);
+        assert_eq!(command(&mut b, [0x0600, 0, 0, 0])[1], 9);
     }
 }
 

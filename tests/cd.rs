@@ -114,7 +114,7 @@ fn runtime_sector_get_delete_partial_abort_and_transfer_bounds() {
     issue(&mut cd, [0x6300, 0, 0, 1]);
     assert_eq!(read(&cd, 20), bytes[..20]);
     let r = issue(&mut cd, [0x0600, 0, 0, 0]);
-    assert_eq!(r[1], 10);
+    assert_eq!(r[1], 11);
     assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 1);
     issue(&mut cd, [0x6100, 0, 0, 1]);
     assert_eq!(read(&cd, 2048), bytes[2048..4096]);
@@ -616,7 +616,7 @@ fn only_sector_buffer_transfers_raise_host_io_completion() {
             cd.write16(CD + 8, !0x80).unwrap();
             assert_ne!(issue(&mut cd, cmd)[0] & 0x4000, 0);
             read(&cd, words * 2);
-            assert_eq!(issue(&mut cd, [0x0600, 0, 0, 0])[1], words as u16);
+            assert_eq!(issue(&mut cd, [0x0600, 0, 0, 0])[1], words as u16 + 1);
             assert_eq!(cd.read16(CD + 8).unwrap() & 0x82, 0);
         }
     }
@@ -1426,5 +1426,72 @@ fn held_information_window_preserves_self_parent_ids_and_has_exact_254_child_lim
             assert!(!directory_with_chunk(&mut cd, [0x7100, 0, 0, 302], chunk));
             assert_eq!(issue(&mut cd, [0x7200, 0, 0, 0])[0], 0xFF00);
         }
+    }
+}
+
+#[test]
+fn every_get_class_prefetches_without_consuming_the_next_transfer_and_put_does_not() {
+    // ST-162 §8.2.1 function1.10: partial GET > host, full/excess == normal;
+    // partial PUT == host. Literal lengths/word counts are independent of core.
+    let (mut cd, bytes) = mounted();
+    sectors(&mut cd, 1);
+    for size in [0, 1, 2, 3] {
+        issue(&mut cd, [0x6000 | size, 0xFF00, 0, 0]);
+        let normal = [1024, 1168, 1170, 1176][size as usize];
+        for host in [0, 1, normal - 1, normal, normal + 1] {
+            issue(&mut cd, [0x6100, 0, 0, 1]);
+            let first = cd.peek16(DATA).unwrap();
+            assert_eq!(cd.peek16(DATA).unwrap(), first);
+            assert_eq!(cd.peek16(CD + 0x24), cd.peek16(CD + 0x24));
+            read(&cd, host * 2);
+            // Overlap returns WAIT; an independent query must leave FIFO intact.
+            assert_ne!(issue(&mut cd, [0x0200, 0, 0, 0])[0] & 0x8000, 0);
+            assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 1);
+            assert_eq!(
+                issue(&mut cd, [0x0600, 0, 0, 0])[1],
+                (host + 1).min(normal) as u16
+            );
+            assert_eq!(cd.read16(DATA).unwrap(), 0xFFFF);
+            assert_eq!(issue(&mut cd, [0x0600, 0, 0, 0])[1], 0xFFFF);
+            issue(&mut cd, [0x6100, 0, 0, 1]);
+            assert_eq!(
+                cd.read16(DATA).unwrap(),
+                first,
+                "fresh GET starts at byte zero"
+            );
+            issue(&mut cd, [0x0600, 0, 0, 0]);
+        }
+    }
+    issue(&mut cd, [0x6000, 0, 0, 0]);
+    issue(&mut cd, [0x6300, 0, 0, 1]);
+    assert_eq!(read(&cd, 2), bytes[..2]);
+    assert_eq!(issue(&mut cd, [0x0600, 0, 0, 0])[1], 2);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 0);
+    // Metadata GETs share the count contract, but never acquire EHST ownership.
+    cd.mount(Media::iso(include_bytes!("fixtures/cd-runtime.iso")).unwrap());
+    assert!(directory(&mut cd, [0x7000, 0, 0x00FF, 0xFFFF]));
+    for (cmd, normal) in [
+        ([0x0200, 0, 0, 0], 204),
+        ([0x2000, 0, 0, 0], 5),
+        ([0x7300, 0, 0, 2], 6),
+    ] {
+        for host in [0, 1, normal - 1, normal, normal + 1] {
+            cd.write16(CD + 8, !0x80).unwrap();
+            issue(&mut cd, cmd);
+            read(&cd, host * 2);
+            assert_eq!(
+                issue(&mut cd, [0x0600, 0, 0, 0])[1],
+                (host + 1).min(normal) as u16
+            );
+            assert_eq!(cd.read16(CD + 8).unwrap() & 0x82, 0);
+        }
+    }
+    for host in [0, 1, 1023, 1024, 1025] {
+        issue(&mut cd, [0x6400, 0, 0x0100, 1]);
+        for _ in 0..host {
+            cd.write16(DATA, 0xCAFE).unwrap();
+        }
+        assert_eq!(issue(&mut cd, [0x0600, 0, 0, 0])[1], host.min(1024));
+        issue(&mut cd, [0x4800, 0, 0x0100, 0]);
     }
 }

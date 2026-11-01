@@ -21,6 +21,7 @@ import { bBusReads } from "./b-bus-reads.mjs";
 import { scuFringe } from "./scu-fringe.mjs";
 import { dmacBus } from "./dmac-bus.mjs";
 import { sh2Store } from "./sh2-store.mjs";
+import { cdRuntime } from "./cd-runtime.mjs";
 import { externalDiscovery } from "./external-discovery.mjs";
 import { externalStartup } from "./external-startup.mjs";
 import { interruptEntry } from "./interrupt-entry.mjs";
@@ -121,7 +122,7 @@ try {
     const scenarios = { vdp2Status, videoTransactions, abusTiming, dspArithmetic,
       busTransactions, bBusReads, videoWrites, slaveRaster, hleDual, scuFringe,
       dmacBus, sh2BusPipeline, sh2ResetBus, cs0Transfers, spriteShrink,
-      hardwareBoundaries, refreshArbitration, interruptEntry, externalStartup, externalDiscovery, sh2Fetch, sh2Store, sh2Load, sh2Multiplier,
+      hardwareBoundaries, refreshArbitration, interruptEntry, externalStartup, externalDiscovery, cdRuntime, sh2Fetch, sh2Store, sh2Load, sh2Multiplier,
       cdCopy, dmaStartup, cdReports, cdRw, rotationReload, rotationFetch,
       rotationHighResolution, mosaic, scspMonitor, m68kReset, scspClock, scspEffects,
       scspDma, scspPcm, scspCpuMemory, scspMvol };
@@ -1368,6 +1369,9 @@ try {
   if (includeScenarios) await timings.measure("externalStartup", async () => {
     await externalStartup(page);
   });
+  if (includeScenarios) await timings.measure("cdRuntime", async () => {
+    await cdRuntime(page);
+  });
   if (includeScenarios) await timings.measure("externalDiscovery", async () => {
     await externalDiscovery(page);
   });
@@ -1672,14 +1676,14 @@ try {
     assert(result[0x2C/4]>=170 && result[0x2C/4]<250);
     assert(result[0x4C/4]>=150 && result[0x4C/4]<160);
     assert.equal(result[0xA4/4],204);
-    assert.equal(result[0xB4/4],2);
+    assert.equal(result[0xB4/4],3);
     assert.equal(result[0xCC/4],0);
     assert.equal(result[0xE0/4],0x41000096);
     for (const offset of [0x110,0x120,0x140,0x150]) assert.equal(result[offset/4],0xFF00);
     assert.equal(result[0x134/4],0x0304);
     assert.equal(result[0x188/4],0x0400);
     for (const [offset,value] of [[0x2F0,0],[0x2F4,0x80],[0x234,1],[0x24C,0],
-      [0x25C,2],[0x264,198],[0x284,1025],[0x294,200],[0x300,payload],[0x304,0]]) {
+      [0x25C,2],[0x264,198],[0x284,1026],[0x294,200],[0x300,payload],[0x304,0]]) {
       assert.equal(result[offset/4],value,`CD host transfer ${offset.toString(16)}`);
     }
     if (previousDrive) assert.deepEqual(result,previousDrive);
