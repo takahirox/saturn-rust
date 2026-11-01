@@ -47,7 +47,7 @@ fn timer_triggered_cd_to_video_waits_for_finite_guest_writes_and_executes_end_ha
                     first,
                     second,
                     first.wrapping_add(second),
-                    if trigger { 4 } else { 0 },
+                    if trigger { 5 } else { 1 },
                     0x600d
                 ]
             );

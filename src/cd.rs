@@ -1187,10 +1187,13 @@ impl CdBlock {
                     self.response.set(r);
                     return true;
                 };
-                // CD I/F §8.2.1 DataEnd: an interrupted GET reports more
-                // CD-side words than host-consumed words. R–W keeps one next
-                // word offered to DATATRNS; cap prefetch at the 12-word pack.
-                let words = (t.position / 2 + usize::from(t.rw.is_some())).min(t.bytes.len() / 2);
+                // ST-162 §8.2.1 function1.10, transfer-count table: every
+                // interrupted GET reports more CD-side than host-side words;
+                // PUT reports exactly the host count. Model one offered FIFO
+                // word for all GET classes, bounded by the accepted payload.
+                // This accounting never advances the host cursor or consumes
+                // a byte from a subsequent transfer.
+                let words = (t.position / 2 + usize::from(t.put.is_none())).min(t.bytes.len() / 2);
                 if let Some(sequence) = t.rw {
                     self.rw.end(sequence);
                 }

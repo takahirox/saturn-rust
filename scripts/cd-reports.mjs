@@ -56,7 +56,7 @@ export async function cdReports(page) {
       assert.equal(read(0x814 + q * 32), words.reduce((a, b) => a + b, 0));
     });
     assert.equal(read(0xFE0), changed ? 0xA6A6 : 0x6969);
-    assert.equal(report(28)[1], 1);
+    assert.equal(report(28)[1], 2);
   }
   console.log('CD reports passed: guest commands/home/error recovery/Q transfers and sums, changed FAD/media, omitted stop, passive Machine/Wasm debugger reads and repeated cold boots.');
 }

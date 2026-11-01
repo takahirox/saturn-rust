@@ -437,7 +437,7 @@ fn executing_guest_transfers_q_computes_sums_and_recovers_from_home_and_error() 
                 );
             }
             assert_eq!(read(0xFE0), if changed { 0xA6A6 } else { 0x6969 });
-            assert_eq!(report(28)[1], 1);
+            assert_eq!(report(28)[1], 2);
             let records: Vec<_> = (0..1024).map(|i| read(i * 4)).collect();
             if let Some(old) = previous {
                 assert_eq!(records, old);

@@ -51,6 +51,7 @@
     "refreshArbitration",
     "interruptEntry",
     "externalStartup",
+    "cdRuntime",
     "externalDiscovery",
     "sh2Fetch",
     "sh2Store",

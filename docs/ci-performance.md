@@ -70,9 +70,9 @@ no benchmark, hardware, human-approval or post-merge gate.
 ## Issue #61 performance record
 
 The timing measurements below are the historical Issue #61 inventory. The
-current registry has 71 browser groups and 100 fixture/media builders, retaining
+current registry has 72 browser groups and 101 fixture/media builders, retaining
 the required suite coverage and publication gates. See
-[Issue #81 validation](validation-issue-81.md) for the latest executed checks;
+[Issue #91 validation](validation-issue-91.md) for the latest executed checks;
 the older counts and measurements below describe their historical checkpoints.
 
 

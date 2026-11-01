@@ -3952,3 +3952,25 @@ commercial-title support and full chip/optical/bus conformance remain unverified
 #17 remains open; #81/#82's SCU endpoint evidence and draft-publication rule remain
 unchanged. No successful checkpoint, green CI or intermediate merge establishes
 hardware completion.
+
+## Application runtime file reader and GET termination (Issue #91)
+
+Related to #91 and #17. The [primary-backed runtime contract](cd-runtime.md)
+distinguishes original guest CDC/GFS-style software from hardware commands and
+BIOS/system services. The unchanged #85 ROM discovers and boots the same original
+MIT application on two IP/ISO layouts. Guest-controlled root/child directory
+reads resolve names/FIDs; two handles exercise seek, partial/consecutive/cross-
+sector byte reads, EOF, close/reopen and alternating output-buffer lifetimes.
+
+| Behavior | Actual hardware and independent evidence | Limit |
+| --- | --- | --- |
+| Interrupted GET DataEnd | `CdBlock::execute(06)` counts a CD-side offered word for every GET, capped at accepted length; PUT remains host count. The inherited application fails E091 (host2/CD2), corrected hardware passes unchanged (host2/CD3). Native CD vectors cover sector lengths 2048/2336/2340/2352, TOC/Q/file info, zero/partial/full/excess, overlap WAIT, independent queries and fresh FIFO starts | One-word depth is a deterministic policy; primary ST-162 §8.2.1 function1.10 specifies count inequalities, not a physical prefetch depth |
+| Runtime guest and layout ownership | [Builder/assembly](../tests/fixtures/build_cd_runtime.py), [native](../tests/cd_runtime.rs), [Wasm/Canvas](../scripts/cd-runtime.mjs): complete actual file and65536 canary bytes, tails, cursor/length records, literal command replies, SCU transactions/acknowledgments and asset-derived pixels | Private original synchronous test ABI; no Sega GFS/CDC binary compatibility claim |
+| Error and reset boundaries | Rejected initialization/FID, absent names/records, malformed/out-of-volume child metadata, uncorrectable raw sector/retry deadline, truncated mount, empty medium, abort, active-FIFO reset, cold repeat and SYSRES; chunks 1/3/17/10000 and passive inspection | Existing bounded command timing retained; complete optical/controller behavior and all asynchronous library patterns remain unverified |
+
+The fixture registry now contains 101 commands and the complete browser inventory
+72 groups (30 shared, 42 scenarios), retaining prior groups, failure propagation,
+lossless transport, artifact identity and main-only Pages gates. See
+[executed checks and negative control](validation-issue-91.md). Hardware status
+remains **Pending**. This increment does not resolve the wider #17 scope or the
+#81/#82 SCU endpoint evidence finding and draft-publication constraint.
