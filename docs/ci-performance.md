@@ -70,9 +70,9 @@ no benchmark, hardware, human-approval or post-merge gate.
 ## Issue #61 performance record
 
 The timing measurements below are the historical Issue #61 inventory. The
-current registry has 72 browser groups and 101 fixture/media builders, retaining
+current registry has 73 browser groups and 102 fixture/media builders, retaining
 the required suite coverage and publication gates. See
-[Issue #91 validation](validation-issue-91.md) for the latest executed checks;
+[Issue #93 validation](validation-issue-93.md) for the latest executed checks;
 the older counts and measurements below describe their historical checkpoints.
 
 
@@ -693,3 +693,18 @@ verification still gate publication without skips. See the
 [executed validation](validation-issue-75.md) for complete-suite results and
 inherited-main native/Wasm failures of the nonempty-pack oracle. Historical
 inventory counts elsewhere in this record describe earlier checkpoints.
+
+
+## Issue #93 streaming coverage cost
+
+The bounded streaming increment retains all existing coverage and adds one
+fixture builder, six native guest tests, two device tests and one isolated
+browser scenario. Broad phase/chunk/reset combinations stay at device/native
+layers; the new browser group covers two layouts, changed bytes, active-FIFO
+reset, production Canvas and a representative chunk/inspection comparison.
+The focused group measured 16.223 seconds on macOS arm64; it does not duplicate
+the existing synchronous runtime reader's full software API corpus. Complete
+suite counts, elapsed times and the shared-host measurement limits are recorded
+in [Issue #93 validation](validation-issue-93.md). Exact tested-site identity,
+both browser shards, runner failure propagation and main-only Pages publication
+remain unchanged.

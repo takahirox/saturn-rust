@@ -782,6 +782,16 @@ impl CdBlock {
                     }
                 }
                 self.fad += 1;
+                // ST-162 §4.2 (printed p38): filling the buffer causes
+                // PAUSE/BFUL. Publish at the allocation that fills it, not
+                // at a later failed read (which never occurs at range end).
+                // Keep playing armed so freeing a slot resumes this FAD at
+                // the next existing drive deadline, without a new Play.
+                if self.used() >= POOL {
+                    self.buffer_paused = true;
+                    self.status = 1;
+                    self.raise(BFUL);
+                }
                 if self
                     .file_read
                     .as_ref()

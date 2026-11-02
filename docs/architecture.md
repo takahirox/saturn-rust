@@ -823,3 +823,29 @@ asset-derived arithmetic and Canvas, errors, cold reset and SYSRES on two
 layouts. The private test API is CDC/GFS-like software, not Sega SDK binary ABI
 compatibility. Genuine BIOS, commercial games, authenticated media and complete
 CD/controller timing remain unverified. See [Issue #91 validation](validation-issue-91.md).
+
+
+## Guest CD streaming and buffer-full scheduling
+
+The [bounded streaming contract](cd-streaming.md) keeps drive acquisition,
+selector jobs, host FIFO, SCU DMA and CPU/raster progression in their existing
+clock domains. A sector allocation that fills the shared pool now posts
+PAUSE/BFUL immediately, including at finite range end; it does not wait for a
+subsequent failed read. DataEnd releases the accepted sector identities, and an
+armed drive resumes the retained next FAD at its existing deadline after space
+becomes available. SCU source/destination publication and interrupt handling
+remain in the bus scheduler.
+
+An original MIT application runs after the unchanged ExternalBios discovery
+firmware on two authored ISO layouts. It uses actual Play, selector/partition
+and GET/DataEnd commands, fixed-source DMA, cached computation and uncached
+shared IRQ counters. It processes prior bytes and changes real VDP2 back-screen
+pixels while later sectors remain pending. A separate partition retaining 198
+sectors bounds the slow-consumer/full-pool case. Native and production Wasm
+checks compare complete data/canaries, FAD and DMA records and actual framebuffer
+or Canvas pixels. See [Issue #93 validation](validation-issue-93.md).
+
+This evidence does not verify full cross-chip arbitration, arbitrary
+asynchronous CDC/GFS calls, real Sega BIOS/SDK ABI or commercial games. Physical
+controller timing, complete connector lifetime and the wider hardware scope
+remain pending; no host file API or HLE service is installed by ExternalBios.

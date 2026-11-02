@@ -21,6 +21,7 @@ import { bBusReads } from "./b-bus-reads.mjs";
 import { scuFringe } from "./scu-fringe.mjs";
 import { dmacBus } from "./dmac-bus.mjs";
 import { sh2Store } from "./sh2-store.mjs";
+import { cdStream } from "./cd-stream.mjs";
 import { cdRuntime } from "./cd-runtime.mjs";
 import { externalDiscovery } from "./external-discovery.mjs";
 import { externalStartup } from "./external-startup.mjs";
@@ -122,7 +123,7 @@ try {
     const scenarios = { vdp2Status, videoTransactions, abusTiming, dspArithmetic,
       busTransactions, bBusReads, videoWrites, slaveRaster, hleDual, scuFringe,
       dmacBus, sh2BusPipeline, sh2ResetBus, cs0Transfers, spriteShrink,
-      hardwareBoundaries, refreshArbitration, interruptEntry, externalStartup, externalDiscovery, cdRuntime, sh2Fetch, sh2Store, sh2Load, sh2Multiplier,
+      hardwareBoundaries, refreshArbitration, interruptEntry, externalStartup, externalDiscovery, cdRuntime, cdStream, sh2Fetch, sh2Store, sh2Load, sh2Multiplier,
       cdCopy, dmaStartup, cdReports, cdRw, rotationReload, rotationFetch,
       rotationHighResolution, mosaic, scspMonitor, m68kReset, scspClock, scspEffects,
       scspDma, scspPcm, scspCpuMemory, scspMvol };
@@ -1371,6 +1372,9 @@ try {
   });
   if (includeScenarios) await timings.measure("cdRuntime", async () => {
     await cdRuntime(page);
+  });
+  if (includeScenarios) await timings.measure("cdStream", async () => {
+    await cdStream(page);
   });
   if (includeScenarios) await timings.measure("externalDiscovery", async () => {
     await externalDiscovery(page);

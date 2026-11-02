@@ -697,7 +697,7 @@ no-op CPU/device implementations cannot satisfy those assertions.
 | BIN/CUE/raw/mixed tracks, [DISC] / [CD] §§4/7.2.3 | Caller-resolved files, cooked/2352-byte Mode1/Mode2/audio, shared/separate files, INDEX00–99, gaps and TOC; subindices and PRE/DCP/4CH CONTROL metadata drive TOC/status/Q reporting; malformed/duplicate flags rejected; EDC validation, bounded P/Q correction for Mode1/XA Form1, Form2 EDC and PRE audio processing | [media vectors](../tests/media.rs), [parity-matrix/XA vectors](../src/media/integrity.rs), [directory guest](../tests/cd_drive.rs), CLAB | Directory guest on clean/correctable/uncorrectable raw media; CLAB multi-file CUE, INDEX02/99, malformed ordering, missing-reference/reset/privacy | M2G adds plain 2336-byte Mode2 payloads; complete decode/timing boundaries remain; WAVE/compression absent | Pending |
 | CD command/status/HIRQ, [CD] §§3.1–3.4 | Separate command/response latches; 1075-clock command completion, read-protected responses, CMOK/DRDY/CSCT/end flags, masks, clear-zero HIRQ and SCU A-bus IRQ | `tests/cd.rs`, CLAB | CLAB command/FIFO/DMA/IRQ | Full command-specific timing and register mirrors; [R–W](#timed-rw-subcode-and-host-transfers) now adds an explicit companion stream and preserves empty FIFO WAIT | Pending |
 | CD drive/TOC/session/track state, [CD] §§4/7/8.2 | TOC/session/Q, bounded seek, data play, CD-DA/repeat/end, media-dependent FAD/track/index reports; timed CDON/OFF, 60 Hz pause reports, programmed standby, scan directions/range/muting, tray/media retention and deterministic virtual close; state-valid reports/Q, distinct Seek Home recovery and retained repeat/error position, lead-out reports | `tests/cd.rs`, CLAB, CDDRV, [CDRPT](#cd-report-validity-and-retained-position) | CLAB, CDDRV, CDRPT | Full mechanical/drive timing and remaining initialization/subcode options; [R–W](#timed-rw-subcode-and-host-transfers) has separate scoped evidence | Pending |
-| CD buffers/transfers, [CD] §§3.2/3.4/5.3/5.4/8.2 | 200-sector pool, 24 partitions, get/delete/get-delete/put, early-ended writes retain all reserved sectors and their accepted length, use filter routing and sector-I/O EHST; independent selector/host command classes, identity-safe GET/DELETE, size/info/search, FIFO word/long and fixed-source SCU DMA | `tests/cd.rs`, CLAB; [transfer vectors](#retained-vdp1-tables-and-characters-68k-ea-waits-and-cd-transfer-completion) | CLAB actual DMA/IRQ/checksum, sector mutation; extended CD drive guest checks early end, routing, capacity, IRQ and changed payload | Pool-full pause/resume at the blocked FAD has native data vectors; complete transfer overlap and timing/error inventory remain | Pending |
+| CD buffers/transfers, [CD] §§3.2/3.4/5.3/5.4/8.2 | 200-sector pool, 24 partitions, get/delete/get-delete/put, early-ended writes retain all reserved sectors and their accepted length, use filter routing and sector-I/O EHST; independent selector/host command classes, identity-safe GET/DELETE, size/info/search, FIFO word/long and fixed-source SCU DMA | `tests/cd.rs`, CLAB; [transfer vectors](#retained-vdp1-tables-and-characters-68k-ea-waits-and-cd-transfer-completion) | CLAB actual DMA/IRQ/checksum, sector mutation; extended CD drive guest checks early end, routing, capacity, IRQ and changed payload | [Issue #93 streaming](#bounded-cd-streaming-and-buffer-full-publication-issue-93) adds last-slot BFUL, blocked-FAD resume, fast/slow guest FIFO/DMA, computation and VDP2 pixels on two layouts; complete transfer overlap and timing/error inventory remain | Pending |
 | Filters/selectors/partitions, [CD] §§5.2/5.3/8.2.5 | FAD and masked subheader comparisons, reverse conditions, true/false routes, reset, copy/move through destination filter | `tests/cd.rs::selectors_fad_range_connections_copy_move_and_size`, Mode2 reverse vectors | CLAB default filter/partition route | [CDSEL](#scheduled-cd-selector-transfers-and-independent-command-classes-cdsel) adds asynchronous raw copy/move, full-buffer WAIT/move, retained partial failures and concurrent host/selector commands; remaining command-specific connection/timing boundaries stay mandatory | Pending |
 | Scheduled directory acquisition, [CD] §§3.2/6.2/8.2.8 | ChgDir/ReadDir acquire descriptors and directory sectors through drive deadlines, runtime ECC/retries and one reserved shared-pool workspace; atomic publication, cancellation invalidation, independent command engines | [Scheduled vectors/guest](../tests/cd_directory_schedule.rs), existing malformed/XA/window corpus | Same original guest/media, FRT progress, SCU masked/unmasked EFLS handler, navigation/omission/abort controls and cold boots | Deterministic seek policy; remaining filesystem/drive/media/HLE contracts stay required; see [Issue #21 validation](validation-issue-21.md) | Increment covered; umbrella pending |
 | BIOS-less startup, [Boot ROM][BOOT] / [DISC] | Original first-read HLE plus licensed SH-2 master/slave reset trampoline and system-service initialization, separate from ExternalBios | disc.rs, game.rs, CLAB, src/hle/boot.s, HLESYS, DPLAYER below | SC, CLAB, HLESYS, DPLAYER | Full startup/region/version, CD-library and per-call/reset contracts remain mandatory | Pending |
@@ -3974,3 +3974,39 @@ lossless transport, artifact identity and main-only Pages gates. See
 [executed checks and negative control](validation-issue-91.md). Hardware status
 remains **Pending**. This increment does not resolve the wider #17 scope or the
 #81/#82 SCU endpoint evidence finding and draft-publication constraint.
+
+
+## Bounded CD streaming and buffer-full publication (Issue #93)
+
+Related to #17. The [primary-derived operation/ownership matrix](cd-streaming.md)
+reconciles ST-162 §§3–5/8.2 with SCU ST-097/ST-210, SH7604 cached/internal-bus
+execution and VDP2 back-screen output. Inherited `bf76a3f` fails the unchanged
+original guest on both media at E093: after the second sector fills the pool,
+HIRQ=0FE5 lacks BFUL. A device fence isolates actual 4 versus expected 12 at 354022
+reference clocks after Play acceptance, including a finite range whose last
+sector fills the pool and therefore never generates another read attempt.
+
+`CdBlock::drive_frame` now publishes PAUSE/BFUL at that accepted allocation,
+retaining the next FAD, accepted FIFO/sector identities, range completion,
+phase and SCU scheduling. Native tests add literal fences, masked IRQ, partial
+GetDelete/WAIT/reset and rearm checks. The original MIT guest boots through the
+unchanged ExternalBios path, discovers different root/data extents from ISO
+bytes, consumes real FIFO with SCU DMA, runs cached arithmetic and processes
+prior chunks while subsequent sectors remain in flight. A bounded slow pass
+keeps 198 independent sectors resident, then repeatedly frees/refills two slots.
+
+[Native assertions](../tests/cd_stream.rs) and
+[production Wasm/Canvas assertions](../scripts/cd-stream.mjs) check all fetched
+bytes and canaries, nonaligned final length, exact FAD/DMA/IRQ records,
+pre-PEND instruction/raster progress and independently expected pixels. Asset
+mutation changes actual results. Abort, cold/SYSRES, active-FIFO reset, no-media,
+chunk1/3/17/10000 and passive debugger controls preserve existing contracts.
+[Validation](validation-issue-93.md) records the inherited control and executed
+checks. The registry adds one builder and one browser scenario while preserving
+all previous coverage and tested-artifact gates.
+
+**Hardware status remains Pending.** Fixed latencies and simultaneous deadline
+ordering remain emulator conventions. Full cross-chip arbitration, arbitrary
+asynchronous CDC/GFS calls, real Sega BIOS/SDK ABI, commercial games and complete
+CD controller/connector/timing conformance are not verified. No wider #17
+acceptance or #81/#82 endpoint evidence finding is resolved by this increment.

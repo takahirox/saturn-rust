@@ -1495,3 +1495,117 @@ fn every_get_class_prefetches_without_consuming_the_next_transfer_and_put_does_n
         issue(&mut cd, [0x4800, 0, 0x0100, 0]);
     }
 }
+
+#[test]
+fn filling_pool_publishes_bful_at_acceptance_including_the_final_sector() {
+    // ST-162 §4.2, printed p38: filling the CD buffer causes PAUSE/BFUL.
+    // Two drive deadlines with 198 slots retained by an independent partition.
+    for (count, chunk, inspect) in [2, 3].into_iter().flat_map(|count| {
+        [1, 3, 17, 10000]
+            .into_iter()
+            .map(move |chunk| (count, chunk, chunk != 10000))
+    }) {
+        let (mut cd, bytes) = mounted();
+        issue(&mut cd, [0x6400, 0, 0x0200, 198]);
+        issue(&mut cd, [0x0600, 0, 0, 0]);
+        issue(&mut cd, [0x3000, 0, 0, 0]);
+        issue(&mut cd, [0x1080, 150, 0x0080, count]);
+        cd.write16(CD + 8, 0).unwrap();
+        // Play retains the drive phase accumulated by the four commands.
+        // First drive edge: ceil(26874100/150) - 4300 = 174861.
+        advance_observed(&mut cd, 174_860, chunk, inspect);
+        assert_eq!(cd.read16(CD + 8).unwrap() & 12, 0);
+        cd.advance(1);
+        assert_eq!(cd.read16(CD + 8).unwrap() & 12, 4);
+        cd.write16(CD + 8, !4).unwrap();
+        advance_observed(&mut cd, 179_160, chunk, inspect);
+        assert_eq!(cd.read16(CD + 8).unwrap() & 12, 0);
+        cd.advance(1);
+        assert_eq!(
+            cd.read16(CD + 8).unwrap() & 12,
+            12,
+            "BFUL at second accepted sector, count {count}"
+        );
+        let full = issue(&mut cd, [0, 0, 0, 0]);
+        assert_eq!((full[0] >> 8, full[3]), (1, 152));
+        assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 2);
+        assert_eq!(issue(&mut cd, [0x5000, 0, 0, 0])[1], 0);
+        issue(&mut cd, [0x6300, 0, 0, 1]);
+        assert_eq!(read(&cd, 2048), bytes[..2048]);
+        assert_eq!(issue(&mut cd, [0x0600, 0, 0, 0])[1], 1024);
+        advance_observed(&mut cd, 400_000, chunk, inspect);
+        assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], count - 1);
+        issue(&mut cd, [0x6100, 0, 0, count - 1]);
+        assert_eq!(
+            read(&cd, usize::from(count - 1) * 2048),
+            bytes[2048..usize::from(count) * 2048]
+        );
+    }
+}
+
+fn advance_observed(cd: &mut CdBlock, mut clocks: u32, chunk: u32, inspect: bool) {
+    while clocks != 0 {
+        let n = clocks.min(chunk);
+        cd.advance(n);
+        if inspect {
+            cd.peek16(CD + 0x24).unwrap();
+            cd.peek16(DATA).unwrap();
+        }
+        clocks -= n;
+    }
+}
+
+#[test]
+fn full_pool_partial_fifo_wait_masked_irq_and_reset_have_no_stale_sector_publication() {
+    for reset_at in [0, 1, 2] {
+        let (mut cd, bytes) = mounted();
+        issue(&mut cd, [0x6400, 0, 0x0200, 198]);
+        issue(&mut cd, [0x0600, 0, 0, 0]);
+        issue(&mut cd, [0x3000, 0, 0, 0]);
+        issue(&mut cd, [0x1080, 150, 0x0080, 3]);
+        cd.write16(CD + 8, 0).unwrap();
+        cd.write16(CD + 12, 0).unwrap();
+        cd.advance(354_022 - u32::from(reset_at == 0));
+        if reset_at != 0 {
+            assert_eq!(cd.read16(CD + 8).unwrap() & 12, 12);
+            assert!(!cd.interrupt(), "masked BFUL still latches");
+            cd.write16(CD + 12, 8).unwrap();
+            assert!(cd.interrupt());
+            cd.write16(CD + 8, !8).unwrap();
+            assert!(!cd.interrupt());
+            if reset_at == 2 {
+                issue(&mut cd, [0x6300, 0, 0, 1]);
+                assert_eq!(read(&cd, 2), bytes[..2]);
+                assert_eq!(issue(&mut cd, [0x6100, 0, 0, 1])[0], 0x8180);
+                assert_eq!(
+                    cd.peek16(DATA).unwrap(),
+                    u16::from_be_bytes([bytes[2], bytes[3]])
+                );
+                assert_eq!(
+                    issue(&mut cd, [0x5100, 0, 0, 0])[3],
+                    2,
+                    "accepted sector identity remains owned until DataEnd"
+                );
+                assert_eq!(issue(&mut cd, [0x0600, 0, 0, 0])[1], 2);
+                assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 1);
+            }
+        }
+        issue(&mut cd, [0x0401, 0, 0, 0]);
+        cd.advance(1_000_000);
+        assert_eq!(cd.read16(CD + 8).unwrap() & 0x1E, 0);
+        assert_eq!(cd.read16(DATA).unwrap(), 0xFFFF);
+        assert_eq!(issue(&mut cd, [0x5000, 0, 0, 0])[1], 200);
+        assert_ne!(issue(&mut cd, [0x6100, 0, 0, 1])[0] & 0x8000, 0);
+        issue(&mut cd, [0x3000, 0, 0, 0]);
+        issue(&mut cd, [0x1080, 150, 0x0080, 2]);
+        cd.advance(400_000);
+        assert_eq!(cd.read16(CD + 8).unwrap() & 12, 4);
+        issue(&mut cd, [0x6300, 0, 0, 2]);
+        assert_eq!(
+            read(&cd, 4096),
+            bytes[..4096],
+            "rearm retained physical medium"
+        );
+        assert_eq!(issue(&mut cd, [0x0600, 0, 0, 0])[1], 2048);
+    }
+}

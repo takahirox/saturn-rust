@@ -52,6 +52,7 @@
     "interruptEntry",
     "externalStartup",
     "cdRuntime",
+    "cdStream",
     "externalDiscovery",
     "sh2Fetch",
     "sh2Store",
