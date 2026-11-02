@@ -342,13 +342,49 @@ and matching headless-shell are available there; the runner uses supported
 revision, assertion or timeout changed. Manuals, PDF text tools, temporary logs
 and downloaded executables stay under ignored `target/`.
 
+## Hosted validation for the reviewed head
+
+[GitHub Actions run 41384873482](https://github.com/takahirox/saturn-rust/actions/runs/41384873482)
+completed successfully on 2026-11-02. It validates PR #94 head
+`3c6fd1bb341d60b5da34487c824b969fd9c7cacb` through GitHub's tested merge commit
+`a98b57aaa6c04af084a2b995242ad4e44404c604`, combining that head with inherited
+main `bf76a3ffe26872a72157e9ddfaf6c84be045faf6`. The worktree files matched the
+reviewed head before this validation-record update.
+
+| Hosted job | Completed evidence / command elapsed seconds |
+| --- | --- |
+| [native](https://github.com/takahirox/saturn-rust/actions/runs/41384873482/job/125083627164) | Fixtures passed / 5.797; `cargo fmt --check` / 2.956; `cargo build --locked` / 8.731; `cargo test --locked`: 1152 passed across 102 harnesses, zero failed/ignored / 873.302; all-target Clippy with `-D warnings` / 5.499 |
+| [wasm](https://github.com/takahirox/saturn-rust/actions/runs/41384873482/job/125083627355) | Production web build / 20.522; Wasm Clippy with `--locked` and `-D warnings` / 8.489; exact web-build artifact uploaded |
+| [browser (shared)](https://github.com/takahirox/saturn-rust/actions/runs/41384873482/job/125083810209) | All 13 runner regressions passed, zero skipped / 21.842; all 32 browser groups passed / 820.319 |
+| [browser (scenarios)](https://github.com/takahirox/saturn-rust/actions/runs/41384873482/job/125083810149) | All 41 browser groups passed / 828.773; `cdStream` / 47.085; `cdRw` / 10.955; `scspMvol` / 168.589; `largeMedia` / 14.076 |
+| [build](https://github.com/takahirox/saturn-rust/actions/runs/41384873482/job/125087602795) | Required native/Wasm/browser results all `success`; exact artifact/revision aggregate passed for all 73 groups at 04:02:39 UTC |
+
+The aggregate log reports `scenarios=828169ms/41 groups` and
+`shared=819816ms/32 groups`. Those are report durations; whole-command timings
+in the table use outer `CI_TIMING` durations, and named scenario timings use
+`BROWSER_TIMING`. Both reports passed the existing revision,
+site digest and complete-group checks against the downloaded production build.
+The web-build ZIP SHA-256 is
+`e21bfcffcc0d5ebee044ffdefb90530bf3eef07baa17f2338c618c726ffdfa99`;
+this is the uploaded archive digest, not the site-directory or Wasm digest.
+Hosted fixture verification reproduced all four `cd-stream` hashes recorded
+above. No retry, coverage reduction, timeout change or production fix was needed
+to resolve the review's pending-hosted-validation finding.
+
+The runner regression log deliberately includes an intentional worker failure;
+all 13 runner tests and both real shards succeeded. `site` and `deploy` were
+skipped as specified for a pull-request run. Earlier pending-hosted statements
+above describe the state when those local corrections were committed; this run
+supplies the completed hosted evidence for the reviewed head.
+
 ## Pre-merge handoff and limits
 
-No GitHub Actions result is claimed. This node is explicitly prohibited from
-pushing, opening a PR, merging or commenting; downstream must require successful
-applicable PR jobs for the committed revision before merge. No post-merge
-verification, physical Saturn, proprietary firmware/disc, human sign-off or live
-Pages inspection is required by #93.
+Required hosted validation passed for the reviewed head identified above. This
+evidence update changes documentation only; it does not claim hosted validation
+for a subsequent published revision. Downstream must require successful
+applicable PR jobs for the revision being merged. This node does not push,
+merge or comment. No post-merge verification, physical Saturn, proprietary
+firmware/disc, human sign-off or live Pages inspection is required by #93.
 
 Full cross-chip arbitration, arbitrary asynchronous CDC/GFS calls, real Sega
 BIOS/SDK ABI and commercial games are not verified. Remaining command/connector,
