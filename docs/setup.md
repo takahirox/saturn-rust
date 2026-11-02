@@ -121,14 +121,15 @@ Rust or guest source. Opening `index.html` as a `file:` URL will not work. The c
    pauses and releases input without resetting, changing boot mode, discarding
    selected files or clearing errors. Returning to Play requires **Resume**.
    Invisible register tables are not refreshed during Play.
-4. Open **Load ISO / BIOS & boot settings** with click or Enter/Space on its
+4. Open **Load disc / BIOS & boot settings** with click or Enter/Space on its
    disclosure. Opening pauses and releases input; closing it does not reset or
    resume. Even if a pending sample download finishes after you dismiss settings
    or return from Debug, playback stays paused. Choose **BIOS-less HLE disc** and
-   a local authorized ISO to use the same loader without fetching the sample.
+   a local authorized supported CHD, ISO or CUE/BIN to use the same loader without fetching the sample.
    Local images load paused; close settings and use Resume to play.
    Startup supports Saturn IP area groups and ISO9660 first-read files,
    including file-unit/gap interleaving and extended-attribute offsets. Select a
+   supported standalone CHD v5 CD-ROM (cdlz/cdzl/cdfl/none, at most 1,058,400,000 compressed bytes), a
    cooked ISO alone (18–450,000 sectors, at most 921,600,000 bytes), or one CUE
    and all its BINARY data/audio track files together (at most 1,058,400,000
    data/audio bytes plus a 1 MiB CUE). These are application resource bounds,
@@ -139,7 +140,11 @@ Rust or guest source. Opening `index.html` as a `file:` URL will not work. The c
    See the [standard-size validation record](validation-issue-33.md). Cooked and raw Mode1,
    raw Mode2, audio, shared/separate files and track gaps/indices are supported.
    Runtime CD commands retain and read the actual medium; CD-DA passes through
-   SCSP. Compressed images and generic game compatibility remain unsupported. Malformed or unsupported media
+   SCSP. See [media formats](media.md) for CHD version/codec/layout/hunk limits,
+   optional SRW1 diagnostics and independent fixture reproduction. Ordinary
+   images need no private sidecar or extracted executable. A BIOS is separate
+   from disc content and optional in HLE mode; commercial-game compatibility
+   is not established by mounting media. Malformed or unsupported media
    produce errors and stop the old machine.
 5. To inspect the preserved debugger fixture, select **HLE bootstrap prototype**
    in settings and choose **Debug**. Click Step to see `R0=5`, then

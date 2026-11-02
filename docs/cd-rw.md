@@ -174,3 +174,13 @@ packs. Corrected header/payload input reproduces clean records; uncorrectable
 header/payload input sets PACK and changes records. Changed clean payload changes
 records. All variants repeat cold boots. The exact final stereo stream remains
 `[1000,-2000]`; existing suite WebAudio assertions remain required.
+
+
+## Standard media remain independent of SRW1
+
+SRW1 is only requested by an explicit `REM SATURN_RW` diagnostic CUE directive.
+Ordinary ISO/CUE/BIN and supported standalone CHD CD-ROMs need no companion.
+CHD `RW_RAW`/`RW` payloads require optical deinterleaving before this
+already-reconstructed pack boundary. That conversion is not implemented; they
+mount with the same no-subchannel behavior as `NONE`, without a companion. See [media input](media.md) for tested
+codecs, resource bounds and the distinction between mounting and retail boot.

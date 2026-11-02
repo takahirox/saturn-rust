@@ -86,7 +86,7 @@ for checks of this correction and the remaining publication gate.
 ## Issue #61 performance record
 
 The timing measurements below are the historical Issue #61 inventory. The
-current registry has 73 browser groups and 102 fixture/media builders, retaining
+current registry has 74 browser groups and 103 fixture/media builders, retaining
 the required suite coverage and publication gates. See
 [Issue #93 validation](validation-issue-93.md) for the latest executed checks;
 the older counts and measurements below describe their historical checkpoints.
@@ -724,3 +724,15 @@ suite counts, elapsed times and the shared-host measurement limits are recorded
 in [Issue #93 validation](validation-issue-93.md). Exact tested-site identity,
 both browser shards, runner failure propagation and main-only Pages publication
 remain unchanged.
+
+
+## Issue #95 CHD validation cost
+
+One fixture builder and one isolated browser group cover the new container
+boundary without crossing every existing hardware guest with every codec.
+Native tests compare complete sectors/tracks/indices and malformed containers;
+the browser executes the same original full-track/TOC FIFO guest, stereo oracles,
+HLE DMA/IRQ guest and local picker/reset/error behavior. Existing 73 groups and
+all prior fixture checks remain registered, including optional SRW1 and all
+three built-in demos. The [validation record](validation-issue-95.md) records
+actual stage/group timings, Wasm size, admission CPU and resource limits.
