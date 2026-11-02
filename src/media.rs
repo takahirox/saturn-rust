@@ -1,6 +1,7 @@
 //! Owned CD media, independent of bootstrap extraction (ST-040 §§3–5).
 //! CUE references are resolved only against caller-supplied bytes, never the
 //! filesystem or network. Track times are binary 75 Hz frames; FAD starts at 150.
+mod chd;
 mod integrity;
 use crate::disc::{DiscError, SECTOR};
 use std::sync::Arc;
@@ -41,6 +42,7 @@ pub struct Track {
     stride: usize,
     stored_start: u32,
     mode2_format: Mode2Format,
+    chd_layout: Option<chd::Layout>,
 }
 impl Track {
     pub fn control_adr(&self) -> u8 {
@@ -71,6 +73,7 @@ pub struct Media {
     pub(crate) tracks: Vec<Track>,
     pub(crate) leadout: u32,
     rw: Option<(u32, Arc<Vec<u8>>)>,
+    chd: Option<Arc<std::sync::Mutex<chd::Source>>>,
 }
 fn invalid(message: &str) -> DiscError {
     DiscError(message.into())
@@ -185,9 +188,11 @@ impl Media {
                 stride: SECTOR,
                 stored_start: 150,
                 mode2_format: Mode2Format::Data,
+                chd_layout: None,
             }],
             leadout: end,
             rw: None,
+            chd: None,
         })
     }
     pub fn cue(cue: &str, files: &[(&str, &[u8])]) -> Result<Self, DiscError> {
@@ -482,6 +487,7 @@ impl Media {
                 byte_end: owned[t.file].1 + end as usize * t.stride,
                 stride: t.stride,
                 stored_start,
+                chd_layout: None,
                 mode2_format: if t.mode == TrackMode::Mode2 && mode2_format == Mode2Format::Auto {
                     // Inspect at most one second of stored sectors. Use the
                     // track's source layout, never the result of ECC recovery:
@@ -507,6 +513,7 @@ impl Media {
             tracks: result,
             leadout: cursor,
             rw: None,
+            chd: None,
         };
         if let Some(name) = rw_file {
             let mut matches = files.iter().enumerate().filter(|(_, (n, _))| *n == name);
@@ -572,6 +579,37 @@ impl Media {
             return Ok(sector);
         }
         let offset = t.offset + (fad - t.stored_start) as usize * t.stride;
+        if let Some(source) = &self.chd {
+            if !self.has_stored_sector(t, fad) {
+                return Ok(sector);
+            }
+            let frame = source
+                .lock()
+                .map_err(|_| invalid("CHD cache unavailable"))?
+                .frame((offset / t.stride) as u32)?;
+            match t.chd_layout.unwrap().kind {
+                chd::Kind::Raw => sector.copy_from_slice(&frame[..RAW_SECTOR]),
+                chd::Kind::Audio => {
+                    sector.copy_from_slice(&frame[..RAW_SECTOR]);
+                    for sample in sector.as_chunks_mut::<2>().0 {
+                        sample.swap(0, 1);
+                    }
+                }
+                chd::Kind::Mode1 => {
+                    sector[1..11].fill(255);
+                    let bcd = |v: u32| (v / 10 * 16 + v % 10) as u8;
+                    sector[12..16].copy_from_slice(&[
+                        bcd(fad / 4500),
+                        bcd(fad / 75 % 60),
+                        bcd(fad % 75),
+                        1,
+                    ]);
+                    sector[16..2064].copy_from_slice(&frame[..SECTOR]);
+                    mode1_checksums(&mut sector);
+                }
+            }
+            return Ok(sector);
+        }
         let Some(bytes) = t
             .bytes
             .get(..t.byte_end)
@@ -667,7 +705,7 @@ impl crate::disc::SectorReader for Media {
             .checked_add(lba)
             .ok_or_else(|| invalid("bootstrap FAD overflow"))?;
         // Cooked storage needs neither raw synthesis nor EDC/ECC decoding.
-        if t.stride == SECTOR {
+        if t.stride == SECTOR && self.chd.is_none() {
             let offset = t.offset + (fad - t.stored_start) as usize * SECTOR;
             return self.tracks[0].bytes[offset..offset + SECTOR]
                 .try_into()

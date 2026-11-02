@@ -8,6 +8,14 @@ publish = false
 [lib]
 crate-type = ["rlib", "cdylib"]
 
+[dependencies]
+# Pure Rust CD decoding on native and Wasm; retain raw sectors/subcode and CRC.
+chd = { version = "=0.4.0", default-features = false, features = ["std", "cd_full", "verify_block_crc", "nonstandard_channel_count"] }
+
+sha1 = "=0.10.6"
+# Validate CD FLAC frame channel/bit-depth invariants before upstream decoding.
+claxon = "=0.4.3"
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "=0.2.129"
 

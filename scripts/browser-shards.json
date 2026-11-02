@@ -53,6 +53,7 @@
     "refreshArbitration",
     "interruptEntry",
     "externalStartup",
+    "chd",
     "cdStream",
     "sh2Fetch",
     "sh2Store",

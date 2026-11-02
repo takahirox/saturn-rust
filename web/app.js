@@ -412,10 +412,11 @@ try {
     const cueFiles = files.filter((file) => /\.cue$/i.test(file.name));
     const cue = cueFiles.length === 1 ? cueFiles[0] : null;
     const file = files[0];
-    if ((!cue && (files.length !== 1 || file.size < 18 * 2048 || file.size > MAX_ISO_BYTES || file.size % 2048 !== 0)) ||
+    const chd = !cue && /\.chd$/i.test(file.name);
+    if ((!cue && (files.length !== 1 || (chd ? file.size < 124 || file.size > MAX_MEDIA_BYTES : !/\.iso$/i.test(file.name) || file.size < 18 * 2048 || file.size > MAX_ISO_BYTES || file.size % 2048 !== 0))) ||
         cueFiles.length > 1 || files.filter((file) => file !== cue).reduce((total, file) => total + file.size, 0) > MAX_MEDIA_BYTES ||
         (cue && (cue.size > 1048576 || files.length < 2 || files.length > 100))) {
-      $("error").textContent = "Select one complete 2048-byte-sector ISO (18 to 450000 sectors), or one CUE and all its BINARY track files together (up to 1058400000 data/audio bytes).";
+      $("error").textContent = "Select one self-contained CHD v5 CD-ROM, one complete 2048-byte-sector ISO (18 to 450000 sectors), or one CUE and all its referenced BINARY track files together (up to 1058400000 bytes). A lone raw BIN needs its CUE.";
       render();
       return;
     }
@@ -435,6 +436,7 @@ try {
       } else {
         const bytes = new Uint8Array(await file.arrayBuffer());
         if (generation !== discGeneration) return;
+        if (chd && new TextDecoder().decode(bytes.subarray(0, 8)) !== "MComprHD") throw new Error("Invalid CHD header; expected CHD v5 CD-ROM.");
         discBytes = bytes;
       }
       loadingDisc = false;

@@ -53,7 +53,7 @@
           </div>
         </div>
         <details id="settings" class="panel settings">
-          <summary>Load ISO / BIOS &amp; boot settings</summary>
+          <summary>Load disc / BIOS &amp; boot settings</summary>
           <div class="settings-body">
             <fieldset id="controls" disabled>
               <legend>Boot image</legend>
@@ -64,9 +64,9 @@
                 <option value="bios">User-provided BIOS</option>
               </select>
               <div id="disc-controls" hidden>
-                <label for="disc">Local homebrew ISO or CUE with its track files</label>
-                <input id="disc" type="file" accept=".iso,.cue,.bin,.srw" multiple>
-                <p>Select one cooked ISO (up to 921,600,000 bytes), or select a CUE and all its BINARY data/audio files together (up to 1,058,400,000 data/audio bytes). HLE loads the first data track’s Saturn IP / ISO9660 executable. BIOS mode mounts media for the selected firmware to read through hardware; Restart retains both selections. Compressed discs remain unsupported.</p>
+                <label for="disc">Local homebrew CHD, ISO or CUE with its track files</label>
+                <input id="disc" type="file" accept=".chd,.iso,.cue,.bin,.srw" multiple>
+                <p>Select one self-contained CHD v5 CD-ROM (cdlz/cdzl/cdfl or uncompressed, up to 1,058,400,000 bytes), one cooked ISO (up to 921,600,000 bytes), or a CUE and all its referenced BINARY data/audio files together (up to 1,058,400,000 data/audio bytes). HLE loads the first data track’s Saturn IP / ISO9660 executable. BIOS mode mounts media for the selected firmware to read through hardware; Restart retains both selections. No emulator-specific sidecar is needed for ordinary discs. SRW1 is optional diagnostic input only when explicitly referenced by a CUE. Mounting an image does not establish retail-game compatibility.</p>
               </div>
               <div id="bios-controls" hidden>
                 <label for="bios">Local raw BIOS (512 KiB / 524288 bytes)</label>

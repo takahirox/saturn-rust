@@ -16,7 +16,7 @@ automated local/CI checks; live Pages inspection is not a completion gate.
 | src/backup.rs | Packed battery RAM, atomic import and odd-byte storage with word/long bus lanes |
 | src/disc.rs | Bounded ISO9660 and Saturn IP validation, first-read executable selection |
 | src/hle.rs, src/hle/ | HLE boot tables and original guest-executed vector, callback, mask, semaphore, priority, clock and backup-library services |
-| src/media.rs | Retained cooked/raw/BIN/CUE data/audio media, track indices/gaps and bounded caller-supplied SRW1 companions |
+| src/media.rs | Retained CHD/cooked/raw/BIN/CUE data/audio media, track indices/gaps and bounded caller-supplied SRW1 companions |
 | src/cd.rs, src/cd_rw.rs | Timed runtime CD commands, selector/sector pool, shared FIFO, CD-DA and scheduled R–W acquisition/parity/ring |
 | src/devices.rs | Shared device constants and compatibility exports |
 | src/vdp1.rs | Clock-driven command lists, primitive/texture drawing and framebuffers |
@@ -510,9 +510,16 @@ an error. Browser admission uses one aggregate Blob buffer, transfers ownership
 of the Wasm input vector to shared immutable track storage, then releases JS
 input buffers. Restart and SYSRES share stored bytes through `Arc<Vec<u8>>`.
 Native borrowed constructors make one retained owned copy; owned constructors
-transfer allocation ownership. No streaming/compression framework is introduced.
+transfer allocation ownership. The [CHD adapter](media.md) retains compressed
+bytes and a bounded hunk cache, with admission validation of every hunk and
+its available CRC/raw SHA-1. It feeds these same track/sector semantics.
 The runtime CD block retains the complete medium, including tracks, indices and
-gaps. Compressed media and unsupported ISO record formats remain unsupported.
+gaps. Supported self-contained CHD v5 CD-ROM uses cdlz/cdzl/cdfl/none, with
+track padding removed, pregaps preserved and CD-DA byte order adapted. Parent
+CHDs and unsupported codecs/layout metadata fail explicitly; see
+[media limits and optional subcode behavior](media.md). No private sidecar is
+needed to mount ordinary media in HLE or external-BIOS mode. Unsupported ISO
+record formats and broader retail-game compatibility remain separate limits.
 See [Issue #33 validation](validation-issue-33.md) for generated media and limits.
 
 HLE copies the IP system area to 06002000, loads the first-read file at the header's

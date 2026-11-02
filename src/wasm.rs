@@ -28,7 +28,7 @@ impl Emulator {
             .map_err(js_error)
     }
     pub fn reset_disc(&mut self, bytes: Vec<u8>) -> Result<(), JsValue> {
-        let media = crate::media::Media::iso_owned(bytes);
+        let media = standalone_media(bytes);
         match media {
             Ok(media) => self.machine.reset_media(media).map_err(js_error),
             Err(error) => {
@@ -76,8 +76,7 @@ impl Emulator {
         Ok(())
     }
     pub fn mount_disc(&mut self, bytes: Vec<u8>) -> Result<(), JsValue> {
-        let media =
-            crate::media::Media::iso_owned(bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let media = standalone_media(bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
         self.machine.mount_media(media);
         Ok(())
     }
@@ -275,4 +274,14 @@ fn cue_media(
         ));
     }
     crate::media::Media::cue_owned(cue, &files, bytes)
+}
+
+// Dispatch by content as well as filename-independent native validation. A CHD
+// extension never coerces a malformed CHD into a cooked ISO.
+fn standalone_media(bytes: Vec<u8>) -> Result<crate::media::Media, crate::disc::DiscError> {
+    if bytes.starts_with(b"MComprHD") {
+        crate::media::Media::chd_owned(bytes)
+    } else {
+        crate::media::Media::iso_owned(bytes)
+    }
 }
