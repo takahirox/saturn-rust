@@ -661,6 +661,7 @@ impl CdBlock {
     fn sync_rw(&mut self) {
         let active = self.init_flags & 2 != 0
             && self.playing
+            && !self.buffer_paused
             && self.seeking == 0
             && self.scan.is_none()
             && !self.tray_open

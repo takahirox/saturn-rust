@@ -253,6 +253,65 @@ The successful runs used that directory and `BROWSER_CHANNEL=chromium`.
 Relative documentation links and Git whitespace checks passed. Required hosted
 PR CI remains pending; this correction is committed locally without pushing.
 
+## Review correction: R–W decoding during buffer-full PAUSE
+
+The new device regression
+`buffer_full_pause_defers_rw_publication_until_resume_and_preserves_pack_order`
+fails against the reviewed production implementation (`e495450`). It enables
+R–W decoding, retains 199 PUT sectors in partition 2, and plays one data sector
+followed by two audio sectors with an original SRW1 companion. After 200000
+clocks, status is PAUSE/FAD 151 and retrieval returns WAIT (`8100`). After
+another 1000000 clocks, status remains PAUSE/FAD 151, but retrieval incorrectly
+returns `4100` instead of `8100`. The unchanged oracle failed in 0.02 seconds
+of test execution, with exit 101.
+
+ST-162-062094 §4.3, PDF28/printed40, restricts R–W decoding to CD-DA PLAY.
+`sync_rw` now includes the armed buffer-full pause in its activity predicate;
+the retained `playing` flag alone cannot start acquisition or publication.
+Freeing a slot still resumes at the existing drive deadline. The regression
+checks WAIT and an empty FIFO throughout the pause, WAIT immediately after
+freeing a slot, PLAY/FAD 151 after automatic recovery, all eight distinct valid
+packs in literal source order across both audio sectors, full DataEnd counts,
+and no extra pack. It repeats with chunks 1/3/17/10000 and passive inspection
+off/on. The corrected focused test passed in 0.10 seconds. Existing guest/media
+fixtures and browser assertions are unchanged.
+
+All applicable local checks passed again for this correction:
+
+| Command | Result / elapsed seconds |
+| --- | --- |
+| `cargo fmt --check` | Passed / 0.454 |
+| `cargo build --locked` | Passed / 1.531 |
+| `cargo test --locked` | 1152 passed, zero failed/ignored / 438.754 |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed / 4.813 |
+| `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings` | Passed / 7.411 |
+| `sh scripts/check-fixtures.sh` | All 102 commands passed / 4.347 |
+| `sh scripts/build-web.sh` | Passed / 11.376 |
+| `node --test scripts/ci-runner.test.mjs` | All 13 passed, zero skipped / 12.817 |
+| Complete `npm run test:browser` | All 73 groups passed / 394.643 |
+
+The native run retained all 102 harnesses, with summed execution time 394.870
+seconds. The browser aggregate verified 32 shared groups in 394.178 seconds and
+41 scenario groups in 304.802 seconds against the same production site; the
+supervisor took 394.415 seconds. `cdStream` and `cdRw` passed in 19.964 and 4.338
+seconds. Relative to the preceding full-buffer audio correction's complete
+runs, native/browser elapsed times increased by 26.812/2.337 seconds. These
+concurrent shared-host measurements do not isolate the new device test's cost.
+No existing coverage, retry policy or timeout changed.
+
+Production Wasm SHA-256:
+`51e899a990435d76cba1908906228d2aadc4ded02e11fefa0652c6b8add73291`.
+Tested-site SHA-256:
+`017a41e9005199aba0c1bbd47bcd271506468ccf176fef7f76b61042e99d3198`.
+The first runner attempt failed because the matching headless shell was absent.
+The pinned Playwright download completed but extraction stalled; stopping only
+this task's installer processes and extracting that same archive with `ditto`
+under ignored `target/issue-93-rw-review/browsers` resolved setup. Successful
+checks used `PLAYWRIGHT_BROWSERS_PATH` pointing there and Chromium headless shell
+145.0.7632.6. No browser or dependency revision changed. Relative documentation
+links and Git whitespace checks passed. Hosted checks for the subsequently
+published PR head remain required; this node does not push or merge.
+
 ## Corrected development failures and environment
 
 The first root-read attempt did not clear firmware PEND before starting a new

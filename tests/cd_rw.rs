@@ -530,6 +530,75 @@ fn guest_cpu_dma_scdq_irqs_integrity_controls_and_repeated_machine_resets() {
 }
 
 #[test]
+fn buffer_full_pause_defers_rw_publication_until_resume_and_preserves_pack_order() {
+    // ST-162 §4.3, PDF28/printed40: decoding is restricted to CD-DA PLAY.
+    // Filling the pool at the data→audio boundary must not start decoding
+    // while the pickup remains in the buffer-full PAUSE (§4.2).
+    let data = vec![0x69; 2048];
+    let audio = vec![0; 2352 * 2];
+    let mut sub = companion(151, 2);
+    for (pack, code) in sub[12..]
+        .as_chunks_mut::<24>()
+        .0
+        .iter_mut()
+        .zip(CODEWORDS.iter().chain(&CHANGED))
+    {
+        pack.copy_from_slice(code);
+    }
+    let media = Media::cue(
+        "FILE \"d\" BINARY\nTRACK 01 MODE1/2048\nINDEX 01 00:00:00\n\
+         FILE \"a\" BINARY\nTRACK 02 AUDIO\nINDEX 01 00:00:00",
+        &[("d", &data), ("a", &audio)],
+    )
+    .unwrap()
+    .with_subchannel(&sub)
+    .unwrap();
+    for chunk in [1, 3, 17, 10000] {
+        for preview in [false, true] {
+            let mut b = Bus::default();
+            b.cd.mount(media.clone());
+            issue(&mut b, [0x0402, 0, 0, 0]);
+            issue(&mut b, [0x6400, 0, 0x0200, 199]);
+            issue(&mut b, [0x0600, 0, 0, 0]);
+            issue(&mut b, [0x3000, 0, 0, 0]);
+            issue(&mut b, [0x1080, 150, 0x0080, 3]);
+            advance(&mut b, 200_000, chunk, preview);
+            let paused = issue(&mut b, [0, 0, 0, 0]);
+            assert_eq!((paused[0] >> 8, paused[3]), (1, 151));
+            assert_eq!(issue(&mut b, [0x2001, 0, 0, 0])[0], 0x8100);
+            // Longer than acquisition/decode startup and its bounded window:
+            // neither a pack nor a stale FIFO may appear during PAUSE.
+            advance(&mut b, 1_000_000, chunk, preview);
+            let paused = issue(&mut b, [0, 0, 0, 0]);
+            assert_eq!((paused[0] >> 8, paused[3]), (1, 151));
+            assert_eq!(issue(&mut b, [0x2001, 0, 0, 0])[0], 0x8100);
+            assert_eq!(b.read16(DATA).unwrap(), 0xffff);
+            issue(&mut b, [0x6200, 0, 0x0200, 1]);
+            assert_eq!(issue(&mut b, [0x2001, 0, 0, 0])[0], 0x8100);
+            advance(&mut b, 200_000, chunk, preview);
+            let resumed = issue(&mut b, [0, 0, 0, 0]);
+            assert_eq!((resumed[0] >> 8, resumed[3]), (3, 151));
+            advance(&mut b, 800_000, chunk, preview);
+            // Two distinct frames, four distinct valid packs each: no skipped,
+            // duplicated or reordered pack from acquisition during the pause.
+            for code in CODEWORDS.iter().chain(&CHANGED) {
+                assert_eq!(issue(&mut b, [0x2001, 0, 0, 0]), [0x4300, 12, 0, 0]);
+                let expected: Vec<_> = code
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|w| u16::from_be_bytes(*w))
+                    .collect();
+                assert_eq!(words(&b), expected);
+                assert_eq!(issue(&mut b, [0x0600, 0, 0, 0])[1], 12);
+            }
+            assert_eq!(issue(&mut b, [0x2001, 0, 0, 0])[0], 0x8300);
+            assert_eq!(b.read16(DATA).unwrap(), 0xffff);
+        }
+    }
+}
+
+#[test]
 fn data_audio_boundaries_repeat_and_no_change_play_keep_the_documented_domains() {
     let raw = vec![0; 2352 * 4];
     let data = vec![0; 2048 * 2];
