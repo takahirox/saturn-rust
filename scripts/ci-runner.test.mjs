@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { shards, selection } from "./browser-selection.mjs";
+import { shards, selection, scenarioGroups, sharedScenarios } from "./browser-selection.mjs";
 import { siteDigest, revision, verifyResults } from "./browser-results.mjs";
 import { runWorker } from "./browser-suite.mjs";
 import { videoWrites } from "./video-writes.mjs";
@@ -144,20 +144,29 @@ test("shared versus fresh contexts retain complete guest clock, DMAC, Canvas and
 test("complete-suite inventory covers all original groups and missing groups fail", async () => {
   const source = await readFile(new URL("./browser-smoke.mjs", import.meta.url), "utf8");
   const registered = [...source.matchAll(/(?:timings\.(?:group|measure)|setup)\("([^"]+)"/g)].map(m => m[1]);
-  assert.equal(groups.length, 72);
+  assert.equal(groups.length, 73);
   assert(groups.includes("sh2Store"));
   assert(groups.includes("sh2Fetch"));
   assert(groups.includes("cdRw"));
   assert(groups.includes("externalStartup"));
   assert(groups.includes("externalDiscovery"));
   assert(groups.includes("cdRuntime"));
+  assert(groups.includes("cdStream"));
   assert.deepEqual([...new Set(registered)], groups);
-  assert.deepEqual(shards.scenarios, [...source.matchAll(/timings.measure\("([^"]+)"/g)].map(m => m[1]));
-  assert.deepEqual(shards.shared, groups.filter(g => !shards.scenarios.includes(g)));
+  assert.deepEqual(scenarioGroups, [...source.matchAll(/timings.measure\("([^"]+)"/g)].map(m => m[1]));
+  assert.deepEqual(shards.shared, [...groups.filter(g => !scenarioGroups.includes(g)), ...sharedScenarios]);
   const scenarioRegistry = source.match(/const scenarios = \{ ([^}]+) \}/)[1].split(/,\s+/);
-  assert.deepEqual([...scenarioRegistry, "largeMedia"].sort(), [...shards.scenarios].sort());
-  assert.equal((source.match(/if \(includeScenarios\) await timings.measure/g) ?? []).length, 42);
+  assert.deepEqual([...scenarioRegistry, "largeMedia"].sort(), [...scenarioGroups].sort());
+  assert.equal((source.match(/if \(includeScenarios\) await timings.measure/g) ?? []).length, 43);
   assert.deepEqual(selection([]).groups, groups);
+  assert.equal(shards.shared.length, 32);
+  assert.equal(shards.scenarios.length, 41);
+  for (const name of sharedScenarios) {
+    assert.deepEqual(selection([`--group=${name}`]), { mode: "scenarios", groups: [name], report: undefined });
+    assert(!shards.scenarios.includes(name), "Moved modules must run only once in the complete suite");
+  }
+  assert(source.includes("await runScenarios(sharedScenarios);"));
+  assert(source.includes("await runScenarios(selected.groups);"));
   for (const args of [["--shard=missing"], ["--group=missing"], ["--shard=shared", "--group=scspMvol"], ["--typo"]]) {
     assert.throws(() => selection(args));
   }
@@ -393,10 +402,11 @@ test("CI gates publication on both suites and retains the actually tested assets
   assert.equal(JSON.parse(await readFile("package.json", "utf8")).scripts["test:browser"], "node scripts/browser-suite.mjs");
   // Exact registry: moving commands must not lose fixtures/options.
   const fixtures = (await readFile("scripts/check-fixtures.sh", "utf8")).split("\n").filter(s => s.startsWith("python3 "));
-  assert.equal(fixtures.length, 101);
+  assert.equal(fixtures.length, 102);
   assert(fixtures.includes("python3 tests/fixtures/build_interrupt_entry.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_external_startup.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_cd_runtime.py --check"));
+  assert(fixtures.includes("python3 tests/fixtures/build_cd_stream.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_vdp1_hdtv.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_mosaic.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_cd_rw.py --check"));

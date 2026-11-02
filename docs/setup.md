@@ -241,9 +241,10 @@ The independent `wasm` job builds Wasm once, runs Wasm Clippy and retains the im
 key, no fallback keys, and the existing build always verifies CLI version 0.2.129.
 A cold cache performs the original locked install. Two `browser` matrix jobs
 download that same artifact:
-`shared` runs the original dependent UI trace (30 groups), and `scenarios` runs
-34 modules in fresh browser contexts, one at a time. Both jobs use Chromium and
-all the original assertions. Runner regression tests execute once in `shared`.
+`shared` runs the original dependent UI trace (30 groups), then the independent
+`cdRuntime` and `externalDiscovery` modules (32 groups total). `scenarios` runs
+the other 41 modules. Every independent module receives a fresh browser context,
+one at a time. Both jobs use Chromium and all the original assertions. Runner regression tests execute once in `shared`.
 The retained `build` status depends on native, Wasm and **both** browser jobs.
 Its always-run first step explicitly fails on any failed, skipped or cancelled
 dependency, so a skipped aggregate cannot appear as a green required check.
@@ -253,7 +254,7 @@ On main pushes only, `site` waits for all those jobs and uploads that same
 artifact; `deploy` still checks current main. PRs cannot publish. Main runs are
 serialized and superseded PR validation can be canceled.
 
-The direct `npm run test:browser` command runs **all 71 registered groups** with
+The direct `npm run test:browser` command runs **all 73 registered groups** with
 at most two independent Node/Chromium process trees. Each owns its loopback
 server, page state, media and backup RAM. The scenario shard creates a fresh
 context for each module and closes it before the next; the shared UI trace

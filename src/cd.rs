@@ -661,6 +661,7 @@ impl CdBlock {
     fn sync_rw(&mut self) {
         let active = self.init_flags & 2 != 0
             && self.playing
+            && !self.buffer_paused
             && self.seeking == 0
             && self.scan.is_none()
             && !self.tray_open
@@ -703,6 +704,12 @@ impl CdBlock {
             self.finish_play();
             return;
         }
+        // A full-buffer pause also owns the pickup across a data-to-audio
+        // transition. Resume at this drive deadline before the audio return.
+        if self.buffer_paused && (acquiring_directory || self.used() < POOL) {
+            self.buffer_paused = false;
+            self.status = 3;
+        }
         let audio = media
             .track(self.fad)
             .is_some_and(|t| t.mode == TrackMode::Audio);
@@ -721,10 +728,6 @@ impl CdBlock {
             self.status = 1;
             self.raise(BFUL);
             return;
-        }
-        if self.buffer_paused {
-            self.buffer_paused = false;
-            self.status = 3;
         }
         let passes = if self.ecc == 0x80 { 0 } else { self.ecc + 1 };
         match media.decode_sector(self.fad, passes, self.init_flags & 4 == 0) {
@@ -782,6 +785,16 @@ impl CdBlock {
                     }
                 }
                 self.fad += 1;
+                // ST-162 §4.2 (printed p38): filling the buffer causes
+                // PAUSE/BFUL. Publish at the allocation that fills it, not
+                // at a later failed read (which never occurs at range end).
+                // Keep playing armed so freeing a slot resumes this FAD at
+                // the next existing drive deadline, without a new Play.
+                if self.used() >= POOL {
+                    self.buffer_paused = true;
+                    self.status = 1;
+                    self.raise(BFUL);
+                }
                 if self
                     .file_read
                     .as_ref()
@@ -906,6 +919,7 @@ impl CdBlock {
         if !self.enabled
             || (!self.playing && !self.scan.is_some_and(|(_, audible)| audible))
             || self.seeking != 0
+            || self.buffer_paused
         {
             return [0; 2];
         }

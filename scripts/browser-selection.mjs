@@ -7,6 +7,12 @@ assert.deepEqual(Object.keys(shards), ["shared", "scenarios"]);
 assert.equal(new Set(Object.values(shards).flat()).size, groups.length, "Duplicate/missing shard group");
 assert.deepEqual(Object.values(shards).flat().sort(), [...groups].sort(), "Shard coverage must equal the original inventory");
 
+// These costly independent modules run after the shared UI trace, each in a
+// fresh context. Keep the same two workers and 20-minute per-worker budget.
+export const sharedScenarios = ["cdRuntime", "externalDiscovery"];
+export const scenarioGroups = groups.filter(name => shards.scenarios.includes(name) || sharedScenarios.includes(name));
+assert(sharedScenarios.every(name => shards.shared.includes(name)));
+
 export function selection(args) {
   let mode = "serial", selected = groups, report;
   let subset = false;
@@ -23,7 +29,7 @@ export function selection(args) {
         assert(Object.hasOwn(shards, name), `Unknown shard: ${name}`);
         mode = name; selected = shards[name];
       } else {
-        assert(shards.scenarios.includes(name), `Group ${name} belongs to a shared trace or is unknown; use --shard=shared for shared UI groups`);
+        assert(scenarioGroups.includes(name), `Group ${name} belongs to a shared trace or is unknown; use --shard=shared for shared UI groups`);
         mode = "scenarios"; selected = [name];
       }
     } else throw new Error(`Unknown browser argument: ${arg}`);

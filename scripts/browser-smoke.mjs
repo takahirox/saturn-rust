@@ -1,7 +1,7 @@
 // Runs the actual static UI and Wasm in Chromium. Synthetic vectors are original
 // test data; no Sega firmware or game data is used.
 import nodeAssert from "node:assert/strict";
-import { selection } from "./browser-selection.mjs";
+import { selection, sharedScenarios } from "./browser-selection.mjs";
 import { siteDigest } from "./browser-results.mjs";
 import { BrowserTimings } from "./browser-timings.mjs";
 import { instrumentBrowser } from "./browser-transport.mjs";
@@ -21,6 +21,7 @@ import { bBusReads } from "./b-bus-reads.mjs";
 import { scuFringe } from "./scu-fringe.mjs";
 import { dmacBus } from "./dmac-bus.mjs";
 import { sh2Store } from "./sh2-store.mjs";
+import { cdStream } from "./cd-stream.mjs";
 import { cdRuntime } from "./cd-runtime.mjs";
 import { externalDiscovery } from "./external-discovery.mjs";
 import { externalStartup } from "./external-startup.mjs";
@@ -118,19 +119,18 @@ try {
     }
   }
   assert(await page.evaluate(() => [...document.styleSheets].some((sheet) => sheet.href?.endsWith("/saturn-rust/style.css") && sheet.cssRules.length > 0)));
-  if (selected.mode === "scenarios") {
-    const scenarios = { vdp2Status, videoTransactions, abusTiming, dspArithmetic,
+  const scenarios = { vdp2Status, videoTransactions, abusTiming, dspArithmetic,
       busTransactions, bBusReads, videoWrites, slaveRaster, hleDual, scuFringe,
       dmacBus, sh2BusPipeline, sh2ResetBus, cs0Transfers, spriteShrink,
-      hardwareBoundaries, refreshArbitration, interruptEntry, externalStartup, externalDiscovery, cdRuntime, sh2Fetch, sh2Store, sh2Load, sh2Multiplier,
+      hardwareBoundaries, refreshArbitration, interruptEntry, externalStartup, externalDiscovery, cdRuntime, cdStream, sh2Fetch, sh2Store, sh2Load, sh2Multiplier,
       cdCopy, dmaStartup, cdReports, cdRw, rotationReload, rotationFetch,
       rotationHighResolution, mosaic, scspMonitor, m68kReset, scspClock, scspEffects,
       scspDma, scspPcm, scspCpuMemory, scspMvol };
+  const runScenarios = async names => {
     timings.wasmReport = null;
-    await context.close();
     // Every module receives a fresh tab/context, including its own emulator,
     // media, backup RAM and audio state. Never share a page between workers.
-    for (const name of selected.groups) {
+    for (const name of names) {
       await timings.measure(name, async () => {
         if (name === "largeMedia") {
           await largeMedia(browser, address + prefix);
@@ -157,6 +157,10 @@ try {
         }
       });
     }
+  };
+  if (selected.mode === "scenarios") {
+    await context.close();
+    await runScenarios(selected.groups);
   } else {
   timings.group("ui-bios-and-exceptions");
   const value = (id) => page.locator(`#${id}`).textContent();
@@ -1371,6 +1375,9 @@ try {
   });
   if (includeScenarios) await timings.measure("cdRuntime", async () => {
     await cdRuntime(page);
+  });
+  if (includeScenarios) await timings.measure("cdStream", async () => {
+    await cdStream(page);
   });
   if (includeScenarios) await timings.measure("externalDiscovery", async () => {
     await externalDiscovery(page);
@@ -3520,6 +3527,14 @@ try {
   }));
   await playerPage.close();
   assert.deepEqual(pageErrors,[]);
+  }
+  if (selected.mode === "shared") {
+    // Complete the shared trace's measurements before closing its emulator.
+    await timings.wasmReport?.();
+    timings.wasmReport = null;
+    timings.finish();
+    await context.close();
+    await runScenarios(sharedScenarios);
   }
   timings.assertComplete();
   console.log(`Browser smoke passed (${await browser.version()}): ${selected.mode}, ${selected.groups.length} required groups`);

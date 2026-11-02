@@ -67,12 +67,28 @@ Changes to triggers, selection, caches, timeouts, worker counts or tests require
 separately scoped implementation and applicable validation. These principles add
 no benchmark, hardware, human-approval or post-merge gate.
 
+## Issue #93 shard rebalance
+
+The expanded scenario shard in [run 41378197649](https://github.com/takahirox/saturn-rust/actions/runs/41378197649)
+hit its unchanged 1,200-second worker limit during `scspMvol`, before
+`largeMedia`. The shared shard passed all 30 groups in 516.087 seconds.
+`cdRuntime` and `externalDiscovery` alone passed in 214.346 and 183.158 seconds.
+Their combined 397.504 seconds motivated moving these two independent modules
+after the shared UI trace, closing that trace's context first and preserving a
+fresh context for each module. This redistributes existing work across the same
+two workers: 32 shared groups and 41 scenario groups, with all 73 groups retained.
+The original serial order and individual module commands remain available.
+No guest clock budget, assertion, timeout, retry or artifact/publication gate
+changes. The inherited timings motivate the split; they do not establish revised
+hosted runtimes. See [the validation record](validation-issue-93.md#ci-shard-timeout-correction)
+for checks of this correction and the remaining publication gate.
+
 ## Issue #61 performance record
 
 The timing measurements below are the historical Issue #61 inventory. The
-current registry has 72 browser groups and 101 fixture/media builders, retaining
+current registry has 73 browser groups and 102 fixture/media builders, retaining
 the required suite coverage and publication gates. See
-[Issue #91 validation](validation-issue-91.md) for the latest executed checks;
+[Issue #93 validation](validation-issue-93.md) for the latest executed checks;
 the older counts and measurements below describe their historical checkpoints.
 
 
@@ -693,3 +709,18 @@ verification still gate publication without skips. See the
 [executed validation](validation-issue-75.md) for complete-suite results and
 inherited-main native/Wasm failures of the nonempty-pack oracle. Historical
 inventory counts elsewhere in this record describe earlier checkpoints.
+
+
+## Issue #93 streaming coverage cost
+
+The bounded streaming increment retains all existing coverage and adds one
+fixture builder, six native guest tests, two device tests and one isolated
+browser scenario. Broad phase/chunk/reset combinations stay at device/native
+layers; the new browser group covers two layouts, changed bytes, active-FIFO
+reset, production Canvas and a representative chunk/inspection comparison.
+The focused group measured 16.223 seconds on macOS arm64; it does not duplicate
+the existing synchronous runtime reader's full software API corpus. Complete
+suite counts, elapsed times and the shared-host measurement limits are recorded
+in [Issue #93 validation](validation-issue-93.md). Exact tested-site identity,
+both browser shards, runner failure propagation and main-only Pages publication
+remain unchanged.

@@ -114,3 +114,11 @@ is synchronous and single threaded; simultaneous outstanding library calls are
 unsupported, while two handles retain independent cursors and owned output RAM.
 The wider #17 hardware scope and #81/#82 SCU endpoint finding remain unresolved.
 See [executed validation](validation-issue-91.md) for results and CI limits.
+
+
+The separate [Issue #93 streaming guest](cd-streaming.md) exercises drive
+acquisition overlapping host FIFO/DMA, cached computation and actual VDP2 output,
+with fast and pool-limited consumers. It corrects the full-buffer notification
+at the last-slot allocation. This original synchronous reader and its complete
+byte/cursor/IRQ/DMA/screen oracles remain unchanged; the new scenario does not
+add asynchronous calls to its private library API.
