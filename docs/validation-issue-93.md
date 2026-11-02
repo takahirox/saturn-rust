@@ -38,7 +38,7 @@ acceptance. A finite two-sector range never attempts another acquisition, so
 the notification stays missing. ST-162 §4.2, printed38/PDF26, requires the
 full-buffer pause/BFUL transition, independently of any command polling policy.
 
-The correction adds only the post-allocation occupancy check in `drive_frame`.
+The initial correction added the post-allocation occupancy check in `drive_frame`.
 The same final guest and test oracle pass with it. To reproduce in an independent
 worktree at `bf76a3f`, copy `tests/cd_stream.rs`, the four `cd-stream` fixture
 outputs and the added device tests from this checkpoint, then run the two
@@ -191,6 +191,67 @@ suites were not repeated for this correction. No successful revised GitHub
 scenario or aggregate check is claimed: this node must not push or merge.
 After publication, require successful `browser (shared)`, `browser (scenarios)`
 and required `build` checks for the revised PR head before approval.
+
+## Review correction: full-buffer pause across an audio transition
+
+The review regression retains 199 sectors in partition 2 and plays a one-sector
+data track followed by two audio sectors. Against the unchanged reviewed
+implementation (`25a8df7`), the new
+`full_buffer_pause_spans_data_to_audio_and_resumes_without_consuming_samples`
+device test failed: after PAUSE/FAD 151 and CSCT/BFUL=12, `audio_sample()` returned
+`[4660, -1234]` instead of `[0, 0]`. The command exited with status 101; one test failed in 0.01 seconds
+of test execution. This reproduces the review's hardware-visible sample leak.
+
+ST-162-062094 §4.2, PDF26/printed38, specifies the full-buffer PAUSE/BFUL and
+automatic continuation from the retained position when space is available.
+The correction gates audio sampling on the armed pause, preserving sample/FAD
+position, and performs the existing space/resume check before the audio-track
+return in `drive_frame`. The directory workspace exception remains intact.
+No new unconditional pool restriction on audio playback or timing policy is added.
+
+The regression uses chunks 1/3/17/10000 with passive CR4/FIFO inspection. It checks
+the literal first-sector deadline, silence and retained FAD while full, silence
+between freeing a slot and the next drive deadline, PLAY/FAD 151 after recovery,
+sticky BFUL and explicit acknowledgment, all 1176 distinct stereo frames,
+FAD 152 after frame 588, PEND/FAD 153 after frame 1176, and retained data bytes.
+It refills the pool after recovery to distinguish an armed pause from ordinary
+audio playback with a full pool. The focused corrected test passed all four
+stepping variants in 0.04 seconds. Original guest/media fixtures are unchanged.
+
+All applicable local checks were repeated for this production correction:
+
+| Command | Result / elapsed seconds |
+| --- | --- |
+| `cargo fmt --check` | Passed / 0.405 |
+| `cargo build --locked` | Passed / 1.205 |
+| `cargo test --locked` | 1151 passed, zero failed/ignored / 411.942 |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed / 2.739 |
+| `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings` | Passed / 5.163 |
+| `sh scripts/check-fixtures.sh` | All 102 commands passed / 3.791 |
+| `sh scripts/build-web.sh` | Passed / 5.654 |
+| `node --test scripts/ci-runner.test.mjs` | All 13 passed, zero skipped / 14.632 |
+| Complete `npm run test:browser` | All 73 groups passed / 392.306 |
+
+The native run retained all 102 harnesses, with summed execution time 377.160
+seconds. The browser aggregate verified both complete shards against the same
+production site: 32 shared groups in 391.761 seconds and 41 scenario groups
+in 303.870 seconds, supervisor 392.077 seconds. The existing streaming group
+passed in 17.352 seconds. Relative to the preceding recorded native invocation
+(410.635 seconds) and rebalanced browser invocation (388.176 seconds), elapsed
+times increased by 1.307 and 4.130 seconds. These concurrent shared-host runs do
+not isolate the added regression's cost; no coverage, retry or timeout changed.
+
+Production Wasm SHA-256:
+`ac53c1a8dac597dc8f085e5b2df1ae01c4aa7d244e8ed1b58220b96fe93c85ad`.
+Tested-site SHA-256:
+`b858db20ee9a4db444a08ae8a5a0fa8e879a881b2fd73b433e6580dd522a00a5`.
+Initial runner attempts failed because the cached pinned browser installation
+was incomplete and its matching headless shell was absent. Downloading the
+unchanged pinned Chromium/headless-shell 145.0.7632.6 archives and extracting
+with `ditto` into ignored `target/issue-93-audio-review/browsers` resolved setup.
+The successful runs used that directory and `BROWSER_CHANNEL=chromium`.
+Relative documentation links and Git whitespace checks passed. Required hosted
+PR CI remains pending; this correction is committed locally without pushing.
 
 ## Corrected development failures and environment
 

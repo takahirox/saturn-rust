@@ -55,6 +55,15 @@ FIFO identity and clock phase. Freeing a sector through DataEnd lets the
 existing next drive deadline resume that FAD. At end of range it stays stopped;
 BFUL and PEND may both be set. No SCU/bus implementation change is needed.
 
+The armed full-buffer pause also spans a data-to-audio track transition:
+CD-DA emits silence without consuming samples or advancing FAD until space
+is available and the next drive deadline resumes Play. The resume check runs
+before the audio-track return. A full pool alone does not stop an audio track
+when no buffer pause is armed. A focused mixed-track device regression retains
+199 sectors, fills the last slot at FAD 150, holds at FAD 151, frees one slot,
+and checks every resumed stereo frame through PEND at FAD 153. This follows the
+same §4.2 pause/automatic-resume contract, not a new audio timing claim.
+
 The [device oracle](../tests/cd.rs) retains 198 sectors and starts a two- or
 three-sector range. Four 1075-clock commands have accumulated 4300 clocks.
 Relative to Play command completion, sector 1 arrives at 174861 reference clocks,

@@ -703,6 +703,12 @@ impl CdBlock {
             self.finish_play();
             return;
         }
+        // A full-buffer pause also owns the pickup across a data-to-audio
+        // transition. Resume at this drive deadline before the audio return.
+        if self.buffer_paused && (acquiring_directory || self.used() < POOL) {
+            self.buffer_paused = false;
+            self.status = 3;
+        }
         let audio = media
             .track(self.fad)
             .is_some_and(|t| t.mode == TrackMode::Audio);
@@ -721,10 +727,6 @@ impl CdBlock {
             self.status = 1;
             self.raise(BFUL);
             return;
-        }
-        if self.buffer_paused {
-            self.buffer_paused = false;
-            self.status = 3;
         }
         let passes = if self.ecc == 0x80 { 0 } else { self.ecc + 1 };
         match media.decode_sector(self.fad, passes, self.init_flags & 4 == 0) {
@@ -916,6 +918,7 @@ impl CdBlock {
         if !self.enabled
             || (!self.playing && !self.scan.is_some_and(|(_, audible)| audible))
             || self.seeking != 0
+            || self.buffer_paused
         {
             return [0; 2];
         }

@@ -896,6 +896,78 @@ fn full_sector_pool_pauses_and_freed_partition_resumes_at_same_pickup() {
 }
 
 #[test]
+fn full_buffer_pause_spans_data_to_audio_and_resumes_without_consuming_samples() {
+    // ST-162 §4.2 (printed p38): an armed buffer-full pause suspends Play
+    // until space is available, even when the next track needs no data slot.
+    let data = vec![0x69; 2048];
+    let mut audio = vec![0; 2352 * 2];
+    for (i, frame) in audio.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        frame[..2].copy_from_slice(&(4660 + i as i16).to_le_bytes());
+        frame[2..].copy_from_slice(&(-1234 - i as i16).to_le_bytes());
+    }
+    let media = Media::cue(
+        "FILE \"d\" BINARY\nTRACK 01 MODE1/2048\nINDEX 01 00:00:00\n\
+         FILE \"a\" BINARY\nTRACK 02 AUDIO\nINDEX 01 00:00:00",
+        &[("d", &data), ("a", &audio)],
+    )
+    .unwrap();
+    for chunk in [1, 3, 17, 10000] {
+        let mut cd = CdBlock::default();
+        cd.mount(media.clone());
+        empty_sectors(&mut cd, 2, 199);
+        issue(&mut cd, [0x3000, 0, 0, 0]);
+        issue(&mut cd, [0x1080, 150, 0x0080, 3]);
+        cd.write16(CD + 8, 0).unwrap();
+        advance_observed(&mut cd, 174_860, chunk, true);
+        assert_eq!(cd.read16(CD + 8).unwrap() & 12, 0);
+        cd.advance(1);
+        assert_eq!(cd.read16(CD + 8).unwrap() & 12, 12);
+        let paused = issue(&mut cd, [0, 0, 0, 0]);
+        assert_eq!((paused[0] >> 8, paused[3]), (1, 151));
+        for _ in 0..588 {
+            assert_eq!(cd.audio_sample(), [0; 2], "full-buffer pause mutes CD-DA");
+        }
+        advance_observed(&mut cd, 400_000, chunk, true);
+        let paused = issue(&mut cd, [0, 0, 0, 0]);
+        assert_eq!((paused[0] >> 8, paused[3]), (1, 151));
+        assert_eq!(cd.read16(CD + 8).unwrap() & 16, 0, "no premature PEND");
+        issue(&mut cd, [0x6200, 0, 0x0200, 1]);
+        assert_eq!(cd.audio_sample(), [0; 2], "wait for a drive deadline");
+        advance_observed(&mut cd, 400_000, chunk, true);
+        let resumed = issue(&mut cd, [0, 0, 0, 0]);
+        assert_eq!((resumed[0] >> 8, resumed[3]), (3, 151));
+        assert_eq!(cd.read16(CD + 8).unwrap() & 8, 8, "BFUL stays latched");
+        cd.write16(CD + 8, !8).unwrap();
+        // A full pool alone must not pause an audio track: only the previously
+        // armed pause blocks it. Restore occupancy after automatic resume.
+        empty_sectors(&mut cd, 2, 1);
+        assert_eq!(issue(&mut cd, [0x5000, 0, 0, 0])[1], 0);
+        advance_observed(&mut cd, 400_000, chunk, true);
+        for (i, frame) in audio.as_chunks::<4>().0.iter().enumerate() {
+            assert_eq!(
+                cd.audio_sample(),
+                [
+                    i16::from_le_bytes(frame[..2].try_into().unwrap()),
+                    i16::from_le_bytes(frame[2..].try_into().unwrap()),
+                ],
+                "audio frame {i} after resume, chunk {chunk}"
+            );
+            if i == 587 {
+                let playing = issue(&mut cd, [0, 0, 0, 0]);
+                assert_eq!((playing[0] >> 8, playing[3]), (3, 152));
+            }
+        }
+        let ended = issue(&mut cd, [0, 0, 0, 0]);
+        assert_eq!((ended[0] >> 8, ended[3]), (1, 153));
+        assert_eq!(cd.audio_sample(), [0; 2]);
+        assert_eq!(cd.read16(CD + 8).unwrap() & 24, 16, "only PEND latched");
+        assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 1);
+        issue(&mut cd, [0x6100, 0, 0, 1]);
+        assert_eq!(read(&cd, 2048), data, "retained data sector is intact");
+    }
+}
+
+#[test]
 fn cue_copy_preemphasis_and_channel_control_survive_drive_and_q_reports() {
     let audio = vec![0; 2352 * 2];
     let mut cd = CdBlock::default();
