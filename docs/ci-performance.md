@@ -67,6 +67,22 @@ Changes to triggers, selection, caches, timeouts, worker counts or tests require
 separately scoped implementation and applicable validation. These principles add
 no benchmark, hardware, human-approval or post-merge gate.
 
+## Issue #93 shard rebalance
+
+The expanded scenario shard in [run 41378197649](https://github.com/takahirox/saturn-rust/actions/runs/41378197649)
+hit its unchanged 1,200-second worker limit during `scspMvol`, before
+`largeMedia`. The shared shard passed all 30 groups in 516.087 seconds.
+`cdRuntime` and `externalDiscovery` alone passed in 214.346 and 183.158 seconds.
+Their combined 397.504 seconds motivated moving these two independent modules
+after the shared UI trace, closing that trace's context first and preserving a
+fresh context for each module. This redistributes existing work across the same
+two workers: 32 shared groups and 41 scenario groups, with all 73 groups retained.
+The original serial order and individual module commands remain available.
+No guest clock budget, assertion, timeout, retry or artifact/publication gate
+changes. The inherited timings motivate the split; they do not establish revised
+hosted runtimes. See [the validation record](validation-issue-93.md#ci-shard-timeout-correction)
+for checks of this correction and the remaining publication gate.
+
 ## Issue #61 performance record
 
 The timing measurements below are the historical Issue #61 inventory. The

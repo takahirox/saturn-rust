@@ -144,6 +144,54 @@ oracles were also rerun against inherited main, giving the negative results
 above. Relative documentation file links, JavaScript syntax and Git whitespace
 were checked.
 
+## CI shard timeout correction
+
+Review found that [GitHub Actions run 41378197649](https://github.com/takahirox/saturn-rust/actions/runs/41378197649)
+failed the required `build` gate: `scenarios` exhausted its 1,200-second worker
+budget during `scspMvol` and never reached `largeMedia`. `cdStream` itself passed
+in 46.341 seconds. Native, Wasm and `shared` jobs succeeded, but that does not
+make the failed aggregate acceptable.
+
+The correction moves only the independent `cdRuntime` and `externalDiscovery`
+modules from `scenarios` to `shared`, after the complete original UI trace.
+Their hosted times were 214.346 and 183.158 seconds, versus 516.087 seconds for
+the original shared trace. Each moved module uses the same fresh-context runner
+as before; the shared trace's context is measured and closed before either starts.
+The split is now 32 shared groups and 41 scenarios. All 73 groups, independent
+oracles, individual `--group` commands and original `--serial` order are retained.
+The two-worker cap, 20-minute limit, failure propagation and artifact/publication
+gates are unchanged; no retries or test-clock reductions were added.
+
+The focused inventory/aggregate/publication checks passed, followed by all 13
+runner regressions (14.540 seconds, none skipped). The production web build
+passed in 6.082 seconds and generated the same Wasm SHA-256 recorded above.
+JavaScript syntax, Rust formatting and Git whitespace checks passed.
+
+The complete `npm run test:browser` command passed all 73 groups and the
+unchanged artifact/revision aggregate in 388.176 seconds (387.957 seconds in
+the supervisor). Successful report times were 387.719 seconds for 32 shared
+groups and 306.772 seconds for 41 scenario groups. `cdRuntime` and
+`externalDiscovery` passed in 77.775 and 65.018 seconds on shared; `cdStream`,
+`scspMvol` and `largeMedia` passed on scenarios in 17.062, 61.704 and 5.340
+seconds. No groups were skipped or retried. The aggregate verified the same
+site digest recorded above. Compared with the earlier 444.094-second local
+full-suite record, elapsed time decreased by 55.918 seconds; these shared-host
+runs are not a controlled performance comparison or revised hosted-CI evidence.
+
+The first local build selected Homebrew Rust without Wasm target libraries;
+setting `RUSTC` to Rustup stable's compiler fixed the environment. Initial browser
+launches exposed an incomplete cached Chromium framework and then an absent
+headless shell. Downloading and extracting the exact pinned Chromium and shell
+revision 1208 (145.0.7632.6) under ignored `target/issue-93-shards/browsers`
+resolved these setup failures. No dependency or browser revision changed.
+
+This correction changes CI orchestration and documentation only. The prior
+complete native/fixture/Clippy results remain recorded above; those unaffected
+suites were not repeated for this correction. No successful revised GitHub
+scenario or aggregate check is claimed: this node must not push or merge.
+After publication, require successful `browser (shared)`, `browser (scenarios)`
+and required `build` checks for the revised PR head before approval.
+
 ## Corrected development failures and environment
 
 The first root-read attempt did not clear firmware PEND before starting a new

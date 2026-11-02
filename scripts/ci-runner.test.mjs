@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { shards, selection } from "./browser-selection.mjs";
+import { shards, selection, scenarioGroups, sharedScenarios } from "./browser-selection.mjs";
 import { siteDigest, revision, verifyResults } from "./browser-results.mjs";
 import { runWorker } from "./browser-suite.mjs";
 import { videoWrites } from "./video-writes.mjs";
@@ -153,12 +153,20 @@ test("complete-suite inventory covers all original groups and missing groups fai
   assert(groups.includes("cdRuntime"));
   assert(groups.includes("cdStream"));
   assert.deepEqual([...new Set(registered)], groups);
-  assert.deepEqual(shards.scenarios, [...source.matchAll(/timings.measure\("([^"]+)"/g)].map(m => m[1]));
-  assert.deepEqual(shards.shared, groups.filter(g => !shards.scenarios.includes(g)));
+  assert.deepEqual(scenarioGroups, [...source.matchAll(/timings.measure\("([^"]+)"/g)].map(m => m[1]));
+  assert.deepEqual(shards.shared, [...groups.filter(g => !scenarioGroups.includes(g)), ...sharedScenarios]);
   const scenarioRegistry = source.match(/const scenarios = \{ ([^}]+) \}/)[1].split(/,\s+/);
-  assert.deepEqual([...scenarioRegistry, "largeMedia"].sort(), [...shards.scenarios].sort());
+  assert.deepEqual([...scenarioRegistry, "largeMedia"].sort(), [...scenarioGroups].sort());
   assert.equal((source.match(/if \(includeScenarios\) await timings.measure/g) ?? []).length, 43);
   assert.deepEqual(selection([]).groups, groups);
+  assert.equal(shards.shared.length, 32);
+  assert.equal(shards.scenarios.length, 41);
+  for (const name of sharedScenarios) {
+    assert.deepEqual(selection([`--group=${name}`]), { mode: "scenarios", groups: [name], report: undefined });
+    assert(!shards.scenarios.includes(name), "Moved modules must run only once in the complete suite");
+  }
+  assert(source.includes("await runScenarios(sharedScenarios);"));
+  assert(source.includes("await runScenarios(selected.groups);"));
   for (const args of [["--shard=missing"], ["--group=missing"], ["--shard=shared", "--group=scspMvol"], ["--typo"]]) {
     assert.throws(() => selection(args));
   }
