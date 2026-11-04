@@ -175,7 +175,7 @@ function render() {
   $("start").hidden = sessionStarted;
   $("backup-export").disabled = busy;
   const state = loadingFile() ? "Loading image…" : loadingBackup ? "Reading backup RAM…" : $("error").textContent ? "Stopped — check the selected image" :
-    playing ? "Running" : discReady ? (sessionStarted ? "Paused — Resume to play" : "Disc ready — press Start") : "Load a disc to begin";
+    playing ? "Running" : launchReady ? (sessionStarted ? "Paused — Resume to play" : "Disc ready — press Start") : "Load a disc to begin";
   setText("player-status", `${state} · ${$("mode").selectedOptions[0].textContent}`);
   setText("launch-status", busy ? "Reading local data…" : $("error").textContent ? "Check the error beside the player." :
     $("mode").value === "hle" ? "Debugger fixture selected. Use the advanced CPU controls." :
@@ -244,14 +244,15 @@ function reset() {
   $("empty-state").hidden = false;
   act(() => {
     if ($("mode").value === "disc") {
-      if (cueMedia) emulator.reset_cue(cueMedia.cue, cueMedia.names, cueMedia.lengths, cueMedia.bytes);
-      else if (discBytes) emulator.reset_disc(discBytes);
-      else if (loadedDisc) emulator.reset_loaded_disc();
-      else emulator.reset_disc(new Uint8Array());
-      loadedDisc = true;
+      // Mount validation is independent of whether HLE supports this disc's boot data.
+      if (cueMedia) emulator.mount_cue(cueMedia.cue, cueMedia.names, cueMedia.lengths, cueMedia.bytes);
+      else if (discBytes) emulator.mount_disc(discBytes);
+      loadedDisc = loadedDisc || Boolean(cueMedia || discBytes);
       // The retained Wasm medium now owns these bytes; restart needs no upload.
       discBytes = null;
       cueMedia = null;
+      if (loadedDisc) emulator.reset_loaded_disc();
+      else emulator.reset_disc(new Uint8Array());
     }
     else if ($("mode").value === "hle") emulator.reset_hle();
     else {
@@ -267,8 +268,6 @@ function reset() {
     }
     bootValid = true;
   });
-  // A rejected HLE boot clears the core medium; never advertise it as retained.
-  if (!bootValid && $("mode").value === "disc") loadedDisc = false;
   // Failed validation must not keep a second unvalidated JS copy alive.
   discBytes = null;
   cueMedia = null;

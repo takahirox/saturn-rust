@@ -508,12 +508,13 @@ impl Machine {
     /// Boot caller-resolved ISO/BIN/CUE media through the same independent HLE.
     /// No file reference is opened by the emulator. Invalid input stops the old
     /// machine while preserving battery RAM, as with the single-file loader.
+    /// Structurally valid media remains mounted even if its HLE boot is rejected.
     pub fn reset_media(&mut self, media: media::Media) -> Result<(), MachineError> {
         self.clear_execution();
         self.mode = Some(BootMode::HleDisc);
-        self.boot_disc(&media)?;
+        let result = self.boot_disc(&media);
         self.bus.cd.mount(media);
-        Ok(())
+        result
     }
 
     /// Attach local media to an external BIOS without replacing its CPU/reset

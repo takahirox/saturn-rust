@@ -43,7 +43,38 @@ export async function playUi(browser, url) {
     }, selection);
     const ready = () => page.waitForFunction(() => !document.getElementById("start").disabled);
     const failed = pattern => page.waitForFunction(pattern => new RegExp(pattern).test(document.getElementById("error").textContent), pattern);
+    const bios = Buffer.alloc(524288);
+    bios.writeUInt32BE(0x100,0); bios.writeUInt32BE(0x06100000,4);
+    bios.writeUInt16BE(0xAFFE,0x100); bios.writeUInt16BE(0x0009,0x102);
+    const firmware = {name:"original-loop.bin",mimeType:"application/octet-stream",buffer:bios};
     await context.setOffline(true);
+    // Firmware alone allows debugging, but Play still needs a mounted disc.
+    await page.locator("#mode").selectOption("bios");
+    await page.locator("#bios").setInputFiles(firmware);
+    await page.waitForFunction(() => document.getElementById("bios-selection").textContent.includes("loaded locally"));
+    assert(await page.locator("#start").isDisabled());
+    assert.match(await page.locator("#player-status").textContent(), /Load a disc to begin/);
+    assert.match(await page.locator("#launch-status").textContent(), /Select a valid disc/);
+    assert.equal(await page.locator("#error").textContent(), "");
+    // This is a valid medium with deliberately unsupported HLE boot metadata.
+    // Returning to BIOS must reuse it without asking for another file read.
+    const noHle = Buffer.from(iso);
+    noHle[0] = 0;
+    await page.locator("#disc").setInputFiles({name:"no-hle.iso",mimeType:"application/octet-stream",buffer:noHle});
+    await ready();
+    const mounted = await page.locator("#disc-selection").textContent();
+    assert.match(mounted, /Loaded locally/);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await page.locator("#mode").selectOption("disc");
+      await failed("Saturn");
+      assert(await page.locator("#start").isDisabled());
+      assert.equal(await page.locator("#disc-selection").textContent(), mounted);
+      await page.locator("#mode").selectOption("bios");
+      await ready();
+      assert.equal(await page.locator("#error").textContent(), "");
+      assert.equal(await page.locator("#disc-selection").textContent(), mounted);
+    }
+    await page.locator("#mode").selectOption("disc");
     await drop(files.slice(0,2));
     await failed("Missing or ambiguous CUE file reference");
     assert(await page.locator("#start").isDisabled());
@@ -54,10 +85,6 @@ export async function playUi(browser, url) {
     assert(selected.includes("Loaded locally"));
     assert(await page.locator("#pause").isHidden());
     // Step 2 works before Step 3: selecting optional firmware does not lose disc.
-    const bios = Buffer.alloc(524288);
-    bios.writeUInt32BE(0x100,0); bios.writeUInt32BE(0x06100000,4);
-    bios.writeUInt16BE(0xAFFE,0x100); bios.writeUInt16BE(0x0009,0x102);
-    const firmware = {name:"original-loop.bin",mimeType:"application/octet-stream",buffer:bios};
     await page.locator("#bios").setInputFiles(firmware);
     await ready();
     assert.match(await page.locator("#bios-selection").textContent(), /unused in HLE/);
