@@ -131,6 +131,32 @@ fn malformed_and_unsupported_discs_fail_before_execution_without_stale_state() {
 }
 
 #[test]
+fn failed_hle_boot_retains_structurally_valid_media_for_bios_and_retries() {
+    let mut image = ISO.to_vec();
+    image[0] = 0; // Valid ISO sector layout, unsupported Saturn IP identifier.
+    let mut m = Machine::new();
+    let media = saturn_rust::media::Media::iso(&image).unwrap();
+    assert!(m.reset_media(media).is_err());
+    for _ in 0..2 {
+        assert_eq!(m.mode(), Some(BootMode::HleDisc));
+        assert_eq!(m.cpu_state().status, CpuStatus::Reset);
+        assert_eq!(
+            m.bus().cd.media().unwrap().cooked_sector(150).unwrap(),
+            image[..SECTOR]
+        );
+        let mut bios = vec![0; 524288];
+        bios[..4].copy_from_slice(&0x100u32.to_be_bytes());
+        bios[4..8].copy_from_slice(&0x06100000u32.to_be_bytes());
+        m.reset(Boot::ExternalBios(&bios)).unwrap();
+        assert_eq!(
+            m.bus().cd.media().unwrap().cooked_sector(150).unwrap(),
+            image[..SECTOR]
+        );
+        assert!(m.reset_loaded_disc().is_err());
+    }
+}
+
+#[test]
 fn malformed_inputs_never_panic_even_with_corrupt_directory_bytes() {
     // Deterministic bounded parser robustness exercise, no external corpus.
     for offset in (0..ISO.len()).step_by(127) {

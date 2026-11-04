@@ -9,7 +9,9 @@ let loadedDisc = false;
 const MAX_ISO_BYTES = 450000 * 2048;
 const MAX_MEDIA_BYTES = 450000 * 2352;
 let playing = false;
-let playAfterLoad = false;
+let sessionStarted = false;
+let attemptedBoot = false;
+let bootValid = false;
 let buttons = 0;
 let port2Buttons = 0;
 const gamepadMasks = [0, 0];
@@ -53,7 +55,8 @@ let loadingBackup = false;
 let view = "play";
 
 export const audio = new AudioOutput((stats) => {
-  $("audio-status").textContent = `Audio: ${stats.state} · ${stats.rendered} frames · ${stats.underflow} underflow · ${stats.dropped} dropped`;
+  setText("audio-status", `Audio: ${stats.state}${stats.state === "underflow" ? " · buffer empty" : ""}`);
+  $("audio-diagnostics").textContent = `${stats.rendered} audio frames · ${stats.underflow} underflow · ${stats.dropped} dropped`;
 });
 $("audio-enable").addEventListener("click", async () => {
   try {
@@ -95,11 +98,17 @@ function releaseButtons() {
 function pause() {
   playing = false;
   audio.setPaused(true);
-  playAfterLoad = false;
   releaseButtons();
 }
 
+function setDisplayRatio(width, height) {
+  const ratio = width === 320 && height === 224 ? "4 / 3" : `${width} / ${height}`;
+  $("screen").style.aspectRatio = ratio;
+  $("player-shell").style.setProperty("--display-ratio", ratio);
+}
+
 export function advanceFrame() {
+  $("empty-state").hidden = true;
   pollGamepads();
   emulator.advance_frame();
   audio.setPaused(!playing);
@@ -110,7 +119,7 @@ export function advanceFrame() {
   if (canvas.width !== width || canvas.height !== height) {
     canvas.width = width;
     canvas.height = height;
-    canvas.style.aspectRatio = `${width} / ${height}`;
+    setDisplayRatio(width, height);
   }
   context.putImageData(new ImageData(pixels, width, height), 0, 0);
 }
@@ -134,8 +143,9 @@ function canExecute(status = emulator.status()) {
 
 function render() {
   if (!emulator) return;
-  const machineStatus = emulator.status();
+  const machineStatus = attemptedBoot ? emulator.status() : "Ready";
   const mode = emulator.mode();
+  if (biosBytes && $("bios").files[0]) setText("bios-selection", `${$("bios").files[0].name} · 512 KiB · loaded locally${$("mode").value === "bios" ? "" : " (unused in HLE mode)"}`);
   $("active-mode").textContent = mode;
   setText("status", machineStatus);
   // Keep register allocation and Wasm register reads out of the playback loop.
@@ -150,21 +160,27 @@ function render() {
     $("frames").textContent = emulator.frames();
   }
   const busy = loadingFile() || loadingBackup;
-  const ready = !busy && canExecute(machineStatus);
+  const ready = bootValid && !busy && canExecute(machineStatus);
   $("step").disabled = !ready;
   $("run").disabled = !ready;
   $("reset").disabled = false;
   const discReady = ready && ["disc", "bios"].includes($("mode").value);
-  $("pause").disabled = !discReady;
+  $("pause").disabled = !discReady || !sessionStarted;
+  $("pause").hidden = !sessionStarted;
   $("pause").textContent = playing ? "Pause" : "Resume";
   $("restart").disabled = busy || ($("mode").value === "bios" ? !biosBytes : $("mode").value !== "disc" || !(discBytes || cueMedia || loadedDisc));
   $("frame").disabled = !discReady || playing;
-  $("play-homebrew").disabled = busy;
-  $("play-prism").disabled = busy;
+  const launchReady = discReady && !$("error").textContent && loadedDisc && ($("mode").value !== "bios" || Boolean(biosBytes));
+  $("start").disabled = !launchReady || playing;
+  $("start").hidden = sessionStarted;
   $("backup-export").disabled = busy;
-  const state = loadingFile() ? "Loading image…" : loadingBackup ? "Reading backup RAM…" : $("error").textContent ? "Stopped — see error below" :
-    playing ? "Running" : discReady ? "Paused — Resume to play" : "Ready — Play Star Collector or open Debug";
-  setText("player-status", `${state} · ${mode}`);
+  const state = loadingFile() ? "Loading image…" : loadingBackup ? "Reading backup RAM…" : $("error").textContent ? "Stopped — check the selected image" :
+    playing ? "Running" : launchReady ? (sessionStarted ? "Paused — Resume to play" : "Disc ready — press Start") : "Load a disc to begin";
+  setText("player-status", `${state} · ${$("mode").selectedOptions[0].textContent}`);
+  setText("launch-status", busy ? "Reading local data…" : $("error").textContent ? "Check the error beside the player." :
+    $("mode").value === "hle" ? "Debugger fixture selected. Use the advanced CPU controls." :
+    $("mode").value === "bios" && !biosBytes ? "Select a 512 KiB BIOS and a valid disc." :
+    launchReady ? (sessionStarted ? "Playback controls are beneath the display." : "Ready to start. Audio is enabled separately.") : "Select a valid disc to start.");
   $("recovery").hidden = !$("error").textContent || loadingFile();
 }
 
@@ -176,8 +192,7 @@ for (const nextView of ["play", "debug"]) {
     view = nextView;
     $("main").className = `view-${view}`;
     for (const name of ["play", "debug"]) $(`view-${name}`).setAttribute("aria-pressed", String(view === name));
-    $("play-intro").hidden = view !== "play";
-    for (const id of ["debug-intro", "debug-view", "register-panel"]) $(id).hidden = view !== "debug";
+    for (const id of ["debug-view", "register-panel"]) $(id).hidden = view !== "debug";
     render();
   });
 }
@@ -224,30 +239,41 @@ function reset() {
   pause();
   const canvas = $("screen");
   context.clearRect(0, 0, canvas.width, canvas.height);
+  attemptedBoot = true;
+  bootValid = false;
+  $("empty-state").hidden = false;
   act(() => {
     if ($("mode").value === "disc") {
-      if (cueMedia) emulator.reset_cue(cueMedia.cue, cueMedia.names, cueMedia.lengths, cueMedia.bytes);
-      else if (discBytes) emulator.reset_disc(discBytes);
-      else if (loadedDisc) emulator.reset_loaded_disc();
-      else emulator.reset_disc(new Uint8Array());
-      loadedDisc = true;
+      // Mount validation is independent of whether HLE supports this disc's boot data.
+      if (cueMedia) emulator.mount_cue(cueMedia.cue, cueMedia.names, cueMedia.lengths, cueMedia.bytes);
+      else if (discBytes) emulator.mount_disc(discBytes);
+      loadedDisc = loadedDisc || Boolean(cueMedia || discBytes);
       // The retained Wasm medium now owns these bytes; restart needs no upload.
       discBytes = null;
       cueMedia = null;
+      if (loadedDisc) emulator.reset_loaded_disc();
+      else emulator.reset_disc(new Uint8Array());
     }
     else if ($("mode").value === "hle") emulator.reset_hle();
     else {
-      emulator.reset_bios(biosBytes ?? new Uint8Array());
+      // Validate/mount a selected medium even when firmware has not been added.
+      let biosError;
+      try { emulator.reset_bios(biosBytes ?? new Uint8Array()); } catch (error) { biosError = error; }
       if (cueMedia) emulator.mount_cue(cueMedia.cue, cueMedia.names, cueMedia.lengths, cueMedia.bytes);
       else if (discBytes) emulator.mount_disc(discBytes);
       loadedDisc = loadedDisc || Boolean(cueMedia || discBytes);
       discBytes = null;
       cueMedia = null;
+      if (biosError) throw biosError;
     }
+    bootValid = true;
   });
+  // Failed validation must not keep a second unvalidated JS copy alive.
+  discBytes = null;
+  cueMedia = null;
   canvas.width = emulator.video_width();
   canvas.height = emulator.video_height();
-  canvas.style.aspectRatio = `${canvas.width} / ${canvas.height}`;
+  setDisplayRatio(canvas.width, canvas.height);
 }
 
 try {
@@ -306,9 +332,22 @@ try {
     loadingDisc = false;
     reset();
   });
+  $("start").addEventListener("click", () => {
+    if ($("start").disabled) return;
+    sessionStarted = true;
+    playing = true;
+    lastFrame = 0;
+    audio.setPaused(false);
+    $("screen").focus();
+    render();
+  });
+  $("fixture").addEventListener("click", () => {
+    $("mode").value = "hle";
+    $("mode").dispatchEvent(new Event("change"));
+  });
   $("restart").addEventListener("click", () => {
     reset();
-    if (["disc", "bios"].includes($("mode").value) && canExecute() && !$("settings").open && view === "play") {
+    if (sessionStarted && ["disc", "bios"].includes($("mode").value) && canExecute() && !$("settings").open && view === "play") {
       playing = true;
       lastFrame = 0;
       $("screen").focus();
@@ -324,25 +363,42 @@ try {
     emulator.run_steps(count);
   }));
   $("mode").addEventListener("change", () => {
-    // Invalidate pending file reads and discard bytes on every mode change.
+    sessionStarted = false;
     biosGeneration++;
     discGeneration++;
-    biosBytes = null;
+    // Completed selections survive switching between the two disc boot modes.
+    // In-flight reads are cancelled; they cannot revive an old boot selection.
+    if (loadingBios) {
+      biosBytes = null;
+      $("bios").value = "";
+      $("bios-selection").textContent = "BIOS read cancelled by mode change. Select it again.";
+    }
+    if (loadingDisc) {
+      loadedDisc = false;
+      emulator.clear_media();
+      $("disc").value = "";
+      $("disc-selection").textContent = "Disc read cancelled by mode change. Select it again.";
+    }
     discBytes = null;
     cueMedia = null;
-    loadedDisc = false;
-    emulator.clear_media();
-    $("disc").value = "";
     loadingBios = false;
     loadingDisc = false;
-    $("bios").value = "";
-    $("disc-controls").hidden = !["disc", "bios"].includes($("mode").value);
-    $("bios-controls").hidden = $("mode").value !== "bios";
+    if ($("mode").value === "hle") {
+      biosBytes = null;
+      loadedDisc = false;
+      emulator.clear_media();
+      $("disc").value = "";
+      $("bios").value = "";
+      $("disc-selection").textContent = "No disc selected.";
+      $("bios-selection").textContent = "No BIOS selected.";
+    }
     reset();
   });
   $("bios").addEventListener("change", async () => {
     const generation = ++biosGeneration;
     const file = $("bios").files[0];
+    sessionStarted = false;
+    $("bios-selection").textContent = file ? `${file.name} · ${file.size.toLocaleString()} bytes (not yet validated)` : "No BIOS selected.";
     biosBytes = null;
     loadingBios = false;
     reset(); // Immediately stop the old machine, even if reading the new file fails.
@@ -358,7 +414,9 @@ try {
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       if (generation !== biosGeneration) return;
+      if (bytes.length !== 524288) throw new Error("BIOS read did not contain 524288 bytes");
       biosBytes = bytes;
+      $("bios-selection").textContent = `${file.name} · 512 KiB · loaded locally${$("mode").value === "bios" ? "" : " (unused in HLE mode)"}`;
       loadingBios = false;
       reset();
     } catch (error) {
@@ -367,41 +425,11 @@ try {
       act(() => { throw new Error(`Could not read BIOS locally: ${error}. Select the file again.`); });
     }
   });
-  const beginDisc = () => {
-    const startPlaying = playAfterLoad;
-    reset();
-    if (canExecute()) {
-      playing = startPlaying && view === "play" && !$("settings").open;
-      lastFrame = 0;
-      if (playing) $("screen").focus();
-      render();
-    }
-  };
-  for (const [button, image] of [["play-homebrew", "star-collector.iso"], ["play-prism", "prism-courier.iso"]]) $(button).addEventListener("click", async () => {
-    $("mode").value = "disc";
-    $("mode").dispatchEvent(new Event("change"));
+  const selectDisc = async (files) => {
+    if ($("controls").disabled) return;
     const generation = ++discGeneration;
-    loadingDisc = true;
-    playAfterLoad = true;
-    $("error").textContent = "";
-    render();
-    try {
-      const response = await fetch(`./${image}`);
-      if (!response.ok) throw new Error(`Sample ISO HTTP ${response.status}; rebuild or select the ISO locally.`);
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      if (generation !== discGeneration) return;
-      discBytes = bytes;
-      loadingDisc = false;
-      beginDisc();
-    } catch (error) {
-      if (generation !== discGeneration) return;
-      loadingDisc = false;
-      act(() => { throw error; });
-    }
-  });
-  $("disc").addEventListener("change", async () => {
-    const generation = ++discGeneration;
-    const files = [...$("disc").files];
+    sessionStarted = false;
+    $("disc-selection").textContent = files.length ? files.map(file => `${file.name} · ${file.size.toLocaleString()} bytes`).join("\n") + "\nNot yet validated." : "No disc selected.";
     discBytes = null;
     cueMedia = null;
     loadedDisc = false;
@@ -440,13 +468,30 @@ try {
         discBytes = bytes;
       }
       loadingDisc = false;
-      beginDisc();
+      reset();
+      if (loadedDisc) $("disc-selection").textContent = files.map(file => `${file.name} · ${file.size.toLocaleString()} bytes`).join("\n") + "\nLoaded locally. Replacement stops playback.";
     } catch (error) {
       if (generation !== discGeneration) return;
       loadingDisc = false;
       act(() => { throw new Error(`Could not read disc locally: ${error}. Select the file again.`); });
     }
+  };
+  $("disc").addEventListener("change", () => selectDisc([...$("disc").files]));
+  const dropZone = $("disc-drop");
+  for (const type of ["dragenter", "dragover"]) dropZone.addEventListener(type, event => {
+    event.preventDefault();
+    if (!$("controls").disabled) dropZone.classList.add("drag-over");
   });
+  dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-over"));
+  dropZone.addEventListener("drop", event => {
+    event.preventDefault();
+    dropZone.classList.remove("drag-over");
+    if ($("controls").disabled) return;
+    $("disc").value = "";
+    selectDisc([...event.dataTransfer.files]);
+  });
+  // Prevent a dropped image outside the target from navigating away from the tab.
+  for (const type of ["dragover", "drop"]) window.addEventListener(type, event => event.preventDefault());
   $("pause").addEventListener("click", () => {
     if (playing) pause();
     else { playing = true; lastFrame = 0; $("screen").focus(); }
@@ -474,7 +519,7 @@ try {
   $("controls").disabled = false;
   $("debug-controls").disabled = false;
   $("backup-controls").disabled = false;
-  reset();
+  render();
 } catch (error) {
   $("error").textContent = `Could not load the Wasm module: ${error}. Build web/pkg and serve web/ over HTTP as described in README.`;
   $("status").textContent = "Initialization failed";

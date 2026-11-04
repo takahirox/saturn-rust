@@ -1,31 +1,46 @@
 # saturn-rust
 
 An independently implemented Rust SH-2 interpreter and minimal Saturn devices,
-compiled to WebAssembly. **Star Collector** is the first supported browser-playable
-homebrew: an original, silent Saturn-targeted disc game with graphics, keyboard
-input, scoring, completion and in-game restart. It needs no proprietary BIOS.
-General homebrew and commercial-game compatibility are not supported.
+compiled to WebAssembly. The browser opens as a **Saturn Disc Player** with an
+empty display and a visible four-step setup:
 
-Open **https://takahirox.github.io/saturn-rust/** and choose **Play Star Collector**
-in the default **Play** view after the updated Pages build deploys. Move the cyan
-square with arrows to collect five yellow stars. Gold blocks show progress; a
-green banner means completion.
-**Enter (Saturn Start)** restarts. Click the pixel-crisp, responsive display for
-keyboard focus. Pause/Resume, Restart and Fullscreen sit beside the player.
-Fullscreen uses the browser API and reports when unavailable or denied.
+1. Select your authorized disc: a supported self-contained CHD v5 CD-ROM, a
+   cooked ISO, or a CUE together with all referenced BINARY tracks. Use the file
+   picker or drop the files onto **Select disc**. A lone raw BIN needs its CUE.
+2. Optionally add a local raw 512 KiB BIOS. HLE does not use this file.
+3. Choose **BIOS-less HLE disc** or **User-provided BIOS**. BIOS mode requires the
+   firmware and never falls back to HLE. Switching between these modes retains
+   loaded files, cancels pending reads and pauses playback.
+4. Press **Start** once the required inputs have loaded and validated.
 
-Choose **Debug** for CPU registers, Step, bounded Run, Reset and Advance frame.
-Switching views or opening settings pauses and releases held input; returning or
-closing settings never resumes automatically. View changes preserve the CPU,
-selected local media and diagnostics. Reset cold-boots the selected mode; Restart
-in Play cold-boots the loaded disc and starts playback when settings are closed.
-Keyboard and standard Gamepad inputs are supported; virtual touchscreen controls are not included.
+Open **https://takahirox.github.io/saturn-rust/** for the player. No bundled game
+is selected or downloaded automatically. This UI does not expand emulator
+compatibility: general homebrew, retail games and native BIOS boot remain
+incomplete. Original MIT-licensed Star Collector, Prism Courier and Hardware Lab
+remain buildable fixtures with native/Wasm/browser coverage; they can be loaded
+explicitly as local discs.
 
-The display is rasterized in Rust from guest-written VDP2 VRAM, and controls go
-through emulated SMPC hardware. Game rules and drawing execute as guest SH-2 code.
-The original hardware diagnostics also execute a sound CPU and direct SCSP PCM
-through a bounded WebAudio path. **Enable audio** requires a user gesture and
-reports playback/blocked/mute/underflow states; Star Collector has no soundtrack.
+The desktop layout places a large player beside setup; smaller screens place
+setup first. The standard 320×224 framebuffer is displayed at 4:3 with pixelated
+rendering; other core dimensions update the display ratio. Focus the display for
+keyboard input: arrows for directions, Z for A, Enter for Saturn Start. Standard
+gamepads are supported; virtual touchscreen controls are not included.
+Pause/Resume, Restart, audio and Fullscreen are beneath the display. Fullscreen
+reports unavailable or denied requests without interrupting the normal player.
+
+**Advanced → Debug** reveals CPU registers, Step, bounded Run, Reset and frame
+advance. **Advanced / backup RAM & format details** contains import/export and
+media limits. Opening advanced settings or switching views pauses and releases
+held input; closing settings or returning to Play never resumes automatically.
+Losing display/window focus releases input; hiding the tab pauses. View changes
+preserve CPU state, files and errors. Restart cold-boots retained media without
+reading the file again; it resumes an existing Play session when settings are
+closed. Debug Reset cold-boots and stays paused.
+
+The display is rasterized in Rust from guest-written video state; input goes
+through emulated SMPC hardware. **Enable audio** requires a user gesture and
+reports blocked, muted, paused and underflow states. Actual guest sound travels
+through the bounded WebAudio consumer; no soundtrack is supplied by the UI.
 
 - [Build, run, test and Pages setup](docs/setup.md)
 - [Supported CPU, disc boot and hardware; limitations and primary manuals](docs/architecture.md)
@@ -38,33 +53,37 @@ reports playback/blocked/mute/underflow states; Star Collector has no soundtrack
 - [Redistribution/provenance audit](docs/homebrew-provenance.md)
 - [Play/Debug validation and pending deployment verification](docs/validation-issue-9.md)
 
-Open **Load disc / BIOS & boot settings** and choose **BIOS-less HLE disc** to
-select one supported self-contained CHD v5 CD-ROM, one cooked ISO, or one CUE
+Use **Select disc** and **BIOS-less HLE disc** to load one supported
+self-contained CHD v5 CD-ROM, one cooked ISO, or one CUE
 with its referenced BINARY tracks selected together. Ordinary discs need no
 emulator-specific sidecar, extracted executable or per-title metadata. Firmware
 is optional in HLE mode and supplied locally in BIOS mode. See the
 [media formats, codec/size limits and diagnostic SRW1 exception](docs/media.md)
 and [sector-addressed boot contract](docs/architecture.md#disc-and-bios-less-hle-boot).
 Image mounting alone does not establish commercial-game compatibility.
-Full hardware and BIOS/CD-library compatibility remain pending. The packaged sample is MIT licensed, including its original visuals
+Full hardware and BIOS/CD-library compatibility remain pending. The packaged
+sample is MIT licensed, including its original visuals
 and generated disc image. No Sega security objects, SDK libraries or firmware are
 bundled; this is not a stock-console authenticated disc.
 
 The original **HLE bootstrap prototype** debugger fixture remains available in
-boot settings. In **Debug**, Reset, then Run 6 yields `R0=4`, `R1=7`,
+**Advanced → Debug → Load HLE bootstrap fixture**. Loading this diagnostic
+clears both image selections. Reset, then Run 6 yields `R0=4`, `R1=7`,
 `PC=0x0600000E`. **User-provided BIOS** accepts a local raw 512 KiB file and uses
 its actual reset vectors. Native Sega
 BIOS boot/game support is incomplete and often faults on unimplemented devices
 or bus behavior. BIOS mode never silently changes into HLE.
 
 Local BIOS/disc bytes stay in the tab's memory, with no upload, browser storage,
-analytics, CDN or backend. Only public static assets and the licensed sample are
-fetched. Use files you are authorized to use; do not contribute proprietary media.
+analytics, CDN or backend. Only public static runtime assets are fetched by
+the normal Play flow. Use files you are authorized to use; do not contribute
+proprietary media.
 
-Boot settings also offer **Backup RAM** import/export. The packed 32768-byte raw
+**Advanced / backup RAM & format details** offers **Backup RAM** import/export.
+The packed 32768-byte raw
 backup survives resets and boot changes in the current tab. Export before closing
 or reloading; import explicitly replaces the bytes. This is not a save state or
-BIOS backup-library emulation. Star Collector does not use it. A second direct
+BIOS backup-library emulation. A second direct
 digital pad is available to guest programs: I/K/J/L directions, U/O/P for A/B/C,
 Right Shift for Start. Both pads release on focus loss and pause.
 
