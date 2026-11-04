@@ -78,7 +78,7 @@ python3 homebrew/star-collector/build.py
 sh scripts/check-fixtures.sh
 ```
 
-This is the complete 101-command CI reproducibility registry, including all three
+This is the complete 103-command CI reproducibility registry, including all three
 homebrew discs, HLE code, hardware guests and standard-size media. Individual
 `python3 ... --check` commands in that script remain usable for focused checks.
 
@@ -99,91 +99,70 @@ Rust or guest source. Opening `index.html` as a `file:` URL will not work. The c
 `wasm-unsafe-eval` CSP directive; the tested browser is recorded in
 [validation results](validation-issue-9.md).
 
-1. The default **Play** view centers the native 320×224 display, scaled at 10:7
-   with pixelated rendering. Click **Play Star Collector** to fetch the packaged
-   MIT-licensed ISO and boot it through BIOS-less HLE. Initial guest bitmap
-   clearing takes a few frames. Click the screen for keyboard focus; arrows move
-   the cyan player, yellow stars are collected one at a time. Five gold blocks and a green banner
-   mean success. Press **Enter / Start** to restart inside the guest, including
-   after completion. Star Collector has no soundtrack. **Enable audio** starts
-   WebAudio for guests using the supported direct PCM path; its status reports
-   blocked, muted, paused and underflow states explicitly.
-2. Use the adjacent **Pause/Resume**, **Restart** and **Fullscreen** controls.
-   Restart cold-boots the selected disc and starts playback when settings are
-   closed. Fullscreen targets the player shell; exit with its button or the
-   browser's Escape action. Unavailable/denied requests show an explanation and
-   leave the normal player usable. Focus returns to the Fullscreen button on exit.
-   Losing display/window focus releases held buttons. Hiding the browser tab pauses.
-3. Choose **Debug** for CPU R0–R15 and special registers, retired instructions,
-   pending delay target, exception count/last vector, machine status, **Step**,
-   **Run**, **Reset** and **Advance
-   frame**. Frame advancement requires a ready, paused disc. Switching Play/Debug
-   pauses and releases input without resetting, changing boot mode, discarding
-   selected files or clearing errors. Returning to Play requires **Resume**.
-   Invisible register tables are not refreshed during Play.
-4. Open **Load disc / BIOS & boot settings** with click or Enter/Space on its
-   disclosure. Opening pauses and releases input; closing it does not reset or
-   resume. Even if a pending sample download finishes after you dismiss settings
-   or return from Debug, playback stays paused. Choose **BIOS-less HLE disc** and
-   a local authorized supported CHD, ISO or CUE/BIN to use the same loader without fetching the sample.
-   Local images load paused; close settings and use Resume to play.
-   Startup supports Saturn IP area groups and ISO9660 first-read files,
-   including file-unit/gap interleaving and extended-attribute offsets. Select a
-   supported standalone CHD v5 CD-ROM (cdlz/cdzl/cdfl/none, at most 1,058,400,000 compressed bytes), a
-   cooked ISO alone (18–450,000 sectors, at most 921,600,000 bytes), or one CUE
-   and all its BINARY data/audio track files together (at most 1,058,400,000
-   data/audio bytes plus a 1 MiB CUE). These are application resource bounds,
-   separate from hardware recording limits. Large selections require enough
-   browser memory for the local input buffer and the retained Wasm medium.
-   Reset cancels pending reads; restart reuses the retained medium without a
-   second upload. Bootstrap reads only metadata and the selected executable.
-   See the [standard-size validation record](validation-issue-33.md). Cooked and raw Mode1,
-   raw Mode2, audio, shared/separate files and track gaps/indices are supported.
-   Runtime CD commands retain and read the actual medium; CD-DA passes through
-   SCSP. See [media formats](media.md) for CHD version/codec/layout/hunk limits,
-   optional SRW1 diagnostics and independent fixture reproduction. Ordinary
-   images need no private sidecar or extracted executable. A BIOS is separate
-   from disc content and optional in HLE mode; commercial-game compatibility
-   is not established by mounting media. Malformed or unsupported media
-   produce errors and stop the old machine.
-5. To inspect the preserved debugger fixture, select **HLE bootstrap prototype**
-   in settings and choose **Debug**. Click Step to see `R0=5`, then
-   Reset and Run the default 6 instructions. Expect `R0=4`, `R1=7`,
-   `PC=0x0600000E`, and 6 retired instructions.
-6. Step again to see a pending branch, and again to execute its NOP delay slot.
-   Further bounded runs stay in that loop. This is a test/homebrew startup path,
-   not BIOS service emulation.
-7. In settings, choose **User-provided BIOS**. Missing input shows a size error
-   and disables stepping. Select a legally obtained **raw 524288-byte** BIOS.
-   Incorrect sizes are rejected; correct size validates the layout, not authenticity or region.
-   Native Sega BIOS boot is incomplete; BIOS mode never switches to HLE.
-   PC and R15 are loaded from the first two big-endian vector words. Step or Run
-   may stop on unimplemented bus/device behavior with its PC. Illegal opcodes
-   dispatch guest exception vectors; failing entry is reported explicitly.
-8. **Backup RAM** in settings imports/exports a packed raw 32768-byte file. Import
-   pauses playback and replaces all backup bytes without resetting CPU/media.
-   Export your existing backup first if you need it. Backup survives Reset,
-   Restart, mode changes and rejected boots within this tab; export before closing
-   or reloading, then import to restore in a later session. No automatic browser
-   persistence or network transfer occurs. This is not a save state or BIOS
-   backup-file service; Star Collector does not use backup RAM. Guest programs
-   can also read a second direct digital pad: I/K/J/L directions, U/O/P for A/B/C,
-   Right Shift for Start. Both pads release with focus loss and pause.
-9. Debug Reset restarts the selected mode. Changing mode or file performs a cold
-   reset; switching modes discards the previous file selection. Run accepts a whole
-   count from 1 to 10000 interleaved machine turns. Each turn attempts a master
-   step and, when enabled, a slave step; exception entry and sleeping turns may
-   retire no instructions. SLEEP keeps controls enabled when an implemented
-   peripheral or the slave can wake the master. CPU/device faults stop the entire
-   machine until reset.
+The default page is an idle **Saturn Disc Player**. It does not select, fetch or
+run a bundled sample. On desktop the player is beside the four-step setup; on
+narrow screens setup comes first.
 
-Only static files, including the original MIT-licensed sample ISO, are fetched.
-Local BIOS/disc bytes are read via `File.arrayBuffer()` and
-copied into this tab's Wasm memory, with no upload, browser storage, analytics,
-CDN or external runtime assets. They are discarded from application state on mode
-change or tab close (this is not a secure memory-erasure guarantee). The fixture
-works with network access disabled after the static assets have loaded; offline
-reload is not supported because there is no service worker.
+1. **Select disc** with the accessible multi-file picker or drag-and-drop area.
+   Choose one supported self-contained CHD v5 CD-ROM (cdlz/cdzl/cdfl/none, at most
+   1,058,400,000 compressed bytes), one cooked ISO (18–450,000 2048-byte sectors,
+   at most 921,600,000 bytes), or one CUE and all referenced BINARY tracks
+   (at most 1,058,400,000 track bytes plus a 1 MiB CUE). A lone raw BIN requires
+   its CUE. SRW1 companions are optional diagnostic input only when explicitly
+   referenced by a CUE. Errors identify invalid/missing input; the old machine
+   stops on replacement. Large images need memory for local input and the
+   retained Wasm medium. See [media formats](media.md) for codec/layout/hunk
+   restrictions, gaps/indices, CD-DA and resource bounds.
+2. **Add BIOS (if needed)** from a local raw 524288-byte file. It is optional
+   and unused in HLE mode. No BIOS is bundled or downloaded; size validation
+   establishes neither authenticity nor region.
+3. **Choose boot mode**: BIOS-less HLE uses the first data track’s Saturn
+   IP / ISO9660 executable. User-provided BIOS uses actual firmware reset
+   vectors and hardware disc access; it never redirects to HLE. BIOS/game
+   support is incomplete and may stop on unimplemented devices or bus behavior.
+   Switching these modes retains loaded selections, cancels pending reads and
+   stops playback. Select a cancelled file again. Mounting a disc or redesigning
+   the UI does not establish retail-game compatibility.
+4. **Start playing** is enabled only after the selected mode’s required disc
+   and, for BIOS mode, firmware have loaded and validated. Nothing auto-starts
+   after a read, view change or closing advanced settings. Audio has a separate
+   user-gesture **Enable audio** button and meaningful disabled/blocked/muted/
+   paused/underflow status. Playback controls beneath the display offer
+   Pause/Resume, Restart and Fullscreen. Restart reuses the retained medium,
+   cold-boots and resumes an existing Play session when advanced settings are
+   closed. Fullscreen failures leave the normal player usable; focus returns
+   to its button on exit.
+
+Focus the display for keyboard input: arrows for directions, Z for A, Enter for
+Saturn Start. A second digital pad uses I/K/J/L, U/O/P for A/B/C and Right Shift
+for Start. Standard Gamepad input is supported. Focus loss releases held input;
+hiding the tab pauses. Touchscreen controls are not included. Standard 320×224
+pixels are presented at 4:3; mode changes update dimensions and the display ratio.
+
+Under the player, **Advanced → Debug** reveals CPU R0–R15 and special registers,
+retired instructions, exceptions, pending delay target, machine state, Step,
+Run (1–10000 whole machine turns), Reset and frame advance. Switching views
+preserves machine/media/errors and pauses input; returning requires Resume.
+Frame advancement requires a ready, paused disc. Sleeping/resetting CPUs retain
+controls when an implemented hardware event can wake them. CPU/device faults
+stop the machine until reset. Invisible registers are not updated during Play.
+**Load HLE bootstrap fixture** explicitly replaces selected media with the
+original debugger fixture. Reset and Run 6 yields `R0=4`, `R1=7`,
+`PC=0x0600000E`; further runs stay in the BRA/NOP loop. It is not firmware.
+
+**Advanced / backup RAM & format details** contains packed 32768-byte backup RAM
+import/export. Import replaces all bytes and pauses; export the old backup first
+if needed. Backup survives Reset, Restart, mode changes and failed boots within
+this tab. Export before closing or reloading; import explicitly in a later tab.
+It is not a save state or BIOS backup-file service.
+
+All selected files stay in this tab’s memory. There are no uploads, browser
+storage, analytics, CDN, automatic BIOS downloads or implicit persistence. Public
+static runtime files alone are fetched by Play. Local media work offline once
+runtime assets have loaded; offline reload is not supported (no service worker).
+This is not a secure memory-erasure guarantee. Original licensed homebrew discs
+remain in `web/` for reproducible fixture coverage and explicit local selection;
+they are not promotional controls or default launches.
 
 ## Automated browser smoke test
 
@@ -209,9 +188,11 @@ reset/mode transitions, offline execution and the absence of requests carrying
 BIOS/disc data. It boots the actual ISO through Wasm, drives two distinct
 keyboard sequences, verifies guest-written position/score/completion/update
 counters and Canvas pixel differences, completes and restarts, rejects malformed
-local discs, checks pending-file/mode races and loads a local ISO offline. It uses
+local discs, checks pending-file/mode and replacement races and loads a local ISO
+offline. It uses
 only original licensed guest content and no Sega firmware. It also checks the
-Play-first state, keyboard view navigation and native settings disclosure,
+disc-first empty state, four-step setup, multi-file CUE drops, keyboard view
+navigation and advanced disclosure,
 CPU/media/diagnostic preservation, pause and held-key release, hidden register
 updates, loading/view races, Play Restart and Debug frame advancement. At
 the hardware boundary it also executes an original backup/port-2 guest as a
@@ -221,7 +202,7 @@ second-pad input release and fresh-tab isolation. It also executes the original
 dual-SH-2 ROM, checking independent CPU registers/stacks, shared guest computation,
 FRT IRQ/capture results, two slave starts/stops, master NMI and a visible sticky
 slave exception-entry fault. At
-1440×900, 768×1024 and 390×844 it asserts native canvas dimensions, rendered 10:7
+1440×900, 768×1024 and 390×844 it asserts native canvas dimensions, rendered 4:3
 ratio, pixelated scaling, no document horizontal overflow and reachable controls
 in Play, Debug and expanded settings (including a selected BIOS).
 
@@ -361,7 +342,8 @@ instrumentation, drain/underflow, mute and suspended-context feedback. Synthetic
 Gamepads exercise two independent ports and focus release. These fixtures are
 diagnostics and do not replace the two required original demonstration discs.
 
-**Play Prism Courier** starts the new original MIT-licensed VDP1+VDP2+SCSP disc.
+Explicitly select `web/prism-courier.iso` locally and press **Start** to run the
+original MIT-licensed VDP1+VDP2+SCSP disc.
 Steer the cyan prism through the red barrier's gap to the green dock; collision
 turns the banner red, delivery turns it green, and Enter/Start restarts. Enable
 audio for the separately executing 68k's computed stereo tone. The source,
@@ -398,7 +380,7 @@ implementation and limitations are in the [conformance matrix](hardware-conforma
 
 Hardware Lab is the original mixed-track diagnostic in
 [homebrew/hardware-lab](../homebrew/hardware-lab/README.md). Select the three
-`web/hardware-lab` CUE/ISO/audio files together in local disc settings. It computes
+`web/hardware-lab` CUE/ISO/audio files together in **Select disc**. It computes
 slave SH-2, SCU DSP and runtime CD/FIFO/DMA/IRQ results, starts the independent
 68k sound guest, uploads/executes its SCSP effects program, mixes CD-DA through
 the effects path, displays the advanced VDP2 scene and

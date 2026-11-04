@@ -1,6 +1,7 @@
 # Local disc input
 
-Select media in **Load disc / BIOS & boot settings**. Files remain in tab memory;
+Use **Select disc** in the visible four-step setup, with the picker or a multi-file
+drop. Files remain in tab memory;
 the Play app never uploads them, invokes a host converter, writes an expanded
 disc, or fetches a codec, firmware or per-title database.
 
@@ -13,8 +14,9 @@ disc, or fetches a codec, firmware or per-title database.
 A CUE and its referenced tracks constitute the medium. A lone raw BIN lacks the
 track layout and needs its normal CUE. Ordinary images need no private manifest,
 extracted `GAME.BIN`, patched/rebuilt disc, title-specific JSON, `.srw`, `.sub`,
-or extra BIOS-like assets. The built-in original MIT Star Collector, Prism
-Courier and Hardware Lab demos remain available.
+or extra BIOS-like assets. The original MIT Star Collector, Prism
+Courier and Hardware Lab images remain buildable test fixtures and may be selected
+explicitly as local files; the player does not fetch or launch them automatically.
 
 **BIOS-less HLE disc** needs no firmware. **User-provided BIOS** needs a locally
 provided raw 524288-byte BIOS and mounts the same media for the firmware to read.
@@ -96,8 +98,10 @@ sufficient browser/Wasm memory for input marshaling. Reset/Restart shares the
 retained medium without re-uploading compressed or expanded bytes.
 
 A replacement selection immediately stops and clears the previous medium.
-Cancellation, pending-read cancellation, mode switching and failed HLE loads
-keep the existing UI reset semantics. The native/Wasm external mount operation
+Switching between HLE-disc and user-BIOS modes preserves completed file
+selections, cancels pending reads and resets playback. Selecting the advanced
+HLE bootstrap fixture clears both image selections. Failed reads/boots never
+auto-resume playback. The native/Wasm external mount operation
 validates before attaching and preserves the previous machine on failure.
 Errors do not silently select HLE or continue an old disc.
 

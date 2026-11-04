@@ -21,6 +21,7 @@ import { bBusReads } from "./b-bus-reads.mjs";
 import { scuFringe } from "./scu-fringe.mjs";
 import { dmacBus } from "./dmac-bus.mjs";
 import { sh2Store } from "./sh2-store.mjs";
+import { playUi } from "./play-ui.mjs";
 import { chd } from "./chd.mjs";
 import { cdStream } from "./cd-stream.mjs";
 import { cdRuntime } from "./cd-runtime.mjs";
@@ -164,6 +165,7 @@ try {
     await runScenarios(selected.groups);
   } else {
   timings.group("ui-bios-and-exceptions");
+  await playUi(browser, address + prefix);
   const value = (id) => page.locator(`#${id}`).textContent();
   const showView = (name) => page.locator(`#view-${name}`).click();
   const settings = page.locator("#settings > summary");
@@ -193,10 +195,11 @@ try {
       assert.equal(layout.overflow, false, `Horizontal overflow at ${width} in ${isPlay ? "Play" : "Debug"}`);
       assert(layout.width >= Math.min(280, width - 80), `Canvas is too small at ${width}`);
       assert(layout.left >= 0 && layout.right <= width);
-      assert(Math.abs(layout.width / layout.height - 320 / 224) < 0.005);
+      assert(Math.abs(layout.width / layout.height - 4 / 3) < 0.005);
       assert.deepEqual(layout.native, [320, 224]);
       assert.equal(layout.pixels, "pixelated");
-      const controls = isPlay ? ["view-debug", "play-homebrew", "play-prism", "pause", "restart", "fullscreen"] : ["view-play", "step", "run", "reset", "frame", "count"];
+      const controls = isPlay ? ["view-debug", "start", "restart", "fullscreen"] : ["view-play", "step", "run", "reset", "frame", "count"];
+      if (isPlay && !(await page.locator("#start").isVisible())) controls.splice(controls.indexOf("start"), 1);
       if (await page.locator("#mode").isVisible()) controls.push("mode");
       for (const id of ["disc", "bios"]) if (await page.locator(`#${id}`).isVisible()) controls.push(id);
       for (const id of controls) {
@@ -218,12 +221,12 @@ try {
           `Overlapping ${a.id}/${b.id} at ${width}`);
       }
       if (isPlay) {
-        // The primary action and display must share the initial viewport.
+        // Disc setup sits beside the display on desktop and precedes it on mobile.
         await page.evaluate(() => window.scrollTo(0, 0));
         const canvas = await page.locator("#screen").boundingBox();
-        const cta = await page.locator("#play-homebrew").boundingBox();
-        assert(canvas.y >= 0 && canvas.y + canvas.height <= height);
-        assert(cta.y >= 0 && cta.y + cta.height <= height);
+        const cta = await page.locator("#disc").boundingBox();
+        if (width > 900) assert(cta.x > canvas.x + canvas.width);
+        else assert(cta.y < canvas.y);
       }
       // Keyboard navigation works at every size, including with local media.
       const beforeSwitch = await machine();
@@ -241,7 +244,13 @@ try {
   assert.equal(await page.locator("#register-panel").isVisible(), false);
   assert.equal(await page.locator("#settings").getAttribute("open"), null);
   assert.equal(await page.locator("#registers tr").count(), 0);
-  assert.equal(await value("play-homebrew"), "Play Star Collector");
+  assert.equal(await page.title(), "Saturn Disc Player");
+  assert.equal(await page.locator("#mode").inputValue(), "disc");
+  assert(await page.locator("#empty-state").isVisible());
+  assert(await page.locator("#start").isDisabled());
+  assert(await page.locator("#pause").isHidden());
+  assert.equal(await value("error"), "");
+  assert.equal(requests.some(request => /\.iso$/.test(request.url)), false);
   await responsive(true);
   const initialMachine = await machine();
   // Native disclosure is keyboard operable and never boots or discards a machine.
@@ -262,6 +271,7 @@ try {
   await settings.click();
   await responsive(false);
 
+  await page.locator("#fixture").click();
   assert.equal(await value("active-mode"), "HLE bootstrap prototype");
   assert.equal(await value("pc"), "0x06000000");
   await page.locator("#step").click();
@@ -2787,34 +2797,33 @@ try {
   await page.locator("#run").click();
   assert.equal(await value("instructions"), "10006");
   assert.equal(await value("r1"), "0x00000007");
-  // Presentation changes during a sample download preserve the load but cancel
-  // automatic playback, even after returning to Play and closing settings.
+  // A delayed local read may finish across view/disclosure changes, but only
+  // the explicit Start action launches playback. No sample fetch path exists.
   await context.setOffline(false);
   await settings.click();
   await showView("play");
-  let finishSample;
-  const sampleRequested = new Promise((resolve) => { finishSample = resolve; });
-  const sampleDeadline = setTimeout(() => finishSample(null), 10000).unref();
-  await page.route("**/star-collector.iso", (route) => finishSample(route));
-  await page.locator("#play-homebrew").click();
-  const sampleRoute = await sampleRequested;
-  clearTimeout(sampleDeadline);
-  assert(sampleRoute, "Sample ISO request did not start");
+  await page.locator("#mode").selectOption("disc");
+  await page.evaluate(() => {
+    const original = File.prototype.arrayBuffer;
+    File.prototype.arrayBuffer = function () {
+      return new Promise(resolve => { window.finishLocalRead = async () => resolve(await original.call(this)); });
+    };
+    window.restoreLocalRead = () => { File.prototype.arrayBuffer = original; };
+  });
+  await page.locator("#disc").setInputFiles({name:"star-collector.iso", mimeType:"application/octet-stream", buffer:await readFile("web/star-collector.iso")});
+  await page.waitForFunction(() => typeof window.finishLocalRead === "function");
   assert.match(await value("player-status"), /Loading image/);
+  assert(await page.locator("#start").isDisabled());
   await settings.click();
   await page.locator("#mode").focus();
   await settings.click();
   await showView("debug");
   await showView("play");
-  await sampleRoute.fulfill({status: 200, contentType: "application/octet-stream", body: await readFile("web/star-collector.iso")});
-  await page.waitForFunction(() => document.getElementById("pause").disabled === false);
-  assert.equal(await value("pause"), "Resume");
-  assert.match(await value("player-status"), /Paused/);
+  await page.evaluate(async () => { await window.finishLocalRead(); window.restoreLocalRead(); });
+  await page.waitForFunction(() => !document.getElementById("start").disabled);
+  assert.match(await value("player-status"), /Disc ready/);
   assert.equal(Number((await machine()).frames), 0);
-  await page.unroute("**/star-collector.iso");
-  // Same actual ISO + Wasm + input bridge + Canvas as the UI. Stop wall-clock
-  // playback and advance deterministic frames, with no game-specific host writes.
-  await page.locator("#play-homebrew").click();
+  await page.locator("#start").click();
   await page.waitForFunction(() => window.emulatedFrames() > 0);
   assert.equal(await value("active-mode"), "BIOS-less HLE disc");
   await page.locator("#pause").click();
@@ -2955,7 +2964,7 @@ try {
     assert.equal(await page.evaluate(() => document.fullscreenElement.id), "player-shell");
     await page.waitForFunction(() => document.activeElement === document.getElementById("screen"));
     const rect = await page.locator("#screen").boundingBox();
-    assert(Math.abs(rect.width / rect.height - 10 / 7) < 0.005);
+    assert(Math.abs(rect.width / rect.height - 4 / 3) < 0.005);
     await page.locator("#fullscreen").click();
     await page.waitForFunction(() => !document.fullscreenElement);
     await page.waitForFunction(() => document.activeElement === document.getElementById("fullscreen") && document.getElementById("fullscreen").textContent === "Fullscreen");
@@ -3034,7 +3043,7 @@ try {
   await page.waitForFunction(() => /missing Saturn hardware identifier/.test(document.getElementById("error").textContent));
   await page.locator("#disc").setInputFiles({name:"authorized-homebrew.iso", mimeType:"application/octet-stream", buffer:disc});
   await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
-  assert.equal(await value("pause"), "Resume");
+  assert.equal(await value("start"), "Start");
   await settings.click();
   const localMachine = await machine();
   await showView("play");
@@ -3180,7 +3189,7 @@ try {
   assert.equal(await samplePad(), 0x3F);
   await page.keyboard.up("i");
   await settings.click();
-  await page.locator("#pause").click();
+  await page.locator("#start").click();
   await page.locator("#screen").focus();
   await page.keyboard.down("i");
   await page.locator("#pause").click();
@@ -3194,7 +3203,7 @@ try {
   assert(await anotherTab.evaluate(async () => (await import("./app.js")).emulator.export_backup_ram().every((byte) => byte === 0)));
   await anotherTab.close();
   timings.group("prism-courier");
-  // Original playable VDP1+VDP2+SCSP disc. UI loads the packaged image; only
+  // Original playable VDP1+VDP2+SCSP disc. UI selects the fixture as a local file; only
   // controller input enters the guest. Graphics, collision and state are SH-2
   // computations and real command/texture writes; the 68k computes PCM.
   const courier = await context.newPage();
@@ -3206,7 +3215,9 @@ try {
     const { emulator } = await import("./app.js");
     window.courierState = () => [0,4,8,12,16].map((offset) => emulator.read_long(0x06018000+offset));
   });
-  await courier.locator("#play-prism").click();
+  await courier.locator("#disc").setInputFiles({name:"prism-courier.iso", mimeType:"application/octet-stream", buffer:await readFile("web/prism-courier.iso")});
+  await courier.waitForFunction(() => !document.getElementById("start").disabled);
+  await courier.locator("#start").click();
   await courier.waitForFunction(() => window.courierState()[4] > 2, null, { timeout: 30000 });
   await courier.locator("#pause").click();
   const courierState = () => courier.evaluate(() => window.courierState());

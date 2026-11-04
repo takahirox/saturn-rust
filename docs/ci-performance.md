@@ -736,3 +736,57 @@ HLE DMA/IRQ guest and local picker/reset/error behavior. Existing 73 groups and
 all prior fixture checks remain registered, including optional SRW1 and all
 three built-in demos. The [validation record](validation-issue-95.md) records
 actual stage/group timings, Wasm size, admission CPU and resource limits.
+
+## Issue #97 disc-first Play validation
+
+The player now opens without selected media or a running fixture. A two-column
+layout places the real display beside four ordered setup steps; narrow layouts
+place setup first. There is one Start action after validation, and the developer
+bootstrap remains an explicit advanced action. Switching HLE-disc/user-BIOS
+modes retains completed selections and cancels pending reads. Emulation support,
+original licensed media, builders, native tests and all 74 browser groups remain.
+No runtime asset, library, CDN or backend is added; the existing `web/` allowlist
+and CSP are retained. Hardware/retail-BIOS compatibility remains incomplete;
+Related to #17.
+
+The additional UI checks run inside the existing `ui-bios-and-exceptions` group,
+using a fresh context and original local media/firmware. They detect unintended
+sample requests/auto-run, premature Start, lost disc/BIOS selections, stale
+replacement reads, missing CUE tracks, lone BIN admission, drop/picker mismatch,
+visibility auto-resume and overflow/control clipping. They cover ISO, CHD and
+multi-file CUE drops without repeating the hardware guest corpus for each format.
+The expanded UI group took 3.068 s in the complete run. Existing original game
+scenarios now select their fixtures as local files and explicitly press Start;
+guest instructions, input/Canvas/audio oracles and execution budgets are retained.
+
+Executed on macOS arm64 with rustup stable Rust 1.99.0, Node 26.12.1,
+Playwright 1.58.2 and pinned Chromium 145.0.7632.6:
+
+- `cargo fmt --check`, `cargo build --locked` and `cargo test --locked` pass:
+  1,160 native tests, no failures or ignored tests.
+- `cargo clippy --locked --all-targets -- -D warnings` and
+  `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings` pass.
+- `sh scripts/check-fixtures.sh`: all 103 commands pass, including all three
+  original demonstration/diagnostic discs and CHD reproduction.
+- `sh scripts/build-web.sh` passes with wasm-bindgen 0.2.129.
+- `node --test scripts/ci-runner.test.mjs`: 13 passed, no failures/skips
+  (14.306 s), including deliberate failure propagation and publication gates.
+- Complete `npm run test:browser`: all 74 groups pass, 32 shared in 387.358 s
+  and 42 scenarios in 340.598 s; aggregate wall time 387.588 s. The normal
+  two-worker invocation verifies complete coverage and exact tested-site identity.
+- Responsive assertions cover 1440, 1024, 768, 390 and 320 px widths; existing
+  Play/Debug/backup checks retain 1440×900, 768×1024 and 390×844 coverage.
+  Local desktop/mobile screenshots were inspected. Git whitespace checks pass.
+
+Initial browser attempts exposed a missing pinned browser and an obsolete test
+sequence that clicked Resume before the new Start action. The sequence now uses
+Start. As in the Issue #95 environment, Node 26's Playwright ZIP extraction
+stalled; the downloaded official pinned archive passed a complete ZIP CRC check
+and was extracted locally. The final normal browser invocation uses that pinned headless shell with the
+updated UI scenarios and all existing assertion groups.
+
+Hosted GitHub Actions was not invoked because this node must not push or open a
+PR; its native/Wasm/browser/runner commands were executed locally. These local
+concurrent timings are not hosted-CI performance claims. No live Pages, personal
+BIOS, commercial game, hardware or human approval gate is required. Required
+post-merge verification: none.

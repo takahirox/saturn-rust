@@ -4,88 +4,99 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
-  <title>saturn-rust · Star Collector</title>
+  <title>Saturn Disc Player</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header class="site-header">
-    <a class="brand" href="https://github.com/takahirox/saturn-rust"><span class="brand-mark" aria-hidden="true">s</span>saturn-rust</a>
-    <nav aria-label="Emulator view">
-      <button id="view-play" type="button" aria-pressed="true" aria-controls="play-intro">Play</button>
-      <button id="view-debug" type="button" aria-pressed="false" aria-controls="debug-view">Debug</button>
-    </nav>
-    <a class="source-link" href="https://github.com/takahirox/saturn-rust">Source <span aria-hidden="true">↗</span></a>
+    <a class="brand" href="./">Saturn Disc Player</a>
+    <a class="source-link" href="https://github.com/takahirox/saturn-rust">saturn-rust · Source ↗</a>
   </header>
   <main id="main" class="view-play">
-    <section id="play-intro" class="intro" aria-labelledby="game-title">
-      <p class="eyebrow">Original Saturn homebrew</p>
-      <h1 id="game-title">Star Collector<span aria-hidden="true"> ✦</span></h1>
-      <p>Five stars. One little cyan explorer. Collect them all.</p>
-      <p class="disclosure">Guest SH-2 code · BIOS-less HLE · Silent prototype</p>
-    </section>
-    <div id="debug-intro" class="intro studio-intro" hidden>
-      <p class="eyebrow">Emulator studio</p>
-      <h1>Debug</h1>
-      <p>Inspect the machine, one instruction or frame at a time.</p>
-    </div>
     <div class="workspace">
-      <section class="player-column" aria-label="Console player">
+      <aside id="setup" class="setup panel" aria-label="Disc setup">
+        <fieldset id="controls" disabled>
+          <legend>Load your disc</legend>
+          <ol class="setup-steps">
+            <li id="disc-controls">
+              <h1>Select disc</h1>
+              <div id="disc-drop" class="drop-zone">
+                <label for="disc">Choose files or drop them here</label>
+                <input id="disc" type="file" accept=".chd,.iso,.cue,.bin,.srw" multiple aria-describedby="disc-help disc-selection">
+                <p id="disc-help">CHD v5 CD-ROM, cooked ISO, or CUE + all referenced BINARY tracks. Select the CUE and its tracks together.</p>
+              </div>
+              <p id="disc-selection" role="status">No disc selected.</p>
+              <p class="privacy">Files stay local in this tab. No uploads, automatic storage or analytics.</p>
+            </li>
+            <li id="bios-controls">
+              <h2>Add BIOS <small>(if needed)</small></h2>
+              <label for="bios">Local raw BIOS · 512 KiB (524288 bytes)</label>
+              <input id="bios" type="file" aria-describedby="bios-help bios-selection">
+              <p id="bios-selection" role="status">No BIOS selected.</p>
+              <p id="bios-help">Optional for HLE; required for user-BIOS mode. No firmware is bundled or downloaded.</p>
+            </li>
+            <li>
+              <h2>Choose boot mode</h2>
+              <label for="mode">Boot selection</label>
+              <select id="mode" aria-describedby="boot-warning">
+                <option value="disc" selected>BIOS-less HLE disc</option>
+                <option value="bios">User-provided BIOS</option>
+                <option value="hle" hidden>HLE bootstrap prototype (debug only)</option>
+              </select>
+              <p id="boot-warning">HLE boots without firmware. User-BIOS mode uses your firmware and never falls back to HLE. BIOS and retail-game support remain incomplete.</p>
+              <p>Switching modes keeps loaded files and cancels pending reads. Replacement stops playback.</p>
+            </li>
+            <li>
+              <h2>Start playing</h2>
+              <button id="start" class="primary" type="button" disabled>Start</button>
+              <p id="launch-status" role="status">Select a valid disc to start.</p>
+            </li>
+          </ol>
+        </fieldset>
+      </aside>
+      <section class="player-column" aria-label="Saturn player">
         <div id="player-shell" class="player-shell">
-          <div class="player-topline"><span class="eyebrow">saturn-rust / display</span><span class="display-spec">320 × 224</span></div>
           <div class="display-surround">
-            <canvas id="screen" width="320" height="224" tabindex="0" aria-label="Emulated Saturn display" aria-describedby="input-hint">Your browser needs Canvas support to display the game.</canvas>
+            <canvas id="screen" width="320" height="224" tabindex="0" aria-label="Emulated Saturn display" aria-describedby="input-hint">Your browser needs Canvas support.</canvas>
+            <div id="empty-state" class="empty-state"><span class="disc-motif" aria-hidden="true"></span><p>Load a disc to begin</p><small>Your Saturn disc, played locally.</small></div>
           </div>
-          <div class="player-toolbar">
-            <button id="play-homebrew" class="primary" type="button" disabled>Play Star Collector</button>
-            <button id="play-prism" type="button" disabled>Play Prism Courier</button>
-            <button id="audio-enable" type="button">Enable audio</button>
+          <div class="player-toolbar" aria-label="Playback controls">
             <button id="pause" type="button" disabled>Resume</button>
             <button id="restart" type="button" disabled>Restart</button>
+            <button id="audio-enable" type="button">Enable audio</button>
             <button id="fullscreen" type="button">Fullscreen</button>
           </div>
-          <p id="input-hint" class="input-hint">Click the display to focus · <kbd>↑ ↓ ← →</kbd> move · <kbd>Enter</kbd> / Start restarts</p>
-          <p id="fullscreen-status" class="fullscreen-status" role="status"></p>
+          <p id="input-hint" class="input-hint">Focus the display to use the keyboard · Arrows: directions · Z: A · Enter: Start<br>Standard gamepads supported. Touch controls are not included.</p>
+          <p id="fullscreen-status" role="status"></p>
           <div class="player-feedback">
             <p id="player-status" role="status">Loading emulator…</p>
             <p id="error" role="alert"></p>
             <p id="audio-status" role="status">Audio: disabled</p>
-            <p class="recovery" id="recovery" hidden>Try Restart or Debug → Reset, choose another image in boot settings, or Play Star Collector.</p>
+            <p id="recovery" hidden>Check your selection or choose another image. Advanced Debug shows machine details.</p>
           </div>
         </div>
+        <div class="advanced-nav" role="group" aria-label="Advanced debugger">
+          <span>Advanced</span>
+          <button id="view-play" type="button" aria-pressed="true" aria-controls="debug-view">Play</button>
+          <button id="view-debug" type="button" aria-pressed="false" aria-controls="debug-view register-panel">Debug</button>
+        </div>
         <details id="settings" class="panel settings">
-          <summary>Load disc / BIOS &amp; boot settings</summary>
+          <summary>Advanced / backup RAM &amp; format details</summary>
           <div class="settings-body">
-            <fieldset id="controls" disabled>
-              <legend>Boot image</legend>
-              <label for="mode">Boot selection</label>
-              <select id="mode" aria-describedby="boot-warning">
-                <option value="disc">BIOS-less HLE disc</option>
-                <option value="hle" selected>HLE bootstrap prototype (no BIOS)</option>
-                <option value="bios">User-provided BIOS</option>
-              </select>
-              <div id="disc-controls" hidden>
-                <label for="disc">Local homebrew CHD, ISO or CUE with its track files</label>
-                <input id="disc" type="file" accept=".chd,.iso,.cue,.bin,.srw" multiple>
-                <p>Select one self-contained CHD v5 CD-ROM (cdlz/cdzl/cdfl or uncompressed, up to 1,058,400,000 bytes), one cooked ISO (up to 921,600,000 bytes), or a CUE and all its referenced BINARY data/audio files together (up to 1,058,400,000 data/audio bytes). HLE loads the first data track’s Saturn IP / ISO9660 executable. BIOS mode mounts media for the selected firmware to read through hardware; Restart retains both selections. No emulator-specific sidecar is needed for ordinary discs. SRW1 is optional diagnostic input only when explicitly referenced by a CUE. Mounting an image does not establish retail-game compatibility.</p>
-              </div>
-              <div id="bios-controls" hidden>
-                <label for="bios">Local raw BIOS (512 KiB / 524288 bytes)</label>
-                <input id="bios" type="file">
-                <p>Use a legally obtained BIOS. Correct size validates layout, not authenticity or region. Its real reset vectors are used; native Sega BIOS boot/game support is incomplete and often stops on unimplemented device or bus behavior. BIOS mode never redirects to HLE.</p>
-              </div>
-              <p id="boot-warning">Changing mode clears both images. Changing a file cold-resets the machine and replaces that selection; BIOS and disc can be selected together. Opening or closing settings does not reset; opening pauses playback. Use Resume to continue.</p>
-              <p class="privacy">Local images and backup data stay in this tab's memory unless you export backup RAM. No uploads, browser storage or analytics. No Sega BIOS is bundled.</p>
-            </fieldset>
+            <p id="audio-diagnostics">Audio has not been enabled.</p>
+            <p>CHD: self-contained v5 CD-ROM, cdlz/cdzl/cdfl or uncompressed, up to 1,058,400,000 bytes. ISO: cooked 2048-byte sectors, 18–450,000 sectors (921,600,000 bytes). CUE: all referenced BINARY tracks, up to 1,058,400,000 track bytes plus a 1 MiB CUE. A lone raw BIN needs its CUE. SRW1 companions are optional diagnostics only when explicitly referenced by a CUE. Large images need sufficient browser memory.</p>
+            <p>HLE loads the first data track’s Saturn IP / ISO9660 executable. BIOS mode mounts the medium for firmware to read through hardware. No extraction or private sidecar is needed for ordinary discs. A BIOS must be an authorized raw 512 KiB file; size does not verify authenticity or region. The advanced fixture clears both image selections; Restart retains selected media and backup RAM.</p>
             <fieldset id="backup-controls" disabled>
               <legend>Backup RAM</legend>
-              <p>Backup RAM survives Reset, Restart and boot changes in this tab. Export it to keep a copy before closing or reloading. Star Collector does not use backup RAM.</p>
+              <p>Backup RAM survives Reset, Restart and boot changes in this tab. Export it to keep a copy before closing or reloading.</p>
               <label for="backup-import">Replace backup RAM from a local packed 32 KiB file</label>
               <input id="backup-import" type="file" aria-describedby="backup-format">
               <p id="backup-format">Import replaces all backup bytes and pauses playback. Only a 32768-byte raw file is accepted; this is not a save state or an ISO. Export your current backup first if you need to keep it.</p>
               <button id="backup-export" type="button">Export backup RAM</button>
               <p id="backup-status" role="status"></p>
-              <p>Second digital pad: <kbd>I K J L</kbd> directions, <kbd>U O P</kbd> A/B/C, <kbd>Right Shift</kbd> Start. The bundled game uses the first pad only.</p>
+              <p>Second digital pad: <kbd>I K J L</kbd> directions, <kbd>U O P</kbd> A/B/C, <kbd>Right Shift</kbd> Start.</p>
             </fieldset>
+
           </div>
         </details>
       </section>
@@ -115,7 +126,7 @@
         </fieldset>
         <aside class="fixture-hint">
           <h3>Bootstrap reference</h3>
-          <p>In boot settings, choose <strong>HLE bootstrap prototype</strong>, then Reset and Run 6.</p>
+          <p><button id="fixture" type="button">Load HLE bootstrap fixture</button> Then Run 6. This replaces the current media selection.</p>
           <p><code>R0=4 · R1=7 · PC=0x0600000E</code></p>
           <p>Later runs stay in a BRA/NOP loop. Run is bounded to 10000 CPU steps; exception entry and sleeping steps may retire no instructions. This original fixture is not Saturn BIOS service emulation.</p>
         </aside>
@@ -127,17 +138,18 @@
           <table><caption>General purpose · R0–R15</caption><tbody id="registers"></tbody></table>
         </div>
       </section>
+
     </div>
     <details class="about">
-      <summary>About this prototype &amp; original game</summary>
-      <p>Move the cyan square to touch five yellow stars. Gold blocks show your score; a green banner means success. Graphics and game rules execute as guest SH-2 code. Star Collector has no soundtrack. Guest-controlled direct PCM audio is supported; general homebrew and commercial-game compatibility are not supported. Keyboard required; touchscreen controls are not included.</p>
-      <p>The sample and its original graphics are MIT licensed. <a href="star-collector-LICENSE.txt">License</a> · <a href="star-collector.iso" download>Download sample ISO</a> · <a href="https://github.com/takahirox/saturn-rust/tree/main/homebrew/star-collector">Buildable guest source</a></p>
-      <p>Prism Courier: steer the cyan prism through the red barrier's gap to the green dock. Arrows move; Enter restarts. Enable audio for its guest-generated stereo tone. <a href="prism-courier-LICENSE.txt">MIT license</a> · <a href="prism-courier.iso" download>Download ISO</a> · <a href="https://github.com/takahirox/saturn-rust/tree/main/homebrew/prism-courier">Buildable guest source</a></p>
-      <p>Switching Play / Debug pauses playback and releases held buttons. Returning to Play does not resume automatically. Moving focus away from the display also releases input.</p>
+      <summary>Controls, privacy &amp; compatibility</summary>
+      <p>Focus the display for keyboard input. Arrows control directions, Z is A and Enter is Saturn Start. Second pad: I/K/J/L directions, U/O/P for A/B/C, Right Shift for Start. Losing focus releases held input; hiding the tab pauses. Returning from Debug or closing advanced settings never resumes automatically.</p>
+      <p>Enable audio with a click; status reports blocked, muted, paused and underflow states. Fullscreen uses your browser’s API. Restart cold-boots the selected mode; Debug offers CPU Step, bounded Run, Reset and frame advance.</p>
+      <p>This is an independent emulator under development. Loading media does not guarantee that a game or retail BIOS will run. No commercial screenshots or simulated game output are shown.</p>
+      <p>Disc, BIOS and backup bytes stay in memory in this tab. No uploads, browser persistence, analytics or CDN. Export backup RAM under Advanced before closing or reloading. This is not a save state.</p>
     </details>
-    <noscript><p class="panel">JavaScript and WebAssembly are required to run the emulator. Enable JavaScript, then reload this page.</p></noscript>
+    <noscript><p class="panel">JavaScript and WebAssembly are required. Enable JavaScript, then reload.</p></noscript>
   </main>
-  <footer>saturn-rust <span aria-hidden="true">/</span> An independent emulation experiment</footer>
+  <footer>An independent emulation experiment · Use media you are authorized to use.</footer>
   <script type="module" src="app.js"></script>
 </body>
 </html>
