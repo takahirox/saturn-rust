@@ -186,7 +186,8 @@ remaining reference clocks, INTBACK waiting/phase flags, seven IREG values,
 SR, OREG31, and main-bus clock. The remaining command deadline is in **reference
 clocks**; do not add it to the main-bus clock across PLL changes. Waiting for
 continue/VBlank has no numeric pending deadline and is distinguished from idle.
-Already decoded instruction words are retained for synchronous operand errors;
+Already decoded instruction words are retained for synchronous operand errors
+and TRAPA/illegal-instruction exception-entry faults;
 late buffered writes have `instruction: None`. No firmware is reread to fill that
 field, no ROM bytes or personal filename are dumped, and nothing is automatically
 logged, uploaded or saved. Reset clears the fault. Observation does not consume
@@ -1292,3 +1293,71 @@ that directory. The setup failure and deliberate inherited-code negative-control
 failure are excluded from passing results. No test assertion or timeout was
 relaxed. No human result, personal firmware, live Pages inspection, push, merge
 or hosted-CI success is claimed.
+
+## Review follow-up: decoded synchronous exception instruction
+
+The original `smpc-exception-stack` and `smpc-exception-vector` reset-vector
+guests execute `TRAPA #32` (`C320`). Both reject an SMPC longword transaction
+during exception entry. Previously, instruction enrichment covered
+`CpuError::Bus` only, leaving the available trap opcode absent from
+`CpuError::ExceptionEntry`. The decoded-instruction path now enriches both
+error variants, including synchronous illegal/slot-illegal entry, using only
+the opcode already fetched. It adds no guest read or clock advancement.
+Asynchronous entry and late buffered-store faults retain their existing context.
+
+The existing native and production-Wasm `hardwareBoundaries` exception tests now
+require `instruction: Some(0xC320)` (decimal 49952 in the Wasm diagnostic). Both
+guests run with chunks **1/3/127/10000**, Debug observation on/off, while retaining
+their existing assertions for unchanged IREGs, untouched sentinel, stack results,
+zero completed exceptions, literal clock/instruction progress and sticky faults.
+The negative-control command, before the runtime correction, was:
+
+```sh
+python3 scripts/ci-time.py issue103-exception-negative cargo test --locked \
+  --test smpc_transactions \
+  unaligned_exception_stack_and_vector_guests_stop_at_the_smpc_longword_boundary
+```
+
+It fails as intended with `None` versus `Some(49952)`: **1 failed, exit 101,
+7.990 s** including compilation. After the correction, the focused command
+`cargo test --locked --test smpc_transactions --test smpc_read_guests
+--test dual_sh2` passes **17/17**, **14.704 s** including compilation.
+This fixes the diagnostic finding only; #103 remains open and #104 remains draft
+with `Related to #103` in Related Issues under the publication rule above.
+
+Validation uses macOS arm64, stable Rust **1.99.0**, Node **26.12.1**,
+wasm-bindgen **0.2.129** and Playwright **1.58.2**. Wall times use
+`python3 scripts/ci-time.py <label> <command>`; concurrent checks are correctness
+evidence, not performance baselines.
+
+- `cargo test --locked`: **1,189 pass**, zero failures/ignored, **507.033 s**.
+- `cargo build --locked`: pass, **3.883 s**.
+- `cargo clippy --locked --all-targets -- -D warnings`: pass, **4.627 s**.
+- `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings`:
+  pass, **5.215 s**.
+- `sh scripts/check-fixtures.sh`: all **104 registered commands pass**,
+  **4.489 s**.
+- `sh scripts/build-web.sh`: production Wasm and matching bindings pass,
+  **6.758 s**.
+- `npm ci --ignore-scripts`: pass, **0.806 s**.
+- `node --test scripts/ci-runner.test.mjs`: **13/13 pass**, zero failures/skips,
+  **14.396 s** wrapper / **14.307 s** Node time.
+- `npm run test:browser`: **74/74 required groups pass**, **503.932 s** wrapper /
+  **503.715 s** suite. Shared passes **31 groups / 362.474 s**, including
+  `hardwareBoundaries` (**102.372 s**); scenarios passes **43 / 503.430 s**.
+  The aggregator verifies complete coverage, revision and production artifact
+  digest. Both workers finish within the unchanged 1,200-second limit.
+- `cargo fmt --check`, `node --check scripts/hardware-boundaries.mjs` and
+  `git diff --check`: pass.
+
+Browser checks use `PLAYWRIGHT_BROWSERS_PATH="$PWD/target/issue103-browser"`.
+The initial runner attempt failed **5/13** tests because the pinned executable
+was missing. The standard installer stalled after reporting 100% download
+progress and was stopped. The pinned Chromium archive and matching headless-shell
+archive (downloaded directly from the installer's official URL with `curl -fL`) both
+pass `unzip -tq` and were extracted locally with their executable modes.
+Both executables report **145.0.7632.6**; the existing matching FFmpeg cache was
+reused. The successful runner uses the headless shell. The complete browser suite
+uses `BROWSER_CHANNEL=chromium`, selecting the full pinned Chromium executable.
+The setup failure and deliberate regression failure are excluded from passing
+results; no test assertion or timeout was relaxed.

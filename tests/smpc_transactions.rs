@@ -498,6 +498,7 @@ fn unaligned_exception_stack_and_vector_guests_stop_at_the_smpc_longword_boundar
                 else {
                     panic!("{name}: expected bounded exception SMPC fault, got {error:?}");
                 };
+                assert_eq!(fault.instruction, Some(0xc320));
                 assert_eq!(
                     (fault.address, fault.width, fault.write, fault.reason),
                     (address, 4, write, Rejection::ByteOnly)

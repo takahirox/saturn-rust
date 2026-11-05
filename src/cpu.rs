@@ -44,6 +44,23 @@ impl fmt::Display for CpuError {
 }
 impl std::error::Error for CpuError {}
 
+impl CpuError {
+    fn with_instruction(mut self, opcode: u16) -> Self {
+        if let Self::Bus {
+            source: BusError::Smpc(fault),
+            ..
+        }
+        | Self::ExceptionEntry {
+            source: BusError::Smpc(fault),
+            ..
+        } = &mut self
+        {
+            fault.instruction = Some(opcode);
+        }
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CpuStatus {
     Reset,
@@ -428,18 +445,11 @@ impl Cpu {
         }
         let opcode = self.fetch.select(bus, pc).map_err(access)?;
         // Retain only the already decoded instruction on a rejected SMPC
-        // operand. Never re-read firmware or devices for diagnostics. Buffered
-        // writes may fault after retirement, when this opcode is unavailable.
-        let access = |source| CpuError::Bus {
-            pc,
-            source: match source {
-                BusError::Smpc(mut fault) => {
-                    fault.instruction = Some(opcode);
-                    BusError::Smpc(fault)
-                }
-                other => other,
-            },
-        };
+        // operand or synchronous exception entry. Never re-read firmware or
+        // devices for diagnostics. Buffered writes may fault after retirement,
+        // when this opcode is unavailable.
+        let instruction = |error: CpuError| error.with_instruction(opcode);
+        let access = |source| instruction(CpuError::Bus { pc, source });
         // H §6.3.2: a before-execution break requires a successfully fetched
         // instruction. A fetch failure or speculative fill cannot cause it.
         if bus.instruction_break(pc, false)
@@ -455,7 +465,7 @@ impl Cpu {
         let rewrites_pc = unconditional_branch
             || matches!(opcode & 0xFF00, 0x8900 | 0x8B00 | 0x8D00 | 0x8F00 | 0xC300);
         if rewrites_pc && self.state.delay_target.is_some() {
-            return self.illegal(bus);
+            return self.illegal(bus).map_err(instruction);
         }
         let clock = bus.sh2_clock().unwrap_or(self.multiplier.clock);
         let ex = self.load_pipeline.issue_clock(clock);
@@ -495,7 +505,8 @@ impl Cpu {
         if opcode & 0xFF00 == 0xC300 {
             // Rev.5 fig7.93 fetches/discards both successors. Complete its
             // arbiter-backed IF above before exception entry clears the stream.
-            self.enter_exception(bus, opcode as u8, pc.wrapping_add(2))?;
+            self.enter_exception(bus, opcode as u8, pc.wrapping_add(2))
+                .map_err(instruction)?;
             self.execution_clock = fetch_start.map(|_| ex + stretch);
             self.state.instructions += 1;
             return Ok(());
@@ -1102,7 +1113,7 @@ impl Cpu {
                 let displacement = ((opcode << 4) as i16 as i32) >> 4;
                 next_branch = Some(pc.wrapping_add(4).wrapping_add((displacement * 2) as u32));
             }
-            _ => return self.illegal(bus.inner),
+            _ => return self.illegal(bus.inner).map_err(instruction),
         }
         if let Some(mov) = mov_access {
             mov.finish(&mut self.load_pipeline, bus.inner)

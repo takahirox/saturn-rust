@@ -138,6 +138,7 @@ export async function hardwareBoundaries(page) {
         assert.match(result.message, /Exception vector 32.*4-byte (read|write).*ByteOnly/);
         assert.match(result.message, name === "stack" ? /write at 0x20100005.*value=0x000000F0/i : /read at 0x20100061/);
         assert.match(result.details, /Master SH-2 PC=0x.*width: 4.*ByteOnly/);
+        assert.match(result.details, /instruction: Some\(49952\)/); // TRAPA #32 (C320)
         assert.match(result.details, /input: \[0, 0, 0, 0, 0, 0, 0\]/);
         assert.equal(result.repeated, result.message);
         assert.equal(result.stationary, true);
