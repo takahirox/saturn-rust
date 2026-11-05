@@ -886,3 +886,84 @@ No Rust runtime, fixture, hardware test or production web source changed; the
 full native, fixture and Clippy suites were not repeated for this scheduling-only
 follow-up. Their previous results above are historical evidence. No new hosted
 run, personal firmware, human result or live Pages inspection is claimed.
+
+
+## Review follow-up: DMA and cache-refill read context
+
+Related to #103. The review identified two calls to `external_read_group` that
+bypassed complete-unit width validation. DMA longwords were split by the BSC
+before checking the SMPC byte-only restriction, reporting a two-byte operand.
+With CCR.CE enabled, a permitted byte read generated a cache-refill longword;
+its fault instead described a decomposed two-byte transfer at the refill
+address, losing the issuing operand's address and width.
+
+`external_read_group` now validates the complete read unit before scheduling or
+BSC decomposition. DMA faults retain their four-byte operand. The cache callback
+retains the issuing operand in `AccessFault.address/width` and separately records
+the generated longword in `AccessFault.refill`. Both the formatted host fault
+and opt-in Debug snapshot distinguish these contexts without extra bus reads.
+Unsupported refill units still fail explicitly; permitted byte accesses through
+cache-through, disabled data refill or disabled cache retain their behavior.
+This follows the existing ST-169 §1.2/fig1.3 byte-width boundary and SH7604
+§8.4.1/fig8.4 longword-refill order; it adds no electrical/open-bus claim.
+
+The focused [public-API tests](../tests/smpc_read_context.rs) exercise both
+processors, physical/mirrored/cache-through aliases, all DMA first/last flag
+combinations and successful RAM DMA. Cached byte reads cover every byte of an
+OREG line plus SR/SF and disconnected lanes, the first refill address including
+line wrap, explicit four-byte refill context, unchanged command state/SF,
+formatted operands and retries without line population. The byte controls
+independently compare cache-through, refill-disabled and cache-disabled reads
+with the direct bus result.
+
+Before changing runtime code, the two tests using only inherited diagnostic
+fields both fail on the inherited checkpoint: DMA reports width **2**, and
+the cached read at **00100020** reports **00100024 / width 2** instead of the
+issuing byte. `cargo test --locked --test smpc_read_context` exits **101** in
+**7.440 s** including compilation. After correction and adding assertions for
+the separate refill field, both tests pass in **2.429 s** including compilation.
+The negative control changed no emulator behavior or fixture expectations.
+
+The private one-byte COMREG failure remains unclassified, and the other limits
+in [Finding and scope](#finding-and-scope) remain. Keep #103 open, PR #104 draft
+and its Related Issues section `Related to #103`. No human result, proprietary
+firmware, hosted CI, live Pages verification, push or merge is claimed.
+
+### Executed read-context validation
+
+Local macOS arm64, rustup stable Rust **1.99.0**, Node **26.12.1**,
+wasm-bindgen **0.2.129**, Playwright **1.58.2** and pinned Chromium
+**145.0.7632.6**. The existing `scripts/ci-time.py` wrapper records wall time.
+Rust/web commands select the installed stable toolchain and matching bindgen CLI
+via PATH. Browser/runner commands set
+`PLAYWRIGHT_BROWSERS_PATH="$PWD/target/issue103-browser"`. Native and browser
+execution overlap; these are local results, not hosted-CI measurements.
+
+- `cargo fmt --check`, changed documentation links/anchor and
+  `git diff --check`: pass.
+- `cargo build --locked`: pass, **4.020 s**.
+- `cargo test --locked`: **1,185 pass**, zero failures/ignored across
+  **106 harnesses**, **510.919 s** including compilation. This includes both
+  new read-context regressions and the existing CPU/cache/DMA, SMPC guest,
+  exception, issuer, command timing, IRQ, reset and media coverage.
+- `cargo clippy --locked --all-targets -- -D warnings` and
+  `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings`:
+  pass, **4.576 s / 5.294 s**.
+- `sh scripts/check-fixtures.sh`: all **104 registered commands pass**,
+  **4.082 s**. No fixture bytes or shared progress expectations change.
+- `sh scripts/build-web.sh`: production Wasm/bindings build passes,
+  **6.600 s**; production assets stay unchanged during browser validation.
+- `node --test scripts/ci-runner.test.mjs`: **13/13 pass**, zero failures/skipped,
+  **13.036 s** wrapper / **12.950 s** Node time.
+- `npm run test:browser`: **74/74 groups pass**, **507.789 s** wrapper /
+  **507.567 s** suite time. Shared passes **33** groups in **507.312 s**;
+  scenarios passes **41** in **350.246 s**. The existing `hardwareBoundaries`
+  group passes in **99.980 s**. The aggregator verifies complete coverage,
+  revision and the exact tested production artifact digest.
+
+The ordinary browser installer stalled during extraction after completing its
+download. It was stopped; system unzip verified every ZIP CRC and extracted the
+same pinned official archive with original executable modes into the ignored
+private test directory. The executable reports **145.0.7632.6**. This setup
+interruption and the deliberate inherited-code negative control are excluded
+from passing results. No runtime or test policy was relaxed.

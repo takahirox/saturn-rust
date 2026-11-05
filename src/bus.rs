@@ -1493,6 +1493,10 @@ impl CpuBus<'_> {
         last: bool,
         locked: bool,
     ) -> Result<[u8; N], BusError> {
+        // Validate the complete DMA/refill unit before the BSC splits it
+        // into narrow transfers. A refill's issuing operand is retained by
+        // the cache callback separately from this generated longword.
+        self.bus.check_smpc_width(address, N, None)?;
         let chip = &self.bus.onchip[self.processor as usize];
         if self.scheduled && self.cached && Self::b_bus_memory(address) {
             // `cached` selects the CPU adapter (even with CCR.CE=0),
@@ -1707,6 +1711,18 @@ impl CpuBus<'_> {
             if let Some(bytes) = cache.read(address, instruction, |beat| {
                 index += 1;
                 self.external_read_group::<4>(beat, index == 1, index == 4, false)
+                    .map_err(|error| match error {
+                        BusError::Smpc(mut fault) => {
+                            fault.refill = Some(crate::smpc::diagnostics::ReadUnit {
+                                address: beat,
+                                width: 4,
+                            });
+                            fault.address = address;
+                            fault.width = N;
+                            BusError::Smpc(fault)
+                        }
+                        other => other,
+                    })
             })? {
                 return Ok(bytes);
             }

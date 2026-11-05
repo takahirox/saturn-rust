@@ -423,6 +423,10 @@ Exception stacking and vector fetches validate the complete longword through
 the direct CPU and scheduler replay adapters before splitting unaligned cycles
 into bytes. Any overlap with the SMPC select is rejected; the existing
 exact-address RAM exception policy and address-error sequencing are retained.
+DMA reads and generated cache-refill longwords also validate their complete
+units before BSC decomposition. A refill rejection retains the issuing operand's
+address and width plus the generated refill unit separately in diagnostics;
+it does not treat a permitted byte operand as a prohibited guest longword.
 COMREG and IREG remain write-only; no command echo or guessed open-bus value is
 returned. Rejected SMPC accesses carry direction, operand, reason and a command
 state snapshot. The explicit local native/Wasm `smpc_fault_diagnostics()` query

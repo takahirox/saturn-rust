@@ -35,7 +35,14 @@ pub struct CommandState {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReadUnit {
+    pub address: u32,
+    pub width: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AccessFault {
+    /// Issuing operand, before cache refill or BSC decomposition.
     pub address: u32,
     pub width: usize,
     /// None means read; Some is the actual write operand, including zero.
@@ -44,6 +51,9 @@ pub struct AccessFault {
     pub state: CommandState,
     pub main_clock: Option<u64>,
     pub instruction: Option<u16>,
+    /// Generated cache-refill unit, distinct from the issuing operand above.
+    /// None for direct CPU, host and DMA accesses.
+    pub refill: Option<ReadUnit>,
 }
 
 impl AccessFault {
@@ -74,6 +84,13 @@ impl fmt::Display for AccessFault {
         )?;
         if let Some(value) = self.write {
             write!(f, " value=0x{value:08X}")?;
+        }
+        if let Some(unit) = self.refill {
+            write!(
+                f,
+                " (cache refill: {}-byte read at 0x{:08X})",
+                unit.width, unit.address
+            )?;
         }
         write!(
             f,
@@ -118,6 +135,7 @@ impl Smpc {
             state: self.command_state(),
             main_clock: None,
             instruction: None,
+            refill: None,
         })
     }
 }

@@ -4039,6 +4039,16 @@ clock/instruction stopping points across chunks 1/3/127/10000. Invalid RAM
 exception-cycle data and architectural address-error handling are retained.
 See [the exception review record](validation-issue-103.md#review-follow-up-unaligned-exception-operands).
 
+DMA/cache-refill reads now validate each complete longword before BSC
+decomposition. Refill diagnostics distinguish the issuing byte operand from
+the generated four-byte refill unit, preserving both addresses and widths.
+Focused regressions cover both processors, mirrors, DMA burst boundaries,
+refill order/wrap, retries and unchanged SMPC state, with successful RAM,
+cache-through and disabled-refill controls. This preserves explicit rejection
+of unsupported refill widths; it does not establish electrical bus behavior
+or explain the private one-byte COMREG fault. See
+[the read-context review record](validation-issue-103.md#review-follow-up-dma-and-cache-refill-read-context).
+
 `src/smpc/diagnostics.rs` and the opt-in native/Wasm diagnostic query record the
 access direction, operand, reason, CPU/PC, available instruction, SF, pending
 command/remaining clocks, INTBACK flags, IREGs and result status without additional
