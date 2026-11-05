@@ -30,8 +30,6 @@
     "hardware-lab",
     "cdda",
     "hle-player",
-    "cdRuntime",
-    "externalDiscovery",
     "hardwareBoundaries"
   ],
   "scenarios": [
@@ -53,8 +51,10 @@
     "refreshArbitration",
     "interruptEntry",
     "externalStartup",
+    "cdRuntime",
     "chd",
     "cdStream",
+    "externalDiscovery",
     "sh2Fetch",
     "sh2Store",
     "sh2Load",

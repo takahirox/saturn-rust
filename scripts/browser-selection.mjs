@@ -7,9 +7,9 @@ assert.deepEqual(Object.keys(shards), ["shared", "scenarios"]);
 assert.equal(new Set(Object.values(shards).flat()).size, groups.length, "Duplicate/missing shard group");
 assert.deepEqual(Object.values(shards).flat().sort(), [...groups].sort(), "Shard coverage must equal the original inventory");
 
-// These costly independent modules run after the shared UI trace, each in a
-// fresh context. Keep the same two workers and 20-minute per-worker budget.
-export const sharedScenarios = ["cdRuntime", "externalDiscovery", "hardwareBoundaries"];
+// Hosted timings balance this module plus the shared UI trace against the
+// remaining independent modules. Keep two workers and the 20-minute budget.
+export const sharedScenarios = ["hardwareBoundaries"];
 export const scenarioGroups = groups.filter(name => shards.scenarios.includes(name) || sharedScenarios.includes(name));
 assert(sharedScenarios.every(name => shards.shared.includes(name)));
 

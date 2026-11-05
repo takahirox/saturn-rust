@@ -967,3 +967,75 @@ same pinned official archive with original executable modes into the ignored
 private test directory. The executable reports **145.0.7632.6**. This setup
 interruption and the deliberate inherited-code negative control are excluded
 from passing results. No runtime or test policy was relaxed.
+
+## Review follow-up: balance both hosted browser workers
+
+Related to #103. The [reviewed shared job](https://github.com/takahirox/saturn-rust/actions/runs/42011452118/job/127191666435)
+spent **724.096 s** across the dependent UI groups, **218.265 s** on `cdRuntime`
+and **186.887 s** on `externalDiscovery`. It began `hardwareBoundaries` with
+only about 70 seconds left and hit the unchanged **1,200-second** timeout.
+The [scenarios job](https://github.com/takahirox/saturn-rust/actions/runs/42011452118/job/127191666609)
+passed all **41 groups** in **599.105 s** (599.558 s including its wrapper).
+Moving only `hardwareBoundaries` to shared had therefore left that worker
+overloaded; the previous local pass did not establish hosted success.
+
+Move `cdRuntime` and `externalDiscovery` back to scenarios. Shared retains the
+30 dependent UI groups followed by isolated `hardwareBoundaries`, for a
+**31/43 split covering all 74 groups exactly once**. Using the observed timings
+above and the earlier complete hosted `hardwareBoundaries` time of **276.543 s**
+gives estimates of **1,000.639 s shared / 1,004.257 s scenarios**, about 195
+seconds below each worker's limit. These estimates combine separate runs;
+they are scheduling evidence, not a measured successful hosted run.
+
+Both moved modules already use fresh browser contexts. Preserve every assertion,
+guest, original serial order, opt-in module selection, two-worker cap, timeout,
+failure propagation and artifact/publication gate. Update the existing inventory
+regression and its stale-assignment negative control to reject the old 33/41
+reports, even when their combined coverage still contains all 74 names.
+No emulator, fixture or production web source changes.
+
+### Rebalanced-worker validation
+
+Local macOS arm64, stable Rust **1.99.0**, Node **26.12.1**, matching
+wasm-bindgen **0.2.129**, Playwright **1.58.2** and pinned Chromium
+**145.0.7632.6**. The existing `scripts/ci-time.py` wrapper records wall time.
+Rust/web commands select the installed stable toolchain and matching bindgen
+CLI through PATH. Runner/browser commands set
+`PLAYWRIGHT_BROWSERS_PATH="$PWD/target/issue103-browser"`. Runner tests finish
+before the full browser run, with no concurrent native guest suite.
+
+- `npm ci --ignore-scripts`: pass, locked dependencies installed.
+- `python3 scripts/ci-time.py issue103-rebalance-web sh scripts/build-web.sh`:
+  production Wasm/bindings build passes, **6.906 s**.
+- `python3 scripts/ci-time.py issue103-rebalance-runner node --test
+  scripts/ci-runner.test.mjs`: **13/13 pass**, zero failures/skipped,
+  **12.641 s** wrapper / **12.552 s** Node time. Includes inventory, stale
+  assignment, missing coverage, revision/digest mismatch, real Chromium
+  failures, timeout/cancellation and publication-gate regressions.
+- `python3 scripts/ci-time.py issue103-rebalance-complete npm run test:browser`:
+  **74/74 groups pass**, **494.007 s** wrapper / **493.798 s** suite time.
+  Shared passes **31** groups in **356.174 s**, including `hardwareBoundaries`
+  (**100.800 s**). Scenarios passes **43** in **493.562 s**, including the
+  moved `cdRuntime` (**80.196 s**) and `externalDiscovery` modules. Both workers
+  finish within the unchanged 1,200-second limit. The aggregator verifies all
+  groups, revision and exact tested production artifact digest. The site digest
+  remains unchanged before/after:
+  `02e74246dc5922e3ab9a689b3a97b30b94411f2f5dd039dc70b1d0a6460da673`.
+  These are local results, not hosted-CI timings.
+- `cargo fmt --check`, `node --check scripts/browser-selection.mjs`,
+  `node --check scripts/ci-runner.test.mjs`, documentation anchor and
+  `git diff --check`: pass.
+
+The installer completed the pinned headless-shell download but stalled during
+extraction. It was stopped; system unzip verified every ZIP CRC and extracted
+that same official archive with executable modes into the ignored private test
+directory. The executable reports **145.0.7632.6**. This setup interruption is
+excluded from passing results. Native, fixture and Clippy suites were not
+repeated for this scheduling-only change; their earlier results are historical.
+
+Hosted verification of this revision remains pending: this node must commit
+locally without pushing, so it cannot trigger the PR workflow with its changes.
+After publication, require both hosted browser jobs and the aggregate `build`
+gate to succeed; do not treat the timing estimates or local suite as that result.
+Keep #103 open and PR #104 draft with `Related to #103` in Related Issues while
+the limits in [Finding and scope](#finding-and-scope) remain unresolved.

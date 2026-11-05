@@ -238,8 +238,8 @@ key, no fallback keys, and the existing build always verifies CLI version 0.2.12
 A cold cache performs the original locked install. Two `browser` matrix jobs
 download that same artifact:
 `shared` runs the original dependent UI trace (30 groups), then the independent
-`cdRuntime`, `externalDiscovery` and `hardwareBoundaries` modules (33 groups
-total). `scenarios` runs the other 41 modules. Every independent module receives a fresh browser context,
+`hardwareBoundaries` module (31 groups total). `scenarios` runs the other 43
+modules, including `cdRuntime` and `externalDiscovery`. Every independent module receives a fresh browser context,
 one at a time. Both jobs use Chromium and all the original assertions. Runner regression tests execute once in `shared`.
 The retained `build` status depends on native, Wasm and **both** browser jobs.
 Its always-run first step explicitly fails on any failed, skipped or cancelled
