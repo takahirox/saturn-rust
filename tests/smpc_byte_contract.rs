@@ -1,5 +1,8 @@
 //! Independent COMREG acceptance audit, ST-169 tables 2.1–2.4, pp.37–38,
-//! 42–43, 46 and 54. Uses only the inherited public API for differential runs.
+//! 42–43, 46 and 54. Firmware progress uses a shared native/Wasm record.
+#[path = "support/smpc_progress.rs"]
+mod progress;
+
 use saturn_rust::{
     bus::{Bus, Memory},
     smpc::Smpc,
@@ -160,25 +163,31 @@ fn original_byte_firmware_publishes_real_calendar_memory_and_handshake_results()
         .map(|s| u32::from_str_radix(s, 16).unwrap())
         .collect();
     let mut reference = None;
-    for chunk in [1, 127, 10000] {
-        let mut m = Machine::new();
-        for _ in 0..2 {
-            m.reset(Boot::ExternalBios(&bios)).unwrap();
-            let mut left = 2000000;
-            while left > 0 {
-                let n = left.min(chunk);
-                m.run_steps(n).unwrap();
-                let _ = m.cpu_state();
-                let _ = m.debug_read32(0x0601b000).unwrap();
-                left -= n;
+    for chunk in [1, 3, 127, 10000] {
+        for observe in [false, true] {
+            let mut m = Machine::new();
+            for _ in 0..2 {
+                m.reset(Boot::ExternalBios(&bios)).unwrap();
+                let mut left = 2000000;
+                while left > 0 {
+                    let n = left.min(chunk);
+                    m.run_steps(n).unwrap();
+                    if observe {
+                        let _ = m.cpu_state();
+                        let _ = m.debug_read32(0x0601b000).unwrap();
+                        assert!(m.smpc_fault_diagnostics().is_none());
+                    }
+                    left -= n;
+                }
+                let actual: Vec<_> = (0..expected.len())
+                    .map(|i| m.bus().read32(0x0601b000 + i as u32 * 4).unwrap())
+                    .collect();
+                assert_eq!(actual, expected);
+                assert_eq!(m.cpu_state().exceptions, 0);
+                progress::assert_progress("smpc-byte-audit", 2000000, &m);
+                let result = (m.clocks(), m.cpu_state().clone());
+                assert_eq!(*reference.get_or_insert(result.clone()), result);
             }
-            let actual: Vec<_> = (0..expected.len())
-                .map(|i| m.bus().read32(0x0601b000 + i as u32 * 4).unwrap())
-                .collect();
-            assert_eq!(actual, expected);
-            assert_eq!(m.cpu_state().exceptions, 0);
-            let result = (m.clocks(), m.cpu_state().clone());
-            assert_eq!(*reference.get_or_insert(result.clone()), result);
         }
     }
 }

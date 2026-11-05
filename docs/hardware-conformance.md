@@ -4067,3 +4067,14 @@ absence of stale results/IRQs. See the [precise contracts and executed checks](v
 These are executable functional-model checks, not evidence of invalid-window
 hardware behavior or a classification of the private one-byte fault. #103 remains
 open and #104 draft under the partial publication scope.
+
+
+The #103 parity follow-up supplements per-backend invariance checks
+with a [shared native/Chromium progress record](../tests/fixtures/smpc-progress.tsv)
+for byte-audit, timed-peripheral and reset-observer execution. Both backends
+assert identical clocks, retired master instructions and exception counts for
+chunks 1/3/127/10000, with and without passive Debug observation, while retaining
+the independent 201/79/20-word guest-result checks. See [actual counts and
+validation](validation-issue-103.md#review-follow-up-shared-nativechromium-progress-evidence).
+This is functional-model parity evidence; the partial #103/#104 state and
+unclassified private one-byte failure remain unchanged.

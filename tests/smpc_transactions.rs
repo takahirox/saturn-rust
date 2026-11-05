@@ -1,4 +1,7 @@
 //! Original ST-169 command-contract guest, including explicit unsupported paths.
+#[path = "support/smpc_progress.rs"]
+mod progress;
+
 use saturn_rust::{
     Boot, Machine, MachineError,
     bus::{Bus, BusError, Memory},
@@ -235,6 +238,7 @@ fn raster_gated_intback_forms_publish_results_and_service_each_irq() {
                 .collect();
             assert_eq!(actual, expected);
             assert_eq!(m.cpu_state().exceptions, 6);
+            progress::assert_progress("smpc-timed-peripherals", 500000, &m);
             let result = (m.clocks(), m.cpu_state().clone());
             assert_eq!(*reference.get_or_insert(result.clone()), result);
         }
@@ -257,50 +261,55 @@ fn cold_reset_cancels_guest_commands_beyond_former_deadlines_and_preserves_batte
         let bios = rom(source);
         for extra_turns in [0, 1, 7] {
             for chunk in [1, 3, 127, 10000] {
-                let mut m = Machine::new();
-                m.reset(Boot::ExternalBios(&bios)).unwrap();
-                for _ in 0..100000 {
-                    m.step().unwrap();
-                    if m.bus().read8(0x0601a200) == Ok(0x55) {
-                        break;
+                for observe in [false, true] {
+                    let mut m = Machine::new();
+                    m.reset(Boot::ExternalBios(&bios)).unwrap();
+                    for _ in 0..100000 {
+                        m.step().unwrap();
+                        if m.bus().read8(0x0601a200) == Ok(0x55) {
+                            break;
+                        }
                     }
+                    for _ in 0..extra_turns {
+                        m.step().unwrap();
+                    }
+                    assert_eq!(m.bus().read8(0x0601a200), Ok(0x55));
+                    assert_eq!(m.bus().read32(0x0601a00c), Ok(1));
+                    assert_eq!(m.bus().read32(0x0601a010), Ok(u32::from(command)));
+                    let pending = m.bus().smpc_command_state();
+                    assert_eq!(pending.pending, Some(command));
+                    let remaining = pending.remaining.unwrap();
+                    assert!(remaining > 0);
+                    m.reset(Boot::ExternalBios(&observer)).unwrap();
+                    assert_eq!(m.bus().smpc_command_state().pending, None);
+                    let mut left = 100000;
+                    while left > 0 {
+                        let n = left.min(chunk);
+                        m.run_steps(n).unwrap();
+                        if observe {
+                            let _ = m.cpu_state();
+                            let _ = m.debug_read32(0x0601c000).unwrap();
+                            assert!(m.smpc_fault_diagnostics().is_none());
+                        }
+                        left -= n;
+                    }
+                    // The observer waits a full raster transition before sampling
+                    // cancelled state, well beyond every former command deadline.
+                    assert!(m.clocks() > u64::from(remaining) + 100000);
+                    let actual: Vec<_> = (0..expected.len())
+                        .map(|i| m.bus().read32(0x0601c000 + i as u32 * 4).unwrap())
+                        .collect();
+                    assert_eq!(
+                        actual, expected,
+                        "command {command:02x}, offset {extra_turns}, chunk {chunk}"
+                    );
+                    assert_eq!(m.cpu_state().exceptions, 0);
+                    let state = m.bus().smpc_command_state();
+                    assert!(!state.busy && !state.sf);
+                    progress::assert_progress("smpc-reset-observer", 100000, &m);
+                    let result = (m.clocks(), m.cpu_state().clone());
+                    assert_eq!(*reference.get_or_insert(result.clone()), result);
                 }
-                for _ in 0..extra_turns {
-                    m.step().unwrap();
-                }
-                assert_eq!(m.bus().read8(0x0601a200), Ok(0x55));
-                assert_eq!(m.bus().read32(0x0601a00c), Ok(1));
-                assert_eq!(m.bus().read32(0x0601a010), Ok(u32::from(command)));
-                let pending = m.bus().smpc_command_state();
-                assert_eq!(pending.pending, Some(command));
-                let remaining = pending.remaining.unwrap();
-                assert!(remaining > 0);
-                m.reset(Boot::ExternalBios(&observer)).unwrap();
-                assert_eq!(m.bus().smpc_command_state().pending, None);
-                let mut left = 100000;
-                while left > 0 {
-                    let n = left.min(chunk);
-                    m.run_steps(n).unwrap();
-                    let _ = m.cpu_state();
-                    let _ = m.debug_read32(0x0601c000).unwrap();
-                    assert!(m.smpc_fault_diagnostics().is_none());
-                    left -= n;
-                }
-                // The observer waits a full raster transition before sampling
-                // cancelled state, well beyond every former command deadline.
-                assert!(m.clocks() > u64::from(remaining) + 100000);
-                let actual: Vec<_> = (0..expected.len())
-                    .map(|i| m.bus().read32(0x0601c000 + i as u32 * 4).unwrap())
-                    .collect();
-                assert_eq!(
-                    actual, expected,
-                    "command {command:02x}, offset {extra_turns}, chunk {chunk}"
-                );
-                assert_eq!(m.cpu_state().exceptions, 0);
-                let state = m.bus().smpc_command_state();
-                assert!(!state.busy && !state.sf);
-                let result = (m.clocks(), m.cpu_state().clone());
-                assert_eq!(*reference.get_or_insert(result.clone()), result);
             }
         }
     }
