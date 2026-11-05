@@ -7,10 +7,12 @@ empty display and a visible four-step setup:
 1. Select your authorized disc: a supported self-contained CHD v5 CD-ROM, a
    cooked ISO, or a CUE together with all referenced BINARY tracks. Use the file
    picker or drop the files onto **Select disc**. A lone raw BIN needs its CUE.
+   A disc is required in HLE disc mode and optional in user-BIOS mode.
 2. Optionally add a local raw 512 KiB BIOS. HLE does not use this file.
 3. Choose **BIOS-less HLE disc** or **User-provided BIOS**. BIOS mode requires the
-   firmware and never falls back to HLE. Switching between these modes retains
-   loaded files, cancels pending reads and pauses playback.
+   firmware, can start without a disc, and never falls back to HLE. Switching
+   between these modes retains loaded files, cancels pending reads and pauses
+   playback.
 4. Press **Start** once the required inputs have loaded and validated.
 
 Open **https://takahirox.github.io/saturn-rust/** for the player. No bundled game
@@ -33,9 +35,9 @@ advance. **Advanced / backup RAM & format details** contains import/export and
 media limits. Opening advanced settings or switching views pauses and releases
 held input; closing settings or returning to Play never resumes automatically.
 Losing display/window focus releases input; hiding the tab pauses. View changes
-preserve CPU state, files and errors. Restart cold-boots retained media without
-reading the file again; it resumes an existing Play session when settings are
-closed. Debug Reset cold-boots and stays paused.
+preserve CPU state, files and errors. Restart cold-boots the selected BIOS and/or
+retained media without reading the file again; it resumes an existing Play session
+when settings are closed. Debug Reset cold-boots and stays paused.
 
 The display is rasterized in Rust from guest-written video state; input goes
 through emulated SMPC hardware. **Enable audio** requires a user gesture and
@@ -70,7 +72,8 @@ The original **HLE bootstrap prototype** debugger fixture remains available in
 **Advanced → Debug → Load HLE bootstrap fixture**. Loading this diagnostic
 clears both image selections. Reset, then Run 6 yields `R0=4`, `R1=7`,
 `PC=0x0600000E`. **User-provided BIOS** accepts a local raw 512 KiB file and uses
-its actual reset vectors. Native Sega
+its actual reset vectors, with or without a disc. Start advances the real guest;
+BIOS-only eligibility does not guarantee an authentic firmware menu. Native Sega
 BIOS boot/game support is incomplete and often faults on unimplemented devices
 or bus behavior. BIOS mode never silently changes into HLE.
 

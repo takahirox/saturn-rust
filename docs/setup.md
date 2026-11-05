@@ -104,6 +104,7 @@ run a bundled sample. On desktop the player is beside the four-step setup; on
 narrow screens setup comes first.
 
 1. **Select disc** with the accessible multi-file picker or drag-and-drop area.
+   Required in HLE disc mode; optional in user-BIOS mode.
    Choose one supported self-contained CHD v5 CD-ROM (cdlz/cdzl/cdfl/none, at most
    1,058,400,000 compressed bytes), one cooked ISO (18–450,000 2048-byte sectors,
    at most 921,600,000 bytes), or one CUE and all referenced BINARY tracks
@@ -118,13 +119,17 @@ narrow screens setup comes first.
    establishes neither authenticity nor region.
 3. **Choose boot mode**: BIOS-less HLE uses the first data track’s Saturn
    IP / ISO9660 executable. User-provided BIOS uses actual firmware reset
-   vectors and hardware disc access; it never redirects to HLE. BIOS/game
-   support is incomplete and may stop on unimplemented devices or bus behavior.
+   vectors and optional hardware disc access; it can start without media and
+   never redirects to HLE. BIOS/game support is incomplete and may stop on
+   unimplemented devices or bus behavior.
    Switching these modes retains loaded selections, cancels pending reads and
    stops playback. Select a cancelled file again. Mounting a disc or redesigning
    the UI does not establish retail-game compatibility.
-4. **Start playing** is enabled only after the selected mode’s required disc
-   and, for BIOS mode, firmware have loaded and validated. Nothing auto-starts
+4. **Start playing** is enabled after a valid disc in HLE disc mode, or a fully
+   read/accepted 524288-byte BIOS in user-BIOS mode (with or without a disc).
+   Pending reads and rejected selections block execution until resolved. BIOS-only
+   Start executes the real SH-2 firmware; it does not promise an authentic system
+   menu, CD player or retail-game compatibility. Nothing auto-starts
    after a read, view change or closing advanced settings. Audio has a separate
    user-gesture **Enable audio** button and meaningful disabled/blocked/muted/
    paused/underflow status. Playback controls beneath the display offer
@@ -132,6 +137,10 @@ narrow screens setup comes first.
    cold-boots and resumes an existing Play session when advanced settings are
    closed. Fullscreen failures leave the normal player usable; focus returns
    to its button on exit.
+
+See [BIOS-only startup validation](validation-issue-101.md) for the original
+synthetic firmware, regression oracles and executed checks. Authentic BIOS menu
+behavior remains unverified.
 
 Focus the display for keyboard input: arrows for directions, Z for A, Enter for
 Saturn Start. A second digital pad uses I/K/J/L, U/O/P for A/B/C and Right Shift
@@ -143,8 +152,9 @@ Under the player, **Advanced → Debug** reveals CPU R0–R15 and special regist
 retired instructions, exceptions, pending delay target, machine state, Step,
 Run (1–10000 whole machine turns), Reset and frame advance. Switching views
 preserves machine/media/errors and pauses input; returning requires Resume.
-Frame advancement requires a ready, paused disc. Sleeping/resetting CPUs retain
-controls when an implemented hardware event can wake them. CPU/device faults
+Frame advancement requires a ready, paused disc or user-BIOS machine.
+Sleeping/resetting CPUs retain controls when an implemented hardware event can
+wake them. CPU/device faults
 stop the machine until reset. Invisible registers are not updated during Play.
 **Load HLE bootstrap fixture** explicitly replaces selected media with the
 original debugger fixture. Reset and Run 6 yields `R0=4`, `R1=7`,
@@ -328,8 +338,9 @@ implementation PR does not publish or verify a new live revision.
 The hosted build supports Star Collector and the documented synthetic diagnostic
 subsets, including SCU DSP/DMA/interrupts, MC68EC000/direct SCSP PCM, SMPC
 RTC/INTBACK and NTSC raster timing. The original game has no soundtrack; a
-bounded AudioWorklet path plays emulated PCM when explicitly enabled. External BIOS mode retains local/private reset-vector stepping but does
-not promise a Sega BIOS splash screen or game boot. No proprietary BIOS/security
+bounded AudioWorklet path plays emulated PCM when explicitly enabled. External
+BIOS mode supports local/private firmware-only Start and reset-vector stepping
+but does not promise a Sega BIOS splash screen or game boot. No proprietary BIOS/security
 code or commercial disc is distributed. See [architecture](architecture.md) and
 [game license/provenance](homebrew-provenance.md).
 

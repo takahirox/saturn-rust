@@ -1,4 +1,4 @@
-// Disc-first UI acceptance uses only repository-authored media and firmware.
+// Play UI acceptance uses only repository-authored media and firmware.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
@@ -43,18 +43,135 @@ export async function playUi(browser, url) {
     }, selection);
     const ready = () => page.waitForFunction(() => !document.getElementById("start").disabled);
     const failed = pattern => page.waitForFunction(pattern => new RegExp(pattern).test(document.getElementById("error").textContent), pattern);
-    const bios = Buffer.alloc(524288);
-    bios.writeUInt32BE(0x100,0); bios.writeUInt32BE(0x06100000,4);
-    bios.writeUInt16BE(0xAFFE,0x100); bios.writeUInt16BE(0x0009,0x102);
+    const rom = async name => {
+      const bytes = Buffer.alloc(524288);
+      for (const line of (await readFile(`tests/fixtures/${name}.hex`, "utf8")).trim().split(/\r?\n/)) {
+        if (line.startsWith("#")) continue;
+        const [offset, ...words] = line.split(/\s+/).map(word => parseInt(word,16));
+        words.forEach((word,i) => bytes.writeUInt16BE(word,offset+i*2));
+      }
+      return bytes;
+    };
+    const bios = await rom("bios-only");
     const firmware = {name:"original-loop.bin",mimeType:"application/octet-stream",buffer:bios};
     await context.setOffline(true);
-    // Firmware alone allows debugging, but Play still needs a mounted disc.
+    // No firmware, wrong-sized firmware and rejected local reads cannot launch.
     await page.locator("#mode").selectOption("bios");
-    await page.locator("#bios").setInputFiles(firmware);
-    await page.waitForFunction(() => document.getElementById("bios-selection").textContent.includes("loaded locally"));
     assert(await page.locator("#start").isDisabled());
-    assert.match(await page.locator("#player-status").textContent(), /Load a disc to begin/);
-    assert.match(await page.locator("#launch-status").textContent(), /Select a valid disc/);
+    await page.locator("#bios").setInputFiles({...firmware,buffer:Buffer.alloc(1)});
+    await failed("received 1 bytes");
+    assert(await page.locator("#start").isDisabled());
+    await page.evaluate(() => {
+      const original = File.prototype.arrayBuffer;
+      File.prototype.arrayBuffer = function () {
+        if (this.name === "rejected.bin") return Promise.reject(new Error("test read rejection"));
+        if (this.name !== "pending.bin") return original.call(this);
+        return new Promise(resolve => { window.finishBiosRead = async () => resolve(await original.call(this)); });
+      };
+      window.restoreBiosRead = () => { File.prototype.arrayBuffer = original; };
+    });
+    await page.locator("#bios").setInputFiles({...firmware,name:"rejected.bin"});
+    await failed("test read rejection");
+    assert(await page.locator("#start").isDisabled());
+    await page.locator("#reset").evaluate(button => button.click());
+    assert(await page.locator("#start").isDisabled());
+    assert.match(await page.locator("#error").textContent(), /test read rejection/);
+    // Cancelling a pending BIOS read cannot revive it in either mode.
+    await page.locator("#bios").setInputFiles({...firmware,name:"pending.bin"});
+    assert(await page.locator("#start").isDisabled());
+    assert.match(await page.locator("#player-status").textContent(), /Loading image/);
+    await page.locator("#mode").selectOption("disc");
+    await page.evaluate(async () => { await window.finishBiosRead(); window.restoreBiosRead(); });
+    assert(await page.locator("#start").isDisabled());
+    await page.locator("#mode").selectOption("bios");
+    assert(await page.locator("#start").isDisabled());
+    await page.locator("#bios").setInputFiles(firmware);
+    await ready();
+    assert.match(await page.locator("#player-status").textContent(), /BIOS ready/);
+    assert.match(await page.locator("#launch-status").textContent(), /Disc optional/);
+    assert.match(await page.locator("#status").textContent(), /Resetting/);
+    await page.evaluate(async () => { window.biosMachine = (await import("./app.js")).emulator; });
+    const state = () => page.evaluate(() => ({
+      count:window.biosMachine.instruction_count(), counter:window.biosMachine.read_long(0x06001000),
+      frames:window.biosMachine.frames(), mode:window.biosMachine.mode(),
+    }));
+    assert.deepEqual(await state(), {count:"0", counter:0, frames:"0", mode:"User-provided BIOS"});
+    await page.locator("#start").click();
+    await page.waitForFunction(() => window.biosMachine.read_long(0x06001000) > 0);
+    assert.match(await page.locator("#player-status").textContent(), /Running/);
+    assert(await page.locator("#empty-state").isHidden());
+    await page.locator("#pause").click();
+    const paused = await state();
+    assert(Number(paused.count) > 100);
+    assert(Number(paused.frames) > 0);
+    await page.waitForTimeout(50);
+    assert.deepEqual(await state(), paused, "Pause stops guest execution");
+    await page.locator("#pause").click();
+    await page.waitForFunction(count => Number(window.biosMachine.instruction_count()) > Number(count), paused.count);
+    // Observe the synchronous UI reset before its next animation frame executes.
+    const restarted = await page.locator("#restart").evaluate(button => {
+      button.click();
+      return [window.biosMachine.instruction_count(), window.biosMachine.read_long(0x06001000), window.biosMachine.frames()];
+    });
+    assert.deepEqual(restarted, ["0",0,"0"]);
+    await page.waitForFunction(() => window.biosMachine.read_long(0x06001000) > 0);
+    await page.locator("#view-debug").click();
+    assert(Number(await page.locator("#instructions").textContent()) > 100);
+    await page.locator("#reset").click();
+    assert.equal(await page.locator("#pause").textContent(), "Resume");
+    assert.equal((await state()).count, "0");
+    await page.locator("#step").click();
+    assert.equal((await state()).count, "1");
+    await page.locator("#frame").click();
+    assert(Number((await state()).frames) > 0);
+    assert.equal(await page.locator("#disc").evaluate(input => input.files.length), 0);
+    assert.equal(await page.locator("#disc-selection").textContent(), "No disc selected.");
+    // A separate existing MIT firmware queries real CD hardware and records its
+    // no-media result. Start, rather than host stepping, must reach that result.
+    await page.locator("#bios").setInputFiles({...firmware,buffer:await rom("external-startup")});
+    await ready();
+    await page.locator("#view-play").click();
+    await page.locator("#start").click();
+    await page.waitForFunction(() => window.biosMachine.read_long(0x060100FC) === 0xE001);
+    assert.equal(await page.locator("#error").textContent(), "");
+    assert.equal(await page.locator("#disc-selection").textContent(), "No disc selected.");
+    // A sleeping guest with no wake source can still be paused. Resume must
+    // remain disabled honestly until a reset makes the CPU executable again.
+    const sleeping = Buffer.from(bios);
+    sleeping.writeUInt16BE(0x001B,0x100); // SLEEP, with reset SR masking IRQs
+    await page.locator("#bios").setInputFiles({...firmware,buffer:sleeping});
+    await ready();
+    await page.locator("#start").click();
+    await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Sleeping"));
+    assert.match(await page.locator("#player-status").textContent(), /Sleeping/);
+    assert(await page.locator("#pause").isEnabled());
+    await page.locator("#pause").click();
+    assert(await page.locator("#pause").isDisabled());
+    assert.match(await page.locator("#launch-status").textContent(), /Sleeping/);
+    assert.doesNotMatch(await page.locator("#player-status").textContent(), /Load a disc/);
+    // Faults are reported honestly and cannot enable Start or Resume.
+    const fault = Buffer.from(bios);
+    fault.writeUInt16BE(0xD001,0x100); fault.writeUInt16BE(0x2000,0x102);
+    fault.writeUInt32BE(0x05FE00CC,0x108);
+    await page.locator("#bios").setInputFiles({...firmware,buffer:fault});
+    await ready();
+    await page.locator("#start").click();
+    await failed("Unsupported Saturn device/register");
+    assert.match(await page.locator("#status").textContent(), /Faulted/);
+    assert(await page.locator("#pause").isDisabled());
+    await page.locator("#bios").setInputFiles(firmware);
+    await ready();
+    // Invalid optional media must stay rejected through Reset and mode changes.
+    await page.locator("#disc").setInputFiles({name:"invalid.iso",mimeType:"application/octet-stream",buffer:Buffer.alloc(1)});
+    await failed("complete 2048-byte-sector ISO");
+    assert(await page.locator("#start").isDisabled());
+    await page.locator("#reset").evaluate(button => button.click());
+    assert(await page.locator("#start").isDisabled());
+    await page.locator("#mode").selectOption("disc");
+    await page.locator("#mode").selectOption("bios");
+    assert(await page.locator("#start").isDisabled());
+    await page.locator("#disc").setInputFiles([]);
+    await ready();
     assert.equal(await page.locator("#error").textContent(), "");
     // This is a valid medium with deliberately unsupported HLE boot metadata.
     // Returning to BIOS must reuse it without asking for another file read.
