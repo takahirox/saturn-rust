@@ -332,6 +332,62 @@ fn firmware_faults_distinguish_direction_operand_state_and_width_without_side_ef
 }
 
 #[test]
+fn comreg_read_guests_preserve_operand_instead_of_legacy_byte_signature() {
+    // Only inherited public APIs: run this exact test and rom() against main
+    // as a negative control. Both guests formerly reported a one-byte access
+    // at 0010001f, despite their distinct instruction and effective address.
+    for (source, instruction, address, expected) in [
+        (
+            include_str!("fixtures/smpc-fault-comreg-word-read.hex"),
+            0x6011_u16,
+            0x0010001e,
+            "2-byte read at 0x0010001E: ByteOnly",
+        ),
+        (
+            include_str!("fixtures/smpc-fault-read.hex"),
+            0x6010,
+            0x0010001f,
+            "1-byte read at 0x0010001F: WriteOnly",
+        ),
+    ] {
+        let bios = rom(source);
+        assert_eq!(&bios[0x20c..0x20e], &instruction.to_be_bytes());
+        let mut reference = None;
+        for chunk in [1, 3, 127, 10000] {
+            for observe in [false, true] {
+                let mut machine = Machine::new();
+                machine.reset(Boot::ExternalBios(&bios)).unwrap();
+                let error = (0..10000)
+                    .find_map(|_| {
+                        let result = machine.run_steps(chunk);
+                        if observe {
+                            let _ = machine.cpu_state();
+                            assert_eq!(machine.debug_read32(0x0601a200), Ok(0));
+                        }
+                        result.err()
+                    })
+                    .expect("bounded COMREG fault");
+                let message = error.to_string();
+                assert!(message.contains("PC 0x0000020C"), "{message}");
+                assert!(message.contains(expected), "{message}");
+                assert_eq!(machine.cpu_state().r[1], address);
+                assert_eq!(machine.cpu_state().exceptions, 0);
+                assert_eq!(machine.bus().read8(0x00100063), Ok(0));
+                assert_eq!(machine.bus().read32(0x0601a200), Ok(0));
+                let result = (machine.clocks(), machine.cpu_state().clone(), message);
+                assert_eq!(machine.run_steps(1).unwrap_err().to_string(), result.2);
+                assert_eq!(machine.clocks(), result.0);
+                assert_eq!(
+                    *reference.get_or_insert(result.clone()),
+                    result,
+                    "instruction {instruction:04x}, chunk {chunk}, observe {observe}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn byte_only_negative_control_rejects_wide_accesses_before_any_register_changes() {
     // This test deliberately uses only the inherited public API, so it also
     // runs unmodified against main as a genuine red/green negative control.

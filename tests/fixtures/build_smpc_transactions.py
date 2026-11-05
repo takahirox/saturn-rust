@@ -357,6 +357,9 @@ def build():
         'word': byte(0x20100063, 1) + 'load 0x2010001e,r1\nmov #9,r0\nmov.w r0,@r1\n',
         'long': 'load 0x20100000,r1\nload 0x00120034,r0\nmov.l r0,@r1\n',
         'word-read': 'load 0x20100062,r1\nmov.w @r1,r0\n',
+        # Inherited byte decomposition reaches write-only COMREG at +1f,
+        # falsely describing this MOV.W operand as a one-byte access there.
+        'comreg-word-read': 'load 0x0010001e,r1\nmov.w @r1,r0\n',
         'long-read': 'load 0x20100060,r1\nmov.l @r1,r0\n',
     }
     for name, source in cases.items():

@@ -328,29 +328,47 @@ export async function hardwareBoundaries(page) {
     ["command", "UnsupportedCommand", "write", 1], ["parameters", "InvalidParameters", "write", 1],
     ["word", "ByteOnly", "write", 2], ["long", "ByteOnly", "write", 4],
     ["word-read", "ByteOnly", "read", 2], ["long-read", "ByteOnly", "read", 4],
+    ["comreg-word-read", "ByteOnly", "read", 2],
   ]) {
     const image = await rom(`smpc-fault-${name}`);
     let reference;
     for (const chunk of [1, 127, 10000]) {
-      await load(page, `smpc-fault-${name}`, image);
-      const result = await page.evaluate(async chunk => {
-        const {emulator} = await import("./app.js");
-        let message;
-        for (let i = 0; i < 10000; i++) {
-          try { emulator.run_steps(chunk); } catch (error) { message = String(error); break; }
+      for (const observe of (name === "read" || name === "comreg-word-read" ? [false, true] : [true])) {
+        await load(page, `smpc-fault-${name}`, image);
+        const result = await page.evaluate(async ({chunk, observe}) => {
+          const {emulator} = await import("./app.js");
+          let message;
+          for (let i = 0; i < 10000; i++) {
+            try { emulator.run_steps(chunk); } catch (error) { message = String(error); }
+            if (observe) { emulator.registers(); emulator.read_long(0x0601a200); emulator.smpc_fault_diagnostics(); }
+            if (message) break;
+          }
+          const clocks = emulator.peripheral_clocks();
+          const details = emulator.smpc_fault_diagnostics();
+          const before = emulator.read_long(0x0601a200);
+          const detailsAgain = emulator.smpc_fault_diagnostics();
+          let repeated;
+          try { emulator.run_steps(1); } catch (error) { repeated = String(error); }
+          return {message, repeated, details, clocks, stationary: clocks === emulator.peripheral_clocks() && details === detailsAgain, before,
+            operand: emulator.registers()[1], exceptions: emulator.exception_count()};
+        }, {chunk, observe});
+        assert.match(result.message, new RegExp(`${width}-byte ${direction}.*${reason}`));
+        assert.match(result.details, /Master SH-2 PC=0x.*main_clock: Some/);
+        assert.match(result.details, /remaining:.*input:/);
+        if (name === "busy") assert.match(result.details, /pending: Some\(9\).*remaining: Some/);
+        if (name === "read" || name === "comreg-word-read") {
+          const word = name === "comreg-word-read";
+          const address = word ? 0x0010001e : 0x0010001f;
+          assert.match(result.message, new RegExp(`PC 0x0000020C.*${width}-byte read at 0x${address.toString(16).toUpperCase().padStart(8, "0")}: ${reason}`));
+          assert.match(result.details, new RegExp(`address: ${address}, width: ${width}, write: None, reason: ${reason}`));
+          assert.match(result.details, new RegExp(`instruction: Some\\(${word ? 0x6011 : 0x6010}\\)`));
+          assert.match(result.details, /sf: false, busy: false, command: 0, pending: None, remaining: None/);
+          assert.equal(result.operand, address); assert.equal(result.exceptions, "0");
         }
-        const clocks = emulator.peripheral_clocks();
-        const details = emulator.smpc_fault_diagnostics();
-        const before = emulator.read_long(0x0601a200);
-        const detailsAgain = emulator.smpc_fault_diagnostics();
-        return {message, details, clocks, stationary: clocks === emulator.peripheral_clocks() && details === detailsAgain, before};
-      }, chunk);
-      assert.match(result.message, new RegExp(`${width}-byte ${direction}.*${reason}`));
-      assert.match(result.details, /Master SH-2 PC=0x.*main_clock: Some/);
-      assert.match(result.details, /remaining:.*input:/);
-      if (name === "busy") assert.match(result.details, /pending: Some\(9\).*remaining: Some/);
-      assert.equal(result.stationary, true); assert.equal(result.before, 0);
-      reference ??= result; assert.deepEqual(result, reference, `${name}, chunk ${chunk}`);
+        assert.equal(result.repeated, result.message);
+        assert.equal(result.stationary, true); assert.equal(result.before, 0);
+        reference ??= result; assert.deepEqual(result, reference, `${name}, chunk ${chunk}, observe ${observe}`);
+      }
     }
     await page.locator("#reset").click();
     assert.equal(await page.evaluate(async () => (await import("./app.js")).emulator.smpc_fault_diagnostics()), undefined);

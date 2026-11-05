@@ -2,7 +2,7 @@
 
 ## Finding and scope
 
-Related to #103 and #17. The reported **one-byte** access at PC `0x0000025C`
+Related to #103 and #17. The reported **one-byte diagnostic** at PC `0x0000025C`
 remains unclassified: no instruction, direction, operand or earlier SMPC state
 was supplied. This work does not identify that private firmware instruction or
 claim that its startup now reaches a menu. No personal firmware or trace is an
@@ -16,6 +16,14 @@ The inherited code at `2a323e79f12ba58333be46ae9d69c089f3a14676` routes
 - A write without SF=1, or while a command/INTBACK acquisition is busy.
 - An unsupported command code, invalid SETTIME calendar, or unsupported/invalid
   INTBACK parameters (including missing IREG2=F0).
+- A wider guest operand decomposed into byte accesses by the inherited bus.
+  `Smpc::unsupported` hardcodes width=1, so the reported width does **not**
+  establish the guest operand width. An original reset-vector probe executing
+  `MOV.W @R1,R0` (6011), R1=`0010001E`, reaches disconnected lane `0010001E`
+  followed by write-only COMREG `0010001F` and reproduces the legacy
+  `1-byte access at 0x0010001F` diagnostic. The corrected bus rejects the
+  complete operand as `2-byte read at 0x0010001E: ByteOnly`. See the
+  [reproducible control below](#review-follow-up-inherited-operand-decomposition).
 
 The independent byte investigation below finds **no rejection of documented
 master-issued byte commands**. An exhaustive command/parameter audit (which used
@@ -30,8 +38,10 @@ longword SMPC operands as multiple byte register operations, even though ST-169
 specifies byte-only access. A word store of 0009 to `0x2010001E`, after setting
 SF, silently issues CDOFF. A longword store to `0x20100000` silently changes two
 IREGs. Wide status reads also silently succeed. These are prohibited widths,
-**not evidence explaining the reported one-byte fault**. The correction rejects
-such operands before register mutation, cache fill or BSC decomposition. This is
+**not proof of the unavailable firmware transaction**. The COMREG word-read
+probe demonstrates one route to its diagnostic signature, not its cause.
+The correction rejects such operands before register mutation, cache fill or BSC
+decomposition. This is
 a bounded emulator policy for accesses outside the documented contract; it does
 not assert a physical Saturn bus exception or measured electrical response.
 
@@ -45,7 +55,7 @@ defect also does not identify the private firmware transaction.
 The scope is independently reconstructed SMPC access semantics, an executable
 master-context acceptance audit, rejection diagnostics and proven
 width/issuer-policy corrections.
-The original byte failure is unverified. Keep #103 open and PR #104 in draft
+The original firmware transaction is unverified. Keep #103 open and PR #104 in draft
 under the partial publication scope; do not generate a closing reference from
 this checkpoint. The review follow-up below supplies timing-valid byte-command
 and post-deadline reset evidence; it does not classify the original symptom.
@@ -1162,3 +1172,123 @@ ignored test directory. The binary reports the pinned version above. These
 setup interruptions and deliberate negative-control failures are excluded from
 passing results. The focused browser and negative-control runs overlapped the
 full native suite; their wall times are observations, not performance baselines.
+
+## Review follow-up: inherited operand decomposition
+
+Related to #103. The inherited diagnostic's width describes the rejected SMPC
+byte subaccess, not necessarily the SH-2 operand. The original MIT
+[`smpc-fault-comreg-word-read`](../tests/fixtures/smpc-fault-comreg-word-read.s)
+fixture boots a 512 KiB BIOS through real reset vectors and executes
+`MOV.W @R1,R0` (6011) at PC `0000020C`, R1=`0010001E`. No host register setup,
+private firmware bytes or PC-specific emulator behavior is involved. The existing
+[`smpc-fault-read`](../tests/fixtures/smpc-fault-read.s) fixture is the byte-read
+control: same PC, instruction 6010 and R1=`0010001F`.
+
+Inherited `Bus::read` splits the word into byte register reads. The even lane
+returns FF; the next byte reaches write-only COMREG. `Smpc::unsupported` then
+hardcodes width=1, losing the issuing word's width and starting address. Both
+guests therefore produce this same inherited diagnostic:
+
+```text
+Memory access at PC 0x0000020C: Unsupported Saturn device/register: 1-byte access at 0x0010001F; this build supports only the documented homebrew hardware subset
+```
+
+The corrected bus rejects the complete word before decomposition. The controls
+now distinguish `2-byte read at 0x0010001E: ByteOnly` from
+`1-byte read at 0x0010001F: WriteOnly`. This supplies a concrete alternative
+reconstruction of the reported signature. It does **not** identify the user's
+instruction at PC `0000025C`, establish their operand width/direction/command
+state, or prove that the width correction resolves their startup failure.
+The byte-only policy and primary-source limits above still apply.
+Keep #103 open and PR #104 draft with `Related to #103` in Related Issues.
+
+The added [native regression](../tests/smpc_transactions.rs) uses only inherited
+public APIs so it can run unchanged against an isolated archive of
+`2a323e79f12ba58333be46ae9d69c089f3a14676`. With its exact `rom()` helper,
+test function and two sparse fixtures copied into
+`target/issue103-operand-negative/tests/operand_reconstruction.rs` and
+`tests/fixtures/`, the negative-control command is:
+
+```sh
+CARGO_TARGET_DIR="$PWD/target/issue103-operand-negative-build" \
+  python3 scripts/ci-time.py issue103-operand-inherited \
+  cargo test --locked \
+  --manifest-path target/issue103-operand-negative/Cargo.toml \
+  --test operand_reconstruction
+```
+
+It fails as intended at the word operand assertion, printing the legacy signature
+above: **1 failed / exit 101 / 8.180 s** including compilation. An isolated
+`legacy_signature` variant changes only the two expected diagnostic substrings
+to `1-byte access at 0x0010001F`; the equivalent command with
+`--test legacy_signature` passes **1/1 in 0.734 s**, confirming that both distinct
+operands collapse to that signature. Neither control changes emulator code.
+
+Production Wasm was also built from that same isolated inherited source using
+`CARGO_TARGET_DIR="$PWD/target/issue103-operand-negative-build" python3
+scripts/ci-time.py issue103-operand-inherited-web sh
+target/issue103-operand-negative/scripts/build-web.sh`: pass, **6.563 s**.
+A temporary local Chromium probe (`python3 scripts/ci-time.py
+issue103-operand-wasm-control node target/issue103-operand-wasm-control.mjs`)
+serves only the inherited/corrected release bindings and Wasm. It calls
+`reset_bios` with the two checked-in guests, advances with `run_steps`, and
+checks the explicit diagnostic, R1, zero exceptions and untouched success
+sentinel. It passes **32 executions in 1.425 s**: both guests, both builds,
+chunks **1/3/127/10000**, Debug reads enabled/disabled. Inherited word and byte
+probes both stop at **123 clocks / 3 retired instructions**. Corrected word
+rejection stops at **115 / 3**; the byte control remains **123 / 3**. These are
+functional-model observations, not measured physical bus timing.
+
+The committed production `hardwareBoundaries` browser group exercises the new
+word guest and byte control under chunks **1/127/10000**, Debug observation
+on/off. It asserts PC, instruction, operand address/width/direction/reason,
+idle SF/command/deadline snapshot, unchanged success sentinel, zero guest
+exceptions, stationary clocks and identical sticky faults on re-advancement.
+The native test covers chunks **1/3/127/10000**, Debug on/off, with the same
+explicit operand expectations and unchanged SF/sentinel. Each backend compares
+its complete stopping result across its advancement/observation matrix.
+No runtime, scheduling, hardware policy or browser inventory changes.
+
+### Operand-reconstruction validation
+
+Local macOS arm64, stable Rust **1.99.0**, Node **26.12.1**,
+wasm-bindgen **0.2.129**, Playwright **1.58.2**, pinned Chromium
+**145.0.7632.6**. Commands use the installed stable toolchain and matching CLI
+through PATH. Browser commands set
+`PLAYWRIGHT_BROWSERS_PATH="$PWD/target/issue103-browser"`; wall times use
+`python3 scripts/ci-time.py <label> <command>`. Native and browser work overlaps,
+so these are correctness results, not performance baselines or hosted-CI times.
+
+- `npm ci --ignore-scripts`: pass, locked dependencies installed.
+- `cargo test --locked --test smpc_transactions`: **9/9 pass**, zero
+  failures/ignored, **19.504 s** including compilation (**11.60 s** test time).
+- `cargo test --locked`: **1,189 pass**, zero failures/ignored,
+  **511.746 s** including compilation.
+- `cargo build --locked`: pass, **3.902 s**.
+- `cargo clippy --locked --all-targets -- -D warnings`: pass, **4.771 s**.
+- `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings`:
+  pass, **5.392 s**.
+- `sh scripts/check-fixtures.sh`: all **104 registered commands pass**,
+  including regeneration checks for the new sparse BIOS/source, **4.069 s**.
+- `sh scripts/build-web.sh`: production Wasm and matching bindings pass,
+  **6.996 s**.
+- `node --test scripts/ci-runner.test.mjs`: **13/13 pass**, zero
+  failures/skips, **13.667 s** wrapper / **13.579 s** Node time.
+- `npm run test:browser`: **74/74 required groups pass**, **499.683 s**
+  wrapper / **499.455 s** suite. Shared passes **31 groups / 361.670 s**,
+  including `hardwareBoundaries` (**103.278 s**); scenarios passes
+  **43 / 499.196 s**. The aggregator verifies complete coverage, revision and
+  the tested production artifact digest. Both workers finish within the
+  unchanged 1,200-second limit.
+- `cargo fmt --check`, `node --check scripts/hardware-boundaries.mjs`,
+  documentation links/anchor and `git diff --check`: pass.
+
+The initial runner invocation failed because the pinned browser executable was
+absent. The installer was stopped during its download; an existing archive for
+that exact pinned headless-shell revision was CRC-verified with `unzip -tq` and
+extracted with original executable modes into the ignored private test directory.
+The executable reports **145.0.7632.6**. The successful runner invocation uses
+that directory. The setup failure and deliberate inherited-code negative-control
+failure are excluded from passing results. No test assertion or timeout was
+relaxed. No human result, personal firmware, live Pages inspection, push, merge
+or hosted-CI success is claimed.
