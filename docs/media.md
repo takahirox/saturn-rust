@@ -11,6 +11,13 @@ disc, or fetches a codec, firmware or per-title database.
 | Cooked ISO | One `.iso` with whole 2048-byte sectors |
 | CUE/BIN | One `.cue` and its actual referenced BINARY track files, selected together with the picker’s multiple-file selection |
 
+CUE track references (and explicitly requested SRW1 companions) use the full
+selected filename. A unique exact match takes precedence; otherwise ASCII letter
+case differences are tolerated only when exactly one selected file matches.
+Missing names, duplicate exact names and ambiguous case matches are rejected.
+Directory components and non-ASCII characters are preserved without path guessing
+or Unicode normalization. No renaming or conversion is needed for ASCII case alone.
+
 A CUE and its referenced tracks constitute the medium. A lone raw BIN lacks the
 track layout and needs its normal CUE. Ordinary images need no private manifest,
 extracted `GAME.BIN`, patched/rebuilt disc, title-specific JSON, `.srw`, `.sub`,

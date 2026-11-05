@@ -76,7 +76,7 @@ export async function playUi(browser, url) {
     }
     await page.locator("#mode").selectOption("disc");
     await drop(files.slice(0,2));
-    await failed("Missing or ambiguous CUE file reference");
+    await failed("Missing CUE file reference");
     assert(await page.locator("#start").isDisabled());
     await drop(files);
     await ready();
@@ -147,6 +147,62 @@ export async function playUi(browser, url) {
     await ready();
     await page.locator("#mode").selectOption("disc");
     await ready();
+    // Issue #99: the unchanged MIT Hardware Lab CUE references lower-case
+    // names. The picker and drop must both boot the original bytes under
+    // different ASCII spelling, without a sidecar, converter or request.
+    const caseFiles = files.map((file, i) => ({...file,
+      name: i === 1 ? "HARDWARE-LAB.ISO" : i === 2 ? "Hardware-Lab-Audio.BIN" : file.name,
+    }));
+    const picker = selection => page.locator("#disc").setInputFiles(selection.map(file => ({
+      name:file.name, mimeType:"application/octet-stream", buffer:Buffer.from(file.bytes),
+    })));
+    const guest = () => page.evaluate(async () => {
+      const {emulator:m, advanceFrame} = await import("./app.js");
+      for (let i=0; i<40 && m.read_long(0x06010020)!==0x600D; i++) m.run_steps(10000);
+      m.advance_frame();
+      const pcm = Array.from(m.audio_samples(8192));
+      advanceFrame();
+      const frame = m.framebuffer();
+      const canvas = document.getElementById("screen").getContext("2d");
+      return {fields:Array.from({length:11},(_,i)=>m.read_long(0x06010000+i*4)),
+        mode:m.mode(), stereo:pcm.some((v,i)=>i%2===0 && v!==pcm[i+1]),
+        wasm:Array.from(frame.slice(0,4)), canvas:Array.from(canvas.getImageData(0,0,1,1).data)};
+    });
+    const checkGuest = async () => {
+      const result = await guest();
+      assert.deepEqual(result.fields.slice(0,6), [1,1,84,35,42,393984]);
+      assert.equal(result.fields[8], 0x600D);
+      assert.equal(result.fields[10], 0x900);
+      assert.equal(result.mode, "BIOS-less HLE disc");
+      assert(result.stereo);
+      assert.deepEqual(result.wasm, [255,255,255,255]);
+      assert.deepEqual(result.canvas, result.wasm);
+    };
+    const beforeCaseRequests = requests.length;
+    for (const select of [picker, drop]) {
+      await select(caseFiles);
+      await ready();
+      assert.equal(await page.locator("#error").textContent(), "");
+      assert.match(await page.locator("#disc-selection").textContent(), /Hardware-Lab-Audio.BIN/);
+      await checkGuest();
+      // Retained-medium reset needs no selected bytes to be sent again.
+      await page.locator("#restart").click();
+      await ready();
+      await checkGuest();
+      // No exact winner: two ASCII candidates are explicitly ambiguous.
+      await select([...caseFiles, {...caseFiles[2], name:"HARDWARE-LAB-AUDIO.BIN"}]);
+      await failed("Ambiguous CUE file reference");
+      assert(await page.locator("#start").isDisabled());
+      await select(caseFiles.slice(0,2));
+      await failed("Missing CUE file reference");
+      assert(await page.locator("#start").isDisabled());
+      // An exact track wins over an earlier invalid case-fold candidate.
+      const wrongAudio = {...caseFiles[2], bytes:[0]};
+      await select([...caseFiles.slice(0,2), wrongAudio, files[2]]);
+      await ready();
+      await checkGuest();
+    }
+    assert.equal(requests.length, beforeCaseRequests, "Local CUE resolution must make no network requests");
     // Disc-first layout: setup precedes display on narrow screens; every control
     // remains in bounds and the idle display is 4:3 without changing its pixels.
     for (const [width,height] of [[1440,1000],[1024,900],[768,1024],[390,844],[320,700]]) {

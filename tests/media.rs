@@ -290,3 +290,181 @@ fn resource_policy_retains_broader_runtime_layout_and_checked_owned_ranges() {
         .is_err()
     );
 }
+
+// Exercise the same names and bytes through the borrowed native and owned Wasm
+// storage boundaries, including nonzero offsets and reversed file-table order.
+fn cue_apis(
+    cue: &str,
+    files: &[(&str, &[u8])],
+) -> [Result<Media, saturn_rust::disc::DiscError>; 2] {
+    let mut bytes = vec![0xEE; 13];
+    let names: Vec<_> = files
+        .iter()
+        .map(|(name, data)| {
+            let start = bytes.len();
+            bytes.extend_from_slice(data);
+            (*name, start..bytes.len())
+        })
+        .collect();
+    [Media::cue(cue, files), Media::cue_owned(cue, &names, bytes)]
+}
+
+#[test]
+fn cue_ascii_case_single_raw_bin_preserves_complete_sectors() {
+    let cooked: Vec<_> = (0..4096).map(|i| (i ^ (i >> 5)) as u8).collect();
+    let iso = Media::iso(&cooked).unwrap();
+    let raw: Vec<_> = (150..152)
+        .flat_map(|fad| iso.raw_sector(fad).unwrap())
+        .collect();
+    let cue = "FILE \"GAME.BIN\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00";
+    for result in cue_apis(cue, &[("game.bin", &raw)]) {
+        let media = result.unwrap();
+        assert_eq!(media.leadout(), 152);
+        assert_eq!(media.tracks()[0].mode, TrackMode::Mode1);
+        for fad in 150..152 {
+            let offset = (fad - 150) as usize;
+            assert_eq!(
+                media.raw_sector(fad).unwrap(),
+                raw[offset * RAW_SECTOR..(offset + 1) * RAW_SECTOR]
+            );
+            assert_eq!(
+                media.cooked_sector(fad).unwrap(),
+                cooked[offset * 2048..(offset + 1) * 2048]
+            );
+        }
+    }
+}
+
+#[test]
+fn cue_ascii_case_multifile_preserves_order_indices_gaps_toc_and_audio() {
+    let data = vec![0x35; 4096];
+    let audio: Vec<_> = (0..4).flat_map(|n| vec![0x40 + n; RAW_SECTOR]).collect();
+    let cue = "FILE \"DaTa.IsO\" BINARY\nTRACK 01 MODE1/2048\nINDEX 01 00:00:00\nFILE \"MuSiC.BiN\" BINARY\nTRACK 02 AUDIO\nFLAGS PRE DCP\nPREGAP 00:00:01\nINDEX 00 00:00:00\nINDEX 01 00:00:01\nINDEX 02 00:00:02\nPOSTGAP 00:00:01";
+    for result in cue_apis(cue, &[("music.bin", &audio), ("DATA.iso", &data)]) {
+        let media = result.unwrap();
+        assert_eq!(
+            media
+                .tracks()
+                .iter()
+                .map(|t| (t.number, t.mode, t.index0, t.start, t.end))
+                .collect::<Vec<_>>(),
+            [
+                (1, TrackMode::Mode1, 150, 150, 152),
+                (2, TrackMode::Audio, 152, 154, 158)
+            ]
+        );
+        assert_eq!(media.tracks()[1].index(2), Some(155));
+        assert_eq!(media.cooked_sector(151).unwrap(), data[2048..]);
+        assert_eq!(media.raw_sector(152).unwrap(), [0; RAW_SECTOR]);
+        for (fad, n) in [(153, 0), (154, 1), (155, 2), (156, 3)] {
+            assert_eq!(media.raw_sector(fad).unwrap(), [0x40 + n; RAW_SECTOR]);
+        }
+        assert_eq!(media.raw_sector(157).unwrap(), [0; RAW_SECTOR]);
+        assert!(media.cooked_sector(154).is_err());
+        assert_eq!(media.leadout(), 158);
+        let mut toc = [255; 408];
+        toc[..8].copy_from_slice(&[0x41, 0, 0, 150, 0x31, 0, 0, 154]);
+        toc[396..].copy_from_slice(&[0x41, 1, 0, 0, 0x31, 2, 0, 0, 1, 0, 0, 158]);
+        assert_eq!(media.toc(), toc);
+    }
+}
+
+#[test]
+fn cue_ascii_case_exact_winner_and_ambiguous_or_missing_diagnostics() {
+    let cue = "FILE \"GAME.BIN\" BINARY\nTRACK 01 AUDIO\nINDEX 01 00:00:00";
+    let winner = vec![0x31; RAW_SECTOR];
+    let other = vec![0x42; RAW_SECTOR];
+    for files in [
+        vec![
+            ("game.bin", other.as_slice()),
+            ("GAME.BIN", winner.as_slice()),
+        ],
+        vec![
+            ("GAME.BIN", winner.as_slice()),
+            ("game.bin", other.as_slice()),
+        ],
+    ] {
+        for result in cue_apis(cue, &files) {
+            assert_eq!(result.unwrap().raw_sector(150).unwrap(), [0x31; RAW_SECTOR]);
+        }
+    }
+    for (names, error) in [
+        (vec!["other.bin"], "Missing CUE file reference"),
+        (vec!["game.bin", "Game.Bin"], "Ambiguous CUE file reference"),
+        (vec!["Game.Bin", "game.bin"], "Ambiguous CUE file reference"),
+        (vec!["GAME.BIN", "GAME.BIN"], "Ambiguous CUE file reference"),
+        (
+            vec!["game.bin", "GAME.BIN", "GAME.BIN"],
+            "Ambiguous CUE file reference",
+        ),
+    ] {
+        let files: Vec<_> = names.iter().map(|n| (*n, winner.as_slice())).collect();
+        for result in cue_apis(cue, &files) {
+            assert_eq!(result.err().unwrap().0, error);
+        }
+    }
+}
+
+#[test]
+fn cue_ascii_case_preserves_paths_special_characters_and_unicode() {
+    let bytes = [0x45; RAW_SECTOR];
+    for (reference, selected, succeeds) in [
+        ("Dir/Track #1 [é].BIN", "dIR/tRACK #1 [é].bin", true),
+        ("Dir/Track.BIN", "track.bin", false),
+        ("Dir/Track.BIN", "Dir\\track.bin", false),
+        ("É.BIN", "é.bin", false),
+        ("é.BIN", "e\u{301}.bin", false),
+    ] {
+        let cue = format!("FILE \"{reference}\" BINARY\nTRACK 01 AUDIO\nINDEX 01 00:00:00");
+        for result in cue_apis(&cue, &[(selected, &bytes)]) {
+            if succeeds {
+                assert_eq!(result.unwrap().raw_sector(150).unwrap(), bytes);
+            } else {
+                assert_eq!(result.err().unwrap().0, "Missing CUE file reference");
+            }
+        }
+    }
+}
+
+#[test]
+fn cue_ascii_case_optional_companion_uses_the_same_unique_matching_contract() {
+    let audio = [0x42; RAW_SECTOR];
+    let mut valid = b"SRW1".to_vec();
+    valid.extend_from_slice(&150u32.to_be_bytes());
+    valid.extend_from_slice(&1u32.to_be_bytes());
+    valid.extend_from_slice(&[0; 96]);
+    let cue =
+        "REM SATURN_RW \"PACKS.SRW\"\nFILE \"a.bin\" BINARY\nTRACK 01 AUDIO\nINDEX 01 00:00:00";
+    for files in [
+        vec![("a.bin", audio.as_slice()), ("packs.srw", valid.as_slice())],
+        // The exact valid companion wins over an invalid case-fold candidate.
+        vec![
+            ("a.bin", audio.as_slice()),
+            ("packs.srw", b"bad".as_slice()),
+            ("PACKS.SRW", valid.as_slice()),
+        ],
+    ] {
+        for result in cue_apis(cue, &files) {
+            assert_eq!(result.unwrap().raw_sector(150).unwrap(), audio);
+        }
+    }
+    for (names, error) in [
+        (vec![], "Missing SRW1 companion"),
+        (vec!["packs.srw", "Packs.Srw"], "Ambiguous SRW1 companion"),
+        (vec!["PACKS.SRW", "PACKS.SRW"], "Ambiguous SRW1 companion"),
+    ] {
+        let mut files = vec![("a.bin", audio.as_slice())];
+        files.extend(names.iter().map(|n| (*n, valid.as_slice())));
+        for result in cue_apis(cue, &files) {
+            assert_eq!(result.err().unwrap().0, error);
+        }
+    }
+    // A companion cannot alias a track, even through the case fallback.
+    for result in cue_apis(&cue.replace("PACKS.SRW", "A.BIN"), &[("a.bin", &audio)]) {
+        assert_eq!(result.err().unwrap().0, "Ambiguous SRW1 companion");
+    }
+    // No REM directive: ordinary CUE/BIN still needs no companion.
+    for result in cue_apis(cue.split_once('\n').unwrap().1, &[("a.bin", &audio)]) {
+        assert_eq!(result.unwrap().raw_sector(150).unwrap(), audio);
+    }
+}

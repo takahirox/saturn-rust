@@ -67,14 +67,14 @@ export async function cdRw(page) {
   return [rejected,before,emulator.read_long(0x060103fc)];
  },{cue,iso:[...original],audio:[...audio]});
  assert.deepEqual(atomic,[true,0x600d,0x600d],'Failed mount must preserve executing guest state');
- // Exercise the production local-file UI, including the missing companion.
+ // Exercise the production local-file UI: missing and ASCII-case companion lookup.
  await page.locator('#mode').selectOption('disc');
  const file = (name,buffer)=>({name,mimeType:'application/octet-stream',buffer});
  const files=[file('cd-rw.cue',Buffer.from(cue)),file('cd-rw.iso',original),file('cd-rw-audio.bin',audio)];
  await page.locator('#disc').setInputFiles(files);
  await page.waitForFunction(()=>document.getElementById('error').textContent.includes('Missing SRW1'));
  const requests=[];const listener=req=>requests.push(req.url());page.on('request',listener);
- await page.locator('#disc').setInputFiles([...files,file('cd-rw.srw',await readFile('tests/fixtures/cd-rw.srw'))]);
+ await page.locator('#disc').setInputFiles([...files,file('CD-RW.SRW',await readFile('tests/fixtures/cd-rw.srw'))]);
  await page.waitForFunction(()=>document.getElementById('error').textContent==='');
  const loaded=await page.evaluate(async()=>{
   const {emulator}=await import('./app.js');

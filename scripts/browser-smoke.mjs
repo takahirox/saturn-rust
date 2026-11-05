@@ -3464,7 +3464,7 @@ try {
     {name:"hardware-lab.cue",mimeType:"text/plain",buffer:invalidIndices},...labFiles().slice(1)]);
   await lab.waitForFunction(()=>document.getElementById("error").textContent.includes("increasing index numbers"));
   await lab.locator("#disc").setInputFiles(labFiles().slice(0,2));
-  await lab.waitForFunction(()=>document.getElementById("error").textContent.includes("Missing or ambiguous CUE file reference"));
+  await lab.waitForFunction(()=>document.getElementById("error").textContent.includes("Missing CUE file reference"));
   const rejected=await lab.evaluate(async()=>{const {emulator}=await import("./app.js");return {state:emulator.status(),retired:emulator.instruction_count()};});
   assert.match(rejected.state,/Reset/);assert.equal(rejected.retired,"0");
   assert(labRequests.every(r=>r.method==="GET"&&!r.body&&r.url.startsWith(address+prefix)));
