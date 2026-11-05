@@ -686,3 +686,71 @@ fn direct_analog_route_changes_cancel_pending_edges_only_on_the_affected_port() 
         assert_eq!(s.handshake[1].clocks_to_event(), u32::MAX);
     }
 }
+
+#[test]
+fn every_command_deadline_preserves_sf_and_rejected_transaction_state() {
+    for chunk in [1, 3, 127, 10000] {
+        let mut s = Smpc::default();
+        for (command, clocks) in [
+            (2, 807),
+            (3, 807),
+            (7, 807),
+            (8, 1075),
+            (9, 1075),
+            (0x17, 1075),
+            (0x18, 807),
+            (0x19, 807),
+            (0x1a, 807),
+        ] {
+            s.write(0x100063, 1).unwrap();
+            s.write(0x10001f, command).unwrap();
+            let mut left = clocks - 1;
+            while left > 0 {
+                let n = left.min(chunk);
+                s.advance_clocks(n);
+                left -= n;
+            }
+            assert_eq!(s.read(0x100063), Ok(1));
+            let before = s.command_state();
+            assert!(s.write(0x10001f, 8).is_err());
+            assert!(s.write(0x100003, 42).is_err());
+            assert!(s.read(0x10001f).is_err());
+            assert_eq!(before, s.command_state());
+            assert_eq!(s.advance_clocks(1), Some(command));
+            assert_eq!(s.read(0x100063), Ok(0));
+            assert_eq!(s.advance_clocks(1), None);
+            assert_eq!(s.read(0x10005f), Ok(command));
+        }
+    }
+}
+
+#[test]
+fn invalid_register_handshake_and_parameter_policies_do_not_mutate_command_state() {
+    for value in [0, 2, 255] {
+        let mut s = Smpc::default();
+        let before = s.command_state();
+        assert!(
+            matches!(s.write(SMPC+0x63,value), Err(BusError::Smpc(f)) if f.reason == Rejection::InvalidSf)
+        );
+        assert_eq!(s.command_state(), before);
+    }
+    let mut s = Smpc::default();
+    for offset in [1, 3, 0x1f] {
+        assert!(
+            matches!(s.read(SMPC+offset), Err(BusError::Smpc(f)) if f.reason == Rejection::WriteOnly)
+        );
+    }
+    for offset in [0x21, 0x5f, 0x61] {
+        assert!(
+            matches!(s.write(SMPC+offset,0), Err(BusError::Smpc(f)) if f.reason == Rejection::ReadOnly)
+        );
+    }
+    s.write(SMPC + 0x63, 1).unwrap();
+    let before = s.command_state();
+    for command in [1, 4, 5, 0xff] {
+        assert!(
+            matches!(s.write(SMPC+0x1f,command), Err(BusError::Smpc(f)) if f.reason == Rejection::UnsupportedCommand)
+        );
+        assert_eq!(s.command_state(), before);
+    }
+}

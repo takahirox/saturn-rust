@@ -51,7 +51,11 @@ fn phase(b: &mut Bus, address: u32, width: usize, duration: u32, chunk: u32) {
     );
     // Debugger reads cannot age, sample or publish the outstanding phase.
     for _ in 0..3 {
-        b.read32(address & !3).unwrap();
+        if width == 1 {
+            b.read8(address).unwrap();
+        } else {
+            b.read32(address & !3).unwrap();
+        }
     }
     assert_eq!(b.transactions.active.as_ref().unwrap().remaining, duration);
     elapse(b, duration, chunk);

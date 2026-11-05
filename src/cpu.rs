@@ -427,6 +427,19 @@ impl Cpu {
             return Ok(());
         }
         let opcode = self.fetch.select(bus, pc).map_err(access)?;
+        // Retain only the already decoded instruction on a rejected SMPC
+        // operand. Never re-read firmware or devices for diagnostics. Buffered
+        // writes may fault after retirement, when this opcode is unavailable.
+        let access = |source| CpuError::Bus {
+            pc,
+            source: match source {
+                BusError::Smpc(mut fault) => {
+                    fault.instruction = Some(opcode);
+                    BusError::Smpc(fault)
+                }
+                other => other,
+            },
+        };
         // H §6.3.2: a before-execution break requires a successfully fetched
         // instruction. A fetch failure or speculative fill cannot cause it.
         if bus.instruction_break(pc, false)

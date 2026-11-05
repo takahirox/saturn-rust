@@ -403,7 +403,8 @@ test("CI gates publication on both suites and retains the actually tested assets
   assert.equal(JSON.parse(await readFile("package.json", "utf8")).scripts["test:browser"], "node scripts/browser-suite.mjs");
   // Exact registry: moving commands must not lose fixtures/options.
   const fixtures = (await readFile("scripts/check-fixtures.sh", "utf8")).split("\n").filter(s => s.startsWith("python3 "));
-  assert.equal(fixtures.length, 103);
+  assert.equal(fixtures.length, 104);
+  assert(fixtures.includes("python3 tests/fixtures/build_smpc_transactions.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_interrupt_entry.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_external_startup.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_cd_runtime.py --check"));

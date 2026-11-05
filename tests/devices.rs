@@ -7,10 +7,7 @@ use saturn_rust::{
 #[test]
 fn digital_pad_direct_port_obeys_direction_selection_and_active_low_buttons() {
     let mut bus = Bus::default();
-    assert!(matches!(
-        bus.read8(SMPC + 0x75),
-        Err(BusError::UnsupportedDevice { .. })
-    ));
+    assert!(matches!(bus.read8(SMPC + 0x75), Err(BusError::Smpc(_))));
     bus.write8(SMPC + 0x79, 0x60).unwrap();
     bus.write8(SMPC + 0x7D, 1).unwrap();
     bus.write8(SMPC + 0x7F, 0).unwrap();
@@ -80,7 +77,9 @@ fn both_digital_ports_have_independent_direction_selection_and_enable_bits() {
     assert!(bus.read8(SMPC + 0x75).is_ok());
     assert!(bus.read8(SMPC + 0x7B).is_err()); // Write-only DDR2.
     bus.advance_clocks(54).unwrap();
-    assert_eq!(bus.read16(SMPC + 0x76), Ok(0xFF7C)); // odd input lane, even pull-up
+    assert!(bus.read16(SMPC + 0x76).is_err()); // ST-169 byte-only
+    assert_eq!(bus.read8(SMPC + 0x77), Ok(0x7C));
+    assert_eq!(bus.read8(SMPC + 0x76), Ok(0xFF)); // disconnected even lane
 }
 
 #[test]

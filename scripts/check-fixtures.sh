@@ -17,6 +17,7 @@ python3 tests/fixtures/build_bsc_share.py --check
 python3 tests/fixtures/build_bsc_memory.py --check
 python3 tests/fixtures/build_refresh.py --check
 python3 tests/fixtures/build_smpc_boundaries.py --check
+python3 tests/fixtures/build_smpc_transactions.py --check
 python3 tests/fixtures/build_sh2_timing.py --check
 python3 tests/fixtures/build_sh2_load.py --check
 python3 tests/fixtures/build_sh2_store.py --check

@@ -4,7 +4,9 @@
 use crate::bus::BusError;
 use crate::devices::SMPC;
 mod controller;
+pub mod diagnostics;
 use controller::{Analog, DigitalMux, Handshake};
+use diagnostics::Rejection;
 const REFERENCE_HZ: u64 = 26_874_100;
 
 /// SMPC ST-169 §2.4.2 OREG9: physical console area straps. Region is
@@ -454,9 +456,6 @@ impl Smpc {
         }
         self.output[31] = 0x10;
     }
-    fn unsupported(address: u32) -> BusError {
-        BusError::UnsupportedDevice { address, width: 1 }
-    }
     fn port_select(&self, port: usize) -> u8 {
         (self.pdr[port] & self.ddr[port])
             | (!self.ddr[port] & 0x7F & !(0x40 * u8::from(!self.th[port])))
@@ -472,7 +471,12 @@ impl Smpc {
                 let port = ((offset - 0x75) / 2) as usize;
                 let bit = 1 << port;
                 if self.iosel & bit == 0 {
-                    return Err(Self::unsupported(address));
+                    return Err(self.access_fault(
+                        address,
+                        1,
+                        None,
+                        Rejection::UnsupportedRegister,
+                    ));
                 }
                 // ST-169 §1.2: input pins and output latches share PDR; DDR
                 // controls each bit independently, including TH used by EXLE.
@@ -485,7 +489,13 @@ impl Smpc {
                 };
                 Ok((self.pdr[port] & self.ddr[port]) | (pins & !self.ddr[port]))
             }
-            _ => Err(Self::unsupported(address)),
+            offset @ 1..=0x0D if offset & 1 != 0 => {
+                Err(self.access_fault(address, 1, None, Rejection::WriteOnly))
+            }
+            0x1F | 0x79 | 0x7B | 0x7D | 0x7F => {
+                Err(self.access_fault(address, 1, None, Rejection::WriteOnly))
+            }
+            _ => Err(self.access_fault(address, 1, None, Rejection::UnsupportedRegister)),
         }
     }
     pub fn write(&mut self, address: u32, value: u8) -> Result<(), BusError> {
@@ -507,11 +517,35 @@ impl Smpc {
                         self.peripheral_phase = true;
                     }
                 } else if self.busy() {
-                    return Err(Self::unsupported(address));
+                    return Err(self.access_fault(
+                        address,
+                        1,
+                        Some(u32::from(value)),
+                        Rejection::Busy,
+                    ));
                 }
                 self.input[i] = value;
             }
             0x63 if value == 1 => self.sf = true,
+            0x63 => {
+                return Err(self.access_fault(
+                    address,
+                    1,
+                    Some(u32::from(value)),
+                    Rejection::InvalidSf,
+                ));
+            }
+            0x1F if self.busy() => {
+                return Err(self.access_fault(address, 1, Some(u32::from(value)), Rejection::Busy));
+            }
+            0x1F if !self.sf => {
+                return Err(self.access_fault(
+                    address,
+                    1,
+                    Some(u32::from(value)),
+                    Rejection::MissingSf,
+                ));
+            }
             0x1F if self.sf && !self.busy() => {
                 let clocks = match value {
                     0 | 2 | 3 | 6 | 7 | 0x18 | 0x19 | 0x1A => Self::CPU_COMMAND_CLOCKS,
@@ -527,7 +561,18 @@ impl Smpc {
                     {
                         Self::STATUS_CLOCKS
                     }
-                    _ => return Err(Self::unsupported(address)),
+                    _ => {
+                        return Err(self.access_fault(
+                            address,
+                            1,
+                            Some(u32::from(value)),
+                            if matches!(value, 0x10 | 0x16) {
+                                Rejection::InvalidParameters
+                            } else {
+                                Rejection::UnsupportedCommand
+                            },
+                        ));
+                    }
                 };
                 self.command = value;
                 self.output[31] = value;
@@ -553,7 +598,22 @@ impl Smpc {
             0x7B => self.ddr[1] = value & 0x7F,
             0x7D => self.iosel = value & 3,
             0x7F => self.exle = value & 3,
-            _ => return Err(Self::unsupported(address)),
+            offset @ 0x21..=0x61 if offset & 1 != 0 => {
+                return Err(self.access_fault(
+                    address,
+                    1,
+                    Some(u32::from(value)),
+                    Rejection::ReadOnly,
+                ));
+            }
+            _ => {
+                return Err(self.access_fault(
+                    address,
+                    1,
+                    Some(u32::from(value)),
+                    Rejection::UnsupportedRegister,
+                ));
+            }
         }
         for port in 0..2 {
             self.digital[port].select(self.port_select(port));

@@ -4010,3 +4010,34 @@ ordering remain emulator conventions. Full cross-chip arbitration, arbitrary
 asynchronous CDC/GFS calls, real Sega BIOS/SDK ABI, commercial games and complete
 CD controller/connector/timing conformance are not verified. No wider #17
 acceptance or #81/#82 endpoint evidence finding is resolved by this increment.
+
+
+## SMPC command access investigation (#103)
+
+Related to #103 and #17. [The validation record](validation-issue-103.md)
+reconciles ST-169 §1.2/fig1.3, §2.2/table2.4, §§2.3–2.5 and §3
+with SH7604 table4.6/§7.11.2 and SCU §1.2/§2.1. COMREG/IREG reads remain
+explicit unsupported write-only accesses. SF/command/results, busy state,
+INTBACK and real SCU IRQ sequencing retain their existing functional model.
+
+A proven defect allowed prohibited word/longword SMPC operands to become byte
+register operations. The bus now rejects them before any side effect, including
+CPU aliases and BSC decomposition. Five independent inherited-main negative
+controls fail: four original ROMs reach their prohibited-success sentinel and a
+host COMREG word write succeeds. The corrected native/Wasm guests reject all
+four widths/directions; accepted byte-command results and IRQs still execute.
+Rejection is an emulator policy, not a measured electrical fault/open-bus result.
+
+`src/smpc/diagnostics.rs` and the opt-in native/Wasm diagnostic query record the
+access direction, operand, reason, CPU/PC, available instruction, SF, pending
+command/remaining clocks, INTBACK flags, IREGs and result status without additional
+guest transactions. Original MIT reset-vector guests and independent native
+clock-boundary tests cover real outputs, failure-state atomicity, Debug observation,
+chunk partitions and reset cancellation. The fixture registry includes their
+reproduction command; the existing `hardwareBoundaries` browser group is expanded.
+
+The original one-byte access at private BIOS PC 0000025C remains unclassified;
+no documented valid byte-command rejection has been demonstrated. This width
+correction does not claim to resolve that symptom, produce a stock menu, or
+complete SMPC/#17. Do not close #103 on that evidence alone. Remaining timing,
+CPU-specific command-issuance restrictions and wider hardware scope are unchanged.

@@ -18,6 +18,59 @@ async function load(page,name,image) {
 }
 
 export async function hardwareBoundaries(page) {
+  const transactionRom = await rom("smpc-transactions");
+  const transactionExpected = (await readFile("tests/fixtures/smpc-transactions.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v, 16));
+  let transactionReference;
+  for (const chunk of [1, 127, 10000]) {
+    await load(page, "smpc-transactions", transactionRom);
+    const result = await page.evaluate(async ({chunk, count}) => {
+      const {emulator} = await import("./app.js");
+      for (let left = 10000; left > 0;) {
+        const n = Math.min(left, chunk); emulator.run_steps(n); left -= n;
+        emulator.registers(); emulator.read_long(0x0601a000);
+        if (emulator.smpc_fault_diagnostics() !== undefined) throw Error("unexpected SMPC fault");
+      }
+      return {trace: Array.from({length: count}, (_, i) => emulator.read_long(0x0601a000 + i*4)),
+        exceptions: emulator.exception_count(), clocks: emulator.peripheral_clocks(), instructions: emulator.instruction_count()};
+    }, {chunk, count: transactionExpected.length});
+    assert.deepEqual(result.trace, transactionExpected);
+    assert.equal(result.exceptions, "1");
+    transactionReference ??= result;
+    assert.deepEqual(result, transactionReference, `SMPC chunk ${chunk} with Debug observation`);
+  }
+  for (const [name, reason, direction, width] of [
+    ["read", "WriteOnly", "read", 1], ["missing-sf", "MissingSf", "write", 1],
+    ["invalid-sf", "InvalidSf", "write", 1], ["busy", "Busy", "write", 1],
+    ["command", "UnsupportedCommand", "write", 1], ["parameters", "InvalidParameters", "write", 1],
+    ["word", "ByteOnly", "write", 2], ["long", "ByteOnly", "write", 4],
+    ["word-read", "ByteOnly", "read", 2], ["long-read", "ByteOnly", "read", 4],
+  ]) {
+    const image = await rom(`smpc-fault-${name}`);
+    let reference;
+    for (const chunk of [1, 127, 10000]) {
+      await load(page, `smpc-fault-${name}`, image);
+      const result = await page.evaluate(async chunk => {
+        const {emulator} = await import("./app.js");
+        let message;
+        for (let i = 0; i < 10000; i++) {
+          try { emulator.run_steps(chunk); } catch (error) { message = String(error); break; }
+        }
+        const clocks = emulator.peripheral_clocks();
+        const details = emulator.smpc_fault_diagnostics();
+        const before = emulator.read_long(0x0601a200);
+        const detailsAgain = emulator.smpc_fault_diagnostics();
+        return {message, details, clocks, stationary: clocks === emulator.peripheral_clocks() && details === detailsAgain, before};
+      }, chunk);
+      assert.match(result.message, new RegExp(`${width}-byte ${direction}.*${reason}`));
+      assert.match(result.details, /Master SH-2 PC=0x.*main_clock: Some/);
+      assert.match(result.details, /remaining:.*input:/);
+      if (name === "busy") assert.match(result.details, /pending: Some\(9\).*remaining: Some/);
+      assert.equal(result.stationary, true); assert.equal(result.before, 0);
+      reference ??= result; assert.deepEqual(result, reference, `${name}, chunk ${chunk}`);
+    }
+    await page.locator("#reset").click();
+    assert.equal(await page.evaluate(async () => (await import("./app.js")).emulator.smpc_fault_diagnostics()), undefined);
+  }
   const commandReport=await rom("smpc-command-report");
   const commandExpected=(await readFile("tests/fixtures/smpc-command-report.tsv","utf8")).trim().split(/\r?\n/).map(v=>parseInt(v,16));
   await load(page,"smpc-command-report",commandReport);

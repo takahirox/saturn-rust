@@ -416,6 +416,17 @@ line back table), or opaque black. Reserved display encodings and 256-line mode 
 Unsupported enabled effects still fail explicitly. Register readback for
 implemented write-only VDP2 controls remains a debugger convenience.
 
+SMPC register operands are byte-only (ST-169 §1.2/fig1.3). Word/longword
+accesses now fail before register mutation or physical bus decomposition. This
+is a bounded policy for prohibited widths, not a physical bus-error assertion.
+COMREG and IREG remain write-only; no command echo or guessed open-bus value is
+returned. Rejected SMPC accesses carry direction, operand, reason and a command
+state snapshot. The explicit local native/Wasm `smpc_fault_diagnostics()` query
+adds CPU/PC, already available instruction and timing context without device
+reads or persistence. See the [Issue #103 register matrix and evidence](validation-issue-103.md).
+The reported private BIOS byte transaction remains unverified; the independently
+reproduced wide-access defect does not explain it or establish BIOS-menu support.
+
 SMPC uses byte accesses: PDR1/PDR2 +75/+77, DDR1/DDR2 +79/+7B,
 IOSEL +7D, EXLE +7F (relative to
 00100000, often accessed at 20100000). DDR1=60, IOSEL1=1 and EXLE1=0 select
