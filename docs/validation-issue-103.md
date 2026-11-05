@@ -227,3 +227,19 @@ Hosted GitHub Actions, publication, live Pages, proprietary ROMs and real device
 were not invoked. This node must not push, open a PR, comment or merge. The original
 private-BIOS transaction and general BIOS/menu/retail compatibility remain
 unverified; no unavailable owner investigation is made a mandatory gate.
+
+## PR publication reference correction
+
+Review found that PR #104's Related Issues section used a closing reference for
+this partial increment. Replaced it with `Related to #103.` and removed the
+contradictory closure-target explanation. Exact GitHub body readback confirms
+the replacement, open/draft PR state and unchanged published head
+`0eb49111f9182e9aef63a1150c831ed03e395432`. Checkpoint publication must preserve
+the plain reference, as recorded in [the contributor guidance](../AGENTS.md).
+Keep #103 open and PR #104 in draft; this correction does not resolve the
+remaining acceptance criteria or explain the original one-byte fault.
+
+Validation for this PR-body and documentation correction: exact PR metadata
+readback, local Markdown links/anchors and Git whitespace checks passed. Runtime
+files are unchanged, so runtime suites were not rerun; their earlier results
+remain recorded above. No push or merge was performed.

@@ -20,3 +20,10 @@ a closing reference from the Run's source Issue. Keep #81 open and PR #82 in dra
 while the mandatory SCU endpoint evidence finding in
 [the validation record](docs/validation-issue-81.md#remaining-acceptance-limits)
 remains unresolved. This publication rule does not waive that finding.
+
+For the partial Issue #103 increment, PR #104 must use `Related to #103` in its
+Related Issues section, including during checkpoint publication. Do not regenerate
+a closing reference from the Run's source Issue. Keep #103 open and PR #104 in
+draft while the remaining acceptance criteria in
+[the validation record](docs/validation-issue-103.md#finding-and-scope) remain
+unresolved. The width correction does not explain the reported one-byte fault.
