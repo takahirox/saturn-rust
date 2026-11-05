@@ -78,6 +78,30 @@ pub struct Media {
 fn invalid(message: &str) -> DiscError {
     DiscError(message.into())
 }
+// Resolve only the supplied full name. Exact spelling wins; ASCII fallback
+// must be unique too. Never guess a basename, normalize Unicode or open a path.
+fn resolve_cue_file(
+    files: &[(&str, &[u8])],
+    name: &str,
+    reference: &str,
+) -> Result<usize, DiscError> {
+    for exact in [true, false] {
+        let mut matches = files.iter().enumerate().filter(|(_, (candidate, _))| {
+            if exact {
+                *candidate == name
+            } else {
+                candidate.eq_ignore_ascii_case(name)
+            }
+        });
+        if let Some((index, _)) = matches.next() {
+            if matches.next().is_some() {
+                return Err(invalid(&format!("Ambiguous {reference}")));
+            }
+            return Ok(index);
+        }
+    }
+    Err(invalid(&format!("Missing {reference}")))
+}
 fn time(text: &str) -> Result<u32, DiscError> {
     let fields: Vec<_> = text.split(':').collect();
     if fields.len() != 3 {
@@ -284,15 +308,7 @@ impl Media {
                     if !kind.trim().eq_ignore_ascii_case("BINARY") {
                         return Err(invalid("CUE FILE requires BINARY bytes"));
                     }
-                    let matches: Vec<_> = files
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, (n, _))| *n == name)
-                        .collect();
-                    if matches.len() != 1 {
-                        return Err(invalid("Missing or ambiguous CUE file reference"));
-                    }
-                    file = Some(matches[0].0);
+                    file = Some(resolve_cue_file(files, name, "CUE file reference")?);
                 }
                 "TRACK" => {
                     let fields: Vec<_> = rest.split_whitespace().collect();
@@ -516,14 +532,11 @@ impl Media {
             chd: None,
         };
         if let Some(name) = rw_file {
-            let mut matches = files.iter().enumerate().filter(|(_, (n, _))| *n == name);
-            let (i, (_, bytes)) = matches
-                .next()
-                .ok_or_else(|| invalid("Missing SRW1 companion"))?;
-            if matches.next().is_some() || tracks.iter().any(|t| t.file == i) {
+            let i = resolve_cue_file(files, name, "SRW1 companion")?;
+            if tracks.iter().any(|t| t.file == i) {
                 return Err(invalid("Ambiguous SRW1 companion"));
             }
-            media.with_subchannel(bytes)
+            media.with_subchannel(files[i].1)
         } else {
             Ok(media)
         }
