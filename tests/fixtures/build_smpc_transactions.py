@@ -247,6 +247,75 @@ def issuer_guests():
     return files
 
 
+def read_path_guests():
+    """ST-169 fig1.3; SH7604 §§8.4.1/9.3.8: real cache/DMAC paths.
+
+    OREG0..7 are individually readable. Disabling width rejection lets both
+    the burst and refill succeed, with no unrelated write-only/unsupported
+    byte to mask that regression. All setup is guest code.
+    """
+    from build_scu import store
+    files = {}
+    park = 'park:\nsleep\nbra park\nnop\n'
+    # End completed probes with an explicit write-only read. The existing
+    # bounded diagnostic exposes all IREG/pending state in both backends;
+    # this observation itself must have no guest-visible side effects.
+    snapshot = 'load 0x2010001f,r1\nmov.b @r1,r0\n' + byte(0x2601f080, 0x55) + park
+    # SF is reserved but no command is issued: state cannot change with time.
+    setup = 'load 0x2601f000,r8\n' + byte(0x20100063, 1)
+    for i, value in enumerate([0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde]):
+        setup += byte(0x20100001 + i*2, value)
+    status = ''.join(read(at, 1) for at in [0x20100063, 0x20100061, 0x2010005f])
+    # Fetch through P1 so enabling cache cannot fault on an instruction refill.
+    vectors = [(0, 0x2000), (2, 0x0200)]
+    for name, address, ccr in [('cache', 0x00100021, 0x11),
+                               ('cache-through', 0x20100021, 0x11),
+                               ('cache-disabled', 0x00100021, 0x15)]:
+        s = setup + status + byte(0xfffffe92, ccr)
+        s += f'load {address:#x},r1\nload 0x20001000,r3\njmp @r3\nnop\n'
+        probe = ('mov.b @r1,r0\nextu.b r0,r0\n' + record() +
+                 byte(0xfffffe92, 0) + status +
+                 'load 0x600d,r0\n' + record() + snapshot)
+        code = assembler.assemble(probe, base=0x1000)
+        operands = vectors + [(0x1000+i, int.from_bytes(code[i:i+2], 'big'))
+                              for i in range(0, len(code), 2)]
+        guest = 'smpc-read-' + name
+        extra, _ = encode(guest, s, operands)
+        extra[guest + '.s'] = ('; Reset entry at P1 0x20000200\n' + s +
+                              '; Byte probe at P1 0x20001000\n' + probe).encode()
+        files.update(extra)
+    for name, source in [('dma', 0x00100020), ('dma-ram', 0x2601f200)]:
+        s = setup + status
+        for i, value in enumerate([0x12345678, 0x89abcdef, 0x13579bdf, 0x2468ace0]):
+            s += store(0x2601f200+i*4, value) + store(0x2601f100+i*4, 0xa5a5a5a5)
+        # Auto-request, burst, 16-byte units, increment destination, four longs.
+        for at, value in [(0xffffff80, source), (0xffffff84, 0x2601f100),
+                          (0xffffff88, 4), (0xffffff8c, 0x4e11), (0xffffffb0, 1)]:
+            s += store(at, value)
+        s += ('load 0xffffff8c,r1\nwait_dma:\nmov.l @r1,r0\ntst #2,r0\nbt wait_dma\n'
+              'mov #0,r0\n' + record() + 'load 0x20001800,r3\njmp @r3\nnop\n')
+        # Vector10 entry publishes the failure context from the actual stack.
+        handler = 'mov #10,r0\n' + record()
+        handler += 'mov.l @r15,r0\n' + record() + 'mov r15,r1\nadd #4,r1\nmov.l @r1,r0\n' + record()
+        handler += 'load 0x20001800,r3\njmp @r3\nnop\n'
+        report = ''.join(read(at) for at in [0xffffffb0, 0xffffff80, 0xffffff84,
+                                            0xffffff88, 0xffffff8c])
+        report += status + ''.join(read(0x2601f100+i*4) for i in range(4))
+        report += 'load 0x600d,r0\n' + record() + snapshot
+        operands = vectors + [(40, 0x2000), (42, 0x1400)]
+        for base, code_source in [(0x1400, handler), (0x1800, report)]:
+            code = assembler.assemble(code_source, base=base)
+            operands += [(base+i, int.from_bytes(code[i:i+2], 'big'))
+                         for i in range(0, len(code), 2)]
+        guest = 'smpc-read-' + name
+        extra, _ = encode(guest, s, operands)
+        extra[guest + '.s'] = ('; Reset entry at P1 0x20000200\n' + s +
+                              '; Vector10 at P1 0x20001400\n' + handler +
+                              '; Report at P1 0x20001800\n' + report).encode()
+        files.update(extra)
+    return files
+
+
 def build():
     s = 'load 0x2601a000,r8\n'
     s += read(0x20100063, 1) + read(0x2010005f, 1)
@@ -309,6 +378,7 @@ def build():
     files.update(timed_peripherals())
     files.update(reset_guests())
     files.update(issuer_guests())
+    files.update(read_path_guests())
     return files
 
 

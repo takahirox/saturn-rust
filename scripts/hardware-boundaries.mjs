@@ -27,6 +27,86 @@ export async function hardwareBoundaries(page) {
     assert.deepEqual([String(turns), result.clocks, result.instructions, result.exceptions],
       progress.get(name), `${name}: Wasm progress must match the shared native oracle`);
   }
+  // Real SH-2 reset-vector guests configure DMAC/cache with instructions.
+  // DMA errors enter vector10; the handler records AE, remaining count,
+  // saved PC/SR and untouched destination. A deliberate COMREG byte read
+  // after completed probes exposes hidden SMPC state through the existing
+  // diagnostic, distinct from the DMA error or the cache refill rejection.
+  for (const name of ["dma", "dma-ram", "cache", "cache-through", "cache-disabled"]) {
+    const image = await rom(`smpc-read-${name}`);
+    let reference;
+    for (const chunk of [1, 3, 127, 10000]) {
+      for (const observe of [false, true]) {
+        const result = await page.evaluate(async ({image, chunk, observe}) => {
+          const {Emulator} = await import("./pkg/saturn_rust.js");
+          const emulator = new Emulator();
+          try {
+            emulator.reset_bios(Uint8Array.from(atob(image), c => c.charCodeAt(0)));
+            let message;
+            for (let left = 10000; left > 0;) {
+              const n = Math.min(left, chunk);
+              try { emulator.run_steps(n); } catch (e) { message = String(e); }
+              left -= n;
+              if (observe) {
+                emulator.registers(); emulator.smpc_fault_diagnostics();
+                emulator.read_long(0x0601f000);
+                // Debug must not acknowledge DMAOR.AE or CHCR.TE.
+                emulator.read_long(0xffffffb0); emulator.read_long(0xffffff8c);
+              }
+              if (message) break;
+            }
+            const clocks = emulator.peripheral_clocks();
+            const details = emulator.smpc_fault_diagnostics();
+            let repeated;
+            try { emulator.run_steps(1); } catch (e) { repeated = String(e); }
+            return {message, repeated, details,
+              unchanged: details === emulator.smpc_fault_diagnostics(),
+              clocks, stationary: clocks === emulator.peripheral_clocks(),
+              instructions: emulator.instruction_count(), exceptions: emulator.exception_count(),
+              lastException: emulator.last_exception(),
+              registers: Array.from(emulator.registers()), special: Array.from(emulator.special_registers()),
+              trace: Array.from({length: 20}, (_, i) => emulator.read_long(0x0601f000 + i*4)),
+              sentinel: emulator.read_long(0x0601f080)};
+          } finally { emulator.free(); }
+        }, {image: image.toString("base64"), chunk, observe});
+        assertProgress(`smpc-read-${name}`, 0, result);
+        assert.equal(result.repeated, result.message);
+        assert.equal(result.stationary, true); assert.equal(result.unchanged, true);
+        assert.equal(result.sentinel, 0);
+        assert.match(result.details, /sf: true, busy: false, command: 0, pending: None, remaining: None/);
+        assert.match(result.details, /await_continue: false, await_vblank: false, peripheral_phase: false/);
+        assert.match(result.details, /input: \[18, 52, 86, 120, 154, 188, 222\], status: 0, command_report: 0/);
+        assert.match(result.details, new RegExp(`main_clock: Some\\(${result.clocks}\\), instruction: Some\\(24592\\)`));
+        const expected = [1, 0, 0];
+        if (name === "cache") {
+          assert.match(result.message, /PC 0x20001000.*1-byte read at 0x00100021.*cache refill: 4-byte read at 0x00100024.*ByteOnly/);
+          assert.match(result.details, /Master SH-2 PC=0x20001000.*address: 1048609, width: 1, write: None, reason: ByteOnly/);
+          assert.match(result.details, /refill: Some\(ReadUnit \{ address: 1048612, width: 4 \}\)/);
+          assert.equal(result.special[0], 0x20001000);
+        } else {
+          assert.match(result.message, /1-byte read at 0x2010001F.*WriteOnly/);
+          const pc = name.startsWith("dma") ? "200018E8" : "20001078";
+          assert.match(result.details, new RegExp(`Master SH-2 PC=0x${pc}.*address: 537919519, width: 1, write: None, reason: WriteOnly`));
+          assert.match(result.details, /refill: None/);
+          assert.equal(result.special[0], parseInt(pc, 16));
+          if (name === "dma") {
+            expected.push(10, 0x20000444, 0xf0, 5, 0x00100020, 0x2601f100, 4, 0x4e11,
+              1, 0, 0, ...Array(4).fill(0xa5a5a5a5), 0x600d);
+            assert.equal(result.lastException, "Vector 10 · saved PC 0x20000444");
+          } else if (name === "dma-ram") {
+            expected.push(0, 1, 0x2601f210, 0x2601f110, 0, 0x4e13, 1, 0, 0,
+              0x12345678, 0x89abcdef, 0x13579bdf, 0x2468ace0, 0x600d);
+          } else {
+            expected.push(0, 1, 0, 0, 0x600d);
+          }
+        }
+        if (name !== "dma") assert.equal(result.lastException, "none");
+        assert.deepEqual(result.trace, expected.concat(Array(20 - expected.length).fill(0)));
+        reference ??= result;
+        assert.deepEqual(result, reference, `${name}, chunk ${chunk}, observe ${observe}`);
+      }
+    }
+  }
   // H §§4.8.2–3 exception cycles retain their full operand width even for
   // unaligned SP/VBR. Byte splitting must not mutate IREGs or read SR/SF.
   for (const name of ["stack", "vector"]) {

@@ -1039,3 +1039,126 @@ After publication, require both hosted browser jobs and the aggregate `build`
 gate to succeed; do not treat the timing estimates or local suite as that result.
 Keep #103 open and PR #104 draft with `Related to #103` in Related Issues while
 the limits in [Finding and scope](#finding-and-scope) remain unresolved.
+
+## Review follow-up: scheduled DMA and cache read guests
+
+Related to #103. The earlier `smpc_read_context` tests called CpuBus directly;
+they did not establish reset-vector guest execution through Machine's scheduled
+replay, DMAC error handling or CPU fault propagation. This follow-up changes
+validation only. The existing [fixture builder](../tests/fixtures/build_smpc_transactions.py)
+now emits five original MIT 512 KiB BIOS images (sparse hex plus assembly,
+licensed by the adjacent LICENSE). Native [guest tests](../tests/smpc_read_guests.rs)
+and the required production `hardwareBoundaries` Chromium/Wasm group execute
+the identical images. Hosts select firmware, advance the machine and inspect
+results; all SMPC/cache/DMAC setup and mailbox writes are SH-2 instructions.
+
+| Guest | Executed path and assertions |
+| --- | --- |
+| `smpc-read-dma` | Guest programs SAR0=00100020, DAR0=2601F100, TCR0=4, CHCR0=4E11 (auto-request, burst, 16-byte unit, increment destination), then DMAOR.DME. The first longword must be rejected before BSC byte decomposition. DMAC latches AE and enters real vector10 despite SR.I=15; the guest handler records saved PC=20000444/SR=F0, DMAOR=5, unchanged SAR/DAR/TCR/CHCR and all four A5A5A5A5 destination sentinels. Exactly one exception occurs. This is the existing DMAC error policy, not a claim of measured Saturn electrical response. |
+| `smpc-read-dma-ram` | Same configuration with RAM source containing 12345678/89ABCDEF/13579BDF/2468ACE0. Four longwords arrive, SAR/DAR advance by 16, TCR=0, TE=1, AE=0, no exception. This exercises successful scheduled replay rather than rejecting all DMA. |
+| `smpc-read-cache` | Guest purges/enables cache (CCR=11) and executes MOV.B @R1,R0 (6010) at P1 PC=20001000 with R1=00100021. The fault retains the one-byte OREG operand and separately records the first generated four-byte refill at 00100024, `ByteOnly`, instruction and stopping clock. No result/success marker is published. P1 instruction fetch isolates the data refill. |
+| `smpc-read-cache-through` | Same cache setup and byte instruction, through P1 address 20100021. It reads the actual zero OREG value and publishes the completion marker. |
+| `smpc-read-cache-disabled` | Same physical byte address with data refill disabled (CCR=15). It also reads zero and completes. |
+
+OREG0–7 are individually readable. Disabling width rejection therefore allows
+both the burst and refill to succeed, rather than merely failing later at a
+write-only or unsupported lane. Removing only the complete-unit guard still
+hits a later BSC two-byte width rejection, but changes the scheduled stopping
+clock; the shared progress oracle detects that distinct regression as well.
+The expected rejection follows the existing
+ST-169 §1.2/fig1.3 byte-only policy; SH7604 §8.4.1/fig8.4 supplies refill order,
+and §9.3.8 supplies the four-read DMAC unit. No new hardware behavior is inferred.
+
+Every guest reserves SF and writes seven distinct IREG bytes without issuing a
+command. Its expected state is idle with SF=1, inputs 12/34/56/78/9A/BC/DE,
+no pending command/deadline/INTBACK phase and zero command/report/status. Native
+tests compare the entire command-state structure. To expose that same hidden
+state with the existing production Wasm API, the four completed probes end
+with a deliberate write-only COMREG byte read **after** publishing their real
+results. Its `WriteOnly` snapshot is separate from the handled DMA error;
+the cache fault instead supplies its own `ByteOnly` snapshot. The snapshot read
+does not change device state. Tests assert every state field, instruction,
+clock, PC, reason, operand/refill context and an unexecuted post-fault sentinel.
+Repeated advancement must return the identical error with stationary clocks
+and state. No host diagnostic is mistaken for a guest DMA exception.
+
+All five run under chunks **1/3/127/10000**, with Debug inspection enabled and
+disabled (**40 executions per backend**). Inspection includes CPU registers,
+mailboxes, fault snapshots and DMAOR/CHCR; Debug must not acknowledge AE or TE.
+Each backend compares its complete stopping result across that matrix. Both
+also assert these shared checked-in progress records, extending
+[`smpc-progress.tsv`](../tests/fixtures/smpc-progress.tsv):
+
+| Guest suffix | Main clocks | Retired master instructions | Exceptions |
+| --- | ---: | ---: | ---: |
+| dma | 4108 | 271 | 1 |
+| dma-ram | 4069 | 268 | 0 |
+| cache | 1503 | 95 | 0 |
+| cache-through | 2086 | 135 | 0 |
+| cache-disabled | 2086 | 135 | 0 |
+
+These are functional-model regression counts, not physical-cycle measurements.
+The private one-byte COMREG failure remains unclassified. Keep #103 open and
+PR #104 draft with `Related to #103`; no push, merge, human confirmation or
+hosted-CI success is claimed by this local follow-up.
+
+### Scheduled-read validation results
+
+Local macOS arm64, rustup stable Rust **1.99.0**, Node **26.12.1**,
+wasm-bindgen **0.2.129**, Playwright **1.58.2**, pinned Chromium
+**145.0.7632.6**. Commands use the installed stable toolchain/CLI through PATH;
+browser commands set `PLAYWRIGHT_BROWSERS_PATH="$PWD/target/issue103-browser"`.
+The existing `python3 scripts/ci-time.py <label> <command>` wrapper records
+wall time. No runtime code, scheduler, browser inventory or timeout is changed.
+
+| Command | Result / wall time |
+| --- | --- |
+| `npm ci --ignore-scripts` | Pass, locked dependencies installed |
+| `cargo fmt --check` | Pass / 0.428 s |
+| `cargo build --locked` | Pass / 3.935 s |
+| `cargo test --locked` | 1,188 pass, zero failed/ignored; new guest binary 3/3 in 0.02 s / 513.190 s total including compilation |
+| `cargo clippy --locked --all-targets -- -D warnings` | Pass / 4.964 s |
+| `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings` | Pass / 5.483 s |
+| `sh scripts/check-fixtures.sh` | All 104 registered commands pass, including the five new BIOSes / 4.207 s |
+| `python3 tests/fixtures/build_smpc_transactions.py --check` | Pass; source and sparse firmware reproduce exactly |
+| `sh scripts/build-web.sh` | Production release Wasm and matching web bindings pass / 6.389 s |
+| `node scripts/browser-smoke.mjs --group=hardwareBoundaries` | Pass, including 40 new guest executions / 103.215 s wrapper, 102.515 s group |
+| `node --test scripts/ci-runner.test.mjs` | 13/13 pass, zero failures/skips / 13.099 s wrapper, 13.013 s Node time |
+| `npm run test:browser` | 74/74 required groups pass / 495.002 s wrapper, 494.793 s suite |
+| `node --check scripts/hardware-boundaries.mjs`, new documentation links/anchor, `git diff --check` | Pass |
+
+The complete browser invocation followed completion of native and runner tests.
+Its shared worker passes **31 groups / 359.333 s**, including
+`hardwareBoundaries` (**102.327 s**); scenarios passes **43 / 494.570 s**.
+Both finish within the unchanged 1,200-second worker limit. The aggregator
+verifies full coverage, revision and the tested production artifact digest.
+The site digest is unchanged before/after:
+`02e74246dc5922e3ab9a689b3a97b30b94411f2f5dd039dc70b1d0a6460da673`.
+These are local results; hosted CI remains unperformed for this unpushed commit.
+
+Three negative controls run **only in an isolated ignored copy** of the source,
+with the exact new tests, firmware and shared oracle. Each invokes
+`CARGO_TARGET_DIR="$PWD/target/issue103-negative-build" cargo test --locked
+--manifest-path target/issue103-read-negative/Cargo.toml --test smpc_read_guests`:
+
+- Remove only `external_read_group`'s complete-unit width guard: **2 expected
+  failures / 1 pass**, exit **101**, **7.938 s** including compilation. The
+  remaining split-width guard still rejects later; DMA/cache stop eight clocks
+  late (4116/1511 instead of 4108/1503), violating the shared scheduled oracle.
+- Restore that guard and remove only the refill callback's issuing
+  `address/width` remapping: **1 expected failure / 2 pass**, exit **101**,
+  **1.466 s**. Cache fault reports generated 00100024/width4 instead of issuing
+  00100021/width1. DMA and success controls pass.
+- Restore context and disable only SMPC width rejection: **2 expected failures /
+  1 pass**, exit **101**, **1.474 s**. DMA completes instead of entering vector10;
+  cached byte load completes and reaches the later snapshot instead of failing
+  at PC=20001000. The three success controls still pass.
+
+The initial focused browser launch failed because the pinned executable was
+absent. Its official installer downloaded the complete archive but stalled
+during extraction. It was stopped; system `unzip -tq` verified every ZIP CRC and
+`unzip` extracted that same archive with its executable modes into the private
+ignored test directory. The binary reports the pinned version above. These
+setup interruptions and deliberate negative-control failures are excluded from
+passing results. The focused browser and negative-control runs overlapped the
+full native suite; their wall times are observations, not performance baselines.

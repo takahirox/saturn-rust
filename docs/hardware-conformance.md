@@ -4049,6 +4049,18 @@ of unsupported refill widths; it does not establish electrical bus behavior
 or explain the private one-byte COMREG fault. See
 [the read-context review record](validation-issue-103.md#review-follow-up-dma-and-cache-refill-read-context).
 
+The subsequent [scheduled guest validation](validation-issue-103.md#review-follow-up-scheduled-dma-and-cache-read-guests)
+adds five original MIT reset-vector BIOSes to native Machine and production
+Chromium/Wasm checks. A 16-byte SH-2 DMAC burst from individually readable OREGs
+must enter vector10 with AE set, count/source/destination retained and no
+destination writes; RAM DMA completes with four distinct source values. A
+cache-enabled OREG byte load must retain its PC/instruction/byte operand and
+generated longword refill context; cache-through and data-refill-disabled
+controls complete. All five compare complete SMPC state, sticky host snapshots
+and shared clock/instruction/exception counts across chunks 1/3/127/10000 with
+and without Debug reads, including nonacknowledging DMAOR/CHCR inspection.
+This supplements the direct CpuBus tests; no runtime behavior changes here.
+
 `src/smpc/diagnostics.rs` and the opt-in native/Wasm diagnostic query record the
 access direction, operand, reason, CPU/PC, available instruction, SF, pending
 command/remaining clocks, INTBACK flags, IREGs and result status without additional
