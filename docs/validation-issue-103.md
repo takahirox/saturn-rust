@@ -39,9 +39,10 @@ The scope is independently reconstructed SMPC access semantics, an executable
 finding of no byte-command acceptance defect, rejection diagnostics and a proven
 width-policy correction.
 The original byte failure is unverified. Keep #103 open and PR #104 in draft
-while the remaining integrated acceptance scope is unresolved; do not generate a
-closing reference from this checkpoint. No private trace or human confirmation
-is required to finish that work. Broad hardware
+under the partial publication scope; do not generate a closing reference from
+this checkpoint. The review follow-up below supplies timing-valid byte-command
+and post-deadline reset evidence; it does not classify the original symptom.
+No private trace or human confirmation is required to finish that work. Broad hardware
 completion remains in #17, and the unrelated #81 SCU endpoint finding is unchanged.
 
 ## Primary-source reconciliation
@@ -114,11 +115,12 @@ dispatch. IREG contents do not restrict parameterless commands or SETSMEM.
 | SETTIME parameters | §2.5 p.46 defines BCD year/date/time, hexadecimal month 1–C and weekday 0–6. Every date in 2000/2001, all seven weekdays and both midnight/23:59:59 are accepted: 10,234 valid calendars, including leap day. Four nonexistent/non-BCD cases retain the explicit undefined-result policy. The firmware additionally reads back 1993/2000/2024/2099 and months A/B/C. Undefined calendars are not reclassified as unsupported command codes or physical bus errors. |
 
 The new [public-API audit](../tests/smpc_byte_contract.rs) has no dependency on the
-new diagnostics or width correction. The exact source and fixtures were copied
-into an isolated archive of `2a323e79f12ba58333be46ae9d69c089f3a14676`; all five
+new diagnostics or width correction. At the prior checkpoint, the exact source
+and fixtures were copied into an isolated archive of `2a323e79f12ba58333be46ae9d69c089f3a14676`; all five
 tests pass there. This includes the original MIT 512 KiB
 [byte firmware](../tests/fixtures/smpc-byte-audit.s) and its independent
-[111-record expectation](../tests/fixtures/smpc-byte-audit.tsv).
+[expectation](../tests/fixtures/smpc-byte-audit.tsv) (then 111 records; now 201
+with the raster checks below).
 It executes reset vectors, polls SF, claims SF **before** writing IREGs, issues
 SETTIME/SETSMEM/INTBACK through byte stores, reads real calendar/SMEM results,
 and exercises all eighteen status-plus-peripheral port/optimization combinations.
@@ -143,8 +145,10 @@ byte command in this model. No evidence supports a byte-path behavior change.
 This substantiates the Issue's permitted no-defect outcome for the byte-command
 acceptance investigation. It does not prove the unavailable firmware violated
 the protocol, identify its transaction, or establish full SMPC timing/electrical
-conformance. In particular the timing-window/CPU-issuer limitations noted above,
-cache-enabled MMIO and wider integrated acceptance are outside this audit.
+conformance. The dispatch audit alone excludes timing-window/CPU-issuer limitations,
+cache-enabled MMIO and wider integrated acceptance. The timing-valid firmware
+evidence below now covers command windows independently; it does not turn the
+dispatch audit into evidence for timing enforcement or CPU-issuer restrictions.
 No byte compatibility fix, private-ROM startup success, or red-to-green byte
 negative control is claimed. Existing read/handshake/busy/invalid-parameter
 negative controls remain active; the width defect has its separate red control.
@@ -183,7 +187,7 @@ PC 00000226: COMREG 2-byte write 2010001E value=0009 -> ByteOnly
 These PCs belong only to the original fixtures, not the unavailable user BIOS.
 
 [`build_smpc_transactions.py`](../tests/fixtures/build_smpc_transactions.py)
-reproduces the source `.s` and sparse big-endian `.hex` representation of twelve
+reproduces the source `.s` and sparse big-endian `.hex` representation of seventeen
 standalone **524288-byte** ROMs, all under the adjacent [MIT license](../tests/fixtures/LICENSE).
 Reset PC/SP are 00000200/060FF000. Expansion starts with zero-filled ROM bytes;
 the fixture builder uses the repository's original assembler, no SDK/cross compiler.
@@ -206,8 +210,9 @@ latencies. Independent SMPC device tests actually partition clock advancement
 into 1/3/127/10000 clocks and sample one clock before, exactly at and one clock
 after deadlines. They verify rejected reads/reissues/parameter writes retain the
 pending deadline; SF values 00/02/FF and read-only output writes are negative
-controls. The new reset test interrupts guest-issued SETSMEM at three pending
-points and verifies cold boot cancels it. Existing SMPC, clock-domain, dual-CPU,
+controls. The reset follow-up below interrupts guest-issued SETSMEM, SETTIME
+and INTBACK at three pending points and runs an observing guest beyond their
+former deadlines. Existing SMPC, clock-domain, dual-CPU,
 INTBACK/pad, SCU, HLE and browser guests cover the other exercised command classes.
 
 ## Negative control
@@ -364,3 +369,127 @@ Validation for this PR-body and documentation correction: exact PR metadata
 readback, local Markdown links/anchors and Git whitespace checks passed. Runtime
 files are unchanged, so runtime suites were not rerun; their earlier results
 remain recorded above. No push or merge was performed.
+
+
+## Review follow-up: timing-valid guests and reset observation
+
+Related to #103. The earlier byte guest did not observe command issuance windows,
+and the earlier reset test stopped on an immediate unsupported read. These two
+coverage gaps are now replaced with executable evidence, without changing the
+emulator's device behavior or inferring the private firmware's transaction.
+
+ST-169 §2.2, printed pp.17–19, figures2.5–2.7 requires commands later than
+VBlank-in + 300 µs; INTBACK and status-to-peripheral continue must precede
+VBlank-out. Other commands sharing an INTBACK frame also precede VBlank-out.
+The guests execute on the master at the reset NTSC 320 clock, without SYSRES
+or PLL changes, so the separate post-reset figure2.6 waiting rule and table2.5 issuer restrictions are not exercised here.
+
+The original byte-audit guest now enables DISP (ST-058 §2.5: otherwise TVSTAT
+reports blank even during active display), observes active display then the next
+VBlank-in, and measures elapsed time with coherent FRT high/low reads (SH7604
+§11.2, FRC/TEMP). Reset FRT phi/8 is retained. A 1200-tick wait nominally
+spans 9600 clocks; allowing a full tick of quantization still gives at least
+9592 clocks, above the 8063 clocks for 300 µs at 26.8741 MHz. Each of thirty
+command windows publishes three checks: elapsed >=1200 ticks,
+elapsed <=2000 ticks, and TVSTAT.VBLANK=8. SF claim, parameters and COMREG follow
+immediately in the same blank, well before its 39-line/66612-clock end. All
+SETTIME/SETSMEM/status commands and eighteen port/optimization combinations now
+execute this sequence. The original 111 result records plus ninety window
+checks produce **201 records**. The larger 2,000,000-turn budget is necessary to
+execute the thirty real raster transitions rather than omit or accelerate them.
+
+The additional original [timed peripheral guest](../tests/fixtures/smpc-timed-peripherals.s)
+executes status-only, status-plus-peripheral (with a continue in the same blank),
+and peripheral-only INTBACK, including both optimization settings and repeated
+optimized acquisition after measurement. Its **79 records** check the same window
+bounds, SF/SR/OREG31, Japan region, both real released digital-pad packets
+(F1/02/FF/FF), IRQ counts and cleared SCU bit7 after actual SH-2 vector47/RTE.
+Six actual IRQ entries occur. Native and production Wasm use chunks
+1/3/127/10000, with and without passive Debug queries, and compare complete
+records, clocks/instruction progress and exception counts across all partitions.
+The native test additionally compares the entire CPU state. These run-call
+partitions do not alter device deadlines. Existing device/bus tests retain
+before/at/after deadline and invalid-handshake/width negative controls.
+
+Three original pending-command ROMs issue SETSMEM (12/34/56/78), SETTIME
+(2024-10-31 12:34:56), or status-only INTBACK in a valid window, then publish
+SF=1, the actual OREG31 command and a mailbox. Native tests verify pending state
+and a positive remaining deadline after that mailbox and after 0/1/7 additional
+scheduler turns. The same instructions and offsets execute in production Wasm.
+The host then cold-resets into an original [observer ROM](../tests/fixtures/smpc-reset-observer.s),
+which executes normally for 100,000 turns. It waits through a full raster
+transition (over 390,000 clocks) **before** inspecting cancelled state, exceeding
+all former remaining deadlines (at most 8600 clocks). It records SF=0,
+OREG31=0, SR=0 and SCU bit7=0, then issues a timing-valid fresh status request
+and checks the unchanged default calendar/RTC-set flag and zero SMEM. All twenty
+records, zero exceptions, clocks and CPU/instruction progress agree across
+commands, offsets and chunks 1/3/127/10000, with Debug observation. No fault or
+host register injection prevents time from passing or supplies guest results.
+Each case starts with a fresh machine so retained battery time from previous
+cases cannot contaminate the independently specified default-calendar oracle.
+The case itself resets the same machine, preserving the battery reset contract.
+
+These tests establish valid-window execution and cancellation beyond former
+deadlines in the functional model. They do not establish electrical timing,
+invalid-window behavior, every CPU-specific issue restriction, cache-enabled MMIO,
+or private BIOS/menu compatibility. #103 stays open and #104 stays draft under
+the partial publication rule; #17 and #81 scope is unchanged. Required post-merge
+verification: none.
+
+
+### Executed review-follow-up validation
+
+Same pinned toolchain as the prior checkpoint. No runtime source changes, ROM
+imports, Issue/PR updates, push or merge were performed. Reproduce all seventeen
+original ROMs with `python3 tests/fixtures/build_smpc_transactions.py --check`.
+The new/current expanded images are:
+
+| Expanded 524288-byte original ROM | SHA-256 |
+| --- | --- |
+| smpc-byte-audit | `77939c738d2411666943c01c91871b9e96ef7590283d45527882c2ff24fb7774` |
+| smpc-timed-peripherals | `59139be608b572036485728deaff66a344da63f0fb6024448f7fac887b4dd35e` |
+| smpc-reset-pending-17 | `2620ea11fc6e30dfe61c8f9bc9881471f0bd13ffd60e2c5935535304cd0a46eb` |
+| smpc-reset-pending-16 | `f1a4386dd47739001ac3f857815c5045db08bc50c682f9360afdd1cd15e4438d` |
+| smpc-reset-pending-10 | `1bdafbf0338a2136c4e04cadbe866bf7e28db39315e43464977825f1e22bea3a` |
+| smpc-reset-observer | `575c97f8a8bb6dac27ed2a7de463129cb3ed388998d4e7ccacdcdd958eedafaf` |
+
+- `cargo fmt --check`, `cargo build --locked`: pass.
+- `python3 scripts/ci-time.py issue-103-review-native cargo test --locked`:
+  **1,179 pass**, zero failures/ignored, 105 harnesses; 514.42 s summed harness
+  time, 575.595 s wall time including compilation and local contention.
+  This includes all five `smpc_transactions` tests (5.87 s) and all five revised
+  `smpc_byte_contract` tests (16.29 s).
+- `cargo clippy --locked --all-targets -- -D warnings` and
+  `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings`: pass.
+- `sh scripts/check-fixtures.sh`: all **104** registered commands pass. The
+  transaction builder additionally passes its final focused reproduction check;
+  registry size and prior generated fixtures are unchanged.
+- `sh scripts/build-web.sh`: production Wasm/bindings build passes (Cargo release
+  compilation 6.94 s). No changes were made to the tested web artifact afterward.
+- In an isolated archive of inherited `2a323e7`, the exact revised byte-audit
+  test/ROM/TSV pass **5/5** (38.29 s). The timing-valid INTBACK test uses only
+  inherited public APIs after removing the new diagnostic query: **1/1** pass
+  (10.42 s), including all 79 records and six actual IRQs for every partition.
+  This remains a no-byte-defect result, not a fabricated red/green byte fix.
+- `npm run test:browser -- --group=hardwareBoundaries`: pass, **408 assertions**,
+  41.963 s group / 42.396 s total, using pinned Chromium 145.0.7632.6. UI uploads
+  exercise the expanded byte/timed guests; cancellation cases instantiate fresh
+  production Wasm machines and call their real `reset_bios`/`run_steps` exports.
+- Complete `npm run test:browser`: **74/74 groups pass**, 42 scenario groups
+  (397.083 s) and 32 shared groups (413.140 s), 413.415 s total wall time.
+  The two-worker aggregator verifies complete coverage and the production web
+  artifact digest. Existing BIOS-only UI, HLE, dual-CPU, backup, media and
+  audio/video regressions all pass. The expanded hardware-boundary group also
+  passes inside this full run (42.105 s).
+- `node --test scripts/ci-runner.test.mjs`: **13/13 pass**, 14.212 s.
+- JavaScript syntax, relative Markdown link targets and Git whitespace: pass.
+
+Initial checks found an unsupported assembler spelling (`cmp/hi`, replaced by
+`cmp/hs`) and a zero-turn native `run_steps` call (`StepLimit(0)`, replaced by an
+empty step loop). The first browser invocation lacked the pinned shell; its
+official installer downloaded but stalled during extraction. The installer was
+stopped and the same official 1208 archive was CRC-checked/extracted with original
+permissions. Initial cancellation runs also demonstrated correct retained battery
+state/time from earlier cases; fresh per-case production instances now match
+native setup while each cancellation resets that same instance. These development
+failures are excluded from passing validation results.

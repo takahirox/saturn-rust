@@ -164,7 +164,7 @@ fn original_byte_firmware_publishes_real_calendar_memory_and_handshake_results()
         let mut m = Machine::new();
         for _ in 0..2 {
             m.reset(Boot::ExternalBios(&bios)).unwrap();
-            let mut left = 100000;
+            let mut left = 2000000;
             while left > 0 {
                 let n = left.min(chunk);
                 m.run_steps(n).unwrap();

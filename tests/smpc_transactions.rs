@@ -208,28 +208,100 @@ fn byte_only_negative_control_rejects_wide_accesses_before_any_register_changes(
 }
 
 #[test]
-fn cold_reset_cancels_a_command_started_by_firmware_before_its_deadline() {
-    let bios = rom(include_str!("fixtures/smpc-transactions.hex"));
-    let fault_rom = rom(include_str!("fixtures/smpc-fault-read.hex"));
-    let mut m = Machine::new();
-    for extra_turns in [0, 1, 7] {
-        m.reset(Boot::ExternalBios(&bios)).unwrap();
-        for _ in 0..10000 {
-            m.step().unwrap();
-            if m.bus().smpc_command_state().pending == Some(0x17) {
-                break;
+fn raster_gated_intback_forms_publish_results_and_service_each_irq() {
+    let bios = rom(include_str!("fixtures/smpc-timed-peripherals.hex"));
+    let expected: Vec<_> = include_str!("fixtures/smpc-timed-peripherals.tsv")
+        .lines()
+        .map(|s| u32::from_str_radix(s, 16).unwrap())
+        .collect();
+    let mut reference = None;
+    for chunk in [1, 3, 127, 10000] {
+        for observe in [false, true] {
+            let mut m = Machine::new();
+            m.reset(Boot::ExternalBios(&bios)).unwrap();
+            let mut left = 500000;
+            while left > 0 {
+                let n = left.min(chunk);
+                m.run_steps(n).unwrap();
+                if observe {
+                    let _ = m.cpu_state();
+                    let _ = m.debug_read32(0x0601d000).unwrap();
+                    assert!(m.smpc_fault_diagnostics().is_none());
+                }
+                left -= n;
+            }
+            let actual: Vec<_> = (0..expected.len())
+                .map(|i| m.bus().read32(0x0601d000 + i as u32 * 4).unwrap())
+                .collect();
+            assert_eq!(actual, expected);
+            assert_eq!(m.cpu_state().exceptions, 6);
+            let result = (m.clocks(), m.cpu_state().clone());
+            assert_eq!(*reference.get_or_insert(result.clone()), result);
+        }
+    }
+}
+
+#[test]
+fn cold_reset_cancels_guest_commands_beyond_former_deadlines_and_preserves_battery() {
+    let observer = rom(include_str!("fixtures/smpc-reset-observer.hex"));
+    let expected: Vec<_> = include_str!("fixtures/smpc-reset-observer.tsv")
+        .lines()
+        .map(|s| u32::from_str_radix(s, 16).unwrap())
+        .collect();
+    let mut reference = None;
+    for (command, source) in [
+        (0x17, include_str!("fixtures/smpc-reset-pending-17.hex")),
+        (0x16, include_str!("fixtures/smpc-reset-pending-16.hex")),
+        (0x10, include_str!("fixtures/smpc-reset-pending-10.hex")),
+    ] {
+        let bios = rom(source);
+        for extra_turns in [0, 1, 7] {
+            for chunk in [1, 3, 127, 10000] {
+                let mut m = Machine::new();
+                m.reset(Boot::ExternalBios(&bios)).unwrap();
+                for _ in 0..100000 {
+                    m.step().unwrap();
+                    if m.bus().read8(0x0601a200) == Ok(0x55) {
+                        break;
+                    }
+                }
+                for _ in 0..extra_turns {
+                    m.step().unwrap();
+                }
+                assert_eq!(m.bus().read8(0x0601a200), Ok(0x55));
+                assert_eq!(m.bus().read32(0x0601a00c), Ok(1));
+                assert_eq!(m.bus().read32(0x0601a010), Ok(u32::from(command)));
+                let pending = m.bus().smpc_command_state();
+                assert_eq!(pending.pending, Some(command));
+                let remaining = pending.remaining.unwrap();
+                assert!(remaining > 0);
+                m.reset(Boot::ExternalBios(&observer)).unwrap();
+                assert_eq!(m.bus().smpc_command_state().pending, None);
+                let mut left = 100000;
+                while left > 0 {
+                    let n = left.min(chunk);
+                    m.run_steps(n).unwrap();
+                    let _ = m.cpu_state();
+                    let _ = m.debug_read32(0x0601c000).unwrap();
+                    assert!(m.smpc_fault_diagnostics().is_none());
+                    left -= n;
+                }
+                // The observer waits a full raster transition before sampling
+                // cancelled state, well beyond every former command deadline.
+                assert!(m.clocks() > u64::from(remaining) + 100000);
+                let actual: Vec<_> = (0..expected.len())
+                    .map(|i| m.bus().read32(0x0601c000 + i as u32 * 4).unwrap())
+                    .collect();
+                assert_eq!(
+                    actual, expected,
+                    "command {command:02x}, offset {extra_turns}, chunk {chunk}"
+                );
+                assert_eq!(m.cpu_state().exceptions, 0);
+                let state = m.bus().smpc_command_state();
+                assert!(!state.busy && !state.sf);
+                let result = (m.clocks(), m.cpu_state().clone());
+                assert_eq!(*reference.get_or_insert(result.clone()), result);
             }
         }
-        for _ in 0..extra_turns {
-            m.step().unwrap();
-        }
-        assert_eq!(m.bus().smpc_command_state().pending, Some(0x17));
-        assert!(m.bus().smpc_command_state().remaining.unwrap() > 0);
-        m.reset(Boot::ExternalBios(&fault_rom)).unwrap();
-        assert_eq!(m.bus().smpc_command_state().pending, None);
-        assert!(!m.bus().smpc_command_state().sf);
-        assert!(m.run_steps(10000).is_err());
-        let snapshot = m.smpc_fault_diagnostics().unwrap();
-        assert!(snapshot.contains("pending: None") && snapshot.contains("command_report: 0"));
     }
 }

@@ -4051,3 +4051,19 @@ for the primary-manual predicates and limits. This width
 correction does not claim to resolve the original symptom, produce a stock menu, or
 complete SMPC/#17. Do not close #103 on that evidence alone. Remaining timing,
 CPU-specific command-issuance restrictions and wider hardware scope are unchanged.
+
+
+The #103 review follow-up supplies the previously missing timing-valid command
+and post-deadline cancellation evidence. The byte ROM now observes thirty real
+VBlank edges with DISP enabled, waits >=9592 clocks using FRT (ST-169 §2.2
+pp.17–19, figs2.5–2.7), and checks 201 window/result records. An additional
+original 512 KiB ROM exercises all three INTBACK forms, continue before
+VBlank-out, repeated optimized collection, both real pad packets and six actual
+SH-2 IRQ/RTE entries (79 records). Native and production Wasm run chunks
+1/3/127/10000, with/without Debug observation. Three pending-command ROMs and a
+normally executing reset observer check SETSMEM/SETTIME/INTBACK cancellation at
+three offsets, past the former deadlines, including unchanged battery state and
+absence of stale results/IRQs. See the [precise contracts and executed checks](validation-issue-103.md#review-follow-up-timing-valid-guests-and-reset-observation).
+These are executable functional-model checks, not evidence of invalid-window
+hardware behavior or a classification of the private one-byte fault. #103 remains
+open and #104 draft under the partial publication scope.

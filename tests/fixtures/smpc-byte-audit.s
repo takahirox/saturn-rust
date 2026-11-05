@@ -1,4 +1,10 @@
 load 0x2601b000,r8
+load 0x25f80000,r1
+load 0x8000,r0
+mov.w r0,@r1
+load command_window,r3
+jsr @r3
+nop
 load 0x100063,r1
 claim_time0:
 mov.b @r1,r0
@@ -46,6 +52,9 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
 load 0x20100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -69,6 +78,9 @@ memory0:
 mov.b @r1,r0
 tst #1,r0
 bf memory0
+load command_window,r3
+jsr @r3
+nop
 load 0x20100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -149,6 +161,9 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
 load 0x100063,r1
 claim_time1:
 mov.b @r1,r0
@@ -196,6 +211,9 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
 load 0x20100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -219,6 +237,9 @@ memory1:
 mov.b @r1,r0
 tst #1,r0
 bf memory1
+load command_window,r3
+jsr @r3
+nop
 load 0x20100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -299,6 +320,9 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
 load 0x100063,r1
 claim_time2:
 mov.b @r1,r0
@@ -346,6 +370,9 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
 load 0x20100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -369,6 +396,9 @@ memory2:
 mov.b @r1,r0
 tst #1,r0
 bf memory2
+load command_window,r3
+jsr @r3
+nop
 load 0x20100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -449,6 +479,9 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
 load 0x100063,r1
 claim_time3:
 mov.b @r1,r0
@@ -496,6 +529,9 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
 load 0x20100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -519,6 +555,9 @@ memory3:
 mov.b @r1,r0
 tst #1,r0
 bf memory3
+load command_window,r3
+jsr @r3
+nop
 load 0x20100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -599,6 +638,14 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
+load 0x100063,r1
+claim_0_0_0:
+mov.b @r1,r0
+tst #1,r0
+bf claim_0_0_0
 load 0x100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -637,6 +684,14 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
+load 0x100063,r1
+claim_0_0_2:
+mov.b @r1,r0
+tst #1,r0
+bf claim_0_0_2
 load 0x100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -675,6 +730,14 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
+load 0x100063,r1
+claim_0_1_0:
+mov.b @r1,r0
+tst #1,r0
+bf claim_0_1_0
 load 0x100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -713,6 +776,14 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
+load 0x100063,r1
+claim_0_1_2:
+mov.b @r1,r0
+tst #1,r0
+bf claim_0_1_2
 load 0x100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -751,6 +822,14 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
+load 0x100063,r1
+claim_0_3_0:
+mov.b @r1,r0
+tst #1,r0
+bf claim_0_3_0
 load 0x100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -789,6 +868,14 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
+load 0x100063,r1
+claim_0_3_2:
+mov.b @r1,r0
+tst #1,r0
+bf claim_0_3_2
 load 0x100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -827,6 +914,14 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
+load 0x100063,r1
+claim_1_0_0:
+mov.b @r1,r0
+tst #1,r0
+bf claim_1_0_0
 load 0x100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -865,6 +960,14 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
+load 0x100063,r1
+claim_1_0_2:
+mov.b @r1,r0
+tst #1,r0
+bf claim_1_0_2
 load 0x100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -903,6 +1006,14 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
+load 0x100063,r1
+claim_1_1_0:
+mov.b @r1,r0
+tst #1,r0
+bf claim_1_1_0
 load 0x100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -941,6 +1052,14 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
+load 0x100063,r1
+claim_1_1_2:
+mov.b @r1,r0
+tst #1,r0
+bf claim_1_1_2
 load 0x100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -979,6 +1098,14 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
+load 0x100063,r1
+claim_1_3_0:
+mov.b @r1,r0
+tst #1,r0
+bf claim_1_3_0
 load 0x100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -1017,6 +1144,14 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
+load 0x100063,r1
+claim_1_3_2:
+mov.b @r1,r0
+tst #1,r0
+bf claim_1_3_2
 load 0x100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -1055,6 +1190,14 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
+load 0x100063,r1
+claim_3_0_0:
+mov.b @r1,r0
+tst #1,r0
+bf claim_3_0_0
 load 0x100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -1093,6 +1236,14 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
+load 0x100063,r1
+claim_3_0_2:
+mov.b @r1,r0
+tst #1,r0
+bf claim_3_0_2
 load 0x100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -1131,6 +1282,14 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
+load 0x100063,r1
+claim_3_1_0:
+mov.b @r1,r0
+tst #1,r0
+bf claim_3_1_0
 load 0x100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -1169,6 +1328,14 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
+load 0x100063,r1
+claim_3_1_2:
+mov.b @r1,r0
+tst #1,r0
+bf claim_3_1_2
 load 0x100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -1207,6 +1374,14 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
+load 0x100063,r1
+claim_3_3_0:
+mov.b @r1,r0
+tst #1,r0
+bf claim_3_3_0
 load 0x100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -1245,6 +1420,14 @@ mov.b @r1,r0
 extu.b r0,r0
 mov.l r0,@r8
 add #4,r8
+load command_window,r3
+jsr @r3
+nop
+load 0x100063,r1
+claim_3_3_2:
+mov.b @r1,r0
+tst #1,r0
+bf claim_3_3_2
 load 0x100063,r1
 load 0x1,r0
 mov.b r0,@r1
@@ -1289,4 +1472,52 @@ add #4,r8
 park:
 sleep
 bra park
+nop
+command_window:
+load 0x25f80004,r1
+window_active:
+mov.w @r1,r0
+tst #8,r0
+bf window_active
+window_blank:
+mov.w @r1,r0
+tst #8,r0
+bt window_blank
+load 0xfffffe12,r4
+load 0xfffffe13,r5
+mov.b @r4,r0
+extu.b r0,r0
+shll8 r0
+mov.b @r5,r1
+extu.b r1,r1
+or r1,r0
+mov r0,r6
+load 1200,r7
+window_delay:
+mov.b @r4,r0
+extu.b r0,r0
+shll8 r0
+mov.b @r5,r1
+extu.b r1,r1
+or r1,r0
+sub r6,r0
+extu.w r0,r0
+cmp/hs r7,r0
+bf window_delay
+mov r0,r6
+movt r0
+mov.l r0,@r8
+add #4,r8
+load 2000,r7
+cmp/hs r6,r7
+movt r0
+mov.l r0,@r8
+add #4,r8
+load 0x25f80004,r1
+mov.w @r1,r0
+mov #8,r2
+and r2,r0
+mov.l r0,@r8
+add #4,r8
+rts
 nop

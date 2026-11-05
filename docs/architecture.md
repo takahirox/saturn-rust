@@ -431,6 +431,11 @@ INTBACK field combinations and real calendars, with an original reset-vector
 guest in native and production Wasm. It finds no documented byte-command
 rejection defect in inherited main; undefined operations retain explicit policies.
 This bounded result does not establish complete SMPC timing or electrical behavior.
+The [#103 review guests](validation-issue-103.md#review-follow-up-timing-valid-guests-and-reset-observation)
+add DISP-enabled raster observation and FRT-delayed issuance within ST-169
+§2.2 windows, real INTBACK result IRQ/RTE for all three forms, and cold-reset
+observation beyond cancelled SETSMEM/SETTIME/INTBACK deadlines. These checks
+exercise the existing functional model without broadening invalid-access policy.
 
 SMPC uses byte accesses: PDR1/PDR2 +75/+77, DDR1/DDR2 +79/+7B,
 IOSEL +7D, EXLE +7F (relative to
