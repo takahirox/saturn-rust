@@ -294,6 +294,17 @@ def build():
         source += byte(0x2601a200, 0x55) + 'park:\nsleep\nbra park\nnop\n'
         extra, _ = encode('smpc-fault-' + name, source)
         files.update(extra)
+    # H §§4.8.2–3: invalid alignment still issues exception bus cycles.
+    # Those cycles remain longword operands at the ST-169 byte-only boundary.
+    # Stack SR would change IREGs; the vector spans readable SR/SF registers,
+    # so a byte-decomposed read cannot accidentally pass on a WriteOnly fault.
+    for name, source, operands in [
+        ('stack', 'trapa #32\n', [(4, 0x2010), (6, 0x0009)]),
+        ('vector', 'load 0x200fffe1,r0\nldc r0,vbr\ntrapa #32\n', []),
+    ]:
+        source += byte(0x2601a200, 0x55) + 'park:\nsleep\nbra park\nnop\n'
+        extra, _ = encode('smpc-exception-' + name, source, operands)
+        files.update(extra)
     files.update(byte_audit())
     files.update(timed_peripherals())
     files.update(reset_guests())

@@ -419,6 +419,10 @@ implemented write-only VDP2 controls remains a debugger convenience.
 SMPC register operands are byte-only (ST-169 §1.2/fig1.3). Word/longword
 accesses now fail before register mutation or physical bus decomposition. This
 is a bounded policy for prohibited widths, not a physical bus-error assertion.
+Exception stacking and vector fetches validate the complete longword through
+the direct CPU and scheduler replay adapters before splitting unaligned cycles
+into bytes. Any overlap with the SMPC select is rejected; the existing
+exact-address RAM exception policy and address-error sequencing are retained.
 COMREG and IREG remain write-only; no command echo or guessed open-bus value is
 returned. Rejected SMPC accesses carry direction, operand, reason and a command
 state snapshot. The explicit local native/Wasm `smpc_fault_diagnostics()` query

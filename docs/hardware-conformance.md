@@ -4028,6 +4028,17 @@ host COMREG word write succeeds. The corrected native/Wasm guests reject all
 four widths/directions; accepted byte-command results and IRQs still execute.
 Rejection is an emulator policy, not a measured electrical fault/open-bus result.
 
+The exception-path review correction applies the same guard before unaligned
+stack/vector longwords are split into bytes, including operands crossing into
+the SMPC select. Public Bus and both CPU views reject the complete operand
+without IREG mutation. Two original MIT reset-vector ROMs exercise TRAPA #32
+with SP=20100009 and VBR=200FFFE1 (vector address 20100061); native and
+production-Wasm tests compare full-width faults, unchanged IREGs, completed RAM
+stacking for the vector case, sticky failure, Debug observation and shared
+clock/instruction stopping points across chunks 1/3/127/10000. Invalid RAM
+exception-cycle data and architectural address-error handling are retained.
+See [the exception review record](validation-issue-103.md#review-follow-up-unaligned-exception-operands).
+
 `src/smpc/diagnostics.rs` and the opt-in native/Wasm diagnostic query record the
 access direction, operand, reason, CPU/PC, available instruction, SF, pending
 command/remaining clocks, INTBACK flags, IREGs and result status without additional

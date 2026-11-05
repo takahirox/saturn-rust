@@ -27,6 +27,49 @@ export async function hardwareBoundaries(page) {
     assert.deepEqual([String(turns), result.clocks, result.instructions, result.exceptions],
       progress.get(name), `${name}: Wasm progress must match the shared native oracle`);
   }
+  // H §§4.8.2–3 exception cycles retain their full operand width even for
+  // unaligned SP/VBR. Byte splitting must not mutate IREGs or read SR/SF.
+  for (const name of ["stack", "vector"]) {
+    const image = await rom(`smpc-exception-${name}`);
+    let reference;
+    for (const chunk of [1, 3, 127, 10000]) {
+      for (const observe of [false, true]) {
+        const result = await page.evaluate(async ({image, chunk, observe}) => {
+          const {Emulator} = await import("./pkg/saturn_rust.js");
+          const emulator = new Emulator();
+          try {
+            emulator.reset_bios(Uint8Array.from(atob(image), c => c.charCodeAt(0)));
+            let message;
+            for (let i = 0; i < 1000; i++) {
+              try { emulator.run_steps(chunk); } catch (e) { message = String(e); }
+              if (observe) { emulator.registers(); emulator.read_long(0x0601a200); emulator.smpc_fault_diagnostics(); }
+              if (message) break;
+            }
+            const clocks = emulator.peripheral_clocks();
+            let repeated;
+            try { emulator.run_steps(1); } catch (e) { repeated = String(e); }
+            return {message, repeated, details: emulator.smpc_fault_diagnostics(),
+              clocks, stationary: clocks === emulator.peripheral_clocks(),
+              instructions: emulator.instruction_count(), exceptions: emulator.exception_count(),
+              sentinel: emulator.read_long(0x0601a200),
+              frame: [emulator.read_long(0x060feff8), emulator.read_long(0x060feffc)]};
+          } finally { emulator.free(); }
+        }, {image: image.toString("base64"), chunk, observe});
+        assert.match(result.message, /Exception vector 32.*4-byte (read|write).*ByteOnly/);
+        assert.match(result.message, name === "stack" ? /write at 0x20100005.*value=0x000000F0/i : /read at 0x20100061/);
+        assert.match(result.details, /Master SH-2 PC=0x.*width: 4.*ByteOnly/);
+        assert.match(result.details, /input: \[0, 0, 0, 0, 0, 0, 0\]/);
+        assert.equal(result.repeated, result.message);
+        assert.equal(result.stationary, true);
+        assert.equal(result.exceptions, "0");
+        assertProgress(`smpc-exception-${name}`, 0, result);
+        assert.equal(result.sentinel, 0);
+        assert.deepEqual(result.frame, name === "vector" ? [0x210, 0xf0] : [0, 0]);
+        reference ??= result;
+        assert.deepEqual(result, reference, `${name}, chunk ${chunk}, observe ${observe}`);
+      }
+    }
+  }
   // Table2.5: these are real dual-SH-2 guests. Master releases slave with
   // SSHON; slave issues COMREG via the production scheduler/write buffer.
   const issuerProgress = new Map((await readFile("tests/fixtures/smpc-issuer-progress.tsv", "utf8"))

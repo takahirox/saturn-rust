@@ -51,6 +51,9 @@ impl ExternalBus<'_> {
 }
 #[cfg(test)]
 impl Memory for ExternalBus<'_> {
+    fn check_exception_access(&self, address: u32, write: Option<u32>) -> Result<(), BusError> {
+        self.0.check_exception_access(address, write)
+    }
     fn read8(&self, address: u32) -> Result<u8, BusError> {
         let value = self.0.read8(address)?;
         self.observe(address, 1, u32::from(value), false);
@@ -266,10 +269,18 @@ pub trait Memory {
     fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError>;
     fn write32(&mut self, address: u32, value: u32) -> Result<(), BusError>;
 
+    /// Validate the complete exception longword before any invalid-alignment
+    /// byte decomposition. Device width restrictions still apply to those
+    /// cycles; RAM retains the exact-address policy below.
+    fn check_exception_access(&self, _address: u32, _write: Option<u32>) -> Result<(), BusError> {
+        Ok(())
+    }
+
     /// SH7604 §4.8.3: exception stacking issues a bus cycle even with an
     /// unaligned SP. The physical write data is undefined. This functional model
     /// writes the big-endian bytes at the exact SP address, without rounding it.
     fn exception_write32(&mut self, address: u32, value: u32) -> Result<(), BusError> {
+        self.check_exception_access(address, Some(value))?;
         if address & 3 == 0 {
             return self.write32(address, value);
         }
@@ -284,6 +295,7 @@ pub trait Memory {
     /// dispatching that error. Use exact-address big-endian bytes as the
     /// deterministic invalid-cycle data policy, without rounding the VBR.
     fn exception_read32(&self, address: u32) -> Result<u32, BusError> {
+        self.check_exception_access(address, None)?;
         if address & 3 == 0 {
             return self.read32(address);
         }
@@ -1040,7 +1052,11 @@ impl Bus {
         // ST-169 §1.2/fig1.3: byte-only, before any lane side effects,
         // cache fill or BSC narrow-bus decomposition. Rejection is an emulator
         // boundary, not a claim about undefined electrical bus behavior.
-        if width != 1 && (SMPC..SMPC + 0x80).contains(&Self::physical(address)) {
+        if width != 1
+            && (0..width).any(|i| {
+                (SMPC..SMPC + 0x80).contains(&Self::physical(address.wrapping_add(i as u32)))
+            })
+        {
             return Err(self.smpc_error(
                 self.smpc.access_fault(
                     address,
@@ -1406,6 +1422,9 @@ impl Bus {
 }
 
 impl Memory for Bus {
+    fn check_exception_access(&self, address: u32, write: Option<u32>) -> Result<(), BusError> {
+        self.check_smpc_width(address, 4, write)
+    }
     fn read8(&self, address: u32) -> Result<u8, BusError> {
         if address == CCR {
             return Ok(self.cache[0].borrow().control());
@@ -1716,6 +1735,9 @@ impl CpuBus<'_> {
     }
 }
 impl Memory for CpuBus<'_> {
+    fn check_exception_access(&self, address: u32, write: Option<u32>) -> Result<(), BusError> {
+        self.bus.check_smpc_width(address, 4, write)
+    }
     fn sh2_speculative_fetch(&self, address: u32) -> bool {
         let physical = Bus::physical(address);
         address & 1 == 0

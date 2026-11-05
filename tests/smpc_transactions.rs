@@ -4,7 +4,7 @@ mod progress;
 
 use saturn_rust::{
     Boot, Machine, MachineError,
-    bus::{Bus, BusError, Memory},
+    bus::{Bus, BusError, Memory, Processor},
     cpu::CpuError,
     smpc::diagnostics::Rejection,
 };
@@ -350,6 +350,127 @@ fn byte_only_negative_control_rejects_wide_accesses_before_any_register_changes(
         assert_eq!(b.read8(base + 0x1e), Ok(255));
         b.write8(base + 0x1e, 9).unwrap(); // disconnected lane cannot issue command
         assert_eq!(b.read8(base + 0x5f), Ok(0));
+    }
+}
+
+#[test]
+fn exception_operands_reject_smpc_before_byte_decomposition_but_preserve_ram_cycles() {
+    fn check(memory: &mut impl Memory) {
+        for base in [0x00100000, 0x00100100, 0x20100000, 0x2017ff80] {
+            // Include operands beginning before the select boundary.
+            for address in base - 3..base + 4 {
+                let Err(BusError::Smpc(fault)) = memory.exception_write32(address, 0x12003400)
+                else {
+                    panic!("exception store must reject the complete SMPC longword");
+                };
+                assert_eq!(
+                    (fault.address, fault.width, fault.write, fault.reason),
+                    (address, 4, Some(0x12003400), Rejection::ByteOnly)
+                );
+                assert_eq!(fault.state.input, [0; 7]);
+            }
+            // SR, disconnected lane, SF and disconnected lane are individually
+            // readable: the +61 longword needs the width guard to stop it.
+            for address in base + 0x60..base + 0x64 {
+                let Err(BusError::Smpc(fault)) = memory.exception_read32(address) else {
+                    panic!("exception read must reject the complete SMPC longword");
+                };
+                assert_eq!(
+                    (fault.address, fault.width, fault.write, fault.reason),
+                    (address, 4, None, Rejection::ByteOnly)
+                );
+            }
+        }
+        // H §§4.8.2–3's exact-address data policy for invalid RAM cycles is
+        // unchanged; regular operands still raise the existing alignment error.
+        for offset in 1..4 {
+            let address = 0x26010000 + offset;
+            memory.exception_write32(address, 0x12345678).unwrap();
+            assert_eq!(memory.exception_read32(address), Ok(0x12345678));
+            assert!(matches!(
+                memory.read32(address),
+                Err(BusError::Unaligned { .. })
+            ));
+        }
+    }
+    let mut bus = Bus::default();
+    check(&mut bus);
+    for processor in [Processor::Master, Processor::Slave] {
+        check(&mut bus.for_cpu(processor));
+    }
+    assert_eq!(bus.smpc_command_state().input, [0; 7]);
+}
+
+#[test]
+fn unaligned_exception_stack_and_vector_guests_stop_at_the_smpc_longword_boundary() {
+    for (name, source, address, write) in [
+        (
+            "stack",
+            include_str!("fixtures/smpc-exception-stack.hex"),
+            0x20100005,
+            Some(0xf0),
+        ),
+        (
+            "vector",
+            include_str!("fixtures/smpc-exception-vector.hex"),
+            0x20100061,
+            None,
+        ),
+    ] {
+        let mut reference = None;
+        for chunk in [1, 3, 127, 10000] {
+            for observe in [false, true] {
+                let mut machine = Machine::new();
+                machine.reset(Boot::ExternalBios(&rom(source))).unwrap();
+                let mut error = None;
+                for _ in 0..1000 {
+                    let result = machine.run_steps(chunk);
+                    if observe {
+                        let _ = (machine.cpu_state(), machine.smpc_fault_diagnostics());
+                        assert_eq!(machine.debug_read32(0x0601a200), Ok(0));
+                    }
+                    if let Err(e) = result {
+                        error = Some(e);
+                        break;
+                    }
+                }
+                let Some(MachineError::Cpu(CpuError::ExceptionEntry {
+                    vector: 32,
+                    source: BusError::Smpc(fault),
+                    ..
+                })) = &error
+                else {
+                    panic!("{name}: expected bounded exception SMPC fault, got {error:?}");
+                };
+                assert_eq!(
+                    (fault.address, fault.width, fault.write, fault.reason),
+                    (address, 4, write, Rejection::ByteOnly)
+                );
+                assert_eq!(fault.state.input, [0; 7]);
+                assert_eq!(machine.bus().smpc_command_state(), fault.state);
+                assert_eq!(machine.bus().read32(0x0601a200), Ok(0));
+                assert_eq!(machine.cpu_state().exceptions, 0);
+                if name == "vector" {
+                    // RAM stacking completed before the rejected vector fetch.
+                    assert_eq!(machine.bus().read32(0x060feffc), Ok(0xf0));
+                    assert_eq!(machine.bus().read32(0x060feff8), Ok(0x210));
+                }
+                let result = (
+                    machine.clocks(),
+                    machine.cpu_state().clone(),
+                    machine.smpc_fault_diagnostics().unwrap(),
+                    error.unwrap().to_string(),
+                );
+                progress::assert_progress(&format!("smpc-exception-{name}"), 0, &machine);
+                assert_eq!(machine.run_steps(1).unwrap_err().to_string(), result.3);
+                assert_eq!(machine.clocks(), result.0);
+                assert_eq!(
+                    *reference.get_or_insert(result.clone()),
+                    result,
+                    "{name}, chunk {chunk}, observe {observe}"
+                );
+            }
+        }
     }
 }
 

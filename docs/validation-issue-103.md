@@ -91,7 +91,7 @@ cache-through alias. Existing 128-byte chip-select mirrors are retained.
 | IREG0–6 +01…0D | Byte, W parameters; INTBACK IREG0 also continue/break (§3.1/table3.2) | Read fails `WriteOnly`. Input changes while busy fail except implemented INTBACK continue/break. Rejected writes do not change the pending command or deadline. SETSMEM copies actual guest operands. |
 | OREG0–31 +21…5F | Byte, R results; OREG31 identifies command at processing start (§2.3 p.21/§2.4 p.35) | Writes fail `ReadOnly`. SF distinguishes active/completed command reports. Status publication preserves INTBACK code. |
 | SR +61 | Byte, R, readable independent of command (§1.2); RESB sampled at VBlank-in | Writes fail `ReadOnly`; existing status/peripheral/reset-button behavior retained. |
-| Word/longword | Only byte register accesses specified (fig1.3) | `ByteOnly` before any lane side effect, including CPU aliases and physical DMA bus paths. A CPU operand alignment error still follows SH7604 table4.6 through the existing operand checker. No fabricated guest exception for unsupported device behavior. |
+| Word/longword | Only byte register accesses specified (fig1.3) | `ByteOnly` before any lane side effect, including CPU aliases and physical DMA bus paths. Ordinary CPU operand alignment errors still follow SH7604 table4.6 through the existing operand checker; exception stack/vector longwords are checked before invalid-cycle byte splitting. No fabricated guest exception for unsupported device behavior. |
 | Disconnected even byte lane | No register on this lane; electrical value not specified by fig1.3 | Existing deterministic FF read/ignored byte write policy retained, confined to disconnected lanes. It does not apply to odd COMREG reads. |
 | Type B/C commands | No SMPC result IRQ; SF/OREG31 report completion (table2.4) | Existing reset/power/RTC/SMEM effects and deadlines retained. CDOFF/CDON use 1075 reference clocks (40 µs rounded up), SETSMEM 1075, SETTIME 1882; CPU/NMI/reset-enable commands use 807 (30 µs). These are deterministic functional deadlines, not measured oscillator/internal-task latency. |
 | INTBACK type D | IREG0=00/01, IREG2=F0; reserved port mode prohibited; status/peripheral readiness interrupts (§2.4.2 pp.37–44, §3) | Existing 8600-clock status bound, SF/OREG/SR publication, SCU bit7, VBlank collection, continue/break retained. SF completion is not SCU acknowledgement. Native/Wasm guest observes pending IRQ, then services it through the real SH-2 vector. |
@@ -721,3 +721,100 @@ same official 145.0.7632.6 headless shell to a private ignored test directory
 `npm run test:browser -- --group=largeMedia` pass: **6.050 s** wrapper,
 **5.234 s** group. These setup interruptions and deliberate negative controls
 are excluded from passing suite results. No runtime/test policy was relaxed.
+
+
+## Review follow-up: unaligned exception operands
+
+Related to #103. The review found that `Memory::exception_write32` /
+`exception_read32` and scheduler `ReplayMemory::exception_write32` split
+unaligned longwords into byte operations before the existing SMPC width guard.
+Thus `exception_write32(20100001,12003400)` succeeded and changed IREGs,
+while the equivalent regular longword operand was rejected. This is another
+width-policy bypass; it does not identify the private one-byte COMREG fault.
+
+The complete exception operand now passes a side-effect-free validation hook
+through Bus, both CPU views and replay before any byte transfer. The existing
+SMPC guard checks every covered byte, including operands beginning before the
+chip-select boundary and physical/cache-through mirrors. Rejections retain the
+original address, four-byte width, direction, full write value and SMPC snapshot.
+The hook defaults to no restriction for other Memory implementations. It leaves
+SH7604 §§4.8.2–3's existing exact-address RAM data policy and delayed
+architectural address-error handling intact; it does not assert physical Saturn
+fault behavior for prohibited device widths.
+
+Two original MIT 512 KiB ROMs are reproducible with the existing registered
+`python3 tests/fixtures/build_smpc_transactions.py --check` command:
+
+- `smpc-exception-stack`: reset SP=20100009, then TRAPA #32. The first SR
+  push at 20100005 fails before IREG mutation or vector dispatch.
+- `smpc-exception-vector`: reset into original code that sets VBR=200FFFE1,
+  then TRAPA #32. RAM SR/PC pushes complete (F0/210), then the longword vector
+  fetch at 20100061 fails. Its SR/even/SF/even bytes are individually readable,
+  so a mistaken byte decomposition cannot hide behind a write-only rejection.
+
+The native public-API regression also checks Bus and both processor views,
+aligned and all three unaligned offsets, mirrors, select-boundary overlap, full
+operand diagnostics, no IREG changes and unchanged RAM exception transfers.
+Native and production Chromium tests use chunks 1/3/127/10000 with and without
+Debug observation, unchanged success sentinels and sticky, stationary faults.
+Both assert the checked-in shared stopping-point record: stack 66 clocks / 0
+retired instructions; vector 133 clocks / 4 retired instructions, neither with
+a completed exception. These counts describe this functional model only.
+
+Before modifying runtime code, `cargo test --locked --test smpc_transactions
+exception_` fails both new tests (exit 101, 8.111 s including compilation): the
+public exception store succeeds and the stack guest produces no SMPC fault.
+After correction, both focused tests pass (1.059 s). An initial test expectation
+for the vector guest's saved PC was corrected to 210 from the assembled ROM;
+no runtime behavior or fixture instruction was changed to fit that assertion.
+
+The original symptom and remaining scope in [Finding and scope](#finding-and-scope)
+are unchanged. Keep #103 open and PR #104 draft with `Related to #103`. No
+personal firmware, human confirmation, live Pages, push or merge is required or
+claimed.
+
+
+### Executed exception-follow-up validation
+
+Local macOS arm64, rustup stable 1.99.0, Node 26.12.1, wasm-bindgen 0.2.129,
+Playwright 1.58.2 and pinned Chromium 145.0.7632.6. The existing
+`scripts/ci-time.py` wrapper records wall time; native and browser execution
+overlap. Rust commands select the installed rustup stable toolchain and matching
+wasm-bindgen CLI with PATH. Browser commands use
+`PLAYWRIGHT_BROWSERS_PATH="$PWD/target/issue103-browser"`.
+
+- `cargo fmt --check`, `git diff --check`, `node --check
+  scripts/hardware-boundaries.mjs`, changed documentation relative targets and
+  new anchor: pass.
+- `cargo build --locked`: pass, **4.263 s**.
+- `cargo test --locked`: **1,183 pass**, zero failures/ignored across
+  **105 harnesses**, **512.240 s** including compilation. This includes all
+  **8** SMPC transaction tests and existing unaligned-RAM exception stacking,
+  vector repair and dual-SH-2 regressions.
+- `cargo clippy --locked --all-targets -- -D warnings` and
+  `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings`:
+  pass, **5.696 s / 6.253 s**.
+- `sh scripts/check-fixtures.sh`: all **104 registered commands pass**,
+  **5.548 s**, including both new ROMs in the existing SMPC builder. Shared
+  stopping-point expectations are checked-in native captures independently
+  asserted in Chromium; the fixture checker does not generate them.
+- `sh scripts/build-web.sh`: production Wasm/bindings build passes,
+  **6.571 s**; production assets remain unchanged during browser validation.
+- `npm run test:browser -- --group=hardwareBoundaries`: pass,
+  **106.815 s** wrapper / **104.873 s** group, including all sixteen new
+  guest/chunk/observation combinations and existing hardware controls.
+- `node --test scripts/ci-runner.test.mjs`: **13/13 pass**, zero skipped,
+  **14.271 s** wrapper / **14.178 s** Node time.
+- `npm run test:browser`: **74/74 groups pass**, **461.625 s** wrapper /
+  **461.366 s** suite time. Shared passes **32** groups in **412.789 s**;
+  scenarios passes **42** in **461.055 s**. The aggregator verifies complete
+  coverage and the exact tested production artifact digest.
+
+Initial browser and runner attempts stopped because the shared Playwright cache
+lacked its pinned executable. The ordinary private-directory installer stalled
+after downloading the shell; it was stopped. Downloading the same official
+145.0.7632.6 archive directly, verifying all ZIP CRCs and extracting with original
+file modes restored the executable in the ignored private test directory. The
+passing runs above use that version without runtime/test-policy changes; setup
+interruptions and the deliberate inherited-code negative control are excluded
+from passing results.
