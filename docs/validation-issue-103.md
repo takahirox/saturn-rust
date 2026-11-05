@@ -17,9 +17,12 @@ The inherited code at `2a323e79f12ba58333be46ae9d69c089f3a14676` routes
 - An unsupported command code, invalid SETTIME calendar, or unsupported/invalid
   INTBACK parameters (including missing IREG2=F0).
 
-There is no evidence here that a documented, correctly issued **byte command**
-is rejected. The original failure must not be labeled a COMREG read or attributed
-to a specific command. A synthetic test of each candidate now distinguishes these
+The independent byte investigation below finds **no byte-command acceptance
+defect within the documented issue protocol**. An exhaustive command/parameter
+audit and an additional original firmware guest pass unchanged against inherited
+main and the checkpoint, including production Wasm/Chromium. The original failure
+must not be labeled a COMREG read, an invalid firmware operation, or attributed to
+a specific command. A synthetic test of each candidate distinguishes the rejection
 paths; none is converted to unconditional success.
 
 A separate concrete defect was reproduced: the inherited bus implements word and
@@ -32,10 +35,13 @@ such operands before register mutation, cache fill or BSC decomposition. This is
 a bounded emulator policy for accesses outside the documented contract; it does
 not assert a physical Saturn bus exception or measured electrical response.
 
-The scope is therefore independently reconstructed SMPC access semantics,
-rejection diagnostics and a proven width-policy correction. The original byte
-failure is unverified. Keep #103 open if tracking resolution of that symptom;
-do not generate a closing reference from this checkpoint. Broad hardware
+The scope is independently reconstructed SMPC access semantics, an executable
+finding of no byte-command acceptance defect, rejection diagnostics and a proven
+width-policy correction.
+The original byte failure is unverified. Keep #103 open and PR #104 in draft
+while the remaining integrated acceptance scope is unresolved; do not generate a
+closing reference from this checkpoint. No private trace or human confirmation
+is required to finish that work. Broad hardware
 completion remains in #17, and the unrelated #81 SCU endpoint finding is unchanged.
 
 ## Primary-source reconciliation
@@ -90,6 +96,60 @@ The model still does not enforce every documented command-issuance window or
 CPU-specific command limitation in table2.5. This checkpoint does not claim full
 SMPC or stock-firmware conformance.
 
+## Independent byte-transaction investigation
+
+The follow-up examines the rejection predicates themselves. ST-169 tables2.1–2.3
+(p.12) list exactly these sixteen command bytes: 00, 02, 03, 06, 07, 08, 09,
+0D, 0E, 0F, 10, 16, 17, 18, 19, 1A. Table2.4 (p.13) divides them into
+exception/reset, parameterless, parameterized and result/IRQ classes. All sixteen
+are accepted by inherited `Smpc::write`; no listed command is missing from its
+dispatch. IREG contents do not restrict parameterless commands or SETSMEM.
+
+| Byte rejection at COMREG | Primary contract and independently checked boundary |
+| --- | --- |
+| Read | §1.2/fig1.3 pp.5–6 specifies W. SH-2 programming manual table5.3 and §6.32 distinguish MOV.B loads (6010 for @R1,R0) from stores (2100 for R0,@R1). No instruction/direction was supplied for the reported PC. A W map supplies no electrical read value; explicit unsupported-read policy remains justified. |
+| Missing SF / busy | §2.2 pp.13–16 and command limitations p.19 require SF polling, SF=01, parameters when required, then COMREG, with completion before another issue. SF reservation alone has no pending command. All accepted commands enter pending processing or an INTBACK collection phase; completion/break releases them. A new byte-bus audit checks disconnected even lanes, four aliases, one clock before, at and after CDOFF's deadline, rejected reissue and subsequent CDON. |
+| Unlisted command | All 256 byte codes are independently compared with the sixteen entries above. Each listed code accepts with valid parameters; the other 240 remain explicitly unsupported. Their electrical effects are unspecified here. |
+| INTBACK parameters | §2.4 pp.37–38, 42–43 and §3.1 table3.3 p.54 require IREG0=00/01, IREG2=F0, nonreserved port modes (00/01/11), and PEN for peripheral acquisition. Status-only uses 01/00/F0. Every IREG0 byte, every defined IREG1 field combination (bits2/0 zero) and three IREG2 values are audited: 49,152 cases, including all 54 accepted combinations. Neither optimization choice nor 255-byte/zero-byte mode is accidentally excluded. No data requested (00/00/F0) remains outside the three documented acquisition forms. |
+| SETTIME parameters | §2.5 p.46 defines BCD year/date/time, hexadecimal month 1–C and weekday 0–6. Every date in 2000/2001, all seven weekdays and both midnight/23:59:59 are accepted: 10,234 valid calendars, including leap day. Four nonexistent/non-BCD cases retain the explicit undefined-result policy. The firmware additionally reads back 1993/2000/2024/2099 and months A/B/C. Undefined calendars are not reclassified as unsupported command codes or physical bus errors. |
+
+The new [public-API audit](../tests/smpc_byte_contract.rs) has no dependency on the
+new diagnostics or width correction. The exact source and fixtures were copied
+into an isolated archive of `2a323e79f12ba58333be46ae9d69c089f3a14676`; all five
+tests pass there. This includes the original MIT 512 KiB
+[byte firmware](../tests/fixtures/smpc-byte-audit.s) and its independent
+[111-record expectation](../tests/fixtures/smpc-byte-audit.tsv).
+It executes reset vectors, polls SF, claims SF **before** writing IREGs, issues
+SETTIME/SETSMEM/INTBACK through byte stores, reads real calendar/SMEM results,
+and exercises all eighteen status-plus-peripheral port/optimization combinations.
+Each status result leaves SF busy, SR.PDE reports readiness, and guest BREAK
+releases acquisition. IRQ delivery/acknowledgement, actual peripheral collection,
+reset/power/NMI and dual-CPU command effects retain the existing dedicated guests;
+this audit does not replace those checks or infer their correctness from acceptance.
+
+SH7604 table4.6 (pp.71–72) does not make this odd byte MMIO operand an alignment
+exception. Its §7.11.2 (pp.210–211) distinguishes buffered external writes from
+CPU completion and uses real addresses for cache-through operands. The new guest
+uses 201000xx and, with cache disabled at reset, 001000xx; it does not read COMREG
+to flush a write. SCU §1.2/fig1.3 maps the SMPC region at these aliases; it does
+not prescribe readback for a write-only register. These sources give no basis for
+changing a rejected COMREG read to zero, FF or a command echo. The existing
+opt-in diagnostics distinguish buffered-store failures without re-reading ROM.
+
+**Conclusion:** every inherited byte rejection predicate has a documented
+precondition or an explicitly bounded unsupported/undefined-operation policy;
+the independent audits demonstrate no rejection of a correctly issued documented
+byte command in this model. No evidence supports a byte-path behavior change.
+This substantiates the Issue's permitted no-defect outcome for the byte-command
+acceptance investigation. It does not prove the unavailable firmware violated
+the protocol, identify its transaction, or establish full SMPC timing/electrical
+conformance. In particular the timing-window/CPU-issuer limitations noted above,
+cache-enabled MMIO and wider integrated acceptance are outside this audit.
+No byte compatibility fix, private-ROM startup success, or red-to-green byte
+negative control is claimed. Existing read/handshake/busy/invalid-parameter
+negative controls remain active; the width defect has its separate red control.
+Keep #103 open and PR #104 in draft under the contributor publication rule.
+
 ## Diagnostics and original guests
 
 `BusError::Smpc(AccessFault)` captures the rejected access without an extra bus
@@ -123,7 +183,7 @@ PC 00000226: COMREG 2-byte write 2010001E value=0009 -> ByteOnly
 These PCs belong only to the original fixtures, not the unavailable user BIOS.
 
 [`build_smpc_transactions.py`](../tests/fixtures/build_smpc_transactions.py)
-reproduces the source `.s` and sparse big-endian `.hex` representation of eleven
+reproduces the source `.s` and sparse big-endian `.hex` representation of twelve
 standalone **524288-byte** ROMs, all under the adjacent [MIT license](../tests/fixtures/LICENSE).
 Reset PC/SP are 00000200/060FF000. Expansion starts with zero-filled ROM bytes;
 the fixture builder uses the repository's original assembler, no SDK/cross compiler.
@@ -168,7 +228,7 @@ policy defect only. The inherited read/missing-SF/busy/unsupported-command paths
 already fail; their new tests establish diagnostic precision, not a previously
 successful byte-command compatibility fix.
 
-## Executed validation
+## Executed validation (prior checkpoint)
 
 Executed on macOS arm64 with rustup stable Rust/Cargo 1.99.0, Node 26.12.1,
 Playwright 1.58.2, Chromium Headless Shell 145.0.7632.6 and wasm-bindgen 0.2.129.
@@ -227,6 +287,67 @@ Hosted GitHub Actions, publication, live Pages, proprietary ROMs and real device
 were not invoked. This node must not push, open a PR, comment or merge. The original
 private-BIOS transaction and general BIOS/menu/retail compatibility remain
 unverified; no unavailable owner investigation is made a mandatory gate.
+
+## Executed byte-investigation validation
+
+The review follow-up used the same Rust 1.99.0 / Node 26.12.1 /
+wasm-bindgen 0.2.129 / pinned Chromium 145.0.7632.6 toolchain. The new fixture's
+expanded 524288-byte SHA-256 is
+`4d8fc3fcafc6c8fa44d85a1b56f2a7a2cd3b3238302f1f0b9202b5b915dc96a4`.
+All firmware bytes and expected records are original and covered by the fixtures'
+MIT license. No runtime behavior or external publication state was changed.
+
+- `cargo fmt --check`, `cargo build --locked`: pass.
+- `cargo test --locked --test smpc_byte_contract`: **5/5 pass**, final focused
+  run 0.62 s after the Clippy parenthesis correction.
+- `python3 scripts/ci-time.py issue-103-byte-native cargo test --locked`:
+  **1,178 pass**, zero failures/ignored, 105 harnesses; 430.56 s summed harness
+  time, 472.259 s wall time including compilation. The final parenthesis-only
+  test-helper clarification also passes the focused rerun above.
+- In an isolated `git archive` of inherited `2a323e7`, copy the new test and
+  `smpc-byte-audit.{s,hex,tsv}`, then run:
+
+  ```sh
+  CARGO_TARGET_DIR=target/issue-103/baseline-target cargo test --locked \
+    --manifest-path target/issue-103/baseline-src/Cargo.toml --test smpc_byte_contract
+  ```
+
+  **5/5 pass**, final run 1.73 s. An additional bounded observation of the native
+  firmware execution reports 933356 clocks, 12667 instructions, zero exceptions
+  for all chunks and resets. This is differential evidence of accepted byte
+  operations in inherited code; it is not a claimed failing byte negative control.
+- `cargo clippy --locked --all-targets -- -D warnings` and
+  `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings`: pass.
+- `sh scripts/check-fixtures.sh`: all **104** reproduction commands pass. The
+  existing registered transaction builder now also reproduces the twelfth ROM;
+  registry size and all prior fixtures remain unchanged.
+- `sh scripts/build-web.sh`: production build/bindings pass, 13.746 s wall time
+  including compilation. The inherited archive was independently built with
+  `cargo build --locked --release --target wasm32-unknown-unknown` and matching
+  `wasm-bindgen --target web --no-typescript`. A temporary Chromium harness called
+  each module's exported `Emulator.reset_bios`, `run_steps`, Debug reads and
+  clock/instruction counters with the same original ROM. All six combinations
+  (inherited/current × chunks 1/127/10000) produce the identical 111 records,
+  **933356 clocks, 12667 instructions, zero exceptions**, agreeing with native.
+- `npm run test:browser -- --group=hardwareBoundaries`: pass, 4.240 s group /
+  4.674 s total, **276 assertions**. The production UI uploads the original ROM;
+  all chunks and two cold boots compare its actual guest-published results.
+  Existing invalid-operation/width/IRQ/peripheral controls also pass.
+- Complete `npm run test:browser`: **74/74 groups pass**, 32 shared groups
+  (417.617 s), 42 scenario groups (364.935 s), 417.923 s total wall time.
+  The two-worker aggregator verifies complete coverage and the production web
+  artifact digest; BIOS-only UI, media, backup, audio/video, HLE and dual-CPU
+  regressions all pass.
+- `node --test scripts/ci-runner.test.mjs`: **13/13 pass**, 14.662 s.
+- JavaScript syntax, relative Markdown link targets and Git whitespace: pass.
+
+The initial runner invocation preceded the first web build and timed out waiting
+for missing Wasm assets; the complete rerun above passed after building. The new
+guest initially attempted an unsupported SCU IST write in its test setup. Its
+final readiness loop polls SR.PDE and uses the documented IREG0 BREAK path;
+existing IRQ guests retain real CPU interrupt acknowledgement. Native Clippy
+initially requested parentheses in the test's BCD helper; the corrected native
+and Wasm checks pass. These initial failures are not counted as passing checks.
 
 ## PR publication reference correction
 

@@ -426,6 +426,11 @@ adds CPU/PC, already available instruction and timing context without device
 reads or persistence. See the [Issue #103 register matrix and evidence](validation-issue-103.md).
 The reported private BIOS byte transaction remains unverified; the independently
 reproduced wide-access defect does not explain it or establish BIOS-menu support.
+The independent byte acceptance audit covers every documented command code,
+INTBACK field combinations and real calendars, with an original reset-vector
+guest in native and production Wasm. It finds no documented byte-command
+rejection defect in inherited main; undefined operations retain explicit policies.
+This bounded result does not establish complete SMPC timing or electrical behavior.
 
 SMPC uses byte accesses: PDR1/PDR2 +75/+77, DDR1/DDR2 +79/+7B,
 IOSEL +7D, EXLE +7F (relative to

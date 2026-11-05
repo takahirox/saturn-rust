@@ -4037,7 +4037,17 @@ chunk partitions and reset cancellation. The fixture registry includes their
 reproduction command; the existing `hardwareBoundaries` browser group is expanded.
 
 The original one-byte access at private BIOS PC 0000025C remains unclassified;
-no documented valid byte-command rejection has been demonstrated. This width
-correction does not claim to resolve that symptom, produce a stock menu, or
+an independent byte-command acceptance investigation now audits all 256 codes,
+49,152 INTBACK parameter combinations and 10,234 valid calendars. The same five
+public-API tests and an additional original 512 KiB reset-vector ROM pass against
+inherited main and the checkpoint. Native and production Chromium/Wasm compare
+111 real RTC/SMEM/SF/SR records across chunk sizes and resets; inherited/current
+Wasm also agree on clocks and instruction counts. This supports a bounded
+finding of no byte-command acceptance defect under the documented protocol,
+without declaring the
+unavailable firmware's operation invalid or changing COMREG readback. See the
+[byte investigation](validation-issue-103.md#independent-byte-transaction-investigation)
+for the primary-manual predicates and limits. This width
+correction does not claim to resolve the original symptom, produce a stock menu, or
 complete SMPC/#17. Do not close #103 on that evidence alone. Remaining timing,
 CPU-specific command-issuance restrictions and wider hardware scope are unchanged.

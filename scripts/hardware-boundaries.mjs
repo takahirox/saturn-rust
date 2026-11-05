@@ -18,6 +18,27 @@ async function load(page,name,image) {
 }
 
 export async function hardwareBoundaries(page) {
+  const byteRom = await rom("smpc-byte-audit");
+  const byteExpected = (await readFile("tests/fixtures/smpc-byte-audit.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v, 16));
+  let byteReference;
+  for (const chunk of [1, 127, 10000]) {
+    for (let boot = 0; boot < 2; boot++) {
+      await load(page, "smpc-byte-audit", byteRom);
+      const result = await page.evaluate(async ({chunk, count}) => {
+        const {emulator} = await import("./app.js");
+        for (let left = 100000; left > 0;) {
+          const n = Math.min(left, chunk); emulator.run_steps(n); left -= n;
+          emulator.registers(); emulator.read_long(0x0601b000);
+        }
+        return {trace: Array.from({length: count}, (_, i) => emulator.read_long(0x0601b000 + i*4)),
+          exceptions: emulator.exception_count(), clocks: emulator.peripheral_clocks(), instructions: emulator.instruction_count()};
+      }, {chunk, count: byteExpected.length});
+      assert.deepEqual(result.trace, byteExpected);
+      assert.equal(result.exceptions, "0");
+      byteReference ??= result;
+      assert.deepEqual(result, byteReference, `byte audit chunk ${chunk}, boot ${boot}`);
+    }
+  }
   const transactionRom = await rom("smpc-transactions");
   const transactionExpected = (await readFile("tests/fixtures/smpc-transactions.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v, 16));
   let transactionReference;

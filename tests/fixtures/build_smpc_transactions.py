@@ -14,6 +14,63 @@ from build_video_transactions import encode
 HERE = Path(__file__).resolve().parent
 
 
+def byte_audit():
+    """Independent byte acceptance/result guest; also runs on inherited main.
+
+    ST-169 §2.2's SF-before-parameters sequence, §2.5 hexadecimal months,
+    BCD calendar, §2.4 SMEM/status and all nonreserved port mode fields.
+    Existing clock/reset/dual-CPU guests exercise the other command effects.
+    """
+    s = 'load 0x2601b000,r8\n'
+    expected = []
+    calendars = [
+        [0x19, 0x93, 0x5c, 0x31, 0x23, 0x59, 0x59],
+        [0x20, 0x00, 0x22, 0x29, 0, 0, 0],
+        [0x20, 0x24, 0x4a, 0x31, 0x12, 0x34, 0x56],
+        [0x20, 0x99, 0x0b, 0x30, 0x01, 0x02, 0x03],
+    ]
+    for n, calendar in enumerate(calendars):
+        s += idle(f'claim_time{n}') + byte(0x20100063, 1)
+        for i, value in enumerate(calendar):
+            s += byte(0x20100001 + i * 2, value)
+        s += byte(0x2010001f, 0x16) + idle(f'time{n}')
+        s += read(0x20100063, 1) + read(0x2010005f, 1)
+        expected += [0, 0x16]
+        # Change data operands on each iteration; expected status comes from
+        # actual RTC/SMEM publication rather than a host-authored RAM result.
+        memory = [value ^ n for value in [0x12, 0x34, 0x56, 0x78]]
+        s += byte(0x20100063, 1)
+        for i, value in enumerate(memory):
+            s += byte(0x20100001 + i * 2, value)
+        s += byte(0x2010001f, 0x17) + idle(f'memory{n}')
+        s += byte(0x20100063, 1)
+        for i, value in enumerate([1, 0, 0xf0]):
+            s += byte(0x20100001 + i * 2, value)
+        s += byte(0x2010001f, 0x10) + idle(f'calendar_status{n}')
+        for i in [0, 1, 2, 3, 4, 5, 6, 7, 12, 13, 14, 15]:
+            s += read(0x20100021 + i * 2, 1)
+        expected += [0xc0] + calendar + memory
+    for port1 in [0, 1, 3]:
+        for port2 in [0, 1, 3]:
+            for ope in [0, 2]:
+                tag = f'{port1}_{port2}_{ope}'
+                s += byte(0x00100063, 1)
+                for i, value in enumerate([1, port2 << 6 | port1 << 4 | 8 | ope, 0xf0]):
+                    s += byte(0x00100001 + i * 2, value)
+                s += byte(0x0010001f, 0x10)
+                # SF remains busy awaiting continue; SR.PDE distinguishes
+                # the new result from the preceding (already broken) status.
+                s += ('load 0x00100061,r1\n'+f'status_{tag}:\nmov.b @r1,r0\n'
+                      f'tst #32,r0\nbt status_{tag}\n')
+                s += read(0x00100063, 1) + read(0x00100061, 1)
+                s += byte(0x00100001, 0x41) + read(0x00100063, 1)
+                expected += [1, 0x60, 0]
+    s += 'load 0x600d,r0\n' + record() + 'park:\nsleep\nbra park\nnop\n'
+    files, _ = encode('smpc-byte-audit', s)
+    files['smpc-byte-audit.tsv'] = ''.join(f'{v:08X}\n' for v in expected + [0x600d]).encode()
+    return files
+
+
 def build():
     s = 'load 0x2601a000,r8\n'
     s += read(0x20100063, 1) + read(0x2010005f, 1)
@@ -61,6 +118,7 @@ def build():
         source += byte(0x2601a200, 0x55) + 'park:\nsleep\nbra park\nnop\n'
         extra, _ = encode('smpc-fault-' + name, source)
         files.update(extra)
+    files.update(byte_audit())
     return files
 
 
