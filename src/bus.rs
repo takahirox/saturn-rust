@@ -1250,6 +1250,15 @@ impl Bus {
     }
 
     fn write<const N: usize>(&mut self, address: u32, bytes: [u8; N]) -> Result<(), BusError> {
+        self.write_from(Processor::Master, address, bytes)
+    }
+
+    fn write_from<const N: usize>(
+        &mut self,
+        issuer: Processor,
+        address: u32,
+        bytes: [u8; N],
+    ) -> Result<(), BusError> {
         let value = bytes.iter().fold(0u32, |v, b| v << 8 | u32::from(*b));
         self.check_smpc_width(address, N, Some(value))?;
         let guest_address = address;
@@ -1358,7 +1367,7 @@ impl Bus {
                 let lane = address + i as u32;
                 if lane & 1 != 0 {
                     self.smpc
-                        .write(lane, byte)
+                        .write_from(issuer, lane, byte)
                         .map_err(|e| self.smpc_error(e, guest_address))?;
                 }
             }
@@ -1567,9 +1576,15 @@ impl CpuBus<'_> {
                 continue;
             }
             let result = match width {
-                1 => self.bus.write(at, [bytes[0]]),
-                2 => self.bus.write(at, [bytes[0], bytes[1]]),
-                _ => self.bus.write(at, [bytes[0], bytes[1], bytes[2], bytes[3]]),
+                1 => self.bus.write_from(self.processor, at, [bytes[0]]),
+                2 => self
+                    .bus
+                    .write_from(self.processor, at, [bytes[0], bytes[1]]),
+                _ => self.bus.write_from(
+                    self.processor,
+                    at,
+                    [bytes[0], bytes[1], bytes[2], bytes[3]],
+                ),
             };
             // The ROM has no write-enable pin. Keep the checked host loader's
             // ReadOnly error, but a real CPU write completes without changing

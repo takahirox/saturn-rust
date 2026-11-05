@@ -26,6 +26,149 @@ fn rom(text: &str) -> Vec<u8> {
 }
 
 #[test]
+fn dual_sh2_firmware_preserves_command_issuer_and_permitted_slave_results() {
+    let master_expected: Vec<_> = include_str!("fixtures/smpc-issuer-allowed.tsv")
+        .lines()
+        .map(|s| u32::from_str_radix(s, 16).unwrap())
+        .collect();
+    for (name, command, source) in [
+        (
+            "allowed",
+            None,
+            include_str!("fixtures/smpc-issuer-allowed.hex"),
+        ),
+        ("02", Some(2), include_str!("fixtures/smpc-issuer-02.hex")),
+        ("03", Some(3), include_str!("fixtures/smpc-issuer-03.hex")),
+        (
+            "0e",
+            Some(0x0e),
+            include_str!("fixtures/smpc-issuer-0e.hex"),
+        ),
+        (
+            "0f",
+            Some(0x0f),
+            include_str!("fixtures/smpc-issuer-0f.hex"),
+        ),
+        (
+            "10",
+            Some(0x10),
+            include_str!("fixtures/smpc-issuer-10.hex"),
+        ),
+    ] {
+        let mut reference = None;
+        for chunk in [1, 3, 127, 10000] {
+            for observe in [false, true] {
+                let mut m = Machine::new();
+                m.reset(Boot::ExternalBios(&rom(source))).unwrap();
+                let mut error = None;
+                for start in (0..250000).step_by(chunk) {
+                    let result = m.run_steps((250000 - start).min(chunk) as u32);
+                    if observe {
+                        let _ = (m.cpu_state(), m.slave_state());
+                        let _ = m.debug_read32(0x0601e100).unwrap();
+                        let _ = m.smpc_fault_diagnostics();
+                    }
+                    if let Err(e) = result {
+                        error = Some(e);
+                        break;
+                    }
+                }
+                if let Some(command) = command {
+                    let Some(MachineError::SlaveCpu(CpuError::Bus {
+                        source: BusError::Smpc(fault),
+                        ..
+                    })) = &error
+                    else {
+                        panic!("{name}: expected slave fault, got {error:?}");
+                    };
+                    assert_eq!(fault.reason, Rejection::ProhibitedIssuer);
+                    assert_eq!(
+                        (fault.address, fault.width, fault.write),
+                        (0x2010001f, 1, Some(command))
+                    );
+                    assert!(fault.state.sf);
+                    assert!(!fault.state.busy);
+                    assert_eq!(
+                        (
+                            fault.state.command,
+                            fault.state.pending,
+                            fault.state.remaining
+                        ),
+                        (0x17, None, None)
+                    );
+                    assert_eq!(&fault.state.input[..3], &[1, 0, 0xf0]);
+                    assert_eq!(fault.state.command_report, 0x17);
+                    assert_eq!(m.bus().smpc_command_state(), fault.state);
+                    assert!(
+                        m.smpc_fault_diagnostics()
+                            .unwrap()
+                            .contains("Slave SH-2 PC=0x")
+                    );
+                    assert_eq!(m.bus().read32(0x0601e204), Ok(0));
+                    // Guest observed permitted SETSMEM completion before fault.
+                    let actual: Vec<_> = (0..8)
+                        .map(|i| m.bus().read32(0x0601e100 + i * 4).unwrap())
+                        .collect();
+                    assert_eq!(actual, [1, 1, 8, 0, 0x17, 1, 1, 8]);
+                    let clocks = m.clocks();
+                    assert_eq!(
+                        m.run_steps(1).unwrap_err().to_string(),
+                        error.as_ref().unwrap().to_string()
+                    );
+                    assert_eq!(m.clocks(), clocks);
+                } else {
+                    assert!(error.is_none(), "{error:?}");
+                    let actual: Vec<_> = (0..master_expected.len())
+                        .map(|i| m.bus().read32(0x0601e000 + i as u32 * 4).unwrap())
+                        .collect();
+                    assert_eq!(actual, master_expected);
+                    let actual: Vec<_> = (0..11)
+                        .map(|i| m.bus().read32(0x0601e100 + i * 4).unwrap())
+                        .collect();
+                    assert_eq!(actual, [1, 1, 8, 0, 0x17, 1, 1, 8, 0, 0x16, 0x600d]);
+                    assert_eq!(m.bus().read32(0x0601e204), Ok(1));
+                }
+                assert!(m.slave_state().instructions > 0);
+                assert_eq!(
+                    (m.cpu_state().exceptions, m.slave_state().exceptions),
+                    (0, 0)
+                );
+                let result = (
+                    m.clocks(),
+                    m.cpu_state().clone(),
+                    m.slave_state().clone(),
+                    error.map(|e| e.to_string()),
+                );
+                let row = include_str!("fixtures/smpc-issuer-progress.tsv")
+                    .lines()
+                    .find_map(|line| {
+                        let (guest, counts) = line.split_once('\t')?;
+                        (guest == name).then_some(counts)
+                    })
+                    .unwrap();
+                let expected: Vec<u64> =
+                    row.split_whitespace().map(|v| v.parse().unwrap()).collect();
+                assert_eq!(
+                    [
+                        m.clocks(),
+                        m.cpu_state().instructions,
+                        m.slave_state().instructions
+                    ]
+                    .as_slice(),
+                    expected,
+                    "{name}: native must match shared Wasm progress"
+                );
+                assert_eq!(
+                    *reference.get_or_insert(result.clone()),
+                    result,
+                    "{name}, chunk {chunk}, observe {observe}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn command_guest_uses_reset_vectors_real_results_irq_and_chunk_invariant_observation() {
     let bios = rom(include_str!("fixtures/smpc-transactions.hex"));
     let expected: Vec<_> = include_str!("fixtures/smpc-transactions.tsv")

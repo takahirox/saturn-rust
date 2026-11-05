@@ -426,10 +426,20 @@ adds CPU/PC, already available instruction and timing context without device
 reads or persistence. See the [Issue #103 register matrix and evidence](validation-issue-103.md).
 The reported private BIOS byte transaction remains unverified; the independently
 reproduced wide-access defect does not explain it or establish BIOS-menu support.
-The independent byte acceptance audit covers every documented command code,
+The independent master-context byte acceptance audit covers every documented command code,
 INTBACK field combinations and real calendars, with an original reset-vector
 guest in native and production Wasm. It finds no documented byte-command
 rejection defect in inherited main; undefined operations retain explicit policies.
+That audit used the implicit master interface. CPU bus dispatch now carries the
+issuer through direct transfers and scheduled write-buffer/DMA completion to
+`Smpc::write_from`. ST-169 §2.2/table2.5 (p.20) prohibits slave SSHON, SSHOFF,
+CKCHG352/320 and INTBACK. These fail `ProhibitedIssuer` before any command,
+report or deadline mutation; the other eleven commands remain permitted from
+slave. Host `Bus`/`Smpc::write` helpers retain their master-interface convention.
+This diagnostic is a bounded emulator policy for prohibited issuance, not an
+assertion of physical bus-error or open-bus behavior. Original dual-SH-2 native
+and production-Wasm guests verify slave SETSMEM/SETTIME results via master
+INTBACK and all five prohibited stores, including shared progress counts.
 This bounded result does not establish complete SMPC timing or electrical behavior.
 The [#103 review guests](validation-issue-103.md#review-follow-up-timing-valid-guests-and-reset-observation)
 add DISP-enabled raster observation and FRT-delayed issuance within ST-169

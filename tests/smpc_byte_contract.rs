@@ -4,14 +4,58 @@
 mod progress;
 
 use saturn_rust::{
-    bus::{Bus, Memory},
-    smpc::Smpc,
+    bus::{Bus, BusError, Memory, Processor},
+    smpc::{Smpc, diagnostics::Rejection},
 };
 
 const BASE: u32 = 0x00100000;
 const COMMANDS: [u8; 16] = [
     0, 2, 3, 6, 7, 8, 9, 0x0d, 0x0e, 0x0f, 0x10, 0x16, 0x17, 0x18, 0x19, 0x1a,
 ];
+
+#[test]
+fn both_cpu_bus_views_enforce_table_2_5_without_mutating_rejected_commands() {
+    for issuer in [Processor::Master, Processor::Slave] {
+        for base in [BASE, BASE + 0x100, 0x20100000, 0x2017ff80] {
+            for command in COMMANDS {
+                let mut b = Bus::default();
+                let mut cpu = b.for_cpu(issuer);
+                cpu.write8(base + 0x63, 1).unwrap();
+                let bytes: &[u8] = match command {
+                    0x10 => &[1, 0, 0xf0],
+                    0x16 => &[0x20, 0x24, 0x4a, 0x31, 0x12, 0x34, 0x56],
+                    _ => &[0x12, 0x34, 0x56, 0x78],
+                };
+                for (i, byte) in bytes.iter().enumerate() {
+                    cpu.write8(base + 1 + i as u32 * 2, *byte).unwrap();
+                }
+                let before = b.smpc_command_state();
+                let result = b.for_cpu(issuer).write8(base + 0x1f, command);
+                if issuer == Processor::Slave && [2, 3, 0x0e, 0x0f, 0x10].contains(&command) {
+                    let Err(BusError::Smpc(fault)) = result else {
+                        panic!("slave command {command:02x} accepted: {result:?}");
+                    };
+                    assert_eq!(fault.reason, Rejection::ProhibitedIssuer);
+                    assert_eq!(fault.write, Some(u32::from(command)));
+                    assert_eq!(fault.address, base + 0x1f);
+                    assert_eq!(fault.state, before);
+                    assert_eq!(b.smpc_command_state(), before);
+                    b.advance_clocks(8601).unwrap();
+                    assert_eq!(b.smpc_command_state(), before);
+                    // Rejection leaves the shared handshake usable by master.
+                    b.for_cpu(Processor::Master).write8(base + 0x1f, 9).unwrap();
+                    b.advance_clocks(1075).unwrap();
+                    assert_eq!(b.read8(base + 0x63), Ok(0));
+                    assert_eq!(b.read8(base + 0x5f), Ok(9));
+                } else {
+                    result.unwrap();
+                    assert!(b.smpc_command_state().busy);
+                    assert_eq!(b.smpc_command_state().pending, Some(command));
+                }
+            }
+        }
+    }
+}
 
 fn parameters(s: &mut Smpc, bytes: &[u8]) {
     // §2.2: claim SF first, then supply parameters, then write COMREG.

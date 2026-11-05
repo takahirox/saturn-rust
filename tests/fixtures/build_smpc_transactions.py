@@ -189,6 +189,64 @@ def byte_audit():
     return files
 
 
+def issuer_guests():
+    """Table2.5: real SSHON/reset entry, shared SF and slave COMREG stores.
+
+    All issuers wait for VBlank+300us. Only the host observes/reports faults;
+    each prohibited guest reaches a success marker on the inherited dispatch.
+    """
+    files = {}
+    window = 'load 0x20000,r3\njsr @r3\nnop\n'
+    park = 'park:\nsleep\nbra park\nnop\n'
+    for command in [None, 2, 3, 0x0e, 0x0f, 0x10]:
+        name = 'smpc-issuer-' + ('allowed' if command is None else f'{command:02x}')
+        # The master sets the flag before SSHON can release slave reset.
+        master = ('load 0x2601e200,r1\nmov.l @r1,r0\ntst r0,r0\nbt master\n'
+                  'load 0x10000,r1\njmp @r1\nnop\nmaster:\n')
+        master += byte(0x2601e203, 1) + 'load 0x2601e000,r8\n'
+        master += put16(0x25f80000, 0x8000) + window + issue(2) + idle('slave_started')
+        master += ('load 0x2601e204,r1\nwait_slave:\nmov.l @r1,r0\ntst r0,r0\nbt wait_slave\n')
+        master += window + byte(0x20100063, 1)
+        for i, value in enumerate([1, 0, 0xf0]):
+            master += byte(0x20100001 + i * 2, value)
+        master += byte(0x2010001f, 0x10) + idle('master_status')
+        for i in [0, 1, 2, 3, 4, 5, 6, 7, 12, 13, 14, 15]:
+            master += read(0x20100021 + i * 2, 1)
+        master += read(0x20100063, 1) + read(0x2010005f, 1)
+        master += 'load 0x600d,r0\n' + record() + park
+        slave = 'load 0x060fe000,r15\nload 0x2601e100,r8\n' + idle('master_finished')
+        # A permitted command in every guest is a control against blanket
+        # rejection of all slave MMIO; master later verifies its real SMEM.
+        slave += window + byte(0x20100063, 1)
+        for i, value in enumerate([0x12, 0x34, 0x56, 0x78]):
+            slave += byte(0x20100001 + i * 2, value)
+        slave += byte(0x2010001f, 0x17) + idle('slave_memory')
+        slave += read(0x20100063, 1) + read(0x2010005f, 1)
+        slave += window + byte(0x20100063, 1)
+        values = ([0x20, 0x24, 0x4a, 0x31, 0x12, 0x34, 0x56]
+                  if command is None else [1, 0, 0xf0])
+        for i, value in enumerate(values):
+            slave += byte(0x20100001 + i * 2, value)
+        slave += byte(0x2010001f, 0x16 if command is None else command)
+        slave += idle('slave_command') + read(0x20100063, 1) + read(0x2010005f, 1)
+        slave += byte(0x2601e207, 1) + 'load 0x600d,r0\n' + record() + park
+        operands = []
+        for base, source in [(0x10000, slave), (0x20000, command_window())]:
+            code = assembler.assemble(source, base=base)
+            operands += [(base+i, int.from_bytes(code[i:i+2], 'big')) for i in range(0, len(code), 2)]
+        extra, _ = encode(name, master, operands)
+        extra[name + '.s'] = ('; Master/reset entry at 0x200\n' + master +
+                             '; Slave entry at 0x10000\n' + slave +
+                             '; Shared window routine at 0x20000\n' + command_window()).encode()
+        files.update(extra)
+    # Independent results: the master must receive the calendar and memory
+    # actually set by slave; status-only INTBACK is then master-issued.
+    files['smpc-issuer-allowed.tsv'] = ''.join(f'{v:08X}\n' for v in
+        WINDOW_EXPECTED * 2 + [0xc0, 0x20, 0x24, 0x4a, 0x31, 0x12, 0x34, 0x56,
+                           0x12, 0x34, 0x56, 0x78, 0, 0x10, 0x600d]).encode()
+    return files
+
+
 def build():
     s = 'load 0x2601a000,r8\n'
     s += read(0x20100063, 1) + read(0x2010005f, 1)
@@ -239,6 +297,7 @@ def build():
     files.update(byte_audit())
     files.update(timed_peripherals())
     files.update(reset_guests())
+    files.update(issuer_guests())
     return files
 
 

@@ -13,6 +13,7 @@ pub enum Rejection {
     Busy,
     UnsupportedCommand,
     InvalidParameters,
+    ProhibitedIssuer,
     UnsupportedRegister,
 }
 

@@ -1,7 +1,7 @@
 //! SMPC ST-169 §§1.2, 2.2/2.4/2.5, 3.2/3.3. Original functional model.
 //! RTC advances only with emulated clocks. Direct digital and standard analog
 //! joystick inputs are electrical levels, never writes into guest game state.
-use crate::bus::BusError;
+use crate::bus::{BusError, Processor};
 use crate::devices::SMPC;
 mod controller;
 pub mod diagnostics;
@@ -498,7 +498,17 @@ impl Smpc {
             _ => Err(self.access_fault(address, 1, None, Rejection::UnsupportedRegister)),
         }
     }
+    /// Host/device tests use the master command interface. CPU bus callers
+    /// must retain their issuer through `write_from`.
     pub fn write(&mut self, address: u32, value: u8) -> Result<(), BusError> {
+        self.write_from(Processor::Master, address, value)
+    }
+    pub(crate) fn write_from(
+        &mut self,
+        issuer: Processor,
+        address: u32,
+        value: u8,
+    ) -> Result<(), BusError> {
         match address - SMPC {
             offset @ 1..=0x0D if offset & 1 != 0 => {
                 let i = ((offset - 1) / 2) as usize;
@@ -533,6 +543,18 @@ impl Smpc {
                     1,
                     Some(u32::from(value)),
                     Rejection::InvalidSf,
+                ));
+            }
+            // ST-169 §2.2/table2.5 (p.20): these five commands are
+            // master-only. Fail before command/report/deadline mutation.
+            // This bounded host diagnostic does not assert an electrical
+            // response or an SH-2 architectural exception for prohibited use.
+            0x1F if issuer == Processor::Slave && matches!(value, 2 | 3 | 0x0E | 0x0F | 0x10) => {
+                return Err(self.access_fault(
+                    address,
+                    1,
+                    Some(u32::from(value)),
+                    Rejection::ProhibitedIssuer,
                 ));
             }
             0x1F if self.busy() => {

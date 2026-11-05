@@ -4043,14 +4043,15 @@ public-API tests and an additional original 512 KiB reset-vector ROM pass agains
 inherited main and the checkpoint. Native and production Chromium/Wasm compare
 111 real RTC/SMEM/SF/SR records across chunk sizes and resets; inherited/current
 Wasm also agree on clocks and instruction counts. This supports a bounded
-finding of no byte-command acceptance defect under the documented protocol,
+finding of no rejection of documented master-issued byte commands,
 without declaring the
 unavailable firmware's operation invalid or changing COMREG readback. See the
 [byte investigation](validation-issue-103.md#independent-byte-transaction-investigation)
 for the primary-manual predicates and limits. This width
 correction does not claim to resolve the original symptom, produce a stock menu, or
 complete SMPC/#17. Do not close #103 on that evidence alone. Remaining timing,
-CPU-specific command-issuance restrictions and wider hardware scope are unchanged.
+and wider hardware scope are unchanged; table2.5 issuer restrictions are covered
+by the correction below.
 
 
 The #103 review follow-up supplies the previously missing timing-valid command
@@ -4078,3 +4079,21 @@ the independent 201/79/20-word guest-result checks. See [actual counts and
 validation](validation-issue-103.md#review-follow-up-shared-nativechromium-progress-evidence).
 This is functional-model parity evidence; the partial #103/#104 state and
 unclassified private one-byte failure remain unchanged.
+
+
+The #103 issuer follow-up corrects a separate byte-path acceptance defect:
+CPU bus dispatch previously dropped the issuing processor, accepting all five
+master-only commands from slave. ST-169 §2.2/table2.5 (p.20) now maps to an
+explicit `ProhibitedIssuer` diagnostic before command/report/deadline mutation.
+Direct CPU transfers and scheduled CPU/write-buffer/DMAC completion preserve
+the owner through dispatch. The native bus audit checks all sixteen commands,
+both CPUs and four aliases (128 cases), including post-rejection master recovery.
+Six original MIT 512 KiB dual-SH-2 guests run through SSHON/reset vectors and
+real byte MMIO in native and production Wasm. Permitted slave SETSMEM/SETTIME
+results are read by master INTBACK; five prohibited slave stores leave SF,
+previous command/report, inputs and deadline intact. Both backends use the same
+[progress baseline](../tests/fixtures/smpc-issuer-progress.tsv), chunk sizes
+1/3/127/10000 and passive Debug controls. This enforces a software contract,
+without asserting electrical behavior for prohibited issuance. See the
+[issuer validation record](validation-issue-103.md#review-follow-up-command-issuer).
+The private one-byte failure remains unclassified; #103 stays open and #104 draft.

@@ -27,6 +27,66 @@ export async function hardwareBoundaries(page) {
     assert.deepEqual([String(turns), result.clocks, result.instructions, result.exceptions],
       progress.get(name), `${name}: Wasm progress must match the shared native oracle`);
   }
+  // Table2.5: these are real dual-SH-2 guests. Master releases slave with
+  // SSHON; slave issues COMREG via the production scheduler/write buffer.
+  const issuerProgress = new Map((await readFile("tests/fixtures/smpc-issuer-progress.tsv", "utf8"))
+    .trim().split(/\r?\n/).filter(line => !line.startsWith("#"))
+    .map(line => { const [name, ...counts] = line.split("\t"); return [name, counts]; }));
+  const issuerExpected = (await readFile("tests/fixtures/smpc-issuer-allowed.tsv", "utf8"))
+    .trim().split(/\r?\n/).map(v => parseInt(v, 16));
+  for (const name of ["allowed", "02", "03", "0e", "0f", "10"]) {
+    const image = await rom(`smpc-issuer-${name}`);
+    let reference;
+    for (const chunk of [1, 3, 127, 10000]) {
+      for (const observe of [false, true]) {
+        const result = await page.evaluate(async ({image, chunk, observe, count}) => {
+          const {Emulator} = await import("./pkg/saturn_rust.js");
+          const emulator = new Emulator();
+          try {
+            emulator.reset_bios(Uint8Array.from(atob(image), c => c.charCodeAt(0)));
+            let message;
+            for (let left = 250000; left > 0;) {
+              const n = Math.min(left, chunk);
+              try { emulator.run_steps(n); } catch (e) { message = String(e); break; }
+              left -= n;
+              if (observe) { emulator.registers(); emulator.slave_registers(); emulator.read_long(0x0601e100); emulator.smpc_fault_diagnostics(); }
+            }
+            const details = emulator.smpc_fault_diagnostics();
+            const clocks = emulator.peripheral_clocks();
+            let repeated;
+            if (message) { try { emulator.run_steps(1); } catch (e) { repeated = String(e); } }
+            return {message, details, repeated, stationary: clocks === emulator.peripheral_clocks(),
+              clocks, instructions: emulator.instruction_count(), slave: emulator.slave_instruction_count(),
+              exceptions: emulator.exception_count(), slaveExceptions: emulator.slave_exception_count(),
+              masterTrace: Array.from({length: count}, (_, i) => emulator.read_long(0x0601e000 + i*4)),
+              slaveTrace: Array.from({length: 11}, (_, i) => emulator.read_long(0x0601e100 + i*4)),
+              done: emulator.read_long(0x0601e204)};
+          } finally { emulator.free(); }
+        }, {image: image.toString("base64"), chunk, observe, count: issuerExpected.length});
+        assert.deepEqual([result.clocks, result.instructions, result.slave], issuerProgress.get(name), `${name}: shared native/Wasm issuer progress`);
+        assert.equal(result.exceptions, "0"); assert.equal(result.slaveExceptions, "0");
+        assert.equal(result.stationary, true);
+        if (name === "allowed") {
+          assert.equal(result.message, undefined);
+          assert.equal(result.details, undefined);
+          assert.deepEqual(result.masterTrace, issuerExpected);
+          assert.deepEqual(result.slaveTrace, [1, 1, 8, 0, 0x17, 1, 1, 8, 0, 0x16, 0x600d]);
+          assert.equal(result.done, 1);
+        } else {
+          assert.match(result.message, /Slave SH-2:.*1-byte write.*ProhibitedIssuer/);
+          assert.match(result.message, new RegExp(`value=0x${parseInt(name, 16).toString(16).padStart(8, "0")}`, "i"));
+          assert.equal(result.repeated, result.message);
+          assert.match(result.details, /Slave SH-2 PC=0x.*ProhibitedIssuer/);
+          assert.match(result.details, /sf: true, busy: false, command: 23, pending: None, remaining: None/);
+          assert.match(result.details, /input: \[1, 0, 240/);
+          assert.deepEqual(result.slaveTrace, [1, 1, 8, 0, 0x17, 1, 1, 8, 0, 0, 0]);
+          assert.equal(result.done, 0);
+        }
+        reference ??= result;
+        assert.deepEqual(result, reference, `${name}, chunk ${chunk}, observe ${observe}`);
+      }
+    }
+  }
   const observerRom = await rom("smpc-reset-observer");
   const resetExpected = (await readFile("tests/fixtures/smpc-reset-observer.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v, 16));
   let resetReference;
