@@ -1,0 +1,8 @@
+# Original synthetic SH-2 ROM, MIT licensed (see adjacent LICENSE).
+# Offset / big-endian words; expand to 524288 bytes, unspecified bytes zero.
+# Reset vectors: PC=0x100, SP=0x06100000.
+0000 0000 0100 0610 0000
+# MOV.L counter,R1; MOV #0,R0; ADD #1,R0; MOV.L R0,@R1;
+# BRA back to ADD; NOP delay slot. All progress comes from guest instructions.
+0100 D103 E000 7001 2102 AFFC 0009
+0110 0600 1000

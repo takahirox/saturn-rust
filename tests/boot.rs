@@ -34,6 +34,44 @@ fn external_bios_uses_power_on_vectors_and_reset_registers() {
 }
 
 #[test]
+fn bios_only_frames_execute_guest_and_restart_without_attaching_media() {
+    // Identical original MIT firmware is selected locally by scripts/play-ui.mjs.
+    let mut rom = vec![0; BIOS_SIZE];
+    for line in include_str!("fixtures/bios-only.hex")
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+    {
+        let mut fields = line.split_whitespace();
+        let offset = usize::from_str_radix(fields.next().unwrap(), 16).unwrap();
+        for (i, word) in fields.enumerate() {
+            let word = u16::from_str_radix(word, 16).unwrap();
+            rom[offset + i * 2..offset + i * 2 + 2].copy_from_slice(&word.to_be_bytes());
+        }
+    }
+    let mut machine = Machine::new();
+    let backup = vec![0x5A; 32768];
+    machine.import_backup_ram(&backup).unwrap();
+    for _ in 0..2 {
+        machine.reset(Boot::ExternalBios(&rom)).unwrap();
+        assert_eq!(machine.mode(), Some(BootMode::ExternalBios));
+        assert!(machine.reset_in_progress());
+        assert!(machine.bus().cd.media().is_none());
+        assert_eq!(machine.bus().read32(0x06001000), Ok(0));
+        assert_eq!(machine.cpu_state().instructions, 0);
+        machine.advance_frame().unwrap();
+        assert!(!machine.reset_in_progress());
+        assert!(machine.frames() > 0);
+        assert!(machine.cpu_state().instructions > 100);
+        let counter = machine.bus().read32(0x06001000).unwrap();
+        assert!(counter > 0);
+        machine.advance_frame().unwrap();
+        assert!(machine.bus().read32(0x06001000).unwrap() > counter);
+        assert!(machine.bus().cd.media().is_none());
+        assert_eq!(machine.backup_ram(), backup);
+    }
+}
+
+#[test]
 fn missing_short_and_long_bios_fail_with_no_hle_or_stale_rom() {
     let mut machine = Machine::new();
     for size in [0, BIOS_SIZE - 1, BIOS_SIZE + 1] {

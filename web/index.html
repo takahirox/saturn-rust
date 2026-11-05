@@ -14,16 +14,16 @@
   </header>
   <main id="main" class="view-play">
     <div class="workspace">
-      <aside id="setup" class="setup panel" aria-label="Disc setup">
+      <aside id="setup" class="setup panel" aria-label="Boot setup">
         <fieldset id="controls" disabled>
-          <legend>Load your disc</legend>
+          <legend>Set up your boot</legend>
           <ol class="setup-steps">
             <li id="disc-controls">
-              <h1>Select disc</h1>
+              <h1>Select disc <small>(optional with BIOS)</small></h1>
               <div id="disc-drop" class="drop-zone">
                 <label for="disc">Choose files or drop them here</label>
                 <input id="disc" type="file" accept=".chd,.iso,.cue,.bin,.srw" multiple aria-describedby="disc-help disc-selection">
-                <p id="disc-help">CHD v5 CD-ROM, cooked ISO, or CUE + all referenced BINARY tracks. Select the CUE and its tracks together.</p>
+                <p id="disc-help">Required in HLE disc mode; optional in user-BIOS mode. CHD v5 CD-ROM, cooked ISO, or CUE + all referenced BINARY tracks. Select the CUE and its tracks together.</p>
               </div>
               <p id="disc-selection" role="status">No disc selected.</p>
               <p class="privacy">Files stay local in this tab. No uploads, automatic storage or analytics.</p>
@@ -33,7 +33,7 @@
               <label for="bios">Local raw BIOS · 512 KiB (524288 bytes)</label>
               <input id="bios" type="file" aria-describedby="bios-help bios-selection">
               <p id="bios-selection" role="status">No BIOS selected.</p>
-              <p id="bios-help">Optional for HLE; required for user-BIOS mode. No firmware is bundled or downloaded.</p>
+              <p id="bios-help">Unused in HLE; required for user-BIOS mode, which can start without a disc. No firmware is bundled or downloaded.</p>
             </li>
             <li>
               <h2>Choose boot mode</h2>
@@ -43,7 +43,7 @@
                 <option value="bios">User-provided BIOS</option>
                 <option value="hle" hidden>HLE bootstrap prototype (debug only)</option>
               </select>
-              <p id="boot-warning">HLE boots without firmware. User-BIOS mode uses your firmware and never falls back to HLE. BIOS and retail-game support remain incomplete.</p>
+              <p id="boot-warning">HLE requires a disc and boots without firmware. User-BIOS mode uses your firmware with or without a disc and never falls back to HLE. Authentic BIOS menus and retail-game support remain unverified or incomplete.</p>
               <p>Switching modes keeps loaded files and cancels pending reads. Replacement stops playback.</p>
             </li>
             <li>
@@ -58,7 +58,7 @@
         <div id="player-shell" class="player-shell">
           <div class="display-surround">
             <canvas id="screen" width="320" height="224" tabindex="0" aria-label="Emulated Saturn display" aria-describedby="input-hint">Your browser needs Canvas support.</canvas>
-            <div id="empty-state" class="empty-state"><span class="disc-motif" aria-hidden="true"></span><p>Load a disc to begin</p><small>Your Saturn disc, played locally.</small></div>
+            <div id="empty-state" class="empty-state"><span class="disc-motif" aria-hidden="true"></span><p id="empty-title">Load a disc to begin</p><small id="empty-hint">Disc required for BIOS-less HLE. Or select user-BIOS mode.</small></div>
           </div>
           <div class="player-toolbar" aria-label="Playback controls">
             <button id="pause" type="button" disabled>Resume</button>
@@ -85,7 +85,7 @@
           <div class="settings-body">
             <p id="audio-diagnostics">Audio has not been enabled.</p>
             <p>CHD: self-contained v5 CD-ROM, cdlz/cdzl/cdfl or uncompressed, up to 1,058,400,000 bytes. ISO: cooked 2048-byte sectors, 18–450,000 sectors (921,600,000 bytes). CUE: all referenced BINARY tracks, up to 1,058,400,000 track bytes plus a 1 MiB CUE. A lone raw BIN needs its CUE. SRW1 companions are optional diagnostics only when explicitly referenced by a CUE. Large images need sufficient browser memory.</p>
-            <p>HLE loads the first data track’s Saturn IP / ISO9660 executable. BIOS mode mounts the medium for firmware to read through hardware. No extraction or private sidecar is needed for ordinary discs. A BIOS must be an authorized raw 512 KiB file; size does not verify authenticity or region. The advanced fixture clears both image selections; Restart retains selected media and backup RAM.</p>
+            <p>HLE loads the first data track’s Saturn IP / ISO9660 executable. BIOS mode starts firmware without a disc, or mounts your selected medium for firmware to read through hardware. No extraction or private sidecar is needed for ordinary discs. A BIOS must be an authorized raw 512 KiB file; size does not verify authenticity or region. The advanced fixture clears both image selections; Restart retains the BIOS, any selected media and backup RAM.</p>
             <fieldset id="backup-controls" disabled>
               <legend>Backup RAM</legend>
               <p>Backup RAM survives Reset, Restart and boot changes in this tab. Export it to keep a copy before closing or reloading.</p>
