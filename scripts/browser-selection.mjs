@@ -9,7 +9,7 @@ assert.deepEqual(Object.values(shards).flat().sort(), [...groups].sort(), "Shard
 
 // These costly independent modules run after the shared UI trace, each in a
 // fresh context. Keep the same two workers and 20-minute per-worker budget.
-export const sharedScenarios = ["cdRuntime", "externalDiscovery"];
+export const sharedScenarios = ["cdRuntime", "externalDiscovery", "hardwareBoundaries"];
 export const scenarioGroups = groups.filter(name => shards.scenarios.includes(name) || sharedScenarios.includes(name));
 assert(sharedScenarios.every(name => shards.shared.includes(name)));
 

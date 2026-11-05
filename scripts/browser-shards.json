@@ -31,7 +31,8 @@
     "cdda",
     "hle-player",
     "cdRuntime",
-    "externalDiscovery"
+    "externalDiscovery",
+    "hardwareBoundaries"
   ],
   "scenarios": [
     "vdp2Status",
@@ -49,7 +50,6 @@
     "sh2ResetBus",
     "cs0Transfers",
     "spriteShrink",
-    "hardwareBoundaries",
     "refreshArbitration",
     "interruptEntry",
     "externalStartup",

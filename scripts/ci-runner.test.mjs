@@ -160,8 +160,8 @@ test("complete-suite inventory covers all original groups and missing groups fai
   assert.deepEqual([...scenarioRegistry, "largeMedia"].sort(), [...scenarioGroups].sort());
   assert.equal((source.match(/if \(includeScenarios\) await timings.measure/g) ?? []).length, 44);
   assert.deepEqual(selection([]).groups, groups);
-  assert.equal(shards.shared.length, 32);
-  assert.equal(shards.scenarios.length, 42);
+  assert.equal(shards.shared.length, 33);
+  assert.equal(shards.scenarios.length, 41);
   for (const name of sharedScenarios) {
     assert.deepEqual(selection([`--group=${name}`]), { mode: "scenarios", groups: [name], report: undefined });
     assert(!shards.scenarios.includes(name), "Moved modules must run only once in the complete suite");
@@ -288,6 +288,11 @@ test("aggregate rejects missing/duplicate groups or shards, failed assertions, s
   bad(r => { r[0].groups[0].status = "failed"; });
   bad(r => { r[0].revision = "stale"; });
   bad(r => { r[1].siteDigest = "stale"; });
+  // A report pair from the previous split must not satisfy the revised gate.
+  bad(r => {
+    const at = r[0].groups.findIndex(group => group.name === "hardwareBoundaries");
+    r[1].groups.push(...r[0].groups.splice(at, 1));
+  });
   const directory = await mkdtemp(join(tmpdir(), "saturn-aggregate-"));
   const verify = () => spawnSync(process.execPath, ["scripts/browser-suite.mjs", "--verify", directory], { encoding: "utf8" });
   try {

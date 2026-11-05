@@ -818,3 +818,71 @@ file modes restored the executable in the ignored private test directory. The
 passing runs above use that version without runtime/test-policy changes; setup
 interruptions and the deliberate inherited-code negative control are excluded
 from passing results.
+
+
+## Review follow-up: complete browser scheduling
+
+Related to #103. The review's [hosted scenarios job](https://github.com/takahirox/saturn-rust/actions/runs/42002816210/job/127162428973)
+reached the existing **1,200-second worker limit** in `scspMvol`, reporting
+41/42 groups and never reaching `largeMedia`. Its expanded `hardwareBoundaries`
+group passed in **276.543 s**, while the separate shared job passed all 32 groups
+in **682.283 s**. These are actual hosted log measurements, not local estimates.
+
+Move `hardwareBoundaries` after `cdRuntime` and `externalDiscovery` in the shared
+worker, after closing the dependent UI trace's context. The existing isolated
+module runner creates a fresh context for this group. The same two workers now
+run **33 shared + 41 scenarios = 74 groups**, exactly once each. The independent
+module selection and serial order remain available. No hardware assertion,
+guest/chunk/Debug combination, expected value, guest clock budget, firmware byte,
+20-minute worker limit, retry behavior or artifact/publication gate changes.
+The inventory regression checks the new counts; the existing aggregate negative
+controls additionally reject reports using the previous 32/42 group assignment.
+
+This addresses the complete-suite scheduling finding only. The private one-byte
+COMREG symptom remains unclassified, and the other limits in
+[Finding and scope](#finding-and-scope) remain. Keep #103 open and PR #104 draft
+with `Related to #103` in Related Issues. No Issue/PR change, push or merge is
+performed by this follow-up.
+
+### Executed scheduling-follow-up validation
+
+Local macOS arm64, rustup stable Rust **1.99.0**, Node **26.12.1**,
+wasm-bindgen **0.2.129**, Playwright **1.58.2** and pinned Chromium
+**145.0.7632.6**. Commands below use `scripts/ci-time.py` for wall time.
+Browser commands set `PLAYWRIGHT_BROWSERS_PATH="$PWD/target/issue103-browser"`.
+The build selects the installed rustup stable and matching bindgen CLI via PATH.
+Runner tests finish before the complete browser run; no native guest suite runs
+alongside it. These are local results, not a new hosted-CI result or a controlled
+before/after performance comparison.
+
+- `npm ci --ignore-scripts`: pass, locked Playwright installed.
+- `python3 scripts/ci-time.py issue103-browser-fix-web sh scripts/build-web.sh`:
+  production Wasm/bindings build passes, **7.371 s**.
+- `python3 scripts/ci-time.py issue103-browser-fix-runner node --test
+  scripts/ci-runner.test.mjs`: **13/13 pass**, zero failures/skipped,
+  **13.711 s** wrapper / **13.618 s** Node time. This includes real Chromium
+  assertion failures, stale-success removal, crash/rejection/timeout/cancellation
+  propagation, inventory checks, rejection of the old shard assignment, missing
+  groups/reports, stale revisions, changed assets and publication gates.
+- `python3 scripts/ci-time.py issue103-browser-fix-complete npm run test:browser`:
+  **74/74 groups pass**, **510.659 s** wrapper / **510.420 s** suite time.
+  Shared passes **33** groups in **510.151 s**; scenarios passes **41** groups
+  in **356.693 s**, including `scspMvol` (**63.445 s**) and `largeMedia`
+  (**5.093 s**). The moved `hardwareBoundaries` passes in **99.018 s**, with
+  every existing guest/chunk/observation case and shared native/Wasm oracle
+  assertion intact. Both workers complete within the unchanged 1,200-second
+  budget. The aggregator verifies all 74 groups, revision and the exact tested
+  production artifact digest. The site digest remains unchanged before/after:
+  `1d5184b05916144ec70f1bcad69db09c7fc1dc389170aafbdf5d02971e79c089`.
+- `cargo fmt --check`, `node --check scripts/browser-selection.mjs`,
+  `node --check scripts/ci-runner.test.mjs`, changed documentation relative links
+  and anchors, `git diff --check` and `git diff --cached --check`: pass.
+
+The ordinary private-directory browser installer downloaded the pinned archive
+but stalled during extraction. It was stopped; system unzip verified every ZIP
+CRC and extracted the same archive with its executable modes. The executable
+reports 145.0.7632.6. This setup interruption is excluded from passing results.
+No Rust runtime, fixture, hardware test or production web source changed; the
+full native, fixture and Clippy suites were not repeated for this scheduling-only
+follow-up. Their previous results above are historical evidence. No new hosted
+run, personal firmware, human result or live Pages inspection is claimed.
