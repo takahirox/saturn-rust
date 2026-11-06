@@ -26,6 +26,149 @@ fn rom(text: &str) -> Vec<u8> {
 }
 
 #[test]
+fn resdisa_sf_guests_preserve_claim_order_and_real_nmi_disable_results() {
+    for (name, source, records) in [
+        (
+            "direct",
+            include_str!("fixtures/smpc-sf-direct.hex"),
+            include_str!("fixtures/smpc-sf-direct.tsv"),
+        ),
+        (
+            "activity",
+            include_str!("fixtures/smpc-sf-activity.hex"),
+            include_str!("fixtures/smpc-sf-activity.tsv"),
+        ),
+    ] {
+        let bios = rom(source);
+        let expected: Vec<_> = records
+            .lines()
+            .map(|s| u32::from_str_radix(s, 16).unwrap())
+            .collect();
+        let mut reference = None;
+        for chunk in [1, 3, 127, 10000] {
+            for observe in [false, true] {
+                let mut m = Machine::new();
+                m.reset(Boot::ExternalBios(&bios)).unwrap();
+                // Reset a claim that has reached the device but has no command
+                // deadline. Old buffered stores must not leak into the next boot.
+                for _ in 0..250000 {
+                    m.step().unwrap();
+                    if m.bus().read8(0x0601a280) == Ok(0x55) {
+                        break;
+                    }
+                }
+                assert_eq!(m.bus().read8(0x0601a280), Ok(0x55));
+                let claimed = m.bus().smpc_command_state();
+                assert!(claimed.sf && !claimed.busy);
+                assert_eq!(claimed.pending, None);
+                assert_eq!(claimed.command, 0x10);
+                m.reset(Boot::ExternalBios(&bios)).unwrap();
+                let cold = m.bus().smpc_command_state();
+                assert!(!cold.sf && !cold.busy);
+                assert_eq!((cold.command, cold.command_report), (0, 0));
+                let mut left = 250000;
+                while left > 0 {
+                    let n = left.min(chunk);
+                    m.run_steps(n).unwrap();
+                    if observe {
+                        let _ = (m.cpu_state(), m.smpc_fault_diagnostics());
+                        let _ = m.debug_read32(0x0601a000).unwrap();
+                    }
+                    left -= n;
+                }
+                let actual: Vec<_> = (0..expected.len())
+                    .map(|i| m.bus().read32(0x0601a000 + i as u32 * 4).unwrap())
+                    .collect();
+                assert_eq!(actual, expected, "{name}, chunk {chunk}");
+                assert!(m.smpc_fault_diagnostics().is_none());
+                assert_eq!(m.cpu_state().exceptions, 0);
+                let state = m.bus().smpc_command_state();
+                assert!(!state.sf && !state.busy);
+                assert_eq!((state.command, state.command_report), (0x10, 0x10));
+                let result = (
+                    m.clocks(),
+                    m.cpu_state().clone(),
+                    m.slave_state().clone(),
+                    state,
+                );
+                assert_eq!(*reference.get_or_insert(result.clone()), result);
+                progress::assert_progress(&format!("smpc-sf-{name}"), 250000, &m);
+            }
+        }
+        // Change the actual command operand, retaining every instruction and
+        // SF claim. The RESd and OREG31 oracles must detect RESENAB instead.
+        let mut changed = bios.clone();
+        let operands: Vec<_> = changed
+            .windows(4)
+            .enumerate()
+            .filter_map(|(i, w)| (w == [0, 0, 0, 0x1a]).then_some(i))
+            .collect();
+        assert_eq!(operands.len(), 1);
+        changed[operands[0] + 3] = 0x19;
+        let mut m = Machine::new();
+        m.reset(Boot::ExternalBios(&changed)).unwrap();
+        for _ in 0..25 {
+            m.run_steps(10000).unwrap();
+        }
+        let mut changed_expected: Vec<_> = expected
+            .iter()
+            .map(|v| if *v == 0x1a { 0x19 } else { *v })
+            .collect();
+        changed_expected[expected.len() - 4] = 0;
+        let actual: Vec<_> = (0..expected.len())
+            .map(|i| m.bus().read32(0x0601a000 + i as u32 * 4).unwrap())
+            .collect();
+        assert_eq!(actual, changed_expected);
+    }
+}
+
+#[test]
+fn resdisa_without_sf_is_a_sticky_policy_diagnostic_with_no_latched_command() {
+    let bios = rom(include_str!("fixtures/smpc-sf-missing.hex"));
+    let mut reference = None;
+    for chunk in [1, 3, 127, 10000] {
+        let mut m = Machine::new();
+        for _ in 0..2 {
+            m.reset(Boot::ExternalBios(&bios)).unwrap();
+            let error = (0..250000_u32)
+                .step_by(chunk as usize)
+                .find_map(|start| m.run_steps((250000 - start).min(chunk)).err())
+                .expect("bounded MissingSf");
+            let MachineError::Cpu(CpuError::Bus {
+                source: BusError::Smpc(fault),
+                ..
+            }) = &error
+            else {
+                panic!("{error:?}");
+            };
+            assert_eq!(
+                (fault.address, fault.width, fault.write, fault.reason),
+                (0x2010001f, 1, Some(0x1a), Rejection::MissingSf)
+            );
+            assert!(!fault.state.sf && !fault.state.busy);
+            assert_eq!(
+                (
+                    fault.state.command,
+                    fault.state.command_report,
+                    fault.state.pending
+                ),
+                (0, 0, None)
+            );
+            assert_eq!(m.bus().read32(0x0601a014), Ok(0)); // no success marker
+            let result = (
+                m.clocks(),
+                m.cpu_state().clone(),
+                m.smpc_fault_diagnostics().unwrap(),
+                error.to_string(),
+            );
+            assert_eq!(m.run_steps(1).unwrap_err().to_string(), result.3);
+            assert_eq!(m.clocks(), result.0);
+            assert_eq!(*reference.get_or_insert(result.clone()), result);
+        }
+    }
+}
+
+#[test]
 fn dual_sh2_firmware_preserves_command_issuer_and_permitted_slave_results() {
     let master_expected: Vec<_> = include_str!("fixtures/smpc-issuer-allowed.tsv")
         .lines()

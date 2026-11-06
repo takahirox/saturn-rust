@@ -4014,6 +4014,17 @@ acceptance or #81/#82 endpoint evidence finding is resolved by this increment.
 
 ## SMPC command access investigation (#103)
 
+The focused [SF lifecycle/ordering audit (#105)](validation-issue-105.md)
+adds original reset-vector RESDISA guests with and without cache/RAM activity,
+RESENAB-to-RESDISA state changes, idle-claim cold reset, and missing-SF/changed
+command controls in native and production Wasm. Unit fences prove the modeled
+reset-button NMI enable changes at completion and idle SF claims have no timeout.
+No tested valid issuance was rejected and no runtime handshake change was
+justified. ST-169 specifies the software SF synchronization sequence; it does
+not establish hardware rejection of COMREG with SF=0. `MissingSf` remains a
+bounded emulator policy. The private firmware history and authentic BIOS/menu
+compatibility remain unverified; hardware status stays **Pending**.
+
 Related to #103 and #17. [The validation record](validation-issue-103.md)
 reconciles ST-169 §1.2/fig1.3, §2.2/table2.4, §§2.3–2.5 and §3
 with SH7604 table4.6/§7.11.2 and SCU §1.2/§2.1. COMREG/IREG reads remain

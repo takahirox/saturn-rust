@@ -27,6 +27,84 @@ export async function hardwareBoundaries(page) {
     assert.deepEqual([String(turns), result.clocks, result.instructions, result.exceptions],
       progress.get(name), `${name}: Wasm progress must match the shared native oracle`);
   }
+  // #105: the same RESDISA guests and result/progress records as native.
+  // Reset while SF is claimed but no command exists, then execute a fresh
+  // cold boot. The activity guest fills cache and uses both RAM aliases.
+  for (const name of ["direct", "activity", "missing"]) {
+    const image = await rom(`smpc-sf-${name}`);
+    const expected = name === "missing" ? null :
+      (await readFile(`tests/fixtures/smpc-sf-${name}.tsv`, "utf8")).trim().split(/\r?\n/).map(v => parseInt(v,16));
+    let reference;
+    for (const chunk of [1, 3, 127, 10000]) {
+      for (const observe of [false, true]) {
+        const result = await page.evaluate(async ({image, chunk, observe, missing, count}) => {
+          const {Emulator} = await import("./pkg/saturn_rust.js");
+          const m = new Emulator();
+          const bios = Uint8Array.from(atob(image), c => c.charCodeAt(0));
+          try {
+            m.reset_bios(bios);
+            if (!missing) {
+              for (let i = 0; i < 250000 && m.read_long(0x0601a280) !== 0x55000000; i++) m.step();
+              if (m.read_long(0x0601a280) !== 0x55000000) throw new Error("SF reservation not reached");
+              m.reset_bios(bios);
+              if (m.read_long(0x0601a280) !== 0) throw new Error("stale reservation mailbox");
+            }
+            let message;
+            for (let left = 250000; left > 0;) {
+              const n = Math.min(left, chunk);
+              try { m.run_steps(n); } catch (e) { message = String(e); }
+              left -= n;
+              if (observe) { m.registers(); m.smpc_fault_diagnostics(); m.read_long(0x0601a000); }
+              if (message) break;
+            }
+            const clocks = m.peripheral_clocks();
+            const details = m.smpc_fault_diagnostics();
+            let repeated;
+            if (missing) { try { m.run_steps(1); } catch (e) { repeated = String(e); } }
+            return {message, repeated, details, clocks, stationary: clocks === m.peripheral_clocks(),
+              instructions: m.instruction_count(), exceptions: m.exception_count(),
+              registers: Array.from(m.registers()), special: Array.from(m.special_registers()),
+              records: Array.from({length: count}, (_,i) => m.read_long(0x0601a000 + i*4)),
+              hle: m.read_long(0x06000320), mode: m.mode()};
+          } finally { m.free(); }
+        }, {image: image.toString("base64"), chunk, observe, missing: name === "missing", count: expected?.length ?? 6});
+        if (expected) {
+          assert.deepEqual(result.records, expected);
+          assert.equal(result.details, undefined);
+          assert.equal(result.message, undefined);
+          assertProgress(`smpc-sf-${name}`, 250000, result);
+        } else {
+          assert.match(result.message, /COMREG: 1-byte write at 0x2010001F value=0x0000001A: MissingSf \(SF=0, busy=false, command=0x00\)/);
+          assert.match(result.details, /Master SH-2 PC=0x.*sf: false, busy: false, command: 0, pending: None, remaining: None/);
+          assert.equal(result.repeated, result.message);
+          assert.equal(result.stationary, true);
+          assert.equal(result.records[5], 0);
+        }
+        assert.equal(result.exceptions, "0");
+        assert.equal(result.hle, 0); assert.equal(result.mode, "User-provided BIOS");
+        reference ??= result;
+        assert.deepEqual(result, reference, `${name}, chunk ${chunk}, observe ${observe}`);
+      }
+    }
+    if (expected) {
+      // The command-literal mutation must change actual RESd, not merely
+      // retain a completion marker. Same negative control as native.
+      const changed = Buffer.from(image), operands = [];
+      for (let i = 0; i < changed.length-3; i++) if (changed.readUInt32BE(i) === 0x1a) operands.push(i);
+      assert.equal(operands.length, 1); changed[operands[0]+3] = 0x19;
+      const result = await page.evaluate(async image => {
+        const {Emulator} = await import("./pkg/saturn_rust.js"); const m = new Emulator();
+        try {
+          m.reset_bios(Uint8Array.from(atob(image), c => c.charCodeAt(0)));
+          for (let i = 0; i < 25; i++) m.run_steps(10000);
+          return Array.from({length: 40}, (_,i) => m.read_long(0x0601a000+i*4));
+        } finally { m.free(); }
+      }, changed.toString("base64"));
+      const changedExpected = expected.map(v => v === 0x1a ? 0x19 : v);
+      changedExpected[expected.length-4] = 0;
+      assert.deepEqual(result.slice(0, expected.length), changedExpected);
+    }
+  }
   // Real SH-2 reset-vector guests configure DMAC/cache with instructions.
   // DMA errors enter vector10; the handler records AE, remaining count,
   // saved PC/SR and untouched destination. A deliberate COMREG byte read

@@ -8,6 +8,8 @@ pub enum Rejection {
     WriteOnly,
     ReadOnly,
     ByteOnly,
+    /// COMREG arrived without an active SF claim. The hardware response to
+    /// that sequence is unspecified by ST-169; rejection is emulator policy.
     MissingSf,
     InvalidSf,
     Busy,

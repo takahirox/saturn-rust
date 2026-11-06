@@ -316,6 +316,63 @@ def read_path_guests():
     return files
 
 
+def sf_handshake_guests():
+    """Issue #105: RESDISA effects after an SF claim, with/without bus work.
+
+    Results come from SF/OREG31 and INTBACK.RESd, not a success-only mailbox.
+    The missing-SF guest tests emulator policy, not undocumented electronics.
+    """
+    files = {}
+    poll = lambda tag: (f'load 0x20100063,r1\n{tag}:\nmov.b @r1,r0\n'
+                        f'tst #1,r0\nbf {tag}\n')
+    for name in ['direct', 'activity', 'missing']:
+        s = 'load 0x2601a000,r8\n'
+        s += read(0x20100063, 1) + read(0x2010005f, 1)
+        s += put16(0x25f80000, 0x8000) + WINDOW_CALL
+        expected = [0, 0] + WINDOW_EXPECTED
+        if name != 'missing':
+            # Enable reset-button NMI first: power-on already disables it,
+            # so RESDISA alone would not prove that its effect was executed.
+            s += byte(0x20100063, 1) + byte(0x2010001f, 0x19) + poll('enabled')
+            for i, value in enumerate([1, 0, 0xf0]):
+                s += byte(0x20100001 + 2*i, value)
+            s += byte(0x20100063, 1) + byte(0x2010001f, 0x10) + poll('enabled_status')
+            s += read(0x20100021, 1)
+            expected += [0]
+            s += WINDOW_CALL + poll('claim') + byte(0x20100063, 1)
+            s += read(0x20100063, 1) + read(0x2010005f, 1)
+            s += byte(0x2601a280, 0x55)
+            expected += WINDOW_EXPECTED + [1, 0x10]
+        if name == 'activity':
+            # CCR purge/enable, instruction refill, cached RAM fill/hit and
+            # write-through, uncached RAM bus work and a delay >807 clocks.
+            # All device accesses still use P1 and remain individual bytes.
+            s += byte(0xfffffe92, 0x11)
+            s += ('load 0x0601a300,r4\nload 0x12345678,r0\nmov.l r0,@r4\n'
+                  'mov.l @r4,r0\nmov.l @r4,r0\n' + record() +
+                  'load 0x2601a304,r4\nmov.l r0,@r4\nmov.l @r4,r0\n' + record() +
+                  'load 512,r5\ndelay_claim:\nadd #1,r6\ndt r5\nbf delay_claim\n')
+            s += read(0x20100063, 1)
+            expected += [0x12345678, 0x12345678, 1]
+        s += byte(0x2010001f, 0x1a)
+        if name != 'missing':
+            s += read(0x20100063, 1) + read(0x2010005f, 1) + poll('disabled')
+            s += read(0x20100063, 1) + read(0x2010005f, 1)
+            expected += [1, 0x1a, 0, 0x1a]
+            s += WINDOW_CALL + byte(0x20100063, 1)
+            for i, value in enumerate([1, 0, 0xf0]):
+                s += byte(0x20100001 + 2*i, value)
+            s += byte(0x2010001f, 0x10) + poll('disabled_status')
+            s += read(0x20100021, 1) + read(0x20100063, 1) + read(0x2010005f, 1)
+            expected += WINDOW_EXPECTED + [0x40, 0, 0x10]
+        s += 'load 0x600d,r0\n' + record() + 'park:\nsleep\nbra park\nnop\n' + command_window()
+        extra, _ = encode('smpc-sf-' + name, s)
+        files.update(extra)
+        if name != 'missing':
+            files['smpc-sf-' + name + '.tsv'] = ''.join(f'{v:08X}\n' for v in expected + [0x600d]).encode()
+    return files
+
+
 def build():
     s = 'load 0x2601a000,r8\n'
     s += read(0x20100063, 1) + read(0x2010005f, 1)
@@ -382,6 +439,7 @@ def build():
     files.update(reset_guests())
     files.update(issuer_guests())
     files.update(read_path_guests())
+    files.update(sf_handshake_guests())
     return files
 
 

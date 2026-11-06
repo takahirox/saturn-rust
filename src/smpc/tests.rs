@@ -754,3 +754,85 @@ fn invalid_register_handshake_and_parameter_policies_do_not_mutate_command_state
         assert_eq!(s.command_state(), before);
     }
 }
+
+#[test]
+fn sf_claim_has_no_deadline_and_only_explicit_reset_discards_an_idle_claim() {
+    for chunk in [1, 3, 127, 10000] {
+        let mut s = Smpc::default();
+        let cold = s.command_state();
+        assert!(!cold.sf && !cold.busy);
+        assert_eq!(
+            (cold.command, cold.pending, cold.command_report),
+            (0, None, 0)
+        );
+        s.write(SMPC + 0x63, 1).unwrap();
+        let claimed = s.command_state();
+        assert!(claimed.sf && !claimed.busy);
+        assert_eq!(claimed.remaining, None);
+        let mut left = 30000;
+        while left > 0 {
+            let n = left.min(chunk);
+            assert_eq!(s.advance_clocks(n), None);
+            s.vblank_in();
+            s.vblank_out();
+            s.set_buttons(0x123);
+            s.set_th(0, false);
+            s.set_reset_button(true); // disabled at power-on
+            assert_eq!(s.read(SMPC + 0x63), Ok(1));
+            assert!(s.read(SMPC + 0x1f).is_err());
+            assert!(s.write(SMPC + 0x63, 0).is_err());
+            assert!(s.write(SMPC + 0x5f, 0).is_err());
+            assert_eq!(s.command_state(), claimed);
+            left -= n;
+        }
+        s.write(SMPC + 0x1f, 0x1a).unwrap();
+        assert_eq!(s.command_state().pending, Some(0x1a));
+        s.reset_volatile();
+        assert_eq!(s.command_state(), cold);
+        assert_eq!(s.advance_clocks(30000), None);
+        s.write(SMPC + 0x63, 1).unwrap();
+        s.system_reset();
+        assert!(!s.sf && !s.busy());
+        assert_eq!((s.command, s.output[31]), (0, 0x0d));
+    }
+}
+
+#[test]
+fn resdisa_changes_reset_button_nmi_only_at_completion_and_does_not_clear_a_later_claim() {
+    for chunk in [1, 3, 127, 10000] {
+        let mut s = Smpc::default();
+        issue(&mut s, 0x19);
+        assert_eq!(s.advance_clocks(807), Some(0x19));
+        assert!(s.set_reset_button(true));
+        s.set_reset_button(false);
+        issue(&mut s, 0x1a);
+        let mut left = 806;
+        while left > 0 {
+            let n = left.min(chunk);
+            assert_eq!(s.advance_clocks(n), None);
+            left -= n;
+        }
+        assert!(s.sf && s.busy());
+        assert!(s.set_reset_button(true));
+        s.set_reset_button(false);
+        let before = s.command_state();
+        assert!(
+            matches!(s.write(SMPC + 0x1f, 0x19), Err(BusError::Smpc(f)) if f.reason == Rejection::Busy)
+        );
+        assert_eq!(s.command_state(), before);
+        assert_eq!(s.advance_clocks(1), Some(0x1a));
+        assert!(!s.sf && !s.busy());
+        assert!(!s.set_reset_button(true));
+        assert_eq!(s.read(SMPC + 0x5f), Ok(0x1a));
+        s.write(SMPC + 0x63, 1).unwrap();
+        let claimed = s.command_state();
+        assert_eq!(s.advance_clocks(10000), None);
+        assert_eq!(s.command_state(), claimed);
+        // The SF=0 negative control preserves actual disabled-NMI state.
+        s.reset_volatile();
+        assert!(
+            matches!(s.write(SMPC + 0x1f, 0x1a), Err(BusError::Smpc(f)) if f.reason == Rejection::MissingSf)
+        );
+        assert!(!s.sf && !s.busy() && s.reset_disabled);
+    }
+}
