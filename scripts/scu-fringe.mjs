@@ -1,8 +1,10 @@
 // Original MIT guest. ST-097 §2.1 fig.2.1; SH7604 §6.3.4.
 import assert from "node:assert/strict";
+import { scuDstp } from "./scu-dstp.mjs";
 import { readFile } from "node:fs/promises";
 
 export async function scuFringe(page) {
+  await scuDstp(page);
   const bytes = Buffer.alloc(524288);
   for (const line of (await readFile("tests/fixtures/scu-fringe.hex", "utf8")).split(/\r?\n/)) {
     if (!line || line.startsWith("#")) continue;

@@ -309,6 +309,8 @@ pub trait Memory {
 
 pub struct Bus {
     transactions: transactions::Transactions,
+    // Opt-in, first 64 completed legacy-DSTP transactions; no guest reads.
+    pub(crate) dstp_trace: Option<Vec<String>>,
     bios: Option<Vec<u8>>,
     low: Vec<u8>,
     high: Vec<u8>,
@@ -353,6 +355,7 @@ impl Default for Bus {
     fn default() -> Self {
         Self {
             transactions: transactions::Transactions::default(),
+            dstp_trace: None,
             bios: None,
             low: vec![0; WRAM_SIZE],
             high: vec![0; WRAM_SIZE],

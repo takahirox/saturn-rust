@@ -38,8 +38,9 @@ fn interrupt_mapping_and_gate_with_model_equal_level_order_and_consumption() {
     assert_eq!(scu.interrupt(), Some((7, 0x50)));
     scu.acknowledge(0x50);
     assert_eq!(scu.interrupt(), None);
-    // Final silicon removes these functions; do not implement the obsolete maps.
-    for offset in [0x60, 0x70, 0x74, 0x78, 0x7C, 0xAC] {
+    // Unmodeled removed ports retain honest diagnostics; DSTP has a separately
+    // documented nonfatal compatibility policy.
+    for offset in [0x70, 0x74, 0x78, 0x7C, 0xAC] {
         assert!(scu.read32(SCU + offset).is_err());
         assert!(scu.write32(SCU + offset, 0).is_err());
     }
@@ -696,4 +697,118 @@ fn higher_dma_channel_can_preempt_between_dsp_b_bus_halves_without_losing_the_wo
     s.advance_dma(&mut b).unwrap();
     assert_eq!(b.read32(crate::vdp1::VRAM + 0x1000).unwrap(), 0x11223344);
     assert!(!s.dsp.dma_pending());
+}
+
+#[test]
+fn legacy_dstp_preserves_every_dma_level_phase_trigger_and_completion() {
+    // Differential bus-cycle traces, not merely a register round trip. Every
+    // level is exercised alone, including indirect descriptor/payload retention.
+    for channel in 0..3 {
+        for indirect in [false, true] {
+            for phase in 0..4 {
+                // idle, armed, requested, in progress
+                let setup = || {
+                    let mut s = Scu::default();
+                    let mut b = Bus::default();
+                    b.write32(HIGH_WRAM + 0x100, 0x12345678).unwrap();
+                    b.write32(HIGH_WRAM + 0x104, 0x9abcdef0).unwrap();
+                    for (i, v) in [8, HIGH_WRAM + 0x200, 0x86000100].into_iter().enumerate() {
+                        b.write32(HIGH_WRAM + i as u32 * 4, v).unwrap();
+                    }
+                    set_dma(
+                        &mut s,
+                        channel,
+                        HIGH_WRAM + 0x100,
+                        if indirect {
+                            HIGH_WRAM
+                        } else {
+                            HIGH_WRAM + 0x200
+                        },
+                        8,
+                        0x102,
+                        2 | if indirect { 1 << 24 } else { 0 },
+                    );
+                    s.write32(SCU + channel * 32 + 16, if phase == 0 { 0 } else { 0x100 })
+                        .unwrap();
+                    if phase >= 2 {
+                        s.signal(2);
+                    }
+                    if phase == 3 {
+                        s.advance_dma(&mut b).unwrap();
+                        s.advance_dma(&mut b).unwrap();
+                        s.signal(2); // exactly one retained retrigger
+                    }
+                    s.write32(SCU + 0xa0, 0xbfff & !(1 << (11 - channel)))
+                        .unwrap();
+                    (s, b)
+                };
+                let (mut s, mut b) = setup();
+                let (mut control, mut memory) = setup();
+                for tick in 0..80 {
+                    for value in [0, 1, u32::MAX, 0xa55a1234] {
+                        s.write32(SCU + 0x60, value).unwrap();
+                        assert_eq!(s.read32(SCU + 0x60), Ok(0));
+                    }
+                    assert_eq!(s.dma_pending(), control.dma_pending());
+                    assert_eq!(s.can_wake(), control.can_wake());
+                    assert_eq!(s.interrupt(), control.interrupt());
+                    assert_eq!(s.read32(SCU + 0xa4), control.read32(SCU + 0xa4));
+                    assert_eq!(
+                        s.read32(SCU + channel * 32),
+                        control.read32(SCU + channel * 32)
+                    );
+                    assert_eq!(
+                        s.read32(SCU + channel * 32 + 4),
+                        control.read32(SCU + channel * 32 + 4)
+                    );
+                    assert!(s.read32(SCU + 0x7c).is_err()); // removed DSTA remains diagnostic
+                    for offset in [0x200, 0x204] {
+                        assert_eq!(
+                            b.read32(HIGH_WRAM + offset),
+                            memory.read32(HIGH_WRAM + offset)
+                        );
+                    }
+                    if tick == 2 && phase < 2 {
+                        assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(0));
+                        if phase == 0 {
+                            s.write32(SCU + channel * 32 + 16, 0x100).unwrap();
+                            control.write32(SCU + channel * 32 + 16, 0x100).unwrap();
+                        }
+                        s.signal(2);
+                        control.signal(2);
+                    }
+                    let cycle = s.prepare_dma_cycle(false);
+                    let reference = control.prepare_dma_cycle(false);
+                    let fields = |c: DmaCycle| (c.channel, c.address, c.width, c.value);
+                    assert_eq!(cycle.map(fields), reference.map(fields));
+                    if let (Some(c), Some(r)) = (cycle, reference) {
+                        let complete = |c: DmaCycle, b: &mut Bus| {
+                            if let Some(value) = c.value {
+                                b.write32(c.address, value).map(|_| value)
+                            } else if c.width == 0 {
+                                Ok(0)
+                            } else {
+                                b.read32(c.address)
+                            }
+                        };
+                        let value = complete(c, &mut b);
+                        let expected = complete(r, &mut memory);
+                        assert_eq!(value, expected);
+                        s.complete_dma_cycle(c, value).unwrap();
+                        control.complete_dma_cycle(r, expected).unwrap();
+                    }
+                }
+                assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(0x12345678));
+                assert_eq!(b.read32(HIGH_WRAM + 0x204), Ok(0x9abcdef0));
+                assert_eq!(s.status & 0xe00, 1 << (11 - channel));
+                assert!(!s.dma_pending());
+                // Real channel disable stops future trigger acceptance. DSTP did
+                // not disable this still-armed channel or consume its IRQ.
+                s.write32(SCU + channel * 32 + 16, 0).unwrap();
+                s.signal(2);
+                s.write32(SCU + 0x60, 1).unwrap();
+                assert!(!s.dma_pending());
+            }
+        }
+    }
 }

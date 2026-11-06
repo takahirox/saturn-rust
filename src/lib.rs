@@ -422,6 +422,16 @@ impl Machine {
         }
     }
 
+    /// Enable a fresh bounded local trace of completed legacy-DSTP cycles.
+    /// Disabled by default and cleared by cold/system reset. No guest state,
+    /// timing or bus reads are changed by observation.
+    pub fn set_dstp_trace(&mut self, enabled: bool) {
+        self.bus.dstp_trace = enabled.then(Vec::new);
+    }
+    pub fn dstp_trace(&self) -> Option<String> {
+        self.bus.dstp_trace.as_ref().map(|trace| trace.join("\n"))
+    }
+
     pub fn fault(&self) -> Option<&MachineError> {
         self.fault.as_ref()
     }

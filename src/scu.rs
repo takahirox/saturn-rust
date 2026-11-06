@@ -191,6 +191,10 @@ impl Scu {
     pub fn read32(&self, address: u32) -> Result<u32, BusError> {
         match address - SCU {
             offset @ 0..=0x5F => self.channels[offset as usize / 32].read(offset & 31, address),
+            // Final-spec model: removed DSTP has no guaranteed readback. Zero
+            // is a deterministic compatibility fallback, not measured open bus.
+            // Kept local to this longword port; see docs/mmio-compatibility.md.
+            0x60 => Ok(0),
             0x80 => Ok(self.dsp.control()),
             0x8C => self.dsp.read_data(address),
             0xA4 => Ok(self.status),
@@ -205,6 +209,10 @@ impl Scu {
             offset @ 0..=0x5F => {
                 self.channels[offset as usize / 32].write(offset & 31, value, address)?
             }
+            // ST-210 #14 removes the old force-stop function. Forbidden writes
+            // do not establish an SH-2 exception. Ignore without touching any
+            // DMA state, deadline, pending trigger, arbitration or interrupt.
+            0x60 => (),
             0x80 => self.dsp.set_control(value),
             0x84 => self.dsp.write_program(value, address)?,
             0x88 => self.dsp.set_data_address(value, address)?,
@@ -221,7 +229,7 @@ impl Scu {
             0xA8 => self.abus_ack = value & 1 != 0,
             0xB0 | 0xB4 | 0xB8 => self.abus.write(address - SCU, value),
             0xC4 => self.sdram = value & 1 != 0,
-            // ST-210 #6/7/13/14: unused ports, IST writes, DSTA/DSTOP are prohibited.
+            // ST-210 #6/7/13: unused ports, IST writes, DSTA are prohibited.
             // ASR/AREF are write-only and control external bus cycles.
             _ => return Err(BusError::UnsupportedDevice { address, width: 4 }),
         }

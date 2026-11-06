@@ -555,7 +555,8 @@ instruction-specific microsequences and SCSP register-bus/physical interface pha
 
 SCU subsets now execute actual operations. The entire SCU acceptance criterion
 remains pending: bus arbitration/waits, all device connections and exhaustive DSP
-edge/transfer coverage are still required. Unsupported registers fail explicitly.
+edge/transfer coverage are still required. Unmodeled registers retain explicit
+emulator diagnostics, subject to the scoped [MMIO compatibility policy](mmio-compatibility.md).
 
 | Feature / manual | Implemented behavior | Native / browser | Outstanding failure | Status |
 | --- | --- | --- | --- | --- |
@@ -571,10 +572,12 @@ edge/transfer coverage are still required. Unsupported registers fail explicitly
 Implementation: [SCU ports/interrupts/timers](../src/scu.rs),
 [DMA beats](../src/scu/dma.rs), [DSP interpreter](../src/scu/dsp.rs),
 [clock-domain dispatch](../src/bus.rs) and [raster deadlines](../src/timing.rs).
-ST-210 supersedes the earlier indirect-table diagram and removes DSTA/DSTOP;
-these ports and prohibited IST writes raise diagnostics rather than behaving as
-inert registers. Master external-vector acquisition now uses the accepted IRL
-level and acknowledges only its selected source at acquisition completion;
+ST-210 supersedes the earlier indirect-table diagram and removes DSTA/DSTOP.
+DSTA and prohibited IST writes retain diagnostics. Issue #111 gives only the
+legacy DSTP longword port a bounded compatibility policy: reads return zero and
+writes are ignored without DMA effects; neither is a measured electrical rule.
+See [the evidence and validation](validation-issue-111.md). Master external-vector
+acquisition now uses the accepted IRL level and acknowledges only its selected source at acquisition completion;
 autovector mode generates no endpoint acknowledgement and preserves requests.
 The external acquisition is replay-safe. The
 [phase contract and SCU evidence limits](sh2-interrupt-entry.md) distinguish the

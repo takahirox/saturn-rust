@@ -139,6 +139,13 @@ impl Emulator {
     pub fn smpc_fault_diagnostics(&self) -> Option<String> {
         self.machine.smpc_fault_diagnostics()
     }
+    /// Explicit developer-only local trace; first 64 completed DSTP cycles.
+    pub fn set_dstp_trace(&mut self, enabled: bool) {
+        self.machine.set_dstp_trace(enabled);
+    }
+    pub fn dstp_trace(&self) -> Option<String> {
+        self.machine.dstp_trace()
+    }
     /// Read-only debugger access, also used to assert guest-written diagnostics.
     pub fn read_long(&self, address: u32) -> Result<u32, JsValue> {
         self.machine
