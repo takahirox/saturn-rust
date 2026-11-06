@@ -67,6 +67,96 @@ Changes to triggers, selection, caches, timeouts, worker counts or tests require
 separately scoped implementation and applicable validation. These principles add
 no benchmark, hardware, human-approval or post-merge gate.
 
+## Issue #107 execution cost and shard balance
+
+The current inventory is **74 groups: 33 shared / 41 scenarios**. The baseline
+assignment was 31/43; do not infer today's counts from historical records below.
+The [validation record](validation-issue-107.md) and
+[per-group measurements](ci-performance-issue-107.json) distinguish work reduction,
+scheduling and the exact-final-head hosted PR gate. After the failed runs below,
+the implementation passed hosted run 42176210930 on published head `6ce1492`;
+see the completion measurements at the end of this section.
+
+Main run [42160464316](https://github.com/takahirox/saturn-rust/actions/runs/42160464316)
+passed shared in 784.438 s but terminated scenarios at the unchanged 1,200 s
+limit during MVOL, before large media. This is timeout evidence, not an identified
+assertion regression. The earlier passing PR took 813.726/1,053.664 s, with large
+per-group hosted variation. Shared had observed capacity for independent CHD and
+CD streaming (132.134 + 48.175 s in main); both now run in fresh contexts after
+the original ordered UI trace and hardware-boundary module.
+
+Separately, CD runtime and firmware discovery no longer replay redundant native
+chunk/inspection combinations in the browser. The existing native tests retain
+their full matrices. Wasm retains every layout and negative control, representative
+tiny/odd/bulk chunks, passive reads, exact fixed-clock snapshots and production
+Canvas checks. This removes 22.4 million duplicate emulated steps without changing
+any surviving guest's clock budget, expected result, hardware boundary or assertion.
+CHD codecs, all video/field combinations, repeated cold boots and MVOL/AudioWorklet
+cases remain. The 74-group registry, serial/targeted commands, two-worker cap,
+timeouts, failure/cancellation semantics and revision/artifact/publication gates
+are unchanged. See the record for measured results and outstanding hosted evidence;
+local timing is not a hosted CI pass.
+
+On the same local Chrome/Wasm build, complete-suite elapsed fell from 511.427 to
+453.747 s (**11.28%**), while summed browser worker elapsed fell from 894.995 to
+870.209 s (**2.77%**). CD runtime/discovery alone saved 30.630 s; other variation
+offset part of that saving. The new workers took 452.488/417.721 s. These are
+single local samples, not hosted headroom or measured CPU/billed runner savings.
+
+Hosted PR run [42169608017](https://github.com/takahirox/saturn-rust/actions/runs/42169608017)
+on reviewed head `98b5a3f` subsequently timed out shared at 1,199.575 s during
+CD streaming, after CHD passed. Scenarios passed all 41 groups in 1,123.675 s,
+including MVOL and large media, leaving only 76.325 s (6.36%) to the limit.
+Only 73/74 groups completed successfully. Summed worker elapsed was 2,323.250 s
+**incomplete**, while summed browser runner intervals were 2,405 s. These results
+do not establish adequate headroom or a total hosted-work saving. The aggregate
+verifier rejects the missing shared success report. Further optimization and a
+passed exact-head hosted workflow remain required; keep #107 open and PR #108
+draft. See the [hosted follow-up](validation-issue-107.md#hosted-review-follow-up-timeout-remains)
+for costly-group measurements and the remaining acceptance limits.
+
+The next published-head run,
+[42172508446](https://github.com/takahirox/saturn-rust/actions/runs/42172508446),
+also failed shared during streaming (1,199.595 s); scenarios passed in 1,116.208 s.
+Native and Wasm passed; aggregate `build` failed. The review fix therefore removes
+additional duplicate SMPC chunk/inspection and audio/video cold-boot replays,
+with the complete matrices independently retained in native tests. Every distinct
+browser input, negative control and expectation remains; representative cold
+boots, both fields, full Canvas images and all five MVOL AudioWorklet checks stay.
+This removes 30.4 million fixed-horizon SMPC steps and 112 duplicate frame
+advances, without shortening any retained guest run. The assignment stays 33/41.
+
+Fresh sequential pinned-Chromium samples using the same production Wasm passed
+all 74 groups before and after this fix. Workers fell from 486.632/448.096 s to
+383.251/365.478 s; summed worker elapsed fell **19.90%** (934.728 → 748.729 s),
+separately from suite elapsed's **21.23%** reduction (486.923 → 383.538 s).
+Changed groups account for 170.248 s of the observed 185.999 s worker saving;
+variation in unchanged groups accounts for the remainder. These are local wall
+times, not hosted headroom, CPU or billed runner savings. A bounded LTO build
+trial showed no consistent useful speedup and was reverted. See the
+[review-fix evidence](validation-issue-107.md#second-hosted-result-and-review-fix)
+for retained coverage, commands and timings.
+
+Hosted run [42176210930](https://github.com/takahirox/saturn-rust/actions/runs/42176210930)
+on published head `6ce1492` passed native (1,193 tests), Wasm, all 13 runner
+regressions, **33/33 shared and 41/41 scenario groups**, and aggregate `build`.
+Shared/scenarios took **1,058.177/986.645 s**, leaving **141.823/213.355 s**
+(11.82%/17.78%) below the unchanged 1,200 s limit. Independent downloaded-report
+verification confirmed all 74 groups, including MVOL/large media, the merge
+revision and exact tested-site digest. This establishes observed hosted headroom
+for the implementation; one sample does not establish a variance bound.
+
+Summed complete browser worker elapsed was **2,044.822 s**, separately from
+**2,141 s** summed browser runner intervals and **1,178 s** workflow elapsed.
+The previous 2,315.803 s worker sum was incomplete, and the original complete
+PR baseline was 1,867.390 s; those hosted samples do not establish a total-work
+saving. The controlled local comparison and removed operations above supply
+that evidence. See [hosted completion](validation-issue-107.md#hosted-completion-of-review-fix)
+for group timings, artifact verification and commands. The sub-ten-minute goal
+remains unmet. This evidence-only checkpoint creates a new revision: keep #107
+open and #108 draft with `Related to #107` until normal required CI passes on
+the final published head. No workload or workflow changes were needed here.
+
 ## Issue #93 shard rebalance
 
 The expanded scenario shard in [run 41378197649](https://github.com/takahirox/saturn-rust/actions/runs/41378197649)
@@ -103,9 +193,9 @@ for the complete rerun and its limits.
 ## Issue #61 performance record
 
 The timing measurements below are the historical Issue #61 inventory. The
-current registry has 74 browser groups and 103 fixture/media builders, retaining
+current registry has 74 browser groups and 104 fixture/media builders, retaining
 the required suite coverage and publication gates. See
-[Issue #93 validation](validation-issue-93.md) for the latest executed checks;
+[Issue #107 validation](validation-issue-107.md) for the current executed checks;
 the older counts and measurements below describe their historical checkpoints.
 
 
@@ -181,7 +271,7 @@ concurrently invoking callbacks against the original shared page.
   Large-media tests retain their original private contexts and standard-size
   inputs. No two callbacks use the same page concurrently.
 - The default full command launches those two independent Node/Chromium/server
-  process trees and verifies the combined inventory. `--serial` runs all 65 current groups
+  process trees and verifies the combined inventory. `--serial` ran all 65 then-current groups
   in the original single-process order. Individual modules and either shard have
   deterministic reproduction commands; dependent UI groups remain together.
 - `wasm` uploads one immutable `web-build`. Each CI browser job downloads it,

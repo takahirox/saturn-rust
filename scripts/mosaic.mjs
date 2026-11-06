@@ -15,6 +15,10 @@ export async function mosaic(page) {
     const bit = mode === "rotation" ? 0x10 : 1;
     for (let boot = 0; boot < 2; boot++) for (const tv of [0x8080, 0x80c0]) {
       for (const [seed, mz, parameter] of [[1, bit, 0], [9, bit, 0], [1, 0x3300 | bit, 0], [9, 0x3300 | bit, mode === "rotation" ? 1 : 0], [1, 0x3300, 0]]) {
+        // Native mosaic_guest_fields_pixels_controls_and_repeated_cold_boots
+        // repeats every combination. Keep all 30 Wasm/Canvas inputs and repeat
+        // the baseline for each mode/field density through the production reset.
+        if (boot === 1 && !(seed === 1 && mz === bit && parameter === 0)) continue;
         const image = Buffer.from(original);
         for (const [at, value] of [[0x100, tv], [0x102, seed], [0x104, mz], [0x106, parameter]]) image.writeUInt16BE(value, at);
         const actual = await page.evaluate(async rom => {

@@ -35,56 +35,55 @@ export async function hardwareBoundaries(page) {
     const expected = name === "missing" ? null :
       (await readFile(`tests/fixtures/smpc-sf-${name}.tsv`, "utf8")).trim().split(/\r?\n/).map(v => parseInt(v,16));
     let reference;
-    for (const chunk of [1, 3, 127, 10000]) {
-      for (const observe of [false, true]) {
-        const result = await page.evaluate(async ({image, chunk, observe, missing, count}) => {
-          const {Emulator} = await import("./pkg/saturn_rust.js");
-          const m = new Emulator();
-          const bios = Uint8Array.from(atob(image), c => c.charCodeAt(0));
-          try {
+    // Native smpc_transactions keeps the full chunk/inspection matrix.
+    for (const [chunk, observe] of [[1, true], [3, true], [127, true], [10000, false]]) {
+      const result = await page.evaluate(async ({image, chunk, observe, missing, count}) => {
+        const {Emulator} = await import("./pkg/saturn_rust.js");
+        const m = new Emulator();
+        const bios = Uint8Array.from(atob(image), c => c.charCodeAt(0));
+        try {
+          m.reset_bios(bios);
+          if (!missing) {
+            for (let i = 0; i < 250000 && m.read_long(0x0601a280) !== 0x55000000; i++) m.step();
+            if (m.read_long(0x0601a280) !== 0x55000000) throw new Error("SF reservation not reached");
             m.reset_bios(bios);
-            if (!missing) {
-              for (let i = 0; i < 250000 && m.read_long(0x0601a280) !== 0x55000000; i++) m.step();
-              if (m.read_long(0x0601a280) !== 0x55000000) throw new Error("SF reservation not reached");
-              m.reset_bios(bios);
-              if (m.read_long(0x0601a280) !== 0) throw new Error("stale reservation mailbox");
-            }
-            let message;
-            for (let left = 250000; left > 0;) {
-              const n = Math.min(left, chunk);
-              try { m.run_steps(n); } catch (e) { message = String(e); }
-              left -= n;
-              if (observe) { m.registers(); m.smpc_fault_diagnostics(); m.read_long(0x0601a000); }
-              if (message) break;
-            }
-            const clocks = m.peripheral_clocks();
-            const details = m.smpc_fault_diagnostics();
-            let repeated;
-            if (missing) { try { m.run_steps(1); } catch (e) { repeated = String(e); } }
-            return {message, repeated, details, clocks, stationary: clocks === m.peripheral_clocks(),
-              instructions: m.instruction_count(), exceptions: m.exception_count(),
-              registers: Array.from(m.registers()), special: Array.from(m.special_registers()),
-              records: Array.from({length: count}, (_,i) => m.read_long(0x0601a000 + i*4)),
-              hle: m.read_long(0x06000320), mode: m.mode()};
-          } finally { m.free(); }
-        }, {image: image.toString("base64"), chunk, observe, missing: name === "missing", count: expected?.length ?? 6});
-        if (expected) {
-          assert.deepEqual(result.records, expected);
-          assert.equal(result.details, undefined);
-          assert.equal(result.message, undefined);
-          assertProgress(`smpc-sf-${name}`, 250000, result);
-        } else {
-          assert.match(result.message, /COMREG: 1-byte write at 0x2010001F value=0x0000001A: MissingSf \(SF=0, busy=false, command=0x00\)/);
-          assert.match(result.details, /Master SH-2 PC=0x.*sf: false, busy: false, command: 0, pending: None, remaining: None/);
-          assert.equal(result.repeated, result.message);
-          assert.equal(result.stationary, true);
-          assert.equal(result.records[5], 0);
-        }
-        assert.equal(result.exceptions, "0");
-        assert.equal(result.hle, 0); assert.equal(result.mode, "User-provided BIOS");
-        reference ??= result;
-        assert.deepEqual(result, reference, `${name}, chunk ${chunk}, observe ${observe}`);
+            if (m.read_long(0x0601a280) !== 0) throw new Error("stale reservation mailbox");
+          }
+          let message;
+          for (let left = 250000; left > 0;) {
+            const n = Math.min(left, chunk);
+            try { m.run_steps(n); } catch (e) { message = String(e); }
+            left -= n;
+            if (observe) { m.registers(); m.smpc_fault_diagnostics(); m.read_long(0x0601a000); }
+            if (message) break;
+          }
+          const clocks = m.peripheral_clocks();
+          const details = m.smpc_fault_diagnostics();
+          let repeated;
+          if (missing) { try { m.run_steps(1); } catch (e) { repeated = String(e); } }
+          return {message, repeated, details, clocks, stationary: clocks === m.peripheral_clocks(),
+            instructions: m.instruction_count(), exceptions: m.exception_count(),
+            registers: Array.from(m.registers()), special: Array.from(m.special_registers()),
+            records: Array.from({length: count}, (_,i) => m.read_long(0x0601a000 + i*4)),
+            hle: m.read_long(0x06000320), mode: m.mode()};
+        } finally { m.free(); }
+      }, {image: image.toString("base64"), chunk, observe, missing: name === "missing", count: expected?.length ?? 6});
+      if (expected) {
+        assert.deepEqual(result.records, expected);
+        assert.equal(result.details, undefined);
+        assert.equal(result.message, undefined);
+        assertProgress(`smpc-sf-${name}`, 250000, result);
+      } else {
+        assert.match(result.message, /COMREG: 1-byte write at 0x2010001F value=0x0000001A: MissingSf \(SF=0, busy=false, command=0x00\)/);
+        assert.match(result.details, /Master SH-2 PC=0x.*sf: false, busy: false, command: 0, pending: None, remaining: None/);
+        assert.equal(result.repeated, result.message);
+        assert.equal(result.stationary, true);
+        assert.equal(result.records[5], 0);
       }
+      assert.equal(result.exceptions, "0");
+      assert.equal(result.hle, 0); assert.equal(result.mode, "User-provided BIOS");
+      reference ??= result;
+      assert.deepEqual(result, reference, `${name}, chunk ${chunk}, observe ${observe}`);
     }
     if (expected) {
       // The command-literal mutation must change actual RESd, not merely
@@ -239,54 +238,53 @@ export async function hardwareBoundaries(page) {
   for (const name of ["allowed", "02", "03", "0e", "0f", "10"]) {
     const image = await rom(`smpc-issuer-${name}`);
     let reference;
-    for (const chunk of [1, 3, 127, 10000]) {
-      for (const observe of [false, true]) {
-        const result = await page.evaluate(async ({image, chunk, observe, count}) => {
-          const {Emulator} = await import("./pkg/saturn_rust.js");
-          const emulator = new Emulator();
-          try {
-            emulator.reset_bios(Uint8Array.from(atob(image), c => c.charCodeAt(0)));
-            let message;
-            for (let left = 250000; left > 0;) {
-              const n = Math.min(left, chunk);
-              try { emulator.run_steps(n); } catch (e) { message = String(e); break; }
-              left -= n;
-              if (observe) { emulator.registers(); emulator.slave_registers(); emulator.read_long(0x0601e100); emulator.smpc_fault_diagnostics(); }
-            }
-            const details = emulator.smpc_fault_diagnostics();
-            const clocks = emulator.peripheral_clocks();
-            let repeated;
-            if (message) { try { emulator.run_steps(1); } catch (e) { repeated = String(e); } }
-            return {message, details, repeated, stationary: clocks === emulator.peripheral_clocks(),
-              clocks, instructions: emulator.instruction_count(), slave: emulator.slave_instruction_count(),
-              exceptions: emulator.exception_count(), slaveExceptions: emulator.slave_exception_count(),
-              masterTrace: Array.from({length: count}, (_, i) => emulator.read_long(0x0601e000 + i*4)),
-              slaveTrace: Array.from({length: 11}, (_, i) => emulator.read_long(0x0601e100 + i*4)),
-              done: emulator.read_long(0x0601e204)};
-          } finally { emulator.free(); }
-        }, {image: image.toString("base64"), chunk, observe, count: issuerExpected.length});
-        assert.deepEqual([result.clocks, result.instructions, result.slave], issuerProgress.get(name), `${name}: shared native/Wasm issuer progress`);
-        assert.equal(result.exceptions, "0"); assert.equal(result.slaveExceptions, "0");
-        assert.equal(result.stationary, true);
-        if (name === "allowed") {
-          assert.equal(result.message, undefined);
-          assert.equal(result.details, undefined);
-          assert.deepEqual(result.masterTrace, issuerExpected);
-          assert.deepEqual(result.slaveTrace, [1, 1, 8, 0, 0x17, 1, 1, 8, 0, 0x16, 0x600d]);
-          assert.equal(result.done, 1);
-        } else {
-          assert.match(result.message, /Slave SH-2:.*1-byte write.*ProhibitedIssuer/);
-          assert.match(result.message, new RegExp(`value=0x${parseInt(name, 16).toString(16).padStart(8, "0")}`, "i"));
-          assert.equal(result.repeated, result.message);
-          assert.match(result.details, /Slave SH-2 PC=0x.*ProhibitedIssuer/);
-          assert.match(result.details, /sf: true, busy: false, command: 23, pending: None, remaining: None/);
-          assert.match(result.details, /input: \[1, 0, 240/);
-          assert.deepEqual(result.slaveTrace, [1, 1, 8, 0, 0x17, 1, 1, 8, 0, 0, 0]);
-          assert.equal(result.done, 0);
-        }
-        reference ??= result;
-        assert.deepEqual(result, reference, `${name}, chunk ${chunk}, observe ${observe}`);
+    // Native smpc_transactions keeps every chunk x inspection combination.
+    for (const [chunk, observe] of [[1, true], [3, true], [127, true], [10000, false]]) {
+      const result = await page.evaluate(async ({image, chunk, observe, count}) => {
+        const {Emulator} = await import("./pkg/saturn_rust.js");
+        const emulator = new Emulator();
+        try {
+          emulator.reset_bios(Uint8Array.from(atob(image), c => c.charCodeAt(0)));
+          let message;
+          for (let left = 250000; left > 0;) {
+            const n = Math.min(left, chunk);
+            try { emulator.run_steps(n); } catch (e) { message = String(e); break; }
+            left -= n;
+            if (observe) { emulator.registers(); emulator.slave_registers(); emulator.read_long(0x0601e100); emulator.smpc_fault_diagnostics(); }
+          }
+          const details = emulator.smpc_fault_diagnostics();
+          const clocks = emulator.peripheral_clocks();
+          let repeated;
+          if (message) { try { emulator.run_steps(1); } catch (e) { repeated = String(e); } }
+          return {message, details, repeated, stationary: clocks === emulator.peripheral_clocks(),
+            clocks, instructions: emulator.instruction_count(), slave: emulator.slave_instruction_count(),
+            exceptions: emulator.exception_count(), slaveExceptions: emulator.slave_exception_count(),
+            masterTrace: Array.from({length: count}, (_, i) => emulator.read_long(0x0601e000 + i*4)),
+            slaveTrace: Array.from({length: 11}, (_, i) => emulator.read_long(0x0601e100 + i*4)),
+            done: emulator.read_long(0x0601e204)};
+        } finally { emulator.free(); }
+      }, {image: image.toString("base64"), chunk, observe, count: issuerExpected.length});
+      assert.deepEqual([result.clocks, result.instructions, result.slave], issuerProgress.get(name), `${name}: shared native/Wasm issuer progress`);
+      assert.equal(result.exceptions, "0"); assert.equal(result.slaveExceptions, "0");
+      assert.equal(result.stationary, true);
+      if (name === "allowed") {
+        assert.equal(result.message, undefined);
+        assert.equal(result.details, undefined);
+        assert.deepEqual(result.masterTrace, issuerExpected);
+        assert.deepEqual(result.slaveTrace, [1, 1, 8, 0, 0x17, 1, 1, 8, 0, 0x16, 0x600d]);
+        assert.equal(result.done, 1);
+      } else {
+        assert.match(result.message, /Slave SH-2:.*1-byte write.*ProhibitedIssuer/);
+        assert.match(result.message, new RegExp(`value=0x${parseInt(name, 16).toString(16).padStart(8, "0")}`, "i"));
+        assert.equal(result.repeated, result.message);
+        assert.match(result.details, /Slave SH-2 PC=0x.*ProhibitedIssuer/);
+        assert.match(result.details, /sf: true, busy: false, command: 23, pending: None, remaining: None/);
+        assert.match(result.details, /input: \[1, 0, 240/);
+        assert.deepEqual(result.slaveTrace, [1, 1, 8, 0, 0x17, 1, 1, 8, 0, 0, 0]);
+        assert.equal(result.done, 0);
       }
+      reference ??= result;
+      assert.deepEqual(result, reference, `${name}, chunk ${chunk}, observe ${observe}`);
     }
   }
   const observerRom = await rom("smpc-reset-observer");
@@ -295,91 +293,89 @@ export async function hardwareBoundaries(page) {
   for (const command of ["17", "16", "10"]) {
     const producer = await rom(`smpc-reset-pending-${command}`);
     for (const extra of [0, 1, 7]) {
-      for (const chunk of [1, 3, 127, 10000]) {
-        for (const observe of [false, true]) {
-          const result = await page.evaluate(async ({chunk, extra, observer, producer, count, command, observe}) => {
-            // Each case owns a fresh production machine, as in native tests.
-            // Cold resets retain battery state; separate cases must not share RTC time.
-            const {Emulator} = await import("./pkg/saturn_rust.js");
-            const emulator = new Emulator();
-            try {
-              emulator.reset_bios(Uint8Array.from(atob(producer), c => c.charCodeAt(0)));
-              for (let i = 0; i < 100000 && emulator.read_long(0x0601a200) !== 0x55000000; i++) emulator.run_steps(1);
-              if (emulator.read_long(0x0601a200) !== 0x55000000) throw Error("pending command mailbox absent");
-              if (emulator.read_long(0x0601a00c) !== 1 || emulator.read_long(0x0601a010) !== parseInt(command, 16)) throw Error("guest did not observe the pending command");
-              if (extra) emulator.run_steps(extra);
-              // Debug status is read by the guest; reset uses only production API.
-              // No fault stops execution before or after reset.
-              emulator.reset_bios(Uint8Array.from(atob(observer), c => c.charCodeAt(0)));
-              for (let left = 100000; left > 0;) {
-                const n = Math.min(left, chunk); emulator.run_steps(n); left -= n;
-                if (observe) {
-                  emulator.registers(); emulator.read_long(0x0601c000);
-                  if (emulator.smpc_fault_diagnostics() !== undefined) throw Error("reset observer fault");
-                }
+      // Keep every command/offset and deadline; native retains all eight combinations.
+      for (const [chunk, observe] of [[1, true], [10000, false]]) {
+        const result = await page.evaluate(async ({chunk, extra, observer, producer, count, command, observe}) => {
+          // Each case owns a fresh production machine, as in native tests.
+          // Cold resets retain battery state; separate cases must not share RTC time.
+          const {Emulator} = await import("./pkg/saturn_rust.js");
+          const emulator = new Emulator();
+          try {
+            emulator.reset_bios(Uint8Array.from(atob(producer), c => c.charCodeAt(0)));
+            for (let i = 0; i < 100000 && emulator.read_long(0x0601a200) !== 0x55000000; i++) emulator.run_steps(1);
+            if (emulator.read_long(0x0601a200) !== 0x55000000) throw Error("pending command mailbox absent");
+            if (emulator.read_long(0x0601a00c) !== 1 || emulator.read_long(0x0601a010) !== parseInt(command, 16)) throw Error("guest did not observe the pending command");
+            if (extra) emulator.run_steps(extra);
+            // Debug status is read by the guest; reset uses only production API.
+            // No fault stops execution before or after reset.
+            emulator.reset_bios(Uint8Array.from(atob(observer), c => c.charCodeAt(0)));
+            for (let left = 100000; left > 0;) {
+              const n = Math.min(left, chunk); emulator.run_steps(n); left -= n;
+              if (observe) {
+                emulator.registers(); emulator.read_long(0x0601c000);
+                if (emulator.smpc_fault_diagnostics() !== undefined) throw Error("reset observer fault");
               }
-              return {trace: Array.from({length: count}, (_, i) => emulator.read_long(0x0601c000 + i*4)),
-                exceptions: emulator.exception_count(), clocks: emulator.peripheral_clocks(), instructions: emulator.instruction_count()};
-            } finally { emulator.free(); }
-          }, {chunk, extra, command, observe, producer: producer.toString("base64"), observer: observerRom.toString("base64"), count: resetExpected.length});
-          assert.deepEqual(result.trace, resetExpected, `cancel ${command}, offset ${extra}, chunk ${chunk}`);
-          assert.equal(result.exceptions, "0");
-          assert(BigInt(result.clocks) > 108600n);
-          assertProgress("smpc-reset-observer", 100000, result);
-          resetReference ??= result;
-          assert.deepEqual(result, resetReference);
-        }
+            }
+            return {trace: Array.from({length: count}, (_, i) => emulator.read_long(0x0601c000 + i*4)),
+              exceptions: emulator.exception_count(), clocks: emulator.peripheral_clocks(), instructions: emulator.instruction_count()};
+          } finally { emulator.free(); }
+        }, {chunk, extra, command, observe, producer: producer.toString("base64"), observer: observerRom.toString("base64"), count: resetExpected.length});
+        assert.deepEqual(result.trace, resetExpected, `cancel ${command}, offset ${extra}, chunk ${chunk}`);
+        assert.equal(result.exceptions, "0");
+        assert(BigInt(result.clocks) > 108600n);
+        assertProgress("smpc-reset-observer", 100000, result);
+        resetReference ??= result;
+        assert.deepEqual(result, resetReference);
       }
     }
   }
   const byteRom = await rom("smpc-byte-audit");
   const byteExpected = (await readFile("tests/fixtures/smpc-byte-audit.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v, 16));
   let byteReference;
-  for (const chunk of [1, 3, 127, 10000]) {
-    for (const observe of [false, true]) {
-      for (let boot = 0; boot < 2; boot++) {
-        await load(page, "smpc-byte-audit", byteRom);
-        const result = await page.evaluate(async ({chunk, count, observe}) => {
-          const {emulator} = await import("./app.js");
-          for (let left = 2000000; left > 0;) {
-            const n = Math.min(left, chunk); emulator.run_steps(n); left -= n;
-            if (observe) {
-              emulator.registers(); emulator.read_long(0x0601b000);
-              if (emulator.smpc_fault_diagnostics() !== undefined) throw Error("byte audit fault");
-            }
+  // Native smpc_byte_contract retains all 16 runs; Wasm keeps every chunk,
+  // passive inspection and repeated cold boots at odd and bulk boundaries.
+  for (const [chunk, observe, boots] of [[1, true, 1], [3, true, 1], [127, false, 2], [10000, false, 2]]) {
+    for (let boot = 0; boot < boots; boot++) {
+      await load(page, "smpc-byte-audit", byteRom);
+      const result = await page.evaluate(async ({chunk, count, observe}) => {
+        const {emulator} = await import("./app.js");
+        for (let left = 2000000; left > 0;) {
+          const n = Math.min(left, chunk); emulator.run_steps(n); left -= n;
+          if (observe) {
+            emulator.registers(); emulator.read_long(0x0601b000);
+            if (emulator.smpc_fault_diagnostics() !== undefined) throw Error("byte audit fault");
           }
-          return {trace: Array.from({length: count}, (_, i) => emulator.read_long(0x0601b000 + i*4)),
-            exceptions: emulator.exception_count(), clocks: emulator.peripheral_clocks(), instructions: emulator.instruction_count()};
-        }, {chunk, observe, count: byteExpected.length});
-        assert.deepEqual(result.trace, byteExpected);
-        assertProgress("smpc-byte-audit", 2000000, result);
-        assert.equal(result.exceptions, "0");
-        byteReference ??= result;
-        assert.deepEqual(result, byteReference, `byte audit chunk ${chunk}, boot ${boot}, observe ${observe}`);
-      }
+        }
+        return {trace: Array.from({length: count}, (_, i) => emulator.read_long(0x0601b000 + i*4)),
+          exceptions: emulator.exception_count(), clocks: emulator.peripheral_clocks(), instructions: emulator.instruction_count()};
+      }, {chunk, observe, count: byteExpected.length});
+      assert.deepEqual(result.trace, byteExpected);
+      assertProgress("smpc-byte-audit", 2000000, result);
+      assert.equal(result.exceptions, "0");
+      byteReference ??= result;
+      assert.deepEqual(result, byteReference, `byte audit chunk ${chunk}, boot ${boot}, observe ${observe}`);
     }
   }
   const timedRom = await rom("smpc-timed-peripherals");
   const timedExpected = (await readFile("tests/fixtures/smpc-timed-peripherals.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v, 16));
   let timedReference;
-  for (const chunk of [1, 3, 127, 10000]) {
-    for (const observe of [false, true]) {
-      await load(page, "smpc-timed-peripherals", timedRom);
-      const result = await page.evaluate(async ({chunk, observe, count}) => {
-        const {emulator} = await import("./app.js");
-        for (let left = 500000; left > 0;) {
-          const n = Math.min(left, chunk); emulator.run_steps(n); left -= n;
-          if (observe) { emulator.registers(); emulator.read_long(0x0601d000); emulator.smpc_fault_diagnostics(); }
-        }
-        return {trace: Array.from({length: count}, (_, i) => emulator.read_long(0x0601d000 + i*4)),
-          exceptions: emulator.exception_count(), clocks: emulator.peripheral_clocks(), instructions: emulator.instruction_count()};
-      }, {chunk, observe, count: timedExpected.length});
-      assert.deepEqual(result.trace, timedExpected);
-      assertProgress("smpc-timed-peripherals", 500000, result);
-      assert.equal(result.exceptions, "6");
-      timedReference ??= result;
-      assert.deepEqual(result, timedReference, `raster-gated INTBACK chunk ${chunk}, observe ${observe}`);
-    }
+  // Native raster_gated_intback retains the full matrix and all six IRQs.
+  for (const [chunk, observe] of [[1, true], [3, true], [127, true], [10000, false]]) {
+    await load(page, "smpc-timed-peripherals", timedRom);
+    const result = await page.evaluate(async ({chunk, observe, count}) => {
+      const {emulator} = await import("./app.js");
+      for (let left = 500000; left > 0;) {
+        const n = Math.min(left, chunk); emulator.run_steps(n); left -= n;
+        if (observe) { emulator.registers(); emulator.read_long(0x0601d000); emulator.smpc_fault_diagnostics(); }
+      }
+      return {trace: Array.from({length: count}, (_, i) => emulator.read_long(0x0601d000 + i*4)),
+        exceptions: emulator.exception_count(), clocks: emulator.peripheral_clocks(), instructions: emulator.instruction_count()};
+    }, {chunk, observe, count: timedExpected.length});
+    assert.deepEqual(result.trace, timedExpected);
+    assertProgress("smpc-timed-peripherals", 500000, result);
+    assert.equal(result.exceptions, "6");
+    timedReference ??= result;
+    assert.deepEqual(result, timedReference, `raster-gated INTBACK chunk ${chunk}, observe ${observe}`);
   }
   const transactionRom = await rom("smpc-transactions");
   const transactionExpected = (await readFile("tests/fixtures/smpc-transactions.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v, 16));

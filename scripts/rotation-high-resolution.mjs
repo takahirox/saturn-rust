@@ -14,6 +14,10 @@ export async function rotationHighResolution(page) {
     const golden = (await readFile(`tests/fixtures/rotation-hi-${mode}.tsv`, "utf8")).trim().split(/\r?\n/).map(w => parseInt(w, 16));
     for (let boot = 0; boot < 2; boot++) for (const tv of [0x8002, 0x8003]) {
       for (const [seed, shift, enabled, parameter] of [[1, 0, true, 0], [17, 7, true, 1], [1, 0, false, 0]]) {
+        // Native guest_high_resolution_rotation_full_images_mutations_and_cold_boots
+        // repeats all 24 inputs. Wasm/Canvas keeps each input and repeats the
+        // baseline for every renderer and width through the production reset.
+        if (boot === 1 && !(seed === 1 && shift === 0 && enabled)) continue;
         const image = Buffer.from(original);
         const enable = enabled ? mode === "rbg1" ? 0x30 : 0x10 : 0;
         for (const [at, value] of [[0x100, tv], [0x102, seed], [0x104, shift], [0x106, enable], [0x108, mode === "rbg1" ? 0 : parameter]]) image.writeUInt16BE(value, at);

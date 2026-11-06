@@ -112,7 +112,11 @@ export async function scspMvol(page) {
   for(let mode=0;mode<4;mode++) {
     for(const gain of [0,1,13,14,15]) {
       let previous;
-      for(let repeat=0;repeat<2;repeat++) {
+      // Native guest_mvol_amplitudes retains both boots for all 20 pairs.
+      // Wasm keeps every pair and repeats each isolated source at gain 13,
+      // plus combined-source mute, intermediate gain and unity cold resets.
+      const boots=gain===13 || (mode===3 && (gain===0 || gain===15)) ? 2 : 1;
+      for(let repeat=0;repeat<boots;repeat++) {
         const result=await execute(variant(mode,gain));
         authored(result.samples,mode,gain,16,0x4000,1024);
         assert.equal(result.records[0],4);assert.equal(result.records[1],45000);
