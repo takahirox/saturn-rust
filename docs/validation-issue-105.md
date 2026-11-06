@@ -1,5 +1,10 @@
 # SMPC SF/COMREG lifecycle and ordering audit (#105)
 
+Issue #109 supersedes the idle `MissingSf` rejection described in this historical
+record. See [the current policy and validation](validation-issue-109.md). The
+SF-before-COMREG guests and idle-claim/reset evidence below remain applicable;
+the two missing-SF fault fixtures were replaced with acceptance/overlap controls.
+
 ## Outcome and limits
 
 The source audit and original guests demonstrate no rejection of the tested,

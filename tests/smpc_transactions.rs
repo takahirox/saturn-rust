@@ -26,6 +26,64 @@ fn rom(text: &str) -> Vec<u8> {
 }
 
 #[test]
+fn idle_commands_execute_without_fabricating_sf_in_original_firmware() {
+    for (source, records, prewrite) in [
+        (
+            include_str!("fixtures/smpc-idle-zero.hex"),
+            include_str!("fixtures/smpc-idle-zero.tsv"),
+            false,
+        ),
+        (
+            include_str!("fixtures/smpc-idle-prewrite.hex"),
+            include_str!("fixtures/smpc-idle-prewrite.tsv"),
+            true,
+        ),
+    ] {
+        let bios = rom(source);
+        let expected: Vec<_> = records
+            .lines()
+            .map(|s| u32::from_str_radix(s, 16).unwrap())
+            .collect();
+        let mut reference = None;
+        for chunk in [1, 3, 127, 10000] {
+            let mut m = Machine::new();
+            m.reset(Boot::ExternalBios(&bios)).unwrap();
+            // Observe the actual first RESDISA while pending, then cold
+            // reset it. No host register, guest RAM or flag writes.
+            for _ in 0..250000 {
+                m.step().unwrap();
+                if m.bus().read8(0x0601a280) == Ok(1) {
+                    break;
+                }
+            }
+            let pending = m.bus().smpc_command_state();
+            assert_eq!(
+                (pending.command, pending.pending, pending.command_report),
+                (0x1a, Some(0x1a), 0x1a)
+            );
+            assert!(pending.busy && pending.remaining.unwrap() < 807);
+            assert_eq!(pending.sf, prewrite);
+            m.reset(Boot::ExternalBios(&bios)).unwrap();
+            assert!(!m.bus().smpc_command_state().busy);
+            for start in (0..1000000).step_by(chunk) {
+                m.run_steps((1000000 - start).min(chunk) as u32).unwrap();
+                let _ = (m.cpu_state(), m.smpc_fault_diagnostics());
+            }
+            let actual: Vec<_> = (0..expected.len())
+                .map(|i| m.bus().read32(0x0601b000 + i as u32 * 4).unwrap())
+                .collect();
+            assert_eq!(actual, expected, "SF prewrite={prewrite}, chunk={chunk}");
+            assert!(m.smpc_fault_diagnostics().is_none());
+            assert_eq!(m.cpu_state().exceptions, 7);
+            let state = m.bus().smpc_command_state();
+            assert!(!state.sf && !state.busy);
+            let result = (m.clocks(), m.cpu_state().clone(), state);
+            assert_eq!(*reference.get_or_insert(result.clone()), result);
+        }
+    }
+}
+
+#[test]
 fn resdisa_sf_guests_preserve_claim_order_and_real_nmi_disable_results() {
     for (name, source, records) in [
         (
@@ -119,52 +177,6 @@ fn resdisa_sf_guests_preserve_claim_order_and_real_nmi_disable_results() {
             .map(|i| m.bus().read32(0x0601a000 + i as u32 * 4).unwrap())
             .collect();
         assert_eq!(actual, changed_expected);
-    }
-}
-
-#[test]
-fn resdisa_without_sf_is_a_sticky_policy_diagnostic_with_no_latched_command() {
-    let bios = rom(include_str!("fixtures/smpc-sf-missing.hex"));
-    let mut reference = None;
-    for chunk in [1, 3, 127, 10000] {
-        let mut m = Machine::new();
-        for _ in 0..2 {
-            m.reset(Boot::ExternalBios(&bios)).unwrap();
-            let error = (0..250000_u32)
-                .step_by(chunk as usize)
-                .find_map(|start| m.run_steps((250000 - start).min(chunk)).err())
-                .expect("bounded MissingSf");
-            let MachineError::Cpu(CpuError::Bus {
-                source: BusError::Smpc(fault),
-                ..
-            }) = &error
-            else {
-                panic!("{error:?}");
-            };
-            assert_eq!(
-                (fault.address, fault.width, fault.write, fault.reason),
-                (0x2010001f, 1, Some(0x1a), Rejection::MissingSf)
-            );
-            assert!(!fault.state.sf && !fault.state.busy);
-            assert_eq!(
-                (
-                    fault.state.command,
-                    fault.state.command_report,
-                    fault.state.pending
-                ),
-                (0, 0, None)
-            );
-            assert_eq!(m.bus().read32(0x0601a014), Ok(0)); // no success marker
-            let result = (
-                m.clocks(),
-                m.cpu_state().clone(),
-                m.smpc_fault_diagnostics().unwrap(),
-                error.to_string(),
-            );
-            assert_eq!(m.run_steps(1).unwrap_err().to_string(), result.3);
-            assert_eq!(m.clocks(), result.0);
-            assert_eq!(*reference.get_or_insert(result.clone()), result);
-        }
     }
 }
 
@@ -354,9 +366,27 @@ fn firmware_faults_distinguish_direction_operand_state_and_width_without_side_ef
             1,
         ),
         (
-            include_str!("fixtures/smpc-fault-missing-sf.hex"),
-            Rejection::MissingSf,
-            Some(9),
+            include_str!("fixtures/smpc-fault-busy-zero.hex"),
+            Rejection::Busy,
+            Some(8),
+            1,
+        ),
+        (
+            include_str!("fixtures/smpc-fault-busy-set.hex"),
+            Rejection::Busy,
+            Some(8),
+            1,
+        ),
+        (
+            include_str!("fixtures/smpc-fault-command-zero.hex"),
+            Rejection::UnsupportedCommand,
+            Some(255),
+            1,
+        ),
+        (
+            include_str!("fixtures/smpc-fault-parameters-zero.hex"),
+            Rejection::InvalidParameters,
+            Some(16),
             1,
         ),
         (
