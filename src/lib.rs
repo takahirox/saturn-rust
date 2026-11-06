@@ -400,6 +400,28 @@ impl Machine {
     pub fn clocks(&self) -> u64 {
         self.clocks
     }
+    /// Explicit local diagnostic request. Bounded transaction state only; no
+    /// firmware dump, filenames, logging, storage or extra guest bus reads.
+    pub fn smpc_fault_diagnostics(&self) -> Option<String> {
+        let (processor, error) = match self.fault.as_ref()? {
+            MachineError::Cpu(error) => ("Master SH-2", error),
+            MachineError::SlaveCpu(error) => ("Slave SH-2", error),
+            _ => return None,
+        };
+        match error {
+            CpuError::Bus {
+                pc,
+                source: BusError::Smpc(fault),
+            }
+            | CpuError::ExceptionEntry {
+                pc,
+                source: BusError::Smpc(fault),
+                ..
+            } => Some(format!("{processor} PC=0x{pc:08X} {fault:?}")),
+            _ => None,
+        }
+    }
+
     pub fn fault(&self) -> Option<&MachineError> {
         self.fault.as_ref()
     }

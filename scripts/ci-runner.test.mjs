@@ -160,8 +160,8 @@ test("complete-suite inventory covers all original groups and missing groups fai
   assert.deepEqual([...scenarioRegistry, "largeMedia"].sort(), [...scenarioGroups].sort());
   assert.equal((source.match(/if \(includeScenarios\) await timings.measure/g) ?? []).length, 44);
   assert.deepEqual(selection([]).groups, groups);
-  assert.equal(shards.shared.length, 32);
-  assert.equal(shards.scenarios.length, 42);
+  assert.equal(shards.shared.length, 31);
+  assert.equal(shards.scenarios.length, 43);
   for (const name of sharedScenarios) {
     assert.deepEqual(selection([`--group=${name}`]), { mode: "scenarios", groups: [name], report: undefined });
     assert(!shards.scenarios.includes(name), "Moved modules must run only once in the complete suite");
@@ -288,6 +288,13 @@ test("aggregate rejects missing/duplicate groups or shards, failed assertions, s
   bad(r => { r[0].groups[0].status = "failed"; });
   bad(r => { r[0].revision = "stale"; });
   bad(r => { r[1].siteDigest = "stale"; });
+  // A report pair from the previous split must not satisfy the revised gate.
+  bad(r => {
+    for (const name of ["cdRuntime", "externalDiscovery"]) {
+      const at = r[1].groups.findIndex(group => group.name === name);
+      r[0].groups.splice(-1, 0, ...r[1].groups.splice(at, 1));
+    }
+  });
   const directory = await mkdtemp(join(tmpdir(), "saturn-aggregate-"));
   const verify = () => spawnSync(process.execPath, ["scripts/browser-suite.mjs", "--verify", directory], { encoding: "utf8" });
   try {
@@ -403,7 +410,8 @@ test("CI gates publication on both suites and retains the actually tested assets
   assert.equal(JSON.parse(await readFile("package.json", "utf8")).scripts["test:browser"], "node scripts/browser-suite.mjs");
   // Exact registry: moving commands must not lose fixtures/options.
   const fixtures = (await readFile("scripts/check-fixtures.sh", "utf8")).split("\n").filter(s => s.startsWith("python3 "));
-  assert.equal(fixtures.length, 103);
+  assert.equal(fixtures.length, 104);
+  assert(fixtures.includes("python3 tests/fixtures/build_smpc_transactions.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_interrupt_entry.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_external_startup.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_cd_runtime.py --check"));

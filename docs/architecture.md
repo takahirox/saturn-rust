@@ -416,6 +416,49 @@ line back table), or opaque black. Reserved display encodings and 256-line mode 
 Unsupported enabled effects still fail explicitly. Register readback for
 implemented write-only VDP2 controls remains a debugger convenience.
 
+SMPC register operands are byte-only (ST-169 §1.2/fig1.3). Word/longword
+accesses now fail before register mutation or physical bus decomposition. This
+is a bounded policy for prohibited widths, not a physical bus-error assertion.
+Exception stacking and vector fetches validate the complete longword through
+the direct CPU and scheduler replay adapters before splitting unaligned cycles
+into bytes. Any overlap with the SMPC select is rejected; the existing
+exact-address RAM exception policy and address-error sequencing are retained.
+DMA reads and generated cache-refill longwords also validate their complete
+units before BSC decomposition. A refill rejection retains the issuing operand's
+address and width plus the generated refill unit separately in diagnostics;
+it does not treat a permitted byte operand as a prohibited guest longword.
+COMREG and IREG remain write-only; no command echo or guessed open-bus value is
+returned. Rejected SMPC accesses carry direction, operand, reason and a command
+state snapshot. The explicit local native/Wasm `smpc_fault_diagnostics()` query
+adds CPU/PC, already available instruction and timing context without device
+reads or persistence. See the [Issue #103 register matrix and evidence](validation-issue-103.md).
+The reported private BIOS transaction remains unverified, including its operand
+width: inherited SMPC errors hardcoded width=1 after decomposition. The byte/word
+reset-vector controls reproduce that ambiguity and corrected diagnostics retain
+the complete operand. Independent contract reconstruction and original
+native/Wasm/browser guests supply the [eight-criterion acceptance evidence](validation-issue-103.md#acceptance-matrix);
+the unavailable private trace is optional and no BIOS-menu support is established.
+The independent master-context byte acceptance audit covers every documented command code,
+INTBACK field combinations and real calendars, with an original reset-vector
+guest in native and production Wasm. It finds no documented byte-command
+rejection defect in inherited main; undefined operations retain explicit policies.
+That audit used the implicit master interface. CPU bus dispatch now carries the
+issuer through direct transfers and scheduled write-buffer/DMA completion to
+`Smpc::write_from`. ST-169 §2.2/table2.5 (p.20) prohibits slave SSHON, SSHOFF,
+CKCHG352/320 and INTBACK. These fail `ProhibitedIssuer` before any command,
+report or deadline mutation; the other eleven commands remain permitted from
+slave. Host `Bus`/`Smpc::write` helpers retain their master-interface convention.
+This diagnostic is a bounded emulator policy for prohibited issuance, not an
+assertion of physical bus-error or open-bus behavior. Original dual-SH-2 native
+and production-Wasm guests verify slave SETSMEM/SETTIME results via master
+INTBACK and all five prohibited stores, including shared progress counts.
+This bounded result does not establish complete SMPC timing or electrical behavior.
+The [#103 review guests](validation-issue-103.md#review-follow-up-timing-valid-guests-and-reset-observation)
+add DISP-enabled raster observation and FRT-delayed issuance within ST-169
+§2.2 windows, real INTBACK result IRQ/RTE for all three forms, and cold-reset
+observation beyond cancelled SETSMEM/SETTIME/INTBACK deadlines. These checks
+exercise the existing functional model without broadening invalid-access policy.
+
 SMPC uses byte accesses: PDR1/PDR2 +75/+77, DDR1/DDR2 +79/+7B,
 IOSEL +7D, EXLE +7F (relative to
 00100000, often accessed at 20100000). DDR1=60, IOSEL1=1 and EXLE1=0 select

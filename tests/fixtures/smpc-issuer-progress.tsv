@@ -1,0 +1,8 @@
+# Native-captured regression baseline shared with production Wasm; not physical timing.
+# guest main_clocks master_instructions slave_instructions (both exception counts zero)
+allowed	2167640	66856	24811
+02	1292657	43870	24702
+03	1292657	43870	24702
+0e	1292657	43870	24702
+0f	1292657	43870	24702
+10	1292657	43870	24702

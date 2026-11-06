@@ -135,6 +135,10 @@ impl Emulator {
     pub fn import_backup_ram(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
         self.machine.import_backup_ram(bytes).map_err(js_error)
     }
+    /// Explicit bounded local fault context; does not read guest memory.
+    pub fn smpc_fault_diagnostics(&self) -> Option<String> {
+        self.machine.smpc_fault_diagnostics()
+    }
     /// Read-only debugger access, also used to assert guest-written diagnostics.
     pub fn read_long(&self, address: u32) -> Result<u32, JsValue> {
         self.machine

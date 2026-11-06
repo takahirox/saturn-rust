@@ -1,0 +1,15 @@
+# Original MIT synthetic guests: shared native/production-Wasm regression oracle.
+# Captured from native Machine execution; independently checked in Chromium.
+# Counts describe this functional model, not physical hardware cycle accuracy.
+# guest	scheduler_turns	main_clocks	retired_master_instructions	master_exceptions
+smpc-byte-audit	2000000	24027263	675272	0
+smpc-timed-peripherals	500000	5559242	130511	6
+smpc-reset-observer	100000	1040642	20375	0
+# Faulting guests have no completed-turn budget; compare their stopping point.
+smpc-exception-stack	0	66	0	0
+smpc-exception-vector	0	133	4	0
+smpc-read-dma	0	4108	271	1
+smpc-read-dma-ram	0	4069	268	0
+smpc-read-cache	0	1503	95	0
+smpc-read-cache-through	0	2086	135	0
+smpc-read-cache-disabled	0	2086	135	0

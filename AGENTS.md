@@ -20,3 +20,15 @@ a closing reference from the Run's source Issue. Keep #81 open and PR #82 in dra
 while the mandatory SCU endpoint evidence finding in
 [the validation record](docs/validation-issue-81.md#remaining-acceptance-limits)
 remains unresolved. This publication rule does not waive that finding.
+
+For Issue #103, assess all eight pre-merge criteria using
+[the acceptance matrix](docs/validation-issue-103.md#acceptance-matrix).
+Preserve PR #104 and the validated corrections. A private BIOS/trace, physical
+hardware, human confirmation and live Pages inspection are optional, not gates.
+Independent primary-source reconstruction, original native/Wasm/browser guests,
+inherited negative controls and bounded no-defect findings can satisfy the Issue.
+Keep PR #104 draft with `Related to #103` while required criteria or exact-head
+CI remain unmet. Once they pass, use the normal closing reference and mark it
+ready for full review; do not bypass required reviews or merge checks. No
+post-merge verification is required. Do not claim the unavailable firmware's
+transaction is identified or that stock BIOS/menu compatibility is established.

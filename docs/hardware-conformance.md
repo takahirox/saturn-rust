@@ -4010,3 +4010,129 @@ ordering remain emulator conventions. Full cross-chip arbitration, arbitrary
 asynchronous CDC/GFS calls, real Sega BIOS/SDK ABI, commercial games and complete
 CD controller/connector/timing conformance are not verified. No wider #17
 acceptance or #81/#82 endpoint evidence finding is resolved by this increment.
+
+
+## SMPC command access investigation (#103)
+
+Related to #103 and #17. [The validation record](validation-issue-103.md)
+reconciles ST-169 §1.2/fig1.3, §2.2/table2.4, §§2.3–2.5 and §3
+with SH7604 table4.6/§7.11.2 and SCU §1.2/§2.1. COMREG/IREG reads remain
+explicit unsupported write-only accesses. SF/command/results, busy state,
+INTBACK and real SCU IRQ sequencing retain their existing functional model.
+The [eight-criterion acceptance matrix](validation-issue-103.md#acceptance-matrix)
+records complete Issue #103 implementation/validation evidence, including green
+CI on preserved PR head `1be62104ed684539488ed27958e38b0c6ed0358f`.
+Identifying the unavailable private BIOS transaction is optional. Final-head CI
+and normal PR review still apply to publication; comprehensive #17/#81 hardware
+requirements are unchanged.
+
+A proven defect allowed prohibited word/longword SMPC operands to become byte
+register operations. The bus now rejects them before any side effect, including
+CPU aliases and BSC decomposition. Five independent inherited-main negative
+controls fail: four original ROMs reach their prohibited-success sentinel and a
+host COMREG word write succeeds. The corrected native/Wasm guests reject all
+four widths/directions; accepted byte-command results and IRQs still execute.
+Rejection is an emulator policy, not a measured electrical fault/open-bus result.
+
+The exception-path review correction applies the same guard before unaligned
+stack/vector longwords are split into bytes, including operands crossing into
+the SMPC select. Public Bus and both CPU views reject the complete operand
+without IREG mutation. Two original MIT reset-vector ROMs exercise TRAPA #32
+with SP=20100009 and VBR=200FFFE1 (vector address 20100061); native and
+production-Wasm tests compare full-width faults, unchanged IREGs, completed RAM
+stacking for the vector case, sticky failure, Debug observation and shared
+clock/instruction stopping points across chunks 1/3/127/10000. Invalid RAM
+exception-cycle data and architectural address-error handling are retained.
+See [the exception review record](validation-issue-103.md#review-follow-up-unaligned-exception-operands).
+
+DMA/cache-refill reads now validate each complete longword before BSC
+decomposition. Refill diagnostics distinguish the issuing byte operand from
+the generated four-byte refill unit, preserving both addresses and widths.
+Focused regressions cover both processors, mirrors, DMA burst boundaries,
+refill order/wrap, retries and unchanged SMPC state, with successful RAM,
+cache-through and disabled-refill controls. This preserves explicit rejection
+of unsupported refill widths; it does not establish electrical bus behavior
+or explain the private one-byte COMREG fault. See
+[the read-context review record](validation-issue-103.md#review-follow-up-dma-and-cache-refill-read-context).
+
+The subsequent [scheduled guest validation](validation-issue-103.md#review-follow-up-scheduled-dma-and-cache-read-guests)
+adds five original MIT reset-vector BIOSes to native Machine and production
+Chromium/Wasm checks. A 16-byte SH-2 DMAC burst from individually readable OREGs
+must enter vector10 with AE set, count/source/destination retained and no
+destination writes; RAM DMA completes with four distinct source values. A
+cache-enabled OREG byte load must retain its PC/instruction/byte operand and
+generated longword refill context; cache-through and data-refill-disabled
+controls complete. All five compare complete SMPC state, sticky host snapshots
+and shared clock/instruction/exception counts across chunks 1/3/127/10000 with
+and without Debug reads, including nonacknowledging DMAOR/CHCR inspection.
+This supplements the direct CpuBus tests; no runtime behavior changes here.
+
+`src/smpc/diagnostics.rs` and the opt-in native/Wasm diagnostic query record the
+access direction, operand, reason, CPU/PC, available instruction, SF, pending
+command/remaining clocks, INTBACK flags, IREGs and result status without additional
+guest transactions. Original MIT reset-vector guests and independent native
+clock-boundary tests cover real outputs, failure-state atomicity, Debug observation,
+chunk partitions and reset cancellation. The fixture registry includes their
+reproduction command; the existing `hardwareBoundaries` browser group is expanded.
+
+The original one-byte access at private BIOS PC 0000025C remains unclassified;
+an independent byte-command acceptance investigation now audits all 256 codes,
+49,152 INTBACK parameter combinations and 10,234 valid calendars. The same five
+public-API tests and an additional original 512 KiB reset-vector ROM pass against
+inherited main and the checkpoint. Native and production Chromium/Wasm compare
+111 real RTC/SMEM/SF/SR records across chunk sizes and resets; inherited/current
+Wasm also agree on clocks and instruction counts. This supports a bounded
+finding of no rejection of documented master-issued byte commands,
+without declaring the
+unavailable firmware's operation invalid or changing COMREG readback. See the
+[byte investigation](validation-issue-103.md#independent-byte-transaction-investigation)
+for the primary-manual predicates and limits. This width
+correction does not claim to resolve the original symptom, produce a stock menu, or
+complete SMPC/#17. The full #103 acceptance assessment also uses the timing,
+reset, issuer and cross-backend evidence below. Wider hardware scope is unchanged.
+
+
+The #103 review follow-up supplies the previously missing timing-valid command
+and post-deadline cancellation evidence. The byte ROM now observes thirty real
+VBlank edges with DISP enabled, waits >=9592 clocks using FRT (ST-169 §2.2
+pp.17–19, figs2.5–2.7), and checks 201 window/result records. An additional
+original 512 KiB ROM exercises all three INTBACK forms, continue before
+VBlank-out, repeated optimized collection, both real pad packets and six actual
+SH-2 IRQ/RTE entries (79 records). Native and production Wasm run chunks
+1/3/127/10000, with/without Debug observation. Three pending-command ROMs and a
+normally executing reset observer check SETSMEM/SETTIME/INTBACK cancellation at
+three offsets, past the former deadlines, including unchanged battery state and
+absence of stale results/IRQs. See the [precise contracts and executed checks](validation-issue-103.md#review-follow-up-timing-valid-guests-and-reset-observation).
+These are executable functional-model checks, not evidence of invalid-window
+hardware behavior or a classification of the private one-byte fault. Neither
+classification nor general hardware conformance is required by Issue #103.
+
+
+The #103 parity follow-up supplements per-backend invariance checks
+with a [shared native/Chromium progress record](../tests/fixtures/smpc-progress.tsv)
+for byte-audit, timed-peripheral and reset-observer execution. Both backends
+assert identical clocks, retired master instructions and exception counts for
+chunks 1/3/127/10000, with and without passive Debug observation, while retaining
+the independent 201/79/20-word guest-result checks. See [actual counts and
+validation](validation-issue-103.md#review-follow-up-shared-nativechromium-progress-evidence).
+This is functional-model parity evidence; the private one-byte failure remains
+unclassified, without becoming a mandatory private-firmware acceptance gate.
+
+
+The #103 issuer follow-up corrects a separate byte-path acceptance defect:
+CPU bus dispatch previously dropped the issuing processor, accepting all five
+master-only commands from slave. ST-169 §2.2/table2.5 (p.20) now maps to an
+explicit `ProhibitedIssuer` diagnostic before command/report/deadline mutation.
+Direct CPU transfers and scheduled CPU/write-buffer/DMAC completion preserve
+the owner through dispatch. The native bus audit checks all sixteen commands,
+both CPUs and four aliases (128 cases), including post-rejection master recovery.
+Six original MIT 512 KiB dual-SH-2 guests run through SSHON/reset vectors and
+real byte MMIO in native and production Wasm. Permitted slave SETSMEM/SETTIME
+results are read by master INTBACK; five prohibited slave stores leave SF,
+previous command/report, inputs and deadline intact. Both backends use the same
+[progress baseline](../tests/fixtures/smpc-issuer-progress.tsv), chunk sizes
+1/3/127/10000 and passive Debug controls. This enforces a software contract,
+without asserting electrical behavior for prohibited issuance. See the
+[issuer validation record](validation-issue-103.md#review-follow-up-command-issuer).
+The private one-byte failure remains unclassified. Publication follows the
+complete acceptance matrix and exact-head CI, not a permanent partial-only rule.

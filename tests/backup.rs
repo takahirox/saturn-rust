@@ -45,7 +45,7 @@ fn backup_byte_lanes_endpoints_and_cache_through_access_do_not_alias_work_ram() 
     assert_eq!(bus.read32(0x0600_0000), Ok(0));
     assert!(matches!(
         bus.read8(BACKUP_RAM - 1),
-        Err(BusError::UnsupportedDevice { .. }) // mirrored SMPC EXLE, write-only
+        Err(BusError::Smpc(_)) // mirrored SMPC EXLE, write-only
     ));
     assert_eq!(bus.read8(BACKUP_RAM + BACKUP_WINDOW), Ok(255));
     // Even lanes are unconnected; wider bus cycles strobe only odd bytes.

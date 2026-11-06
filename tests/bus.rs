@@ -172,8 +172,9 @@ fn sound_video_and_smpc_chip_select_mirrors_and_lanes() {
         assert_eq!(b.read32(base + 0x10), Ok(0x1234CAFE));
     }
     b.write8(0x00100162, 0).unwrap(); // no connected even SMPC lane
-    b.write16(0x00100162, 1).unwrap();
-    assert_eq!(b.read16(0x00100062), Ok(0xFF01));
-    b.write16(0x0010011E, 0).unwrap(); // MSHON through mirrored word bus
-    assert_eq!(b.read16(0x0010005E), Ok(0xFF00));
+    assert!(b.write16(0x00100162, 1).is_err()); // ST-169 byte-only
+    b.write8(0x00100163, 1).unwrap();
+    assert_eq!(b.read8(0x00100063), Ok(1));
+    b.write8(0x0010011F, 0).unwrap(); // MSHON through mirrored byte lane
+    assert_eq!(b.read8(0x0010005F), Ok(0));
 }

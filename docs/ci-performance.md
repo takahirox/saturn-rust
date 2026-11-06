@@ -83,6 +83,23 @@ changes. The inherited timings motivate the split; they do not establish revised
 hosted runtimes. See [the validation record](validation-issue-93.md#ci-shard-timeout-correction)
 for checks of this correction and the remaining publication gate.
 
+## Issue #103 shard rebalance
+
+The scenario shard in [run 42002816210](https://github.com/takahirox/saturn-rust/actions/runs/42002816210)
+hit its unchanged 1,200-second worker limit during `scspMvol`, reporting 41/42
+groups before `largeMedia`. The shared shard passed 32 groups in **682.283 s**.
+The expanded `hardwareBoundaries` group passed in **276.543 s** in scenarios.
+Moving that independent module after the shared trace distributes the existing
+work across the same two workers: **33 shared and 41 scenarios, 74 total**.
+The historical shared time plus the moved group is 958.826 s; that is scheduling
+motivation, not a revised hosted measurement. Each module still owns a fresh
+context, and serial execution retains its original order. All guest/chunk/Debug
+combinations, assertions, clock budgets, failure timeouts, runner concurrency and
+coverage/revision/artifact gates are retained. The runner regression also rejects
+reports using the superseded 32/42 assignment. See
+[executed validation](validation-issue-103.md#review-follow-up-complete-browser-scheduling)
+for the complete rerun and its limits.
+
 ## Issue #61 performance record
 
 The timing measurements below are the historical Issue #61 inventory. The

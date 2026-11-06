@@ -51,6 +51,9 @@ impl ExternalBus<'_> {
 }
 #[cfg(test)]
 impl Memory for ExternalBus<'_> {
+    fn check_exception_access(&self, address: u32, write: Option<u32>) -> Result<(), BusError> {
+        self.0.check_exception_access(address, write)
+    }
     fn read8(&self, address: u32) -> Result<u8, BusError> {
         let value = self.0.read8(address)?;
         self.observe(address, 1, u32::from(value), false);
@@ -85,6 +88,7 @@ impl Memory for ExternalBus<'_> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusError {
+    Smpc(crate::smpc::diagnostics::AccessFault),
     /// Internal scheduler suspension; never an architectural address error.
     Pending,
     Unaligned {
@@ -114,6 +118,7 @@ pub enum BusError {
 impl fmt::Display for BusError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Smpc(fault) => fault.fmt(f),
             Self::Pending => write!(f, "Bus transaction is pending"),
             Self::Unaligned { address, width } => {
                 write!(f, "Unaligned {width}-byte access at 0x{address:08X}")
@@ -264,10 +269,18 @@ pub trait Memory {
     fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError>;
     fn write32(&mut self, address: u32, value: u32) -> Result<(), BusError>;
 
+    /// Validate the complete exception longword before any invalid-alignment
+    /// byte decomposition. Device width restrictions still apply to those
+    /// cycles; RAM retains the exact-address policy below.
+    fn check_exception_access(&self, _address: u32, _write: Option<u32>) -> Result<(), BusError> {
+        Ok(())
+    }
+
     /// SH7604 §4.8.3: exception stacking issues a bus cycle even with an
     /// unaligned SP. The physical write data is undefined. This functional model
     /// writes the big-endian bytes at the exact SP address, without rounding it.
     fn exception_write32(&mut self, address: u32, value: u32) -> Result<(), BusError> {
+        self.check_exception_access(address, Some(value))?;
         if address & 3 == 0 {
             return self.write32(address, value);
         }
@@ -282,6 +295,7 @@ pub trait Memory {
     /// dispatching that error. Use exact-address big-endian bytes as the
     /// deterministic invalid-cycle data policy, without rounding the VBR.
     fn exception_read32(&self, address: u32) -> Result<u32, BusError> {
+        self.check_exception_access(address, None)?;
         if address & 3 == 0 {
             return self.read32(address);
         }
@@ -1014,6 +1028,48 @@ impl Bus {
         self.read32(address)
     }
 
+    /// Read-only command observation; no device read or IRQ acknowledgement.
+    pub fn smpc_command_state(&self) -> crate::smpc::diagnostics::CommandState {
+        self.smpc.command_state()
+    }
+
+    fn smpc_error(&self, error: BusError, address: u32) -> BusError {
+        match error {
+            BusError::Smpc(mut fault) => {
+                fault.main_clock = Some(self.main_clocks);
+                fault.address = address;
+                BusError::Smpc(fault)
+            }
+            other => other,
+        }
+    }
+    fn check_smpc_width(
+        &self,
+        address: u32,
+        width: usize,
+        write: Option<u32>,
+    ) -> Result<(), BusError> {
+        // ST-169 §1.2/fig1.3: byte-only, before any lane side effects,
+        // cache fill or BSC narrow-bus decomposition. Rejection is an emulator
+        // boundary, not a claim about undefined electrical bus behavior.
+        if width != 1
+            && (0..width).any(|i| {
+                (SMPC..SMPC + 0x80).contains(&Self::physical(address.wrapping_add(i as u32)))
+            })
+        {
+            return Err(self.smpc_error(
+                self.smpc.access_fault(
+                    address,
+                    width,
+                    write,
+                    crate::smpc::diagnostics::Rejection::ByteOnly,
+                ),
+                address,
+            ));
+        }
+        Ok(())
+    }
+
     // SH7604 §2.3: P1 cache-through accesses share the external physical bus.
     fn physical(address: u32) -> u32 {
         let address = if (0x2000_0000..0x4000_0000).contains(&address) {
@@ -1075,6 +1131,8 @@ impl Bus {
     }
 
     fn read<const N: usize>(&self, address: u32) -> Result<[u8; N], BusError> {
+        self.check_smpc_width(address, N, None)?;
+        let guest_address = address;
         let address = Self::physical(address);
         if !address.is_multiple_of(N as u32) {
             return Err(BusError::Unaligned { address, width: N });
@@ -1175,7 +1233,9 @@ impl Bus {
                 *byte = if lane & 1 == 0 {
                     255
                 } else {
-                    self.smpc.read(lane)?
+                    self.smpc
+                        .read(lane)
+                        .map_err(|e| self.smpc_error(e, guest_address))?
                 };
             }
             return Ok(bytes);
@@ -1206,6 +1266,18 @@ impl Bus {
     }
 
     fn write<const N: usize>(&mut self, address: u32, bytes: [u8; N]) -> Result<(), BusError> {
+        self.write_from(Processor::Master, address, bytes)
+    }
+
+    fn write_from<const N: usize>(
+        &mut self,
+        issuer: Processor,
+        address: u32,
+        bytes: [u8; N],
+    ) -> Result<(), BusError> {
+        let value = bytes.iter().fold(0u32, |v, b| v << 8 | u32::from(*b));
+        self.check_smpc_width(address, N, Some(value))?;
+        let guest_address = address;
         let address = Self::physical(address);
         if (vdp1::FRAMEBUFFER..vdp1::REGISTERS + 0x18).contains(&address)
             || (VRAM..VDP2 + 0x120).contains(&address)
@@ -1310,7 +1382,9 @@ impl Bus {
             for (i, byte) in bytes.into_iter().enumerate() {
                 let lane = address + i as u32;
                 if lane & 1 != 0 {
-                    self.smpc.write(lane, byte)?;
+                    self.smpc
+                        .write_from(issuer, lane, byte)
+                        .map_err(|e| self.smpc_error(e, guest_address))?;
                 }
             }
             return Ok(());
@@ -1348,6 +1422,9 @@ impl Bus {
 }
 
 impl Memory for Bus {
+    fn check_exception_access(&self, address: u32, write: Option<u32>) -> Result<(), BusError> {
+        self.check_smpc_width(address, 4, write)
+    }
     fn read8(&self, address: u32) -> Result<u8, BusError> {
         if address == CCR {
             return Ok(self.cache[0].borrow().control());
@@ -1416,6 +1493,10 @@ impl CpuBus<'_> {
         last: bool,
         locked: bool,
     ) -> Result<[u8; N], BusError> {
+        // Validate the complete DMA/refill unit before the BSC splits it
+        // into narrow transfers. A refill's issuing operand is retained by
+        // the cache callback separately from this generated longword.
+        self.bus.check_smpc_width(address, N, None)?;
         let chip = &self.bus.onchip[self.processor as usize];
         if self.scheduled && self.cached && Self::b_bus_memory(address) {
             // `cached` selects the CPU adapter (even with CCR.CE=0),
@@ -1518,9 +1599,15 @@ impl CpuBus<'_> {
                 continue;
             }
             let result = match width {
-                1 => self.bus.write(at, [bytes[0]]),
-                2 => self.bus.write(at, [bytes[0], bytes[1]]),
-                _ => self.bus.write(at, [bytes[0], bytes[1], bytes[2], bytes[3]]),
+                1 => self.bus.write_from(self.processor, at, [bytes[0]]),
+                2 => self
+                    .bus
+                    .write_from(self.processor, at, [bytes[0], bytes[1]]),
+                _ => self.bus.write_from(
+                    self.processor,
+                    at,
+                    [bytes[0], bytes[1], bytes[2], bytes[3]],
+                ),
             };
             // The ROM has no write-enable pin. Keep the checked host loader's
             // ReadOnly error, but a real CPU write completes without changing
@@ -1611,6 +1698,7 @@ impl CpuBus<'_> {
         }
     }
     fn read<const N: usize>(&self, address: u32, instruction: bool) -> Result<[u8; N], BusError> {
+        self.bus.check_smpc_width(address, N, None)?;
         if !address.is_multiple_of(N as u32) {
             return Err(BusError::Unaligned { address, width: N });
         }
@@ -1623,6 +1711,18 @@ impl CpuBus<'_> {
             if let Some(bytes) = cache.read(address, instruction, |beat| {
                 index += 1;
                 self.external_read_group::<4>(beat, index == 1, index == 4, false)
+                    .map_err(|error| match error {
+                        BusError::Smpc(mut fault) => {
+                            fault.refill = Some(crate::smpc::diagnostics::ReadUnit {
+                                address: beat,
+                                width: 4,
+                            });
+                            fault.address = address;
+                            fault.width = N;
+                            BusError::Smpc(fault)
+                        }
+                        other => other,
+                    })
             })? {
                 return Ok(bytes);
             }
@@ -1630,6 +1730,8 @@ impl CpuBus<'_> {
         self.external_read::<N>(address)
     }
     fn write<const N: usize>(&mut self, address: u32, bytes: [u8; N]) -> Result<(), BusError> {
+        let value = bytes.iter().fold(0u32, |v, b| v << 8 | u32::from(*b));
+        self.bus.check_smpc_width(address, N, Some(value))?;
         if !address.is_multiple_of(N as u32) {
             return Err(BusError::Unaligned { address, width: N });
         }
@@ -1649,6 +1751,9 @@ impl CpuBus<'_> {
     }
 }
 impl Memory for CpuBus<'_> {
+    fn check_exception_access(&self, address: u32, write: Option<u32>) -> Result<(), BusError> {
+        self.bus.check_smpc_width(address, 4, write)
+    }
     fn sh2_speculative_fetch(&self, address: u32) -> bool {
         let physical = Bus::physical(address);
         address & 1 == 0

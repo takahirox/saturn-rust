@@ -280,7 +280,11 @@ impl ScheduledMemory<'_> {
 // a resumed interpreter uses exactly the same checked Memory boundary.
 pub(crate) struct ReplayMemory<'a>(RefCell<ScheduledMemory<'a>>);
 impl Memory for ReplayMemory<'_> {
+    fn check_exception_access(&self, address: u32, write: Option<u32>) -> Result<(), BusError> {
+        self.0.borrow().0.check_exception_access(address, write)
+    }
     fn exception_write32(&mut self, address: u32, value: u32) -> Result<(), BusError> {
+        self.check_exception_access(address, Some(value))?;
         if address & 3 == 0 {
             self.0
                 .get_mut()
@@ -1389,9 +1393,9 @@ impl Bus {
                 .map(|_| t.write.unwrap())
         } else if let Some(value) = t.write {
             let result = match t.width {
-                1 => self.write(t.address, [value as u8]),
-                2 => self.write(t.address, (value as u16).to_be_bytes()),
-                _ => self.write(t.address, value.to_be_bytes()),
+                1 => self.write_from(processor, t.address, [value as u8]),
+                2 => self.write_from(processor, t.address, (value as u16).to_be_bytes()),
+                _ => self.write_from(processor, t.address, value.to_be_bytes()),
             };
             match result {
                 Ok(()) | Err(BusError::ReadOnly { .. }) => Ok(value),
