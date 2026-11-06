@@ -114,6 +114,29 @@ passed exact-head hosted workflow remain required; keep #107 open and PR #108
 draft. See the [hosted follow-up](validation-issue-107.md#hosted-review-follow-up-timeout-remains)
 for costly-group measurements and the remaining acceptance limits.
 
+The next published-head run,
+[42172508446](https://github.com/takahirox/saturn-rust/actions/runs/42172508446),
+also failed shared during streaming (1,199.595 s); scenarios passed in 1,116.208 s.
+Native and Wasm passed; aggregate `build` failed. The review fix therefore removes
+additional duplicate SMPC chunk/inspection and audio/video cold-boot replays,
+with the complete matrices independently retained in native tests. Every distinct
+browser input, negative control and expectation remains; representative cold
+boots, both fields, full Canvas images and all five MVOL AudioWorklet checks stay.
+This removes 30.4 million fixed-horizon SMPC steps and 112 duplicate frame
+advances, without shortening any retained guest run. The assignment stays 33/41.
+
+Fresh sequential pinned-Chromium samples using the same production Wasm passed
+all 74 groups before and after this fix. Workers fell from 486.632/448.096 s to
+383.251/365.478 s; summed worker elapsed fell **19.90%** (934.728 → 748.729 s),
+separately from suite elapsed's **21.23%** reduction (486.923 → 383.538 s).
+Changed groups account for 170.248 s of the observed 185.999 s worker saving;
+variation in unchanged groups accounts for the remainder. These are local wall
+times, not hosted headroom, CPU or billed runner savings. A bounded LTO build
+trial showed no consistent useful speedup and was reverted. See the
+[review-fix evidence](validation-issue-107.md#second-hosted-result-and-review-fix)
+for retained coverage, commands, timings and the required hosted validation after
+publication. Keep PR #108 draft with `Related to #107` until that gate passes.
+
 ## Issue #93 shard rebalance
 
 The expanded scenario shard in [run 41378197649](https://github.com/takahirox/saturn-rust/actions/runs/41378197649)

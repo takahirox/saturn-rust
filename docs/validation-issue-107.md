@@ -113,15 +113,15 @@ Bounded profiling of other candidates:
 - **CHD:** preserve all codecs, ISO/CUE/raw/subcode baselines, PCM, UI errors and
   reset/restart. Default and forced-cdlz fixtures have different SHA-256 hashes;
   equal decoded output alone does not justify skipping either decoder input.
-- **Mosaic:** keep all 60 guest executions, 240 frame advances, both density/field
+- **Mosaic (initial pass):** kept all 60 guest executions, 240 frame advances, both density/field
   paths, source/enable mutations and repeated cold boots. Production Canvas and
   field history add browser coverage beyond native arithmetic.
-- **High-resolution rotation:** keep all 48 executions/advances and full
+- **High-resolution rotation (initial pass):** kept all 48 executions/advances and full
   640/704-wide Wasm/Canvas images. Input/output protocol work is secondary to
   guest execution; the existing compact transport already handles bulk arrays.
 - **Video transactions:** keep all 132 BIOS resets, distinct VBE/HDTV, bus
   ownership, retained-word, cycle acquisition and omitted-write controls.
-- **MVOL:** keep all 46 executions, repeated cold resets, gain/source mutations,
+- **MVOL (initial pass):** kept all 46 executions, repeated cold resets, gain/source mutations,
   exact mute/resume progress and all five production AudioWorklet deliveries.
   The passing hosted sample spent 127.668 s inside callbacks versus 129.937 s
   evaluate elapsed; assertions totaled only 1.923 ms. Reducing assertion strictness
@@ -323,15 +323,160 @@ scripts/ci-runner.test.mjs` passed **7 tests, 0 failed/skipped** (1.436 s).
 No timeout, retry, assertion, test inventory or implementation change was made
 in this follow-up, and no hosted run was retried.
 
+## Second hosted result and review fix
+
+[Run 42172508446](https://github.com/takahirox/saturn-rust/actions/runs/42172508446)
+has now completed on published head `71d71160c3ef547e6bbf6682d6230b63c93df2ce`,
+tested through merge revision `6daf26c10fb723cd3ef9566bc8a0cc8a35142e49`.
+Native passed all 1,193 tests (1,259.932 s including compilation), fixtures,
+fmt, build and Clippy. Wasm build/Clippy passed in 15.272/9.290 s and runner
+regressions passed in 29.703 s. Scenarios passed all 41 groups in **1,116.208 s**,
+including MVOL and large media: only **83.792 s** margin. Shared again timed out
+at **1,199.595 s** during streaming, after hardware boundaries (315.620 s) and
+CHD (133.632 s) passed. Streaming's interrupted 18.372 s teardown record is not
+an identified assertion failure. Aggregate `build` failed; site/deploy skipped.
+The worker sum is **2,315.803 s, incomplete**, not a completed workload or CPU
+measurement. This second failure reinforces the need to reduce work on both
+workers, rather than transfer streaming back onto the nearly full scenario shard.
+
+The review fix reduces duplicate browser executions in four modules. It keeps
+every distinct fixture/input, authored result, mutation and omitted-write control.
+Each retained run uses its original stepping bound, reset boundary, frame count,
+pixel/audio/IRQ expectations and assertion strictness. Existing native tests
+independently retain the fuller combination/repetition matrices:
+
+| Browser executions before → after | Independent native coverage and retained browser contracts |
+| --- | --- |
+| SMPC SF and dual-SH-2 issuer: 8 → 4 per guest | `resdisa_sf_guests_preserve_claim_order_and_real_nmi_disable_results` and `dual_sh2_firmware_preserves_command_issuer_and_permitted_slave_results` in `tests/smpc_transactions.rs` retain all chunk/inspection pairs. Wasm retains 1/3/127/10000, inspected small/odd versus uninspected bulk, every allowed/prohibited issuer, sticky diagnostics, exact progress and command-literal mutations. The missing-SF native test retains every chunk and repeated boots. |
+| Reset observer: 72 → 18 | `cold_reset_cancels_guest_commands_beyond_former_deadlines_and_preserves_battery` retains all 72. Wasm retains every command × offset (0/1/7), single-step inspected and bulk uninspected runs, fresh machines, original pending-command boundary, 100,000 observer steps and the shared native progress oracle beyond former deadlines. |
+| Byte audit: 16 → 6 | `original_byte_firmware_publishes_real_calendar_memory_and_handshake_results` in `tests/smpc_byte_contract.rs` retains all 16. Wasm keeps all four chunks, passive inspection at 1/3, repeated cold boots at 127/10000, the complete authored trace and exact 2,000,000-step progress. |
+| Raster INTBACK: 8 → 4 | `raster_gated_intback_forms_publish_results_and_service_each_irq` retains all eight. Wasm retains every chunk, inspection, the 500,000-step horizon, authored results and all six IRQs. |
+| MVOL: 46 → 32 | `guest_mvol_amplitudes_distinguish_pcm_dsp_runtime_cdda_and_combined_sources` in `tests/scsp_mvol.rs` repeats all 20 mode/gain pairs. Wasm keeps every pair; repeats every source at gain 13 and combined mute/unity; retains all source mutations, omitted-write control, full mute/resume traces and five production AudioWorklet checks. |
+| Mosaic: 60 → 36 | `mosaic_guest_fields_pixels_controls_and_repeated_cold_boots` in `tests/mosaic.rs` repeats all 30 inputs. Wasm keeps all 30 plus baseline repeats for every mode/density, every source/enable/parameter control, both captured fields and full Wasm/Canvas images. |
+| High-resolution rotation: 48 → 32 | `guest_high_resolution_rotation_full_images_mutations_and_cold_boots` in `tests/rotation_high_resolution.rs` repeats all 24 inputs. Wasm keeps all 24 plus baseline repeats for every renderer/width, every mutation/omitted enable and full 640/704-wide Wasm/Canvas images. |
+
+SMPC alone removes **30.4 million fixed-horizon duplicate steps**, plus removed
+producer prefixes and early-fault repetitions. Mosaic removes 96 duplicate frame
+advances and high-resolution rotation removes 16. This supersedes the initial
+decision above to retain every duplicate visual/audio cold boot; native's full
+matrices were inspected before making this change. Production browser reset and
+field-history coverage remains, with fewer repetitions. No unique negative
+control moves out of Wasm. CD runtime/discovery, CHD, streaming, video transactions,
+the ordered shared UI trace and all other groups are unchanged by this fix.
+
+The registry and assignment remain **74 groups, 33 shared / 41 scenarios**. Each
+independent module still owns a fresh context. Both workers lose substantive
+work; no additional shard move, timeout increase, retry, extra worker or gate
+relaxation is introduced. PR #108's Related Issues section was corrected to
+`Related to #107`; the PR remains draft and the Issue remains open.
+
+The fresh comparison used the same M4 Max/64 GiB host, Node 26.12.1,
+Playwright 1.58.2 and pinned Chromium 145.0.7632.6. Both samples used the same
+production Wasm (`c207f061835b8809ba325032fbee18c3f219469334c67c6fd9ec41ab810054a3`,
+956,666 bytes), with no native/build/other browser work from this task alongside
+them. They were sequential single samples; the host was not reserved from
+unrelated activity. Both ran `PLAYWRIGHT_BROWSERS_PATH=target/issue107-browsers
+NODE_OPTIONS=--import=./target/issue107-profile.mjs npm run test:browser`.
+The ignored temporary preload logged per-callback elapsed times from
+`BrowserTimings.operation` for hardware boundaries in both samples; it changed
+no assertions, selection, bindings or reports. The ordinary command reproduces
+the full coverage, counters and shard totals without that extra logging.
+
+| Complete local comparison, seconds | Reviewed workload | Review fix |
+| --- | ---: | ---: |
+| Shared, 33/33 | 486.632 | 383.251 |
+| Scenarios, 41/41 | 448.096 | 365.478 |
+| Sum of workers | 934.728 | 748.729 |
+| Suite including verification/cleanup | 486.923 | 383.538 |
+| hardwareBoundaries | 144.302 | 48.578 |
+| scspMvol | 72.993 | 45.834 |
+| mosaic | 62.791 | 27.297 |
+| rotationHighResolution | 36.475 | 24.604 |
+| cdRuntime | 67.425 | 67.906 |
+| externalDiscovery | 54.822 | 53.941 |
+| chd | 53.629 | 47.727 |
+| cdStream | 18.610 | 18.108 |
+| videoTransactions | 32.666 | 32.899 |
+| largeMedia | 6.053 | 5.339 |
+
+All 74 names/statuses were independently compared against the current registry,
+and both pairs of reports passed the real aggregate verifier. MVOL and large
+media completed; neither complete run timed out or emitted an unsettled-await
+warning. Observed local margins are **816.749 / 834.522 s**. They do not establish
+hosted margins. Summed worker elapsed fell **185.999 s (19.90%)**, while suite
+elapsed fell **103.385 s (21.23%)**. The changed groups account for 170.248 s of
+the worker saving; unchanged-group variation accounts for 15.751 s. Even the
+changed groups contain host variation, so these are observed samples, not a
+causal CPU estimate. Local runs have no hosted runner allocation intervals.
+
+The baseline hardware callback profile measured byte audit at 68.194 s, reset
+observer at 26.836 s, SF at 14.518 s and issuer at 19.943 s. These are callback
+wall times, not CPU. The driver counters confirm actual work was removed:
+
+| Calls before → after | hardwareBoundaries | MVOL | Mosaic | High-resolution rotation |
+| --- | ---: | ---: | ---: | ---: |
+| Evaluate callbacks | 311 → 207 | 53 → 39 | 62 → 38 | 50 → 34 |
+| `run_steps` | 18,912,367 → 6,131,753 | 1,754 → 1,222 | 580 → 348 | 816 → 544 |
+| `reset_bios` (including initial mode setup) | 478 → 298 | 47 → 33 | 61 → 37 | 49 → 33 |
+| Frame advances | — | — | 240 → 144 | 48 → 32 |
+
+MVOL media mounts fell 46 → 32 and PCM reads 1,800 → 1,254; all five worklet
+checks remain. No CPU/RSS measurements are inferred from these counters.
+
+A bounded build experiment enabled release LTO and one codegen unit. Its
+completed costly groups showed no consistent gain: video transactions
+32.666 → 32.480 s, display modes 66.039 → 69.388 s and CD runtime
+67.425 → 70.113 s. It was cancelled through the normal supervisor
+(`cancelled=true`, `timeout=false`), with no full-suite success claim. Both build
+flags were reverted and the original Wasm restored before the final comparison.
+The production build script, emulator and fixtures have no changes from this
+experiment.
+
+Fresh follow-up checks passed:
+
+- `sh scripts/check-fixtures.sh`: all 104 commands, 4.394 s.
+- `sh scripts/build-web.sh`: 2.602 s; its generated bindings and Wasm exactly
+  match the saved production build used in both complete browser comparisons.
+- `PLAYWRIGHT_BROWSERS_PATH=target/issue107-browsers node --test
+  scripts/ci-runner.test.mjs`: 13 passed, 0 failed/skipped, 15.108 s including
+  the timing wrapper. Missing/failed groups, assertions, timeouts, cancellation,
+  stale reports/revisions, corrupted artifacts and publication gates still fail.
+- `cargo test --locked --test smpc_byte_contract --test smpc_transactions
+  --test scsp_mvol --test mosaic --test rotation_high_resolution`: **24 passed**,
+  0 failed/ignored, five binaries, 173.342 s including compilation. These are
+  the unmodified native matrices used to justify the reduced browser replay
+  combinations. They ran after both browser measurements. The full 1,193-test
+  native suite also passed the published-head hosted run above; it was not
+  repeated locally in this node.
+- `cargo fmt --check`, `cargo build --locked`,
+  `cargo clippy --locked --all-targets -- -D warnings` and
+  `cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings`.
+- `node --check` for all four changed modules, `git diff --check`, JSON parsing,
+  exact registry/status comparisons for both complete samples, unchanged
+  assertion call-site counts and relative documentation links. Existing historical
+  measurement JSON is unchanged; the new data is under `review_fix` in the
+  [measurement record](ci-performance-issue-107.json). Unchanged CD runtime,
+  discovery, CHD, streaming and video-transaction Wasm call counts also match
+  between the complete samples.
+
+The fresh worktree initially lacked the pinned browser, so its first launch
+failed before tests. After the Playwright download, its extraction was
+interrupted and the same pinned archive was extracted with system `unzip` into
+`target/issue107-browsers`; real launch/version were checked before measuring.
+The Rust commands used the already-installed stable sysroot and bindgen in
+`PATH`, as documented above. No hosted run was retried, and no allowance reset,
+purchase, model/provider switch, push or merge was performed.
+
 ## Acceptance limits
 
 Local success is not hosted success. A passed hosted PR workflow on the exact
 final publication head (native, Wasm, both shards and aggregate `build`), with
 substantial measured headroom in both shards, remains required before claiming
-#107 complete. The reviewed hosted run failed shared validation and did not
-establish substantial margin in scenarios. Keep #107 open and PR #108 draft
-until further optimization and successful exact-head hosted validation address
-these measured failures. This follow-up is prohibited from pushing or merging;
-its evidence commit cannot establish a passing workflow on a replacement head.
+#107 complete. Both reviewed hosted runs failed shared validation and did not
+establish substantial margin in scenarios. The review fix improves measured
+local runtime; it has not yet established hosted headroom. Keep #107 open and
+PR #108 draft until hosted validation of this work reduction meets that gate.
+This follow-up is prohibited from pushing or merging; its local commit cannot
+establish a passing workflow on a replacement publication head.
 No live Pages inspection, human confirmation, private firmware or physical
 hardware is required.
