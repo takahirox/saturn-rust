@@ -432,8 +432,12 @@ returned. Rejected SMPC accesses carry direction, operand, reason and a command
 state snapshot. The explicit local native/Wasm `smpc_fault_diagnostics()` query
 adds CPU/PC, already available instruction and timing context without device
 reads or persistence. See the [Issue #103 register matrix and evidence](validation-issue-103.md).
-The reported private BIOS byte transaction remains unverified; the independently
-reproduced wide-access defect does not explain it or establish BIOS-menu support.
+The reported private BIOS transaction remains unverified, including its operand
+width: inherited SMPC errors hardcoded width=1 after decomposition. The byte/word
+reset-vector controls reproduce that ambiguity and corrected diagnostics retain
+the complete operand. Independent contract reconstruction and original
+native/Wasm/browser guests supply the [eight-criterion acceptance evidence](validation-issue-103.md#acceptance-matrix);
+the unavailable private trace is optional and no BIOS-menu support is established.
 The independent master-context byte acceptance audit covers every documented command code,
 INTBACK field combinations and real calendars, with an original reset-vector
 guest in native and production Wasm. It finds no documented byte-command

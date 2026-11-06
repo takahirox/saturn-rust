@@ -4019,6 +4019,12 @@ reconciles ST-169 §1.2/fig1.3, §2.2/table2.4, §§2.3–2.5 and §3
 with SH7604 table4.6/§7.11.2 and SCU §1.2/§2.1. COMREG/IREG reads remain
 explicit unsupported write-only accesses. SF/command/results, busy state,
 INTBACK and real SCU IRQ sequencing retain their existing functional model.
+The [eight-criterion acceptance matrix](validation-issue-103.md#acceptance-matrix)
+records complete Issue #103 implementation/validation evidence, including green
+CI on preserved PR head `1be62104ed684539488ed27958e38b0c6ed0358f`.
+Identifying the unavailable private BIOS transaction is optional. Final-head CI
+and normal PR review still apply to publication; comprehensive #17/#81 hardware
+requirements are unchanged.
 
 A proven defect allowed prohibited word/longword SMPC operands to become byte
 register operations. The bus now rejects them before any side effect, including
@@ -4082,9 +4088,8 @@ unavailable firmware's operation invalid or changing COMREG readback. See the
 [byte investigation](validation-issue-103.md#independent-byte-transaction-investigation)
 for the primary-manual predicates and limits. This width
 correction does not claim to resolve the original symptom, produce a stock menu, or
-complete SMPC/#17. Do not close #103 on that evidence alone. Remaining timing,
-and wider hardware scope are unchanged; table2.5 issuer restrictions are covered
-by the correction below.
+complete SMPC/#17. The full #103 acceptance assessment also uses the timing,
+reset, issuer and cross-backend evidence below. Wider hardware scope is unchanged.
 
 
 The #103 review follow-up supplies the previously missing timing-valid command
@@ -4099,8 +4104,8 @@ normally executing reset observer check SETSMEM/SETTIME/INTBACK cancellation at
 three offsets, past the former deadlines, including unchanged battery state and
 absence of stale results/IRQs. See the [precise contracts and executed checks](validation-issue-103.md#review-follow-up-timing-valid-guests-and-reset-observation).
 These are executable functional-model checks, not evidence of invalid-window
-hardware behavior or a classification of the private one-byte fault. #103 remains
-open and #104 draft under the partial publication scope.
+hardware behavior or a classification of the private one-byte fault. Neither
+classification nor general hardware conformance is required by Issue #103.
 
 
 The #103 parity follow-up supplements per-backend invariance checks
@@ -4110,8 +4115,8 @@ assert identical clocks, retired master instructions and exception counts for
 chunks 1/3/127/10000, with and without passive Debug observation, while retaining
 the independent 201/79/20-word guest-result checks. See [actual counts and
 validation](validation-issue-103.md#review-follow-up-shared-nativechromium-progress-evidence).
-This is functional-model parity evidence; the partial #103/#104 state and
-unclassified private one-byte failure remain unchanged.
+This is functional-model parity evidence; the private one-byte failure remains
+unclassified, without becoming a mandatory private-firmware acceptance gate.
 
 
 The #103 issuer follow-up corrects a separate byte-path acceptance defect:
@@ -4129,4 +4134,5 @@ previous command/report, inputs and deadline intact. Both backends use the same
 1/3/127/10000 and passive Debug controls. This enforces a software contract,
 without asserting electrical behavior for prohibited issuance. See the
 [issuer validation record](validation-issue-103.md#review-follow-up-command-issuer).
-The private one-byte failure remains unclassified; #103 stays open and #104 draft.
+The private one-byte failure remains unclassified. Publication follows the
+complete acceptance matrix and exact-head CI, not a permanent partial-only rule.

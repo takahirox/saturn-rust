@@ -1,4 +1,103 @@
-# Issue #103: SMPC transaction investigation and byte-only boundary
+# Issue #103: SMPC transaction contract and validation
+
+## Acceptance matrix
+
+This audit uses the complete [current Issue #103](https://github.com/takahirox/saturn-rust/issues/103),
+read on 2026-11-06, and the development/review rules. Its eight criteria allow
+independent reconstruction when private firmware is unavailable. Identifying
+that private instruction, obtaining human confirmation and demonstrating a stock
+BIOS menu are not mandatory gates. Earlier partial-only publication instructions
+in this record and AGENTS.md were task-generated and are superseded here.
+
+All eight criteria have implementation and validation evidence at preserved PR
+head `1be62104ed684539488ed27958e38b0c6ed0358f`. The audit found no remaining
+required runtime or test gap; no speculative correction or redundant regression
+is added. This checkpoint corrects the acceptance assessment and publication
+guidance, preserving all runtime fixes, original guests and negative controls.
+
+| Original pre-merge criterion | Status and concrete evidence |
+| --- | --- |
+| 1. Trace without proprietary ROM dependency | Satisfied. `src/smpc/diagnostics.rs`, `Machine::smpc_fault_diagnostics()` and its Wasm export retain CPU/PC, available decoded instruction, effective operand/direction/width/value, SF, pending/busy/remaining reference clocks and IREG/result state without guest reads or persistence. [Original fault guests](#diagnostics-and-original-guests) distinguish rejection paths. [Inherited operand reconstruction](#review-follow-up-inherited-operand-decomposition) reproduces the COMREG signature from both byte and word loads, showing why the old diagnostic cannot classify the private transaction. Its instruction, direction, operand and previous state remain unknown. |
+| 2. Primary-manual reconciliation | Satisfied. [Register matrix and primary references](#primary-source-reconciliation) cover COMREG, SF, IREG/OREG, SR, lanes/widths, command classes/deadlines, issuer restrictions, reset/power, INTBACK and SCU IRQ acknowledgement. Undefined electrical responses are explicitly bounded emulator policies. [Independent byte audit](#independent-byte-transaction-investigation) reconciles all sixteen commands and documented parameter fields. |
+| 3. Real hardware correction | Satisfied. `Bus::check_smpc_width` rejects prohibited complete operands before lane/cache/BSC decomposition, including exception and DMA/refill units. `write_from` retains the issuing CPU through scheduled completion and enforces ST-169 table2.5. [Issuer evidence](#review-follow-up-command-issuer) and [read-context evidence](#review-follow-up-dma-and-cache-refill-read-context) demonstrate defects and corrections. Valid results/IRQ sequencing remain intact. COMREG stays write-only; no guessed readback or fabricated architectural exception is introduced. |
+| 4. Negative control and reproducible firmware | Satisfied. `build_smpc_transactions.py --check` reproduces 31 original MIT-licensed 512 KiB ROMs plus assembly and independent result fixtures. [Inherited-main width controls](#negative-control), [issuer controls](#review-follow-up-command-issuer), operand reconstruction and later focused controls fail at the demonstrated defects. Native device/bus tests cover deadline−1/deadline/deadline+1, invalid/missing SF, busy/reissue, aliases/lanes and accepted commands. The bounded master-byte no-rejection conclusion does not invent a failing valid command. |
+| 5. End-to-end fidelity | Satisfied. `tests/smpc_transactions.rs`, `smpc_byte_contract.rs`, `smpc_read_guests.rs` and `scripts/hardware-boundaries.mjs` boot actual SH-2 reset vectors and execute MMIO instructions. [Timing-valid guests/reset observer](#review-follow-up-timing-valid-guests-and-reset-observation) check 201/79/20 result words, six real IRQ/RTE entries and cancellation beyond former deadlines. [Shared progress records](#review-follow-up-shared-nativechromium-progress-evidence) and issuer/read/exception records require native/production-Wasm agreement across chunks 1/3/127/10000 and passive Debug observation, rather than comparing only each backend to itself. No host register/result injection supplies success. |
+| 6. Diagnostic precision | Satisfied. `Rejection` distinguishes write-only/read-only, byte-only, missing/invalid SF, busy, unsupported command/register, invalid parameters and prohibited issuer. DMA/refill diagnostics retain full units and issuing operands separately. [Decoded exception follow-up](#review-follow-up-decoded-synchronous-exception-instruction) retains available TRAPA/illegal-entry opcodes. Sticky faults remain bounded; no personal media paths or firmware dumps are saved. |
+| 7. Regression protection | Satisfied. The preserved implementation passes the complete native and 74-group browser suites, including SMPC clock/reset, dual SH-2, INTBACK/pad, SCU IRQ, HLE, external BIOS/BIOS-only UI, backup, media and audio. [Latest complete validation](#review-follow-up-decoded-synchronous-exception-instruction) records counts/results; [hosted validation](#hosted-validation-and-checkpoint-handoff) passes both browser shards and the artifact/coverage gate. No PC/ROM identity patch, fake menu, blanket MMIO ignore or proprietary code is added. |
+| 8. Validation and documentation | Satisfied for the preserved implementation. The latest full local record reports fmt, locked build, 1,189 native tests, native/Wasm Clippy with warnings denied, 104 fixture commands, production web build, 13 runner tests and all 74 browser groups, with timings and negative controls. Architecture and hardware-conformance notes describe the contract and limits. Hosted CI passes on the exact published head; this documentation checkpoint still needs its own CI after publication. |
+
+### Remaining limits and publication
+
+The private BIOS transaction and stock menu/retail compatibility remain
+unverified. Electrical/open-bus responses to prohibited accesses, invalid-window
+behavior and comprehensive timing/cache/SMPC conformance are not established.
+These limits do not negate the independently validated Issue #103 contract;
+broader hardware completion stays in #17 and the unrelated #81 finding remains.
+Do not suppress subsequent unsupported accesses to claim firmware success.
+
+PR #104 is preserved. While a required criterion or CI on the published final
+head is pending/failing, retain draft state and `Related to #103`. Once all pass,
+replace that reference with `Closes #103` and mark the existing PR ready for full
+review, following normal required reviews/checks. This local fix node must commit
+without pushing or merging, so that transition belongs to publication after the
+new head passes CI. No private trace, arbitrary human approval, live Pages check
+or post-merge verification is required.
+
+## Hosted validation and checkpoint handoff
+
+Read-only GitHub inspection on 2026-11-06 confirms that
+[run 42037523677](https://github.com/takahirox/saturn-rust/actions/runs/42037523677)
+completed successfully on exact published head
+`1be62104ed684539488ed27958e38b0c6ed0358f`. The jobs API reports:
+
+| Required job | Conclusion | Job elapsed time |
+| --- | --- | ---: |
+| `native` | Success | 897 s |
+| `wasm` | Success | 39 s |
+| `browser (shared)` | Success | 1084 s |
+| `browser (scenarios)` | Success | 901 s |
+| `build` | Success | 7 s |
+
+These are hosted job intervals (including setup), not individual test timings.
+The workflow runs fixture reproduction, fmt, locked build/tests/native Clippy;
+production web build/Wasm Clippy; runner tests in the shared job; both complete
+browser shards; and the aggregate revision/coverage/tested-artifact check. Its
+`site`/`deploy` jobs are intentionally skipped on PRs. No Pages verification is
+required. The previously pending hosted run therefore needs no retry or further
+wait, and the old shared-job timeout is not a current blocker.
+
+The recovered checkpoint and this continuation preserve all runtime, test,
+fixture, lockfile and CI files from that head. Reuse the latest complete local
+results below and successful hosted CI rather than repeat equivalent heavy
+suites. This node additionally ran on stable Rust 1.99.0:
+
+- `rustup run stable cargo test --locked --test smpc_transactions --test
+  smpc_byte_contract --test smpc_read_context --test smpc_read_guests`: **20/20
+  pass**, zero failed/ignored; 8.69 s compilation and 55.31 s summed harness
+  time. The four harnesses pass 9/6/2/3 tests respectively.
+- `python3 scripts/ci-time.py issue103-acceptance-device rustup run stable
+  cargo test --locked --lib smpc::tests`: **22/22 pass**, zero failed/ignored,
+  **7.468 s** including compilation.
+- `python3 scripts/ci-time.py issue103-acceptance-fixture python3
+  tests/fixtures/build_smpc_transactions.py --check`: all **31 ROMs** and their
+  generated sources/records reproduce, **0.145 s**.
+- `rustup run stable cargo fmt --check`, changed local Markdown links/anchors
+  and Git whitespace checks: pass.
+
+The audit re-read the original ST-169 PDF §1.2/fig1.3 (printed pp.5–6), §2.2
+(p.13) and table2.5 (p.20), confirming byte-only access, COMREG/IREG W,
+OREG/SR R, SF set-to-01 and the five prohibited slave commands. The linked HTML
+transcription still returns HTTP 502; the original PDF is available. No manual
+bytes or private firmware are committed.
+
+This node leaves a local commit without a push, merge or GitHub metadata change.
+The next publication step must preserve PR #104, push normally without force,
+and wait for CI on the **new** head. The green result above proves the preserved
+implementation head, not a future SHA. With the eight criteria satisfied and
+new-head CI passing, update PR #104's description to the full outcome, replace
+`Related to #103` with `Closes #103`, and mark it ready for normal review. There
+is no remaining private-firmware/human acceptance question and no required
+post-merge verification; required reviews and merge checks still apply.
 
 ## Finding and scope
 
@@ -55,11 +154,10 @@ defect also does not identify the private firmware transaction.
 The scope is independently reconstructed SMPC access semantics, an executable
 master-context acceptance audit, rejection diagnostics and proven
 width/issuer-policy corrections.
-The original firmware transaction is unverified. Keep #103 open and PR #104 in draft
-under the partial publication scope; do not generate a closing reference from
-this checkpoint. The review follow-up below supplies timing-valid byte-command
-and post-deadline reset evidence; it does not classify the original symptom.
-No private trace or human confirmation is required to finish that work. Broad hardware
+The original firmware transaction is unverified. The review follow-up below
+supplies timing-valid byte-command and post-deadline reset evidence; it does not
+classify the original symptom. The acceptance matrix evaluates this evidence
+against the Issue's independent reconstruction route. Broad hardware
 completion remains in #17, and the unrelated #81 SCU endpoint finding is unchanged.
 
 ## Primary-source reconciliation
@@ -173,7 +271,8 @@ For that master-context investigation, no byte correction, private-ROM startup
 success or red-to-green byte control is claimed; the issuer follow-up below has
 its own demonstrated byte acceptance defect and negative controls. Existing read/handshake/busy/invalid-parameter
 negative controls remain active; the width defect has its separate red control.
-Keep #103 open and PR #104 in draft under the contributor publication rule.
+The acceptance matrix evaluates this finding together with the concrete fixes
+and end-to-end evidence; it does not require an unavailable private trace.
 
 ## Diagnostics and original guests
 
@@ -209,16 +308,16 @@ PC 00000226: COMREG 2-byte write 2010001E value=0009 -> ByteOnly
 These PCs belong only to the original fixtures, not the unavailable user BIOS.
 
 [`build_smpc_transactions.py`](../tests/fixtures/build_smpc_transactions.py)
-reproduces the source `.s` and sparse big-endian `.hex` representation of seventeen
+reproduces the source `.s` and sparse big-endian `.hex` representation of 31
 standalone **524288-byte** ROMs, all under the adjacent [MIT license](../tests/fixtures/LICENSE).
-Reset PC/SP are 00000200/060FF000. Expansion starts with zero-filled ROM bytes;
+Default reset PC/SP are 00000200/060FF000. Expansion starts with zero-filled ROM bytes;
 the fixture builder uses the repository's original assembler, no SDK/cross compiler.
 The accepted guest [`smpc-transactions.s`](../tests/fixtures/smpc-transactions.s)
 and independent expected [record fixture](../tests/fixtures/smpc-transactions.tsv)
 exercise SF/command reporting, SETSMEM operands 12/34/56/78, CDOFF status,
 INTBACK status/region/SMEM values, SCU pending bit7, real IRQ vector47 and RTE,
 CDON and RESENAB. Only guest instructions write records at 0601A000 and the IRQ
-counter at 0601A100. Ten additional guests isolate COMREG read, missing/incorrect
+counter at 0601A100. The initial ten rejection guests isolate COMREG read, missing/incorrect
 SF, busy reissue, unsupported command, invalid INTBACK parameters, word/longword
 writes and word/longword reads. Each stores sentinel 55 at 0601A200 only if the
 invalid operation silently proceeds. Native and browser assert the sentinel stays
@@ -376,21 +475,15 @@ existing IRQ guests retain real CPU interrupt acknowledgement. Native Clippy
 initially requested parentheses in the test's BCD helper; the corrected native
 and Wasm checks pass. These initial failures are not counted as passing checks.
 
-## PR publication reference correction
+## Historical PR reference correction
 
-Review found that PR #104's Related Issues section used a closing reference for
-this partial increment. Replaced it with `Related to #103.` and removed the
-contradictory closure-target explanation. Exact GitHub body readback confirms
-the replacement, open/draft PR state and unchanged published head
-`0eb49111f9182e9aef63a1150c831ed03e395432`. Checkpoint publication must preserve
-the plain reference, as recorded in [the contributor guidance](../AGENTS.md).
-Keep #103 open and PR #104 in draft; this correction does not resolve the
-remaining acceptance criteria or explain the original one-byte fault.
-
-Validation for this PR-body and documentation correction: exact PR metadata
-readback, local Markdown links/anchors and Git whitespace checks passed. Runtime
-files are unchanged, so runtime suites were not rerun; their earlier results
-remain recorded above. No push or merge was performed.
+An earlier checkpoint changed PR #104 to `Related to #103` and draft state while
+its acceptance review was incomplete, with published head
+`0eb49111f9182e9aef63a1150c831ed03e395432`. PR metadata readback, documentation
+links/anchors and whitespace checks passed; runtime files were unchanged and
+runtime suites were not repeated. That historical publication state is not a
+permanent partial-only rule. The current acceptance matrix and final-head CI
+determine when the existing PR can use a closing reference and become ready.
 
 
 ## Review follow-up: timing-valid guests and reset observation
@@ -454,8 +547,8 @@ The case itself resets the same machine, preserving the battery reset contract.
 These tests establish valid-window execution and cancellation beyond former
 deadlines in the functional model. They do not establish electrical timing,
 invalid-window behavior, cache-enabled MMIO,
-or private BIOS/menu compatibility. #103 stays open and #104 stays draft under
-the partial publication rule; #17 and #81 scope is unchanged. Required post-merge
+or private BIOS/menu compatibility. These are honest model limits, not mandatory
+private-firmware gates; #17 and #81 scope is unchanged. Required post-merge
 verification: none.
 
 
@@ -549,10 +642,9 @@ backend** assert the shared progress values and all guest records. Existing
 complete native CPU-state comparisons remain in place. No runtime source,
 firmware bytes or guest expectations were changed.
 
-The reported private one-byte fault remains unclassified and the other limits
-in [Finding and scope](#finding-and-scope) remain. Keep #103 open, PR #104 draft,
-and its Related Issues section `Related to #103`. This parity correction does
-not authorize a closing reference or assert general BIOS/menu compatibility.
+The reported private one-byte fault remains unclassified. This parity evidence
+contributes to the complete acceptance matrix without asserting general
+BIOS/menu compatibility.
 
 
 ### Executed parity-follow-up validation
@@ -671,9 +763,8 @@ and the shared fault-progress assertion detects the mismatch. No runtime,
 private firmware, fixture expectations or committed progress values are modified
 for either control.
 
-The private one-byte fault remains unclassified and the other limits in
-[Finding and scope](#finding-and-scope) remain. Keep #103 open, PR #104 draft,
-and its Related Issues section `Related to #103`. No push, PR update, merge,
+The private one-byte fault remains unclassified; the issuer defect is
+independently demonstrated and corrected. No push, PR update, merge,
 personal firmware, human result, hardware or live Pages check is required or
 claimed by this correction.
 
@@ -779,8 +870,7 @@ After correction, both focused tests pass (1.059 s). An initial test expectation
 for the vector guest's saved PC was corrected to 210 from the assembled ROM;
 no runtime behavior or fixture instruction was changed to fit that assertion.
 
-The original symptom and remaining scope in [Finding and scope](#finding-and-scope)
-are unchanged. Keep #103 open and PR #104 draft with `Related to #103`. No
+The original symptom's private transaction remains unknown. No
 personal firmware, human confirmation, live Pages, push or merge is required or
 claimed.
 
@@ -849,10 +939,8 @@ guest/chunk/Debug combination, expected value, guest clock budget, firmware byte
 The inventory regression checks the new counts; the existing aggregate negative
 controls additionally reject reports using the previous 32/42 group assignment.
 
-This addresses the complete-suite scheduling finding only. The private one-byte
-COMREG symptom remains unclassified, and the other limits in
-[Finding and scope](#finding-and-scope) remain. Keep #103 open and PR #104 draft
-with `Related to #103` in Related Issues. No Issue/PR change, push or merge is
+This addresses the complete-suite scheduling finding. The private one-byte
+COMREG symptom remains unclassified. No Issue/PR change, push or merge is
 performed by this follow-up.
 
 ### Executed scheduling-follow-up validation
@@ -935,9 +1023,7 @@ issuing byte. `cargo test --locked --test smpc_read_context` exits **101** in
 the separate refill field, both tests pass in **2.429 s** including compilation.
 The negative control changed no emulator behavior or fixture expectations.
 
-The private one-byte COMREG failure remains unclassified, and the other limits
-in [Finding and scope](#finding-and-scope) remain. Keep #103 open, PR #104 draft
-and its Related Issues section `Related to #103`. No human result, proprietary
+The private one-byte COMREG failure remains unclassified. No human result, proprietary
 firmware, hosted CI, live Pages verification, push or merge is claimed.
 
 ### Executed read-context validation
@@ -1044,12 +1130,12 @@ directory. The executable reports **145.0.7632.6**. This setup interruption is
 excluded from passing results. Native, fixture and Clippy suites were not
 repeated for this scheduling-only change; their earlier results are historical.
 
-Hosted verification of this revision remains pending: this node must commit
-locally without pushing, so it cannot trigger the PR workflow with its changes.
-After publication, require both hosted browser jobs and the aggregate `build`
-gate to succeed; do not treat the timing estimates or local suite as that result.
-Keep #103 open and PR #104 draft with `Related to #103` in Related Issues while
-the limits in [Finding and scope](#finding-and-scope) remain unresolved.
+Hosted verification was pending at this historical scheduling checkpoint.
+Both browser jobs and the aggregate `build` gate have since succeeded on
+preserved head `1be62104ed684539488ed27958e38b0c6ed0358f`; see the
+[hosted validation and checkpoint handoff](#hosted-validation-and-checkpoint-handoff).
+Each subsequent published head still
+requires its own CI; timing estimates and local suites do not replace that gate.
 
 ## Review follow-up: scheduled DMA and cache read guests
 
@@ -1109,8 +1195,7 @@ also assert these shared checked-in progress records, extending
 | cache-disabled | 2086 | 135 | 0 |
 
 These are functional-model regression counts, not physical-cycle measurements.
-The private one-byte COMREG failure remains unclassified. Keep #103 open and
-PR #104 draft with `Related to #103`; no push, merge, human confirmation or
+The private one-byte COMREG failure remains unclassified; no push, merge, human confirmation or
 hosted-CI success is claimed by this local follow-up.
 
 ### Scheduled-read validation results
@@ -1201,7 +1286,7 @@ reconstruction of the reported signature. It does **not** identify the user's
 instruction at PC `0000025C`, establish their operand width/direction/command
 state, or prove that the width correction resolves their startup failure.
 The byte-only policy and primary-source limits above still apply.
-Keep #103 open and PR #104 draft with `Related to #103` in Related Issues.
+The unavailable private transaction is not an acceptance dependency.
 
 The added [native regression](../tests/smpc_transactions.rs) uses only inherited
 public APIs so it can run unchanged against an isolated archive of
@@ -1322,8 +1407,8 @@ It fails as intended with `None` versus `Some(49952)`: **1 failed, exit 101,
 7.990 s** including compilation. After the correction, the focused command
 `cargo test --locked --test smpc_transactions --test smpc_read_guests
 --test dual_sh2` passes **17/17**, **14.704 s** including compilation.
-This fixes the diagnostic finding only; #103 remains open and #104 remains draft
-with `Related to #103` in Related Issues under the publication rule above.
+This fixes the diagnostic finding. The complete acceptance matrix assesses it
+together with all preserved corrections and validation.
 
 Validation uses macOS arm64, stable Rust **1.99.0**, Node **26.12.1**,
 wasm-bindgen **0.2.129** and Playwright **1.58.2**. Wall times use
