@@ -126,36 +126,31 @@ export async function playUi(browser, url) {
     assert(Number((await state()).frames) > 0);
     assert.equal(await page.locator("#disc").evaluate(input => input.files.length), 0);
     assert.equal(await page.locator("#disc-selection").textContent(), "No disc selected.");
-    // #105: original RESDISA firmware through BIOS-only Start and Restart.
-    // A valid SF sequence reports real RESd=1 after first proving RESd=0;
-    // omitted SF remains an explicit, reproducible host protocol diagnostic.
-    for (const name of ["direct", "activity", "missing"]) {
-      const expected = name === "missing" ? null :
-        (await readFile(`tests/fixtures/smpc-sf-${name}.tsv`, "utf8")).trim().split(/\r?\n/).map(v => parseInt(v,16));
-      await page.locator("#bios").setInputFiles({...firmware,buffer:await rom(`smpc-sf-${name}`)});
+    // #105/#109: BIOS-only Start/Restart executes both documented pre-write
+    // and idle SF=0 firmware, checking real reset/sound/CD results offline.
+    for (const [name, base] of [
+      ["smpc-sf-direct", 0x0601a000], ["smpc-sf-activity", 0x0601a000],
+      ["smpc-idle-zero", 0x0601b000], ["smpc-idle-prewrite", 0x0601b000],
+    ]) {
+      const expected = (await readFile(`tests/fixtures/${name}.tsv`, "utf8")).trim().split(/\r?\n/).map(v => parseInt(v,16));
+      await page.locator("#bios").setInputFiles({...firmware,buffer:await rom(name)});
       await ready();
       await page.locator("#view-play").click();
-      const resetState = () => page.evaluate(() => [window.biosMachine.instruction_count(), window.biosMachine.read_long(0x0601a000), window.biosMachine.smpc_fault_diagnostics()]);
+      const resetState = () => page.evaluate(base => [window.biosMachine.instruction_count(), window.biosMachine.read_long(base), window.biosMachine.smpc_fault_diagnostics()], base);
       assert.deepEqual(await resetState(), ["0", 0, undefined]);
       for (let boot = 0; boot < 2; boot++) {
         if (boot === 0) await page.locator("#start").click();
         else {
-          const reset = await page.locator("#restart").evaluate(button => {
+          const reset = await page.locator("#restart").evaluate((button, base) => {
             button.click();
-            return [window.biosMachine.instruction_count(), window.biosMachine.read_long(0x0601a000), window.biosMachine.smpc_fault_diagnostics()];
-          });
+            return [window.biosMachine.instruction_count(), window.biosMachine.read_long(base), window.biosMachine.smpc_fault_diagnostics()];
+          }, base);
           assert.deepEqual(reset, ["0", 0, undefined]);
         }
-        if (expected) {
-          await page.waitForFunction(length => window.biosMachine.read_long(0x0601a000+(length-1)*4) === 0x600d, expected.length);
-          const records = await page.evaluate(length => Array.from({length}, (_,i) => window.biosMachine.read_long(0x0601a000+i*4)), expected.length);
-          assert.deepEqual(records, expected);
-          assert.equal(await page.locator("#error").textContent(), "");
-        } else {
-          await failed("MissingSf");
-          assert.match(await page.locator("#error").textContent(), /0x2010001F value=0x0000001A: MissingSf \(SF=0, busy=false, command=0x00\)/);
-          assert.equal(await page.evaluate(() => window.biosMachine.read_long(0x0601a014)), 0);
-        }
+        await page.waitForFunction(({base, length}) => window.biosMachine.read_long(base+(length-1)*4) === 0x600d, {base, length:expected.length});
+        const records = await page.evaluate(({base, length}) => Array.from({length}, (_,i) => window.biosMachine.read_long(base+i*4)), {base, length:expected.length});
+        assert.deepEqual(records, expected);
+        assert.equal(await page.locator("#error").textContent(), "");
         assert.equal(await page.locator("#disc-selection").textContent(), "No disc selected.");
       }
     }

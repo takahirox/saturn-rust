@@ -828,11 +828,153 @@ fn resdisa_changes_reset_button_nmi_only_at_completion_and_does_not_clear_a_late
         let claimed = s.command_state();
         assert_eq!(s.advance_clocks(10000), None);
         assert_eq!(s.command_state(), claimed);
-        // The SF=0 negative control preserves actual disabled-NMI state.
         s.reset_volatile();
-        assert!(
-            matches!(s.write(SMPC + 0x1f, 0x1a), Err(BusError::Smpc(f)) if f.reason == Rejection::MissingSf)
-        );
         assert!(!s.sf && !s.busy() && s.reset_disabled);
+    }
+}
+
+#[test]
+fn idle_commands_keep_sf_independent_of_execution_and_preserve_effect_deadlines() {
+    for prewrite in [false, true] {
+        for chunk in [1, 3, 127, 10000] {
+            for (command, clocks) in [
+                (0, 807),
+                (2, 807),
+                (3, 807),
+                (6, 807),
+                (7, 807),
+                (8, 1075),
+                (9, 1075),
+                (0x0d, Smpc::SYSTEM_RESET_CLOCKS),
+                (0x0e, Smpc::SYSTEM_RESET_CLOCKS),
+                (0x0f, Smpc::SYSTEM_RESET_CLOCKS),
+                (0x10, 8600),
+                (0x16, 1882),
+                (0x17, 1075),
+                (0x18, 807),
+                (0x19, 807),
+                (0x1a, 807),
+            ] {
+                let mut s = Smpc {
+                    sound_enabled: command == 7,
+                    cd_enabled: command != 8,
+                    reset_disabled: command != 0x1a,
+                    ..Smpc::default()
+                };
+                let parameters: &[u8] = match command {
+                    0x10 => &[1, 0, 0xf0],
+                    0x16 => &[0x20, 0x24, 0x11, 1, 0, 0, 0],
+                    _ => &[0x12, 0x34, 0x56, 0x78],
+                };
+                input(&mut s, parameters);
+                if prewrite {
+                    s.write(SMPC + 0x63, 1).unwrap();
+                }
+                let effects = (
+                    s.sound_enabled,
+                    s.cd_enabled,
+                    s.reset_disabled,
+                    s.battery.memory,
+                    s.battery.set,
+                );
+                s.write(SMPC + 0x1f, command).unwrap();
+                let issued = s.command_state();
+                assert_eq!(issued.sf, prewrite);
+                assert!(issued.busy);
+                assert_eq!(
+                    (
+                        issued.command,
+                        issued.pending,
+                        issued.remaining,
+                        issued.command_report
+                    ),
+                    (command, Some(command), Some(clocks), command)
+                );
+                let mut left = clocks - 1;
+                while left > 0 {
+                    let n = left.min(chunk);
+                    assert_eq!(s.advance_clocks(n), None);
+                    left -= n;
+                }
+                assert_eq!(s.sf, prewrite);
+                assert_eq!(
+                    effects,
+                    (
+                        s.sound_enabled,
+                        s.cd_enabled,
+                        s.reset_disabled,
+                        s.battery.memory,
+                        s.battery.set
+                    )
+                );
+                let before = s.command_state();
+                assert!(
+                    matches!(s.write(SMPC + 0x1f, 8), Err(BusError::Smpc(f)) if f.reason == Rejection::Busy)
+                );
+                assert_eq!(s.command_state(), before);
+                // Claiming SF during real work must neither replace nor restart it.
+                s.write(SMPC + 0x63, 1).unwrap();
+                assert_eq!(s.pending, Some((command, 1)));
+                assert!(
+                    matches!(s.write(SMPC + 0x1f, 8), Err(BusError::Smpc(f)) if f.reason == Rejection::Busy)
+                );
+                assert_eq!(s.advance_clocks(1), Some(command));
+                assert!(!s.sf && !s.busy());
+                assert_eq!(s.take_irq(), command == 0x10);
+                match command {
+                    6 => assert!(s.sound_enabled),
+                    7 => assert!(!s.sound_enabled),
+                    8 => assert!(s.cd_enabled),
+                    9 => assert!(!s.cd_enabled),
+                    0x19 => assert!(s.set_reset_button(true)),
+                    0x1a => assert!(!s.set_reset_button(true)),
+                    0x16 => assert!(s.battery.set),
+                    0x17 => assert_eq!(s.battery.memory, [0x12, 0x34, 0x56, 0x78]),
+                    _ => (),
+                }
+                assert_eq!(s.advance_clocks(10000), None);
+                assert!(!s.take_irq());
+                assert_eq!(s.read(SMPC + 0x5f), Ok(command));
+            }
+        }
+    }
+}
+
+#[test]
+fn no_prewrite_intback_preserves_continue_break_and_reset_cancellation() {
+    for phase in 0..4 {
+        let mut s = Smpc::default();
+        input(&mut s, &[u8::from(phase != 0), 0x0a, 0xf0]);
+        s.write(SMPC + 0x1f, 0x10).unwrap();
+        assert!(!s.sf && s.busy());
+        if phase != 0 {
+            assert_eq!(s.advance_clocks(8599), None);
+            assert!(!s.sf && !s.take_irq());
+            assert_eq!(s.advance_clocks(1), Some(0x10));
+            assert!(s.take_irq());
+            // Existing INTBACK status/continue protocol explicitly sets SF;
+            // that behavior is separate from COMREG's lack of an implicit set.
+            assert!(s.sf && s.await_continue);
+            if phase >= 2 {
+                s.write(SMPC + 1, 0x81).unwrap();
+            }
+        }
+        if phase == 3 {
+            s.vblank_out();
+            s.advance_clocks(8599);
+        }
+        assert!(
+            matches!(s.write(SMPC + 0x1f, 7), Err(BusError::Smpc(f)) if f.reason == Rejection::Busy)
+        );
+        if phase % 2 == 0 {
+            s.write(SMPC + 1, 0x40).unwrap();
+        } else {
+            s.reset_volatile();
+        }
+        assert!(!s.sf && !s.busy());
+        s.vblank_out();
+        s.advance_clocks(100000);
+        assert!(!s.take_irq());
+        assert_eq!(s.pending, None);
     }
 }

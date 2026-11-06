@@ -15,11 +15,10 @@ mod smpc_command_tests {
     use super::*;
 
     #[test]
-    fn cpu_control_commands_require_sf_latch_output_and_complete_after_807_clocks() {
+    fn cpu_control_commands_latch_output_and_complete_after_807_clocks() {
         for command in [0, 2, 3, 0x18] {
             let mut smpc = Smpc::default();
             assert_eq!(smpc.read(SMPC + 0x63).unwrap(), 0);
-            assert!(smpc.write(SMPC + 0x1F, command).is_err());
             smpc.write(SMPC + 0x63, 1).unwrap();
             smpc.write(SMPC + 0x1F, command).unwrap();
             assert_eq!(smpc.read(SMPC + 0x5F).unwrap(), command);

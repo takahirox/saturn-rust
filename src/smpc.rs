@@ -560,19 +560,11 @@ impl Smpc {
             0x1F if self.busy() => {
                 return Err(self.access_fault(address, 1, Some(u32::from(value)), Rejection::Busy));
             }
-            0x1F if !self.sf => {
-                // ST-169 §§1.2/2.2 require software to claim SF before issue
-                // to prevent double issue. They do not specify the electrical
-                // effect of COMREG with SF=0. This is a host protocol diagnostic,
-                // not a measured hardware gate or an SH-2 exception. See #105.
-                return Err(self.access_fault(
-                    address,
-                    1,
-                    Some(u32::from(value)),
-                    Rejection::MissingSf,
-                ));
-            }
-            0x1F if self.sf && !self.busy() => {
+            // ST-169 documents SF-before-COMREG for software synchronization.
+            // Idle SF=0 acceptance is an emulator compatibility policy (#109),
+            // not measured electrical behavior. SF is independent of internal
+            // work: never set it implicitly here, and reject actual overlap above.
+            0x1F => {
                 let clocks = match value {
                     0 | 2 | 3 | 6 | 7 | 0x18 | 0x19 | 0x1A => Self::CPU_COMMAND_CLOCKS,
                     8 | 9 => 1075, // ST-169 §§2.3.6/2.3.7: 40 microseconds.

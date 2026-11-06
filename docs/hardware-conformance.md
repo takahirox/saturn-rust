@@ -4014,16 +4014,22 @@ acceptance or #81/#82 endpoint evidence finding is resolved by this increment.
 
 ## SMPC command access investigation (#103)
 
-The focused [SF lifecycle/ordering audit (#105)](validation-issue-105.md)
-adds original reset-vector RESDISA guests with and without cache/RAM activity,
-RESENAB-to-RESDISA state changes, idle-claim cold reset, and missing-SF/changed
-command controls in native and production Wasm. Unit fences prove the modeled
-reset-button NMI enable changes at completion and idle SF claims have no timeout.
-No tested valid issuance was rejected and no runtime handshake change was
-justified. ST-169 specifies the software SF synchronization sequence; it does
-not establish hardware rejection of COMREG with SF=0. `MissingSf` remains a
-bounded emulator policy. The private firmware history and authentic BIOS/menu
-compatibility remain unverified; hardware status stays **Pending**.
+The [idle SF=0 compatibility increment (#109)](validation-issue-109.md)
+supersedes #105's `MissingSf` rejection. Valid idle COMREG bytes use the same
+command dispatcher with either SF value, without setting SF on issue. Pending
+commands and INTBACK phases still block overlapping COMREG writes independently
+of SF. Original MIT reset-vector firmware checks power-on RESDISA, observable
+RESENAB→RESDISA, SNDON/SNDOFF, CD off/on and status/SCU IRQ results, with an SF=1
+control, native and production Wasm/Chromium execution, and BIOS-only Play/Restart.
+Unit fences retain every command's deadlines/effects and INTBACK cancellation.
+
+The earlier [SF lifecycle/ordering audit (#105)](validation-issue-105.md) remains
+evidence for documented pre-write sequences, cache/RAM ordering and idle claims.
+ST-169 specifies software synchronization; it does not conclusively specify the
+electrical result of idle COMREG with SF=0. The new policy is supported by
+third-party emulator precedents, **not verified physical Saturn behavior**.
+Private firmware history and authentic BIOS/menu compatibility remain unverified;
+hardware status stays **Pending**.
 
 Related to #103 and #17. [The validation record](validation-issue-103.md)
 reconciles ST-169 §1.2/fig1.3, §2.2/table2.4, §§2.3–2.5 and §3

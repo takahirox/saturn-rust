@@ -15,42 +15,47 @@ const COMMANDS: [u8; 16] = [
 
 #[test]
 fn both_cpu_bus_views_enforce_table_2_5_without_mutating_rejected_commands() {
-    for issuer in [Processor::Master, Processor::Slave] {
-        for base in [BASE, BASE + 0x100, 0x20100000, 0x2017ff80] {
-            for command in COMMANDS {
-                let mut b = Bus::default();
-                let mut cpu = b.for_cpu(issuer);
-                cpu.write8(base + 0x63, 1).unwrap();
-                let bytes: &[u8] = match command {
-                    0x10 => &[1, 0, 0xf0],
-                    0x16 => &[0x20, 0x24, 0x4a, 0x31, 0x12, 0x34, 0x56],
-                    _ => &[0x12, 0x34, 0x56, 0x78],
-                };
-                for (i, byte) in bytes.iter().enumerate() {
-                    cpu.write8(base + 1 + i as u32 * 2, *byte).unwrap();
-                }
-                let before = b.smpc_command_state();
-                let result = b.for_cpu(issuer).write8(base + 0x1f, command);
-                if issuer == Processor::Slave && [2, 3, 0x0e, 0x0f, 0x10].contains(&command) {
-                    let Err(BusError::Smpc(fault)) = result else {
-                        panic!("slave command {command:02x} accepted: {result:?}");
+    for prewrite in [false, true] {
+        for issuer in [Processor::Master, Processor::Slave] {
+            for base in [BASE, BASE + 0x100, 0x20100000, 0x2017ff80] {
+                for command in COMMANDS {
+                    let mut b = Bus::default();
+                    let mut cpu = b.for_cpu(issuer);
+                    if prewrite {
+                        cpu.write8(base + 0x63, 1).unwrap();
+                    }
+                    let bytes: &[u8] = match command {
+                        0x10 => &[1, 0, 0xf0],
+                        0x16 => &[0x20, 0x24, 0x4a, 0x31, 0x12, 0x34, 0x56],
+                        _ => &[0x12, 0x34, 0x56, 0x78],
                     };
-                    assert_eq!(fault.reason, Rejection::ProhibitedIssuer);
-                    assert_eq!(fault.write, Some(u32::from(command)));
-                    assert_eq!(fault.address, base + 0x1f);
-                    assert_eq!(fault.state, before);
-                    assert_eq!(b.smpc_command_state(), before);
-                    b.advance_clocks(8601).unwrap();
-                    assert_eq!(b.smpc_command_state(), before);
-                    // Rejection leaves the shared handshake usable by master.
-                    b.for_cpu(Processor::Master).write8(base + 0x1f, 9).unwrap();
-                    b.advance_clocks(1075).unwrap();
-                    assert_eq!(b.read8(base + 0x63), Ok(0));
-                    assert_eq!(b.read8(base + 0x5f), Ok(9));
-                } else {
-                    result.unwrap();
-                    assert!(b.smpc_command_state().busy);
-                    assert_eq!(b.smpc_command_state().pending, Some(command));
+                    for (i, byte) in bytes.iter().enumerate() {
+                        cpu.write8(base + 1 + i as u32 * 2, *byte).unwrap();
+                    }
+                    let before = b.smpc_command_state();
+                    let result = b.for_cpu(issuer).write8(base + 0x1f, command);
+                    if issuer == Processor::Slave && [2, 3, 0x0e, 0x0f, 0x10].contains(&command) {
+                        let Err(BusError::Smpc(fault)) = result else {
+                            panic!("slave command {command:02x} accepted: {result:?}");
+                        };
+                        assert_eq!(fault.reason, Rejection::ProhibitedIssuer);
+                        assert_eq!(fault.write, Some(u32::from(command)));
+                        assert_eq!(fault.address, base + 0x1f);
+                        assert_eq!(fault.state, before);
+                        assert_eq!(b.smpc_command_state(), before);
+                        b.advance_clocks(8601).unwrap();
+                        assert_eq!(b.smpc_command_state(), before);
+                        // Rejection leaves the shared handshake usable by master.
+                        b.for_cpu(Processor::Master).write8(base + 0x1f, 9).unwrap();
+                        b.advance_clocks(1075).unwrap();
+                        assert_eq!(b.read8(base + 0x63), Ok(0));
+                        assert_eq!(b.read8(base + 0x5f), Ok(9));
+                    } else {
+                        result.unwrap();
+                        assert_eq!(b.smpc_command_state().sf, prewrite);
+                        assert!(b.smpc_command_state().busy);
+                        assert_eq!(b.smpc_command_state().pending, Some(command));
+                    }
                 }
             }
         }
@@ -161,29 +166,32 @@ fn settime_accepts_real_dates_weekdays_and_boundary_times() {
 
 #[test]
 fn byte_lanes_and_handshake_survive_bus_aliases_and_command_deadlines() {
-    for base in [BASE, BASE + 0x100, 0x20100000, 0x2017ff80] {
-        let mut b = Bus::default();
-        assert!(b.read8(base + 0x1f).is_err()); // no invented COMREG readback
-        assert!(b.write8(base + 0x1f, 9).is_err()); // SF not claimed
-        b.write8(base + 0x63, 1).unwrap();
-        b.write8(base + 0x1e, 9).unwrap(); // disconnected lane
-        assert_eq!(b.read8(base + 0x5f), Ok(0));
-        b.write8(base + 0x1f, 9).unwrap();
-        for clocks in [1, 3, 127, 943] {
-            // 1074 reference clocks, one before CDOFF
-            b.advance_clocks(clocks).unwrap();
-            assert_eq!(b.read8(base + 0x63), Ok(1));
-            assert!(b.write8(base + 0x1f, 8).is_err());
+    for prewrite in [false, true] {
+        for base in [BASE, BASE + 0x100, 0x20100000, 0x2017ff80] {
+            let mut b = Bus::default();
+            assert!(b.read8(base + 0x1f).is_err()); // no invented COMREG readback
+            if prewrite {
+                b.write8(base + 0x63, 1).unwrap();
+            }
+            b.write8(base + 0x1e, 9).unwrap(); // disconnected lane
+            assert_eq!(b.read8(base + 0x5f), Ok(0));
+            b.write8(base + 0x1f, 9).unwrap();
+            for clocks in [1, 3, 127, 943] {
+                // 1074 reference clocks, one before CDOFF
+                b.advance_clocks(clocks).unwrap();
+                assert_eq!(b.read8(base + 0x63), Ok(u8::from(prewrite)));
+                assert!(b.write8(base + 0x1f, 8).is_err());
+            }
+            b.advance_clocks(1).unwrap();
+            assert_eq!(b.read8(base + 0x63), Ok(0));
+            assert_eq!(b.read8(base + 0x5f), Ok(9));
+            b.advance_clocks(1).unwrap();
+            b.write8(base + 0x63, 1).unwrap();
+            b.write8(base + 0x1f, 8).unwrap();
+            b.advance_clocks(1075).unwrap();
+            assert_eq!(b.read8(base + 0x63), Ok(0));
+            assert_eq!(b.read8(base + 0x5f), Ok(8));
         }
-        b.advance_clocks(1).unwrap();
-        assert_eq!(b.read8(base + 0x63), Ok(0));
-        assert_eq!(b.read8(base + 0x5f), Ok(9));
-        b.advance_clocks(1).unwrap();
-        b.write8(base + 0x63, 1).unwrap();
-        b.write8(base + 0x1f, 8).unwrap();
-        b.advance_clocks(1075).unwrap();
-        assert_eq!(b.read8(base + 0x63), Ok(0));
-        assert_eq!(b.read8(base + 0x5f), Ok(8));
     }
 }
 

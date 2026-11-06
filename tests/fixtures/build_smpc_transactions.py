@@ -8,6 +8,7 @@ import struct
 from pathlib import Path
 from build_smpc import byte, issue, idle, assembler
 from build_clock import read, put16
+from build_scu import store
 from build_hle_system import record
 from build_video_transactions import encode
 
@@ -320,29 +321,27 @@ def sf_handshake_guests():
     """Issue #105: RESDISA effects after an SF claim, with/without bus work.
 
     Results come from SF/OREG31 and INTBACK.RESd, not a success-only mailbox.
-    The missing-SF guest tests emulator policy, not undocumented electronics.
     """
     files = {}
     poll = lambda tag: (f'load 0x20100063,r1\n{tag}:\nmov.b @r1,r0\n'
                         f'tst #1,r0\nbf {tag}\n')
-    for name in ['direct', 'activity', 'missing']:
+    for name in ['direct', 'activity']:
         s = 'load 0x2601a000,r8\n'
         s += read(0x20100063, 1) + read(0x2010005f, 1)
         s += put16(0x25f80000, 0x8000) + WINDOW_CALL
         expected = [0, 0] + WINDOW_EXPECTED
-        if name != 'missing':
-            # Enable reset-button NMI first: power-on already disables it,
-            # so RESDISA alone would not prove that its effect was executed.
-            s += byte(0x20100063, 1) + byte(0x2010001f, 0x19) + poll('enabled')
-            for i, value in enumerate([1, 0, 0xf0]):
-                s += byte(0x20100001 + 2*i, value)
-            s += byte(0x20100063, 1) + byte(0x2010001f, 0x10) + poll('enabled_status')
-            s += read(0x20100021, 1)
-            expected += [0]
-            s += WINDOW_CALL + poll('claim') + byte(0x20100063, 1)
-            s += read(0x20100063, 1) + read(0x2010005f, 1)
-            s += byte(0x2601a280, 0x55)
-            expected += WINDOW_EXPECTED + [1, 0x10]
+        # Enable reset-button NMI first: power-on already disables it,
+        # so RESDISA alone would not prove that its effect was executed.
+        s += byte(0x20100063, 1) + byte(0x2010001f, 0x19) + poll('enabled')
+        for i, value in enumerate([1, 0, 0xf0]):
+            s += byte(0x20100001 + 2*i, value)
+        s += byte(0x20100063, 1) + byte(0x2010001f, 0x10) + poll('enabled_status')
+        s += read(0x20100021, 1)
+        expected += [0]
+        s += WINDOW_CALL + poll('claim') + byte(0x20100063, 1)
+        s += read(0x20100063, 1) + read(0x2010005f, 1)
+        s += byte(0x2601a280, 0x55)
+        expected += WINDOW_EXPECTED + [1, 0x10]
         if name == 'activity':
             # CCR purge/enable, instruction refill, cached RAM fill/hit and
             # write-through, uncached RAM bus work and a delay >807 clocks.
@@ -355,21 +354,82 @@ def sf_handshake_guests():
             s += read(0x20100063, 1)
             expected += [0x12345678, 0x12345678, 1]
         s += byte(0x2010001f, 0x1a)
-        if name != 'missing':
-            s += read(0x20100063, 1) + read(0x2010005f, 1) + poll('disabled')
-            s += read(0x20100063, 1) + read(0x2010005f, 1)
-            expected += [1, 0x1a, 0, 0x1a]
-            s += WINDOW_CALL + byte(0x20100063, 1)
-            for i, value in enumerate([1, 0, 0xf0]):
-                s += byte(0x20100001 + 2*i, value)
-            s += byte(0x2010001f, 0x10) + poll('disabled_status')
-            s += read(0x20100021, 1) + read(0x20100063, 1) + read(0x2010005f, 1)
-            expected += WINDOW_EXPECTED + [0x40, 0, 0x10]
+        s += read(0x20100063, 1) + read(0x2010005f, 1) + poll('disabled')
+        s += read(0x20100063, 1) + read(0x2010005f, 1)
+        expected += [1, 0x1a, 0, 0x1a]
+        s += WINDOW_CALL + byte(0x20100063, 1)
+        for i, value in enumerate([1, 0, 0xf0]):
+            s += byte(0x20100001 + 2*i, value)
+        s += byte(0x2010001f, 0x10) + poll('disabled_status')
+        s += read(0x20100021, 1) + read(0x20100063, 1) + read(0x2010005f, 1)
+        expected += WINDOW_EXPECTED + [0x40, 0, 0x10]
         s += 'load 0x600d,r0\n' + record() + 'park:\nsleep\nbra park\nnop\n' + command_window()
         extra, _ = encode('smpc-sf-' + name, s)
         files.update(extra)
-        if name != 'missing':
-            files['smpc-sf-' + name + '.tsv'] = ''.join(f'{v:08X}\n' for v in expected + [0x600d]).encode()
+        files['smpc-sf-' + name + '.tsv'] = ''.join(f'{v:08X}\n' for v in expected + [0x600d]).encode()
+    return files
+
+
+def idle_sf_guests():
+    """Issue #109: identical commands with SF=0 and documented SF=1 control.
+
+    A single SF read follows each issue. FRT/raster waiting (not SF=0 polling)
+    separates commands; INTBACK reads real reset/sound/CD state afterward.
+    """
+    files = {}
+    for prewrite in [False, True]:
+        name = 'smpc-idle-' + ('prewrite' if prewrite else 'zero')
+        s = 'load 0x2601b000,r8\n' + put16(0x25f80000, 0x8000)
+        s += store(0x25a00000, 0x7fff0) + store(0x25a00004, 0x100)
+        s += store(0x25a00100, 0x4e722700)  # original 68k STOP guest
+        s += put16(0xfffffee0, 1)
+        s += 'load 0x25fe00a0,r1\nload 0xbf7f,r0\nmov.l r0,@r1\nmov #0,r0\nldc r0,sr\n'
+        s += read(0x20100063, 1)
+        expected = [0]
+        # First RESDISA uses power-on SF=0 in zero variant. Then RESENAB
+        # makes the second RESDISA observable; sound and CD change both ways.
+        for n, (command, resd, sound, cd) in enumerate([
+            (0x1a, 0x40, 0x35, 0), (0x19, 0, 0x35, 0),
+            (0x1a, 0x40, 0x35, 0), (6, 0x40, 0x34, 0),
+            (7, 0x40, 0x35, 0), (9, 0x40, 0x35, 0x40),
+            (8, 0x40, 0x35, 0),
+        ]):
+            s += WINDOW_CALL
+            expected += WINDOW_EXPECTED
+            if prewrite:
+                s += byte(0x20100063, 1)
+            s += byte(0x2010001f, command)
+            s += read(0x20100063, 1)
+            if command == 7 and not prewrite:
+                # Original read-once-or-spin control: an implicit SF set would
+                # latch this loop forever, even after command completion.
+                s += 'tst #1,r0\none_shot_spin:\nbf one_shot_spin\n'
+            s += read(0x2010005f, 1)
+            expected += [int(prewrite), command]
+            # Mailbox identifies a real guest-issued, still pending command.
+            s += byte(0x2601a280, n + 1)
+            s += WINDOW_CALL
+            expected += WINDOW_EXPECTED
+            s += read(0x20100063, 1) + read(0x2010005f, 1)
+            expected += [0, command]
+            for i, value in enumerate([1, 0, 0xf0]):
+                s += byte(0x20100001 + i*2, value)
+            # Status-only INTBACK also takes the shared no-prewrite path.
+            if prewrite:
+                s += byte(0x20100063, 1)
+            s += byte(0x2010001f, 0x10)
+            # Wait on the actual new status IRQ, not an already-clear SF.
+            s += (f'load 0x2601a100,r1\nload {n+1},r2\nstatus{n}:\nmov.l @r1,r0\n'
+                  f'cmp/eq r2,r0\nbf status{n}\n')
+            for at in [0x20100021, 0x20100035, 0x20100037, 0x20100063, 0x2010005f]:
+                s += read(at, 1)
+            expected += [resd, sound, cd, 0, 0x10]
+            s += read(0x2601a100)
+            expected += [n+1]
+        s += 'load 0x600d,r0\n' + record() + 'park:\nsleep\nbra park\nnop\n' + command_window()
+        extra, _ = encode(name, s, irq_operands())
+        files.update(extra)
+        files[name + '.tsv'] = ''.join(f'{v:08X}\n' for v in expected + [0x600d]).encode()
     return files
 
 
@@ -406,7 +466,10 @@ def build():
     # publishes a sentinel only if the prohibited operation silently succeeds.
     cases = {
         'read': 'load 0x0010001f,r1\nmov.b @r1,r0\n',
-        'missing-sf': byte(0x0010001f, 9),
+        'busy-zero': byte(0x2010001f, 9) + byte(0x0010001f, 8),
+        'busy-set': byte(0x2010001f, 9) + byte(0x20100063, 1) + byte(0x0010001f, 8),
+        'command-zero': byte(0x0010001f, 0xff),
+        'parameters-zero': byte(0x0010001f, 0x10),
         'invalid-sf': byte(0x20100063, 0),
         'busy': issue(9) + byte(0x0010001f, 8),
         'command': byte(0x20100063, 1) + byte(0x0010001f, 0xff),
@@ -440,6 +503,7 @@ def build():
     files.update(issuer_guests())
     files.update(read_path_guests())
     files.update(sf_handshake_guests())
+    files.update(idle_sf_guests())
     return files
 
 

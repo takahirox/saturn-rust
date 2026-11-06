@@ -27,28 +27,56 @@ export async function hardwareBoundaries(page) {
     assert.deepEqual([String(turns), result.clocks, result.instructions, result.exceptions],
       progress.get(name), `${name}: Wasm progress must match the shared native oracle`);
   }
+  // #109: actual original SF=0 firmware and its SF=1 pre-write control.
+  for (const variant of ["zero", "prewrite"]) {
+    const name = `smpc-idle-${variant}`, image = await rom(name);
+    const expected = (await readFile(`tests/fixtures/${name}.tsv`, "utf8")).trim().split(/\r?\n/).map(v => parseInt(v, 16));
+    let reference;
+    for (const chunk of [1, 3, 127, 10000]) {
+      const result = await page.evaluate(async ({image, chunk, count}) => {
+        const {Emulator} = await import("./pkg/saturn_rust.js"); const m = new Emulator();
+        const bios = Uint8Array.from(atob(image), c => c.charCodeAt(0));
+        try {
+          // Cancel guest-issued pending RESDISA through a real cold reset.
+          m.reset_bios(bios);
+          for (let i = 0; i < 250000 && m.read_long(0x0601a280) !== 0x01000000; i++) m.step();
+          if (m.read_long(0x0601a280) !== 0x01000000) throw new Error("pending RESDISA not reached");
+          m.reset_bios(bios);
+          for (let left = 1000000; left > 0;) {
+            const n = Math.min(left, chunk); m.run_steps(n); left -= n;
+            m.registers(); m.smpc_fault_diagnostics();
+          }
+          return {records: Array.from({length: count}, (_, i) => m.read_long(0x0601b000+i*4)),
+            clocks: m.peripheral_clocks(), instructions: m.instruction_count(), exceptions: m.exception_count(),
+            details: m.smpc_fault_diagnostics(), mode: m.mode(), hle: m.read_long(0x06000320)};
+        } finally { m.free(); }
+      }, {image: image.toString("base64"), chunk, count: expected.length});
+      assert.deepEqual(result.records, expected);
+      assert.equal(result.exceptions, "7"); assert.equal(result.details, undefined);
+      assert.equal(result.mode, "User-provided BIOS"); assert.equal(result.hle, 0);
+      reference ??= result; assert.deepEqual(result, reference, `${name}, chunk ${chunk}`);
+    }
+  }
   // #105: the same RESDISA guests and result/progress records as native.
   // Reset while SF is claimed but no command exists, then execute a fresh
   // cold boot. The activity guest fills cache and uses both RAM aliases.
-  for (const name of ["direct", "activity", "missing"]) {
+  for (const name of ["direct", "activity"]) {
     const image = await rom(`smpc-sf-${name}`);
-    const expected = name === "missing" ? null :
+    const expected =
       (await readFile(`tests/fixtures/smpc-sf-${name}.tsv`, "utf8")).trim().split(/\r?\n/).map(v => parseInt(v,16));
     let reference;
     // Native smpc_transactions keeps the full chunk/inspection matrix.
     for (const [chunk, observe] of [[1, true], [3, true], [127, true], [10000, false]]) {
-      const result = await page.evaluate(async ({image, chunk, observe, missing, count}) => {
+      const result = await page.evaluate(async ({image, chunk, observe, count}) => {
         const {Emulator} = await import("./pkg/saturn_rust.js");
         const m = new Emulator();
         const bios = Uint8Array.from(atob(image), c => c.charCodeAt(0));
         try {
           m.reset_bios(bios);
-          if (!missing) {
-            for (let i = 0; i < 250000 && m.read_long(0x0601a280) !== 0x55000000; i++) m.step();
-            if (m.read_long(0x0601a280) !== 0x55000000) throw new Error("SF reservation not reached");
-            m.reset_bios(bios);
-            if (m.read_long(0x0601a280) !== 0) throw new Error("stale reservation mailbox");
-          }
+          for (let i = 0; i < 250000 && m.read_long(0x0601a280) !== 0x55000000; i++) m.step();
+          if (m.read_long(0x0601a280) !== 0x55000000) throw new Error("SF reservation not reached");
+          m.reset_bios(bios);
+          if (m.read_long(0x0601a280) !== 0) throw new Error("stale reservation mailbox");
           let message;
           for (let left = 250000; left > 0;) {
             const n = Math.min(left, chunk);
@@ -59,50 +87,38 @@ export async function hardwareBoundaries(page) {
           }
           const clocks = m.peripheral_clocks();
           const details = m.smpc_fault_diagnostics();
-          let repeated;
-          if (missing) { try { m.run_steps(1); } catch (e) { repeated = String(e); } }
-          return {message, repeated, details, clocks, stationary: clocks === m.peripheral_clocks(),
+          return {message, details, clocks, stationary: clocks === m.peripheral_clocks(),
             instructions: m.instruction_count(), exceptions: m.exception_count(),
             registers: Array.from(m.registers()), special: Array.from(m.special_registers()),
             records: Array.from({length: count}, (_,i) => m.read_long(0x0601a000 + i*4)),
             hle: m.read_long(0x06000320), mode: m.mode()};
         } finally { m.free(); }
-      }, {image: image.toString("base64"), chunk, observe, missing: name === "missing", count: expected?.length ?? 6});
-      if (expected) {
-        assert.deepEqual(result.records, expected);
-        assert.equal(result.details, undefined);
-        assert.equal(result.message, undefined);
-        assertProgress(`smpc-sf-${name}`, 250000, result);
-      } else {
-        assert.match(result.message, /COMREG: 1-byte write at 0x2010001F value=0x0000001A: MissingSf \(SF=0, busy=false, command=0x00\)/);
-        assert.match(result.details, /Master SH-2 PC=0x.*sf: false, busy: false, command: 0, pending: None, remaining: None/);
-        assert.equal(result.repeated, result.message);
-        assert.equal(result.stationary, true);
-        assert.equal(result.records[5], 0);
-      }
+      }, {image: image.toString("base64"), chunk, observe, count: expected.length});
+      assert.deepEqual(result.records, expected);
+      assert.equal(result.details, undefined);
+      assert.equal(result.message, undefined);
+      assertProgress(`smpc-sf-${name}`, 250000, result);
       assert.equal(result.exceptions, "0");
       assert.equal(result.hle, 0); assert.equal(result.mode, "User-provided BIOS");
       reference ??= result;
       assert.deepEqual(result, reference, `${name}, chunk ${chunk}, observe ${observe}`);
     }
-    if (expected) {
-      // The command-literal mutation must change actual RESd, not merely
-      // retain a completion marker. Same negative control as native.
-      const changed = Buffer.from(image), operands = [];
-      for (let i = 0; i < changed.length-3; i++) if (changed.readUInt32BE(i) === 0x1a) operands.push(i);
-      assert.equal(operands.length, 1); changed[operands[0]+3] = 0x19;
-      const result = await page.evaluate(async image => {
-        const {Emulator} = await import("./pkg/saturn_rust.js"); const m = new Emulator();
-        try {
-          m.reset_bios(Uint8Array.from(atob(image), c => c.charCodeAt(0)));
-          for (let i = 0; i < 25; i++) m.run_steps(10000);
-          return Array.from({length: 40}, (_,i) => m.read_long(0x0601a000+i*4));
-        } finally { m.free(); }
-      }, changed.toString("base64"));
-      const changedExpected = expected.map(v => v === 0x1a ? 0x19 : v);
-      changedExpected[expected.length-4] = 0;
-      assert.deepEqual(result.slice(0, expected.length), changedExpected);
-    }
+    // The command-literal mutation must change actual RESd, not merely
+    // retain a completion marker. Same negative control as native.
+    const changed = Buffer.from(image), operands = [];
+    for (let i = 0; i < changed.length-3; i++) if (changed.readUInt32BE(i) === 0x1a) operands.push(i);
+    assert.equal(operands.length, 1); changed[operands[0]+3] = 0x19;
+    const result = await page.evaluate(async image => {
+      const {Emulator} = await import("./pkg/saturn_rust.js"); const m = new Emulator();
+      try {
+        m.reset_bios(Uint8Array.from(atob(image), c => c.charCodeAt(0)));
+        for (let i = 0; i < 25; i++) m.run_steps(10000);
+        return Array.from({length: 40}, (_,i) => m.read_long(0x0601a000+i*4));
+      } finally { m.free(); }
+    }, changed.toString("base64"));
+    const changedExpected = expected.map(v => v === 0x1a ? 0x19 : v);
+    changedExpected[expected.length-4] = 0;
+    assert.deepEqual(result.slice(0, expected.length), changedExpected);
   }
   // Real SH-2 reset-vector guests configure DMAC/cache with instructions.
   // DMA errors enter vector10; the handler records AE, remaining count,
@@ -398,7 +414,9 @@ export async function hardwareBoundaries(page) {
     assert.deepEqual(result, transactionReference, `SMPC chunk ${chunk} with Debug observation`);
   }
   for (const [name, reason, direction, width] of [
-    ["read", "WriteOnly", "read", 1], ["missing-sf", "MissingSf", "write", 1],
+    ["read", "WriteOnly", "read", 1],
+    ["busy-zero", "Busy", "write", 1], ["busy-set", "Busy", "write", 1],
+    ["command-zero", "UnsupportedCommand", "write", 1], ["parameters-zero", "InvalidParameters", "write", 1],
     ["invalid-sf", "InvalidSf", "write", 1], ["busy", "Busy", "write", 1],
     ["command", "UnsupportedCommand", "write", 1], ["parameters", "InvalidParameters", "write", 1],
     ["word", "ByteOnly", "write", 2], ["long", "ByteOnly", "write", 4],
@@ -430,7 +448,10 @@ export async function hardwareBoundaries(page) {
         assert.match(result.message, new RegExp(`${width}-byte ${direction}.*${reason}`));
         assert.match(result.details, /Master SH-2 PC=0x.*main_clock: Some/);
         assert.match(result.details, /remaining:.*input:/);
-        if (name === "busy") assert.match(result.details, /pending: Some\(9\).*remaining: Some/);
+        if (name.startsWith("busy")) assert.match(result.details, /pending: Some\(9\).*remaining: Some/);
+        if (name === "busy-zero") assert.match(result.details, /sf: false, busy: true/);
+        if (name === "busy-set") assert.match(result.details, /sf: true, busy: true/);
+        if (name === "command-zero" || name === "parameters-zero") assert.match(result.details, /sf: false, busy: false, command: 0, pending: None/);
         if (name === "read" || name === "comreg-word-read") {
           const word = name === "comreg-word-read";
           const address = word ? 0x0010001e : 0x0010001f;
