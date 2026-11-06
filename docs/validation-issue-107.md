@@ -1,9 +1,11 @@
 # Issue #107: browser execution cost and scheduling
 
-Related to #107 and PR #108. Exact-final-head hosted PR validation remains a
-pre-merge gate: the reviewed head timed out in hosted shared validation, as
-recorded below. This worktree-only follow-up does not push or merge. No post-merge
-check is required. No emulator, fixture, hardware deadline or expected result changes.
+Related to #107 and PR #108. The implementation passed hosted PR validation on
+published head `6ce1492`, with all 74 groups and measured margins in both workers;
+see [hosted completion](#hosted-completion-of-review-fix). Any replacement published
+head must still pass its exact-revision workflow. This worktree-only follow-up
+does not push or merge. No post-merge check is required. No emulator, fixture,
+hardware deadline or expected result changes.
 
 ## Hosted baseline and critical path
 
@@ -467,16 +469,91 @@ The Rust commands used the already-installed stable sysroot and bindgen in
 `PATH`, as documented above. No hosted run was retried, and no allowance reset,
 purchase, model/provider switch, push or merge was performed.
 
+## Hosted completion of review fix
+
+[Run 42176210930](https://github.com/takahirox/saturn-rust/actions/runs/42176210930)
+completed successfully on PR head `6ce14923ffc4e65cdae51940d2db0f08e2ccb8d8`,
+checked out through merge revision `ad1446192a85883f34476dc5a1464210adae18ec`.
+Native, Wasm, both browser shards and mandatory aggregate `build` passed.
+The main-only site/deploy jobs were correctly skipped. This is hosted evidence,
+superseding the pending status and failed runs above; no workflow was retried.
+
+| Hosted worker | Passed groups | `BROWSER_TOTAL` seconds | Margin to 1,200 s |
+| --- | ---: | ---: | ---: |
+| Shared | 33/33 | 1,058.177 | 141.823 s (11.82%) |
+| Scenarios | 41/41 | 986.645 | 213.355 s (17.78%) |
+
+Both workers now finish with observed margins exceeding two minutes. The
+shared margin is smaller and remains the critical path; this single sample
+establishes observed headroom, not a guarantee across hosted-image/load variation.
+No timeout or unsettled-await warning occurred in either complete shard.
+The unchanged sub-ten-minute feedback investigation goal remains unmet.
+
+| Major group, seconds | Previous hosted run 42172508446 | Successful run 42176210930 |
+| --- | ---: | ---: |
+| hardwareBoundaries | 315.620 | 130.966 |
+| scspMvol | 173.955 | 122.366 |
+| mosaic | 126.973 | 76.111 |
+| rotationHighResolution | 100.670 | 67.929 |
+| cdRuntime | 179.699 | 180.522 |
+| externalDiscovery | 144.174 | 143.357 |
+| chd | 133.632 | 133.820 |
+| cdStream | interrupted at 18.372 | 50.197 |
+| videoTransactions | 88.935 | 89.066 |
+| largeMedia | 14.720 | 14.658 |
+
+Summed worker elapsed is **2,044.822 s, complete**, versus the previous
+**2,315.803 s, incomplete**. The original complete PR baseline was 1,867.390 s;
+hosted variation prevents claiming a total hosted-work saving from these
+different runs. The controlled local before/after comparison above and removed
+operation counts remain the evidence for actual work reduction. Scheduling
+remains 33/41 with two workers. Browser runner allocation intervals total
+**2,141 s** (1,115 shared + 1,026 scenarios), separately from **1,178 s** workflow
+elapsed (06:43:06–07:02:44 UTC, 2026-11-06) and **3,113 s** summed validation
+runner intervals including native, Wasm and build. None measures host CPU or
+billed time; no separate queue-delay measurement was made.
+
+The downloaded `web-build` and both report ZIPs matched GitHub's SHA-256 archive
+digests. Independent local verification used the unchanged real verifier:
+
+```sh
+GITHUB_SHA=ad1446192a85883f34476dc5a1464210adae18ec \
+  node scripts/browser-suite.mjs --verify target/hosted-42176210930/reports
+```
+
+It passed against the restored hosted site. All **74 names and passed statuses**
+were additionally compared with the source registry, shard manifest and logged
+group manifests; no group was duplicated or missing. Both reports contain the
+expected merge revision and site digest
+`bb6dd2c59ee77f2b1f85b2bc35e380c3e74948e7e1b470f2a90fa095a38da97a`.
+The tested Wasm SHA-256 is
+`26f934490ce711189579129d28a6619aeb8a61959d3c80286fdc72b2b83906c1`.
+Full per-group timings, report elapsed times, artifact IDs/digests and job
+intervals are under `hosted_acceptance` in the
+[measurement record](ci-performance-issue-107.json). Report elapsed includes
+post-summary cleanup/digest work: 1,058.215/986.755 s, matching the hosted
+aggregate log and leaving essentially the same margins.
+
+The hosted commands in the workflow passed: fixtures (4.698 s), fmt (2.578 s),
+native build (15.245 s), all **1,193 native tests** (878.095 s including
+compilation), native Clippy (10.260 s), production Wasm build (26.924 s), Wasm
+Clippy (11.075 s), all **13 runner regressions** (28.994 s), both complete browser
+shards (1,058.801/987.371 s including supervisor) and aggregate verification.
+Locally, `npm ci --ignore-scripts` and the seven focused inventory, timed-command,
+crash/timeout, aggregate-integrity, corrupted-Wasm, build-binding and publication
+gate regressions passed. The first focused invocation lacked generated Wasm and
+failed the corruption test's setup; restoring `web/pkg` from the hosted artifact
+made all seven pass (1.619 s). No browser installation or redundant full local
+suite was needed for this evidence-only follow-up.
+
 ## Acceptance limits
 
-Local success is not hosted success. A passed hosted PR workflow on the exact
-final publication head (native, Wasm, both shards and aggregate `build`), with
-substantial measured headroom in both shards, remains required before claiming
-#107 complete. Both reviewed hosted runs failed shared validation and did not
-establish substantial margin in scenarios. The review fix improves measured
-local runtime; it has not yet established hosted headroom. Keep #107 open and
-PR #108 draft until hosted validation of this work reduction meets that gate.
-This follow-up is prohibited from pushing or merging; its local commit cannot
-establish a passing workflow on a replacement publication head.
+The implementation now has successful hosted coverage and measured headroom on
+the published head identified above. This evidence-only local commit changes no
+test workload, manifest, timeout, assertion or workflow, but it is a new revision
+and is not itself covered by that run. Keep #107 open and PR #108 draft with
+`Related to #107` until the final published head's normal required CI passes;
+do not substitute this earlier run for its exact-revision gate. This follow-up
+does not push or merge. No additional implementation fix is indicated by this run.
 No live Pages inspection, human confirmation, private firmware or physical
 hardware is required.

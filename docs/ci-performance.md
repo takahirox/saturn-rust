@@ -73,8 +73,9 @@ The current inventory is **74 groups: 33 shared / 41 scenarios**. The baseline
 assignment was 31/43; do not infer today's counts from historical records below.
 The [validation record](validation-issue-107.md) and
 [per-group measurements](ci-performance-issue-107.json) distinguish work reduction,
-scheduling and the still-required exact-final-head hosted PR gate. The reviewed
-head's hosted run failed shared validation; see the follow-up measurements below.
+scheduling and the exact-final-head hosted PR gate. After the failed runs below,
+the implementation passed hosted run 42176210930 on published head `6ce1492`;
+see the completion measurements at the end of this section.
 
 Main run [42160464316](https://github.com/takahirox/saturn-rust/actions/runs/42160464316)
 passed shared in 784.438 s but terminated scenarios at the unchanged 1,200 s
@@ -134,8 +135,27 @@ variation in unchanged groups accounts for the remainder. These are local wall
 times, not hosted headroom, CPU or billed runner savings. A bounded LTO build
 trial showed no consistent useful speedup and was reverted. See the
 [review-fix evidence](validation-issue-107.md#second-hosted-result-and-review-fix)
-for retained coverage, commands, timings and the required hosted validation after
-publication. Keep PR #108 draft with `Related to #107` until that gate passes.
+for retained coverage, commands and timings.
+
+Hosted run [42176210930](https://github.com/takahirox/saturn-rust/actions/runs/42176210930)
+on published head `6ce1492` passed native (1,193 tests), Wasm, all 13 runner
+regressions, **33/33 shared and 41/41 scenario groups**, and aggregate `build`.
+Shared/scenarios took **1,058.177/986.645 s**, leaving **141.823/213.355 s**
+(11.82%/17.78%) below the unchanged 1,200 s limit. Independent downloaded-report
+verification confirmed all 74 groups, including MVOL/large media, the merge
+revision and exact tested-site digest. This establishes observed hosted headroom
+for the implementation; one sample does not establish a variance bound.
+
+Summed complete browser worker elapsed was **2,044.822 s**, separately from
+**2,141 s** summed browser runner intervals and **1,178 s** workflow elapsed.
+The previous 2,315.803 s worker sum was incomplete, and the original complete
+PR baseline was 1,867.390 s; those hosted samples do not establish a total-work
+saving. The controlled local comparison and removed operations above supply
+that evidence. See [hosted completion](validation-issue-107.md#hosted-completion-of-review-fix)
+for group timings, artifact verification and commands. The sub-ten-minute goal
+remains unmet. This evidence-only checkpoint creates a new revision: keep #107
+open and #108 draft with `Related to #107` until normal required CI passes on
+the final published head. No workload or workflow changes were needed here.
 
 ## Issue #93 shard rebalance
 

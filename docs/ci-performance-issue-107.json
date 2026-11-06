@@ -1612,5 +1612,155 @@
       ]
     },
     "publication": {"related_issues": "Related to #107", "pr_draft": true, "pushed": false, "merged": false, "remaining": "Successful hosted native, Wasm, both browser shards and aggregate build on the final publication head, with substantial measured browser margins. Keep #107 open and #108 draft until verified."}
+  },
+  "hosted_acceptance": {
+    "run": 42176210930,
+    "url": "https://github.com/takahirox/saturn-rust/actions/runs/42176210930",
+    "head": "6ce14923ffc4e65cdae51940d2db0f08e2ccb8d8",
+    "checkout_revision": "ad1446192a85883f34476dc5a1464210adae18ec",
+    "status": "completed",
+    "conclusion": "success",
+    "created_at": "2026-11-06T06:43:06Z",
+    "updated_at": "2026-11-06T07:02:44Z",
+    "jobs": [
+      {"id": 127755155365, "name": "wasm", "conclusion": "success", "started_at": "2026-11-06T06:43:08Z", "completed_at": "2026-11-06T06:43:55Z"},
+      {"id": 127755155640, "name": "native", "conclusion": "success", "started_at": "2026-11-06T06:43:09Z", "completed_at": "2026-11-06T06:58:25Z"},
+      {"id": 127755419323, "name": "browser (scenarios)", "conclusion": "success", "started_at": "2026-11-06T06:43:57Z", "completed_at": "2026-11-06T07:01:03Z"},
+      {"id": 127755419357, "name": "browser (shared)", "conclusion": "success", "started_at": "2026-11-06T06:43:57Z", "completed_at": "2026-11-06T07:02:32Z"},
+      {"id": 127761630480, "name": "build", "conclusion": "success", "started_at": "2026-11-06T07:02:34Z", "completed_at": "2026-11-06T07:02:43Z"},
+      {"id": 127761690495, "name": "deploy", "conclusion": "skipped"},
+      {"id": 127761690600, "name": "site", "conclusion": "skipped"}
+    ],
+    "native_tests": 1193,
+    "native_ci": [
+      {"stage": "fixtures", "seconds": 4.698, "exit_code": 0},
+      {"stage": "fmt", "seconds": 2.578, "exit_code": 0},
+      {"stage": "native-build", "seconds": 15.245, "exit_code": 0},
+      {"stage": "native-tests", "seconds": 878.095, "exit_code": 0},
+      {"stage": "native-clippy", "seconds": 10.26, "exit_code": 0}
+    ],
+    "wasm_ci": [
+      {"stage": "wasm-build", "seconds": 26.924, "exit_code": 0},
+      {"stage": "wasm-clippy", "seconds": 11.075, "exit_code": 0}
+    ],
+    "browser": {
+      "shared": {
+        "total": {"shard": "shared", "ms": 1058177, "status": "passed", "groups": 33, "expected": 33},
+        "groups": [
+          {"name": "assets", "ms": 8, "status": "passed"},
+          {"name": "server-and-launch", "ms": 112, "status": "passed"},
+          {"name": "page-init-and-assets", "ms": 183, "status": "passed"},
+          {"name": "ui-bios-and-exceptions", "ms": 33004, "status": "passed"},
+          {"name": "cd-directory-cache-dack", "ms": 1811, "status": "passed"},
+          {"name": "cd-scheduled-directory", "ms": 20717, "status": "passed"},
+          {"name": "cd-filesystem", "ms": 3085, "status": "passed"},
+          {"name": "boot-layout", "ms": 137, "status": "passed"},
+          {"name": "hle-system", "ms": 3773, "status": "passed"},
+          {"name": "hle-backup", "ms": 26064, "status": "passed"},
+          {"name": "clock", "ms": 95968, "status": "passed"},
+          {"name": "display-modes", "ms": 185422, "status": "passed"},
+          {"name": "digital-and-cd-decode", "ms": 19034, "status": "passed"},
+          {"name": "sh7604-divu-smpc-bsc", "ms": 1531, "status": "passed"},
+          {"name": "bsc-waits-share-idle", "ms": 1600, "status": "passed"},
+          {"name": "sh2-timing-dsp-ubc-reset", "ms": 6776, "status": "passed"},
+          {"name": "mode2", "ms": 1589, "status": "passed"},
+          {"name": "cd-drive", "ms": 3066, "status": "passed"},
+          {"name": "raster-and-sprite-rotation", "ms": 5493, "status": "passed"},
+          {"name": "interlace-video-composition-scu", "ms": 26153, "status": "passed"},
+          {"name": "sound-and-memory", "ms": 5511, "status": "passed"},
+          {"name": "intc-sound-io", "ms": 2323, "status": "passed"},
+          {"name": "m68k-families-synthesis", "ms": 23898, "status": "passed"},
+          {"name": "input-dual-sh2-and-media-races", "ms": 2533, "status": "passed"},
+          {"name": "star-collector-ui-backup", "ms": 83582, "status": "passed"},
+          {"name": "prism-courier", "ms": 64807, "status": "passed"},
+          {"name": "missing-build", "ms": 117, "status": "passed"},
+          {"name": "hardware-lab", "ms": 11023, "status": "passed"},
+          {"name": "cdda", "ms": 1069, "status": "passed"},
+          {"name": "hle-player", "ms": 112791, "status": "passed"},
+          {"name": "hardwareBoundaries", "ms": 130966, "status": "passed"},
+          {"name": "chd", "ms": 133820, "status": "passed"},
+          {"name": "cdStream", "ms": 50197, "status": "passed"}
+        ],
+        "ci": [
+          {"stage": "npm-install", "seconds": 0.943, "exit_code": 0},
+          {"stage": "chromium-install", "seconds": 18.695, "exit_code": 0},
+          {"stage": "runner-tests", "seconds": 28.994, "exit_code": 0},
+          {"stage": "browser-shared", "seconds": 1058.801, "exit_code": 0}
+        ],
+        "margin_ms": 141823
+      },
+      "scenarios": {
+        "total": {"shard": "scenarios", "ms": 986645, "status": "passed", "groups": 41, "expected": 41},
+        "groups": [
+          {"name": "vdp2Status", "ms": 1217, "status": "passed"},
+          {"name": "videoTransactions", "ms": 89066, "status": "passed"},
+          {"name": "abusTiming", "ms": 598, "status": "passed"},
+          {"name": "dspArithmetic", "ms": 1055, "status": "passed"},
+          {"name": "busTransactions", "ms": 604, "status": "passed"},
+          {"name": "bBusReads", "ms": 849, "status": "passed"},
+          {"name": "videoWrites", "ms": 4840, "status": "passed"},
+          {"name": "slaveRaster", "ms": 8207, "status": "passed"},
+          {"name": "hleDual", "ms": 40091, "status": "passed"},
+          {"name": "scuFringe", "ms": 2309, "status": "passed"},
+          {"name": "dmacBus", "ms": 582, "status": "passed"},
+          {"name": "sh2BusPipeline", "ms": 1256, "status": "passed"},
+          {"name": "sh2ResetBus", "ms": 1729, "status": "passed"},
+          {"name": "cs0Transfers", "ms": 4743, "status": "passed"},
+          {"name": "spriteShrink", "ms": 21530, "status": "passed"},
+          {"name": "refreshArbitration", "ms": 9473, "status": "passed"},
+          {"name": "interruptEntry", "ms": 1367, "status": "passed"},
+          {"name": "externalStartup", "ms": 26940, "status": "passed"},
+          {"name": "cdRuntime", "ms": 180522, "status": "passed"},
+          {"name": "externalDiscovery", "ms": 143357, "status": "passed"},
+          {"name": "sh2Fetch", "ms": 1930, "status": "passed"},
+          {"name": "sh2Store", "ms": 1463, "status": "passed"},
+          {"name": "sh2Load", "ms": 1066, "status": "passed"},
+          {"name": "sh2Multiplier", "ms": 10414, "status": "passed"},
+          {"name": "cdCopy", "ms": 1764, "status": "passed"},
+          {"name": "dmaStartup", "ms": 7245, "status": "passed"},
+          {"name": "cdRw", "ms": 11554, "status": "passed"},
+          {"name": "cdReports", "ms": 3660, "status": "passed"},
+          {"name": "rotationReload", "ms": 9690, "status": "passed"},
+          {"name": "rotationFetch", "ms": 40961, "status": "passed"},
+          {"name": "rotationHighResolution", "ms": 67929, "status": "passed"},
+          {"name": "mosaic", "ms": 76111, "status": "passed"},
+          {"name": "scspMonitor", "ms": 10677, "status": "passed"},
+          {"name": "m68kReset", "ms": 15521, "status": "passed"},
+          {"name": "scspClock", "ms": 4153, "status": "passed"},
+          {"name": "scspEffects", "ms": 8489, "status": "passed"},
+          {"name": "scspDma", "ms": 4935, "status": "passed"},
+          {"name": "scspPcm", "ms": 21628, "status": "passed"},
+          {"name": "scspCpuMemory", "ms": 7987, "status": "passed"},
+          {"name": "scspMvol", "ms": 122366, "status": "passed"},
+          {"name": "largeMedia", "ms": 14658, "status": "passed"}
+        ],
+        "ci": [
+          {"stage": "npm-install", "seconds": 2.318, "exit_code": 0},
+          {"stage": "chromium-install", "seconds": 19.455, "exit_code": 0},
+          {"stage": "browser-scenarios", "seconds": 987.371, "exit_code": 0}
+        ],
+        "margin_ms": 213355
+      }
+    },
+    "worker_ms_sum": 2044822,
+    "browser_runner_seconds_sum": 2141,
+    "validation_runner_seconds_sum": 3113,
+    "elapsed_seconds": 1178,
+    "artifacts": [
+      {"id": 13484680186, "name": "browser-result-scenarios", "size_in_bytes": 862, "digest": "sha256:85af4e37c363a9024d07986526b7110c78f76be9b000d9c52ece2f49b9625e8a"},
+      {"id": 13483823461, "name": "browser-result-shared", "size_in_bytes": 836, "digest": "sha256:3620adfe1481fb8657338d0711d852799498269c1b29a23301d86d88790c0cb9"},
+      {"id": 13482917816, "name": "web-build", "size_in_bytes": 372300, "digest": "sha256:276c0ae9e4f294bbf70901200c14e527df81ffd52d95279d8c8eef2483c7fdc8"}
+    ],
+    "site_digest": "bb6dd2c59ee77f2b1f85b2bc35e380c3e74948e7e1b470f2a90fa095a38da97a",
+    "wasm_sha256": "26f934490ce711189579129d28a6619aeb8a61959d3c80286fdc72b2b83906c1",
+    "report_ms": {"shared": 1058215, "scenarios": 986755},
+    "verified_group_count": 74,
+    "local_verification": {
+      "command": "GITHUB_SHA=ad1446192a85883f34476dc5a1464210adae18ec node scripts/browser-suite.mjs --verify target/hosted-42176210930/reports",
+      "exit_code": 0,
+      "focused_runner_tests": {"passed": 7, "failed": 0, "skipped": 0},
+      "focused_runner_command": "node --test --test-name-pattern='inventory|timed commands|crashed|aggregate rejects|corrupted real|web build binds|CI gates' scripts/ci-runner.test.mjs"
+    },
+    "limits": "One hosted sample on the published implementation head; elapsed and runner intervals are not CPU or billed time. The new local evidence-only commit is not covered by this run; retain the exact-head CI requirement after publication. No push, merge, retry, timeout or workload change in this follow-up."
   }
 }
