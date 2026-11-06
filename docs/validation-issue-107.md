@@ -1,8 +1,9 @@
 # Issue #107: browser execution cost and scheduling
 
-Related to #107. Exact-final-head hosted PR validation remains a pre-merge gate;
-this worktree-only execution does not publish a branch or PR. No post-merge check
-is required. No emulator, fixture, hardware deadline or expected result changes.
+Related to #107 and PR #108. Exact-final-head hosted PR validation remains a
+pre-merge gate: the reviewed head timed out in hosted shared validation, as
+recorded below. This worktree-only follow-up does not push or merge. No post-merge
+check is required. No emulator, fixture, hardware deadline or expected result changes.
 
 ## Hosted baseline and critical path
 
@@ -244,12 +245,93 @@ inventory/status checks, and relative documentation link checks passed. The
 small implementation changes only shard assignment/selection, two browser CD
 combination loops, runner negative controls and this performance evidence.
 
+## Hosted review follow-up: timeout remains
+
+[PR run 42169608017](https://github.com/takahirox/saturn-rust/actions/runs/42169608017)
+targets the reviewed PR #108 head `98b5a3fc6a952e614f7e385ce1e8fe55e583cc4f`.
+Checkout tested merge revision `814212e65921fa421e1f103edf3d2bea66bcfa34`, combining
+that head with main `4ffcb97c6f028def7da1085ebee21bce9ee6b959`. This is actual
+hosted evidence, separate from the local comparisons above. Wasm build and
+Clippy passed (27.342/11.412 s), as did the hosted runner regressions (28.934 s).
+Native also passed fixtures, fmt, build, tests and Clippy. Its timed stages were
+7.208/1.164/15.120/1,457.522/13.987 s, respectively; all **1,193 native tests**
+passed, with 0 failed/ignored (excluding duplicate `NATIVE_TIMING` annotations).
+The mandatory aggregate
+`build` job then failed with `native=success wasm=success browser=failure`;
+site/deploy skipped. The workflow concluded **failure**. The first validation
+job start through aggregate completion spanned **1,508 s**, and all non-skipped
+validation job intervals summed to **3,958 s**. Neither is CPU time, and neither
+demonstrates the <10-minute overall feedback investigation goal.
+
+| Hosted worker | Elapsed seconds | Passed groups | Margin to 1,200 s |
+| --- | ---: | ---: | ---: |
+| Shared | 1,199.575 (interrupted) | 32/33 | Timed out |
+| Scenarios | 1,123.675 | 41/41 | 76.325 s (6.36%) |
+
+Shared reached the unchanged supervisor limit during `cdStream`, after CHD
+passed in 135.212 s. Streaming's 5.061 s failed teardown record does **not**
+identify an assertion failure: the supervisor reported `timeout=true`, exit
+code 13, and `CI_TIMING` recorded 1,200.273 s with exit code 1. No shared success
+artifact was uploaded. The scenario worker completed MVOL (178.874 s) and large
+media (14.635 s); its command passed in 1,124.435 s. Thus only **73/74** groups
+completed successfully, and the successful scenario shard also lacks substantial
+observed headroom. The review finding remains unresolved.
+
+| Costly group seconds | Reviewed hosted head |
+| --- | ---: |
+| hardwareBoundaries | 313.319 |
+| display-modes | 184.964 |
+| cdRuntime | 179.555 |
+| scspMvol | 178.874 |
+| externalDiscovery | 143.722 |
+| chd | 135.212 |
+| mosaic | 126.713 |
+| hle-player | 112.585 |
+| rotationHighResolution | 101.156 |
+| clock | 98.747 |
+| videoTransactions | 89.352 |
+
+Summed browser worker elapsed was **2,323.250 s, incomplete**. Summed browser
+job start/completion intervals were **2,405 s**, including setup and regressions;
+the two jobs spanned 1,255 s from their common start through shared completion.
+These are distinct from overall workflow elapsed and CPU time. With only
+76.750 s left in the combined 2,400 s worker budgets before completing streaming,
+this sample does not support solving the remaining headroom problem by partition
+alone. Shared's original workload alone consumed about 1,059 s, versus 784 s in main;
+the local before/after savings cannot establish hosted savings under this
+variation. The measured duplicate-work removal remains real, but the current
+implementation has not met the hosted runtime requirement.
+
+The downloaded scenario artifact independently matched all 41 current manifest
+names and passed statuses, the checkout revision above, and the hosted site's
+digest `bb6dd2c59ee77f2b1f85b2bc35e380c3e74948e7e1b470f2a90fa095a38da97a`.
+The downloaded `web-build` ZIP also matched GitHub's SHA-256
+`83b696ce7ac6a16e885dd1a1dcc2242ec4f62d8937210e6cd4760dcf44946d74`.
+`verifyDirectory` rejected the available report directory with
+`Missing/extra shard file`, as required. The worker timings, complete reported
+group inventories (including the interrupted group), costly-operation counters
+and Wasm call counters are retained under `hosted.review-*` in the
+[measurement record](ci-performance-issue-107.json). The worker elapsed above
+uses `BROWSER_TOTAL`; the successful scenario artifact records 1,123.785 s after
+report-integrity work.
+
+The fresh follow-up worktree initially lacked Playwright, so the focused runner
+command could not start. After `npm ci --ignore-scripts` and restoring `web/pkg`
+from the hosted artifact, `node --test --test-name-pattern='inventory|timed
+commands|crashed|aggregate rejects|corrupted real|web build binds|CI gates'
+scripts/ci-runner.test.mjs` passed **7 tests, 0 failed/skipped** (1.436 s).
+No timeout, retry, assertion, test inventory or implementation change was made
+in this follow-up, and no hosted run was retried.
+
 ## Acceptance limits
 
 Local success is not hosted success. A passed hosted PR workflow on the exact
 final publication head (native, Wasm, both shards and aggregate `build`), with
 substantial measured headroom in both shards, remains required before claiming
-#107 complete. This node is explicitly prohibited from pushing, opening a PR,
-commenting or merging, so it cannot create that hosted evidence. Keep #107 open
-until downstream publication/validation supplies it. No live Pages inspection,
-human confirmation, private firmware or physical hardware is required.
+#107 complete. The reviewed hosted run failed shared validation and did not
+establish substantial margin in scenarios. Keep #107 open and PR #108 draft
+until further optimization and successful exact-head hosted validation address
+these measured failures. This follow-up is prohibited from pushing or merging;
+its evidence commit cannot establish a passing workflow on a replacement head.
+No live Pages inspection, human confirmation, private firmware or physical
+hardware is required.

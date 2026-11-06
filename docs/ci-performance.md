@@ -73,7 +73,8 @@ The current inventory is **74 groups: 33 shared / 41 scenarios**. The baseline
 assignment was 31/43; do not infer today's counts from historical records below.
 The [validation record](validation-issue-107.md) and
 [per-group measurements](ci-performance-issue-107.json) distinguish work reduction,
-scheduling and the still-required exact-final-head hosted PR gate.
+scheduling and the still-required exact-final-head hosted PR gate. The reviewed
+head's hosted run failed shared validation; see the follow-up measurements below.
 
 Main run [42160464316](https://github.com/takahirox/saturn-rust/actions/runs/42160464316)
 passed shared in 784.438 s but terminated scenarios at the unchanged 1,200 s
@@ -100,6 +101,18 @@ On the same local Chrome/Wasm build, complete-suite elapsed fell from 511.427 to
 870.209 s (**2.77%**). CD runtime/discovery alone saved 30.630 s; other variation
 offset part of that saving. The new workers took 452.488/417.721 s. These are
 single local samples, not hosted headroom or measured CPU/billed runner savings.
+
+Hosted PR run [42169608017](https://github.com/takahirox/saturn-rust/actions/runs/42169608017)
+on reviewed head `98b5a3f` subsequently timed out shared at 1,199.575 s during
+CD streaming, after CHD passed. Scenarios passed all 41 groups in 1,123.675 s,
+including MVOL and large media, leaving only 76.325 s (6.36%) to the limit.
+Only 73/74 groups completed successfully. Summed worker elapsed was 2,323.250 s
+**incomplete**, while summed browser runner intervals were 2,405 s. These results
+do not establish adequate headroom or a total hosted-work saving. The aggregate
+verifier rejects the missing shared success report. Further optimization and a
+passed exact-head hosted workflow remain required; keep #107 open and PR #108
+draft. See the [hosted follow-up](validation-issue-107.md#hosted-review-follow-up-timeout-remains)
+for costly-group measurements and the remaining acceptance limits.
 
 ## Issue #93 shard rebalance
 

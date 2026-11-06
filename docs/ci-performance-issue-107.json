@@ -1,9 +1,209 @@
 {
   "sources": {
+    "review": {"url": "https://github.com/takahirox/saturn-rust/actions/runs/42169608017", "revision": "98b5a3fc6a952e614f7e385ce1e8fe55e583cc4f", "checkout_revision": "814212e65921fa421e1f103edf3d2bea66bcfa34"},
     "main": {"url": "https://github.com/takahirox/saturn-rust/actions/runs/42160464316", "revision": "4ffcb97c6f028def7da1085ebee21bce9ee6b959"},
     "pr": {"url": "https://github.com/takahirox/saturn-rust/actions/runs/42157801981", "revision": "2f8cd6086d5ce2eeaf6ac84d2abca0993969131e"}
   },
   "hosted": {
+    "review-shared": {
+      "total": {"shard": "shared", "ms": 1199575, "status": "failed", "groups": 33, "expected": 33},
+      "groups": [
+        {"name": "assets", "ms": 9, "status": "passed"},
+        {"name": "server-and-launch", "ms": 124, "status": "passed"},
+        {"name": "page-init-and-assets", "ms": 203, "status": "passed"},
+        {"name": "ui-bios-and-exceptions", "ms": 33600, "status": "passed"},
+        {"name": "cd-directory-cache-dack", "ms": 1862, "status": "passed"},
+        {"name": "cd-scheduled-directory", "ms": 20677, "status": "passed"},
+        {"name": "cd-filesystem", "ms": 3093, "status": "passed"},
+        {"name": "boot-layout", "ms": 152, "status": "passed"},
+        {"name": "hle-system", "ms": 3750, "status": "passed"},
+        {"name": "hle-backup", "ms": 25863, "status": "passed"},
+        {"name": "clock", "ms": 98747, "status": "passed"},
+        {"name": "display-modes", "ms": 184964, "status": "passed"},
+        {"name": "digital-and-cd-decode", "ms": 19631, "status": "passed"},
+        {"name": "sh7604-divu-smpc-bsc", "ms": 1585, "status": "passed"},
+        {"name": "bsc-waits-share-idle", "ms": 1720, "status": "passed"},
+        {"name": "sh2-timing-dsp-ubc-reset", "ms": 6989, "status": "passed"},
+        {"name": "mode2", "ms": 1621, "status": "passed"},
+        {"name": "cd-drive", "ms": 3123, "status": "passed"},
+        {"name": "raster-and-sprite-rotation", "ms": 5668, "status": "passed"},
+        {"name": "interlace-video-composition-scu", "ms": 26672, "status": "passed"},
+        {"name": "sound-and-memory", "ms": 5646, "status": "passed"},
+        {"name": "intc-sound-io", "ms": 2412, "status": "passed"},
+        {"name": "m68k-families-synthesis", "ms": 24643, "status": "passed"},
+        {"name": "input-dual-sh2-and-media-races", "ms": 2651, "status": "passed"},
+        {"name": "star-collector-ui-backup", "ms": 82086, "status": "passed"},
+        {"name": "prism-courier", "ms": 63612, "status": "passed"},
+        {"name": "missing-build", "ms": 134, "status": "passed"},
+        {"name": "hardware-lab", "ms": 10964, "status": "passed"},
+        {"name": "cdda", "ms": 1183, "status": "passed"},
+        {"name": "hle-player", "ms": 112585, "status": "passed"},
+        {"name": "hardwareBoundaries", "ms": 313319, "status": "passed"},
+        {"name": "chd", "ms": 135212, "status": "passed"},
+        {"name": "cdStream", "ms": 5061, "status": "failed"}
+      ],
+      "operations": {
+        "hardwareBoundaries/network-and-init": {"calls": 1, "ms": 35.29826099995989, "browserMs": 0},
+        "hardwareBoundaries/polling-wall": {"calls": 82, "ms": 1234.46302799962, "browserMs": 0},
+        "hardwareBoundaries/evaluate-wall": {"calls": 311, "ms": 305147.205760999, "browserMs": 297743.1000000002},
+        "hardwareBoundaries/assertions-wall": {"calls": 2444, "ms": 12.076504000462592, "browserMs": 0},
+        "chd/network-and-init": {"calls": 1, "ms": 36.01721700001508, "browserMs": 0},
+        "chd/polling-wall": {"calls": 12, "ms": 93.61301800003275, "browserMs": 0},
+        "chd/evaluate-wall": {"calls": 32, "ms": 133864.08543400024, "browserMs": 131594.2999999998},
+        "chd/assertions-wall": {"calls": 124, "ms": 81.37963699782267, "browserMs": 0},
+        "cdStream/network-and-init": {"calls": 1, "ms": 35.714668000116944, "browserMs": 0},
+        "cdStream/polling-wall": {"calls": 1, "ms": 37.62247599987313, "browserMs": 0},
+        "cdStream/evaluate-wall": {"calls": 2, "ms": 4795.031970000127, "browserMs": 0.20000000018626451}
+      },
+      "wasm": [
+        {
+          "group": "hardwareBoundaries",
+          "reset_bios": {"calls": 478, "ms": 211.69999999913853},
+          "run_steps": {"calls": 18912367, "ms": 273978.90000001655}
+        },
+        {
+          "group": "chd",
+          "reset_bios": {"calls": 20, "ms": 12.400000000139698},
+          "mount_disc": {"calls": 24, "ms": 34.699999999953434},
+          "run_steps": {"calls": 2028, "ms": 130883.60000000219},
+          "audio_samples": {"calls": 22, "ms": 2.4999999995343387},
+          "mount_cue": {"calls": 4, "ms": 1.9000000001396984}
+        }
+      ],
+      "ci": [
+        {"stage": "npm-install", "seconds": 1.055, "exit_code": 0},
+        {"stage": "chromium-install", "seconds": 18.369, "exit_code": 0},
+        {"stage": "runner-tests", "seconds": 28.934, "exit_code": 0},
+        {"stage": "browser-shared", "seconds": 1200.273, "exit_code": 1}
+      ]
+    },
+    "review-scenarios": {
+      "total": {"shard": "scenarios", "ms": 1123675, "status": "passed", "groups": 41, "expected": 41},
+      "groups": [
+        {"name": "vdp2Status", "ms": 1205, "status": "passed"},
+        {"name": "videoTransactions", "ms": 89352, "status": "passed"},
+        {"name": "abusTiming", "ms": 586, "status": "passed"},
+        {"name": "dspArithmetic", "ms": 1038, "status": "passed"},
+        {"name": "busTransactions", "ms": 600, "status": "passed"},
+        {"name": "bBusReads", "ms": 846, "status": "passed"},
+        {"name": "videoWrites", "ms": 4859, "status": "passed"},
+        {"name": "slaveRaster", "ms": 8122, "status": "passed"},
+        {"name": "hleDual", "ms": 38828, "status": "passed"},
+        {"name": "scuFringe", "ms": 2294, "status": "passed"},
+        {"name": "dmacBus", "ms": 594, "status": "passed"},
+        {"name": "sh2BusPipeline", "ms": 1303, "status": "passed"},
+        {"name": "sh2ResetBus", "ms": 1709, "status": "passed"},
+        {"name": "cs0Transfers", "ms": 4728, "status": "passed"},
+        {"name": "spriteShrink", "ms": 21629, "status": "passed"},
+        {"name": "refreshArbitration", "ms": 9143, "status": "passed"},
+        {"name": "interruptEntry", "ms": 1362, "status": "passed"},
+        {"name": "externalStartup", "ms": 27200, "status": "passed"},
+        {"name": "cdRuntime", "ms": 179555, "status": "passed"},
+        {"name": "externalDiscovery", "ms": 143722, "status": "passed"},
+        {"name": "sh2Fetch", "ms": 1919, "status": "passed"},
+        {"name": "sh2Store", "ms": 1451, "status": "passed"},
+        {"name": "sh2Load", "ms": 1069, "status": "passed"},
+        {"name": "sh2Multiplier", "ms": 10291, "status": "passed"},
+        {"name": "cdCopy", "ms": 1770, "status": "passed"},
+        {"name": "dmaStartup", "ms": 7331, "status": "passed"},
+        {"name": "cdRw", "ms": 11403, "status": "passed"},
+        {"name": "cdReports", "ms": 3651, "status": "passed"},
+        {"name": "rotationReload", "ms": 9695, "status": "passed"},
+        {"name": "rotationFetch", "ms": 40428, "status": "passed"},
+        {"name": "rotationHighResolution", "ms": 101156, "status": "passed"},
+        {"name": "mosaic", "ms": 126713, "status": "passed"},
+        {"name": "scspMonitor", "ms": 10865, "status": "passed"},
+        {"name": "m68kReset", "ms": 15402, "status": "passed"},
+        {"name": "scspClock", "ms": 4177, "status": "passed"},
+        {"name": "scspEffects", "ms": 8794, "status": "passed"},
+        {"name": "scspDma", "ms": 5029, "status": "passed"},
+        {"name": "scspPcm", "ms": 21587, "status": "passed"},
+        {"name": "scspCpuMemory", "ms": 8006, "status": "passed"},
+        {"name": "scspMvol", "ms": 178874, "status": "passed"},
+        {"name": "largeMedia", "ms": 14635, "status": "passed"}
+      ],
+      "operations": {
+        "videoTransactions/network-and-init": {"calls": 1, "ms": 31.074302999999873, "browserMs": 0},
+        "videoTransactions/polling-wall": {"calls": 1, "ms": 35.93996300000026, "browserMs": 0},
+        "videoTransactions/evaluate-wall": {"calls": 133, "ms": 86263.29019999994, "browserMs": 77752.80000000002},
+        "videoTransactions/assertions-wall": {"calls": 466, "ms": 15.90914400001202, "browserMs": 0},
+        "cdRuntime/network-and-init": {"calls": 1, "ms": 30.77098199998727, "browserMs": 0},
+        "cdRuntime/polling-wall": {"calls": 1, "ms": 32.807440000004135, "browserMs": 0},
+        "cdRuntime/evaluate-wall": {"calls": 21, "ms": 178588.9556210001, "browserMs": 176948.90000000008},
+        "cdRuntime/assertions-wall": {"calls": 321, "ms": 6.024483000044711, "browserMs": 0},
+        "externalDiscovery/network-and-init": {"calls": 1, "ms": 30.221383999974933, "browserMs": 0},
+        "externalDiscovery/polling-wall": {"calls": 1, "ms": 32.14443800004665, "browserMs": 0},
+        "externalDiscovery/evaluate-wall": {"calls": 88, "ms": 141208.4649029997, "browserMs": 135129.10000000003},
+        "externalDiscovery/assertions-wall": {"calls": 598, "ms": 10.045074000430759, "browserMs": 0},
+        "rotationHighResolution/network-and-init": {"calls": 1, "ms": 35.58042499993462, "browserMs": 0},
+        "rotationHighResolution/polling-wall": {"calls": 1, "ms": 34.328332999954, "browserMs": 0},
+        "rotationHighResolution/evaluate-wall": {"calls": 50, "ms": 97567.1117880001, "browserMs": 92072.20000000007},
+        "rotationHighResolution/assertions-wall": {"calls": 249, "ms": 1658.1714609984774, "browserMs": 0},
+        "mosaic/network-and-init": {"calls": 1, "ms": 33.80975200003013, "browserMs": 0},
+        "mosaic/polling-wall": {"calls": 1, "ms": 36.63865900004748, "browserMs": 0},
+        "mosaic/evaluate-wall": {"calls": 62, "ms": 124792.83392999996, "browserMs": 119715.5},
+        "mosaic/assertions-wall": {"calls": 544, "ms": 8.74042599927634, "browserMs": 0},
+        "scspMvol/network-and-init": {"calls": 1, "ms": 33.062373999971896, "browserMs": 0},
+        "scspMvol/polling-wall": {"calls": 1, "ms": 36.0636190000223, "browserMs": 0},
+        "scspMvol/evaluate-wall": {"calls": 53, "ms": 177429.06278700102, "browserMs": 174463.90000000002},
+        "scspMvol/assertions-wall": {"calls": 7068, "ms": 2.432608997565694, "browserMs": 0}
+      },
+      "wasm": [
+        {
+          "group": "videoTransactions",
+          "reset_bios": {"calls": 132, "ms": 53.60000000006403},
+          "run_steps": {"calls": 1406, "ms": 56157.8},
+          "advance_frame": {"calls": 72, "ms": 20609.699999999983},
+          "audio_samples": {"calls": 72, "ms": 2.3999999999869033},
+          "framebuffer": {"calls": 148, "ms": 49.09999999998399}
+        },
+        {
+          "group": "cdRuntime",
+          "reset_bios": {"calls": 23, "ms": 12.899999999935972},
+          "mount_disc": {"calls": 17, "ms": 1.1999999999534339},
+          "run_steps": {"calls": 309939, "ms": 169753.5000000026},
+          "advance_frame": {"calls": 6, "ms": 1145.2999999999884},
+          "audio_samples": {"calls": 6, "ms": 0.7999999999883585},
+          "framebuffer": {"calls": 6, "ms": 1.7000000000698492},
+          "mount_cue": {"calls": 1, "ms": 1.400000000023283}
+        },
+        {
+          "group": "externalDiscovery",
+          "reset_bios": {"calls": 93, "ms": 39.79999999946449},
+          "mount_disc": {"calls": 85, "ms": 0.8999999999650754},
+          "run_steps": {"calls": 4178040, "ms": 131679.70000000548},
+          "mount_cue": {"calls": 1, "ms": 1.400000000023283}
+        },
+        {
+          "group": "rotationHighResolution",
+          "reset_bios": {"calls": 49, "ms": 22.699999999720603},
+          "run_steps": {"calls": 816, "ms": 70243.90000000037},
+          "advance_frame": {"calls": 48, "ms": 19059.40000000014},
+          "audio_samples": {"calls": 48, "ms": 1.8999999999068677},
+          "framebuffer": {"calls": 96, "ms": 33.3000000002794}
+        },
+        {
+          "group": "mosaic",
+          "reset_bios": {"calls": 61, "ms": 28.800000000046566},
+          "run_steps": {"calls": 580, "ms": 46145.89999999956},
+          "advance_frame": {"calls": 240, "ms": 69747.59999999998},
+          "audio_samples": {"calls": 240, "ms": 8.20000000053551},
+          "framebuffer": {"calls": 360, "ms": 97.00000000034925}
+        },
+        {
+          "group": "scspMvol",
+          "reset_bios": {"calls": 47, "ms": 22.500000000931323},
+          "audio_samples": {"calls": 1800, "ms": 33.89999999816064},
+          "mount_cue": {"calls": 46, "ms": 3.199999999604188},
+          "run_steps": {"calls": 1754, "ms": 173694.20000000426}
+        }
+      ],
+      "ci": [
+        {"stage": "npm-install", "seconds": 1.03, "exit_code": 0},
+        {"stage": "chromium-install", "seconds": 17.335, "exit_code": 0},
+        {"stage": "browser-scenarios", "seconds": 1124.435, "exit_code": 0}
+      ]
+    },
     "main-shared": {
       "total": {"shard": "shared", "ms": 784438, "status": "passed", "groups": 31, "expected": 31},
       "groups": [
@@ -752,7 +952,105 @@
       "tests": 1,
       "seconds": 0.53
     },
-    "hosted_final_head": {"status": "pending", "reason": "This worktree-only node must not push or open a PR. Required downstream before Issue #107 closure."},
+    "hosted_final_head": {"status": "pending", "reason": "Reviewed-head run 42169608017 failed shared validation at the 1,200 s cap; scenarios passed with only 76.325 s margin. Further optimization and successful final-head hosted validation remain required. This follow-up must not push or merge."},
+    "hosted_reviewed_head": {
+      "run_id": 42169608017,
+      "head_sha": "98b5a3fc6a952e614f7e385ce1e8fe55e583cc4f",
+      "checkout_revision": "814212e65921fa421e1f103edf3d2bea66bcfa34",
+      "status": "failed",
+      "jobs": [
+        {
+          "id": 127734071373,
+          "name": "wasm",
+          "conclusion": "success"
+        },
+        {
+          "id": 127734071565,
+          "name": "native",
+          "conclusion": "success"
+        },
+        {
+          "id": 127734328184,
+          "name": "browser (scenarios)",
+          "conclusion": "success"
+        },
+        {
+          "id": 127734328218,
+          "name": "browser (shared)",
+          "conclusion": "failure"
+        },
+        {
+          "id": 127741896776,
+          "name": "build",
+          "conclusion": "failure"
+        },
+        {
+          "id": 127741932188,
+          "name": "site",
+          "conclusion": "skipped"
+        },
+        {
+          "id": 127741933266,
+          "name": "deploy",
+          "conclusion": "skipped"
+        }
+      ],
+      "native_ci": [
+        {
+          "stage": "fixtures",
+          "seconds": 7.208,
+          "exit_code": 0
+        },
+        {
+          "stage": "fmt",
+          "seconds": 1.164,
+          "exit_code": 0
+        },
+        {
+          "stage": "native-build",
+          "seconds": 15.12,
+          "exit_code": 0
+        },
+        {
+          "stage": "native-tests",
+          "seconds": 1457.522,
+          "exit_code": 0
+        },
+        {
+          "stage": "native-clippy",
+          "seconds": 13.987,
+          "exit_code": 0
+        }
+      ],
+      "wasm_ci": [
+        {
+          "stage": "wasm-build",
+          "seconds": 27.342,
+          "exit_code": 0
+        },
+        {
+          "stage": "wasm-clippy",
+          "seconds": 11.412,
+          "exit_code": 0
+        }
+      ],
+      "scenario_artifact": {
+        "id": 13481815651,
+        "revision": "814212e65921fa421e1f103edf3d2bea66bcfa34",
+        "siteDigest": "bb6dd2c59ee77f2b1f85b2bc35e380c3e74948e7e1b470f2a90fa095a38da97a",
+        "status": "passed",
+        "groups": 41,
+        "ms": 1123785
+      },
+      "successful_groups": 73,
+      "shared_success_artifact": false,
+      "summed_worker_ms_incomplete": 2323250,
+      "summed_browser_job_seconds": 2405,
+      "validation_span_seconds": 1508,
+      "summed_validation_job_seconds": 3958,
+      "remaining_requirement": "Substantial headroom in both shards and successful native, Wasm, shared, scenarios and aggregate build jobs on the final published head."
+    },
+    "review_followup_runner": {"command": "node --test --test-name-pattern='inventory|timed commands|crashed|aggregate rejects|corrupted real|web build binds|CI gates' scripts/ci-runner.test.mjs", "status": "passed", "tests": 7, "seconds": 1.436},
     "native_tests": {
       "command": "python3 scripts/ci-time.py native-tests cargo test --locked",
       "status": "passed",
