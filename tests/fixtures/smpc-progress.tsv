@@ -5,6 +5,8 @@
 smpc-byte-audit	2000000	24027263	675272	0
 smpc-timed-peripherals	500000	5559242	130511	6
 smpc-reset-observer	100000	1040642	20375	0
+smpc-sf-direct	250000	2777186	65446	0
+smpc-sf-activity	250000	2082131	152304	0
 # Faulting guests have no completed-turn budget; compare their stopping point.
 smpc-exception-stack	0	66	0	0
 smpc-exception-vector	0	133	4	0

@@ -561,6 +561,10 @@ impl Smpc {
                 return Err(self.access_fault(address, 1, Some(u32::from(value)), Rejection::Busy));
             }
             0x1F if !self.sf => {
+                // ST-169 §§1.2/2.2 require software to claim SF before issue
+                // to prevent double issue. They do not specify the electrical
+                // effect of COMREG with SF=0. This is a host protocol diagnostic,
+                // not a measured hardware gate or an SH-2 exception. See #105.
                 return Err(self.access_fault(
                     address,
                     1,
