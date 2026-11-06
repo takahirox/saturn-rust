@@ -113,7 +113,11 @@ export async function cdRuntime(page) {
       success(await run(image,{draw:true}),layout,assets(layout));
       success(await run(image,{restart:true}),layout,assets(layout));
       let reference;
-      for(const chunk of [1,3,17,10000]) {
+      // Native runtime_chunks_and_passive_fifo_and_response_inspection_are_identical
+      // keeps 1/3/17/10000 on both layouts. Wasm retains odd small/bulk chunks
+      // and inspected/uninspected execution at the original 2,600,000 steps.
+      // externalDiscovery additionally covers Wasm chunk sizes 1 and 3.
+      for(const chunk of [17,10000]) {
         const got=await run(image,{chunk,inspect:chunk!==10000,fixed:2600000});success(got,layout,assets(layout));
         if(reference)assert.deepEqual(got,reference,"chunking and passive inspection");reference=got;
       }

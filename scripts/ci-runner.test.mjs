@@ -160,8 +160,9 @@ test("complete-suite inventory covers all original groups and missing groups fai
   assert.deepEqual([...scenarioRegistry, "largeMedia"].sort(), [...scenarioGroups].sort());
   assert.equal((source.match(/if \(includeScenarios\) await timings.measure/g) ?? []).length, 44);
   assert.deepEqual(selection([]).groups, groups);
-  assert.equal(shards.shared.length, 31);
-  assert.equal(shards.scenarios.length, 43);
+  assert.equal(shards.shared.length, 33);
+  assert.equal(shards.scenarios.length, 41);
+  assert.deepEqual(sharedScenarios, ["hardwareBoundaries", "chd", "cdStream"]);
   for (const name of sharedScenarios) {
     assert.deepEqual(selection([`--group=${name}`]), { mode: "scenarios", groups: [name], report: undefined });
     assert(!shards.scenarios.includes(name), "Moved modules must run only once in the complete suite");
@@ -175,8 +176,8 @@ test("complete-suite inventory covers all original groups and missing groups fai
   const measuredNames = [...source.matchAll(/timings\.measure\("([^"]+)"/g)].map(m => m[1]);
   assert.deepEqual(timedCalls.map(m => m[1]), measuredNames, "Every timed module must invoke its test");
   for (const match of timedCalls) assert.equal(match[1], match[2]);
-  // Baseline has 598 direct assertion call sites in the integrated runner.
-  // Scenario modules themselves are unchanged by this optimization.
+  // Preserve the integrated trace's baseline assertion inventory. Independent
+  // modules additionally have their own guest/native and full-browser checks.
   assert(source.match(/\bassert(?:\.\w+)?\(/g).length >= 598);
   assert(source.indexOf("timings.assertComplete();") < source.indexOf("timings.success = true;"));
   const timings = new BrowserTimings();
@@ -288,13 +289,25 @@ test("aggregate rejects missing/duplicate groups or shards, failed assertions, s
   bad(r => { r[0].groups[0].status = "failed"; });
   bad(r => { r[0].revision = "stale"; });
   bad(r => { r[1].siteDigest = "stale"; });
-  // A report pair from the previous split must not satisfy the revised gate.
+  // Retain the earlier CD runtime/discovery assignment negative control.
   bad(r => {
     for (const name of ["cdRuntime", "externalDiscovery"]) {
       const at = r[1].groups.findIndex(group => group.name === name);
       r[0].groups.splice(-1, 0, ...r[1].groups.splice(at, 1));
     }
   });
+  // Even a complete, successful pair from the old 31/43 split must fail.
+  bad(r => {
+    for (const name of ["chd", "cdStream"]) {
+      const at = r[0].groups.findIndex(group => group.name === name);
+      r[1].groups.push(...r[0].groups.splice(at, 1));
+    }
+  });
+  for (const name of ["chd", "cdStream", "scspMvol", "largeMedia"]) {
+    const shard = shards.shared.includes(name) ? 0 : 1;
+    bad(r => { r[shard].groups = r[shard].groups.filter(group => group.name !== name); });
+    bad(r => { r[shard].groups.find(group => group.name === name).status = "failed"; });
+  }
   const directory = await mkdtemp(join(tmpdir(), "saturn-aggregate-"));
   const verify = () => spawnSync(process.execPath, ["scripts/browser-suite.mjs", "--verify", directory], { encoding: "utf8" });
   try {

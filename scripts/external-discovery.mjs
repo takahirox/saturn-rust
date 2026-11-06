@@ -102,7 +102,12 @@ export async function externalDiscovery(page) {
     const image=images[i];
     for(const restart of [false,true])success(await run(image,disc,{restart}),disc,image);
     let reference;
-    for(const chunk of [1,3,17,10000]) for(const inspect of [false,true]) {
+    // Native startup_records_are_independent_of_step_chunks_and_passive_cd_inspection
+    // retains the full chunk x inspection matrix for all three layouts. Here
+    // keep every Wasm chunk, with passive reads on the small chunks versus an
+    // uninspected bulk run; compare the same complete, fixed-clock snapshots.
+    for(const chunk of [1,3,17,10000]) {
+      const inspect=chunk!==10000;
       const got=await run(image,disc,{chunk,inspect,fixedSteps:1000000});success(got,disc,image);
       if(reference)assert.deepEqual(got,reference,"chunk/inspection must not change state");reference=got;
     }

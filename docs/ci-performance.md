@@ -67,6 +67,40 @@ Changes to triggers, selection, caches, timeouts, worker counts or tests require
 separately scoped implementation and applicable validation. These principles add
 no benchmark, hardware, human-approval or post-merge gate.
 
+## Issue #107 execution cost and shard balance
+
+The current inventory is **74 groups: 33 shared / 41 scenarios**. The baseline
+assignment was 31/43; do not infer today's counts from historical records below.
+The [validation record](validation-issue-107.md) and
+[per-group measurements](ci-performance-issue-107.json) distinguish work reduction,
+scheduling and the still-required exact-final-head hosted PR gate.
+
+Main run [42160464316](https://github.com/takahirox/saturn-rust/actions/runs/42160464316)
+passed shared in 784.438 s but terminated scenarios at the unchanged 1,200 s
+limit during MVOL, before large media. This is timeout evidence, not an identified
+assertion regression. The earlier passing PR took 813.726/1,053.664 s, with large
+per-group hosted variation. Shared had observed capacity for independent CHD and
+CD streaming (132.134 + 48.175 s in main); both now run in fresh contexts after
+the original ordered UI trace and hardware-boundary module.
+
+Separately, CD runtime and firmware discovery no longer replay redundant native
+chunk/inspection combinations in the browser. The existing native tests retain
+their full matrices. Wasm retains every layout and negative control, representative
+tiny/odd/bulk chunks, passive reads, exact fixed-clock snapshots and production
+Canvas checks. This removes 22.4 million duplicate emulated steps without changing
+any surviving guest's clock budget, expected result, hardware boundary or assertion.
+CHD codecs, all video/field combinations, repeated cold boots and MVOL/AudioWorklet
+cases remain. The 74-group registry, serial/targeted commands, two-worker cap,
+timeouts, failure/cancellation semantics and revision/artifact/publication gates
+are unchanged. See the record for measured results and outstanding hosted evidence;
+local timing is not a hosted CI pass.
+
+On the same local Chrome/Wasm build, complete-suite elapsed fell from 511.427 to
+453.747 s (**11.28%**), while summed browser worker elapsed fell from 894.995 to
+870.209 s (**2.77%**). CD runtime/discovery alone saved 30.630 s; other variation
+offset part of that saving. The new workers took 452.488/417.721 s. These are
+single local samples, not hosted headroom or measured CPU/billed runner savings.
+
 ## Issue #93 shard rebalance
 
 The expanded scenario shard in [run 41378197649](https://github.com/takahirox/saturn-rust/actions/runs/41378197649)
@@ -103,9 +137,9 @@ for the complete rerun and its limits.
 ## Issue #61 performance record
 
 The timing measurements below are the historical Issue #61 inventory. The
-current registry has 74 browser groups and 103 fixture/media builders, retaining
+current registry has 74 browser groups and 104 fixture/media builders, retaining
 the required suite coverage and publication gates. See
-[Issue #93 validation](validation-issue-93.md) for the latest executed checks;
+[Issue #107 validation](validation-issue-107.md) for the current executed checks;
 the older counts and measurements below describe their historical checkpoints.
 
 
@@ -181,7 +215,7 @@ concurrently invoking callbacks against the original shared page.
   Large-media tests retain their original private contexts and standard-size
   inputs. No two callbacks use the same page concurrently.
 - The default full command launches those two independent Node/Chromium/server
-  process trees and verifies the combined inventory. `--serial` runs all 65 current groups
+  process trees and verifies the combined inventory. `--serial` ran all 65 then-current groups
   in the original single-process order. Individual modules and either shard have
   deterministic reproduction commands; dependent UI groups remain together.
 - `wasm` uploads one immutable `web-build`. Each CI browser job downloads it,
