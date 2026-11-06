@@ -126,11 +126,12 @@ export async function playUi(browser, url) {
     assert(Number((await state()).frames) > 0);
     assert.equal(await page.locator("#disc").evaluate(input => input.files.length), 0);
     assert.equal(await page.locator("#disc-selection").textContent(), "No disc selected.");
-    // #105/#109: BIOS-only Start/Restart executes both documented pre-write
-    // and idle SF=0 firmware, checking real reset/sound/CD results offline.
+    // #105/#109/#111: BIOS-only Start/Restart executes documented pre-write,
+    // idle SF=0 and legacy DSTP firmware, checking actual guest results offline.
     for (const [name, base] of [
       ["smpc-sf-direct", 0x0601a000], ["smpc-sf-activity", 0x0601a000],
       ["smpc-idle-zero", 0x0601b000], ["smpc-idle-prewrite", 0x0601b000],
+      ["scu-dstp-access", 0x0600d000],
     ]) {
       const expected = (await readFile(`tests/fixtures/${name}.tsv`, "utf8")).trim().split(/\r?\n/).map(v => parseInt(v,16));
       await page.locator("#bios").setInputFiles({...firmware,buffer:await rom(name)});

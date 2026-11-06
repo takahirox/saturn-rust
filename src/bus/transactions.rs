@@ -16,6 +16,9 @@ mod cs0_tests;
 #[path = "dma_startup_tests.rs"]
 mod dma_startup_tests;
 #[cfg(test)]
+#[path = "dstp_tests.rs"]
+mod dstp_tests;
+#[cfg(test)]
 #[path = "fetch_pipeline_tests.rs"]
 mod fetch_pipeline_tests;
 #[cfg(test)]
@@ -106,6 +109,7 @@ pub(super) struct Journal {
     pending_write: Option<VecDeque<Transfer>>,
     write_accepted: bool,
     write_context: (u32, Option<u8>),
+    current_operation: Option<Operation>,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Owner {
@@ -174,6 +178,7 @@ impl ScheduledMemory<'_> {
                 return result;
             }
             journal.beat_cursor = 0;
+            journal.current_operation = Some(op);
         }
         let result = match op {
             Operation::ClearNmi => {
@@ -1410,6 +1415,61 @@ impl Bus {
                 _ => self.read::<4>(t.address).map(u32::from_be_bytes),
             }
         };
+        // Observe only completed physical cycles, never instruction replay or
+        // debugger peeks. No memory is read to recover PC, operand or value.
+        if Bus::physical(t.address) == SCU + 0x60
+            && let Some(trace) = &mut self.dstp_trace
+            && trace.len() < 64
+        {
+            let (source, pc, operand, kind) = match active.owner {
+                Owner::Cpu(p) => {
+                    let journal = self.transactions.journals[p as usize].borrow();
+                    let operand = match journal.current_operation {
+                        Some(Operation::Read(a, w, _, _)) => Some((a, w)),
+                        Some(Operation::Write(a, w, _) | Operation::StackWrite(a, w, _)) => {
+                            Some((a, w))
+                        }
+                        _ => None,
+                    };
+                    (
+                        format!("{p:?} SH-2"),
+                        Some(journal.write_context.0),
+                        operand,
+                        if t.write.is_none() && (!t.first || !t.last) {
+                            "cache line-fill"
+                        } else {
+                            "direct"
+                        },
+                    )
+                }
+                Owner::WriteBuffer(p, false) => (
+                    format!("{p:?} SH-2"),
+                    Some(
+                        self.transactions.writes[p as usize]
+                            .as_ref()
+                            .unwrap()
+                            .context
+                            .0,
+                    ),
+                    Some((t.address, t.width)),
+                    "buffered write",
+                ),
+                Owner::Dmac(p) | Owner::WriteBuffer(p, true) => {
+                    (format!("{p:?} SH-2 DMAC"), None, None, "DMA")
+                }
+                Owner::Scu => ("SCU DMA/DSP".to_owned(), None, None, "DMA"),
+                Owner::ResetDrain(p) => (
+                    format!("{p:?} reset drain"),
+                    Some(self.transactions.reset_context[p as usize].0),
+                    None,
+                    "reset drain",
+                ),
+                _ => unreachable!(),
+            };
+            trace.push(format!("clock={} source={source} PC={pc:08X?} operand={operand:08X?} {kind} {} address=0x{:08X} physical=0x{:08X} width={} value={:08X?} result={result:08X?}",
+                self.main_clocks, if t.write.is_some() { "write" } else { "read" },
+                t.address, Bus::physical(t.address), t.width, t.write));
+        }
         if let Owner::ResetDrain(processor) = active.owner {
             if let Ok(value) = result
                 && !t.bridge_read
