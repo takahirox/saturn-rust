@@ -178,14 +178,19 @@ fn dstp_is_not_a_general_mmio_or_alignment_bypass() {
             view.write8(saturn_rust::cache::CCR, 0).unwrap();
         }
     }
-    for address in [0x05fe0064, 0x05fe007c, 0x05fe00ac] {
+    for address in [0x05fe0064, 0x05fe0078, 0x05fe00ac] {
         assert!(b.read32(address).is_err());
         assert!(b.write32(address, 0).is_err());
     }
+    assert_eq!(b.read32(0x05fe007c), Ok(0)); // Separate DSTA activity subset.
+    assert!(b.write32(0x05fe007c, 0).is_err());
+    assert!(b.read16(0x05fe007c).is_err());
+    assert!(b.read8(0x05fe007c).is_err());
     assert!(b.read32(0x05fe0008).is_err()); // write-only DMA count
     assert!(b.read32(0x05fe00a0).is_err()); // write-only IMS
     assert!(b.write32(0x05fe00c8, 4).is_err()); // read-only version
-    assert!(b.write32(0x05fe00a4, 0).is_err()); // prohibited IST write
+    b.write32(0x05fe00a4, 0).unwrap(); // Separate zero-clear IST contract.
+    assert_eq!(b.read32(0x05fe00a4), Ok(0));
     assert!(matches!(
         b.read32(0x08000000),
         Err(BusError::Unmapped { .. })

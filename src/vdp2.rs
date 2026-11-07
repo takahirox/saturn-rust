@@ -100,9 +100,9 @@ impl Vdp2 {
     }
     fn supported(offset: usize) -> bool {
         matches!(offset,
-            0 | 2 | 4 | 8 | 0xA | 0xE | 0x10..=0x1E | 0x20..=0x2E | 0x30..=0x6E |
+            0 | 2 | 4 | 6 | 8 | 0xA | 0xC | 0xE | 0x10..=0x1E | 0x20..=0x2E | 0x30..=0x6E |
             0x70..=0xBE | 0xC0..=0xDE | 0xE0 | 0xE2 |
-            0xE4..=0xFC | 0x100..=0x11E
+            0xE4..=0xFE | 0x100..=0x11E
         ) && offset & 1 == 0
     }
     fn word(&self, offset: usize) -> u16 {
@@ -133,6 +133,9 @@ impl Vdp2 {
                 | u16::from(self.pal));
         }
         match offset {
+            // Base 4 Mbit configuration, version zero (ST-058 §3.1).
+            // Reserved readback is a deterministic policy, not open-bus evidence.
+            6 | 0xC | 0xFE => return Ok(0),
             2 if self.word(2) & 0x200 == 0 => self.latched_counters.set(self.live_counters),
             8 => return Ok(self.latched_counters.get().0),
             0xA => return Ok(self.latched_counters.get().1),
@@ -157,13 +160,17 @@ impl Vdp2 {
     }
     pub(crate) fn validate_write(address: u32) -> Result<(), BusError> {
         let offset = (address - VDP2) as usize;
-        if matches!(offset, 4 | 8 | 0xA) || !Self::supported(offset) {
+        if !Self::supported(offset) {
             return Err(BusError::UnsupportedDevice { address, width: 2 });
         }
         Ok(())
     }
     pub(crate) fn validate_value(address: u32, value: u16) -> Result<(), BusError> {
         Self::validate_write(address)?;
+        if address == VDP2 + 6 && value & 0x8000 != 0 {
+            // The renderer and bus implement 4 Mbit VRAM only.
+            return Err(BusError::UnsupportedDevice { address, width: 2 });
+        }
         if (VDP2 + 0x10..=VDP2 + 0x1E).contains(&address)
             && (0..4).any(|n| (8..12).contains(&(value >> (n * 4) & 15)))
         {
@@ -174,6 +181,11 @@ impl Vdp2 {
     pub fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
         Self::validate_value(address, value)?;
         let offset = (address - VDP2) as usize;
+        // Initialization sweeps may touch read-only and these two reserved
+        // words. Ignore without reading TVSTAT or changing counter/latch state.
+        if matches!(offset, 4 | 6 | 8 | 0xA | 0xC | 0xFE) {
+            return Ok(());
+        }
         self.registers[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
         if offset <= 0xA6 {
             self.reconfigure_display();

@@ -78,7 +78,7 @@ python3 homebrew/star-collector/build.py
 sh scripts/check-fixtures.sh
 ```
 
-This is the complete 105-command CI reproducibility registry, including all three
+This is the complete 106-command CI reproducibility registry, including all three
 homebrew discs, HLE code, hardware guests and standard-size media. Individual
 `python3 ... --check` commands in that script remain usable for focused checks.
 
@@ -545,3 +545,12 @@ primary-derived FRT timestamps and saved PC/SR, return on both CPUs, and exercis
 master SCU DMA vector acquisition with timing/source and omitted-trigger controls.
 See the [phase contract](sh2-interrupt-entry.md) and
 [validation record](validation-issue-81.md).
+
+
+The original BIOS-initialization/no-media software-startup fixture is reproduced
+by `python3 tests/fixtures/build_bios_initialization.py --check` and runs inside
+the required `externalStartup` browser group. It executes shared MMIO, DMA, DSP,
+68000 clear-loop acknowledgement and CD WAIT/periodic NODISC checks with identical
+native/Wasm bytes. See the [contract](bios-startup.md) and
+[validation record](validation-issue-113.md). The registry has 106 commands;
+the complete browser inventory remains 74 groups.

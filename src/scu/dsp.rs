@@ -387,13 +387,16 @@ impl Dsp {
                     increments[(xcode & 3) as usize] |= xcode & 4 != 0;
                 }
                 match xmode & 3 {
-                    0 => (),
+                    // P write-enable is clear in 001/101. Treat the unused
+                    // selector as inactive, preserving every parallel effect.
+                    // Compatibility inference, not a documented normal encoding.
+                    0 | 1 => (),
                     2 => self.p = multiplier,
                     3 => {
                         self.p = sx48(xdata);
                         increments[(xcode & 3) as usize] |= xcode & 4 != 0;
                     }
-                    _ => return Err(illegal()),
+                    _ => unreachable!(),
                 }
                 let ymode = (instruction >> 17) & 7;
                 if ymode & 4 != 0 {

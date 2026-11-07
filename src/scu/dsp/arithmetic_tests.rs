@@ -204,3 +204,23 @@ fn running_control_reads_clear_v_without_changing_other_alu_flags() {
     assert!(!d.step().unwrap());
     assert_eq!(d.control() & 0x7f0000, 0x400000);
 }
+
+#[test]
+fn inactive_p_selector_preserves_parallel_buses_and_dma_conflicts() {
+    for xmode in [1, 5] {
+        let mut d = program(
+            20,
+            3,
+            &[0x10000000 | xmode << 23 | 4 << 20 | 2 << 17 | 0x3109],
+        );
+        d.data[0][0] = 7;
+        d.rx = 11;
+        d.step().unwrap();
+        assert_eq!(d.p, 3);
+        assert_eq!(d.a, 23);
+        assert_eq!(d.data[1][0], 23);
+        assert_eq!(d.ct[0], u8::from(xmode == 5));
+        assert_eq!(d.ct[1], 1);
+        assert_eq!(d.rx, if xmode == 5 { 7 } else { 11 });
+    }
+}

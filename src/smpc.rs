@@ -187,6 +187,10 @@ pub struct Smpc {
     sf: bool,
     command: u8,
     pending: Option<(u8, u32)>,
+    // One parameterless category-B command behind INTBACK status only.
+    // Explicit compatibility mailbox; ST-169 prohibits software double issue
+    // but does not specify the electrical outcome. See bios-startup.md.
+    deferred_control: Option<u8>,
     input: [u8; 7],
     output: [u8; 32],
     status: u8,
@@ -219,6 +223,7 @@ impl Default for Smpc {
             sf: false,
             command: 0,
             pending: None,
+            deferred_control: None,
             input: [0; 7],
             output: [0; 32],
             status: 0,
@@ -387,8 +392,27 @@ impl Smpc {
             }
             _ => (),
         }
+        if command == 0x10
+            && let Some(control) = self.deferred_control.take()
+        {
+            // Publish the real status/IRQ first, then abandon only the unused
+            // peripheral continuation. A fresh command uses its full duration.
+            self.await_continue = false;
+            self.status &= !0x20;
+            self.command = control;
+            self.output[31] = control;
+            self.sf = true;
+            self.pending = Some((control, Self::control_clocks(control).unwrap()));
+        }
         self.battery.advance(clocks - elapsed);
         Some(command)
+    }
+    fn control_clocks(command: u8) -> Option<u32> {
+        match command {
+            2 | 3 | 6 | 7 | 0x19 | 0x1A => Some(Self::CPU_COMMAND_CLOCKS),
+            8 | 9 => Some(1075),
+            _ => None,
+        }
     }
     /// External peripheral TH pin (port bit6). ST-169 §1.2/table1.5 routes
     /// a falling input edge to the PAD IRQ and VDP2 latch only with EXLE=1.
@@ -557,13 +581,23 @@ impl Smpc {
                     Rejection::ProhibitedIssuer,
                 ));
             }
+            0x1F if self.pending.is_some_and(|(command, _)| command == 0x10)
+                && !self.peripheral_phase
+                && !self.await_continue
+                && !self.await_vblank
+                && self.deferred_control.is_none()
+                && Self::control_clocks(value).is_some() =>
+            {
+                self.deferred_control = Some(value);
+            }
             0x1F if self.busy() => {
                 return Err(self.access_fault(address, 1, Some(u32::from(value)), Rejection::Busy));
             }
             // ST-169 documents SF-before-COMREG for software synchronization.
             // Idle SF=0 acceptance is an emulator compatibility policy (#109),
             // not measured electrical behavior. SF is independent of internal
-            // work: never set it implicitly here, and reject actual overlap above.
+            // work: never set it implicitly here. Only the bounded status mailbox above
+            // accepts overlap; other busy writes retain diagnostics.
             0x1F => {
                 let clocks = match value {
                     0 | 2 | 3 | 6 | 7 | 0x18 | 0x19 | 0x1A => Self::CPU_COMMAND_CLOCKS,

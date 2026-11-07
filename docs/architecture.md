@@ -476,7 +476,8 @@ U/O/P (A/B/C), Right Shift (Start); both pads release on focus loss, pause, sett
 and view navigation. COMREG supports SSHON=02, SSHOFF=03 and NMIREQ=18. Guest software sets SF
 to one before issuing a command; OREG31 reports it immediately and SF clears at
 completion, after at least 807 reference clocks (minimum 30 µs at 26.8741 MHz,
-rounded to a turn). Busy command overwrite and unsupported commands fail.
+rounded to a turn). Unsupported commands and busy overwrites fail except for
+the explicitly bounded [INTBACK status/control compatibility mailbox](bios-startup.md#smpc-state-contract).
 INTBACK now implements status, continue/break, VBlank-timed peripheral collection
 and SCU SMPC IRQ. SETTIME/SETSMEM provide deterministic BCD Gregorian time and
 four-byte battery storage, retained across volatile resets. SNDON/OFF control the
@@ -899,3 +900,20 @@ This evidence does not verify full cross-chip arbitration, arbitrary
 asynchronous CDC/GFS calls, real Sega BIOS/SDK ABI or commercial games. Physical
 controller timing, complete connector lifetime and the wider hardware scope
 remain pending; no host file API or HLE service is installed by ExternalBios.
+
+
+## Shared initialization and no-media CD startup (Issue #113)
+
+The [source contract](bios-startup.md) scopes IST zero-clear stores, legacy DSTA
+activity readback, base VRSIZE and inert VDP2 initialization words, inactive SCU
+DSP P selectors, SCSP unused-word sweeps and the INTBACK status/control mailbox.
+Compatibility policies are distinguished from documented register semantics and
+unmeasured electrical behavior. No firmware identity controls these paths.
+
+TOC/session queries in OPEN/NODISC now WAIT with the valid drive report, without
+starting a transfer. The original SH-2/SCU-DSP/68000 reset-vector guest executes
+shared initialization, software CD reset and two released periodic NODISC reports
+in native Machine and production browser Wasm. Its sound acknowledgement and
+visible DSP-derived color are guest-computed. See the [validation record](validation-issue-113.md)
+for before/after evidence, exact checks and limits. The private BIOS's CD check,
+stock-menu compatibility and complete hardware conformance remain unverified.

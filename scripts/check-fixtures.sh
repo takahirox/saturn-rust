@@ -112,3 +112,5 @@ python3 tests/fixtures/build_external_startup.py --check
 python3 tests/fixtures/build_cd_runtime.py --check
 python3 tests/fixtures/build_cd_stream.py --check
 python3 tests/fixtures/build_chd.py --check
+
+python3 tests/fixtures/build_bios_initialization.py --check

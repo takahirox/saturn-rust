@@ -147,7 +147,8 @@ def build():
     s += wait(R+0x208,'cd_irq')
     s += put16(0x2589000C,0)+store(0x25FE00A0,0xB77F)
     s += command(0x0200)
-    s += 'load 0x25890018,r1\nmov.w @r1,r0\nextu.w r0,r0\nload 0xff00,r2\ncmp/eq r2,r0\nbf medium_present\nload no_media,r0\njmp @r0\nnop\nmedium_present:\n'
+    # TOC WAIT retains NODISC (ST-162 1.5); REJECT is not a media detector.
+    s += 'load 0x25890018,r1\nmov.w @r1,r0\nextu.w r0,r0\nload 0x87ff,r2\ncmp/eq r2,r0\nbf medium_present\nload no_media,r0\njmp @r0\nnop\nmedium_present:\n'
     s += observe(0x25818000,R+0x214)
     s += 'load 200,r3\nload 0x25818000,r1\nread_toc:\nmov.w @r1,r0\ndt r3\nbf read_toc\n'
     s += observe(0x25818000,R+0x2F8)

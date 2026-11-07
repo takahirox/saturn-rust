@@ -38,7 +38,7 @@ test("bulk transport round trips every number and preserves special values", () 
 });
 
 test("real Chromium callbacks retain all results, state, imports and failures in both modes", async () => {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(process.env.BROWSER_CHANNEL ? { channel: process.env.BROWSER_CHANNEL } : {});
   try {
     const results = [];
     for (const compact of [false, true, true, false]) {
@@ -86,7 +86,7 @@ test("shared versus fresh contexts retain complete guest clock, DMAC, Canvas and
   await once(server, "listening");
   let browser;
   try {
-    browser = await chromium.launch();
+    browser = await chromium.launch(process.env.BROWSER_CHANNEL ? { channel: process.env.BROWSER_CHANNEL } : {});
     const errors = [], contexts = [];
     const fresh = async () => {
       const context = await browser.newContext(); contexts.push(context);
@@ -423,7 +423,7 @@ test("CI gates publication on both suites and retains the actually tested assets
   assert.equal(JSON.parse(await readFile("package.json", "utf8")).scripts["test:browser"], "node scripts/browser-suite.mjs");
   // Exact registry: moving commands must not lose fixtures/options.
   const fixtures = (await readFile("scripts/check-fixtures.sh", "utf8")).split("\n").filter(s => s.startsWith("python3 "));
-  assert.equal(fixtures.length, 105);
+  assert.equal(fixtures.length, 106);
   assert(fixtures.includes("python3 tests/fixtures/build_scu_dstp.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_smpc_transactions.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_interrupt_entry.py --check"));
@@ -431,6 +431,7 @@ test("CI gates publication on both suites and retains the actually tested assets
   assert(fixtures.includes("python3 tests/fixtures/build_cd_runtime.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_cd_stream.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_chd.py --check"));
+  assert(fixtures.includes("python3 tests/fixtures/build_bios_initialization.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_vdp1_hdtv.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_mosaic.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_cd_rw.py --check"));

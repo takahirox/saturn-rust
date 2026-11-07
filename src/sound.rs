@@ -181,6 +181,10 @@ impl Scsp {
             });
         }
         match offset {
+            // ST-077 figs.4.2/4.5 unused slot words and MADRS/MPRO gap.
+            // Zero readback is a compatibility policy, not measured bus data.
+            0..=0x3FF if offset & 31 >= 24 => Ok(0),
+            0x7C0..=0x7FE => Ok(0),
             0..=0x3FF if offset & 31 < 24 => {
                 Ok(self.slots[(offset / 32) as usize][(offset as usize & 31) / 2])
             }
@@ -227,6 +231,9 @@ impl Scsp {
             return Ok(());
         }
         match offset {
+            // Inert stores retain live slots, DSP registers and bus timing.
+            0..=0x3FF if offset & 31 >= 24 => (),
+            0x7C0..=0x7FE => (),
             0..=0x3FF if offset & 31 < 24 => {
                 let slot = (offset / 32) as usize;
                 let index = (offset as usize & 31) / 2;
