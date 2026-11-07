@@ -195,6 +195,16 @@ impl Scu {
             // is a deterministic compatibility fallback, not measured open bus.
             // Kept local to this longword port; see docs/mmio-compatibility.md.
             0x60 => Ok(0),
+            // ST-097 fig.3.13 activity subset; ST-210 #13 removes DSTA.
+            // Compatibility readback follows real accepted transfers, including
+            // their final bus beat. No legacy wait/break flags are invented.
+            0x7C => Ok(self
+                .channels
+                .iter()
+                .enumerate()
+                .fold(u32::from(self.dsp.dma_pending()), |bits, (i, channel)| {
+                    bits | (u32::from(channel.pending()) << (4 + i * 4))
+                })),
             0x80 => Ok(self.dsp.control()),
             0x8C => self.dsp.read_data(address),
             0xA4 => Ok(self.status),
@@ -226,10 +236,14 @@ impl Scu {
                 }
             }
             0xA0 => self.mask = value as u16 & 0xBFFF,
+            // SYS_SETSCUIM/SYS_CHGSCUIM require zero-clear/one-preserve.
+            // ST-210 #7 warns of lost edges, not a CPU bus exception.
+            // Concurrent electrical set/clear priority is not reconstructed.
+            0xA4 => self.status &= value,
             0xA8 => self.abus_ack = value & 1 != 0,
             0xB0 | 0xB4 | 0xB8 => self.abus.write(address - SCU, value),
             0xC4 => self.sdram = value & 1 != 0,
-            // ST-210 #6/7/13: unused ports, IST writes, DSTA are prohibited.
+            // ST-210 #6/13: unused ports and DSTA writes remain diagnosed.
             // ASR/AREF are write-only and control external bus cycles.
             _ => return Err(BusError::UnsupportedDevice { address, width: 4 }),
         }

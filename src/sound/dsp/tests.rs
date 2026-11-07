@@ -23,7 +23,8 @@ fn coefficient_internal_ram_and_byte_lanes_obey_physical_widths() {
     scsp.write16(0x402, 0xFFFF).unwrap();
     assert_eq!(scsp.read16(0x402), Ok(0));
     assert_eq!(scsp.common[1], 0x1FF);
-    assert!(scsp.write16(0x7C0, 1).is_err());
+    scsp.write16(0x7C0, 1).unwrap();
+    assert_eq!(scsp.read16(0x7C0), Ok(0));
     assert!(scsp.read16(0xC01).is_err());
 }
 

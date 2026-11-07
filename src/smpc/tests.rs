@@ -909,14 +909,14 @@ fn idle_commands_keep_sf_independent_of_execution_and_preserve_effect_deadlines(
                 );
                 let before = s.command_state();
                 assert!(
-                    matches!(s.write(SMPC + 0x1f, 8), Err(BusError::Smpc(f)) if f.reason == Rejection::Busy)
+                    matches!(s.write(SMPC + 0x1f, 0x17), Err(BusError::Smpc(f)) if f.reason == Rejection::Busy)
                 );
                 assert_eq!(s.command_state(), before);
                 // Claiming SF during real work must neither replace nor restart it.
                 s.write(SMPC + 0x63, 1).unwrap();
                 assert_eq!(s.pending, Some((command, 1)));
                 assert!(
-                    matches!(s.write(SMPC + 0x1f, 8), Err(BusError::Smpc(f)) if f.reason == Rejection::Busy)
+                    matches!(s.write(SMPC + 0x1f, 0x17), Err(BusError::Smpc(f)) if f.reason == Rejection::Busy)
                 );
                 assert_eq!(s.advance_clocks(1), Some(command));
                 assert!(!s.sf && !s.busy());
@@ -976,5 +976,65 @@ fn no_prewrite_intback_preserves_continue_break_and_reset_cancellation() {
         s.advance_clocks(100000);
         assert!(!s.take_irq());
         assert_eq!(s.pending, None);
+    }
+}
+
+#[test]
+fn status_mailbox_has_one_slot_real_deadlines_and_cancels_on_reset() {
+    for control in [2, 3, 6, 7, 8, 9, 0x19, 0x1a] {
+        for peripheral_request in [0, 8] {
+            let mut s = Smpc {
+                input: [1, peripheral_request, 0xf0, 0, 0, 0, 0],
+                ..Smpc::default()
+            };
+            issue(&mut s, 0x10);
+            s.advance_clocks(907);
+            let pending = s.command_state();
+            s.write(SMPC + 0x1f, control).unwrap();
+            assert_eq!(s.command_state().remaining, Some(7693));
+            assert_eq!(s.command_state().pending, pending.pending);
+            assert_eq!(s.command_state().deferred_control, Some(control));
+            let full = s.command_state();
+            for other in [control, 0x10, 0x16, 0x17, 0x18, 0x0d] {
+                assert!(
+                    matches!(s.write(SMPC + 0x1f, other), Err(BusError::Smpc(f)) if f.reason == Rejection::Busy)
+                );
+                assert_eq!(s.command_state(), full);
+            }
+            assert!(s.write(SMPC + 1, 0).is_err());
+            assert_eq!(s.advance_clocks(7692), None);
+            assert_eq!(s.advance_clocks(1), Some(0x10));
+            assert!(s.take_irq());
+            assert!(!s.await_continue && !s.await_vblank && !s.peripheral_phase);
+            let duration = if matches!(control, 8 | 9) { 1075 } else { 807 };
+            assert_eq!(s.command_state().remaining, Some(duration));
+            assert!(s.sf);
+            assert_eq!(s.advance_clocks(duration - 1), None);
+            assert_eq!(s.advance_clocks(1), Some(control));
+            assert!(!s.busy() && !s.sf);
+            assert_eq!(s.output[31], control);
+        }
+    }
+    for reset in [false, true] {
+        let mut s = Smpc {
+            input: [1, 8, 0xf0, 0, 0, 0, 0],
+            ..Smpc::default()
+        };
+        issue(&mut s, 0x10);
+        // Master-only controls remain prohibited even with an empty mailbox.
+        assert!(
+            s.write_from(crate::bus::Processor::Slave, SMPC + 0x1f, 2)
+                .is_err()
+        );
+        s.write(SMPC + 0x1f, 9).unwrap();
+        if reset {
+            s.system_reset();
+        } else {
+            s.reset_volatile();
+        }
+        assert_eq!(s.deferred_control, None);
+        s.advance_clocks(10000);
+        assert!(s.cd_enabled);
+        assert!(!s.take_irq());
     }
 }

@@ -166,7 +166,7 @@ export async function hardwareBoundaries(page) {
         assert.equal(result.repeated, result.message);
         assert.equal(result.stationary, true); assert.equal(result.unchanged, true);
         assert.equal(result.sentinel, 0);
-        assert.match(result.details, /sf: true, busy: false, command: 0, pending: None, remaining: None/);
+        assert.match(result.details, /sf: true, busy: false, command: 0, pending: None, deferred_control: None, remaining: None/);
         assert.match(result.details, /await_continue: false, await_vblank: false, peripheral_phase: false/);
         assert.match(result.details, /input: \[18, 52, 86, 120, 154, 188, 222\], status: 0, command_report: 0/);
         assert.match(result.details, new RegExp(`main_clock: Some\\(${result.clocks}\\), instruction: Some\\(24592\\)`));
@@ -294,7 +294,7 @@ export async function hardwareBoundaries(page) {
         assert.match(result.message, new RegExp(`value=0x${parseInt(name, 16).toString(16).padStart(8, "0")}`, "i"));
         assert.equal(result.repeated, result.message);
         assert.match(result.details, /Slave SH-2 PC=0x.*ProhibitedIssuer/);
-        assert.match(result.details, /sf: true, busy: false, command: 23, pending: None, remaining: None/);
+        assert.match(result.details, /sf: true, busy: false, command: 23, pending: None, deferred_control: None, remaining: None/);
         assert.match(result.details, /input: \[1, 0, 240/);
         assert.deepEqual(result.slaveTrace, [1, 1, 8, 0, 0x17, 1, 1, 8, 0, 0, 0]);
         assert.equal(result.done, 0);
@@ -458,7 +458,7 @@ export async function hardwareBoundaries(page) {
           assert.match(result.message, new RegExp(`PC 0x0000020C.*${width}-byte read at 0x${address.toString(16).toUpperCase().padStart(8, "0")}: ${reason}`));
           assert.match(result.details, new RegExp(`address: ${address}, width: ${width}, write: None, reason: ${reason}`));
           assert.match(result.details, new RegExp(`instruction: Some\\(${word ? 0x6011 : 0x6010}\\)`));
-          assert.match(result.details, /sf: false, busy: false, command: 0, pending: None, remaining: None/);
+          assert.match(result.details, /sf: false, busy: false, command: 0, pending: None, deferred_control: None, remaining: None/);
           assert.equal(result.operand, address); assert.equal(result.exceptions, "0");
         }
         assert.equal(result.repeated, result.message);

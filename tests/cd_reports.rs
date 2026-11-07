@@ -130,7 +130,10 @@ fn reports_and_q_follow_every_supported_state_and_both_standby_origins() {
             [0xFFFF, 0xFFFF, 0xFFFF, 0x00FF, 0xFFFF],
             chunk,
         );
-        assert_eq!(issue(&mut cd, [0x0200, 0, 0, 0], chunk)[0], 0xFF00);
+        assert_eq!(
+            issue(&mut cd, [0x0200, 0, 0, 0], chunk),
+            [0x86FF, 0xFFFF, 0xFFFF, 0xFFFF]
+        );
         assert_eq!(issue(&mut cd, [0x0100, 0, 0, 0], chunk), [0x06FF, 2, 0, 0]);
         issue(&mut cd, [0x0400, 1, 0, 0], chunk);
         issue(&mut cd, [0x1080, 181, 0x0280, 2], chunk);

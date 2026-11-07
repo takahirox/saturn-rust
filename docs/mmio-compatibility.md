@@ -11,7 +11,7 @@ revision, direction, width and access source before changing behavior.
 | --- | --- | --- |
 | Hardware-specified or independently observed software-visible behavior | Implement the specified data, side effects, ordering and deadlines; distinguish measurements from inference. | Normal SCU DMA completion, interrupt status and device timing. An emulator's unit test alone is not hardware evidence. |
 | Absent device, unused or removed port with a justified nonfatal compatibility fallback | Explicitly identify the endpoint and implement a deterministic, narrowly bounded fallback. Record uncertain readback separately from write effects. Retain optional local diagnostics. | Unconnected external selects already return pulled-up data. Legacy DSTP now reads zero and ignores longword writes. These are different policies; DSTP zero is not a measured open-bus voltage or retained bus word. |
-| Invalid operation with documented device status/error effects | Preserve that device's status, cancellation, IRQ and scheduling consequences. Where electrical behavior is unknown, retain an explicitly labeled emulator diagnostic. | Invalid direct SCU DMA parameters cancel the channel and signal illegal DMA; indirect-mode failures retain diagnostics without fabricating the prohibited illegal IRQ (ST-210 #24). Active-channel rewrites, IST writes, write-only reads and unsupported widths remain bounded diagnostics. |
+| Invalid operation with documented device status/error effects | Preserve that device's status, cancellation, IRQ and scheduling consequences. Where electrical behavior is unknown, retain an explicitly labeled emulator diagnostic. | Invalid direct SCU DMA parameters cancel the channel and signal illegal DMA; indirect-mode failures retain diagnostics without fabricating the prohibited illegal IRQ (ST-210 #24). Active-channel rewrites, write-only reads and unsupported widths remain bounded diagnostics. |
 | Actual SH-2 architectural exception | Follow the CPU's exception entry and recovery rules. Do not replace them with an MMIO workaround. | Misaligned CPU data accesses and invalid fetches retain address-error vector 9. A checked host-bus alignment error and guest architectural dispatch are separate layers. |
 
 A future unknown endpoint needs its own evidence and tests. Keeping an honest
@@ -50,7 +50,10 @@ the first generated longword at `+0x60` succeeds, but `+0x64` still reports an
 unsupported register. No neighboring holes or inappropriate byte/word accesses
 are silently enabled. With CE=0 or data replacement disabled, ordinary P0
 longword accesses can complete at DSTP without a fill. Stores do not allocate lines.
-DSTA remains a removed, unmodeled port with a diagnostic, not fabricated status.
+DSTA now has the separately scoped [legacy activity subset](bios-startup.md#source-contract-and-compatibility-decisions)
+from Issue #113; it follows real pending DMA instead of fabricating idle status.
+IST stores use zero-clear/one-preserve for the system-program contract.
+Neither change extends DSTP to neighboring holes.
 Disabling a real DMA channel's enable bit while armed still rejects subsequent
 triggers; it is not interchangeable with writing DSTP.
 

@@ -99,3 +99,13 @@ and `read_word`. FIFO longwords preview two successive words without consuming
 either; word previews of CR4 leave publication protection set. Architectural
 reads still consume FIFO words and release CR4. Other devices retain their
 existing inspection behavior; this increment establishes CD-read invariance.
+
+
+## OPEN/NODISC query handshake (Issue #113)
+
+ST-162 §8.2.1 functions1.5/1.6 specifies WAIT for TOC and session queries in
+OPEN/NODISC. These now retain valid `86FF/87FF FFFF FFFF FFFF` drive reports
+instead of REJECT and do not create DATATRNS data. The original reset-vector
+software-startup guest verifies ESEL/CMOK, both queries and two released periodic
+NODISC reports. See the [contract and bound](bios-startup.md#reconstructed-no-media-sequence-and-completion-bound)
+and [validation](validation-issue-113.md).
