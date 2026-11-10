@@ -1474,6 +1474,9 @@ fn private_instruction_refills_match_real_cache_eviction_and_write_boundaries() 
 #[test]
 fn data_cache_refills_match_physical_reads_and_cpu_pipeline_at_every_retirement() {
     let mut filled = [false; 4];
+    let mut planned = 0;
+    let mut loads = 0;
+    let mut slots = 0;
     let mut odd_disabled_stays_empty = false;
     for (kind, op) in [0x6014u16, 0x6015, 0x6016, 0x012F].into_iter().enumerate() {
         for ccr in [1u8, 3, 5, 9, 11, 13] {
@@ -1552,6 +1555,9 @@ fn data_cache_refills_match_physical_reads_and_cpu_pipeline_at_every_retirement(
                     assert_eq!(a.bus.instruction_word[0], b.bus.instruction_word[0]);
                     assert_eq!(a.bus.external_owner, b.bus.external_owner);
                 }
+                planned += a.bus.cached_wb_scalars;
+                loads += a.bus.cached_prepared_loads;
+                slots += a.bus.cached_prepared_slots;
                 if ccr & 4 != 0 {
                     assert_eq!(a.bus.cached_code_fills, 0);
                     odd_disabled_stays_empty = true;
@@ -1561,6 +1567,9 @@ fn data_cache_refills_match_physical_reads_and_cpu_pipeline_at_every_retirement(
             }
         }
     }
+    assert!(planned > 0, "prepared scalar path must execute");
+    assert!(loads > 0, "prepared load path must execute");
+    assert!(slots > 0, "prepared delay-slot path must execute");
     assert!(filled.into_iter().all(|hit| hit));
     assert!(odd_disabled_stays_empty);
 }

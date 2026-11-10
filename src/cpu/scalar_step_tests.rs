@@ -204,3 +204,41 @@ fn scalar_blocks_consume_only_spent_writeback_and_preserve_retained_ex() {
         }
     }
 }
+
+#[test]
+fn prepared_scalar_matches_complete_cpu_fetch_events_and_clocks_after_load_writeback() {
+    for op in 0..=u16::MAX {
+        if scalar::decode(op).is_none() {
+            continue;
+        }
+        for mode in 0..6 {
+            let make_bus = || Code {
+                op,
+                clock: Cell::new(100),
+                clocked: true,
+                fetch_clocks: false,
+                events: RefCell::default(),
+            };
+            let (mut a_bus, mut b_bus) = (make_bus(), make_bus());
+            let mut a = Cpu::start(0x100, 0x800);
+            a.state.r = std::array::from_fn(|i| (i as u32).wrapping_mul(0x1357_9BDF));
+            a.load_pipeline
+                .issue(0x6002 | if mode & 1 == 0 { 0 } else { 0xF00 });
+            a.load_pipeline.load_split(mode & 2 != 0);
+            if mode & 4 != 0 {
+                a.load_pipeline.retain_ex(99);
+            }
+            let mut b = a.clone();
+            a.prime_fetch(&a_bus);
+            b.prime_fetch(&b_bus);
+            let plan = a
+                .prepare_cached_instruction(op, 100)
+                .expect("admitted scalar");
+            a.execute_cached_instruction(plan, &mut a_bus);
+            assert!(b.step_cached(&mut b_bus));
+            assert_eq!(a, b, "op={op:04X} mode={mode}");
+            assert_eq!(a_bus.clock.get(), b_bus.clock.get());
+            assert_eq!(*a_bus.events.borrow(), *b_bus.events.borrow());
+        }
+    }
+}

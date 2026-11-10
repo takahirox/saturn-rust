@@ -1133,15 +1133,6 @@ impl Bus {
                 end = normal_end;
                 memory.end.set(end);
             }
-            if (!accepted_opcode(op))
-                || !(cached_operand(op, &cpu, &memory, store_available)
-                    || memory
-                        .passive
-                        .as_ref()
-                        .is_some_and(|p| cpu.cached_load_address(op).is_some_and(|a| p.permits(a))))
-            {
-                break;
-            }
             if anchor.as_ref().is_some_and(|a| retired - a.retired > 16) {
                 anchor = Some(CycleAnchor {
                     cpu: cpu.clone(),
@@ -1306,8 +1297,70 @@ impl Bus {
                     continue;
                 }
             }
+            // Prepared register/load plans preserve retained WB/EX and legal
+            // delay slots. Prove every actual operand and future IF hit before
+            // executing a plan without full CPU/local rollback copies.
+            if memory.passive.is_none()
+                && let Some(plan) = cpu.prepare_cached_instruction(op, memory.clock.get())
+            {
+                let future = plan.future;
+                let reference = self.system_clock.deadline(
+                    ((plan.at - self.main_clocks) as u32).saturating_sub(self.pending_main_clocks),
+                );
+                if plan
+                    .operand
+                    .is_none_or(|(a, _)| ordinary_memory(a) && memory.hit(a))
+                    && ordinary_memory(future)
+                    && (memory.retained.get().is_some_and(|(a, _)| a == future)
+                        || memory.hit(future))
+                    && plan.at <= memory.end.get()
+                    && (checkpoint_sound
+                        || !sound_lookahead
+                        || reference.saturating_sub(points.last_reference) < 9)
+                {
+                    let at = plan.at;
+                    #[cfg(test)]
+                    let loading = plan.operand.is_some();
+                    #[cfg(test)]
+                    let slot = cpu.state().delay_target.is_some();
+                    cpu.execute_cached_instruction(plan, &mut memory);
+                    #[cfg(test)]
+                    {
+                        if slot {
+                            self.cached_prepared_slots += 1;
+                        }
+                        if loading {
+                            self.cached_prepared_loads += 1;
+                        } else {
+                            self.cached_wb_scalars += 1;
+                        }
+                    }
+                    debug_assert_eq!(memory.clock.get(), at);
+                    retired_at = at;
+                    ready = (cpu.execution_clock().unwrap() + u64::from(cpu.last_clocks())).max(at);
+                    memory.clock.set(ready.min(end));
+                    retired += 1;
+                    if sound_lookahead {
+                        points.points.push(at);
+                        points.last_reference = reference;
+                    }
+                    continue;
+                }
+            }
             // The reference interpreter supplies all remaining pipeline semantics.
             // Keep failed attempts' cache/prefetch/epoch changes private.
+            // Scalar blocks and prepared plans have already proved their own
+            // legal opcode, operands, real IFs and observer bounds. Only the
+            // general replay path needs this broader admission check.
+            if (!accepted_opcode(op))
+                || !(cached_operand(op, &cpu, &memory, store_available)
+                    || memory
+                        .passive
+                        .as_ref()
+                        .is_some_and(|p| cpu.cached_load_address(op).is_some_and(|a| p.permits(a))))
+            {
+                break;
+            }
             let before = memory.snapshot();
             let started = before.clock;
             let instruction_pc = cpu.state().pc;

@@ -13,6 +13,22 @@ enum Operation {
     InterruptAcknowledge(u8),
 }
 impl Operation {
+    /// Lossless journal identity: address/clocks32, write data16, width1,
+    /// operation3. The live bus request retains the ordinary typed enum.
+    fn key(self) -> u64 {
+        match self {
+            Self::InternalWait(n) => u64::from(n),
+            Self::FinishClocks(n) => u64::from(n) | 1 << 49,
+            Self::Read(a, width @ (1 | 2)) => u64::from(a) | u64::from(width == 2) << 48 | 2 << 49,
+            Self::Write(a, width @ (1 | 2), v) => {
+                debug_assert!(v <= u32::from(u16::MAX));
+                u64::from(a) | u64::from(v) << 32 | u64::from(width == 2) << 48 | 3 << 49
+            }
+            Self::ResetOutput => 4 << 49,
+            Self::InterruptAcknowledge(level) => u64::from(level) | 5 << 49,
+            _ => unreachable!("68000 bus cycles are byte or word accesses"),
+        }
+    }
     fn complete(self, memory: &mut impl Memory) -> Result<u32, BusError> {
         match self {
             Self::InternalWait(_) | Self::FinishClocks(_) => Ok(0),
@@ -29,11 +45,20 @@ impl Operation {
     }
 }
 
+#[derive(Clone, Copy)]
+struct Completed {
+    key: u64,
+    result: Result<u32, u32>,
+    #[cfg(test)]
+    // Keep the old full-enum equality as an independent replay oracle.
+    operation: Operation,
+}
+
 #[derive(Default, Clone)]
 pub(super) struct Transactions {
     // Successful replay is the hot path. Keep large diagnostic errors out of
     // each completed access; their original values remain available by index.
-    completed: Vec<(Operation, Result<u32, usize>)>,
+    completed: Vec<Completed>,
     errors: Vec<BusError>,
     cursor: usize,
     waiting: Option<Operation>,
@@ -102,10 +127,19 @@ impl Replay<'_> {
             // speculative CPU state is discarded; no extra bus cycle may issue.
             return Err(BusError::Pending);
         }
-        if let Some(&(old, result)) = journal.completed.get(journal.cursor) {
-            assert_eq!(old, operation, "68k replay changed its bus sequence");
+        if let Some(&entry) = journal.completed.get(journal.cursor) {
+            assert_eq!(
+                entry.key,
+                operation.key(),
+                "68k replay changed its bus sequence"
+            );
+            #[cfg(test)]
+            assert_eq!(
+                entry.operation, operation,
+                "packed identity must retain full operation equality"
+            );
             journal.cursor += 1;
-            return result.map_err(|index| journal.errors[index]);
+            return entry.result.map_err(|index| journal.errors[index as usize]);
         }
         journal.waiting = Some(operation);
         Err(BusError::Pending)
@@ -125,7 +159,7 @@ impl Memory for Replay<'_> {
                 && !journal
                     .completed
                     .get(journal.cursor)
-                    .is_some_and(|(op, _)| *op == Operation::FinishClocks(clocks))
+                    .is_some_and(|entry| entry.key == Operation::FinishClocks(clocks).key())
         };
         if ready {
             // This internal barrier has already elapsed. It owns no RAM grant
@@ -232,11 +266,17 @@ impl Sound {
                 Ok,
             );
             let result = result.map_err(|error| {
-                let index = journal.errors.len();
+                let index =
+                    u32::try_from(journal.errors.len()).expect("bounded sound replay errors");
                 journal.errors.push(error);
                 index
             });
-            journal.completed.push((operation, result));
+            journal.completed.push(Completed {
+                key: operation.key(),
+                result,
+                #[cfg(test)]
+                operation,
+            });
         } else {
             journal.start = self.cpu_ticks;
             journal.stalls = 0;
@@ -294,3 +334,31 @@ mod irq_tests;
 #[cfg(test)]
 #[path = "finish_tests.rs"]
 mod finish_tests;
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+    #[test]
+    fn packed_bus_identity_distinguishes_full_addresses_values_widths_and_internal_edges() {
+        let mut seen = std::collections::BTreeMap::new();
+        let mut check = |op: Operation| {
+            if let Some(previous) = seen.insert(op.key(), op) {
+                assert_eq!(previous, op);
+            }
+        };
+        check(Operation::ResetOutput);
+        for level in 0..=255 {
+            check(Operation::InterruptAcknowledge(level));
+        }
+        for n in [0, 1, 65535, 65536, 0xFF_FFFF, 0xFFFF_FFFF] {
+            check(Operation::InternalWait(n));
+            check(Operation::FinishClocks(n));
+            for width in [1, 2] {
+                check(Operation::Read(n, width));
+                for value in [0, 1, 255, 256, 0xFFFF] {
+                    check(Operation::Write(n, width, value));
+                }
+            }
+        }
+    }
+}

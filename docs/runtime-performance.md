@@ -1344,3 +1344,198 @@ These rejected variants are absent from both source trees.
 The compiler step is now part of every standard browser build, together with
 the WRAM-refill increment. Issue #17 remains open. No hardware-completion or general firmware
 compatibility claim, commit, push or publication follows from these results.
+
+## Post-checkpoint VM optimization evaluation (2026-11-10)
+
+This local increment builds on `2d11e97`. It retains two measured changes:
+
+- A short-lived scalar execution plan handles register operations following a
+  load's retained EX/WB state. The plan uses the existing opcode semantics and
+  timing table. It runs only with a ready CPU-visible IF/ID pair, a proven
+  ordinary cache/retained-word successor fetch, and the existing event and sound
+  horizons. Other instructions continue through the reference path. This avoids
+  the full CPU/local rollback copies and common instruction setup for this case.
+- Completed 68000 bus operations use a lossless 64-bit identity plus an
+  eight-byte `Result<u32, u32>`. Release records shrink from 40 to 16 bytes
+  on the native 64-bit target, and from 24 to 16 bytes on Wasm32.
+  The pending operation remains typed; physical transfers, values, ordering and
+  completion clocks are unchanged. Native unit builds additionally retain the
+  original operation and compare its full equality on every replay.
+
+Both changes apply automatically. The scalar plan is prepared from the current
+CPU-visible instruction, rather than cached by PC or reconstructed from RAM.
+This increment does **not** introduce an SH-2-to-Wasm JIT, a persistent decoded
+block cache, or generated guest machine code.
+
+### Combined production-Wasm comparison
+
+The standard build produced a 1,673,072-byte module with SHA-256
+`03ac1abbba7fc10553ff82fe5d7a071cb29ff0c708903e959011c94bf1afddc4`.
+The actual working-tree JS and Wasm are byte-identical to the frozen candidate
+used for the comparisons and complete browser suite. Measurements used local
+Chrome 157.0.8103.38, Canvas presentation, alternating variant order and three
+runs per variant. Timed intervals did not overlap builds, native tests, browser
+validation or other benchmark warm-ups.
+
+| Workload | Previous default fields/s | New default fields/s | Throughput ratio |
+| --- | ---: | ---: | ---: |
+| Local menu, fields 1200–1740, 180 fields/run | 23.367 | 23.693 | 1.01395× |
+| Local startup, first 60 fields/reset | 46.809 | 46.959 | 1.00321× |
+| Original conflicting-WRAM-read/audio guest, 60 warm fields | 45.966 | 46.559 | 1.01288× |
+| Original drawing/rotation/audio guest, 60 warm fields | 47.199 | 47.103 | 0.99796× |
+
+The menu uses the same late button sequence as the earlier comparison; changing
+that sequence selects a different scene and is not an equivalent measurement.
+All paired CPU, clock, exception, register, sound, mailbox and image snapshots
+matched. The menu's median per-run p95 field time fell from 72.1 to 71.0 ms.
+The original drawing/audio difference is about 0.2%; it does not establish a
+speedup for that scene. Separate trials of the scalar plan and compact journal
+improved the menu by about 1.0% and 1.7%; their effects must not be added together.
+
+### Adoption decisions
+
+The following isolated variants were implemented and tested, then left out of
+the working-tree runtime. Ratios compare each variant with the previous default
+in its own paired run; absolute rates from different runs are not interchangeable.
+
+| Rejected variant | Menu throughput ratio | Decision |
+| --- | ---: | --- |
+| Resume a completed non-traced 68000 instruction at its final clock barrier | 0.99448× | No improvement |
+| Box cold SH-2 fault status | 1.02013× initially; 0.79691× on a drifting repeat | Initial gain did not reproduce |
+| Hoist raster mode/PLL invariants | 1.00939× | Marginal gain did not justify extra state |
+| Bound Binaryen one-caller inlining/function size | 0.99551× | No improvement |
+| LLVM inline threshold 225 plus bounded Binaryen inlining | 0.84301× | Regression |
+| Predecode memory/control opcode families | 0.99614× | No improvement |
+| Also predecode ordinary MOV operand addresses | 0.99736× | No improvement |
+| Retain sound-clock quotients/remainders for narrow arithmetic | 0.99676× | No improvement |
+| Reduce PLL ratios and use narrow arithmetic with a wide fallback | 1.00065× | No material improvement |
+| Explicit four-way cache hit search | 1.00343× | No material improvement |
+| Preflight cache-hit loads while keeping full instruction execution | 0.98584× | Regression |
+| Extend that copy-elision proof to register operations | 0.99391× | No improvement |
+
+A diagnostic native run over 24 menu fields counted 1,178,035 register-block
+retirements in 571,078 blocks: an average of 2.06 operations, representing about
+20.1% of 5,857,770 retired SH-2 instructions. It also counted 1,915,999 ordinary
+cached-step attempts and 1,568,108 sound-CPU replays for 446,296 issued sound-CPU
+instructions. These workload-specific counts informed the experiments; they are
+not inclusive host-time fractions or a bound on a broader JIT's potential.
+A future compiled-block backend still needs memory/control operations, exact
+pipeline timing, CPU-visible cache/prefetch identity and precise side exits.
+
+### Validation and remaining target
+
+The combined source passed 1,277 native tests (822 library tests), native
+all-target and Wasm Clippy with warnings denied, and the complete 74-group
+browser suite including 40 cached-runtime cases. The browser suite took
+240,692 ms. New differential evidence compares every scalar encoding across
+load-writeback states against complete reference CPU state, fetch events and
+clocks, and asserts that the new path executes in the existing cache-refill
+retirement oracle. The packed journal retains the old full-operation replay
+comparison in native unit tests and has identity-boundary tests. These checks
+use original licensed guests; personal firmware is not a validation gate.
+
+**60 fields/s remains unmet.** The measured menu still needs approximately
+2.53× average throughput, and its slow fields need more. This is a limited
+interpreter-bookkeeping increment, related to #17; it does not establish hardware
+completion or general stock-firmware compatibility. Changes remain local,
+without a new commit, push or publication.
+
+## Prepared MOV execution and final CPU-only selection (2026-11-10)
+
+This follow-up remains related to #17. The final working-tree increment retains
+the compact 68000 replay records above and extends short-lived execution plans:
+
+- Ordinary MOV loads now cover indirect/post-increment, indexed, displacement,
+  GBR and PC-relative forms, including legal delay slots. The existing MA timing
+  helper and load-result semantics preserve sign extension, register aliasing,
+  WB dependencies, retained EX state and redirected prefetch. System-register
+  loads, unproved accesses and other instructions retain the reference path.
+- Prepared scalar/load classes share the previously unused high byte of the
+  existing 64-bit ISA metadata. No per-PC code cache or extra guest-memory
+  decoder is introduced. The literal decoder remains the exhaustive oracle.
+- The general interpreter's broader opcode/operand admission checks now run
+  after independently certified scalar blocks and prepared plans. Initial burst
+  admission and all fallback checks remain in place.
+
+Plans require a ready CPU-visible IF/ID pair, aligned ordinary cached operands,
+actual successor fetch hits and the existing device/sound horizons. Real IFs,
+LRU touches, memory accesses, pipeline clocks and peripheral work still execute.
+All retained changes apply automatically. This is a prepared interpreter backend;
+**SH-2-to-Wasm JIT compilation and a persistent decoded-block cache remain
+unimplemented.**
+
+### Direct comparison with the committed default
+
+The baseline is the saved production runtime for `2d11e97`, before all changes
+in this post-checkpoint follow-up. The selected standard build is
+1,676,305 bytes, SHA-256
+`a97785653ff57353b57086ee763ae0e5552852445a841a01696af19fdb32f7cb`.
+The actual working-tree JS and Wasm are byte-identical to the frozen tested and
+measured runtime. All 118 Rust source files match the selected validation tree;
+two comment clarifications retain source line counts and preserve the binary.
+
+Chrome 157.0.8103.38 measured three alternating runs per variant with Canvas
+presentation and no frame skipping. Timed intervals did not overlap builds,
+tests, profiles or other benchmark warm-ups. Each paired end-field snapshot
+checks master CPU, clocks, exceptions, registers, sound CPU, mailbox and pixels.
+These selected snapshots supplement the independent functional tests.
+
+| Workload | Committed default fields/s | Selected working tree fields/s | Ratio |
+| --- | ---: | ---: | ---: |
+| Optional local menu, fields 1200–1740, 180 fields/run | 23.940 | 25.221 | 1.05350× |
+| Optional local startup, first 60 fields/reset | 48.956 | 53.567 | 1.09419× |
+| Original conflicting-WRAM-read/audio guest, 60 warm fields | 47.919 | 50.450 | 1.05280× |
+| Original drawing/rotation/audio guest, 60 warm fields | 49.237 | 49.867 | 1.01280× |
+
+All paired snapshots matched and all four measurement processes exited zero.
+The menu's median per-run p95 field time decreased from 71.0 to
+66.2 ms. The same late button sequence was used throughout; a different
+sequence selects a different workload. These are unthrottled emulated-field
+throughput measurements, including presentation, rather than a 60 Hz UI cap.
+
+### Selection and rejected combinations
+
+Isolated trials informed selection but their gains were not added together:
+
+| Trial | Its own paired menu ratio | Final decision |
+| --- | ---: | --- |
+| Broader MOV/slot plans with unified metadata, versus the preceding scalar-plan build | 1.04093× | Retained |
+| Defer fallback-only admission checks, versus the preceding MOV/slot build | 1.02444× | Retained |
+| Defer display acquisitions across isolated spans | 0.99312× | Not retained |
+| Reuse two immutable cache-hit receipts | 0.99931× | Not retained |
+| Select SCSP IRQ priority with parallel bit operations | 0.99045× | Not retained |
+| Compact captured display words alone, versus the MOV/slot build | 1.01541× | Not retained in the final build |
+| Also pack per-dot sample descriptors | 1.01630× | No demonstrated additional gain over captured-word packing |
+| Delay loop-proof snapshots until a backedge | 0.99447× | Not retained; original wait guest also regressed by about 1.3% |
+
+A combined CPU/display candidate passed all functional checks and improved
+startup and original guests, but its direct menu comparison regressed from
+23.590 to 22.695 fields/s (0.96207×). It was rejected. The final selection removes
+all display-storage changes and reproduces the earlier CPU-only runtime byte for
+byte. The cause of that combination's regression was not established; an isolated
+gain is insufficient evidence to enable the union. Additional branch plans also
+lacked a demonstrated improvement beyond the preceding prepared backend.
+
+### Final validation and remaining scope
+
+- Complete native suite: **1,280 passed**, including **825 library tests**,
+  across 109 result groups.
+- Exhaustive ordinary MOV encodings and legal scalar/load delay slots compare
+  complete CPU/pipeline state, MA addresses and clocks, and combined ordered
+  IF/data access events against literal execution. Existing cached-burst tests
+  retain positive path coverage and negative event/fault/admission controls.
+- Native all-target and Wasm Clippy passed with `-D warnings`; standard build,
+  formatting and whitespace checks passed.
+- The exact selected Wasm passed all **74 browser groups**, including the
+  **40 cached-runtime cases**, with original licensed guests. The complete
+  process, reports and aggregation exited zero; Chrome teardown made this
+  local run take 416,100 ms.
+
+This update applies to the working branch. It does not claim that the separate
+latest-main source port has been updated, and it does not close #17. No private
+firmware is included in public assets or source. Local optional firmware is
+measurement input, not a mandatory acceptance fixture. No commit, push or
+publication follows from these results.
+
+**60 fields/s remains unmet:** the measured menu average still requires about
+**2.38×** additional throughput; its slow fields need a larger reduction.

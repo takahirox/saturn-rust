@@ -175,6 +175,25 @@ pub struct Cpu {
     execution_clock: Option<u64>,
 }
 
+enum CachedEffect {
+    Scalar(scalar::Kind),
+    Load,
+}
+pub(crate) struct CachedInstruction {
+    pub at: u64,
+    pub operand: Option<(u32, u32)>,
+    pub future: u32,
+    next_pc: u32,
+    issue_at: u64,
+    decode_ready: u64,
+    ex: u64,
+    pipeline: timing::LoadPipeline,
+    opcode: u16,
+    words: (u16, u16),
+    effect: CachedEffect,
+    interlock: u32,
+}
+
 impl Cpu {
     pub fn state(&self) -> &CpuState {
         &self.state
@@ -225,6 +244,118 @@ impl Cpu {
         }
         count
     }
+    /// Prepare register operations or MOV loads, including legal delay slots.
+    /// The caller proves operand/future IF hits and retains real WB/EX state
+    /// while retirement stays within every observer horizon.
+    pub(crate) fn prepare_cached_instruction(
+        &self,
+        opcode: u16,
+        now: u64,
+    ) -> Option<CachedInstruction> {
+        let instruction = timing::instruction(opcode);
+        let operand = instruction.prepared_load(opcode, &self.state);
+        let effect = if let Some(kind) = instruction.prepared_scalar() {
+            CachedEffect::Scalar(kind)
+        } else if operand.is_some() {
+            CachedEffect::Load
+        } else {
+            return None;
+        };
+        if self.state.status != CpuStatus::Running
+            || self.state.address_error_pending
+            || self.state.pc & 1 != 0
+        {
+            return None;
+        }
+        let next_pc = self
+            .state
+            .delay_target
+            .unwrap_or(self.state.pc.wrapping_add(2));
+        let words = self.fetch.cached_pair_for(self.state.pc, next_pc, now)?;
+        if words.0 != opcode {
+            return None;
+        }
+        let mut pipeline = self.load_pipeline.clone();
+        let ex = pipeline.issue_clock(now);
+        let interlock = pipeline.issue_instruction(instruction);
+        let wait = interlock.saturating_sub(pipeline.issue_overlap);
+        let issue_at = now + u64::from(wait);
+        if operand.is_some_and(|(a, width)| !a.is_multiple_of(width)) {
+            return None;
+        }
+        let at = if operand.is_some() {
+            (ex + u64::from(interlock) + 2).max(issue_at)
+        } else {
+            issue_at
+        };
+        Some(CachedInstruction {
+            at,
+            operand,
+            future: next_pc.wrapping_add(2),
+            next_pc,
+            issue_at,
+            decode_ready: (ex + u64::from(interlock) + 1).max(issue_at),
+            ex,
+            pipeline,
+            opcode: words.0,
+            words,
+            effect,
+            interlock,
+        })
+    }
+    pub(crate) fn execute_cached_instruction(
+        &mut self,
+        mut plan: CachedInstruction,
+        bus: &mut impl Memory,
+    ) {
+        let pc = self.state.pc;
+        bus.sh2_write_context(pc, None);
+        bus.sh2_pipeline_wait(0).expect("ready IF/ID pair");
+        bus.instruction_break(pc, false);
+        let now = bus.sh2_clock().expect("clocked cache plan");
+        if plan.issue_at > now {
+            bus.sh2_pipeline_wait((plan.issue_at - now) as u32)
+                .expect("bounded WB interlock");
+        }
+        let future = bus.fetch16(plan.future).expect("proven scalar IF hit");
+        let split = match plan.effect {
+            CachedEffect::Scalar(kind) => {
+                scalar::execute(kind, plan.opcode, &mut self.state);
+                0
+            }
+            CachedEffect::Load => {
+                let (address, width) = plan.operand.unwrap();
+                let access = timing::MovAccess::start(
+                    bus,
+                    address,
+                    false,
+                    plan.next_pc,
+                    plan.ex + u64::from(plan.interlock),
+                )
+                .expect("proven cached MA");
+                let split = access.split();
+                let value = read_operand(bus, address, width).expect("proven cached load");
+                commit_mov_load(&mut self.state, plan.opcode, value);
+                access
+                    .finish(&mut plan.pipeline, bus)
+                    .expect("bounded cached MA finish");
+                split
+            }
+        };
+        self.state.pc = plan.next_pc;
+        self.state.delay_target = None;
+        self.state.instructions += 1;
+        self.load_pipeline = plan.pipeline;
+        self.last_clocks = 1 + plan.interlock + split;
+        self.execution_clock = Some(plan.ex);
+        self.interrupt_inhibited = false;
+        self.address_error_inhibited = false;
+        self.multiplier.clock += u64::from(self.last_clocks);
+        self.fetch
+            .finish_cached_pair(self.state.pc, (plan.words.1, future), plan.decode_ready);
+        bus.instruction_break(pc, true);
+    }
+
     /// Repeat a proven cache-only cycle. Compare the complete pipeline state
     /// after translating its clocks/counters; DT/BF may additionally decrease
     /// one nonzero counter. Every other architectural/private field must match.
@@ -816,10 +947,7 @@ impl Cpu {
                 _ if matches!(opcode & 0xF00F, 0x6000..=0x6002 | 0x6004..=0x6006) => {
                     let width = 1 << (opcode & 3);
                     let value = read_operand(bus, s.r[m], width).map_err(access)?;
-                    if opcode & 4 != 0 && n != m {
-                        s.r[m] = s.r[m].wrapping_add(width);
-                    }
-                    s.r[n] = value;
+                    commit_mov_load(s, opcode, value);
                 }
                 // Predecrement stores latch the source before changing the address register.
                 _ if matches!(opcode & 0xF00F, 0x2000..=0x2002 | 0x2004..=0x2006) => {
@@ -1201,6 +1329,20 @@ impl Cpu {
         self.multiplier.clock += u64::from(self.last_clocks);
         Ok(())
     }
+}
+
+fn commit_mov_load(s: &mut CpuState, opcode: u16, value: u32) {
+    let n = (opcode >> 8 & 15) as usize;
+    let m = (opcode >> 4 & 15) as usize;
+    if opcode & 0xF000 == 0x6000 && opcode & 4 != 0 && n != m {
+        s.r[m] = s.r[m].wrapping_add(1 << (opcode & 3));
+    }
+    let destination = if matches!(opcode >> 12, 8 | 0xC) {
+        0
+    } else {
+        n
+    };
+    s.r[destination] = value;
 }
 
 fn read_operand(bus: &impl Memory, address: u32, width: u32) -> Result<u32, BusError> {

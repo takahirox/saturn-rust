@@ -122,8 +122,38 @@ impl Instruction {
                 | (forward as u64) << 39
                 | (execution_states(op, false) as u64) << 40
                 | (execution_states(op, true) as u64) << 44
-                | (control_flags(op) as u64) << 48,
+                | (control_flags(op) as u64) << 48
+                | (prepared_class(op) as u64) << 56,
         )
+    }
+
+    pub fn prepared_scalar(self) -> Option<super::scalar::Kind> {
+        super::scalar::decode_prepared((self.0 >> 56) as u8)
+    }
+    pub fn prepared_load(self, opcode: u16, s: &super::CpuState) -> Option<(u32, u32)> {
+        let class = (self.0 >> 56) as u8;
+        if class & 0x40 == 0 {
+            return None;
+        }
+        let descriptor = class & 0x3F;
+        let width = u32::from(descriptor & 7);
+        let m = (opcode >> 4 & 15) as usize;
+        let imm = u32::from(opcode as u8);
+        let pc = || {
+            s.delay_target
+                .map_or(s.pc.wrapping_add(4), |t| t.wrapping_add(2))
+        };
+        let address = match descriptor >> 3 {
+            1 => s.r[m],
+            2 => s.r[m].wrapping_add(s.r[0]),
+            3 => s.r[m].wrapping_add(u32::from(opcode & 15) * 4),
+            4 => s.r[m].wrapping_add(u32::from(opcode & 15) * width),
+            5 => s.gbr.wrapping_add(imm * width),
+            6 => pc().wrapping_add(imm * 2),
+            7 => (pc() & !3).wrapping_add(imm * 4),
+            _ => return None,
+        };
+        Some((address, width))
     }
 
     pub fn control_flags(self) -> u8 {
@@ -158,6 +188,31 @@ pub(super) const fn control_flags(op: u16) -> u8 {
         | ((ldc as u8) * LDC_LONG)
         | ((stc as u8) * STC_LONG)
         | ((byte as u8) * BYTE_MEMORY)
+}
+
+// One prepared-operation class shares the existing ISA metadata load. Zero is
+// unsupported; 1..63 are scalar tags, 0x40..0x7F ordinary MOV descriptors.
+const fn prepared_class(op: u16) -> u8 {
+    if let Some(kind) = super::scalar::decode_literal(op) {
+        kind as u8 + 1
+    } else {
+        let load = prepared_load_descriptor(op);
+        if load == 0 { 0 } else { 0x40 | load }
+    }
+}
+
+// Ordinary MOV families only. LDS.L PR retains its dedicated system/MDU path.
+const fn prepared_load_descriptor(op: u16) -> u8 {
+    match op >> 12 {
+        0 if matches!(op & 15, 0xC..=0xE) => (2 << 3) | (1 << (op & 3)),
+        5 => (3 << 3) | 4,
+        6 if matches!(op & 15, 0..=2 | 4..=6) => (1 << 3) | (1 << (op & 3)),
+        8 if matches!(op >> 8 & 15, 4 | 5) => (4 << 3) | (1 << (op >> 8 & 1)),
+        9 => (6 << 3) | 2,
+        0xC if matches!(op >> 8 & 15, 4..=6) => (5 << 3) | (1 << (op >> 8 & 3)),
+        0xD => (7 << 3) | 4,
+        _ => 0,
+    }
 }
 
 const fn make_instructions() -> [Instruction; 65536] {
@@ -551,6 +606,10 @@ mod instruction_table_tests {
     fn every_instruction_matches_literal_timing_and_all_load_dependency_states() {
         for opcode in 0..=u16::MAX {
             let instruction = instruction(opcode);
+            assert_eq!(
+                instruction.prepared_scalar().map(|k| k as u8),
+                super::super::scalar::decode_literal(opcode).map(|k| k as u8)
+            );
             assert_eq!(
                 instruction.control_flags(),
                 control_flags(opcode),

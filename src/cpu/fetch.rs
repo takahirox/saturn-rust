@@ -35,14 +35,19 @@ pub(super) struct Fetch {
 
 impl Fetch {
     pub(super) fn cached_pair(&self, pc: u32, clock: u64) -> Option<(u16, u16)> {
+        self.cached_pair_for(pc, pc.wrapping_add(2), clock)
+    }
+    pub(super) fn cached_pair_for(
+        &self,
+        pc: u32,
+        successor: u32,
+        clock: u64,
+    ) -> Option<(u16, u16)> {
         if self.decode_ready > clock {
             return None;
         }
         let decoded = self.decoded.as_ref().filter(|w| w.pc == pc)?;
-        let fetched = self
-            .fetched
-            .as_ref()
-            .filter(|w| w.pc == pc.wrapping_add(2))?;
+        let fetched = self.fetched.as_ref().filter(|w| w.pc == successor)?;
         Some((decoded.value.result().ok()?, fetched.value.result().ok()?))
     }
 

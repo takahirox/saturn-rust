@@ -58,6 +58,23 @@ const fn make_decoder() -> [Option<Kind>; 65536] {
 #[allow(long_running_const_eval)]
 static DECODER: [Option<Kind>; 65536] = make_decoder();
 
+const fn make_prepared_kinds() -> [Option<Kind>; 64] {
+    let mut kinds = [None; 64];
+    let mut opcode = 0;
+    while opcode <= u16::MAX as usize {
+        if let Some(kind) = decode_literal(opcode as u16) {
+            kinds[kind as usize + 1] = Some(kind);
+        }
+        opcode += 1;
+    }
+    kinds
+}
+#[allow(long_running_const_eval)]
+static PREPARED_KINDS: [Option<Kind>; 64] = make_prepared_kinds();
+pub(super) fn decode_prepared(tag: u8) -> Option<Kind> {
+    PREPARED_KINDS.get(usize::from(tag)).copied().flatten()
+}
+
 pub(super) fn decode(opcode: u16) -> Option<Kind> {
     DECODER[usize::from(opcode)]
 }
