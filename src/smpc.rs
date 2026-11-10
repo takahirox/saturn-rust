@@ -187,6 +187,10 @@ pub struct Smpc {
     sf: bool,
     command: u8,
     pending: Option<(u8, u32)>,
+    // One parameterless control retained behind an active INTBACK status read.
+    // Compatibility policy for firmware command overlap, not a measured H8
+    // mailbox depth. Other overlap remains a bounded diagnostic.
+    queued_control: Option<(u8, u32)>,
     input: [u8; 7],
     output: [u8; 32],
     status: u8,
@@ -219,6 +223,7 @@ impl Default for Smpc {
             sf: false,
             command: 0,
             pending: None,
+            queued_control: None,
             input: [0; 7],
             output: [0; 32],
             status: 0,
@@ -388,6 +393,19 @@ impl Smpc {
             _ => (),
         }
         self.battery.advance(clocks - elapsed);
+        if command == 0x10
+            && let Some((next, duration)) = self.queued_control.take()
+        {
+            // Finish publishing the status before replacing its command report.
+            // The new control takes over instead of waiting for an INTBACK
+            // continuation that a caller may have masked while issuing it.
+            self.end_peripherals();
+            self.command = next;
+            self.output[31] = next;
+            self.pending = Some((next, duration));
+            // The caller's outstanding SF claim spans the accepted control.
+            self.sf = true;
+        }
         Some(command)
     }
     /// External peripheral TH pin (port bit6). ST-169 §1.2/table1.5 routes
@@ -558,12 +576,30 @@ impl Smpc {
                 ));
             }
             0x1F if self.busy() => {
+                if self.command == 0x10
+                    && self.sf
+                    && !self.peripheral_phase
+                    && self.pending.is_some_and(|(command, _)| command == 0x10)
+                    && self.queued_control.is_none()
+                {
+                    let clocks = match value {
+                        0 | 2 | 3 | 6 | 7 | 0x18 | 0x19 | 0x1A => Some(Self::CPU_COMMAND_CLOCKS),
+                        8 | 9 => Some(1075),
+                        0x0D..=0x0F => Some(Self::SYSTEM_RESET_CLOCKS),
+                        _ => None,
+                    };
+                    if let Some(clocks) = clocks {
+                        self.queued_control = Some((value, clocks));
+                        return Ok(());
+                    }
+                }
                 return Err(self.access_fault(address, 1, Some(u32::from(value)), Rejection::Busy));
             }
             // ST-169 documents SF-before-COMREG for software synchronization.
             // Idle SF=0 acceptance is an emulator compatibility policy (#109),
             // not measured electrical behavior. SF is independent of internal
-            // work: never set it implicitly here, and reject actual overlap above.
+            // work: never set it implicitly here. The bounded status/control
+            // slot above is the only accepted overlap.
             0x1F => {
                 let clocks = match value {
                     0 | 2 | 3 | 6 | 7 | 0x18 | 0x19 | 0x1A => Self::CPU_COMMAND_CLOCKS,

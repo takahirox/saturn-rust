@@ -4,6 +4,7 @@
 //! Accepted words retain their address/direction until the cycle completes.
 use super::*;
 
+#[derive(Clone)]
 pub(super) struct Word {
     address: usize,
     register: u32,

@@ -321,3 +321,136 @@ fn simultaneous_reset_edges_never_drop_a_frame_or_reexecute_a_dsp_instruction() 
         }
     }
 }
+
+#[test]
+fn initialized_zero_program_keeps_dense_execution_state_and_live_writes() {
+    // C=2 makes each dense instruction explicitly select a zero addend.
+    // With TEMP=0 this has the same datapath result as zero MPRO, but keeps
+    // every instruction deadline active as an independent scheduling control.
+    for chunk in [1, 7, 10000] {
+        let mut sparse = Sound::default();
+        let mut dense = Sound::default();
+        for step in 0..128 {
+            program(&mut sparse, step, [0; 4]);
+            program(&mut dense, step, [0, 0, 2, 0]);
+        }
+        assert!(sparse.scsp.dsp.quiescent());
+        assert!(!dense.scsp.dsp.quiescent());
+        for tick in [2, 126, 128, 257] {
+            until(&mut sparse, tick, chunk);
+            until(&mut dense, tick, chunk);
+            assert_eq!(sparse.scsp.dsp.accumulator, dense.scsp.dsp.accumulator);
+            assert_eq!(sparse.scsp.dsp.decrement, dense.scsp.dsp.decrement);
+            assert_eq!(sparse.scsp.dsp.effects, dense.scsp.dsp.effects);
+            assert_eq!(sparse.scsp.dsp.temp, dense.scsp.dsp.temp);
+            assert_eq!(sparse.scsp.dsp.mems, dense.scsp.dsp.mems);
+            assert_eq!(sparse.scsp.drain(4096), dense.scsp.drain(4096));
+        }
+        // A live write exposes the next DSP instruction at its existing phase.
+        for s in [&mut sparse, &mut dense] {
+            program(s, 4, [0, 0xA000, 2, 0]);
+            program(s, 5, [0, 0, 0x1002, 0]);
+            s.scsp.write16(0x700, 0x4000).unwrap();
+            s.scsp.write16(0xE02, 0x2000).unwrap();
+        }
+        for tick in [260, 261, 262, 384] {
+            until(&mut sparse, tick, chunk);
+            until(&mut dense, tick, chunk);
+            assert_eq!(sparse.scsp.dsp.effects, dense.scsp.dsp.effects);
+            assert_eq!(sparse.scsp.dsp.accumulator, dense.scsp.dsp.accumulator);
+        }
+    }
+}
+
+#[test]
+fn zero_program_is_not_quiescent_with_live_temp_accumulator_or_delayed_input() {
+    let mut s = Sound::default();
+    program(&mut s, 0, [0; 4]);
+    assert!(s.scsp.dsp.quiescent());
+    s.scsp.write16(0xC02, 0x1234).unwrap();
+    assert!(!s.scsp.dsp.quiescent());
+    s.scsp.write16(0xC02, 0).unwrap();
+    assert!(s.scsp.dsp.quiescent());
+    s.scsp.dsp.accumulator = 1;
+    assert!(!s.scsp.dsp.quiescent());
+    until(&mut s, 1, 1);
+    assert!(s.scsp.dsp.quiescent());
+    s.scsp.dsp.reads[0] = Some(123);
+    assert!(!s.scsp.dsp.quiescent());
+    until(&mut s, 2, 1);
+    assert_eq!(s.scsp.dsp.memory, 123);
+    assert!(s.scsp.dsp.quiescent());
+}
+
+#[test]
+fn zero_program_slot_elision_preserves_live_sound_cpu_dram_grants() {
+    for chunk in [1, 7, 10000] {
+        let mut sparse = Sound::default();
+        let mut dense = Sound::default();
+        for s in [&mut sparse, &mut dense] {
+            s.ram[..4].copy_from_slice(&0x1000u32.to_be_bytes());
+            s.ram[4..8].copy_from_slice(&0x100u32.to_be_bytes());
+            s.ram[0x100..0x104].copy_from_slice(&[0x4E, 0x71, 0x60, 0xFC]);
+            s.set_enabled(true).unwrap();
+        }
+        for step in 0..128 {
+            program(&mut sparse, step, [0; 4]);
+            program(&mut dense, step, [0, 0, 2, 0]);
+        }
+        for tick in [128, 256, 1024, 20000] {
+            until(&mut sparse, tick, chunk);
+            until(&mut dense, tick, chunk);
+            assert_eq!(
+                sparse.cpu.state, dense.cpu.state,
+                "chunk={chunk} tick={tick}"
+            );
+            assert_eq!(sparse.next_cpu, dense.next_cpu);
+            assert_eq!(sparse.cpu_ticks, dense.cpu_ticks);
+            let a = sparse.memory_trace();
+            let b = dense.memory_trace();
+            assert_eq!(a.len(), b.len());
+            for (index, (a, b)) in a.iter().zip(b).enumerate() {
+                assert_eq!(a, b, "grant {index}");
+            }
+            assert_eq!(sparse.scsp.drain(4096), dense.scsp.drain(4096));
+        }
+    }
+}
+
+#[test]
+fn cached_program_validation_matches_actual_faults_and_live_program_repairs() {
+    let mut ram = vec![0; SOUND_RAM_SIZE];
+    let config = RamConfig { four_mbit: true };
+    let mut vectors = vec![
+        [0, 0, 0, 0],
+        [0x8000, 0, 0, 0],
+        [0, 0x1000, 0, 0],
+        [0, 0, 0, 0x80],
+        [0, 0, 0, 0x100],
+        [0, 0, 0, 0x180],
+        [0, 0, 0x2000, 0],
+        [0, 0, 0x4000, 0],
+        [0, 0, 0x6000, 0],
+        [0, 0xA000, 0x1002, 0],
+    ];
+    vectors.extend((48..64).map(|ira| [0, ira << 6, 0, 0]));
+    for step in 0..128 {
+        for &words in &vectors {
+            let mut dsp = dsp::Dsp::default();
+            assert!(dsp.program_cannot_fault());
+            for (i, word) in words.into_iter().enumerate() {
+                dsp.write(0x800 + step as u32 * 8 + i as u32 * 2, word)
+                    .unwrap();
+            }
+            assert_eq!(
+                dsp.program_cannot_fault(),
+                dsp.step(step, &mut ram, config, 0, [0; 2]).is_ok(),
+                "step={step}, words={words:X?}"
+            );
+            for i in 0..4 {
+                dsp.write(0x800 + step as u32 * 8 + i * 2, 0).unwrap();
+            }
+            assert!(dsp.program_cannot_fault());
+        }
+    }
+}

@@ -6,6 +6,7 @@
 //! completion. This prevents later writes from replacing an earlier operand.
 use super::*;
 
+#[derive(Clone)]
 pub(super) struct Slot {
     pub slot: usize,
     pub regs: [u16; 12],
@@ -24,6 +25,27 @@ pub(super) struct Slot {
     // OP1 accepted an active voice, including one whose EG ends at OP4.
     started: bool,
 }
+// Only these small tokens move through OP1..OP7. Active voices retain
+// their operands in a fixed pool; inactive voices still publish their
+// captured stack inhibition and DSP routing at the original edges.
+#[derive(Clone, Copy)]
+pub(super) struct PipelineSlot {
+    slot: u8,
+    inhibit: bool,
+    routing: u16,
+    work: u8,
+}
+impl PipelineSlot {
+    fn new(i: usize, regs: &[u16; 12]) -> Self {
+        Self {
+            slot: i as u8,
+            inhibit: regs[6] & 0x200 != 0,
+            routing: regs[10],
+            work: u8::MAX,
+        }
+    }
+}
+#[derive(Clone)]
 pub(super) struct Word {
     operand: usize,
     address: usize,
@@ -40,7 +62,36 @@ pub(super) fn decode(mut sample: i16, control: u16) -> i16 {
     sample
 }
 impl Scsp {
+    fn begin_pipeline_slot(&mut self, i: usize) -> PipelineSlot {
+        let mut token = PipelineSlot::new(i, &self.slots[i]);
+        let compact = !self.voices[i].active;
+        #[cfg(test)]
+        let compact = compact && !self.full_pcm_slots;
+        if compact {
+            self.lfo[i].advance(self.slots[i][9]);
+            return token;
+        }
+        let slot = self.begin_slot(i);
+        let retain = slot.started;
+        #[cfg(test)]
+        let retain = retain || self.full_pcm_slots;
+        if retain {
+            assert_ne!(self.pcm_free, 0, "PCM pipeline retains at most seven slots");
+            let index = self.pcm_free.trailing_zeros() as usize;
+            self.pcm_free &= !(1 << index);
+            debug_assert!(self.pcm_slots[index].is_none());
+            self.pcm_slots[index] = Some(slot);
+            token.work = index as u8;
+        }
+        token
+    }
+    pub(super) fn pcm_slot(&self, stage: usize) -> Option<&Slot> {
+        let token = self.pcm_pipeline[stage]?;
+        self.pcm_slots.get(usize::from(token.work))?.as_ref()
+    }
+
     pub(super) fn begin_slot(&mut self, i: usize) -> Slot {
+        self.pcm_quiescent.set(None);
         let regs = self.slots[i];
         let lfo = self.lfo[i];
         self.lfo[i].advance(regs[9]);
@@ -134,19 +185,26 @@ impl Scsp {
     }
 
     fn address_slot(&mut self) {
-        let Some(slot) = self.pcm_pipeline[1].as_mut() else {
+        let Some(token) = self.pcm_pipeline[1] else {
             return;
         };
-        let i = slot.slot;
-        let regs = slot.regs;
+        let i = usize::from(token.slot);
         self.stack.begin_slot(i);
-        self.stack.write(i, 0, regs[6] & 0x200 != 0);
+        self.stack.write(i, 0, token.inhibit);
         if i == 31 {
             self.stack.end_frame();
         }
+        let Some(slot) = self
+            .pcm_slots
+            .get_mut(usize::from(token.work))
+            .and_then(Option::as_mut)
+        else {
+            return;
+        };
         if !slot.active {
             return;
         }
+        let regs = slot.regs;
         // Preview the retained EG operands for DRAM suppression. Commit the
         // envelope only at OP4; this preview has no consumer-visible output.
         let mut envelope = slot.envelope;
@@ -217,7 +275,14 @@ impl Scsp {
             source == 0 && slot.active && (regs[6] & 0x100 != 0 || slot.attenuation < 1023 << 16);
     }
     fn interpolate_slot(&mut self) {
-        let Some(slot) = self.pcm_pipeline[3].as_mut() else {
+        let Some(token) = self.pcm_pipeline[3] else {
+            return;
+        };
+        let Some(slot) = self
+            .pcm_slots
+            .get_mut(usize::from(token.work))
+            .and_then(Option::as_mut)
+        else {
             return;
         };
         if slot.started && self.voices[slot.slot].generation == slot.generation {
@@ -233,9 +298,20 @@ impl Scsp {
     }
 
     fn publish_slot(&mut self) {
-        let Some(slot) = self.pcm_pipeline[6].take() else {
+        let Some(token) = self.pcm_pipeline[6].take() else {
             return;
         };
+        if token.work == u8::MAX {
+            self.stack.write(usize::from(token.slot), 0, token.inhibit);
+            // Adding zero still normalizes MIXS to its signed 20-bit width.
+            self.dsp.add_slot(token.routing, 0);
+            return;
+        }
+        let index = usize::from(token.work);
+        let slot = self.pcm_slots[index]
+            .take()
+            .expect("PCM token retains its operands");
+        self.pcm_free |= 1 << index;
         let regs = slot.regs;
         let mut value = slot.value;
         if regs[6] & 0x100 == 0 {
@@ -253,6 +329,7 @@ impl Scsp {
     }
 
     fn pipeline_slot(&mut self, i: usize) {
+        self.pcm_quiescent.set(None);
         // OP7's completed value is supplied to the existing five-interval
         // stack queue immediately before OP2 commits it. Never delay it twice.
         for stage in (1..7).rev() {
@@ -261,7 +338,7 @@ impl Scsp {
         self.publish_slot();
         self.interpolate_slot();
         self.address_slot();
-        self.pcm_pipeline[0] = Some(self.begin_slot(i));
+        self.pcm_pipeline[0] = Some(self.begin_pipeline_slot(i));
     }
 
     fn complete_pcm(&mut self, ram: &[u8]) {
@@ -271,9 +348,10 @@ impl Scsp {
             } else {
                 word.config.read16(ram, word.address & !1) as i16
             };
-            self.pcm_pipeline[2]
+            let token = self.pcm_pipeline[2].expect("PCM grant retains its slot");
+            self.pcm_slots[usize::from(token.work)]
                 .as_mut()
-                .expect("PCM grant retains its slot")
+                .expect("PCM grant retains its operands")
                 .samples[word.operand] = decode(sample, word.control);
         }
     }
@@ -281,7 +359,7 @@ impl Scsp {
         if step & 1 != 0 {
             return false;
         }
-        let Some(slot) = &self.pcm_pipeline[2] else {
+        let Some(slot) = self.pcm_slot(2) else {
             return false;
         };
         if !slot.fetch {
@@ -299,6 +377,18 @@ impl Scsp {
     /// Completion precedes the next grant. In particular DMA carried across
     /// the frame edge publishes before the first PCM address is accepted.
     pub(super) fn sample_cycle(&mut self, step: usize, ram: &mut [u8]) -> Result<bool, BusError> {
+        self.sample_cycle_recorded(step, ram, None)
+    }
+    pub(super) fn sample_cycle_recorded(
+        &mut self,
+        step: usize,
+        ram: &mut [u8],
+        mut undo: Option<&mut checkpoint::RamUndo>,
+    ) -> Result<bool, BusError> {
+        debug_assert!(
+            undo.is_none() || !self.dma_active(),
+            "lookahead excludes SCSP DMA"
+        );
         self.complete_pcm(ram);
         self.complete_dma(ram)?;
         if step == 0 {
@@ -308,7 +398,13 @@ impl Scsp {
             self.pipeline_slot(step / 4);
         }
         let busy = self.memory_cycle(step)?;
-        self.dsp_step(step, ram)?;
+        self.dsp_step(step, ram, undo.as_deref_mut())?;
+        if step == 127
+            && self.output.len() >= super::BUFFER_FRAMES * 2
+            && let Some(undo) = undo
+        {
+            undo.audio.extend(self.output.iter().take(2).copied());
+        }
         if step == 127 {
             self.end_sample();
         }

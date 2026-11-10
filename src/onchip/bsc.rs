@@ -4,7 +4,7 @@ use crate::bus::BusError;
 use std::cell::Cell;
 
 pub const BSC: u32 = 0xFFFF_FFE0;
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Access {
     area: u32,
     read: bool,
@@ -18,6 +18,8 @@ enum Interface {
     Dram,
     Pseudo,
 }
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub(super) struct Bsc {
     registers: [u16; 7],
     slave: bool,
@@ -51,6 +53,16 @@ impl Default for Bsc {
     }
 }
 impl Bsc {
+    pub(super) fn same_read_protocol(&self, other: &Self) -> bool {
+        self.access.get() == other.access.get()
+            && self.rows.get() == other.rows.get()
+            && self.burst_words.get() == other.burst_words.get()
+    }
+    pub(super) fn commit_read_protocol(&self, other: &Self) {
+        self.access.set(other.access.get());
+        self.rows.set(other.rows.get());
+        self.burst_words.set(other.burst_words.get());
+    }
     /// H §7.5.8/fig.7.27. A0 is not a word-address pin; the MRS
     /// cycle is explicitly exempt from the CPU address-error checks (table4.6).
     pub fn mode_states(&self, address: u32) -> Result<u32, BusError> {
@@ -476,6 +488,9 @@ impl Bsc {
     /// H §§7.2.7/7.5.7/7.10: a compare latches a request, not an
     /// overlapping refresh cycle. The board arbiter calls this only after
     /// the current owner's indivisible transfer has relinquished the bus.
+    pub fn refresh_is_pending(&self) -> bool {
+        self.refresh_pending.get()
+    }
     pub fn grant_refresh(&self) -> Option<u32> {
         if !self.refresh_pending.replace(false) {
             return None;

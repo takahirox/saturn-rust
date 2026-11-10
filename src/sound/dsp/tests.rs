@@ -4,6 +4,72 @@ use super::*;
 use crate::sound::SOUND_RAM_SIZE;
 
 #[test]
+fn zero_word_specialization_matches_the_full_decoder_and_delayed_input_stages() {
+    for step in 0..128 {
+        for temp in [-0x800000, -1, 0, 1, 0x7FFFFF] {
+            for fraction in [-4096, -1, 0, 2047, 4095] {
+                for accumulator in [-0x2000000, -1, 0, 1, 0x1FFFFFF] {
+                    for pending in 0..4 {
+                        let mut fast = Dsp {
+                            programmed: true,
+                            decrement: (step * 113) as u16,
+                            ..Dsp::default()
+                        };
+                        fast.temp.fill(temp);
+                        fast.nonzero_temp = if temp == 0 { 0 } else { 128 };
+                        fast.fraction = fraction;
+                        fast.accumulator = accumulator;
+                        fast.memory = 123;
+                        fast.reads = [
+                            if pending & 1 != 0 {
+                                Some(-0x123456)
+                            } else {
+                                None
+                            },
+                            if pending & 2 != 0 {
+                                Some(0x654321)
+                            } else {
+                                None
+                            },
+                        ];
+                        let mut literal = fast.clone();
+                        let config = RamConfig { four_mbit: true };
+                        fast.step_core::<true>(step, &mut [0; 8], config, 0, [0; 2], None)
+                            .unwrap();
+                        literal
+                            .step_core::<false>(step, &mut [0; 8], config, 0, [0; 2], None)
+                            .unwrap();
+                        assert_eq!(fast, literal, "zero MPRO at step {step}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn live_program_deadlines_follow_every_partial_word_write_and_clear() {
+    let mut dsp = Dsp::default();
+    for pass in 0..2 {
+        for word in 0..512 {
+            dsp.write(0x800 + word * 2, if pass == 0 { 1 } else { 0 })
+                .unwrap();
+            for step in 0..128 {
+                let expected = (step..128)
+                    .find(|&i| dsp.program[i] != [0; 4])
+                    .map_or(128, |i| (i - step) as u32);
+                assert_eq!(dsp.idle_zero_steps(step), expected);
+            }
+        }
+    }
+    dsp.accumulator = 1;
+    assert_eq!(dsp.idle_zero_steps(0), 0);
+    dsp.accumulator = 0;
+    dsp.reads[1] = Some(123);
+    assert_eq!(dsp.idle_zero_steps(0), 0);
+}
+
+#[test]
 fn coefficient_internal_ram_and_byte_lanes_obey_physical_widths() {
     let mut scsp = Scsp::default();
     for (base, low_mask) in [(0xC00, 255), (0xE00, 255), (0xE80, 15)] {
@@ -23,8 +89,35 @@ fn coefficient_internal_ram_and_byte_lanes_obey_physical_widths() {
     scsp.write16(0x402, 0xFFFF).unwrap();
     assert_eq!(scsp.read16(0x402), Ok(0));
     assert_eq!(scsp.common[1], 0x1FF);
-    assert!(scsp.write16(0x7C0, 1).is_err());
+    scsp.write16(0x7C0, 1).unwrap();
+    assert_eq!(scsp.read16(0x7C0), Ok(0));
     assert!(scsp.read16(0xC01).is_err());
+}
+
+#[test]
+fn reserved_address_program_gap_has_no_coefficient_address_or_program_side_effects() {
+    let mut scsp = Scsp::default();
+    scsp.write16(0x77e, 0x5ab8).unwrap();
+    scsp.write16(0x7be, 0x1234).unwrap();
+    for offset in (0x7c0..0x800).step_by(2) {
+        scsp.write16(offset, 0xffff).unwrap();
+        scsp.write8(offset, 0x12).unwrap();
+        scsp.write8(offset + 1, 0x34).unwrap();
+        assert_eq!(scsp.read16(offset), Ok(0));
+    }
+    assert_eq!(scsp.read16(0x77e), Ok(0x5ab8));
+    assert_eq!(scsp.read16(0x7be), Ok(0x1234));
+    assert_eq!(scsp.read16(0x800), Ok(0));
+    assert!(!scsp.dsp.programmed);
+    assert!(scsp.read16(0x7c1).is_err());
+    for slot in 0..32 {
+        scsp.write16(slot * 32 + 0x16, 0x1200).unwrap();
+        for word in (0x18..0x20).step_by(2) {
+            scsp.write16(slot * 32 + word, 0xffff).unwrap();
+            assert_eq!(scsp.read16(slot * 32 + word), Ok(0));
+        }
+        assert_eq!(scsp.read16(slot * 32 + 0x16), Ok(0x1200));
+    }
 }
 
 #[test]
@@ -62,7 +155,7 @@ fn temp_pointer_moves_once_per_sample_and_reads_precede_parallel_writes() {
     }
     // A simultaneous TEMP read/write must multiply the old data.
     dsp.decrement = 0;
-    dsp.temp[0] = 0x100000;
+    dsp.write(0xC02, (0x100000 >> 8) as u16).unwrap();
     dsp.program[0] = [0x0080, 0x2000, 2, 0];
     dsp.program[1] = [0, 0, 0x1102, 0];
     dsp.sample(&mut ram, RamConfig { four_mbit: true }, 0, [0; 2])
@@ -75,7 +168,7 @@ fn shifter_clips_or_wraps_and_effect_stores_replace_the_previous_sixteen_bits() 
     for (shift, expected) in [(0, 24576), (1, 32767), (2, -16384), (3, 24576)] {
         let mut dsp = Dsp::default();
         let mut ram = vec![0; SOUND_RAM_SIZE];
-        dsp.temp[0] = 0x600000;
+        dsp.write(0xC02, (0x600000 >> 8) as u16).unwrap();
         dsp.programmed = true;
         dsp.program[0] = [0, 0, 0, 0]; // ACC=TEMP0
         dsp.program[1] = [0, 0, 0x1000 | (shift << 4), 0];
@@ -85,7 +178,7 @@ fn shifter_clips_or_wraps_and_effect_stores_replace_the_previous_sixteen_bits() 
     }
     let mut dsp = Dsp::default();
     let mut ram = vec![0; SOUND_RAM_SIZE];
-    dsp.temp[0] = 0x600000;
+    dsp.write(0xC02, (0x600000 >> 8) as u16).unwrap();
     dsp.programmed = true;
     dsp.program[1] = [0, 0, 0x1000, 0];
     dsp.program[2] = [0, 0, 0x1000, 0];
@@ -129,7 +222,7 @@ fn ring_table_linear_reads_use_two_step_latency_and_preserve_read_before_write()
     }
     // Simultaneous MRD/MWT returns the old RAM word and stores the shifter.
     dsp.decrement = 0;
-    dsp.temp[0] = 0x250000;
+    dsp.write(0xC02, (0x250000 >> 8) as u16).unwrap();
     dsp.program[0] = [0, 0, 0, 0];
     dsp.program[1] = [0, 0, 0xE002, 0x8000];
     dsp.addresses[0] = 0;
@@ -160,7 +253,7 @@ fn floating_memory_format_has_independent_bit_patterns_and_bounded_error() {
     let mut dsp = Dsp::default();
     let mut ram = vec![0; SOUND_RAM_SIZE];
     dsp.programmed = true;
-    dsp.temp[0] = 0x200000;
+    dsp.write(0xC02, (0x200000 >> 8) as u16).unwrap();
     dsp.program[1] = [0, 0, 0xC002, 0]; // floating TABLE write
     dsp.program[3] = [0, 0, 0xA002, 0]; // floating TABLE read
     dsp.program[5] = [0, 0x20, 2, 0];
@@ -184,7 +277,7 @@ fn y_fraction_and_address_latches_use_previous_step_values() {
     assert_eq!(&dsp.effects[..2], &[0, 2048]);
     // FRCL loads the previous shifter result, consumed next instruction.
     dsp.decrement = 0;
-    dsp.temp[0] = 0x200000;
+    dsp.write(0xC02, (0x200000 >> 8) as u16).unwrap();
     dsp.program.fill([0; 4]);
     dsp.program[1] = [0, 0, 0x42, 0]; // FRCL=0x400
     dsp.program[2] = [0, 0x8000, 2, 0];

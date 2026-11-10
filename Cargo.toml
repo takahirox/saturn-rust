@@ -16,6 +16,12 @@ sha1 = "=0.10.6"
 # Validate CD FLAC frame channel/bit-depth invariants before upstream decoding.
 claxon = "=0.4.3"
 
+# The browser interpreter crosses many small CPU/device boundaries. Optimize
+# them together rather than preserving independent code-generation units.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "=0.2.129"
 

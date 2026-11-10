@@ -29,22 +29,35 @@ impl Operation {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(super) struct Transactions {
-    completed: Vec<(Operation, Result<u32, BusError>)>,
+    // Successful replay is the hot path. Keep large diagnostic errors out of
+    // each completed access; their original values remain available by index.
+    completed: Vec<(Operation, Result<u32, usize>)>,
+    errors: Vec<BusError>,
     cursor: usize,
     waiting: Option<Operation>,
     start: u64,
+    #[cfg(test)]
+    literal_finishes: bool,
+    #[cfg(test)]
+    elided_finishes: u64,
     stalls: u64,
     reset: Option<ResetSequence>,
     cpu: Option<M68k>,
 }
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct ResetSequence {
     word: usize,
     high: u16,
 }
 impl Transactions {
+    /// A RAM transfer cannot change SCSP configuration or signal the main CPU.
+    /// A newly issued control write/reset needs at least four sound CPU clocks.
+    pub fn control_write_pending(&self) -> bool {
+        matches!(self.waiting, Some(Operation::Write(a, _, _)) if a & 0xFF_FFFF >= SOUND_RAM_SIZE as u32)
+            || self.waiting == Some(Operation::ResetOutput)
+    }
     pub fn ram_request(&self, pc: u32) -> Option<memory::Request> {
         let (address, width, write) = if let Some(reset) = &self.reset {
             let address = if reset.word < 4 {
@@ -80,7 +93,7 @@ impl Transactions {
         }
     }
 }
-struct Replay<'a>(RefCell<&'a mut Transactions>);
+struct Replay<'a>(RefCell<&'a mut Transactions>, u64);
 impl Replay<'_> {
     fn access(&self, operation: Operation) -> Result<u32, BusError> {
         let mut journal = self.0.borrow_mut();
@@ -92,7 +105,7 @@ impl Replay<'_> {
         if let Some(&(old, result)) = journal.completed.get(journal.cursor) {
             assert_eq!(old, operation, "68k replay changed its bus sequence");
             journal.cursor += 1;
-            return result;
+            return result.map_err(|index| journal.errors[index]);
         }
         journal.waiting = Some(operation);
         Err(BusError::Pending)
@@ -100,6 +113,30 @@ impl Replay<'_> {
 }
 impl Memory for Replay<'_> {
     fn m68k_finish_clocks(&self, clocks: u32) -> Result<(), BusError> {
+        let ready = {
+            let journal = self.0.borrow();
+            #[cfg(test)]
+            let enabled = !journal.literal_finishes;
+            #[cfg(not(test))]
+            let enabled = true;
+            enabled
+                && journal.waiting.is_none()
+                && self.1 >= journal.start + journal.stalls + u64::from(clocks)
+                && !journal
+                    .completed
+                    .get(journal.cursor)
+                    .is_some_and(|(op, _)| *op == Operation::FinishClocks(clocks))
+        };
+        if ready {
+            // This internal barrier has already elapsed. It owns no RAM grant
+            // or physical bus phase. A recorded completion still consumes its
+            // journal entry above, including when trace replays an older tail.
+            #[cfg(test)]
+            {
+                self.0.borrow_mut().elided_finishes += 1;
+            }
+            return Ok(());
+        }
         self.access(Operation::FinishClocks(clocks)).map(|_| ())
     }
     fn m68k_internal_wait(&self, clocks: u32) -> Result<(), BusError> {
@@ -194,6 +231,11 @@ impl Sound {
                 },
                 Ok,
             );
+            let result = result.map_err(|error| {
+                let index = journal.errors.len();
+                journal.errors.push(error);
+                index
+            });
             journal.completed.push((operation, result));
         } else {
             journal.start = self.cpu_ticks;
@@ -202,7 +244,7 @@ impl Sound {
         }
         journal.cursor = 0;
         let mut execution = journal.cpu.as_ref().unwrap().clone();
-        let clocks = execution.step(&mut Replay(RefCell::new(journal)));
+        let clocks = execution.step(&mut Replay(RefCell::new(journal), self.cpu_ticks));
         let journal = &mut self.transactions;
         if journal.waiting.is_some() {
             if let Some(state) = execution.retired_state() {
@@ -239,6 +281,7 @@ impl Sound {
                 .cpu_ticks
                 .max(journal.start + journal.stalls + u64::from(clocks));
             journal.completed.clear();
+            journal.errors.clear();
             journal.cpu = None;
         }
     }
@@ -247,3 +290,7 @@ impl Sound {
 #[cfg(test)]
 #[path = "irq_tests.rs"]
 mod irq_tests;
+
+#[cfg(test)]
+#[path = "finish_tests.rs"]
+mod finish_tests;

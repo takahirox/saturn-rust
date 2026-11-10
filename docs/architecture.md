@@ -68,6 +68,47 @@ or game-state renderer. Read-only `read_long` is a debugger/test facility.
 
 ## SH-2 reference interpreter
 
+The frame runner has an [event-bounded cache execution path](runtime-performance.md#cache-execution-follow-up).
+It uses the same interpreter/pipeline semantics with transactional cache/prefetch
+state between CPU-observable events, including fractional NTSC/PAL PLL phases.
+Register-only sequences share the reference ALU operations while carrying their
+real IF words and final pipeline state in one block. MMIO and misses retain the
+transaction protocol. Device stores end a block after actual write-buffer
+acceptance and any remaining instruction IF phases; the ordinary bus protocol still controls endian/width splitting,
+external ownership and publication. Cache hits may overlap an accepted data
+write, with catch-up split at its physical completion before later acquisitions.
+Control writes and refresh retain their completion boundaries.
+System/control stack transfers and RTE retain the reference microsequences;
+special stores require work RAM and changes to SR.I end the burst. Cache writes
+update subsequent IFs while previously retained instruction words keep their
+original values. A retry after hardware reaches CPU readiness completes one
+instruction under the same field-boundary contract as ordinary stepping.
+Independent device work runs at its original acquisition/sample/interrupt edges
+within each device. Bus masters and live user breaks retain detailed scheduling.
+Debugger stepping and `run_steps` retain the reference path.
+
+A bounded exception admits uncached word/longword reads of passive VDP1
+EDSR/LOPR, while drawing completion, field changes and control publication stay
+outside the interval. A private BSC sequence accounts for every physical beat,
+wait, bus width, byte order and protocol transition; actual device advancement
+still produces drawing completion. Other uncached reads retain transaction replay, except bounded cache-disabled
+ROM instruction/data sequences using the same physical-beat model.
+Slow read retirements use transactional sound lookahead: synthesis, CPU, MIDI,
+controller and pending transfer state are retained, with physical RAM bytes and
+lost host-output samples journaled for rollback. A shorter CPU prefix restores
+that state before advancing sound only through the selected reference time.
+The sound RAM and complete host-output ring are retained in place rather than
+copied for each checkpoint. Original polling/drawing/rotation/effects guests
+compare this path against ordinary stepping; firmware is optional.
+
+Isolated WRAM store bursts retain a private ordered cache overlay and BSC
+write timeline. Earlier completed payloads can publish together only while no
+admitted master can observe WRAM; the final store still uses real buffered
+acceptance, external beats and any pending tail. Existing accepted final beats
+also drain through the real scheduler. Cache-through aliases do not update
+cached copies, and already sampled IF words keep their original bytes. Device
+and VRAM stores retain their individual real publication boundaries.
+
 The interpreter decodes the 142 documented SH-2 instruction forms (53,752 valid
 16-bit encodings). [The conformance matrix](hardware-conformance.md) records
 instruction families, exact tests, primary references and remaining failures.
@@ -633,8 +674,9 @@ CD-DA feed real instructions; EFREG outputs use the SCSP effect sends. Hardware
 Lab's independent 68k uploads an original effects program, and native/browser
 checks compare exact samples and changed guest coefficients. Detailed timing,
 full DSP conformance and bus contention remain required.
-Reference-emulator/physical-hardware comparison and performance measurements
-have not been performed. Synthetic Gamepad input is automatically tested. No dynarec, workers,
+Reference-emulator/physical-hardware comparison has not been performed. Local
+profiling and throughput comparisons are recorded in
+[runtime performance](runtime-performance.md). Synthetic Gamepad input is automatically tested. No dynarec, workers,
 server backend or general-game compatibility is introduced.
 
 Issue #17 continues all unmet hardware criteria; #11/#13/#15 remain closed.
@@ -899,3 +941,69 @@ This evidence does not verify full cross-chip arbitration, arbitrary
 asynchronous CDC/GFS calls, real Sega BIOS/SDK ABI or commercial games. Physical
 controller timing, complete connector lifetime and the wider hardware scope
 remain pending; no host file API or HLE service is installed by ExternalBios.
+
+
+The bounded execution path can retire register ALU instructions after their
+ordinary IF/WB phases. Already elapsed sound retirement barriers complete inline,
+while pending bus phases retain replay. VDP2 retains the required one/two priority
+ranks for ordinary composition and uses priority bounds to avoid hidden RGB
+conversion; physical display acquisition still runs at its scheduled edges.
+Extended calculation and gradation retain the complete four-image path. See
+[the performance evidence](runtime-performance.md#elapsed-sound-barriers-and-visible-image-composition)
+for literal CPU/compositor comparisons and the remaining 60 Hz throughput gap.
+
+
+Cached execution also previews the remaining phases of already accepted,
+unobserved WRAM or idle VDP1 command-RAM writes. Ordinary board catch-up still
+publishes these continuations at their real edges; active drawing and control
+writes retain their existing paths. A frame-only retry may resume a full bounded
+burst after a wait in the same field, while a wait crossing the field boundary
+retains one-instruction completion. ISA-only timing/dependency tables share the
+literal decoder's semantics, and scanout writes into its existing RGBA buffer.
+See [the comparison and remaining limits](runtime-performance.md#cached-instruction-metadata-and-quiescent-write-queues).
+
+
+Cached admission also uses an ISA-generated eligibility/store-width table and
+admits scalar blocks whose load interlock was already consumed by IF, while
+retaining ordinary handling at an MA/EX overlap. Sound advancement reuses a
+known integer DSP tick, reevaluates eligibility after device/control changes,
+and omits a duplicate zero-clock follow-up only after fully settled lookahead.
+Decode-only cache peeks do not copy or mutate replacement state. The current
+measurements and remaining 60-field/sec gap are recorded in
+[the performance record](runtime-performance.md#cached-admission-and-clock-scheduling).
+
+
+PCM stages move compact tokens while active-voice operands remain in a fixed
+pool; inactive slots retain their original LFO, stack and DSP edges. Isolated
+WRAM stores preserve real bus grant/publication clocks while independent devices
+catch up once. Pure catch-up retains unchanged IRQ recognition starts, and VDP1
+keeps drawing operands in a stable allocation per command. See
+[the measured evidence and remaining limits](runtime-performance.md#retained-pcm-operands-and-isolated-wram-updates).
+
+
+Cache-only CPU intervals may cross non-interrupting BSC refresh while real board
+grants and recovery retain their original edges. A discovered write narrows the
+interval to the original horizon; external operands and other observers keep
+the ordinary path. Packed captured display words reduce per-pixel metadata.
+See [the performance evidence and remaining limits](runtime-performance.md#cache-only-execution-across-silent-refresh).
+
+### Cached memory multiply-accumulate
+
+The memory form of `MAC.L` can join an observer-bounded cached burst when both
+operands are ordinary aligned cache hits. Admission checks the second address
+after the first increment when Rn and Rm alias. The shared interpreter retains
+the actual memory-read order, saturation and multiplier/IF pipeline timing;
+failed admission keeps normal transaction scheduling. Native instruction-boundary
+comparisons and original cached/bypass Wasm guests cover this path. See the
+[paired measurements and remaining limits](runtime-performance.md#cached-memory-multiply-accumulate).
+
+### Bounded WRAM cache refills
+
+A bounded CPU burst can retain a stable WRAM instruction or data cache miss.
+It privately plans all four physical longword reads and versions each replaced
+cache set; normal tags, data, LRU, ID/OD controls and external width/byte order
+remain effective. Failure or a sound-control boundary rolls back the unaccepted
+prefix tail before replay and publication. Physical reads narrow any silent
+refresh extension to the original BSC horizon. Writes, bypass/peripheral operands
+and interfering observers retain ordinary scheduling. See the
+[paired measurements and limits](runtime-performance.md#bounded-wram-cache-refills).

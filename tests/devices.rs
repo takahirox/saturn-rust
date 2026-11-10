@@ -117,10 +117,11 @@ fn vram_aliases_endianness_alignment_register_boundaries_and_read_only_status() 
     assert!(bus.write32(VRAM + 1, 0).is_err());
     assert_eq!(bus.read8(VRAM + 512 * 1024), bus.read8(VRAM));
     assert_eq!(bus.read16(VDP2 + 4), Ok(10)); // DISP=0 forces status VBLANK.
-    assert!(bus.write16(VDP2 + 4, 8).is_err());
+    bus.write16(VDP2 + 4, 8).unwrap();
+    assert_eq!(bus.read16(VDP2 + 4), Ok(10)); // read-only status is unchanged.
     bus.write32(VDP2, 0x80000000).unwrap(); // TVMD and EXTEN are both writable.
     assert_eq!(bus.read16(VDP2), Ok(0x8000));
-    assert!(bus.write32(VDP2 + 8, 0xFFFFFFFF).is_err()); // HCNT/VCNT are read-only.
+    bus.write32(VDP2 + 8, 0xFFFFFFFF).unwrap(); // HCNT/VCNT ignore stores.
     assert_eq!(bus.read32(VDP2 + 8), Ok(0));
     bus.write16(VDP2 + 0x2A, 1).unwrap();
     assert_eq!(bus.read16(VDP2 + 0x2A), Ok(1));

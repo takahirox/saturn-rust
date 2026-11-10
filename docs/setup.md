@@ -28,7 +28,7 @@ cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 ```
 
-The test profile uses optimization level 1 with debug assertions and overflow
+The test profile uses optimization level 3 with debug assertions and overflow
 checks explicitly enabled. Hardware guests still execute every emulated clock;
 optimization keeps the complete native integration suite practical in CI.
 
@@ -89,6 +89,23 @@ sh scripts/build-web.sh
 cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings
 python3 -m http.server 8000 --bind 127.0.0.1 --directory web
 ```
+
+Every browser build runs Binaryen 127 `wasm-opt -O4` after wasm-bindgen. Install
+[Binaryen 127 from the official release](https://github.com/WebAssembly/binaryen/releases/tag/version_127)
+for your platform and add its extracted `bin` directory to `PATH` before building:
+
+```sh
+wasm-opt --version  # wasm-opt version 127
+sh scripts/build-web.sh
+```
+
+No optimization option or environment variable is needed. The build fails with
+installation instructions if the optimizer is missing or has a different version;
+it never silently emits an unoptimized release. Downloads are an explicit setup
+step, not part of the build. The optimizer preserves the existing Wasm features
+and trap semantics, replaces the output only after success, and cleans temporary
+output on failure. See the
+[paired performance evidence](runtime-performance.md#binaryen-postprocessing).
 
 Open <http://127.0.0.1:8000>. The build regenerates the original licensed ISO and
 its public license, then creates
@@ -228,13 +245,16 @@ and results. Nonzero exit means failure.
 ## GitHub Pages
 
 The [Browser Pages workflow](../.github/workflows/pages.yml) uses stable Rust,
-the committed Cargo/npm lockfiles, matching `wasm-bindgen-cli 0.2.129`, and
+the committed Cargo/npm lockfiles, matching `wasm-bindgen-cli 0.2.129`, Binaryen 127, and
 `scripts/build-web.sh`. The independent `native` job checks every registered
 fixture and runs formatting, build, tests and native Clippy. The test profile
 uses optimization level 3 while retaining debug assertions and overflow checks.
 The independent `wasm` job builds Wasm once, runs Wasm Clippy and retains the immutable
 `web-build` artifact. Its bindgen CLI cache has one exact version/OS/architecture
-key, no fallback keys, and the existing build always verifies CLI version 0.2.129.
+key, no fallback keys, and the existing build always verifies CLI version
+0.2.129. Binaryen is installed from its pinned Linux release archive with a
+checked SHA-256; the build always verifies optimizer version 127 and runs `-O4`.
+The browser tests and Pages publication consume that same optimized artifact.
 A cold cache performs the original locked install. Two `browser` matrix jobs
 download that same artifact:
 `shared` runs the original dependent UI trace (30 groups), then the independent

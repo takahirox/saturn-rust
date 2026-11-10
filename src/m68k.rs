@@ -52,7 +52,7 @@ pub struct M68k {
     pub reset_output: bool,
     // Instruction register plus a prefetched word. Writes to the sound bus do
     // not invalidate either; only a control-flow change flushes the queue.
-    prefetch: std::collections::VecDeque<(u32, u16)>,
+    prefetch: Prefetch,
     bus_pc: u32,
     exception_activity: bool,
     // MOVEM memory-to-register consumes its EA extensions before the operand
@@ -62,6 +62,38 @@ pub struct M68k {
     // A traced instruction has already retired while its trace frame/vector
     // cycles are in flight. Reset must retain that completed register state.
     retired_state: Option<State>,
+}
+/// The 68000 retains at most its instruction word and one lookahead word.
+/// Keep both inline: instruction/bus replay clones this queue very frequently.
+#[derive(Clone, Copy, Default)]
+struct Prefetch([Option<(u32, u16)>; 2]);
+impl Prefetch {
+    fn len(&self) -> usize {
+        usize::from(self.0[0].is_some()) + usize::from(self.0[1].is_some())
+    }
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.0[0].is_none()
+    }
+    fn front(&self) -> Option<&(u32, u16)> {
+        self.0[0].as_ref()
+    }
+    fn back(&self) -> Option<&(u32, u16)> {
+        self.0[1].as_ref().or(self.0[0].as_ref())
+    }
+    fn clear(&mut self) {
+        self.0 = [None; 2];
+    }
+    fn push_back(&mut self, word: (u32, u16)) {
+        assert!(self.0[1].is_none(), "68000 prefetch exceeds two words");
+        let at = usize::from(self.0[0].is_some());
+        self.0[at] = Some(word);
+    }
+    fn pop_front(&mut self) -> Option<(u32, u16)> {
+        let word = self.0[0].take();
+        self.0[0] = self.0[1].take();
+        word
+    }
 }
 #[derive(Clone, Copy)]
 enum Size {

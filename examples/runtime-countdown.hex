@@ -1,0 +1,4 @@
+# Original MIT guest. DT/BF countdown with a guest-visible zero-exit marker.
+00000000 0000 0200 060F F000
+00000200 D10F E001 2100 D30F 4310 8BFD E655 AFFE 0009
+00000240 FFFF FE92 0010 0000

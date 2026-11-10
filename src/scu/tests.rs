@@ -40,12 +40,57 @@ fn interrupt_mapping_and_gate_with_model_equal_level_order_and_consumption() {
     assert_eq!(scu.interrupt(), None);
     // Unmodeled removed ports retain honest diagnostics; DSTP has a separately
     // documented nonfatal compatibility policy.
-    for offset in [0x70, 0x74, 0x78, 0x7C, 0xAC] {
+    for offset in [0x70, 0x74, 0x78, 0xAC] {
         assert!(scu.read32(SCU + offset).is_err());
         assert!(scu.write32(SCU + offset, 0).is_err());
     }
-    assert!(scu.write32(SCU + 0xA4, 0).is_err()); // ST-210 #7
+    assert_eq!(scu.read32(SCU + 0x7C), Ok(0));
+    assert!(scu.write32(SCU + 0x7C, 0).is_err());
+    scu.write32(SCU + 0xA4, 0).unwrap(); // legacy zero-clear compatibility
     assert!(scu.read32(SCU + 0xA0).is_err()); // IMS write-only
+}
+
+#[test]
+fn legacy_ist_write_clears_only_zero_bits_and_does_not_mask_new_factors() {
+    // System Program reference SYS_SETSCUIM / SYS_CHGSCUIM explicitly writes
+    // IST. ST-210 #7's lost-interrupt warning is not a CPU exception contract.
+    for bit in (0..14).chain(16..32) {
+        let mut scu = Scu::default();
+        scu.write32(SCU + 0xA0, 0).unwrap();
+        scu.write32(SCU + 0xA8, 1).unwrap();
+        scu.signal(bit);
+        let pending = scu.read32(SCU + 0xA4).unwrap();
+        assert_ne!(pending & (1 << bit), 0);
+        scu.write32(SCU + 0xA4, u32::MAX).unwrap();
+        assert_eq!(scu.read32(SCU + 0xA4), Ok(pending));
+        scu.write32(SCU + 0xA4, !(1 << bit)).unwrap();
+        assert_eq!(scu.read32(SCU + 0xA4), Ok(pending & !(1 << bit)));
+        scu.write32(SCU + 0xA8, 1).unwrap();
+        scu.signal(bit);
+        assert_ne!(scu.read32(SCU + 0xA4).unwrap() & (1 << bit), 0);
+        scu.write32(SCU + 0xA4, 0).unwrap();
+        assert_eq!(scu.read32(SCU + 0xA4), Ok(0));
+        assert_eq!(scu.mask, 0);
+    }
+}
+
+#[test]
+fn legacy_ist_clear_preserves_active_dma_and_its_later_end_interrupt() {
+    for channel in 0..3 {
+        let mut scu = Scu::default();
+        let mut memory = Bus::default();
+        memory.write32(HIGH_WRAM, 0x12345678).unwrap();
+        memory.write32(HIGH_WRAM + 4, 0x9abcdef0).unwrap();
+        set_dma(&mut scu, channel, HIGH_WRAM, HIGH_WRAM + 0x100, 8, 0x102, 7);
+        scu.advance_dma(&mut memory).unwrap();
+        scu.signal(2);
+        scu.write32(SCU + 0xA4, 0).unwrap();
+        assert_eq!(scu.read32(SCU + 0xA4), Ok(0));
+        drain(&mut scu, &mut memory);
+        assert_eq!(memory.read32(HIGH_WRAM + 0x100), Ok(0x12345678));
+        assert_eq!(memory.read32(HIGH_WRAM + 0x104), Ok(0x9abcdef0));
+        assert_eq!(scu.read32(SCU + 0xA4), Ok(1 << (11 - channel)));
+    }
 }
 
 #[test]
@@ -97,6 +142,48 @@ fn endpoint_model_consumes_only_unmasked_sources_at_requested_level() {
             }
         }
     }
+}
+
+#[test]
+fn legacy_dma_activity_retains_pending_levels_until_actual_completion() {
+    let mut scu = Scu::default();
+    let mut memory = Bus::default();
+    for i in 0..8 {
+        memory.write32(HIGH_WRAM + i * 4, 0x12340000 + i).unwrap();
+    }
+    for channel in 0..3 {
+        set_dma(
+            &mut scu,
+            channel,
+            HIGH_WRAM,
+            HIGH_WRAM + 0x100 + channel * 0x100,
+            32,
+            0x102,
+            7,
+        );
+    }
+    assert_eq!(scu.read32(SCU + 0x7C), Ok(0x1110));
+    for channel in (0..3).rev() {
+        let expected = [0x10, 0x110, 0x1110][channel];
+        for _ in 0..100 {
+            assert_eq!(scu.read32(SCU + 0x7C), Ok(expected));
+        }
+        for _ in 0..1000 {
+            scu.advance_dma(&mut memory).unwrap();
+            if !scu.channels[channel].pending() {
+                break;
+            }
+        }
+        assert!(!scu.channels[channel].pending());
+        for i in 0..8 {
+            assert_eq!(
+                memory.read32(HIGH_WRAM + 0x100 + channel as u32 * 0x100 + i * 4),
+                Ok(0x12340000 + i)
+            );
+        }
+    }
+    assert_eq!(scu.read32(SCU + 0x7C), Ok(0));
+    assert_eq!(scu.read32(SCU + 0xA4), Ok(0xe00));
 }
 
 fn set_dma(
@@ -761,7 +848,7 @@ fn legacy_dstp_preserves_every_dma_level_phase_trigger_and_completion() {
                         s.read32(SCU + channel * 32 + 4),
                         control.read32(SCU + channel * 32 + 4)
                     );
-                    assert!(s.read32(SCU + 0x7c).is_err()); // removed DSTA remains diagnostic
+                    assert_eq!(s.read32(SCU + 0x7c), control.read32(SCU + 0x7c));
                     for offset in [0x200, 0x204] {
                         assert_eq!(
                             b.read32(HIGH_WRAM + offset),

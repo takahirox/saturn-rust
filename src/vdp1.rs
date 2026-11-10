@@ -190,7 +190,7 @@ pub struct Vdp1 {
     blank_remaining: u32,
     erasing: Option<Erasing>,
     display_erase: Option<EraseArea>,
-    drawing: Option<Drawing>,
+    drawing: Option<Box<Drawing>>,
     pending_pixel: Option<PendingPixel>,
     local: Point,
     system: Point,
@@ -490,6 +490,87 @@ impl Vdp1 {
         }
         self.erasing = Some(erase);
     }
+    /// Pixel, texture and erase work cannot signal an IRQ or fault. A new
+    /// command can do so at its final decode phase, or at the first fetch if
+    /// its table address is invalid. Cached CPUs cannot observe framebuffer
+    /// progress until their next I/O; normal VDP2 composition waits for blank.
+    pub(crate) fn clocks_to_observable_event(&self) -> u32 {
+        // A six-state pixel can straddle a framebuffer swap. Its captured
+        // destination is then the front buffer, which rotation sprite-window
+        // acquisition can observe before the next horizontal blank.
+        let display_write = self
+            .pending_pixel
+            .as_ref()
+            .filter(|pixel| pixel.buffer != self.draw)
+            .map_or(u32::MAX, |pixel| pixel.clocks)
+            .min(
+                if self
+                    .erasing
+                    .as_ref()
+                    .is_some_and(|erase| erase.area.buffer != self.draw)
+                {
+                    self.erase_deadline()
+                } else {
+                    u32::MAX
+                },
+            );
+        self.clocks_to_command_event().min(display_write)
+    }
+    fn clocks_to_command_event(&self) -> u32 {
+        if !self.running {
+            return u32::MAX;
+        }
+        if self.pc + 32 > VRAM_SIZE || self.pc & 31 != 0 {
+            return COMMAND_WORD_CLOCKS - self.phase;
+        }
+        if self.drawing.is_some() || self.pending_pixel.is_some() {
+            // Every remaining row consumes at least one pixel phase. End
+            // codes can shorten a textured row, but never omit that phase.
+            // With end codes disabled, the current retained row must consume
+            // all its remaining dots before the next command can decode.
+            let pending = self.pending_pixel.as_ref().map_or(0, |pixel| pixel.clocks);
+            let drawing = self.drawing.as_ref().map_or(0, |draw| {
+                if draw.row > draw.rows {
+                    return 0;
+                }
+                let no_end_codes = draw.command[0] & 15 > 2 || draw.command[2] & 0x1080 != 0;
+                let row = if no_end_codes {
+                    let owned;
+                    let line = if let Some(line) = &draw.line {
+                        line
+                    } else {
+                        owned = Self::raster_line(draw);
+                        &owned
+                    };
+                    (line.last - line.dot + 1).max(1) as u32
+                } else {
+                    1
+                };
+                let p = &draw.points;
+                let rectangle = matches!(draw.command[0] & 15, 0..=2 | 4)
+                    && p[0].x == p[3].x
+                    && p[1].x == p[2].x
+                    && p[0].y == p[1].y
+                    && p[3].y == p[2].y
+                    && draw.clip.is_none_or(|[low, high]| {
+                        p[0].y.min(p[3].y) >= low.y && p[0].y.max(p[3].y) <= high.y
+                    });
+                let rows = (draw.rows - draw.row) as u32;
+                let width = if rows != 0 && no_end_codes && rectangle {
+                    let first = Self::raster_line(draw);
+                    (first.last - first.dot + 1).max(1) as u32
+                } else {
+                    1
+                };
+                row.saturating_add(rows.saturating_mul(width))
+            });
+            pending
+                .saturating_add(drawing)
+                .saturating_add(COMMAND_CLOCKS)
+        } else {
+            (16 - self.command_read) as u32 * COMMAND_WORD_CLOCKS - self.phase
+        }
+    }
     pub fn clocks_to_event(&self) -> u32 {
         let draw = if self.running {
             let draw = if let Some(pixel) = &self.pending_pixel {
@@ -525,14 +606,75 @@ impl Vdp1 {
         vram_busy: bool,
         framebuffer_busy: bool,
     ) -> Result<bool, BusError> {
+        if !self.running && self.erasing.is_none() {
+            if self.vblank {
+                self.blank_remaining = self.blank_remaining.saturating_sub(clocks);
+            }
+            return Ok(false);
+        }
         let mut remaining = clocks;
         let mut ended = false;
         while remaining != 0 {
+            let drawn = self.try_draw_run(remaining, framebuffer_busy);
+            if drawn != 0 {
+                remaining -= drawn;
+                continue;
+            }
             let delta = remaining.min(self.clocks_to_event());
             ended |= self.advance_phase(delta, vram_busy, framebuffer_busy)?;
             remaining -= delta;
         }
         Ok(ended)
+    }
+    /// No other master observes an intermediate point inside this call. Keep
+    /// every pixel and stop before the next texture/table bus phase, pending
+    /// six-state pixel, forced stop or erase phase. Cached texture words remain
+    /// usable even when the VRAM port belongs to the system controller.
+    fn try_draw_run(&mut self, clocks: u32, framebuffer_busy: bool) -> u32 {
+        if clocks < 2
+            || framebuffer_busy
+            || !self.running
+            || self.pending_pixel.is_some()
+            || self.stop_remaining.is_some()
+            || self.erasing.is_some()
+            || self.phase != 0
+        {
+            return 0;
+        }
+        let Some(mut draw) = self.drawing.take() else {
+            return 0;
+        };
+        let mut used = 0;
+        while used < clocks && !draw.tables_pending() && !draw.texture_pending(self.draw_control) {
+            self.draw_next(&mut draw);
+            used += 1;
+            if draw.row > draw.rows || self.pending_pixel.is_some() {
+                break;
+            }
+        }
+        if draw.row <= draw.rows || self.pending_pixel.is_some() {
+            self.drawing = Some(draw);
+        }
+        if self.vblank {
+            self.blank_remaining = self.blank_remaining.saturating_sub(used);
+        }
+        used
+    }
+    fn draw_next(&mut self, draw: &mut Drawing) {
+        if draw.line.is_none() {
+            draw.line = Some(Self::raster_line(draw));
+        }
+        let done = self.draw_dot(
+            &draw.command,
+            &draw.lookup,
+            draw.texture.map(|(_, word)| word),
+            draw.line.as_mut().unwrap(),
+        );
+        if done {
+            draw.line = None;
+            draw.row += 1;
+            draw.texture = None;
+        }
     }
     fn advance_phase(
         &mut self,
@@ -555,7 +697,7 @@ impl Vdp1 {
             }
             self.stop_remaining = Some(left - clocks);
         }
-        let tables_pending = self.drawing.as_ref().is_some_and(Drawing::tables_pending);
+        let tables_pending = self.drawing.as_deref().is_some_and(Drawing::tables_pending);
         let texture_pending = self.pending_pixel.is_none()
             && self
                 .drawing
@@ -645,21 +787,7 @@ impl Vdp1 {
                 self.drawing = Some(draw);
                 return Ok(false);
             }
-            if draw.line.is_none() {
-                draw.line = Some(Self::raster_line(&draw));
-            }
-            let line = draw.line.as_mut().unwrap();
-            let done = self.draw_dot(
-                &draw.command,
-                &draw.lookup,
-                draw.texture.map(|(_, word)| word),
-                line,
-            );
-            if done {
-                draw.line = None;
-                draw.row += 1;
-                draw.texture = None;
-            }
+            self.draw_next(&mut draw);
             if draw.row <= draw.rows || self.pending_pixel.is_some() {
                 self.drawing = Some(draw);
             }
@@ -788,7 +916,7 @@ impl Vdp1 {
             5 => 3,
             _ => p[0].distance(p[3]).max(p[1].distance(p[2])),
         };
-        self.drawing = Some(Drawing {
+        self.drawing = Some(Box::new(Drawing {
             command: *c,
             points: p,
             shade: [[0; 3]; 4],
@@ -823,7 +951,7 @@ impl Vdp1 {
             } else {
                 None
             },
-        });
+        }));
         Ok(())
     }
     fn raster_line(draw: &Drawing) -> RasterLine {

@@ -96,6 +96,9 @@ impl Scu {
                 0
             };
         // Equal-level sources use ascending vector order.
+        if unmasked == 0 {
+            return None;
+        }
         (0..32)
             .filter(|bit| unmasked & (1 << bit) != 0)
             .map(|bit| (INTERRUPT_LEVELS[bit], 0x40 + bit as u8))
@@ -128,7 +131,6 @@ impl Scu {
         // Undriven data is modeled high; this is not a specified SCU vector.
         source.unwrap_or(0x7F)
     }
-    #[cfg(test)]
     pub(crate) fn dma_pending(&self) -> bool {
         self.dsp.dma_pending() || self.channels.iter().any(|c| c.pending())
     }
@@ -195,6 +197,18 @@ impl Scu {
             // is a deterministic compatibility fallback, not measured open bus.
             // Kept local to this longword port; see docs/mmio-compatibility.md.
             0x60 => Ok(0),
+            // Legacy DSTA activity view (ST-097 fig3.13, superseded by
+            // ST-210 #13). Keep each move bit asserted until the real
+            // transfer completes, including queued/arbitration waits.
+            // This conservative compatibility view is not an electrical
+            // reconstruction of the removed wait/break/access flags.
+            0x7C => Ok(self
+                .channels
+                .iter()
+                .enumerate()
+                .fold(u32::from(self.dsp.dma_pending()), |status, (i, channel)| {
+                    status | (u32::from(channel.pending()) << (4 + i * 4))
+                })),
             0x80 => Ok(self.dsp.control()),
             0x8C => self.dsp.read_data(address),
             0xA4 => Ok(self.status),
@@ -226,10 +240,15 @@ impl Scu {
                 }
             }
             0xA0 => self.mask = value as u16 & 0xBFFF,
+            // System Program SYS_SETSCUIM/CHGSCUIM requires IST stores.
+            // Compatibility model: zero clears, one preserves a factor.
+            // ST-210 #7 warns about lost interrupts, not CPU bus exceptions;
+            // concurrent electrical set/clear priority is not established.
+            0xA4 => self.status &= value,
             0xA8 => self.abus_ack = value & 1 != 0,
             0xB0 | 0xB4 | 0xB8 => self.abus.write(address - SCU, value),
             0xC4 => self.sdram = value & 1 != 0,
-            // ST-210 #6/7/13: unused ports, IST writes, DSTA are prohibited.
+            // ST-210 #6/13: unused ports and DSTA writes remain unsupported.
             // ASR/AREF are write-only and control external bus cycles.
             _ => return Err(BusError::UnsupportedDevice { address, width: 4 }),
         }

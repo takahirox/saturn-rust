@@ -4,6 +4,7 @@
 //! Sprite readout uses A's start/deltas, not its matrix or coefficients (p.159).
 use super::{Layer, Vdp2};
 use crate::vdp1::Vdp1;
+use std::cell::RefCell;
 
 #[derive(Clone, Copy)]
 pub(super) struct RotationSample {
@@ -14,6 +15,7 @@ pub(super) struct RotationSample {
 #[derive(Default)]
 pub(super) struct RotationRead {
     pub line: Option<usize>,
+    pub(super) transforms: RefCell<[[Option<Transform>; 2]; 2]>,
     previous: Option<usize>,
     starts: [[i64; 3]; 2],
     coefficients: [Option<Coefficient>; 2],
@@ -31,6 +33,47 @@ struct Coefficient {
     line_color: Option<u16>,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct Transform {
+    origin: [i64; 2],
+    delta: [i64; 2],
+    matrix: [i64; 4],
+    z: [i64; 2],
+    offset: [i64; 2],
+    scale: [i64; 2],
+}
+impl Transform {
+    fn coordinates(&self, x: usize, coefficient: Option<Coefficient>) -> (i64, i64) {
+        let sx = self.origin[0] + self.delta[0] * x as i64;
+        let sy = self.origin[1] + self.delta[1] * x as i64;
+        let [mut kx, mut ky] = self.scale;
+        let [mut xp, yp] = self.offset;
+        if let Some(Coefficient { value, mode, .. }) = coefficient {
+            match mode {
+                0 => {
+                    kx = value;
+                    ky = value;
+                }
+                1 => kx = value,
+                2 => ky = value,
+                _ => xp = value,
+            }
+        }
+        (
+            (multiply(
+                kx,
+                multiply(self.matrix[0], sx) + multiply(self.matrix[1], sy) + self.z[0],
+            ) + xp)
+                >> 16,
+            (multiply(
+                ky,
+                multiply(self.matrix[2], sx) + multiply(self.matrix[3], sy) + self.z[1],
+            ) + yp)
+                >> 16,
+        )
+    }
+}
+
 fn signed(value: u32, bits: u32) -> i64 {
     i64::from((value << (32 - bits)) as i32 >> (32 - bits))
 }
@@ -45,6 +88,7 @@ impl Vdp2 {
     /// value advances by the current delta; changing table RAM alone cannot
     /// reload it. Each of Xst, Yst and KAst has an independent one-shot request.
     pub(super) fn read_rotation_line(&mut self, y: usize, first: bool) {
+        self.rotation_read.transforms.get_mut().fill([None; 2]);
         for single in [false, true] {
             let row = |y| {
                 if single && self.word(0) & 0xC0 == 0xC0 {
@@ -324,9 +368,73 @@ impl Vdp2 {
             line_color,
         })
     }
+    fn decode_transform(&self, parameter: usize, y: usize, single: bool) -> Transform {
+        let start = |offset| signed(self.rotation_long(parameter, offset) & 0x1FFFFFC0, 29);
+        let delta = |offset| signed(self.rotation_long(parameter, offset) & 0x7FFC0, 19);
+        let matrix = |offset| signed(self.rotation_long(parameter, offset) & 0xFFFC0, 20);
+        let point = |offset| signed(u32::from(self.rotation_word(parameter, offset)), 14) << 16;
+        let shift = |offset| signed(self.rotation_long(parameter, offset) & 0x3FFFFFC0, 30);
+        let m = [
+            matrix(0x1C),
+            matrix(0x20),
+            matrix(0x24),
+            matrix(0x28),
+            matrix(0x2C),
+            matrix(0x30),
+        ];
+        let p = [point(0x34), point(0x36), point(0x38)];
+        let c = [point(0x3C), point(0x3E), point(0x40)];
+        let sz = start(8) - p[2];
+        Transform {
+            origin: [
+                self.rotation_image_start(parameter, 0, y, single) - p[0],
+                self.rotation_image_start(parameter, 1, y, single) - p[1],
+            ],
+            delta: [delta(0x14), delta(0x18)],
+            matrix: [m[0], m[1], m[3], m[4]],
+            z: [multiply(m[2], sz), multiply(m[5], sz)],
+            offset: [
+                multiply(m[0], p[0] - c[0])
+                    + multiply(m[1], p[1] - c[1])
+                    + multiply(m[2], p[2] - c[2])
+                    + c[0]
+                    + shift(0x44),
+                multiply(m[3], p[0] - c[0])
+                    + multiply(m[4], p[1] - c[1])
+                    + multiply(m[5], p[2] - c[2])
+                    + c[1]
+                    + shift(0x48),
+            ],
+            scale: [
+                signed(self.rotation_long(parameter, 0x4C), 24),
+                signed(self.rotation_long(parameter, 0x50), 24),
+            ],
+        }
+    }
+    /// Decode the line's retained operands once. Every fixed-point product
+    /// keeps its original rounding; live per-dot coefficients still override
+    /// scale/translation after decoding, before the final products.
+    fn rotation_coordinates(
+        &self,
+        parameter: usize,
+        x: usize,
+        y: usize,
+        coefficient: Option<Coefficient>,
+        single: bool,
+    ) -> (i64, i64) {
+        if self.beam_rendering && self.rotation_read.line == Some(y) {
+            let mut transforms = self.rotation_read.transforms.borrow_mut();
+            return transforms[parameter][usize::from(single)]
+                .get_or_insert_with(|| self.decode_transform(parameter, y, single))
+                .coordinates(x, coefficient);
+        }
+        self.decode_transform(parameter, y, single)
+            .coordinates(x, coefficient)
+    }
+    #[cfg(test)]
     /// Compute map coordinates in Q16 throughout; discard fractional bits only
     /// after matrix/perspective/translation operations. No host floating point.
-    fn rotation_coordinates(
+    fn literal_rotation_coordinates(
         &self,
         parameter: usize,
         x: usize,
@@ -538,6 +646,66 @@ mod tests {
     fn put(v: &mut Vdp2, offset: usize, value: u32) {
         v.vram[0x10000 + offset..0x10004 + offset].copy_from_slice(&value.to_be_bytes());
     }
+    #[test]
+    fn retained_transform_operands_match_literal_products_and_live_coefficients() {
+        let mut v = Vdp2::default();
+        v.write16(VDP2, 0x80C0).unwrap();
+        v.write16(VDP2 + 0xBE, 0x8000).unwrap();
+        let mut random = 0x1937ABCDu32;
+        for y in 0..8 {
+            for parameter in 0..2 {
+                for offset in (0..0x60).step_by(4) {
+                    random = random.wrapping_mul(1664525).wrapping_add(1013904223);
+                    put(&mut v, parameter * 0x80 + offset, random);
+                }
+            }
+            v.read_line_tables(y);
+            v.beam_rendering = true;
+            v.read_rotation_line(y, y == 0);
+            for parameter in 0..2 {
+                for single in [false, true] {
+                    for x in [0, 1, 7, 8, 319, 703] {
+                        let compare = |coefficient| {
+                            assert_eq!(
+                                v.rotation_coordinates(parameter, x, y, coefficient, single),
+                                v.literal_rotation_coordinates(
+                                    parameter,
+                                    x,
+                                    y,
+                                    coefficient,
+                                    single
+                                )
+                            );
+                        };
+                        compare(None);
+                        for mode in 0..4 {
+                            for value in [-0x800000, -1, 0, 1, 0x7FFFFF] {
+                                compare(Some(Coefficient {
+                                    transparent: false,
+                                    value,
+                                    mode,
+                                    line_color: None,
+                                }));
+                            }
+                        }
+                    }
+                    assert!(
+                        v.rotation_read.transforms.borrow()[parameter][usize::from(single)]
+                            .is_some()
+                    );
+                }
+            }
+            // A debugger preview must use live table operands, independently
+            // of the previously populated clocked transform cache.
+            v.beam_rendering = false;
+            put(&mut v, 0x1C, 0x70000);
+            assert_eq!(
+                v.rotation_coordinates(0, 23, y, None, false),
+                v.literal_rotation_coordinates(0, 23, y, None, false)
+            );
+        }
+    }
+
     #[test]
     fn parameter_reload_strobes_are_independent_and_accumulate_current_deltas() {
         // ST-058 §6.3 pp.152/158: each start loads on the first row;

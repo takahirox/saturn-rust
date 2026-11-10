@@ -136,7 +136,9 @@ fn sound_off_cancels_each_partial_reset_and_on_starts_a_new_sequence() {
 
 #[test]
 fn reset_prefetch_fault_halts_without_stack_writes_or_recursive_exception() {
-    for pc in [0x201u32, 0x80000, 0x100018] {
+    // Slot padding +18 is now a nonfatal initialization endpoint. Keep this
+    // reset-fault control on the still-unmodeled common-register hole +430.
+    for pc in [0x201u32, 0x80000, 0x100430] {
         let mut sound = fixture();
         sound.ram[4..8].copy_from_slice(&pc.to_be_bytes());
         let ram = sound.ram.clone();

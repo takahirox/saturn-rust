@@ -2,6 +2,41 @@
 use super::*;
 
 #[test]
+fn idle_sound_deadlines_keep_every_distributed_and_terminal_slot() {
+    // Existing OP/LFO/output edge schedule, including both final edges.
+    // Check every reference-clock position, including an unconsumed edge
+    // shared with reset, against a literal two-sample schedule.
+    let slots = [
+        1u64, 5, 9, 13, 17, 21, 25, 29, 33, 37, 41, 45, 49, 53, 57, 61, 65, 69, 73, 77, 81, 85, 89,
+        93, 97, 101, 105, 109, 113, 117, 121, 125, 127, 128,
+    ];
+    let edges: Vec<_> = (0..3)
+        .flat_map(|frame| slots.map(|slot| ((frame * 128 + slot) * REFERENCE_HZ).div_ceil(DSP_HZ)))
+        .collect();
+    let mut sound = Sound::default();
+    for now in 0..(256 * REFERENCE_HZ).div_ceil(DSP_HZ) {
+        for consumed in [true, false] {
+            let current = now * DSP_HZ / REFERENCE_HZ;
+            sound.scsp_tick = if consumed {
+                current
+            } else {
+                current.saturating_sub(1)
+            };
+            let expected = edges
+                .iter()
+                .copied()
+                .find(|&edge| edge > now || (!consumed && current != 0 && edge == now))
+                .unwrap();
+            assert_eq!(
+                sound.scsp_deadline(now),
+                expected,
+                "now={now}, consumed={consumed}"
+            );
+        }
+    }
+}
+
+#[test]
 fn memory_geometry_is_shared_by_main_and_sound_cpu_and_preserves_inaccessible_bytes() {
     // ST-077 §4.2 table4.32/fig4.58. Address bit17 selects the absent
     // second chip in 1-Mbit mode, bit19 in 4-Mbit mode. Higher unused
@@ -1052,4 +1087,48 @@ fn mvol_clips_both_polarities_before_gain_and_truncates_signed_fractions() {
         scsp.sample(&mut ram).unwrap();
     }
     assert_eq!(scsp.drain(4), [0, 0, 0, 0, 16383, 16383, -16383, -16383]);
+}
+
+#[test]
+fn potential_control_write_deadline_never_overestimates_fractional_cpu_phase() {
+    let mut s = Sound {
+        enabled: true,
+        ..Sound::default()
+    };
+    for tick in 0..256u64 {
+        s.time = (tick * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
+        s.next_cpu = s.time;
+        let earliest_write = ((tick + 4) * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ) - s.time;
+        assert!(
+            u64::from(s.cached_cpu_deadline()) <= earliest_write,
+            "tick={tick}, bound={}, actual={earliest_write}",
+            s.cached_cpu_deadline()
+        );
+    }
+}
+
+#[test]
+fn pcm_activity_summary_follows_keyon_retained_slots_and_sample_end() {
+    let mut sound = Sound::default();
+    assert!(sound.scsp.pcm_quiescent());
+    sound.scsp.write16(6, 4).unwrap(); // Four-sample, non-looping source.
+    sound.scsp.write16(0, 0x1800).unwrap(); // KEYON + execution strobe.
+    assert!(!sound.scsp.pcm_quiescent());
+    for _ in 0..8192 {
+        sound.advance(1).unwrap();
+        let literal = !sound.scsp.voices.iter().any(|v| v.active)
+            && !sound
+                .scsp
+                .pcm_slots
+                .iter()
+                .flatten()
+                .any(|s| s.active || s.fetch);
+        assert_eq!(sound.scsp.pcm_quiescent(), literal);
+        assert_eq!(sound.scsp.pcm_quiescent(), literal);
+    }
+    assert!(sound.scsp.pcm_quiescent());
+    sound.scsp.write16(0, 0x1800).unwrap();
+    assert!(!sound.scsp.pcm_quiescent());
+    sound.scsp.set_reset(true);
+    assert!(sound.scsp.pcm_quiescent());
 }

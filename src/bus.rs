@@ -9,6 +9,7 @@ use crate::timing::{Raster, RasterEvent, SystemClock};
 use crate::vdp1::{self, Vdp1};
 use std::cell::{Cell, RefCell};
 use std::fmt;
+mod cached;
 #[cfg(test)]
 mod dmac_tests;
 #[cfg(test)]
@@ -309,6 +310,19 @@ pub trait Memory {
 
 pub struct Bus {
     transactions: transactions::Transactions,
+    inline: Option<transactions::InlineProgress>,
+    // Retain host retirement-buffer capacity between cached bursts.
+    cached_retirement_points: Vec<u64>,
+    #[cfg(test)]
+    inline_resumes: u64,
+    #[cfg(test)]
+    cached_cycle_skipped: u64,
+    #[cfg(test)]
+    cached_stores: u64,
+    #[cfg(test)]
+    cached_read_beats: u64,
+    #[cfg(test)]
+    cached_code_fills: u64,
     // Opt-in, first 64 completed legacy-DSTP transactions; no guest reads.
     pub(crate) dstp_trace: Option<Vec<String>>,
     bios: Option<Vec<u8>>,
@@ -355,6 +369,18 @@ impl Default for Bus {
     fn default() -> Self {
         Self {
             transactions: transactions::Transactions::default(),
+            inline: None,
+            cached_retirement_points: Vec::new(),
+            #[cfg(test)]
+            inline_resumes: 0,
+            #[cfg(test)]
+            cached_cycle_skipped: 0,
+            #[cfg(test)]
+            cached_stores: 0,
+            #[cfg(test)]
+            cached_read_beats: 0,
+            #[cfg(test)]
+            cached_code_fills: 0,
             dstp_trace: None,
             bios: None,
             low: vec![0; WRAM_SIZE],
@@ -690,10 +716,15 @@ impl Bus {
         }
     }
     fn acquire_display(&mut self) {
+        if !self.vdp2.display_active() {
+            return;
+        }
         if let Some((field, line, phase, slot)) = self.raster.display_slot() {
             self.vdp2.acquire_display(field, line, phase, slot);
         }
-        if let Some((field, line, phase, x)) = self.raster.rotation_display_slot() {
+        if self.vdp2.rotation_display_active()
+            && let Some((field, line, phase, x)) = self.raster.rotation_display_slot()
+        {
             self.vdp2
                 .acquire_rotation_display(&self.vdp1, field, line, phase, x);
         }
@@ -703,7 +734,11 @@ impl Bus {
             .clocks_to_event()
             .min(self.interrupt_deadline())
             .min(self.bus_main_deadline())
-            .min(self.onchip[1].clocks_to_event())
+            .min(if self.slave_enabled {
+                self.onchip[1].clocks_to_event()
+            } else {
+                u32::MAX
+            })
             .min(self.raster.clocks_to_event())
             .min(if self.vdp2.display_active() {
                 self.raster
@@ -720,20 +755,35 @@ impl Bus {
             .min(self.vdp1.clocks_to_event())
     }
 
-    fn reference_deadline(&self) -> u32 {
+    fn reference_deadline_with_sound(&self, coalesced: bool) -> u32 {
+        let sound = if coalesced && self.cd.media().is_none() && self.sound_ram_request().is_none()
+        {
+            self.sound.cached_cpu_deadline()
+        } else {
+            self.sound.clocks_to_event()
+        };
         self.cd
             .clocks_to_event()
             .min(self.smpc.clocks_to_event())
-            .min(self.sound.clocks_to_event())
+            .min(sound)
     }
 
     fn advance_fixed_clocks(&mut self, clocks: u32) -> Result<Option<u8>, ScuError> {
+        self.advance_fixed_with_sound(clocks, false)
+    }
+    fn advance_fixed_with_sound(
+        &mut self,
+        clocks: u32,
+        sound_advanced: bool,
+    ) -> Result<Option<u8>, ScuError> {
         self.cd.advance(clocks);
         if self.cd.interrupt() {
             self.scu.signal(16);
         }
-        self.sound.main_ram_request(self.sound_ram_request());
-        self.sound.advance_with_cd(clocks, &mut self.cd)?;
+        if !sound_advanced {
+            self.sound.main_ram_request(self.sound_ram_request());
+            self.sound.advance_with_cd(clocks, &mut self.cd)?;
+        }
         if self.sound.scsp.main_interrupt() {
             self.scu.signal(6);
         }
@@ -760,9 +810,9 @@ impl Bus {
             self.grant_bus_transaction();
             let delta = remaining.min(self.main_deadline());
             self.main_clocks = self.main_clocks.wrapping_add(u64::from(delta));
-            self.onchip[0].advance_clocks(delta);
+            self.onchip[0].advance_to_event(delta);
             if self.slave_enabled {
-                self.onchip[1].advance_clocks(delta);
+                self.onchip[1].advance_to_event(delta);
             }
             self.scu.advance_clocks(delta)?;
             let (vram_busy, framebuffer_busy) = self.vdp1_bus_ownership();
@@ -859,13 +909,20 @@ impl Bus {
     /// Advance attached hardware in reference clocks without issuing CPU
     /// instructions. Machine coordinates command completions with CPU state.
     pub fn advance_clocks(&mut self, clocks: u32) -> Result<Option<u8>, ScuError> {
+        self.advance_clocks_with_sound(clocks, false)
+    }
+    fn advance_clocks_with_sound(
+        &mut self,
+        clocks: u32,
+        coalesced: bool,
+    ) -> Result<Option<u8>, ScuError> {
         let mut remaining = clocks;
         let mut command = None;
         while remaining != 0 {
             self.grant_bus_transaction();
             let delta = remaining
                 .min(self.system_clock.deadline(self.main_deadline()).max(1))
-                .min(self.reference_deadline());
+                .min(self.reference_deadline_with_sound(coalesced));
             let main_clocks = self.system_clock.advance(delta);
             if let Some(completed) = self.advance_main_clocks(main_clocks, delta)? {
                 if matches!(completed, 0x0E | 0x0F) {
@@ -881,25 +938,34 @@ impl Bus {
     /// reference tick. The CPU can issue between them; fixed domains advance
     /// once. Longer idle intervals retain the existing batched fast path.
     pub(crate) fn advance_cpu_clocks(&mut self, main: u32) -> Result<(u32, Option<u8>), ScuError> {
+        self.advance_cpu_clocks_with_sound(main, false)
+    }
+    pub(crate) fn advance_cpu_clocks_with_sound(
+        &mut self,
+        main: u32,
+        coalesced: bool,
+    ) -> Result<(u32, Option<u8>), ScuError> {
+        if coalesced && let Some(result) = self.try_coalesced_wait(main) {
+            return result;
+        }
         if self.pending_main_clocks == 0 {
             if self.system_clock.is_reference() {
-                let reference = main.min(self.reference_deadline());
+                let reference = main.min(self.reference_deadline_with_sound(coalesced));
                 return self
-                    .advance_clocks(reference)
+                    .advance_clocks_with_sound(reference, coalesced)
                     .map(|command| (reference, command));
             }
             // Fixed-domain events can establish a new recognition deadline.
             // Yield to Machine at that reference edge, even inside a longer
             // main-clock idle batch. Bound reference ticks after PLL conversion
             // so fractional phase and two-main-tick edges remain intact.
-            let reference = self
-                .system_clock
-                .deadline(main)
-                .saturating_sub(1)
-                .min(self.reference_deadline().saturating_sub(1));
+            let reference = self.system_clock.deadline(main).saturating_sub(1).min(
+                self.reference_deadline_with_sound(coalesced)
+                    .saturating_sub(1),
+            );
             if reference > 0 {
                 return self
-                    .advance_clocks(reference)
+                    .advance_clocks_with_sound(reference, coalesced)
                     .map(|command| (reference, command));
             }
             self.pending_main_clocks = self.system_clock.advance(1);

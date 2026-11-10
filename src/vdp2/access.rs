@@ -1,6 +1,19 @@
 //! ST-058-R2 §3.3, figs.3.2–3.7 and tables3.2–3.5: display/CPU VRAM grants.
 use super::Vdp2;
 
+pub(super) struct AccessCache {
+    commands: Option<[[u8; 16]; 4]>,
+    characters: [u8; 400],
+}
+impl Default for AccessCache {
+    fn default() -> Self {
+        Self {
+            commands: None,
+            characters: [0; 400],
+        }
+    }
+}
+
 impl Vdp2 {
     pub(super) fn display_bank(&self, address: usize) -> usize {
         let bank = (address & 0x7FFFF) >> 17;
@@ -11,13 +24,21 @@ impl Vdp2 {
         }
     }
     fn command_slots(&self, bank: usize, command: u16) -> u8 {
-        if self.rotation_bank(bank) {
-            return 0;
-        }
-        let count = if self.word(0) & 6 == 0 { 8 } else { 4 };
-        (0..count).fold(0, |mask, slot| {
-            mask | (u8::from(self.access_command(bank, slot) == command) << slot)
-        })
+        let mut cache = self.access_cache.borrow_mut();
+        let masks = cache.commands.get_or_insert_with(|| {
+            let mut masks = [[0; 16]; 4];
+            let count = if self.word(0) & 6 == 0 { 8 } else { 4 };
+            for (bank, mask) in masks.iter_mut().enumerate() {
+                if self.rotation_bank(bank) {
+                    continue;
+                }
+                for slot in 0..count {
+                    mask[usize::from(self.access_command(bank, slot))] |= 1 << slot;
+                }
+            }
+            masks
+        });
+        masks[bank][usize::from(command)]
     }
     fn reduction(&self, layer: usize) -> u32 {
         if layer >= 2 {
@@ -77,7 +98,25 @@ impl Vdp2 {
         if !self.beam_rendering {
             return true;
         }
-        let slots = self.command_slots(self.display_bank(address), 4 + layer as u16);
+        let bank = self.display_bank(address);
+        let name_bank = name.map_or(4, |address| self.display_bank(address));
+        let key = ((layer * 4 + bank) * 5 + usize::from(format)) * 5 + name_bank;
+        let remembered = self.access_cache.borrow().characters[key];
+        if remembered != 0 {
+            return remembered == 2;
+        }
+        let allowed = self.character_policy(layer, bank, format, name);
+        self.access_cache.borrow_mut().characters[key] = if allowed { 2 } else { 1 };
+        allowed
+    }
+    fn character_policy(
+        &self,
+        layer: usize,
+        bank: usize,
+        format: u16,
+        name: Option<usize>,
+    ) -> bool {
+        let slots = self.command_slots(bank, 4 + layer as u16);
         let reads = [1u32, 2, 4, 4, 8][usize::from(format)];
         let reduction = self.reduction(layer);
         if slots.count_ones() < reads * reduction {

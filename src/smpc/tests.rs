@@ -9,6 +9,68 @@ fn issue(s: &mut Smpc, command: u8) {
     s.write(SMPC + 0x63, 1).unwrap();
     s.write(SMPC + 0x1F, command).unwrap();
 }
+
+#[test]
+fn status_overlap_retains_one_control_and_executes_it_after_status_publication() {
+    for (control, clocks) in [(0x19, 807), (0x1a, 807), (6, 807), (9, 1075)] {
+        for pen in [0, 8] {
+            let mut s = Smpc::default();
+            input(&mut s, &[1, pen, 0xf0]);
+            issue(&mut s, 0x10);
+            s.advance_clocks(907);
+            let status_deadline = s.pending;
+            s.write(SMPC + 0x1f, control).unwrap();
+            assert_eq!(s.pending, status_deadline);
+            assert_eq!(s.command_state().queued_control, Some(control));
+            assert_eq!(s.read(SMPC + 0x5f), Ok(0x10));
+            assert!(
+                matches!(s.write(SMPC + 0x1f, 7), Err(BusError::Smpc(f)) if f.reason == Rejection::Busy)
+            );
+            assert!(s.write(SMPC + 3, 0).is_err());
+            assert_eq!(s.advance_clocks(7692), None);
+            assert_eq!(s.advance_clocks(1), Some(0x10));
+            assert!(s.take_irq());
+            assert_eq!(s.read(SMPC + 0x21), Ok(0x40));
+            assert_eq!(s.read(SMPC + 0x5f), Ok(control));
+            assert_eq!(s.pending, Some((control, clocks)));
+            assert!(s.sf && s.busy());
+            assert!(!s.await_continue && !s.await_vblank && !s.peripheral_phase);
+            assert_eq!(s.advance_clocks(clocks - 1), None);
+            assert_eq!(s.advance_clocks(1), Some(control));
+            assert!(!s.sf && !s.busy() && !s.take_irq());
+            match control {
+                0x19 => assert!(!s.reset_disabled),
+                0x1a => assert!(s.reset_disabled),
+                6 => assert!(s.sound_enabled),
+                9 => assert!(!s.cd_enabled),
+                _ => unreachable!(),
+            }
+            s.vblank_out();
+            s.advance_clocks(100000);
+            assert!(!s.take_irq());
+        }
+    }
+}
+
+#[test]
+fn queued_status_control_is_canceled_by_reset_and_does_not_relax_other_overlap() {
+    let mut s = Smpc::default();
+    input(&mut s, &[1, 8, 0xf0]);
+    issue(&mut s, 0x10);
+    for value in [0x10, 0x16, 0x17, 0xff] {
+        assert!(s.write(SMPC + 0x1f, value).is_err());
+        assert_eq!(s.queued_control, None);
+    }
+    s.write(SMPC + 0x1f, 0x19).unwrap();
+    s.reset_volatile();
+    assert_eq!(s.queued_control, None);
+    s.advance_clocks(100000);
+    assert!(s.reset_disabled && !s.busy() && !s.take_irq());
+    input(&mut s, &[1, 8, 0xf0]);
+    s.write(SMPC + 0x1f, 0x10).unwrap(); // SF=0 is not implicitly claimed.
+    assert!(s.write(SMPC + 0x1f, 0x19).is_err());
+    assert_eq!(s.queued_control, None);
+}
 fn output(s: &Smpc, count: usize) -> Vec<u8> {
     (0..count)
         .map(|i| s.read(SMPC + 0x21 + i as u32 * 2).unwrap())
@@ -909,14 +971,14 @@ fn idle_commands_keep_sf_independent_of_execution_and_preserve_effect_deadlines(
                 );
                 let before = s.command_state();
                 assert!(
-                    matches!(s.write(SMPC + 0x1f, 8), Err(BusError::Smpc(f)) if f.reason == Rejection::Busy)
+                    matches!(s.write(SMPC + 0x1f, 0x17), Err(BusError::Smpc(f)) if f.reason == Rejection::Busy)
                 );
                 assert_eq!(s.command_state(), before);
                 // Claiming SF during real work must neither replace nor restart it.
                 s.write(SMPC + 0x63, 1).unwrap();
                 assert_eq!(s.pending, Some((command, 1)));
                 assert!(
-                    matches!(s.write(SMPC + 0x1f, 8), Err(BusError::Smpc(f)) if f.reason == Rejection::Busy)
+                    matches!(s.write(SMPC + 0x1f, 0x17), Err(BusError::Smpc(f)) if f.reason == Rejection::Busy)
                 );
                 assert_eq!(s.advance_clocks(1), Some(command));
                 assert!(!s.sf && !s.busy());

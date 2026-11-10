@@ -573,7 +573,10 @@ Implementation: [SCU ports/interrupts/timers](../src/scu.rs),
 [DMA beats](../src/scu/dma.rs), [DSP interpreter](../src/scu/dsp.rs),
 [clock-domain dispatch](../src/bus.rs) and [raster deadlines](../src/timing.rs).
 ST-210 supersedes the earlier indirect-table diagram and removes DSTA/DSTOP.
-DSTA and prohibited IST writes retain diagnostics. Issue #111 gives only the
+[BIOS initialization](bios-startup.md) now provides a legacy DSTA activity view
+from actual pending DMA and models legacy
+IST stores as zero-clear/one-preserve, with native and production-Wasm guest
+coverage and explicit simultaneous-event uncertainty. Issue #111 gives only the
 legacy DSTP longword port a bounded compatibility policy: reads return zero and
 writes are ignored without DMA effects; neither is a measured electrical rule.
 See [the evidence and validation](validation-issue-111.md). Master external-vector

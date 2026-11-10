@@ -1,6 +1,7 @@
 //! Shared SCSP/sound-CPU bus and independent audio clock domain.
 //! Primary references: ST-077 §§1.2, 3, 4.2; M68000PRM §§2–4.
 //! PCM, slot modulation/LFO/noise and the effects processor execute here.
+mod checkpoint;
 mod dma;
 mod dsp;
 mod envelope;
@@ -78,6 +79,7 @@ fn mix_sample(mix: &mut [i64; 2], sample: i16, send: u16, pan: u16) {
 }
 
 #[derive(Default, Clone, Copy)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 struct Voice {
     generation: u64,
     active: bool,
@@ -88,11 +90,13 @@ struct Voice {
     reverse: bool,
     envelope: envelope::Envelope,
 }
+#[derive(Clone)]
 pub struct Scsp {
     reset_held: bool,
     dsp: dsp::Dsp,
     slots: [[u16; 12]; 32],
     voices: [Voice; 32],
+    pcm_quiescent: Cell<Option<bool>>,
     common: [u16; 24],
     timer_phase: [u16; 3],
     pending: Cell<u16>,
@@ -107,7 +111,11 @@ pub struct Scsp {
     dma_remaining: u16,
     dma_word: Option<dma::Word>,
     // Retained OP1..OP7 work; frame edges never discard late slots.
-    pcm_pipeline: [Option<pcm::Slot>; 7],
+    pcm_pipeline: [Option<pcm::PipelineSlot>; 7],
+    pcm_slots: [Option<pcm::Slot>; 7],
+    pcm_free: u8,
+    #[cfg(test)]
+    full_pcm_slots: bool,
     pcm_word: Option<pcm::Word>,
     refresh_pending: u32,
     memory_owner: Option<memory::Owner>,
@@ -124,6 +132,7 @@ impl Default for Scsp {
             dsp: dsp::Dsp::default(),
             slots: [[0; 12]; 32],
             voices: [Voice::default(); 32],
+            pcm_quiescent: Cell::new(None),
             common: [0; 24],
             timer_phase: [0; 3],
             pending: Cell::new(0),
@@ -137,7 +146,11 @@ impl Default for Scsp {
             lfo: std::array::from_fn(synthesis::Lfo::new),
             dma_remaining: 0,
             dma_word: None,
-            pcm_pipeline: std::array::from_fn(|_| None),
+            pcm_pipeline: [None; 7],
+            pcm_slots: std::array::from_fn(|_| None),
+            pcm_free: 0x7F,
+            #[cfg(test)]
+            full_pcm_slots: false,
             pcm_word: None,
             refresh_pending: 0,
             memory_owner: None,
@@ -150,12 +163,23 @@ impl Default for Scsp {
     }
 }
 impl Scsp {
+    fn pcm_quiescent(&self) -> bool {
+        if let Some(quiet) = self.pcm_quiescent.get() {
+            return quiet;
+        }
+        let quiet = !self.voices.iter().any(|v| v.active)
+            && !self.pcm_slots.iter().flatten().any(|s| s.fetch || s.active);
+        self.pcm_quiescent.set(Some(quiet));
+        quiet
+    }
     fn set_reset(&mut self, held: bool) {
         // Retain elapsed time and already-produced host audio. RESET affects
         // the device, not sound RAM or samples from before the signal edge.
         let output = std::mem::take(&mut self.output);
         *self = Self {
             reset_held: held,
+            #[cfg(test)]
+            full_pcm_slots: self.full_pcm_slots,
             generated: self.generated,
             dropped: self.dropped,
             output,
@@ -184,6 +208,9 @@ impl Scsp {
             0..=0x3FF if offset & 31 < 24 => {
                 Ok(self.slots[(offset / 32) as usize][(offset as usize & 31) / 2])
             }
+            // ST-077 §4.1 fig4.2: last four words of each slot are unused.
+            // Scoped compatibility readback, not measured electrical data.
+            0..=0x3FF => Ok(0),
             0x400 => Ok(0), // MEM4MB/MVOL/DAC18B are write-only (ST-077 §4.2).
             0x402 => Ok(0), // RBL/RBP are write-only, ST-077 §4.3.
             0x404 => {
@@ -217,6 +244,7 @@ impl Scsp {
         }
     }
     pub fn write16(&mut self, offset: u32, value: u16) -> Result<(), BusError> {
+        self.pcm_quiescent.set(None);
         if offset & 1 != 0 {
             return Err(BusError::Unaligned {
                 address: SCSP + offset,
@@ -268,6 +296,7 @@ impl Scsp {
                     }
                 }
             }
+            0..=0x3FF => (), // Unused slot padding has no write function.
             0x400 => {
                 if value & !0x20F != 0 {
                     return Err(Self::error(offset));
@@ -396,10 +425,26 @@ impl Scsp {
         }
         self.dsp.begin_sample();
     }
-    fn dsp_step(&mut self, step: usize, ram: &mut [u8]) -> Result<(), BusError> {
-        if !self.reset_held {
-            self.dsp
-                .step(step, ram, self.ram_config(), self.common[1], self.external)?;
+    fn dsp_step(
+        &mut self,
+        step: usize,
+        ram: &mut [u8],
+        undo: Option<&mut checkpoint::RamUndo>,
+    ) -> Result<(), BusError> {
+        if !self.reset_held && !self.dsp.quiescent() {
+            if let Some(undo) = undo {
+                self.dsp.step_recorded(
+                    step,
+                    ram,
+                    self.ram_config(),
+                    self.common[1],
+                    self.external,
+                    Some(undo),
+                )?;
+            } else {
+                self.dsp
+                    .step(step, ram, self.ram_config(), self.common[1], self.external)?;
+            }
         }
         Ok(())
     }
@@ -657,15 +702,8 @@ impl Sound {
         // An untouched DSP executes no instructions. Keep source-capture and
         // output edges, skipping only empty intervening execution slots. A live
         // MPRO write immediately exposes the next slot at the current phase.
-        if !self.scsp.dsp.programmed()
-            && !self.scsp.dma_active()
-            && !self.scsp.voices.iter().any(|v| v.active)
-            && !self
-                .scsp
-                .pcm_pipeline
-                .iter()
-                .flatten()
-                .any(|s| s.fetch || s.active)
+        if !self.scsp.dma_active()
+            && self.scsp.pcm_quiescent()
             && self.scsp.refresh_pending == 0
             && !self.memory.pending()
             && self.scsp.memory_owner.is_none()
@@ -674,14 +712,66 @@ impl Sound {
             // KEYON joins its next slot without replaying or batching work.
             let frame = (tick - 1) & !127;
             let phase = tick - frame;
-            tick = frame
-                + (1..=128)
-                    .filter(|t| (t - 1) % 4 == 0 || *t >= 127)
-                    .find(|&t| t >= phase)
-                    .unwrap();
+            // OP/LFO slots are 1,5,...,125, followed by 127 and 128.
+            // Round directly to the next slot instead of scanning from 1
+            // at every CPU/bus boundary. Keep the two terminal edges distinct.
+            let next = if phase <= 125 {
+                ((phase + 2) & !3) + 1
+            } else {
+                phase.max(127)
+            };
+            let dsp = self.scsp.dsp.idle_zero_steps(((tick - 1) & 127) as usize);
+            tick = (tick + u64::from(dsp)).min(frame + next);
         }
         (tick * REFERENCE_HZ).div_ceil(DSP_HZ)
     }
+    /// Validated DSP/PCM work cannot signal or fault the SH-2 with MCIEB and
+    /// DMA disabled. Every synthesis, refresh and MIDI edge still executes;
+    /// only its independent scheduling within cache-only CPU work is batched.
+    pub(crate) fn cached_lookahead_allowed(&self) -> bool {
+        self.scsp.common[21] == 0
+            && !self.scsp.dma_active()
+            && self.scsp.dsp.program_cannot_fault()
+            && !self.transactions.control_write_pending()
+            && self.reset_output_start.is_none()
+            && self.reset_output_end.is_none()
+    }
+    /// Run until a sound instruction queues its first control write/reset.
+    /// The write itself remains behind a four-clock bus phase. Cached SH-2
+    /// retirement points let the caller finish strictly before that phase.
+    pub(crate) fn cached_lookahead(&mut self, clocks: u32) -> Result<u32, BusError> {
+        let start = self.time;
+        self.advance_domain_until_control(clocks, None, true)?;
+        Ok((self.time - start) as u32)
+    }
+    /// Only query immediately after lookahead, with no intervening Sound
+    /// mutation. A normal completion drained every equal-edge event already.
+    pub(crate) fn cached_lookahead_settled(&self) -> bool {
+        !self.transactions.control_write_pending()
+            && self.reset_output_start.is_none()
+            && self.reset_output_end.is_none()
+    }
+    pub(crate) fn cached_cpu_deadline(&self) -> u32 {
+        if self.scsp.common[21] == 0
+            && !self.scsp.dma_active()
+            && self.scsp.dsp.program_cannot_fault()
+        {
+            let next_write = if self.transactions.control_write_pending() {
+                self.next_cpu
+            } else {
+                self.next_cpu
+                    .saturating_add((4 * REFERENCE_HZ) / SOUND_CPU_HZ)
+            };
+            next_write
+                .min(self.reset_output_start.unwrap_or(u64::MAX))
+                .min(self.reset_output_end.unwrap_or(u64::MAX))
+                .saturating_sub(self.time)
+                .min(u64::from(u32::MAX)) as u32
+        } else {
+            self.clocks_to_event()
+        }
+    }
+
     pub(crate) fn clocks_to_event(&self) -> u32 {
         (self
             .scsp_deadline(self.time)
@@ -729,11 +819,28 @@ impl Sound {
     fn advance_domain(
         &mut self,
         clocks: u32,
+        cd: Option<&mut crate::cd::CdBlock>,
+    ) -> Result<(), BusError> {
+        self.advance_domain_until_control(clocks, cd, false)
+    }
+    fn advance_domain_until_control(
+        &mut self,
+        clocks: u32,
+        cd: Option<&mut crate::cd::CdBlock>,
+        stop_control: bool,
+    ) -> Result<(), BusError> {
+        self.advance_domain_recorded(clocks, cd, stop_control, None)
+    }
+    fn advance_domain_recorded(
+        &mut self,
+        clocks: u32,
         mut cd: Option<&mut crate::cd::CdBlock>,
+        stop_control: bool,
+        mut undo: Option<&mut checkpoint::RamUndo>,
     ) -> Result<(), BusError> {
         // Main-CPU MMIO may have changed output since the previous advance.
         self.sample_interrupt_input();
-        let target = self.time + u64::from(clocks);
+        let mut target = self.time + u64::from(clocks);
         let mut now = self.time;
         loop {
             let next_midi = now + u64::from(self.scsp.midi_clocks_to_event());
@@ -773,11 +880,21 @@ impl Sound {
                 if step == 0 {
                     self.scsp.external = cd.as_mut().map_or([0; 2], |cd| cd.audio_sample());
                 }
-                self.memory.complete(&mut self.ram, tick);
+                if let Some(undo) = undo.as_deref_mut() {
+                    self.memory
+                        .complete_recorded(&mut self.ram, tick, Some(undo));
+                } else {
+                    self.memory.complete(&mut self.ram, tick);
+                }
                 if let Some(owner) = self.scsp.memory_owner.take() {
                     self.memory.record(tick, owner, true);
                 }
-                let internal = self.scsp.sample_cycle(step, &mut self.ram)?;
+                let internal = if let Some(undo) = undo.as_deref_mut() {
+                    self.scsp
+                        .sample_cycle_recorded(step, &mut self.ram, Some(undo))?
+                } else {
+                    self.scsp.sample_cycle(step, &mut self.ram)?
+                };
                 let owner = if internal {
                     let owner = self.scsp.memory_owner.unwrap();
                     self.memory.record(tick, owner, false);
@@ -818,6 +935,14 @@ impl Sound {
             }
             // Device events and completed CPU MMIO update pins during replay.
             self.sample_interrupt_input();
+            if stop_control
+                && (self.transactions.control_write_pending()
+                    || self.reset_output_start.is_some()
+                    || self.reset_output_end.is_some())
+            {
+                target = now;
+                break;
+            }
         }
         self.scsp.advance_midi((target - now) as u32);
         self.sample_interrupt_input();

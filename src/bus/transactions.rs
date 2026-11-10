@@ -77,7 +77,7 @@ enum Operation {
     DiscardPrefetch,
     WriteContext(u32, Option<u8>),
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Transfer {
     pub(super) address: u32,
     pub(super) width: usize,
@@ -92,24 +92,77 @@ pub(super) struct Transfer {
     // Retain the CPU-facing longword while publishing its device words.
     pub(super) bridge_write: Option<u32>,
 }
+/// A buffered SH-2 store is at most one longword, hence at most four
+/// physical byte beats. Keep its payload inline through acceptance/drain.
+#[derive(Default)]
+struct WriteBeats {
+    transfers: [Transfer; 4],
+    head: usize,
+    end: usize,
+}
+impl WriteBeats {
+    fn len(&self) -> usize {
+        self.end - self.head
+    }
+    fn is_empty(&self) -> bool {
+        self.head == self.end
+    }
+    fn front(&self) -> Option<&Transfer> {
+        self.transfers[self.head..self.end].first()
+    }
+    fn pop_front(&mut self) -> Option<Transfer> {
+        let transfer = *self.front()?;
+        self.head += 1;
+        Some(transfer)
+    }
+    fn iter(&self) -> std::slice::Iter<'_, Transfer> {
+        self.transfers[self.head..self.end].iter()
+    }
+}
+impl FromIterator<Transfer> for WriteBeats {
+    fn from_iter<T: IntoIterator<Item = Transfer>>(iter: T) -> Self {
+        let mut beats = Self::default();
+        for transfer in iter {
+            assert!(beats.end < 4, "one buffered store exceeds a longword");
+            beats.transfers[beats.end] = transfer;
+            beats.end += 1;
+        }
+        beats
+    }
+}
 #[derive(Default)]
 pub(super) struct Journal {
     irq: Option<InterruptRequest>,
     nmi_cleared: bool,
     vector_waiting: Option<(u8, u8)>, // accepted level, architectural vector
     synchronous_stack: bool,
-    operations: Vec<(Operation, Result<u32, BusError>)>,
+    operations: Vec<(Operation, Result<u32, u32>)>,
+    errors: Vec<BusError>,
     cursor: usize,
-    beats: Vec<(Transfer, Result<u32, BusError>)>,
+    beats: Vec<(Transfer, Result<u32, u32>)>,
     beat_cursor: usize,
     waiting: Option<Transfer>,
     completed: bool,
     pipeline_wait: Option<(u32, u32)>, // requested clocks, remaining clocks
     operand_completion: Option<u64>,
-    pending_write: Option<VecDeque<Transfer>>,
+    pending_write: Option<WriteBeats>,
     write_accepted: bool,
     write_context: (u32, Option<u8>),
     current_operation: Option<Operation>,
+}
+impl Journal {
+    // Normal replay records carry four-byte values or indices. Keep the large
+    // device diagnostic only on the exceptional path, without changing BusError.
+    fn retain_result(&mut self, result: Result<u32, BusError>) -> Result<u32, u32> {
+        result.map_err(|error| {
+            let index = self.errors.len() as u32;
+            self.errors.push(error);
+            index
+        })
+    }
+    fn resolve_result(&self, result: Result<u32, u32>) -> Result<u32, BusError> {
+        result.map_err(|index| self.errors[index as usize])
+    }
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Owner {
@@ -124,7 +177,7 @@ enum Owner {
 }
 struct BufferedWrite {
     dmac: bool,
-    beats: VecDeque<Transfer>,
+    beats: WriteBeats,
     context: (u32, Option<u8>),
 }
 struct Active {
@@ -165,9 +218,26 @@ pub(super) struct Transactions {
     scu_units: [Option<ScuUnit>; 4],
 }
 
+#[derive(Default)]
+pub(crate) struct InlineProgress {
+    pub reference: u64,
+    pub ready: Option<u64>,
+    pub error: Option<ScuError>,
+    pub write_error: Option<crate::cpu::CpuError>,
+    remaining: u32,
+}
+
 struct ScheduledMemory<'a>(CpuBus<'a>);
 impl ScheduledMemory<'_> {
     fn operation(&mut self, op: Operation) -> Result<u32, BusError> {
+        loop {
+            let result = self.operation_once(op);
+            if result != Err(BusError::Pending) || !self.0.bus.drive_inline(self.0.processor) {
+                return result;
+            }
+        }
+    }
+    fn operation_once(&mut self, op: Operation) -> Result<u32, BusError> {
         let i = self.0.journal_index();
         {
             let mut journal = self.0.bus.transactions.journals[i].borrow_mut();
@@ -175,7 +245,7 @@ impl ScheduledMemory<'_> {
             if let Some(&(recorded, result)) = journal.operations.get(cursor) {
                 assert_eq!(op, recorded, "instruction replay changed its bus sequence");
                 journal.cursor += 1;
-                return result;
+                return journal.resolve_result(result);
             }
             journal.beat_cursor = 0;
             journal.current_operation = Some(op);
@@ -274,7 +344,8 @@ impl ScheduledMemory<'_> {
         };
         if result != Err(BusError::Pending) {
             let mut journal = self.0.bus.transactions.journals[i].borrow_mut();
-            journal.operations.push((op, result));
+            let retained = journal.retain_result(result);
+            journal.operations.push((op, retained));
             journal.cursor += 1;
             journal.beats.clear();
         }
@@ -497,7 +568,7 @@ impl Bus {
             if let Some(write) = &self.transactions.writes[i]
                 && (!admitting || active.is_some())
             {
-                drain = write.beats.clone();
+                drain = write.beats.iter().copied().collect();
                 if active.is_some() {
                     drain.pop_front();
                 }
@@ -619,12 +690,101 @@ impl Bus {
                 && self.transactions.internal[p as usize].is_some()
         })
     }
+    pub(crate) fn begin_inline(&mut self, enabled: bool) {
+        self.inline = (enabled && !self.slave_enabled && self.cached_wait_allowed()).then_some(
+            InlineProgress {
+                remaining: 128,
+                ..InlineProgress::default()
+            },
+        );
+    }
+    pub(crate) fn take_inline(&mut self) -> Option<InlineProgress> {
+        self.inline.take()
+    }
+    fn drive_inline(&mut self, processor: Processor) -> bool {
+        if processor != Processor::Master || self.inline.is_none() {
+            return false;
+        }
+        loop {
+            if self.inline.as_ref().unwrap().remaining == 0 || !self.cached_wait_allowed() {
+                return false;
+            }
+            self.grant_bus_transaction();
+            // Shared sound RAM retains every sound/DRAM arbitration edge.
+            // Only the host interpreter continuation stays in place; the
+            // iteration budget still yields a blocked transaction to Machine.
+            let shared_sound_ram = self.sound_ram_request().is_some();
+            let fixed = self
+                .system_clock
+                .preview(self.smpc.clocks_to_event().saturating_sub(1))
+                .saturating_add(self.pending_main_clocks);
+            let main = self
+                .observable_main_deadline()
+                .saturating_sub(1)
+                .min(self.bus_main_deadline())
+                .min(fixed)
+                .min(crate::CLOCKS_PER_STEP);
+            if main == 0 {
+                return false;
+            }
+            let progress = self.inline.as_mut().unwrap();
+            progress.remaining -= 1;
+            // The ordinary interpreter would first publish Pending, then the
+            // board would wake it at completion. Retain that readiness on faults.
+            progress.ready = Some(u64::MAX);
+            match self.advance_cpu_clocks_with_sound(main, !shared_sound_ram) {
+                Ok((reference, command)) => {
+                    assert!(command.is_none(), "inline cycle crossed SMPC completion");
+                    self.inline.as_mut().unwrap().reference += u64::from(reference);
+                }
+                Err(error) => {
+                    self.inline.as_mut().unwrap().error = Some(error);
+                    return false;
+                }
+            }
+            if let Some(error) = self.take_cpu_write_error(processor) {
+                self.inline.as_mut().unwrap().write_error = Some(error);
+                return false;
+            }
+            if self.take_cpu_transaction_completion(processor) {
+                #[cfg(test)]
+                {
+                    self.inline_resumes += 1;
+                }
+                self.inline.as_mut().unwrap().ready = Some(self.main_clocks);
+                return true;
+            }
+        }
+    }
+    fn dmac_quiescent(&self, processor: Processor) -> bool {
+        let i = processor as usize;
+        if self.onchip[i].dma.active()
+            || self.onchip[i].dma.in_progress()
+            || self.onchip[i].dma.address_error
+            || self.transactions.dmac_owner == Some(processor)
+            || self.transactions.writes[i].as_ref().is_some_and(|w| w.dmac)
+        {
+            return false;
+        }
+        let journal = self.transactions.journals[i + 2].borrow();
+        journal.operations.is_empty()
+            && journal.beats.is_empty()
+            && journal.waiting.is_none()
+            && journal.pending_write.is_none()
+            && journal.pipeline_wait.is_none()
+    }
     fn prepare_dmac(&mut self, processor: Processor) {
         let i = processor as usize;
         if (i == 1 && !self.slave_enabled)
             || self.onchip[i].reset_active()
             || self.onchip[i].dma_stopped()
         {
+            return;
+        }
+        // With no enabled or accepted unit, no error to publish and no
+        // retained grant/journal, preparation has no effect. In particular,
+        // keep accepted units on the normal path after DME or DREQ changes.
+        if self.dmac_quiescent(processor) {
             return;
         }
         self.transactions.journals[i + 2].get_mut().cursor = 0;
@@ -686,6 +846,9 @@ impl Bus {
             [Processor::Master, Processor::Slave]
         };
         for processor in order {
+            if self.dmac_quiescent(processor) {
+                continue;
+            }
             if self.onchip[processor as usize].reset_active() {
                 continue;
             }
@@ -746,6 +909,143 @@ impl Bus {
             remaining,
         });
     }
+    pub(super) fn cached_bus_compatible(&self) -> bool {
+        self.transactions.active.as_ref().is_none_or(|a| {
+            matches!(a.owner, Owner::Refresh)
+                || (matches!(a.owner, Owner::WriteBuffer(Processor::Master, false))
+                    && !(crate::sound::SOUND_RAM..crate::sound::SCSP)
+                        .contains(&Bus::physical(a.transfer.address)))
+        }) && self.transactions.internal.iter().all(Option::is_none)
+            && self
+                .transactions
+                .writes
+                .iter()
+                .enumerate()
+                .all(|(i, w)| w.as_ref().is_none_or(|w| i == 0 && !w.dmac))
+            && self.transactions.dmac_owner.is_none()
+            && self.transactions.reset_owner.is_none()
+            && self
+                .transactions
+                .reset_drains
+                .iter()
+                .all(VecDeque::is_empty)
+            && self.transactions.lock.is_none()
+            && (self.transactions.cpu_group.is_none()
+                || (self.transactions.cpu_group == Some(Processor::Master)
+                    && self.transactions.writes[0].as_ref().is_some_and(|w| {
+                        !w.dmac && (w.beats.len() == 1 || self.cached_isolated_write_pending())
+                    })))
+            && self.transactions.write_errors.iter().all(Option::is_none)
+            && self.transactions.journals.iter().all(|j| {
+                let j = j.borrow();
+                j.waiting.is_none()
+                    && j.pipeline_wait.is_none()
+                    && j.pending_write.is_none()
+                    && j.vector_waiting.is_none()
+                    && j.operations.is_empty()
+            })
+    }
+    pub(super) fn cached_transfer_active(&self) -> bool {
+        self.transactions.active.is_some()
+    }
+    pub(super) fn cached_reads_quiet(&self) -> bool {
+        self.cached_readonly_bus_quiet() && self.external_owner.get() == Some(Processor::Master)
+    }
+    pub(super) fn cached_readonly_bus_quiet(&self) -> bool {
+        self.transactions.active.is_none()
+            && self.transactions.writes.iter().all(Option::is_none)
+            && self.onchip[1].cached_batch_allowed()
+    }
+    pub(super) fn commit_cached_read_sequence(&mut self, sequence: crate::onchip::ReadSequence) {
+        self.onchip[0].commit_cached_reads(sequence, self.main_clocks);
+        self.transactions.previous = Some(Processor::Master);
+        self.transactions.dmac_yield = false;
+    }
+    /// Only accepted writes to unobserved data can overlap a cached burst.
+    /// Command/texture VRAM is unobserved while VDP1 is stopped; blanking and
+    /// other observers remain strict cached_batch horizons.
+    pub(super) fn cached_isolated_write_pending(&self) -> bool {
+        self.transactions.writes[0].as_ref().is_some_and(|write| {
+            !write.dmac
+                && !write.beats.is_empty()
+                && write.beats.iter().all(|beat| {
+                    let address = Self::physical(beat.address);
+                    (LOW_WRAM..LOW_WRAM + WRAM_SIZE as u32).contains(&address)
+                        || (HIGH_WRAM..HIGH_WRAM + WRAM_SIZE as u32).contains(&address)
+                        || (!self.vdp1.busy()
+                            && (vdp1::VRAM..vdp1::VRAM + vdp1::VRAM_SIZE as u32).contains(&address))
+                })
+        })
+    }
+    pub(super) fn cached_store_window(&self) -> Option<(u32, Option<crate::onchip::ReadSequence>)> {
+        if self.external_monitor_owns_internal(Processor::Master) {
+            return None;
+        }
+        if self.transactions.active.is_none()
+            && self.transactions.writes.iter().all(Option::is_none)
+        {
+            return Some((0, None));
+        }
+        let active = self.transactions.active.as_ref()?;
+        let write = self.transactions.writes[0].as_ref()?;
+        if active.owner != Owner::WriteBuffer(Processor::Master, false) {
+            return None;
+        }
+        let address = Self::physical(active.transfer.address);
+        if write.beats.len() == 1 {
+            return Self::isolated_data_memory(address).then_some((active.remaining, None));
+        }
+        if !self.cached_isolated_write_pending() {
+            return None;
+        }
+        // The active phase has already updated BSC protocol state. Advance its
+        // remaining clocks, then preview each admitted continuation with its
+        // original first/last signals. Real board catch-up still publishes it.
+        let mut sequence = self.onchip[0].plan_cached_reads(self.main_clocks);
+        let mut ready = self.main_clocks + u64::from(active.remaining);
+        sequence.advance(ready);
+        for beat in write.beats.iter().skip(1) {
+            ready = sequence.write_phase(
+                Self::physical(beat.address),
+                beat.width,
+                ready,
+                beat.first,
+                beat.last,
+            );
+        }
+        Some((
+            (ready - self.main_clocks)
+                .try_into()
+                .expect("bounded write buffer"),
+            Some(sequence),
+        ))
+    }
+    fn isolated_data_memory(address: u32) -> bool {
+        (LOW_WRAM..LOW_WRAM + WRAM_SIZE as u32).contains(&address)
+            || (HIGH_WRAM..HIGH_WRAM + WRAM_SIZE as u32).contains(&address)
+            || (vdp1::VRAM..vdp1::VRAM + vdp1::VRAM_SIZE as u32).contains(&address)
+            || (vdp1::FRAMEBUFFER..vdp1::FRAMEBUFFER + vdp1::BUFFER_SIZE as u32).contains(&address)
+            || (VRAM..VRAM + 0x80000).contains(&address)
+            || (crate::vdp2::CRAM..crate::vdp2::CRAM + 0x1000).contains(&address)
+    }
+    /// cached_batch has excluded new DMA, refresh and pending CPU requests.
+    /// Only an already accepted write can need a grant at this boundary.
+    pub(super) fn grant_cached_write_continuation(&mut self) {
+        if self.transactions.active.is_none() && self.transactions.writes[0].is_some() {
+            self.grant_cached_transaction();
+        }
+    }
+    pub(super) fn grant_cached_transaction(&mut self) {
+        self.sound.main_ram_request(None);
+        if self.transactions.active.is_none() {
+            if self.transactions.writes[0].is_some() {
+                self.grant_bus_transaction();
+            } else {
+                // Preserve the idle cycle-steal opportunity's bookkeeping.
+                self.transactions.dmac_yield = false;
+            }
+        }
+    }
     pub(crate) fn replay_cpu(&mut self, processor: Processor) -> ReplayMemory<'_> {
         self.transactions.journals[processor as usize]
             .borrow_mut()
@@ -757,10 +1057,29 @@ impl Bus {
             scheduled: true,
         })))
     }
+    pub(super) fn cached_store_memory(
+        &mut self,
+        pc: u32,
+        address: u32,
+        width: usize,
+        value: u32,
+    ) -> CpuBus<'_> {
+        let journal = self.transactions.journals[0].get_mut();
+        journal.write_context = (pc, None);
+        journal.current_operation = Some(Operation::Write(address, width, value));
+        journal.beat_cursor = 0;
+        CpuBus {
+            bus: self,
+            processor: Processor::Master,
+            cached: true,
+            scheduled: true,
+        }
+    }
     pub(crate) fn finish_cpu_transaction(&mut self, processor: Processor) {
         let journal = self.transactions.journals[processor as usize].get_mut();
         journal.operations.clear();
         journal.beats.clear();
+        journal.errors.clear();
         journal.cursor = 0;
         journal.beat_cursor = 0;
         journal.waiting = None;
@@ -875,6 +1194,17 @@ impl Bus {
         // An already granted access cannot be displaced by a later request.
         for processor in [Processor::Master, Processor::Slave] {
             let i = processor as usize;
+            // External operands cannot consume an internal grant. Do not
+            // resolve DMA/UBC ownership when neither an internal operand nor
+            // a buffered-write acceptance is requesting this bus.
+            {
+                let journal = self.transactions.journals[i].borrow();
+                if journal.pending_write.is_none()
+                    && journal.waiting.is_none_or(|t| t.address < 0xFFFF_FE00)
+                {
+                    continue;
+                }
+            }
             if self.onchip[i].reset_active()
                 || self.transactions.internal[i].is_some()
                 || self.external_monitor_owns_internal(processor)
@@ -915,6 +1245,17 @@ impl Bus {
         // Drop canceled DRAM work before allocating a replacement bus beat.
         // A retained manual-reset drain is still active and keeps its grant.
         self.sound.main_ram_request(self.sound_ram_request());
+        if self.transactions.active.is_some()
+            && [Processor::Master, Processor::Slave].into_iter().all(|p| {
+                let i = p as usize;
+                let journal = self.transactions.journals[i].borrow();
+                journal.pending_write.is_none()
+                    && journal.waiting.is_none_or(|t| t.address < 0xFFFF_FE00)
+                    && self.dmac_quiescent(p)
+            })
+        {
+            return;
+        }
         self.allocate_bus_transaction();
         self.sound.main_ram_request(self.sound_ram_request());
     }
@@ -1042,6 +1383,7 @@ impl Bus {
             return;
         }
         if self.transactions.lock.is_none()
+            && self.scu.dma_pending()
             && let Some(cycle) = self.scu.prepare_dma_cycle(self.cpu_ab_write_pending())
         {
             let mut first = true;
@@ -1598,7 +1940,8 @@ impl Bus {
                     0
                 };
             let journal = self.transactions.journals[index].get_mut();
-            journal.beats.push((t, result));
+            let retained = journal.retain_result(result);
+            journal.beats.push((t, retained));
             journal.waiting = None;
             journal.completed = true;
             if matches!(active.owner, Owner::Dmac(_)) {
@@ -1695,7 +2038,7 @@ impl CpuBus<'_> {
                 "instruction replay changed its physical bus sequence"
             );
             journal.beat_cursor += 1;
-            return result;
+            return journal.resolve_result(result);
         }
         journal.waiting = Some(transfer);
         Err(BusError::Pending)
@@ -2283,3 +2626,20 @@ mod dma_tests {
 #[cfg(test)]
 #[path = "vbe_tests.rs"]
 mod vbe_tests;
+
+#[cfg(test)]
+impl Bus {
+    pub(super) fn assert_cached_refresh_arbiter_matches(&self, other: &Self) {
+        let active = |b: &Self| {
+            b.transactions
+                .active
+                .as_ref()
+                .map(|v| (v.owner, v.transfer, v.remaining))
+        };
+        assert!(
+            active(self) == active(other),
+            "refresh grant/remaining/transfer changed"
+        );
+        assert_eq!(self.transactions.dmac_yield, other.transactions.dmac_yield);
+    }
+}

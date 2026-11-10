@@ -5,6 +5,8 @@
 //! Program, coefficient and RAM accesses use their execution-time values.
 use super::{BusError, RamConfig, Scsp};
 
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub(super) struct Dsp {
     coefficients: [u16; 64],
     addresses: [u16; 32],
@@ -21,6 +23,10 @@ pub(super) struct Dsp {
     memory: i32,
     reads: [Option<i32>; 2],
     programmed: bool,
+    nonzero_program: u16,
+    live_steps: [u64; 2],
+    nonzero_temp: u16,
+    validated_program: std::cell::Cell<Option<bool>>,
 }
 impl Default for Dsp {
     fn default() -> Self {
@@ -40,6 +46,10 @@ impl Default for Dsp {
             memory: 0,
             reads: [None; 2],
             programmed: false,
+            nonzero_program: 0,
+            live_steps: [0; 2],
+            nonzero_temp: 0,
+            validated_program: std::cell::Cell::new(None),
         }
     }
 }
@@ -88,6 +98,9 @@ impl Dsp {
         Ok(match offset {
             0x700..=0x77E => self.coefficients[(index - 0x700) / 2],
             0x780..=0x7BE => self.addresses[(index - 0x780) / 2],
+            // ST-077 §4.1: unused gap between MADRS and MPRO. Deterministic
+            // compatibility read, not a measured bus value.
+            0x7C0..=0x7FE => 0,
             0x800..=0xBFE => self.program[(index - 0x800) / 8][(index / 2) & 3],
             0xC00..=0xDFE => part(self.temp[(index - 0xC00) / 4], 8),
             0xE00..=0xE7E => part(self.mems[(index - 0xE00) / 4], 8),
@@ -110,11 +123,30 @@ impl Dsp {
         match offset {
             0x700..=0x77E => self.coefficients[(index - 0x700) / 2] = value & 0xFFF8,
             0x780..=0x7BE => self.addresses[(index - 0x780) / 2] = value,
+            // Initialization sweeps may cross this unused block; no live
+            // coefficient/address/program state is selected by these words.
+            0x7C0..=0x7FE => (),
             0x800..=0xBFE => {
-                self.program[(index - 0x800) / 8][(index / 2) & 3] = value;
+                self.validated_program.set(None);
+                let word = &mut self.program[(index - 0x800) / 8][(index / 2) & 3];
+                self.nonzero_program =
+                    self.nonzero_program - u16::from(*word != 0) + u16::from(value != 0);
+                *word = value;
+                let step = (index - 0x800) / 8;
+                let bit = 1u64 << (step & 63);
+                if self.program[step] == [0; 4] {
+                    self.live_steps[step / 64] &= !bit;
+                } else {
+                    self.live_steps[step / 64] |= bit;
+                }
                 self.programmed = true;
             }
-            0xC00..=0xDFE => part(&mut self.temp[(index - 0xC00) / 4], 8),
+            0xC00..=0xDFE => {
+                let word = &mut self.temp[(index - 0xC00) / 4];
+                let before = u16::from(*word != 0);
+                part(word, 8);
+                self.nonzero_temp = self.nonzero_temp - before + u16::from(*word != 0);
+            }
             0xE00..=0xE7E => part(&mut self.mems[(index - 0xE00) / 4], 8),
             0xE80..=0xEBE => part(&mut self.mix[(index - 0xE80) / 4], 4),
             0xEC0..=0xEDE => self.effects[(index - 0xEC0) / 2] = value as i16,
@@ -134,8 +166,71 @@ impl Dsp {
             );
         }
     }
-    pub fn programmed(&self) -> bool {
-        self.programmed
+    /// Zero MPRO is inert only when its TEMP inputs and accumulator are zero
+    /// and no delayed memory input remains. Programming zero still starts DSP.
+    pub fn quiescent(&self) -> bool {
+        !self.programmed
+            || (self.nonzero_program == 0
+                && self.nonzero_temp == 0
+                && self.accumulator == 0
+                && self.reads.iter().all(Option::is_none))
+    }
+    fn zero_accumulator(&self) -> i32 {
+        let temp = self.temp[usize::from(self.decrement) & 127];
+        signed(
+            ((i64::from(temp) * i64::from(self.fraction)) >> 12) + i64::from(temp),
+            26,
+        )
+    }
+    /// Zero MPRO still updates ACC and delayed memory input. Only an already
+    /// fixed ACC with empty input stages permits omitting intervening zero
+    /// words; the next nonzero word must keep its individual deadline.
+    pub fn idle_zero_steps(&self, step: usize) -> u32 {
+        if !self.programmed {
+            return 128;
+        }
+        if self.reads.iter().any(Option::is_some) || self.accumulator != self.zero_accumulator() {
+            return 0;
+        }
+        if step < 64 {
+            let low = self.live_steps[0] >> step;
+            if low != 0 {
+                return low.trailing_zeros();
+            }
+            if self.live_steps[1] != 0 {
+                return 64 - step as u32 + self.live_steps[1].trailing_zeros();
+            }
+        } else {
+            let high = self.live_steps[1] >> (step - 64);
+            if high != 0 {
+                return high.trailing_zeros();
+            }
+        }
+        128
+    }
+    /// With no DMA/program write, these are all possible DSP execution errors.
+    /// Validation only widens an independent cache-only CPU horizon: every DSP
+    /// instruction, memory grant and PCM sample still executes normally.
+    pub fn program_cannot_fault(&self) -> bool {
+        if !self.programmed {
+            return true;
+        }
+        if let Some(valid) = self.validated_program.get() {
+            return valid;
+        }
+        let valid = self
+            .program
+            .iter()
+            .enumerate()
+            .all(|(step, &[a, b, c, d])| {
+                a & 0x8000 == 0
+                    && b & 0x1000 == 0
+                    && d & 0x180 == 0
+                    && (b >> 6) & 63 <= 49
+                    && (c & 0x6000 == 0 || step & 1 != 0)
+            });
+        self.validated_program.set(Some(valid));
+        valid
     }
     pub fn memory_access(&self, step: usize) -> bool {
         self.programmed && step & 1 != 0 && self.program[step][2] & 0x6000 != 0
@@ -151,10 +246,39 @@ impl Dsp {
         control: u16,
         external: [i16; 2],
     ) -> Result<(), BusError> {
+        self.step_recorded(step, ram, config, control, external, None)
+    }
+    pub fn step_recorded(
+        &mut self,
+        step: usize,
+        ram: &mut [u8],
+        config: RamConfig,
+        control: u16,
+        external: [i16; 2],
+        undo: Option<&mut super::checkpoint::RamUndo>,
+    ) -> Result<(), BusError> {
+        self.step_core::<true>(step, ram, config, control, external, undo)
+    }
+    fn step_core<const FAST_ZERO: bool>(
+        &mut self,
+        step: usize,
+        ram: &mut [u8],
+        config: RamConfig,
+        control: u16,
+        external: [i16; 2],
+        undo: Option<&mut super::checkpoint::RamUndo>,
+    ) -> Result<(), BusError> {
         if !self.programmed {
             return Ok(());
         }
         let [a, b, c, d] = self.program[step];
+        if FAST_ZERO && [a, b, c, d] == [0; 4] {
+            self.accumulator = self.zero_accumulator();
+            if let Some(value) = self.reads[(step + 1) & 1].take() {
+                self.memory = value;
+            }
+            return Ok(());
+        }
         // MPRO63, MPRO44 and MPRO8:7 are reserved on SCSP.
         if a & 0x8000 != 0 || b & 0x1000 != 0 || d & 0x180 != 0 {
             return Err(Scsp::error(0x800 + step as u32 * 8));
@@ -204,6 +328,8 @@ impl Dsp {
         }
         if a & 0x80 != 0 {
             let index = (usize::from(a & 127) + usize::from(self.decrement)) & 127;
+            self.nonzero_temp =
+                self.nonzero_temp - u16::from(self.temp[index] != 0) + u16::from(shifted != 0);
             self.temp[index] = shifted;
         }
         if c & 0x1000 != 0 {
@@ -263,6 +389,9 @@ impl Dsp {
                 } else {
                     pack(shifted)
                 };
+                if let Some(undo) = undo {
+                    undo.record(ram, config, index, 2);
+                }
                 config.write16(ram, index, word);
             }
         }

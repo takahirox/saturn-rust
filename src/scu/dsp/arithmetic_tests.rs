@@ -18,6 +18,31 @@ fn program(a: u64, p: u64, words: &[u32]) -> Dsp {
 }
 
 #[test]
+fn inactive_p_source_selector_preserves_parallel_arithmetic_rx_and_d1_effects() {
+    // Compatibility extension of ST-097 §4.5 X-bus fields: b24 enables P,
+    // b23 selects its source. An inactive source does not discard the word.
+    // Original literals constructed from independent fields, no firmware code.
+    for mode in [1, 5] {
+        for operand in [0x12345678, 0xfffffffe] {
+            let word = 4 << 26 | mode << 23 | 4 << 20 | 2 << 17 | 1 << 12 | 7 << 8 | 0x23;
+            let mut d = program(5, 7, &[word, 0x1503, 0xf0000000]);
+            d.rx = 0x55;
+            d.ry = 0x22;
+            d.ct[0] = 63;
+            d.data[0][63] = operand;
+            d.step().unwrap();
+            assert_eq!(d.a, 12);
+            assert_eq!(d.p, 7);
+            assert_eq!(d.wa0, 0x23);
+            assert_eq!(d.rx, if mode == 5 { operand } else { 0x55 });
+            assert_eq!(d.ct[0], if mode == 5 { 0 } else { 63 });
+            d.step().unwrap();
+            assert_eq!(d.p, 3);
+        }
+    }
+}
+
+#[test]
 fn arithmetic_literal_width_flags_and_parallel_result_do_not_require_writeback() {
     // op, A, P, complete ALU result, S/Z/C/V. High A survives 32-bit ops.
     for (op, a, p, result, flags) in [

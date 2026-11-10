@@ -2,13 +2,31 @@
 //! independently of the instruction whose EX occupies that slot.
 use crate::bus::{BusError, Memory};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Word {
     pc: u32,
-    value: Result<u16, BusError>,
+    value: Value,
 }
 
-#[derive(Debug, Default, Clone)]
+// Keep exceptional device diagnostics out of the frequently cloned IF/ID
+// state. A speculative non-fetch needs no allocation or fabricated fault.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Value {
+    Ready(u16),
+    Pending,
+    Fault(Box<BusError>),
+}
+impl Value {
+    fn result(&self) -> Result<u16, BusError> {
+        match self {
+            Self::Ready(v) => Ok(*v),
+            Self::Pending => Err(BusError::Pending),
+            Self::Fault(e) => Err(**e),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(super) struct Fetch {
     decoded: Option<Word>,
     fetched: Option<Word>,
@@ -16,6 +34,44 @@ pub(super) struct Fetch {
 }
 
 impl Fetch {
+    pub(super) fn cached_pair(&self, pc: u32, clock: u64) -> Option<(u16, u16)> {
+        if self.decode_ready > clock {
+            return None;
+        }
+        let decoded = self.decoded.as_ref().filter(|w| w.pc == pc)?;
+        let fetched = self
+            .fetched
+            .as_ref()
+            .filter(|w| w.pc == pc.wrapping_add(2))?;
+        Some((decoded.value.result().ok()?, fetched.value.result().ok()?))
+    }
+
+    pub(super) fn finish_cached_pair(&mut self, pc: u32, words: (u16, u16), ready: u64) {
+        self.decoded = Some(Word {
+            pc,
+            value: Value::Ready(words.0),
+        });
+        self.fetched = Some(Word {
+            pc: pc.wrapping_add(2),
+            value: Value::Ready(words.1),
+        });
+        self.decode_ready = ready;
+    }
+
+    pub fn shift_cached_clock(&mut self, clocks: u64) {
+        if self.decode_ready != 0 {
+            self.decode_ready += clocks;
+        }
+    }
+
+    pub(super) fn decoded_opcode(&self, pc: u32) -> Option<u16> {
+        self.decoded
+            .as_ref()
+            .filter(|word| word.pc == pc)?
+            .value
+            .result()
+            .ok()
+    }
     pub fn handler(&mut self, bus: &mut impl Memory, pc: u32) -> Result<(), BusError> {
         if bus.sh2_clock().is_some() {
             let start = bus.sh2_clock().unwrap();
@@ -41,6 +97,10 @@ impl Fetch {
         }
         // An error on an overrun fetch is retained as data, never dispatched
         // until this address actually reaches the execution boundary.
+        let value = match value {
+            Ok(v) => Value::Ready(v),
+            Err(error) => Value::Fault(Box::new(error)),
+        };
         Ok(Word { pc, value })
     }
 
@@ -58,7 +118,7 @@ impl Fetch {
         if self
             .decoded
             .as_ref()
-            .is_none_or(|word| word.pc != pc || word.value == Err(BusError::Pending))
+            .is_none_or(|word| word.pc != pc || matches!(word.value, Value::Pending))
         {
             self.clear();
             let start = bus.sh2_clock().unwrap();
@@ -71,7 +131,7 @@ impl Fetch {
             self.fetched = Some(Self::lookahead(bus, pc.wrapping_add(2))?);
             Self::finish_slot(bus, start)?;
         }
-        self.decoded.as_ref().unwrap().value
+        self.decoded.as_ref().unwrap().value.result()
     }
 
     fn lookahead(bus: &impl Memory, pc: u32) -> Result<Word, BusError> {
@@ -82,7 +142,7 @@ impl Fetch {
             // The ordinary checked fetch will run if this entry is selected.
             Ok(Word {
                 pc,
-                value: Err(BusError::Pending),
+                value: Value::Pending,
             })
         }
     }

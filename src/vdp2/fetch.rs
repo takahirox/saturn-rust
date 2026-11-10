@@ -3,9 +3,10 @@
 //! while its packed dots are consumed, independently of later CPU VRAM writes.
 use super::{Vdp2, rotation::RotationSample};
 use crate::vdp1::Vdp1;
-use std::cell::Cell;
+use std::{cell::Cell, num::NonZeroU8};
 
 pub(super) type NormalSample = (usize, usize, usize, u16, u16);
+type PlannedSample = (NormalSample, (usize, usize));
 
 type Words = [Option<(usize, u16)>; 2];
 
@@ -27,8 +28,13 @@ pub(crate) struct DisplayFetch {
     request: Option<(usize, usize)>,
     // Slot 5 is RBG1: it shares composition/register id0 with NBG0,
     // but must not replace NBG0 operands already in the normal pipeline.
-    pixels: Vec<[[Option<Acquired>; 3]; 6]>,
+    pixels: Vec<[[Option<CapturedWords>; 3]; 6]>,
     samples: Vec<[Option<NormalSample>; 4]>,
+    planned_samples: Vec<[Option<PlannedSample>; 4]>,
+    #[cfg(test)]
+    literal_addresses: bool,
+    #[cfg(test)]
+    direct_bitmaps: usize,
     cursor: [[usize; 3]; 4],
     retained: [[Option<Acquired>; 3]; 4],
     edge: Option<(u64, u16, u32)>,
@@ -49,16 +55,37 @@ pub(crate) struct DisplayRead {
 }
 
 #[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+struct CapturedWords {
+    address: usize,
+    bytes: NonZeroU8,
+    words: [u16; 2],
+}
+impl CapturedWords {
+    fn new(address: usize, bytes: usize, words: [u16; 2]) -> Self {
+        debug_assert!(matches!(bytes, 2 | 4));
+        Self {
+            address,
+            bytes: NonZeroU8::new(bytes as u8).unwrap(),
+            words,
+        }
+    }
+    fn word(self, address: usize) -> Option<u16> {
+        let offset = address.wrapping_sub(self.address) & 0x7FFFF;
+        (offset < usize::from(self.bytes.get())).then(|| self.words[offset / 2])
+    }
+}
+// Only the retained normal-port group needs this key. Per-dot consumers use
+// captured address/width/data directly, preserving the original read edges.
+#[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 struct Acquired {
     group: (usize, usize),
-    address: usize,
-    bytes: usize,
-    words: [u16; 2],
+    data: CapturedWords,
 }
 impl Acquired {
     fn word(self, address: usize) -> Option<u16> {
-        let offset = address.wrapping_sub(self.address) & 0x7FFFF;
-        (offset < self.bytes).then(|| self.words[offset / 2])
+        self.data.word(address)
     }
 }
 
@@ -101,11 +128,10 @@ impl Vdp2 {
                 {
                     return None;
                 }
-                let acquired = Acquired {
-                    group: (x, 0),
+                let acquired = CapturedWords::new(
                     address,
                     bytes,
-                    words: [
+                    [
                         self.vword(address),
                         if bytes == 4 {
                             self.vword(address + 2)
@@ -113,7 +139,7 @@ impl Vdp2 {
                             0
                         },
                     ],
-                };
+                );
                 #[cfg(test)]
                 let phase = fetch.rotation_edge.unwrap().2;
                 #[cfg(test)]
@@ -135,7 +161,7 @@ impl Vdp2 {
                 && held.group == fetch.group
                 && let Some(value) = held.word(address)
             {
-                fetch.pixels[x][layer][path] = Some(held);
+                fetch.pixels[x][layer][path] = Some(held.data);
                 return Some(value);
             }
             fetch.request = Some((path, address));
@@ -166,7 +192,33 @@ impl Vdp2 {
         }
     }
 
+    pub(super) fn planned_sample(&self, layer: usize) -> Option<NormalSample> {
+        let mut fetch = self.display_fetch.borrow_mut();
+        #[cfg(test)]
+        if fetch.literal_addresses {
+            return None;
+        }
+        if self.beam_rendering && fetch.planning {
+            let (sample, group) = fetch.planned_samples.get(fetch.pixel)?[layer]?;
+            fetch.group = group;
+            Some(sample)
+        } else {
+            None
+        }
+    }
+    pub(super) fn plan_sample(&self, layer: usize, sample: NormalSample) {
+        let mut fetch = self.display_fetch.borrow_mut();
+        if self.beam_rendering && fetch.planning {
+            let (pixel, group) = (fetch.pixel, fetch.group);
+            fetch.planned_samples[pixel][layer] = Some((sample, group));
+        }
+    }
+    pub(super) fn invalidate_planned_samples(&mut self) {
+        self.display_fetch.get_mut().planned_samples.fill([None; 4]);
+    }
+
     pub(super) fn reconfigure_display(&mut self) {
+        self.invalidate_planned_samples();
         let fetch = self.display_fetch.get_mut();
         for layer in 0..4 {
             let unfinished = fetch
@@ -208,11 +260,145 @@ impl Vdp2 {
         self.read_line_tables(y);
     }
 
+    // Unit-step bitmaps have no name/cell dependencies. Resolve their
+    // coordinates once per edge and consume each retained physical word
+    // directly, preserving per-dot storage and every real command/grant.
+    fn acquire_unit_bitmap(
+        &mut self,
+        layer: usize,
+        y: usize,
+        horizon: usize,
+        phase: u32,
+        slot: usize,
+        used: &mut [bool; 4],
+    ) -> bool {
+        if layer >= 2
+            || self.word(0) & 6 != 0
+            || self.word(0x22) & (1 << layer) != 0
+            || self.word(0x9A) >> (layer * 8) & 15 != 0
+            || self.long(0x78 + layer * 0x10) & 0x7FF00 != 0x10000
+        {
+            return false;
+        }
+        let (ctl, format) = self.character_control(layer);
+        if ctl & 2 == 0 || format >= 4 {
+            return false;
+        }
+        #[cfg(test)]
+        {
+            self.display_fetch.get_mut().direct_bitmaps += 1;
+        }
+        let width = if ctl & 8 == 0 { 512 } else { 1024 };
+        let height = if ctl & 4 == 0 { 256 } else { 512 };
+        let scroll = 0x70 + layer * 0x10;
+        let sx = (self.long(scroll) & 0x7FFFF00) as usize >> 16;
+        let sy = ((u64::from(self.long(scroll + 4) & 0x7FFFF00)
+            + y as u64 * u64::from(self.long(scroll + 12) & 0x7FF00))
+            >> 16) as usize;
+        let base = usize::from(self.word(0x3C) >> (layer * 4) & 7) * 0x20000;
+        let palette = usize::from(self.word(0x2C) >> (layer * 8) & 7) * 256;
+        let special = self.word(0x2C) >> (layer * 8 + 4) & 3;
+        let mut policies = [None; 4];
+        loop {
+            let x = self.display_fetch.get_mut().cursor[layer][1];
+            if x >= horizon {
+                break;
+            }
+            let group = ((sx + x) / 8, sy);
+            let sample = (
+                base,
+                (sy % height) * width + (sx + x) % width,
+                palette,
+                special,
+                format,
+            );
+            let address = Self::dot_address(sample.0, sample.1, format) & 0x7FFFE;
+            let bank = self.display_bank(address);
+            let allowed = if let Some(allowed) = policies[bank] {
+                allowed
+            } else {
+                let allowed = self.character_access(layer, address, format, None, false);
+                policies[bank] = Some(allowed);
+                allowed
+            };
+            {
+                let fetch = self.display_fetch.get_mut();
+                fetch.pixel = x;
+                fetch.group = group;
+                fetch.request = None;
+                fetch.planning = false;
+                if !allowed {
+                    fetch.cursor[layer][1] += 1;
+                    continue;
+                }
+                fetch.planned_samples[x][layer] = Some((sample, group));
+            }
+            let held = {
+                let fetch = self.display_fetch.get_mut();
+                fetch.pixels[x][layer][1]
+                    .filter(|v| v.word(address).is_some())
+                    .or_else(|| {
+                        fetch.retained[layer][1]
+                            .filter(|v| v.group == group && v.word(address).is_some())
+                            .map(|v| v.data)
+                    })
+            };
+            let acquired = if let Some(held) = held {
+                held
+            } else {
+                self.display_fetch.get_mut().request = Some((1, address));
+                if used[bank]
+                    || self.rotation_bank(bank)
+                    || self.access_command(bank, slot) != (4 + layer) as u16
+                {
+                    break;
+                }
+                used[bank] = true;
+                let address = address & !3;
+                let acquired =
+                    CapturedWords::new(address, 4, [self.vword(address), self.vword(address + 2)]);
+                #[cfg(test)]
+                self.display_fetch.get_mut().trace.push(DisplayRead {
+                    phase,
+                    slot,
+                    layer,
+                    path: 1,
+                    address,
+                    words: acquired.words,
+                });
+                #[cfg(not(test))]
+                let _ = phase;
+                self.display_fetch.get_mut().retained[layer][1] = Some(Acquired {
+                    group,
+                    data: acquired,
+                });
+                acquired
+            };
+            let fetch = self.display_fetch.get_mut();
+            fetch.request = None;
+            fetch.pixels[x][layer][1] = Some(acquired);
+            fetch.samples[x][layer] = Some(sample);
+            fetch.cursor[layer][1] += 1;
+        }
+        true
+    }
+
     /// One command per physical bank at an actual T0–T7/T0–T3 boundary.
     /// ST-058-R2 §3.3 fig.3.2, tables3.2–3.4 and fig.3.5. The
     /// 32-bit character/table port supplies two retained 16-bit words;
     /// a name access supplies one complete one/two-word entry.
     pub(crate) fn acquire_display(&mut self, field: u64, line: u16, phase: u32, slot: usize) {
+        self.acquire_display_paths(field, line, phase, slot, true);
+    }
+
+    fn acquire_display_paths(
+        &mut self,
+        field: u64,
+        line: u16,
+        phase: u32,
+        slot: usize,
+        omit_unused: bool,
+    ) {
         if !self.display_active() || self.validate().is_err() {
             return;
         }
@@ -225,6 +411,10 @@ impl Vdp2 {
         {
             self.prepare_display_line(field, usize::from(line));
         }
+        #[cfg(test)]
+        {
+            self.display_fetch.get_mut().literal_addresses = !omit_unused;
+        }
         let width = self.dimensions().0;
         {
             let fetch = self.display_fetch.get_mut();
@@ -232,6 +422,7 @@ impl Vdp2 {
             fetch.edge = Some(edge);
             fetch.pixels.resize(width, [[None; 3]; 6]);
             fetch.samples.resize(width, [None; 4]);
+            fetch.planned_samples.resize(width, [None; 4]);
         }
         let y = if self.word(0) & 0xC0 == 0xC0 {
             usize::from(line) * 2 + usize::from(!field.is_multiple_of(2))
@@ -251,6 +442,31 @@ impl Vdp2 {
                 if self.word(0x20) & (1 << layer) == 0
                     || !self.normal_layer_available(layer)
                     || self.word(0x20) & 0x20 != 0
+                {
+                    continue;
+                }
+                // These disabled dependency paths cannot request memory. The
+                // later enabled paths still resolve and latch every operand
+                // at this same slot, before another bus master can run.
+                if omit_unused
+                    && ((path == 2
+                        && (layer >= 2
+                            || self.word(0x9A) & (1 << (layer * 8)) == 0
+                            || self.word(0x22) & (1 << layer) != 0))
+                        || (path == 0 && layer < 2 && self.character_control(layer).0 & 2 != 0))
+                {
+                    self.display_fetch.get_mut().cursor[layer][path] = horizon;
+                    continue;
+                }
+                if path == 1
+                    && omit_unused
+                    && self.display_fetch.get_mut().cursor[layer][1] >= horizon
+                {
+                    continue;
+                }
+                if path == 1
+                    && omit_unused
+                    && self.acquire_unit_bitmap(layer, y, horizon, phase, slot, &mut used)
                 {
                     continue;
                 }
@@ -314,16 +530,18 @@ impl Vdp2 {
                     let address = if path == 1 { address & !3 } else { address };
                     let acquired = Acquired {
                         group: self.display_fetch.borrow().group,
-                        address,
-                        bytes,
-                        words: [
-                            self.vword(address),
-                            if bytes == 4 {
-                                self.vword(address + 2)
-                            } else {
-                                0
-                            },
-                        ],
+                        data: CapturedWords::new(
+                            address,
+                            bytes,
+                            [
+                                self.vword(address),
+                                if bytes == 4 {
+                                    self.vword(address + 2)
+                                } else {
+                                    0
+                                },
+                            ],
+                        ),
                     };
                     #[cfg(test)]
                     self.display_fetch.get_mut().trace.push(DisplayRead {
@@ -332,7 +550,7 @@ impl Vdp2 {
                         layer,
                         path,
                         address,
-                        words: acquired.words,
+                        words: acquired.data.words,
                     });
                     self.display_fetch.get_mut().retained[layer][path] = Some(acquired);
                 }
@@ -477,6 +695,213 @@ mod tests {
     fn pixel(v: &Vdp2, x: usize, y: usize) -> [u8; 4] {
         let at = (y * 320 + x) * 4;
         v.scanning[at..at + 4].try_into().unwrap()
+    }
+
+    #[test]
+    fn reloaded_line_coordinates_invalidate_unfinished_address_plans() {
+        let configure = || {
+            let mut v = setup(0);
+            for (at, value) in [
+                (0x10, 0xFFFF),
+                (0x12, 0x4FFF),
+                (0x9A, 2),
+                (0xA0, 0),
+                (0xA2, 0x8000),
+            ] {
+                v.write16(VDP2 + at, value).unwrap();
+            }
+            v.vram[..4].fill(0x11);
+            v.vram[4..8].fill(0x22);
+            v
+        };
+        let (mut optimized, mut literal) = (configure(), configure());
+        optimized.acquire_display(0, 0, 0, 0);
+        literal.acquire_display_paths(0, 0, 0, 0, false);
+        // A name/address is resolved before the character's T4 grant. The
+        // line-start latch can reload scroll operands after normal prefetch.
+        assert!(optimized.display_fetch.borrow().planned_samples[0][0].is_some());
+        for v in [&mut optimized, &mut literal] {
+            v.vram[0x10000..0x10004].copy_from_slice(&0x0008_0000u32.to_be_bytes());
+            v.read_line_tables(0);
+        }
+        for phase in (4..32).step_by(4) {
+            optimized.acquire_display(0, 0, phase, phase as usize / 4);
+            literal.acquire_display_paths(0, 0, phase, phase as usize / 4, false);
+        }
+        let (a, b) = (
+            optimized.display_fetch.borrow(),
+            literal.display_fetch.borrow(),
+        );
+        assert_eq!(a.trace, b.trace);
+        assert_eq!(a.pixels, b.pixels);
+        assert_eq!(a.samples, b.samples);
+        assert_eq!(a.trace[0].address, 4);
+        assert_eq!(a.trace[0].words, [0x2222; 2]);
+    }
+
+    #[test]
+    fn unit_bitmaps_preserve_literal_scroll_wrap_reconfiguration_and_live_word_reads() {
+        for layer in 0..2 {
+            for format in 0..4 {
+                for size in [0, 4, 8, 12] {
+                    for scroll in [0x00068000u32, 0x01FF8000] {
+                        let configure = || {
+                            let mut v = setup(0);
+                            let registers = [
+                                (0x20, (0x101 << layer) as u16),
+                                (0x28, (2 | size | format << 4) << (layer * 8)),
+                                (0x78 + layer * 16, 1),
+                                (0x7A + layer * 16, 0),
+                                (0x7C + layer * 16, 1),
+                                (0x7E + layer * 16, 0x8000),
+                                (0x70 + layer * 16, (scroll >> 16) as u16),
+                                (0x72 + layer * 16, scroll as u16),
+                                (0x74 + layer * 16, 0x200),
+                                (0x76 + layer * 16, 0x8000),
+                            ];
+                            for (offset, value) in registers {
+                                v.write16(VDP2 + offset as u32, value).unwrap();
+                            }
+                            for bank in 0..4 {
+                                let command = (4 + layer) as u16 * 0x1111;
+                                v.write16(VDP2 + 0x10 + bank * 4, command).unwrap();
+                                v.write16(VDP2 + 0x12 + bank * 4, command).unwrap();
+                            }
+                            for (i, byte) in v.vram.iter_mut().enumerate() {
+                                *byte = (i as u8).wrapping_mul(19);
+                            }
+                            v
+                        };
+                        let (mut fast, mut literal) = (configure(), configure());
+                        for phase in (0..160).step_by(4) {
+                            for v in [&mut fast, &mut literal] {
+                                v.vram[..128].fill(phase as u8);
+                                if phase == 92 {
+                                    v.write16(VDP2 + 0x70 + layer as u32 * 16, 7).unwrap();
+                                }
+                            }
+                            let slot = (phase as usize / 4) % 8;
+                            fast.acquire_display(0, 7, phase, slot);
+                            literal.acquire_display_paths(0, 7, phase, slot, false);
+                            let (a, b) =
+                                (fast.display_fetch.borrow(), literal.display_fetch.borrow());
+                            assert_eq!(a.trace, b.trace);
+                            assert_eq!(a.pixels, b.pixels);
+                            assert_eq!(a.samples, b.samples);
+                        }
+                        assert!(fast.display_fetch.borrow().direct_bitmaps > 0);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unused_dependency_paths_preserve_literal_acquisitions_and_latched_pixels() {
+        let mut direct_bitmaps = 0;
+        for layer in 0..4 {
+            for bitmap in [false, true] {
+                if bitmap && layer >= 2 {
+                    continue;
+                }
+                for cell in [false, true] {
+                    for mosaic in [false, true] {
+                        for format in 0..=if layer < 2 { 3 } else { 1 } {
+                            let configure = || {
+                                let mut v = setup(0);
+                                v.vram
+                                    .iter_mut()
+                                    .enumerate()
+                                    .for_each(|(i, byte)| *byte = (i as u8).wrapping_mul(17));
+                                for (at, value) in [
+                                    (0x20, 1 << layer),
+                                    (0x22, if mosaic { 0x2300 | 1 << layer } else { 0 }),
+                                    (
+                                        0x28,
+                                        if layer < 2 {
+                                            ((u16::from(bitmap) * 2) | (format << 4)) << (layer * 8)
+                                        } else {
+                                            0
+                                        },
+                                    ),
+                                    (
+                                        0x2A,
+                                        if layer >= 2 {
+                                            format << ((layer - 2) * 4 + 1)
+                                        } else {
+                                            0
+                                        },
+                                    ),
+                                    (
+                                        0x9A,
+                                        if cell && layer < 2 {
+                                            1 << (layer * 8)
+                                        } else {
+                                            0
+                                        },
+                                    ),
+                                    (0x30 + layer * 2, 0x8000),
+                                    (0xF8 + layer / 2 * 2, 1 << (layer % 2 * 8)),
+                                ] {
+                                    v.write16(VDP2 + at as u32, value).unwrap();
+                                }
+                                for bank in 0..4 {
+                                    v.write16(
+                                        VDP2 + 0x10 + bank * 4,
+                                        ((12 + layer.min(1)) << 12
+                                            | layer << 8
+                                            | (4 + layer) << 4
+                                            | 15) as u16,
+                                    )
+                                    .unwrap();
+                                    v.write16(VDP2 + 0x12 + bank * 4, 0xFFFF).unwrap();
+                                }
+                                v
+                            };
+                            let (mut optimized, mut literal) = (configure(), configure());
+                            for phase in (0..128).step_by(4) {
+                                let slot = (phase as usize / 4) % 8;
+                                optimized.acquire_display(0, 0, phase, slot);
+                                literal.acquire_display_paths(0, 0, phase, slot, false);
+                                let (a, b) = (
+                                    optimized.display_fetch.borrow(),
+                                    literal.display_fetch.borrow(),
+                                );
+                                assert_eq!(a.trace, b.trace);
+                                assert_eq!(
+                                    a.pixels, b.pixels,
+                                    "layer={layer}, bitmap={bitmap}, cell={cell}, mosaic={mosaic}, format={format}, phase={phase}"
+                                );
+                                assert_eq!(a.samples, b.samples);
+                                drop((a, b));
+                                // A write between acquisition edges must affect only
+                                // later transfers, including a live dependency change.
+                                for v in [&mut optimized, &mut literal] {
+                                    v.vram[(phase as usize * 64)..(phase as usize * 64 + 64)]
+                                        .fill(phase as u8);
+                                    if phase == 60 && layer < 2 {
+                                        v.write16(
+                                            VDP2 + 0x9A,
+                                            if cell { 0 } else { 1 << (layer * 8) },
+                                        )
+                                        .unwrap();
+                                    }
+                                }
+                            }
+                            let sprites = Vdp1::default();
+                            optimized.scan_to(&sprites, 0, 32);
+                            literal.scan_to(&sprites, 0, 32);
+                            assert_eq!(optimized.scanning, literal.scanning);
+                            direct_bitmaps += optimized.display_fetch.borrow().direct_bitmaps;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            direct_bitmaps > 0,
+            "literal comparison must exercise the direct bitmap pipeline"
+        );
     }
 
     #[test]

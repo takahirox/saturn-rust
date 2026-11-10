@@ -373,6 +373,8 @@ struct CpuBoundary {
 
 #[derive(Default)]
 pub struct Machine {
+    #[cfg(test)]
+    cached_retired: u64,
     cpu: Cpu,
     slave: Cpu,
     bus: Bus,
@@ -640,13 +642,57 @@ impl Machine {
     /// the caller responsive while detailed chip pipelines remain independent.
     pub fn advance_frame(&mut self) -> Result<(), MachineError> {
         let target = self.frames() + 1;
-        for _ in 0..1_000_000 {
-            self.step()?;
+        let mut steps = 0;
+        while steps < 1_000_000 {
+            let limit = (1_000_000 - steps).min(512);
+            let mut count = self.try_cached_batch(limit)?;
+            if count == 0 {
+                if let Some(error) = &self.fault {
+                    return Err(error.clone());
+                }
+                count = self
+                    .step_inner_with_retry(true, limit)
+                    .inspect_err(|error| self.fault = Some(error.clone()))?;
+            }
+            steps += count.max(1);
             if self.frames() >= target {
                 return Ok(());
             }
         }
         Err(MachineError::StepLimit(1_000_000))
+    }
+
+    fn try_cached_batch(&mut self, limit: u32) -> Result<u32, MachineError> {
+        if self.fault.is_some()
+            || self.nmi_pending
+            || self.dma_errors[0]
+            || self.cpu_boundary[0].is_some()
+            || self.cpu_reset_vectors[0].is_some()
+            || self.cpu_ready[0] > self.bus.main_clocks
+        {
+            return Ok(0);
+        }
+        let result = self.bus.cached_batch(&self.cpu, limit);
+        let Some(batch) = result.inspect_err(|error| {
+            self.fault = Some(error.clone());
+        })?
+        else {
+            return Ok(0);
+        };
+        #[cfg(test)]
+        {
+            self.cached_retired += u64::from(batch.retired);
+        }
+        self.cpu = batch.cpu;
+        self.cpu_ready[0] = batch.ready;
+        self.clocks += batch.reference;
+        // Match the last ordinary step's post-retirement advancement. In
+        // particular, a field edge can precede this CPU's next issue time.
+        if let Err(error) = self.finish_hardware_boundary(true) {
+            self.fault = Some(error.clone());
+            return Err(error);
+        }
+        Ok(batch.retired)
     }
 
     pub fn step(&mut self) -> Result<(), MachineError> {
@@ -680,6 +726,13 @@ impl Machine {
     }
 
     fn issue_cpu(&mut self, processor: Processor) -> Result<bool, MachineError> {
+        self.issue_cpu_with_inline(processor, false)
+    }
+    fn issue_cpu_with_inline(
+        &mut self,
+        processor: Processor,
+        inline: bool,
+    ) -> Result<bool, MachineError> {
         let i = processor as usize;
         let slave = processor == Processor::Slave;
         self.bus.sample_interrupts();
@@ -786,6 +839,7 @@ impl Machine {
         } else {
             self.cpu.clone()
         };
+        self.bus.begin_inline(inline && !slave);
         let result = (|| -> Result<(bool, bool, bool), CpuError> {
             self.bus.prepare_interrupt(processor, None);
             let (dma, nmi) = {
@@ -818,6 +872,19 @@ impl Machine {
         if self.bus.take_nmi_clear(processor) {
             self.nmi_pending = false;
             self.nmi_detected = None;
+        }
+        if let Some(progress) = self.bus.take_inline() {
+            self.clocks += progress.reference;
+            if let Some(ready) = progress.ready {
+                self.cpu_ready[i] = ready;
+            }
+            if let Some(error) = progress.error {
+                return Err(MachineError::Scu(error));
+            }
+            if let Some(error) = progress.write_error {
+                self.cpu.deferred_write_fault(error.clone());
+                return Err(MachineError::Cpu(error));
+            }
         }
         match result {
             Err(
@@ -874,22 +941,69 @@ impl Machine {
     }
 
     fn step_inner(&mut self) -> Result<(), MachineError> {
+        self.step_inner_with_idle(false)
+    }
+    fn step_inner_with_idle(&mut self, coalesced: bool) -> Result<(), MachineError> {
+        self.step_inner_with_retry(coalesced, 1).map(|_| ())
+    }
+
+    fn step_inner_with_retry(
+        &mut self,
+        coalesced: bool,
+        retry_limit: u32,
+    ) -> Result<u32, MachineError> {
+        let field = self.frames();
         // Complete an architectural boundary when possible. Long bus-master
         // bursts can keep both CPUs waiting; yield after bounded hardware work
         // without manufacturing a CPU fault or freezing the browser caller.
-        for _ in 0..1024 {
-            if self.step_hardware_boundary()? {
-                return Ok(());
+        for turn in 0..1024 {
+            // The frame runner already tried at entry. After a hardware wait
+            // reaches the existing ready time, retry before issuing through
+            // replay. Within the same field the frame runner can resume a
+            // whole bounded burst. A wait crossing the field edge retains the
+            // ordinary step's single-instruction completion contract.
+            if coalesced && turn != 0 {
+                let limit = if self.frames() == field {
+                    retry_limit
+                } else {
+                    1
+                };
+                let retired = self.try_cached_batch(limit)?;
+                if retired != 0 {
+                    return Ok(retired);
+                }
+            }
+            if self.step_hardware_boundary_with_idle(coalesced)? {
+                return Ok(1);
             }
         }
-        Ok(())
+        Ok(0)
     }
 
+    #[cfg(test)]
     fn step_hardware_boundary(&mut self) -> Result<bool, MachineError> {
-        let mut committed = self.issue_cpu(Processor::Master)?;
+        self.step_hardware_boundary_with_idle(false)
+    }
+    fn step_hardware_boundary_with_idle(&mut self, coalesced: bool) -> Result<bool, MachineError> {
+        let mut committed = if coalesced {
+            self.issue_cpu_with_inline(Processor::Master, true)?
+        } else {
+            self.issue_cpu(Processor::Master)?
+        };
         if self.bus.slave_enabled {
             committed |= self.issue_cpu(Processor::Slave)?;
         }
+        self.finish_hardware_boundary_with_idle(committed, coalesced)
+    }
+
+    fn finish_hardware_boundary(&mut self, committed: bool) -> Result<bool, MachineError> {
+        self.finish_hardware_boundary_with_idle(committed, false)
+    }
+    fn finish_hardware_boundary_with_idle(
+        &mut self,
+        committed: bool,
+        coalesced: bool,
+    ) -> Result<bool, MachineError> {
         self.bus.grant_bus_transaction();
         let next = if self.bus.slave_enabled {
             self.cpu_ready[0].min(self.cpu_ready[1])
@@ -903,20 +1017,35 @@ impl Machine {
             let remaining = (r + 2).saturating_sub(self.bus.main_clocks);
             if remaining == 0 { u64::MAX } else { remaining }
         });
+        let can_coalesce = coalesced
+            && !committed
+            && !self.bus.slave_enabled
+            // A new instruction cannot issue before ready either. These
+            // between-instruction waits need the same device boundaries as an
+            // in-flight operand; debugger steps retain their ordinary path.
+            && (self.cpu_boundary[0].is_some() || self.cpu_ready[0] > self.bus.main_clocks)
+            && self.bus.cached_wait_allowed();
+        let main_deadline = if can_coalesce {
+            self.bus.coalesced_main_deadline()
+        } else {
+            self.bus.main_deadline()
+        };
         let elapsed = next
             .saturating_sub(self.bus.main_clocks)
             .min(nmi_wait)
             // A device event can assert a new request inside an idle batch.
             // Return to CPU scheduling at that edge so the newly established
             // recognition deadline can bound the following advance.
-            .min(u64::from(self.bus.main_deadline()))
+            .min(u64::from(main_deadline))
             .min(u64::from(self.bus.bus_transaction_deadline()))
             .max(1)
             .min(u64::from(CLOCKS_PER_STEP)) as u32;
-        let (reference, command) = self
-            .bus
-            .advance_cpu_clocks(elapsed)
-            .map_err(MachineError::Scu)?;
+        let result = if can_coalesce {
+            self.bus.advance_cpu_clocks_with_sound(elapsed, true)
+        } else {
+            self.bus.advance_cpu_clocks(elapsed)
+        };
+        let (reference, command) = result.map_err(MachineError::Scu)?;
         self.clocks += u64::from(reference);
         match command {
             Some(0x02) if !self.bus.slave_enabled => {

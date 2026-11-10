@@ -387,13 +387,18 @@ impl Dsp {
                     increments[(xcode & 3) as usize] |= xcode & 4 != 0;
                 }
                 match xmode & 3 {
-                    0 => (),
+                    // The source selector is inactive when the P write
+                    // enable (bit24) is clear. Treat 001/101 like 000/100,
+                    // preserving RX-only moves and all other parallel fields.
+                    // This is a compatibility decode for an unspecified
+                    // selector combination, not a whole-instruction NOP.
+                    0 | 1 => (),
                     2 => self.p = multiplier,
                     3 => {
                         self.p = sx48(xdata);
                         increments[(xcode & 3) as usize] |= xcode & 4 != 0;
                     }
-                    _ => return Err(illegal()),
+                    _ => unreachable!(),
                 }
                 let ymode = (instruction >> 17) & 7;
                 if ymode & 4 != 0 {
