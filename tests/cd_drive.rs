@@ -31,7 +31,11 @@ fn guest_scans_reverses_pauses_waits_and_reopens_same_disc_without_reading_secto
             previous = None;
         }
         machine.reset(Boot::ExternalBios(&rom)).unwrap();
-        machine.mount_media(Media::iso(&vec![0; 2048 * 100]).unwrap());
+        let mut disc = vec![0; 2048 * 100];
+        if iteration >= 2 {
+            disc[..16].copy_from_slice(b"SEGA SEGASATURN ");
+        }
+        machine.mount_media(Media::iso(&disc).unwrap());
         for _ in 0..80 {
             machine.run_steps(10000).unwrap();
             if machine.bus().read32(0x060090F0) == Ok(0x600D) {
@@ -40,6 +44,7 @@ fn guest_scans_reverses_pauses_waits_and_reopens_same_disc_without_reading_secto
         }
         let read = |offset: u32| machine.bus().read32(0x06009000 + offset).unwrap();
         assert_eq!(read(0xF0), 0x600D);
+        assert_eq!(&machine.framebuffer().unwrap()[..4], &[0, 255, 0, 255]);
         for (offset, status) in [
             (0, 0x0180),
             (0x10, 0x0500),
@@ -49,7 +54,7 @@ fn guest_scans_reverses_pauses_waits_and_reopens_same_disc_without_reading_secto
             (0x70, 0x8180),
             (0x80, 0x06FF), // ST-162 §7.2.4(4): OPEN report invalid.
             (0x90, 0x0180),
-            (0xA0, 0x4180),
+            (0xA0, 0x4100),
         ] {
             assert_eq!(read(offset), status, "offset {offset:x}");
         }
@@ -78,7 +83,18 @@ fn guest_scans_reverses_pauses_waits_and_reopens_same_disc_without_reading_secto
         ] {
             assert_eq!(read(offset), value, "host transfer field {offset:X}");
         }
-        let trace = (0..194).map(|i| read(i * 4)).collect::<Vec<_>>();
+        assert_eq!(read(0x310), 0x0080);
+        assert_eq!(read(0x324), 0);
+        assert_eq!(read(0x330), 0x0100);
+        assert_eq!(read(0x334), if iteration >= 2 { 4 } else { 2 });
+        assert_eq!(read(0x340), 0x204);
+        assert_eq!(read(0x440) & 0x1E00, 0x800);
+        assert_eq!(read(0x444), 0xA5123456);
+        assert_eq!(read(0x448), 0x789ABCA5);
+        // Four fetched words plus the CD-side prefetched word, despite six
+        // destination bytes. Guard bytes remain outside the DMA count.
+        assert_eq!(read(0x454), 5);
+        let trace = (0..280).map(|i| read(i * 4)).collect::<Vec<_>>();
         if let Some(old) = previous {
             assert_eq!(trace, old);
         }

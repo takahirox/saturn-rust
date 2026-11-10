@@ -333,3 +333,76 @@ fn zero_first_read_address_executes_original_aip_without_loading_a_file() {
     assert_eq!(m.bus().read32(0x06004000), Ok(0));
     assert_eq!(m.cpu_state().instructions, 71); // 67 reset + four original AIP instructions
 }
+
+fn iso_number(bytes: &mut [u8], offset: usize, value: u32) {
+    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    bytes[offset + 4..offset + 8].copy_from_slice(&value.to_be_bytes());
+}
+
+#[test]
+fn mixed_mode_volume_envelope_does_not_make_audio_or_gaps_bootstrap_data() {
+    use saturn_rust::media::{Media, RAW_SECTOR};
+    let mut data = ISO.to_vec();
+    let sectors = (data.len() / SECTOR) as u32;
+    let audio = vec![0; 3 * RAW_SECTOR];
+    let cue = "FILE \"data\" BINARY\nTRACK 01 MODE1/2048\nINDEX 01 00:00:00\nFILE \"audio\" BINARY\nTRACK 02 AUDIO\nPREGAP 00:02:00\nINDEX 01 00:00:00\n";
+    let volume = sectors + 150 + 3;
+    iso_number(&mut data, 16 * SECTOR + 80, volume);
+    let media = Media::cue(cue, &[("data", &data), ("audio", &audio)]).unwrap();
+    assert_eq!(media.sector_count(), Ok(sectors));
+    assert_eq!(media.volume_sector_count(), Ok(volume));
+    assert!(media.read_sector(sectors - 1).is_ok());
+    assert!(media.read_sector(sectors).is_err());
+    assert!(media.read_sector(sectors + 150).is_err());
+    assert_eq!(
+        parse_sectors(&media).unwrap().executable,
+        parse(ISO).unwrap().executable
+    );
+    // Neither a declared volume beyond leadout nor an executable in audio
+    // becomes valid merely because its descriptor lies in the first track.
+    iso_number(&mut data, 16 * SECTOR + 80, volume + 1);
+    let invalid = Media::cue(cue, &[("data", &data), ("audio", &audio)]).unwrap();
+    assert!(parse_sectors(&invalid).is_err());
+    iso_number(&mut data, 16 * SECTOR + 80, volume);
+    iso_number(&mut data, 20 * SECTOR + 68 + 2, sectors + 150);
+    let invalid = Media::cue(cue, &[("data", &data), ("audio", &audio)]).unwrap();
+    assert!(parse_sectors(&invalid).is_err());
+}
+
+#[test]
+fn large_root_directory_keeps_first_read_bytes_and_the_shared_allocation_bound() {
+    // Expand the original licensed fixture's root by 64 sectors and move all
+    // following contents. No commercial disc bytes or layout constants enter
+    // this fixture; the first-read identifier and every file extent still work.
+    let extra = 64;
+    let mut image = vec![0; ISO.len() + extra * SECTOR];
+    image[..21 * SECTOR].copy_from_slice(&ISO[..21 * SECTOR]);
+    image[(21 + extra) * SECTOR..].copy_from_slice(&ISO[21 * SECTOR..]);
+    let sectors = (image.len() / SECTOR) as u32;
+    iso_number(&mut image, 16 * SECTOR + 80, sectors);
+    let directory_bytes = ((1 + extra) * SECTOR) as u32;
+    iso_number(&mut image, 16 * SECTOR + 156 + 10, directory_bytes);
+    let mut offset = 20 * SECTOR;
+    while image[offset] != 0 {
+        let length = usize::from(image[offset]);
+        if matches!(image[offset + 33], 0 | 1) {
+            iso_number(&mut image, offset + 10, directory_bytes);
+        } else {
+            let old = u32::from_le_bytes(image[offset + 2..offset + 6].try_into().unwrap());
+            assert!(old >= 21);
+            iso_number(&mut image, offset + 2, old + extra as u32);
+        }
+        offset += length;
+    }
+    let expected = parse(ISO).unwrap();
+    let actual = parse(&image).unwrap();
+    assert_eq!(actual.ip, expected.ip);
+    assert_eq!(actual.executable, expected.executable);
+    assert_eq!(actual.load_address, expected.load_address);
+    let mut machine = Machine::new();
+    machine.reset(Boot::HleDisc(&image)).unwrap();
+    machine.run_steps(500).unwrap();
+    assert!(machine.cpu_state().instructions > 100);
+    iso_number(&mut image, 16 * SECTOR + 156 + 10, 1024 * 1024 + 1);
+    assert!(parse(&image).is_err());
+}

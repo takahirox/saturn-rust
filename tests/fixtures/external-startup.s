@@ -208,12 +208,28 @@ load no_media,r0
 jmp @r0
 nop
 medium_present:
+mov r9,r1
+add #-16,r1
+mov.l @r1,r3
+extu.b r3,r3
+shll8 r3
+shll8 r3
+add #4,r1
+mov.l @r1,r0
+or r0,r3
+load 204,r2
+cmp/eq r2,r3
+bt toc_size_valid
+load io_error,r0
+jmp @r0
+nop
+toc_size_valid:
 load 0x25818000,r1
 mov.l @r1,r0
 load 0x26010214,r1
 mov.l r0,@r1
-load 200,r3
-load 0x25818000,r1
+add #-4,r3
+load 0x25898000,r1
 read_toc:
 mov.w @r1,r0
 dt r3

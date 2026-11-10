@@ -2189,33 +2189,35 @@ mod tests {
     }
     #[test]
     fn replay_does_not_consume_a_cd_fifo_word_twice_when_a_later_operand_stalls() {
-        let mut b = Bus::default();
-        b.cd.mount(
-            crate::media::Media::iso(include_bytes!("../../web/star-collector.iso")).unwrap(),
-        );
-        for (offset, value) in [(0x18, 0x0200), (0x1C, 0), (0x20, 0), (0x24, 0)] {
-            b.cd.write16(crate::cd::REGISTERS + offset, value).unwrap();
+        for data in [crate::cd::DATA, crate::cd::WORD_DATA] {
+            let mut b = Bus::default();
+            b.cd.mount(
+                crate::media::Media::iso(include_bytes!("../../web/star-collector.iso")).unwrap(),
+            );
+            for (offset, value) in [(0x18, 0x0200), (0x1C, 0), (0x20, 0), (0x24, 0)] {
+                b.cd.write16(crate::cd::REGISTERS + offset, value).unwrap();
+            }
+            b.advance_clocks(1075).unwrap();
+            assert_eq!(
+                b.replay_cpu(Processor::Master).read16(data),
+                Err(BusError::Pending)
+            );
+            complete(&mut b);
+            {
+                let m = b.replay_cpu(Processor::Master);
+                assert_eq!(m.read16(data), Ok(0x4100));
+                assert_eq!(m.read32(HIGH_WRAM | 0x20000000), Err(BusError::Pending));
+            }
+            complete(&mut b);
+            {
+                let m = b.replay_cpu(Processor::Master);
+                assert_eq!(m.read16(data), Ok(0x4100));
+                assert_eq!(m.read32(HIGH_WRAM | 0x20000000), Ok(0));
+            }
+            b.finish_cpu_transaction(Processor::Master);
+            // The next word is still track1's FAD150, not a third FIFO word.
+            assert_eq!(b.cd.read16(crate::cd::DATA), Ok(150));
         }
-        b.advance_clocks(1075).unwrap();
-        assert_eq!(
-            b.replay_cpu(Processor::Master).read16(crate::cd::DATA),
-            Err(BusError::Pending)
-        );
-        complete(&mut b);
-        {
-            let m = b.replay_cpu(Processor::Master);
-            assert_eq!(m.read16(crate::cd::DATA), Ok(0x4100));
-            assert_eq!(m.read32(HIGH_WRAM | 0x20000000), Err(BusError::Pending));
-        }
-        complete(&mut b);
-        {
-            let m = b.replay_cpu(Processor::Master);
-            assert_eq!(m.read16(crate::cd::DATA), Ok(0x4100));
-            assert_eq!(m.read32(HIGH_WRAM | 0x20000000), Ok(0));
-        }
-        b.finish_cpu_transaction(Processor::Master);
-        // The next word is still track1's FAD150, not a third FIFO word.
-        assert_eq!(b.cd.read16(crate::cd::DATA), Ok(150));
     }
     #[test]
     fn tas_owns_read_write_interval_and_cancellation_releases_a_waiting_peer() {

@@ -9,11 +9,18 @@ pub const SECTOR: usize = 2048;
 pub const MAX_SECTORS: u32 = 100 * 60 * 75;
 pub const MAX_DISC_SIZE: usize = MAX_SECTORS as usize * SECTOR;
 pub const MAX_MEDIA_BYTES: usize = MAX_SECTORS as usize * 2352;
+// Shared bootstrap/runtime directory allocation policy, not an ISO size limit.
+pub(crate) const MAX_DIRECTORY_BYTES: u32 = 1024 * 1024;
 
 /// Checked logical sectors relative to INDEX 01 of the first data track.
 /// Implementations must reject missing/non-2048-byte sectors, never pad them.
 pub trait SectorReader {
     fn sector_count(&self) -> Result<u32, DiscError>;
+    /// Volume descriptors may cover a mixed-mode disc beyond its first data
+    /// track. This envelope never makes gaps or audio readable as file data.
+    fn volume_sector_count(&self) -> Result<u32, DiscError> {
+        self.sector_count()
+    }
     fn read_sector(&self, lba: u32) -> Result<[u8; SECTOR], DiscError>;
 }
 impl SectorReader for [u8] {
@@ -209,7 +216,8 @@ pub fn parse(image: &[u8]) -> Result<DiscBoot, DiscError> {
 
 pub fn parse_sectors(reader: &(impl SectorReader + ?Sized)) -> Result<DiscBoot, DiscError> {
     let count = reader.sector_count()?;
-    if !(18..=MAX_SECTORS).contains(&count) {
+    let volume_count = reader.volume_sector_count()?;
+    if !(18..=MAX_SECTORS).contains(&count) || !(count..=MAX_SECTORS).contains(&volume_count) {
         return Err(invalid("bootstrap sector count outside resource bounds"));
     }
     let image = &reader.read_sector(0)?;
@@ -277,7 +285,8 @@ pub fn parse_sectors(reader: &(impl SectorReader + ?Sized)) -> Result<DiscBoot, 
     }
     let (pvd, descriptors_end) = primary_volume(reader, count)?;
     let volume_size = dual32(&pvd, 80)?;
-    if volume_size < descriptors_end || volume_size > count || pvd[128..132] != [0, 8, 8, 0] {
+    if volume_size < descriptors_end || volume_size > volume_count || pvd[128..132] != [0, 8, 8, 0]
+    {
         return Err(invalid(
             "ISO volume size/block size exceeds the medium or excludes its descriptors",
         ));
@@ -292,7 +301,7 @@ pub fn parse_sectors(reader: &(impl SectorReader + ?Sized)) -> Result<DiscBoot, 
     let directory_size = dual32(root, 10)?;
     if directory_sector < descriptors_end
         || directory_size == 0
-        || directory_size > 64 * SECTOR as u32
+        || directory_size > MAX_DIRECTORY_BYTES
     {
         return Err(invalid("unsupported root directory extent/size"));
     }

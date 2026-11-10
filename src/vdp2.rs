@@ -362,7 +362,9 @@ impl Vdp2 {
             || (mode & 4 != 0 && mode & 0xC0 != 0)
             || (mode & 4 == 0 && mode & 0x30 == 0x30)
             || (mode & 4 == 0 && !self.pal && mode & 0x30 == 0x20)
-            || self.word(0x20) & !0x1F3F != 0
+            // BGON bit6 is unused (ST-058 §4.1), not an extra screen.
+            // Retain debugger state but ignore this observed initialization bit.
+            || self.word(0x20) & !0x1F7F != 0
             || self.word(0xE) & !0xB3FF != 0
             || self.word(0xE) >> 12 & 3 == 3
             || (self.word(0xE) & 0x8000 != 0 && self.word(0xE) & 0x3000 != 0x1000)

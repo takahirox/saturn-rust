@@ -1095,6 +1095,7 @@ impl Bus {
         let physical = Self::physical(address);
         if (crate::cd::REGISTERS..crate::cd::REGISTERS + 0x2C).contains(&physical)
             || (crate::cd::DATA..crate::cd::DATA + 4).contains(&physical)
+            || physical == crate::cd::WORD_DATA
         {
             return self.cd.peek16(physical);
         }
@@ -1226,6 +1227,7 @@ impl Bus {
         }
         if (crate::cd::REGISTERS..crate::cd::REGISTERS + 0x2C).contains(&address)
             || (crate::cd::DATA..crate::cd::DATA + 4).contains(&address)
+            || address == crate::cd::WORD_DATA
         {
             if N != 2 && !(N == 4 && address == crate::cd::DATA) {
                 return Err(BusError::UnsupportedDevice { address, width: N });
@@ -1373,6 +1375,7 @@ impl Bus {
         }
         if (crate::cd::REGISTERS..crate::cd::REGISTERS + 0x2C).contains(&address)
             || (crate::cd::DATA..crate::cd::DATA + 4).contains(&address)
+            || address == crate::cd::WORD_DATA
         {
             if N != 2 && !(N == 4 && address == crate::cd::DATA) {
                 return Err(BusError::UnsupportedDevice { address, width: N });

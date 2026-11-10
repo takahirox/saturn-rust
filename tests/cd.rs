@@ -517,7 +517,8 @@ fn selector_connection_commands_validate_both_outputs_and_exclusive_inputs_atomi
 fn toc_raw_transfer_lengths_put_reset_and_chunk_invariance() {
     let (mut cd, bytes) = mounted();
     let r = issue(&mut cd, [0x0200, 0, 0, 0]);
-    assert_eq!(r[1], 204);
+    assert_eq!(r, [0x4100, 204, 0, 0]);
+    assert_eq!((u32::from(r[0] & 255) << 16) | u32::from(r[1]), 204);
     assert_eq!(&read(&cd, 408)[..4], &[0x41, 0, 0, 150]);
     issue(&mut cd, [0x0600, 0, 0, 0]);
     for size in 0..4 {
@@ -552,6 +553,94 @@ fn toc_raw_transfer_lengths_put_reset_and_chunk_invariance() {
             left -= n;
         }
         assert_eq!(issue(&mut c, [0x5100, 0, 0, 0])[3], 1);
+    }
+}
+
+#[test]
+fn disc_authentication_has_a_separate_completion_and_follows_the_selected_medium() {
+    const DURATION: u32 = (26_874_100_u64 * 2 / 75) as u32;
+    let saturn = Media::iso(include_bytes!("../web/star-collector.iso")).unwrap();
+    for chunk in [1, 17, 10000, DURATION] {
+        let mut cd = CdBlock::default();
+        cd.mount(saturn.clone());
+        assert_eq!(issue(&mut cd, [0xE100, 0, 0, 0])[1], 0);
+        cd.write16(CD + 8, !(512 | 4)).unwrap();
+        assert_eq!(issue(&mut cd, [0xE000, 0, 0, 0])[0] >> 8, 0);
+        assert_eq!(cd.read16(CD + 8).unwrap() & (512 | 4), 0);
+        assert_eq!(issue(&mut cd, [0xE100, 0, 0, 0])[1], 0);
+        let mut left = DURATION - 1075 - 1;
+        while left != 0 {
+            let n = left.min(chunk);
+            cd.advance(n);
+            left -= n;
+        }
+        assert_eq!(cd.read16(CD + 8).unwrap() & (512 | 4), 0);
+        cd.advance(1);
+        assert_eq!(cd.read16(CD + 8).unwrap() & (512 | 4), 512 | 4);
+        assert_eq!(issue(&mut cd, [0xE100, 0, 0, 0]), [0x0100, 4, 0, 0]);
+        // Completion reports an event, not a fabricated buffered sector.
+        assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 0);
+        assert_eq!(issue(&mut cd, [0xE000, 1, 0, 0])[0], 0xFF00);
+        assert_eq!(issue(&mut cd, [0xE100, 1, 0, 0])[0], 0xFF00);
+        assert_eq!(issue(&mut cd, [0xE001, 0, 0, 0])[0], 0xFF00);
+        assert_eq!(issue(&mut cd, [0xE200, 0, 0, 0])[0], 0xFF00);
+        assert_eq!(issue(&mut cd, [0xE100, 0, 0, 0])[1], 4);
+        issue(&mut cd, [0x0500, 0, 0, 0]);
+        assert_eq!(issue(&mut cd, [0xE100, 0, 0, 0])[1], 0);
+        assert_eq!(issue(&mut cd, [0xE000, 0, 0, 0])[0], 0xFF00);
+    }
+    for (media, expected) in [
+        (Media::iso(&vec![0; 2048 * 18]).unwrap(), 2),
+        (
+            Media::cue(
+                "FILE a BINARY\nTRACK 01 AUDIO\nINDEX 01 00:00:00\n",
+                &[("a", &vec![0; 2352])],
+            )
+            .unwrap(),
+            1,
+        ),
+    ] {
+        let mut cd = CdBlock::default();
+        cd.mount(saturn.clone());
+        issue(&mut cd, [0xE000, 0, 0, 0]);
+        // A replacement cancels the previous disc's in-flight result.
+        cd.mount(media);
+        cd.write16(CD + 8, !(512 | 4)).unwrap();
+        cd.advance(DURATION);
+        assert_eq!(cd.read16(CD + 8).unwrap() & (512 | 4), 0);
+        assert_eq!(issue(&mut cd, [0xE100, 0, 0, 0])[1], 0);
+        issue(&mut cd, [0xE000, 0, 0, 0]);
+        cd.advance(DURATION);
+        assert_eq!(issue(&mut cd, [0xE100, 0, 0, 0])[1], expected);
+        cd.set_enabled(false);
+        cd.set_enabled(true);
+        assert_eq!(issue(&mut cd, [0xE100, 0, 0, 0])[1], 0);
+    }
+    assert_eq!(issue(&mut CdBlock::default(), [0xE000, 0, 0, 0])[0], 0xFF00);
+}
+
+#[test]
+fn session_location_keeps_its_logical_origin_separate_from_track_fad() {
+    let data = vec![0; 18 * 2048];
+    for pregap in [0, 7] {
+        let cue = format!(
+            "FILE d BINARY\nTRACK 01 MODE1/2048\nPREGAP 00:00:{pregap:02}\nINDEX 01 00:00:00\n"
+        );
+        let media = Media::cue(&cue, &[("d", &data)]).unwrap();
+        assert_eq!(media.tracks()[0].start, 150);
+        assert_eq!(media.tracks()[0].index0, 150 - pregap);
+        let end = media.leadout();
+        let mut cd = CdBlock::default();
+        cd.mount(media);
+        assert_eq!(
+            issue(&mut cd, [0x0300, 0, 0, 0]),
+            [0x0100, 0, 0x0100, end as u16]
+        );
+        assert_eq!(issue(&mut cd, [0x0301, 0, 0, 0]), [0x0100, 0, 0x0100, 0]);
+        assert_eq!(
+            issue(&mut cd, [0x0302, 0, 0, 0]),
+            [0x0100, 0, 0xFFFF, 0xFFFF]
+        );
     }
 }
 
@@ -1679,5 +1768,117 @@ fn full_pool_partial_fifo_wait_masked_irq_and_reset_have_no_stale_sector_publica
             "rearm retained physical medium"
         );
         assert_eq!(issue(&mut cd, [0x0600, 0, 0, 0])[1], 2048);
+    }
+}
+
+#[test]
+fn word_datatrns_window_shares_fifo_cursor_and_debugger_reads_are_passive() {
+    use saturn_rust::cd::WORD_DATA;
+    let mut b = Bus::default();
+    b.cd.mount(Media::iso(include_bytes!("../web/star-collector.iso")).unwrap());
+    let expected = b.cd.media().unwrap().toc();
+    issue(&mut b.cd, [0x0200, 0, 0, 0]);
+    for base in [WORD_DATA, WORD_DATA | 0x20000000] {
+        assert_eq!(b.debug_read16(base), Ok(0x4100));
+        assert!(b.read8(base).is_err());
+        assert!(b.read32(base).is_err());
+        assert!(b.write32(base, 0).is_err());
+        assert_eq!(b.debug_read16(base), Ok(0x4100));
+    }
+    assert_eq!(b.read16(WORD_DATA), Ok(0x4100));
+    assert_eq!(b.read16(DATA), Ok(150));
+    let rest: Vec<_> = (0..(expected.len() - 4) / 2)
+        .flat_map(|i| {
+            b.read16(if i % 2 == 0 {
+                WORD_DATA | 0x20000000
+            } else {
+                DATA + 2
+            })
+            .unwrap()
+            .to_be_bytes()
+        })
+        .collect();
+    assert_eq!(rest, expected[4..]);
+    assert_eq!(
+        issue(&mut b.cd, [0x0600, 0, 0, 0])[1],
+        (expected.len() / 2) as u16
+    );
+    assert_eq!(b.read16(WORD_DATA), Ok(0xFFFF));
+    // PUT uses the same single-word cursor; adjacent unrelated ports retain
+    // their diagnostics rather than gaining a broad speculative alias map.
+    issue(&mut b.cd, [0x6400, 0, 0, 1]);
+    b.write16(WORD_DATA | 0x20000000, 0x1357).unwrap();
+    b.write16(DATA, 0x9BDF).unwrap();
+    assert!(b.write16(WORD_DATA + 4, 0).is_err());
+    assert_eq!(issue(&mut b.cd, [0x0600, 0, 0, 0])[1], 2);
+    issue(&mut b.cd, [0x6100, 0, 0, 1]);
+    assert_eq!(b.read16(WORD_DATA), Ok(0x1357));
+    assert_eq!(b.read16(DATA), Ok(0x9BDF));
+}
+
+#[test]
+fn fixed_datatrns_dma_keeps_longword_source_units_and_exact_destination_fringe() {
+    use saturn_rust::scu::SCU;
+    // Original distinct bytes reveal dropped, repeated and over-written tails.
+    // The long DATATRNS window has an atomic four-byte stream read; destination
+    // byte fringes must not turn it into unsupported byte I/O.
+    let bytes: Vec<_> = (0..4096).map(|i| ((i * 37) ^ (i >> 3)) as u8).collect();
+    for channel in 0..3 {
+        for count in [1u32, 2, 3, 4, 5, 6, 7, 8, 9, 258] {
+            for alignment in 0..4 {
+                for chunk in [1, 127] {
+                    let mut b = Bus::default();
+                    b.cd.mount(Media::iso(&bytes).unwrap());
+                    sectors(&mut b.cd, 1);
+                    issue(&mut b.cd, [0x6100, 0, 0, 1]);
+                    let destination = HIGH_WRAM + 0x100 + alignment;
+                    for a in destination - 1..=destination + count {
+                        b.write8(a, 0xA5).unwrap();
+                    }
+                    let base = SCU + channel * 32;
+                    for (offset, value) in [
+                        (0, DATA),
+                        (4, destination),
+                        (8, count),
+                        (12, 2),
+                        (20, 7),
+                        (16, 0x101),
+                    ] {
+                        b.write32(base + offset, value).unwrap();
+                    }
+                    for _ in 0..20_000 / chunk {
+                        b.advance_clocks(chunk).unwrap();
+                        if b.read32(SCU + 0xA4).unwrap() & 0x1E00 != 0 {
+                            break;
+                        }
+                    }
+                    assert_eq!(
+                        b.read32(SCU + 0xA4).unwrap() & 0x1E00,
+                        1 << (11 - channel),
+                        "channel={channel} count={count} alignment={alignment} chunk={chunk}"
+                    );
+                    assert_eq!(b.read32(SCU + 0x7C), Ok(0));
+                    let actual: Vec<_> = (0..count)
+                        .map(|i| b.read8(destination + i).unwrap())
+                        .collect();
+                    assert_eq!(actual, bytes[..count as usize]);
+                    assert_eq!(b.read8(destination - 1), Ok(0xA5));
+                    assert_eq!(b.read8(destination + count), Ok(0xA5));
+                    let consumed = count.div_ceil(4) * 4;
+                    assert_eq!(
+                        b.debug_read16(DATA),
+                        Ok(u16::from_be_bytes([
+                            bytes[consumed as usize],
+                            bytes[consumed as usize + 1],
+                        ]))
+                    );
+                    assert!(b.read8(DATA).is_err());
+                    assert_eq!(
+                        issue(&mut b.cd, [0x0600, 0, 0, 0])[1],
+                        (consumed / 2 + 1) as u16
+                    );
+                }
+            }
+        }
     }
 }

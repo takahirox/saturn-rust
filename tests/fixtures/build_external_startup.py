@@ -148,8 +148,14 @@ def build():
     s += put16(0x2589000C,0)+store(0x25FE00A0,0xB77F)
     s += command(0x0200)
     s += 'load 0x25890018,r1\nmov.w @r1,r0\nextu.w r0,r0\nload 0xff00,r2\ncmp/eq r2,r0\nbf medium_present\nload no_media,r0\njmp @r0\nnop\nmedium_present:\n'
+    # Decode all 24 count bits: retaining report flags here used to turn
+    # the fixed 204-word TOC into an enormous transfer in real firmware.
+    s += ('mov r9,r1\nadd #-16,r1\nmov.l @r1,r3\nextu.b r3,r3\nshll8 r3\nshll8 r3\n'
+          'add #4,r1\nmov.l @r1,r0\nor r0,r3\nload 204,r2\ncmp/eq r2,r3\n')
+    s += 'bt toc_size_valid\nload io_error,r0\njmp @r0\nnop\ntoc_size_valid:\n'
     s += observe(0x25818000,R+0x214)
-    s += 'load 200,r3\nload 0x25818000,r1\nread_toc:\nmov.w @r1,r0\ndt r3\nbf read_toc\n'
+    # Exercise both DATATRNS windows in one FIFO; the sector DMA stays long.
+    s += 'add #-4,r3\nload 0x25898000,r1\nread_toc:\nmov.w @r1,r0\ndt r3\nbf read_toc\n'
     s += observe(0x25818000,R+0x2F8)
     s += command(0x0600)
     s += put16(0x25890008,0xFFBF)+command(0x3000)

@@ -708,6 +708,12 @@ impl crate::disc::SectorReader for Media {
             .and_then(|n| n.checked_sub(t.start - t.stored_start))
             .ok_or_else(|| invalid("bootstrap track length overflow"))
     }
+    fn volume_sector_count(&self) -> Result<u32, DiscError> {
+        self.sector_count()?;
+        self.leadout
+            .checked_sub(self.tracks[0].start)
+            .ok_or_else(|| invalid("bootstrap volume length overflow"))
+    }
     fn read_sector(&self, lba: u32) -> Result<[u8; SECTOR], DiscError> {
         if lba >= self.sector_count()? {
             return Err(invalid("bootstrap sector outside stored data track"));

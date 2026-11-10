@@ -222,7 +222,17 @@ impl Channel {
         };
         let write_width = write_unit.min(if b_bus(t.destination) { 2 } else { 4 });
         if t.buffer.len() < write_width && t.unread != 0 {
-            let read_width = width(t.source, t.unread);
+            // The fixed DATATRNS longword window is a stream endpoint, not
+            // byte-addressable RAM. Keep its four-byte source unit at a short
+            // tail; only the requested bytes reach the destination. Extra
+            // sampled bytes are consumed by the FIFO and discarded at end.
+            // This scoped compatibility policy leaves ordinary source fringes
+            // (ST-097 fig.2.1) and unsupported byte MMIO unchanged.
+            let read_width = if self.add & 0x100 == 0 && t.source == crate::cd::DATA {
+                4
+            } else {
+                width(t.source, t.unread)
+            };
             if !valid_source(t.source + read_width as u32 - 1) {
                 return Err(illegal());
             }
@@ -234,7 +244,7 @@ impl Channel {
             if self.add & 0x100 != 0 {
                 t.source = t.source.wrapping_add(read_width as u32);
             }
-            t.unread -= read_width as u32;
+            t.unread = t.unread.saturating_sub(read_width as u32);
             return Ok(false);
         }
         if !valid_destination(t.destination + write_width as u32 - 1) {

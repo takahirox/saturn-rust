@@ -13,9 +13,14 @@ def main():
     parser.add_argument("--frames", type=int, default=200)
     parser.add_argument("--output", type=Path, default=Path("target/private-bios/frame.ppm"))
     parser.add_argument("--buttons", type=Path, help="optional frame / hexadecimal button-mask TSV")
+    parser.add_argument("--cue", type=Path, help="optional local CUE to mount before BIOS reset")
+    parser.add_argument("--track", type=Path, action="append", default=[],
+                        help="referenced track file (repeatable; defaults to the CUE's same-basename .bin)")
     args = parser.parse_args()
     if args.frames < 1:
         parser.error("--frames must be positive")
+    if args.track and not args.cue:
+        parser.error("--track requires --cue")
     if is_zipfile(args.bios):
         with ZipFile(args.bios) as archive:
             candidates = [entry for entry in archive.infolist()
@@ -33,8 +38,11 @@ def main():
         bios.write_bytes(data)
         command = ["cargo", "run", "--locked", "--release", "--example", "bios_probe",
                    "--", str(bios), str(args.frames), str(args.output)]
-        if args.buttons:
-            command.append(str(args.buttons))
+        if args.buttons or args.cue:
+            command.append(str(args.buttons) if args.buttons else "-")
+        if args.cue:
+            command.extend(["--cue", str(args.cue)])
+            command.extend(str(track) for track in (args.track or [args.cue.with_suffix(".bin")]))
         subprocess.run(command, check=True)
 
 

@@ -94,6 +94,89 @@ For browser use, extract an authorized raw copy outside `web/`, build with
 for arrows and Z (Saturn A). New battery state presents the firmware's date/time
 setup. No BIOS is uploaded or fetched by the page.
 
+## Local mixed-mode disc startup
+
+The same probe can mount local CUE/BIN media before resetting the actual BIOS:
+
+```sh
+python3 scripts/probe-bios.py BIOS.bin --cue game.cue --frames 1800 --buttons controls.tsv
+```
+
+The default track path is the CUE's same-basename `.bin`. For multiple files or
+different names, pass each explicitly with repeatable `--track FILE` arguments.
+The probe supplies these basenames and bytes to the ordinary checked media
+loader; it does not follow arbitrary paths embedded in a CUE. Inputs and frames
+remain local and outside `web/`. Mounting and bounded execution alone do not
+establish a game's title screen or playability.
+
+Disc startup exposed the following independent functional corrections:
+
+- Bootstrap PVD volume size can describe a whole mixed-mode volume. Its envelope
+  is distinct from the first data track's readable sectors: audio and gaps still
+  fail as bootstrap file data. Root directories share the existing runtime
+  allocation bound of 1 MiB instead of the former bootstrap-only 128 KiB bound.
+  These are checked resource policies, not claims of an ISO directory limit.
+  [ST-040-R4](https://antime.kapsi.fi/sega/files/ST-040-R4-051795.pdf) §§2–4 and
+  [ECMA-119 second edition](https://ecma-international.org/wp-content/uploads/ECMA-119_2nd_edition_december_1987.pdf)
+  §§8.4.8/9.1 provide the layout/volume/record contracts.
+- Halfword DATATRNS at physical `05898000` shares the existing FIFO with
+  `05818000`. P0/P1 aliases and passive debugger reads retain their usual
+  behavior. Only the observed halfword endpoint is added; neighboring addresses,
+  byte/long accesses and general A-bus conversion remain outside this change.
+  [Firsthand A-bus measurements](https://segaxtreme.net/threads/a-bus-cs2.24940/)
+  distinguish the word window used for TOC/file information from the longword
+  sector window. [CD ST-162](https://antime.kapsi.fi/sega/files/ST-162-062094.pdf)
+  §3.1 specifies the FIFO and 16-bit communication interface.
+- TOC, Q/R–W and file-information size responses place their 24-bit word count
+  in CR1's low byte and CR2. They must replace the normal report's flag/repeat
+  byte. Retaining the CD-ROM flag made a 204-word TOC look like `008000CC`
+  words; a real firmware copy then overwrote its own code with exhausted FIFO
+  reads and entered an illegal-instruction handler. ST-162 §§7.2.3/8.2.1 specify
+  the 408-byte/204-word TOC; the packed count reconstruction was independently
+  observed in the authorized local firmware. Earlier recorded `4180 00CC`
+  TOC responses in historical validation records describe the superseded model;
+  the current paused-disc response is `4100 00CC`.
+- Session location reports the first track's offset before the 150-frame FAD
+  bias. Returning 150 for the first session made firmware add the bias twice
+  and read sector 150 instead of the IP. The original
+  [CD firmware analysis](https://github.com/user-none/erings/blob/main/docs/cdblock/saturn_cdblock_firmware.md#disc-operation-commands-92a2-945c)
+  describes the first-track FAD minus 150; ST-162 §7.2.3 distinguishes session
+  location from TOC position. This implementation remains single-session.
+- Disc-only `E0` starts a separate check; `E1` reports its result. The
+  [author's hardware experiments](https://segaxtreme.net/threads/sega-cdc-library-recreated.11053/)
+  report Saturn result 4 and separate CSCT/EFLS completion. Ordinary image
+  formats omit the physical security ring. The functional image policy returns
+  4 for a first data sector with the Saturn system identifier, 2 for other data,
+  and 1 for audio. This is not physical-disc authentication. A two-frame 75 Hz
+  model delay separates CMOK from completion; it is not a measured seek time.
+  Replacement, tray open and CD reset discard stale results. MPEG authentication
+  and MPEG boot-ROM commands remain unsupported.
+- The entered disc initialization code writes a longword to `FFFFFFB8`, an
+  unassigned SH-2 internal address. This exact write is discarded as a scoped
+  compatibility policy. It does not alias DMAOR, add readback, accept narrower
+  accesses or change neighboring undefined addresses. The
+  [SH7604 manual](https://antime.kapsi.fi/sega/files/sh7604.pdf) §9.1.4/table9.2
+  identifies the implemented DMA registers; it does not establish silicon
+  behavior for this unused address. Both CPU views and the original cd-drive
+  guest check the policy without copying the private initialization code.
+- BGON's unused bit6 no longer rejects the complete VDP2 frame. It does not
+  enable another screen or affect defined layer/transparency bits. This scoped
+  rendering policy preserves the existing captured debugger value and other
+  unsupported configuration diagnostics. The
+  [VDP2 §4.1 register map](https://www.infochunk.com/saturn/segahtml_en/hard/vdp2/hon/p04_10.htm)
+  assigns no screen to bit6. A private disc run reproduced the rejection at
+  field1043 in both native and production Chromium; the original cd-drive guest
+  checks an independently authored green back screen with bit6 set in both
+  backends, and literal pixel vectors cover an enabled bitmap as well.
+
+The original external-startup guest now decodes all 24 TOC count bits and uses
+both FIFO windows without changing its sector DMA endpoint. The original
+cd-drive guest checks pending/completed authentication and distinguishes an
+original Saturn-header fixture from zero-filled data. Both guests run through
+the native Machine and production browser Wasm; private BIOS/game bytes are
+never incorporated into these fixtures. These additions do not close #17 or
+establish general retail-game compatibility.
+
 ## Independent regression evidence
 
 The original MIT [initialization guest](../tests/fixtures/bios-startup.asm) is
@@ -126,11 +209,12 @@ faults on that path. These are bounded local observations of the supplied BIOS.
 
 The CD player still displays its checking message without a mounted disc, and
 sprite/overlay fidelity has not been checked against a reference. A completed
-no-disc status transition, pixel-perfect startup, BIOS audio fidelity, retail boot and other
-BIOS revisions are not established. Broad hardware completion and physical
-same-edge behavior remain in #17; that Issue stays open. No hosted CI,
-publication, commit or push is performed. Screenshots and private diagnostic
-outputs remain only under ignored `target/private-bios/`.
+no-disc status transition, pixel-perfect startup, BIOS audio fidelity and broad
+BIOS revision coverage are not established. The later mixed-mode observations
+below are limited to the supplied inputs. Broad hardware completion and physical
+same-edge behavior remain in #17; that Issue stays open. Validation is local;
+it does not imply hosted CI or publication. Screenshots and private diagnostic
+outputs remain under ignored `target/private-bios/` and `target/private-game/`.
 
 The original fixture representation `bios-startup.hex` has SHA-256
 `73840b9ebe7379fd0f16c53cd05ae80d9e3b8881ca15967c67676c153a7ff6b1`.
@@ -173,3 +257,54 @@ at newly modeled endpoints were replaced with state-preservation checks. The
 reset-prefetch bus-fault control moved from now-benign slot padding to the still
 unsupported common-register hole +430, retaining halt/no-stack-write/recovery
 assertions. No original execution deadline or required check was waived.
+
+The fixed longword DATATRNS source also retains four-byte FIFO reads for short
+SCU DMA tails. Previously a transfer length not divisible by four reached a
+byte read at the CD port, failed the device-width check and never signaled DMA
+completion. The destination still receives exactly the requested count,
+including unaligned byte fringes; guards outside that count remain untouched.
+Unused bytes from the last source longword are consumed and discarded, and
+DataEnd includes those FIFO words plus the CD-side prefetched word as usual.
+This is an explicit functional compatibility policy for the fixed `DATA`
+source, not a claim that ST-097's general byte-fringe diagram establishes this
+CD endpoint's electrical timing. Incrementing sources, ordinary RAM fringes,
+the single-word window and direct unsupported byte MMIO retain their behavior.
+ST-162 §3.1 defines a word transfer interface; the firsthand A-bus CS2 captures
+linked above distinguish its longword window. The short-tail rule is a model
+choice, not a new independent physical measurement.
+
+Original native vectors exercise all three DMA levels, counts 1–9 and 258,
+all four destination alignments, two scheduler chunk sizes, exact payloads,
+guards, FIFO consumption and DMA-end versus DMA-illegal status. The original
+CD drive guest performs a six-byte transfer into an unaligned destination and
+checks both guards and DataEnd through native and production Wasm execution.
+No private disc bytes or firmware instructions form these regressions.
+
+
+## Mixed-mode startup observations
+
+The supplied Sound Novel Machi Disc 1 CUE/BIN and authorized external BIOS now
+execute the actual disc initialization and game engine without HLE substitution
+or guest RAM/PC patches. Native execution passes the CHUNSOFT animation and
+TrueMotion notice, displays the game logo by field 2400 and reaches the book
+selection screen by field 2824 with ordinary date-confirmation and Start input.
+Pressing A for eight fields and then releasing it advances to the game's
+Japanese operation-guide text by field 3252. The ordinary production browser UI,
+with local BIOS and CUE/BIN selection, reproduces the logo and the same book
+selection screen and A-triggered operation guide at those field boundaries;
+its error display remains empty.
+The former uniform gray screen was a pending CD read, not a compositor priority
+problem: after the DMA tail correction, the game itself removes its covering
+background. No forced BGON, priority, completion flag or callback is used.
+
+The current working tree passes all 1288 native tests (109 result groups), the
+standard two-worker browser suite (74 groups plus artifact digest/aggregation),
+the full fixture reproduction registry, formatting, and native/Wasm Clippy.
+Production Wasm is built by the ordinary Binaryen 127 build, not a diagnostic
+core. An additional legacy serial-order browser run timed out at `sh2Store`'s
+reset-status wait; that group passes in the standard independent-context suite.
+The legacy serial runner was not changed as part of this disc correction.
+
+These bounded local observations do not establish a full playthrough, reference
+image/audio fidelity, other retail discs or 60fps. Original tests remain runnable
+without any personal firmware or commercial game data.

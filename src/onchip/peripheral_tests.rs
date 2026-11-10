@@ -3,6 +3,41 @@ use super::*;
 use crate::bus::{Bus, Memory, Processor};
 
 #[test]
+fn unused_initialization_longword_does_not_alias_dma_or_add_readable_registers() {
+    let mut bus = Bus::default();
+    for processor in [Processor::Master, Processor::Slave] {
+        let mut chip = bus.for_cpu(processor);
+        for (offset, value) in [
+            (0, 0x06004000),
+            (4, 0x06008000),
+            (8, 7),
+            (12, 0x5000),
+            (0x30, 1),
+        ] {
+            chip.write32(DMAC + offset, value).unwrap();
+        }
+        let before: Vec<_> = [0, 4, 8, 12, 0x30]
+            .map(|offset| chip.read32(DMAC + offset).unwrap())
+            .into();
+        for value in [0, u32::MAX, 0x12345678] {
+            chip.write32(0xFFFF_FFB8, value).unwrap();
+            for (index, offset) in [0, 4, 8, 12, 0x30].into_iter().enumerate() {
+                assert_eq!(chip.read32(DMAC + offset), Ok(before[index]));
+            }
+        }
+        assert!(chip.read32(0xFFFF_FFB8).is_err());
+        assert!(chip.write8(0xFFFF_FFB8, 0).is_err());
+        assert!(chip.write16(0xFFFF_FFB8, 0).is_err());
+        assert!(chip.write32(0xFFFF_FFB4, 0).is_err());
+        assert!(chip.write32(0xFFFF_FFBC, 0).is_err());
+        assert!(matches!(
+            chip.write32(0xFFFF_FFB9, 0),
+            Err(BusError::Unaligned { .. })
+        ));
+    }
+}
+
+#[test]
 fn dma_divu_accesses_preserve_cpu_instruction_dependencies_and_do_not_create_new_ones() {
     // H §10.4.1 consecutive *CPU instruction* dependency is independent of
     // the peripheral DMA master and of elapsed external bus time.

@@ -25,7 +25,10 @@ def command(words, name, mailbox):
     return source
 
 def build():
-    s = command([0x0400,1,0,0], 'initialize', 0x06009000)
+    s = 'load 0xffffffb8,r1\nmov #0,r0\nmov.l r0,@r1\n'
+    # BGON bit6 is unused; it must not reject this ordinary green back screen.
+    s += store(0x25E00000, 0x03E0) + store(0x25F80020, 0x40) + store(0x25F80000, 0x8100)
+    s += command([0x0400,1,0,0], 'initialize', 0x06009000)
     s += command([0x1200,0,0,0], 'scan_forward', 0x06009010)
     s += 'forward:\n' + command([0,0,0,0], 'forward_status', 0x06009020)
     s += 'load 170,r2\ncmp/hs r2,r0\nbt forward_done\nbra forward\nnop\nforward_done:\n'
@@ -77,6 +80,34 @@ def build():
           'mov.w @r4,r0\nextu.w r0,r0\nload 0x06009304,r1\nmov.l r0,@r1\n')
     s += command([0x0600,0,0,0], 'end_reserved', 0x06009280)
     s += command([0x5000,0,0,0], 'released_size', 0x06009290)
+    # Firsthand hardware observations: E0 disc check, separate CSCT/EFLS,
+    # then E1 result. No security-ring bytes or SDK code are part of this guest.
+    s += store(0x25890008, 0xFDFB)
+    s += command([0xE000,0,0,0], 'authenticate', 0x06009310)
+    s += command([0xE100,0,0,0], 'authentication_pending', 0x06009320)
+    s += ('load 0x25890008,r1\nload 0x200,r2\nauthentication_wait:\n'
+          'mov.w @r1,r0\ntst r2,r0\nbt authentication_wait\n'
+          'load 0x204,r2\nand r2,r0\nload 0x06009340,r1\nmov.l r0,@r1\n')
+    s += command([0xE100,0,0,0], 'authentication_result', 0x06009330)
+    # Original six-byte transfer with unaligned destination and guard bytes.
+    # The fixed longword FIFO source must not become byte MMIO at its tail.
+    s += command([0x483F,0,0,0], 'tail_reset', 0x06009400)
+    s += command([0x6400,0,0,1], 'tail_put', 0x06009410)
+    for word in [0x1234,0x5678,0x9ABC,0xDEF0]:
+        s += store(0x25818000,word)
+    s += command([0x0600,0,0,0], 'tail_end_put', 0x06009420)
+    s += command([0x6300,0,0,1], 'tail_get', 0x06009430)
+    for address, value in [(0x06009600,0xA5A5A5A5),(0x06009604,0xA5A5A5A5),
+                           (0x25FE00A4,0),(0x25FE0000,0x05818000),
+                           (0x25FE0004,0x06009601),(0x25FE0008,6),
+                           (0x25FE000C,2),(0x25FE0014,7),(0x25FE0010,0x101)]:
+        s += f'load {address:#x},r1\nload {value:#x},r0\nmov.l r0,@r1\n'
+    s += ('load 0x25FE00A4,r1\nload 0x800,r2\ntail_wait:\n'
+          'mov.l @r1,r0\ntst r2,r0\nbt tail_wait\n'
+          'load 0x06009440,r1\nmov.l r0,@r1\n')
+    for source, destination in [(0x06009600,0x06009444),(0x06009604,0x06009448)]:
+        s += f'load {source:#x},r1\nmov.l @r1,r0\nload {destination:#x},r1\nmov.l r0,@r1\n'
+    s += command([0x0600,0,0,0], 'tail_end_get', 0x06009450)
     s += 'load 0x060090F0,r1\nload 0x600d,r0\nmov.l r0,@r1\nsleep\n'
     rom = bytearray(524288)
     struct.pack_into('>II',rom,0,0x200,0x06100000)

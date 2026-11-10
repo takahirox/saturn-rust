@@ -698,6 +698,12 @@ impl OnChip {
         if (DMAC..DMAC + 0x34).contains(&address) && self.dma.write(address - DMAC, value) {
             return Ok(());
         }
+        if address == 0xFFFF_FFB8 {
+            // Unassigned initialization strobe observed in disc startup.
+            // Compatibility policy: discard this exact longword write without
+            // aliasing DMAOR or inventing a readable DMA register.
+            return Ok(());
+        }
         Err(Self::unsupported(address, 4))
     }
 
