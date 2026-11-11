@@ -6,17 +6,35 @@ use crate::{cache::CacheTouch, cpu::Cpu, onchip::FRT};
 pub(crate) struct PollCycle {
     pub(crate) period: u64,
     pub(crate) mask: u32,
+    retirements: u32,
+    template: usize,
     instructions: u64,
     local: u64,
     touches: [Option<CacheTouch>; 16],
     status: u8,
 }
+impl PollCycle {
+    pub(crate) fn can_retire_at(&self, elapsed: u64) -> bool {
+        let phase = elapsed % self.period;
+        elapsed != 0 && (phase == 0 || (phase < 32 && self.retirements & (1 << phase) != 0))
+    }
+}
+
 pub(super) struct PollTemplate {
     initial: Cpu,
     origin: u64,
     retained: Option<(u32, u16)>,
     fetched: [Option<FetchCheck>; 16],
     cycle: PollCycle,
+    prefixes: Vec<PollPrefix>,
+}
+struct PollPrefix {
+    at: u64,
+    ready: u64,
+    cpu: Cpu,
+    touches: [Option<CacheTouch>; 16],
+    retained: Option<(u32, u16)>,
+    read: bool,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct FetchCheck {
@@ -127,12 +145,12 @@ impl Memory for PollMemory<'_> {
     }
 }
 impl Bus {
-    pub(crate) fn prepare_poll_cycle(&mut self, initial: &Cpu, status: u8) -> Option<PollCycle> {
+    pub(crate) fn prepare_poll_cycle(&mut self, initial: &Cpu) -> Option<PollCycle> {
         let chip = &self.onchip[1];
+        let status = chip.ftcsr();
         if !self.cached_bus_compatible()
             || !chip.cached_batch_allowed()
             || chip.monitors_external_bus()
-            || chip.ftcsr() != status
         {
             return None;
         }
@@ -140,19 +158,29 @@ impl Bus {
         let mask = (initial.state().sr >> 4) & 15;
         let cache = self.cache[1].borrow();
         let retained = self.instruction_word[1].get();
-        if let Some(template) = &self.poll_template
-            && template.cycle.status == status
-            && template.retained == retained
-            && template.initial.state().pc == initial.state().pc
-            && initial
-                .same_cached_cycle_origin(&template.initial, origin.saturating_sub(template.origin))
-            && template.fetched.iter().flatten().all(|check| {
-                cache.peek_cached_touch(check.address) == Some((check.words, check.touch))
-            })
+        if let Some((index, template)) =
+            self.poll_templates
+                .iter()
+                .enumerate()
+                .find(|(_, template)| {
+                    template.cycle.status == status
+                        && template.retained == retained
+                        && template.initial.state().pc == initial.state().pc
+                        && initial.same_cached_cycle_origin(
+                            &template.initial,
+                            origin.saturating_sub(template.origin),
+                        )
+                        && template.fetched.iter().flatten().all(|check| {
+                            cache.peek_cached_touch(check.address)
+                                == Some((check.words, check.touch))
+                        })
+                })
         {
             return Some(PollCycle {
                 period: template.cycle.period,
                 mask,
+                retirements: template.cycle.retirements,
+                template: index,
                 instructions: template.cycle.instructions,
                 local: template.cycle.local,
                 touches: template.cycle.touches,
@@ -170,6 +198,8 @@ impl Bus {
             status,
         };
         let mut cpu = initial.clone();
+        let mut retirements = 0;
+        let mut prefixes = Vec::new();
         for instructions in 1..=8 {
             let op = cpu.decoded_opcode()?;
             if !Cpu::is_scalar(op)
@@ -188,10 +218,23 @@ impl Bus {
             let at = memory.clock.get();
             let ready =
                 (cpu.execution_clock().unwrap_or(started) + u64::from(cpu.last_clocks())).max(at);
+            prefixes.push(PollPrefix {
+                at: at - origin,
+                ready: ready - origin,
+                cpu: cpu.clone(),
+                touches: memory
+                    .fetched
+                    .get()
+                    .map(|check| check.map(|read| read.touch)),
+                retained: memory.retained.get(),
+                read: memory.reads.get() != 0,
+            });
+            if at > origin && at - origin < 32 {
+                retirements |= 1 << (at - origin);
+            }
             if cpu.state().pc == initial.state().pc && memory.reads.get() == 1 {
-                let period = at - origin;
+                let period = ready - origin;
                 if period == 0
-                    || at != ready
                     || memory.retained.get() != retained
                     || !cpu.repeat_cached_cycle(initial, period, 0, None)
                 {
@@ -200,7 +243,11 @@ impl Bus {
                 let fetched = memory.fetched.into_inner();
                 let touches = fetched.map(|check| check.map(|read| read.touch));
                 let local = cpu.cached_local_clock() - initial.cached_local_clock();
-                self.poll_template = Some(PollTemplate {
+                if self.poll_templates.len() == 8 {
+                    self.poll_templates.remove(0);
+                }
+                let index = self.poll_templates.len();
+                self.poll_templates.push(PollTemplate {
                     initial: initial.clone(),
                     origin,
                     retained,
@@ -208,15 +255,20 @@ impl Bus {
                     cycle: PollCycle {
                         period,
                         mask,
+                        retirements,
+                        template: index,
                         instructions,
                         local,
                         touches,
                         status,
                     },
+                    prefixes,
                 });
                 return Some(PollCycle {
                     period,
                     mask,
+                    retirements,
+                    template: index,
                     instructions,
                     local,
                     touches,
@@ -227,14 +279,76 @@ impl Bus {
         }
         None
     }
-    pub(crate) fn commit_poll_cycle(&mut self, cycle: PollCycle, cpu: &mut Cpu, periods: u64) {
-        assert!(periods != 0);
-        cpu.publish_poll_periods(cycle.period, cycle.instructions, cycle.local, periods);
+    pub(crate) fn commit_poll_cycle(
+        &mut self,
+        cycle: PollCycle,
+        cpu: &mut Cpu,
+        elapsed: u64,
+    ) -> u64 {
+        assert!(cycle.can_retire_at(elapsed));
+        let periods = elapsed / cycle.period;
+        let phase = elapsed % cycle.period;
         let chip = &self.onchip[1];
-        assert_eq!(chip.read8(FRT + 1), Ok(cycle.status));
-        chip.count_cached_instructions(cycle.instructions * periods);
-        for touch in cycle.touches.into_iter().flatten() {
+        if periods != 0 {
+            cpu.publish_poll_periods(cycle.period, cycle.instructions, cycle.local, periods);
+            assert_eq!(chip.read8(FRT + 1), Ok(cycle.status));
+            chip.count_cached_instructions(cycle.instructions * periods);
+            for touch in cycle.touches.into_iter().flatten() {
+                self.cache[1].get_mut().publish_touch(touch);
+            }
+        }
+        if phase == 0 {
+            return self.main_clocks;
+        }
+        // Prefix states were computed by the shared interpreter during proof.
+        // The admission guard rechecked every fetched byte and physical way.
+        let template = &self.poll_templates[cycle.template];
+        let prefix = template
+            .prefixes
+            .iter()
+            .find(|prefix| prefix.at == phase)
+            .expect("proven polling retirement");
+        let mut next = prefix.cpu.clone();
+        let retired = next.state().instructions - template.initial.state().instructions;
+        next.rebase_poll_prefix(
+            &template.initial,
+            cpu,
+            self.main_clocks - phase - template.origin,
+        );
+        *cpu = next;
+        if prefix.read {
+            assert_eq!(self.onchip[1].read8(FRT + 1), Ok(cycle.status));
+        }
+        self.instruction_word[1].set(prefix.retained);
+        for touch in prefix.touches.into_iter().flatten() {
             self.cache[1].get_mut().publish_touch(touch);
+        }
+        self.onchip[1].count_cached_instructions(retired);
+        self.main_clocks - phase + prefix.ready
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PollCycle;
+
+    #[test]
+    fn retirement_mask_does_not_wrap_past_its_recorded_clock_range() {
+        let cycle = PollCycle {
+            period: 35,
+            mask: 15,
+            retirements: 1 << 1,
+            template: 0,
+            instructions: 3,
+            local: 0,
+            touches: [None; 16],
+            status: 0,
+        };
+        for elapsed in [1, 35, 36, 70] {
+            assert!(cycle.can_retire_at(elapsed));
+        }
+        for elapsed in [0, 32, 33, 34, 68] {
+            assert!(!cycle.can_retire_at(elapsed));
         }
     }
 }

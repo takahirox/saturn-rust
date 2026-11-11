@@ -594,6 +594,13 @@ impl Cpu {
         self.multiplier.clock += local * copies;
         self.shift_cached_clock(period * copies);
     }
+    pub(crate) fn rebase_poll_prefix(&mut self, prior: &Self, current: &Self, elapsed: u64) {
+        self.state.instructions =
+            current.state.instructions + (self.state.instructions - prior.state.instructions);
+        self.multiplier.clock =
+            current.multiplier.clock + (self.multiplier.clock - prior.multiplier.clock);
+        self.shift_cached_clock(elapsed);
+    }
     pub(crate) fn cached_load_address(&self, opcode: u16) -> Option<u32> {
         timing::mov_load_address(opcode, &self.state).or_else(|| {
             matches!(

@@ -1,6 +1,7 @@
 //! SH7604 §8: 4 KiB, four-way, write-through cache. No hardware snooping.
 //! The LRU masks below are derived from tables 8.3/8.4, not another core.
 use crate::bus::BusError;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 mod shadow;
 pub(crate) use shadow::CachedLines;
@@ -21,6 +22,7 @@ pub(crate) struct Cache {
     control: u8,
     lines: Vec<[Line; 4]>,
     lru: [u8; 64],
+    lookup: [AtomicU32; 64],
 }
 impl Default for Cache {
     fn default() -> Self {
@@ -30,6 +32,7 @@ impl Default for Cache {
                 .map(|_| std::array::from_fn(|_| Line::default()))
                 .collect(),
             lru: [0; 64],
+            lookup: std::array::from_fn(|_| AtomicU32::new(0)),
         }
     }
 }
@@ -51,6 +54,9 @@ impl Cache {
         self.control
     }
     pub fn set_control(&mut self, value: u8) {
+        for lookup in &self.lookup {
+            lookup.store(0, Ordering::Relaxed);
+        }
         self.control = value & 0xCF;
         if value & 0x10 != 0 {
             for set in &mut self.lines {
@@ -63,6 +69,9 @@ impl Cache {
     }
     pub fn reset_control(&mut self) {
         self.control = 0;
+        for lookup in &self.lookup {
+            lookup.store(0, Ordering::Relaxed);
+        }
     }
     fn parts(address: u32) -> (usize, u32, usize) {
         (
@@ -96,11 +105,19 @@ impl Cache {
     }
     fn hit_way(&self, address: u32) -> Option<usize> {
         let (set, tag, _) = Self::parts(address);
-        self.lines[set]
+        let lookup = self.lookup[set].load(Ordering::Relaxed);
+        if lookup & !3 == tag | 4 {
+            return Some((lookup & 3) as usize);
+        }
+        let way = self.lines[set]
             .iter()
             .enumerate()
             .skip(self.first_cache_way())
-            .find_map(|(way, line)| (line.valid && line.tag == tag).then_some(way))
+            .find_map(|(way, line)| (line.valid && line.tag == tag).then_some(way));
+        if let Some(way) = way {
+            self.lookup[set].store(tag | 4 | way as u32, Ordering::Relaxed);
+        }
+        way
     }
     pub(crate) fn cached_only<const N: usize>(
         &self,
@@ -185,6 +202,7 @@ impl Cache {
                 valid: true,
                 data,
             };
+            self.lookup[set].store(tag | 4 | way as u32, Ordering::Relaxed);
             way
         };
         let mut bytes = [0; N];
@@ -262,6 +280,7 @@ impl Cache {
                         line.valid = false;
                     }
                 }
+                self.lookup[set].store(0, Ordering::Relaxed);
             }
             3 => {
                 if N != 4 {
@@ -272,6 +291,7 @@ impl Cache {
                 line.tag = tag;
                 line.valid = address & 4 != 0;
                 self.lru[set] = ((value >> 4) & 63) as u8;
+                self.lookup[set].store(0, Ordering::Relaxed);
             }
             6 => {
                 let way = ((address >> 10) & 3) as usize;
@@ -286,6 +306,32 @@ impl Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn memoized_lookup_preserves_first_way_after_duplicate_tags_purges_and_mode_changes() {
+        let mut cache = Cache::default();
+        let _: &(dyn Send + Sync) = &cache;
+        let address = 0x0600_1000;
+        // Install a later-way tag and warm the host lookup.
+        cache.set_control(0xC1);
+        cache
+            .array_write(0x6000_0004 | address, 0u32.to_be_bytes())
+            .unwrap();
+        cache.array_write::<4>(0xC000_0C00, [3; 4]).unwrap();
+        assert_eq!(cache.peek_cached::<4>(address), Some([3; 4]));
+        // An earlier matching way must win even with a warmed later-way entry.
+        cache.set_control(1);
+        cache
+            .array_write(0x6000_0004 | address, 0u32.to_be_bytes())
+            .unwrap();
+        cache.array_write::<4>(0xC000_0000, [1; 4]).unwrap();
+        assert_eq!(cache.peek_cached::<4>(address), Some([1; 4]));
+        cache.set_control(9);
+        assert_eq!(cache.peek_cached::<4>(address), Some([3; 4]));
+        cache
+            .array_write(0x4000_0000 | address, 0u32.to_be_bytes())
+            .unwrap();
+        assert_eq!(cache.peek_cached::<4>(address), None);
+    }
     #[test]
     fn decode_peeks_match_discarded_cache_touches_without_changing_lru() {
         for control in [0, 1, 9] {

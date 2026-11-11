@@ -106,6 +106,76 @@ fn cd_hirq_width_faults_keep_the_ordinary_bus_path() {
 }
 
 #[test]
+fn polling_phase_templates_preserve_cpu_fields_audio_and_sound_control_edges() {
+    let bytes = rom(include_str!("../../tests/fixtures/dual-poll.hex"));
+    let programs: &[&[u16]] = &[
+        &[],
+        &[0x4E71, 0x60FC],
+        &[0x33FC, 0x400, 0x10, 0x42A, 0x33FC, 0, 0x10, 0x42A, 0x60EE],
+        &[0x4E70, 0x4E71, 0x60FA],
+    ];
+    for fast in [false, true] {
+        for &program in programs {
+            let (mut optimized, mut reference) = pair(&bytes);
+            for m in [&mut optimized, &mut reference] {
+                m.bus.change_system_clock(fast);
+                if !program.is_empty() {
+                    m.bus.sound.ram[..4].copy_from_slice(&0x70000u32.to_be_bytes());
+                    m.bus.sound.ram[4..8].copy_from_slice(&0x100u32.to_be_bytes());
+                    for (i, opcode) in program.iter().enumerate() {
+                        m.bus.sound.ram[0x100 + i * 2..0x102 + i * 2]
+                            .copy_from_slice(&opcode.to_be_bytes());
+                    }
+                    for (i, byte) in m.bus.sound.ram[0x1000..0x1100].iter_mut().enumerate() {
+                        *byte = (i as u8).wrapping_mul(37);
+                    }
+                    for (offset, value) in [
+                        (2, 0x1000),
+                        (6, 128),
+                        (8, 31),
+                        (12, 0x100),
+                        (16, 0x7800),
+                        (22, 0xE000),
+                        (0, 0x1820),
+                        (0x400, 0x20F),
+                        (0x780, 0x1000),
+                        (0x80C, 0xC000),
+                    ] {
+                        m.bus.sound.scsp.write16(offset, value).unwrap();
+                    }
+                    m.bus.scu.write32(SCU + 0xA0, 0xBFBF).unwrap();
+                    m.bus.sound.set_enabled(true).unwrap();
+                }
+            }
+            let mut heard = false;
+            for _ in 0..2 {
+                optimized.advance_frame().unwrap();
+                reference_frame(&mut reference).unwrap();
+                let audio = optimized.bus.sound.scsp.drain(8192);
+                assert_eq!(audio, reference.bus.sound.scsp.drain(8192));
+                heard |= audio.iter().any(|&sample| sample != 0);
+                same(&mut optimized, &mut reference);
+                assert_eq!(
+                    optimized.bus.scu.read32(SCU + 0xA4),
+                    reference.bus.scu.read32(SCU + 0xA4)
+                );
+                for m in [&mut optimized, &mut reference] {
+                    m.bus.scu.write32(SCU + 0xA4, !(1 << 6)).unwrap();
+                }
+            }
+            if program == programs[1] {
+                assert!(heard);
+            }
+            assert!(
+                optimized.cached_poll_origins.len() > 1,
+                "rotated phases must execute"
+            );
+            assert!(optimized.cached_poll_prefixes > 0);
+        }
+    }
+}
+
+#[test]
 fn slave_poll_periods_commute_with_accepted_master_ram_writes() {
     let make = || {
         let mut m = crate::scheduling_tests::cached_pair(

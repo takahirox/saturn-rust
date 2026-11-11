@@ -1795,3 +1795,52 @@ Their code sections are identical. The data differences are confined to
 SCSP tick-conversion memoization, continuous polling stamps and isolated
 slave waiting produced no selected gain. Work remains in dual-CPU scheduling,
 board arbitration, interrupt sampling, sound advancement and video acquisition.
+
+
+## Guarded polling prefixes and host cache lookups (2026-11-11)
+
+Related to #17. The slave polling proof retains interpreter-computed CPU states
+at individual retirement offsets. A cached master burst can start at multiple
+validated loop positions and finish at one of these offsets. A bounded set of
+eight templates checks complete CPU/pipeline state under clock translation,
+retained instruction words, fetched bytes and physical cache ways. Publication
+rebases the selected prefix's instruction counters and local clocks, applies
+its ordered cache touches and records any FTCSR read. The ordinary scheduler
+handles a rejected proof. Device and shared-bus observer deadlines bound the
+whole interval.
+
+Recording CPU-state assumptions and recovering state at instruction boundaries
+also underpins dynamic translation. Execution here uses the shared interpreter
+and memoized prefix states. [QEMU translator internals](https://www.qemu.org/docs/master/devel/tcg.html), [QEMU instruction counting and I/O](https://www.qemu.org/docs/master/devel/tcg-icount.html)
+
+A host-only lookup retains the most recently matched tag/way for each SH7604
+cache set. Mode changes, purges, tag-array writes and committed shadow fills
+invalidate the affected entries. Relaxed `AtomicU32` accesses preserve the
+public `Cache` type's `Send + Sync` traits. Native regressions cover duplicate
+tags, two-way mode, purges and a warmed lookup across a shadow eviction. The
+polling retirement mask checks its recorded range before shifting.
+
+The original dual-CPU guest now also runs with live PCM, DSP memory activity,
+sound interrupt-control writes and sound reset output. Native differential
+checks exercise both clocks, emitted samples, complete CPU states and renewed
+SCU sound requests. The production browser scheduler runs an original coupled
+guest and requires nonzero PCM while comparing ordinary steps against fields.
+All 1,311 native tests passed in 111 result groups. All 74 browser groups passed,
+including 45 scheduler cases. The 13 runner checks, registered fixtures,
+formatting and native/Wasm Clippy with warnings denied passed.
+
+Chrome 157.0.8103.39 drew every field to Canvas. Three alternating pairs used
+the CD HIRQ build from the preceding main merge as their baseline. Every timed
+endpoint matched CPU, sound, clocks and pixel state.
+
+| Workload | Earlier fields/s | Combined fields/s | Median p95 field time |
+| --- | ---: | ---: | ---: |
+| Local Machi Disc 1, fields 1200–1380 | 6.782 | 7.136 | 176.4 → 176.0 ms |
+| Local BIOS menu, fields 1200–1560 | 25.775 | 26.393 | 65.4 → 63.6 ms |
+
+The measured module is the final default build, SHA-256
+`255c85ba1d97c4f8813c47eec9e7c877591d33563c526b04926fa0831d2bab74`.
+It reproduced all six local game checkpoints through field 3252, including
+byte-identical title, book-menu and operation-guide screenshots. The game
+median improved 5.2% and the menu median improved 2.4%. 60 fields/s remains
+unmet, requiring about 8.4× additional throughput in the measured game window.

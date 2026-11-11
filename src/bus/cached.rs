@@ -86,13 +86,13 @@ impl Retirements {
         }
         lo
     }
-    fn aligned_prefix(&self, limit: usize, origin: u64, period: Option<u64>) -> usize {
-        let Some(period) = period else { return limit };
+    fn aligned_prefix(&self, limit: usize, origin: u64, poll: Option<&PollCycle>) -> usize {
+        let Some(poll) = poll else { return limit };
         (0..limit)
             .rev()
             .find(|&i| {
                 let clocks = self.at(i) - origin;
-                clocks != 0 && clocks.is_multiple_of(period)
+                poll.can_retire_at(clocks)
             })
             .map_or(0, |i| i + 1)
     }
@@ -986,6 +986,17 @@ impl Bus {
         }
         Ok(u64::from(reference))
     }
+    pub(crate) fn cached_master_admissible(&self, initial: &Cpu) -> bool {
+        initial.decoded_opcode().is_none_or(accepted_opcode)
+            && ordinary_memory(initial.state().pc)
+            && self.cached_bus_compatible()
+            && self.onchip[0].cached_batch_allowed()
+            && !self.scu.dma_pending()
+            && self.cpu_dma_errors.iter().all(|&error| !error)
+            && initial.state().status == CpuStatus::Running
+            && !initial.state().address_error_pending
+            && (self.cache[0].borrow().control() & 1 != 0 || initial.state().pc < BIOS_SIZE as u32)
+    }
     pub(crate) fn cached_batch(
         &mut self,
         initial: &Cpu,
@@ -994,21 +1005,7 @@ impl Bus {
         master_start: u64,
     ) -> Result<Option<CachedBatch>, crate::MachineError> {
         let poll_period = poll.map(|cycle| cycle.period);
-        if initial
-            .decoded_opcode()
-            .is_some_and(|op| !accepted_opcode(op))
-        {
-            return Ok(None);
-        }
-        if (self.slave_enabled && poll_period.is_none())
-            || !ordinary_memory(initial.state().pc)
-            || !self.cached_bus_compatible()
-            || !self.onchip[0].cached_batch_allowed()
-            || self.scu.dma_pending()
-            || self.cpu_dma_errors.iter().any(|&e| e)
-            || initial.state().status != CpuStatus::Running
-            || initial.state().address_error_pending
-            || (self.cache[0].borrow().control() & 1 == 0 && initial.state().pc >= BIOS_SIZE as u32)
+        if (self.slave_enabled && poll_period.is_none()) || !self.cached_master_admissible(initial)
         {
             return Ok(None);
         }
@@ -1511,7 +1508,7 @@ impl Bus {
                 break;
             }
         }
-        let mut selected = points.aligned_prefix(retired as usize, self.main_clocks, poll_period);
+        let mut selected = points.aligned_prefix(retired as usize, self.main_clocks, poll);
         if selected == 0 {
             points.recycle_into(&mut self.cached_retirement_points);
             return Ok(None);
@@ -1546,7 +1543,7 @@ impl Bus {
             selected = points.aligned_prefix(
                 points.through(main_through).min(selected),
                 self.main_clocks,
-                poll_period,
+                poll,
             );
             if selected == 0
                 && let Some(checkpoint) = checkpoint
