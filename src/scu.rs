@@ -1,6 +1,7 @@
 //! Independently authored SCU control. ST-097 §§2–4 and ST-210 final-spec
 //! corrections are the behavioral references; see docs/hardware-conformance.md.
 mod abus;
+pub(crate) use abus::Abus;
 mod dma;
 mod dsp;
 mod transactions;
@@ -273,6 +274,12 @@ impl Scu {
     }
     pub(crate) fn abus_access(&self, address: u32, width: usize, write: bool) -> u32 {
         self.abus.access(address, width, write)
+    }
+    pub(crate) fn plan_cached_abus(&self) -> Abus {
+        self.abus.clone()
+    }
+    pub(crate) fn commit_cached_abus(&self, planned: &Abus) {
+        self.abus.commit_cached(planned);
     }
     pub(crate) fn bus_width(&self, address: u32) -> Option<usize> {
         self.abus

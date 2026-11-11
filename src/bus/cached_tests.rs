@@ -3,6 +3,109 @@ use super::*;
 use crate::{Boot, Machine, MachineError};
 
 #[test]
+fn cd_hirq_polling_preserves_abus_protocol_width_and_command_edges() {
+    let mut bytes = rom(include_str!("../../examples/runtime-poll.hex"));
+    bytes[0x224..0x228].copy_from_slice(&0x25890008u32.to_be_bytes());
+    for (index, opcode) in [0x6041u16, 0x6041, 0x7801, 0xAFFB, 9]
+        .into_iter()
+        .enumerate()
+    {
+        bytes[0x20C + index * 2..0x20E + index * 2].copy_from_slice(&opcode.to_be_bytes());
+    }
+    for fast in [false, true] {
+        for width in [2, 4] {
+            for little in [false, true] {
+                for precharge in [0, 0x60000000, 0x60010000] {
+                    let (mut optimized, mut reference) = pair(&bytes);
+                    for m in [&mut optimized, &mut reference] {
+                        m.bus.change_system_clock(fast);
+                        m.bus.onchip[0]
+                            .write32(
+                                0xFFFFFFE4,
+                                0xA55A00CC | (if width == 2 { 2 } else { 3 } << 4),
+                            )
+                            .unwrap();
+                        m.bus.onchip[0]
+                            .write32(0xFFFFFFE0, 0xA55A03F0 | if little { 0x1000 } else { 0 })
+                            .unwrap();
+                        m.bus.scu.write32(SCU + 0xB4, precharge).unwrap();
+                        m.bus.scu.write32(SCU + 0xB8, 0x1F).unwrap();
+                    }
+                    let mut largest = 0;
+                    let mut hirq_retired = 0;
+                    for target in [1024, 2048] {
+                        while optimized.cpu_state().instructions < target {
+                            let limit =
+                                (target - optimized.cpu_state().instructions).min(128) as u32;
+                            let hirq = optimized
+                                .bus
+                                .passive_read(&optimized.cpu)
+                                .is_some_and(|read| read.address == 0x25890008);
+                            if hirq {
+                                optimized.bus.scu.refresh_abus();
+                                reference.bus.scu.refresh_abus();
+                            }
+                            let count = optimized.try_cached_batch(limit).unwrap();
+                            if hirq {
+                                hirq_retired += count;
+                            }
+                            largest = largest.max(count);
+                            if count == 0 {
+                                optimized.step_inner_with_idle(true).unwrap();
+                            }
+                            while reference.cpu_state().instructions
+                                < optimized.cpu_state().instructions
+                            {
+                                reference.step().unwrap();
+                            }
+                            assert_eq!(optimized.cpu, reference.cpu);
+                            assert_eq!(optimized.clocks, reference.clocks);
+                            optimized.bus.onchip[0]
+                                .assert_cached_read_bus_matches(&reference.bus.onchip[0]);
+                            assert_eq!(
+                                optimized.bus.scu.plan_cached_abus(),
+                                reference.bus.scu.plan_cached_abus()
+                            );
+                            assert_eq!(
+                                optimized.bus.cd.peek16(crate::cd::REGISTERS + 8),
+                                reference.bus.cd.peek16(crate::cd::REGISTERS + 8)
+                            );
+                        }
+                        for m in [&mut optimized, &mut reference] {
+                            m.bus.cd.write16(crate::cd::REGISTERS + 8, 0xFFEE).unwrap();
+                            for offset in [0x18, 0x1C, 0x20, 0x24] {
+                                m.bus.cd.write16(crate::cd::REGISTERS + offset, 0).unwrap();
+                            }
+                        }
+                    }
+                    assert!(largest >= 8);
+                    assert!(hirq_retired > 100, "no CD batches: {hirq_retired}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn cd_hirq_width_faults_keep_the_ordinary_bus_path() {
+    for load in [0x6040u16, 0x6042] {
+        let mut bytes = rom(include_str!("../../examples/runtime-poll.hex"));
+        bytes[0x224..0x228].copy_from_slice(&0x25890008u32.to_be_bytes());
+        bytes[0x20C..0x20E].copy_from_slice(&load.to_be_bytes());
+        let (mut optimized, mut reference) = pair(&bytes);
+        let fault = optimized.advance_frame();
+        assert!(fault.is_err());
+        assert_eq!(fault, reference_frame(&mut reference));
+        same(&mut optimized, &mut reference);
+        optimized.bus.onchip[0].assert_cached_read_bus_matches(&reference.bus.onchip[0]);
+        assert_eq!(
+            optimized.bus.scu.plan_cached_abus(),
+            reference.bus.scu.plan_cached_abus()
+        );
+    }
+}
+
+#[test]
 fn slave_poll_periods_commute_with_accepted_master_ram_writes() {
     let make = || {
         let mut m = crate::scheduling_tests::cached_pair(

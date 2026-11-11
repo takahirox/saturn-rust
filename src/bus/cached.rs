@@ -23,6 +23,7 @@ struct Local {
 struct PassiveRead<'a> {
     address: u32,
     bytes: [u8; 4],
+    allowed_widths: u8,
     little: bool,
     rom: Option<&'a [u8]>,
     sequence: RefCell<crate::onchip::ReadSequence>,
@@ -318,7 +319,7 @@ impl Cached<'_> {
             if let Some(passive) = &self.passive
                 && passive.rom.is_none()
                 && address == passive.address
-                && matches!(N, 2 | 4)
+                && passive.allowed_widths & N as u8 != 0
             {
                 let at =
                     passive
@@ -746,6 +747,7 @@ impl Bus {
             return Some(PassiveRead {
                 address: u32::MAX,
                 bytes: [0; 4],
+                allowed_widths: 1 | 2 | 4,
                 little: false,
                 rom: None,
                 sequence: RefCell::new(self.onchip[0].plan_cached_reads(self.main_clocks)),
@@ -763,19 +765,29 @@ impl Bus {
         {
             return None;
         }
-        let bytes = if physical == crate::vdp1::REGISTERS + 0x10 {
+        let (bytes, allowed_widths) = if physical == crate::vdp1::REGISTERS + 0x10 {
             let a = self.vdp1.read16(physical).ok()?.to_be_bytes();
             let b = self.vdp1.read16(physical + 2).ok()?.to_be_bytes();
-            [a[0], a[1], b[0], b[1]]
+            ([a[0], a[1], b[0], b[1]], 2 | 4)
+        } else if physical == crate::cd::REGISTERS + 8 {
+            // HIRQ reads preserve pending flags. CR4 and data ports have
+            // read side effects and remain on the ordinary bus path.
+            let word = self.cd.peek16(physical).ok()?.to_be_bytes();
+            ([word[0], word[1], 0, 0], 2)
         } else {
             return None;
         };
+        let mut sequence = self.onchip[0].plan_cached_reads(self.main_clocks);
+        if physical == crate::cd::REGISTERS + 8 {
+            sequence = sequence.with_abus(self.scu.plan_cached_abus());
+        }
         Some(PassiveRead {
             address,
             bytes,
+            allowed_widths,
             rom: None,
             little: self.onchip[0].external_little_endian(Bus::physical(address)),
-            sequence: RefCell::new(self.onchip[0].plan_cached_reads(self.main_clocks)),
+            sequence: RefCell::new(sequence),
         })
     }
     pub(crate) fn cached_wait_allowed(&self) -> bool {
