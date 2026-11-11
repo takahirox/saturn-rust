@@ -1921,3 +1921,63 @@ The measured default module SHA-256 is
 Six extended local game checkpoints and three screenshots match the preceding
 production captures. The game median improved 1.6% and menu throughput was
 unchanged at this precision. 60 fields/s remains unmet.
+
+
+## Private polling continuations (2026-11-12)
+
+Related to #17. The default frame runner can reuse private slave polling while
+that processor is suspended inside a resident instruction. A bounded proof
+executes the existing interpreter with the actual private continuation, including
+its journal, retained IF, pipeline and local instruction epoch. It records the
+transient prefix and a closed polling period. Reuse checks full CPU and
+continuation state, FTCSR, cache control, fetched bytes and physical ways.
+
+Two cache-replacement seeds establish each phase's keep/value transformation.
+Publication rebases CPU and journal timestamps, local counters, read/clear
+bookkeeping and replacement bits. The actual board and sound domains advance
+through their existing event-bounded paths. Master retirement records retain
+both retirement and readiness times. A selected endpoint yields master issue
+before publishing a pending slave phase, preserving same-clock fault ordering.
+The proof cache holds 32 templates and retains its scratch machine between
+attempts. Every attempt resets probe transaction ownership and journals.
+
+Original native guests compare every published phase across both PLLs,
+PAL/NTSC, two code alignments and ordinary/delayed-slot FTCSR loads. Comparisons
+include complete CPUs, both caches and bus timing. A prepared branch can retain
+its existing readiness representation during a partial replay wake. Subsequent
+publications check completion. Negative controls cover status, cache bytes,
+cache control and a rejected external probe followed by a valid private proof.
+
+An asserted sound/CD pin with an unprocessed SCU effect is an immediate
+hardware horizon. This includes a cleared IST factor, CD acknowledgement
+consumption and a newly armed sound-triggered DMA channel. The fixed tick
+publishes that effect before cached work resumes. An original regression covers
+both sources, preserves the CPUs on refusal and checks the subsequent ordinary
+publication. Negative controls remove the horizon, acknowledgement handling and
+DMA-trigger handling independently. Each fails the regression.
+
+The complete native suite passed 1,318 tests in 111 result groups before the
+final acknowledgement/DMA refinement. The refined guard passed all 849 native
+library tests locally. The full native suite runs again in CI. All 74 production-Wasm
+browser groups passed, including 46 scheduler cases and an original delayed
+FTCSR guest. The first shared-shard run exposed a duplicated fixture mutation
+in the new test. After correcting that test, all 33 shared groups passed. All
+41 scenario groups passed. The 13 runner checks, registered fixtures, formatting
+and native/Wasm Clippy with warnings denied passed.
+
+Chrome 157.0.8103.39 drew every field to Canvas. Three alternating comparisons
+used the prepared-store build from PR #120 as their baseline. Every timed
+endpoint matched CPU, sound, clocks and pixels.
+
+| Workload | Earlier fields/s | Private continuations fields/s | Median p95 field time |
+| --- | ---: | ---: | ---: |
+| Local Machi Disc 1, fields 1200–1380 | 7.324 | 7.590 | 161.0 → 157.3 ms |
+| Local BIOS menu, fields 1200–1560 | 26.438 | 26.220 | 63.0 → 63.5 ms |
+
+The measured default module SHA-256 is
+`c0c08ea383f48eff5edbee6c3af655d46299cc5ea1b9d9cfa6c59d184aae0a0b`.
+Six extended local game checkpoints through field 3252 and byte-identical title,
+book-menu and operation-guide screenshots match the preceding captures.
+Game median throughput improved 3.6%. Menu throughput changed by −0.8%.
+60 fields/s remains unmet, requiring about 7.9× additional throughput in the
+measured game window.

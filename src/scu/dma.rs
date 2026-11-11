@@ -138,8 +138,11 @@ impl Channel {
     pub(super) fn indirect(&self) -> bool {
         self.mode & (1 << 24) != 0
     }
+    pub(super) fn accepts_trigger(&self, trigger: u8) -> bool {
+        self.enabled && self.mode & 7 == u32::from(trigger)
+    }
     pub(super) fn trigger(&mut self, trigger: u8) {
-        if self.enabled && self.mode & 7 == u32::from(trigger) {
+        if self.accepts_trigger(trigger) {
             if self.pending() {
                 self.retrigger = true;
             } else {

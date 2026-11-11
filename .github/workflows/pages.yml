@@ -98,7 +98,9 @@ jobs:
       - name: Set up Chromium
         run: |
           python3 scripts/ci-time.py npm-install npm ci --ignore-scripts
-          python3 scripts/ci-time.py chromium-install npx playwright install --with-deps chromium
+          # Ubuntu's bundled browsers provide the runtime libraries.
+          # Install the pinned Playwright browser directly.
+          python3 scripts/ci-time.py chromium-install npx playwright install chromium
       - name: Validate runner failure propagation and publication gates
         if: matrix.shard == 'shared'
         run: python3 scripts/ci-time.py runner-tests node --test scripts/ci-runner.test.mjs

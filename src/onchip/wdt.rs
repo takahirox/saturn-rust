@@ -7,6 +7,7 @@ pub enum ResetRequest {
     Manual,
 }
 
+#[derive(Clone)]
 pub(super) struct Watchdog {
     control: u8,
     counter: u8,

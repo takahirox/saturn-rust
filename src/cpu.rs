@@ -175,12 +175,13 @@ pub struct Cpu {
     execution_clock: Option<u64>,
 }
 
+#[derive(Clone, PartialEq, Eq)]
 enum CachedEffect {
     Scalar(scalar::Kind),
     Load,
     Store(u32),
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct Branch {
     target: Option<u32>,
     delayed: bool,
@@ -233,6 +234,7 @@ impl Branch {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct PreparedBranch {
     branch: Branch,
     fetch: fetch::Fetch,
@@ -240,6 +242,7 @@ pub(crate) struct PreparedBranch {
     states: u32,
     ex: u64,
 }
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct CachedInstruction {
     pub at: u64,
     pub operand: Option<(u32, u32)>,
@@ -1662,3 +1665,33 @@ mod multiplier_tests;
 mod store_tests;
 #[cfg(test)]
 mod tests;
+
+impl PreparedBranch {
+    pub(crate) fn shift_private_clock(&mut self, elapsed: u64) {
+        self.ex += elapsed;
+        self.fetch.shift_cached_clock(elapsed);
+        self.pipeline.shift_cached_clock(elapsed);
+    }
+}
+impl CachedInstruction {
+    pub(crate) fn shift_private_clock(&mut self, elapsed: u64) {
+        self.at += elapsed;
+        self.issue_at += elapsed;
+        if self.decode_ready != 0 {
+            self.decode_ready += elapsed;
+        }
+        self.ex += elapsed;
+        self.pipeline.shift_cached_clock(elapsed);
+    }
+}
+
+impl Cpu {
+    pub(crate) fn private_code_addresses(&self) -> [Option<u32>; 2] {
+        self.fetch.private_addresses()
+    }
+}
+impl PreparedBranch {
+    pub(crate) fn private_code_addresses(&self) -> [Option<u32>; 2] {
+        self.fetch.private_addresses()
+    }
+}

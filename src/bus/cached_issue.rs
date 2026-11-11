@@ -4,18 +4,21 @@ use super::{Bus, BusError, Cache, Cell, Memory, Processor, cached::ordinary_memo
 use crate::cache::CacheTouch;
 use crate::cpu::{CachedInstruction, Cpu, PreparedBranch};
 
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct CachedLoad {
     pub(crate) plan: CachedInstruction,
     pub(crate) future: u16,
     pub(super) scheduled: bool,
 }
 
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct CachedStore {
     pub(crate) plan: CachedInstruction,
     pub(crate) future: u16,
     pub(crate) value: u32,
 }
 
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct CachedBranch {
     plan: PreparedBranch,
     touches: [Option<CacheTouch>; 5],
@@ -246,5 +249,17 @@ impl Bus {
         self.instruction_word[index].set(branch.retained);
         self.onchip[index].count_cached_instructions(1);
         branch.plan
+    }
+}
+
+impl CachedBranch {
+    pub(crate) fn shift_private_clock(&mut self, elapsed: u64) {
+        self.plan.shift_private_clock(elapsed);
+    }
+}
+
+impl CachedBranch {
+    pub(crate) fn private_code_addresses(&self) -> [Option<u32>; 2] {
+        self.plan.private_code_addresses()
     }
 }

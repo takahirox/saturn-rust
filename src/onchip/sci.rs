@@ -2,6 +2,7 @@
 use std::cell::Cell;
 use std::collections::VecDeque;
 
+#[derive(Clone)]
 pub(super) struct Serial {
     mode: u8,
     rate: u8,

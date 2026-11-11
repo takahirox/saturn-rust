@@ -303,6 +303,17 @@ impl Cache {
     }
 }
 
+impl Cache {
+    pub(crate) fn copy_private(&mut self, source: &Self, replacement: u8) {
+        self.control = source.control;
+        self.lines.clone_from(&source.lines);
+        self.lru.fill(replacement);
+        for lookup in &self.lookup {
+            lookup.store(0, Ordering::Relaxed);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

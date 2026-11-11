@@ -9,7 +9,7 @@ const HBLANK_CLOCK: u32 = 320 * 4;
 /// SMPC ST-169 §§1.1/2.3.9–10: the PLL clocks the SH-2s and video,
 /// independently of the fixed sound/CD/RTC domains. Public machine time stays
 /// in 26.8741 MHz reference ticks, avoiding rounding drift when switching PLLs.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct SystemClock {
     fast: bool,
     pal: bool,
@@ -79,7 +79,7 @@ pub enum RasterEvent {
     VBlankIn,
     VBlankOut,
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Raster {
     pub line: u16,
     pub fields: u64,

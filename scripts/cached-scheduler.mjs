@@ -36,6 +36,7 @@ export async function cachedScheduler(page) {
     ["SH7604/cache/reset", "tests/fixtures/sh7604.hex", false],
     ["dual SH-2", "tests/fixtures/dual-sh2.hex", false],
     ["dual resident polling and buffered RAM writes", "tests/fixtures/dual-poll.hex", false],
+    ["dual polling with a delayed status load", "tests/fixtures/dual-poll.hex", "dual-delayed"],
     ["dual polling with live PCM, DSP and sound control writes", "tests/fixtures/dual-poll.hex", "dual-sound"],
     ["multiplier", "tests/fixtures/sh2-multiplier.hex", false],
     ["PLL", "tests/fixtures/clock.hex", false],
@@ -134,6 +135,12 @@ export async function cachedScheduler(page) {
       emit(0x001A);emit(0x040A);
       emit(0xA000 | (((loop-(pc+4))/2)&0xFFF));emit(0x0009);
       assert(pc<=0x280 && literal<=0x300);
+    }
+    if (mutate === "dual-delayed") {
+      assert.equal(bytes.readUInt16BE(0x2A0), 0x6010);
+      // TST, BT/S back to TST, then the real FTCSR read in its slot.
+      [0xC880, 0x8DFD, 0x6010, 0xAFFB, 0x0009]
+        .forEach((word, i) => bytes.writeUInt16BE(word, 0x2A0 + i * 2));
     }
     if (mutate === "dual-sound") {
       assert(bytes.subarray(0x100, 0x200).every(byte => byte === 0));

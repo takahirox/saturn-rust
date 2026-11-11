@@ -10,12 +10,14 @@ use crate::vdp1::{self, Vdp1};
 use std::cell::{Cell, RefCell};
 use std::fmt;
 mod cached;
+pub(crate) use cached::PeerSchedule;
 mod cached_issue;
 #[cfg(test)]
 mod dmac_tests;
 #[cfg(test)]
 mod hdtv_tests;
 mod poll_cycle;
+pub(crate) mod private_poll;
 #[cfg(test)]
 mod slave_raster_tests;
 mod transactions;
@@ -315,7 +317,7 @@ pub struct Bus {
     transactions: transactions::Transactions,
     inline: Option<transactions::InlineProgress>,
     // Retain host retirement-buffer capacity between cached bursts.
-    cached_retirement_points: Vec<u64>,
+    cached_retirement_points: Vec<cached::Retirement>,
     #[cfg(test)]
     inline_resumes: u64,
     #[cfg(test)]
