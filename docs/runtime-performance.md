@@ -2069,7 +2069,9 @@ and pixel endpoint against PR #122's default module.
 | Local BIOS menu, fields 1200–1560 | 25.706 | 25.627 | 64.5 → 65.0 ms |
 
 The game median improved 9.7%, with a 12.4% improvement across combined measured
-time. Menu median throughput changed by −0.3%. The measured default module's
+time. A separate three-pair repeat measured 8.007 → 8.472 fields/s, a 5.8%
+median improvement and a 9.2% improvement across combined time. Every timed
+endpoint matched again. Menu median throughput changed by −0.3%. The measured default module's
 SHA-256 is
 `b6dbef290593ccde10f69c62a28d387cef71933bdd798a436b154f6034cb2d8c`.
 
