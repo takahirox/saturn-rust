@@ -1842,3 +1842,45 @@ fn cached_sound_with_mounted_media_keeps_cdda_start_and_stop_edges() {
     }
     assert!(a.cached_retired > 1000);
 }
+
+#[test]
+fn short_retirement_wait_retains_fractional_pll_boundaries() {
+    let mut admitted = 0;
+    let mut fallback = 0;
+    for pal in [false, true] {
+        for fast in [false, true] {
+            let (mut optimized, mut reference) = (Bus::default(), Bus::default());
+            for bus in [&mut optimized, &mut reference] {
+                bus.set_pal(pal);
+                bus.change_system_clock(fast);
+            }
+            for _ in 0..2048 {
+                let actual = match optimized.try_retirement_wait() {
+                    Some(result) => {
+                        admitted += 1;
+                        result
+                    }
+                    None => {
+                        fallback += 1;
+                        optimized.advance_cpu_clocks(1)
+                    }
+                };
+                assert_eq!(actual, reference.advance_cpu_clocks(1));
+                assert_eq!(optimized.main_clocks, reference.main_clocks);
+                assert_eq!(optimized.pending_main_clocks, reference.pending_main_clocks);
+                assert_eq!(
+                    optimized.system_clock.preview(257),
+                    reference.system_clock.preview(257)
+                );
+                assert_eq!(optimized.raster.counters(), reference.raster.counters());
+                assert_eq!(optimized.irq_observed, reference.irq_observed);
+                assert_eq!(optimized.onchip[0].ftcsr(), reference.onchip[0].ftcsr());
+            }
+            assert_eq!(
+                optimized.sound.scsp.drain(4096),
+                reference.sound.scsp.drain(4096)
+            );
+        }
+    }
+    assert!(admitted > 0 && fallback > 0);
+}

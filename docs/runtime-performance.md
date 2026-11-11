@@ -1844,3 +1844,44 @@ It reproduced all six local game checkpoints through field 3252, including
 byte-identical title, book-menu and operation-guide screenshots. The game
 median improved 5.2% and the menu median improved 2.4%. 60 fields/s remains
 unmet, requiring about 8.4× additional throughput in the measured game window.
+
+
+## Short CPU waits and display acquisition deadlines (2026-11-11)
+
+Related to #17. A completed instruction can use the existing independent
+hardware path for a one-main-clock wait when both CPUs remain behind their
+readiness boundaries and the normal DMA and observer guards pass. A PAL PLL
+edge that produces zero main clocks retains the ordinary reference-clock
+advance. A new regression compares 8,192 boundaries across both video
+standards and PLL selections, including fractional phase, pending main ticks,
+raster counters, interrupt recognition and emitted samples.
+
+The board retains the next normal/rotation display acquisition deadline.
+Repeated scheduler calls before that deadline reuse it. VDP2 register writes,
+video-standard changes and PLL resets invalidate it. Buffered WRAM publication
+can advance board time before display catch-up. That catch-up invalidates the
+memo at each intermediate beam position to retain every physical acquisition.
+The existing original shared-hardware guest detects an omitted invalidation
+through its captured pixels.
+
+The 1,311 existing native tests and the added PLL regression passed. All 74
+browser groups passed, including 45 cached-scheduler cases. The 13 runner
+checks, registered fixtures, formatting and native/Wasm Clippy with warnings
+denied passed. Trials that shortened longer post-retirement waits produced
+clock mismatches and were corrected to the one-clock admission above. A
+separate sound-checkpoint elision trial produced no selected throughput gain.
+
+Chrome 157.0.8103.39 drew every field to Canvas. Three alternating comparisons
+used the guarded-prefix build from PR #118 as their baseline. Every timed
+endpoint matched CPU, sound, clock and pixel state.
+
+| Workload | Earlier fields/s | Combined fields/s | Median p95 field time |
+| --- | ---: | ---: | ---: |
+| Local Machi Disc 1, fields 1200–1380 | 6.989 | 7.201 | 177.8 → 173.7 ms |
+| Local BIOS menu, fields 1200–1560 | 26.436 | 26.382 | 63.0 → 63.2 ms |
+
+The measured module is the default build, SHA-256
+`5a752de3b192c5b591b4bb6c0cc94e3974b5a18e7ae8bb2a60c6b040beefbb54`.
+The game median improved 3.0%. Menu throughput changed by −0.2%. 60 fields/s
+remains unmet, requiring about 8.3× additional throughput in the measured game
+window.
