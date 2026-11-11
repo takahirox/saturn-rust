@@ -12,6 +12,11 @@ struct Line {
     valid: bool,
     data: [u8; 16],
 }
+#[derive(Clone, Copy)]
+pub(crate) struct CacheTouch {
+    set: u8,
+    way: u8,
+}
 pub(crate) struct Cache {
     control: u8,
     lines: Vec<[Line; 4]>,
@@ -115,6 +120,12 @@ impl Cache {
     /// Decode-only inspection must not touch replacement state. This avoids
     /// copying the whole LRU array just to discard one hypothetical touch.
     pub(crate) fn peek_cached<const N: usize>(&self, address: u32) -> Option<[u8; N]> {
+        self.peek_cached_touch(address).map(|(bytes, _)| bytes)
+    }
+    pub(crate) fn peek_cached_touch<const N: usize>(
+        &self,
+        address: u32,
+    ) -> Option<([u8; N], CacheTouch)> {
         if address >= 0x2000_0000 || self.control & 1 == 0 || address as usize & (N - 1) != 0 {
             return None;
         }
@@ -122,7 +133,16 @@ impl Cache {
         let way = self.hit_way(address)?;
         let mut bytes = [0; N];
         bytes.copy_from_slice(&self.lines[set][way].data[offset..offset + N]);
-        Some(bytes)
+        Some((
+            bytes,
+            CacheTouch {
+                set: set as u8,
+                way: way as u8,
+            },
+        ))
+    }
+    pub(crate) fn publish_touch(&mut self, touch: CacheTouch) {
+        self.touch(usize::from(touch.set), usize::from(touch.way));
     }
     pub(crate) fn replacement_state(&self) -> [u8; 64] {
         self.lru

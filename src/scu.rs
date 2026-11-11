@@ -89,20 +89,17 @@ impl Default for Scu {
 impl Scu {
     /// ST-097 table 2.1. Only the master receives the SCU interrupt output.
     pub fn interrupt(&self) -> Option<(u8, u8)> {
-        let unmasked = self.status & !u32::from(self.mask) & 0x3FFF
-            | if self.mask & 0x8000 == 0 {
-                self.status & 0xFFFF_0000
-            } else {
-                0
-            };
-        // Equal-level sources use ascending vector order.
-        if unmasked == 0 {
-            return None;
+        let internal = self.status & !u32::from(self.mask) & 0x3FFF;
+        // Within each bank, levels descend in vector order. Only compare
+        // the first pending internal factor with the first A-bus factor.
+        let mut bit = internal.trailing_zeros();
+        if self.mask & 0x8000 == 0 && self.status >> 16 != 0 {
+            let external = (self.status & 0xFFFF_0000).trailing_zeros();
+            if bit == 32 || INTERRUPT_LEVELS[external as usize] > INTERRUPT_LEVELS[bit as usize] {
+                bit = external;
+            }
         }
-        (0..32)
-            .filter(|bit| unmasked & (1 << bit) != 0)
-            .map(|bit| (INTERRUPT_LEVELS[bit], 0x40 + bit as u8))
-            .max_by_key(|(level, vector)| (*level, 255 - *vector))
+        (bit < 32).then(|| (INTERRUPT_LEVELS[bit as usize], 0x40 + bit as u8))
     }
     fn acknowledge(&mut self, vector: u8) {
         if (0x40..=0x5F).contains(&vector) {

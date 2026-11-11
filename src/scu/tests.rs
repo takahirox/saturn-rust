@@ -5,6 +5,28 @@ use super::*;
 use crate::bus::{Bus, HIGH_WRAM};
 
 #[test]
+fn interrupt_priority_matches_literal_selection_across_both_factor_banks() {
+    let mut scu = Scu::default();
+    for mask in [0, 0x8000, 0x1555, 0x2AAA, 0xBFFF] {
+        scu.mask = mask;
+        for first in 0..32 {
+            for second in first..32 {
+                scu.status = 1 << first | 1 << second;
+                let expected = (0..32)
+                    .filter(|&bit| {
+                        scu.status & (1 << bit) != 0
+                            && (bit < 14 && mask & (1 << bit) == 0
+                                || bit >= 16 && mask & 0x8000 == 0)
+                    })
+                    .map(|bit| (INTERRUPT_LEVELS[bit], 0x40 + bit as u8))
+                    .max_by_key(|&(level, vector)| (level, std::cmp::Reverse(vector)));
+                assert_eq!(scu.interrupt(), expected);
+            }
+        }
+    }
+}
+
+#[test]
 fn interrupt_mapping_and_gate_with_model_equal_level_order_and_consumption() {
     let mut scu = Scu::default();
     for bit in [11, 10, 9, 8, 7, 5, 4, 3, 2, 1, 0] {

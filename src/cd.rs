@@ -2,7 +2,7 @@
 //! Primary reference: ST-162-062094, CD Communication Interface §§3–8
 //! (not ST-162-R1, which describes the peripheral library).
 use crate::bus::BusError;
-use crate::media::{Media, RAW_SECTOR, TrackMode};
+use crate::media::{Media, RAW_SECTOR, Track, TrackMode};
 use std::cell::{Cell, RefCell};
 
 pub const REGISTERS: u32 = 0x0589_0000;
@@ -96,6 +96,7 @@ struct SelectorTransfer {
 
 pub struct CdBlock {
     media: Option<Media>,
+    audio_track_at: Cell<Option<(u32, bool)>>,
     request: [u16; 4],
     response: Cell<[u16; 4]>,
     hirq: Cell<u16>,
@@ -262,6 +263,7 @@ impl Default for CdBlock {
     fn default() -> Self {
         Self {
             media: None,
+            audio_track_at: Cell::new(None),
             request: [0; 4],
             response: Cell::new([0x0043, 0x4442, 0x4C4F, 0x434B]),
             hirq: Cell::new(0xBE1),
@@ -352,6 +354,7 @@ impl CdBlock {
             self.end = media.leadout;
         }
         self.media = Some(media);
+        self.audio_track_at.set(None);
         self.status = 1;
         self.report(false);
         self.raise(0x20);
@@ -392,19 +395,29 @@ impl CdBlock {
                 || self.copying.is_some())
     }
     pub fn clocks_to_event(&self) -> u32 {
+        self.clocks_to_event_up_to(u32::MAX)
+    }
+    pub(crate) fn clocks_to_event_up_to(&self, limit: u32) -> u32 {
         if !self.enabled {
-            return u32::MAX;
+            return limit;
         }
-        let drive = (HZ - self.phase).div_ceil(75 * u64::from(self.drive_speed())) as u32;
-        let report = (HZ - self.report_phase).div_ceil(self.report_hz()) as u32;
+        // Most board steps are a handful of clocks. Neither rational phase
+        // needs a division or a track lookup when even double speed cannot
+        // cross its edge within the requested interval.
+        let limit = self.command_deadline(limit);
+        if u64::from(limit) * 150 < (HZ - self.phase).min(HZ - self.report_phase) {
+            return limit;
+        }
+        self.phase_deadline(limit, 75 * u64::from(self.drive_speed()))
+    }
+    fn command_deadline(&self, limit: u32) -> u32 {
         let standby = if self.status == 1 && !self.playing {
             (u64::from(self.standby_seconds) * HZ - self.pause_clocks).min(u64::from(u32::MAX))
                 as u32
         } else {
             u32::MAX
         };
-        drive
-            .min(report)
+        limit
             .min(standby)
             .min(self.pending.map_or(u32::MAX, |(_, n)| n))
             .min(self.copying.as_ref().map_or(u32::MAX, |job| job.clocks))
@@ -416,23 +429,44 @@ impl CdBlock {
                 self.seeking
             })
     }
+    fn phase_deadline(&self, limit: u32, drive_hz: u64) -> u32 {
+        let report_hz = self.report_hz(drive_hz);
+        let before = |phase: u64, rate: u64| {
+            let remaining = HZ - phase;
+            if u64::from(limit) * rate < remaining {
+                limit
+            } else {
+                remaining.div_ceil(rate) as u32
+            }
+        };
+        before(self.phase, drive_hz).min(before(self.report_phase, report_hz))
+    }
     fn drive_speed(&self) -> u32 {
-        if self.scan.is_some()
-            || self
-                .media
-                .as_ref()
-                .and_then(|m| m.track(self.fad))
-                .is_some_and(|t| t.mode == TrackMode::Audio)
-        {
+        if self.scan.is_some() || self.speed == 1 || self.at_audio_track() {
             1
         } else {
             self.speed
         }
     }
-    fn report_hz(&self) -> u64 {
+    fn at_audio_track(&self) -> bool {
+        let Some(media) = &self.media else {
+            return false;
+        };
+        if let Some((fad, audio)) = self.audio_track_at.get()
+            && fad == self.fad
+        {
+            return audio;
+        }
+        let audio = media
+            .track(self.fad)
+            .is_some_and(|track| track.mode == TrackMode::Audio);
+        self.audio_track_at.set(Some((self.fad, audio)));
+        audio
+    }
+    fn report_hz(&self, drive_hz: u64) -> u64 {
         // ST-162 §3.4: 75/150 Hz during play, 60 Hz while stopped/paused.
         if self.playing || self.scan.is_some() {
-            75 * u64::from(self.drive_speed())
+            drive_hz
         } else {
             60
         }
@@ -573,10 +607,10 @@ impl CdBlock {
         }
         while clocks != 0 {
             self.sync_rw();
-            let delta = clocks.min(self.clocks_to_event());
+            let drive_hz = 75 * u64::from(self.drive_speed());
+            let report_hz = self.report_hz(drive_hz);
+            let delta = self.phase_deadline(self.command_deadline(clocks), drive_hz);
             self.rw.advance(delta, self.media.as_ref());
-            let speed = self.drive_speed();
-            let report_hz = self.report_hz();
             if self.status == 1 && !self.playing {
                 self.pause_clocks += u64::from(delta);
                 if self.pause_clocks >= u64::from(self.standby_seconds) * HZ {
@@ -602,7 +636,7 @@ impl CdBlock {
                     self.authentication = Some((left - delta, result));
                 }
             }
-            self.phase += u64::from(delta) * 75 * u64::from(speed);
+            self.phase += u64::from(delta) * drive_hz;
             while self.phase >= HZ {
                 self.phase -= HZ;
                 if let Some((reverse, _)) = self.scan {
@@ -938,20 +972,30 @@ impl CdBlock {
         }
         255 // finite cyclic selector networks drop rather than hang host
     }
-    /// External SCSP input: signed stereo, 588 frames per Red Book sector.
-    pub fn audio_sample(&mut self) -> [i16; 2] {
-        let scanning = self.scan.is_some();
+    fn audio_source(&self) -> Option<(&Media, &Track)> {
+        let media = self.media.as_ref()?;
         if !self.enabled
             || (!self.playing && !self.scan.is_some_and(|(_, audible)| audible))
             || self.seeking != 0
             || self.buffer_paused
         {
-            return [0; 2];
+            return None;
         }
-        let Some(media) = &self.media else {
-            return [0; 2];
-        };
-        let Some(track) = media.track(self.fad).filter(|t| t.mode == TrackMode::Audio) else {
+        let track = media
+            .track(self.fad)
+            .filter(|t| t.mode == TrackMode::Audio)?;
+        Some((media, track))
+    }
+
+    /// Audio is constant zero until a CD event or a guest CD register access.
+    pub(crate) fn audio_quiet(&self) -> bool {
+        self.audio_source().is_none()
+    }
+
+    /// External SCSP input: signed stereo, 588 frames per Red Book sector.
+    pub fn audio_sample(&mut self) -> [i16; 2] {
+        let scanning = self.scan.is_some();
+        let Some((media, track)) = self.audio_source() else {
             return [0; 2];
         };
         let preemphasis = track.control & 1 != 0;

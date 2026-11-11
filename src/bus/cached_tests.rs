@@ -1573,3 +1573,56 @@ fn data_cache_refills_match_physical_reads_and_cpu_pipeline_at_every_retirement(
     assert!(filled.into_iter().all(|hit| hit));
     assert!(odd_disabled_stays_empty);
 }
+
+#[test]
+fn cached_sound_with_mounted_media_keeps_cdda_start_and_stop_edges() {
+    use crate::{cd::REGISTERS, media::Media};
+    let mut audio = vec![0; 2352 * 16];
+    for (i, frame) in audio.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        frame[..2].copy_from_slice(&(2048 + (i % 251) as i16).to_le_bytes());
+        frame[2..].copy_from_slice(&(-1024i16).to_le_bytes());
+    }
+    let media = Media::cue(
+        "FILE \"data\" BINARY\nTRACK 01 MODE1/2048\nINDEX 01 00:00:00\nFILE \"audio\" BINARY\nTRACK 02 AUDIO\nINDEX 01 00:00:00",
+        &[("data", &[0; 2048]), ("audio", &audio)],
+    ).unwrap();
+    let bytes = rom(include_str!("../../examples/runtime-loop.hex"));
+    let (mut a, mut b) = pair(&bytes);
+    for m in [&mut a, &mut b] {
+        m.mount_media(media.clone());
+        let sound = &mut m.bus.sound;
+        sound.ram[..4].copy_from_slice(&0x1000u32.to_be_bytes());
+        sound.ram[4..8].copy_from_slice(&0x100u32.to_be_bytes());
+        sound.ram[0x100..0x104].copy_from_slice(&[0x4E, 0x71, 0x60, 0xFC]);
+        sound.scsp.write16(0x400, 15).unwrap();
+        sound.scsp.write16(16 * 32 + 22, 0xFF).unwrap();
+        sound.scsp.write16(17 * 32 + 22, 0xEF).unwrap();
+        sound.set_enabled(true).unwrap();
+    }
+    for (command, quiet) in [
+        (None, true),
+        (Some([0x1080, 151, 0x80, 16]), false),
+        (Some([0x11FF, 0xFFFF, 0, 0]), true),
+    ] {
+        if let Some(command) = command {
+            for m in [&mut a, &mut b] {
+                for (i, word) in command.into_iter().enumerate() {
+                    m.bus
+                        .cd
+                        .write16(REGISTERS + 0x18 + i as u32 * 4, word)
+                        .unwrap();
+                }
+            }
+        }
+        a.advance_frame().unwrap();
+        reference_frame(&mut b).unwrap();
+        assert_eq!(a.bus.cd.audio_quiet(), quiet);
+        let pcm = a.drain_audio(4096);
+        assert_eq!(pcm, b.drain_audio(4096));
+        if !quiet {
+            assert!(pcm.iter().any(|&sample| sample != 0));
+        }
+        same(&mut a, &mut b);
+    }
+    assert!(a.cached_retired > 1000);
+}

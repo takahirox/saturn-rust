@@ -179,6 +179,66 @@ enum CachedEffect {
     Scalar(scalar::Kind),
     Load,
 }
+#[derive(Clone, Copy)]
+struct Branch {
+    target: Option<u32>,
+    delayed: bool,
+    link: bool,
+    inhibit: bool,
+}
+impl Branch {
+    fn recognized(opcode: u16) -> bool {
+        matches!(opcode >> 12, 0xA | 0xB)
+            || matches!(opcode >> 8, 0x89 | 0x8B | 0x8D | 0x8F)
+            || matches!(opcode & 0xF0FF, 0x400B | 0x402B | 0x0003 | 0x0023)
+            || opcode == 0x000B
+    }
+    fn decode(opcode: u16, s: &CpuState) -> Option<Self> {
+        let relative = |offset: u32| s.pc.wrapping_add(4).wrapping_add(offset);
+        if matches!(opcode >> 8, 0x89 | 0x8B | 0x8D | 0x8F) {
+            let taken = (s.sr & T != 0) == (opcode & 0x200 == 0);
+            let delayed = opcode & 0x400 != 0;
+            let displacement = i32::from(opcode as i8) * 2;
+            return Some(Self {
+                target: taken.then(|| relative(displacement as u32)),
+                delayed,
+                link: false,
+                // H table 4.10: a conditional delay slot suppresses IRQ/NMI
+                // entry even when its branch is not taken.
+                inhibit: delayed,
+            });
+        }
+        let (target, link) = match opcode {
+            0x000B => (s.pr, false),
+            _ if matches!(opcode & 0xF0FF, 0x400B | 0x402B | 0x0003 | 0x0023) => {
+                let r = s.r[((opcode >> 8) & 15) as usize];
+                (
+                    if opcode & 0x4000 != 0 { r } else { relative(r) },
+                    opcode & 0x20 == 0,
+                )
+            }
+            _ if matches!(opcode >> 12, 0xA | 0xB) => {
+                let displacement = i32::from((opcode << 4) as i16 >> 4) * 2;
+                (relative(displacement as u32), opcode >> 12 == 0xB)
+            }
+            _ => return None,
+        };
+        Some(Self {
+            target: Some(target),
+            delayed: true,
+            link,
+            inhibit: false,
+        })
+    }
+}
+
+pub(crate) struct PreparedBranch {
+    branch: Branch,
+    fetch: fetch::Fetch,
+    pipeline: timing::LoadPipeline,
+    states: u32,
+    ex: u64,
+}
 pub(crate) struct CachedInstruction {
     pub at: u64,
     pub operand: Option<(u32, u32)>,
@@ -193,6 +253,16 @@ pub(crate) struct CachedInstruction {
     effect: CachedEffect,
     interlock: u32,
 }
+impl CachedInstruction {
+    pub(crate) fn issue_at(&self) -> u64 {
+        self.issue_at
+    }
+    pub(crate) fn load_wait(&self, now: u64, scheduled: bool) -> u32 {
+        self.at
+            .saturating_sub(u64::from(scheduled))
+            .saturating_sub(now) as u32
+    }
+}
 
 impl Cpu {
     pub fn state(&self) -> &CpuState {
@@ -206,6 +276,23 @@ impl Cpu {
     /// The caller bounds clocks against all external observers. Real IFs still
     /// run before each EX, preserving cache replacement and retained words.
     pub(crate) fn cached_scalar_block(&mut self, bus: &mut impl Memory, limit: u32) -> u32 {
+        self.cached_scalar_block_with_fetch(
+            bus.sh2_clock().expect("clocked cache block"),
+            limit,
+            |pc, address| {
+                let word = bus.fetch16(address).ok()?;
+                bus.instruction_break(pc, false);
+                Some(word)
+            },
+        )
+    }
+
+    pub(crate) fn cached_scalar_block_with_fetch(
+        &mut self,
+        start: u64,
+        limit: u32,
+        mut fetch: impl FnMut(u32, u32) -> Option<u16>,
+    ) -> u32 {
         if self.state.status != CpuStatus::Running
             || self.state.address_error_pending
             || self.state.delay_target.is_some()
@@ -213,7 +300,6 @@ impl Cpu {
         {
             return 0;
         }
-        let start = bus.sh2_clock().expect("clocked cache block");
         let Some(mut words) = self.fetch.cached_pair(self.state.pc, start) else {
             return 0;
         };
@@ -222,10 +308,9 @@ impl Cpu {
             let Some(kind) = scalar::decode(words.0) else {
                 break;
             };
-            let Ok(future) = bus.fetch16(self.state.pc.wrapping_add(4)) else {
+            let Some(future) = fetch(self.state.pc, self.state.pc.wrapping_add(4)) else {
                 break;
             };
-            bus.instruction_break(self.state.pc, false);
             scalar::execute(kind, words.0, &mut self.state);
             self.state.pc = self.state.pc.wrapping_add(2);
             words = (words.1, future);
@@ -342,6 +427,26 @@ impl Cpu {
                 split
             }
         };
+        self.retire_cached_instruction(plan, future, split);
+        bus.instruction_break(pc, true);
+    }
+    pub(crate) fn retire_prepared_load(
+        &mut self,
+        mut plan: CachedInstruction,
+        future: u16,
+        value: u32,
+        now: u64,
+    ) {
+        assert!(now >= plan.at);
+        commit_mov_load(&mut self.state, plan.opcode, value);
+        let split = plan.next_pc & 2 == 0;
+        plan.pipeline.load_split(split);
+        if !split {
+            plan.pipeline.retain_ex(now - 1);
+        }
+        self.retire_cached_instruction(plan, future, u32::from(split));
+    }
+    fn retire_cached_instruction(&mut self, plan: CachedInstruction, future: u16, split: u32) {
         self.state.pc = plan.next_pc;
         self.state.delay_target = None;
         self.state.instructions += 1;
@@ -353,7 +458,81 @@ impl Cpu {
         self.multiplier.clock += u64::from(self.last_clocks);
         self.fetch
             .finish_cached_pair(self.state.pc, (plan.words.1, future), plan.decode_ready);
-        bus.instruction_break(pc, true);
+    }
+
+    pub(crate) fn prepare_cached_control(&self, bus: &mut impl Memory) -> Option<PreparedBranch> {
+        if self.state.status != CpuStatus::Running
+            || self.state.address_error_pending
+            || self.state.delay_target.is_some()
+        {
+            return None;
+        }
+        let opcode = self.decoded_opcode()?;
+        let branch = Branch::decode(opcode, &self.state)?;
+        let instruction = timing::instruction(opcode);
+        let mut fetch = self.fetch.clone();
+        let pc = self.state.pc;
+        if fetch.select(bus, pc).ok()? != opcode {
+            return None;
+        }
+        bus.instruction_break(pc, false);
+        let mut pipeline = self.load_pipeline.clone();
+        let ex = pipeline.issue_clock(bus.sh2_clock()?);
+        let interlock = pipeline.issue_instruction(instruction);
+        let wait = interlock.saturating_sub(pipeline.issue_overlap);
+        bus.sh2_pipeline_wait(wait).ok()?;
+        let fetch_start = bus.sh2_clock()?;
+        let issue = ex + u64::from(interlock);
+        if instruction.control_flags() & timing::UNCONDITIONAL != 0 {
+            fetch.hold_delay_slot(bus, issue);
+        } else {
+            fetch.advance(bus, pc.wrapping_add(2), issue).ok()?;
+        }
+        let stretch = bus
+            .sh2_clock()?
+            .saturating_sub(fetch_start)
+            .saturating_sub(1);
+        if let Some(target) = branch.target {
+            bus.sh2_discard_prefetch();
+            fetch
+                .redirect(bus, target, branch.delayed, issue + stretch + 1)
+                .ok()?;
+        }
+        let states = instruction.states(self.state.sr & T != 0) + interlock;
+        Some(PreparedBranch {
+            branch,
+            fetch,
+            pipeline,
+            states,
+            ex: ex + stretch,
+        })
+    }
+    pub(crate) fn has_cached_control(&self, opcode: u16) -> bool {
+        Branch::recognized(opcode)
+            && self.state.status == CpuStatus::Running
+            && !self.state.address_error_pending
+            && self.state.delay_target.is_none()
+            && self.decoded_opcode() == Some(opcode)
+    }
+    pub(crate) fn retire_cached_control(&mut self, plan: PreparedBranch) {
+        let branch = plan.branch;
+        let pc = self.state.pc;
+        if branch.link {
+            self.state.pr = pc.wrapping_add(4);
+        }
+        self.state.pc = branch
+            .target
+            .filter(|_| !branch.delayed)
+            .unwrap_or_else(|| pc.wrapping_add(2));
+        self.state.delay_target = branch.target.filter(|_| branch.delayed);
+        self.state.instructions += 1;
+        self.fetch = plan.fetch;
+        self.load_pipeline = plan.pipeline;
+        self.last_clocks = plan.states;
+        self.execution_clock = Some(plan.ex);
+        self.interrupt_inhibited = branch.inhibit;
+        self.address_error_inhibited = branch.inhibit || self.state.delay_target.is_some();
+        self.multiplier.clock += u64::from(plan.states);
     }
 
     /// Repeat a proven cache-only cycle. Compare the complete pipeline state
@@ -886,7 +1065,6 @@ impl Cpu {
         let n = ((opcode >> 8) & 15) as usize;
         let m = ((opcode >> 4) & 15) as usize;
         let imm = opcode as u8 as u32;
-        let signed_imm = opcode as u8 as i8 as i32 as u32;
         let s = &mut self.state;
         let mut next_branch = None;
         let mut sequential_pc = pc.wrapping_add(2);
@@ -905,7 +1083,6 @@ impl Cpu {
                     s.mach = 0;
                     s.macl = 0;
                 } // CLRMAC
-                0x000B => next_branch = Some(s.pr),
                 0x001B => {
                     s.status = CpuStatus::Sleeping;
                     bus.inner.enter_sleep();
@@ -1258,37 +1435,19 @@ impl Cpu {
                     set_special(s, opcode & 1 != 0, (opcode >> 4) & 3, value);
                     inhibit = true;
                 }
-                _ if matches!(opcode & 0xFF00, 0x8900 | 0x8B00 | 0x8D00 | 0x8F00) => {
-                    let taken = (s.sr & T != 0) == (opcode & 0x200 == 0);
-                    let target = pc.wrapping_add(4).wrapping_add(signed_imm.wrapping_mul(2));
-                    // H §4.6 Table 4.10: the successor must execute before IRQ/NMI
-                    // acceptance even when BT/S or BF/S does not take the branch.
-                    inhibit = opcode & 0x400 != 0;
-                    if taken {
-                        if opcode & 0x400 != 0 {
+                _ if let Some(branch) = Branch::decode(opcode, s) => {
+                    if branch.link {
+                        s.pr = pc.wrapping_add(4);
+                    }
+                    inhibit = branch.inhibit;
+                    if let Some(target) = branch.target {
+                        if branch.delayed {
                             next_branch = Some(target);
                         } else {
                             sequential_pc = target;
                             direct_branch = true;
                         }
                     }
-                }
-                _ if matches!(opcode & 0xF0FF, 0x400B | 0x402B | 0x0003 | 0x0023) => {
-                    next_branch = Some(if opcode & 0x4000 != 0 {
-                        s.r[n]
-                    } else {
-                        pc.wrapping_add(4).wrapping_add(s.r[n])
-                    });
-                    if opcode & 0x20 == 0 {
-                        s.pr = pc.wrapping_add(4);
-                    }
-                }
-                _ if matches!(opcode & 0xF000, 0xA000 | 0xB000) => {
-                    if opcode & 0xF000 == 0xB000 {
-                        s.pr = pc.wrapping_add(4);
-                    }
-                    let displacement = ((opcode << 4) as i16 as i32) >> 4;
-                    next_branch = Some(pc.wrapping_add(4).wrapping_add((displacement * 2) as u32));
                 }
                 _ => return self.illegal(bus.inner).map_err(instruction),
             }
@@ -1345,7 +1504,7 @@ fn commit_mov_load(s: &mut CpuState, opcode: u16, value: u32) {
     s.r[destination] = value;
 }
 
-fn read_operand(bus: &impl Memory, address: u32, width: u32) -> Result<u32, BusError> {
+pub(crate) fn read_operand(bus: &impl Memory, address: u32, width: u32) -> Result<u32, BusError> {
     match width {
         1 => Ok(bus.read8(address)? as i8 as i32 as u32),
         2 => Ok(bus.read16(address)? as i16 as i32 as u32),

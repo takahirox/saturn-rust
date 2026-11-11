@@ -122,6 +122,9 @@ impl OnChip {
         }
         self.bsc.grant_refresh()
     }
+    pub(crate) fn refresh_pending(&self) -> bool {
+        self.bsc.refresh_is_pending()
+    }
     pub(crate) fn inhibits_external_bus(&self) -> bool {
         self.bsc.inhibits_external_bus()
     }
@@ -530,51 +533,58 @@ impl OnChip {
         if self.ubc.borrow().pending() {
             return Some((15, 12));
         }
-        // Priority zero masks every ordinary internal source. UBC remains
-        // independent, so inspect it before this common reset/startup case.
-        if self.ipra & 0xFFF0 == 0 && self.iprb & 0xFF00 == 0 {
-            return None;
-        }
         // H table 5.4: earlier source wins when programmed levels are equal.
-        let div = self.division.borrow();
-        let frt = self.tier & self.status & 0x8E;
-        let frt_vector = if frt & 0x80 != 0 {
-            self.vcrc >> 8
-        } else if frt & 0x0C != 0 {
-            self.vcrc & 0x7F
-        } else {
-            self.vcrd >> 8
-        };
-        let sci_vector = self.serial.irq().map(|source| match source {
-            0 => self.vcra >> 8,
-            1 => self.vcra & 0x7F,
-            2 => self.vcrb >> 8,
-            _ => self.vcrb & 0x7F,
-        });
-        let sources = [
-            (self.ipra >> 12, div.irq().then_some(div.vector as u16)),
-            ((self.ipra >> 8) & 15, self.dma.interrupt().map(u16::from)),
-            (
-                (self.ipra >> 4) & 15,
-                self.watchdog.irq().then_some(self.vcrwdt >> 8),
-            ),
-            (
-                (self.ipra >> 4) & 15,
-                self.bsc.interrupt().then_some(self.vcrwdt & 0x7F),
-            ),
-            (self.iprb >> 12, sci_vector),
-            ((self.iprb >> 8) & 15, (frt != 0).then_some(frt_vector)),
-        ];
-        let mut winner = None;
-        for (level, vector) in sources {
-            if level != 0
-                && let Some(vector) = vector
-                && winner.is_none_or(|(old, _)| level as u8 > old)
-            {
-                winner = Some((level as u8, vector as u8));
+        let mut winner = (0, 0);
+        let mut level = self.ipra >> 12;
+        if level != 0 {
+            let div = self.division.borrow();
+            if div.irq() {
+                winner = (level, div.vector as u16);
             }
         }
-        winner
+        level = (self.ipra >> 8) & 15;
+        if level > winner.0
+            && let Some(vector) = self.dma.interrupt()
+        {
+            winner = (level, u16::from(vector));
+        }
+        level = (self.ipra >> 4) & 15;
+        if level > winner.0 {
+            if self.watchdog.irq() {
+                winner = (level, self.vcrwdt >> 8);
+            } else if self.bsc.interrupt() {
+                winner = (level, self.vcrwdt & 0x7F);
+            }
+        }
+        level = self.iprb >> 12;
+        if level > winner.0
+            && let Some(source) = self.serial.irq()
+        {
+            winner = (
+                level,
+                match source {
+                    0 => self.vcra >> 8,
+                    1 => self.vcra & 0x7F,
+                    2 => self.vcrb >> 8,
+                    _ => self.vcrb & 0x7F,
+                },
+            );
+        }
+        level = (self.iprb >> 8) & 15;
+        if level > winner.0 {
+            let flags = self.tier & self.status & 0x8E;
+            if flags != 0 {
+                let vector = if flags & 0x80 != 0 {
+                    self.vcrc >> 8
+                } else if flags & 0x0C != 0 {
+                    self.vcrc & 0x7F
+                } else {
+                    self.vcrd >> 8
+                };
+                winner = (level, vector);
+            }
+        }
+        (winner.0 != 0).then_some((winner.0 as u8, winner.1 as u8))
     }
 
     pub(crate) fn cpu_peripheral_wait(&self, address: u32, width: usize, write: bool) -> u32 {

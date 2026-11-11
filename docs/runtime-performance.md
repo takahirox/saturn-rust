@@ -1539,3 +1539,147 @@ publication follows from these results.
 
 **60 fields/s remains unmet:** the measured menu average still requires about
 **2.38×** additional throughput; its slow fields need a larger reduction.
+
+## Dual-SH-2 register retirement and sound deadlines (2026-11-11)
+
+Related to #17. When both SH-2s are enabled, the frame scheduler can retire a
+register instruction directly at its existing issue clock. It uses the
+interpreter's scalar operation and requires a ready IF/ID pair and a successor
+word already in the CPU's cache or retained fetch word. The cache keeps its
+normal replacement updates. An in-flight transaction, an eligible interrupt or
+an instruction that needs a bus phase uses the ordinary scheduler. A native
+differential test compares both CPUs and their issue clocks while one CPU waits
+for an uncached operand.
+
+The SCSP scheduler takes the next DSP tick from the last consumed tick. It
+carries that tick through deadline selection and retains an unprocessed tick
+when reset takes precedence at the same clock. This removes repeated conversion
+from the reference clock in the sound loop.
+
+The standard production Wasm, SHA-256
+`9b9d746274ff3afb428ab202eaf11f90771db1c17d73ca7ad4fe5673f1e0853a`,
+was compared with the production build for `3f95b42`. Chrome 157.0.8103.39
+presented each field to Canvas. Each workload used three alternating pairs with
+matched controller input and no concurrent benchmark or validation work in the
+timed windows.
+
+| Workload | Baseline fields/s | Candidate fields/s | Median p95 field time |
+| --- | ---: | ---: | ---: |
+| Local BIOS menu, fields 1200–1560, 120 per window | 24.232 | 24.240 | 69.4 → 69.1 ms |
+| Local Sound Novel Machi Disc 1, fields 1200–1380, 60 per window | 2.912 | 3.042 | 365.7 → 344.5 ms |
+
+Each paired end state matched, including CPU and sound state, clocks and pixels.
+The Machi comparison also checked the slave SH-2 and used the ordinary local
+file picker and external BIOS. The candidate reproduced the previous title,
+book menu and operation guide images byte for byte, including Start and A input.
+Disc and BIOS files remain private and optional for these measurements.
+
+All 1,289 native tests and 74 standard browser groups passed, including the
+browser artifact digest and aggregation. Native and Wasm Clippy passed with
+warnings denied. The measured game window gained 4.46% throughput. The BIOS menu
+was effectively flat, and both workloads remain below 60 fields/s.
+
+### Sound scheduling with a mounted disc
+
+A mounted disc can supply a constant zero external sample during a pause, seek,
+or data-track operation. The cached scheduler now uses the same audio-source
+check as the CD block. It can advance sound ahead of CPU retirement while that
+sample stays zero and no CD interrupt is asserted. The next CD event still
+bounds the entire interval. An accepted CD register write retains its bus
+completion boundary. Audible CD-DA uses the ordinary sound deadline.
+
+The production Wasm with this change has SHA-256
+`240554c48792ec0f21e311cde69f9fac584948a8a431b40901ad2f67700d29a2`.
+Compared with the dual-SH-2 and SCSP build above, it produced the following
+isolated, alternating results. Both used the original Star Collector ISO in the
+drive and presented every field to Canvas.
+
+| Workload | Earlier build | Mounted-disc scheduling |
+| --- | ---: | ---: |
+| Original drawing and live sound guest, fields 60–420 | 10.818 fields/s | 48.982 fields/s |
+| Supplied BIOS startup, fields 260–620, total time | 68.828 s | 29.352 s |
+
+The drawing guest row uses the median of three windows. The BIOS row sums the
+three consecutive windows because they cover different stages of startup.
+Paired CPU, clock, sound and image snapshots matched throughout. An original
+mixed-mode native test compares sample values against ordinary execution as the
+drive starts CD-DA and returns to pause. It checks that the audible interval
+produces nonzero output.
+
+Two smaller sound trials were left out of the selected build. Simplifying the
+tick conversion without retaining the tick changed the BIOS menu from
+24.199 to 24.143 fields/s. Reducing repeated MIDI and sound-CPU observations
+improved the original drawing and sound scene from 48.806 to 49.251 fields/s.
+Its standalone gain was too small to justify adding the change.
+
+The final build was also compared directly with `3f95b42` in three isolated
+pairs without a disc. The BIOS menu measured 24.462 → 24.317 fields/s, and
+the first 60 fields from reset measured 52.156 → 51.971 fields/s. These changes
+are below 1%. The sampled snapshots matched. The mounted-disc gain drove the
+decision to keep the change.
+
+An initial rebuild picked up another trial's Wasm from the shared Cargo output.
+A separate build directory and a rebuild of the default crate output both
+reproduced the measured module byte for byte. That module passed all 74 standard
+browser groups and artifact aggregation. The native suite passed 1,290 tests.
+A subsequent test-only Clippy fix was checked with the affected CD-DA test and
+both native and Wasm Clippy.
+
+The final Wasm ran the supplied Machi disc from BIOS reset through the operation
+guide. Both SH-2s, the sound CPU, clocks and Canvas checksums matched the earlier
+build at six checkpoints through field 3252. The title, book menu and operation
+guide images matched the previous captures byte for byte.
+
+## Dual-SH-2 instruction continuations (2026-11-11)
+
+Related to #17. Resident control transfers and ordinary MOV loads can retain
+their prepared execution state through a wait when both SH-2s are enabled.
+The scheduler schedules the load's actual operand phases, including a cache
+refill or an internal FTCSR read. A peer capture strobe can change the value
+up to the ordinary sample edge. The same prepared branch semantics also apply
+inside single-SH-2 cached bursts. Private branch IF stages can share one wait
+when no local break or reset transition intervenes. The plan publishes the
+retained word and ordered cache touches before the next instruction. Each
+instruction retires at its original clock.
+
+The replay journal retains the first observation at each distinct clock and
+uses the operation cursor to reconstruct later observations. The board uses
+the one-clock path when the requested span already fixes its duration. SCU
+interrupt selection compares the highest pending factor in each bank, with the
+same vector order at equal levels. Short CD advances bound the drive and
+report phases before evaluating their rational deadlines.
+
+[QEMU's translator documentation](https://www.qemu.org/docs/master/devel/tcg.html)
+describes carrying CPU state assumptions and chaining validated blocks.
+[Its instruction-counting design](https://www.qemu.org/docs/master/devel/tcg-icount.html)
+shows how timer deadlines and I/O constrain those blocks. Here the SH7604's
+actual IF, MA and IRQ recognition clocks constrain the prepared execution.
+[Dolphin's idle-skipping description](https://nb.dolphin-emu.org/blog/2025/12/22/dolphin-progress-report-release-2512/#complex-idle-loops)
+informed a separate experiment on the slave's repeated FTCSR polling.
+
+The production module SHA-256 is
+`660d88d7ec0603aedff44bfeb539c82ed00ecd412df0bd2d6634cb64f8939b16`.
+Chrome 157.0.8103.39 presented each field to Canvas. The BIOS menu used
+three alternating pairs of 120 fields. Machi Disc 1 used the normal file
+picker and three alternating pairs of 60 fields with matched input. Both
+comparisons used the preceding mounted-disc scheduling build.
+
+| Workload | Earlier fields/s | Continuations fields/s | Median p95 field time |
+| --- | ---: | ---: | ---: |
+| Local BIOS menu, fields 1200–1560 | 23.601 | 24.789 | 72.2 → 68.8 ms |
+| Local Machi Disc 1, fields 1200–1380 | 2.914 | 5.935 | 361.7 → 197.9 ms |
+
+Both SH-2s, the sound CPU, clocks and Canvas checksums matched at each timed
+endpoint. The continuation build also reproduced six prior checkpoints
+through field 3252 and the title, book menu and operation guide screenshots
+byte for byte. The standard suite passed all 74 browser groups and verified
+the tested Wasm digest. All 1,293 native tests passed in 109 result groups.
+Differential checks include a peer strobe
+during an FTCSR load, delayed replay across clock boundaries and SCU priority
+pairs. Native and Wasm Clippy passed with warnings denied.
+
+The game window still needs approximately 10.1× average throughput for
+60 fields/s. In a diagnostic sample from the continuation build, substantial
+time remained in CPU issue, bus grants, video acquisition, IRQ sampling and
+sound advancement. The profile reports self samples for the built Wasm
+functions, including inlined work.

@@ -169,7 +169,7 @@ struct RamPlan {
     stores: Vec<RamStore>,
     before_last: crate::onchip::ReadSequence,
 }
-fn ordinary_memory(address: u32) -> bool {
+pub(super) fn ordinary_memory(address: u32) -> bool {
     address < 0x2000_0000
         && (address < BIOS_SIZE as u32
             || (LOW_WRAM..LOW_WRAM + WRAM_SIZE as u32).contains(&address)
@@ -693,6 +693,39 @@ pub(crate) struct CachedBatch {
     pub retired: u32,
 }
 impl Bus {
+    /// Retire one register instruction at the current hardware boundary.
+    /// A missing IF must fall back before changing CPU or cache state.
+    pub(crate) fn issue_cached_scalar(&mut self, processor: Processor, cpu: &mut Cpu) -> bool {
+        let index = processor as usize;
+        if !self.onchip[index].cached_batch_allowed() {
+            return false;
+        }
+        let clock = self.main_clocks;
+        let count = cpu.cached_scalar_block_with_fetch(clock, 1, |_, address| {
+            self.fetch_resident_instruction(processor, address)
+        });
+        self.onchip[index].count_cached_instructions(u64::from(count));
+        count != 0
+    }
+    pub(super) fn fetch_resident_instruction(
+        &mut self,
+        processor: Processor,
+        address: u32,
+    ) -> Option<u16> {
+        if !ordinary_memory(address) {
+            return None;
+        }
+        let memory = self.for_cpu(processor);
+        memory
+            .fetch_instruction_word(address, |a| {
+                memory.bus.cache[processor as usize]
+                    .borrow_mut()
+                    .read(a, true, |_| Err(BusError::Pending))?
+                    .ok_or(BusError::Pending)
+            })
+            .ok()
+    }
+
     fn passive_read<'a>(&self, initial: &Cpu) -> Option<PassiveRead<'a>> {
         if self.cache[0].borrow().control() & 1 == 0
             && initial.state().pc < BIOS_SIZE as u32
@@ -734,7 +767,9 @@ impl Bus {
         })
     }
     pub(crate) fn cached_wait_allowed(&self) -> bool {
-        self.onchip[0].cached_batch_allowed() && !self.scu.dma_pending()
+        self.onchip[0].cached_batch_allowed()
+            && (!self.slave_enabled || self.onchip[1].cached_batch_allowed())
+            && !self.scu.dma_pending()
     }
     pub(crate) fn coalesced_main_deadline(&self) -> u32 {
         self.observable_main_deadline()
@@ -766,9 +801,18 @@ impl Bus {
         if self.sound_ram_request().is_some() {
             return None;
         }
+        let deadline = self
+            .cd
+            .clocks_to_event()
+            .min(self.smpc.clocks_to_event())
+            .min(if self.cd.audio_quiet() && !self.cd.interrupt() {
+                self.sound.cached_cpu_deadline()
+            } else {
+                self.sound.clocks_to_event()
+            });
         let fixed = self
             .system_clock
-            .preview(self.reference_deadline_with_sound(true).saturating_sub(1))
+            .preview(deadline.saturating_sub(1))
             .saturating_add(self.pending_main_clocks);
         let main = requested
             .min(self.observable_main_deadline().saturating_sub(1))
@@ -778,7 +822,7 @@ impl Bus {
             return None;
         }
         Some(
-            self.advance_isolated_clocks(main, false, true)
+            self.advance_isolated_segment::<false>(main, false, true)
                 .map(|r| (r as u32, None)),
         )
     }
@@ -860,6 +904,9 @@ impl Bus {
         self.pending_main_clocks =
             self.pending_main_clocks + self.system_clock.advance(reference) - main;
         self.onchip[0].advance_to_event(main);
+        if self.slave_enabled {
+            self.onchip[1].advance_to_event(main);
+        }
         self.scu.advance_clocks(main)?;
         let (vram_busy, framebuffer_busy) = self.vdp1_bus_ownership();
         let ended = self
@@ -997,9 +1044,11 @@ impl Bus {
         } else {
             None
         };
-        let sound_lookahead = self.sound.enabled
-            && self.cd.media().is_none()
-            && self.sound.cached_lookahead_allowed();
+        // Cache-only work cannot access CD registers. The CD deadline below
+        // keeps the whole span before a possible change of audio source.
+        let cd_quiet = self.cd.audio_quiet() && !self.cd.interrupt();
+        let sound_lookahead =
+            self.sound.enabled && cd_quiet && self.sound.cached_lookahead_allowed();
         // External operands can span more than the ordinary sound cutoff's
         // retirement gap. A sound checkpoint permits choosing an earlier CPU
         // prefix without publishing future RAM, synthesis or control effects.
@@ -1010,7 +1059,7 @@ impl Bus {
             .min(self.smpc.clocks_to_event())
             .min(if sound_lookahead {
                 u32::MAX
-            } else if self.cd.media().is_none() {
+            } else if cd_quiet {
                 self.sound.cached_cpu_deadline()
             } else {
                 self.sound.clocks_to_event()
@@ -1365,12 +1414,23 @@ impl Bus {
             let started = before.clock;
             let instruction_pc = cpu.state().pc;
             let interrupt_mask = cpu.state().sr & 0xF0;
-            let mut next = cpu.clone();
-            if !next.step_cached(&mut memory)
-                || next.state().instructions != cpu.state().instructions + 1
-            {
-                memory.restore(before);
-                break;
+            let mut branch = None;
+            let mut interpreted = None;
+            if cpu.has_cached_control(op) {
+                let Some(plan) = cpu.prepare_cached_control(&mut memory) else {
+                    memory.restore(before);
+                    break;
+                };
+                branch = Some(plan);
+            } else {
+                let mut next = cpu.clone();
+                if !next.step_cached(&mut memory)
+                    || next.state().instructions != cpu.state().instructions + 1
+                {
+                    memory.restore(before);
+                    break;
+                }
+                interpreted = Some(next);
             }
             let at = memory.clock.get();
             if memory.fill_count.get() != 0 {
@@ -1389,12 +1449,16 @@ impl Bus {
                 points.points.push(at);
                 points.last_reference = reference;
             }
+            if let Some(branch) = branch {
+                cpu.retire_cached_control(branch);
+            } else {
+                cpu = interpreted.unwrap();
+            }
             retired_at = at;
-            ready = (next.execution_clock().unwrap_or(started)
-                + u64::from(next.last_clocks().max(1)))
+            ready = (cpu.execution_clock().unwrap_or(started)
+                + u64::from(cpu.last_clocks().max(1)))
             .max(memory.clock.get());
             memory.clock.set(ready.min(end));
-            cpu = next;
             retired += 1;
             if memory.store.get().is_some() {
                 store_pc = instruction_pc;

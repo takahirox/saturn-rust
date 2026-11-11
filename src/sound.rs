@@ -691,14 +691,8 @@ impl Sound {
     pub(crate) fn ram_busy(&self) -> bool {
         self.time < self.ram_busy_until
     }
-    fn scsp_deadline(&self, now: u64) -> u64 {
-        let current = now * DSP_HZ / REFERENCE_HZ;
-        // A higher-priority reset edge may share the current DSP deadline.
-        // Retain that unprocessed edge until its frame work has also run.
-        let mut tick = current
-            + u64::from(
-                current <= self.scsp_tick || (current * REFERENCE_HZ).div_ceil(DSP_HZ) != now,
-            );
+    fn next_scsp_tick(&self) -> u64 {
+        let mut tick = self.scsp_tick + 1;
         // An untouched DSP executes no instructions. Keep source-capture and
         // output edges, skipping only empty intervening execution slots. A live
         // MPRO write immediately exposes the next slot at the current phase.
@@ -723,7 +717,10 @@ impl Sound {
             let dsp = self.scsp.dsp.idle_zero_steps(((tick - 1) & 127) as usize);
             tick = (tick + u64::from(dsp)).min(frame + next);
         }
-        (tick * REFERENCE_HZ).div_ceil(DSP_HZ)
+        tick
+    }
+    fn scsp_deadline(&self) -> u64 {
+        (self.next_scsp_tick() * REFERENCE_HZ).div_ceil(DSP_HZ)
     }
     /// Validated DSP/PCM work cannot signal or fault the SH-2 with MCIEB and
     /// DMA disabled. Every synthesis, refresh and MIDI edge still executes;
@@ -774,7 +771,7 @@ impl Sound {
 
     pub(crate) fn clocks_to_event(&self) -> u32 {
         (self
-            .scsp_deadline(self.time)
+            .scsp_deadline()
             .min(self.next_cpu)
             .min(self.first_cpu_request.unwrap_or(u64::MAX))
             .min(self.reset_output_start.unwrap_or(u64::MAX))
@@ -844,7 +841,8 @@ impl Sound {
         let mut now = self.time;
         loop {
             let next_midi = now + u64::from(self.scsp.midi_clocks_to_event());
-            let next_scsp = self.scsp_deadline(now);
+            let tick = self.next_scsp_tick();
+            let next_scsp = (tick * REFERENCE_HZ).div_ceil(DSP_HZ);
             let deadline = self
                 .next_cpu
                 .min(next_scsp)
@@ -862,6 +860,10 @@ impl Sound {
                 // Empty slots elapsed before this CPU/MIDI/reset event. A
                 // first MPRO write at the edge must not execute them again.
                 self.scsp_tick = deadline * DSP_HZ / REFERENCE_HZ;
+            } else {
+                // Skipped idle ticks are already elapsed. A reset at this
+                // deadline can change the schedule before this tick is used.
+                self.scsp_tick = tick - 1;
             }
             now = deadline;
             if Some(deadline) == self.reset_output_start {
@@ -874,7 +876,6 @@ impl Sound {
                 self.scsp.set_reset(false);
                 self.reset_output_end = None;
             } else if deadline == next_scsp {
-                let tick = deadline * DSP_HZ / REFERENCE_HZ;
                 self.scsp_tick = tick;
                 let step = ((tick - 1) & 127) as usize;
                 if step == 0 {

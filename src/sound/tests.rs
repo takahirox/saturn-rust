@@ -17,18 +17,15 @@ fn idle_sound_deadlines_keep_every_distributed_and_terminal_slot() {
     for now in 0..(256 * REFERENCE_HZ).div_ceil(DSP_HZ) {
         for consumed in [true, false] {
             let current = now * DSP_HZ / REFERENCE_HZ;
-            sound.scsp_tick = if consumed {
-                current
-            } else {
-                current.saturating_sub(1)
-            };
+            let at_edge = current != 0 && (current * REFERENCE_HZ).div_ceil(DSP_HZ) == now;
+            sound.scsp_tick = current - u64::from(!consumed && at_edge);
             let expected = edges
                 .iter()
                 .copied()
                 .find(|&edge| edge > now || (!consumed && current != 0 && edge == now))
                 .unwrap();
             assert_eq!(
-                sound.scsp_deadline(now),
+                sound.scsp_deadline(),
                 expected,
                 "now={now}, consumed={consumed}"
             );
