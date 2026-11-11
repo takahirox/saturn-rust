@@ -580,7 +580,7 @@ fn work_ram(address: u32) -> bool {
     (LOW_WRAM..LOW_WRAM + WRAM_SIZE as u32).contains(&address)
         || (HIGH_WRAM..HIGH_WRAM + WRAM_SIZE as u32).contains(&address)
 }
-fn buffered_memory(address: u32) -> bool {
+pub(super) fn buffered_memory(address: u32) -> bool {
     if address >= 0x4000_0000 {
         return false;
     }
@@ -1712,7 +1712,13 @@ impl Bus {
             .map(|reference| prefix + reference)
     }
     fn issue_planned_store(&mut self, store: PlannedStore, pc: u32) -> Result<(), BusError> {
-        let mut memory = self.cached_store_memory(pc, store.address, store.width, store.value);
+        let mut memory = self.cached_store_memory(
+            Processor::Master,
+            pc,
+            store.address,
+            store.width,
+            store.value,
+        );
         match store.width {
             1 => memory.write8(store.address, store.value as u8),
             2 => memory.write16(store.address, store.value as u16),

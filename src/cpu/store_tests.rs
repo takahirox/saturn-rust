@@ -27,6 +27,9 @@ impl Memory for Clocked {
     fn sh2_fetch_slots(&self) -> bool {
         true
     }
+    fn sh2_speculative_fetch(&self, _address: u32) -> bool {
+        true
+    }
     fn sh2_schedule_memory_access(&self, a: u32, write: bool, end: u64) -> bool {
         self.phases.borrow_mut().push((a, write, end));
         self.scheduled
@@ -98,6 +101,7 @@ fn every_store_form_retains_source_lanes_flags_and_predecrement_alias_at_ma() {
     ] {
         for pc in [0x100, 0x102] {
             for (scheduled, latency, completion) in [(false, 1, 34), (true, 1, 34), (true, 4, 37)] {
+                let mut prepared_memory = memory(pc, op, scheduled, latency);
                 let mut memory = memory(pc, op, scheduled, latency);
                 let mut c = Cpu::start(pc, 0xF000);
                 c.prime_fetch(&memory);
@@ -106,7 +110,23 @@ fn every_store_form_retains_source_lanes_flags_and_predecrement_alias_at_ma() {
                 c.state.r[2] = 0x81234567;
                 c.state.gbr = 0x900;
                 c.state.sr = SR_MASK;
+                let mut prepared = c.clone();
+                let plan = prepared.prepare_cached_store(op, 32).unwrap();
+                prepared.execute_cached_instruction(plan, &mut prepared_memory);
                 c.step(&mut memory).unwrap();
+                assert_eq!(prepared, c, "prepared store {op:04X}");
+                assert_eq!(
+                    prepared_memory.writes, memory.writes,
+                    "prepared store {op:04X}"
+                );
+                assert_eq!(
+                    prepared_memory.phases, memory.phases,
+                    "prepared store {op:04X}"
+                );
+                assert!(
+                    prepared_memory.data.0 == memory.data.0,
+                    "prepared store {op:04X}"
+                );
                 let mask = match width {
                     1 => 0xFF,
                     2 => 0xFFFF,
@@ -156,4 +176,31 @@ fn register_mov_is_ex_only_and_store_in_delay_slot_publishes_target_after_ma() {
     assert_eq!(c.state.r[15], 0x7FC);
     assert_eq!(c.state.pc, 0x400);
     assert_eq!(c.state.delay_target, None);
+}
+
+#[test]
+fn prepared_store_preserves_a_successor_fetched_before_its_code_is_overwritten() {
+    let make = || {
+        let mut memory = memory(0x100, 0x2121, true, 1);
+        memory.data.write16(0x102, 0x0009).unwrap();
+        memory.data.write16(0x104, 0xE111).unwrap();
+        let mut cpu = Cpu::start(0x100, 0xF000);
+        cpu.state.r[1] = 0x104;
+        cpu.state.r[2] = 0xE177;
+        cpu.prime_fetch(&memory);
+        (cpu, memory)
+    };
+    let ((mut prepared, mut planned_memory), (mut reference, mut reference_memory)) =
+        (make(), make());
+    let plan = prepared.prepare_cached_store(0x2121, 32).unwrap();
+    prepared.execute_cached_instruction(plan, &mut planned_memory);
+    reference.step(&mut reference_memory).unwrap();
+    assert_eq!(prepared, reference);
+    assert_eq!(planned_memory.data.read16(0x104), Ok(0xE177));
+    for _ in 0..2 {
+        prepared.step(&mut planned_memory).unwrap();
+        reference.step(&mut reference_memory).unwrap();
+        assert_eq!(prepared, reference);
+    }
+    assert_eq!(prepared.state.r[1], 0x11);
 }

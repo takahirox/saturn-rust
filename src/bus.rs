@@ -19,7 +19,7 @@ mod poll_cycle;
 #[cfg(test)]
 mod slave_raster_tests;
 mod transactions;
-pub(crate) use cached_issue::{CachedBranch, CachedLoad};
+pub(crate) use cached_issue::{CachedBranch, CachedLoad, CachedStore};
 
 pub const BIOS_SIZE: usize = 512 * 1024;
 pub const WRAM_SIZE: usize = 1024 * 1024;

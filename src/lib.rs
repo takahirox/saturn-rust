@@ -27,7 +27,9 @@ pub mod vdp2;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
-use bus::{Bus, BusError, CachedBranch, CachedLoad, HIGH_WRAM, Memory, Processor, WRAM_SIZE};
+use bus::{
+    Bus, BusError, CachedBranch, CachedLoad, CachedStore, HIGH_WRAM, Memory, Processor, WRAM_SIZE,
+};
 use cpu::{Cpu, CpuError, CpuState};
 use std::fmt;
 
@@ -206,6 +208,36 @@ mod scheduling_tests {
                 optimized.bus.write16(0x2100_0000, 0).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn slave_store_continuations_preserve_shared_ram_arbitration() {
+        let make = || {
+            let mut m = cached_pair(&[0x60F2, 0xAFFD, 9], &[0xE211, 0x2F22, 0x7201, 0xAFFC, 9]);
+            m.slave = Cpu::start(HIGH_WRAM + 0x100, HIGH_WRAM + 0x1000);
+            m.slave.prime_fetch(&m.bus.for_cpu(Processor::Slave));
+            m
+        };
+        let (mut optimized, mut reference) = (make(), make());
+        let mut continued = false;
+        for field in 1..=2 {
+            while optimized.frames() < field {
+                optimized.step_inner_with_idle(true).unwrap();
+                continued |= matches!(optimized.cached_issue[1], Some(CachedIssue::Store(_)));
+            }
+            while reference.frames() < field {
+                reference.step().unwrap();
+            }
+            assert_eq!(optimized.cpu, reference.cpu);
+            assert_eq!(optimized.slave, reference.slave);
+            assert_eq!(optimized.cpu_ready, reference.cpu_ready);
+            assert_eq!(optimized.clocks, reference.clocks);
+            assert_eq!(
+                optimized.bus.read32(HIGH_WRAM + 0x1000),
+                reference.bus.read32(HIGH_WRAM + 0x1000)
+            );
+        }
+        assert!(continued);
     }
 
     #[test]
@@ -494,6 +526,7 @@ struct CpuBoundary {
 enum CachedIssue {
     Branch(CachedBranch),
     Load(CachedLoad),
+    Store(CachedStore),
 }
 
 #[derive(Default)]
@@ -1068,6 +1101,14 @@ impl Machine {
                 }
                 return self.resume_cached_issue(processor);
             }
+            if let Some((store, waiting)) = self.bus.prepare_cached_store(processor, cpu) {
+                self.cached_issue[i] = Some(CachedIssue::Store(store));
+                if waiting {
+                    self.cpu_ready[i] = u64::MAX;
+                    return Ok(false);
+                }
+                return self.resume_cached_issue(processor);
+            }
         }
         let boundary = *self.cpu_boundary[i].get_or_insert_with(|| CpuBoundary {
             dma: self.dma_errors[i],
@@ -1175,47 +1216,47 @@ impl Machine {
             Processor::Master => &mut self.cpu,
             Processor::Slave => &mut self.slave,
         };
-        let mut value = None;
-        let complete = match self.cached_issue[i].as_mut().unwrap() {
-            CachedIssue::Branch(_) => true,
-            CachedIssue::Load(load) => match self.bus.resume_cached_load(processor, load) {
-                Ok(loaded) => {
-                    value = Some(loaded);
-                    true
-                }
-                Err(BusError::Pending) => false,
-                Err(source) => {
-                    self.cached_issue[i] = None;
-                    self.bus.cancel_cpu_transaction(processor);
-                    let error = CpuError::Bus {
-                        pc: cpu.state().pc,
-                        source,
-                    };
-                    cpu.deferred_write_fault(error.clone());
-                    return Err(match processor {
-                        Processor::Master => MachineError::Cpu(error),
-                        Processor::Slave => MachineError::SlaveCpu(error),
-                    });
-                }
-            },
+        let result = match self.cached_issue[i].as_mut().unwrap() {
+            CachedIssue::Branch(_) => Ok(0),
+            CachedIssue::Load(load) => self.bus.resume_cached_load(processor, load),
+            CachedIssue::Store(store) => self
+                .bus
+                .resume_cached_store(processor, cpu.state().pc, store)
+                .map(|()| 0),
         };
-        if !complete {
-            self.cpu_ready[i] = u64::MAX;
-            return Ok(false);
-        }
+        let value = match result {
+            Ok(value) => value,
+            Err(BusError::Pending) => {
+                self.cpu_ready[i] = u64::MAX;
+                return Ok(false);
+            }
+            Err(source) => {
+                self.cached_issue[i] = None;
+                self.bus.cancel_cpu_transaction(processor);
+                let error = CpuError::Bus {
+                    pc: cpu.state().pc,
+                    source,
+                };
+                cpu.deferred_write_fault(error.clone());
+                return Err(match processor {
+                    Processor::Master => MachineError::Cpu(error),
+                    Processor::Slave => MachineError::SlaveCpu(error),
+                });
+            }
+        };
         match self.cached_issue[i].take().unwrap() {
             CachedIssue::Branch(branch) => {
                 cpu.retire_cached_control(self.bus.commit_cached_branch(processor, branch));
             }
             CachedIssue::Load(load) => {
                 let pc = cpu.state().pc;
-                cpu.retire_prepared_load(
-                    load.plan,
-                    load.future,
-                    value.unwrap(),
-                    self.bus.main_clocks,
-                );
-                self.bus.prepared_load_retired(processor, pc);
+                cpu.retire_prepared_load(load.plan, load.future, value, self.bus.main_clocks);
+                self.bus.prepared_memory_retired(processor, pc);
+            }
+            CachedIssue::Store(store) => {
+                let pc = cpu.state().pc;
+                cpu.retire_prepared_store(store.plan, store.future, self.bus.main_clocks);
+                self.bus.prepared_memory_retired(processor, pc);
             }
         }
         let states = self.bus.cpu_main_delay(processor, cpu.last_clocks());
