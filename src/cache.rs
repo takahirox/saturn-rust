@@ -12,7 +12,7 @@ struct Line {
     valid: bool,
     data: [u8; 16],
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CacheTouch {
     set: u8,
     way: u8,

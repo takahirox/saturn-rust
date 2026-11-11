@@ -30,6 +30,30 @@ fn parse_rom(source: &str) -> Vec<u8> {
 }
 
 #[test]
+fn resident_peer_polling_preserves_guest_ram_and_both_cpu_boundaries() {
+    let image = parse_rom(include_str!("fixtures/dual-poll.hex"));
+    let mut optimized = Machine::new();
+    let mut reference = Machine::new();
+    optimized.reset(Boot::ExternalBios(&image)).unwrap();
+    reference.reset(Boot::ExternalBios(&image)).unwrap();
+    for field in 1..=2 {
+        optimized.advance_frame().unwrap();
+        while reference.frames() < field {
+            reference.step().unwrap();
+        }
+        assert_eq!(optimized.cpu_state(), reference.cpu_state());
+        assert_eq!(optimized.slave_state(), reference.slave_state());
+        assert_eq!(optimized.clocks(), reference.clocks());
+        for address in (0x06002000..0x06002040).step_by(4) {
+            assert_eq!(
+                optimized.debug_read32(address),
+                reference.debug_read32(address)
+            );
+        }
+    }
+}
+
+#[test]
 fn guest_compare_irq_waits_for_the_edge_leaving_ocra_and_wakes_sleep() {
     // SH7604 §§11.4.3/11.4.6, figs. 11.7/11.11. Each phi/128 count
     // edge takes 128 clocks, including BSC waits during guest setup/SLEEP.

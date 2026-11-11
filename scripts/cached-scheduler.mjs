@@ -32,6 +32,7 @@ export async function cachedScheduler(page) {
     ["uncached ROM division", "examples/runtime-divide.hex", "uncached-rom"],
     ["SH7604/cache/reset", "tests/fixtures/sh7604.hex", false],
     ["dual SH-2", "tests/fixtures/dual-sh2.hex", false],
+    ["dual resident polling and buffered RAM writes", "tests/fixtures/dual-poll.hex", false],
     ["multiplier", "tests/fixtures/sh2-multiplier.hex", false],
     ["PLL", "tests/fixtures/clock.hex", false],
     ["VDP1 acquisition", "tests/fixtures/vdp1-command-fetch.hex", false],

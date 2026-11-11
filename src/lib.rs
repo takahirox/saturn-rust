@@ -160,6 +160,54 @@ mod scheduling_tests {
     }
 
     #[test]
+    fn aligned_slave_poll_batches_match_independent_retirement_and_capture() {
+        for destination in [
+            None,
+            Some(HIGH_WRAM + 0x1000),
+            Some(0x25E00000),
+            Some(0x21000000),
+        ] {
+            let make = || {
+                let master = if destination.is_some() {
+                    [0x7001, 0x7101, 0x2F01, 0xAFFB, 9]
+                } else {
+                    [0x7001, 0x7101, 0x7201, 0xAFFB, 9]
+                };
+                let mut m = cached_pair(&master, &[0x60F0, 0xC880, 0x89FC, 0xAFFB, 9]);
+                if let Some(address) = destination {
+                    m.cpu = Cpu::start(HIGH_WRAM, address);
+                    m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
+                }
+                m.slave = Cpu::start(HIGH_WRAM + 0x100, onchip::FRT + 1);
+                m.slave.prime_fetch(&m.bus.for_cpu(Processor::Slave));
+                m
+            };
+            let mut reference = make();
+            let mut optimized = make();
+            for field in 1..=2 {
+                optimized.advance_frame().unwrap();
+                while reference.frames() < field {
+                    reference.step().unwrap();
+                }
+                assert_eq!(optimized.cpu, reference.cpu, "master {destination:?}");
+                assert_eq!(optimized.slave, reference.slave, "slave {destination:?}");
+                assert_eq!(optimized.clocks, reference.clocks);
+                assert_eq!(optimized.cpu_ready, reference.cpu_ready);
+                if destination.is_none() || destination == Some(HIGH_WRAM + 0x1000) {
+                    assert!(optimized.cached_poll_periods > 0, "batch {destination:?}");
+                }
+                if destination != Some(0x21000000)
+                    && let Some(address) = destination
+                {
+                    assert_eq!(optimized.bus.read16(address), reference.bus.read16(address));
+                }
+                reference.bus.write16(0x2100_0000, 0).unwrap();
+                optimized.bus.write16(0x2100_0000, 0).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn different_opcode_deadlines_allow_the_other_cpu_to_issue_independently() {
         // P table7.2: NOP=1, BRA=2 with one NOP slot=1.
         let mut m = cached_pair(&[9; 8], &[0xAFFE, 9]);
@@ -453,6 +501,8 @@ pub struct Machine {
     cached_retired: u64,
     #[cfg(test)]
     cached_dual_scalars: u64,
+    #[cfg(test)]
+    cached_poll_periods: u64,
     cpu: Cpu,
     slave: Cpu,
     bus: Bus,
@@ -464,6 +514,8 @@ pub struct Machine {
     cpu_ready: [u64; 2],
     cpu_boundary: [Option<CpuBoundary>; 2],
     cached_issue: [Option<CachedIssue>; 2],
+    slave_poll_at: Option<(u64, u8)>,
+    slave_poll_retry: u64,
     cpu_reset_vectors: [Option<onchip::ResetRequest>; 2],
     fault: Option<MachineError>,
 }
@@ -586,6 +638,8 @@ impl Machine {
         self.cpu_ready = [0; 2];
         self.cpu_boundary = [None; 2];
         self.cached_issue = [None, None];
+        self.slave_poll_at = None;
+        self.slave_poll_retry = 0;
         self.cpu_reset_vectors = [None; 2];
         self.fault = None;
         self.cpu = Cpu::default();
@@ -725,7 +779,11 @@ impl Machine {
         let mut steps = 0;
         while steps < 1_000_000 {
             let limit = (1_000_000 - steps).min(512);
-            let mut count = if self.bus.slave_enabled {
+            let mut count = if self.bus.slave_enabled
+                && self
+                    .slave_poll_at
+                    .is_none_or(|(at, _)| at != self.bus.main_clocks)
+            {
                 0
             } else {
                 self.try_cached_batch(limit)?
@@ -753,15 +811,49 @@ impl Machine {
             || self.cpu_boundary[0].is_some()
             || self.cached_issue[0].is_some()
             || self.cpu_reset_vectors[0].is_some()
-            || self.cpu_ready[0] > self.bus.main_clocks
+            || self.cpu_ready[0].saturating_sub(self.bus.main_clocks)
+                > if self.bus.slave_enabled { 8 } else { 0 }
         {
             return Ok(0);
         }
-        let result = self.bus.cached_batch(&self.cpu, limit);
+        let origin = self.bus.main_clocks;
+        let peer = if self.bus.slave_enabled {
+            if origin < self.slave_poll_retry {
+                return Ok(0);
+            }
+            let Some((_, status)) = self.slave_poll_at.filter(|&(at, _)| at == origin) else {
+                return Ok(0);
+            };
+            self.slave_poll_at = None;
+            if self.cpu_ready[1] != origin
+                || self.cpu_boundary[1].is_some()
+                || self.cached_issue[1].is_some()
+                || self.cpu_reset_vectors[1].is_some()
+                || self.dma_errors[1]
+            {
+                return Ok(0);
+            }
+            let Some(cycle) = self.bus.prepare_poll_cycle(&self.slave, status) else {
+                self.slave_poll_retry = origin + 64;
+                return Ok(0);
+            };
+            Some(cycle)
+        } else {
+            None
+        };
+        let result = self.bus.cached_batch(
+            &self.cpu,
+            limit,
+            peer.as_ref(),
+            origin.max(self.cpu_ready[0]),
+        );
         let Some(batch) = result.inspect_err(|error| {
             self.fault = Some(error.clone());
         })?
         else {
+            if peer.is_some() {
+                self.slave_poll_retry = origin + 64;
+            }
             return Ok(0);
         };
         #[cfg(test)]
@@ -769,6 +861,17 @@ impl Machine {
             self.cached_retired += u64::from(batch.retired);
         }
         self.cpu = batch.cpu;
+        if let Some(peer) = peer {
+            let clocks = self.bus.main_clocks - origin;
+            assert!(clocks.is_multiple_of(peer.period));
+            let periods = clocks / peer.period;
+            #[cfg(test)]
+            {
+                self.cached_poll_periods += periods;
+            }
+            self.bus.commit_poll_cycle(peer, &mut self.slave, periods);
+            self.cpu_ready[1] = self.bus.main_clocks;
+        }
         self.cpu_ready[0] = batch.ready;
         self.clocks += batch.reference;
         // Match the last ordinary step's post-retirement advancement. In
@@ -1099,6 +1202,10 @@ impl Machine {
             }
             CachedIssue::Load(load) => {
                 let pc = cpu.state().pc;
+                if processor == Processor::Slave && load.plan.operand == Some((onchip::FRT + 1, 1))
+                {
+                    self.slave_poll_at = Some((self.bus.main_clocks, value.unwrap() as u8));
+                }
                 cpu.retire_prepared_load(
                     load.plan,
                     load.future,

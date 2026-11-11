@@ -1,8 +1,10 @@
 //! Event-bounded cached CPU bursts, with real buffered-store acceptance.
-//! No peer CPU, interfering bus master, UBC comparison or CPU-visible event may
-//! intervene. Register blocks share the interpreter's ALU semantics; other
-//! instructions use ordinary step(). Local clock/cache/prefetch changes remain
+//! A peer must have a proven private polling period. Interfering bus masters,
+//! UBC comparisons and CPU-visible events bound each burst. Register blocks
+//! share the interpreter's ALU semantics. Other instructions use ordinary
+//! step(). Local clock/cache/prefetch changes remain
 //! private until validated. A final store reuses the actual bus protocol.
+use super::poll_cycle::PollCycle;
 use super::*;
 use crate::cache::CachedLines;
 use crate::cpu::{Cpu, CpuStatus};
@@ -82,6 +84,16 @@ impl Retirements {
             }
         }
         lo
+    }
+    fn aligned_prefix(&self, limit: usize, origin: u64, period: Option<u64>) -> usize {
+        let Some(period) = period else { return limit };
+        (0..limit)
+            .rev()
+            .find(|&i| {
+                let clocks = self.at(i) - origin;
+                clocks != 0 && clocks.is_multiple_of(period)
+            })
+            .map_or(0, |i| i + 1)
     }
 }
 struct WramInstructions<'a> {
@@ -966,14 +978,17 @@ impl Bus {
         &mut self,
         initial: &Cpu,
         count: u32,
+        poll: Option<&PollCycle>,
+        master_start: u64,
     ) -> Result<Option<CachedBatch>, crate::MachineError> {
+        let poll_period = poll.map(|cycle| cycle.period);
         if initial
             .decoded_opcode()
             .is_some_and(|op| !accepted_opcode(op))
         {
             return Ok(None);
         }
-        if self.slave_enabled
+        if (self.slave_enabled && poll_period.is_none())
             || !ordinary_memory(initial.state().pc)
             || !self.cached_bus_compatible()
             || !self.onchip[0].cached_batch_allowed()
@@ -999,6 +1014,12 @@ impl Bus {
         // Host input can establish a request between frame calls. Start its
         // recognition interval at this boundary, as ordinary issue_cpu does.
         self.sample_interrupts();
+        if poll.is_some_and(|cycle| {
+            self.recognized_interrupt(Processor::Slave)
+                .is_some_and(|irq| u32::from(irq.level) > cycle.mask)
+        }) {
+            return Ok(None);
+        }
         if self
             .recognized_interrupt(Processor::Master)
             .is_some_and(|r| u32::from(r.level) > (initial.state().sr >> 4) & 15)
@@ -1049,10 +1070,11 @@ impl Bus {
         let cd_quiet = self.cd.audio_quiet() && !self.cd.interrupt();
         let sound_lookahead =
             self.sound.enabled && cd_quiet && self.sound.cached_lookahead_allowed();
+        let track_retirements = sound_lookahead || poll_period.is_some();
         // External operands can span more than the ordinary sound cutoff's
         // retirement gap. A sound checkpoint permits choosing an earlier CPU
         // prefix without publishing future RAM, synthesis or control effects.
-        let mut checkpoint_sound = passive.is_some() && sound_lookahead;
+        let mut checkpoint_sound = (passive.is_some() || poll_period.is_some()) && sound_lookahead;
         let reference_span = self
             .cd
             .clocks_to_event()
@@ -1093,6 +1115,9 @@ impl Bus {
             return Ok(None);
         }
         let mut end = self.main_clocks + u64::from(span);
+        if master_start > end {
+            return Ok(None);
+        }
         let code = (passive.is_none() && self.cached_reads_quiet()).then_some(WramInstructions {
             low: &self.low,
             high: &self.high,
@@ -1106,7 +1131,7 @@ impl Bus {
             fill_count: Cell::new(0),
             fill_reads: RefCell::new(None),
             scalar_active: Cell::new(false),
-            clock: Cell::new(self.main_clocks),
+            clock: Cell::new(master_start),
             lru: RefCell::new(cache.replacement_state()),
             retained: Cell::new(self.instruction_word[0].get()),
             epochs: Cell::new(0),
@@ -1264,7 +1289,7 @@ impl Bus {
                         let extra = instructions * repetitions as u32;
                         retired += extra;
                         skipped += extra;
-                        if sound_lookahead {
+                        if track_retirements {
                             assert!(points.repeated.is_none());
                             points.repeated = Some((
                                 points.points.len(),
@@ -1336,7 +1361,7 @@ impl Bus {
                     ready = retired_at + 1;
                     memory.clock.set(ready);
                     retired += scalar_count;
-                    if sound_lookahead {
+                    if track_retirements {
                         points.points.extend(scalar_start..=retired_at);
                         points.last_reference = self.system_clock.deadline(
                             ((retired_at - self.main_clocks) as u32)
@@ -1389,7 +1414,7 @@ impl Bus {
                     ready = (cpu.execution_clock().unwrap() + u64::from(cpu.last_clocks())).max(at);
                     memory.clock.set(ready.min(end));
                     retired += 1;
-                    if sound_lookahead {
+                    if track_retirements {
                         points.points.push(at);
                         points.last_reference = reference;
                     }
@@ -1438,11 +1463,14 @@ impl Bus {
                 readonly_refresh = None;
             }
             checkpoint_sound |= sound_lookahead && memory.fill_count.get() != 0;
-            if sound_lookahead {
+            if track_retirements {
                 let reference = self.system_clock.deadline(
                     ((at - self.main_clocks) as u32).saturating_sub(self.pending_main_clocks),
                 );
-                if !checkpoint_sound && reference.saturating_sub(points.last_reference) >= 9 {
+                if sound_lookahead
+                    && !checkpoint_sound
+                    && reference.saturating_sub(points.last_reference) >= 9
+                {
                     memory.restore(before);
                     break;
                 }
@@ -1471,13 +1499,17 @@ impl Bus {
                 break;
             }
         }
-        if retired == 0 {
+        let mut selected = points.aligned_prefix(retired as usize, self.main_clocks, poll_period);
+        if selected == 0 {
             points.recycle_into(&mut self.cached_retirement_points);
             return Ok(None);
         }
         if sound_lookahead {
             self.sound.main_ram_request(None);
-            let desired = points.last_reference;
+            let desired = self.system_clock.deadline(
+                ((points.at(selected - 1) - self.main_clocks) as u32)
+                    .saturating_sub(self.pending_main_clocks),
+            );
             let (advanced, checkpoint) = if checkpoint_sound {
                 let (advanced, checkpoint) = self
                     .sound
@@ -1499,7 +1531,11 @@ impl Bus {
             let main_through = self.main_clocks
                 + u64::from(self.pending_main_clocks)
                 + u64::from(self.system_clock.preview(through));
-            let selected = points.through(main_through);
+            selected = points.aligned_prefix(
+                points.through(main_through).min(selected),
+                self.main_clocks,
+                poll_period,
+            );
             if selected == 0
                 && let Some(checkpoint) = checkpoint
             {
@@ -1515,23 +1551,6 @@ impl Bus {
                 selected > 0 && (selected_reference >= advanced || checkpoint.is_some()),
                 "sound control write preceded the next cache-only retirement"
             );
-            if selected < retired as usize {
-                // Sound RAM cannot affect this cache-only instruction stream.
-                // Replay its prevalidated prefix after discovering a control write.
-                memory.restore(origin);
-                cpu = initial.clone();
-                for _ in 0..selected {
-                    let start = memory.clock.get();
-                    cpu.step(&mut memory)
-                        .expect("prevalidated cache-only prefix");
-                    retired_at = memory.clock.get();
-                    ready = (cpu.execution_clock().unwrap_or(start)
-                        + u64::from(cpu.last_clocks().max(1)))
-                    .max(retired_at);
-                    memory.clock.set(ready.min(end));
-                }
-                retired = selected as u32;
-            }
             let restored = selected_reference < advanced;
             let remainder = if restored {
                 self.sound
@@ -1546,6 +1565,22 @@ impl Bus {
                     .map_err(ScuError::from)
                     .map_err(crate::MachineError::Scu)?;
             }
+        }
+        if selected < retired as usize {
+            // Replay the prevalidated prefix at the shared retirement horizon.
+            memory.restore(origin);
+            cpu = initial.clone();
+            for _ in 0..selected {
+                let start = memory.clock.get();
+                cpu.step(&mut memory)
+                    .expect("prevalidated cache-only prefix");
+                retired_at = memory.clock.get();
+                ready = (cpu.execution_clock().unwrap_or(start)
+                    + u64::from(cpu.last_clocks().max(1)))
+                .max(retired_at);
+                memory.clock.set(ready.min(end));
+            }
+            retired = selected as u32;
         }
         points.recycle_into(&mut self.cached_retirement_points);
         let store = memory.store.get();

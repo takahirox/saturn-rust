@@ -514,6 +514,9 @@ impl Cpu {
             && self.state.delay_target.is_none()
             && self.decoded_opcode() == Some(opcode)
     }
+    pub(crate) fn is_scalar(opcode: u16) -> bool {
+        scalar::decode(opcode).is_some()
+    }
     pub(crate) fn retire_cached_control(&mut self, plan: PreparedBranch) {
         let branch = plan.branch;
         let pc = self.state.pc;
@@ -569,6 +572,27 @@ impl Cpu {
         self.fetch.shift_cached_clock(clocks);
         self.load_pipeline.shift_cached_clock(clocks);
         self.execution_clock = self.execution_clock.map(|at| at + clocks);
+    }
+    pub(crate) fn same_cached_cycle_origin(&self, prior: &Self, elapsed: u64) -> bool {
+        let mut expected = prior.clone();
+        expected.state.instructions = self.state.instructions;
+        expected.multiplier.clock = self.multiplier.clock;
+        expected.shift_cached_clock(elapsed);
+        expected == *self
+    }
+    pub(crate) fn cached_local_clock(&self) -> u64 {
+        self.multiplier.clock
+    }
+    pub(crate) fn publish_poll_periods(
+        &mut self,
+        period: u64,
+        instructions: u64,
+        local: u64,
+        copies: u64,
+    ) {
+        self.state.instructions += instructions * copies;
+        self.multiplier.clock += local * copies;
+        self.shift_cached_clock(period * copies);
     }
     pub(crate) fn cached_load_address(&self, opcode: u16) -> Option<u32> {
         timing::mov_load_address(opcode, &self.state).or_else(|| {

@@ -3,6 +3,44 @@ use super::*;
 use crate::{Boot, Machine, MachineError};
 
 #[test]
+fn slave_poll_periods_commute_with_accepted_master_ram_writes() {
+    let make = || {
+        let mut m = crate::scheduling_tests::cached_pair(
+            &[0xE040, 0x2F02, 0x7001, 0x7101, 0xAFFB, 9],
+            &[0x60F0, 0xC880, 0x89FC, 0xAFFB, 9],
+        );
+        m.slave = Cpu::start(HIGH_WRAM + 0x100, crate::onchip::FRT + 1);
+        m.slave.prime_fetch(&m.bus.for_cpu(Processor::Slave));
+        m
+    };
+    let mut reference = make();
+    let mut optimized = make();
+    let mut overlapped = false;
+    while optimized.frames() < 1 {
+        if optimized.bus.cached_transfer_active() {
+            overlapped |= optimized.try_cached_batch(128).unwrap() != 0;
+        }
+        if optimized.frames() < 1 {
+            optimized.step_inner_with_idle(true).unwrap();
+        }
+    }
+    while reference.frames() < 1 {
+        reference.step().unwrap();
+    }
+    assert!(overlapped);
+    assert_eq!(optimized.cpu, reference.cpu);
+    assert_eq!(optimized.slave, reference.slave);
+    assert_eq!(optimized.clocks, reference.clocks);
+    assert_eq!(optimized.cpu_ready, reference.cpu_ready);
+    assert_eq!(optimized.bus.high, reference.bus.high);
+    for i in 0..2 {
+        optimized.bus.cache[i]
+            .borrow()
+            .assert_same_contents(&reference.bus.cache[i].borrow());
+    }
+}
+
+#[test]
 fn passive_draw_status_reads_preserve_cpu_bus_waits_restart_and_completion() {
     for fast in [false, true] {
         for width in [2u32, 4] {
@@ -1173,7 +1211,12 @@ fn shared_sound_ram_buffered_writes_cannot_enter_cached_sound_lookahead() {
     );
     assert!(!m.bus.cached_bus_compatible());
     let clock = m.bus.main_clocks;
-    assert!(m.bus.cached_batch(&m.cpu, 128).unwrap().is_none());
+    assert!(
+        m.bus
+            .cached_batch(&m.cpu, 128, None, m.bus.main_clocks)
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(m.bus.main_clocks, clock);
 }
 
