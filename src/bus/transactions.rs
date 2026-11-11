@@ -93,7 +93,7 @@ pub(super) struct Transfer {
 }
 /// A buffered SH-2 store is at most one longword, hence at most four
 /// physical byte beats. Keep its payload inline through acceptance/drain.
-#[derive(Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 struct WriteBeats {
     transfers: [Transfer; 4],
     head: usize,
@@ -129,7 +129,7 @@ impl FromIterator<Transfer> for WriteBeats {
         beats
     }
 }
-#[derive(Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 struct ClockJournal {
     // An instruction cannot change the board clock between two adjacent
     // operations except by suspending in the journal. Keep a run start only
@@ -167,7 +167,7 @@ impl ClockJournal {
         self.phase = 0;
     }
 }
-#[derive(Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub(super) struct Journal {
     irq: Option<InterruptRequest>,
     nmi_cleared: bool,
@@ -218,6 +218,7 @@ struct BufferedWrite {
     beats: WriteBeats,
     context: (u32, Option<u8>),
 }
+#[derive(Clone, PartialEq, Eq)]
 struct Active {
     owner: Owner,
     transfer: Transfer,
@@ -2766,5 +2767,133 @@ impl Bus {
             "refresh grant/remaining/transfer changed"
         );
         assert_eq!(self.transactions.dmac_yield, other.transactions.dmac_yield);
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct PrivateTransaction {
+    journal: Journal,
+    active: Option<Active>,
+    retained: Option<(u32, u16)>,
+    clocks: u32,
+}
+impl PrivateTransaction {
+    pub(crate) fn shift_clock(&mut self, clocks: u64) {
+        for (_, at) in &mut self.journal.clocks.phases {
+            *at += clocks;
+        }
+        for (op, _) in &mut self.journal.operations {
+            if let Operation::MemoryAccess(_, _, at) = op {
+                *at += clocks;
+            }
+        }
+        if let Some(Operation::MemoryAccess(_, _, at)) = &mut self.journal.current_operation {
+            *at += clocks;
+        }
+        if let Some(at) = &mut self.journal.operand_completion {
+            *at += clocks;
+        }
+    }
+}
+impl Bus {
+    fn private_journal(&self) -> Option<std::cell::Ref<'_, Journal>> {
+        let t = &self.transactions;
+        let j = t.journals[1].borrow();
+        let private_read = |transfer: &Transfer| {
+            transfer.address == crate::onchip::FRT + 1
+                && transfer.width == 1
+                && transfer.write.is_none()
+        };
+        if t.active.as_ref().is_some_and(|a| {
+            matches!(
+                a.owner,
+                Owner::Cpu(Processor::Slave)
+                    | Owner::Dmac(Processor::Slave)
+                    | Owner::WriteBuffer(Processor::Slave, _)
+                    | Owner::WriteAccept(Processor::Slave, _)
+                    | Owner::ResetDrain(Processor::Slave)
+                    | Owner::Vector(Processor::Slave, _)
+            )
+        }) || t.internal[1]
+            .as_ref()
+            .is_some_and(|a| a.owner != Owner::Cpu(Processor::Slave) || !private_read(&a.transfer))
+            || t.writes[1].is_some()
+            || t.resetting[1]
+            || !t.reset_drains[1].is_empty()
+            || t.cpu_group == Some(Processor::Slave)
+            || t.lock == Some(Processor::Slave)
+            || t.write_errors[1].is_some()
+            || j.irq.is_some()
+            || j.nmi_cleared
+            || j.vector_waiting.is_some()
+            || j.synchronous_stack
+            || j.pending_write.is_some()
+            || j.write_accepted
+            || !j.errors.is_empty()
+            || j.waiting
+                .as_ref()
+                .is_some_and(|transfer| !private_read(transfer))
+            || j.beats
+                .iter()
+                .any(|(transfer, result)| !private_read(transfer) || result.is_err())
+            || j.operations.iter().any(|(op, result)| {
+                result.is_err()
+                    || !matches!(
+                        op,
+                        Operation::PipelineWait(_)
+                            | Operation::MemoryAccess(_, false, _)
+                            | Operation::Read(_, _, true, false)
+                            | Operation::Read(0xFFFF_FE11, 1, false, false)
+                            | Operation::BreakPending
+                            | Operation::InstructionBreak(_, _)
+                            | Operation::AcknowledgeBreak
+                            | Operation::DiscardPrefetch
+                            | Operation::WriteContext(_, _)
+                    )
+            })
+        {
+            return None;
+        }
+        Some(j)
+    }
+    pub(crate) fn private_transaction(&self) -> Option<PrivateTransaction> {
+        Some(PrivateTransaction {
+            journal: self.private_journal()?.clone(),
+            active: self.transactions.internal[1].clone(),
+            retained: self.instruction_word[1].get(),
+            clocks: self.cpu_bus_clocks[1].get(),
+        })
+    }
+    pub(super) fn private_transaction_matches(
+        &self,
+        prior: &PrivateTransaction,
+        elapsed: u64,
+    ) -> bool {
+        if self.transactions.internal[1] != prior.active
+            || self.instruction_word[1].get() != prior.retained
+            || self.cpu_bus_clocks[1].get() != prior.clocks
+        {
+            return false;
+        }
+        let Some(current) = self.private_journal() else {
+            return false;
+        };
+        let mut expected = prior.clone();
+        expected.shift_clock(elapsed);
+        *current == expected.journal
+    }
+    pub(crate) fn take_private_transaction(&mut self) -> PrivateTransaction {
+        PrivateTransaction {
+            journal: std::mem::take(self.transactions.journals[1].get_mut()),
+            active: self.transactions.internal[1].take(),
+            retained: self.instruction_word[1].get(),
+            clocks: self.cpu_bus_clocks[1].replace(0),
+        }
+    }
+    pub(crate) fn restore_private_transaction(&mut self, state: PrivateTransaction) {
+        *self.transactions.journals[1].get_mut() = state.journal;
+        self.transactions.internal[1] = state.active;
+        self.instruction_word[1].set(state.retained);
+        self.cpu_bus_clocks[1].set(state.clocks);
     }
 }

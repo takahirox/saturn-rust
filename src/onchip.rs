@@ -32,6 +32,7 @@ pub const IPRB: u32 = 0xFFFF_FE60;
 pub const VCRC: u32 = 0xFFFF_FE66;
 pub const VCRD: u32 = 0xFFFF_FE68;
 
+#[derive(Clone)]
 pub struct OnChip {
     ubc: RefCell<ubc::Ubc>,
     bsc: bsc::Bsc,
@@ -1215,3 +1216,16 @@ mod tests {
 
 #[cfg(test)]
 mod peripheral_tests;
+
+impl OnChip {
+    pub(crate) fn private_poll_observed(&self) -> u8 {
+        self.observed.get()
+    }
+    pub(crate) fn private_poll_epoch(&self) -> u64 {
+        self.instruction_epoch.get()
+    }
+    pub(crate) fn publish_private_poll(&self, observed: u8, epoch: u64) {
+        self.observed.set(observed);
+        self.instruction_epoch.set(epoch);
+    }
+}

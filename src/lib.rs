@@ -513,7 +513,7 @@ impl From<CpuError> for MachineError {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct CpuBoundary {
     dma: bool,
     nmi: bool,
@@ -523,6 +523,7 @@ struct CpuBoundary {
 
 // Keep continuations inline because these paths run at instruction frequency.
 #[allow(clippy::large_enum_variant)]
+#[derive(Clone, PartialEq, Eq)]
 enum CachedIssue {
     Branch(CachedBranch),
     Load(CachedLoad),
@@ -531,6 +532,9 @@ enum CachedIssue {
 
 #[derive(Default)]
 pub struct Machine {
+    private_poll: bus::private_poll::Context,
+    #[cfg(test)]
+    cached_private_phases: u64,
     #[cfg(test)]
     cached_retired: u64,
     #[cfg(test)]
@@ -676,6 +680,7 @@ impl Machine {
         self.cpu_boundary = [None; 2];
         self.cached_issue = [None, None];
         self.slave_poll_retry = 0;
+        self.private_poll = bus::private_poll::Context::default();
         self.cpu_reset_vectors = [None; 2];
         self.fault = None;
         self.cpu = Cpu::default();
@@ -816,8 +821,9 @@ impl Machine {
         while steps < 1_000_000 {
             let limit = (1_000_000 - steps).min(512);
             let mut count = if self.bus.slave_enabled
-                && (self.cpu_ready[1] != self.bus.main_clocks
-                    || self.bus.main_clocks < self.slave_poll_retry
+                && (((self.cpu_ready[1] != self.bus.main_clocks
+                    || self.bus.main_clocks < self.slave_poll_retry)
+                    && self.bus.main_clocks < self.private_poll.retry)
                     || self.cpu_boundary[0].is_some()
                     || self.cached_issue[0].is_some())
             {
@@ -842,6 +848,13 @@ impl Machine {
     }
 
     fn try_cached_batch(&mut self, limit: u32) -> Result<u32, MachineError> {
+        let retired = self.try_retired_poll_batch(limit)?;
+        if retired != 0 {
+            return Ok(retired);
+        }
+        self.try_private_poll_batch(limit)
+    }
+    fn try_retired_poll_batch(&mut self, limit: u32) -> Result<u32, MachineError> {
         if self.fault.is_some()
             || self.nmi_pending
             || self.dma_errors[0]
@@ -881,7 +894,7 @@ impl Machine {
         let result = self.bus.cached_batch(
             &self.cpu,
             limit,
-            peer.as_ref(),
+            peer.as_ref().map(bus::PeerSchedule::Retired).as_ref(),
             origin.max(self.cpu_ready[0]),
         );
         let Some(batch) = result.inspect_err(|error| {

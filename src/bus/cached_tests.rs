@@ -353,7 +353,9 @@ fn disabled_peer_deadlines_do_not_limit_the_running_master() {
 #[test]
 fn compressed_retirement_cycles_preserve_every_sound_cutoff_position() {
     let mut points = Retirements {
-        points: vec![5, 9, 11, 14],
+        points: [5, 9, 11, 14]
+            .map(|at| Retirement { at, ready: at + 1 })
+            .to_vec(),
         repeated: Some((4, 3, 9, 7)),
         last_reference: 0,
     };
@@ -361,7 +363,9 @@ fn compressed_retirement_cycles_preserve_every_sound_cutoff_position() {
     for cycle in 1..=7 {
         literal.extend([9, 11, 14].map(|at| at + cycle * 9));
     }
-    points.points.extend([79, 80]);
+    points
+        .points
+        .extend([79, 80].map(|at| Retirement { at, ready: at + 1 }));
     literal.extend([79, 80]);
     assert_eq!(points.len(), literal.len());
     assert_eq!(points.last(), 80);
@@ -1883,4 +1887,79 @@ fn short_retirement_wait_retains_fractional_pll_boundaries() {
         }
     }
     assert!(admitted > 0 && fallback > 0);
+}
+
+#[test]
+fn private_pending_poll_phases_match_each_published_microstate() {
+    for delayed_load in [false, true] {
+        for prefix in [false, true] {
+            for pal in [false, true] {
+                for fast in [false, true] {
+                    let make = || {
+                        let mut slave = if delayed_load {
+                            vec![0xC880, 0x8DFD, 0x60F0, 0xAFFB, 9]
+                        } else {
+                            vec![0x60F0, 0xC880, 0x89FC, 0xAFFB, 9]
+                        };
+                        if prefix {
+                            slave.insert(0, 9);
+                        }
+                        let mut m = crate::scheduling_tests::cached_pair(
+                            &[0x7001, 0x7101, 0x7201, 0xAFFB, 9],
+                            &slave,
+                        );
+                        m.slave = Cpu::start(
+                            HIGH_WRAM + 0x100 + u32::from(prefix) * 2,
+                            crate::onchip::FRT + 1,
+                        );
+                        m.slave.prime_fetch(&m.bus.for_cpu(Processor::Slave));
+                        m.bus.change_system_clock(fast);
+                        m.bus.set_pal(pal);
+                        m.bus.set_slave_enabled(true);
+                        m.bus.cache[1].get_mut().set_control(1);
+                        m.bus.onchip[1].write32(0xFFFFFFE8, 0xA55A0000).unwrap();
+                        m
+                    };
+                    let (mut a, mut b) = (make(), make());
+                    while a.frames() < 2 {
+                        let before = a.cached_private_phases;
+                        if a.try_private_poll_batch(128).unwrap() == 0 {
+                            a.step_inner_with_idle(true).unwrap();
+                        }
+                        if a.cached_private_phases != before {
+                            while b.bus.main_clocks < a.bus.main_clocks || b.clocks < a.clocks {
+                                b.step_hardware_boundary().unwrap();
+                            }
+                            assert_eq!(a.bus.main_clocks, b.bus.main_clocks);
+                            assert_eq!(
+                                a.cpu, b.cpu,
+                                "master fast={fast} phases={} clock={}",
+                                a.cached_private_phases, a.bus.main_clocks
+                            );
+                            assert_eq!(
+                                a.slave, b.slave,
+                                "slave fast={fast} phases={} clock={}",
+                                a.cached_private_phases, a.bus.main_clocks
+                            );
+                            assert_eq!(a.cpu_ready[0], b.cpu_ready[0]);
+                            // A prepared branch holds the same CPU state across
+                            // combined replay wakes. Later publications check
+                            // its actual completion.
+                            if !matches!(a.cached_issue[1], Some(crate::CachedIssue::Branch(_))) {
+                                assert_eq!(a.cpu_ready[1], b.cpu_ready[1]);
+                            }
+                            for i in 0..2 {
+                                a.bus.cache[i]
+                                    .borrow()
+                                    .assert_same_contents(&b.bus.cache[i].borrow());
+                                a.bus.onchip[i].assert_cached_read_bus_matches(&b.bus.onchip[i]);
+                            }
+                            assert_eq!(a.bus.onchip[1].ftcsr(), b.bus.onchip[1].ftcsr());
+                        }
+                    }
+                    assert!(a.cached_private_phases > 0);
+                }
+            }
+        }
+    }
 }

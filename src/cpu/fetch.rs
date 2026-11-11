@@ -202,3 +202,12 @@ impl Fetch {
         Ok(())
     }
 }
+
+impl Fetch {
+    pub(super) fn private_addresses(&self) -> [Option<u32>; 2] {
+        [
+            self.decoded.as_ref().map(|w| w.pc),
+            self.fetched.as_ref().map(|w| w.pc),
+        ]
+    }
+}

@@ -1921,3 +1921,53 @@ The measured default module SHA-256 is
 Six extended local game checkpoints and three screenshots match the preceding
 production captures. The game median improved 1.6% and menu throughput was
 unchanged at this precision. 60 fields/s remains unmet.
+
+
+## Private polling continuations (2026-11-11)
+
+Related to #17. The default frame runner can reuse private slave polling while
+that processor is suspended inside a resident instruction. A bounded proof
+executes the existing interpreter with the actual private continuation, including
+its journal, retained IF, pipeline and local instruction epoch. It records the
+transient prefix and a closed polling period. Reuse checks full CPU and
+continuation state, FTCSR, cache control, fetched bytes and physical ways.
+
+Two cache-replacement seeds establish each phase's keep/value transformation.
+Publication rebases CPU and journal timestamps, local counters, read/clear
+bookkeeping and replacement bits. The actual board and sound domains advance
+through their existing event-bounded paths. Master retirement records retain
+both retirement and readiness times. A selected endpoint yields master issue
+before publishing a pending slave phase, preserving same-clock fault ordering.
+The proof cache holds 32 templates and retains its scratch machine between
+attempts. Every attempt resets probe transaction ownership and journals.
+
+Original native guests compare every published phase across both PLLs,
+PAL/NTSC, two code alignments and ordinary/delayed-slot FTCSR loads. Comparisons
+include complete CPUs, both caches and bus timing. A prepared branch can retain
+its existing readiness representation during a partial replay wake. Subsequent
+publications check completion. Negative controls cover status, cache bytes,
+cache control and a rejected external probe followed by a valid private proof.
+
+All 1,317 native tests passed in 111 result groups. All 74 production-Wasm
+browser groups passed, including 46 scheduler cases and an original delayed
+FTCSR guest. The first shared-shard run exposed a duplicated fixture mutation
+in the new test. After correcting that test, all 33 shared groups passed. All
+41 scenario groups passed. The 13 runner checks, registered fixtures, formatting
+and native/Wasm Clippy with warnings denied passed.
+
+Chrome 157.0.8103.39 drew every field to Canvas. Three alternating comparisons
+used the prepared-store build from PR #120 as their baseline. Every timed
+endpoint matched CPU, sound, clocks and pixels.
+
+| Workload | Earlier fields/s | Private continuations fields/s | Median p95 field time |
+| --- | ---: | ---: | ---: |
+| Local Machi Disc 1, fields 1200–1380 | 7.028 | 7.543 | 168.9 → 159.2 ms |
+| Local BIOS menu, fields 1200–1560 | 25.438 | 25.267 | 65.8 → 66.5 ms |
+
+The measured default module SHA-256 is
+`ef966dac84c68e55c2de04ee572987ca47afc9a7f3edeaa3f0014adf010b344f`.
+Six extended local game checkpoints through field 3252 and byte-identical title,
+book-menu and operation-guide screenshots match the preceding captures.
+Game median throughput improved 7.3%. Menu throughput changed by −0.7%.
+60 fields/s remains unmet, requiring about 8.0× additional throughput in the
+measured game window.

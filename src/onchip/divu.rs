@@ -1,5 +1,5 @@
 //! SH7604 §10, signed 32/32 and 64/32 division with 39/6-clock completion.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct Division {
     divisor: u32,
     high: u32,

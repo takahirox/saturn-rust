@@ -2,6 +2,7 @@
 use crate::bus::{BusError, Memory};
 use std::cell::Cell;
 
+#[derive(Clone)]
 struct Channel {
     source: u32,
     destination: u32,
@@ -32,6 +33,7 @@ impl Default for Channel {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Dma {
     channels: [Channel; 2],
     operation: u32,

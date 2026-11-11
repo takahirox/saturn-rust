@@ -1,7 +1,7 @@
 //! Register-only SH-2 semantics shared by ordinary and block execution.
 use super::{CpuState, M, Q, T};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Kind {
     ClearT,
     SetT,

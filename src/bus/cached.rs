@@ -9,6 +9,35 @@ use super::*;
 use crate::cache::CachedLines;
 use crate::cpu::{Cpu, CpuStatus};
 
+/// A ready peer publishes proven instruction retirements. A pending peer
+/// publishes a proven private microstate after the master has yielded issue.
+pub(crate) enum PeerSchedule<'a> {
+    Retired(&'a PollCycle),
+    Pending { mask: u32, span: u32 },
+}
+impl PeerSchedule<'_> {
+    fn mask(&self) -> u32 {
+        match self {
+            Self::Retired(cycle) => cycle.mask,
+            Self::Pending { mask, .. } => *mask,
+        }
+    }
+    fn span(&self) -> u32 {
+        match self {
+            Self::Retired(_) => u32::MAX,
+            Self::Pending { span, .. } => *span,
+        }
+    }
+    fn permits(&self, elapsed: u64, master_waiting: bool) -> bool {
+        match self {
+            Self::Retired(cycle) => cycle.can_retire_at(elapsed),
+            Self::Pending { span, .. } => {
+                elapsed != 0 && elapsed <= u64::from(*span) && master_waiting
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Local {
     clock: u64,
@@ -45,31 +74,44 @@ struct CycleAnchor {
 /// Keep a proven periodic instruction sequence compact. Sound catch-up needs
 /// retirement positions, not a host allocation and PLL conversion per skipped
 /// instruction. There is at most one repeated cycle in each bounded burst.
+#[derive(Clone, Copy)]
+pub(super) struct Retirement {
+    at: u64,
+    ready: u64,
+}
 #[derive(Default)]
 struct Retirements {
-    points: Vec<u64>,
+    points: Vec<Retirement>,
     repeated: Option<(usize, usize, u64, usize)>, // prefix, pattern, period, copies
     last_reference: u32,
 }
 impl Retirements {
-    fn recycle_into(mut self, reuse: &mut Vec<u64>) {
+    fn recycle_into(mut self, reuse: &mut Vec<Retirement>) {
         self.points.clear();
         *reuse = self.points;
     }
     fn len(&self) -> usize {
         self.points.len() + self.repeated.map_or(0, |(_, n, _, copies)| n * copies)
     }
-    fn at(&self, index: usize) -> u64 {
+    fn point(&self, index: usize) -> Retirement {
         if let Some((prefix, n, period, copies)) = self.repeated
             && index >= prefix
         {
             let relative = index - prefix;
             if relative < n * copies {
-                return self.points[prefix - n + relative % n] + period * (1 + relative / n) as u64;
+                let point = self.points[prefix - n + relative % n];
+                let shift = period * (1 + relative / n) as u64;
+                return Retirement {
+                    at: point.at + shift,
+                    ready: point.ready + shift,
+                };
             }
             return self.points[index - n * copies];
         }
         self.points[index]
+    }
+    fn at(&self, index: usize) -> u64 {
+        self.point(index).at
     }
     fn last(&self) -> u64 {
         self.at(self.len() - 1)
@@ -86,13 +128,13 @@ impl Retirements {
         }
         lo
     }
-    fn aligned_prefix(&self, limit: usize, origin: u64, poll: Option<&PollCycle>) -> usize {
+    fn aligned_prefix(&self, limit: usize, origin: u64, poll: Option<&PeerSchedule<'_>>) -> usize {
         let Some(poll) = poll else { return limit };
         (0..limit)
             .rev()
             .find(|&i| {
                 let clocks = self.at(i) - origin;
-                poll.can_retire_at(clocks)
+                poll.permits(clocks, self.point(i).ready > self.at(i))
             })
             .map_or(0, |i| i + 1)
     }
@@ -1018,12 +1060,10 @@ impl Bus {
         &mut self,
         initial: &Cpu,
         count: u32,
-        poll: Option<&PollCycle>,
+        poll: Option<&PeerSchedule<'_>>,
         master_start: u64,
     ) -> Result<Option<CachedBatch>, crate::MachineError> {
-        let poll_period = poll.map(|cycle| cycle.period);
-        if (self.slave_enabled && poll_period.is_none()) || !self.cached_master_admissible(initial)
-        {
+        if (self.slave_enabled && poll.is_none()) || !self.cached_master_admissible(initial) {
             return Ok(None);
         }
         // An accepted buffered write, or refresh, can overlap cache hits.
@@ -1042,7 +1082,7 @@ impl Bus {
         self.sample_interrupts();
         if poll.is_some_and(|cycle| {
             self.recognized_interrupt(Processor::Slave)
-                .is_some_and(|irq| u32::from(irq.level) > cycle.mask)
+                .is_some_and(|irq| u32::from(irq.level) > cycle.mask())
         }) {
             return Ok(None);
         }
@@ -1096,11 +1136,11 @@ impl Bus {
         let cd_quiet = self.cd.audio_quiet() && !self.cd.interrupt();
         let sound_lookahead =
             self.sound.enabled && cd_quiet && self.sound.cached_lookahead_allowed();
-        let track_retirements = sound_lookahead || poll_period.is_some();
+        let track_retirements = sound_lookahead || poll.is_some();
         // External operands can span more than the ordinary sound cutoff's
         // retirement gap. A sound checkpoint permits choosing an earlier CPU
         // prefix without publishing future RAM, synthesis or control effects.
-        let mut checkpoint_sound = (passive.is_some() || poll_period.is_some()) && sound_lookahead;
+        let mut checkpoint_sound = (passive.is_some() || poll.is_some()) && sound_lookahead;
         let reference_span = self
             .cd
             .clocks_to_event()
@@ -1136,7 +1176,9 @@ impl Bus {
             })
             .filter(|&wider| wider > span);
         let normal_end = self.main_clocks + u64::from(span);
-        let span = readonly_refresh.unwrap_or(span);
+        let span = readonly_refresh
+            .unwrap_or(span)
+            .min(poll.map_or(u32::MAX, PeerSchedule::span));
         if span < 2 {
             return Ok(None);
         }
@@ -1388,7 +1430,9 @@ impl Bus {
                     memory.clock.set(ready);
                     retired += scalar_count;
                     if track_retirements {
-                        points.points.extend(scalar_start..=retired_at);
+                        points.points.extend(
+                            (scalar_start..=retired_at).map(|at| Retirement { at, ready: at + 1 }),
+                        );
                         points.last_reference = self.system_clock.deadline(
                             ((retired_at - self.main_clocks) as u32)
                                 .saturating_sub(self.pending_main_clocks),
@@ -1441,7 +1485,7 @@ impl Bus {
                     memory.clock.set(ready.min(end));
                     retired += 1;
                     if track_retirements {
-                        points.points.push(at);
+                        points.points.push(Retirement { at, ready });
                         points.last_reference = reference;
                     }
                     continue;
@@ -1500,7 +1544,6 @@ impl Bus {
                     memory.restore(before);
                     break;
                 }
-                points.points.push(at);
                 points.last_reference = reference;
             }
             if let Some(branch) = branch {
@@ -1512,6 +1555,9 @@ impl Bus {
             ready = (cpu.execution_clock().unwrap_or(started)
                 + u64::from(cpu.last_clocks().max(1)))
             .max(memory.clock.get());
+            if track_retirements {
+                points.points.push(Retirement { at, ready });
+            }
             memory.clock.set(ready.min(end));
             retired += 1;
             if memory.store.get().is_some() {
@@ -1800,3 +1846,16 @@ impl Bus {
 #[cfg(test)]
 #[path = "cached_tests.rs"]
 mod tests;
+
+impl Bus {
+    pub(crate) fn cached_private_master_candidate(&self, initial: &Cpu) -> bool {
+        initial.decoded_opcode().is_some_and(accepted_opcode)
+            && ordinary_memory(initial.state().pc)
+            && self.onchip[0].cached_batch_allowed()
+            && !self.scu.dma_pending()
+            && self.cpu_dma_errors.iter().all(|&error| !error)
+            && initial.state().status == CpuStatus::Running
+            && !initial.state().address_error_pending
+            && self.cache[0].borrow().control() & 1 != 0
+    }
+}

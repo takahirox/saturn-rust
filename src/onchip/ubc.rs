@@ -16,7 +16,7 @@ struct Conditions {
     control: u16,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct Ubc {
     address: [u32; 2],
     mask: [u32; 2],
