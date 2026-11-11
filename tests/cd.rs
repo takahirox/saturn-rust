@@ -892,7 +892,10 @@ fn tray_open_stops_audio_and_scan_retains_inserted_media_and_close_reuses_it() {
     sectors(&mut cd, 1);
     assert_eq!(issue(&mut cd, [0x0500, 0, 0, 0])[0] >> 8, 6);
     assert_eq!(cd.audio_sample(), [0, 0]);
-    assert_eq!(issue(&mut cd, [0x0200, 0, 0, 0])[0], 0xFF00);
+    assert_eq!(
+        issue(&mut cd, [0x0200, 0, 0, 0]),
+        [0x86FF, 0xFFFF, 0xFFFF, 0xFFFF]
+    );
     // Tray opening is distinct from removing the medium; this virtual drive
     // closes deterministically on the documented initialization command.
     assert!(cd.media().is_some());

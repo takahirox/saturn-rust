@@ -147,7 +147,8 @@ def build():
     s += wait(R+0x208,'cd_irq')
     s += put16(0x2589000C,0)+store(0x25FE00A0,0xB77F)
     s += command(0x0200)
-    s += 'load 0x25890018,r1\nmov.w @r1,r0\nextu.w r0,r0\nload 0xff00,r2\ncmp/eq r2,r0\nbf medium_present\nload no_media,r0\njmp @r0\nnop\nmedium_present:\n'
+    # TOC WAIT retains NODISC (ST-162 1.5); REJECT is not a media detector.
+    s += 'load 0x25890018,r1\nmov.w @r1,r0\nextu.w r0,r0\nload 0x87ff,r2\ncmp/eq r2,r0\nbf medium_present\nload no_media,r0\njmp @r0\nnop\nmedium_present:\n'
     # Decode all 24 count bits: retaining report flags here used to turn
     # the fixed 204-word TOC into an enormous transfer in real firmware.
     s += ('mov r9,r1\nadd #-16,r1\nmov.l @r1,r3\nextu.b r3,r3\nshll8 r3\nshll8 r3\n'

@@ -201,7 +201,7 @@ nop
 load 0x25890018,r1
 mov.w @r1,r0
 extu.w r0,r0
-load 0xff00,r2
+load 0x87ff,r2
 cmp/eq r2,r0
 bf medium_present
 load no_media,r0

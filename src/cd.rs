@@ -1149,8 +1149,11 @@ impl CdBlock {
                 flags,
             ]);
         };
-        if self.tray_open && matches!(command, 0x02 | 0x03) {
-            return false;
+        // ST-162 §8.2.1 functions1.5/1.6: OPEN/NODISC wait, with a
+        // valid drive report. They are not malformed-command REJECTs and
+        // must neither start DATATRNS nor manufacture TOC/session data.
+        if matches!(command, 0x02 | 0x03) && (self.tray_open || self.media.is_none()) {
+            return self.wait();
         }
         match command {
             0x00 => (),

@@ -573,10 +573,8 @@ Implementation: [SCU ports/interrupts/timers](../src/scu.rs),
 [DMA beats](../src/scu/dma.rs), [DSP interpreter](../src/scu/dsp.rs),
 [clock-domain dispatch](../src/bus.rs) and [raster deadlines](../src/timing.rs).
 ST-210 supersedes the earlier indirect-table diagram and removes DSTA/DSTOP.
-[BIOS initialization](bios-startup.md) now provides a legacy DSTA activity view
-from actual pending DMA and models legacy
-IST stores as zero-clear/one-preserve, with native and production-Wasm guest
-coverage and explicit simultaneous-event uncertainty. Issue #111 gives only the
+Issue #113 separately adds legacy DSTA activity readback and zero-clear IST
+stores; see the [initialization contract](bios-startup.md). Issue #111 gives only the
 legacy DSTP longword port a bounded compatibility policy: reads return zero and
 writes are ignored without DMA effects; neither is a measured electrical rule.
 See [the evidence and validation](validation-issue-111.md). Master external-vector
@@ -4159,3 +4157,23 @@ without asserting electrical behavior for prohibited issuance. See the
 [issuer validation record](validation-issue-103.md#review-follow-up-command-issuer).
 The private one-byte failure remains unclassified. Publication follows the
 complete acceptance matrix and exact-head CI, not a permanent partial-only rule.
+
+
+## Shared initialization and no-media software startup (Issue #113)
+
+Related to #113 and #17. The [primary-source matrix](bios-startup.md#source-contract-and-compatibility-decisions)
+documents narrowly scoped SCU/VDP2/SMPC/DSP/SCSP behavior and explicit compatibility
+policies. The original MIT [reset-vector guest](../tests/fixtures/bios-initialization.s)
+runs identically in [native Machine](../tests/bios_initialization.rs) and the
+required production `externalStartup` browser group, including DSP-derived
+Canvas pixels, real DMA data/IRQ and a separately executing 68000 acknowledgement.
+The [CD protocol vectors](../tests/cd_no_media.rs) and guest cover reset ESEL, CMOK,
+OPEN/NODISC WAIT and successive released periodic reports, power cancellation,
+passive observation and replacement media. All other Issue #17 requirements
+remain in force; this does not establish stock BIOS or retail-game compatibility.
+
+Reproduce with `python3 tests/fixtures/build_bios_initialization.py --check`,
+now included in the complete fixture registry. ROM hash and negative-control
+changes are recorded in the [contract](bios-startup.md#original-fixture-and-independent-controls);
+executed checks and remaining publication gates are in the
+[validation record](validation-issue-113.md).

@@ -129,9 +129,9 @@ impl Vdp2 {
     }
     fn supported(offset: usize) -> bool {
         matches!(offset,
-            0 | 2 | 4 | 6 | 8 | 0xA | 0xE | 0x10..=0x1E | 0x20..=0x2E | 0x30..=0x6E |
+            0 | 2 | 4 | 6 | 8 | 0xA | 0xC | 0xE | 0x10..=0x1E | 0x20..=0x2E | 0x30..=0x6E |
             0x70..=0xBE | 0xC0..=0xDE | 0xE0 | 0xE2 |
-            0xE4..=0xFC | 0x100..=0x11E
+            0xE4..=0xFE | 0x100..=0x11E
         ) && offset & 1 == 0
     }
     fn word(&self, offset: usize) -> u16 {
@@ -156,7 +156,7 @@ impl Vdp2 {
         // ST-058 §16 lists +0C and +FE as reserved words with no function.
         // Local compatibility fallback for register initialization sweeps;
         // zero is deterministic, not a measured electrical bus value.
-        if matches!(offset, 0xC | 0xFE) {
+        if matches!(offset, 6 | 0xC | 0xFE) {
             return Ok(0);
         }
         if offset == 4 {
@@ -192,7 +192,7 @@ impl Vdp2 {
     }
     pub(crate) fn validate_write(address: u32) -> Result<(), BusError> {
         let offset = (address - VDP2) as usize;
-        if !Self::supported(offset) && !matches!(offset, 0xC | 0xFE) {
+        if !Self::supported(offset) {
             return Err(BusError::UnsupportedDevice { address, width: 2 });
         }
         Ok(())
@@ -218,11 +218,7 @@ impl Vdp2 {
         let offset = (address - VDP2) as usize;
         // TVSTAT/HCNT/VCNT have no write function. Initialization stores must
         // not alter status, counters, or the external-latch read-clear edge.
-        if matches!(offset, 4 | 8 | 0xA | 0xC | 0xFE) {
-            return Ok(());
-        }
-        if offset == 6 {
-            self.registers[6..8].fill(0);
+        if matches!(offset, 4 | 6 | 8 | 0xA | 0xC | 0xFE) {
             return Ok(());
         }
         self.registers[offset..offset + 2].copy_from_slice(&value.to_be_bytes());

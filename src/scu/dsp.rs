@@ -387,11 +387,9 @@ impl Dsp {
                     increments[(xcode & 3) as usize] |= xcode & 4 != 0;
                 }
                 match xmode & 3 {
-                    // The source selector is inactive when the P write
-                    // enable (bit24) is clear. Treat 001/101 like 000/100,
-                    // preserving RX-only moves and all other parallel fields.
-                    // This is a compatibility decode for an unspecified
-                    // selector combination, not a whole-instruction NOP.
+                    // P write-enable is clear in 001/101. Treat the unused
+                    // selector as inactive, preserving every parallel effect.
+                    // Compatibility inference, not a documented normal encoding.
                     0 | 1 => (),
                     2 => self.p = multiplier,
                     3 => {

@@ -56,8 +56,10 @@ or region enforcement. It does not claim that metadata checks substitute for the
 boot-code checks required of a retail disc. The SMPC revision here is R1-072694.
 The CD I/F PDF filename is ST-162-062094 (its pages are headed System Library
 User's Guide); ST-162-R1-092994 is a different System Library revision, not an
-interchangeable command reference. ST-210's prohibition on IST writes supersedes
-older system-program examples. The [SCU endpoint limitation](sh2-interrupt-entry.md#reconciled-cpuendpoint-boundary)
+interchangeable command reference. ST-210 prohibits software IST writes because
+of interrupt loss; Issue #113 reconciles the required system-program stores with
+[zero-clear/one-preserve endpoint behavior](bios-startup.md), without asserting
+a physical bus exception. The [SCU endpoint limitation](sh2-interrupt-entry.md#reconciled-cpuendpoint-boundary)
 remains in force.
 
 ## Supported discovery and memory bounds

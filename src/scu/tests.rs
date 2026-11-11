@@ -66,9 +66,9 @@ fn interrupt_mapping_and_gate_with_model_equal_level_order_and_consumption() {
         assert!(scu.read32(SCU + offset).is_err());
         assert!(scu.write32(SCU + offset, 0).is_err());
     }
-    assert_eq!(scu.read32(SCU + 0x7C), Ok(0));
-    assert!(scu.write32(SCU + 0x7C, 0).is_err());
-    scu.write32(SCU + 0xA4, 0).unwrap(); // legacy zero-clear compatibility
+    assert!(scu.write32(SCU + 0x7C, 0).is_err()); // DSTA remains read-only.
+    scu.write32(SCU + 0xA4, 0).unwrap();
+    assert_eq!(scu.read32(SCU + 0xA4), Ok(0));
     assert!(scu.read32(SCU + 0xA0).is_err()); // IMS write-only
 }
 
@@ -793,11 +793,14 @@ fn higher_dma_channel_can_preempt_between_dsp_b_bus_halves_without_losing_the_wo
     s.write32(SCU + 0x80, 0x18000).unwrap();
     s.advance_clocks(6).unwrap(); // WA0=05C01000/4, DMA1 M0,D0,1, ENDI.
     s.advance_dma(&mut b).unwrap();
+    assert_eq!(s.read32(SCU + 0x7c), Ok(1)); // DSP retains the second B-bus word.
     assert_eq!(b.read32(crate::vdp1::VRAM + 0x1000).unwrap(), 0x11220000);
     b.write32(HIGH_WRAM, 0x55667788).unwrap();
     set_dma(&mut s, 0, HIGH_WRAM, HIGH_WRAM + 0x100, 4, 0x102, 7);
-    for _ in 0..3 {
+    assert_eq!(s.read32(SCU + 0x7c), Ok(0x11));
+    for beat in 0..3 {
         s.advance_dma(&mut b).unwrap();
+        assert_eq!(s.read32(SCU + 0x7c), Ok(if beat == 2 { 1 } else { 0x11 }));
         assert_eq!(b.read32(crate::vdp1::VRAM + 0x1000).unwrap(), 0x11220000);
         assert!(s.dsp.dma_pending());
     }
@@ -806,6 +809,7 @@ fn higher_dma_channel_can_preempt_between_dsp_b_bus_halves_without_losing_the_wo
     s.advance_dma(&mut b).unwrap();
     assert_eq!(b.read32(crate::vdp1::VRAM + 0x1000).unwrap(), 0x11223344);
     assert!(!s.dsp.dma_pending());
+    assert_eq!(s.read32(SCU + 0x7c), Ok(0));
 }
 
 #[test]
@@ -853,6 +857,14 @@ fn legacy_dstp_preserves_every_dma_level_phase_trigger_and_completion() {
                 };
                 let (mut s, mut b) = setup();
                 let (mut control, mut memory) = setup();
+                assert_eq!(
+                    s.read32(SCU + 0x7c),
+                    Ok(if phase >= 2 {
+                        1 << (4 + channel * 4)
+                    } else {
+                        0
+                    })
+                );
                 for tick in 0..80 {
                     for value in [0, 1, u32::MAX, 0xa55a1234] {
                         s.write32(SCU + 0x60, value).unwrap();
@@ -920,4 +932,31 @@ fn legacy_dstp_preserves_every_dma_level_phase_trigger_and_completion() {
             }
         }
     }
+}
+
+#[test]
+fn ist_zero_clear_preserves_masks_dma_and_later_edges() {
+    let mut s = Scu::default();
+    s.write32(SCU + 0xa0, 0x1234).unwrap();
+    set_dma(&mut s, 0, HIGH_WRAM, HIGH_WRAM + 0x200, 4, 0x102, 7);
+    for bit in [0, 7, 11] {
+        s.signal(bit);
+    }
+    s.write32(SCU + 0xa4, !0x81).unwrap();
+    assert_eq!(s.read32(SCU + 0xa4), Ok(0x800));
+    assert_eq!(s.mask, 0x1234 & 0xbfff);
+    assert_eq!(s.read32(SCU + 0x7c), Ok(0x10));
+    s.write32(SCU + 0xa4, 0).unwrap();
+    s.signal(7);
+    assert_eq!(s.read32(SCU + 0xa4), Ok(0x80));
+    let mut b = Bus::default();
+    b.write32(HIGH_WRAM, 0x13579bdf).unwrap();
+    s.advance_dma(&mut b).unwrap();
+    assert_eq!(s.read32(SCU + 0x7c), Ok(0x10)); // Retained between read and write.
+    s.advance_dma(&mut b).unwrap();
+    assert_eq!(s.read32(SCU + 0x7c), Ok(0x10));
+    s.advance_dma(&mut b).unwrap();
+    assert_eq!(s.read32(SCU + 0x7c), Ok(0));
+    assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(0x13579bdf));
+    assert_eq!(s.read32(SCU + 0xa4), Ok(0x880));
 }

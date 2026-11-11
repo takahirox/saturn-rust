@@ -2,7 +2,10 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
+import { biosInitialization } from "./bios-initialization.mjs";
+
 export async function externalStartup(page) {
+  await biosInitialization(page);
   const rom=Buffer.alloc(524288);
   for(const line of (await readFile("tests/fixtures/external-startup.hex","utf8")).trim().split(/\r?\n/)) {
     if(line.startsWith("#"))continue;

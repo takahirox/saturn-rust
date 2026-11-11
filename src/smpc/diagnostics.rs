@@ -22,6 +22,7 @@ pub struct CommandState {
     pub busy: bool,
     pub command: u8,
     pub pending: Option<u8>,
+    pub deferred_control: Option<u8>,
     /// Reference clocks until command completion; None while idle or waiting
     /// for INTBACK continue/VBlank. Not host time or an absolute CPU deadline.
     pub remaining: Option<u32>,
@@ -31,7 +32,6 @@ pub struct CommandState {
     pub input: [u8; 7],
     pub status: u8,
     pub command_report: u8,
-    pub queued_control: Option<u8>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,7 +110,7 @@ impl Smpc {
             busy: self.busy(),
             command: self.command,
             pending: self.pending.map(|(command, _)| command),
-            queued_control: self.queued_control.map(|(command, _)| command),
+            deferred_control: self.deferred_control,
             remaining: self.pending.map(|(_, clocks)| clocks),
             await_continue: self.await_continue,
             await_vblank: self.await_vblank,

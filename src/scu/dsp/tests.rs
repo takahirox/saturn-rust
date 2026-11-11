@@ -355,8 +355,9 @@ fn program_dma_count_forms_and_hold_use_a_private_zero_based_cursor() {
     }
 }
 
-fn bank_operations(bank: u32) -> [u32; 10] {
+fn bank_operations(bank: u32) -> [u32; 11] {
     [
+        0x02800000 | bank << 20, // Unused P selector, active M -> X
         0x02000000 | bank << 20, // M -> X
         0x01C00000 | bank << 20, // MC -> P
         0x00080000 | bank << 14, // M -> Y
@@ -404,6 +405,7 @@ fn dma_bank_conflicts_are_diagnosed_before_any_parallel_instruction_side_effect(
             for instruction in [
                 0,
                 0x10040000,
+                0x00800000 | u32::from(bank) << 20, // Dormant unused selector
                 0x00003409,
                 0x82400001 | u32::from(bank) << 26,
             ] {
