@@ -1963,3 +1963,66 @@ fn private_pending_poll_phases_match_each_published_microstate() {
         }
     }
 }
+
+#[test]
+fn cached_bursts_wait_for_live_sound_and_cd_irq_relatching() {
+    for sound in [false, true] {
+        let mut m = crate::scheduling_tests::cached_pair(
+            &[0x7001, 0x7101, 0x7201, 0xAFFB, 9],
+            &[0x60F0, 0xC880, 0x89FC, 0xAFFB, 9],
+        );
+        m.slave = Cpu::start(HIGH_WRAM + 0x100, crate::onchip::FRT + 1);
+        m.slave.prime_fetch(&m.bus.for_cpu(Processor::Slave));
+        let source = if sound { 6 } else { 16 };
+        if sound {
+            m.bus.sound.scsp.write16(0x42A, 0x400).unwrap();
+            m.bus.scu.write32(SCU + 0xA0, 0xBFBF).unwrap();
+        } else {
+            m.bus.cd.write16(crate::cd::REGISTERS + 0xC, 1).unwrap();
+            m.bus.scu.write32(SCU + 0xA0, 0x7FFF).unwrap();
+            m.bus.scu.write32(SCU + 0xA8, 1).unwrap();
+        }
+        m.bus.advance_clocks(1000).unwrap();
+        m.clocks += 1000;
+        m.cpu_ready = [m.bus.main_clocks; 2];
+        assert!(if sound {
+            m.bus.sound.scsp.main_interrupt()
+        } else {
+            m.bus.cd.interrupt()
+        });
+        assert!(m.bus.scu.read32(SCU + 0xA4).unwrap() & (1 << source) != 0);
+        m.bus.scu.write32(SCU + 0xA4, !(1 << source)).unwrap();
+        assert_eq!(m.bus.scu.read32(SCU + 0xA4).unwrap() & (1 << source), 0);
+        if !sound {
+            m.bus.scu.write32(SCU + 0xA8, 1).unwrap();
+        }
+        assert_eq!(m.bus.observable_main_deadline(), 1);
+        assert!(m.bus.try_coalesced_wait(8).is_none());
+        let before = m.bus.main_clocks;
+        let master = m.cpu.clone();
+        let slave = m.slave.clone();
+        assert_eq!(m.try_private_poll_batch(128), Ok(0));
+        assert_eq!(m.bus.main_clocks, before);
+        assert_eq!(m.cpu, master);
+        assert_eq!(m.slave, slave);
+        m.step().unwrap();
+        assert!(m.bus.scu.read32(SCU + 0xA4).unwrap() & (1 << source) != 0);
+        assert!(m.bus.interrupt_request(Processor::Master).is_some());
+        // A retained IST factor still permits a newly armed device action.
+        if sound {
+            m.bus.scu.write32(SCU + 0x14, 5).unwrap();
+            m.bus.scu.write32(SCU + 0x10, 0x100).unwrap();
+            assert!(!m.bus.scu.dma_pending());
+        } else {
+            m.bus.scu.write32(SCU + 0xA8, 1).unwrap();
+        }
+        assert_eq!(m.bus.observable_main_deadline(), 1);
+        assert!(m.bus.try_coalesced_wait(8).is_none());
+        m.bus.advance_fixed_clocks(1).unwrap();
+        if sound {
+            assert!(m.bus.scu.dma_pending());
+        } else {
+            assert_eq!(m.bus.scu.read32(SCU + 0xA8).unwrap(), 0);
+        }
+    }
+}

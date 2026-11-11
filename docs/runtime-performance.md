@@ -1923,7 +1923,7 @@ production captures. The game median improved 1.6% and menu throughput was
 unchanged at this precision. 60 fields/s remains unmet.
 
 
-## Private polling continuations (2026-11-11)
+## Private polling continuations (2026-11-12)
 
 Related to #17. The default frame runner can reuse private slave polling while
 that processor is suspended inside a resident instruction. A bounded proof
@@ -1948,7 +1948,17 @@ its existing readiness representation during a partial replay wake. Subsequent
 publications check completion. Negative controls cover status, cache bytes,
 cache control and a rejected external probe followed by a valid private proof.
 
-All 1,317 native tests passed in 111 result groups. All 74 production-Wasm
+An asserted sound/CD pin with an unprocessed SCU effect is an immediate
+hardware horizon. This includes a cleared IST factor, CD acknowledgement
+consumption and a newly armed sound-triggered DMA channel. The fixed tick
+publishes that effect before cached work resumes. An original regression covers
+both sources, preserves the CPUs on refusal and checks the subsequent ordinary
+publication. Negative controls remove the horizon, acknowledgement handling and
+DMA-trigger handling independently. Each fails the regression.
+
+The complete native suite passed 1,318 tests in 111 result groups before the
+final acknowledgement/DMA refinement. The refined guard passed all 849 native
+library tests locally. The full native suite runs again in CI. All 74 production-Wasm
 browser groups passed, including 46 scheduler cases and an original delayed
 FTCSR guest. The first shared-shard run exposed a duplicated fixture mutation
 in the new test. After correcting that test, all 33 shared groups passed. All
@@ -1961,13 +1971,13 @@ endpoint matched CPU, sound, clocks and pixels.
 
 | Workload | Earlier fields/s | Private continuations fields/s | Median p95 field time |
 | --- | ---: | ---: | ---: |
-| Local Machi Disc 1, fields 1200–1380 | 7.028 | 7.543 | 168.9 → 159.2 ms |
-| Local BIOS menu, fields 1200–1560 | 25.438 | 25.267 | 65.8 → 66.5 ms |
+| Local Machi Disc 1, fields 1200–1380 | 7.324 | 7.590 | 161.0 → 157.3 ms |
+| Local BIOS menu, fields 1200–1560 | 26.438 | 26.220 | 63.0 → 63.5 ms |
 
 The measured default module SHA-256 is
-`ef966dac84c68e55c2de04ee572987ca47afc9a7f3edeaa3f0014adf010b344f`.
+`c0c08ea383f48eff5edbee6c3af655d46299cc5ea1b9d9cfa6c59d184aae0a0b`.
 Six extended local game checkpoints through field 3252 and byte-identical title,
 book-menu and operation-guide screenshots match the preceding captures.
-Game median throughput improved 7.3%. Menu throughput changed by −0.7%.
-60 fields/s remains unmet, requiring about 8.0× additional throughput in the
+Game median throughput improved 3.6%. Menu throughput changed by −0.8%.
+60 fields/s remains unmet, requiring about 7.9× additional throughput in the
 measured game window.

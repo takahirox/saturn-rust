@@ -139,6 +139,18 @@ impl Scu {
             || self.mask & 7 != 7
             || (self.timer_mode & 1 != 0 && self.mask & 0x18 != 0x18)
     }
+    /// An asserted device pin has an unprocessed IST, acknowledgement or DMA effect.
+    pub(crate) fn device_signal_pending(&self, bit: u8) -> bool {
+        if bit >= 16 {
+            return self.abus_ack;
+        }
+        self.status & (1 << bit) == 0
+            || (bit == 6
+                && self
+                    .channels
+                    .iter()
+                    .any(|channel| channel.accepts_trigger(5)))
+    }
     /// Device edges latch irrespective of IMS. DMA triggers are independent of IRQ masking.
     pub fn signal(&mut self, bit: u8) {
         if bit >= 32 || matches!(bit, 14 | 15) {
