@@ -260,6 +260,11 @@ impl Smpc {
             .chain(self.handshake.iter().map(Handshake::clocks_to_event))
             .fold(self.pending.map_or(u32::MAX, |(_, n)| n), u32::min)
     }
+    pub(crate) fn clocks_to_cpu_reset(&self) -> Option<u32> {
+        self.pending
+            .filter(|&(command, _)| matches!(command, 0x03 | 0x0D..=0x0F))
+            .map(|(_, clocks)| clocks)
+    }
     pub fn set_region(&mut self, region: Region) {
         self.region = region;
     }

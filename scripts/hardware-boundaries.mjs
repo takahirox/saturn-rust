@@ -2,6 +2,7 @@
 // The browser uploads local synthetic BIOSes and observes actual Wasm execution.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { cachedScheduler } from "./cached-scheduler.mjs";
 
 async function rom(name) {
   const image = Buffer.alloc(524288);
@@ -18,6 +19,7 @@ async function load(page,name,image) {
 }
 
 export async function hardwareBoundaries(page) {
+  await cachedScheduler(page);
   // Both backends assert this same checked-in record. Separate first-run
   // references cannot detect a consistent native/Wasm timing disagreement.
   const progress = new Map((await readFile("tests/fixtures/smpc-progress.tsv", "utf8"))

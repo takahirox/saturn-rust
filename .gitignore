@@ -1,3 +1,5 @@
 /target/
 /web/pkg/
 /node_modules/
+/BIOS_JP_v1_01.zip
+__pycache__/

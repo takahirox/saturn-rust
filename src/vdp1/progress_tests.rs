@@ -51,6 +51,112 @@ fn drawing_exposes_one_pixel_per_clock_and_end_irq_follows_the_last_pixel() {
         assert_ne!(bus.read32(SCU + 0xA4).unwrap() & (1 << 13), 0);
     }
 }
+
+#[test]
+fn pending_translucent_pixel_becomes_observable_when_its_buffer_is_swapped() {
+    let mut bus = Bus::default();
+    line(&mut bus, 2);
+    command(&mut bus, 32, &[(4, 0xC3)]);
+    bus.vdp1.advance(65).unwrap();
+    assert_eq!(bus.vdp1.clocks_to_observable_event(), 38);
+    assert_eq!(bus.vdp1.display_pixel(0, 0), 0);
+    reg(&mut bus, 2, 0);
+    bus.vdp1.vblank_out();
+    assert_eq!(bus.vdp1.clocks_to_observable_event(), 5);
+    bus.vdp1.advance(4).unwrap();
+    assert_eq!(bus.vdp1.display_pixel(0, 0), 0);
+    assert_eq!(bus.vdp1.clocks_to_observable_event(), 1);
+    bus.vdp1.advance(1).unwrap();
+    assert_eq!(bus.vdp1.display_pixel(0, 0), 0x801F);
+    assert!(bus.vdp1.clocks_to_observable_event() > 1);
+}
+
+#[test]
+fn pixel_runs_match_single_clocks_across_texture_ports_and_six_state_effects() {
+    for mode in [0x40, 0xC0, 0xC1, 0xC3, 0xC4] {
+        for chunk in [3u32, 8, 31, 128] {
+            let make = || {
+                let mut bus = Bus::default();
+                command(&mut bus, 0, &[(0, 9), (20, 511), (22, 255)]);
+                command(
+                    &mut bus,
+                    32,
+                    &[(4, mode), (6, 0x8000), (8, 0x100), (10, 0x802)],
+                );
+                command(&mut bus, 64, &[(0, 0x8000)]);
+                for at in (0..64).step_by(2) {
+                    bus.write16(
+                        VRAM + 0x800 + at,
+                        if mode == 0x40 { 0xFFFF } else { 0x1234 },
+                    )
+                    .unwrap();
+                }
+                reg(&mut bus, 2, 2);
+                reg(&mut bus, 4, 1);
+                bus.vdp1
+            };
+            let (mut batched, mut single) = (make(), make());
+            let mut horizons = Vec::new();
+            let mut clock = 0u32;
+            let mut completion = None;
+            for turn in 0..1000 {
+                let (vram, fb) =
+                    [(false, false), (true, false), (false, true), (true, true)][turn % 4];
+                let result = batched.advance_with_bus(chunk, vram, fb);
+                let mut ended = false;
+                for _ in 0..chunk {
+                    if single.busy() {
+                        horizons.push((clock, single.clocks_to_observable_event()));
+                    }
+                    let edge = single.advance_with_bus(1, vram, fb).unwrap();
+                    clock += 1;
+                    if edge {
+                        completion = Some(clock);
+                    }
+                    ended |= edge;
+                }
+                assert_eq!(result, Ok(ended));
+                assert_eq!(batched.buffers, single.buffers);
+                assert_eq!(
+                    (
+                        batched.pc,
+                        batched.phase,
+                        batched.command_read,
+                        batched.edsr
+                    ),
+                    (single.pc, single.phase, single.command_read, single.edsr)
+                );
+                let drawing = |v: &super::Vdp1| {
+                    v.drawing.as_ref().map(|d| {
+                        (
+                            d.row,
+                            d.texture,
+                            d.line.as_ref().map(|l| (l.dot, l.end_codes)),
+                        )
+                    })
+                };
+                assert_eq!(drawing(&batched), drawing(&single));
+                let pixel = |v: &super::Vdp1| {
+                    v.pending_pixel
+                        .as_ref()
+                        .map(|p| (p.buffer, p.address, p.color, p.clocks))
+                };
+                assert_eq!(pixel(&batched), pixel(&single));
+                if !single.busy() {
+                    break;
+                }
+            }
+            assert!(!single.busy());
+            let completion = completion.unwrap();
+            for (at, bound) in horizons {
+                assert!(
+                    at + bound <= completion,
+                    "mode={mode:X}, at={at}, bound={bound}, end={completion}"
+                );
+            }
+        }
+    }
+}
 #[test]
 fn forced_stop_retains_partial_pixels_without_end_status_or_irq() {
     let mut bus = Bus::default();

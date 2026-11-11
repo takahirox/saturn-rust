@@ -1,0 +1,5 @@
+# Original MIT benchmark guest. Enable cache and store ROM-provided data to WRAM.
+# Wait using a GBR load, compare and BT; mismatched data reaches an R6 marker.
+00000000 0000 0200 060F F000
+00000200 D10F E001 2100 D10F D00F 2102 411E E401 C600 3400 89FC E655 AFFE 0009
+00000240 FFFF FE92 0602 0000 0000 0001

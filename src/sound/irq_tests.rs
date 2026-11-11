@@ -97,7 +97,10 @@ fn rearm_pending_enable_and_level_during_division_survives_replay_once() {
                 assert_eq!(&sound.ram[0xff4..0xffa], &[0; 6]);
                 advance(&mut sound, iack_end, chunk, inspect);
                 assert_eq!(
-                    sound.transactions.completed[0],
+                    (
+                        sound.transactions.completed[0].operation,
+                        sound.transactions.completed[0].result
+                    ),
                     (Operation::InterruptAcknowledge(7), Ok(31))
                 );
                 assert_eq!(
@@ -169,14 +172,14 @@ fn edge_during_pending_stack_work_is_retained_without_changing_replay() {
                         .transactions
                         .completed
                         .iter()
-                        .any(|e| e.0 == Operation::InterruptAcknowledge(7))
+                        .any(|e| e.operation == Operation::InterruptAcknowledge(7))
                         && sound.transactions.completed.len() == phase + 1
                     {
                         break;
                     }
                 }
                 assert_eq!(
-                    sound.transactions.completed[0].0,
+                    sound.transactions.completed[0].operation,
                     Operation::InterruptAcknowledge(7)
                 );
                 // Real main-CPU DRAM contention extends a pending stack/vector cycle.
@@ -334,7 +337,7 @@ fn rearm_after_completed_midi_read_does_not_replay_mmio_or_publish_partial_instr
             .transactions
             .completed
             .iter()
-            .any(|e| e.0 == Operation::Read(0x100404, 2))
+            .any(|e| e.operation == Operation::Read(0x100404, 2))
         {
             break;
         }

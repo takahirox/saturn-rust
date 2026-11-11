@@ -36,10 +36,7 @@ fn two_operand_reads_retain_separate_data_and_publish_only_after_interpolation()
             assert!(s.ram_busy());
             s.ram[0x1000..0x1002].copy_from_slice(&0x1800u16.to_be_bytes());
             until(&mut s, t + 1, chunk);
-            assert_eq!(
-                s.scsp.pcm_pipeline[2].as_ref().unwrap().samples,
-                [0x1800, 0]
-            );
+            assert_eq!(s.scsp.pcm_slot(2).unwrap().samples, [0x1800, 0]);
             s.ram[0x1000..0x1004].copy_from_slice(&[0x70, 0, 0x28, 0]);
             until(&mut s, t + 2, chunk); // second address retained
             assert!(s.ram_busy());
@@ -88,7 +85,7 @@ fn each_grant_retains_geometry_but_later_reads_observe_new_memory_configuration(
         // A live SA write cannot redirect a slot whose OP2 already ran.
         s.scsp.write16(2, 0x2000).unwrap();
         until(&mut s, 10, chunk);
-        assert_eq!(s.scsp.pcm_pipeline[2].as_ref().unwrap().samples[0], 8192);
+        assert_eq!(s.scsp.pcm_slot(2).unwrap().samples[0], 8192);
         until(&mut s, 11, chunk); // second read accepts absent-chip geometry
         s.scsp.write16(0x400, 0x20F).unwrap();
         until(&mut s, 128, chunk);
@@ -212,7 +209,7 @@ fn reset_cancels_either_read_and_completed_operands_cannot_leak_into_the_next_vo
             assert_eq!(s.scsp.drain(1), [0; 2]);
             assert!(
                 s.scsp
-                    .pcm_pipeline
+                    .pcm_slots
                     .iter()
                     .flatten()
                     .all(|p| !p.active && !p.fetch)
@@ -352,7 +349,7 @@ fn scheduled_fm_reads_all_selectors_and_generations_at_the_five_interval_boundar
                     };
                     let generation = newest - usize::from(!(0x1C..=0x3B).contains(&select));
                     let expected = ((generation + 1) * 100 + source) as i64;
-                    let slot = scsp.pcm_pipeline[1].as_ref().unwrap();
+                    let slot = scsp.pcm_slot(1).unwrap();
                     // octave -8: 256 Q16 units/sample, four preceding PGs.
                     assert_eq!(
                         slot.fraction,
@@ -539,4 +536,98 @@ fn an_inflight_envelope_cannot_overwrite_a_later_keyoff_or_retrigger() {
     until(&mut s, 25, 1);
     assert_eq!(s.scsp.voices[0].generation, generation);
     assert_eq!(s.scsp.voices[0].phase, 0);
+}
+
+#[test]
+fn compact_inactive_tokens_match_retained_operands_through_writes_and_reset() {
+    for enabled in [0u32, 0x8000_0001, u32::MAX] {
+        let mut compact = Sound::default();
+        for i in 0..32u32 {
+            voice(&mut compact, i, ((i % 3) as u16) << 7, i & 1 == 0);
+            compact
+                .scsp
+                .write16(i * 32 + 12, 0x100 | ((i as u16 & 1) << 9))
+                .unwrap();
+            compact.scsp.write16(i * 32 + 18, (i as u16) << 10).unwrap();
+            compact
+                .scsp
+                .write16(i * 32 + 20, ((i as u16 & 15) << 3) | 7)
+                .unwrap();
+            compact.scsp.voices[i as usize].active = enabled & (1 << i) != 0;
+        }
+        compact.ram[0x1000..0x1008].copy_from_slice(&[0x12, 0x34, 0x80, 0, 0x7F, 0xFF, 0xFE, 0xDC]);
+        compact.scsp.dsp.mix.fill(0x1234_5678);
+        compact.scsp.stack.data.fill(-1234);
+        let mut full = Sound {
+            scsp: compact.scsp.clone(),
+            ram: compact.ram.clone(),
+            ..Sound::default()
+        };
+        full.scsp.full_pcm_slots = true;
+        let mut compact_seen = false;
+        let mut active_seen = false;
+        for tick in 0..1536 {
+            for sound in [&mut compact, &mut full] {
+                // Writes after OP1 must not replace a token's captured route
+                // or inhibit flag. Key-on may overlap an older inactive slot.
+                if tick % 13 == 3 {
+                    let i = ((tick / 13) % 32) as u32;
+                    sound
+                        .scsp
+                        .write16(i * 32 + 12, (tick as u16) & 0x3FF)
+                        .unwrap();
+                    sound
+                        .scsp
+                        .write16(i * 32 + 20, (tick as u16) & 0x7F)
+                        .unwrap();
+                }
+                if matches!(tick, 17 | 149 | 291 | 433 | 809 | 1191) {
+                    let i = ((tick / 17) % 32) as u32;
+                    sound.scsp.write16(i * 32, 0x18A0).unwrap();
+                }
+                if matches!(tick, 257 | 641 | 1021) {
+                    sound.scsp.write16(0, 0x1020).unwrap();
+                }
+                if tick == 511 {
+                    sound.scsp.set_reset(true);
+                }
+                if tick == 517 {
+                    sound.scsp.set_reset(false);
+                }
+            }
+            let step = tick & 127;
+            assert_eq!(
+                compact.scsp.sample_cycle(step, &mut compact.ram),
+                full.scsp.sample_cycle(step, &mut full.ram)
+            );
+            let (a, b) = (&compact.scsp, &full.scsp);
+            assert_eq!(a.slots, b.slots);
+            assert_eq!(a.voices, b.voices);
+            assert_eq!(a.lfo, b.lfo);
+            assert_eq!(a.stack, b.stack);
+            assert_eq!(a.dsp, b.dsp);
+            assert_eq!(a.frame_mix, b.frame_mix);
+            assert_eq!(a.output, b.output);
+            assert_eq!(a.generated, b.generated);
+            assert_eq!(a.pcm_quiescent(), b.pcm_quiescent());
+            assert_eq!(
+                a.pcm_free.count_zeros() - 1,
+                a.pcm_slots.iter().flatten().count() as u32
+            );
+            compact_seen |= a
+                .pcm_pipeline
+                .iter()
+                .flatten()
+                .any(|token| token.work == u8::MAX);
+            active_seen |= a.pcm_slots.iter().flatten().any(|slot| slot.started);
+            if tick & 127 == 127 {
+                assert_eq!(compact.ram, full.ram);
+                // Lookahead checkpoints clone indices and their retained data
+                // together; later allocation must not alias the original.
+                compact.scsp = compact.scsp.clone();
+                full.scsp = full.scsp.clone();
+            }
+        }
+        assert!(compact_seen && active_seen);
+    }
 }

@@ -3,7 +3,7 @@
 //! Fetch/operand waits belong to the CPU-local bus. Load WB/EX interlocks
 //! are tracked per CPU below; multiplier access is in multiplier.rs.
 
-pub(super) fn execution_states(op: u16, t: bool) -> u32 {
+pub(super) const fn execution_states(op: u16, t: bool) -> u32 {
     match op {
         0x000B => 2,                             // RTS
         0x002B => 4,                             // RTE
@@ -94,10 +94,148 @@ mod tests {
     }
 }
 
+// Instruction properties depend only on the ISA word, not guest memory. Keep
+// the literal classifiers as the source of the table and the reference oracle.
+#[derive(Clone, Copy)]
+pub(super) struct Instruction(u64);
+impl Instruction {
+    const fn new(op: u16) -> Self {
+        let load = load_destination(op);
+        let destination = match load {
+            Some(register) => register,
+            None => 17,
+        };
+        let mut uses = ex_register_uses(op, false);
+        let mut forwarded = ex_register_uses(op, true);
+        if matches!(op & 0xF00F, 0x000F | 0x400F) {
+            uses = 0;
+            forwarded = 0;
+        } else if let Some(register) = load {
+            uses &= !(1 << register);
+            forwarded &= !(1 << register);
+        }
+        let forward = load.is_some() && !matches!(op & 0xF0FF, 0x000A | 0x001A | 0x4026);
+        Self(
+            uses as u64
+                | (forwarded as u64) << 17
+                | (destination as u64) << 34
+                | (forward as u64) << 39
+                | (execution_states(op, false) as u64) << 40
+                | (execution_states(op, true) as u64) << 44
+                | (control_flags(op) as u64) << 48
+                | (prepared_class(op) as u64) << 56,
+        )
+    }
+
+    pub fn prepared_scalar(self) -> Option<super::scalar::Kind> {
+        super::scalar::decode_prepared((self.0 >> 56) as u8)
+    }
+    pub fn prepared_load(self, opcode: u16, s: &super::CpuState) -> Option<(u32, u32)> {
+        let class = (self.0 >> 56) as u8;
+        if class & 0x40 == 0 {
+            return None;
+        }
+        let descriptor = class & 0x3F;
+        let width = u32::from(descriptor & 7);
+        let m = (opcode >> 4 & 15) as usize;
+        let imm = u32::from(opcode as u8);
+        let pc = || {
+            s.delay_target
+                .map_or(s.pc.wrapping_add(4), |t| t.wrapping_add(2))
+        };
+        let address = match descriptor >> 3 {
+            1 => s.r[m],
+            2 => s.r[m].wrapping_add(s.r[0]),
+            3 => s.r[m].wrapping_add(u32::from(opcode & 15) * 4),
+            4 => s.r[m].wrapping_add(u32::from(opcode & 15) * width),
+            5 => s.gbr.wrapping_add(imm * width),
+            6 => pc().wrapping_add(imm * 2),
+            7 => (pc() & !3).wrapping_add(imm * 4),
+            _ => return None,
+        };
+        Some((address, width))
+    }
+
+    pub fn control_flags(self) -> u8 {
+        (self.0 >> 48) as u8
+    }
+
+    pub fn states(self, t: bool) -> u32 {
+        (self.0 >> (40 + u32::from(t) * 4) & 15) as u32
+    }
+}
+
+pub(super) const UNCONDITIONAL: u8 = 1;
+pub(super) const REWRITES_PC: u8 = 2;
+pub(super) const DEFERRED_IF: u8 = 4;
+pub(super) const LDC_LONG: u8 = 8;
+pub(super) const STC_LONG: u8 = 16;
+pub(super) const BYTE_MEMORY: u8 = 32;
+
+pub(super) const fn control_flags(op: u16) -> u8 {
+    let unconditional = matches!(op & 0xF000, 0xA000 | 0xB000)
+        || matches!(op & 0xF0FF, 0x0003 | 0x0023 | 0x400B | 0x402B)
+        || matches!(op, 0x000B | 0x002B);
+    let rewrites =
+        unconditional || matches!(op & 0xFF00, 0x8900 | 0x8B00 | 0x8D00 | 0x8F00 | 0xC300);
+    let deferred = matches!(op & 0xF00F, 0x0007 | 0x3005 | 0x300D | 0x000F | 0x400F);
+    let ldc = matches!(op & 0xF0FF, 0x4007 | 0x4017 | 0x4027);
+    let stc = matches!(op & 0xF0FF, 0x4003 | 0x4013 | 0x4023);
+    let byte = matches!(op & 0xFF00, 0xCC00..=0xCF00) || op & 0xF0FF == 0x401B;
+    ((unconditional as u8) * UNCONDITIONAL)
+        | ((rewrites as u8) * REWRITES_PC)
+        | ((deferred as u8) * DEFERRED_IF)
+        | ((ldc as u8) * LDC_LONG)
+        | ((stc as u8) * STC_LONG)
+        | ((byte as u8) * BYTE_MEMORY)
+}
+
+// One prepared-operation class shares the existing ISA metadata load. Zero is
+// unsupported; 1..63 are scalar tags, 0x40..0x7F ordinary MOV descriptors.
+const fn prepared_class(op: u16) -> u8 {
+    if let Some(kind) = super::scalar::decode_literal(op) {
+        kind as u8 + 1
+    } else {
+        let load = prepared_load_descriptor(op);
+        if load == 0 { 0 } else { 0x40 | load }
+    }
+}
+
+// Ordinary MOV families only. LDS.L PR retains its dedicated system/MDU path.
+const fn prepared_load_descriptor(op: u16) -> u8 {
+    match op >> 12 {
+        0 if matches!(op & 15, 0xC..=0xE) => (2 << 3) | (1 << (op & 3)),
+        5 => (3 << 3) | 4,
+        6 if matches!(op & 15, 0..=2 | 4..=6) => (1 << 3) | (1 << (op & 3)),
+        8 if matches!(op >> 8 & 15, 4 | 5) => (4 << 3) | (1 << (op >> 8 & 1)),
+        9 => (6 << 3) | 2,
+        0xC if matches!(op >> 8 & 15, 4..=6) => (5 << 3) | (1 << (op >> 8 & 3)),
+        0xD => (7 << 3) | 4,
+        _ => 0,
+    }
+}
+
+const fn make_instructions() -> [Instruction; 65536] {
+    let mut table = [Instruction(0); 65536];
+    let mut op = 0;
+    while op < table.len() {
+        table[op] = Instruction::new(op as u16);
+        op += 1;
+    }
+    table
+}
+
+#[allow(long_running_const_eval)]
+static INSTRUCTIONS: [Instruction; 65536] = make_instructions();
+
+pub(super) fn instruction(opcode: u16) -> Instruction {
+    INSTRUCTIONS[usize::from(opcode)]
+}
+
 /// Programming Manual §7.5/fig.7.9. WB follows the successor's EX stage.
 /// A conflicting successor splits the slot once; repeated loads and MAC use
 /// the documented MA forwarding path. The state belongs to each CPU.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(super) struct LoadPipeline {
     destination: Option<u8>,
     /// Only memory loads use the store-data forwarding rule; multiplier/system
@@ -111,6 +249,16 @@ pub(super) struct LoadPipeline {
     pub issue_overlap: u32,
 }
 impl LoadPipeline {
+    /// A split IF has already consumed the preceding load's WB interlock.
+    /// A retained MA/EX clock still needs the ordinary issue path.
+    pub fn scalar_ready(&self) -> bool {
+        self.next_ex.is_none() && (self.destination.is_none() || self.fetch_split)
+    }
+
+    pub fn shift_cached_clock(&mut self, clocks: u64) {
+        self.next_ex = self.next_ex.map(|at| at + clocks);
+    }
+
     pub fn issue_clock(&mut self, now: u64) -> u64 {
         self.issue_overlap = u32::from(self.next_ex.take().is_some_and(|ex| now == ex + 1));
         now - u64::from(self.issue_overlap)
@@ -122,6 +270,19 @@ impl LoadPipeline {
 
     pub fn load_split(&mut self, split: bool) {
         self.fetch_split = split;
+    }
+
+    pub fn issue_instruction(&mut self, instruction: Instruction) -> u32 {
+        let uses = (instruction.0 >> (u32::from(self.forward_store_data) * 17)) as u32 & 0x1FFFF;
+        let hazard = !self.fetch_split
+            && self
+                .destination
+                .is_some_and(|register| uses & (1 << register) != 0);
+        let destination = (instruction.0 >> 34 & 31) as u8;
+        self.fetch_split = false;
+        self.destination = (destination < 17).then_some(destination);
+        self.forward_store_data = instruction.0 & (1 << 39) != 0;
+        u32::from(hazard)
     }
 
     pub fn issue(&mut self, opcode: u16) -> u32 {
@@ -139,7 +300,7 @@ impl LoadPipeline {
         u32::from(hazard)
     }
 }
-fn load_destination(op: u16) -> Option<u8> {
+const fn load_destination(op: u16) -> Option<u8> {
     // §7.7.6 figs7.86/7.90: LDS.L to PR and STS from MACH/MACL
     // have the same WB stage as memory-to-GPR loads. PR is register16 in
     // this private dependency mask, separate from every general register.
@@ -161,7 +322,7 @@ fn load_destination(op: u16) -> Option<u8> {
 // Ordinary store data is needed only in MA and can forward from load WB
 // (Renesas Rev.5.00 §7.2.2, p.419/fig7.14). Keep address/index uses in EX,
 // including aliases where the data register also supplies the address.
-fn ex_register_uses(op: u16, forward_store_data: bool) -> u32 {
+const fn ex_register_uses(op: u16, forward_store_data: bool) -> u32 {
     let n = 1 << (op >> 8 & 15);
     let m = 1 << (op >> 4 & 15);
     let pr = 1 << 16;
@@ -434,5 +595,53 @@ impl MovAccess {
             pipeline.retain_ex(end - 1);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod instruction_table_tests {
+    use super::*;
+
+    #[test]
+    fn every_instruction_matches_literal_timing_and_all_load_dependency_states() {
+        for opcode in 0..=u16::MAX {
+            let instruction = instruction(opcode);
+            assert_eq!(
+                instruction.prepared_scalar().map(|k| k as u8),
+                super::super::scalar::decode_literal(opcode).map(|k| k as u8)
+            );
+            assert_eq!(
+                instruction.control_flags(),
+                control_flags(opcode),
+                "{opcode:04X}"
+            );
+            for t in [false, true] {
+                assert_eq!(
+                    instruction.states(t),
+                    execution_states(opcode, t),
+                    "{opcode:04X}/{t}"
+                );
+            }
+            for previous in 0..=17 {
+                for split in [false, true] {
+                    for forward in [false, true] {
+                        let mut literal = LoadPipeline {
+                            destination: (previous < 17).then_some(previous),
+                            fetch_split: split,
+                            forward_store_data: forward,
+                            next_ex: Some(123),
+                            issue_overlap: 1,
+                        };
+                        let mut table = literal.clone();
+                        assert_eq!(
+                            table.issue_instruction(instruction),
+                            literal.issue(opcode),
+                            "{opcode:04X}/{previous}/{split}/{forward}"
+                        );
+                        assert_eq!(table, literal, "{opcode:04X}/{previous}/{split}/{forward}");
+                    }
+                }
+            }
+        }
     }
 }

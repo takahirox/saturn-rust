@@ -37,6 +37,9 @@ impl SystemClock {
         self.phase = 0;
     }
     pub fn deadline(&self, main_clocks: u32) -> u32 {
+        if self.is_reference() && self.phase == 0 {
+            return main_clocks;
+        }
         if main_clocks == u32::MAX {
             return u32::MAX;
         }
@@ -44,7 +47,25 @@ impl SystemClock {
             .saturating_sub(self.phase)
             .div_ceil(self.frequency()) as u32
     }
+    /// Upper bound on the distance between two converted main-clock edges,
+    /// independent of the PLL phase and a pending second main tick.
+    pub fn reference_span_bound(&self, main_clocks: u32) -> u32 {
+        (u64::from(main_clocks) * Self::REFERENCE)
+            .div_ceil(self.frequency())
+            .min(u64::from(u32::MAX)) as u32
+    }
+    /// Main ticks available after a fixed-domain interval, without changing phase.
+    pub fn preview(&self, reference_clocks: u32) -> u32 {
+        if self.is_reference() && self.phase == 0 {
+            return reference_clocks;
+        }
+        ((self.phase + u64::from(reference_clocks) * self.frequency()) / Self::REFERENCE)
+            .min(u64::from(u32::MAX)) as u32
+    }
     pub fn advance(&mut self, reference_clocks: u32) -> u32 {
+        if self.is_reference() && self.phase == 0 {
+            return reference_clocks;
+        }
         let elapsed = self.phase + u64::from(reference_clocks) * self.frequency();
         self.phase = elapsed % Self::REFERENCE;
         (elapsed / Self::REFERENCE) as u32
@@ -275,6 +296,28 @@ impl Raster {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reference_span_bound_covers_fractional_phase_and_double_tick_distances() {
+        for pal in [false, true] {
+            for fast in [false, true] {
+                let mut clock = SystemClock::default();
+                clock.set_pal(pal);
+                clock.select(fast);
+                for _ in 0..257 {
+                    clock.advance(1);
+                    for start in 0..32 {
+                        for gap in 0..16 {
+                            assert!(
+                                clock.deadline(start + gap) - clock.deadline(start)
+                                    <= clock.reference_span_bound(gap)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
     #[test]
     fn rotation_dot_deadlines_have_no_normal_prefetch_lead_and_stop_at_blank() {
         for (mode, fast, width, clocks, line_clocks) in [

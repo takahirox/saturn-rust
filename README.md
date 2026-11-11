@@ -46,6 +46,7 @@ through the bounded WebAudio consumer; no soundtrack is supplied by the UI.
 
 - [Build, run, test and Pages setup](docs/setup.md)
 - [Supported CPU, disc boot and hardware; limitations and primary manuals](docs/architecture.md)
+- [Local BIOS startup, private ZIP probe and compatibility limits](docs/bios-startup.md)
 - [Hardware conformance matrix and outstanding Issue #17 scope](docs/hardware-conformance.md)
 - [Hardware implementation and automated validation](docs/validation-issue-17.md)
 - [Historical address-error implementation and automated validation](docs/validation-issue-15.md)
@@ -105,6 +106,7 @@ Contributor and AI agent guidance:
 - [Development flow and English collaboration convention](docs/development-flow.md)
 - [Review and merge guidelines](docs/review-guidelines.md)
 - [Test and CI principles](docs/ci-performance.md#test-and-ci-principles)
+- [Runtime profiling, benchmarks and measured limits](docs/runtime-performance.md)
 - [Issue template](.github/ISSUE_TEMPLATE/issue.md)
 - [Pull request template](.github/pull_request_template.md)
 

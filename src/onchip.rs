@@ -3,11 +3,13 @@
 use crate::bus::BusError;
 use std::cell::{Cell, RefCell};
 mod bsc;
+mod cached;
 mod divu;
 mod dma;
 mod sci;
 mod ubc;
 mod wdt;
+pub(crate) use cached::ReadSequence;
 use divu::Division;
 use dma::Dma;
 use sci::Serial;
@@ -38,6 +40,7 @@ pub struct OnChip {
     wake_remaining: Option<u32>,
     division: RefCell<Division>,
     instruction_epoch: Cell<u64>,
+    peripheral_deadline: Cell<Option<u32>>,
     division_write_epoch: Cell<Option<u64>>,
     pub(super) dma: Dma,
     serial: Serial,
@@ -76,6 +79,7 @@ impl Default for OnChip {
             wake_remaining: None,
             division: RefCell::new(Division::default()),
             instruction_epoch: Cell::new(0),
+            peripheral_deadline: Cell::new(None),
             division_write_epoch: Cell::new(None),
             dma: Dma::default(),
             serial: Serial::default(),
@@ -117,6 +121,9 @@ impl OnChip {
             return None;
         }
         self.bsc.grant_refresh()
+    }
+    pub(crate) fn refresh_pending(&self) -> bool {
+        self.bsc.refresh_is_pending()
     }
     pub(crate) fn inhibits_external_bus(&self) -> bool {
         self.bsc.inhibits_external_bus()
@@ -265,6 +272,7 @@ impl OnChip {
     }
 
     pub fn write8(&mut self, address: u32, value: u8) -> Result<(), BusError> {
+        self.peripheral_deadline.set(None);
         if address == SBYCR {
             let rising = value & !self.module_stop;
             if rising & 0x10 != 0 && self.dma.active() {
@@ -345,6 +353,7 @@ impl OnChip {
     }
 
     pub fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
+        self.peripheral_deadline.set(None);
         if address & 1 != 0 {
             return Err(BusError::Unaligned { address, width: 2 });
         }
@@ -408,7 +417,24 @@ impl OnChip {
             clocks -= n;
         }
     }
+    /// The board has already bounded this interval by this chip's next event.
+    /// Standalone callers still use `advance_clocks` to split longer chunks.
+    pub(crate) fn advance_to_event(&mut self, clocks: u32) {
+        debug_assert!(clocks <= self.clocks_to_event());
+        self.advance_segment(clocks);
+    }
     fn advance_segment(&mut self, clocks: u32) {
+        // A previously calculated peripheral horizon remains exact until its
+        // event. BSC and UBC have independent external mutations and are always
+        // queried directly; register writes and DIVU completion invalidate this.
+        self.peripheral_deadline
+            .set(self.peripheral_deadline.get().and_then(|next| {
+                if next == u32::MAX {
+                    Some(next)
+                } else {
+                    next.checked_sub(clocks).filter(|&n| n != 0)
+                }
+            }));
         if self.standby {
             // The bus is released throughout standby/wake, independent of
             // stopped peripheral clocks (H §14.3).
@@ -442,15 +468,19 @@ impl OnChip {
         if self.module_stop & 2 != 0 {
             return;
         }
-        let divisor = match self.control & 3 {
-            0 => 8,
-            1 => 32,
-            2 => 128,
+        let shift = match self.control & 3 {
+            0 => 3,
+            1 => 5,
+            2 => 7,
             _ => return,
         };
         let clocks = u64::from(self.divider) + u64::from(clocks);
-        self.divider = (clocks % divisor) as u32;
-        for _ in 0..clocks / divisor {
+        self.divider = (clocks & ((1 << shift) - 1)) as u32;
+        let ticks = clocks >> shift;
+        if ticks != 0 {
+            // The interval ends no later than the first compare/overflow edge.
+            // Earlier increments have no flags, output or clear side effects.
+            self.counter = self.counter.wrapping_add((ticks - 1) as u16);
             self.increment();
         }
     }
@@ -504,45 +534,57 @@ impl OnChip {
             return Some((15, 12));
         }
         // H table 5.4: earlier source wins when programmed levels are equal.
-        let div = self.division.borrow();
-        let frt = self.tier & self.status & 0x8E;
-        let frt_vector = if frt & 0x80 != 0 {
-            self.vcrc >> 8
-        } else if frt & 0x0C != 0 {
-            self.vcrc & 0x7F
-        } else {
-            self.vcrd >> 8
-        };
-        let sci_vector = self.serial.irq().map(|source| match source {
-            0 => self.vcra >> 8,
-            1 => self.vcra & 0x7F,
-            2 => self.vcrb >> 8,
-            _ => self.vcrb & 0x7F,
-        });
-        let sources = [
-            (self.ipra >> 12, div.irq().then_some(div.vector as u16)),
-            ((self.ipra >> 8) & 15, self.dma.interrupt().map(u16::from)),
-            (
-                (self.ipra >> 4) & 15,
-                self.watchdog.irq().then_some(self.vcrwdt >> 8),
-            ),
-            (
-                (self.ipra >> 4) & 15,
-                self.bsc.interrupt().then_some(self.vcrwdt & 0x7F),
-            ),
-            (self.iprb >> 12, sci_vector),
-            ((self.iprb >> 8) & 15, (frt != 0).then_some(frt_vector)),
-        ];
-        let mut winner = None;
-        for (level, vector) in sources {
-            if level != 0
-                && let Some(vector) = vector
-                && winner.is_none_or(|(old, _)| level as u8 > old)
-            {
-                winner = Some((level as u8, vector as u8));
+        let mut winner = (0, 0);
+        let mut level = self.ipra >> 12;
+        if level != 0 {
+            let div = self.division.borrow();
+            if div.irq() {
+                winner = (level, div.vector as u16);
             }
         }
-        winner
+        level = (self.ipra >> 8) & 15;
+        if level > winner.0
+            && let Some(vector) = self.dma.interrupt()
+        {
+            winner = (level, u16::from(vector));
+        }
+        level = (self.ipra >> 4) & 15;
+        if level > winner.0 {
+            if self.watchdog.irq() {
+                winner = (level, self.vcrwdt >> 8);
+            } else if self.bsc.interrupt() {
+                winner = (level, self.vcrwdt & 0x7F);
+            }
+        }
+        level = self.iprb >> 12;
+        if level > winner.0
+            && let Some(source) = self.serial.irq()
+        {
+            winner = (
+                level,
+                match source {
+                    0 => self.vcra >> 8,
+                    1 => self.vcra & 0x7F,
+                    2 => self.vcrb >> 8,
+                    _ => self.vcrb & 0x7F,
+                },
+            );
+        }
+        level = (self.iprb >> 8) & 15;
+        if level > winner.0 {
+            let flags = self.tier & self.status & 0x8E;
+            if flags != 0 {
+                let vector = if flags & 0x80 != 0 {
+                    self.vcrc >> 8
+                } else if flags & 0x0C != 0 {
+                    self.vcrc & 0x7F
+                } else {
+                    self.vcrd >> 8
+                };
+                winner = (level, vector);
+            }
+        }
+        (winner.0 != 0).then_some((winner.0 as u8, winner.1 as u8))
     }
 
     pub(crate) fn cpu_peripheral_wait(&self, address: u32, width: usize, write: bool) -> u32 {
@@ -588,6 +630,7 @@ impl OnChip {
         self.read32(address)
     }
     pub(crate) fn dma_write32(&mut self, address: u32, value: u32) -> Result<(), BusError> {
+        self.peripheral_deadline.set(None);
         if address & 3 == 0 && (DIVU..DIVU + 0x18).contains(&address) {
             if self.module_stop & 4 == 0 && self.division.get_mut().write(address - DIVU, value) {
                 return Ok(());
@@ -597,6 +640,7 @@ impl OnChip {
         self.write32(address, value)
     }
     pub fn read32(&self, address: u32) -> Result<u32, BusError> {
+        self.peripheral_deadline.set(None);
         if address & 3 != 0 {
             return Err(BusError::Unaligned { address, width: 4 });
         }
@@ -638,6 +682,7 @@ impl OnChip {
     }
 
     pub fn write32(&mut self, address: u32, value: u32) -> Result<(), BusError> {
+        self.peripheral_deadline.set(None);
         if address & 3 != 0 {
             return Err(BusError::Unaligned { address, width: 4 });
         }
@@ -663,10 +708,17 @@ impl OnChip {
         if (DMAC..DMAC + 0x34).contains(&address) && self.dma.write(address - DMAC, value) {
             return Ok(());
         }
+        if address == 0xFFFF_FFB8 {
+            // Unassigned initialization strobe observed in disc startup.
+            // Compatibility policy: discard this exact longword write without
+            // aliasing DMAOR or inventing a readable DMA register.
+            return Ok(());
+        }
         Err(Self::unsupported(address, 4))
     }
 
     pub fn receive_serial(&mut self, byte: u8, errors: u8, multiprocessor: bool) {
+        self.peripheral_deadline.set(None);
         if !self.standby && self.module_stop & 1 == 0 {
             self.serial.receive(byte, errors, multiprocessor);
         }
@@ -686,6 +738,7 @@ impl OnChip {
         [self.serial.dma_request(1), self.serial.dma_request(2)]
     }
     pub(crate) fn acknowledge_serial_dma(&mut self, source: u8) {
+        self.peripheral_deadline.set(None);
         self.serial.dma_acknowledge(source);
     }
     pub(crate) fn take_wait_clocks(&self) -> u32 {
@@ -740,16 +793,41 @@ impl OnChip {
         !self.standby
     }
     pub(crate) fn clocks_to_event(&self) -> u32 {
+        let local = self.clocks_to_local_event();
+        if self.standby || self.reset_active() {
+            local
+        } else {
+            local.min(self.bsc.clocks_to_event())
+        }
+    }
+    /// Cache hits own no external bus phase. With refresh interrupts disabled,
+    /// the board can catch up refresh separately, retaining all grants/recovery.
+    pub(crate) fn readonly_refresh_deadline(&self) -> Option<u32> {
+        (!self.bsc.can_request_interrupt() && self.cached_batch_allowed())
+            .then(|| self.clocks_to_local_event())
+    }
+    fn clocks_to_local_event(&self) -> u32 {
         if self.standby {
             return self.wake_remaining.unwrap_or(u32::MAX);
         }
-        let watchdog = self.watchdog.clocks_to_event();
+        let core = if let Some(next) = self.peripheral_deadline.get() {
+            next
+        } else {
+            let next = self.peripheral_clocks_to_event();
+            self.peripheral_deadline.set(Some(next));
+            next
+        };
         if self.reset_active() {
-            return watchdog;
+            core
+        } else {
+            core.min(self.ubc.borrow().clocks_to_event())
         }
-        let mut next = watchdog
-            .min(self.ubc.borrow().clocks_to_event())
-            .min(self.bsc.clocks_to_event());
+    }
+    fn peripheral_clocks_to_event(&self) -> u32 {
+        let mut next = self.watchdog.clocks_to_event();
+        if self.reset_active() {
+            return next;
+        }
         if self.module_stop & 4 == 0 && self.division.borrow().busy() {
             next = next.min(self.division.borrow().remaining());
         }
@@ -766,6 +844,7 @@ impl OnChip {
         next
     }
     pub(crate) fn enter_sleep(&mut self) {
+        self.peripheral_deadline.set(None);
         if self.module_stop & 0x80 == 0 {
             return;
         }
@@ -864,6 +943,22 @@ impl OnChip {
             .borrow_mut()
             .observe(address, width, value, write, master, None);
     }
+    pub(crate) fn cached_batch_allowed(&self) -> bool {
+        !self.standby
+            && !self.reset_active()
+            && self.watchdog.request.is_none()
+            && self.wait_clocks.get() == 0
+            && !self.bsc.refresh_is_pending()
+            && !self.bsc.inhibits_external_bus()
+            && self.ubc.borrow().comparisons_disabled()
+            && !self.dma.active()
+            && !self.dma.in_progress()
+            && !self.dma.address_error
+    }
+    pub(crate) fn count_cached_instructions(&self, count: u64) {
+        self.instruction_epoch
+            .set(self.instruction_epoch.get().wrapping_add(count));
+    }
     pub(crate) fn can_request_interrupt(&self) -> bool {
         if self.standby {
             return self.wake_remaining.is_some();
@@ -883,6 +978,55 @@ impl OnChip {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memoized_deadline_tracks_frt_sci_watchdog_and_division_transactions() {
+        let mut chip = OnChip::default();
+        chip.write8(SCI + 2, 0x20).unwrap();
+        chip.write8(SCI + 3, 0x5A).unwrap();
+        assert!(chip.clocks_to_event() > 1);
+        chip.acknowledge_serial_dma(2);
+        assert_eq!(chip.clocks_to_event(), 1);
+        for sequence in 0..4096u32 {
+            match sequence % 12 {
+                0 => chip.write8(FRT + 6, sequence as u8 & 3).unwrap(),
+                1 => {
+                    chip.write8(FRT + 2, (sequence >> 8) as u8).unwrap();
+                    chip.write8(FRT + 3, sequence as u8).unwrap();
+                }
+                2 => {
+                    chip.write8(FRT + 4, (sequence >> 8) as u8).unwrap();
+                    chip.write8(FRT + 5, sequence as u8).unwrap();
+                }
+                3 => chip.write16(WDT, 0xA520 | (sequence as u16 & 7)).unwrap(),
+                4 => chip.write16(WDT, 0x5A00 | (sequence as u16 & 255)).unwrap(),
+                5 => chip.write32(DIVU, 7).unwrap(),
+                6 => chip.write32(DIVU + 4, sequence).unwrap(),
+                7 => {
+                    chip.read32(DIVU + 4).unwrap();
+                }
+                8 => chip.write8(SCI + 2, 0x20).unwrap(),
+                9 => chip.write8(SCI + 3, sequence as u8).unwrap(),
+                10 => {
+                    chip.read8(SCI + 4).unwrap();
+                    chip.write8(SCI + 4, 0).unwrap();
+                }
+                _ => chip.write8(SBYCR, (sequence as u8 >> 3) & 3).unwrap(),
+            }
+            for advance in [0, 1, sequence % 63 + 1] {
+                chip.advance_clocks(advance);
+                let core = chip.peripheral_clocks_to_event();
+                let expected = if chip.reset_active() {
+                    core
+                } else {
+                    core.min(chip.ubc.borrow().clocks_to_event())
+                        .min(chip.bsc.clocks_to_event())
+                };
+                assert_eq!(chip.clocks_to_event(), expected, "sequence={sequence}");
+                assert_eq!(chip.clocks_to_event(), expected);
+            }
+        }
+    }
 
     fn write_pair(chip: &mut OnChip, offset: u32, word: u16) {
         chip.write8(FRT + offset, (word >> 8) as u8).unwrap();

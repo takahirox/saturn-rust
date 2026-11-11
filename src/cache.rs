@@ -2,12 +2,20 @@
 //! The LRU masks below are derived from tables 8.3/8.4, not another core.
 use crate::bus::BusError;
 
+mod shadow;
+pub(crate) use shadow::CachedLines;
+
 pub const CCR: u32 = 0xFFFF_FE92;
 #[derive(Clone, Default)]
 struct Line {
     tag: u32,
     valid: bool,
     data: [u8; 16],
+}
+#[derive(Clone, Copy)]
+pub(crate) struct CacheTouch {
+    set: u8,
+    way: u8,
 }
 pub(crate) struct Cache {
     control: u8,
@@ -26,6 +34,19 @@ impl Default for Cache {
     }
 }
 impl Cache {
+    #[cfg(test)]
+    pub(crate) fn assert_same_contents(&self, other: &Self) {
+        assert_eq!(self.control, other.control);
+        assert_eq!(self.lru, other.lru);
+        for (a, b) in self
+            .lines
+            .iter()
+            .flatten()
+            .zip(other.lines.iter().flatten())
+        {
+            assert_eq!((a.tag, a.valid, a.data), (b.tag, b.valid, b.data));
+        }
+    }
     pub fn control(&self) -> u8 {
         self.control
     }
@@ -51,12 +72,17 @@ impl Cache {
         )
     }
     fn touch(&mut self, set: usize, way: usize) {
+        self.lru[set] = Self::touch_replacement(self.lru[set], way);
+    }
+    fn touch_replacement(lru: u8, way: usize) -> u8 {
         let (mask, value) = [(0x38, 0), (0x26, 0x20), (0x15, 0x14), (0x0B, 0x0B)][way];
-        self.lru[set] = (self.lru[set] & !mask) | value;
+        (lru & !mask) | value
     }
     fn victim(&self, set: usize) -> usize {
-        let lru = self.lru[set];
-        if self.control & 8 != 0 {
+        Self::victim_from(self.control, self.lru[set])
+    }
+    fn victim_from(control: u8, lru: u8) -> usize {
+        if control & 8 != 0 {
             return if lru & 1 == 0 { 3 } else { 2 };
         }
         [(0x38, 0x38), (0x26, 0x06), (0x15, 0x01), (0x0B, 0)]
@@ -75,6 +101,54 @@ impl Cache {
             .enumerate()
             .skip(self.first_cache_way())
             .find_map(|(way, line)| (line.valid && line.tag == tag).then_some(way))
+    }
+    pub(crate) fn cached_only<const N: usize>(
+        &self,
+        address: u32,
+        lru: &mut [u8; 64],
+    ) -> Option<[u8; N]> {
+        if address >= 0x2000_0000 || self.control & 1 == 0 || address as usize & (N - 1) != 0 {
+            return None;
+        }
+        let (set, _, offset) = Self::parts(address);
+        let way = self.hit_way(address)?;
+        let mut bytes = [0; N];
+        bytes.copy_from_slice(&self.lines[set][way].data[offset..offset + N]);
+        lru[set] = Self::touch_replacement(lru[set], way);
+        Some(bytes)
+    }
+    /// Decode-only inspection must not touch replacement state. This avoids
+    /// copying the whole LRU array just to discard one hypothetical touch.
+    pub(crate) fn peek_cached<const N: usize>(&self, address: u32) -> Option<[u8; N]> {
+        self.peek_cached_touch(address).map(|(bytes, _)| bytes)
+    }
+    pub(crate) fn peek_cached_touch<const N: usize>(
+        &self,
+        address: u32,
+    ) -> Option<([u8; N], CacheTouch)> {
+        if address >= 0x2000_0000 || self.control & 1 == 0 || address as usize & (N - 1) != 0 {
+            return None;
+        }
+        let (set, _, offset) = Self::parts(address);
+        let way = self.hit_way(address)?;
+        let mut bytes = [0; N];
+        bytes.copy_from_slice(&self.lines[set][way].data[offset..offset + N]);
+        Some((
+            bytes,
+            CacheTouch {
+                set: set as u8,
+                way: way as u8,
+            },
+        ))
+    }
+    pub(crate) fn publish_touch(&mut self, touch: CacheTouch) {
+        self.touch(usize::from(touch.set), usize::from(touch.way));
+    }
+    pub(crate) fn replacement_state(&self) -> [u8; 64] {
+        self.lru
+    }
+    pub(crate) fn commit_replacement_state(&mut self, lru: [u8; 64]) {
+        self.lru = lru;
     }
     pub fn read_hit(&self, address: u32) -> bool {
         address < 0x2000_0000 && self.control & 1 != 0 && self.hit_way(address).is_some()
@@ -119,14 +193,34 @@ impl Cache {
         Ok(Some(bytes))
     }
     pub fn written<const N: usize>(&mut self, address: u32, bytes: [u8; N]) {
-        if address >= 0x2000_0000 || self.control & 1 == 0 {
-            return;
-        }
-        let (set, tag, offset) = Self::parts(address);
-        for way in self.first_cache_way()..4 {
-            if self.lines[set][way].valid && self.lines[set][way].tag == tag {
+        let ways = self.written_ways(address);
+        let (set, _, offset) = Self::parts(address);
+        for way in 0..4 {
+            if ways & (1 << way) != 0 {
                 self.lines[set][way].data[offset..offset + N].copy_from_slice(&bytes);
                 self.touch(set, way);
+            }
+        }
+    }
+    fn written_ways(&self, address: u32) -> u8 {
+        if address >= 0x2000_0000 || self.control & 1 == 0 {
+            return 0;
+        }
+        let (set, tag, _) = Self::parts(address);
+        let mut ways = 0;
+        for way in self.first_cache_way()..4 {
+            if self.lines[set][way].valid && self.lines[set][way].tag == tag {
+                ways |= 1 << way;
+            }
+        }
+        ways
+    }
+    pub(crate) fn plan_written_replacement(&self, address: u32, lru: &mut [u8; 64]) {
+        let ways = self.written_ways(address);
+        let (set, _, _) = Self::parts(address);
+        for way in 0..4 {
+            if ways & (1 << way) != 0 {
+                lru[set] = Self::touch_replacement(lru[set], way);
             }
         }
     }
@@ -192,6 +286,38 @@ impl Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn decode_peeks_match_discarded_cache_touches_without_changing_lru() {
+        for control in [0, 1, 9] {
+            let mut cache = Cache::default();
+            cache.set_control(control);
+            for line in 0..16 {
+                cache
+                    .read::<4>(0x0600_0000 + line * 0x400, false, |a| Ok(a.to_be_bytes()))
+                    .unwrap();
+                for base in [0x0600_0000, 0x2600_0000, 0xFFFF_0000] {
+                    for offset in 0..16 {
+                        let address = base + line * 0x400 + offset;
+                        let before = cache.replacement_state();
+                        macro_rules! check {
+                            ($width:literal) => {
+                                let mut hypothetical = before;
+                                assert_eq!(
+                                    cache.peek_cached::<$width>(address),
+                                    cache.cached_only::<$width>(address, &mut hypothetical)
+                                );
+                            };
+                        }
+                        check!(1);
+                        check!(2);
+                        check!(4);
+                        assert_eq!(cache.replacement_state(), before);
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn refill_bus_beats_wrap_and_requested_longword_is_last_for_every_offset() {
         // H §8.4.1 fig.8.4; expected beat orders are independently authored.

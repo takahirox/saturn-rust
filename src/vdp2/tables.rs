@@ -15,6 +15,8 @@ pub(super) struct LineTables {
 
 impl Vdp2 {
     pub(super) fn read_line_tables(&mut self, y: usize) {
+        self.invalidate_planned_samples();
+        self.rotation_read.transforms.get_mut().fill([None; 2]);
         let mut tables = LineTables {
             line: Some(y),
             ..LineTables::default()

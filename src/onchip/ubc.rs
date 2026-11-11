@@ -166,6 +166,9 @@ impl Ubc {
         Ok(())
     }
 
+    pub fn comparisons_disabled(&self) -> bool {
+        self.active.get().cycle == [0; 2] && !self.pending
+    }
     pub fn pending(&self) -> bool {
         self.pending
     }

@@ -13,6 +13,22 @@ enum Operation {
     InterruptAcknowledge(u8),
 }
 impl Operation {
+    /// Lossless journal identity: address/clocks32, write data16, width1,
+    /// operation3. The live bus request retains the ordinary typed enum.
+    fn key(self) -> u64 {
+        match self {
+            Self::InternalWait(n) => u64::from(n),
+            Self::FinishClocks(n) => u64::from(n) | 1 << 49,
+            Self::Read(a, width @ (1 | 2)) => u64::from(a) | u64::from(width == 2) << 48 | 2 << 49,
+            Self::Write(a, width @ (1 | 2), v) => {
+                debug_assert!(v <= u32::from(u16::MAX));
+                u64::from(a) | u64::from(v) << 32 | u64::from(width == 2) << 48 | 3 << 49
+            }
+            Self::ResetOutput => 4 << 49,
+            Self::InterruptAcknowledge(level) => u64::from(level) | 5 << 49,
+            _ => unreachable!("68000 bus cycles are byte or word accesses"),
+        }
+    }
     fn complete(self, memory: &mut impl Memory) -> Result<u32, BusError> {
         match self {
             Self::InternalWait(_) | Self::FinishClocks(_) => Ok(0),
@@ -29,22 +45,44 @@ impl Operation {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy)]
+struct Completed {
+    key: u64,
+    result: Result<u32, u32>,
+    #[cfg(test)]
+    // Keep the old full-enum equality as an independent replay oracle.
+    operation: Operation,
+}
+
+#[derive(Default, Clone)]
 pub(super) struct Transactions {
-    completed: Vec<(Operation, Result<u32, BusError>)>,
+    // Successful replay is the hot path. Keep large diagnostic errors out of
+    // each completed access; their original values remain available by index.
+    completed: Vec<Completed>,
+    errors: Vec<BusError>,
     cursor: usize,
     waiting: Option<Operation>,
     start: u64,
+    #[cfg(test)]
+    literal_finishes: bool,
+    #[cfg(test)]
+    elided_finishes: u64,
     stalls: u64,
     reset: Option<ResetSequence>,
     cpu: Option<M68k>,
 }
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct ResetSequence {
     word: usize,
     high: u16,
 }
 impl Transactions {
+    /// A RAM transfer cannot change SCSP configuration or signal the main CPU.
+    /// A newly issued control write/reset needs at least four sound CPU clocks.
+    pub fn control_write_pending(&self) -> bool {
+        matches!(self.waiting, Some(Operation::Write(a, _, _)) if a & 0xFF_FFFF >= SOUND_RAM_SIZE as u32)
+            || self.waiting == Some(Operation::ResetOutput)
+    }
     pub fn ram_request(&self, pc: u32) -> Option<memory::Request> {
         let (address, width, write) = if let Some(reset) = &self.reset {
             let address = if reset.word < 4 {
@@ -80,7 +118,7 @@ impl Transactions {
         }
     }
 }
-struct Replay<'a>(RefCell<&'a mut Transactions>);
+struct Replay<'a>(RefCell<&'a mut Transactions>, u64);
 impl Replay<'_> {
     fn access(&self, operation: Operation) -> Result<u32, BusError> {
         let mut journal = self.0.borrow_mut();
@@ -89,10 +127,19 @@ impl Replay<'_> {
             // speculative CPU state is discarded; no extra bus cycle may issue.
             return Err(BusError::Pending);
         }
-        if let Some(&(old, result)) = journal.completed.get(journal.cursor) {
-            assert_eq!(old, operation, "68k replay changed its bus sequence");
+        if let Some(&entry) = journal.completed.get(journal.cursor) {
+            assert_eq!(
+                entry.key,
+                operation.key(),
+                "68k replay changed its bus sequence"
+            );
+            #[cfg(test)]
+            assert_eq!(
+                entry.operation, operation,
+                "packed identity must retain full operation equality"
+            );
             journal.cursor += 1;
-            return result;
+            return entry.result.map_err(|index| journal.errors[index as usize]);
         }
         journal.waiting = Some(operation);
         Err(BusError::Pending)
@@ -100,6 +147,30 @@ impl Replay<'_> {
 }
 impl Memory for Replay<'_> {
     fn m68k_finish_clocks(&self, clocks: u32) -> Result<(), BusError> {
+        let ready = {
+            let journal = self.0.borrow();
+            #[cfg(test)]
+            let enabled = !journal.literal_finishes;
+            #[cfg(not(test))]
+            let enabled = true;
+            enabled
+                && journal.waiting.is_none()
+                && self.1 >= journal.start + journal.stalls + u64::from(clocks)
+                && !journal
+                    .completed
+                    .get(journal.cursor)
+                    .is_some_and(|entry| entry.key == Operation::FinishClocks(clocks).key())
+        };
+        if ready {
+            // This internal barrier has already elapsed. It owns no RAM grant
+            // or physical bus phase. A recorded completion still consumes its
+            // journal entry above, including when trace replays an older tail.
+            #[cfg(test)]
+            {
+                self.0.borrow_mut().elided_finishes += 1;
+            }
+            return Ok(());
+        }
         self.access(Operation::FinishClocks(clocks)).map(|_| ())
     }
     fn m68k_internal_wait(&self, clocks: u32) -> Result<(), BusError> {
@@ -194,7 +265,18 @@ impl Sound {
                 },
                 Ok,
             );
-            journal.completed.push((operation, result));
+            let result = result.map_err(|error| {
+                let index =
+                    u32::try_from(journal.errors.len()).expect("bounded sound replay errors");
+                journal.errors.push(error);
+                index
+            });
+            journal.completed.push(Completed {
+                key: operation.key(),
+                result,
+                #[cfg(test)]
+                operation,
+            });
         } else {
             journal.start = self.cpu_ticks;
             journal.stalls = 0;
@@ -202,7 +284,7 @@ impl Sound {
         }
         journal.cursor = 0;
         let mut execution = journal.cpu.as_ref().unwrap().clone();
-        let clocks = execution.step(&mut Replay(RefCell::new(journal)));
+        let clocks = execution.step(&mut Replay(RefCell::new(journal), self.cpu_ticks));
         let journal = &mut self.transactions;
         if journal.waiting.is_some() {
             if let Some(state) = execution.retired_state() {
@@ -239,6 +321,7 @@ impl Sound {
                 .cpu_ticks
                 .max(journal.start + journal.stalls + u64::from(clocks));
             journal.completed.clear();
+            journal.errors.clear();
             journal.cpu = None;
         }
     }
@@ -247,3 +330,35 @@ impl Sound {
 #[cfg(test)]
 #[path = "irq_tests.rs"]
 mod irq_tests;
+
+#[cfg(test)]
+#[path = "finish_tests.rs"]
+mod finish_tests;
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+    #[test]
+    fn packed_bus_identity_distinguishes_full_addresses_values_widths_and_internal_edges() {
+        let mut seen = std::collections::BTreeMap::new();
+        let mut check = |op: Operation| {
+            if let Some(previous) = seen.insert(op.key(), op) {
+                assert_eq!(previous, op);
+            }
+        };
+        check(Operation::ResetOutput);
+        for level in 0..=255 {
+            check(Operation::InterruptAcknowledge(level));
+        }
+        for n in [0, 1, 65535, 65536, 0xFF_FFFF, 0xFFFF_FFFF] {
+            check(Operation::InternalWait(n));
+            check(Operation::FinishClocks(n));
+            for width in [1, 2] {
+                check(Operation::Read(n, width));
+                for value in [0, 1, 255, 256, 0xFFFF] {
+                    check(Operation::Write(n, width, value));
+                }
+            }
+        }
+    }
+}

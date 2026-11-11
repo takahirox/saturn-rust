@@ -67,7 +67,7 @@ fn reports_and_q_follow_every_supported_state_and_both_standby_origins() {
         );
         q(
             &mut cd,
-            0x47FF,
+            0x4700,
             [0xFFFF, 0xFFFF, 0xFFFF, 0x00FF, 0xFFFF],
             chunk,
         );
@@ -83,13 +83,13 @@ fn reports_and_q_follow_every_supported_state_and_both_standby_origins() {
             issue(&mut cd, [0, 0, 0, 0], chunk),
             [0x0180, 0x4101, 0x0100, 181]
         );
-        q(&mut cd, 0x4180, [0x4101, 0x0100, 0x001F, 0, 181], chunk);
+        q(&mut cd, 0x4100, [0x4101, 0x0100, 0x001F, 0, 181], chunk);
         advance(&mut cd, 26_874_100, chunk, true);
         assert_eq!(
             issue(&mut cd, [0, 0, 0, 0], chunk),
             [0x0280, 0x4101, 0x0100, 181]
         );
-        q(&mut cd, 0x4280, [0x4101, 0x0100, 0x001F, 0, 181], chunk);
+        q(&mut cd, 0x4200, [0x4101, 0x0100, 0x001F, 0, 181], chunk);
         issue(&mut cd, [0x11FF, 0xFFFF, 0, 0], chunk);
         advance(&mut cd, 26_875, chunk, true);
         assert_eq!(
@@ -102,7 +102,7 @@ fn reports_and_q_follow_every_supported_state_and_both_standby_origins() {
         );
         q(
             &mut cd,
-            0x42FF,
+            0x4200,
             [0xFFFF, 0xFFFF, 0xFFFF, 0x00FF, 0xFFFF],
             chunk,
         );
@@ -126,7 +126,7 @@ fn reports_and_q_follow_every_supported_state_and_both_standby_origins() {
         );
         q(
             &mut cd,
-            0x46FF,
+            0x4600,
             [0xFFFF, 0xFFFF, 0xFFFF, 0x00FF, 0xFFFF],
             chunk,
         );
@@ -142,7 +142,7 @@ fn reports_and_q_follow_every_supported_state_and_both_standby_origins() {
             issue(&mut cd, [0, 0, 0, 0], chunk),
             [0x0380, 0x4101, 0x0100, 181]
         );
-        q(&mut cd, 0x4380, [0x4101, 0x0100, 0x001F, 0, 181], chunk);
+        q(&mut cd, 0x4300, [0x4101, 0x0100, 0x001F, 0, 181], chunk);
     }
 }
 
@@ -164,12 +164,12 @@ fn home_open_error_and_queries_keep_repeat_range_and_recovery_information() {
             issue(&mut cd, [0, 0, 0, 0], chunk),
             [0x0281, 0x4101, 0x0100, 181]
         );
-        q(&mut cd, 0x4281, [0x4101, 0x0100, 31, 0, 181], chunk);
+        q(&mut cd, 0x4200, [0x4101, 0x0100, 31, 0, 181], chunk);
         issue(&mut cd, [0x1100, 0, 0, 0], chunk);
         issue(&mut cd, [0x0500, 0, 0, 0], chunk);
         q(
             &mut cd,
-            0x46FF,
+            0x4600,
             [0xFFFF, 0xFFFF, 0xFFFF, 0x00FF, 0xFFFF],
             chunk,
         );
@@ -214,7 +214,7 @@ fn home_open_error_and_queries_keep_repeat_range_and_recovery_information() {
             issue(&mut cd, [0, 0, 0, 0], chunk),
             [0x0880, 0x4101, 0x0100, 182]
         );
-        q(&mut cd, 0x4880, [0x4101, 0x0100, 32, 0, 182], chunk);
+        q(&mut cd, 0x4800, [0x4101, 0x0100, 32, 0, 182], chunk);
         advance(&mut cd, 179_161, chunk, true);
         assert_eq!(
             issue(&mut cd, [0, 0, 0, 0], chunk),
@@ -222,7 +222,7 @@ fn home_open_error_and_queries_keep_repeat_range_and_recovery_information() {
         );
         q(
             &mut cd,
-            0x49FF,
+            0x4900,
             [0xFFFF, 0xFFFF, 0xFFFF, 0x00FF, 0xFFFF],
             chunk,
         );
@@ -232,7 +232,7 @@ fn home_open_error_and_queries_keep_repeat_range_and_recovery_information() {
             issue(&mut cd, [0, 0, 0, 0], chunk),
             [0x0180, 0x4101, 0x0100, 182]
         );
-        q(&mut cd, 0x4180, [0x4101, 0x0100, 32, 0, 182], chunk);
+        q(&mut cd, 0x4100, [0x4101, 0x0100, 32, 0, 182], chunk);
         // Allow the damaged sector once to acquire a nonzero notification,
         // then reenable failure without changing the retained play range.
         issue(&mut cd, [0x0480, 1, 0, 0xFF40], chunk);
@@ -571,7 +571,7 @@ fn disc_end_pause_and_q_agree_on_the_leadout_position() {
             issue(&mut cd, [0, 0, 0, 0], chunk),
             [0x0180, 0x41AA, 0x0100, 250]
         );
-        q(&mut cd, 0x4180, [0x41AA, 0x0100, 0, 0, 250], chunk);
+        q(&mut cd, 0x4100, [0x41AA, 0x0100, 0, 0, 250], chunk);
         assert_eq!(
             issue(&mut cd, [0x11FF, 0xFFFF, 0, 0], chunk),
             [0x0400, 0x41AA, 0x0100, 250]
@@ -664,7 +664,7 @@ fn pause_cancellation_requires_both_retained_bounds_after_home() {
                 );
                 q(
                     &mut cd,
-                    0x4181,
+                    0x4100,
                     [0x4101, 0x0100, position - 150, 0, position],
                     chunk,
                 );
@@ -786,7 +786,7 @@ fn shorter_replacement_bounds_play_without_overwriting_retained_settings() {
             [0x0180, 0x41AA, 0x0100, 200]
         );
         assert_ne!(cd.read16(CD + 8).unwrap() & 16, 0);
-        q(&mut cd, 0x4180, [0x41AA, 0x0100, 0, 0, 200], chunk);
+        q(&mut cd, 0x4100, [0x41AA, 0x0100, 0, 0, 200], chunk);
         assert_eq!(
             issue(&mut cd, [0x10FF, 0xFFFF, 0x7FFF, 0xFFFF], chunk),
             [0x0180, 0x41AA, 0x0100, 200]
@@ -886,14 +886,14 @@ fn shorter_replacement_bounds_scan_and_q_without_changing_retained_range() {
             [0x0180, 0x4101, 0x0100, 199]
         );
         assert_ne!(cd.read16(CD + 8).unwrap() & 16, 0);
-        q(&mut cd, 0x4180, [0x4101, 0x0100, 49, 0, 199], chunk);
+        q(&mut cd, 0x4100, [0x4101, 0x0100, 49, 0, 199], chunk);
         issue(&mut cd, [0x1201, 0, 0, 0], chunk);
         advance(&mut cd, 2_200_000, chunk, true);
         assert_eq!(
             issue(&mut cd, [0, 0, 0, 0], chunk),
             [0x0180, 0x4101, 0x0100, 150]
         );
-        q(&mut cd, 0x4180, [0x4101, 0x0100, 0, 0, 150], chunk);
+        q(&mut cd, 0x4100, [0x4101, 0x0100, 0, 0, 150], chunk);
         cd.cd.mount(Media::iso(&vec![0x69; 2048 * 120]).unwrap());
         issue(&mut cd, [0x1200, 0, 0, 0], chunk);
         advance(&mut cd, 4_000_000, chunk, true);
@@ -901,7 +901,7 @@ fn shorter_replacement_bounds_scan_and_q_without_changing_retained_range() {
             issue(&mut cd, [0, 0, 0, 0], chunk),
             [0x0180, 0x4101, 0x0100, 249]
         );
-        q(&mut cd, 0x4180, [0x4101, 0x0100, 99, 0, 249], chunk);
+        q(&mut cd, 0x4100, [0x4101, 0x0100, 99, 0, 249], chunk);
         // Even the retained lower bound can lie beyond a shorter medium.
         // Scanning must stay on that medium without erasing either bound or
         // the finite repeat maximum/notification count (ST-162 §5.5).
@@ -916,7 +916,7 @@ fn shorter_replacement_bounds_scan_and_q_without_changing_retained_range() {
                 issue(&mut cd, [0, 0, 0, 0], chunk),
                 [0x0181, 0x4101, 0x0100, 199]
             );
-            q(&mut cd, 0x4181, [0x4101, 0x0100, 49, 0, 199], chunk);
+            q(&mut cd, 0x4100, [0x4101, 0x0100, 49, 0, 199], chunk);
         }
         cd.cd.mount(Media::iso(&vec![0x69; 2048 * 120]).unwrap());
         issue(&mut cd, [0x1180, 225, 0, 0], chunk);
@@ -978,7 +978,7 @@ fn empty_retained_range_scans_stay_on_disc_and_preserve_play_settings() {
                         [0x0180, 0x4101, 0x0100, 150]
                     );
                     assert_ne!(cd.read16(CD + 8).unwrap() & 16, 0);
-                    q(&mut cd, 0x4180, [0x4101, 0x0100, 0, 0, 150], chunk);
+                    q(&mut cd, 0x4100, [0x4101, 0x0100, 0, 0, 150], chunk);
                     // Neither scan direction may repair the empty saved end.
                     assert_eq!(
                         issue(&mut cd, [0x10FF, 0xFFFF, 0x7FFF, 0xFFFF], chunk),
@@ -1002,7 +1002,7 @@ fn empty_retained_range_scans_stay_on_disc_and_preserve_play_settings() {
                             issue(&mut cd, [0, 0, 0, 0], chunk),
                             [0x0182, 0x4101, 0x0100, 185]
                         );
-                        q(&mut cd, 0x4182, [0x4101, 0x0100, 35, 0, 185], chunk);
+                        q(&mut cd, 0x4100, [0x4101, 0x0100, 35, 0, 185], chunk);
                     }
                 }
             }
@@ -1026,7 +1026,7 @@ fn debugger_fifo_longwords_preserve_each_word_and_cr4_publication_protection() {
         // Previewing CR4 must not release this command-specific payload at the
         // next periodic edge, though SCDQ still rises.
         advance(&mut cd, 447_902, chunk, true);
-        assert_eq!(peek(&cd), [0x4180, 5, 0, 0]);
+        assert_eq!(peek(&cd), [0x4100, 5, 0, 0]);
         assert_ne!(cd.read16(CD + 8).unwrap() & 1024, 0);
         assert_eq!(cd.read32(DATA).unwrap(), 0x4101_0100);
         assert_eq!(cd.debug_read32(DATA).unwrap(), 0x001F_0000);

@@ -4,6 +4,8 @@ use crate::{bus::BusError, devices::VDP2, vdp1::Vdp1};
 use std::cell::{Cell, RefCell};
 
 mod access;
+#[cfg(test)]
+mod composition_tests;
 mod fetch;
 #[cfg(test)]
 mod mosaic_tests;
@@ -16,6 +18,8 @@ mod tables;
 pub const CRAM: u32 = 0x05F0_0000;
 pub struct Vdp2 {
     registers: [u8; 0x120],
+    validated_pal: Cell<Option<bool>>,
+    access_cache: RefCell<access::AccessCache>,
     pub vram: Vec<u8>,
     pub cram: Vec<u8>,
     pub vblank: bool,
@@ -44,6 +48,8 @@ impl Default for Vdp2 {
     fn default() -> Self {
         Self {
             registers: [0; 0x120],
+            validated_pal: Cell::new(None),
+            access_cache: RefCell::default(),
             vram: vec![0; 0x80000],
             cram: vec![0; 0x1000],
             vblank: false,
@@ -78,6 +84,29 @@ struct Layer {
     coefficient_color: Option<u16>,
     palette: bool,
 }
+fn insert_layer<const N: usize>(images: &mut [Layer; 4], mut layer: Layer) {
+    for image in &mut images[..N] {
+        if layer.priority >= image.priority {
+            std::mem::swap(image, &mut layer);
+        }
+    }
+}
+
+fn insert_visible_layer<const N: usize>(
+    images: &mut [Layer; 4],
+    keys: &mut [u16; 2],
+    mut layer: Layer,
+    tie: u16,
+) {
+    let mut key = layer.priority * 8 + tie;
+    for i in 0..N {
+        if key > keys[i] {
+            std::mem::swap(&mut images[i], &mut layer);
+            std::mem::swap(&mut keys[i], &mut key);
+        }
+    }
+}
+
 struct Pixel {
     rgb: [u8; 3],
     code: u16,
@@ -124,6 +153,12 @@ impl Vdp2 {
     }
     pub fn read16(&self, address: u32) -> Result<u16, BusError> {
         let offset = (address - VDP2) as usize;
+        // ST-058 §16 lists +0C and +FE as reserved words with no function.
+        // Local compatibility fallback for register initialization sweeps;
+        // zero is deterministic, not a measured electrical bus value.
+        if matches!(offset, 6 | 0xC | 0xFE) {
+            return Ok(0);
+        }
         if offset == 4 {
             // ST-058 §2.5: board TV standard and current scan field.
             return Ok(u16::from(self.external_latched.replace(false)) << 9
@@ -133,9 +168,6 @@ impl Vdp2 {
                 | u16::from(self.pal));
         }
         match offset {
-            // Base 4 Mbit configuration, version zero (ST-058 §3.1).
-            // Reserved readback is a deterministic policy, not open-bus evidence.
-            6 | 0xC | 0xFE => return Ok(0),
             2 if self.word(2) & 0x200 == 0 => self.latched_counters.set(self.live_counters),
             8 => return Ok(self.latched_counters.get().0),
             0xA => return Ok(self.latched_counters.get().1),
@@ -167,8 +199,9 @@ impl Vdp2 {
     }
     pub(crate) fn validate_value(address: u32, value: u16) -> Result<(), BusError> {
         Self::validate_write(address)?;
+        // ST-058 §3.1: the base console has 4 Mbit VRAM. Expanded 8 Mbit
+        // addressing is not implemented; VER3..0 are read-only, version zero.
         if address == VDP2 + 6 && value & 0x8000 != 0 {
-            // The renderer and bus implement 4 Mbit VRAM only.
             return Err(BusError::UnsupportedDevice { address, width: 2 });
         }
         if (VDP2 + 0x10..=VDP2 + 0x1E).contains(&address)
@@ -180,9 +213,11 @@ impl Vdp2 {
     }
     pub fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
         Self::validate_value(address, value)?;
+        self.validated_pal.set(None);
+        *self.access_cache.get_mut() = access::AccessCache::default();
         let offset = (address - VDP2) as usize;
-        // Initialization sweeps may touch read-only and these two reserved
-        // words. Ignore without reading TVSTAT or changing counter/latch state.
+        // TVSTAT/HCNT/VCNT have no write function. Initialization stores must
+        // not alter status, counters, or the external-latch read-clear edge.
         if matches!(offset, 4 | 6 | 8 | 0xA | 0xC | 0xFE) {
             return Ok(());
         }
@@ -267,15 +302,22 @@ impl Vdp2 {
         self.rotation_read.line = Some(y);
         self.beam_rendering = true;
         let mut history = self.scan_history;
-        let pixels = self.render_region(Some(sprites), y, y + 1, first..end, &mut history);
+        let mut scanning = std::mem::take(&mut self.scanning);
+        let result = self.render_region_into::<true>(
+            Some(sprites),
+            y,
+            y + 1,
+            first..end,
+            &mut history,
+            &mut scanning[(y * size.0 + first) * 4..(y * size.0 + end) * 4],
+        );
+        self.scanning = scanning;
         self.scan_history = history;
         self.scan_x = end;
         self.rotation_read.line = None;
         self.beam_rendering = false;
-        match pixels {
-            Ok(pixels) => self.scanning[(y * size.0 + first) * 4..(y * size.0 + end) * 4]
-                .copy_from_slice(&pixels),
-            Err(error) => self.scan_error = Some(error),
+        if let Err(error) = result {
+            self.scan_error = Some(error);
         }
     }
     pub(crate) fn finish_field(&mut self) {
@@ -305,13 +347,20 @@ impl Vdp2 {
         (width, height)
     }
     fn validate(&self) -> Result<(), String> {
+        // Configuration validity depends only on guest registers and TV region,
+        // not on the display slot, VRAM contents or acquired pixel operands.
+        if self.validated_pal.get() == Some(self.pal) {
+            return Ok(());
+        }
         let mode = self.word(0);
         let unsupported = mode & !0x81F7 != 0
             || mode & 0xC0 == 0x40
             || (mode & 4 != 0 && mode & 0xC0 != 0)
             || (mode & 4 == 0 && mode & 0x30 == 0x30)
             || (mode & 4 == 0 && !self.pal && mode & 0x30 == 0x20)
-            || self.word(0x20) & !0x1F3F != 0
+            // BGON bit6 is unused (ST-058 §4.1), not an extra screen.
+            // Retain debugger state but ignore this observed initialization bit.
+            || self.word(0x20) & !0x1F7F != 0
             || self.word(0xE) & !0xB3FF != 0
             || self.word(0xE) >> 12 & 3 == 3
             || (self.word(0xE) & 0x8000 != 0 && self.word(0xE) & 0x3000 != 0x1000)
@@ -352,6 +401,7 @@ impl Vdp2 {
             }
         }
         self.validate_rotation()?;
+        self.validated_pal.set(Some(self.pal));
         Ok(())
     }
     fn validate_special(&self, id: usize, format: u16) -> Result<(), String> {
@@ -667,6 +717,9 @@ impl Vdp2 {
         if let Some(sample) = self.scheduled_sample(layer) {
             return sample;
         }
+        if let Some(sample) = self.planned_sample(layer) {
+            return Some(sample);
+        }
         // ST-058 §2.1 p.13: exclusive high resolution alternates the two
         // normal screens. Guest increments of two and NBG1's +1 scroll
         // produce adjacent source dots, not two full-width overlaid layers.
@@ -713,7 +766,9 @@ impl Vdp2 {
                 return None;
             }
         }
-        Some((base, pixel, palette, special, format))
+        let sample = (base, pixel, palette, special, format);
+        self.plan_sample(layer, sample);
+        Some(sample)
     }
     // Keep output geometry and unaffected screens in the hardware TV mode.
     // See docs/vdp2-mosaic.md for the field/output/source coordinate table.
@@ -824,7 +879,7 @@ impl Vdp2 {
         first: usize,
         end: usize,
     ) -> Result<Vec<u8>, String> {
-        self.render_region(
+        self.render_region::<true>(
             sprites,
             first,
             end,
@@ -832,7 +887,7 @@ impl Vdp2 {
             &mut [[0; 3]; 2],
         )
     }
-    fn render_region(
+    fn render_region<const LIMITED: bool>(
         &self,
         sprites: Option<&Vdp1>,
         first: usize,
@@ -840,9 +895,22 @@ impl Vdp2 {
         columns: std::ops::Range<usize>,
         history: &mut [[u8; 3]; 2],
     ) -> Result<Vec<u8>, String> {
+        let mut pixels = vec![0; columns.len() * (end - first) * 4];
+        self.render_region_into::<LIMITED>(sprites, first, end, columns, history, &mut pixels)?;
+        Ok(pixels)
+    }
+
+    fn render_region_into<const LIMITED: bool>(
+        &self,
+        sprites: Option<&Vdp1>,
+        first: usize,
+        end: usize,
+        columns: std::ops::Range<usize>,
+        history: &mut [[u8; 3]; 2],
+        pixels: &mut [u8],
+    ) -> Result<(), String> {
         let (_, height) = self.dimensions();
         let width = columns.len();
-        let mut pixels = vec![0; width * (end - first) * 4];
         if self.word(0) & 0x8000 == 0 && self.word(0) & 0x100 == 0 {
             *history = if width == 1 {
                 [history[1], [0; 3]]
@@ -850,12 +918,59 @@ impl Vdp2 {
                 [[0; 3]; 2]
             };
             for p in pixels.as_chunks_mut::<4>().0 {
-                p[3] = 255;
+                *p = [0, 0, 0, 255];
             }
-            return Ok(pixels);
+            return Ok(());
         }
         self.validate()?;
         let gradation = self.gradation_screen();
+        // Only extended calculation and gradation consume the third/fourth
+        // image. Preserve their complete stack; ordinary blending needs two,
+        // and disabled calculation needs only the highest-priority screen.
+        let ranks = if LIMITED && gradation.is_none() {
+            if self.word(0xEC) & 0x7F == 0 {
+                1
+            } else if self.word(0xEC) & 0x400 == 0 {
+                2
+            } else {
+                4
+            }
+        } else {
+            4
+        };
+        let mut candidates = [(0u16, 0u8); 6];
+        if ranks < 4 {
+            let enabled = self.word(0x20);
+            for (screen, candidate) in candidates.iter_mut().enumerate() {
+                let (id, tie, present) = match screen {
+                    0 => (4, 5, enabled & 0x10 != 0 && self.word(0) & 4 == 0),
+                    1 => (0, 4, enabled & 0x20 != 0 && self.word(0) & 4 == 0),
+                    _ => {
+                        let id = screen - 2;
+                        (
+                            id,
+                            4 - id,
+                            enabled & 0x20 == 0
+                                && enabled & (1 << id) != 0
+                                && self.normal_layer_available(id),
+                        )
+                    }
+                };
+                let priority_register = if id == 4 { 0xFC } else { 0xF8 + id / 2 * 2 };
+                let shift = if id == 4 { 0 } else { id % 2 * 8 };
+                let mut priority = self.word(priority_register) >> shift & 7;
+                if self.word(0xEA) >> (id * 2) & 3 != 0 {
+                    priority |= 1;
+                }
+                let key = if present && priority != 0 {
+                    priority * 8 + tie as u16
+                } else {
+                    0
+                };
+                *candidate = (key, screen as u8);
+            }
+            candidates.sort_unstable_by_key(|a| std::cmp::Reverse(a.0));
+        }
         for y in first..end {
             // The manuals do not define the two pre-display pipeline samples.
             // Use black at the left border, reset every scanline; never carry
@@ -892,25 +1007,53 @@ impl Vdp2 {
                 };
                 let mut images = [back; 4];
                 let mut gradation_rgb = [0; 3];
-                for mut layer in [
-                    self.background(3, x, y, sprite_window),
-                    self.background(2, x, y, sprite_window),
-                    self.background(1, x, y, sprite_window),
-                    self.background(0, x, y, sprite_window),
-                    self.rotation1(x, y, sprite_window),
-                    self.rotation(x, y, sprite_window),
-                    sprite.layer,
-                ]
-                .into_iter()
-                .flatten()
-                {
-                    if Some(layer.id) == gradation {
-                        gradation_rgb = layer.rgb;
-                    }
-                    for image in &mut images {
-                        if layer.priority >= image.priority {
-                            std::mem::swap(image, &mut layer);
+                if ranks < 4 {
+                    let mut keys = [0; 2];
+                    if let Some(layer) = sprite.layer {
+                        if ranks == 1 {
+                            insert_visible_layer::<1>(&mut images, &mut keys, layer, 6);
+                        } else {
+                            insert_visible_layer::<2>(&mut images, &mut keys, layer, 6);
                         }
+                    }
+                    // Physical operands were acquired by the clock even when
+                    // the image is hidden. Decode RGB only while a screen's
+                    // maximum priority/tie key can enter the required stack.
+                    for &(bound, screen) in &candidates {
+                        if bound <= keys[ranks - 1] {
+                            break;
+                        }
+                        let layer = match screen {
+                            0 => self.rotation(x, y, sprite_window),
+                            1 => self.rotation1(x, y, sprite_window),
+                            _ => self.background(usize::from(screen - 2), x, y, sprite_window),
+                        };
+                        if let Some(layer) = layer {
+                            let tie = bound & 7;
+                            if ranks == 1 {
+                                insert_visible_layer::<1>(&mut images, &mut keys, layer, tie);
+                            } else {
+                                insert_visible_layer::<2>(&mut images, &mut keys, layer, tie);
+                            }
+                        }
+                    }
+                } else {
+                    for layer in [
+                        self.background(3, x, y, sprite_window),
+                        self.background(2, x, y, sprite_window),
+                        self.background(1, x, y, sprite_window),
+                        self.background(0, x, y, sprite_window),
+                        self.rotation1(x, y, sprite_window),
+                        self.rotation(x, y, sprite_window),
+                        sprite.layer,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        if Some(layer.id) == gradation {
+                            gradation_rgb = layer.rgb;
+                        }
+                        insert_layer::<4>(&mut images, layer);
                     }
                 }
                 let [top, mut second, mut third, mut fourth] = images;
@@ -994,7 +1137,7 @@ impl Vdp2 {
                 p[3] = 255;
             }
         }
-        Ok(pixels)
+        Ok(())
     }
 
     /// ST-058 §12.2 CCCTL BOKEN/BOKN; RBG1 shares NBG0's screen ID.
@@ -1047,6 +1190,25 @@ impl Vdp2 {
 #[cfg(test)]
 mod display_tests {
     use super::*;
+    #[test]
+    fn initialization_stores_do_not_clear_external_latches_or_change_counters() {
+        let mut v = Vdp2::default();
+        v.write16(VDP2 + 2, 0x200).unwrap();
+        v.counters(123, 45);
+        v.external_latch();
+        v.counters(234, 67);
+        for offset in [4, 8, 0xA, 0xC, 0xFE] {
+            v.write16(VDP2 + offset, 0xffff).unwrap();
+        }
+        assert_eq!(v.read16(VDP2 + 8), Ok(123));
+        assert_eq!(v.read16(VDP2 + 0xA), Ok(45));
+        assert_ne!(v.read16(VDP2 + 4).unwrap() & 0x200, 0);
+        assert_eq!(v.read16(VDP2 + 4).unwrap() & 0x200, 0);
+        v.external_latch();
+        assert_eq!(v.read16(VDP2 + 8), Ok(234));
+        assert_eq!(v.read16(VDP2 + 0xA), Ok(67));
+    }
+
     #[test]
     fn display_validation_covers_standard_tv_reserved_and_monitor_encodings() {
         let mut v = Vdp2::default();

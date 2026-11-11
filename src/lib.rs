@@ -27,7 +27,7 @@ pub mod vdp2;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
-use bus::{Bus, BusError, HIGH_WRAM, Memory, Processor, WRAM_SIZE};
+use bus::{Bus, BusError, CachedBranch, CachedLoad, HIGH_WRAM, Memory, Processor, WRAM_SIZE};
 use cpu::{Cpu, CpuError, CpuState};
 use std::fmt;
 
@@ -88,6 +88,75 @@ mod scheduling_tests {
         m.slave = Cpu::start(HIGH_WRAM + 0x100, HIGH_WRAM + 0x2000);
         m.slave.prime_fetch(&m.bus.for_cpu(Processor::Slave));
         m
+    }
+
+    #[test]
+    fn dual_cached_register_issue_matches_replay_during_external_access() {
+        // The master starts an uncached load while the slave retires
+        // register operations and branches at its own deadlines.
+        let make = || {
+            let mut m = cached_pair(
+                &[0x60F2, 0xE101, 0x7101, 0x2108, 0xAFFD, 9],
+                &[0xE20F, 0x7201, 0x6213, 0xAFFC, 9],
+            );
+            m.cpu = Cpu::start(HIGH_WRAM, (HIGH_WRAM + 0x2000) | 0x20000000);
+            m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
+            m
+        };
+        let mut reference = make();
+        let mut optimized = make();
+        let mut continued_branch = false;
+        for _ in 0..512 {
+            optimized.step_inner_with_idle(true).unwrap();
+            reference.step_inner_with_idle(false).unwrap();
+            assert_eq!(optimized.cpu, reference.cpu);
+            assert_eq!(optimized.slave, reference.slave);
+            assert_eq!(optimized.cpu_ready, reference.cpu_ready);
+            assert_eq!(optimized.clocks(), reference.clocks());
+            assert_eq!(optimized.bus.main_clocks, reference.bus.main_clocks);
+            continued_branch |= optimized
+                .cached_issue
+                .iter()
+                .any(|issue| matches!(issue, Some(CachedIssue::Branch(_))));
+        }
+        assert!(optimized.cached_dual_scalars > 100);
+        assert!(continued_branch);
+    }
+
+    #[test]
+    fn dual_cached_ftcsr_poll_samples_the_peer_strobe_on_the_internal_bus() {
+        let make = || {
+            let mut m = cached_pair(
+                &[9, 9, 0x2F01, 0xAFFE, 9],
+                &[0x60F0, 0xC880, 0x89FC, 0xAFFB, 9],
+            );
+            m.cpu = Cpu::start(HIGH_WRAM, 0x2100_0000);
+            m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
+            m.slave = Cpu::start(HIGH_WRAM + 0x100, onchip::FRT + 1);
+            m.slave.prime_fetch(&m.bus.for_cpu(Processor::Slave));
+            m
+        };
+        let mut reference = make();
+        let mut optimized = make();
+        let mut polling = false;
+        let mut captured = false;
+        for _ in 0..100 {
+            reference.step_inner_with_idle(false).unwrap();
+            optimized.step_inner_with_idle(true).unwrap();
+            assert_eq!(optimized.clocks, reference.clocks);
+            for (index, issue) in optimized.cached_issue.iter().enumerate() {
+                // A private IF continuation may have combined several
+                // internal wakes while its architectural state stays held.
+                if !matches!(issue, Some(CachedIssue::Branch(_))) {
+                    assert_eq!(optimized.cpu_ready[index], reference.cpu_ready[index]);
+                }
+            }
+            assert_eq!(optimized.cpu, reference.cpu);
+            assert_eq!(optimized.slave, reference.slave);
+            polling |= matches!(optimized.cached_issue[1], Some(CachedIssue::Load(_)));
+            captured |= optimized.slave.state().r[0] == 0xFFFF_FF80;
+        }
+        assert!(polling && captured);
     }
 
     #[test]
@@ -371,8 +440,19 @@ struct CpuBoundary {
     started: u64,
 }
 
+// Keep continuations inline because these paths run at instruction frequency.
+#[allow(clippy::large_enum_variant)]
+enum CachedIssue {
+    Branch(CachedBranch),
+    Load(CachedLoad),
+}
+
 #[derive(Default)]
 pub struct Machine {
+    #[cfg(test)]
+    cached_retired: u64,
+    #[cfg(test)]
+    cached_dual_scalars: u64,
     cpu: Cpu,
     slave: Cpu,
     bus: Bus,
@@ -383,6 +463,7 @@ pub struct Machine {
     dma_errors: [bool; 2],
     cpu_ready: [u64; 2],
     cpu_boundary: [Option<CpuBoundary>; 2],
+    cached_issue: [Option<CachedIssue>; 2],
     cpu_reset_vectors: [Option<onchip::ResetRequest>; 2],
     fault: Option<MachineError>,
 }
@@ -504,6 +585,7 @@ impl Machine {
         self.dma_errors = [false; 2];
         self.cpu_ready = [0; 2];
         self.cpu_boundary = [None; 2];
+        self.cached_issue = [None, None];
         self.cpu_reset_vectors = [None; 2];
         self.fault = None;
         self.cpu = Cpu::default();
@@ -640,13 +722,62 @@ impl Machine {
     /// the caller responsive while detailed chip pipelines remain independent.
     pub fn advance_frame(&mut self) -> Result<(), MachineError> {
         let target = self.frames() + 1;
-        for _ in 0..1_000_000 {
-            self.step()?;
+        let mut steps = 0;
+        while steps < 1_000_000 {
+            let limit = (1_000_000 - steps).min(512);
+            let mut count = if self.bus.slave_enabled {
+                0
+            } else {
+                self.try_cached_batch(limit)?
+            };
+            if count == 0 {
+                if let Some(error) = &self.fault {
+                    return Err(error.clone());
+                }
+                count = self
+                    .step_inner_with_retry(true, limit)
+                    .inspect_err(|error| self.fault = Some(error.clone()))?;
+            }
+            steps += count.max(1);
             if self.frames() >= target {
                 return Ok(());
             }
         }
         Err(MachineError::StepLimit(1_000_000))
+    }
+
+    fn try_cached_batch(&mut self, limit: u32) -> Result<u32, MachineError> {
+        if self.fault.is_some()
+            || self.nmi_pending
+            || self.dma_errors[0]
+            || self.cpu_boundary[0].is_some()
+            || self.cached_issue[0].is_some()
+            || self.cpu_reset_vectors[0].is_some()
+            || self.cpu_ready[0] > self.bus.main_clocks
+        {
+            return Ok(0);
+        }
+        let result = self.bus.cached_batch(&self.cpu, limit);
+        let Some(batch) = result.inspect_err(|error| {
+            self.fault = Some(error.clone());
+        })?
+        else {
+            return Ok(0);
+        };
+        #[cfg(test)]
+        {
+            self.cached_retired += u64::from(batch.retired);
+        }
+        self.cpu = batch.cpu;
+        self.cpu_ready[0] = batch.ready;
+        self.clocks += batch.reference;
+        // Match the last ordinary step's post-retirement advancement. In
+        // particular, a field edge can precede this CPU's next issue time.
+        if let Err(error) = self.finish_hardware_boundary(true) {
+            self.fault = Some(error.clone());
+            return Err(error);
+        }
+        Ok(batch.retired)
     }
 
     pub fn step(&mut self) -> Result<(), MachineError> {
@@ -676,13 +807,27 @@ impl Machine {
         self.dma_errors[i] = false;
         self.cpu_ready[i] = self.bus.main_clocks;
         self.cpu_boundary[i] = None;
+        self.cached_issue[i] = None;
         self.cpu_reset_vectors[i] = Some(reset);
     }
 
     fn issue_cpu(&mut self, processor: Processor) -> Result<bool, MachineError> {
+        self.issue_cpu_with_inline(processor, false)
+    }
+    fn issue_cpu_with_inline(
+        &mut self,
+        processor: Processor,
+        optimized: bool,
+    ) -> Result<bool, MachineError> {
         let i = processor as usize;
         let slave = processor == Processor::Slave;
-        self.bus.sample_interrupts();
+        if optimized && !slave && self.bus.slave_enabled {
+            // Master issue uses its own IRQ. An effect on the slave from a
+            // shared bus access only publishes at the hardware completion.
+            self.bus.sample_interrupt(Processor::Master);
+        } else {
+            self.bus.sample_interrupts();
+        }
         if self.nmi_pending {
             self.nmi_detected.get_or_insert(self.bus.main_clocks);
         } else {
@@ -711,6 +856,7 @@ impl Machine {
         if self.bus.cpu_reset_active(processor) {
             self.bus.hold_cpu_reset(processor);
             self.cpu_boundary[i] = None;
+            self.cached_issue[i] = None;
             self.cpu_reset_vectors[i] = None;
             if slave {
                 self.slave = Cpu::default();
@@ -722,6 +868,9 @@ impl Machine {
         }
         if self.cpu_ready[i] > self.bus.main_clocks {
             return Ok(false);
+        }
+        if self.cached_issue[i].is_some() {
+            return self.resume_cached_issue(processor);
         }
         if !self.bus.nmi_ready(processor) {
             // Software standby gates the entire processor, including external
@@ -767,6 +916,49 @@ impl Machine {
                 }
             };
         }
+        let irq = self
+            .bus
+            .recognized_interrupt(processor)
+            .filter(|r| u32::from(r.level) > (state.sr >> 4) & 15);
+        if optimized
+            && self.bus.slave_enabled
+            && self.cpu_boundary[i].is_none()
+            && !self.dma_errors[i]
+            && (slave || !nmi_recognized)
+            && irq.is_none()
+        {
+            let cpu = if slave {
+                &mut self.slave
+            } else {
+                &mut self.cpu
+            };
+            if self.bus.issue_cached_scalar(processor, cpu) {
+                let states = self.bus.cpu_main_delay(processor, cpu.last_clocks());
+                self.cpu_ready[i] = self.bus.main_clocks + u64::from(states);
+                self.bus.finish_cpu_transaction(processor);
+                #[cfg(test)]
+                {
+                    self.cached_dual_scalars += 1;
+                }
+                return Ok(true);
+            }
+            if let Some((branch, waiting)) = self.bus.prepare_cached_branch(processor, cpu) {
+                self.cached_issue[i] = Some(CachedIssue::Branch(branch));
+                if waiting {
+                    self.cpu_ready[i] = u64::MAX;
+                    return Ok(false);
+                }
+                return self.resume_cached_issue(processor);
+            }
+            if let Some((load, waiting)) = self.bus.prepare_cached_load(processor, cpu) {
+                self.cached_issue[i] = Some(CachedIssue::Load(load));
+                if waiting {
+                    self.cpu_ready[i] = u64::MAX;
+                    return Ok(false);
+                }
+                return self.resume_cached_issue(processor);
+            }
+        }
         let boundary = *self.cpu_boundary[i].get_or_insert_with(|| CpuBoundary {
             dma: self.dma_errors[i],
             nmi: !slave
@@ -775,7 +967,7 @@ impl Machine {
                 && self
                     .nmi_detected
                     .is_some_and(|r| self.bus.main_clocks >= r + 2),
-            irq: self.bus.recognized_interrupt(processor),
+            irq,
             started: self.bus.main_clocks,
         });
         // Keep the architectural state at its previous boundary until all bus
@@ -786,38 +978,32 @@ impl Machine {
         } else {
             self.cpu.clone()
         };
-        let result = (|| -> Result<(bool, bool, bool), CpuError> {
-            self.bus.prepare_interrupt(processor, None);
-            let (dma, nmi) = {
-                let mut memory = self.bus.replay_cpu(processor);
-                let dma = boundary.dma && cpu.accept_dma_address_error(&mut memory)?;
-                let nmi = !dma && boundary.nmi && cpu.accept_nmi(&mut memory)?;
-                (dma, nmi)
-            };
-            let irq = !dma && !nmi && {
-                self.bus.prepare_interrupt(processor, boundary.irq);
-                if let Some(irq) = boundary.irq {
-                    cpu.accept_interrupt(
-                        &mut self.bus.replay_cpu(processor),
-                        irq.level,
-                        irq.vector,
-                    )?
-                } else {
-                    false
-                }
-            };
-            if !dma && !nmi && !irq {
-                // A recognized request may be masked or deferred. It must not
-                // supply a vector or acknowledge a source for an exception
-                // raised by the instruction itself (including native UBC).
-                self.bus.prepare_interrupt(processor, None);
-                cpu.step(&mut self.bus.replay_cpu(processor))?;
-            }
-            Ok((dma, nmi, irq))
-        })();
-        if self.bus.take_nmi_clear(processor) {
+        let inline = optimized && !slave && !self.bus.slave_enabled;
+        if inline {
+            self.bus.begin_inline(true);
+        }
+        let result = if !boundary.dma && !boundary.nmi && boundary.irq.is_none() {
+            cpu.step(&mut self.bus.replay_cpu(processor))
+                .map(|()| false)
+        } else {
+            self.resume_interrupt_boundary(processor, &mut cpu, boundary)
+        };
+        if boundary.nmi && self.bus.take_nmi_clear(processor) {
             self.nmi_pending = false;
             self.nmi_detected = None;
+        }
+        if let Some(progress) = self.bus.take_inline() {
+            self.clocks += progress.reference;
+            if let Some(ready) = progress.ready {
+                self.cpu_ready[i] = ready;
+            }
+            if let Some(error) = progress.error {
+                return Err(MachineError::Scu(error));
+            }
+            if let Some(error) = progress.write_error {
+                self.cpu.deferred_write_fault(error.clone());
+                return Err(MachineError::Cpu(error));
+            }
         }
         match result {
             Err(
@@ -846,7 +1032,7 @@ impl Machine {
                     MachineError::Cpu(error)
                 })
             }
-            Ok((dma, _, _)) => {
+            Ok(dma) => {
                 if dma {
                     self.dma_errors[i] = false;
                 }
@@ -873,23 +1059,153 @@ impl Machine {
         }
     }
 
+    fn resume_cached_issue(&mut self, processor: Processor) -> Result<bool, MachineError> {
+        let i = processor as usize;
+        let cpu = match processor {
+            Processor::Master => &mut self.cpu,
+            Processor::Slave => &mut self.slave,
+        };
+        let mut value = None;
+        let complete = match self.cached_issue[i].as_mut().unwrap() {
+            CachedIssue::Branch(_) => true,
+            CachedIssue::Load(load) => match self.bus.resume_cached_load(processor, load) {
+                Ok(loaded) => {
+                    value = Some(loaded);
+                    true
+                }
+                Err(BusError::Pending) => false,
+                Err(source) => {
+                    self.cached_issue[i] = None;
+                    self.bus.cancel_cpu_transaction(processor);
+                    let error = CpuError::Bus {
+                        pc: cpu.state().pc,
+                        source,
+                    };
+                    cpu.deferred_write_fault(error.clone());
+                    return Err(match processor {
+                        Processor::Master => MachineError::Cpu(error),
+                        Processor::Slave => MachineError::SlaveCpu(error),
+                    });
+                }
+            },
+        };
+        if !complete {
+            self.cpu_ready[i] = u64::MAX;
+            return Ok(false);
+        }
+        match self.cached_issue[i].take().unwrap() {
+            CachedIssue::Branch(branch) => {
+                cpu.retire_cached_control(self.bus.commit_cached_branch(processor, branch));
+            }
+            CachedIssue::Load(load) => {
+                let pc = cpu.state().pc;
+                cpu.retire_prepared_load(
+                    load.plan,
+                    load.future,
+                    value.unwrap(),
+                    self.bus.main_clocks,
+                );
+                self.bus.prepared_load_retired(processor, pc);
+            }
+        }
+        let states = self.bus.cpu_main_delay(processor, cpu.last_clocks());
+        self.cpu_ready[i] =
+            (cpu.execution_clock().unwrap() + u64::from(states)).max(self.bus.main_clocks);
+        self.bus.finish_cpu_transaction(processor);
+        Ok(true)
+    }
+
+    fn resume_interrupt_boundary(
+        &mut self,
+        processor: Processor,
+        cpu: &mut Cpu,
+        boundary: CpuBoundary,
+    ) -> Result<bool, CpuError> {
+        self.bus.prepare_interrupt(processor, None);
+        let mut memory = self.bus.replay_cpu(processor);
+        if boundary.dma && cpu.accept_dma_address_error(&mut memory)? {
+            return Ok(true);
+        }
+        if boundary.nmi && cpu.accept_nmi(&mut memory)? {
+            return Ok(false);
+        }
+        if let Some(irq) = boundary.irq {
+            self.bus.prepare_interrupt(processor, Some(irq));
+            if cpu.accept_interrupt(&mut self.bus.replay_cpu(processor), irq.level, irq.vector)? {
+                return Ok(false);
+            }
+        }
+        // A deferred request must not supply a vector or acknowledge a
+        // source for a synchronous exception raised by the instruction.
+        self.bus.prepare_interrupt(processor, None);
+        cpu.step(&mut self.bus.replay_cpu(processor))?;
+        Ok(false)
+    }
+
     fn step_inner(&mut self) -> Result<(), MachineError> {
+        self.step_inner_with_idle(false)
+    }
+    fn step_inner_with_idle(&mut self, coalesced: bool) -> Result<(), MachineError> {
+        self.step_inner_with_retry(coalesced, 1).map(|_| ())
+    }
+
+    fn step_inner_with_retry(
+        &mut self,
+        coalesced: bool,
+        retry_limit: u32,
+    ) -> Result<u32, MachineError> {
+        let field = self.frames();
         // Complete an architectural boundary when possible. Long bus-master
         // bursts can keep both CPUs waiting; yield after bounded hardware work
         // without manufacturing a CPU fault or freezing the browser caller.
-        for _ in 0..1024 {
-            if self.step_hardware_boundary()? {
-                return Ok(());
+        for turn in 0..1024 {
+            // The frame runner already tried at entry. After a hardware wait
+            // reaches the existing ready time, retry before issuing through
+            // replay. Within the same field the frame runner can resume a
+            // whole bounded burst. A wait crossing the field edge retains the
+            // ordinary step's single-instruction completion contract.
+            if coalesced && turn != 0 && !self.bus.slave_enabled {
+                let limit = if self.frames() == field {
+                    retry_limit
+                } else {
+                    1
+                };
+                let retired = self.try_cached_batch(limit)?;
+                if retired != 0 {
+                    return Ok(retired);
+                }
+            }
+            if self.step_hardware_boundary_with_idle(coalesced)? {
+                return Ok(1);
             }
         }
-        Ok(())
+        Ok(0)
     }
 
+    #[cfg(test)]
     fn step_hardware_boundary(&mut self) -> Result<bool, MachineError> {
-        let mut committed = self.issue_cpu(Processor::Master)?;
+        self.step_hardware_boundary_with_idle(false)
+    }
+    fn step_hardware_boundary_with_idle(&mut self, coalesced: bool) -> Result<bool, MachineError> {
+        let mut committed = if coalesced {
+            self.issue_cpu_with_inline(Processor::Master, true)?
+        } else {
+            self.issue_cpu(Processor::Master)?
+        };
         if self.bus.slave_enabled {
-            committed |= self.issue_cpu(Processor::Slave)?;
+            committed |= self.issue_cpu_with_inline(Processor::Slave, coalesced)?;
         }
+        self.finish_hardware_boundary_with_idle(committed, coalesced)
+    }
+
+    fn finish_hardware_boundary(&mut self, committed: bool) -> Result<bool, MachineError> {
+        self.finish_hardware_boundary_with_idle(committed, false)
+    }
+    fn finish_hardware_boundary_with_idle(
+        &mut self,
+        committed: bool,
+        coalesced: bool,
+    ) -> Result<bool, MachineError> {
         self.bus.grant_bus_transaction();
         let next = if self.bus.slave_enabled {
             self.cpu_ready[0].min(self.cpu_ready[1])
@@ -899,25 +1215,58 @@ impl Machine {
         if committed && next <= self.bus.main_clocks {
             return Ok(true);
         }
+        // Even an earlier event would be handled by the bus scheduler inside
+        // the minimum one-clock advance. Avoid querying all horizons twice.
+        let can_coalesce = self.can_coalesce_wait(next, committed, coalesced);
+        let elapsed = if next.saturating_sub(self.bus.main_clocks) <= 1 {
+            1
+        } else {
+            self.hardware_idle_span(next, can_coalesce)
+        };
+        let result = if can_coalesce {
+            self.bus.advance_cpu_clocks_with_sound(elapsed, true)
+        } else {
+            self.bus.advance_cpu_clocks(elapsed)
+        };
+        let (reference, command) = result.map_err(MachineError::Scu)?;
+        self.clocks += u64::from(reference);
+        self.complete_hardware_boundary(command)?;
+        Ok(committed)
+    }
+
+    fn can_coalesce_wait(&self, next: u64, committed: bool, coalesced: bool) -> bool {
+        let waiting = if self.bus.slave_enabled {
+            next.saturating_sub(self.bus.main_clocks) > 1
+        } else {
+            self.cpu_boundary[0].is_some() || next > self.bus.main_clocks
+        };
+        // Both CPUs are waiting for their existing readiness or bus edges.
+        // Debugger steps retain their ordinary hardware path.
+        coalesced && !committed && waiting && self.bus.cached_wait_allowed()
+    }
+
+    fn hardware_idle_span(&self, next: u64, can_coalesce: bool) -> u32 {
         let nmi_wait = self.nmi_detected.map_or(u64::MAX, |r| {
             let remaining = (r + 2).saturating_sub(self.bus.main_clocks);
             if remaining == 0 { u64::MAX } else { remaining }
         });
-        let elapsed = next
-            .saturating_sub(self.bus.main_clocks)
+        let main_deadline = if can_coalesce {
+            self.bus.coalesced_main_deadline()
+        } else {
+            self.bus.main_deadline()
+        };
+        next.saturating_sub(self.bus.main_clocks)
             .min(nmi_wait)
             // A device event can assert a new request inside an idle batch.
             // Return to CPU scheduling at that edge so the newly established
             // recognition deadline can bound the following advance.
-            .min(u64::from(self.bus.main_deadline()))
+            .min(u64::from(main_deadline))
             .min(u64::from(self.bus.bus_transaction_deadline()))
             .max(1)
-            .min(u64::from(CLOCKS_PER_STEP)) as u32;
-        let (reference, command) = self
-            .bus
-            .advance_cpu_clocks(elapsed)
-            .map_err(MachineError::Scu)?;
-        self.clocks += u64::from(reference);
+            .min(u64::from(CLOCKS_PER_STEP)) as u32
+    }
+
+    fn complete_hardware_boundary(&mut self, command: Option<u8>) -> Result<(), MachineError> {
         match command {
             Some(0x02) if !self.bus.slave_enabled => {
                 self.bus.set_slave_enabled(true);
@@ -927,6 +1276,7 @@ impl Machine {
                 self.bus.set_slave_enabled(false);
                 self.slave = Cpu::default();
                 self.cpu_boundary[1] = None;
+                self.cached_issue[1] = None;
                 self.cpu_reset_vectors[1] = None;
             }
             Some(0x06) => self.bus.sound.set_enabled(true)?,
@@ -949,6 +1299,7 @@ impl Machine {
                 self.dma_errors = [false; 2];
                 self.cpu_ready = [self.bus.main_clocks; 2];
                 self.cpu_boundary = [None; 2];
+                self.cached_issue = [None, None];
                 self.cpu_reset_vectors = [None; 2];
                 match self.mode {
                     Some(BootMode::HleDisc) => {
@@ -974,6 +1325,7 @@ impl Machine {
                 self.dma_errors[1] = false;
                 self.cpu_ready[1] = self.bus.main_clocks;
                 self.cpu_boundary[1] = None;
+                self.cached_issue[1] = None;
                 self.cpu_reset_vectors[1] = None;
                 // Clock completion wakes software standby through the same
                 // input, DMAC inhibition and scheduled exception path as NMI.
@@ -1015,7 +1367,7 @@ impl Machine {
                 self.cpu_ready[processor as usize] = self.bus.main_clocks;
             }
         }
-        Ok(committed)
+        Ok(())
     }
 
     /// Bounded CPU steps, stopping at the first host error. Exception entry and

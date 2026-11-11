@@ -431,6 +431,37 @@ fn vdp2_palette_rgb24_transparency_back_screen_and_color_offsets() {
 }
 
 #[test]
+fn unused_bgon_bit_six_preserves_back_screen_and_enabled_bitmap_pixels() {
+    let mut v = bitmap();
+    v.vram[..2].copy_from_slice(&0x801Fu16.to_be_bytes());
+    v.write16(VDP2 + 0xAE, 0x4000).unwrap();
+    v.vram[0x8000..0x8002].copy_from_slice(&0x83E0u16.to_be_bytes());
+    for enable in [0, 1, 0x101] {
+        v.write16(VDP2 + 0x20, enable).unwrap();
+        let expected = v.framebuffer().unwrap();
+        assert_eq!(
+            &expected[..4],
+            if enable == 0 {
+                &[0, 255, 0, 255]
+            } else {
+                &[255, 0, 0, 255]
+            }
+        );
+        v.write16(VDP2 + 0x20, enable | 0x40).unwrap();
+        assert_eq!(v.framebuffer().unwrap(), expected);
+    }
+    v.write16(VDP2, 0x0100).unwrap();
+    v.write16(VDP2 + 0x20, 0x40).unwrap();
+    assert_eq!(&v.framebuffer().unwrap()[..4], &[0, 255, 0, 255]);
+    // This scoped compatibility bit does not admit other unsupported settings.
+    v.write16(VDP2 + 0x20, 0x80).unwrap();
+    assert!(v.framebuffer().is_err());
+    v.write16(VDP2 + 0x20, 0x40).unwrap();
+    v.write16(VDP2, 0x8008).unwrap();
+    assert!(v.framebuffer().is_err());
+}
+
+#[test]
 fn vdp2_two_bitmaps_windows_priorities_blending_and_vdp1_composition() {
     let mut v = bitmap();
     v.write16(VDP2 + 0x20, 0x303).unwrap();

@@ -2,7 +2,7 @@
 //! See docs/sh2-multiplier.md for the independently derived timing table.
 use crate::bus::{BusError, Memory};
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(super) struct Multiplier {
     ready: u64,
     /// Clock for architectural-only Memory implementations. Clocked adapters

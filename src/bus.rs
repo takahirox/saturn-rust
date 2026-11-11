@@ -9,6 +9,8 @@ use crate::timing::{Raster, RasterEvent, SystemClock};
 use crate::vdp1::{self, Vdp1};
 use std::cell::{Cell, RefCell};
 use std::fmt;
+mod cached;
+mod cached_issue;
 #[cfg(test)]
 mod dmac_tests;
 #[cfg(test)]
@@ -16,6 +18,7 @@ mod hdtv_tests;
 #[cfg(test)]
 mod slave_raster_tests;
 mod transactions;
+pub(crate) use cached_issue::{CachedBranch, CachedLoad};
 
 pub const BIOS_SIZE: usize = 512 * 1024;
 pub const WRAM_SIZE: usize = 1024 * 1024;
@@ -309,6 +312,25 @@ pub trait Memory {
 
 pub struct Bus {
     transactions: transactions::Transactions,
+    inline: Option<transactions::InlineProgress>,
+    // Retain host retirement-buffer capacity between cached bursts.
+    cached_retirement_points: Vec<u64>,
+    #[cfg(test)]
+    inline_resumes: u64,
+    #[cfg(test)]
+    cached_cycle_skipped: u64,
+    #[cfg(test)]
+    cached_stores: u64,
+    #[cfg(test)]
+    cached_read_beats: u64,
+    #[cfg(test)]
+    cached_code_fills: u64,
+    #[cfg(test)]
+    cached_wb_scalars: u64,
+    #[cfg(test)]
+    cached_prepared_loads: u64,
+    #[cfg(test)]
+    cached_prepared_slots: u64,
     // Opt-in, first 64 completed legacy-DSTP transactions; no guest reads.
     pub(crate) dstp_trace: Option<Vec<String>>,
     bios: Option<Vec<u8>>,
@@ -355,6 +377,24 @@ impl Default for Bus {
     fn default() -> Self {
         Self {
             transactions: transactions::Transactions::default(),
+            inline: None,
+            cached_retirement_points: Vec::new(),
+            #[cfg(test)]
+            inline_resumes: 0,
+            #[cfg(test)]
+            cached_cycle_skipped: 0,
+            #[cfg(test)]
+            cached_stores: 0,
+            #[cfg(test)]
+            cached_read_beats: 0,
+            #[cfg(test)]
+            cached_code_fills: 0,
+            #[cfg(test)]
+            cached_wb_scalars: 0,
+            #[cfg(test)]
+            cached_prepared_loads: 0,
+            #[cfg(test)]
+            cached_prepared_slots: 0,
             dstp_trace: None,
             bios: None,
             low: vec![0; WRAM_SIZE],
@@ -474,7 +514,8 @@ impl Bus {
 
     fn interrupt_request(&self, processor: Processor) -> Option<InterruptRequest> {
         let internal = self.onchip[processor as usize].interrupt();
-        let user_break = self.onchip[processor as usize].break_pending();
+        let user_break =
+            internal == Some((15, 12)) && self.onchip[processor as usize].break_pending();
         let external = if processor == Processor::Master {
             self.scu
                 .interrupt()
@@ -523,21 +564,23 @@ impl Bus {
     }
 
     pub(crate) fn sample_interrupts(&mut self) {
-        for p in [Processor::Master, Processor::Slave] {
-            let request = self.interrupt_request(p);
-            let observed = &mut self.irq_observed[p as usize];
-            if let (Some((old, since)), Some(new)) = (*observed, request)
-                && matches!(old.source, InterruptSource::Scu)
-                && matches!(new.source, InterruptSource::Scu)
-                && old.level == new.level
-                && old.external == new.external
-            {
-                // SCU source identity is not encoded on IRL pins. A different
-                // same-level factor cannot restart the level's recognition.
-                *observed = Some((new, since));
-            } else if observed.map(|(r, _)| r) != request {
-                *observed = request.map(|r| (r, self.main_clocks));
-            }
+        self.sample_interrupt(Processor::Master);
+        self.sample_interrupt(Processor::Slave);
+    }
+    pub(crate) fn sample_interrupt(&mut self, processor: Processor) {
+        let request = self.interrupt_request(processor);
+        let observed = &mut self.irq_observed[processor as usize];
+        if let (Some((old, since)), Some(new)) = (*observed, request)
+            && matches!(old.source, InterruptSource::Scu)
+            && matches!(new.source, InterruptSource::Scu)
+            && old.level == new.level
+            && old.external == new.external
+        {
+            // SCU source identity is not encoded on IRL pins. A different
+            // same-level factor cannot restart the level's recognition.
+            *observed = Some((new, since));
+        } else if observed.map(|(r, _)| r) != request {
+            *observed = request.map(|r| (r, self.main_clocks));
         }
     }
     pub(crate) fn recognized_interrupt(&self, processor: Processor) -> Option<InterruptRequest> {
@@ -690,10 +733,15 @@ impl Bus {
         }
     }
     fn acquire_display(&mut self) {
+        if !self.vdp2.display_active() {
+            return;
+        }
         if let Some((field, line, phase, slot)) = self.raster.display_slot() {
             self.vdp2.acquire_display(field, line, phase, slot);
         }
-        if let Some((field, line, phase, x)) = self.raster.rotation_display_slot() {
+        if self.vdp2.rotation_display_active()
+            && let Some((field, line, phase, x)) = self.raster.rotation_display_slot()
+        {
             self.vdp2
                 .acquire_rotation_display(&self.vdp1, field, line, phase, x);
         }
@@ -703,7 +751,11 @@ impl Bus {
             .clocks_to_event()
             .min(self.interrupt_deadline())
             .min(self.bus_main_deadline())
-            .min(self.onchip[1].clocks_to_event())
+            .min(if self.slave_enabled {
+                self.onchip[1].clocks_to_event()
+            } else {
+                u32::MAX
+            })
             .min(self.raster.clocks_to_event())
             .min(if self.vdp2.display_active() {
                 self.raster
@@ -720,20 +772,34 @@ impl Bus {
             .min(self.vdp1.clocks_to_event())
     }
 
-    fn reference_deadline(&self) -> u32 {
+    fn reference_deadline_with_sound(&self, limit: u32, coalesced: bool) -> u32 {
+        let sound = if coalesced && self.cd.media().is_none() && self.sound_ram_request().is_none()
+        {
+            self.sound.cached_cpu_deadline()
+        } else {
+            self.sound.clocks_to_event()
+        };
         self.cd
-            .clocks_to_event()
+            .clocks_to_event_up_to(limit.min(sound))
             .min(self.smpc.clocks_to_event())
-            .min(self.sound.clocks_to_event())
     }
 
     fn advance_fixed_clocks(&mut self, clocks: u32) -> Result<Option<u8>, ScuError> {
+        self.advance_fixed_with_sound(clocks, false)
+    }
+    fn advance_fixed_with_sound(
+        &mut self,
+        clocks: u32,
+        sound_advanced: bool,
+    ) -> Result<Option<u8>, ScuError> {
         self.cd.advance(clocks);
         if self.cd.interrupt() {
             self.scu.signal(16);
         }
-        self.sound.main_ram_request(self.sound_ram_request());
-        self.sound.advance_with_cd(clocks, &mut self.cd)?;
+        if !sound_advanced {
+            self.sound.main_ram_request(self.sound_ram_request());
+            self.sound.advance_with_cd(clocks, &mut self.cd)?;
+        }
         if self.sound.scsp.main_interrupt() {
             self.scu.signal(6);
         }
@@ -758,11 +824,16 @@ impl Bus {
             self.sample_interrupts();
             self.acquire_display();
             self.grant_bus_transaction();
-            let delta = remaining.min(self.main_deadline());
+            let delta = if remaining == 1 {
+                debug_assert!(self.main_deadline() > 0);
+                1
+            } else {
+                remaining.min(self.main_deadline())
+            };
             self.main_clocks = self.main_clocks.wrapping_add(u64::from(delta));
-            self.onchip[0].advance_clocks(delta);
+            self.onchip[0].advance_to_event(delta);
             if self.slave_enabled {
-                self.onchip[1].advance_clocks(delta);
+                self.onchip[1].advance_to_event(delta);
             }
             self.scu.advance_clocks(delta)?;
             let (vram_busy, framebuffer_busy) = self.vdp1_bus_ownership();
@@ -859,13 +930,21 @@ impl Bus {
     /// Advance attached hardware in reference clocks without issuing CPU
     /// instructions. Machine coordinates command completions with CPU state.
     pub fn advance_clocks(&mut self, clocks: u32) -> Result<Option<u8>, ScuError> {
+        self.advance_clocks_with_sound(clocks, false)
+    }
+    fn advance_clocks_with_sound(
+        &mut self,
+        clocks: u32,
+        coalesced: bool,
+    ) -> Result<Option<u8>, ScuError> {
         let mut remaining = clocks;
         let mut command = None;
         while remaining != 0 {
             self.grant_bus_transaction();
-            let delta = remaining
-                .min(self.system_clock.deadline(self.main_deadline()).max(1))
-                .min(self.reference_deadline());
+            let delta = self.reference_deadline_with_sound(
+                remaining.min(self.system_clock.deadline(self.main_deadline()).max(1)),
+                coalesced,
+            );
             let main_clocks = self.system_clock.advance(delta);
             if let Some(completed) = self.advance_main_clocks(main_clocks, delta)? {
                 if matches!(completed, 0x0E | 0x0F) {
@@ -881,11 +960,29 @@ impl Bus {
     /// reference tick. The CPU can issue between them; fixed domains advance
     /// once. Longer idle intervals retain the existing batched fast path.
     pub(crate) fn advance_cpu_clocks(&mut self, main: u32) -> Result<(u32, Option<u8>), ScuError> {
+        self.advance_cpu_clocks_with_sound(main, false)
+    }
+    pub(crate) fn advance_cpu_clocks_with_sound(
+        &mut self,
+        main: u32,
+        coalesced: bool,
+    ) -> Result<(u32, Option<u8>), ScuError> {
+        if coalesced && let Some(result) = self.try_coalesced_wait(main) {
+            return result;
+        }
         if self.pending_main_clocks == 0 {
             if self.system_clock.is_reference() {
-                let reference = main.min(self.reference_deadline());
+                let reference = self.reference_deadline_with_sound(main, coalesced);
+                if reference == 1 {
+                    self.grant_bus_transaction();
+                    let command = self.advance_main_clocks(1, 1)?;
+                    if let Some(completed @ (0x0E | 0x0F)) = command {
+                        self.change_system_clock(completed == 0x0E);
+                    }
+                    return Ok((1, command));
+                }
                 return self
-                    .advance_clocks(reference)
+                    .advance_clocks_with_sound(reference, coalesced)
                     .map(|command| (reference, command));
             }
             // Fixed-domain events can establish a new recognition deadline.
@@ -893,13 +990,11 @@ impl Bus {
             // main-clock idle batch. Bound reference ticks after PLL conversion
             // so fractional phase and two-main-tick edges remain intact.
             let reference = self
-                .system_clock
-                .deadline(main)
-                .saturating_sub(1)
-                .min(self.reference_deadline().saturating_sub(1));
+                .reference_deadline_with_sound(self.system_clock.deadline(main), coalesced)
+                .saturating_sub(1);
             if reference > 0 {
                 return self
-                    .advance_clocks(reference)
+                    .advance_clocks_with_sound(reference, coalesced)
                     .map(|command| (reference, command));
             }
             self.pending_main_clocks = self.system_clock.advance(1);
@@ -1017,6 +1112,7 @@ impl Bus {
         let physical = Self::physical(address);
         if (crate::cd::REGISTERS..crate::cd::REGISTERS + 0x2C).contains(&physical)
             || (crate::cd::DATA..crate::cd::DATA + 4).contains(&physical)
+            || physical == crate::cd::WORD_DATA
         {
             return self.cd.peek16(physical);
         }
@@ -1148,6 +1244,7 @@ impl Bus {
         }
         if (crate::cd::REGISTERS..crate::cd::REGISTERS + 0x2C).contains(&address)
             || (crate::cd::DATA..crate::cd::DATA + 4).contains(&address)
+            || address == crate::cd::WORD_DATA
         {
             if N != 2 && !(N == 4 && address == crate::cd::DATA) {
                 return Err(BusError::UnsupportedDevice { address, width: N });
@@ -1295,6 +1392,7 @@ impl Bus {
         }
         if (crate::cd::REGISTERS..crate::cd::REGISTERS + 0x2C).contains(&address)
             || (crate::cd::DATA..crate::cd::DATA + 4).contains(&address)
+            || address == crate::cd::WORD_DATA
         {
             if N != 2 && !(N == 4 && address == crate::cd::DATA) {
                 return Err(BusError::UnsupportedDevice { address, width: N });
@@ -1474,6 +1572,44 @@ impl Memory for Bus {
 }
 
 impl CpuBus<'_> {
+    fn instruction_prefetchable(address: u32) -> bool {
+        let physical = Bus::physical(address);
+        address & 1 == 0
+            && (physical < BIOS_SIZE as u32
+                || (LOW_WRAM..LOW_WRAM + WRAM_SIZE as u32).contains(&physical)
+                || (HIGH_WRAM..HIGH_WRAM + WRAM_SIZE as u32).contains(&physical)
+                || address >> 29 == 6)
+    }
+    fn fetch_instruction_word(
+        &self,
+        address: u32,
+        read: impl FnOnce(u32) -> Result<[u8; 4], BusError>,
+    ) -> Result<u16, BusError> {
+        if address & 1 != 0 {
+            return Err(BusError::Unaligned { address, width: 2 });
+        }
+        let index = self.processor as usize;
+        let retained = &self.bus.instruction_word[index];
+        if let Some((next, word)) = retained.get()
+            && next == address
+        {
+            retained.set(None);
+            return Ok(word);
+        }
+        let words = read(address & !3)?;
+        self.bus.onchip[index].instruction_fetch(address & !3);
+        if address & 2 == 0 {
+            retained.set(Some((
+                address + 2,
+                u16::from_be_bytes([words[2], words[3]]),
+            )));
+            Ok(u16::from_be_bytes([words[0], words[1]]))
+        } else {
+            retained.set(None);
+            Ok(u16::from_be_bytes([words[2], words[3]]))
+        }
+    }
+
     // ST-210 §3 item32; ST-097 §3.2 figs3.6–3.8. Only passive
     // memory endpoints are covered: never widen a side-effecting register.
     fn b_bus_memory(address: u32) -> bool {
@@ -1758,12 +1894,7 @@ impl Memory for CpuBus<'_> {
         self.bus.check_smpc_width(address, 4, write)
     }
     fn sh2_speculative_fetch(&self, address: u32) -> bool {
-        let physical = Bus::physical(address);
-        address & 1 == 0
-            && (physical < BIOS_SIZE as u32
-                || (LOW_WRAM..LOW_WRAM + WRAM_SIZE as u32).contains(&physical)
-                || (HIGH_WRAM..HIGH_WRAM + WRAM_SIZE as u32).contains(&physical)
-                || address >> 29 == 6)
+        Self::instruction_prefetchable(address)
     }
     fn sh2_discard_prefetch(&self) {
         self.bus.instruction_word[self.processor as usize].set(None);
@@ -1826,28 +1957,7 @@ impl Memory for CpuBus<'_> {
         Ok(value)
     }
     fn fetch16(&self, address: u32) -> Result<u16, BusError> {
-        if address & 1 != 0 {
-            return Err(BusError::Unaligned { address, width: 2 });
-        }
-        let retained = &self.bus.instruction_word[self.processor as usize];
-        if let Some((next, word)) = retained.get()
-            && next == address
-        {
-            retained.set(None);
-            return Ok(word);
-        }
-        let words: [u8; 4] = self.read(address & !3, true)?;
-        self.bus.onchip[self.processor as usize].instruction_fetch(address & !3);
-        if address & 2 == 0 {
-            retained.set(Some((
-                address + 2,
-                u16::from_be_bytes([words[2], words[3]]),
-            )));
-            Ok(u16::from_be_bytes([words[0], words[1]]))
-        } else {
-            retained.set(None);
-            Ok(u16::from_be_bytes([words[2], words[3]]))
-        }
+        self.fetch_instruction_word(address, |a| self.read(a, true))
     }
     fn tas_read8(&self, address: u32) -> Result<u8, BusError> {
         let value = self.external_read_group::<1>(address, true, true, true)?[0];

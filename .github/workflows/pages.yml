@@ -56,6 +56,14 @@ jobs:
       - name: Install the pinned wasm-bindgen CLI on a cold cache
         if: steps.bindgen-cache.outputs.cache-hit != 'true'
         run: python3 scripts/ci-time.py bindgen cargo install wasm-bindgen-cli --version 0.2.129 --locked
+      - name: Install the pinned Binaryen optimizer
+        run: |
+          archive="$RUNNER_TEMP/binaryen-127.tar.gz"
+          curl --fail --location --retry 3 --output "$archive" https://github.com/WebAssembly/binaryen/releases/download/version_127/binaryen-version_127-x86_64-linux.tar.gz
+          printf '%s  %s\n' c8ebe5d00c978601086bcad33b2c80fcfe33d6a8b87b754ba4ea86a9a16cc316 "$archive" | sha256sum --check
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/binaryen-version_127/bin/wasm-opt" --version
+          echo "$RUNNER_TEMP/binaryen-version_127/bin" >> "$GITHUB_PATH"
       - name: Build browser client
         run: |
           python3 scripts/ci-time.py wasm-build sh scripts/build-web.sh

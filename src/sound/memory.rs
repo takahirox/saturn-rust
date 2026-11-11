@@ -17,13 +17,14 @@ pub(crate) enum Owner {
     Main,
     Cpu,
 }
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Port {
     request: Option<Request>,
     result: Option<u32>,
     offset: usize,
     sampled: u32,
 }
+#[derive(Clone)]
 struct Admitted {
     owner: Owner,
     request: Request,
@@ -40,6 +41,15 @@ pub(super) struct Controller {
     pub trace: Vec<(u64, Owner, bool)>,
 }
 impl Controller {
+    pub fn checkpoint_state(&self) -> Self {
+        Self {
+            main: self.main.clone(),
+            cpu: self.cpu.clone(),
+            admitted: self.admitted.clone(),
+            #[cfg(test)]
+            trace: Vec::new(),
+        }
+    }
     fn port(&mut self, owner: Owner) -> &mut Port {
         match owner {
             Owner::Main => &mut self.main,
@@ -93,9 +103,20 @@ impl Controller {
         }
     }
     pub fn complete(&mut self, ram: &mut [u8], tick: u64) {
+        self.complete_recorded(ram, tick, None);
+    }
+    pub fn complete_recorded(
+        &mut self,
+        ram: &mut [u8],
+        tick: u64,
+        undo: Option<&mut checkpoint::RamUndo>,
+    ) {
         if let Some(a) = self.admitted.take() {
             let r = a.request;
             let result = if let Some(value) = r.write {
+                if let Some(undo) = undo {
+                    undo.record(ram, a.config, r.address, r.width);
+                }
                 if r.width == 1 {
                     a.config.write8(ram, r.address, value as u8);
                 } else {

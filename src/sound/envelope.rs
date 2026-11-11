@@ -14,6 +14,7 @@ enum Stage {
 const MAX: u32 = 1023 << 16;
 
 #[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub(super) struct Envelope {
     stage: Stage,
     attenuation: u32,

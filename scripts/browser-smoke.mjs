@@ -1681,15 +1681,21 @@ try {
     if (reset===2) previousDrive=undefined;
     await page.locator("#bios").setInputFiles({name:"original-cd-drive.bin",mimeType:"application/octet-stream",buffer:driveRom});
     await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
-    const result=await page.evaluate(async()=>{
+    const result=await page.evaluate(async payload=>{
       const {emulator}=await import("./app.js");
-      emulator.mount_disc(new Uint8Array(2048*100));
+      const disc=new Uint8Array(2048*100);
+      if(payload===0x2468)disc.set(new TextEncoder().encode("SEGA SEGASATURN "));
+      emulator.mount_disc(disc);
       for(let i=0;i<80 && emulator.read_long(0x060090F0)!==0x600D;i++) emulator.run_steps(10000);
-      return Array.from({length:194},(_,i)=>emulator.read_long(0x06009000+i*4));
-    });
+      {
+        const pixel=Array.from(emulator.framebuffer().slice(0,4));
+        if(String(pixel)!=="0,255,0,255")throw new Error(`Unused BGON bit changed back screen: ${pixel}`);
+      }
+      return Array.from({length:280},(_,i)=>emulator.read_long(0x06009000+i*4));
+    },payload);
     assert.equal(result[0xF0/4],0x600D);
     for (const [offset,status] of [[0,0x0180],[0x10,0x0500],[0x30,0x0500],[0x50,0x0400],
-      [0x60,0x0180],[0x70,0x8180],[0x80,0x06FF],[0x90,0x0180],[0xA0,0x4180]]) {
+      [0x60,0x0180],[0x70,0x8180],[0x80,0x06FF],[0x90,0x0180],[0xA0,0x4100]]) {
       assert.equal(result[offset/4],status,`CD guest offset ${offset.toString(16)}`);
     }
     assert(result[0x2C/4]>=170 && result[0x2C/4]<250);
@@ -1705,6 +1711,15 @@ try {
       [0x25C,2],[0x264,198],[0x284,1026],[0x294,200],[0x300,payload],[0x304,0]]) {
       assert.equal(result[offset/4],value,`CD host transfer ${offset.toString(16)}`);
     }
+    assert.equal(result[0x310/4],0x0080);
+    assert.equal(result[0x324/4],0);
+    assert.equal(result[0x330/4],0x0100);
+    assert.equal(result[0x334/4],payload===0x2468?4:2);
+    assert.equal(result[0x340/4],0x204);
+    assert.equal(result[0x440/4]&0x1E00,0x800);
+    assert.equal(result[0x444/4],0xA5123456);
+    assert.equal(result[0x448/4],0x789ABCA5);
+    assert.equal(result[0x454/4],5);
     if (previousDrive) assert.deepEqual(result,previousDrive);
     previousDrive=result;
   }

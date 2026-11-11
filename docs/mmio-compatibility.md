@@ -21,6 +21,41 @@ have meaningful hardware effects. This change does not catch or swallow global
 emulator errors. Missing mappings, broken devices, widths and register-specific
 restrictions retain their existing behavior.
 
+## BIOS initialization compatibility
+
+The local [BIOS startup investigation](bios-startup.md) adds these explicit cases:
+
+- Aligned SCU IST longword stores clear pending bits where the operand is zero
+  and preserve bits where it is one. The System Program reference requires IST
+  stores in SYS_SETSCUIM/CHGSCUIM; ST-210 #7 warns about lost interrupts, without
+  specifying an SH-2 bus exception. This is a deterministic compatibility model,
+  not a measurement of simultaneous interrupt set/write-clear priority.
+- VDP2 VRSIZE exposes version zero and the base console's 4 Mbit VRAM mode.
+  The version nibble ignores stores. Expanded 8 Mbit addressing remains an
+  explicit unsupported configuration.
+- VDP2 TVSTAT/HCNT/VCNT stores complete without changing their read-only state.
+  Reserved words +0C/+FE read zero and ignore stores. Their read value is a
+  bounded compatibility fallback; the manual gives no electrical value.
+- During an active INTBACK status acquisition with SF claimed, one parameterless
+  control may wait behind the status operation. Its real deadline/effect follows
+  status completion; any unused peripheral continuation is canceled. Another
+  queued command, parameter writes and other overlaps retain diagnostics. This
+  explicit compatibility policy is not measured SMPC mailbox/overlap behavior.
+- Legacy DSTA longword reads expose conservative activity bits from actual
+  pending CPU/DSP DMA, held until physical completion. ST-210 #13 removed this
+  register; this compatibility view does not reconstruct all old wait, break or
+  bus-access flags. DSTA writes and neighboring removed ports remain unsupported.
+- The SCSP's unused slot padding words and +7C0–7FE DSP-address gap read zero
+  and ignore stores. Live slot, coefficient, MADRS and MPRO state is retained;
+  ignored stores do not arm DSP execution or synthesize sound-driver results.
+
+The same investigation documents the SCU DSP's inactive-P-selector compatibility
+decode separately. It executes all other parallel fields and preserves genuine
+instruction/dependency errors; it is not a global instruction-error fallback.
+
+These cases do not enable neighboring holes, arbitrary register widths or
+unmapped memory, and do not change CPU address-error dispatch.
+
 ## DSTP at SCU +0x60
 
 The existing SCU identifies itself as production revision 4 (`VER=4`). This model

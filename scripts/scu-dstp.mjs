@@ -13,6 +13,27 @@ async function rom(name) {
 }
 
 export async function scuDstp(page) {
+  const startup = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/bios-startup.hex", "utf8")).trim().split(/\r?\n/)) {
+    if (line.startsWith("#")) continue;
+    const [at, ...words] = line.split(/\s+/).map(v => parseInt(v, 16));
+    words.forEach((word, i) => startup.writeUInt16BE(word, at + i * 2));
+  }
+  for (const chunk of [1, 127, 10000]) {
+    const results = await page.evaluate(async ({ image, chunk }) => {
+      const { emulator: m } = await import("./app.js");
+      const results = [];
+      m.clear_media();
+      for (let boot = 0; boot < 2; boot++) {
+        m.reset_bios(Uint8Array.from(image));
+        for (let i = 0; i < 30000; i += chunk) m.run_steps(Math.min(chunk, 30000 - i));
+        results.push({ records: Array.from({ length: 25 }, (_, i) => m.read_long(0x0600d000 + i * 4)),
+          exceptions: m.exception_count() });
+      }
+      return results;
+    }, { image: [...startup], chunk });
+    for (const result of results) assert.deepEqual(result, { records: [4,4,0,4,0,0,0,0,0x1a,0x40,0xc0,0x20,0x24,0,0x12345678,0x9abcdef0,0x800,5,10,19,0x12345678,0x5ab8,0,0,0x600d], exceptions: "0" });
+  }
   const disc=[...await readFile("web/star-collector.iso")];
   for (const name of ["read","write","access"]) {
     const image=await rom(name);

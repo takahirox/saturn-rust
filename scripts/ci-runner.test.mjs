@@ -335,7 +335,7 @@ test("a corrupted real Wasm artifact fails a required shard before browser launc
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test("web build binds the newly compiled custom-target artifact and rejects a stale cached CLI", async () => {
+test("web build optimizes custom-target output by default and rejects tool or optimizer failures", async () => {
   const directory = await mkdtemp(join(tmpdir(), "saturn-build-target-"));
   try {
     await mkdir(join(directory, "scripts"));
@@ -349,19 +349,44 @@ test("web build binds the newly compiled custom-target artifact and rejects a st
     // paths separately build real fixtures, compile real Wasm and run Chromium.
     await tool("python3", "exit 0");
     await tool("cp", "exit 0");
+    await tool("dirname", 'exec /usr/bin/dirname "$@"');
     await tool("cargo", 'mkdir -p "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release"\nprintf "fresh-wasm\\n" > "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/saturn_rust.wasm"');
-    await tool("wasm-bindgen", 'if [ "$1" = "--version" ]; then cat tool-version.txt; exit 0; fi\nfor input do :; done\ntest "$(cat "$input")" = fresh-wasm\nprintf "%s" "$input" > selected.txt');
+    await tool("wasm-bindgen", 'if [ "$1" = "--version" ]; then cat tool-version.txt; exit 0; fi\nfor input do :; done\ntest "$(cat "$input")" = fresh-wasm\nprintf "%s" "$input" > selected.txt\nmkdir -p web/pkg\nprintf bound-wasm > web/pkg/saturn_rust_bg.wasm');
+    await tool("wasm-opt", 'if [ "$1" = "--version" ]; then cat optimizer-version.txt; exit 0; fi\ntest "$(cat "$1")" = bound-wasm\nprintf "%s\\n" "$@" > optimizer-args.txt\nwhile [ "$1" != "-o" ]; do shift; done\nprintf optimized-wasm > "$2"\nexit "$(cat optimizer-exit.txt)"');
     await writeFile(join(directory, "tool-version.txt"), "wasm-bindgen 0.2.129\n");
+    await writeFile(join(directory, "optimizer-version.txt"), "wasm-opt version 127\n");
+    await writeFile(join(directory, "optimizer-exit.txt"), "0\n");
     const customTarget = join(directory, "custom targets");
-    const run = () => spawnSync("sh", ["scripts/build-web.sh"], { cwd: directory, encoding: "utf8",
-      env: { ...process.env, PATH: `${join(directory, "bin")}:${process.env.PATH}`, CARGO_TARGET_DIR: customTarget } });
+    const run = (toolPath = `${join(directory, "bin")}:/usr/bin:/bin`) => spawnSync("/bin/sh", ["scripts/build-web.sh"], { cwd: directory, encoding: "utf8",
+      env: { ...process.env, PATH: toolPath, CARGO_TARGET_DIR: customTarget } });
     const built = run();
     assert.equal(built.status, 0, built.stderr);
     assert.equal(await readFile(join(directory, "selected.txt"), "utf8"), join(customTarget, "wasm32-unknown-unknown/release/saturn_rust.wasm"));
+    assert.equal(await readFile(join(directory, "web/pkg/saturn_rust_bg.wasm"), "utf8"), "optimized-wasm");
+    assert.match(await readFile(join(directory, "optimizer-args.txt"), "utf8"), /^web\/pkg\/saturn_rust_bg\.wasm\n-O4\n/);
+    assert(!(await readdir(join(directory, "web/pkg"))).some(name => name.startsWith(".saturn-opt-")));
+    await writeFile(join(directory, "optimizer-version.txt"), "wasm-opt version 127 (version_127)\n");
+    const releaseOptimizer = run();
+    assert.equal(releaseOptimizer.status, 0, releaseOptimizer.stderr);
+    assert.equal(await readFile(join(directory, "web/pkg/saturn_rust_bg.wasm"), "utf8"), "optimized-wasm");
     await writeFile(join(directory, "tool-version.txt"), "wasm-bindgen 0.2.128\n");
     const stale = run();
     assert.equal(stale.status, 1);
     assert.match(stale.stderr, /Install the matching CLI/);
+    await writeFile(join(directory, "tool-version.txt"), "wasm-bindgen 0.2.129\n");
+    await writeFile(join(directory, "optimizer-version.txt"), "wasm-opt version 126\n");
+    const wrongOptimizer = run();
+    assert.equal(wrongOptimizer.status, 1);
+    assert.match(wrongOptimizer.stderr, /Install Binaryen 127/);
+    await writeFile(join(directory, "optimizer-version.txt"), "wasm-opt version 127\n");
+    await writeFile(join(directory, "optimizer-exit.txt"), "7\n");
+    assert.equal(run().status, 7);
+    assert.equal(await readFile(join(directory, "web/pkg/saturn_rust_bg.wasm"), "utf8"), "bound-wasm");
+    assert(!(await readdir(join(directory, "web/pkg"))).some(name => name.startsWith(".saturn-opt-")));
+    await rm(join(directory, "bin/wasm-opt"));
+    const missingOptimizer = run(join(directory, "bin"));
+    assert.equal(missingOptimizer.status, 1);
+    assert.match(missingOptimizer.stderr, /Install Binaryen 127/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -376,10 +401,16 @@ test("CI gates publication on both suites and retains the actually tested assets
   assert.match(wasm, /key: wasm-bindgen-ubuntu24-\$\{\{ runner.os \}\}-\$\{\{ runner.arch \}\}-0.2.129/);
   assert.match(wasm, /if: steps.bindgen-cache.outputs.cache-hit != 'true'/);
   assert(wasm.includes("cargo install wasm-bindgen-cli --version 0.2.129 --locked"));
+  assert(wasm.includes("binaryen-version_127-x86_64-linux.tar.gz"));
+  assert(wasm.includes("c8ebe5d00c978601086bcad33b2c80fcfe33d6a8b87b754ba4ea86a9a16cc316"));
+  assert(wasm.includes("sha256sum --check"));
+  assert(wasm.includes('"$RUNNER_TEMP/binaryen-version_127/bin" >> "$GITHUB_PATH"'));
   assert(!wasm.includes("restore-keys"), "Do not restore a differently versioned executable");
   const buildWeb = await readFile("scripts/build-web.sh", "utf8");
   assert(buildWeb.includes('expected="wasm-bindgen 0.2.129"'));
   assert(buildWeb.includes('[ "$(wasm-bindgen --version)" != "$expected" ]'));
+  assert(buildWeb.includes('expected_optimizer="wasm-opt version 127"'));
+  assert(!buildWeb.includes("WASM_OPT"), "Optimization must not require an opt-in variable");
   const testProfile = (await readFile("Cargo.toml", "utf8")).split("[profile.test]")[1];
   assert.match(testProfile, /opt-level = 3/);
   assert.match(testProfile, /debug-assertions = true/);

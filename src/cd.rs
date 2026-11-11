@@ -2,11 +2,17 @@
 //! Primary reference: ST-162-062094, CD Communication Interface §§3–8
 //! (not ST-162-R1, which describes the peripheral library).
 use crate::bus::BusError;
-use crate::media::{Media, RAW_SECTOR, TrackMode};
+use crate::media::{Media, RAW_SECTOR, Track, TrackMode};
 use std::cell::{Cell, RefCell};
 
 pub const REGISTERS: u32 = 0x0589_0000;
 pub const DATA: u32 = 0x0581_8000;
+/// A19-selected halfword DATATRNS window, sharing the same host FIFO.
+pub const WORD_DATA: u32 = 0x0589_8000;
+
+fn data_port(address: u32) -> bool {
+    matches!(address, DATA | WORD_DATA) || address == DATA + 2
+}
 const HZ: u64 = 26_874_100;
 const CMOK: u16 = 1;
 const DRDY: u16 = 2;
@@ -90,6 +96,7 @@ struct SelectorTransfer {
 
 pub struct CdBlock {
     media: Option<Media>,
+    audio_track_at: Cell<Option<(u32, bool)>>,
     request: [u16; 4],
     response: Cell<[u16; 4]>,
     hirq: Cell<u16>,
@@ -122,6 +129,8 @@ pub struct CdBlock {
     buffer_paused: bool,
     tray_open: bool,
     seeking: u32,
+    authentication: Option<(u32, u16)>,
+    authenticated: u16,
     playing: bool,
     enabled: bool,
     audio_index: usize,
@@ -254,6 +263,7 @@ impl Default for CdBlock {
     fn default() -> Self {
         Self {
             media: None,
+            audio_track_at: Cell::new(None),
             request: [0; 4],
             response: Cell::new([0x0043, 0x4442, 0x4C4F, 0x434B]),
             hirq: Cell::new(0xBE1),
@@ -282,6 +292,8 @@ impl Default for CdBlock {
             buffer_paused: false,
             tray_open: false,
             seeking: 0,
+            authentication: None,
+            authenticated: 0,
             playing: false,
             enabled: true,
             audio_index: 0,
@@ -325,6 +337,8 @@ impl CdBlock {
         *self.transfer.get_mut() = None;
         self.playing = false;
         self.seeking = 0;
+        self.authentication = None;
+        self.authenticated = 0;
         self.audio_index = 0;
         self.deemphasis = crate::cd_audio::Deemphasis::default();
         self.scan = None;
@@ -340,6 +354,7 @@ impl CdBlock {
             self.end = media.leadout;
         }
         self.media = Some(media);
+        self.audio_track_at.set(None);
         self.status = 1;
         self.report(false);
         self.raise(0x20);
@@ -380,22 +395,33 @@ impl CdBlock {
                 || self.copying.is_some())
     }
     pub fn clocks_to_event(&self) -> u32 {
+        self.clocks_to_event_up_to(u32::MAX)
+    }
+    pub(crate) fn clocks_to_event_up_to(&self, limit: u32) -> u32 {
         if !self.enabled {
-            return u32::MAX;
+            return limit;
         }
-        let drive = (HZ - self.phase).div_ceil(75 * u64::from(self.drive_speed())) as u32;
-        let report = (HZ - self.report_phase).div_ceil(self.report_hz()) as u32;
+        // Most board steps are a handful of clocks. Neither rational phase
+        // needs a division or a track lookup when even double speed cannot
+        // cross its edge within the requested interval.
+        let limit = self.command_deadline(limit);
+        if u64::from(limit) * 150 < (HZ - self.phase).min(HZ - self.report_phase) {
+            return limit;
+        }
+        self.phase_deadline(limit, 75 * u64::from(self.drive_speed()))
+    }
+    fn command_deadline(&self, limit: u32) -> u32 {
         let standby = if self.status == 1 && !self.playing {
             (u64::from(self.standby_seconds) * HZ - self.pause_clocks).min(u64::from(u32::MAX))
                 as u32
         } else {
             u32::MAX
         };
-        drive
-            .min(report)
+        limit
             .min(standby)
             .min(self.pending.map_or(u32::MAX, |(_, n)| n))
             .min(self.copying.as_ref().map_or(u32::MAX, |job| job.clocks))
+            .min(self.authentication.map_or(u32::MAX, |(clocks, _)| clocks))
             .min(self.rw.clocks())
             .min(if self.seeking == 0 {
                 u32::MAX
@@ -403,23 +429,44 @@ impl CdBlock {
                 self.seeking
             })
     }
+    fn phase_deadline(&self, limit: u32, drive_hz: u64) -> u32 {
+        let report_hz = self.report_hz(drive_hz);
+        let before = |phase: u64, rate: u64| {
+            let remaining = HZ - phase;
+            if u64::from(limit) * rate < remaining {
+                limit
+            } else {
+                remaining.div_ceil(rate) as u32
+            }
+        };
+        before(self.phase, drive_hz).min(before(self.report_phase, report_hz))
+    }
     fn drive_speed(&self) -> u32 {
-        if self.scan.is_some()
-            || self
-                .media
-                .as_ref()
-                .and_then(|m| m.track(self.fad))
-                .is_some_and(|t| t.mode == TrackMode::Audio)
-        {
+        if self.scan.is_some() || self.speed == 1 || self.at_audio_track() {
             1
         } else {
             self.speed
         }
     }
-    fn report_hz(&self) -> u64 {
+    fn at_audio_track(&self) -> bool {
+        let Some(media) = &self.media else {
+            return false;
+        };
+        if let Some((fad, audio)) = self.audio_track_at.get()
+            && fad == self.fad
+        {
+            return audio;
+        }
+        let audio = media
+            .track(self.fad)
+            .is_some_and(|track| track.mode == TrackMode::Audio);
+        self.audio_track_at.set(Some((self.fad, audio)));
+        audio
+    }
+    fn report_hz(&self, drive_hz: u64) -> u64 {
         // ST-162 §3.4: 75/150 Hz during play, 60 Hz while stopped/paused.
         if self.playing || self.scan.is_some() {
-            75 * u64::from(self.drive_speed())
+            drive_hz
         } else {
             60
         }
@@ -477,7 +524,7 @@ impl CdBlock {
     }
     pub fn read16(&self, address: u32) -> Result<u16, BusError> {
         let value = self.peek16(address)?;
-        if address == DATA || address == DATA + 2 {
+        if data_port(address) {
             if let Some(t) = self
                 .transfer
                 .borrow_mut()
@@ -497,7 +544,7 @@ impl CdBlock {
         if address & 1 != 0 {
             return Err(BusError::Unaligned { address, width: 2 });
         }
-        if address == DATA || address == DATA + 2 {
+        if data_port(address) {
             return Ok(self.peek_data(0));
         }
         match address.wrapping_sub(REGISTERS) {
@@ -526,7 +573,7 @@ impl CdBlock {
         if address & 1 != 0 {
             return Err(BusError::Unaligned { address, width: 2 });
         }
-        if address == DATA || address == DATA + 2 {
+        if data_port(address) {
             if let Some(t) = self.transfer.get_mut().as_mut().filter(|t| t.put.is_some())
                 && t.position + 2 <= t.bytes.len()
             {
@@ -560,10 +607,10 @@ impl CdBlock {
         }
         while clocks != 0 {
             self.sync_rw();
-            let delta = clocks.min(self.clocks_to_event());
+            let drive_hz = 75 * u64::from(self.drive_speed());
+            let report_hz = self.report_hz(drive_hz);
+            let delta = self.phase_deadline(self.command_deadline(clocks), drive_hz);
             self.rw.advance(delta, self.media.as_ref());
-            let speed = self.drive_speed();
-            let report_hz = self.report_hz();
             if self.status == 1 && !self.playing {
                 self.pause_clocks += u64::from(delta);
                 if self.pause_clocks >= u64::from(self.standby_seconds) * HZ {
@@ -577,7 +624,19 @@ impl CdBlock {
             if was_seeking && self.seeking == 0 {
                 self.status = if self.playing { 3 } else { 1 };
             }
-            self.phase += u64::from(delta) * 75 * u64::from(speed);
+            if let Some((left, result)) = self.authentication {
+                if delta >= left {
+                    self.authentication = None;
+                    self.authenticated = result;
+                    self.status = 1;
+                    self.fad = self.media.as_ref().map_or(150, |m| m.tracks[0].start);
+                    self.report(true);
+                    self.raise(CSCT | EFLS);
+                } else {
+                    self.authentication = Some((left - delta, result));
+                }
+            }
+            self.phase += u64::from(delta) * drive_hz;
             while self.phase >= HZ {
                 self.phase -= HZ;
                 if let Some((reverse, _)) = self.scan {
@@ -913,20 +972,30 @@ impl CdBlock {
         }
         255 // finite cyclic selector networks drop rather than hang host
     }
-    /// External SCSP input: signed stereo, 588 frames per Red Book sector.
-    pub fn audio_sample(&mut self) -> [i16; 2] {
-        let scanning = self.scan.is_some();
+    fn audio_source(&self) -> Option<(&Media, &Track)> {
+        let media = self.media.as_ref()?;
         if !self.enabled
             || (!self.playing && !self.scan.is_some_and(|(_, audible)| audible))
             || self.seeking != 0
             || self.buffer_paused
         {
-            return [0; 2];
+            return None;
         }
-        let Some(media) = &self.media else {
-            return [0; 2];
-        };
-        let Some(track) = media.track(self.fad).filter(|t| t.mode == TrackMode::Audio) else {
+        let track = media
+            .track(self.fad)
+            .filter(|t| t.mode == TrackMode::Audio)?;
+        Some((media, track))
+    }
+
+    /// Audio is constant zero until a CD event or a guest CD register access.
+    pub(crate) fn audio_quiet(&self) -> bool {
+        self.audio_source().is_none()
+    }
+
+    /// External SCSP input: signed stereo, 588 frames per Red Book sector.
+    pub fn audio_sample(&mut self) -> [i16; 2] {
+        let scanning = self.scan.is_some();
+        let Some((media, track)) = self.audio_source() else {
             return [0; 2];
         };
         let preemphasis = track.control & 1 != 0;
@@ -1069,6 +1138,17 @@ impl CdBlock {
             r[3] = d;
             this.response.set(r);
         };
+        let transfer_size = |this: &Self, words: u32, flags: u16| {
+            // Transfer-size responses use CR1's low byte for the high count,
+            // not the CD report's data/repeat flags.
+            let status = this.response.get()[0] & 0xFF00;
+            this.response.set([
+                status | ((words >> 16) as u16 & 255),
+                words as u16,
+                0,
+                flags,
+            ]);
+        };
         // ST-162 §8.2.1 functions1.5/1.6: OPEN/NODISC wait, with a
         // valid drive report. They are not malformed-command REJECTs and
         // must neither start DATATRNS nor manufacture TOC/session data.
@@ -1083,7 +1163,7 @@ impl CdBlock {
                     return false;
                 };
                 let toc = m.toc();
-                response(self, 204, 0, 0);
+                transfer_size(self, 204, 0);
                 return self.begin_get(toc, None, false);
             }
             0x03 => {
@@ -1092,10 +1172,15 @@ impl CdBlock {
                 };
                 let value = match c[0] & 255 {
                     0 => 0x0100_0000 | m.leadout,
-                    1 => 0x0100_0096,
+                    // Session location is the first track's logical offset;
+                    // the host adds the 150-frame FAD bias exactly once.
+                    1 => 0x0100_0000 | (m.tracks[0].start - 150),
                     _ => 0xFFFF_FFFF,
                 };
                 response(self, 0, (value >> 16) as u16, value as u16);
+                let mut r = self.response.get();
+                r[0] &= 0xFF00;
+                self.response.set(r);
             }
             0x04 => {
                 let flags = c[0] as u8;
@@ -1137,6 +1222,7 @@ impl CdBlock {
                 self.buffer_paused = false;
                 self.playing = false;
                 self.seeking = 0;
+                self.authentication = None;
                 self.audio_index = 0;
                 self.deemphasis = crate::cd_audio::Deemphasis::default();
                 self.finish_directory(false);
@@ -1189,6 +1275,8 @@ impl CdBlock {
                 self.audio_index = 0;
                 self.deemphasis = crate::cd_audio::Deemphasis::default();
                 self.tray_open = true;
+                self.authentication = None;
+                self.authenticated = 0;
                 self.status = 6;
                 self.file_read = None;
                 self.report(false);
@@ -1408,7 +1496,7 @@ impl CdBlock {
                     let Some((sequence, flags)) = self.rw.front() else {
                         return self.wait();
                     };
-                    response(self, 12, 0, flags);
+                    transfer_size(self, 12, flags);
                     if !self.begin_get(vec![0; 24], None, false) {
                         return false;
                     }
@@ -1430,7 +1518,7 @@ impl CdBlock {
                     bytes[3..6].copy_from_slice(&relative.to_be_bytes()[1..]);
                     bytes[7..10].copy_from_slice(&self.fad.to_be_bytes()[1..]);
                 }
-                response(self, 5, 0, 0);
+                transfer_size(self, 5, 0);
                 return self.begin_get(bytes, None, false);
             }
             0x30 => {
@@ -1807,7 +1895,7 @@ impl CdBlock {
                     bytes.extend(f.size.to_be_bytes());
                     bytes.extend([f.unit, f.gap, f.number, f.flags]);
                 }
-                response(self, (bytes.len() / 2) as u16, 0, 0);
+                transfer_size(self, (bytes.len() / 2) as u32, 0);
                 return self.begin_get(bytes, None, false);
             }
             0x74 => {
@@ -1866,6 +1954,52 @@ impl CdBlock {
                 self.playing = false;
                 self.status = 1;
                 self.raise(EFLS);
+            }
+            0xE0 => {
+                // Stock disc authentication only; no MPEG cartridge is modeled.
+                if c[0] & 255 != 0 || c[1] != 0 || self.tray_open {
+                    return false;
+                }
+                let Some(media) = &self.media else {
+                    return false;
+                };
+                if self.authentication.is_some() {
+                    return self.wait();
+                }
+                // Ordinary image formats do not retain the physical security
+                // ring. This functional media policy recognizes the Saturn
+                // system identifier, not a game name or firmware instruction.
+                let result = if media.tracks[0].mode == TrackMode::Audio {
+                    1
+                } else if media
+                    .cooked_sector(media.tracks[0].start)
+                    .is_ok_and(|sector| sector.starts_with(b"SEGA SEGASATURN "))
+                {
+                    4
+                } else {
+                    2
+                };
+                self.stop_rw();
+                self.finish_directory(false);
+                self.file_read = None;
+                self.playing = false;
+                self.scan = None;
+                self.seeking = 0;
+                self.buffer_paused = false;
+                self.at_home = false;
+                self.authenticated = 0;
+                // Two 75 Hz frames are a bounded model latency, not a measured
+                // security-ring seek. Completion is separate from CMOK.
+                self.authentication = Some(((HZ * 2 / 75) as u32, result));
+                self.status = 0;
+                self.report(false);
+            }
+            0xE1 => {
+                if c[0] & 255 != 0 || c[1] != 0 {
+                    return false;
+                }
+                let status = self.response.get()[0] & 0xFF00;
+                self.response.set([status, self.authenticated, 0, 0]);
             }
             _ => return false,
         }
@@ -1935,7 +2069,7 @@ impl CdBlock {
                     if limit <= job.next
                         || root.fad <= job.next
                         || root.size == 0
-                        || root.size > 1024 * 1024
+                        || root.size > crate::disc::MAX_DIRECTORY_BYTES
                     {
                         return None;
                     }
@@ -1959,7 +2093,7 @@ impl CdBlock {
             }
         } else {
             let extent = job.extent.as_ref()?;
-            if extent.size == 0 || extent.size > 1024 * 1024 {
+            if extent.size == 0 || extent.size > crate::disc::MAX_DIRECTORY_BYTES {
                 return None;
             }
             let remaining = extent.size.checked_sub((job.next - extent.fad) * 2048)?;
