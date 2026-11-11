@@ -9,6 +9,7 @@ use crate::{CachedIssue, Cpu, CpuBoundary, Machine, MachineError};
 #[derive(Default)]
 pub(crate) struct Context {
     templates: Vec<Template>,
+    recent: Option<usize>,
     scratch: Option<Box<Machine>>,
     pub(crate) retry: u64,
 }
@@ -231,12 +232,30 @@ fn private_instruction(cpu: &Cpu) -> bool {
     })
 }
 impl Context {
-    fn prepare(&mut self, machine: &Machine, span: u32) -> Option<usize> {
+    pub(crate) fn has_templates(&self) -> bool {
+        !self.templates.is_empty()
+    }
+    fn matching(&mut self, machine: &Machine) -> Option<usize> {
+        if let Some(index) = self.recent
+            && self
+                .templates
+                .get(index)
+                .is_some_and(|template| template.matches(machine))
+        {
+            return Some(index);
+        }
         if let Some(index) = self
             .templates
             .iter()
             .position(|template| template.matches(machine))
         {
+            self.recent = Some(index);
+            return Some(index);
+        }
+        None
+    }
+    fn prepare(&mut self, machine: &Machine, span: u32) -> Option<usize> {
+        if let Some(index) = self.matching(machine) {
             return Some(index);
         }
         let initial = State::capture(machine)?;
@@ -336,6 +355,7 @@ impl Context {
             prefix,
             period,
         });
+        self.recent = Some(index);
         Some(index)
     }
 }
@@ -343,7 +363,6 @@ impl Machine {
     pub(crate) fn try_private_poll_batch(&mut self, limit: u32) -> Result<u32, MachineError> {
         let now = self.bus.main_clocks;
         if !self.bus.slave_enabled
-            || now < self.private_poll.retry
             || self.fault.is_some()
             || self.nmi_pending
             || self.dma_errors.iter().any(|&error| error)
@@ -360,8 +379,18 @@ impl Machine {
             return Ok(0);
         }
         let mut context = std::mem::take(&mut self.private_poll);
-        let Some(index) = context.prepare(self, span) else {
-            context.retry = now + 64;
+        // The retry deadline bounds new proof construction. Retained proofs
+        // recheck the complete private CPU, transaction, status and code state.
+        let can_prepare = now >= context.retry;
+        let matched = if can_prepare {
+            context.prepare(self, span)
+        } else {
+            context.matching(self)
+        };
+        let Some(index) = matched else {
+            if can_prepare {
+                context.retry = now + 64;
+            }
             self.private_poll = context;
             return Ok(0);
         };
@@ -516,5 +545,88 @@ impl Bus {
             lru[i] = (lru[i] & keep[i]) | value[i];
         }
         self.cache[1].get_mut().commit_replacement_state(lru);
+    }
+}
+
+#[cfg(test)]
+mod resume_tests {
+    use super::*;
+    fn polling_machine() -> Machine {
+        let mut machine = crate::scheduling_tests::cached_pair(
+            &[0x7001, 0x7101, 0x7201, 0xAFFB, 9],
+            &[0x60F0, 0xC880, 0x89FC, 0xAFFB, 9],
+        );
+        machine.slave = Cpu::start(HIGH_WRAM + 0x100, onchip::FRT + 1);
+        machine
+            .slave
+            .prime_fetch(&machine.bus.for_cpu(Processor::Slave));
+        let mut context = Context::default();
+        context
+            .prepare(&machine, machine.bus.private_probe_span())
+            .unwrap();
+        context.retry = machine.bus.main_clocks + 64;
+        machine.private_poll = context;
+        machine
+    }
+    #[test]
+    fn known_private_proof_runs_while_new_probes_are_throttled() {
+        let mut optimized = polling_machine();
+        let mut reference = polling_machine();
+        let templates = optimized.private_poll.templates.len();
+        assert!(optimized.try_private_poll_batch(32).unwrap() > 0);
+        assert_eq!(optimized.private_poll.templates.len(), templates);
+        for _ in 0..2 {
+            optimized.advance_frame().unwrap();
+            while reference.frames() < optimized.frames() {
+                reference.step().unwrap();
+            }
+            assert_eq!(optimized.cpu, reference.cpu);
+            assert_eq!(optimized.slave, reference.slave);
+            assert_eq!(optimized.cpu_ready, reference.cpu_ready);
+            assert_eq!(optimized.bus.main_clocks, reference.bus.main_clocks);
+            assert_eq!(optimized.clocks, reference.clocks);
+            for index in 0..2 {
+                optimized.bus.cache[index]
+                    .borrow()
+                    .assert_same_contents(&reference.bus.cache[index].borrow());
+                optimized.bus.onchip[index]
+                    .assert_cached_read_bus_matches(&reference.bus.onchip[index]);
+            }
+        }
+    }
+    #[test]
+    fn repeated_misses_keep_the_scheduled_retry_time() {
+        for change in [0, 1, 2] {
+            let mut machine = polling_machine();
+            let retry = machine.private_poll.retry;
+            match change {
+                0 => machine.bus.write16(0x21000000, 0).unwrap(),
+                1 => machine
+                    .bus
+                    .for_cpu(Processor::Slave)
+                    .write16(HIGH_WRAM + 0x106, 0xE011)
+                    .unwrap(),
+                2 => machine
+                    .bus
+                    .for_cpu(Processor::Slave)
+                    .write8(crate::cache::CCR, 9)
+                    .unwrap(),
+                _ => unreachable!(),
+            }
+            let cpu = machine.cpu.clone();
+            let slave = machine.slave.clone();
+            let clock = machine.bus.main_clocks;
+            for _ in 0..3 {
+                assert_eq!(
+                    machine.try_private_poll_batch(32).unwrap(),
+                    0,
+                    "change={change}"
+                );
+                assert_eq!(machine.private_poll.retry, retry);
+                assert_eq!(machine.cpu, cpu);
+                assert_eq!(machine.slave, slave);
+                assert_eq!(machine.bus.main_clocks, clock);
+            }
+        }
     }
 }

@@ -2038,3 +2038,58 @@ above.
 60 fields/s remains unmet. The measured game window needs approximately 7.4×
 additional throughput. Broader dual-CPU synchronization remains under
 investigation after a prototype first diverged at field 990.
+
+## Reuse private polling proofs during probe backoff (2026-11-12)
+
+Related to #17. The default Web field runner now reuses a validated private
+Slave polling proof during the existing 64-clock backoff for constructing
+new proofs. Each lookup validates the full CPU/pipeline/readiness state,
+private transaction, FTCSR observation, cache control, resident code bytes and
+cache ways through the existing matcher. A last-successful template hint tries
+that same matcher before the linear search. Repeated misses during backoff keep
+the scheduled retry time, allowing construction to resume when due. The existing
+bus, interrupt, DMA, sound and raster horizons bound publication.
+
+Two original native regressions exercise reuse during backoff, compare two
+complete fields against ordinary scheduling with both CPUs/caches/BSCs and
+clocks, and reject stale proofs after FTCSR, resident code and cache-control
+changes. Restoring the old blanket retry refusal in an isolated negative control
+fails the positive reuse assertion. The complete native suite passed 1,321 tests
+in 111 groups. All 74 production-Wasm browser groups, all 48 scheduler cases,
+13 browser-runner checks, fixture reproduction, formatting and native/Wasm
+Clippy passed.
+
+Chrome 157.0.8103.39 drew every field to Canvas. Three rotated game comparisons
+and three alternating menu comparisons matched every exposed CPU, sound, clock
+and pixel endpoint against PR #122's default module. Extended local checks
+also matched fields 1500, 1800, 2100, 2400, 2824 and 3252. The title, book and
+guide captures were byte-identical to the earlier reference captures.
+
+| Workload | Earlier fields/s | Proof reuse fields/s | Median p95 field time |
+| --- | ---: | ---: | ---: |
+| Local Machi Disc 1, fields 1200–1380 | 8.204 | 8.999 | 148.6 → 152.6 ms |
+| Local BIOS menu, fields 1200–1560 | 25.706 | 25.627 | 64.5 → 65.0 ms |
+
+The game median improved 9.7%, with a 12.4% improvement across combined measured
+time. A separate three-pair repeat measured 8.007 → 8.472 fields/s, a 5.8%
+median improvement and a 9.2% improvement across combined time. Every timed
+endpoint matched again. Menu median throughput changed by −0.3%. The measured default module's
+SHA-256 is
+`b6dbef290593ccde10f69c62a28d387cef71933bdd798a436b154f6034cb2d8c`.
+
+An independent single-instruction admission trial allowed cached issue during
+BSC waits while charging the pending wait ledger at retirement. Its original
+BSC/wait regressions and real-game state comparisons passed, and combined game
+throughput changed by −1.6%. A broader private-CPU macro trial corrected its
+field-990 divergence by refusing an already accepted peripheral write, then
+matched all fields through 1200. It reduced combined throughput by 17.2%.
+A phase predictor reduced that regression to 6.7%. These trials remain excluded
+from the default module.
+
+A read-route diagnostic over game fields 1200–1500 counted 8,339,235 Master
+high-WRAM cache hits and 807,589 allocating misses through the ordinary issue
+path, excluding complete cached bursts. No disabled-cache or disabled-data-fill
+misses occurred in that sample. The diagnostic endpoint matched the ordinary
+reference. Reusing private peer states across more issue phases remains under
+investigation. The measured game window still needs approximately 6.7× more
+throughput to reach 60 fields/s.

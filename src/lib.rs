@@ -823,7 +823,8 @@ impl Machine {
             let mut count = if self.bus.slave_enabled
                 && (((self.cpu_ready[1] != self.bus.main_clocks
                     || self.bus.main_clocks < self.slave_poll_retry)
-                    && self.bus.main_clocks < self.private_poll.retry)
+                    && self.bus.main_clocks < self.private_poll.retry
+                    && !self.private_poll.has_templates())
                     || self.cpu_boundary[0].is_some()
                     || self.cached_issue[0].is_some())
             {
