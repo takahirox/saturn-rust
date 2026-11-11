@@ -2026,3 +2026,79 @@ fn cached_bursts_wait_for_live_sound_and_cd_irq_relatching() {
         }
     }
 }
+
+#[test]
+fn uncached_work_ram_reads_preserve_width_order_and_external_changes() {
+    for fast in [false, true] {
+        for base in [LOW_WRAM, HIGH_WRAM] {
+            for narrow in [false, true] {
+                for little in [false, true] {
+                    for (load, offset) in [
+                        (0x60F0, 0x2001),
+                        (0x60F1, 0x2002),
+                        (0x60F2, 0x2000),
+                        (0x60F0, WRAM_SIZE as u32 - 1),
+                    ] {
+                        let make = || {
+                            let mut machine = crate::scheduling_tests::cached_pair(
+                                &[load, 0x7101, 0xAFFC, 9],
+                                &[0x60F0, 0xC880, 0x89FC, 0xAFFB, 9],
+                            );
+                            machine.bus.change_system_clock(fast);
+                            machine.bus.set_slave_enabled(true);
+                            machine
+                                .bus
+                                .for_cpu(Processor::Slave)
+                                .write8(crate::cache::CCR, 0x11)
+                                .unwrap();
+                            machine
+                                .bus
+                                .for_cpu(Processor::Slave)
+                                .fetch16(HIGH_WRAM + 0x100)
+                                .unwrap();
+                            machine.bus.cpu_delay(Processor::Slave, 0);
+                            machine.cpu = Cpu::start(HIGH_WRAM, 0x20000000 | (base + offset));
+                            machine
+                                .cpu
+                                .prime_fetch(&machine.bus.for_cpu(Processor::Master));
+                            machine.slave = Cpu::start(HIGH_WRAM + 0x100, crate::onchip::FRT + 1);
+                            machine
+                                .slave
+                                .prime_fetch(&machine.bus.for_cpu(Processor::Slave));
+                            machine.bus.onchip[0]
+                                .write32(0xFFFFFFE0, 0xA55A03F0 | if little { 0x1000 } else { 0 })
+                                .unwrap();
+                            machine.bus.onchip[0]
+                                .write32(0xFFFFFFE4, if narrow { 0xA55A007C } else { 0xA55A00FC })
+                                .unwrap();
+                            machine.bus.onchip[0]
+                                .write32(0xFFFFFFEC, if narrow { 0xA55A0000 } else { 0xA55A0040 })
+                                .unwrap();
+                            machine
+                        };
+                        let mut optimized = make();
+                        let mut reference = make();
+                        for value in [0x89ABCDEF, 0x76543210] {
+                            for machine in [&mut optimized, &mut reference] {
+                                machine.bus.write32(base + 0x2000, value).unwrap();
+                                machine
+                                    .bus
+                                    .write8(base + WRAM_SIZE as u32 - 1, value as u8)
+                                    .unwrap();
+                            }
+                            optimized.advance_frame().unwrap();
+                            reference_frame(&mut reference).unwrap();
+                            same(&mut optimized, &mut reference);
+                            optimized.bus.onchip[0]
+                                .assert_cached_read_bus_matches(&reference.bus.onchip[0]);
+                        }
+                        assert!(
+                            optimized.bus.cached_read_beats > 0,
+                            "passive reads did not execute fast={fast} base={base:X} narrow={narrow} little={little} load={load:X} offset={offset:X}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

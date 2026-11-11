@@ -797,17 +797,41 @@ impl Bus {
         }
         let op = initial.decoded_opcode()?;
         let address = initial.cached_load_address(op)?;
-        // EDSR/LOPR are stable until drawing completion or a field change.
-        // Both remain strict horizons; no peer or other bus master intervenes.
+        // WRAM and passive device words remain stable inside this burst.
+        // Observer deadlines and the quiet bus exclude intervening writes.
         let physical = Bus::physical(address);
         if !(0x2000_0000..0x4000_0000).contains(&address)
             || op >> 12 == 4
             || !self.cached_reads_quiet()
-            || self.onchip[0].external_bus_width(physical) < 2
         {
             return None;
         }
-        let (bytes, allowed_widths) = if physical == crate::vdp1::REGISTERS + 0x10 {
+        let ram = if (LOW_WRAM..LOW_WRAM + WRAM_SIZE as u32).contains(&physical) {
+            Some((&self.low, LOW_WRAM))
+        } else if (HIGH_WRAM..HIGH_WRAM + WRAM_SIZE as u32).contains(&physical) {
+            Some((&self.high, HIGH_WRAM))
+        } else {
+            None
+        };
+        let (bytes, allowed_widths) = if let Some((ram, base)) = ram {
+            let remaining = &ram[(physical - base) as usize..];
+            let length = remaining.len().min(4);
+            let mut bytes = [0; 4];
+            bytes[..length].copy_from_slice(&remaining[..length]);
+            let widths =
+                1 | if physical.is_multiple_of(2) && length >= 2 {
+                    2
+                } else {
+                    0
+                } | if physical.is_multiple_of(4) && length >= 4 {
+                    4
+                } else {
+                    0
+                };
+            (bytes, widths)
+        } else if self.onchip[0].external_bus_width(physical) < 2 {
+            return None;
+        } else if physical == crate::vdp1::REGISTERS + 0x10 {
             let a = self.vdp1.read16(physical).ok()?.to_be_bytes();
             let b = self.vdp1.read16(physical + 2).ok()?.to_be_bytes();
             ([a[0], a[1], b[0], b[1]], 2 | 4)

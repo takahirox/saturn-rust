@@ -37,6 +37,8 @@ export async function cachedScheduler(page) {
     ["dual SH-2", "tests/fixtures/dual-sh2.hex", false],
     ["dual resident polling and buffered RAM writes", "tests/fixtures/dual-poll.hex", false],
     ["dual polling with a delayed status load", "tests/fixtures/dual-poll.hex", "dual-delayed"],
+    ["dual polling with uncached low WRAM byte reads", "tests/fixtures/dual-poll.hex", "dual-ram-byte"],
+    ["dual polling with uncached high WRAM long reads", "tests/fixtures/dual-poll.hex", "dual-ram-long"],
     ["dual polling with live PCM, DSP and sound control writes", "tests/fixtures/dual-poll.hex", "dual-sound"],
     ["multiplier", "tests/fixtures/sh2-multiplier.hex", false],
     ["PLL", "tests/fixtures/clock.hex", false],
@@ -93,6 +95,14 @@ export async function cachedScheduler(page) {
       const load = mutate === "cd-byte" ? 0x6040 : mutate === "cd-long" ? 0x6042 : 0x6041;
       [load, load, 0x7801, 0xAFFB, 0x0009]
         .forEach((word, i) => bytes.writeUInt16BE(word, 0x20C + i * 2));
+    }
+    if (mutate === "dual-ram-byte" || mutate === "dual-ram-long") {
+      const byte = mutate === "dual-ram-byte";
+      bytes.writeUInt32BE(byte ? 0x20202021 : 0x26002020, 0x264);
+      bytes.writeUInt16BE(byte ? 0x6540 : 0x6542, 0x268);
+      // Keep the original register/count loop and the slave's FTCSR poll.
+      // Its master operand stays uncached and is read without a later store.
+      bytes.writeUInt16BE(0x0009, 0x272);
     }
     if (mutate === "data-cache" || mutate === "data-disabled") {
       bytes.fill(0,0x200,0x400);
