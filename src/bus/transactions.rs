@@ -1090,18 +1090,19 @@ impl Bus {
     }
     pub(super) fn cached_store_memory(
         &mut self,
+        processor: Processor,
         pc: u32,
         address: u32,
         width: usize,
         value: u32,
     ) -> CpuBus<'_> {
-        let journal = self.transactions.journals[0].get_mut();
+        let journal = self.transactions.journals[processor as usize].get_mut();
         journal.write_context = (pc, None);
         journal.current_operation = Some(Operation::Write(address, width, value));
         journal.beat_cursor = 0;
         CpuBus {
             bus: self,
-            processor: Processor::Master,
+            processor,
             cached: true,
             scheduled: true,
         }
@@ -1234,6 +1235,20 @@ impl Bus {
             scheduled: true,
         };
         crate::cpu::read_operand(&memory, address, width)
+    }
+    pub(crate) fn resume_cached_store(
+        &mut self,
+        processor: Processor,
+        pc: u32,
+        store: &CachedStore,
+    ) -> Result<(), BusError> {
+        let (address, width) = store.plan.operand.unwrap();
+        self.transactions.journals[processor as usize]
+            .get_mut()
+            .operand_completion = Some(store.plan.at);
+        let mut memory =
+            self.cached_store_memory(processor, pc, address, width as usize, store.value);
+        crate::cpu::write_operand(&mut memory, address, width, store.value)
     }
     pub(crate) fn take_cpu_write_error(
         &mut self,

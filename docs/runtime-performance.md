@@ -1885,3 +1885,39 @@ The measured module is the default build, SHA-256
 The game median improved 3.0%. Menu throughput changed by −0.2%. 60 fields/s
 remains unmet, requiring about 8.3× additional throughput in the measured game
 window.
+
+
+## Prepared MOV store continuations (2026-11-11)
+
+Related to #17. The default dual-CPU frame runner prepares ordinary MOV stores
+when their instruction stream is resident and existing on-chip guards pass.
+It latches the source value, retains the successor IF and queues the actual MA
+wait. Resumption uses the existing buffered-write acceptance, bus arbitration,
+endianness, width splitting, cache update and deferred-fault paths for the
+issuing processor. CPU state publishes after acceptance. System-register
+stores retain their existing MDU and control paths.
+
+Load and store preparation share the existing WB/EX and fetch timing. Native
+literal vectors compare all 21 ordinary store forms across both IF alignments
+and three completion schedules. Additional regressions preserve a successor
+fetched before its code is overwritten and check slave stores while the master
+reads their shared RAM.
+
+All 1,314 native tests passed in 111 result groups. All 74 browser groups passed,
+including 45 cached-scheduler cases. The 13 runner checks, registered fixtures,
+formatting and native/Wasm Clippy with warnings denied passed.
+
+Chrome 157.0.8103.39 drew every field to Canvas. Three alternating comparisons
+used the short-wait/display build from PR #119 as their baseline. Every timed
+endpoint matched CPU, sound, clocks and pixels.
+
+| Workload | Earlier fields/s | Store continuation fields/s | Median p95 field time |
+| --- | ---: | ---: | ---: |
+| Local Machi Disc 1, fields 1200–1380 | 7.092 | 7.203 | 174.4 → 164.8 ms |
+| Local BIOS menu, fields 1200–1560 | 26.247 | 26.250 | 63.1 → 63.2 ms |
+
+The measured default module SHA-256 is
+`6a2fc8b9a9168187d83d9b5a7aaba4877f5d1c4683fb7014a30cf3b9c6f4e024`.
+Six extended local game checkpoints and three screenshots match the preceding
+production captures. The game median improved 1.6% and menu throughput was
+unchanged at this precision. 60 fields/s remains unmet.

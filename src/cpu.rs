@@ -178,6 +178,7 @@ pub struct Cpu {
 enum CachedEffect {
     Scalar(scalar::Kind),
     Load,
+    Store(u32),
 }
 #[derive(Clone, Copy)]
 struct Branch {
@@ -254,6 +255,12 @@ pub(crate) struct CachedInstruction {
     interlock: u32,
 }
 impl CachedInstruction {
+    pub(crate) fn store_value(&self) -> Option<u32> {
+        match self.effect {
+            CachedEffect::Store(value) => Some(value),
+            _ => None,
+        }
+    }
     pub(crate) fn issue_at(&self) -> u64 {
         self.issue_at
     }
@@ -346,6 +353,42 @@ impl Cpu {
         } else {
             return None;
         };
+        self.prepare_cached_operation(opcode, now, instruction, operand, effect)
+    }
+    pub(crate) fn prepare_cached_store(&self, opcode: u16, now: u64) -> Option<CachedInstruction> {
+        // System-register stores retain their dedicated MDU/control path.
+        if opcode >> 12 == 4 {
+            return None;
+        }
+        let address = timing::mov_store_address(opcode, &self.state)?;
+        let width = match opcode >> 12 {
+            0 | 2 => 1 << (opcode & 3),
+            1 => 4,
+            8 => 1 << (opcode >> 8 & 1),
+            0xC => 1 << (opcode >> 8 & 3),
+            _ => return None,
+        };
+        let source = if matches!(opcode >> 12, 0..=2) {
+            (opcode >> 4 & 15) as usize
+        } else {
+            0
+        };
+        self.prepare_cached_operation(
+            opcode,
+            now,
+            timing::instruction(opcode),
+            Some((address, width)),
+            CachedEffect::Store(self.state.r[source]),
+        )
+    }
+    fn prepare_cached_operation(
+        &self,
+        opcode: u16,
+        now: u64,
+        instruction: timing::Instruction,
+        operand: Option<(u32, u32)>,
+        effect: CachedEffect,
+    ) -> Option<CachedInstruction> {
         if self.state.status != CpuStatus::Running
             || self.state.address_error_pending
             || self.state.pc & 1 != 0
@@ -426,19 +469,50 @@ impl Cpu {
                     .expect("bounded cached MA finish");
                 split
             }
+            CachedEffect::Store(value) => {
+                let (address, width) = plan.operand.unwrap();
+                let access = timing::MovAccess::start(
+                    bus,
+                    address,
+                    true,
+                    plan.next_pc,
+                    plan.ex + u64::from(plan.interlock),
+                )
+                .expect("proven store MA");
+                let split = access.split();
+                write_operand(bus, address, width, value).expect("proven cached store");
+                self.commit_prepared_store_address(&plan);
+                access
+                    .finish(&mut plan.pipeline, bus)
+                    .expect("bounded cached store finish");
+                split
+            }
         };
         self.retire_cached_instruction(plan, future, split);
         bus.instruction_break(pc, true);
     }
     pub(crate) fn retire_prepared_load(
         &mut self,
-        mut plan: CachedInstruction,
+        plan: CachedInstruction,
         future: u16,
         value: u32,
         now: u64,
     ) {
         assert!(now >= plan.at);
         commit_mov_load(&mut self.state, plan.opcode, value);
+        self.retire_prepared_memory(plan, future, now);
+    }
+    pub(crate) fn retire_prepared_store(&mut self, plan: CachedInstruction, future: u16, now: u64) {
+        assert!(now >= plan.at);
+        self.commit_prepared_store_address(&plan);
+        self.retire_prepared_memory(plan, future, now);
+    }
+    fn commit_prepared_store_address(&mut self, plan: &CachedInstruction) {
+        if plan.opcode >> 12 == 2 && plan.opcode & 4 != 0 {
+            self.state.r[(plan.opcode >> 8 & 15) as usize] = plan.operand.unwrap().0;
+        }
+    }
+    fn retire_prepared_memory(&mut self, mut plan: CachedInstruction, future: u16, now: u64) {
         let split = plan.next_pc & 2 == 0;
         plan.pipeline.load_split(split);
         if !split {
@@ -1543,7 +1617,7 @@ pub(crate) fn read_operand(bus: &impl Memory, address: u32, width: u32) -> Resul
     }
 }
 
-fn write_operand(
+pub(crate) fn write_operand(
     bus: &mut impl Memory,
     address: u32,
     width: u32,

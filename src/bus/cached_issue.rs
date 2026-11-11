@@ -10,6 +10,12 @@ pub(crate) struct CachedLoad {
     pub(super) scheduled: bool,
 }
 
+pub(crate) struct CachedStore {
+    pub(crate) plan: CachedInstruction,
+    pub(crate) future: u16,
+    pub(crate) value: u32,
+}
+
 pub(crate) struct CachedBranch {
     plan: PreparedBranch,
     touches: [Option<CacheTouch>; 5],
@@ -143,7 +149,41 @@ impl Bus {
         ))
     }
 
-    pub(crate) fn prepared_load_retired(&self, processor: Processor, pc: u32) {
+    pub(crate) fn prepare_cached_store(
+        &mut self,
+        processor: Processor,
+        cpu: &Cpu,
+    ) -> Option<(CachedStore, bool)> {
+        let op = cpu.decoded_opcode()?;
+        cpu.cached_store_address(op)?;
+        let index = processor as usize;
+        if !ordinary_memory(cpu.state().pc) || !self.onchip[index].cached_batch_allowed() {
+            return None;
+        }
+        let now = self.main_clocks;
+        let plan = cpu.prepare_cached_store(op, now)?;
+        let value = plan.store_value()?;
+        let (address, _) = plan.operand?;
+        if !super::cached::buffered_memory(address) || plan.issue_at() != now {
+            return None;
+        }
+        let future = self.fetch_resident_instruction(processor, plan.future)?;
+        self.onchip[index].count_cached_instructions(1);
+        let wait = plan.load_wait(now, true);
+        if wait != 0 {
+            self.queue_cached_pipeline_wait(processor, wait);
+        }
+        Some((
+            CachedStore {
+                plan,
+                future,
+                value,
+            },
+            wait != 0,
+        ))
+    }
+
+    pub(crate) fn prepared_memory_retired(&self, processor: Processor, pc: u32) {
         self.onchip[processor as usize].instruction_break(pc, true);
     }
 
