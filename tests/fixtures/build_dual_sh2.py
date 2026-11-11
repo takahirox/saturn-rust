@@ -17,24 +17,25 @@ assembler = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(assembler)
 
 
-def build():
+def build(name='dual-sh2'):
     sections = {}
-    for line in (HERE / 'dual-sh2.s').read_text().splitlines():
+    for line in (HERE / f'{name}.s').read_text().splitlines():
         if line.startswith('.section '):
             address = int(line.split()[1], 0)
             sections[address] = []
         else:
             sections[address].append(line)
-    chunks = [(0, struct.pack('>II', 0x200, 0x06100000)),
-              (11 * 4, struct.pack('>I', 0x1800)),
-              (0x40 * 4, struct.pack('>I', 0x1000)),
-              (0x42 * 4, struct.pack('>I', 0x1400))]
+    chunks = [(0, struct.pack('>II', 0x200, 0x06100000))]
+    if name == 'dual-sh2':
+        chunks.extend([(11 * 4, struct.pack('>I', 0x1800)),
+                       (0x40 * 4, struct.pack('>I', 0x1000)),
+                       (0x42 * 4, struct.pack('>I', 0x1400))])
     for address, source in sections.items():
         chunks.append((address, assembler.assemble('\n'.join(source), base=address)))
     chunks.sort()
     end = 0
     text = ['# Original dual-SH-2 BIOS fixture. MIT: adjacent LICENSE.',
-            '# Generated from dual-sh2.s by build_dual_sh2.py; unspecified bytes zero.']
+            f'# Generated from {name}.s by build_dual_sh2.py; unspecified bytes zero.']
     rom = bytearray(524288)
     for address, chunk in chunks:
         assert address >= end and address + len(chunk) <= len(rom)
@@ -50,10 +51,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()
-    text, digest = build()
-    path = HERE / 'dual-sh2.hex'
-    if args.check:
-        assert path.read_text() == text, 'Rebuild dual-sh2.hex'
-    else:
-        path.write_text(text)
-    print(f'{"Verified" if args.check else "Built"} dual-sh2.hex; expanded ROM SHA-256 {digest}')
+    for name in ['dual-sh2', 'dual-poll']:
+        text, digest = build(name)
+        path = HERE / f'{name}.hex'
+        if args.check:
+            assert path.read_text() == text, f'Rebuild {path.name}'
+        else:
+            path.write_text(text)
+        print(f'{"Verified" if args.check else "Built"} {path.name}; expanded ROM SHA-256 {digest}')

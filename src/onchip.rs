@@ -521,6 +521,10 @@ impl OnChip {
         self.status |= 0x80;
     }
 
+    pub(crate) fn ftcsr(&self) -> u8 {
+        self.status
+    }
+
     /// Level-sensitive until guest software reads/clears FTCSR. Exception
     /// acceptance itself does not acknowledge the peripheral flag (§11.5).
     pub(crate) fn break_pending(&self) -> bool {

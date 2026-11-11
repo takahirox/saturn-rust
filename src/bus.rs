@@ -15,6 +15,7 @@ mod cached_issue;
 mod dmac_tests;
 #[cfg(test)]
 mod hdtv_tests;
+mod poll_cycle;
 #[cfg(test)]
 mod slave_raster_tests;
 mod transactions;
@@ -352,6 +353,7 @@ pub struct Bus {
     onchip: [OnChip; 2],
     cache: [RefCell<Cache>; 2],
     instruction_word: [Cell<Option<(u32, u16)>>; 2],
+    poll_template: Option<poll_cycle::PollTemplate>,
     external_owner: Cell<Option<Processor>>,
     pub(crate) slave_enabled: bool,
     irq_observed: [Option<(InterruptRequest, u64)>; 2],
@@ -419,6 +421,7 @@ impl Default for Bus {
             }),
             cache: std::array::from_fn(|_| RefCell::new(Cache::default())),
             instruction_word: std::array::from_fn(|_| Cell::new(None)),
+            poll_template: None,
             external_owner: Cell::new(None),
             slave_enabled: false,
             irq_observed: [None; 2],

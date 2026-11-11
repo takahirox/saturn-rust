@@ -1683,3 +1683,68 @@ The game window still needs approximately 10.1× average throughput for
 time remained in CPU issue, bus grants, video acquisition, IRQ sampling and
 sound advancement. The profile reports self samples for the built Wasm
 functions, including inlined work.
+
+
+## Private slave polling periods (2026-11-11)
+
+The frame runner can combine master execution with a verified slave FTCSR
+polling period. It reconstructs a complete resident cycle using the shared
+interpreter, then compares the architectural state, IF/ID and load pipeline,
+retained instruction word and local clocks. A reusable plan also checks the
+fetched bytes and their physical cache ways. The period contains one private
+FTCSR read. Retirement counters and clocks advance by the verified period.
+The cache replacement updates and status-read latch retain their ordinary
+results.
+
+Master execution ends on a matching slave-period boundary before any relevant
+interrupt, reset, peripheral or bus event. Accepted master writes retain their
+actual bus acceptance and publication edges. A write that can affect the peer
+remains a strict horizon. Sound lookahead uses a checkpoint when the shared
+endpoint requires trimming a speculative prefix. Failed proofs return to
+ordinary scheduling. These paths are available automatically.
+
+The local production-Wasm comparison used the integrated main engine from
+`3e16d6b` as its baseline. Chrome 157.0.8103.39 presented every field to Canvas.
+Machi Disc 1 used the normal local file picker, the same controller input and
+three alternating pairs of 60 fields. The BIOS menu used three alternating
+pairs of 120 fields. Other local builds and correctness suites were idle during
+the timed intervals.
+
+| Workload | Main fields/s | Polling fields/s | Median p95 field time |
+| --- | ---: | ---: | ---: |
+| Local Machi Disc 1, fields 1200–1380 | 6.077 | 6.771 | 187.4 → 175.7 ms |
+| Local BIOS menu, fields 1200–1560 | 25.936 | 25.737 | Unrecorded |
+
+Every measured endpoint matched CPU registers, instruction counts, exceptions,
+sound CPU state, clocks and Canvas pixels. The original native and browser
+`dual-poll` guest exercises guest-started slave polling alongside buffered
+master RAM writes. Additional native checks cover accepted overlapping writes,
+cache contents, both CPUs' retirement state and a peer capture strobe.
+All 1,305 native tests passed in 111 result groups. All 74 standard browser
+groups passed, including 41 scheduler-parity cases using original guests.
+Registered fixtures reproduced and native/Wasm Clippy passed with warnings
+denied. Exact-head CI and the extended local game recheck are recorded in
+the associated PR.
+
+The baseline Wasm SHA-256 is
+`1d72ef3c130ff378a0b2caa0494812726784af0a750301f00e575935d11a6314`.
+The measured polling Wasm SHA-256 is
+`ab220fab647f06be4ebb089ca60ca64e769f1a381e76401da40e05f047ef3351`.
+
+The game window still needs about 8.9× average throughput for 60 fields/s.
+A separate work-RAM store-continuation experiment regressed from a median
+6.081 to 5.462 fields/s and was discarded. A broader device-RAM continuation
+experiment improved 6.201 to 6.402 fields/s and remains under evaluation.
+A voice-slot sound-lookahead experiment changed the menu median from
+25.087 to 25.183 fields/s and was discarded because the measured gain was small.
+
+The loop work builds on the previously cited event-bounded execution and
+idle-skipping designs. Yabause also describes block compilation, invalidation,
+cycle counting and delay-slot handling for SH-2 dynamic recompilation. Those
+techniques inform further work. This increment implements a verified polling
+period within the existing interpreter. [Yabause SH-2 dynamic recompiler](https://wiki.yabause.org/index.php5?title=SH2_dynamic_recompiler)
+
+An additional Wasm build enabled LLVM's `simd128` target feature. Three
+alternating game pairs measured medians of 6.776 fields/s for both builds,
+with matching guest state and pixels. The selected production build uses the baseline feature set. SIMD can accelerate data-parallel code, while this experiment
+showed no throughput gain in the selected window. [V8 SIMD documentation](https://v8.dev/features/simd), [Rust Wasm target documentation](https://doc.rust-lang.org/rustc/platform-support/wasm32-unknown-unknown.html)
