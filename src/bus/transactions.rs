@@ -980,7 +980,14 @@ impl Bus {
             && self.transactions.writes.iter().all(Option::is_none)
             && self.onchip[1].cached_batch_allowed()
     }
-    pub(super) fn commit_cached_read_sequence(&mut self, sequence: crate::onchip::ReadSequence) {
+    pub(super) fn commit_cached_read_sequence(
+        &mut self,
+        mut sequence: crate::onchip::ReadSequence,
+    ) {
+        sequence.advance(self.main_clocks);
+        if let Some(abus) = sequence.abus() {
+            self.scu.commit_cached_abus(abus);
+        }
         self.onchip[0].commit_cached_reads(sequence, self.main_clocks);
         self.transactions.previous = Some(Processor::Master);
         self.transactions.dmac_yield = false;

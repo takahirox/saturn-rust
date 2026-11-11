@@ -4,15 +4,43 @@ use super::*;
 #[derive(Clone)]
 pub(crate) struct ReadSequence {
     bsc: bsc::Bsc,
+    abus: Option<crate::scu::Abus>,
     at: u64,
     pub beats: u64,
 }
 impl ReadSequence {
+    pub fn with_abus(mut self, abus: crate::scu::Abus) -> Self {
+        self.abus = Some(abus);
+        self
+    }
+    pub fn abus(&self) -> Option<&crate::scu::Abus> {
+        self.abus.as_ref()
+    }
+    fn advance_bus(&mut self, clocks: u32) {
+        self.bsc.advance_bus(clocks);
+        if let Some(abus) = &self.abus {
+            abus.advance(clocks);
+        }
+        self.at += u64::from(clocks);
+    }
+    fn access_clocks(
+        &mut self,
+        address: u32,
+        width: usize,
+        write: bool,
+        first: bool,
+        last: bool,
+    ) -> u32 {
+        let (base, waits) = self.bsc.access_timing(address, width, write, first, last);
+        base + waits
+            + self
+                .abus
+                .as_ref()
+                .map_or(0, |abus| abus.access(address, width, write))
+    }
     pub fn advance(&mut self, at: u64) {
         assert!(at >= self.at);
-        self.bsc
-            .advance_bus((at - self.at).try_into().expect("bounded bus interval"));
-        self.at = at;
+        self.advance_bus((at - self.at).try_into().expect("bounded bus interval"));
     }
     pub fn read(&mut self, address: u32, width: usize, at: u64) -> u64 {
         self.transfer(address, width, width, at, false)
@@ -29,15 +57,14 @@ impl ReadSequence {
         self.advance(at);
         let beat = self.bsc.bus_width(address).min(width).min(lanes);
         for offset in (0..width).step_by(beat) {
-            let (base, waits) = self.bsc.access_timing(
+            let clocks = self.access_clocks(
                 address + offset as u32,
                 beat,
                 write,
                 offset == 0,
                 offset + beat == width,
             );
-            self.bsc.advance_bus(base + waits);
-            self.at += u64::from(base + waits);
+            self.advance_bus(clocks);
             self.beats += 1;
         }
         self.at
@@ -50,15 +77,14 @@ impl ReadSequence {
             let address = (requested & !15) | (((requested & 12) + word * 4) & 15);
             let width = self.bsc.bus_width(address).min(4);
             for offset in (0..4).step_by(width) {
-                let (base, waits) = self.bsc.access_timing(
+                let clocks = self.access_clocks(
                     address + offset as u32,
                     width,
                     false,
                     word == 1 && offset == 0,
                     word == 4 && offset + width == 4,
                 );
-                self.bsc.advance_bus(base + waits);
-                self.at += u64::from(base + waits);
+                self.advance_bus(clocks);
                 self.beats += 1;
             }
         }
@@ -73,15 +99,14 @@ impl ReadSequence {
         last: bool,
     ) -> u64 {
         self.advance(at);
-        let (base, waits) = self.bsc.access_timing(address, width, true, first, last);
-        let clocks = (base + waits).max(1);
-        self.bsc.advance_bus(clocks);
-        self.at += u64::from(clocks);
+        let clocks = self.access_clocks(address, width, true, first, last).max(1);
+        self.advance_bus(clocks);
         self.beats += 1;
         self.at
     }
     pub fn repeats(&self, before: &Self, period: u64) -> bool {
         self.bsc.same_read_protocol(&before.bsc)
+            && self.abus == before.abus
             && if self.beats == before.beats {
                 self.at == before.at
             } else {
@@ -100,6 +125,7 @@ impl OnChip {
     pub(crate) fn plan_cached_reads(&self, at: u64) -> ReadSequence {
         ReadSequence {
             bsc: self.bsc.clone(),
+            abus: None,
             at,
             beats: 0,
         }

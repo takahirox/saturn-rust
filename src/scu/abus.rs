@@ -3,7 +3,7 @@
 //! than the normal/burst wait fields belonging to the other three selects.
 use std::cell::Cell;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Previous {
     address: u32,
     width: usize,
@@ -11,14 +11,21 @@ struct Previous {
     busy: u32,
     precharge: u32,
 }
-#[derive(Default)]
-pub(super) struct Abus {
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Abus {
     config: [u16; 4],
     refresh: u8,
     previous: Cell<Option<Previous>>,
     refresh_remaining: Cell<u32>,
 }
 impl Abus {
+    pub fn commit_cached(&self, planned: &Self) {
+        debug_assert_eq!(self.config, planned.config);
+        debug_assert_eq!(self.refresh, planned.refresh);
+        self.previous.set(planned.previous.get());
+        self.refresh_remaining.set(planned.refresh_remaining.get());
+    }
+
     pub fn width(&self, address: u32) -> Option<usize> {
         Self::select(address).map(|select| if self.config[select] & 1 != 0 { 1 } else { 2 })
     }

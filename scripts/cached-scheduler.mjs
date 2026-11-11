@@ -24,6 +24,9 @@ export async function cachedScheduler(page) {
     ["concurrent CPU/rotation/VDP1/effects", "examples/runtime-scene.hex", false],
     ["system/control stack and RTE", "examples/runtime-stack.hex", false],
     ["passive draw status and restart", "examples/runtime-poll.hex", false],
+    ["passive CD HIRQ polling with A-bus precharge", "examples/runtime-poll.hex", "cd-hirq"],
+    ["CD HIRQ byte fault fallback", "examples/runtime-poll.hex", "cd-byte"],
+    ["CD HIRQ long fault fallback", "examples/runtime-poll.hex", "cd-long"],
     ["draw polling with rotation/VDP1/effects", "examples/runtime-poll-scene.hex", false],
     ["draw polling with continuous sound CPU and effects", "examples/runtime-poll-sound-busy-scene.hex", false],
     ["normal bitmap ports with effects", "examples/runtime-normal-scene.hex", false],
@@ -74,6 +77,20 @@ export async function cachedScheduler(page) {
       ]) { load(1, address); load(0, value); emit(0x2102); }
       load(1, entry); emit(0x412B); emit(0x0009);
       assert(pc <= 0x140 && literal <= 0x180);
+    }
+    if (typeof mutate === "string" && mutate.startsWith("cd-")) {
+      assert(bytes.subarray(0x100, 0x140).every(byte => byte === 0));
+      const entry = bytes.readUInt32BE(0);
+      bytes.writeUInt32BE(0x100, 0);
+      // Original guest configures SCU CS2 precharge before polling HIRQ.
+      [0xD107, 0xD008, 0x2102, 0xD108, 0x412B, 0x0009]
+        .forEach((word, i) => bytes.writeUInt16BE(word, 0x100 + i * 2));
+      [0x25FE00B4, 0x60000000, entry]
+        .forEach((word, i) => bytes.writeUInt32BE(word, 0x120 + i * 4));
+      bytes.writeUInt32BE(0x25890008, 0x224);
+      const load = mutate === "cd-byte" ? 0x6040 : mutate === "cd-long" ? 0x6042 : 0x6041;
+      [load, load, 0x7801, 0xAFFB, 0x0009]
+        .forEach((word, i) => bytes.writeUInt16BE(word, 0x20C + i * 2));
     }
     if (mutate === "data-cache" || mutate === "data-disabled") {
       bytes.fill(0,0x200,0x400);

@@ -1748,3 +1748,50 @@ An additional Wasm build enabled LLVM's `simd128` target feature. Three
 alternating game pairs measured medians of 6.776 fields/s for both builds,
 with matching guest state and pixels. The selected production build uses the baseline feature set. SIMD can accelerate data-parallel code, while this experiment
 showed no throughput gain in the selected window. [V8 SIMD documentation](https://v8.dev/features/simd), [Rust Wasm target documentation](https://doc.rust-lang.org/rustc/platform-support/wasm32-unknown-unknown.html)
+
+
+## CD HIRQ passive word reads (2026-11-11)
+
+Related to #17. A bounded cached burst can read the CD block's HIRQ word
+without replaying the host scheduler for each read. The snapshot expires at
+existing CD, IRQ, bus-owner and other observer deadlines. Byte and longword
+accesses retain their ordinary faults. CR4 response release and data FIFO
+reads retain their ordinary device transactions.
+
+The read plan clones the existing SCU A-bus protocol alongside the SH7604 BSC.
+Its accesses and elapsed clocks use the same precharge, refresh and lane-timing
+methods as ordinary transactions. The selected prefix commits both protocol
+states. An early trial omitted the A-bus state and changed the game instruction
+count despite equal register and pixel results. That trial was corrected before
+publication. The original differential guest now explicitly exercises pending
+A-bus refresh, 8/16-bit SCU interfaces, SH-2 bus widths, byte ordering and both
+system clocks. Omitting the A-bus plan makes this check fail with a pipeline
+clock mismatch. Invalid HIRQ widths have independent fault-parity checks.
+
+Chrome 157.0.8103.39 drew every field to Canvas. Three alternating pairs used
+the preceding polling build as their baseline, with each timed endpoint
+checked against the other engine.
+
+| Workload | Baseline fields/s | HIRQ reads fields/s | Median p95 field time |
+| --- | ---: | ---: | ---: |
+| Local Machi Disc 1, fields 1200–1380 | 6.832 | 6.998 | 172.4 → 170.7 ms |
+| Local BIOS menu, fields 1200–1560 | 25.609 | 25.475 | 65.6 → 66.3 ms |
+
+The game median improved 2.4%. The menu median decreased 0.5%. The game check
+includes both SH-2s, the sound CPU, instruction and exception counts, clocks
+and Canvas pixels. All 1,307 native tests passed in 111 result groups. All
+74 browser groups passed, including 44 cached-scheduler cases. The 13 runner
+regressions, registered fixture reproduction, formatting and native/Wasm
+Clippy with warnings denied passed.
+
+The measured game module SHA-256 is
+`f91a3ed5469c9de7ee2f310f9342ab2e71bd37f3873e7732b760e93bcd4c4728`.
+The final module, also used for the menu and browser checks, is
+`2e7c0ba87e65c8e0a420d03d15776b04f34d708ad4fad895f6e3ac65df5be16e`.
+Their code sections are identical. The data differences are confined to
+20 Rust panic source-line fields after comments and tests were added.
+
+60 fields/s remains unmet. Additional Web trials of SIMD code generation,
+SCSP tick-conversion memoization, continuous polling stamps and isolated
+slave waiting produced no selected gain. Work remains in dual-CPU scheduling,
+board arbitration, interrupt sampling, sound advancement and video acquisition.
