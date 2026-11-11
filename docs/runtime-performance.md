@@ -2061,7 +2061,9 @@ Clippy passed.
 
 Chrome 157.0.8103.39 drew every field to Canvas. Three rotated game comparisons
 and three alternating menu comparisons matched every exposed CPU, sound, clock
-and pixel endpoint against PR #122's default module.
+and pixel endpoint against PR #122's default module. Extended local checks
+also matched fields 1500, 1800, 2100, 2400, 2824 and 3252. The title, book and
+guide captures were byte-identical to the earlier reference captures.
 
 | Workload | Earlier fields/s | Proof reuse fields/s | Median p95 field time |
 | --- | ---: | ---: | ---: |
