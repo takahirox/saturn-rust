@@ -1,5 +1,5 @@
 //! Transactional cache-line versions for an observer-bounded read-only burst.
-use super::{Cache, Line};
+use super::{Cache, Line, Ordering};
 
 struct SetVersion {
     index: usize,
@@ -104,6 +104,7 @@ impl CachedLines {
     pub fn commit(self, cache: &mut Cache) {
         for version in self.versions {
             cache.lines[version.index] = version.ways;
+            cache.lookup[version.index].store(0, Ordering::Relaxed);
         }
     }
 }
@@ -123,6 +124,7 @@ mod tests {
             control: cache.control,
             lines: cache.lines.clone(),
             lru: cache.lru,
+            lookup: std::array::from_fn(|_| std::sync::atomic::AtomicU32::new(0)),
         }
     }
 
@@ -167,6 +169,30 @@ mod tests {
             }
             assert_eq!(base.lru, literal.lru);
         }
+    }
+
+    #[test]
+    fn committing_shadow_evictions_invalidates_a_warmed_host_lookup() {
+        let mut base = Cache::default();
+        base.set_control(1);
+        let old = 0x0600_0000;
+        base.read::<4>(old, true, |a| Ok(bytes(a))).unwrap();
+        let mut shadow = CachedLines::default();
+        let mut lru = base.lru;
+        for tag in 1..=4 {
+            let address = old + tag * 0x400;
+            shadow.fill(&base, address, bytes(address), &lru);
+            shadow.read::<4>(&base, address, &mut lru).unwrap();
+        }
+        assert!(base.peek_cached::<4>(old).is_some());
+        assert_eq!(shadow.peek::<4>(&base, old), None);
+        shadow.commit(&mut base);
+        base.commit_replacement_state(lru);
+        assert_eq!(base.peek_cached::<4>(old), None);
+        assert_eq!(
+            base.peek_cached::<4>(old + 0x1000),
+            Some(bytes(old + 0x1000))
+        );
     }
 
     #[test]

@@ -36,6 +36,7 @@ export async function cachedScheduler(page) {
     ["SH7604/cache/reset", "tests/fixtures/sh7604.hex", false],
     ["dual SH-2", "tests/fixtures/dual-sh2.hex", false],
     ["dual resident polling and buffered RAM writes", "tests/fixtures/dual-poll.hex", false],
+    ["dual polling with live PCM, DSP and sound control writes", "tests/fixtures/dual-poll.hex", "dual-sound"],
     ["multiplier", "tests/fixtures/sh2-multiplier.hex", false],
     ["PLL", "tests/fixtures/clock.hex", false],
     ["VDP1 acquisition", "tests/fixtures/vdp1-command-fetch.hex", false],
@@ -134,6 +135,44 @@ export async function cachedScheduler(page) {
       emit(0xA000 | (((loop-(pc+4))/2)&0xFFF));emit(0x0009);
       assert(pc<=0x280 && literal<=0x300);
     }
+    if (mutate === "dual-sound") {
+      assert(bytes.subarray(0x100, 0x200).every(byte => byte === 0));
+      assert(bytes.subarray(0x300, 0x400).every(byte => byte === 0));
+      assert.equal(bytes.readUInt16BE(0x216), 0xE001);
+      assert.equal(bytes.readUInt16BE(0x218), 0x2802);
+      // Master-only preamble preserves the slave's branch delay slot at 0x214.
+      bytes.writeUInt16BE(0xA000 | (((0x100 - 0x21A) / 2) & 0xFFF), 0x216);
+      bytes.writeUInt16BE(0x0009, 0x218);
+      let pc = 0x100, literal = 0x300;
+      const emit = word => { bytes.writeUInt16BE(word, pc); pc += 2; };
+      const load = (register, value) => {
+        const displacement = (literal - ((pc + 4) & ~3)) / 4;
+        assert(Number.isInteger(displacement) && displacement >= 0 && displacement < 256);
+        emit(0xD000 | register << 8 | displacement);
+        bytes.writeUInt32BE(value, literal); literal += 4;
+      };
+      const write = (address, value, opcode) => { load(1, address); load(0, value); emit(opcode); };
+      emit(0xE001); emit(0x2802);
+      for (const [address, value] of [
+        [0x25A00000, 0x70000], [0x25A00004, 0x100],
+        [0x25A00100, 0x33FC0400], [0x25A00104, 0x0010042A],
+        [0x25A00108, 0x33FC0000], [0x25A0010C, 0x0010042A],
+        [0x25A00110, 0x60EE4E71],
+        [0x25A01000, 0x10002000], [0x25A01004, 0x30004000],
+        [0x25FE00A0, 0xBFBF],
+      ]) write(address, value, 0x2102);
+      for (const [offset, value] of [
+        [2, 0x1000], [6, 4], [8, 31], [12, 0x100], [16, 0x7800],
+        [22, 0xE000], [0, 0x1820], [0x400, 0x20F],
+        [0x780, 0x1000], [0x80C, 0xC000],
+      ]) write(0x25B00000 + offset, value, 0x2101);
+      write(0x20100063, 1, 0x2100);
+      write(0x2010001F, 6, 0x2100);
+      load(1, 0x20100063);
+      emit(0x6010); emit(0xC801); emit(0x8BFC);
+      load(1, 0x21A); emit(0x412B); emit(0x0009);
+      assert(pc <= 0x200 && literal <= 0x400);
+    }
     if (mutate === "sound-cache") {
       assert(bytes.subarray(0x180, 0x198).every(byte => byte === 0));
       const entry = bytes.readUInt32BE(0); bytes.writeUInt32BE(0x180, 0);
@@ -191,6 +230,9 @@ export async function cachedScheduler(page) {
     for (const [field, resultAtField] of result.entries()) {
       assert.equal(resultAtField.fastError, resultAtField.referenceError, `${name}, field ${field + 1}: fault parity`);
       assert.deepEqual(resultAtField.fast, resultAtField.reference, `${name}, field ${field + 1}: scheduler parity`);
+      if (mutate === "dual-sound") {
+        assert(resultAtField.fast.audio.some(sample => sample !== 0), "original coupled guest emits PCM");
+      }
     }
   }
   console.log(`Cached scheduler: ${cases.length} original CPU/RAM/loop, sound, video, fault and PLL cases match ordinary steps in production Wasm.`);
