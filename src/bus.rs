@@ -348,6 +348,7 @@ pub struct Bus {
     cpu_bus_clocks: [Cell<u32>; 2],
     pub(crate) main_clocks: u64,
     pending_main_clocks: u32,
+    display_deadline: u64,
     system_clock: SystemClock,
     pub(crate) backup: BackupRam,
     onchip: [OnChip; 2],
@@ -412,6 +413,7 @@ impl Default for Bus {
             cpu_bus_clocks: [Cell::new(0), Cell::new(0)],
             main_clocks: 0,
             pending_main_clocks: 0,
+            display_deadline: 0,
             system_clock: SystemClock::default(),
             backup: BackupRam::default(),
             onchip: std::array::from_fn(|i| {
@@ -736,7 +738,7 @@ impl Bus {
         }
     }
     fn acquire_display(&mut self) {
-        if !self.vdp2.display_active() {
+        if self.main_clocks < self.display_deadline || !self.vdp2.display_active() {
             return;
         }
         if let Some((field, line, phase, slot)) = self.raster.display_slot() {
@@ -748,6 +750,16 @@ impl Bus {
             self.vdp2
                 .acquire_rotation_display(&self.vdp1, field, line, phase, x);
         }
+        let next = self
+            .raster
+            .clocks_to_display_slot()
+            .min(if self.vdp2.rotation_display_active() {
+                self.raster.clocks_to_rotation_slot()
+            } else {
+                u32::MAX
+            })
+            .min(self.raster.clocks_to_event());
+        self.display_deadline = self.main_clocks + u64::from(next);
     }
     pub(crate) fn main_deadline(&self) -> u32 {
         self.onchip[0]
@@ -918,6 +930,7 @@ impl Bus {
     /// SMPC §§2.3.9–10: PLL change resets the listed LSIs, not work RAM,
     /// the master architectural state, CD block or battery-backed storage.
     fn change_system_clock(&mut self, fast: bool) {
+        self.display_deadline = 0;
         self.system_clock.select(fast);
         self.raster.select_clock(fast);
         self.vdp1 = Vdp1::default();
@@ -1045,6 +1058,7 @@ impl Bus {
     }
     /// Physical video standard strap, independent of software region flags.
     pub fn set_pal(&mut self, pal: bool) {
+        self.display_deadline = 0;
         self.raster.pal = pal;
         self.vdp2.pal = pal;
         self.system_clock.set_pal(pal);
@@ -1506,6 +1520,7 @@ impl Bus {
                 let target = address + i as u32 * 2;
                 let value = u16::from_be_bytes([pair[0], pair[1]]);
                 self.vdp2.write16(target, value)?;
+                self.display_deadline = 0;
                 if target == VDP2 {
                     self.raster.configure(value);
                 }

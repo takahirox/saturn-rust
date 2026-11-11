@@ -1333,7 +1333,16 @@ impl Machine {
         } else {
             self.hardware_idle_span(next, can_coalesce)
         };
-        let result = if can_coalesce {
+        let short_wait = coalesced
+            && committed
+            && elapsed == 1
+            && next > self.bus.main_clocks
+            && self.bus.cached_wait_allowed();
+        let result = if short_wait {
+            self.bus
+                .try_retirement_wait()
+                .unwrap_or_else(|| self.bus.advance_cpu_clocks(elapsed))
+        } else if can_coalesce {
             self.bus.advance_cpu_clocks_with_sound(elapsed, true)
         } else {
             self.bus.advance_cpu_clocks(elapsed)

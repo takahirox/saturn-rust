@@ -817,6 +817,14 @@ impl Bus {
             // a pixel captured before a swap that still targets the front.
             .min(self.vdp1.clocks_to_observable_event())
     }
+    pub(crate) fn try_retirement_wait(&mut self) -> Option<Result<(u32, Option<u8>), ScuError>> {
+        // Ordinary post-retirement work advances one reference tick even if
+        // a slow PLL produces no main tick. Retain that partial boundary.
+        if self.pending_main_clocks == 0 && self.system_clock.preview(1) == 0 {
+            return None;
+        }
+        self.try_coalesced_wait(1)
+    }
     pub(super) fn try_coalesced_wait(
         &mut self,
         requested: u32,
@@ -940,6 +948,12 @@ impl Bus {
         let command = self.advance_fixed_with_sound(reference, sound_advanced)?;
         assert!(command.is_none(), "cached catch-up crossed SMPC completion");
         let mut remaining = main;
+        // Buffered WRAM publication can advance board time before this
+        // display catch-up. Its intermediate beam positions share that board
+        // clock and must each acquire their own physical display operands.
+        if CLOCK_ADVANCED {
+            self.display_deadline = 0;
+        }
         self.acquire_display();
         while remaining != 0 {
             let display = if self.vdp2.display_active() {
@@ -961,6 +975,9 @@ impl Bus {
                 self.raster.advance(delta).is_none(),
                 "cached catch-up crossed blanking"
             );
+            if CLOCK_ADVANCED {
+                self.display_deadline = 0;
+            }
             self.acquire_display();
             remaining -= delta;
         }
