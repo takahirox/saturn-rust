@@ -2,10 +2,14 @@
 set -eu
 cd "$(dirname "$0")/.."
 expected_optimizer="wasm-opt version 127"
-if ! command -v wasm-opt >/dev/null 2>&1 || [ "$(wasm-opt --version)" != "$expected_optimizer" ]; then
-  echo "Install Binaryen 127 and add its bin directory to PATH; see docs/setup.md." >&2
-  exit 1
-fi
+optimizer_version="$(wasm-opt --version 2>/dev/null || true)"
+case "$optimizer_version" in
+  "$expected_optimizer"|"$expected_optimizer ("*")") ;;
+  *)
+    echo "Install Binaryen 127 and add its bin directory to PATH; see docs/setup.md." >&2
+    exit 1
+    ;;
+esac
 python3 homebrew/star-collector/build.py
 cp homebrew/star-collector/LICENSE web/star-collector-LICENSE.txt
 python3 homebrew/prism-courier/build.py

@@ -365,6 +365,10 @@ test("web build optimizes custom-target output by default and rejects tool or op
     assert.equal(await readFile(join(directory, "web/pkg/saturn_rust_bg.wasm"), "utf8"), "optimized-wasm");
     assert.match(await readFile(join(directory, "optimizer-args.txt"), "utf8"), /^web\/pkg\/saturn_rust_bg\.wasm\n-O4\n/);
     assert(!(await readdir(join(directory, "web/pkg"))).some(name => name.startsWith(".saturn-opt-")));
+    await writeFile(join(directory, "optimizer-version.txt"), "wasm-opt version 127 (version_127)\n");
+    const releaseOptimizer = run();
+    assert.equal(releaseOptimizer.status, 0, releaseOptimizer.stderr);
+    assert.equal(await readFile(join(directory, "web/pkg/saturn_rust_bg.wasm"), "utf8"), "optimized-wasm");
     await writeFile(join(directory, "tool-version.txt"), "wasm-bindgen 0.2.128\n");
     const stale = run();
     assert.equal(stale.status, 1);

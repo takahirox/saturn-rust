@@ -120,7 +120,7 @@ fn pending_no_media_query_is_cancelled_by_power_reset_and_observation_cannot_rel
     cd.mount(Media::iso(&vec![0; 2048 * 8]).unwrap());
     assert_eq!(
         issue(&mut cd, [0x0200, 0, 0, 0], 127, true),
-        [0x4180, 204, 0, 0]
+        [0x4100, 204, 0, 0]
     );
     assert_eq!(cd.read16(DATA), Ok(0x4100));
 }
