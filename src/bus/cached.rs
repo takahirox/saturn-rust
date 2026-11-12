@@ -45,6 +45,7 @@ struct Local {
     reads: Option<crate::onchip::ReadSequence>,
     write_len: usize,
     fill_len: usize,
+    bus_len: usize,
     write_pc: u32,
 }
 struct PassiveRead<'a> {
@@ -159,21 +160,16 @@ impl WramInstructions<'_> {
         } else {
             return None;
         };
-        let mut result: [u8; 16] = bytes.try_into().unwrap();
-        if self.bus.external_little_endian(base) {
-            for word in result.as_chunks_mut::<4>().0 {
-                word.reverse();
-            }
-        }
-        Some(result)
+        Some(bytes.try_into().unwrap())
     }
 }
 struct Cached<'a> {
     cache: &'a Cache,
     code: Option<WramInstructions<'a>>,
     fills: RefCell<CachedLines>,
-    fill_count: Cell<usize>,
-    fill_reads: RefCell<Option<crate::onchip::ReadSequence>>,
+    version_count: Cell<usize>,
+    refill_count: Cell<usize>,
+    bus_events: RefCell<Vec<BusEvent>>,
     scalar_active: Cell<bool>,
     clock: Cell<u64>,
     lru: RefCell<[u8; 64]>,
@@ -189,8 +185,6 @@ struct Cached<'a> {
     write_protocol: Option<crate::onchip::ReadSequence>,
     idle_vdp1_vram: bool,
     ram_stores: Vec<RamStore>,
-    write_bounds: (u32, u32),
-    write_state: Option<WriteState>,
     write_pc: Cell<u32>,
 }
 #[derive(Clone, Copy)]
@@ -204,24 +198,13 @@ struct PlannedStore {
 struct RamStore {
     store: PlannedStore,
     pc: u32,
-    cached: bool,
+    before_event: usize,
 }
-struct WriteState {
+struct BusEvent {
     sequence: crate::onchip::ReadSequence,
-    before_last: crate::onchip::ReadSequence,
     ready: u64,
-}
-impl WriteState {
-    fn append(&mut self, store: PlannedStore) {
-        self.sequence.advance(store.at);
-        self.before_last = self.sequence.clone();
-        let physical = Bus::physical(store.address);
-        self.ready = if vdp1_vram(physical) {
-            self.sequence.write_video(physical, store.width, store.at)
-        } else {
-            self.sequence.write(physical, store.width, store.at)
-        };
-    }
+    read: bool,
+    read_beats: u64,
 }
 struct RamPlan {
     stores: Vec<RamStore>,
@@ -235,57 +218,76 @@ pub(super) fn ordinary_memory(address: u32) -> bool {
 }
 impl Cached<'_> {
     fn snapshot(&self) -> Local {
-        debug_assert_eq!(self.fill_count.get(), self.fills.borrow().len());
+        debug_assert_eq!(self.version_count.get(), self.fills.borrow().len());
+        debug_assert_eq!(self.refill_count.get(), self.fills.borrow().read_count());
         Local {
             clock: self.clock.get(),
             lru: *self.lru.borrow(),
             retained: self.retained.get(),
             epochs: self.epochs.get(),
-            reads: self
-                .passive
-                .as_ref()
-                .map(|p| p.sequence.borrow().clone())
-                .or_else(|| {
-                    (self.fill_count.get() != 0)
-                        .then(|| self.fill_reads.borrow().clone())
-                        .flatten()
-                }),
+            reads: self.passive.as_ref().map(|p| p.sequence.borrow().clone()),
             write_len: self.ram_stores.len(),
-            fill_len: self.fill_count.get(),
+            fill_len: self.version_count.get(),
+            bus_len: self.bus_events.borrow().len(),
             write_pc: self.write_pc.get(),
         }
     }
     fn restore(&mut self, state: Local) {
         self.store.set(None);
         self.write_pc.set(state.write_pc);
-        if self.ram_stores.len() != state.write_len {
-            self.ram_stores.truncate(state.write_len);
-            self.write_state = None;
-            self.write_bounds = (u32::MAX, 0);
-            for i in 0..self.ram_stores.len() {
-                let ram = self.ram_stores[i];
-                self.append_ram_timing(ram.store);
-                if ram.cached {
-                    self.extend_write_bounds(ram.store);
-                }
-            }
-        }
+        self.ram_stores.truncate(state.write_len);
+        self.bus_events.get_mut().truncate(state.bus_len);
         self.clock.set(state.clock);
         *self.lru.get_mut() = state.lru;
         self.retained.set(state.retained);
         self.epochs.set(state.epochs);
         self.fills.get_mut().truncate(state.fill_len);
-        self.fill_count.set(state.fill_len);
+        self.version_count.set(state.fill_len);
+        self.refill_count.set(self.fills.get_mut().read_count());
         if let Some(passive) = &mut self.passive {
             *passive.sequence.get_mut() = state.reads.expect("passive protocol snapshot");
-        } else {
-            *self.fill_reads.get_mut() = state.reads;
         }
     }
+    fn sequence_before(&self, count: usize) -> crate::onchip::ReadSequence {
+        if count != 0 {
+            return self.bus_events.borrow()[count - 1].sequence.clone();
+        }
+        self.write_protocol.clone().unwrap_or_else(|| {
+            self.write_bus
+                .or_else(|| self.code.as_ref().map(|code| code.bus))
+                .expect("private external protocol")
+                .plan_cached_reads(self.store_origin)
+        })
+    }
+    fn bus_ready(&self) -> u64 {
+        self.bus_events
+            .borrow()
+            .last()
+            .map_or(self.store_ready, |event| event.ready)
+    }
     fn into_parts(self) -> (Local, Option<RamPlan>, CachedLines) {
-        let reads = match self.passive {
-            Some(passive) => Some(passive.sequence.into_inner()),
-            None => self.fill_reads.into_inner(),
+        let before_last = self.ram_stores.last().map(|last| {
+            let mut sequence = self.sequence_before(last.before_event);
+            sequence.advance(last.store.at);
+            sequence
+        });
+        let reads = if let Some(passive) = self.passive {
+            Some(passive.sequence.into_inner())
+        } else {
+            self.bus_events
+                .borrow()
+                .last()
+                .filter(|event| {
+                    event.read
+                        && self.ram_stores.last().is_none_or(|last| {
+                            self.bus_events.borrow().len() > last.before_event + 1
+                        })
+                })
+                .map(|event| {
+                    let mut sequence = event.sequence.clone();
+                    sequence.beats = event.read_beats;
+                    sequence
+                })
         };
         let fills = self.fills.into_inner();
         let local = Local {
@@ -296,51 +298,63 @@ impl Cached<'_> {
             reads,
             write_len: self.ram_stores.len(),
             fill_len: fills.len(),
+            bus_len: self.bus_events.borrow().len(),
             write_pc: self.write_pc.get(),
         };
-        let plan = self.write_state.map(|state| RamPlan {
+        let plan = before_last.map(|before_last| RamPlan {
             stores: self.ram_stores,
-            before_last: state.before_last,
+            before_last,
         });
         (local, plan, fills)
     }
-    fn append_ram_timing(&mut self, store: PlannedStore) {
-        let state = self.write_state.get_or_insert_with(|| {
-            let mut sequence = self.write_protocol.clone().unwrap_or_else(|| {
-                self.write_bus
-                    .expect("quiet data bus")
-                    .plan_cached_reads(self.store_origin)
-            });
-            sequence.advance(self.store_ready);
-            WriteState {
-                before_last: sequence.clone(),
-                sequence,
-                ready: self.store_ready,
-            }
+    fn record_read(&self, sequence: crate::onchip::ReadSequence, at: u64, read_beats: u64) {
+        self.bus_events.borrow_mut().push(BusEvent {
+            sequence,
+            ready: at,
+            read: true,
+            read_beats,
         });
-        state.append(store);
     }
-    fn extend_write_bounds(&mut self, store: PlannedStore) {
-        self.write_bounds.0 = self.write_bounds.0.min(store.address);
-        self.write_bounds.1 = self.write_bounds.1.max(store.address + store.width as u32);
-    }
-    fn overlay<const N: usize>(&self, address: u32, bytes: &mut [u8; N]) {
-        if address >= self.write_bounds.1 || address.saturating_add(N as u32) <= self.write_bounds.0
-        {
-            return;
-        }
+    fn overlay_physical_line(&self, base: u32, bytes: &mut [u8; 16]) {
         for ram in &self.ram_stores {
-            if ram.cached {
-                let store = ram.store;
-                let value = store.value.to_be_bytes();
-                for (i, byte) in bytes.iter_mut().enumerate() {
-                    let at = address.wrapping_add(i as u32);
-                    if (store.address..store.address + store.width as u32).contains(&at) {
-                        *byte = value[4 - store.width + (at - store.address) as usize];
-                    }
+            let store = ram.store;
+            let address = Bus::physical(store.address);
+            if address >= base + 16 || address + store.width as u32 <= base {
+                continue;
+            }
+            let mut value = store.value.to_be_bytes();
+            let value = &mut value[4 - store.width..];
+            if self
+                .write_bus
+                .expect("staged data bus")
+                .external_little_endian(address)
+            {
+                value.reverse();
+            }
+            for (i, byte) in bytes.iter_mut().enumerate() {
+                let at = base + i as u32;
+                if (address..address + store.width as u32).contains(&at) {
+                    *byte = value[(at - address) as usize];
                 }
             }
         }
+    }
+    fn writable(&self, address: u32, width: usize) -> bool {
+        if !buffered_memory(address)
+            || !address.is_multiple_of(width as u32)
+            || self.store.get().is_some()
+            || self.ram_stores.len() == 16
+            || self
+                .passive
+                .as_ref()
+                .is_some_and(|p| p.rom.is_some() || p.sequence.borrow().beats != 0)
+        {
+            return false;
+        }
+        let physical = Bus::physical(address);
+        let ram = self.write_bus.is_some()
+            && (work_ram(physical) || (self.idle_vdp1_vram && vdp1_vram(physical)));
+        ram || (self.ram_stores.is_empty() && self.refill_count.get() == 0)
     }
     fn read<const N: usize>(&self, address: u32) -> Result<[u8; N], BusError> {
         if let Some(passive) = &self.passive
@@ -384,7 +398,7 @@ impl Cached<'_> {
             }
             return Err(BusError::Pending);
         }
-        let mut bytes = if self.fill_count.get() == 0 {
+        let mut bytes = if self.version_count.get() == 0 {
             self.cache.cached_only(address, &mut self.lru.borrow_mut())
         } else {
             self.fills
@@ -404,7 +418,6 @@ impl Cached<'_> {
                 }
             }
         }
-        self.overlay(address, &mut bytes);
         Ok(bytes)
     }
     fn opcode(&self, address: u32) -> Option<u16> {
@@ -417,18 +430,15 @@ impl Cached<'_> {
             let bytes = rom.get(address as usize..(address as usize).saturating_add(2))?;
             return Some(u16::from_be_bytes(bytes.try_into().unwrap()));
         }
-        let bytes = if self.fill_count.get() == 0 {
+        let bytes = if self.version_count.get() == 0 {
             self.cache.peek_cached::<2>(address)
         } else {
             self.fills.borrow().peek::<2>(self.cache, address)
         };
-        bytes.map(|mut bytes| {
-            self.overlay(address, &mut bytes);
-            u16::from_be_bytes(bytes)
-        })
+        bytes.map(u16::from_be_bytes)
     }
     fn hit(&self, address: u32) -> bool {
-        if self.fill_count.get() == 0 {
+        if self.version_count.get() == 0 {
             self.cache.read_hit(address)
         } else {
             self.fills.borrow().read_hit(self.cache, address)
@@ -438,7 +448,6 @@ impl Cached<'_> {
         self.hit(address)
             || (ordinary_memory(address)
                 && self.cache.control() & 5 == 1
-                && self.ram_stores.is_empty()
                 && self.store.get().is_none()
                 && self
                     .code
@@ -459,86 +468,94 @@ impl Cached<'_> {
     fn refill(&self, address: u32, instruction: bool) -> Result<(), BusError> {
         if self.scalar_active.get()
             || self.cache.control() & (if instruction { 3 } else { 5 }) != 1
-            || !self.ram_stores.is_empty()
             || self.store.get().is_some()
         {
             return Err(BusError::Pending);
         }
         let code = self.code.as_ref().ok_or(BusError::Pending)?;
-        let bytes = code.line(address).ok_or(BusError::Pending)?;
-        let mut sequence = self
-            .fill_reads
-            .borrow()
-            .clone()
-            .or_else(|| self.write_protocol.clone())
-            .unwrap_or_else(|| code.bus.plan_cached_reads(self.store_origin));
-        let at = sequence.read_cache_line(address, self.clock.get().max(self.store_ready));
+        let mut bytes = code.line(address).ok_or(BusError::Pending)?;
+        self.overlay_physical_line(address & !15, &mut bytes);
+        if code.bus.external_little_endian(address) {
+            for word in bytes.as_chunks_mut::<4>().0 {
+                word.reverse();
+            }
+        }
+        let mut sequence = self.sequence_before(self.bus_events.borrow().len());
+        let before = sequence.beats;
+        let at = sequence.read_cache_line(address, self.clock.get().max(self.bus_ready()));
         if at > self.end.get().min(self.fill_end) {
             return Err(BusError::Pending);
         }
         self.end.set(self.end.get().min(self.fill_end));
         let mut fills = self.fills.borrow_mut();
         fills.fill(self.cache, address, bytes, &self.lru.borrow());
-        self.fill_count.set(fills.len());
-        *self.fill_reads.borrow_mut() = Some(sequence);
+        self.version_count.set(fills.len());
+        self.refill_count.set(fills.read_count());
+        let read_beats = self
+            .bus_events
+            .borrow()
+            .last()
+            .map_or(0, |event| event.read_beats)
+            + sequence.beats
+            - before;
+        // Publish private protocol state only after every read phase fits
+        // strictly inside the observer window.
+        self.record_read(sequence, at, read_beats);
         self.clock.set(at);
         Ok(())
     }
     fn write<const N: usize>(&mut self, address: u32, bytes: [u8; N]) -> Result<(), BusError> {
-        if self.fill_count.get() != 0
-            || !buffered_memory(address)
-            || self.passive.as_ref().is_some_and(|p| p.rom.is_some())
-            || !address.is_multiple_of(N as u32)
-            || self.store.get().is_some()
-            || self
-                .passive
-                .as_ref()
-                .is_some_and(|p| p.sequence.borrow().beats != 0)
-        {
+        if !self.writable(address, N) {
             return Err(BusError::Pending);
         }
         let physical = Bus::physical(address);
         let ram = self.write_bus.is_some()
             && (work_ram(physical) || (self.idle_vdp1_vram && vdp1_vram(physical)));
-        if (!ram && !self.ram_stores.is_empty()) || self.ram_stores.len() == 16 {
-            return Err(BusError::Pending);
-        }
-        let ready = self
-            .write_state
-            .as_ref()
-            .map_or(self.store_ready, |s| s.ready);
-        self.sh2_pipeline_wait(ready.saturating_sub(self.clock.get()) as u32)?;
+        self.sh2_pipeline_wait(self.bus_ready().saturating_sub(self.clock.get()) as u32)?;
         let at = self.clock.get();
-        // The real write buffer accepts at the end of its one internal state.
-        // Only isolated WRAM stores may be followed by another instruction.
         self.sh2_pipeline_wait(1)?;
-        self.cache
-            .plan_written_replacement(address, &mut self.lru.borrow_mut());
         let store = PlannedStore {
             address,
             width: N,
-            value: bytes
-                .into_iter()
-                .fold(0, |v, byte| v << 8 | u32::from(byte)),
+            value: bytes.into_iter().fold(0, |v, b| v << 8 | u32::from(b)),
             at,
         };
         if ram {
-            self.append_ram_timing(store);
-            let cached = address < 0x2000_0000 && self.cache.read_hit(address);
-            if cached {
-                self.extend_write_bounds(store);
-            }
+            let before_event = self.bus_events.borrow().len();
+            let mut sequence = self.sequence_before(before_event);
+            let ready = if vdp1_vram(physical) {
+                sequence.write_video(physical, N, at)
+            } else {
+                sequence.write(physical, N, at)
+            };
+            let read_beats = self
+                .bus_events
+                .borrow()
+                .last()
+                .map_or(0, |event| event.read_beats);
+            self.bus_events.get_mut().push(BusEvent {
+                sequence,
+                ready,
+                read: false,
+                read_beats,
+            });
+            let mut fills = self.fills.borrow_mut();
+            fills.written(self.cache, address, bytes, &mut self.lru.borrow_mut());
+            self.version_count.set(fills.len());
             self.ram_stores.push(RamStore {
                 store,
                 pc: self.write_pc.get(),
-                cached,
+                before_event,
             });
         } else {
+            self.cache
+                .plan_written_replacement(address, &mut self.lru.borrow_mut());
             self.store.set(Some(store));
         }
         Ok(())
     }
 }
+
 impl Memory for Cached<'_> {
     fn sh2_clock(&self) -> Option<u64> {
         Some(self.clock.get())
@@ -735,10 +752,10 @@ fn cached_operand(op: u16, cpu: &Cpu, memory: &Cached<'_>, store_available: bool
     }
     if let Some(width) = store_width(op) {
         return store_available
-            && memory.fill_count.get() == 0
             && cpu.cached_store_address(op).is_some_and(|address| {
                 buffered_memory(address)
                     && address.is_multiple_of(width as u32)
+                    && memory.writable(address, width)
                     && (op >> 12 != 4 || work_ram(Bus::physical(address)))
             });
     }
@@ -1243,8 +1260,9 @@ impl Bus {
             cache: &cache,
             code,
             fills: RefCell::default(),
-            fill_count: Cell::new(0),
-            fill_reads: RefCell::new(None),
+            version_count: Cell::new(0),
+            refill_count: Cell::new(0),
+            bus_events: RefCell::new(Vec::new()),
             scalar_active: Cell::new(false),
             clock: Cell::new(master_start),
             lru: RefCell::new(cache.replacement_state()),
@@ -1263,8 +1281,6 @@ impl Bus {
             write_protocol: store_window.and_then(|w| w.1),
             idle_vdp1_vram: !self.vdp1.busy(),
             ram_stores: Vec::new(),
-            write_bounds: (u32::MAX, 0),
-            write_state: None,
             write_pc: Cell::new(0),
             passive,
         };
@@ -1355,6 +1371,7 @@ impl Bus {
                     && period != 0
                     && local.write_len == previous.local.write_len
                     && local.fill_len == previous.local.fill_len
+                    && local.bus_len == previous.local.bus_len
                     && local.lru == previous.local.lru
                     && local.retained == previous.local.retained
                     && match (&local.reads, &previous.local.reads) {
@@ -1576,11 +1593,11 @@ impl Bus {
                 saved_cpu = Some(prior);
             }
             let at = memory.clock.get();
-            if memory.fill_count.get() != 0 {
+            if memory.refill_count.get() != 0 {
                 end = memory.end.get();
                 readonly_refresh = None;
             }
-            checkpoint_sound |= sound_lookahead && memory.fill_count.get() != 0;
+            checkpoint_sound |= sound_lookahead && memory.refill_count.get() != 0;
             if track_retirements {
                 let reference = self.system_clock.deadline(
                     ((at - self.main_clocks) as u32).saturating_sub(self.pending_main_clocks),
@@ -1716,7 +1733,7 @@ impl Bus {
         points.recycle_into(&mut self.cached_retirement_points);
         let store = memory.store.get();
         let (local, ram_plan, fills) = memory.into_parts();
-        debug_assert!(fills.is_empty() || (ram_plan.is_none() && store.is_none()));
+        debug_assert!(store.is_none() || (ram_plan.is_none() && fills.read_count() == 0));
         drop(cache);
         self.instruction_word[0].set(local.retained);
         self.onchip[0].count_cached_instructions(local.epochs);
@@ -1757,7 +1774,7 @@ impl Bus {
         }
         #[cfg(test)]
         {
-            self.cached_code_fills += fills.len() as u64;
+            self.cached_code_fills += fills.read_count() as u64;
         }
         fills.commit(self.cache[0].get_mut());
         self.cache[0].get_mut().commit_replacement_state(local.lru);
