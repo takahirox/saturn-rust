@@ -2256,3 +2256,59 @@ fn private_peer_endpoints_keep_strobe_capture_and_status_read_order() {
         }
     }
 }
+
+#[test]
+fn cached_replay_restores_cpu_when_sound_bounds_a_buffered_store() {
+    // Slow byte-wide WRAM writes exceed the sound retirement-gap bound.
+    // A declined store must preserve the prior PC, SP and bus prefix.
+    for fast in [false, true] {
+        let make = || {
+            let mut words = vec![0xE011];
+            for _ in 0..16 {
+                words.extend([9, 0x2F06]);
+            }
+            words.extend([0xAFDD, 9]);
+            let mut m = crate::scheduling_tests::cached_pair(&words, &[0xAFFE, 9]);
+            m.bus.change_system_clock(fast);
+            m.bus.set_slave_enabled(false);
+            m.bus.onchip[0].write32(0xFFFFFFE0, 0xA55A03F0).unwrap();
+            m.bus.onchip[0].write32(0xFFFFFFE4, 0xA55A007C).unwrap();
+            m.bus.onchip[0].write32(0xFFFFFFE8, 0xA55AAAFF).unwrap();
+            m.bus.onchip[0].write32(0xFFFFFFEC, 0xA55A0000).unwrap();
+            let mut memory = m.bus.for_cpu(Processor::Master);
+            memory.write8(crate::cache::CCR, 0x11).unwrap();
+            for offset in (0..words.len() * 2 + 4).step_by(16) {
+                memory.fetch16(HIGH_WRAM + offset as u32).unwrap();
+            }
+            m.bus.cpu_delay(Processor::Master, 0);
+            m.cpu = Cpu::start(HIGH_WRAM, HIGH_WRAM + 0x20000);
+            m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
+            let sound = &mut m.bus.sound;
+            sound.ram[..4].copy_from_slice(&0x1000u32.to_be_bytes());
+            sound.ram[4..8].copy_from_slice(&0x100u32.to_be_bytes());
+            sound.ram[0x100..0x104].copy_from_slice(&[0x4E, 0x71, 0x60, 0xFC]);
+            sound.set_enabled(true).unwrap();
+            assert!(sound.cached_lookahead_allowed());
+            m
+        };
+        let (mut a, mut b) = (make(), make());
+        let mut batches = 0;
+        for _ in 0..256 {
+            let retired = a.try_cached_batch(128).unwrap();
+            if retired == 0 {
+                a.step_inner_with_idle(true).unwrap();
+            } else {
+                batches += 1;
+            }
+            while b.cpu.state().instructions < a.cpu.state().instructions {
+                b.step().unwrap();
+            }
+            same(&mut a, &mut b);
+            a.bus.cache[0]
+                .borrow()
+                .assert_same_contents(&b.bus.cache[0].borrow());
+            a.bus.onchip[0].assert_cached_read_bus_matches(&b.bus.onchip[0]);
+        }
+        assert!(batches > 0);
+    }
+}

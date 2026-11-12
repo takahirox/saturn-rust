@@ -1539,7 +1539,7 @@ impl Bus {
             let instruction_pc = cpu.state().pc;
             let interrupt_mask = cpu.state().sr & 0xF0;
             let mut branch = None;
-            let mut interpreted = None;
+            let mut saved_cpu = None;
             if cpu.has_cached_control(op) {
                 let Some(plan) = cpu.prepare_cached_control(&mut memory) else {
                     memory.restore(before);
@@ -1547,14 +1547,15 @@ impl Bus {
                 };
                 branch = Some(plan);
             } else {
-                let mut next = cpu.clone();
-                if !next.step_cached(&mut memory)
-                    || next.state().instructions != cpu.state().instructions + 1
+                let prior = cpu.clone();
+                if !cpu.step_cached(&mut memory)
+                    || cpu.state().instructions != prior.state().instructions + 1
                 {
+                    cpu = prior;
                     memory.restore(before);
                     break;
                 }
-                interpreted = Some(next);
+                saved_cpu = Some(prior);
             }
             let at = memory.clock.get();
             if memory.fill_count.get() != 0 {
@@ -1570,6 +1571,9 @@ impl Bus {
                     && !checkpoint_sound
                     && reference.saturating_sub(points.last_reference) >= 9
                 {
+                    if let Some(prior) = saved_cpu {
+                        cpu = prior;
+                    }
                     memory.restore(before);
                     break;
                 }
@@ -1577,8 +1581,6 @@ impl Bus {
             }
             if let Some(branch) = branch {
                 cpu.retire_cached_control(branch);
-            } else {
-                cpu = interpreted.unwrap();
             }
             retired_at = at;
             ready = (cpu.execution_clock().unwrap_or(started)

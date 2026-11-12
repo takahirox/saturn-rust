@@ -2211,3 +2211,53 @@ and handles I/O with short blocks. Those techniques inform further trials;
 Saturn's bus and pipeline timing remain part of every comparison.
 [QEMU translator internals](https://www.qemu.org/docs/master/devel/tcg.html),
 [QEMU instruction counting](https://www.qemu.org/docs/master/devel/tcg-icount.html).
+
+
+## Replay into the current private burst CPU (2026-11-12)
+
+Related to #17. General cached-instruction replay now updates the current
+private burst CPU directly and keeps its prior state for rollback. Successful
+instructions no longer move their result back from a second CPU value. Failed
+instructions and the sound retirement-gap check restore the prior CPU and the
+existing memory/protocol snapshot. Scalar blocks, prepared operations, branch
+plans, observer horizons and bus publication keep their existing behavior.
+
+An original native regression runs predecrementing WRAM stores with byte-wide,
+slow BSC transfers alongside a live sound CPU at both PLL settings. It compares
+CPU, PC/SP, clocks, caches, BSC state, sound and RAM against ordinary execution
+after each selected prefix. Omitting failed-instruction CPU restoration fails
+27 inherited cached-burst cases. Omitting sound-gap CPU restoration initially
+passed all 43 inherited cases; the new guest detects the missing restoration
+with a 36-versus-70 reference-clock mismatch. Both mutations were restored. The
+fixture's initial reserved WCR idle encoding was corrected to the accepted
+`0xAAFF` configuration before validation.
+
+Chrome 157.0.8103.39 presented every field to Canvas through the ordinary Web
+entry points. Four rotated game comparisons and three alternating menu
+comparisons matched every exposed CPU/sound, count, clock and pixel endpoint
+against PR #125's default module. Timed intervals ran without another local
+build, test or warm-up. Six extended game checkpoints through field 3252 and
+three byte-identical reference PNG captures also passed.
+
+| Workload | Previous default fields/s | Direct replay fields/s | Median p95 field time |
+| --- | ---: | ---: | ---: |
+| Local Machi Disc 1, fields 1200–1440 | 10.456 | 10.649 | 146.1 → 142.3 ms |
+| Local BIOS menu, fields 1200–1560 | 26.200 | 26.527 | 63.5 → 62.5 ms |
+
+Combined throughput improved 1.8% in the game and 1.2% in the menu. A broader
+memory-MAC snapshot-elision trial measured a 1.0% combined game gain in its final
+comparison and added admission/abort handling; this increment retains the
+smaller replay change and all valid prefixes. Other trials of wait retries,
+load-priority changes and an early register-state comparison were not selected
+because their measured gains were negligible or negative.
+
+The measured module SHA-256 is
+`0a7215ce14afeb395131c3d07c73df56684b74d8eb69a793d1992d09aa5e1566`.
+The standard public build is byte-identical. Formatting, native build, all
+1,324 native tests in 111 groups, fixture reproduction, native/Wasm Clippy,
+all 74 browser groups, 48 scheduler comparisons and 13 browser-runner checks
+passed. Exact-head hosted validation is recorded in the associated PR.
+A separate-code replay helper reduced the emitted burst function from about
+73 KB to 53 KB, but changed combined game throughput by only +0.6% and was not
+selected. 60 fields/s remains unmet: the measured game scene still needs
+approximately 5.6× additional throughput.
