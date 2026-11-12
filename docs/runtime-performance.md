@@ -2710,3 +2710,71 @@ The measured selected Wasm SHA-256 is
 Private firmware, media and captures remain unpublished. **Real Web 60 fields/s
 remains unmet**, as do umbrella hardware and general firmware compatibility
 criteria. Required post-merge verification: none. Related to #17.
+
+
+## Reuse coherent normal-tile address runs
+
+Normal display acquisition repeatedly resolves the same pattern name and tile
+geometry for adjacent source dots. Reuse the existing per-dot address plan within
+one eight-source-dot cell when the normal screen has unit horizontal steps, no
+mosaic or line/cell scroll and standard resolution. Eight-/sixteen-dot characters
+and both flips retain their ordinary addressing. Character words still consume
+the real port, bank grants and per-dot captures; color, palette and composition
+remain live. Register and line-coordinate invalidation clears these derived runs.
+This is always enabled, with no runtime setting.
+
+Historical per-dot name captures take precedence. Filling an uncaptured dot
+requires the currently retained name's complete address/width/data and source
+group to match. Two-word names additionally prove that the held packet contains
+both raw words actually consumed by the decoder. A one-to-two-word mode change
+can otherwise combine an old first word with a new second packet; a valid
+per-dot plan must not spread that mixed name into a future uncaptured dot.
+Rotation and unsupported coordinate cases retain their existing decoders.
+
+### Web comparison
+
+Chrome 157.0.8103.52 runs production JS/Wasm with Canvas presentation and PCM
+draining for every field. Each variant covers fields 1200–1680 in six rotated
+80-field windows, with other local builds, tests, profiles and warm-ups stopped
+throughout timing. Rates divide 480 fields by combined elapsed time.
+
+| Scene | Previous fields/s | Coherent tile runs fields/s |
+| --- | ---: | ---: |
+| Game | 13.569 | 14.142 |
+| BIOS menu | 27.847 | 28.085 |
+
+Game throughput improves 4.23%; all six windows improve individually. Paired
+boot/input/scene and all 18 timed endpoints per scene match exposed CPU, sound,
+clock and pixel state. A one-word-only specialization measured 13.687 game
+fields/s and was excluded because its smaller benefit did not justify selecting
+it over the coherent two-word implementation.
+
+### Correctness and remaining work
+
+Three original tests add an independent seven-color pixel grid covering 72
+name-width/tile-size/flip/unaligned-scroll combinations; timed group/data identity
+cases at both name widths with independently predicted pixels and exact port
+traces; and the mixed-word mode transition above. Test-only counters require the
+optimization to execute. Reference paths bypass reuse while retaining historical
+per-dot plans where a fully literal second decode would consume a lost word.
+Removing group, data, flip or two-word coherence guards produces the independently
+predicted wrong pixels; restoring each guard passes its oracle.
+
+The selected source passes all 1,336 native tests in 111 groups, formatting/build,
+native all-target and Wasm Clippy with warnings denied, registered fixture
+reproduction, all 74 production-Wasm browser groups with 48 scheduler comparisons,
+and 13 runner tests. Full browser elapsed is 206,747 ms. An initial formatting
+check caught indentation in the expanded fixture; formatting was corrected before
+the complete passing validation run.
+
+Five extended optional game checkpoints at fields 1800, 2100, 2400, 2824 and 3252
+match, as do three explicit reference PNG byte comparisons. Standard-build JS and
+Wasm bytes match the measured frozen candidate; Wasm SHA-256 is
+`dc970316cba7def5f392d5829176b6d61c1ab08c7b4ddb214ba5ff7a209f006a`.
+Private firmware, media and captures remain unpublished; original licensed guests
+supply mandatory native/Wasm/browser coverage. Exact-head hosted CI and normal
+review remain mandatory before merge.
+
+**Real Web 60 fields/s remains unmet**, as do umbrella hardware and general
+firmware compatibility criteria. Required post-merge verification: none.
+Related to #17.

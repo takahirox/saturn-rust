@@ -621,6 +621,7 @@ impl Vdp2 {
                 sy,
                 Some(parameter),
                 outside && over == 1,
+                None,
             )?
         };
         if bitmap && !self.rotation_access(id, Self::dot_address(base, pixel, format), 3) {
