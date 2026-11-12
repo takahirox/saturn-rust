@@ -2597,3 +2597,50 @@ Measured game throughput remains about 12.6 fields/s and menu throughput about
 27–28 fields/s on this host. **The real Web 60 fields/s objective remains unmet**;
 general firmware compatibility and the umbrella hardware criteria also remain
 unmet. Related to #17.
+
+## Keep transactional sound snapshots in stable storage
+
+Cached CPU execution saves sound state before advancing sound speculatively.
+Returning that large state inline through `Result`, error conversion and `Option`
+caused bulk moves in the surrounding execution loop. Keep the saved `Sound` in
+a `Box` so these wrappers transfer its handle. The snapshot contents, physical
+RAM/audio undo logs, admission, clocks and rollback behavior are unchanged.
+This is always enabled and adds no public configuration or API.
+
+Native source sampling identified bulk moves around sound checkpoint creation
+and return as a candidate cost. That sample is diagnostic only: adoption uses
+the production Web JS/Wasm path, drawing every field to Canvas and draining PCM.
+Each comparison below covers 480 fields, from 1200 through 1680, with rotated
+variant order and no concurrent local builds, tests, profiles or warm-ups.
+Rates are total fields divided by combined elapsed time, not averages of window
+rates. All paired boot/input/scene and timed-window CPU, bus, audio and pixel
+snapshots match.
+
+| Comparison | Previous game fields/s | Boxed state game fields/s | Previous menu fields/s | Boxed state menu fields/s |
+| --- | ---: | ---: | ---: | ---: |
+| Eight rotated 60-field windows | 12.744 | 13.369 | 27.823 | 28.445 |
+| Fresh instances, six rotated 80-field windows | 12.629 | 13.162 | 28.145 | 28.466 |
+
+Game throughput improved 4.91% initially and 4.22% in the independent repeat;
+menu throughput improved 2.23% and 1.14%. These are local measurements, not a
+cross-browser or cross-game guarantee. Boxing the entire checkpoint instead
+produced similar results (13.286 / 13.167 game fields/s); boxing only its large
+state preserves the existing checkpoint interfaces. Merely combining the error
+conversions did not improve throughput and is excluded.
+
+Existing tests exercise complete sound restoration, overlapping/aliased RAM
+writes, audio FIFO overwrites and error rollback. All 1,333 native tests in 111
+groups, formatting/build, native all-target and Wasm Clippy with warnings denied,
+registered fixture reproduction, all 74 production-Wasm browser groups with 48
+scheduler comparisons, and 13 runner tests pass. Full browser elapsed was
+208,577 ms. Five extended optional game checkpoints at fields 1800, 2100, 2400,
+2824 and 3252 and three reference PNG byte comparisons also pass. Private firmware,
+media and captures remain unpublished; original licensed guests supply mandatory
+native/Wasm/browser coverage.
+
+Standard-build JS glue and Wasm bytes match the measured frozen candidate. The
+selected Wasm SHA-256 is
+`2472f517b1a3840d295cff67ea8c941443d8ab1408c0fffb0d5308259e541de0`.
+Exact-head hosted CI and normal review remain mandatory before merge; required
+post-merge verification: none. **Real Web 60 fields/s remains unmet**, as do the
+umbrella hardware and general firmware compatibility criteria. Related to #17.
