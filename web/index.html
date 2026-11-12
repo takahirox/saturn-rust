@@ -66,7 +66,7 @@
             <button id="audio-enable" type="button">Enable audio</button>
             <button id="fullscreen" type="button">Fullscreen</button>
           </div>
-          <p id="input-hint" class="input-hint">Focus the display to use the keyboard · Arrows: directions · Z: A · Enter: Start<br>Standard gamepads supported. Touch controls are not included.</p>
+          <p id="input-hint" class="input-hint">Focus the display · P1 Arrows: directions · Z/X/C: A/B/C · A/S/D: X/Y/Z · Q/W: L/R · Enter: Start<br>Standard gamepads: full controls on both ports. P2 keyboard details in Advanced.</p>
           <p id="fullscreen-status" role="status"></p>
           <div class="player-feedback">
             <p id="player-status" role="status">Loading emulator…</p>
@@ -94,7 +94,7 @@
               <p id="backup-format">Import replaces all backup bytes and pauses playback. Only a 32768-byte raw file is accepted; this is not a save state or an ISO. Export your current backup first if you need to keep it.</p>
               <button id="backup-export" type="button">Export backup RAM</button>
               <p id="backup-status" role="status"></p>
-              <p>Second digital pad: <kbd>I K J L</kbd> directions, <kbd>U O P</kbd> A/B/C, <kbd>Right Shift</kbd> Start.</p>
+              <p>Player 2 keyboard (partial): <kbd>I K J L</kbd> up/down/left/right, <kbd>U O P</kbd> A/B/C, <kbd>Right Shift</kbd> Start. X/Y/Z/L/R require a gamepad; gamepads provide full digital controls on both ports.</p>
             </fieldset>
 
           </div>
@@ -142,7 +142,7 @@
     </div>
     <details class="about">
       <summary>Controls, privacy &amp; compatibility</summary>
-      <p>Focus the display for keyboard input. Arrows control directions, Z is A and Enter is Saturn Start. Second pad: I/K/J/L directions, U/O/P for A/B/C, Right Shift for Start. Losing focus releases held input; hiding the tab pauses. Returning from Debug or closing advanced settings never resumes automatically.</p>
+      <p>Focus the display for keyboard input. Player 1: Arrows for directions, Z/X/C for A/B/C, A/S/D for X/Y/Z, Q/W for L/R, Enter for Saturn Start. Bindings use physical key positions, independent of Shift, Caps Lock or keyboard layout. Player 2 (partial keyboard controls): I/K/J/L for up/down/left/right, U/O/P for A/B/C, Right Shift for Start; X/Y/Z/L/R require a gamepad. The first two connected gamepads take free ports; a connected pad keeps its port when another disconnects. Standard buttons 0/1/2/3/4/5 map to A/B/C/X/Y/Z, 7/6 to L/R, 9 to Start and 12–15 to directions. Losing focus releases held input; hiding the tab pauses. Returning from Debug or closing advanced settings never resumes automatically. Touch controls are not included.</p>
       <p>Enable audio with a click; status reports blocked, muted, paused and underflow states. Fullscreen uses your browser’s API. Restart cold-boots the selected mode; Debug offers CPU Step, bounded Run, Reset and frame advance.</p>
       <p>This is an independent emulator under development. Loading media does not guarantee that a game or retail BIOS will run. No commercial screenshots or simulated game output are shown.</p>
       <p>Disc, BIOS and backup bytes stay in memory in this tab. No uploads, browser persistence, analytics or CDN. Export backup RAM under Advanced before closing or reloading. This is not a save state.</p>

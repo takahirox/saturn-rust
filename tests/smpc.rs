@@ -3,8 +3,11 @@ use saturn_rust::{
     bus::{BIOS_SIZE, Memory},
 };
 fn rom() -> Vec<u8> {
+    fixture_rom(include_str!("fixtures/smpc.hex"))
+}
+fn fixture_rom(source: &str) -> Vec<u8> {
     let mut bytes = vec![0; BIOS_SIZE];
-    for line in include_str!("fixtures/smpc.hex").lines() {
+    for line in source.lines() {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -17,6 +20,34 @@ fn rom() -> Vec<u8> {
         }
     }
     bytes
+}
+
+#[test]
+fn continuous_intback_guest_observes_fresh_press_and_release_reports_on_both_ports() {
+    let rom = fixture_rom(include_str!("fixtures/digital-input.hex"));
+    let mut m = Machine::new();
+    m.reset(Boot::ExternalBios(&rom)).unwrap();
+    for (mask, digital) in [(0, [255, 255]), (0x1fff, [0, 7]), (0, [255, 255])] {
+        m.set_buttons(mask);
+        m.set_port2_buttons(mask);
+        let before = m.bus().read32(0x06008044).unwrap();
+        for _ in 0..100 {
+            m.run_steps(1000).unwrap();
+            if m.bus().read32(0x06008044).unwrap() >= before + 2 {
+                break;
+            }
+        }
+        assert!(m.bus().read32(0x06008044).unwrap() >= before + 2);
+        let packet: Vec<_> = (0..8)
+            .map(|i| m.bus().read8(0x06008020 + i).unwrap())
+            .collect();
+        assert_eq!(
+            packet,
+            [
+                0xf1, 2, digital[0], digital[1], 0xf1, 2, digital[0], digital[1]
+            ]
+        );
+    }
 }
 #[test]
 fn guest_sets_rtc_smem_reads_status_and_timed_digital_analog_packets_and_handles_smpc_irqs() {

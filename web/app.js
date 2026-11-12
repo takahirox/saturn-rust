@@ -17,14 +17,24 @@ let port2Buttons = 0;
 const gamepadMasks = [0, 0];
 const analogConnected = [false, false];
 const pad3d = [false, false];
+const gamepadSlots = [null, null];
 export function pollGamepads() {
   if (!emulator || document.hidden || !document.hasFocus() || document.activeElement !== $("screen")) return;
-  const pads = Array.from(navigator.getGamepads?.() ?? []).filter((pad) => pad?.connected).slice(0, 2);
+  // Assign the first two connected pads to free ports, retaining a surviving
+  // pad's port when its neighbour disconnects (the API can contain sparse slots).
+  const browserPads = Array.from(navigator.getGamepads?.() ?? []);
+  const connected = browserPads.flatMap((pad, index) => pad?.connected ? [index] : []);
+  for (let port = 0; port < 2; port++) if (!connected.includes(gamepadSlots[port])) gamepadSlots[port] = null;
+  for (const index of connected) {
+    const free = gamepadSlots.indexOf(null);
+    if (free !== -1 && !gamepadSlots.includes(index)) gamepadSlots[free] = index;
+  }
+  const pads = gamepadSlots.map(index => browserPads[index]);
   // Standard Gamepad buttons -> Saturn A/B/C/X/Y/Z/L/R/Start and four directions.
   const mapping = [[0,64],[1,16],[2,32],[3,1024],[4,512],[5,256],[6,4096],[7,2048],[9,128],[12,1],[13,2],[14,4],[15,8]];
   const axis = (value) => Math.round((Math.max(-1, Math.min(1, Number.isFinite(value) ? value : 0)) + 1) * 127.5);
   for (let port = 0; port < 2; port++) {
-    const pad = pads[port];
+    const pad = pads[port]?.connected ? pads[port] : null;
     let mask = 0;
     if (pad) for (const [index, bit] of mapping) if (pad.buttons[index]?.pressed || pad.buttons[index]?.value > 0.5) mask |= bit;
     gamepadMasks[port] = mask;
@@ -35,7 +45,11 @@ export function pollGamepads() {
       const rawY = Number.isFinite(pad.axes[1]) ? pad.axes[1] : 0;
       const radius = Math.max(1, Math.hypot(rawX, rawY));
       const trigger = (i) => Math.round(Math.max(0, Math.min(1, Number.isFinite(pad.buttons[i]?.value) ? pad.buttons[i].value : 0)) * 255);
-      emulator.set_3d_pad(port, true, axis(rawX / radius), axis(rawY / radius), trigger(7), trigger(6));
+      // ID16 derives its shoulder bits from trigger travel. Digital keyboard
+      // shoulders therefore need full travel too, alongside the physical levels.
+      const keyboard = port === 0 ? buttons : port2Buttons;
+      emulator.set_3d_pad(port, true, axis(rawX / radius), axis(rawY / radius),
+        keyboard & 2048 ? 255 : trigger(7), keyboard & 4096 ? 255 : trigger(6));
     } else emulator.set_analog(port, analogConnected[port], pad ? axis(pad.axes[0]) : 128, pad ? axis(pad.axes[1]) : 128, pad ? axis(pad.axes[2] ?? -1) : 0);
   }
   emulator.set_buttons(buttons | gamepadMasks[0]);
@@ -526,18 +540,23 @@ try {
     render();
   });
   $("frame").addEventListener("click", () => act(advanceFrame));
-  const keys = { ArrowUp: 1, ArrowDown: 2, ArrowLeft: 4, ArrowRight: 8, z: 64, Enter: 128 };
+  const keys = { ArrowUp: 1, ArrowDown: 2, ArrowLeft: 4, ArrowRight: 8,
+    KeyZ: 64, KeyX: 16, KeyC: 32, KeyA: 1024, KeyS: 512, KeyD: 256,
+    KeyQ: 2048, KeyW: 4096, Enter: 128 };
   const port2Keys = { KeyI: 1, KeyK: 2, KeyJ: 4, KeyL: 8, KeyO: 16, KeyP: 32, KeyU: 64, ShiftRight: 128 };
   for (const eventName of ["keydown", "keyup"]) {
     window.addEventListener(eventName, (event) => {
-      const mask = keys[event.key];
+      const mask = keys[event.code];
       const port2Mask = port2Keys[event.code];
-      if ((!mask && !port2Mask) || !["disc", "bios"].includes($("mode").value) || loadingFile() || loadingBackup || document.activeElement !== $("screen")) return;
+      if ((!mask && !port2Mask) || !["disc", "bios"].includes($("mode").value) || loadingFile() || loadingBackup || document.hidden || !document.hasFocus() || document.activeElement !== $("screen")) return;
+      // Leave host shortcuts alone. Always accept keyup, even if a modifier
+      // changed while held; repeats cannot reacquire a key released by blur/pause.
+      if (eventName === "keydown" && (event.ctrlKey || event.altKey || event.metaKey)) return;
       event.preventDefault();
+      if (eventName === "keydown" && event.repeat) return;
       if (eventName === "keydown") { buttons |= mask ?? 0; port2Buttons |= port2Mask ?? 0; }
       else { buttons &= ~(mask ?? 0); port2Buttons &= ~(port2Mask ?? 0); }
-      emulator.set_buttons(buttons | gamepadMasks[0]);
-      emulator.set_port2_buttons(port2Buttons | gamepadMasks[1]);
+      pollGamepads();
     });
   }
   $("screen").addEventListener("blur", releaseButtons);
