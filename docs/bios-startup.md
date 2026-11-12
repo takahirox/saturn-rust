@@ -211,8 +211,9 @@ releases buttons. Frames must increase. This supports repeatable private input
 experiments without writing guest RAM or changing firmware.
 
 For browser use, extract an authorized raw copy outside `web/`, build with
-`sh scripts/build-web.sh`, serve only `web/` as in [setup](setup.md), select
-**User-provided BIOS**, select the raw file and press **Start**. Focus the display
+`sh scripts/build-web.sh`, serve only `web/` as in [setup](setup.md), add
+the raw file under **Add BIOS**, then press **Start**. The page automatically
+selects **User-provided BIOS**. Focus the display
 for arrows and Z (Saturn A). New battery state presents the firmware's date/time
 setup. No BIOS is uploaded or fetched by the page.
 

@@ -11,7 +11,6 @@ export async function hlePlayer(page, url) {
   await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
   await page.locator("#view-debug").click();
   await page.locator("#settings > summary").click();
-  await page.locator("#mode").selectOption("disc");
   const files = track => [
     {name:"hle-player.iso",mimeType:"application/octet-stream",buffer:iso},
     {name:"hle-player.cue",mimeType:"text/plain",buffer:cue},

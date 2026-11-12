@@ -26,7 +26,6 @@ export async function largeMedia(browser, url) {
         await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
         await page.locator("#view-debug").click();
         await page.locator("#settings > summary").click();
-        await page.selectOption("#mode", "disc");
         if (mixed) await page.locator("#audio-enable").click();
         await context.setOffline(true);
         // A genuine asynchronous local read cancelled by the Reset button must
@@ -111,7 +110,6 @@ export async function largeMedia(browser, url) {
         await page.goto(url);
         await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
         await page.locator("#view-debug").click(); await page.locator("#settings > summary").click();
-        await page.selectOption("#mode", "disc");
         await page.locator("#disc").setInputFiles(iso);
         await page.waitForFunction(() => document.getElementById("status").textContent === "Ready", null, {timeout:60000});
         const result = await page.evaluate(async () => {

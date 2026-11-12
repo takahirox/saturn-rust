@@ -18,7 +18,7 @@ const gamepadMasks = [0, 0];
 const analogConnected = [false, false];
 const pad3d = [false, false];
 export function pollGamepads() {
-  if (!emulator || document.hidden || !document.hasFocus() || document.activeElement !== $("screen")) return;
+  if (!emulator || !acceptsInput() || document.hidden || !document.hasFocus() || document.activeElement !== $("screen")) return;
   const pads = Array.from(navigator.getGamepads?.() ?? []).filter((pad) => pad?.connected).slice(0, 2);
   // Standard Gamepad buttons -> Saturn A/B/C/X/Y/Z/L/R/Start and four directions.
   const mapping = [[0,64],[1,16],[2,32],[3,1024],[4,512],[5,256],[6,4096],[7,2048],[9,128],[12,1],[13,2],[14,4],[15,8]];
@@ -44,6 +44,8 @@ export function pollGamepads() {
 let lastFrame = 0;
 const context = $("screen").getContext("2d");
 let biosBytes = null;
+let biosSelected = false;
+let debugFixture = false;
 // BIOS and disc reads may overlap; only a replacement of the same image cancels it.
 let biosGeneration = 0;
 let discGeneration = 0;
@@ -52,6 +54,18 @@ let loadingDisc = false;
 const loadingFile = () => loadingBios || loadingDisc;
 const selectionErrors = { bios: "", disc: "" };
 const selectionError = () => selectionErrors.bios || selectionErrors.disc;
+// A selected but unaccepted BIOS always blocks Play, including cancelled reads.
+function effectiveBootMode() {
+  if (debugFixture) return "fixture";
+  if (biosSelected) return biosBytes && !loadingBios && !selectionErrors.bios ? "bios" : "blocked";
+  return "disc";
+}
+function playerInputReady(mode = effectiveBootMode()) {
+  return mode === "bios" || (mode === "disc" && loadedDisc);
+}
+function acceptsInput() {
+  return bootValid && playerInputReady() && !loadingFile() && !loadingBackup && !selectionError();
+}
 let backupGeneration = 0;
 let loadingBackup = false;
 let view = "play";
@@ -153,8 +167,12 @@ function canExecute(status = emulator.status()) {
 function render() {
   if (!emulator) return;
   const machineStatus = attemptedBoot ? emulator.status() : "Ready";
-  const mode = emulator.mode();
-  if (biosBytes && $("bios").files[0]) setText("bios-selection", `${$("bios").files[0].name} · 512 KiB · loaded locally${$("mode").value === "bios" ? "" : " (unused in HLE mode)"}`);
+  const mode = bootValid ? emulator.mode() : "Not started";
+  const bootMode = effectiveBootMode();
+  const bootMethod = bootMode === "fixture" ? "Debug · HLE bootstrap fixture" :
+    bootMode === "blocked" ? (loadingBios ? "Auto · BIOS loading" : "Auto · BIOS selection blocked") :
+    bootMode === "bios" ? "Auto · User-provided BIOS" : "Auto · BIOS-less HLE";
+  setText("boot-method", bootMethod);
   $("active-mode").textContent = mode;
   setText("status", machineStatus);
   // Keep register allocation and Wasm register reads out of the playback loop.
@@ -168,13 +186,15 @@ function render() {
     rows($("special"), ["PC", "SR", "PR", "GBR", "VBR", "MACH", "MACL"], emulator.special_registers());
     $("frames").textContent = emulator.frames();
   }
+  $("bios-clear").disabled = !biosSelected;
+  $("disc-clear").disabled = !loadedDisc && !loadingDisc && !selectionErrors.disc;
   const busy = loadingFile() || loadingBackup;
   const ready = bootValid && !busy && !selectionError() && canExecute(machineStatus);
   $("step").disabled = !ready;
   $("run").disabled = !ready;
   $("reset").disabled = false;
-  const playerReady = ready && ["disc", "bios"].includes($("mode").value);
-  const inputReady = $("mode").value === "bios" ? Boolean(biosBytes) : $("mode").value === "disc" && loadedDisc;
+  const playerReady = ready && playerInputReady(bootMode);
+  const inputReady = playerInputReady(bootMode);
   $("pause").disabled = busy || !sessionStarted || (!playing && !playerReady);
   $("pause").hidden = !sessionStarted;
   $("pause").textContent = playing ? "Pause" : "Resume";
@@ -184,18 +204,17 @@ function render() {
   $("start").disabled = !launchReady || playing;
   $("start").hidden = sessionStarted;
   $("backup-export").disabled = busy;
-  const needsInput = $("mode").value === "bios" ? "Select a 512 KiB BIOS to begin; disc optional" : "Load a disc to begin";
+  const needsInput = "Select a disc or add a 512 KiB BIOS to begin";
   const state = loadingFile() ? "Loading image…" : loadingBackup ? "Reading backup RAM…" : $("error").textContent ? "Stopped — check the error" :
-    playing ? `Running${machineStatus === "Ready" ? "" : ` · ${machineStatus}`}` : launchReady ? (sessionStarted ? "Paused — Resume to play" : `${$("mode").value === "bios" ? "BIOS" : "Disc"} ready — press Start`) :
+    playing ? `Running${machineStatus === "Ready" ? "" : ` · ${machineStatus}`}` : launchReady ? (sessionStarted ? "Paused — Resume to play" : `${bootMode === "bios" ? "BIOS" : "Disc"} ready — press Start`) :
     bootValid ? machineStatus : needsInput;
-  setText("player-status", `${state} · ${$("mode").selectedOptions[0].textContent}`);
-  setText("launch-status", busy ? "Reading local data…" : $("error").textContent ? "Check the error beside the player." :
-    $("mode").value === "hle" ? "Debugger fixture selected. Use the advanced CPU controls." :
-    $("mode").value === "bios" && !biosBytes ? "Select a 512 KiB BIOS. A disc is optional in BIOS mode." :
-    launchReady ? (sessionStarted ? "Playback controls are beneath the display." : `Ready to start.${$("mode").value === "bios" ? " Disc optional in BIOS mode." : ""} Audio is enabled separately.`) :
-    bootValid ? `Machine: ${machineStatus}. See Debug for details.` : "Select a valid disc to start.");
-  setText("empty-title", $("mode").value === "bios" ? "Start with your BIOS" : "Load a disc to begin");
-  setText("empty-hint", $("mode").value === "bios" ? "Disc optional. Firmware support is incomplete." : "Disc required for BIOS-less HLE.");
+  setText("player-status", `${state} · ${bootMethod}`);
+  setText("launch-status", busy ? (loadingBios ? "Reading BIOS locally… Start is blocked until validation completes." : "Reading local data…") : $("error").textContent ? "Check the error beside the player. Replace or clear the rejected selection." :
+    bootMode === "fixture" ? "Debugger fixture selected. Use the advanced CPU controls." :
+    launchReady ? (sessionStarted ? "Playback controls are beneath the display." : `Ready to start.${bootMode === "bios" ? " Disc optional in BIOS mode." : ""} Audio is enabled separately.`) :
+    bootValid ? `Machine: ${machineStatus}. See Debug for details.` : needsInput);
+  setText("empty-title", bootMode === "bios" ? "Start with your BIOS" : bootMode === "blocked" ? "BIOS selection needs attention" : "Load a disc to begin");
+  setText("empty-hint", bootMode === "bios" ? "Disc optional. Firmware support is incomplete." : bootMode === "blocked" ? "Wait for loading, or replace or clear the BIOS selection." : "Or add a local BIOS to start without a disc.");
   $("recovery").hidden = !$("error").textContent || loadingFile();
 }
 
@@ -268,26 +287,20 @@ function reset() {
   attemptedBoot = true;
   bootValid = false;
   $("empty-state").hidden = false;
+  const mode = effectiveBootMode();
   act(() => {
-    if ($("mode").value === "disc") {
-      // Mount validation is independent of whether HLE supports this disc's boot data.
-      mountSelectedDisc();
-      // The retained Wasm medium now owns these bytes; restart needs no upload.
-      discBytes = null;
-      cueMedia = null;
-      if (loadedDisc) emulator.reset_loaded_disc();
-      else emulator.reset_disc(new Uint8Array());
-    }
-    else if ($("mode").value === "hle") emulator.reset_hle();
-    else {
-      // Validate/mount a selected medium even when firmware has not been added.
-      let biosError;
-      try { emulator.reset_bios(biosBytes ?? new Uint8Array()); } catch (error) { biosError = error; }
-      mountSelectedDisc();
-      discBytes = null;
-      cueMedia = null;
-      if (biosError) throw biosError;
-    }
+    // Stop and clear the previous guest immediately, preserving the Wasm medium.
+    // The deliberately empty BIOS resets execution without installing any HLE.
+    try { emulator.reset_bios(new Uint8Array()); } catch { /* Expected size rejection. */ }
+    // Mount validation remains independent of boot choice, even while BIOS loads.
+    mountSelectedDisc();
+    discBytes = null;
+    cueMedia = null;
+    if (loadingFile() || selectionError() || mode === "blocked") return;
+    if (mode === "fixture") emulator.reset_hle();
+    else if (mode === "bios") emulator.reset_bios(biosBytes);
+    else if (loadedDisc) emulator.reset_loaded_disc();
+    else return;
     bootValid = true;
   });
   // Failed validation must not keep a second unvalidated JS copy alive.
@@ -350,6 +363,8 @@ try {
   $("reset").addEventListener("click", () => {
     biosGeneration++;
     discGeneration++;
+    if (loadingBios) selectionErrors.bios = "BIOS read cancelled by Reset. Replace or clear the BIOS selection.";
+    if (loadingDisc) selectionErrors.disc = "Disc read cancelled by Reset. Replace or clear the disc selection.";
     loadingBios = false;
     loadingDisc = false;
     reset();
@@ -364,12 +379,24 @@ try {
     render();
   });
   $("fixture").addEventListener("click", () => {
-    $("mode").value = "hle";
-    $("mode").dispatchEvent(new Event("change"));
+    sessionStarted = false;
+    biosGeneration++;
+    discGeneration++;
+    loadingBios = loadingDisc = false;
+    selectionErrors.bios = selectionErrors.disc = "";
+    biosBytes = discBytes = cueMedia = null;
+    biosSelected = loadedDisc = false;
+    emulator.clear_media();
+    $("disc").value = $("bios").value = "";
+    $("disc-selection").textContent = "No disc selected.";
+    $("bios-selection").textContent = "No BIOS selected.";
+    debugFixture = true;
+    reset();
   });
   $("restart").addEventListener("click", () => {
+    if ($("restart").disabled) return;
     reset();
-    if (sessionStarted && bootValid && !selectionError() && ["disc", "bios"].includes($("mode").value) && canExecute() && !$("settings").open && view === "play") {
+    if (sessionStarted && bootValid && !selectionError() && playerInputReady() && canExecute() && !$("settings").open && view === "play") {
       playing = true;
       lastFrame = 0;
       $("screen").focus();
@@ -384,64 +411,33 @@ try {
     }
     emulator.run_steps(count);
   }));
-  $("mode").addEventListener("change", () => {
-    sessionStarted = false;
-    biosGeneration++;
-    discGeneration++;
-    // Completed selections survive switching between the two player boot modes.
-    // In-flight reads are cancelled; they cannot revive an old boot selection.
-    if (loadingBios) {
-      biosBytes = null;
-      $("bios").value = "";
-      $("bios-selection").textContent = "BIOS read cancelled by mode change. Select it again.";
-    }
-    if (loadingDisc) {
-      loadedDisc = false;
-      emulator.clear_media();
-      $("disc").value = "";
-      $("disc-selection").textContent = "Disc read cancelled by mode change. Select it again.";
-    }
-    discBytes = null;
-    cueMedia = null;
-    loadingBios = false;
-    loadingDisc = false;
-    if ($("mode").value === "hle") {
-      selectionErrors.bios = "";
-      selectionErrors.disc = "";
-      biosBytes = null;
-      loadedDisc = false;
-      emulator.clear_media();
-      $("disc").value = "";
-      $("bios").value = "";
-      $("disc-selection").textContent = "No disc selected.";
-      $("bios-selection").textContent = "No BIOS selected.";
-    }
-    reset();
-  });
   $("bios").addEventListener("change", async () => {
     selectionErrors.bios = "";
     const generation = ++biosGeneration;
     const file = $("bios").files[0];
+    biosSelected = Boolean(file);
+    debugFixture = false;
     sessionStarted = false;
     $("bios-selection").textContent = file ? `${file.name} · ${file.size.toLocaleString()} bytes (not yet validated)` : "No BIOS selected.";
     biosBytes = null;
-    loadingBios = false;
+    loadingBios = Boolean(file);
     reset(); // Immediately stop the old machine, even if reading the new file fails.
     if (!file) return;
     if (file.size !== 524288) {
+      loadingBios = false;
       selectionErrors.bios = $("error").textContent = `Select a raw 512 KiB BIOS (524288 bytes); received ${file.size} bytes.`;
       render();
       return;
     }
     loadingBios = true;
-    $("error").textContent = "";
+    $("error").textContent = selectionError();
     render();
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       if (generation !== biosGeneration) return;
       if (bytes.length !== 524288) throw new Error("BIOS read did not contain 524288 bytes");
       biosBytes = bytes;
-      $("bios-selection").textContent = `${file.name} · 512 KiB · loaded locally${$("mode").value === "bios" ? "" : " (unused in HLE mode)"}`;
+      $("bios-selection").textContent = `${file.name} · 512 KiB · loaded locally`;
       loadingBios = false;
       reset();
     } catch (error) {
@@ -455,13 +451,14 @@ try {
     if ($("controls").disabled) return;
     selectionErrors.disc = "";
     const generation = ++discGeneration;
+    debugFixture = false;
     sessionStarted = false;
     $("disc-selection").textContent = files.length ? files.map(file => `${file.name} · ${file.size.toLocaleString()} bytes`).join("\n") + "\nNot yet validated." : "No disc selected.";
     discBytes = null;
     cueMedia = null;
     loadedDisc = false;
     emulator.clear_media();
-    loadingDisc = false;
+    loadingDisc = Boolean(files.length);
     reset();
     if (!files.length) return;
     const cueFiles = files.filter((file) => /\.cue$/i.test(file.name));
@@ -471,12 +468,13 @@ try {
     if ((!cue && (files.length !== 1 || (chd ? file.size < 124 || file.size > MAX_MEDIA_BYTES : !/\.iso$/i.test(file.name) || file.size < 18 * 2048 || file.size > MAX_ISO_BYTES || file.size % 2048 !== 0))) ||
         cueFiles.length > 1 || files.filter((file) => file !== cue).reduce((total, file) => total + file.size, 0) > MAX_MEDIA_BYTES ||
         (cue && (cue.size > 1048576 || files.length < 2 || files.length > 100))) {
+      loadingDisc = false;
       selectionErrors.disc = $("error").textContent = "Select one self-contained CHD v5 CD-ROM, one complete 2048-byte-sector ISO (18 to 450000 sectors), or one CUE and all its referenced BINARY track files together (up to 1058400000 bytes). A lone raw BIN needs its CUE.";
       render();
       return;
     }
     loadingDisc = true;
-    $("error").textContent = "";
+    $("error").textContent = selectionError();
     render();
     try {
       if (cue) {
@@ -505,6 +503,10 @@ try {
     }
   };
   $("disc").addEventListener("change", () => selectDisc([...$("disc").files]));
+  for (const id of ["bios", "disc"]) $(id + "-clear").addEventListener("click", () => {
+    $(id).value = "";
+    $(id).dispatchEvent(new Event("change"));
+  });
   const dropZone = $("disc-drop");
   for (const type of ["dragenter", "dragover"]) dropZone.addEventListener(type, event => {
     event.preventDefault();
@@ -521,6 +523,7 @@ try {
   // Prevent a dropped image outside the target from navigating away from the tab.
   for (const type of ["dragover", "drop"]) window.addEventListener(type, event => event.preventDefault());
   $("pause").addEventListener("click", () => {
+    if ($("pause").disabled) return;
     if (playing) pause();
     else { playing = true; lastFrame = 0; $("screen").focus(); }
     render();
@@ -532,7 +535,7 @@ try {
     window.addEventListener(eventName, (event) => {
       const mask = keys[event.key];
       const port2Mask = port2Keys[event.code];
-      if ((!mask && !port2Mask) || !["disc", "bios"].includes($("mode").value) || loadingFile() || loadingBackup || document.activeElement !== $("screen")) return;
+      if ((!mask && !port2Mask) || !acceptsInput() || document.activeElement !== $("screen")) return;
       event.preventDefault();
       if (eventName === "keydown") { buttons |= mask ?? 0; port2Buttons |= port2Mask ?? 0; }
       else { buttons &= ~(mask ?? 0); port2Buttons &= ~(port2Mask ?? 0); }
