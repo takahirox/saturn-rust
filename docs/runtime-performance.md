@@ -2093,3 +2093,56 @@ misses occurred in that sample. The diagnostic endpoint matched the ordinary
 reference. Reusing private peer states across more issue phases remains under
 investigation. The measured game window still needs approximately 6.7× more
 throughput to reach 60 fields/s.
+
+
+## Cached loads at a single Slave issue boundary (2026-11-12)
+
+Related to #17. A cached Master load can retire while Master is immediately
+ready to issue again at the same clock. The ordinary scheduler attempts one
+Slave issue and then arbitrates the bus at that boundary. The private polling
+proof now records the number of due issue attempts at each clock, with agreement
+between both cache-replacement seeds. A burst can end at such a Master retirement
+when the proved phase needs zero or one Slave issue attempt. The existing full
+CPU, transaction, FTCSR and resident-code validation certifies each reused proof.
+The field runner applies this automatically.
+
+The new native cached-load guest compares individual admitted retirements with
+ordinary inline issue at two peer phases and both PLL settings. Complete fields
+also match uncoalesced replay, including both CPUs, cache contents, BSC state,
+RAM, sound and pixels. A second original guest drives capture strobes at four
+initial peer phases in both PLL settings and compares FTCSR and both capture
+register byte lanes. The complete native suite passed 1,323 tests in 111 groups.
+Formatting, native/Wasm Clippy and fixture reproduction passed. All 74 browser
+groups, 48 scheduler cases and 13 browser-runner checks passed on the final
+production Wasm.
+
+Restoring the zero-issue restriction fails the positive coverage assertion.
+Allowing additional same-clock Slave issues fails the instruction-boundary
+comparison. An initial scalar-only negative control passed because it did not
+exercise these cached-load retirements. The refined control checks the affected
+boundary directly. The first capture-register check used unsupported 16-bit
+accesses. It was corrected to compare successful 8-bit reads of both lanes.
+
+Chrome 157.0.8103.39 presented every measured field to Canvas. Three rotated
+60-field game windows used the local supplied BIOS and Machi Disc 1 through
+the ordinary file pickers. Every exposed CPU, sound, clock and pixel endpoint
+matched PR #123's default module. Extended checks matched fields 1500, 1800,
+2100, 2400, 2824 and 3252, and the title, book and guide captures matched the
+previous reference.
+
+| Workload | Earlier fields/s | With peer boundary proof, fields/s | Median p95 field time |
+| --- | ---: | ---: | ---: |
+| Local Machi Disc 1, fields 1200–1380 | 8.930 | 10.085 | 152.1 → 143.0 ms |
+| Local BIOS menu, fields 1200–1560 | 25.986 | 26.238 | 64.1 → 63.7 ms |
+
+Median game throughput improved 12.9%. Throughput across all three timed
+windows improved 13.5%. Menu median throughput improved 1.0%, with a 0.9%
+improvement across combined timed throughput. The measured production Wasm SHA-256 is
+`f3dc558b73a7c380aeab53644843831efd645fbadc2b0e5f0ee16577633ff6dd`.
+
+An earlier trial that accepted idle peer phases measured 8.782 → 9.627 fields/s
+in a separate three-pair comparison. Its menu median changed from 24.876 to
+24.453 fields/s. A trial combining cache refills, grouped WRAM writes and shadow
+tag lookup reuse improved throughput by 1.6% in a five-way comparison. Those
+trials informed this smaller selected increment. The measured game window still needs approximately
+6× further throughput to reach 60 fields/s.

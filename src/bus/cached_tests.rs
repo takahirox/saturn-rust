@@ -2102,3 +2102,160 @@ fn uncached_work_ram_reads_preserve_width_order_and_external_changes() {
         }
     }
 }
+
+#[test]
+fn private_peer_single_issue_boundary_preserves_master_retirement_clocks() {
+    for fast in [false, true] {
+        let make = |offset: usize| {
+            let source = HIGH_WRAM + 0x2000;
+            let mut machine = crate::scheduling_tests::cached_pair(
+                &[0x61F2, 0x7001, 0xAFFC, 9],
+                &[0x60F0, 0xC880, 0x89FC, 0xAFFB, 9],
+            );
+            machine.bus.change_system_clock(fast);
+            machine.bus.set_slave_enabled(true);
+            machine.bus.write32(source, 0x12345678).unwrap();
+            for (processor, address) in [
+                (Processor::Slave, HIGH_WRAM + 0x100),
+                (Processor::Master, HIGH_WRAM),
+            ] {
+                let mut memory = machine.bus.for_cpu(processor);
+                memory.write8(crate::cache::CCR, 0x11).unwrap();
+                memory.fetch16(address).unwrap();
+                if processor == Processor::Master {
+                    memory.read32(source).unwrap();
+                }
+                machine.bus.cpu_delay(processor, 0);
+            }
+            machine.cpu = Cpu::start(HIGH_WRAM, source);
+            machine
+                .cpu
+                .prime_fetch(&machine.bus.for_cpu(Processor::Master));
+            machine.slave = Cpu::start(HIGH_WRAM + 0x100, crate::onchip::FRT + 1);
+            machine
+                .slave
+                .prime_fetch(&machine.bus.for_cpu(Processor::Slave));
+            machine.cpu_ready[0] = machine.bus.main_clocks + 128;
+            for _ in 0..offset {
+                machine.step_hardware_boundary().unwrap();
+            }
+            machine.cpu_ready[0] = machine.bus.main_clocks;
+            machine
+        };
+        let mut single_loads = 0;
+        for offset in [0, 1] {
+            let mut optimized = make(offset);
+            let mut reference = make(offset);
+            // Each admitted load shares one ordinary issue boundary. The
+            // offsets include clocks with a second ready peer instruction.
+            for _ in 0..512 {
+                let count = if optimized.cpu.decoded_opcode() == Some(0x61F2)
+                    && optimized.cpu_ready[0] <= optimized.bus.main_clocks
+                {
+                    optimized.try_private_poll_batch(1).unwrap()
+                } else {
+                    0
+                };
+                if count == 0 {
+                    optimized.step_inner_with_idle(true).unwrap();
+                    reference.step_inner_with_idle(true).unwrap();
+                } else {
+                    assert!(optimized.cpu_ready[0] <= optimized.bus.main_clocks);
+                    single_loads += 1;
+                    while reference.cpu_state().instructions < optimized.cpu_state().instructions {
+                        reference.step_inner_with_idle(true).unwrap();
+                    }
+                }
+                assert_eq!(optimized.cpu, reference.cpu);
+                assert_eq!(optimized.slave, reference.slave);
+                assert_eq!(optimized.cpu_ready, reference.cpu_ready);
+                assert_eq!(optimized.clocks(), reference.clocks());
+            }
+        }
+        assert!(single_loads > 0);
+        let mut optimized = make(0);
+        let mut reference = make(0);
+        for _ in 0..2 {
+            optimized.advance_frame().unwrap();
+            reference_frame(&mut reference).unwrap();
+            same(&mut optimized, &mut reference);
+            for i in 0..2 {
+                optimized.bus.cache[i]
+                    .borrow()
+                    .assert_same_contents(&reference.bus.cache[i].borrow());
+                optimized.bus.onchip[i].assert_cached_read_bus_matches(&reference.bus.onchip[i]);
+            }
+        }
+        assert!(optimized.bus.cached_private_single_issue_endpoints > 0);
+    }
+}
+
+#[test]
+fn private_peer_endpoints_keep_strobe_capture_and_status_read_order() {
+    for fast in [false, true] {
+        for offset in 0..4 {
+            let make = || {
+                let mut machine = crate::scheduling_tests::cached_pair(
+                    &[0xE000, 0x7001, 0x2F01, 0xAFFB, 9],
+                    &[0x60F0, 0xC880, 0x89FC, 0xAFFB, 9],
+                );
+                machine.bus.change_system_clock(fast);
+                machine.bus.set_slave_enabled(true);
+                for (processor, address) in [
+                    (Processor::Slave, HIGH_WRAM + 0x100),
+                    (Processor::Master, HIGH_WRAM),
+                ] {
+                    let mut memory = machine.bus.for_cpu(processor);
+                    memory.write8(crate::cache::CCR, 0x11).unwrap();
+                    for i in [0, 16] {
+                        memory.fetch16(address + i).unwrap();
+                    }
+                    machine.bus.cpu_delay(processor, 0);
+                }
+                machine.cpu = Cpu::start(HIGH_WRAM, 0x21000000);
+                machine
+                    .cpu
+                    .prime_fetch(&machine.bus.for_cpu(Processor::Master));
+                machine.slave = Cpu::start(HIGH_WRAM + 0x100, crate::onchip::FRT + 1);
+                machine
+                    .slave
+                    .prime_fetch(&machine.bus.for_cpu(Processor::Slave));
+                machine.cpu_ready[0] = machine.bus.main_clocks + 128;
+                for _ in 0..offset {
+                    machine.step_hardware_boundary().unwrap();
+                }
+                machine.cpu_ready[0] = machine.bus.main_clocks;
+                machine
+            };
+            let mut optimized = make();
+            let mut reference = make();
+            for _ in 0..2 {
+                optimized.advance_frame().unwrap();
+                reference_frame(&mut reference).unwrap();
+                same(&mut optimized, &mut reference);
+                for i in 0..2 {
+                    optimized.bus.cache[i]
+                        .borrow()
+                        .assert_same_contents(&reference.bus.cache[i].borrow());
+                    optimized.bus.onchip[i]
+                        .assert_cached_read_bus_matches(&reference.bus.onchip[i]);
+                }
+                assert_ne!(optimized.bus.onchip[1].ftcsr() & 0x80, 0);
+                assert_eq!(
+                    optimized.bus.onchip[1].ftcsr(),
+                    reference.bus.onchip[1].ftcsr()
+                );
+                for register in [8, 9] {
+                    assert_eq!(
+                        optimized.bus.onchip[1]
+                            .read8(crate::onchip::FRT + register)
+                            .unwrap(),
+                        reference.bus.onchip[1]
+                            .read8(crate::onchip::FRT + register)
+                            .unwrap(),
+                    );
+                }
+            }
+        }
+    }
+}
