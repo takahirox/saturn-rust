@@ -48,16 +48,16 @@ impl Vdp2 {
                 }
             }
         }
-        for window in 0..2 {
+        for (window, value) in tables.window.iter_mut().enumerate() {
             let reg = 0xD8 + window * 4;
             if self.word(reg) & 0x8000 != 0 {
                 let at = self.table_address(reg) + y * 4;
-                tables.window[window] = Some((self.vword(at), self.vword(at + 2)));
+                *value = Some((self.vword(at), self.vword(at + 2)));
             }
         }
-        for parameter in 0..2 {
+        for (parameter, rotation) in tables.rotation.iter_mut().enumerate() {
             let at = self.rotation_table(parameter);
-            for (i, value) in tables.rotation[parameter].iter_mut().enumerate() {
+            for (i, value) in rotation.iter_mut().enumerate() {
                 *value = self.vlong(at + i * 4);
             }
         }

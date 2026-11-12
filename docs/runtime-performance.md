@@ -2731,7 +2731,7 @@ can otherwise combine an old first word with a new second packet; a valid
 per-dot plan must not spread that mixed name into a future uncaptured dot.
 Rotation and unsupported coordinate cases retain their existing decoders.
 
-### Web comparison
+### Initial Web comparison (Rust 1.99)
 
 Chrome 157.0.8103.52 runs production JS/Wasm with Canvas presentation and PCM
 draining for every field. Each variant covers fields 1200–1680 in six rotated
@@ -2743,7 +2743,9 @@ throughout timing. Rates divide 480 fields by combined elapsed time.
 | Game | 13.569 | 14.142 |
 | BIOS menu | 27.847 | 28.085 |
 
-Game throughput improves 4.23%; all six windows improve individually. Paired
+Game throughput improves 4.23%; all six windows improve individually. A fresh
+eight-window repeat measured 13.527 → 13.854 fields/s (+2.42%), with all
+32 game and 32 menu endpoints matching; menu measured 28.101 → 28.339. Paired
 boot/input/scene and all 18 timed endpoints per scene match exposed CPU, sound,
 clock and pixel state. A one-word-only specialization measured 13.687 game
 fields/s and was excluded because its smaller benefit did not justify selecting
@@ -2771,6 +2773,17 @@ Five extended optional game checkpoints at fields 1800, 2100, 2400, 2824 and 325
 match, as do three explicit reference PNG byte comparisons. Standard-build JS and
 Wasm bytes match the measured frozen candidate; Wasm SHA-256 is
 `dc970316cba7def5f392d5829176b6d61c1ab08c7b4ddb214ba5ff7a209f006a`.
+CI subsequently updated its stable compiler to Rust 1.100 and rejected four
+existing indexed loops under the new Clippy diagnostics. The cache-way and
+window/rotation table loops, plus one test-only on-chip initialization loop, now
+use enumerated array iterators with the same order and bounds. No lint is
+suppressed. Native all-target and Wasm Clippy pass with Rust 1.100. The normal
+Rust 1.100 Web build matches the frozen final candidate byte for byte; its Wasm
+SHA-256 is `10bed658d7331e34fec0c6df364269712bd49003175b7a6bff816e35857d4a6c`.
+The earlier hash identifies the initial Rust 1.99 comparison, not this final
+compiler build. Revised-head Web timing and validation are recorded in
+[PR #133](https://github.com/takahirox/saturn-rust/pull/133).
+
 Private firmware, media and captures remain unpublished; original licensed guests
 supply mandatory native/Wasm/browser coverage. Exact-head hosted CI and normal
 review remain mandatory before merge.
