@@ -742,6 +742,7 @@ pub(crate) struct CachedBatch {
     pub ready: u64,
     pub reference: u64,
     pub retired: u32,
+    pub endpoint_issues: u32,
 }
 impl Bus {
     /// Retire one register instruction at the current hardware boundary.
@@ -1685,6 +1686,16 @@ impl Bus {
             }
             retired = selected as u32;
         }
+        let endpoint_issues = if matches!(poll, Some(PeerSchedule::Pending { .. })) {
+            let clock = points.at(selected - 1);
+            let mut first = selected - 1;
+            while first > 0 && points.at(first - 1) == clock {
+                first -= 1;
+            }
+            (selected - first) as u32
+        } else {
+            1
+        };
         points.recycle_into(&mut self.cached_retirement_points);
         let store = memory.store.get();
         let (local, ram_plan, fills) = memory.into_parts();
@@ -1744,6 +1755,7 @@ impl Bus {
             ready,
             reference,
             retired,
+            endpoint_issues,
         }))
     }
     fn publish_ram_store<const N: usize>(&mut self, store: PlannedStore, mut bytes: [u8; N]) {
