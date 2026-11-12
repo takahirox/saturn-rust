@@ -1,6 +1,7 @@
 // Play UI acceptance uses only repository-authored media and firmware.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { digitalInput } from "./digital-input.mjs";
 
 export async function playUi(browser, url) {
   const context = await browser.newContext();
@@ -343,6 +344,7 @@ export async function playUi(browser, url) {
       }
     }
     await framePacing(browser, url, bios);
+    await digitalInput(browser, url);
     assert.deepEqual(errors,[]);
     assert(requests.every(r => r.url.startsWith(url) && r.method === "GET" && r.body === null));
   } finally { await context.close(); }

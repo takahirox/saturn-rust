@@ -117,6 +117,9 @@ impl Emulator {
         self.machine
             .set_3d_pad(port as usize, enabled.then_some([x, y, right, left]));
     }
+    pub fn set_3d_pad_digital(&mut self, port: u8, buttons: u16) {
+        self.machine.set_3d_pad_digital(port as usize, buttons);
+    }
     pub fn sound_halted(&self) -> bool {
         self.machine.sound_state().halted
     }

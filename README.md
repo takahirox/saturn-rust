@@ -25,8 +25,12 @@ explicitly as local discs.
 The desktop layout places a large player beside setup; smaller screens place
 setup first. The standard 320×224 framebuffer is displayed at 4:3 with pixelated
 rendering; other core dimensions update the display ratio. Focus the display for
-keyboard input: arrows for directions, Z for A, Enter for Saturn Start. Standard
-gamepads are supported; virtual touchscreen controls are not included.
+keyboard input: Arrows for directions, Z/X/C for A/B/C, A/S/D for X/Y/Z,
+Q/W for L/R, Enter for Saturn Start (physical key positions). Player 2 retains
+I/K/J/L directions, U/O/P for A/B/C and Right Shift for Start; its keyboard
+mapping is partial (X/Y/Z/L/R require a gamepad). Standard gamepads provide full
+digital controls on both ports; see Controls, privacy & compatibility for button
+numbers. Virtual touchscreen controls are not included.
 Pause/Resume, Restart, audio and Fullscreen are beneath the display. Fullscreen
 reports unavailable or denied requests without interrupting the normal player.
 

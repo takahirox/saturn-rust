@@ -159,9 +159,12 @@ and race coverage, and [BIOS-only startup validation](validation-issue-101.md)
 for the original synthetic firmware and guest regression oracles. Authentic BIOS menu
 behavior remains unverified.
 
-Focus the display for keyboard input: arrows for directions, Z for A, Enter for
-Saturn Start. A second digital pad uses I/K/J/L, U/O/P for A/B/C and Right Shift
-for Start. Standard Gamepad input is supported. Focus loss releases held input;
+Focus the display for keyboard input: Arrows for directions, Z/X/C for A/B/C,
+A/S/D for X/Y/Z, Q/W for L/R, Enter for Saturn Start. These are physical key
+positions, unaffected by Shift, Caps Lock or layout. The second pad's partial
+keyboard mapping uses I/K/J/L directions, U/O/P for A/B/C and Right Shift for
+Start; X/Y/Z/L/R require a gamepad. Standard Gamepad input is supported on both
+ports. Focus loss releases held input;
 hiding the tab pauses. Touchscreen controls are not included. Standard 320×224
 pixels are presented at 4:3; mode changes update dimensions and the display ratio.
 
@@ -385,8 +388,9 @@ nonzero stereo; the browser also verifies real Canvas and AudioWorklet delivery.
 Mutating its original texture changes native and Wasm pixels. This is the first
 required new demonstration; the hardware exerciser disc remains required.
 
-When the display has focus, the first two connected Gamepads map standard buttons
-0/1/2/3/4/5/6/7/9 to A/B/C/X/Y/Z/L/R/Start and buttons 12–15 to directions.
+When the display has focus, the first two connected Gamepads take free ports;
+a connected pad keeps its port when another disconnects. Standard buttons
+0/1/2/3/4/5/7/6/9 map to A/B/C/X/Y/Z/L/R/Start and buttons 12–15 to directions.
 Standard-mapped Gamepads with at least two axes expose a 3D-pad ID16 report:
 X/Y are bounded to the circular stick range, and buttons 7/6 supply independent
 right/left analog trigger levels. The emulated controller applies the documented

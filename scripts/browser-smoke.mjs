@@ -2851,7 +2851,7 @@ try {
     const { emulator } = await import("./app.js");
     const before = String(emulator.instruction_count());
     document.getElementById("screen").focus();
-    window.dispatchEvent(new KeyboardEvent("keydown", {key: "ArrowRight"}));
+    window.dispatchEvent(new KeyboardEvent("keydown", {key: "ArrowRight", code: "ArrowRight"}));
     document.getElementById("view-debug").click();
     return [before, String(emulator.instruction_count())];
   });

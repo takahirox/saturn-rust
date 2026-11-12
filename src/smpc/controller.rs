@@ -3,7 +3,11 @@
 #[derive(Clone, Copy)]
 pub(super) enum Analog {
     Joystick([u8; 3]),
-    Pad { axes: [u8; 4], triggers: [bool; 2] },
+    Pad {
+        axes: [u8; 4],
+        triggers: [bool; 2],
+        digital_shoulders: u16,
+    },
 }
 impl Analog {
     pub(super) fn pad(previous: Option<Self>, axes: [u8; 4]) -> Self {
@@ -18,19 +22,55 @@ impl Analog {
                 *state = false;
             }
         }
-        Self::Pad { axes, triggers }
+        Self::Pad {
+            axes,
+            triggers,
+            digital_shoulders: match previous {
+                Some(Self::Pad {
+                    digital_shoulders, ..
+                }) => digital_shoulders,
+                _ => 0,
+            },
+        }
     }
     pub(super) fn report(self, mut buttons: u16) -> ([u8; 7], usize) {
-        if let Self::Pad { triggers, .. } = self {
+        if let Self::Pad {
+            triggers,
+            digital_shoulders,
+            ..
+        } = self
+        {
             buttons &= !0x1800;
-            buttons |= u16::from(triggers[0]) << 11 | u16::from(triggers[1]) << 12;
+            buttons |=
+                u16::from(triggers[0]) << 11 | u16::from(triggers[1]) << 12 | digital_shoulders;
         }
         let [a, b] = digital(buttons);
         match self {
             Self::Joystick([x, y, z]) => ([0x15, a, b, x, y, z, 0], 6),
             Self::Pad {
-                axes: [x, y, r, l], ..
-            } => ([0x16, a, b, x, y, r, l], 7),
+                axes: [x, y, r, l],
+                digital_shoulders,
+                ..
+            } => (
+                [
+                    0x16,
+                    a,
+                    b,
+                    x,
+                    y,
+                    if digital_shoulders & 2048 != 0 {
+                        255
+                    } else {
+                        r
+                    },
+                    if digital_shoulders & 4096 != 0 {
+                        255
+                    } else {
+                        l
+                    },
+                ],
+                7,
+            ),
         }
     }
 }
