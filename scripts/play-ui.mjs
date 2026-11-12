@@ -367,7 +367,68 @@ export async function playUi(browser, url) {
         assert(box.x >= 0 && box.x+box.width <= width && box.height >= 44, `${id} at ${width}`);
       }
     }
+    await framePacing(browser, url, bios);
     assert.deepEqual(errors,[]);
     assert(requests.every(r => r.url.startsWith(url) && r.method === "GET" && r.body === null));
   } finally { await context.close(); }
+}
+
+// Preserve 60 Hz phase across rounded RAF timestamps and faster displays.
+async function framePacing(browser,url,firmware) {
+  const context=await browser.newContext();
+  try {
+    await context.addInitScript(()=>{
+      let pending;
+      window.requestAnimationFrame=callback=>{pending=callback;return 1};
+      window.deliverFrame=timestamp=>{const cb=pending;pending=null;cb(timestamp)};
+    });
+    const page=await context.newPage();
+    const errors=[];page.on('pageerror',e=>errors.push(e.message));
+    await page.goto(url);
+    // RAF belongs to this test driver; readiness polling uses real timers.
+    await page.waitForFunction(()=>!document.getElementById('controls').disabled,undefined,{polling:10});
+    await page.locator('#settings > summary').evaluate(button=>button.click());
+    await page.locator('#mode').evaluate(select=>{select.value='bios';select.dispatchEvent(new Event('change',{bubbles:true}))});
+    await page.locator('#bios').setInputFiles({name:'original-loop.bin',mimeType:'application/octet-stream',buffer:firmware});
+    await page.waitForFunction(()=>!document.getElementById('start').disabled,undefined,{polling:10});
+    await page.evaluate(async()=>{
+      const {emulator}=await import('./app.js');
+      emulator.advance_frame();
+      window.pacingCalls=0;
+      // Count requests independently of core speed; the real Canvas presenter,
+      // audio draining, status and public playback controls still run.
+      emulator.advance_frame=()=>{window.pacingCalls++};
+    });
+    const results=[];
+    for(const quantum of [.1,1])for(const hz of [30,60,120,144]) {
+      await page.locator(results.length?'#pause':'#start').evaluate(button=>button.click());
+      const base=1000+results.length*10000;
+      const data=await page.evaluate(({hz,quantum,base})=>{
+        window.deliverFrame(base);
+        const start=window.pacingCalls;
+        let maxPerCallback=0;
+        for(let i=1;i<=hz*3;i++) {
+          const before=window.pacingCalls;
+          window.deliverFrame(base+Math.round(i*1000/hz/quantum)*quantum);
+          maxPerCallback=Math.max(maxPerCallback,window.pacingCalls-before);
+        }
+        const frames=window.pacingCalls-start;
+        const beforeStall=window.pacingCalls;
+        window.deliverFrame(base+3500);
+        const afterStall=window.pacingCalls;
+        window.deliverFrame(base+3500);
+        return {frames,maxPerCallback,stall:afterStall-beforeStall,duplicate:window.pacingCalls-afterStall};
+      },{hz,quantum,base});
+      assert.equal(data.frames,Math.min(hz,60)*3,JSON.stringify({hz,quantum,...data}));
+      assert.equal(data.maxPerCallback,1);assert.equal(data.stall,1);assert.equal(data.duplicate,0);
+      await page.locator('#pause').evaluate(button=>button.click());
+      const paused=await page.evaluate(base=>{
+        const before=window.pacingCalls;window.deliverFrame(base+3600);window.deliverFrame(base+3700);return window.pacingCalls-before;
+      },base);
+      assert.equal(paused,0);
+      results.push({hz,quantum,...data});
+    }
+    assert.deepEqual(errors,[]);
+    assert.equal(await page.locator('#error').textContent(),'');
+  } finally {await context.close()}
 }

@@ -127,8 +127,12 @@ export function advanceFrame() {
 }
 
 function animate(now) {
-  if (playing && now - lastFrame >= 1000 / 60) {
-    lastFrame = now;
+  const period = 1000 / 60;
+  const elapsed = now - lastFrame;
+  // Keep fractional time across callbacks, including millisecond timestamp
+  // rounding. A stalled host advances one field without a catch-up burst.
+  if (playing && elapsed >= period - 1) {
+    lastFrame = elapsed > period * 2 ? now : lastFrame + period;
     act(advanceFrame);
   }
   requestAnimationFrame(animate);
