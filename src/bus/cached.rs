@@ -7,7 +7,7 @@
 use super::poll_cycle::PollCycle;
 use super::*;
 use crate::cache::CachedLines;
-use crate::cpu::{Cpu, CpuStatus};
+use crate::cpu::{CachedInstruction, Cpu, CpuStatus};
 
 /// A ready peer publishes proven instruction retirements. A pending peer
 /// publishes a proven microstate after Master yields or after one ordinary peer issue.
@@ -217,6 +217,30 @@ pub(super) fn ordinary_memory(address: u32) -> bool {
             || (HIGH_WRAM..HIGH_WRAM + WRAM_SIZE as u32).contains(&address))
 }
 impl Cached<'_> {
+    fn prepared_retirement(&self, plan: &CachedInstruction) -> Option<u64> {
+        let at = match plan.operand {
+            None => plan.at,
+            Some((address, _)) if ordinary_memory(address) => {
+                if !self.hit(address) {
+                    return None;
+                }
+                plan.at
+            }
+            Some((address, width)) => {
+                let passive = self.passive.as_ref().filter(|p| {
+                    p.rom.is_none() && p.address == address && p.allowed_widths & width as u8 != 0
+                })?;
+                // Predict with the same scheduled MA boundary and BSC protocol
+                // as read(). Execution still consumes the real held operand.
+                let start = plan.issue_at() + u64::from(plan.load_wait(plan.issue_at(), true));
+                let mut sequence = passive.sequence.borrow().clone();
+                sequence
+                    .read(address & 0x1FFF_FFFF, width as usize, start)
+                    .max(plan.at)
+            }
+        };
+        (at <= self.end.get()).then_some(at)
+    }
     fn snapshot(&self) -> Local {
         debug_assert_eq!(self.version_count.get(), self.fills.borrow().len());
         debug_assert_eq!(self.refill_count.get(), self.fills.borrow().read_count());
@@ -1508,27 +1532,28 @@ impl Bus {
             // Prepared register/load plans preserve retained WB/EX and legal
             // delay slots. Prove every actual operand and future IF hit before
             // executing a plan without full CPU/local rollback copies.
-            if memory.passive.is_none()
+            if memory.passive.as_ref().is_none_or(|p| p.rom.is_none())
                 && let Some(plan) = cpu.prepare_cached_instruction(op, memory.clock.get())
+                && let Some(at) = memory.prepared_retirement(&plan)
             {
                 let future = plan.future;
                 let reference = self.system_clock.deadline(
-                    ((plan.at - self.main_clocks) as u32).saturating_sub(self.pending_main_clocks),
+                    ((at - self.main_clocks) as u32).saturating_sub(self.pending_main_clocks),
                 );
-                if plan
-                    .operand
-                    .is_none_or(|(a, _)| ordinary_memory(a) && memory.hit(a))
-                    && ordinary_memory(future)
+                if ordinary_memory(future)
                     && (memory.retained.get().is_some_and(|(a, _)| a == future)
                         || memory.hit(future))
-                    && plan.at <= memory.end.get()
+                    && at <= memory.end.get()
                     && (checkpoint_sound
                         || !sound_lookahead
                         || reference.saturating_sub(points.last_reference) < 9)
                 {
-                    let at = plan.at;
                     #[cfg(test)]
                     let loading = plan.operand.is_some();
+                    #[cfg(test)]
+                    let passive_load = plan
+                        .operand
+                        .is_some_and(|(address, _)| !ordinary_memory(address));
                     #[cfg(test)]
                     let slot = cpu.state().delay_target.is_some();
                     cpu.execute_cached_instruction(plan, &mut memory);
@@ -1539,6 +1564,7 @@ impl Bus {
                         }
                         if loading {
                             self.cached_prepared_loads += 1;
+                            self.cached_prepared_passive += u64::from(passive_load);
                         } else {
                             self.cached_wb_scalars += 1;
                         }

@@ -2682,3 +2682,210 @@ fn self_modified_cold_target_refills_after_the_buffered_write() {
         }
     }
 }
+
+#[test]
+fn prepared_cached_loads_follow_a_passive_operand_in_the_same_burst() {
+    let make = || {
+        let mut machine = crate::scheduling_tests::cached_pair(
+            &[0x61F2, 0xD003, 0x7201, 0xAFFB, 9, 9, 9, 9, 0x89AB, 0xCDEF],
+            &[0x60F0, 0xC880, 0x89FC, 0xAFFB, 9],
+        );
+        machine.bus.write32(HIGH_WRAM + 0x2000, 0x76543210).unwrap();
+        machine.cpu = Cpu::start(HIGH_WRAM, 0x26002000);
+        machine
+            .cpu
+            .prime_fetch(&machine.bus.for_cpu(Processor::Master));
+        machine.slave = Cpu::start(HIGH_WRAM + 0x100, crate::onchip::FRT + 1);
+        machine
+            .slave
+            .prime_fetch(&machine.bus.for_cpu(Processor::Slave));
+        machine.bus.claim_external_bus(Processor::Master);
+        machine
+    };
+    let mut optimized = make();
+    let mut reference = make();
+    assert!(optimized.bus.passive_read(&optimized.cpu).is_some());
+    assert!(optimized.try_private_poll_batch(128).unwrap() >= 2);
+    assert!(optimized.bus.cached_prepared_loads > 0);
+    assert!(optimized.bus.cached_prepared_passive > 0);
+    for _ in 0..2 {
+        optimized.advance_frame().unwrap();
+        reference_frame(&mut reference).unwrap();
+        same(&mut optimized, &mut reference);
+        assert_eq!(optimized.cpu_ready, reference.cpu_ready);
+        for i in 0..2 {
+            optimized.bus.cache[i]
+                .borrow()
+                .assert_same_contents(&reference.bus.cache[i].borrow());
+            optimized.bus.onchip[i].assert_cached_read_bus_matches(&reference.bus.onchip[i]);
+        }
+    }
+}
+
+#[test]
+fn prepared_passive_prediction_rejects_width_address_rom_and_deadline_before_consumption() {
+    for (lane, width, expected) in [
+        (0u16, 1u8, 0xFFFFFF89u32),
+        (1, 2, 0xFFFF89AB),
+        (2, 4, 0x89ABCDEF),
+    ] {
+        let base = HIGH_WRAM + 0x1000;
+        let address = 0x26002000;
+        let mut cache = Cache::default();
+        cache.set_control(1);
+        cache
+            .read::<4>(base, true, |at| {
+                Ok(if at == base {
+                    [0x60, 0xF0 | lane as u8, 0, 9]
+                } else {
+                    [0, 9, 0, 9]
+                })
+            })
+            .unwrap();
+        let chip = crate::onchip::OnChip::default();
+        let make = || Cached {
+            cache: &cache,
+            code: None,
+            fills: RefCell::default(),
+            version_count: Cell::new(0),
+            refill_count: Cell::new(0),
+            bus_events: RefCell::default(),
+            scalar_active: Cell::new(false),
+            clock: Cell::new(1000),
+            lru: RefCell::new(cache.replacement_state()),
+            retained: Cell::new(None),
+            epochs: Cell::new(0),
+            end: Cell::new(10000),
+            fill_end: 10000,
+            store: Cell::new(None),
+            store_ready: 0,
+            store_origin: 1000,
+            write_bus: None,
+            write_protocol: None,
+            idle_vdp1_vram: false,
+            ram_stores: Vec::new(),
+            write_pc: Cell::new(0),
+            passive: Some(PassiveRead {
+                address,
+                bytes: [0x89, 0xAB, 0xCD, 0xEF],
+                allowed_widths: width,
+                little: false,
+                rom: None,
+                sequence: RefCell::new(chip.plan_cached_reads(1000)),
+            }),
+        };
+        let mut actual = make();
+        let mut reference_memory = make();
+        let mut cpu = Cpu::start(base, address);
+        cpu.prime_fetch(&actual);
+        let mut reference = Cpu::start(base, address);
+        reference.prime_fetch(&reference_memory);
+        let plan = cpu.prepare_cached_instruction(0x60F0 | lane, 1000).unwrap();
+        let before = actual.passive.as_ref().unwrap().sequence.borrow().clone();
+        let at = actual.prepared_retirement(&plan).unwrap();
+        assert!(
+            at > plan.at,
+            "real external MA must differ from a resident-cache plan"
+        );
+        assert_eq!(actual.prepared_retirement(&plan), Some(at));
+        actual.end.set(at - 1);
+        assert!(actual.prepared_retirement(&plan).is_none());
+        actual.end.set(at);
+        actual.passive.as_mut().unwrap().allowed_widths = 0;
+        assert!(actual.prepared_retirement(&plan).is_none());
+        actual.passive.as_mut().unwrap().allowed_widths = width;
+        actual.passive.as_mut().unwrap().address += 4;
+        assert!(actual.prepared_retirement(&plan).is_none());
+        actual.passive.as_mut().unwrap().address = address;
+        actual.passive.as_mut().unwrap().rom = Some(&[]);
+        assert!(actual.prepared_retirement(&plan).is_none());
+        actual.passive.as_mut().unwrap().rom = None;
+        assert_eq!(actual.clock.get(), 1000);
+        assert_eq!(actual.epochs.get(), 0);
+        assert_eq!(
+            actual.passive.as_ref().unwrap().sequence.borrow().beats,
+            before.beats
+        );
+        assert!(
+            actual
+                .passive
+                .as_ref()
+                .unwrap()
+                .sequence
+                .borrow()
+                .repeats(&before, 0)
+        );
+        reference_memory.end.set(at);
+        cpu.execute_cached_instruction(plan, &mut actual);
+        reference.step(&mut reference_memory).unwrap();
+        assert_eq!(cpu, reference);
+        assert_eq!(cpu.state().r[0], expected);
+        assert_eq!(actual.clock.get(), at);
+        assert_eq!(actual.clock.get(), reference_memory.clock.get());
+        assert_eq!(*actual.lru.borrow(), *reference_memory.lru.borrow());
+        assert_eq!(actual.retained.get(), reference_memory.retained.get());
+        let actual_sequence = actual.passive.as_ref().unwrap().sequence.borrow();
+        let reference_sequence = reference_memory.passive.as_ref().unwrap().sequence.borrow();
+        assert!(actual_sequence.beats > before.beats);
+        assert_eq!(actual_sequence.beats, reference_sequence.beats);
+        assert!(actual_sequence.repeats(&reference_sequence, 0));
+    }
+}
+
+#[test]
+fn prepared_passive_all_widths_keep_both_plls_and_bsc_interfaces() {
+    for fast in [false, true] {
+        for interface in [2usize, 4] {
+            for padding in [false, true] {
+                for lane in 0..3u16 {
+                    let mut words = vec![9; usize::from(padding)];
+                    words.extend([0x61F0 | lane, 0x6213, 0x7201, 0xAFFB, 9]);
+                    let make = || {
+                        let mut m = crate::scheduling_tests::cached_pair(&words, &[9]);
+                        m.bus.change_system_clock(fast);
+                        m.bus.set_slave_enabled(false);
+                        m.bus.onchip[0].write32(0xFFFFFFEC, 0xA55A0000).unwrap();
+                        m.bus.onchip[0]
+                            .write32(
+                                0xFFFFFFE4,
+                                if interface == 2 {
+                                    0xA55A00BC
+                                } else {
+                                    0xA55A00FC
+                                },
+                            )
+                            .unwrap();
+                        assert_eq!(
+                            m.bus.onchip[0].external_bus_width(HIGH_WRAM + 0x2000),
+                            interface
+                        );
+                        m.bus.write32(HIGH_WRAM + 0x2000, 0x89ABCDEF).unwrap();
+                        m.cpu = Cpu::start(HIGH_WRAM + u32::from(padding) * 2, 0x26002000);
+                        m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
+                        m.cpu_ready[0] = m.bus.main_clocks;
+                        m.cpu_boundary[0] = None;
+                        m.bus.claim_external_bus(Processor::Master);
+                        m
+                    };
+                    let (mut actual, mut reference) = (make(), make());
+                    for _ in 0..2 {
+                        actual.advance_frame().unwrap();
+                        reference_frame(&mut reference).unwrap();
+                        same(&mut actual, &mut reference);
+                        for i in 0..2 {
+                            actual.bus.cache[i]
+                                .borrow()
+                                .assert_same_contents(&reference.bus.cache[i].borrow());
+                            actual.bus.onchip[i]
+                                .assert_cached_read_bus_matches(&reference.bus.onchip[i]);
+                        }
+                    }
+                    assert!(
+                        actual.bus.cached_prepared_passive > 0,
+                        "fast={fast} interface={interface} padding={padding} lane={lane}"
+                    );
+                }
+            }
+        }
+    }
+}

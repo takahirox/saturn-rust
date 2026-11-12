@@ -2447,3 +2447,82 @@ merge.
 60 fields/s remains unmet: the measured game requires approximately 5.1× further
 throughput. This is a partial performance increment, not hardware completion or
 a general firmware-compatibility claim. Required post-merge verification: none.
+
+
+## Prepared instructions with held passive reads
+
+The private cached interpreter previously required `passive.is_none()` before
+using a prepared scalar or load instruction. A burst beginning with a proven
+stable uncached WRAM or passive device read therefore copied CPU and local
+rollback state and entered the general interpreter even for later resident
+loads and register instructions.
+
+Allow the existing prepared executor in non-ROM passive snapshots. For a held
+operand, require the exact address and permitted access width, then predict its
+completion using a copy of the existing BSC read sequence and the shared CPU
+scheduled-MA boundary. Reject the plan before execution if that completion
+exceeds the observer horizon. Prediction consumes no value, clock, instruction
+epoch or bus protocol state. The existing executor still performs the actual
+read and instruction semantics. Future instruction fetches must remain real
+resident cache/retained-word hits; ROM snapshots retain the ordinary path.
+Sound lookahead and retirement records use the predicted external completion,
+rather than the shorter resident-load estimate.
+
+### Web comparison
+
+Chrome 157.0.8103.52 and the normal production JS/Wasm path drew every field to
+Canvas. Four rotated 120-field windows over fields 1200–1680 ran separately for
+the game and BIOS menu, with all builds, tests and warm-ups stopped during timing.
+Complete CPU, sound, clock and pixel snapshots matched after every window and
+through paired boot/input/scene checkpoints before field 1200.
+
+| Variant | Game fields/s | Menu fields/s |
+| --- | ---: | ---: |
+| Main before this increment | 11.695 | 27.613 |
+| Only allow resident prepared instructions in a passive burst | 11.935 | 27.634 |
+| Also plan the actual held passive operand | 12.407 | 27.863 |
+
+The combined elapsed times were 41,043.9 → 38,687.2 ms for the game (+6.09%
+throughput) and 17,382.9 → 17,227.4 ms for the menu (+0.90%). These are local
+samples; they do not establish cross-browser or cross-game performance.
+A fresh two-way comparison with new browser instances measured game throughput
+12.381 → 12.643 fields/s (+2.12%; 38,770.5 → 37,965.9 ms), with all four paired
+game windows improving. Menu throughput was 27.483 → 27.568 (+0.31%; 17,465.2 →
+17,411.5 ms), effectively unchanged. All 16 repeat endpoints matched. The repeat
+supports a modest game gain, not a stable six-percent improvement. First/repeat
+median game-window p95 was 159.0 → 151.55 ms / 151.25 → 150.60 ms.
+
+An independent mixed scalar/load/store Wasm compiled-block prototype was also
+checked and rejected in a separate comparison: it slowed the game by 6.79% and
+the menu by 16.83%. Generated arithmetic was a small part of sampled work;
+root-side admission and metadata remained costly. Passing value, timing and
+browser comparisons alone was not grounds to adopt that prototype. Its compiler,
+ABI additions, table allocation and flags are excluded from this increment.
+
+### Validation and remaining work
+
+Three original native test groups cover a real passive-plus-resident burst,
+byte/word/long prediction with exact/short deadlines and non-consuming rejection,
+and 24 combinations of PLL, physical bus width, instruction alignment and load
+width. Integrated guests compare full CPU, RAM, cache, BSC, audio and pixel state
+with ordinary execution and require actual prepared passive reads. Reinstating
+the old guard fails the positive-path guest. Replacing external read completion
+with the nominal cache-hit time fails the independent timing assertion.
+All 1,333 native tests in 111 groups, formatting/build, native all-target and
+Wasm Clippy with warnings denied, registered fixture reproduction, all 74
+production-Wasm browser groups, 48 scheduler comparisons and 13 runner checks
+pass. Full browser elapsed was 195,342 ms. Native validation used two test
+threads; test content and CI concurrency are unchanged. Local runner validation
+requires the installed Chrome channel and permission for its owned loopback
+servers; initial environment-only attempts could not start the browser/server.
+
+Five extended game checkpoints at fields 1800, 2100, 2400, 2824 and 3252 and
+three reference PNG byte comparisons pass. Standard-build JS/Wasm bytes match
+the measured frozen candidate. Exact-head hosted CI remains mandatory before merge.
+
+The frozen selected Wasm has SHA-256
+`a1c02008624ea5361e69732660567205ec018f6d8d68b4d7bcf42282a82df24d`.
+No optional optimization switch, guest patch, frame skipping or relaxed clock
+model is introduced. Private firmware, media, opcode data and captures remain
+unpublished. **60 fields/s remains unmet**, as do the umbrella hardware and
+general firmware compatibility criteria. Related to #17.
