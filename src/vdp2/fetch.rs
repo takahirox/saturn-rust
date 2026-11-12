@@ -43,6 +43,26 @@ pub(crate) struct DisplayFetch {
     rotation_samples: Vec<[Option<RotationSample>; 2]>,
 }
 
+impl DisplayFetch {
+    pub(super) fn reset(&mut self) {
+        let mut pixels = std::mem::take(&mut self.pixels);
+        let mut samples = std::mem::take(&mut self.samples);
+        let mut planned_samples = std::mem::take(&mut self.planned_samples);
+        let mut rotation_samples = std::mem::take(&mut self.rotation_samples);
+        pixels.clear();
+        samples.clear();
+        planned_samples.clear();
+        rotation_samples.clear();
+        *self = Self {
+            pixels,
+            samples,
+            planned_samples,
+            rotation_samples,
+            ..Self::default()
+        };
+    }
+}
+
 #[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DisplayRead {
@@ -246,12 +266,11 @@ impl Vdp2 {
     }
 
     fn prepare_display_line(&mut self, field: u64, line: usize) {
-        *self.display_fetch.get_mut() = DisplayFetch {
-            scheduled: true,
-            prepared_line: Some(line),
-            prepared_field: Some(field),
-            ..DisplayFetch::default()
-        };
+        let fetch = self.display_fetch.get_mut();
+        fetch.reset();
+        fetch.scheduled = true;
+        fetch.prepared_line = Some(line);
+        fetch.prepared_field = Some(field);
         let y = if self.word(0) & 0xC0 == 0xC0 {
             line * 2 + usize::from(!field.is_multiple_of(2))
         } else {

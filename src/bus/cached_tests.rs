@@ -2390,3 +2390,69 @@ fn cofinal_master_load_and_scalar_keep_each_private_peer_issue() {
         assert!(cofinal > 0);
     }
 }
+
+#[test]
+fn independent_refill_waits_for_every_accepted_write_beat() {
+    for fast in [false, true] {
+        for narrow in [false, true] {
+            for overlap in [false, true] {
+                let make = || {
+                    let load = if overlap { 0x51F0 } else { 0x51F4 };
+                    let mut m = crate::scheduling_tests::cached_pair(
+                        &[0xE011, 0x2F06, load, 0x7001, 0x400E, 0xAFF9, 9],
+                        &[0xAFFE, 9],
+                    );
+                    m.bus.set_slave_enabled(false);
+                    m.bus.change_system_clock(fast);
+                    m.bus.onchip[0].write32(0xFFFFFFE0, 0xA55A03F0).unwrap();
+                    m.bus.onchip[0]
+                        .write32(0xFFFFFFE4, if narrow { 0xA55A007C } else { 0xA55A00FC })
+                        .unwrap();
+                    m.bus.onchip[0].write32(0xFFFFFFE8, 0xA55AAAFF).unwrap();
+                    m.bus.onchip[0]
+                        .write32(0xFFFFFFEC, if narrow { 0xA55A0000 } else { 0xA55A0040 })
+                        .unwrap();
+                    m.bus.write32(HIGH_WRAM + 0x100C, 0x12345678).unwrap();
+                    m
+                };
+                let (mut a, mut b) = (make(), make());
+                for m in [&mut a, &mut b] {
+                    while m.cpu.state().instructions < 2 {
+                        m.step_inner_with_idle(true).unwrap();
+                    }
+                    assert!(m.bus.cached_isolated_write_pending());
+                    assert!(!m.bus.cached_reads_quiet());
+                }
+                let fills = a.bus.cached_code_fills;
+                let count = a.try_cached_batch(2).unwrap();
+                if overlap {
+                    assert_eq!(count, 0, "an overlapping line cannot use stale RAM");
+                } else {
+                    assert!(
+                        count > 0,
+                        "independent read should batch: fast={fast}, narrow={narrow}"
+                    );
+                    assert!(a.bus.cached_code_fills > fills);
+                    assert_eq!(a.cpu.state().r[1], 0x12345678);
+                }
+                if count == 0 {
+                    a.step_inner_with_idle(true).unwrap();
+                }
+                while b.cpu.state().instructions < a.cpu.state().instructions {
+                    b.step_inner_with_idle(true).unwrap();
+                }
+                same(&mut a, &mut b);
+                assert_eq!(
+                    a.bus.read32(HIGH_WRAM + 0xFFC),
+                    b.bus.read32(HIGH_WRAM + 0xFFC)
+                );
+                a.bus.cache[0]
+                    .borrow()
+                    .assert_same_contents(&b.bus.cache[0].borrow());
+                a.bus.onchip[0].assert_cached_read_bus_matches(&b.bus.onchip[0]);
+                assert_eq!(a.bus.instruction_word[0], b.bus.instruction_word[0]);
+                assert_eq!(a.bus.external_owner, b.bus.external_owner);
+            }
+        }
+    }
+}

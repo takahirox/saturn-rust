@@ -1052,6 +1052,16 @@ impl Bus {
             Some(sequence),
         ))
     }
+    pub(super) fn cached_pending_write_bounds(&self) -> Option<(u32, u32)> {
+        let write = self.transactions.writes[0].as_ref()?;
+        let mut bounds = (u32::MAX, 0);
+        for beat in write.beats.iter() {
+            let physical = Self::physical(beat.address);
+            bounds.0 = bounds.0.min(physical);
+            bounds.1 = bounds.1.max(physical + beat.width as u32);
+        }
+        Some(bounds)
+    }
     fn isolated_data_memory(address: u32) -> bool {
         (LOW_WRAM..LOW_WRAM + WRAM_SIZE as u32).contains(&address)
             || (HIGH_WRAM..HIGH_WRAM + WRAM_SIZE as u32).contains(&address)

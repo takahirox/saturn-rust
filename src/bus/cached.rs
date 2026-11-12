@@ -139,10 +139,17 @@ struct WramInstructions<'a> {
     low: &'a [u8],
     high: &'a [u8],
     bus: &'a crate::onchip::OnChip,
+    blocked: Option<(u32, u32)>,
 }
 impl WramInstructions<'_> {
     fn line(&self, address: u32) -> Option<[u8; 16]> {
         let base = address & !15;
+        if self
+            .blocked
+            .is_some_and(|(start, end)| base < end && base + 16 > start)
+        {
+            return None;
+        }
         let bytes = if (LOW_WRAM..LOW_WRAM + WRAM_SIZE as u32).contains(&base) {
             self.low
                 .get((base - LOW_WRAM) as usize..(base - LOW_WRAM) as usize + 16)?
@@ -463,8 +470,9 @@ impl Cached<'_> {
             .fill_reads
             .borrow()
             .clone()
+            .or_else(|| self.write_protocol.clone())
             .unwrap_or_else(|| code.bus.plan_cached_reads(self.store_origin));
-        let at = sequence.read_cache_line(address, self.clock.get());
+        let at = sequence.read_cache_line(address, self.clock.get().max(self.store_ready));
         if at > self.end.get().min(self.fill_end) {
             return Err(BusError::Pending);
         }
@@ -1216,11 +1224,20 @@ impl Bus {
         if master_start > end {
             return Ok(None);
         }
-        let code = (passive.is_none() && self.cached_reads_quiet()).then_some(WramInstructions {
-            low: &self.low,
-            high: &self.high,
-            bus: &self.onchip[0],
-        });
+        // An admitted independent write still drains on the real arbiter.
+        // A later refill may follow its predicted BSC sequence if its entire
+        // line is unchanged by every remaining accepted write beat.
+        let read_after_store = store_available
+            && self.external_owner.get() == Some(Processor::Master)
+            && self.onchip[1].cached_batch_allowed()
+            && self.cached_isolated_write_pending();
+        let code = (passive.is_none() && (self.cached_reads_quiet() || read_after_store))
+            .then_some(WramInstructions {
+                low: &self.low,
+                high: &self.high,
+                bus: &self.onchip[0],
+                blocked: self.cached_pending_write_bounds(),
+            });
         let cache = self.cache[0].borrow();
         let mut memory = Cached {
             cache: &cache,
