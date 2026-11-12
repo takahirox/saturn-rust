@@ -17,6 +17,9 @@ The existing full Standard Gamepad button table and analog/3D-pad axes,
 circular bound and physical trigger hysteresis are preserved. Keyboard L/R
 also supply full-travel trigger levels when an attached Standard Gamepad selects
 the 3D-pad report, so these keys remain guest-visible alongside analog input.
+Their report overlay is separate from the physical trigger levels and latches;
+keyboard release restores the physical travel and its independently retained
+hysteresis state.
 Key transitions refresh that combined input immediately. The first two connected
 gamepads take free Saturn ports; a connected pad retains its port when another
 disconnects. This fixes the prior filtering behavior that shifted P2 onto P1
@@ -59,6 +62,9 @@ Chromium checks independent literal active-low packet expectations for:
   simultaneous two-port input, including keyboard shoulders with 3D-pad triggers.
 - Guest-visible physical trigger hysteresis at levels 140, 146, 100 and 85,
   independently of the adapter's ordinary greater-than-0.5 button bit.
+- Q/W release with inactive and active physical triggers in the 86–145 hold
+  band, physical activation/release while those keys are held, and 3D-pad blur
+  release. Both boot modes check fresh INTBACK bytes and reported trigger travel.
 - Disconnect, a sparse browser slot, neutral reconnect and retention of P2's
   port while P1 is absent.
 - Canvas/window blur, visibility hiding, pause, settings, view changes, restart
@@ -100,19 +106,47 @@ Binaryen 127:
 These are local concurrent timings, not hosted-CI performance measurements.
 Expanded 3D-pad coverage initially failed for keyboard Q/L: its digital mask
 arrived, but the ID16 report replaced that bit with a neutral analog trigger.
-The frontend now supplies the keyboard's full-travel trigger and repolls on key
-transitions; the core's existing trigger thresholds and reports are unchanged.
+The initial frontend fix supplied the keyboard's full-travel trigger and repolled
+on key transitions. Review then found that this changed the physical hysteresis
+latch, leaving a shoulder stuck after keyup at travel 100. The correction passes
+physical travel unchanged and applies digital shoulders only when generating a
+report. It retains the existing trigger thresholds and full-travel keyboard
+reports, without letting either source alter the other's latch.
 The first browser launch found no installed pinned executable. Playwright's
 download then stalled after transfer under Node 26; the official pinned Chrome
 and headless-shell archives passed complete ZIP CRC checks and were extracted
 locally. Validation used the pinned version throughout, without substituting a
 different browser or weakening assertions.
 
+## Review correction checks
+
+Revalidated the shoulder-latch correction locally with the same tool versions:
+
+- Formatting, native build and complete native tests pass, as do native
+  all-target and Wasm Clippy with warnings denied.
+- Fixture reproducibility (106 commands), optimized production Wasm build and
+  JavaScript syntax checks pass.
+- All 13 CI-runner checks pass, without skips.
+- The complete production Chromium suite passes all 74 groups: shared 33/33
+  in 225.562 seconds, scenarios 41/41 in 182.400 seconds, and aggregate
+  two-worker wall time 225.833 seconds. The expanded Play UI group passes
+  in 41.151 seconds, including both boot modes and 3D-pad blur release.
+- A negative control temporarily restored the original frontend against the
+  rebuilt Wasm. The new `bios KeyQ inactive released` guest assertion failed
+  as expected: L remained pressed after keyup. The corrected frontend was
+  restored before the complete suite ran.
+
+The first build attempt selected Homebrew Rust without its Wasm target; the
+documented rustup-stable PATH resolved it. A standalone `playUi` group selection
+was rejected because this group belongs to the shared trace; the complete suite
+above supplies its validation. These setup/selection failures did not relax
+any assertions or required checks.
+
 ## Remaining pre-merge gate
 
-Exact-head hosted PR CI must pass before merge. It was not invoked here because
-this GitWeave node is explicitly prohibited from pushing or creating a PR.
-No PR, review, merge or remote CI result is claimed. Physical-controller testing
+Exact-head hosted PR CI must pass after the correction is published to PR #137
+and before merge. This GitWeave correction node does not push or merge, and
+claims no new remote CI result. Physical-controller testing
 is optional and was not performed. No personal firmware, stock BIOS/menu
 compatibility claim, live Pages inspection or human approval gate is required
 for this input change. Required post-merge verification: none.

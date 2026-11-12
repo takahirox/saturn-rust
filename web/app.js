@@ -45,11 +45,11 @@ export function pollGamepads() {
       const rawY = Number.isFinite(pad.axes[1]) ? pad.axes[1] : 0;
       const radius = Math.max(1, Math.hypot(rawX, rawY));
       const trigger = (i) => Math.round(Math.max(0, Math.min(1, Number.isFinite(pad.buttons[i]?.value) ? pad.buttons[i].value : 0)) * 255);
-      // ID16 derives its shoulder bits from trigger travel. Digital keyboard
-      // shoulders therefore need full travel too, alongside the physical levels.
-      const keyboard = port === 0 ? buttons : port2Buttons;
+      // Keep physical trigger hysteresis independent of digital keyboard input.
+      // The report overlay supplies full keyboard travel without changing its latch.
       emulator.set_3d_pad(port, true, axis(rawX / radius), axis(rawY / radius),
-        keyboard & 2048 ? 255 : trigger(7), keyboard & 4096 ? 255 : trigger(6));
+        trigger(7), trigger(6));
+      emulator.set_3d_pad_digital(port, port === 0 ? buttons : port2Buttons);
     } else emulator.set_analog(port, analogConnected[port], pad ? axis(pad.axes[0]) : 128, pad ? axis(pad.axes[1]) : 128, pad ? axis(pad.axes[2] ?? -1) : 0);
   }
   emulator.set_buttons(buttons | gamepadMasks[0]);
@@ -106,7 +106,10 @@ function releaseButtons() {
   emulator?.set_port2_buttons(0);
   gamepadMasks.fill(0);
   for (let port = 0; port < 2; port++) {
-    if (pad3d[port]) emulator?.set_3d_pad(port, analogConnected[port], 128, 128, 0, 0);
+    if (pad3d[port]) {
+      emulator?.set_3d_pad(port, analogConnected[port], 128, 128, 0, 0);
+      emulator?.set_3d_pad_digital(port, 0);
+    }
     else emulator?.set_analog(port, analogConnected[port], 128, 128, 0);
   }
 }

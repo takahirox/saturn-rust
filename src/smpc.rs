@@ -453,6 +453,15 @@ impl Smpc {
             }
         }
     }
+    /// Digital shoulder overlay, independent of the physical trigger latches.
+    pub fn set_3d_pad_digital(&mut self, port: usize, buttons: u16) {
+        if let Some(Some(Analog::Pad {
+            digital_shoulders, ..
+        })) = self.analog.get_mut(port)
+        {
+            *digital_shoulders = buttons & 0x1800;
+        }
+    }
     fn end_peripherals(&mut self) {
         self.await_continue = false;
         self.await_vblank = false;

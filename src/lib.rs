@@ -773,6 +773,9 @@ impl Machine {
     pub fn set_3d_pad(&mut self, port: usize, axes: Option<[u8; 4]>) {
         self.bus.set_3d_pad(port, axes);
     }
+    pub fn set_3d_pad_digital(&mut self, port: usize, buttons: u16) {
+        self.bus.set_3d_pad_digital(port, buttons);
+    }
 
     /// Peripheral port electrical TH input; it never writes guest RAM or CPU state.
     pub fn set_peripheral_th(&mut self, port: usize, high: bool) {

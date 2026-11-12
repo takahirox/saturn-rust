@@ -129,6 +129,41 @@ export async function digitalInput(browser, url) {
         }, level);
         await sample([mask, 0], [pad3d(packet, level), pad3d()], `physical trigger level ${level}`);
       }
+      // Keyboard travel must not activate the physical trigger's hysteresis
+      // latch, nor clear one already active in the 86..145 hold band. Also move
+      // physical travel across each threshold while the keyboard is held.
+      for (const [code, index, mask, packet] of [
+        ["KeyQ", 7, 2048, [255,0x7f]], ["KeyW", 6, 4096, [255,0xf7]],
+      ]) {
+        const travel = async level => page.evaluate(async ({index, level}) => {
+          window.inputPads[0].buttons[index] = {pressed:false, value:level/255};
+          (await import("./app.js")).pollGamepads();
+        }, {index, level});
+        const report = (digital, level) => pad3d(digital, index === 7 ? level : 0, index === 6 ? level : 0);
+        for (const [label, initial, heldLevels, active] of [
+          ["inactive", 100, [145, 100], false],
+          ["active", 146, [100], true],
+          ["activates while held", 100, [146, 100], true],
+          ["releases while held", 146, [85, 100], false],
+        ]) {
+          await gamepads();
+          await travel(initial);
+          await travel(100);
+          await key(code);
+          await sample([mask, 0], [report(packet, 255), pad3d()], `${mode} ${code} ${label} held`);
+          for (const level of heldLevels) await travel(level);
+          await key(code, false);
+          await sample([0, 0], [report(active ? packet : neutral, 100), pad3d()], `${mode} ${code} ${label} released`);
+          await travel(85);
+          await sample([0, 0], [report(neutral, 85), pad3d()], `${code} physical release threshold`);
+        }
+      }
+      await gamepads();
+      await key("KeyQ"); await key("KeyW");
+      await sample([2048|4096, 0], [pad3d([255,0x77],255,255), pad3d()], "3D keyboard shoulders before blur");
+      await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+      await sample([0, 0], [pad3d(), pad3d()], "3D blur clears physical and keyboard triggers");
+      await key("KeyQ", false); await key("KeyW", false);
       await gamepads();
       await key("KeyQ"); await key("KeyP");
       await gamepads([[0], [6]]);
