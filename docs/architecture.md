@@ -888,8 +888,14 @@ compare full bytes, command/status/IRQ records, context and chunk equivalence.
 
 ExternalBios cold resets retain the selected physical medium while clearing CD
 transactions and all volatile execution state. Native/Wasm mount APIs and both
-local browser file pickers preserve this mode; changing mode clears selections.
-No HLE installation, first-read host copy or host result write occurs. The
+local browser file pickers retain validated media independently of boot choice.
+The browser derives ordinary Play’s method from BIOS selection state: accepted
+BIOS bytes select ExternalBios; absent BIOS selects HLE disc; pending, cancelled
+or rejected BIOS selections block execution. Clearing BIOS retains the medium;
+changing disc retains BIOS bytes. Per-picker generations reject stale reads.
+The explicit Debug bootstrap fixture clears both selections and never enables Play.
+External-firmware startup performs no HLE installation, first-read host copy or
+host result write. The
 independent HLE parser remains unchanged; firmware supports a narrower bounded
 subset without XAR/interleaving/multi-extent files. Unsupported metadata and I/O
 errors park before AIP, including after a partial copy. See

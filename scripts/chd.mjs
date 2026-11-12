@@ -74,7 +74,7 @@ export async function chd(page) {
   assert.deepEqual(Buffer.from(changedResult.data),changed);
 
   // Exercise the production picker, HLE retained-media Reset/Restart and errors.
-  await page.selectOption('#mode','disc');
+  await page.locator('#bios').setInputFiles([]);
   const chd=await readFile('tests/fixtures/chd/mixed-cdlz.chd');
   const select=async(buffer,name='ordinary.chd')=>{
     await page.locator('#disc').setInputFiles({name,mimeType:'application/octet-stream',buffer});

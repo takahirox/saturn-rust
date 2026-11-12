@@ -25,31 +25,24 @@
                 <input id="disc" type="file" accept=".chd,.iso,.cue,.bin,.srw" multiple aria-describedby="disc-help disc-selection">
                 <p id="disc-help">Required in HLE disc mode; optional in user-BIOS mode. CHD v5 CD-ROM, cooked ISO, or CUE + all referenced BINARY tracks. Select the CUE and its tracks together.</p>
               </div>
+              <button id="disc-clear" type="button" disabled>Clear disc</button>
               <p id="disc-selection" role="status">No disc selected.</p>
               <p class="privacy">Files stay local in this tab. No uploads, automatic storage or analytics.</p>
             </li>
             <li id="bios-controls">
-              <h2>Add BIOS <small>(if needed)</small></h2>
+              <h2>Add BIOS <small>(optional)</small></h2>
               <label for="bios">Local raw BIOS · 512 KiB (524288 bytes)</label>
               <input id="bios" type="file" aria-describedby="bios-help bios-selection">
+              <button id="bios-clear" type="button" disabled>Clear BIOS</button>
               <p id="bios-selection" role="status">No BIOS selected.</p>
-              <p id="bios-help">Unused in HLE; required for user-BIOS mode, which can start without a disc. No firmware is bundled or downloaded.</p>
-            </li>
-            <li>
-              <h2>Choose boot mode</h2>
-              <label for="mode">Boot selection</label>
-              <select id="mode" aria-describedby="boot-warning">
-                <option value="disc" selected>BIOS-less HLE disc</option>
-                <option value="bios">User-provided BIOS</option>
-                <option value="hle" hidden>HLE bootstrap prototype (debug only)</option>
-              </select>
-              <p id="boot-warning">HLE requires a disc and boots without firmware. User-BIOS mode uses your firmware with or without a disc and never falls back to HLE. Authentic BIOS menus and retail-game support remain unverified or incomplete.</p>
-              <p>Switching modes keeps loaded files and cancels pending reads. Replacement stops playback.</p>
+              <p id="bios-help">A valid BIOS automatically selects your firmware, with or without a disc. Clear the picker to return to BIOS-less HLE. No firmware is bundled or downloaded.</p>
             </li>
             <li>
               <h2>Start playing</h2>
+              <p id="boot-method" role="status">Auto · BIOS-less HLE</p>
+              <p id="boot-warning">Without a BIOS, a disc boots through HLE. A selected BIOS never falls back to HLE. Authentic BIOS menus and retail-game support remain unverified or incomplete.</p>
               <button id="start" class="primary" type="button" disabled>Start</button>
-              <p id="launch-status" role="status">Select a valid disc to start.</p>
+              <p id="launch-status" role="status">Select a disc or add a 512 KiB BIOS to begin.</p>
             </li>
           </ol>
         </fieldset>
@@ -58,7 +51,7 @@
         <div id="player-shell" class="player-shell">
           <div class="display-surround">
             <canvas id="screen" width="320" height="224" tabindex="0" aria-label="Emulated Saturn display" aria-describedby="input-hint">Your browser needs Canvas support.</canvas>
-            <div id="empty-state" class="empty-state"><span class="disc-motif" aria-hidden="true"></span><p id="empty-title">Load a disc to begin</p><small id="empty-hint">Disc required for BIOS-less HLE. Or select user-BIOS mode.</small></div>
+            <div id="empty-state" class="empty-state"><span class="disc-motif" aria-hidden="true"></span><p id="empty-title">Load a disc to begin</p><small id="empty-hint">Or add a local BIOS to start without a disc.</small></div>
           </div>
           <div class="player-toolbar" aria-label="Playback controls">
             <button id="pause" type="button" disabled>Resume</button>
@@ -143,7 +136,7 @@
     <details class="about">
       <summary>Controls, privacy &amp; compatibility</summary>
       <p>Focus the display for keyboard input. Player 1: Arrows for directions, Z/X/C for A/B/C, A/S/D for X/Y/Z, Q/W for L/R, Enter for Saturn Start. Bindings use physical key positions, independent of Shift, Caps Lock or keyboard layout. Player 2 (partial keyboard controls): I/K/J/L for up/down/left/right, U/O/P for A/B/C, Right Shift for Start; X/Y/Z/L/R require a gamepad. The first two connected gamepads take free ports; a connected pad keeps its port when another disconnects. Standard buttons 0/1/2/3/4/5 map to A/B/C/X/Y/Z, 7/6 to L/R, 9 to Start and 12–15 to directions. Losing focus releases held input; hiding the tab pauses. Returning from Debug or closing advanced settings never resumes automatically. Touch controls are not included.</p>
-      <p>Enable audio with a click; status reports blocked, muted, paused and underflow states. Fullscreen uses your browser’s API. Restart cold-boots the selected mode; Debug offers CPU Step, bounded Run, Reset and frame advance.</p>
+      <p>Enable audio with a click; status reports blocked, muted, paused and underflow states. Fullscreen uses your browser’s API. Restart cold-boots the automatically selected method; Debug offers CPU Step, bounded Run, Reset and frame advance.</p>
       <p>This is an independent emulator under development. Loading media does not guarantee that a game or retail BIOS will run. No commercial screenshots or simulated game output are shown.</p>
       <p>Disc, BIOS and backup bytes stay in memory in this tab. No uploads, browser persistence, analytics or CDN. Export backup RAM under Advanced before closing or reloading. This is not a save state.</p>
     </details>

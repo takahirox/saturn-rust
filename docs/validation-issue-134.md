@@ -142,6 +142,38 @@ was rejected because this group belongs to the shared trace; the complete suite
 above supplies its validation. These setup/selection failures did not relax
 any assertions or required checks.
 
+## Automatic boot selection integration
+
+Integrated main `efac3c8169e313ef9d3c75dbb3844f93e64ec6de` (PR #136)
+to resolve PR #137's conflicts. Input admission now uses the automatic boot
+selection's validity checks while preserving the complete physical keyboard
+mapping, stable gamepad ports and independent keyboard/physical trigger latches.
+The controls help retains every binding and describes automatic restart selection.
+
+The digital-input browser guest no longer references the removed `#mode` selector.
+It loads the original firmware through the BIOS picker for external reset and
+clears that picker for HLE, asserting the automatically selected method. Its
+held-input boot-change checks exercise both adding and clearing firmware, with
+fresh guest INTBACK reports proving release on both ports. Unfocused-key and
+canvas-blur checks now focus the disc picker.
+
+Revalidated locally with the tool versions recorded above:
+
+- Formatting, native build and complete native tests pass: **1,337 passed**,
+  no failures or ignored tests, across 111 harnesses including doc tests.
+  The focused native SMPC guest suite also passes all four tests.
+- Native all-target and Wasm Clippy pass with warnings denied.
+- All 106 fixture checks and the optimized production Wasm build pass.
+- All 13 CI-runner checks pass, without skips.
+- The complete production Chromium suite passes all 74 groups: shared 33/33
+  in 227.281 seconds, scenarios 41/41 in 182.791 seconds, aggregate two-worker
+  wall time 227.543 seconds. The expanded Play UI group passes in 42.859 seconds.
+  Complete coverage and exact tested-site identity verification pass.
+- Changed JavaScript syntax checks and Git whitespace checks pass.
+
+These are local validation results. This node does not push or merge PR #137;
+successful hosted CI for the newly published head remains required before approval.
+
 ## Remaining pre-merge gate
 
 Exact-head hosted PR CI must pass after the correction is published to PR #137

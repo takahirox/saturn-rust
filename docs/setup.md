@@ -117,7 +117,7 @@ Rust or guest source. Opening `index.html` as a `file:` URL will not work. The c
 [validation results](validation-issue-9.md).
 
 The default page is an idle **Saturn Disc Player**. It does not select, fetch or
-run a bundled sample. On desktop the player is beside the four-step setup; on
+run a bundled sample. On desktop the player is beside the three-step setup; on
 narrow screens setup comes first.
 
 1. **Select disc** with the accessible multi-file picker or drag-and-drop area.
@@ -131,19 +131,18 @@ narrow screens setup comes first.
    stops on replacement. Large images need memory for local input and the
    retained Wasm medium. See [media formats](media.md) for codec/layout/hunk
    restrictions, gaps/indices, CD-DA and resource bounds.
-2. **Add BIOS (if needed)** from a local raw 524288-byte file. It is optional
-   and unused in HLE mode. No BIOS is bundled or downloaded; size validation
-   establishes neither authenticity nor region.
-3. **Choose boot mode**: BIOS-less HLE uses the first data track’s Saturn
-   IP / ISO9660 executable. User-provided BIOS uses actual firmware reset
-   vectors and optional hardware disc access; it can start without media and
-   never redirects to HLE. BIOS/game support is incomplete and may stop on
-   unimplemented devices or bus behavior.
-   Switching these modes retains loaded selections, cancels pending reads and
-   stops playback. Select a cancelled file again. Mounting a disc or redesigning
-   the UI does not establish retail-game compatibility.
-4. **Start playing** is enabled after a valid disc in HLE disc mode, or a fully
-   read/accepted 524288-byte BIOS in user-BIOS mode (with or without a disc).
+2. **Add BIOS (optional)** from a local raw 524288-byte file. A valid selection
+   automatically uses your firmware, with or without a disc. Without a BIOS,
+   the selected disc boots through BIOS-less HLE using the first data track’s
+   Saturn IP / ISO9660 executable. No BIOS is bundled or downloaded; size
+   validation establishes neither authenticity nor region. Pending, invalid,
+   cancelled or unreadable BIOS selections block Start and Restart until you
+   replace or explicitly clear the selection. Firmware never redirects to HLE.
+   **Clear BIOS** returns to disc HLE while retaining validated media; replacing
+   or clearing the disc preserves the BIOS bytes. Selection changes stop playback.
+3. **Start playing** is enabled after a valid disc with no BIOS selection, or a
+   fully accepted BIOS (with or without a disc). The read-only boot method shows
+   the automatic choice; there is no manual boot-mode control.
    Pending reads and rejected selections block execution until resolved. BIOS-only
    Start executes the real SH-2 firmware; it does not promise an authentic system
    menu, CD player or retail-game compatibility. Nothing auto-starts
@@ -155,8 +154,9 @@ narrow screens setup comes first.
    closed. Fullscreen failures leave the normal player usable; focus returns
    to its button on exit.
 
-See [BIOS-only startup validation](validation-issue-101.md) for the original
-synthetic firmware, regression oracles and executed checks. Authentic BIOS menu
+See [automatic boot selection validation](validation-issue-135.md) for file-state
+and race coverage, and [BIOS-only startup validation](validation-issue-101.md)
+for the original synthetic firmware and guest regression oracles. Authentic BIOS menu
 behavior remains unverified.
 
 Focus the display for keyboard input: Arrows for directions, Z/X/C for A/B/C,
@@ -218,10 +218,10 @@ reset/mode transitions, offline execution and the absence of requests carrying
 BIOS/disc data. It boots the actual ISO through Wasm, drives two distinct
 keyboard sequences, verifies guest-written position/score/completion/update
 counters and Canvas pixel differences, completes and restarts, rejects malformed
-local discs, checks pending-file/mode and replacement races and loads a local ISO
-offline. It uses
+local discs, checks overlapping-file, cancellation and replacement races, and
+loads a local ISO offline. It uses
 only original licensed guest content and no Sega firmware. It also checks the
-disc-first empty state, four-step setup, multi-file CUE drops, keyboard view
+disc-first empty state, three-step setup, multi-file CUE drops, keyboard view
 navigation and advanced disclosure,
 CPU/media/diagnostic preservation, pause and held-key release, hidden register
 updates, loading/view races, Play Restart and Debug frame advancement. At

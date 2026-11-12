@@ -40,7 +40,13 @@ export async function digitalInput(browser, url) {
     iso.writeUInt32BE(payload.length, 20*2048+68+14);
     await page.locator("#disc").setInputFiles({name:"original-digital-input.iso", mimeType:"application/octet-stream", buffer:iso});
     await ready();
-    await page.locator("#bios").setInputFiles({name:"original-digital-input.bin", mimeType:"application/octet-stream", buffer:rom});
+    const selectBoot = async mode => {
+      await page.locator("#bios").setInputFiles(mode === "bios" ?
+        {name:"original-digital-input.bin", mimeType:"application/octet-stream", buffer:rom} : []);
+      await ready();
+      assert.equal(await page.locator("#boot-method").textContent(),
+        mode === "bios" ? "Auto · User-provided BIOS" : "Auto · BIOS-less HLE");
+    };
     await page.evaluate(async () => {
       const {emulator} = await import("./app.js");
       window.inputMasks = [0, 0];
@@ -81,8 +87,7 @@ export async function digitalInput(browser, url) {
     };
     // Identical position-independent code must work under external BIOS and HLE.
     for (const mode of ["bios", "disc"]) {
-      await page.locator("#mode").selectOption(mode);
-      await ready();
+      await selectBoot(mode);
       await page.locator("#start").click();
       await focus();
       await sample([0, 0], [neutral, neutral], `${mode} initial`);
@@ -226,13 +231,13 @@ export async function digitalInput(browser, url) {
       await gamepads();
       // Release paths run with both keyboard and gamepad state asserted. No
       // adapter repoll is made before observing the actual released guest state.
-      for (const action of ["canvas-blur", "window-blur", "hidden", "pause", "settings", "view", "restart", "mode"]) {
+      for (const action of ["canvas-blur", "window-blur", "hidden", "pause", "settings", "view", "restart", "boot-change"]) {
         await focus(); await key("KeyW"); await key("ShiftRight");
         await gamepads([[0], [1]]);
         await sample([4096|64, 128|16], [[0xfb,0xf7], [0xf6,255]], `${action} held`);
         await page.evaluate(action => {
           const $ = id => document.getElementById(id);
-          if (action === "canvas-blur") $("mode").focus();
+          if (action === "canvas-blur") $("disc").focus();
           if (action === "window-blur") window.dispatchEvent(new Event("blur"));
           if (action === "hidden") {
             Object.defineProperty(document,"hidden",{configurable:true,value:true});
@@ -243,8 +248,8 @@ export async function digitalInput(browser, url) {
           if (action === "settings") $("settings").open = true;
           if (action === "view") $("view-debug").click();
           if (action === "restart") $("restart").click();
-          if (action === "mode") { $("mode").value = $("mode").value === "bios" ? "disc" : "bios"; $("mode").dispatchEvent(new Event("change")); }
         }, action);
+        if (action === "boot-change") await selectBoot(mode === "bios" ? "disc" : "bios");
         if (action === "settings") await page.waitForFunction(() => document.getElementById("pause").textContent === "Resume", undefined, {polling:10});
         // A held key's autorepeat after returning focus cannot reacquire it.
         await focus(); await key("KeyW", true, {repeat:true});
@@ -253,10 +258,9 @@ export async function digitalInput(browser, url) {
         await gamepads();
         await page.evaluate(() => { document.getElementById("settings").open=false; document.getElementById("view-play").click(); });
       }
-      await page.locator("#mode").selectOption(mode);
-      await ready();
+      await selectBoot(mode);
       // Input outside the display remains available to normal UI controls.
-      await page.locator("#mode").focus();
+      await page.locator("#disc").focus();
       assert.equal(await key("KeyZ"), false);
       await sample([0, 0], [neutral, neutral], "unfocused keyboard");
     }

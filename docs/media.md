@@ -1,6 +1,6 @@
 # Local disc input
 
-Use **Select disc** in the visible four-step setup, with the picker or a multi-file
+Use **Select disc** in the visible three-step setup, with the picker or a multi-file
 drop. Files remain in tab memory;
 the Play app never uploads them, invokes a host converter, writes an expanded
 disc, or fetches a codec, firmware or per-title database.

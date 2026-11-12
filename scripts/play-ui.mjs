@@ -13,13 +13,13 @@ export async function playUi(browser, url) {
     await page.goto(url);
     await page.waitForFunction(() => !document.getElementById("controls").disabled);
     assert.equal(await page.title(), "Saturn Disc Player");
-    assert.equal(await page.locator("#mode").inputValue(), "disc");
+    assert.equal(await page.locator("#mode").count(), 0);
     assert(await page.locator("#empty-state").isVisible());
     assert(await page.locator("#start").isDisabled());
     assert(await page.locator("#pause").isHidden());
     assert(await page.locator("#restart").isDisabled());
     assert.equal(await page.locator("#error").textContent(), "");
-    assert.equal(await page.locator(".setup-steps > li").count(), 4);
+    assert.equal(await page.locator(".setup-steps > li").count(), 3);
     assert.equal(await page.locator("#audio-status").textContent(), "Audio: disabled");
     assert.equal(requests.some(r => /\.(iso|chd|bin)$/.test(r.url)), false);
     const idle = await page.evaluate(async () => {
@@ -55,37 +55,8 @@ export async function playUi(browser, url) {
     };
     const bios = await rom("bios-only");
     const firmware = {name:"original-loop.bin",mimeType:"application/octet-stream",buffer:bios};
+    await automaticBootSelections(page, firmware, iso);
     await context.setOffline(true);
-    // No firmware, wrong-sized firmware and rejected local reads cannot launch.
-    await page.locator("#mode").selectOption("bios");
-    assert(await page.locator("#start").isDisabled());
-    await page.locator("#bios").setInputFiles({...firmware,buffer:Buffer.alloc(1)});
-    await failed("received 1 bytes");
-    assert(await page.locator("#start").isDisabled());
-    await page.evaluate(() => {
-      const original = File.prototype.arrayBuffer;
-      File.prototype.arrayBuffer = function () {
-        if (this.name === "rejected.bin") return Promise.reject(new Error("test read rejection"));
-        if (this.name !== "pending.bin") return original.call(this);
-        return new Promise(resolve => { window.finishBiosRead = async () => resolve(await original.call(this)); });
-      };
-      window.restoreBiosRead = () => { File.prototype.arrayBuffer = original; };
-    });
-    await page.locator("#bios").setInputFiles({...firmware,name:"rejected.bin"});
-    await failed("test read rejection");
-    assert(await page.locator("#start").isDisabled());
-    await page.locator("#reset").evaluate(button => button.click());
-    assert(await page.locator("#start").isDisabled());
-    assert.match(await page.locator("#error").textContent(), /test read rejection/);
-    // Cancelling a pending BIOS read cannot revive it in either mode.
-    await page.locator("#bios").setInputFiles({...firmware,name:"pending.bin"});
-    assert(await page.locator("#start").isDisabled());
-    assert.match(await page.locator("#player-status").textContent(), /Loading image/);
-    await page.locator("#mode").selectOption("disc");
-    await page.evaluate(async () => { await window.finishBiosRead(); window.restoreBiosRead(); });
-    assert(await page.locator("#start").isDisabled());
-    await page.locator("#mode").selectOption("bios");
-    assert(await page.locator("#start").isDisabled());
     await page.locator("#bios").setInputFiles(firmware);
     await ready();
     assert.match(await page.locator("#player-status").textContent(), /BIOS ready/);
@@ -197,8 +168,8 @@ export async function playUi(browser, url) {
     assert(await page.locator("#start").isDisabled());
     await page.locator("#reset").evaluate(button => button.click());
     assert(await page.locator("#start").isDisabled());
-    await page.locator("#mode").selectOption("disc");
-    await page.locator("#mode").selectOption("bios");
+    await page.locator("#bios").setInputFiles([]);
+    await page.locator("#bios").setInputFiles(firmware);
     assert(await page.locator("#start").isDisabled());
     await page.locator("#disc").setInputFiles([]);
     await ready();
@@ -212,16 +183,16 @@ export async function playUi(browser, url) {
     const mounted = await page.locator("#disc-selection").textContent();
     assert.match(mounted, /Loaded locally/);
     for (let attempt = 0; attempt < 2; attempt++) {
-      await page.locator("#mode").selectOption("disc");
+      await page.locator("#bios").setInputFiles([]);
       await failed("Saturn");
       assert(await page.locator("#start").isDisabled());
       assert.equal(await page.locator("#disc-selection").textContent(), mounted);
-      await page.locator("#mode").selectOption("bios");
+      await page.locator("#bios").setInputFiles(firmware);
       await ready();
       assert.equal(await page.locator("#error").textContent(), "");
       assert.equal(await page.locator("#disc-selection").textContent(), mounted);
     }
-    await page.locator("#mode").selectOption("disc");
+    await page.locator("#bios").setInputFiles([]);
     await drop(files.slice(0,2));
     await failed("Missing CUE file reference");
     assert(await page.locator("#start").isDisabled());
@@ -231,12 +202,10 @@ export async function playUi(browser, url) {
     for (const file of files) assert(selected.includes(file.name));
     assert(selected.includes("Loaded locally"));
     assert(await page.locator("#pause").isHidden());
-    // Step 2 works before Step 3: selecting optional firmware does not lose disc.
+    // Adding firmware automatically switches paths without losing the disc.
     await page.locator("#bios").setInputFiles(firmware);
     await ready();
-    assert.match(await page.locator("#bios-selection").textContent(), /unused in HLE/);
-    await page.locator("#mode").selectOption("bios");
-    await ready();
+    assert.match(await page.locator("#boot-method").textContent(), /Auto · User-provided BIOS/);
     assert.equal(await page.locator("#bios").evaluate(input => input.files[0].name), firmware.name);
     assert.equal(await page.locator("#disc-selection").textContent(), selected);
     await page.locator("#start").click();
@@ -258,7 +227,7 @@ export async function playUi(browser, url) {
       document.dispatchEvent(new Event("visibilitychange"));
     });
     assert.equal(await page.locator("#pause").textContent(), "Resume");
-    await page.locator("#mode").selectOption("disc");
+    await page.locator("#bios").setInputFiles([]);
     await ready();
     assert.equal(await page.locator("#disc-selection").textContent(), selected);
     // Raw BIN alone is rejected. A valid CHD replaces it via the same picker.
@@ -268,7 +237,14 @@ export async function playUi(browser, url) {
     const chd = await readFile("tests/fixtures/chd/mixed-cdlz.chd");
     await page.locator("#disc").setInputFiles({name:"local.chd",mimeType:"application/octet-stream",buffer:chd});
     await ready();
-    assert.match(await page.locator("#disc-selection").textContent(), /local.chd/);
+    const chdSelection = await page.locator("#disc-selection").textContent();
+    assert.match(chdSelection, /local.chd/);
+    await page.locator("#bios").setInputFiles(firmware);
+    await ready();
+    assert.equal(await page.locator("#disc-selection").textContent(), chdSelection);
+    await page.locator("#bios-clear").click();
+    await ready();
+    assert.equal(await page.locator("#disc-selection").textContent(), chdSelection);
     // A replacement cancels a slow read, including after the new image validates.
     await page.evaluate(() => {
       const original = File.prototype.arrayBuffer;
@@ -286,13 +262,12 @@ export async function playUi(browser, url) {
     assert.match(await page.locator("#disc-selection").textContent(), /replacement.iso/);
     assert(await page.locator("#pause").isHidden());
     // BIOS mode never falls back to HLE after missing/invalid firmware.
-    await page.locator("#mode").selectOption("bios");
     await page.locator("#bios").setInputFiles({name:"invalid.bin",mimeType:"application/octet-stream",buffer:Buffer.alloc(1)});
     await failed("received 1 bytes");
     assert(await page.locator("#start").isDisabled());
     await page.locator("#bios").setInputFiles(firmware);
     await ready();
-    await page.locator("#mode").selectOption("disc");
+    await page.locator("#bios").setInputFiles([]);
     await ready();
     // Issue #99: the unchanged MIT Hardware Lab CUE references lower-case
     // names. The picker and drop must both boot the original bytes under
@@ -363,7 +338,7 @@ export async function playUi(browser, url) {
       assert.equal(layout.overflow,false,`overflow at ${width}`);
       assert(Math.abs(layout.ratio-4/3)<0.005);
       assert(width <= 900 ? layout.before : layout.beside);
-      for (const id of ["disc","bios","mode","start","fullscreen","view-debug"]) {
+      for (const id of ["disc","disc-clear","bios","bios-clear","start","fullscreen","view-debug"]) {
         const box = await page.locator(`#${id}`).boundingBox();
         assert(box.x >= 0 && box.x+box.width <= width && box.height >= 44, `${id} at ${width}`);
       }
@@ -373,6 +348,135 @@ export async function playUi(browser, url) {
     assert.deepEqual(errors,[]);
     assert(requests.every(r => r.url.startsWith(url) && r.method === "GET" && r.body === null));
   } finally { await context.close(); }
+}
+
+// Exercise selection transitions through the production UI. Delayed/rejected
+// File reads control host timing only; all resets and guest execution use Wasm.
+async function automaticBootSelections(page, firmware, iso) {
+  const input = id => page.locator(`#${id}`);
+  const disc = {name:"retained.iso", mimeType:"application/octet-stream", buffer:iso};
+  const ready = () => page.waitForFunction(() => !document.getElementById("start").disabled);
+  const snapshot = () => page.evaluate(async () => {
+    const {emulator:m} = await import("./app.js");
+    return {mode:m.mode(), count:m.instruction_count(), frames:m.frames(), pc:m.special_registers()[0]};
+  });
+  const blocked = async pattern => {
+    assert(await input("start").isDisabled());
+    assert(await input("restart").isDisabled());
+    assert(await input("step").isDisabled());
+    assert(await input("frame").isDisabled());
+    assert.equal((await snapshot()).count, "0");
+    if (pattern) assert.match(await input("error").textContent(), pattern);
+  };
+  await page.evaluate(() => {
+    const original = File.prototype.arrayBuffer;
+    window.selectionReads = {};
+    File.prototype.arrayBuffer = function () {
+      if (this.name.startsWith("reject")) return Promise.reject(new Error("selection read rejected"));
+      if (this.name === "short.bin") return Promise.resolve(new ArrayBuffer(1));
+      if (!this.name.startsWith("pending")) return original.call(this);
+      return new Promise((resolve, reject) => {
+        window.selectionReads[this.name] = async fail => {
+          if (fail) reject(new Error("stale read rejected"));
+          else resolve(await original.call(this));
+        };
+      });
+    };
+    window.restoreSelectionReads = () => { File.prototype.arrayBuffer = original; };
+  });
+  try {
+    // Fail closed both with and without a retained valid disc.
+    for (const withDisc of [false, true]) {
+      if (withDisc) { await input("disc").setInputFiles(disc); await ready(); }
+      const selectedDisc = await input("disc-selection").textContent();
+      for (const [name, buffer, error] of [
+        ["invalid.bin", Buffer.alloc(1), /received 1 bytes/],
+        ["reject.bin", firmware.buffer, /selection read rejected/],
+        ["short.bin", firmware.buffer, /did not contain 524288 bytes/],
+      ]) {
+        await input("bios").setInputFiles({...firmware, name, buffer});
+        await page.waitForFunction(() => Boolean(document.getElementById("error").textContent));
+        await blocked(error);
+        assert.equal(await input("disc-selection").textContent(), selectedDisc);
+        await input("reset").evaluate(button => button.click());
+        await blocked(error);
+      }
+      await input("bios").setInputFiles({...firmware,name:"pending-reset.bin"});
+      await blocked();
+      assert.match(await input("boot-method").textContent(), /BIOS loading/);
+      await input("reset").evaluate(button => button.click());
+      await blocked(/BIOS read cancelled/);
+      await page.evaluate(() => window.selectionReads["pending-reset.bin"]());
+      await blocked(/BIOS read cancelled/);
+      await input("bios-clear").click();
+      if (withDisc) {
+        await ready();
+        assert.equal((await snapshot()).mode, "BIOS-less HLE disc");
+        assert.equal(await input("disc-selection").textContent(), selectedDisc);
+      } else await blocked();
+    }
+    // An independently completing disc read must retain the BIOS error and
+    // validated medium, rather than silently booting it through HLE.
+    await input("disc").setInputFiles({...disc,name:"pending-error.iso"});
+    await input("bios").setInputFiles({...firmware,buffer:Buffer.alloc(1)});
+    await page.evaluate(() => window.selectionReads["pending-error.iso"]());
+    await blocked(/received 1 bytes/);
+    assert.match(await input("disc-selection").textContent(), /Loaded locally/);
+    // Newer accepted firmware wins over either a late success or rejection.
+    for (const reject of [false, true]) {
+      await input("bios").setInputFiles({...firmware,name:"pending-old.bin"});
+      await blocked();
+      await input("bios").setInputFiles(firmware);
+      await ready();
+      const latest = await snapshot();
+      await page.evaluate(reject => window.selectionReads["pending-old.bin"](reject), reject);
+      assert.deepEqual(await snapshot(), latest);
+      assert.equal(await input("error").textContent(), "");
+      assert.match(await input("bios-selection").textContent(), /original-loop/);
+    }
+    // Disc replacement/clear retains the firmware, including an outstanding read.
+    await input("disc-clear").click();
+    await ready();
+    assert.equal((await snapshot()).mode, "User-provided BIOS");
+    assert.equal(await input("disc-selection").textContent(), "No disc selected.");
+    await input("disc").setInputFiles({...disc,name:"pending-disc.iso"});
+    await blocked();
+    await input("disc-clear").click();
+    await ready();
+    await page.evaluate(() => window.selectionReads["pending-disc.iso"]());
+    assert.equal(await input("disc-selection").textContent(), "No disc selected.");
+    assert.equal((await snapshot()).mode, "User-provided BIOS");
+    assert.equal(await input("bios").evaluate(el => el.files[0].name), firmware.name);
+    await input("disc").setInputFiles(disc);
+    await ready();
+    await input("start").click();
+    await page.waitForFunction(() => document.getElementById("pause").textContent === "Pause");
+    // Selection changes stop an active guest and never resume playback.
+    await input("bios").setInputFiles({...firmware,name:"pending-active.bin"});
+    await blocked();
+    await input("bios-clear").click();
+    await ready();
+    const hle = await snapshot();
+    await page.evaluate(() => window.selectionReads["pending-active.bin"]());
+    assert.deepEqual(await snapshot(), hle);
+    assert(await input("pause").isHidden());
+    assert.equal(hle.mode, "BIOS-less HLE disc");
+    // The fixture is explicit, clears files, survives Reset, and cannot Play.
+    await input("view-debug").click();
+    await input("fixture").click();
+    assert.match(await input("boot-method").textContent(), /Debug · HLE bootstrap fixture/);
+    assert(await input("start").isDisabled());
+    assert(await input("restart").isDisabled());
+    await input("run").click();
+    assert.equal(await input("r0").textContent(), "0x00000004");
+    await input("reset").click();
+    assert.equal((await snapshot()).pc, 0x06000000);
+    await input("view-play").click();
+    assert(await input("start").isDisabled());
+    await input("bios").setInputFiles([]); // Return to empty ordinary Play.
+    await blocked();
+    assert.equal(await input("disc-selection").textContent(), "No disc selected.");
+  } finally { await page.evaluate(() => window.restoreSelectionReads()); }
 }
 
 // Preserve 60 Hz phase across rounded RAF timestamps and faster displays.
@@ -390,7 +494,6 @@ async function framePacing(browser,url,firmware) {
     // RAF belongs to this test driver; readiness polling uses real timers.
     await page.waitForFunction(()=>!document.getElementById('controls').disabled,undefined,{polling:10});
     await page.locator('#settings > summary').evaluate(button=>button.click());
-    await page.locator('#mode').evaluate(select=>{select.value='bios';select.dispatchEvent(new Event('change',{bubbles:true}))});
     await page.locator('#bios').setInputFiles({name:'original-loop.bin',mimeType:'application/octet-stream',buffer:firmware});
     await page.waitForFunction(()=>!document.getElementById('start').disabled,undefined,{polling:10});
     await page.evaluate(async()=>{

@@ -50,8 +50,8 @@ export async function externalStartup(page) {
   };
   // Both orders of actual local File selections; Restart/Reset retain both.
   for(const discFirst of [false,true]) {
-    await page.locator("#mode").selectOption("hle");
-    await page.locator("#mode").selectOption("bios");
+    await page.locator("#disc").setInputFiles([]);
+    await page.locator("#bios").setInputFiles([]);
     const loadRom=()=>page.locator("#bios").setInputFiles({name:"original-bios.bin",mimeType:"application/octet-stream",buffer:rom});
     const loadDisc=()=>page.locator("#disc").setInputFiles({name:"original-disc.iso",mimeType:"application/octet-stream",buffer:image});
     if(discFirst) {await loadDisc();await loadRom();} else {await loadRom();await loadDisc();}
@@ -65,8 +65,8 @@ export async function externalStartup(page) {
   // Hold both actual File reads pending: neither picker may cancel the other,
   // and finishing only one must leave execution disabled until both settle.
   for(const discFirst of [false,true]) for(const finishDiscFirst of [false,true]) {
-    await page.locator("#mode").selectOption("hle");
-    await page.locator("#mode").selectOption("bios");
+    await page.locator("#disc").setInputFiles([]);
+    await page.locator("#bios").setInputFiles([]);
     await page.evaluate(() => {
       const original = File.prototype.arrayBuffer;
       window.pendingBootReads = {};
