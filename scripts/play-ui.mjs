@@ -409,8 +409,12 @@ async function framePacing(browser,url,firmware) {
         let maxPerCallback=0;
         for(let i=1;i<=hz*3;i++) {
           const before=window.pacingCalls;
-          window.deliverFrame(base+Math.round(i*1000/hz/quantum)*quantum);
+          const timestamp=base+Math.round(i*1000/hz/quantum)*quantum;
+          window.deliverFrame(timestamp);
           maxPerCallback=Math.max(maxPerCallback,window.pacingCalls-before);
+          const presented=window.pacingCalls;
+          window.deliverFrame(timestamp);
+          if(window.pacingCalls!==presented)throw new Error(`Duplicate RAF advanced at ${hz} Hz, ${quantum} ms rounding`);
         }
         const frames=window.pacingCalls-start;
         const beforeStall=window.pacingCalls;

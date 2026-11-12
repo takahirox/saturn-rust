@@ -2532,9 +2532,11 @@ general firmware compatibility criteria. Related to #17.
 Resetting the animation clock to each accepted RAF timestamp discarded its
 fractional remainder. With rounded timestamps, a callback just before the
 16.667 ms threshold was repeatedly skipped. Keeping the phase, allowing 1 ms
-of timestamp rounding, and resetting the phase after a delay greater than two
-periods avoids that artificial limit. Each callback still advances at most one
+of timestamp rounding, and rebasing after a missed callback period using that
+same rounding boundary avoids the artificial limit. Each callback still advances at most one
 complete emulated field. A slow host does not accumulate a catch-up loop.
+Rebasing uses the same rounding boundary as admission, so residual phase cannot
+qualify a duplicate timestamp as another field.
 
 RAF supplies a timestamp to the callback, and high-resolution time may be
 coarsened or jittered by the browser. See the
@@ -2558,14 +2560,15 @@ guest field, then counts presentation requests independently of core speed by
 replacing only that test instance's `advance_frame` method. Canvas, audio
 draining and status updates still run. Timer polling leaves the controlled RAF
 queue exclusively to the app. Coverage includes sustained 30 Hz callbacks,
-the frequencies above, pause/resume, a 500 ms stall, duplicate timestamps and
+the frequencies above, pause/resume, a 500 ms stall, a duplicate after every
+ordinary callback as well as the stall, and
 the one-field-per-callback bound. These are scheduler results, **not evidence
 that a BIOS or game executes at real-time speed**.
 
 Local validation passes all 1,333 native tests in 111 groups, formatting/build,
 native all-target and Wasm Clippy with warnings denied, registered fixture
 reproduction, the complete 74-group production-Wasm browser suite with 48
-scheduler comparisons, and 13 runner tests. Browser-suite elapsed was 208,057 ms.
+scheduler comparisons, and 13 runner tests. Browser-suite elapsed was 196,042 ms.
 The new pacing cases run within the existing Play UI group, including 90
 requests for three seconds of 30 Hz callbacks. Exact-head hosted CI and normal
 review remain required before merge; no post-merge verification is required.
