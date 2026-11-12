@@ -2644,3 +2644,69 @@ selected Wasm SHA-256 is
 Exact-head hosted CI and normal review remain mandatory before merge; required
 post-merge verification: none. **Real Web 60 fields/s remains unmet**, as do the
 umbrella hardware and general firmware compatibility criteria. Related to #17.
+
+## Elide sound rollback before the first possible control change
+
+Cached bursts previously saved complete sound state whenever a passive read,
+private peer or refill could produce widely spaced CPU retirements. Some selected
+endpoints still precede the existing lower bound on the next possible sound-CPU
+control write or RESET pulse. For those endpoints, use ordinary sound lookahead
+without a checkpoint. Independent SCSP, DSP, RAM, MIDI and synthesis events still
+execute. The strict `desired < cached_cpu_deadline()` comparison keeps potentially
+rollback-requiring intervals on the existing transactional path. No deadline is
+extended and no guest work, clock or output is skipped. This is always enabled.
+
+Unlike an earlier unselected no-event experiment, this admits intervals containing
+real independent sound work. The existing original dual-CPU polling guest now
+requires such an elision through a test-only counter. It still compares complete
+CPU/pipeline, sound, RAM, emitted PCM and interrupt state against ordinary shared
+execution with live PCM/DSP work, control writes and RESET at both PLL settings.
+Removing the control-bound guard causes the inherited instruction-refill oracle
+to detect an unrollbackable sound prefix; restoring the guard passes that check.
+
+### Web comparisons
+
+Chrome 157.0.8103.52 used production JS/Wasm with Canvas presentation and PCM
+draining for every field. Each comparison covers fields 1200–1680, rotates variant
+order and stops all other local builds, tests, profiles and warm-ups during timing.
+Rates use combined elapsed time. Paired boot/input/scene and timed game endpoints
+match exposed CPU, sound, clock and pixel state.
+
+| Comparison | Previous game fields/s | Control-window game fields/s |
+| --- | ---: | ---: |
+| Ten rotated 48-field windows | 13.137 | 13.738 |
+| Fresh instances, six rotated 80-field windows | 13.048 | 13.625 |
+
+Game throughput improves 4.57% initially and 4.42% in the independent repeat.
+The fresh menu comparison is effectively unchanged: 27.881 → 27.911 fields/s.
+All 18 menu endpoints match and that harness exits normally. An earlier optional
+menu harness was stopped after its timing samples because browser shutdown
+stalled; final-window assertion completion was unconfirmed, so that run is
+excluded from acceptance. The fresh harness reports assertion completion before
+closing contexts and the browser.
+
+A compact display-word representation separately improved game throughput by
+1.83% and 1.46%, but its combination with this change measured 13.531 versus
+13.625 fields/s for this change alone. The compact representation is excluded.
+A transposed display layout, single-integer captured words and idle-slot filter
+also did not justify adoption. Conservatively shortening every burst to the
+sound control bound lost existing accelerated refill/store coverage and was
+rejected at native validation. No rejected trial is included.
+
+### Validation and remaining work
+
+The selected source passes all 1,333 native tests in 111 groups, formatting/build,
+native all-target and Wasm Clippy with warnings denied, registered fixture
+reproduction, all 74 production-Wasm browser groups with 48 scheduler comparisons,
+and 13 runner tests. Full browser elapsed is 198,167 ms. These include the added
+positive-path assertion and restored negative control above. Five extended game
+checkpoints at fields 1800, 2100, 2400, 2824 and 3252 match, as do three explicit
+reference PNG byte comparisons. Standard-build JS and Wasm bytes match the frozen
+measured candidate. Exact-head hosted CI and normal review remain mandatory
+before merge.
+
+The measured selected Wasm SHA-256 is
+`32771a07365f119a46d0cab4c38cff3eb99dce8a09c8b4327e30eb8c77664586`.
+Private firmware, media and captures remain unpublished. **Real Web 60 fields/s
+remains unmet**, as do umbrella hardware and general firmware compatibility
+criteria. Required post-merge verification: none. Related to #17.
