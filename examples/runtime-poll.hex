@@ -1,8 +1,0 @@
-# SPDX-License-Identifier: MIT
-# Original EDSR/LOPR polling and draw-restart guest. No firmware or SDK.
-# Enable cache, poll the uncached draw-end flag, count completions in R8,
-# then restart drawing through an ordinary PTMR word write.
-00000000 0000 0200 060F F000
-00000200 D107 E001 2100 D407 D507 E101 6041 C802
-00000210 89FC 7801 2511 AFF9 0009
-00000220 FFFF FE92 25D0 0010 25D0 0004
