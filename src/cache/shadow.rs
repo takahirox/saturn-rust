@@ -1,15 +1,17 @@
-//! Transactional cache-line versions for an observer-bounded read-only burst.
+//! Transactional cache-line versions for an observer-bounded read/write burst.
 use super::{Cache, Line, Ordering};
 
 struct SetVersion {
     index: usize,
     ways: [Line; 4],
     previous: usize,
+    read: bool,
 }
 
 #[derive(Default)]
 pub(crate) struct CachedLines {
     versions: Vec<SetVersion>,
+    reads: usize,
     heads: Option<Box<[usize; 64]>>,
 }
 
@@ -17,12 +19,16 @@ impl CachedLines {
     pub fn len(&self) -> usize {
         self.versions.len()
     }
+    pub fn read_count(&self) -> usize {
+        self.reads
+    }
     pub fn is_empty(&self) -> bool {
         self.versions.is_empty()
     }
     pub fn truncate(&mut self, len: usize) {
         while self.versions.len() > len {
             let version = self.versions.pop().unwrap();
+            self.reads -= usize::from(version.read);
             self.heads.as_mut().unwrap()[version.index] = version.previous;
         }
     }
@@ -81,6 +87,43 @@ impl CachedLines {
         lru[set] = Cache::touch_replacement(lru[set], way);
         Some(bytes)
     }
+    pub fn written<const N: usize>(
+        &mut self,
+        cache: &Cache,
+        address: u32,
+        bytes: [u8; N],
+        lru: &mut [u8; 64],
+    ) {
+        if address >= 0x2000_0000 || cache.control & 1 == 0 {
+            return;
+        }
+        let (index, tag, offset) = Cache::parts(address);
+        let current = self.set(cache, index);
+        let mut mask = 0;
+        for (way, line) in current.iter().enumerate().skip(cache.first_cache_way()) {
+            if line.valid && line.tag == tag {
+                mask |= 1 << way;
+            }
+        }
+        if mask == 0 {
+            return;
+        }
+        let mut ways = current.clone();
+        for (way, line) in ways.iter_mut().enumerate() {
+            if mask & (1 << way) != 0 {
+                line.data[offset..offset + N].copy_from_slice(&bytes);
+                lru[index] = Cache::touch_replacement(lru[index], way);
+            }
+        }
+        let previous = self.heads.as_ref().map_or(0, |heads| heads[index]);
+        self.versions.push(SetVersion {
+            index,
+            ways,
+            previous,
+            read: false,
+        });
+        self.heads.get_or_insert_with(|| Box::new([0; 64]))[index] = self.versions.len();
+    }
     pub fn fill(&mut self, cache: &Cache, address: u32, bytes: [u8; 16], lru: &[u8; 64]) {
         assert!(address < 0x2000_0000 && cache.control & 1 == 1);
         let (index, tag, _) = Cache::parts(address);
@@ -98,7 +141,9 @@ impl CachedLines {
             index,
             ways,
             previous,
+            read: true,
         });
+        self.reads += 1;
         self.heads.get_or_insert_with(|| Box::new([0; 64]))[index] = self.versions.len();
     }
     pub fn commit(self, cache: &mut Cache) {
@@ -227,5 +272,71 @@ mod tests {
         assert_eq!(lru, prefix.lru);
         assert_eq!(shadow.peek::<2>(&base, 0x2600_0000), None);
         assert_eq!(shadow.peek::<4>(&base, 0x0600_0001), None);
+    }
+    #[test]
+    fn ordered_writes_refills_and_rollback_match_every_literal_way() {
+        for control in [1, 9] {
+            let mut base = Cache::default();
+            let address = 0x0600_1000;
+            // Both duplicate matching ways must receive a cache write.
+            for (mode, offset, value) in [(0x81, 0x800, 2), (0xC1, 0xC00, 3)] {
+                base.set_control(mode);
+                base.array_write(0x6000_0004 | address, [0; 4]).unwrap();
+                base.array_write(0xC000_0000 | offset, [value; 4]).unwrap();
+            }
+            base.set_control(control);
+            let mut literal = duplicate(&base);
+            let mut shadow = CachedLines::default();
+            let mut lru = base.lru;
+            let mut reads = 0;
+            let mut saved = None;
+            for step in 0..40u32 {
+                if step == 16 {
+                    saved = Some((shadow.len(), lru, duplicate(&literal), reads));
+                }
+                if step == 32 {
+                    let (len, prior_lru, prior_literal, prior_reads) = saved.take().unwrap();
+                    shadow.truncate(len);
+                    lru = prior_lru;
+                    literal = prior_literal;
+                    reads = prior_reads;
+                }
+                let at = address + (step % 8) * 0x400 + (step % 4) * 4;
+                match step % 3 {
+                    0 => {
+                        literal.written(at, [step as u8]);
+                        shadow.written(&base, at, [step as u8], &mut lru);
+                    }
+                    1 => {
+                        let v = (step as u16 * 17).to_be_bytes();
+                        literal.written(at, v);
+                        shadow.written(&base, at, v, &mut lru);
+                    }
+                    _ => {
+                        let v = (0xA5000000 | step).to_be_bytes();
+                        literal.written(at, v);
+                        shadow.written(&base, at, v, &mut lru);
+                    }
+                }
+                assert_eq!(lru, literal.lru);
+                let expected = literal
+                    .read::<4>(at, true, |a| {
+                        reads += 1;
+                        Ok(bytes(a))
+                    })
+                    .unwrap();
+                let mut actual = shadow.read::<4>(&base, at, &mut lru);
+                if actual.is_none() {
+                    shadow.fill(&base, at, bytes(at & !15), &lru);
+                    actual = shadow.read(&base, at, &mut lru);
+                }
+                assert_eq!(actual, expected);
+                assert_eq!(lru, literal.lru);
+                assert_eq!(shadow.read_count(), reads / 4);
+            }
+            shadow.commit(&mut base);
+            base.commit_replacement_state(lru);
+            base.assert_same_contents(&literal);
+        }
     }
 }

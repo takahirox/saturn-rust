@@ -2363,3 +2363,87 @@ weakened. Hosted exact-head validation remains mandatory before normal merge.
 60 fields/s and hardware completion remain unmet. The measured game median
 still requires approximately 5.5× further throughput. This increment does not
 establish general firmware compatibility.
+
+
+## Ordered cache refills and isolated writes
+
+Related to #17. The default Web runner now keeps cache refills and isolated
+WRAM/idle-VDP1 writes in the same bounded private execution interval. Previously,
+a physical read ended the write path and a staged write prevented later refills,
+forcing repeated ordinary scheduler admission in copying and drawing loops.
+
+The optimization uses ordered copy-on-write cache-set versions and external-bus
+protocol checkpoints. Each physical refill waits for all preceding write beats
+and sees earlier staged physical bytes, including P2 aliases. A cached write
+updates every matching valid way, preserving two-way restrictions and literal
+LRU order. Later refills may evict those versions normally. Failed instruction
+attempts roll back the cache versions, write prefix and bus event sequence
+together. Read-only repeat acceleration requires an unchanged bus-event count.
+
+The final external write is still accepted and drained through the existing
+arbiter. Read protocol is published after that write only when a later completed
+refill exists. Private raw-byte forwarding precedes the normal CPU-endian
+conversion. Already decoded instructions retain their original word; redirected
+fetches see the updated cache or physical line. Observed MMIO stores after a
+refill or RAM prefix retain ordinary execution. Existing DMA, peer, sound, IRQ,
+blanking, ownership, address and refresh bounds are unchanged, including the
+16-store limit. No instruction, device edge or rendered field is skipped.
+
+### Web comparison and adoption
+
+Chrome 157.0.8103.39, the standard production JS/Wasm build and normal local
+file pickers were used. Four rotated 120-field windows over fields 1200–1680
+drew every field to Canvas. Game and BIOS-menu timing ran separately, without
+local builds, tests or warm-ups. Complete CPU/sound/clock/pixel endpoints matched
+between all four variants after every window (32 endpoints in total).
+
+| Variant | Game fields/s | Change | Menu fields/s | Change |
+| --- | ---: | ---: | ---: | ---: |
+| Main before this increment | 10.952 | — | 24.534 | — |
+| Per-set host cache lookup only | 11.010 | +0.53% | 24.298 | −0.96% |
+| Selected ordered read/write versions | 11.811 | +7.84% | 25.801 | +5.16% |
+| Ordered versions plus per-set lookup | 11.797 | +7.72% | 25.978 | +5.89% |
+
+Throughput is 480 fields divided by the combined elapsed time, not an average
+of individual rates. The selected version improved every paired game and menu
+window; game elapsed was 43,828.0 → 40,640.3 ms and menu elapsed was
+19,564.9 → 18,604.1 ms. Median window p95 was 161.75 → 156.8 ms for the game
+and 67.7 → 62.2 ms for the menu. The per-set lookup change is not adopted:
+it adds no game gain to the selected implementation in this comparison.
+These local samples do not establish hosted, cross-browser or cross-game rates.
+
+The selected Wasm is 1,818,827 bytes, SHA-256
+`f710a7cd75e1b7d6503d8a8e400a44411ce6f90224b0fc0acf606fff6ecde385`.
+The standard build's JS/Wasm bytes match the measured frozen files. Private
+firmware, media, traces and captures are not published.
+
+### Validation and remaining work
+
+Four original native tests add ordered duplicate-way/LRU/rollback comparison,
+real forward copies with aliases/overlap/conflicting tags, a write to an already
+decoded instruction and a write before a cold target refill. Both PLLs and
+four/two-way caches are covered, with selected narrow-bus and live-sound cases.
+The guests compare full CPU, memory, cache and BSC state against ordinary
+execution after each accelerated prefix, and require actual mixed read/write
+acceleration. The previous implementation fails that positive-path assertion.
+
+Three intentional runtime defects are independently rejected: omitting physical
+write forwarding fails the cold-target guest, omitting cache writes fails the
+retained-decode guest, and omitting bus-event rollback fails the existing
+instruction-refill/eviction/write-boundary guest. The copy guest alone did not
+reject missing bus rollback; the existing boundary guest supplies that coverage.
+The restored source passes. These cases add defect detection at the native
+layer without another browser scenario or a larger CI concurrency setting.
+
+Five extended game CPU/sound/clock/pixel checkpoints at fields 1800, 2100, 2400,
+2824 and 3252 and three reference PNG byte comparisons pass. All 1,330 native
+tests in 111 groups, formatting/build, native all-target and Wasm Clippy with
+warnings denied, registered fixture reproduction, all 74 production-Wasm
+browser groups, 48 scheduler comparisons and 13 runner checks pass. Complete
+browser elapsed was 227,627 ms. Native validation used two test threads; no test
+content or CI concurrency changed. Exact-head hosted CI remains mandatory before
+merge.
+
+60 fields/s remains unmet: the measured game requires approximately 5.1× further
+throughput. This is a partial performance increment, not hardware completion or
+a general firmware-compatibility claim. Required post-merge verification: none.

@@ -1101,8 +1101,9 @@ fn fabricated_mmio_cache_hit_cannot_bypass_the_peripheral_contract() {
             cache: &cache,
             code: None,
             fills: RefCell::default(),
-            fill_count: Cell::new(0),
-            fill_reads: RefCell::new(None),
+            version_count: Cell::new(0),
+            refill_count: Cell::new(0),
+            bus_events: RefCell::new(Vec::new()),
             scalar_active: Cell::new(false),
             clock: Cell::new(0),
             lru: RefCell::new(cache.replacement_state()),
@@ -1118,8 +1119,6 @@ fn fabricated_mmio_cache_hit_cannot_bypass_the_peripheral_contract() {
             write_protocol: None,
             idle_vdp1_vram: false,
             ram_stores: Vec::new(),
-            write_bounds: (u32::MAX, 0),
-            write_state: None,
             write_pc: Cell::new(0),
         };
         assert_eq!(memory.read16(crate::devices::SMPC), Err(BusError::Pending));
@@ -2453,6 +2452,233 @@ fn independent_refill_waits_for_every_accepted_write_beat() {
                 assert_eq!(a.bus.instruction_word[0], b.bus.instruction_word[0]);
                 assert_eq!(a.bus.external_owner, b.bus.external_owner);
             }
+        }
+    }
+}
+
+#[test]
+fn alternating_stores_and_refills_preserve_aliases_evictions_and_pipeline() {
+    for fast in [false, true] {
+        for (stride, narrow, overlap, bypass, live_sound) in [
+            (4, false, false, false, false),
+            (1024, true, false, false, true),
+            (4, false, true, false, false),
+            (4, true, true, true, true),
+        ] {
+            for control in [1, 9] {
+                let source = HIGH_WRAM + 0x2000;
+                let destination = if overlap {
+                    source + 4
+                } else {
+                    HIGH_WRAM + 0x40000
+                };
+                let make = || {
+                    // Three PC-relative literals, 32 iterations, and a real
+                    // forward copy. Overlap is deliberately not memmove.
+                    let words = [
+                        0xD10F, 0xD210, 0xD410, 0xE320, 0x6012, 0x2202, 0x314C, 0x324C, 0x4310,
+                        0x8BF9, 9, 0x001B,
+                    ];
+                    let mut m = crate::scheduling_tests::cached_pair(&words, &[0xAFFE, 9]);
+                    m.bus.set_slave_enabled(false);
+                    m.bus.change_system_clock(fast);
+                    m.bus.onchip[0].write32(0xFFFFFFE0, 0xA55A03F0).unwrap();
+                    m.bus.onchip[0]
+                        .write32(0xFFFFFFE4, if narrow { 0xA55A007C } else { 0xA55A00FC })
+                        .unwrap();
+                    m.bus.onchip[0]
+                        .write32(0xFFFFFFEC, if narrow { 0xA55A0000 } else { 0xA55A0040 })
+                        .unwrap();
+                    m.bus.write32(HIGH_WRAM + 64, source).unwrap();
+                    m.bus
+                        .write32(
+                            HIGH_WRAM + 68,
+                            destination | if bypass { 0x20000000 } else { 0 },
+                        )
+                        .unwrap();
+                    m.bus.write32(HIGH_WRAM + 72, stride).unwrap();
+                    for i in 0..34u32 {
+                        m.bus
+                            .write32(
+                                source + i * stride,
+                                (i.wrapping_mul(0x01020307)) ^ 0x89ABCDEF,
+                            )
+                            .unwrap();
+                    }
+                    let mut memory = m.bus.for_cpu(Processor::Master);
+                    memory.write8(crate::cache::CCR, 0x10 | control).unwrap();
+                    for offset in (0..32).step_by(16) {
+                        memory.fetch16(HIGH_WRAM + offset).unwrap();
+                    }
+                    m.bus.cpu_delay(Processor::Master, 0);
+                    m.cpu = Cpu::start(HIGH_WRAM, HIGH_WRAM + 0x80000);
+                    m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
+                    if live_sound {
+                        let sound = &mut m.bus.sound;
+                        sound.ram[..4].copy_from_slice(&0x1000u32.to_be_bytes());
+                        sound.ram[4..8].copy_from_slice(&0x100u32.to_be_bytes());
+                        sound.ram[0x100..0x104].copy_from_slice(&[0x4E, 0x71, 0x60, 0xFC]);
+                        sound.set_enabled(true).unwrap();
+                    }
+                    m
+                };
+                let (mut a, mut b) = (make(), make());
+                let mut mixed = 0;
+                let mut turns = 0;
+                while a.cpu.state().status == CpuStatus::Running {
+                    let fills = a.bus.cached_code_fills;
+                    let writes = a.bus.cached_stores;
+                    let count = a.try_cached_batch(128).unwrap();
+                    if count == 0 {
+                        a.step_inner_with_idle(true).unwrap();
+                    } else if a.bus.cached_code_fills > fills && a.bus.cached_stores > writes {
+                        mixed += 1;
+                    }
+                    while b.cpu.state().instructions < a.cpu.state().instructions {
+                        b.step().unwrap();
+                    }
+                    same(&mut a, &mut b);
+                    a.bus.cache[0]
+                        .borrow()
+                        .assert_same_contents(&b.bus.cache[0].borrow());
+                    a.bus.onchip[0].assert_cached_read_bus_matches(&b.bus.onchip[0]);
+                    assert_eq!(a.bus.instruction_word[0], b.bus.instruction_word[0]);
+                    assert_eq!(a.bus.external_owner, b.bus.external_owner);
+                    turns += 1;
+                    assert!(turns < 3000);
+                }
+                assert_eq!(a.cpu.state().r[1], source + 32 * stride);
+                assert_eq!(
+                    a.cpu.state().r[2],
+                    (destination | if bypass { 0x20000000 } else { 0 }) + 32 * stride
+                );
+                assert_eq!(a.cpu.state().r[3], 0);
+                assert!(
+                    mixed > 0,
+                    "fast={fast},stride={stride},narrow={narrow},overlap={overlap},bypass={bypass},control={control}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn self_modified_word_keeps_old_decode_then_refetches_new_cache_value() {
+    for fast in [false, true] {
+        for control in [1, 9] {
+            let make = || {
+                let mut words = vec![9; 21];
+                words[..7].copy_from_slice(&[0xD00F, 0xD110, 0xD210, 0x2101, 0xE701, 0x422B, 9]);
+                words[12..16].copy_from_slice(&[0x6873, 0xD20C, 0x412B, 9]);
+                words[20] = 0x001B;
+                let mut m = crate::scheduling_tests::cached_pair(&words, &[0xAFFE, 9]);
+                m.bus.set_slave_enabled(false);
+                m.bus.change_system_clock(fast);
+                for (offset, value) in [
+                    (64, 0x0000E777),
+                    (68, HIGH_WRAM + 8),
+                    (72, HIGH_WRAM + 24),
+                    (76, HIGH_WRAM + 40),
+                ] {
+                    m.bus.write32(HIGH_WRAM + offset, value).unwrap();
+                }
+                let mut memory = m.bus.for_cpu(Processor::Master);
+                memory.write8(crate::cache::CCR, 0x10 | control).unwrap();
+                for offset in (0..48).step_by(16) {
+                    memory.fetch16(HIGH_WRAM + offset).unwrap();
+                }
+                m.bus.cpu_delay(Processor::Master, 0);
+                m.cpu = Cpu::start(HIGH_WRAM, HIGH_WRAM + 0x1000);
+                m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
+                m
+            };
+            let (mut a, mut b) = (make(), make());
+            let mut mixed = 0;
+            let mut turns = 0;
+            while a.cpu.state().status == CpuStatus::Running {
+                let fills = a.bus.cached_code_fills;
+                let writes = a.bus.cached_stores;
+                let count = a.try_cached_batch(128).unwrap();
+                if count == 0 {
+                    a.step_inner_with_idle(true).unwrap();
+                } else if a.bus.cached_code_fills > fills && a.bus.cached_stores > writes {
+                    mixed += 1;
+                }
+                while b.cpu.state().instructions < a.cpu.state().instructions {
+                    b.step().unwrap();
+                }
+                same(&mut a, &mut b);
+                a.bus.cache[0]
+                    .borrow()
+                    .assert_same_contents(&b.bus.cache[0].borrow());
+                a.bus.onchip[0].assert_cached_read_bus_matches(&b.bus.onchip[0]);
+                turns += 1;
+                assert!(turns < 1000);
+            }
+            assert!(mixed > 0);
+            assert_eq!(
+                a.cpu.state().r[8],
+                1,
+                "the already decoded word must remain old"
+            );
+            assert_eq!(
+                a.cpu.state().r[7],
+                0x77,
+                "redirect must fetch the updated cache word"
+            );
+            assert_eq!(a.bus.read16(HIGH_WRAM + 8), Ok(0xE777));
+        }
+    }
+}
+
+#[test]
+fn self_modified_cold_target_refills_after_the_buffered_write() {
+    for fast in [false, true] {
+        for control in [1, 9] {
+            let make = || {
+                let mut words = vec![9; 18];
+                words[..5].copy_from_slice(&[0xD00F, 0xD110, 0x2101, 0x412B, 9]);
+                words[16..18].copy_from_slice(&[0xE701, 0x001B]);
+                let mut m = crate::scheduling_tests::cached_pair(&words, &[0xAFFE, 9]);
+                m.bus.set_slave_enabled(false);
+                m.bus.change_system_clock(fast);
+                m.bus.write32(HIGH_WRAM + 64, 0x0000E777).unwrap();
+                m.bus.write32(HIGH_WRAM + 68, HIGH_WRAM + 32).unwrap();
+                let mut memory = m.bus.for_cpu(Processor::Master);
+                memory.write8(crate::cache::CCR, 0x10 | control).unwrap();
+                memory.fetch16(HIGH_WRAM).unwrap();
+                m.bus.cpu_delay(Processor::Master, 0);
+                m.cpu = Cpu::start(HIGH_WRAM, HIGH_WRAM + 0x1000);
+                m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
+                assert!(!m.bus.cache[0].borrow().read_hit(HIGH_WRAM + 32));
+                m
+            };
+            let (mut a, mut b) = (make(), make());
+            let mut mixed = 0;
+            let mut turns = 0;
+            while a.cpu.state().status == CpuStatus::Running {
+                let fills = a.bus.cached_code_fills;
+                let writes = a.bus.cached_stores;
+                let count = a.try_cached_batch(128).unwrap();
+                if count == 0 {
+                    a.step_inner_with_idle(true).unwrap();
+                } else if a.bus.cached_code_fills > fills && a.bus.cached_stores > writes {
+                    mixed += 1;
+                }
+                while b.cpu.state().instructions < a.cpu.state().instructions {
+                    b.step().unwrap();
+                }
+                same(&mut a, &mut b);
+                a.bus.cache[0]
+                    .borrow()
+                    .assert_same_contents(&b.bus.cache[0].borrow());
+                a.bus.onchip[0].assert_cached_read_bus_matches(&b.bus.onchip[0]);
+                turns += 1;
+                assert!(turns < 1000);
+            }
+            assert!(mixed > 0);
+            assert_eq!(a.cpu.state().r[7], 0x77);
+            assert_eq!(a.bus.read16(HIGH_WRAM + 32), Ok(0xE777));
         }
     }
 }
