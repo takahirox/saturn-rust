@@ -1674,6 +1674,17 @@ impl Bus {
                 ((points.at(selected - 1) - self.main_clocks) as u32)
                     .saturating_sub(self.pending_main_clocks),
             );
+            // Independent SCSP work still executes. Before the existing lower
+            // bound on the first possible control write/reset, lookahead cannot
+            // force selection behind the requested CPU retirement endpoint.
+            if checkpoint_sound && desired < self.sound.cached_cpu_deadline() {
+                checkpoint_sound = false;
+                #[cfg(test)]
+                {
+                    self.cached_sound_event_elisions +=
+                        u64::from(desired > 0 && desired >= self.sound.clocks_to_event());
+                }
+            }
             let (advanced, checkpoint) = if checkpoint_sound {
                 let (advanced, checkpoint) = self
                     .sound

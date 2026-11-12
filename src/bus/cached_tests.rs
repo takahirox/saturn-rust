@@ -114,6 +114,7 @@ fn polling_phase_templates_preserve_cpu_fields_audio_and_sound_control_edges() {
         &[0x33FC, 0x400, 0x10, 0x42A, 0x33FC, 0, 0x10, 0x42A, 0x60EE],
         &[0x4E70, 0x4E71, 0x60FA],
     ];
+    let mut event_elisions = 0;
     for fast in [false, true] {
         for &program in programs {
             let (mut optimized, mut reference) = pair(&bytes);
@@ -163,6 +164,7 @@ fn polling_phase_templates_preserve_cpu_fields_audio_and_sound_control_edges() {
                     m.bus.scu.write32(SCU + 0xA4, !(1 << 6)).unwrap();
                 }
             }
+            event_elisions += optimized.bus.cached_sound_event_elisions;
             if program == programs[1] {
                 assert!(heard);
             }
@@ -173,6 +175,7 @@ fn polling_phase_templates_preserve_cpu_fields_audio_and_sound_control_edges() {
             assert!(optimized.cached_poll_prefixes > 0);
         }
     }
+    assert!(event_elisions > 0, "elision must cross a real sound event");
 }
 
 #[test]
