@@ -243,7 +243,7 @@ impl Vdp2 {
     }
     pub(crate) fn begin_scanline(&mut self, line: usize) {
         if self.display_fetch.borrow().prepared_line != Some(line) {
-            *self.display_fetch.get_mut() = fetch::DisplayFetch::default();
+            self.display_fetch.get_mut().reset();
         }
         self.scan_x = 0;
         self.scan_history = [[0; 3]; 2];

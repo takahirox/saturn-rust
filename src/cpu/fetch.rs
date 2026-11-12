@@ -63,6 +63,22 @@ impl Fetch {
         self.decode_ready = ready;
     }
 
+    pub fn same_shifted(&self, prior: &Self, elapsed: u64) -> bool {
+        let Self {
+            decoded,
+            fetched,
+            decode_ready,
+        } = self;
+        *decoded == prior.decoded
+            && *fetched == prior.fetched
+            && *decode_ready
+                == if prior.decode_ready == 0 {
+                    0
+                } else {
+                    prior.decode_ready + elapsed
+                }
+    }
+
     pub fn shift_cached_clock(&mut self, clocks: u64) {
         if self.decode_ready != 0 {
             self.decode_ready += clocks;

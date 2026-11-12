@@ -651,11 +651,78 @@ impl Cpu {
         self.execution_clock = self.execution_clock.map(|at| at + clocks);
     }
     pub(crate) fn same_cached_cycle_origin(&self, prior: &Self, elapsed: u64) -> bool {
-        let mut expected = prior.clone();
-        expected.state.instructions = self.state.instructions;
-        expected.multiplier.clock = self.multiplier.clock;
-        expected.shift_cached_clock(elapsed);
-        expected == *self
+        // Exhaustive destructuring makes new CPU fields a compile-time review
+        // requirement. Only the two cumulative counters are intentionally free.
+        let Self {
+            state,
+            interrupt_inhibited,
+            address_error_inhibited,
+            last_clocks,
+            load_pipeline,
+            multiplier,
+            fetch,
+            execution_clock,
+        } = self;
+        let CpuState {
+            r,
+            pc,
+            sr,
+            pr,
+            gbr,
+            vbr,
+            mach,
+            macl,
+            instructions: _,
+            delay_target,
+            exceptions,
+            last_exception,
+            address_error_pending,
+            status,
+        } = state;
+        let same = *interrupt_inhibited == prior.interrupt_inhibited
+            && *address_error_inhibited == prior.address_error_inhibited
+            && *last_clocks == prior.last_clocks
+            && (r, pc, sr, pr, gbr, vbr, mach, macl)
+                == (
+                    &prior.state.r,
+                    &prior.state.pc,
+                    &prior.state.sr,
+                    &prior.state.pr,
+                    &prior.state.gbr,
+                    &prior.state.vbr,
+                    &prior.state.mach,
+                    &prior.state.macl,
+                )
+            && (
+                delay_target,
+                exceptions,
+                last_exception,
+                address_error_pending,
+                status,
+            ) == (
+                &prior.state.delay_target,
+                &prior.state.exceptions,
+                &prior.state.last_exception,
+                &prior.state.address_error_pending,
+                &prior.state.status,
+            )
+            && load_pipeline.same_shifted(&prior.load_pipeline, elapsed)
+            && multiplier.same_ready(&prior.multiplier)
+            && fetch.same_shifted(&prior.fetch, elapsed)
+            && *execution_clock == prior.execution_clock.map(|at| at + elapsed);
+        #[cfg(test)]
+        {
+            let mut expected = prior.clone();
+            expected.state.instructions = self.state.instructions;
+            expected.multiplier.clock = self.multiplier.clock;
+            expected.shift_cached_clock(elapsed);
+            assert_eq!(
+                same,
+                expected == *self,
+                "borrowed comparison disagrees with full shifted CPU"
+            );
+        }
+        same
     }
     pub(crate) fn cached_local_clock(&self) -> u64 {
         self.multiplier.clock

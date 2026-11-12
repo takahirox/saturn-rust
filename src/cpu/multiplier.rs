@@ -34,6 +34,11 @@ impl Access {
 }
 
 impl Multiplier {
+    pub fn same_ready(&self, prior: &Self) -> bool {
+        let Self { ready, clock: _ } = self;
+        *ready == prior.ready
+    }
+
     pub fn access(&self, op: u16, successor: u32, now: u64, fetch: bool) -> Option<(Access, u32)> {
         let word = matches!(op & 0xF00F, 0x200E | 0x200F);
         let long = matches!(op & 0xF00F, 0x0007 | 0x3005 | 0x300D);
