@@ -2,18 +2,18 @@
 
 An independently implemented Rust SH-2 interpreter and minimal Saturn devices,
 compiled to WebAssembly. The browser opens as a **Saturn Disc Player** with an
-empty display and a visible four-step setup:
+empty display and a visible three-step setup:
 
 1. Select your authorized disc: a supported self-contained CHD v5 CD-ROM, a
    cooked ISO, or a CUE together with all referenced BINARY tracks. Use the file
    picker or drop the files onto **Select disc**. A lone raw BIN needs its CUE.
    A disc is required in HLE disc mode and optional in user-BIOS mode.
-2. Optionally add a local raw 512 KiB BIOS. HLE does not use this file.
-3. Choose **BIOS-less HLE disc** or **User-provided BIOS**. BIOS mode requires the
-   firmware, can start without a disc, and never falls back to HLE. Switching
-   between these modes retains loaded files, cancels pending reads and pauses
-   playback.
-4. Press **Start** once the required inputs have loaded and validated.
+2. Optionally add a local raw 512 KiB BIOS. A valid BIOS automatically selects
+   **User-provided BIOS**, with or without a disc. Without a BIOS, a disc uses
+   **BIOS-less HLE**. Pending, invalid or failed BIOS reads block startup;
+   firmware failures never fall back to HLE. **Clear BIOS** returns to disc HLE
+   while retaining the disc. Changing either selection stops playback.
+3. Press **Start** once the selected files have loaded and validated.
 
 Open **https://takahirox.github.io/saturn-rust/** for the player. No bundled game
 is selected or downloaded automatically. This UI does not expand emulator
@@ -56,11 +56,11 @@ through the bounded WebAudio consumer; no soundtrack is supplied by the UI.
 - [Redistribution/provenance audit](docs/homebrew-provenance.md)
 - [Play/Debug validation and pending deployment verification](docs/validation-issue-9.md)
 
-Use **Select disc** and **BIOS-less HLE disc** to load one supported
+Use **Select disc** to load one supported
 self-contained CHD v5 CD-ROM, one cooked ISO, or one CUE
 with its referenced BINARY tracks selected together. Ordinary discs need no
-emulator-specific sidecar, extracted executable or per-title metadata. Firmware
-is optional in HLE mode and supplied locally in BIOS mode. See the
+emulator-specific sidecar, extracted executable or per-title metadata. Adding
+local firmware automatically switches to BIOS boot. See the
 [media formats, codec/size limits and diagnostic SRW1 exception](docs/media.md)
 and [sector-addressed boot contract](docs/architecture.md#disc-and-bios-less-hle-boot).
 Image mounting alone does not establish commercial-game compatibility.

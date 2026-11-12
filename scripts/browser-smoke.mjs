@@ -148,7 +148,6 @@ try {
           await timings.instrument(fresh);
           await fresh.locator("#view-debug").click();
           await fresh.locator("#settings > summary").click();
-          await fresh.locator("#mode").selectOption("bios");
           await scenarios[name](fresh);
           assert.deepEqual(errors, [], `${name}: unhandled page error`);
           await timings.wasmReport();
@@ -200,7 +199,6 @@ try {
       assert.equal(layout.pixels, "pixelated");
       const controls = isPlay ? ["view-debug", "start", "restart", "fullscreen"] : ["view-play", "step", "run", "reset", "frame", "count"];
       if (isPlay && !(await page.locator("#start").isVisible())) controls.splice(controls.indexOf("start"), 1);
-      if (await page.locator("#mode").isVisible()) controls.push("mode");
       for (const id of ["disc", "bios"]) if (await page.locator(`#${id}`).isVisible()) controls.push(id);
       for (const id of controls) {
         const control = page.locator(`#${id}`);
@@ -245,7 +243,7 @@ try {
   assert.equal(await page.locator("#settings").getAttribute("open"), null);
   assert.equal(await page.locator("#registers tr").count(), 0);
   assert.equal(await page.title(), "Saturn Disc Player");
-  assert.equal(await page.locator("#mode").inputValue(), "disc");
+  assert.equal(await page.locator("#mode").count(), 0);
   assert(await page.locator("#empty-state").isVisible());
   assert(await page.locator("#start").isDisabled());
   assert(await page.locator("#pause").isHidden());
@@ -257,7 +255,7 @@ try {
   await settings.focus();
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.getElementById("settings").open);
-  await page.locator("#mode").focus();
+  await page.locator("#bios").focus();
   await page.keyboard.press("Tab");
   assert.deepEqual(await machine(), initialMachine);
   await settings.focus();
@@ -300,10 +298,6 @@ try {
   await page.locator("#step").click();
   assert.equal(await value("delay"), "none");
   assert.equal(await value("pc"), "0x0600000E");
-  await page.locator("#mode").selectOption("bios");
-  assert.equal(await value("active-mode"), "User-provided BIOS");
-  assert.match(await value("error"), /512 KiB/);
-  assert.equal(await page.locator("#step").isDisabled(), true);
   await page.locator("#bios").setInputFiles({ name: "invalid.bin", mimeType: "application/octet-stream", buffer: Buffer.from([1]) });
   assert.match(await value("error"), /received 1 bytes/);
   const bios = Buffer.alloc(524288);
@@ -2770,11 +2764,10 @@ try {
   await page.locator("#bios").setInputFiles({ name: "wrong.bin", mimeType: "application/octet-stream", buffer: Buffer.from([0, 0]) });
   assert.equal(await value("pc"), "0x00000000");
   assert.equal(await page.locator("#step").isDisabled(), true);
-  await page.locator("#mode").selectOption("hle");
+  await page.locator("#fixture").click();
   assert.equal(await value("error"), "");
   assert.equal(await value("pc"), "0x06000000");
-  // An asynchronous file read finishing after a mode switch must not revive ROM.
-  await page.locator("#mode").selectOption("bios");
+  // An asynchronous file read finishing after loading the Debug fixture must not revive ROM.
   await page.evaluate(() => {
     const original = File.prototype.arrayBuffer;
     File.prototype.arrayBuffer = function () {
@@ -2797,7 +2790,7 @@ try {
   assert.equal(await value("pc"), "0x00000000");
   assert.equal(await page.locator("#step").isDisabled(), true);
   await page.locator("#bios").setInputFiles({ name: "delayed-again.bin", mimeType: "application/octet-stream", buffer: bios });
-  await page.locator("#mode").selectOption("hle");
+  await page.locator("#fixture").click();
   await page.evaluate(async () => { await window.finishBiosRead(); window.restoreFileRead(); });
   assert.equal(await value("active-mode"), "HLE bootstrap prototype");
   assert.equal(await value("pc"), "0x06000000");
@@ -2817,7 +2810,7 @@ try {
   await context.setOffline(false);
   await settings.click();
   await showView("play");
-  await page.locator("#mode").selectOption("disc");
+  await page.locator("#bios").setInputFiles([]);
   await page.evaluate(() => {
     const original = File.prototype.arrayBuffer;
     File.prototype.arrayBuffer = function () {
@@ -2830,7 +2823,7 @@ try {
   assert.match(await value("player-status"), /Loading image/);
   assert(await page.locator("#start").isDisabled());
   await settings.click();
-  await page.locator("#mode").focus();
+  await page.locator("#bios").focus();
   await settings.click();
   await showView("debug");
   await showView("play");
@@ -3077,7 +3070,7 @@ try {
   assert.equal(await value("pc"), "0x00000000");
   await page.locator("#disc").setInputFiles({name:"raw.bin", mimeType:"application/octet-stream", buffer:Buffer.alloc(2352)});
   assert.match(await value("error"), /2048-byte-sector ISO/);
-  // A disc read finishing after changing modes must not revive the old game.
+  // A disc read finishing after loading the Debug fixture must not revive the old game.
   await page.evaluate(() => {
     const original = File.prototype.arrayBuffer;
     File.prototype.arrayBuffer = function () {
@@ -3088,7 +3081,7 @@ try {
   });
   await page.locator("#disc").setInputFiles({name:"delayed.iso", mimeType:"application/octet-stream", buffer:disc});
   await page.waitForFunction(() => typeof window.finishDiscRead === "function");
-  await page.locator("#mode").selectOption("hle");
+  await page.locator("#fixture").click();
   await page.evaluate(async () => { await window.finishDiscRead(); window.restoreDiscRead(); });
   assert.equal(await value("active-mode"), "HLE bootstrap prototype");
   assert.equal(await value("pc"), "0x06000000");
@@ -3141,7 +3134,7 @@ try {
   await page.evaluate(async () => { await window.finishBackupRead(); });
   assert.deepEqual(Buffer.from(await backup()), backupBytes);
   await page.locator("#backup-import").setInputFiles(replacement);
-  await page.locator("#mode").selectOption("bios");
+  await page.locator("#bios").setInputFiles({name:"invalid.bin", mimeType:"application/octet-stream", buffer:Buffer.alloc(1)});
   await page.evaluate(async () => { await window.finishBackupRead(); window.restoreBackupRead(); });
   assert.match(await value("backup-status"), /cancelled by boot change/);
   assert.deepEqual(Buffer.from(await backup()), backupBytes);
@@ -3171,7 +3164,7 @@ try {
   backupDisc.writeUInt32BE(0x50, 0xF4);
   backupDisc.writeUInt32LE(0x50, 20 * 2048 + 68 + 10);
   backupDisc.writeUInt32BE(0x50, 20 * 2048 + 68 + 14);
-  await page.locator("#mode").selectOption("disc");
+  await page.locator("#bios").setInputFiles([]);
   await page.locator("#disc").setInputFiles({name:"original-backup-pad-test.iso", mimeType:"application/octet-stream", buffer:backupDisc});
   await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
   const samplePad = () => page.evaluate(async () => {
@@ -3338,7 +3331,6 @@ try {
   await lab.waitForFunction(() => document.getElementById("status").textContent === "Ready");
   await lab.locator("#view-debug").click();
   await lab.locator("#settings > summary").click();
-  await lab.selectOption("#mode", "disc");
   const labIso = await readFile("web/hardware-lab.iso");
   const labAudio = await readFile("web/hardware-lab-audio.bin");
   const labCue = await readFile("web/hardware-lab.cue");
