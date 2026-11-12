@@ -13,11 +13,7 @@ use crate::cpu::{Cpu, CpuStatus};
 /// publishes a proven microstate after Master yields or after one ordinary peer issue.
 pub(crate) enum PeerSchedule<'a> {
     Retired(&'a PollCycle),
-    Pending {
-        mask: u32,
-        span: u32,
-        template: &'a super::private_poll::Template,
-    },
+    Pending { mask: u32, span: u32 },
 }
 impl PeerSchedule<'_> {
     fn mask(&self) -> u32 {
@@ -32,14 +28,10 @@ impl PeerSchedule<'_> {
             Self::Pending { span, .. } => *span,
         }
     }
-    fn permits(&self, elapsed: u64, master_waiting: bool) -> bool {
+    fn permits(&self, elapsed: u64) -> bool {
         match self {
             Self::Retired(cycle) => cycle.can_retire_at(elapsed),
-            Self::Pending { span, template, .. } => {
-                elapsed != 0
-                    && elapsed <= u64::from(*span)
-                    && (master_waiting || template.issue_count_at(elapsed) <= 1)
-            }
+            Self::Pending { span, .. } => elapsed != 0 && elapsed <= u64::from(*span),
         }
     }
 }
@@ -83,7 +75,6 @@ struct CycleAnchor {
 #[derive(Clone, Copy)]
 pub(super) struct Retirement {
     at: u64,
-    ready: u64,
 }
 #[derive(Default)]
 struct Retirements {
@@ -109,7 +100,6 @@ impl Retirements {
                 let shift = period * (1 + relative / n) as u64;
                 return Retirement {
                     at: point.at + shift,
-                    ready: point.ready + shift,
                 };
             }
             return self.points[index - n * copies];
@@ -140,7 +130,7 @@ impl Retirements {
             .rev()
             .find(|&i| {
                 let clocks = self.at(i) - origin;
-                poll.permits(clocks, self.point(i).ready > self.at(i))
+                poll.permits(clocks)
             })
             .map_or(0, |i| i + 1)
     }
@@ -1469,9 +1459,9 @@ impl Bus {
                     memory.clock.set(ready);
                     retired += scalar_count;
                     if track_retirements {
-                        points.points.extend(
-                            (scalar_start..=retired_at).map(|at| Retirement { at, ready: at + 1 }),
-                        );
+                        points
+                            .points
+                            .extend((scalar_start..=retired_at).map(|at| Retirement { at }));
                         points.last_reference = self.system_clock.deadline(
                             ((retired_at - self.main_clocks) as u32)
                                 .saturating_sub(self.pending_main_clocks),
@@ -1524,7 +1514,7 @@ impl Bus {
                     memory.clock.set(ready.min(end));
                     retired += 1;
                     if track_retirements {
-                        points.points.push(Retirement { at, ready });
+                        points.points.push(Retirement { at });
                         points.last_reference = reference;
                     }
                     continue;
@@ -1595,7 +1585,7 @@ impl Bus {
                 + u64::from(cpu.last_clocks().max(1)))
             .max(memory.clock.get());
             if track_retirements {
-                points.points.push(Retirement { at, ready });
+                points.points.push(Retirement { at });
             }
             memory.clock.set(ready.min(end));
             retired += 1;

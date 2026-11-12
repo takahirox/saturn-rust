@@ -353,9 +353,7 @@ fn disabled_peer_deadlines_do_not_limit_the_running_master() {
 #[test]
 fn compressed_retirement_cycles_preserve_every_sound_cutoff_position() {
     let mut points = Retirements {
-        points: [5, 9, 11, 14]
-            .map(|at| Retirement { at, ready: at + 1 })
-            .to_vec(),
+        points: [5, 9, 11, 14].map(|at| Retirement { at }).to_vec(),
         repeated: Some((4, 3, 9, 7)),
         last_reference: 0,
     };
@@ -363,9 +361,7 @@ fn compressed_retirement_cycles_preserve_every_sound_cutoff_position() {
     for cycle in 1..=7 {
         literal.extend([9, 11, 14].map(|at| at + cycle * 9));
     }
-    points
-        .points
-        .extend([79, 80].map(|at| Retirement { at, ready: at + 1 }));
+    points.points.extend([79, 80].map(|at| Retirement { at }));
     literal.extend([79, 80]);
     assert_eq!(points.len(), literal.len());
     assert_eq!(points.last(), 80);
@@ -2104,7 +2100,7 @@ fn uncached_work_ram_reads_preserve_width_order_and_external_changes() {
 }
 
 #[test]
-fn private_peer_single_issue_boundary_preserves_master_retirement_clocks() {
+fn private_peer_partial_issue_boundaries_preserve_master_retirement_clocks() {
     for fast in [false, true] {
         let make = |offset: usize| {
             let source = HIGH_WRAM + 0x2000;
@@ -2187,6 +2183,7 @@ fn private_peer_single_issue_boundary_preserves_master_retirement_clocks() {
             }
         }
         assert!(optimized.bus.cached_private_single_issue_endpoints > 0);
+        assert!(optimized.bus.cached_private_first_issue_endpoints > 0);
     }
 }
 
