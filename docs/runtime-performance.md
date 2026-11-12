@@ -2526,3 +2526,74 @@ No optional optimization switch, guest patch, frame skipping or relaxed clock
 model is introduced. Private firmware, media, opcode data and captures remain
 unpublished. **60 fields/s remains unmet**, as do the umbrella hardware and
 general firmware compatibility criteria. Related to #17.
+
+## Preserve Web animation pacing
+
+Resetting the animation clock to each accepted RAF timestamp discarded its
+fractional remainder. With rounded timestamps, a callback just before the
+16.667 ms threshold was repeatedly skipped. Keeping the phase, allowing 1 ms
+of timestamp rounding, and rebasing after a missed callback period using that
+same rounding boundary avoids the artificial limit. Each callback still advances at most one
+complete emulated field. A slow host does not accumulate a catch-up loop.
+Rebasing uses the same rounding boundary as admission, so residual phase cannot
+qualify a duplicate timestamp as another field.
+
+RAF supplies a timestamp to the callback, and high-resolution time may be
+coarsened or jittered by the browser. See the
+[HTML animation-frame algorithm](https://html.spec.whatwg.org/multipage/imagebitmap-and-animations.html#run-the-animation-frame-callbacks)
+and [High Resolution Time's coarsening algorithm](https://www.w3.org/TR/hr-time-3/#dfn-coarsen-time).
+The 1 ms allowance is a host presentation choice; hardware clocks and field
+contents are unchanged.
+
+An isolated Chrome check drove the actual app with three seconds of controlled
+callbacks and both 0.1 ms and 1 ms timestamp rounding:
+
+| Callback frequency | Previous presentation requests | Phase-preserving requests |
+| --- | ---: | ---: |
+| 60 Hz | 120 | 180 |
+| 120 Hz | 120 | 180 |
+| 144 Hz | 144 | 180 |
+
+The regression in the existing Play UI check uses the repository-authored
+BIOS-only guest and public Start/Pause/Resume controls. It initializes one real
+guest field, then counts presentation requests independently of core speed by
+replacing only that test instance's `advance_frame` method. Canvas, audio
+draining and status updates still run. Timer polling leaves the controlled RAF
+queue exclusively to the app. Coverage includes sustained 30 Hz callbacks,
+the frequencies above, pause/resume, a 500 ms stall, a duplicate after every
+ordinary callback as well as the stall, and
+the one-field-per-callback bound. These are scheduler results, **not evidence
+that a BIOS or game executes at real-time speed**.
+
+Local validation passes all 1,333 native tests in 111 groups, formatting/build,
+native all-target and Wasm Clippy with warnings denied, registered fixture
+reproduction, the complete 74-group production-Wasm browser suite with 48
+scheduler comparisons, and 13 runner tests. Browser-suite elapsed was 196,042 ms.
+The new pacing cases run within the existing Play UI group, including 90
+requests for three seconds of 30 Hz callbacks. Exact-head hosted CI and normal
+review remain required before merge; no post-merge verification is required.
+
+Further isolated core experiments retained matching paired CPU, cache, bus,
+audio and pixel checkpoints, but did not justify adoption. Each ratio below
+comes from its own four rotated 120-field game windows with Canvas; absolute
+rates from separate runs must not be combined.
+
+| Unselected core experiment | Game throughput change |
+| --- | ---: |
+| Prepare cold WRAM loads with physical refill timing | -0.62% |
+| Reuse the prepared refill protocol at actual MA | -0.27% |
+| Stop before replaying a provably rejected cold load | -0.48% |
+| Elide rollback copies for already accepted MOV stores | -2.12% |
+| Use explicit power-of-two tile-address shifts | -0.15% |
+| Publish only the latest transactional cache-set version | -1.13% |
+| Save only MOV-mutable CPU state for ordinary store rollback | +0.68% |
+
+The small positive result in the last row does not justify its additional undo
+API and maintenance. None of these trial executors, switches or diagnostics is
+included. The selected change affects only host animation pacing. The normal
+build's JS glue and Wasm remain byte-identical to the preceding selected build
+(`a1c02008624ea5361e69732660567205ec018f6d8d68b4d7bcf42282a82df24d`).
+Measured game throughput remains about 12.6 fields/s and menu throughput about
+27–28 fields/s on this host. **The real Web 60 fields/s objective remains unmet**;
+general firmware compatibility and the umbrella hardware criteria also remain
+unmet. Related to #17.
