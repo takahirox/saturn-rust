@@ -94,11 +94,12 @@ struct Code {
     touch: CacheTouch,
 }
 struct Phase {
+    issues: u8,
     state: State,
     keep: [u8; 64],
     value: [u8; 64],
 }
-struct Template {
+pub(crate) struct Template {
     initial: State,
     control: u8,
     status: u8,
@@ -141,9 +142,11 @@ impl Template {
                 machine.bus.private_code(code.address) == Some((code.bytes, code.touch))
             })
     }
-    fn publish(&self, machine: &mut Machine, elapsed: u64) {
-        let elapsed = elapsed as usize;
-        let (index, copies) = if elapsed < self.prefix + self.period {
+    pub(crate) fn issue_count_at(&self, elapsed: u64) -> u8 {
+        self.phases[self.position(elapsed as usize).0].issues
+    }
+    fn position(&self, elapsed: usize) -> (usize, usize) {
+        if elapsed < self.prefix + self.period {
             (elapsed, 0)
         } else {
             let relative = elapsed - self.prefix;
@@ -151,7 +154,11 @@ impl Template {
                 self.prefix + self.period + relative % self.period,
                 relative / self.period - 1,
             )
-        };
+        }
+    }
+    fn publish(&self, machine: &mut Machine, elapsed: u64) {
+        let elapsed = elapsed as usize;
+        let (index, copies) = self.position(elapsed);
         let phase = &self.phases[index];
         let first = &self.phases[self.prefix].state;
         let second = &self.phases[self.prefix + self.period].state;
@@ -262,6 +269,7 @@ impl Context {
         let span = span.min(128);
         let scratch = self.scratch.get_or_insert_with(|| Box::new(Machine::new()));
         let mut first = Vec::new();
+        let mut issue_counts = Vec::new();
         let mut code = Vec::new();
         let mut repetition = None;
         let mut ones = Vec::new();
@@ -275,6 +283,7 @@ impl Context {
             scratch.dma_errors = [false; 2];
             scratch.fault = None;
             for time in 0..=span as usize {
+                let mut issues = 0;
                 remember_code(scratch, &mut code)?;
                 for _ in 0..8 {
                     if scratch.cpu_ready[1] > scratch.bus.main_clocks {
@@ -283,6 +292,7 @@ impl Context {
                     if !private_instruction(&scratch.slave) {
                         return None;
                     }
+                    issues += 1;
                     scratch.issue_cpu_with_inline(Processor::Slave, true).ok()?;
                     remember_code(scratch, &mut code)?;
                 }
@@ -303,8 +313,12 @@ impl Context {
                             .map(|(index, _)| (index, time - index));
                     }
                     first.push(state);
+                    issue_counts.push(issues);
                 } else {
                     let phase = first.get(time)?;
+                    if issues != issue_counts[time] {
+                        return None;
+                    }
                     if state.cpu.state().instructions != phase.cpu.state().instructions
                         || !state.same_phase(phase)
                         || state.epoch != phase.epoch
@@ -336,10 +350,16 @@ impl Context {
         let phases = first
             .into_iter()
             .zip(ones)
-            .map(|(state, ones)| {
+            .zip(issue_counts)
+            .map(|((state, ones), issues)| {
                 let keep = std::array::from_fn(|i| state.replacement[i] ^ ones[i]);
                 let value = state.replacement;
-                Phase { state, keep, value }
+                Phase {
+                    issues,
+                    state,
+                    keep,
+                    value,
+                }
             })
             .collect();
         if self.templates.len() == 32 {
@@ -395,7 +415,11 @@ impl Machine {
             return Ok(0);
         };
         let mask = (self.slave.state().sr >> 4) & 15;
-        let poll = PeerSchedule::Pending { mask, span };
+        let poll = PeerSchedule::Pending {
+            mask,
+            span,
+            template: &context.templates[index],
+        };
         let saved = self.bus.take_private_transaction();
         let result =
             self.bus
@@ -414,6 +438,12 @@ impl Machine {
             }
         };
         drop(saved);
+        #[cfg(test)]
+        if batch.ready <= self.bus.main_clocks
+            && context.templates[index].issue_count_at(self.bus.main_clocks - now) == 1
+        {
+            self.bus.cached_private_single_issue_endpoints += 1;
+        }
         self.cpu = batch.cpu;
         context.templates[index].publish(self, self.bus.main_clocks - now);
         self.cpu_ready[0] = batch.ready;

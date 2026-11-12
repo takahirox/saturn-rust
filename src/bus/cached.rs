@@ -10,10 +10,14 @@ use crate::cache::CachedLines;
 use crate::cpu::{Cpu, CpuStatus};
 
 /// A ready peer publishes proven instruction retirements. A pending peer
-/// publishes a proven private microstate after the master has yielded issue.
+/// publishes a proven microstate after Master yields or after one ordinary peer issue.
 pub(crate) enum PeerSchedule<'a> {
     Retired(&'a PollCycle),
-    Pending { mask: u32, span: u32 },
+    Pending {
+        mask: u32,
+        span: u32,
+        template: &'a super::private_poll::Template,
+    },
 }
 impl PeerSchedule<'_> {
     fn mask(&self) -> u32 {
@@ -31,8 +35,10 @@ impl PeerSchedule<'_> {
     fn permits(&self, elapsed: u64, master_waiting: bool) -> bool {
         match self {
             Self::Retired(cycle) => cycle.can_retire_at(elapsed),
-            Self::Pending { span, .. } => {
-                elapsed != 0 && elapsed <= u64::from(*span) && master_waiting
+            Self::Pending { span, template, .. } => {
+                elapsed != 0
+                    && elapsed <= u64::from(*span)
+                    && (master_waiting || template.issue_count_at(elapsed) <= 1)
             }
         }
     }
