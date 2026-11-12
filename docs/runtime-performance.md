@@ -2146,3 +2146,68 @@ in a separate three-pair comparison. Its menu median changed from 24.876 to
 tag lookup reuse improved throughput by 1.6% in a five-way comparison. Those
 trials informed this smaller selected increment. The measured game window still needs approximately
 6× further throughput to reach 60 fields/s.
+
+
+## Publish the first private peer issue at a ready Master endpoint (2026-11-12)
+
+Related to #17. The default Web field runner now retains the Slave state after
+its first issue attempt and bus grant when a proven clock phase needs further
+zero-time attempts. If Master can issue again immediately, publication selects
+that first state, matching one ordinary shared issue boundary. If Master is
+waiting, publication selects the complete phase. Both publications validate CPU,
+pipeline, transaction, FTCSR observation and epoch under both LRU seeds. Their
+replacement masks retain the initial replacement bits that ordinary execution
+would preserve. Existing code, interrupt, reset, DMA, sound and raster guards
+still bound reuse and publication.
+
+This removes the prior restriction that an immediately ready Master endpoint
+must have at most one total due Slave attempt. The pending-peer schedule no
+longer needs the proof pointer or a per-retirement readiness value. Retirement
+positions, compressed periods and sound-prefix selection retain their existing
+clock positions.
+
+The original cached-load boundary regression now requires actual publication of
+the first state from a phase with additional due attempts. It compares 512
+boundaries at two initial phases, two complete fields against ordinary replay,
+both PLL settings and full CPU/cache/BSC state. The inherited strobe matrix also
+checks successful capture-register byte accesses and FTCSR ordering. An isolated
+negative control that always publishes the completed phase fails the boundary
+comparison: Slave readiness is incorrectly left at `u64::MAX` instead of the
+current issue clock. The source was restored before the final build.
+
+Chrome 157.0.8103.39 presented every field to Canvas. Three rotated game
+comparisons and three alternating menu comparisons used the ordinary local file
+pickers and matched input. No other local build, test or warm-up ran during the
+timed intervals. Each timed endpoint matched exposed CPU/sound state, clocks,
+counts and Canvas pixels. Extended checks matched fields 1500, 1800, 2100, 2400,
+2824 and 3252, and all three reference PNG captures matched byte for byte.
+
+| Workload | Previous default fields/s | Partial peer fields/s | Median p95 field time |
+| --- | ---: | ---: | ---: |
+| Local Machi Disc 1, fields 1200–1380 | 9.637 | 10.022 | 148.0 → 144.5 ms |
+| Local BIOS menu, fields 1200–1560 | 25.266 | 25.289 | 65.9 → 66.3 ms |
+
+Game median throughput improved 4.0%, with a 3.7% improvement across combined
+measured time. Menu combined throughput changed by +0.3%. A preliminary version
+retaining the now-unused scheduling metadata measured a 4.6% combined game gain
+in the same rotated comparison; the smaller representation was selected. The
+selected module SHA-256 is
+`b5a8bee5d7fbdbb5c16cb330dd1fe1c891dcc6d8cf26d96b828f9a929552d9e5`.
+The standard public build is byte-identical to the measured module.
+
+The native suite passed 1,323 tests in 111 groups. Formatting, native/Wasm Clippy,
+native build and fixture reproduction passed. All 74 production-Wasm browser
+groups, all 48 scheduler comparisons and 13 browser-runner checks passed.
+Exact-head hosted validation is recorded in the associated PR.
+
+60 fields/s remains unmet; this measured game scene still needs approximately
+6× additional throughput. A fresh profile of the preceding default module puts
+51.2% of samples inside cached-burst execution, including its callees, and 22.3%
+in that function itself. Further work targets repeated setup, state copies and
+execution dispatch. QEMU describes direct block chaining to avoid repeated main
+loop dispatch and precise per-instruction state restoration. Its instruction
+counting documentation also separates timer budgets from cycle-accurate timing
+and handles I/O with short blocks. Those techniques inform further trials;
+Saturn's bus and pipeline timing remain part of every comparison.
+[QEMU translator internals](https://www.qemu.org/docs/master/devel/tcg.html),
+[QEMU instruction counting](https://www.qemu.org/docs/master/devel/tcg-icount.html).

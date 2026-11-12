@@ -329,6 +329,8 @@ pub struct Bus {
     #[cfg(test)]
     cached_private_single_issue_endpoints: u64,
     #[cfg(test)]
+    cached_private_first_issue_endpoints: u64,
+    #[cfg(test)]
     cached_code_fills: u64,
     #[cfg(test)]
     cached_wb_scalars: u64,
@@ -396,6 +398,8 @@ impl Default for Bus {
             cached_read_beats: 0,
             #[cfg(test)]
             cached_private_single_issue_endpoints: 0,
+            #[cfg(test)]
+            cached_private_first_issue_endpoints: 0,
             #[cfg(test)]
             cached_code_fills: 0,
             #[cfg(test)]
