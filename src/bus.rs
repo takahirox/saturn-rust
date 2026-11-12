@@ -2365,13 +2365,12 @@ mod scu_timing_tests {
     fn user_breaks_distinguish_cached_cpu_accesses_from_external_bus_transactions() {
         let mut bus = Bus::default();
         // H §6.3.4: external masters have no operand-size qualification.
-        for index in 0..2 {
-            bus.onchip[index].write32(0xFFFF_FF40, HIGH_WRAM).unwrap();
-            bus.onchip[index]
-                .write16(0xFFFF_FF48, if index == 0 { 0x67 } else { 0xA5 })
+        for (index, chip) in bus.onchip.iter_mut().enumerate() {
+            chip.write32(0xFFFF_FF40, HIGH_WRAM).unwrap();
+            chip.write16(0xFFFF_FF48, if index == 0 { 0x67 } else { 0xA5 })
                 .unwrap();
-            bus.onchip[index].write16(0xFFFF_FF78, 0x3000).unwrap();
-            bus.onchip[index].read16(0xFFFF_FF78).unwrap();
+            chip.write16(0xFFFF_FF78, 0x3000).unwrap();
+            chip.read16(0xFFFF_FF78).unwrap();
         }
         bus.write32(HIGH_WRAM, 0x12345678).unwrap();
         bus.for_cpu(Processor::Master).write8(CCR, 1).unwrap();

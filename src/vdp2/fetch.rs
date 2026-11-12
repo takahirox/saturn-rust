@@ -7,6 +7,14 @@ use std::{cell::Cell, num::NonZeroU8};
 
 pub(super) type NormalSample = (usize, usize, usize, u16, u16);
 type PlannedSample = (NormalSample, (usize, usize));
+pub(super) type LinearName = (usize, [u16; 2]);
+#[derive(Clone, Copy)]
+struct LinearTile {
+    start: usize,
+    end: usize,
+    y: usize,
+    reverse: bool,
+}
 
 type Words = [Option<(usize, u16)>; 2];
 
@@ -31,6 +39,9 @@ pub(crate) struct DisplayFetch {
     pixels: Vec<[[Option<CapturedWords>; 3]; 6]>,
     samples: Vec<[Option<NormalSample>; 4]>,
     planned_samples: Vec<[Option<PlannedSample>; 4]>,
+    linear_tiles: [Option<LinearTile>; 4],
+    #[cfg(test)]
+    linear_tile_hits: u64,
     #[cfg(test)]
     literal_addresses: bool,
     #[cfg(test)]
@@ -74,8 +85,8 @@ pub(crate) struct DisplayRead {
     pub words: [u16; 2],
 }
 
-#[derive(Clone, Copy)]
-#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
 struct CapturedWords {
     address: usize,
     bytes: NonZeroU8,
@@ -233,8 +244,118 @@ impl Vdp2 {
             fetch.planned_samples[pixel][layer] = Some((sample, group));
         }
     }
+    pub(super) fn linear_tile_sample(
+        &self,
+        layer: usize,
+        x: usize,
+        y: usize,
+    ) -> Option<NormalSample> {
+        #[cfg(test)]
+        if self.disable_linear_tiles {
+            return None;
+        }
+        if !self.beam_rendering {
+            return None;
+        }
+        let mut fetch = self.display_fetch.borrow_mut();
+        #[cfg(test)]
+        if fetch.literal_addresses {
+            return None;
+        }
+        if !self.beam_rendering || !fetch.planning || fetch.rotation.get() {
+            return None;
+        }
+        let plan = fetch.linear_tiles[layer]?;
+        if x < plan.start || x >= plan.end || y != plan.y {
+            return None;
+        }
+        let (mut sample, group) = fetch.planned_samples.get(plan.start)?[layer]?;
+        let held = fetch.pixels.get(plan.start)?[layer][0]?;
+        // Historical per-dot names win over a later port value. A dot with
+        // no capture may inherit only the currently retained physical word.
+        if let Some(current) = fetch.pixels.get(x)?[layer][0] {
+            if current != held {
+                return None;
+            }
+        } else if !fetch.retained[layer][0].is_some_and(|v| v.group == group && v.data == held) {
+            return None;
+        }
+        let delta = x - plan.start;
+        sample.1 = if plan.reverse {
+            sample.1 - delta
+        } else {
+            sample.1 + delta
+        };
+        fetch.pixels[x][layer][0] = Some(held);
+        fetch.group = group;
+        fetch.planned_samples[x][layer] = Some((sample, group));
+        #[cfg(test)]
+        {
+            fetch.linear_tile_hits += 1;
+        }
+        Some(sample)
+    }
+    // ST-058 figures 4.9/4.10: within an eight-source-dot character cell,
+    // the resolved name/base stay fixed and horizontal flip reverses the dot.
+    pub(super) fn plan_linear_tile(
+        &self,
+        layer: usize,
+        x: usize,
+        y: usize,
+        sx: usize,
+        sample: NormalSample,
+        name: Option<LinearName>,
+    ) {
+        #[cfg(test)]
+        if self.disable_linear_tiles {
+            return;
+        }
+        if !self.beam_rendering || self.word(0) & 6 != 0 || self.word(0x22) & (1 << layer) != 0 {
+            return;
+        }
+        if layer < 2
+            && (self.character_control(layer).0 & 2 != 0
+                || self.word(0x9A) >> (layer * 8) & 15 != 0
+                || self.long(0x78 + layer * 0x10) & 0x7FF00 != 0x10000)
+        {
+            return;
+        }
+        let mut fetch = self.display_fetch.borrow_mut();
+        #[cfg(test)]
+        if fetch.literal_addresses {
+            return;
+        }
+        if !self.beam_rendering || !fetch.planning || fetch.rotation.get() || x != fetch.pixel {
+            return;
+        }
+        // A mode change can mix an old first word with a newer second
+        // packet. Seed a cross-dot run only when the held packet represents
+        // both words actually consumed by the existing decoder.
+        if let Some((address, words)) = name {
+            let Some(packet) = fetch.pixels.get(x).and_then(|p| p[layer][0]) else {
+                return;
+            };
+            if packet.word(address) != Some(words[0]) || packet.word(address + 2) != Some(words[1])
+            {
+                return;
+            }
+        }
+        let source = sx & 7;
+        let dot = sample.1 & 7;
+        if dot != source && dot != 7 - source {
+            return;
+        }
+        fetch.linear_tiles[layer] = Some(LinearTile {
+            start: x,
+            end: x + 8 - source,
+            y,
+            reverse: dot != source,
+        });
+    }
+
     pub(super) fn invalidate_planned_samples(&mut self) {
         self.display_fetch.get_mut().planned_samples.fill([None; 4]);
+        self.display_fetch.get_mut().linear_tiles.fill(None);
     }
 
     pub(super) fn reconfigure_display(&mut self) {
@@ -714,6 +835,283 @@ mod tests {
     fn pixel(v: &Vdp2, x: usize, y: usize) -> [u8; 4] {
         let at = (y * 320 + x) * 4;
         v.scanning[at..at + 4].try_into().unwrap()
+    }
+
+    #[test]
+    fn unit_tile_runs_follow_independent_one_two_word_flip_and_subcell_pixels() {
+        let colors = [
+            (0x801Fu16, [255, 0, 0, 255]),
+            (0x83E0, [0, 255, 0, 255]),
+            (0xFC00, [0, 0, 255, 255]),
+            (0x83FF, [255, 255, 0, 255]),
+            (0xFC1F, [255, 0, 255, 255]),
+            (0xFFE0, [0, 255, 255, 255]),
+            (0xFFFF, [255, 255, 255, 255]),
+        ];
+        let mut hits = 0;
+        for one in [false, true] {
+            for large in [false, true] {
+                for flip in 0..4usize {
+                    for sx in [0, 3, 7] {
+                        for sy in [3, 11] {
+                            if !large && sy == 11 {
+                                continue;
+                            }
+                            let mut v = setup(0);
+                            for (at, value) in [
+                                (0xE, 0x300),
+                                (0x28, u16::from(large)),
+                                (0x30, if one { 0x8008 } else { 0 }),
+                                (0x10, 0x0FFF),
+                                (0x12, 0x0FFF),
+                                (0x18, 0x4FFF),
+                                (0x1A, 0x4FFF),
+                                (0x70, sx as u16),
+                                (0x74, sy as u16),
+                            ] {
+                                v.write16(VDP2 + at, value).unwrap();
+                            }
+                            let name_bytes = if one { 2 } else { 4 };
+                            for entry in 0..128 {
+                                let at = entry * name_bytes;
+                                let name = (flip as u16) << if one { 10 } else { 14 };
+                                v.vram[at..at + 2].copy_from_slice(&name.to_be_bytes());
+                                if !one {
+                                    v.vram[at + 2..at + 4]
+                                        .copy_from_slice(&0x2000u16.to_be_bytes());
+                                }
+                            }
+                            // Four original 8x8 characters form the documented 2x2 tile.
+                            // Each has a distinct diagonal seven-color pattern.
+                            for cell in 0..4 {
+                                for row in 0..8 {
+                                    for pair in 0..4 {
+                                        let a = (cell * 2 + row + pair * 2) % 7 + 1;
+                                        let b = (cell * 2 + row + pair * 2 + 1) % 7 + 1;
+                                        v.vram[0x40000 + cell * 32 + row * 4 + pair] =
+                                            ((a << 4) | b) as u8;
+                                    }
+                                }
+                            }
+                            for (i, (word, _)) in colors.iter().enumerate() {
+                                v.cram[(i + 1) * 2..(i + 2) * 2]
+                                    .copy_from_slice(&word.to_be_bytes());
+                            }
+                            v.begin_scanline(0);
+                            for phase in (0..96u32).step_by(4) {
+                                v.acquire_display(0, 0, phase, (phase as usize / 4) & 7);
+                            }
+                            v.scan_to(&Vdp1::default(), 0, 24);
+                            let size = if large { 16 } else { 8 };
+                            let mut y = sy % size;
+                            if flip & 2 != 0 {
+                                y = size - 1 - y;
+                            }
+                            for x in 0..24 {
+                                let mut source = (sx + x) % size;
+                                if flip & 1 != 0 {
+                                    source = size - 1 - source;
+                                }
+                                let cell = (y / 8) * 2 + source / 8;
+                                let index = (cell * 2 + y % 8 + source % 8) % 7;
+                                assert_eq!(
+                                    pixel(&v, x, 0),
+                                    colors[index].1,
+                                    "one={one},large={large},flip={flip},sx={sx},sy={sy},dot={x}"
+                                );
+                            }
+                            hits += v.display_fetch.borrow().linear_tile_hits;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            hits > 0,
+            "the independent pixel grid must execute tile-run reuse"
+        );
+    }
+
+    #[test]
+    fn tile_runs_require_current_group_and_value_before_filling_an_uncaptured_name() {
+        // ST-058 figures 4.9/4.10 and tables 3.2/3.3: per-dot names already
+        // captured remain historical; a new dot must consume its own group's
+        // current port value. These cases distinguish group and data identity.
+        for literal in [false, true] {
+            let acquire = |v: &mut Vdp2, phase: u32| {
+                v.acquire_display_paths(0, 0, phase, (phase as usize / 4) & 7, !literal)
+            };
+            for one_word in [false, true] {
+                for same_group in [false, true] {
+                    let mut v = setup(0);
+                    for (at, value) in [
+                        (0xE, 0x300),
+                        (0x28, if same_group { 0 } else { 1 }),
+                        (0x30, if one_word { 0x8008 } else { 0 }),
+                        (0x70, if same_group { 7 } else { 0 }),
+                        (0x10, if same_group { 0x0000 } else { 0x0FFF }),
+                        (0x12, 0xFFFF),
+                        (0x18, 0xFFFF),
+                        (0x1A, 0x4444),
+                    ] {
+                        v.write16(VDP2 + at, value).unwrap();
+                    }
+                    if one_word {
+                        v.vram[2..4].copy_from_slice(&1u16.to_be_bytes());
+                    } else {
+                        v.vram[2..4].copy_from_slice(&0x2000u16.to_be_bytes());
+                        v.vram[6..8].copy_from_slice(&0x2001u16.to_be_bytes());
+                    }
+                    v.vram[0x40000..0x40020].fill(0x11);
+                    v.vram[0x40020..0x40040].fill(0x22);
+                    v.vram[0x40040..0x40060].fill(0x33);
+                    v.vram[0x400A0..0x400C0].fill(0x33);
+                    v.begin_scanline(0);
+                    acquire(&mut v, 0);
+                    let start = if same_group {
+                        acquire(&mut v, 4);
+                        let (at, word) = if one_word { (2, 2u16) } else { (6, 0x2002) };
+                        v.vram[at..at + 2].copy_from_slice(&word.to_be_bytes());
+                        // Preserve old B names at dots 4..7 while reacquiring A.
+                        v.write16(VDP2 + 0x70, 4).unwrap();
+                        acquire(&mut v, 8);
+                        12
+                    } else {
+                        // A 16x16 tile shares its physical name across two eight-dot
+                        // groups. Matching data from group 0 cannot stand in for a new
+                        // group-1 read, which sees this changed character number.
+                        let (at, word) = if one_word { (0, 1u16) } else { (2, 0x2004) };
+                        v.vram[at..at + 2].copy_from_slice(&word.to_be_bytes());
+                        4
+                    };
+                    v.write16(VDP2 + 0x70, 5).unwrap();
+                    for phase in (start..=48u32).step_by(4) {
+                        acquire(&mut v, phase);
+                    }
+                    v.scan_to(&Vdp1::default(), 0, 11);
+                    for x in 0..11 {
+                        let expected = match x {
+                            0..=2 => [255, 0, 0, 255],
+                            3 if same_group => [0, 0, 255, 255],
+                            3..=7 => [0, 255, 0, 255],
+                            _ => [0, 0, 255, 255],
+                        };
+                        assert_eq!(
+                            pixel(&v, x, 0),
+                            expected,
+                            "literal={literal}, one_word={one_word}, same_group={same_group}, dot {x}"
+                        );
+                    }
+                    let reads: Vec<_> = v
+                        .display_fetch
+                        .borrow()
+                        .trace
+                        .iter()
+                        .map(|r| (r.phase, r.path, r.address))
+                        .collect();
+                    let name_bytes = if one_word { 2 } else { 4 };
+                    let expected = if same_group {
+                        vec![
+                            (0, 0, 0),
+                            (4, 0, name_bytes),
+                            (8, 0, 0),
+                            (12, 0, name_bytes),
+                            (16, 1, 0x40000),
+                            (20, 1, 0x40040),
+                            (24, 1, 0x40020),
+                            (32, 0, name_bytes * 2),
+                            (48, 1, 0x40040),
+                        ]
+                    } else {
+                        vec![
+                            (0, 0, 0),
+                            (16, 1, 0x40000),
+                            (20, 1, 0x40020),
+                            (32, 0, 0),
+                            (48, 1, 0x400A0),
+                        ]
+                    };
+                    assert_eq!(
+                        reads, expected,
+                        "literal={literal}, one_word={one_word}, same_group={same_group}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn one_to_two_word_mode_changes_do_not_spread_a_mixed_first_word_to_new_dots() {
+        for reference in [false, true] {
+            let acquire = |v: &mut Vdp2, phase: u32| {
+                v.acquire_display_paths(0, 0, phase, (phase as usize / 4) & 7, true)
+            };
+            let mut v = setup(0);
+            // The established per-dot plan owns the already decoded mixed
+            // name. Disable only cross-dot reuse for the reference: a fully
+            // literal re-decode would consume the lost first word a second time.
+            v.disable_linear_tiles = reference;
+            for (at, value) in [
+                (0xE, 0x300),
+                (0x28, 0),
+                (0x30, 0x8008),
+                (0x70, 13),
+                (0x10, 0x0000),
+                (0x12, 0xFFFF),
+                (0x18, 0xFFFF),
+                (0x1A, 0x4444),
+            ] {
+                v.write16(VDP2 + at, value).unwrap();
+            }
+            v.vram[2..4].copy_from_slice(&0u16.to_be_bytes());
+            v.vram[4..6].copy_from_slice(&1u16.to_be_bytes());
+            v.vram[0x40000..0x40020].fill(0x11);
+            for (index, color) in [(17usize, 0x83E0u16), (33, 0xFC00)] {
+                v.cram[index * 2..index * 2 + 2].copy_from_slice(&color.to_be_bytes());
+            }
+            v.begin_scanline(0);
+            acquire(&mut v, 0);
+            acquire(&mut v, 4);
+            // Old first-word captures at address 4 survive. The second word
+            // comes from a new packet at 6 after switching to two-word names.
+            for (at, word) in [(0usize, 0u16), (2, 0x2000), (4, 2), (6, 0x2000)] {
+                v.vram[at..at + 2].copy_from_slice(&word.to_be_bytes());
+            }
+            v.write16(VDP2 + 0x30, 0).unwrap();
+            v.write16(VDP2 + 0x70, 5).unwrap();
+            for phase in (8..=32u32).step_by(4) {
+                acquire(&mut v, phase);
+            }
+            v.scan_to(&Vdp1::default(), 0, 11);
+            for x in 0..11 {
+                let expected = match x {
+                    0..=2 => [255, 0, 0, 255],
+                    3..=7 => [0, 255, 0, 255],
+                    _ => [0, 0, 255, 255],
+                };
+                assert_eq!(pixel(&v, x, 0), expected, "reference={reference}, dot {x}");
+            }
+            let reads: Vec<_> = v
+                .display_fetch
+                .borrow()
+                .trace
+                .iter()
+                .map(|r| (r.phase, r.path, r.address))
+                .collect();
+            assert_eq!(
+                reads,
+                vec![
+                    (0, 0, 2),
+                    (4, 0, 4),
+                    (8, 0, 0),
+                    (12, 0, 6),
+                    (16, 1, 0x40000),
+                    (20, 1, 0x40000),
+                    (32, 0, 4)
+                ],
+                "reference={reference}"
+            );
+        }
     }
 
     #[test]

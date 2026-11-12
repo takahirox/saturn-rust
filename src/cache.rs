@@ -226,8 +226,12 @@ impl Cache {
         }
         let (set, tag, _) = Self::parts(address);
         let mut ways = 0;
-        for way in self.first_cache_way()..4 {
-            if self.lines[set][way].valid && self.lines[set][way].tag == tag {
+        for (way, line) in self.lines[set]
+            .iter()
+            .enumerate()
+            .skip(self.first_cache_way())
+        {
+            if line.valid && line.tag == tag {
                 ways |= 1 << way;
             }
         }

@@ -17,6 +17,8 @@ mod tables;
 
 pub const CRAM: u32 = 0x05F0_0000;
 pub struct Vdp2 {
+    #[cfg(test)]
+    disable_linear_tiles: bool,
     registers: [u8; 0x120],
     validated_pal: Cell<Option<bool>>,
     access_cache: RefCell<access::AccessCache>,
@@ -47,6 +49,8 @@ pub struct Vdp2 {
 impl Default for Vdp2 {
     fn default() -> Self {
         Self {
+            #[cfg(test)]
+            disable_linear_tiles: false,
             registers: [0; 0x120],
             validated_pal: Cell::new(None),
             access_cache: RefCell::default(),
@@ -587,8 +591,9 @@ impl Vdp2 {
         format: u16,
         x: usize,
         y: usize,
+        linear_name: &mut Option<fetch::LinearName>,
     ) -> Option<(usize, usize, usize, u16)> {
-        self.tile_map(layer, ctl, format, x, y, None, false)
+        self.tile_map(layer, ctl, format, x, y, None, false, Some(linear_name))
     }
     #[allow(clippy::too_many_arguments)]
     fn tile_map(
@@ -600,6 +605,7 @@ impl Vdp2 {
         y: usize,
         parameter: Option<usize>,
         over: bool,
+        linear_name: Option<&mut Option<fetch::LinearName>>,
     ) -> Option<(usize, usize, usize, u16)> {
         let size = if ctl & 1 == 0 { 8 } else { 16 };
         let pnc = self.word(0x30 + layer * 2);
@@ -654,8 +660,12 @@ impl Vdp2 {
             };
             (character, palette, if aux { 0 } else { name >> 10 & 3 })
         } else {
+            let second = self.fetch_word(layer, 0, at + 2)?;
+            if let Some(output) = linear_name {
+                *output = Some((at, [name, second]));
+            }
             (
-                usize::from(self.fetch_word(layer, 0, at + 2)? & 0x7FFF),
+                usize::from(second & 0x7FFF),
                 usize::from(name & 0x7F) * 16,
                 name >> 14 & 3,
             )
@@ -720,6 +730,9 @@ impl Vdp2 {
         if let Some(sample) = self.planned_sample(layer) {
             return Some(sample);
         }
+        if let Some(sample) = self.linear_tile_sample(layer, x, y) {
+            return Some(sample);
+        }
         // ST-058 §2.1 p.13: exclusive high resolution alternates the two
         // normal screens. Guest increments of two and NBG1's +1 scroll
         // produce adjacent source dots, not two full-width overlaid layers.
@@ -748,6 +761,7 @@ impl Vdp2 {
             )
         };
         self.fetch_group((sx / 8, sy));
+        let mut linear_name = None;
         let (base, pixel, palette, special) = if layer < 2 && ctl & 2 != 0 {
             let width = if ctl & 8 == 0 { 512 } else { 1024 };
             let height = if ctl & 4 == 0 { 256 } else { 512 };
@@ -758,7 +772,7 @@ impl Vdp2 {
                 self.word(0x2C) >> (layer * 8 + 4) & 3,
             )
         } else {
-            self.tile(layer, ctl, format, sx, sy)?
+            self.tile(layer, ctl, format, sx, sy, &mut linear_name)?
         };
         if layer < 2 && ctl & 2 != 0 {
             let address = Self::dot_address(base, pixel, format);
@@ -768,6 +782,7 @@ impl Vdp2 {
         }
         let sample = (base, pixel, palette, special, format);
         self.plan_sample(layer, sample);
+        self.plan_linear_tile(layer, x, y, sx, sample, linear_name);
         Some(sample)
     }
     // Keep output geometry and unaffected screens in the hardware TV mode.
