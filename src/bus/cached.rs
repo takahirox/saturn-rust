@@ -742,6 +742,7 @@ pub(crate) struct CachedBatch {
     pub ready: u64,
     pub reference: u64,
     pub retired: u32,
+    pub endpoint_issues: u32,
 }
 impl Bus {
     /// Retire one register instruction at the current hardware boundary.
@@ -1539,7 +1540,7 @@ impl Bus {
             let instruction_pc = cpu.state().pc;
             let interrupt_mask = cpu.state().sr & 0xF0;
             let mut branch = None;
-            let mut interpreted = None;
+            let mut saved_cpu = None;
             if cpu.has_cached_control(op) {
                 let Some(plan) = cpu.prepare_cached_control(&mut memory) else {
                     memory.restore(before);
@@ -1547,14 +1548,15 @@ impl Bus {
                 };
                 branch = Some(plan);
             } else {
-                let mut next = cpu.clone();
-                if !next.step_cached(&mut memory)
-                    || next.state().instructions != cpu.state().instructions + 1
+                let prior = cpu.clone();
+                if !cpu.step_cached(&mut memory)
+                    || cpu.state().instructions != prior.state().instructions + 1
                 {
+                    cpu = prior;
                     memory.restore(before);
                     break;
                 }
-                interpreted = Some(next);
+                saved_cpu = Some(prior);
             }
             let at = memory.clock.get();
             if memory.fill_count.get() != 0 {
@@ -1570,6 +1572,9 @@ impl Bus {
                     && !checkpoint_sound
                     && reference.saturating_sub(points.last_reference) >= 9
                 {
+                    if let Some(prior) = saved_cpu {
+                        cpu = prior;
+                    }
                     memory.restore(before);
                     break;
                 }
@@ -1577,8 +1582,6 @@ impl Bus {
             }
             if let Some(branch) = branch {
                 cpu.retire_cached_control(branch);
-            } else {
-                cpu = interpreted.unwrap();
             }
             retired_at = at;
             ready = (cpu.execution_clock().unwrap_or(started)
@@ -1683,6 +1686,16 @@ impl Bus {
             }
             retired = selected as u32;
         }
+        let endpoint_issues = if matches!(poll, Some(PeerSchedule::Pending { .. })) {
+            let clock = points.at(selected - 1);
+            let mut first = selected - 1;
+            while first > 0 && points.at(first - 1) == clock {
+                first -= 1;
+            }
+            (selected - first) as u32
+        } else {
+            1
+        };
         points.recycle_into(&mut self.cached_retirement_points);
         let store = memory.store.get();
         let (local, ram_plan, fills) = memory.into_parts();
@@ -1742,6 +1755,7 @@ impl Bus {
             ready,
             reference,
             retired,
+            endpoint_issues,
         }))
     }
     fn publish_ram_store<const N: usize>(&mut self, store: PlannedStore, mut bytes: [u8; N]) {

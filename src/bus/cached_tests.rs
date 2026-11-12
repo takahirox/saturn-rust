@@ -2256,3 +2256,137 @@ fn private_peer_endpoints_keep_strobe_capture_and_status_read_order() {
         }
     }
 }
+
+#[test]
+fn cached_replay_restores_cpu_when_sound_bounds_a_buffered_store() {
+    // Slow byte-wide WRAM writes exceed the sound retirement-gap bound.
+    // A declined store must preserve the prior PC, SP and bus prefix.
+    for fast in [false, true] {
+        let make = || {
+            let mut words = vec![0xE011];
+            for _ in 0..16 {
+                words.extend([9, 0x2F06]);
+            }
+            words.extend([0xAFDD, 9]);
+            let mut m = crate::scheduling_tests::cached_pair(&words, &[0xAFFE, 9]);
+            m.bus.change_system_clock(fast);
+            m.bus.set_slave_enabled(false);
+            m.bus.onchip[0].write32(0xFFFFFFE0, 0xA55A03F0).unwrap();
+            m.bus.onchip[0].write32(0xFFFFFFE4, 0xA55A007C).unwrap();
+            m.bus.onchip[0].write32(0xFFFFFFE8, 0xA55AAAFF).unwrap();
+            m.bus.onchip[0].write32(0xFFFFFFEC, 0xA55A0000).unwrap();
+            let mut memory = m.bus.for_cpu(Processor::Master);
+            memory.write8(crate::cache::CCR, 0x11).unwrap();
+            for offset in (0..words.len() * 2 + 4).step_by(16) {
+                memory.fetch16(HIGH_WRAM + offset as u32).unwrap();
+            }
+            m.bus.cpu_delay(Processor::Master, 0);
+            m.cpu = Cpu::start(HIGH_WRAM, HIGH_WRAM + 0x20000);
+            m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
+            let sound = &mut m.bus.sound;
+            sound.ram[..4].copy_from_slice(&0x1000u32.to_be_bytes());
+            sound.ram[4..8].copy_from_slice(&0x100u32.to_be_bytes());
+            sound.ram[0x100..0x104].copy_from_slice(&[0x4E, 0x71, 0x60, 0xFC]);
+            sound.set_enabled(true).unwrap();
+            assert!(sound.cached_lookahead_allowed());
+            m
+        };
+        let (mut a, mut b) = (make(), make());
+        let mut batches = 0;
+        for _ in 0..256 {
+            let retired = a.try_cached_batch(128).unwrap();
+            if retired == 0 {
+                a.step_inner_with_idle(true).unwrap();
+            } else {
+                batches += 1;
+            }
+            while b.cpu.state().instructions < a.cpu.state().instructions {
+                b.step().unwrap();
+            }
+            same(&mut a, &mut b);
+            a.bus.cache[0]
+                .borrow()
+                .assert_same_contents(&b.bus.cache[0].borrow());
+            a.bus.onchip[0].assert_cached_read_bus_matches(&b.bus.onchip[0]);
+        }
+        assert!(batches > 0);
+    }
+}
+
+#[test]
+fn cofinal_master_load_and_scalar_keep_each_private_peer_issue() {
+    // LDC SR ends the burst after two same-clock Master retirements.
+    // Each retained boundary must issue the private peer once.
+    for fast in [false, true] {
+        let mut batches = 0;
+        let mut cofinal = 0;
+        for offset in 0..16 {
+            let make = || {
+                let source = HIGH_WRAM + 0x2000;
+                let mut m = crate::scheduling_tests::cached_pair(
+                    &[0x61F2, 0x7001, 0x400E, 0xAFFB, 9],
+                    &[0x60F0, 0xC880, 0x89FC, 0xAFFB, 9],
+                );
+                m.bus.change_system_clock(fast);
+                m.bus.set_slave_enabled(true);
+                m.bus.write32(source, 0x12345678).unwrap();
+                for (processor, address) in [
+                    (Processor::Slave, HIGH_WRAM + 0x100),
+                    (Processor::Master, HIGH_WRAM),
+                ] {
+                    let mut memory = m.bus.for_cpu(processor);
+                    memory.write8(crate::cache::CCR, 0x11).unwrap();
+                    memory.fetch16(address).unwrap();
+                    if processor == Processor::Master {
+                        memory.read32(source).unwrap();
+                    }
+                    m.bus.cpu_delay(processor, 0);
+                }
+                m.cpu = Cpu::start(HIGH_WRAM, source);
+                m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
+                m.slave = Cpu::start(HIGH_WRAM + 0x100, crate::onchip::FRT + 1);
+                m.slave.prime_fetch(&m.bus.for_cpu(Processor::Slave));
+                m.cpu_ready[0] = m.bus.main_clocks + 128;
+                for _ in 0..offset {
+                    m.step_hardware_boundary_with_idle(true).unwrap();
+                }
+                m.cpu_ready[0] = m.bus.main_clocks;
+                m
+            };
+            let (mut a, mut b) = (make(), make());
+            let count = a.try_private_poll_batch(2).unwrap();
+            cofinal += usize::from(count == 2 && a.cpu_ready[0] <= a.bus.main_clocks);
+            if count == 0 {
+                a.step_inner_with_idle(true).unwrap();
+            } else {
+                batches += 1;
+            }
+            while b.cpu.state().instructions < a.cpu.state().instructions {
+                b.step_inner_with_idle(true).unwrap();
+            }
+            same(&mut a, &mut b);
+            assert!(a.cached_issue[1] == b.cached_issue[1]);
+            assert!(a.cpu_boundary[1] == b.cpu_boundary[1]);
+            let actual = a.bus.private_transaction().unwrap();
+            let expected = b.bus.private_transaction().unwrap();
+            assert!(actual == expected);
+            assert_eq!(
+                a.bus.onchip[1].private_poll_epoch(),
+                b.bus.onchip[1].private_poll_epoch()
+            );
+            assert_eq!(
+                a.bus.onchip[1].private_poll_observed(),
+                b.bus.onchip[1].private_poll_observed()
+            );
+            assert_eq!(a.bus.onchip[1].ftcsr(), b.bus.onchip[1].ftcsr());
+            for i in 0..2 {
+                a.bus.cache[i]
+                    .borrow()
+                    .assert_same_contents(&b.bus.cache[i].borrow());
+                a.bus.onchip[i].assert_cached_read_bus_matches(&b.bus.onchip[i]);
+            }
+        }
+        assert!(batches > 0);
+        assert!(cofinal > 0);
+    }
+}

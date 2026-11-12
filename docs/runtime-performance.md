@@ -2211,3 +2211,69 @@ and handles I/O with short blocks. Those techniques inform further trials;
 Saturn's bus and pipeline timing remain part of every comparison.
 [QEMU translator internals](https://www.qemu.org/docs/master/devel/tcg.html),
 [QEMU instruction counting](https://www.qemu.org/docs/master/devel/tcg-icount.html).
+
+
+## Cached replay and same-clock peer publication (2026-11-12)
+
+Related to #17. A cached load followed by an independent ALU instruction can
+retire both Master instructions at one clock. Publishing the Slave state after
+one issue attempt then leaves it behind ordinary shared scheduling, which issues
+Slave once per Master boundary. The burst now counts Master retirements sharing
+the selected final clock. A private polling proof retains the state after each
+possible same-clock Slave issue and grant, validated under both LRU seeds.
+Publication selects the state after the corresponding number of attempts, or
+the completed phase when Slave is already waiting. A waiting Master still uses
+the completed phase. All selected Master retirements are retained.
+
+General cached replay also updates the current private CPU directly and keeps
+its prior state for rollback. Failed instructions and the sound retirement-gap
+check restore the CPU and existing memory/protocol snapshot. Scalar blocks,
+prepared operations, observer horizons and actual bus publication are unchanged.
+
+An original regression stops a burst after the load and ALU operation with an
+unsupported LDC SR successor. Both PLL settings and 16 initial Slave phases
+compare complete CPUs, cache contents, BSC state, clocks, FTCSR observation and
+private epochs against ordinary shared scheduling. The test requires actual
+two-instruction, immediately ready Master endpoints. It fails on both the main
+baseline and the initial replay-only candidate, with one versus two Slave
+retirements. Forcing one-attempt publication on the corrected implementation
+also fails the test.
+
+A second original guest runs predecrementing WRAM stores with slow byte-wide
+BSC transfers alongside a live sound CPU at both PLL settings. It compares each
+selected prefix with ordinary execution. Omitting failed-instruction CPU
+restoration fails 27 inherited cases. Omitting sound-gap restoration initially
+passed all 43 inherited cases; this new guest detects a 36-versus-70
+reference-clock mismatch. Both mutations were restored. The fixture's initial
+reserved WCR idle encoding was corrected to the accepted `0xAAFF` setting.
+
+Chrome 157.0.8103.39 presented every field to Canvas through the ordinary Web
+entry points. Four alternating game comparisons and three alternating menu
+comparisons matched every exposed CPU/sound, count, clock and pixel endpoint
+against PR #125's default module. Timed intervals ran without another local
+build, test or warm-up. The byte-identical corrected module also matched six
+extended checkpoints through field 3252 and three reference PNG captures.
+
+| Workload | Main fields/s | Corrected replay fields/s | Median p95 field time |
+| --- | ---: | ---: | ---: |
+| Local Machi Disc 1, fields 1200–1440 | 10.653 | 10.653 | 142.3 → 144.6 ms |
+| Local BIOS menu, fields 1200–1560 | 25.335 | 25.538 | 66.2 → 66.0 ms |
+
+Combined-window throughput was essentially unchanged: +0.07% in the game and
+−0.06% in the menu. Earlier isolated CPU-copy comparisons showed small gains;
+those results are not a claim of a gain for this corrected implementation.
+A conservative endpoint fix that trims same-clock Master work passed the
+state comparisons but regressed combined game throughput by about 2.2% against
+the initial replay-only candidate. The selected fix retains all that work.
+A separate-code replay helper reduced emitted burst code from about 73 KB to
+53 KB, but changed combined game throughput by only +0.6% and was not selected.
+
+The corrected module SHA-256 is
+`65da67ad7a73d13d2301dd698b488178fc05a5691db6fdebcf739c677823faa6`.
+The standard public build is byte-identical. Formatting, native build, all
+1,325 native tests in 111 groups, fixture reproduction, native/Wasm Clippy,
+all 74 browser groups, 48 scheduler comparisons and 13 browser-runner checks
+passed. Additional assertions of the Slave epoch, observation and FTCSR passed
+the focused regression. Exact-head hosted validation is recorded in the PR.
+60 fields/s remains unmet; the measured game scene needs approximately 5.6×
+additional throughput.

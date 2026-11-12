@@ -99,7 +99,7 @@ struct Publication {
     value: [u8; 64],
 }
 struct Phase {
-    first: Option<Box<Publication>>,
+    partial: Vec<Publication>,
     #[cfg(test)]
     issues: u8,
     state: State,
@@ -164,14 +164,20 @@ impl Template {
             )
         }
     }
-    fn publish(&self, machine: &mut Machine, elapsed: u64, master_waiting: bool) {
+    fn publish(
+        &self,
+        machine: &mut Machine,
+        elapsed: u64,
+        master_waiting: bool,
+        endpoint_issues: u32,
+    ) {
         let elapsed = elapsed as usize;
         let (index, copies) = self.position(elapsed);
         let phase = &self.phases[index];
         let (state, keep, value) = if !master_waiting {
             phase
-                .first
-                .as_ref()
+                .partial
+                .get(endpoint_issues.saturating_sub(1) as usize)
                 .map_or((&phase.state, &phase.keep, &phase.value), |first| {
                     (&first.state, &first.keep, &first.value)
                 })
@@ -285,7 +291,7 @@ impl Context {
         let scratch = self.scratch.get_or_insert_with(|| Box::new(Machine::new()));
         let mut first = Vec::new();
         let mut issue_counts = Vec::new();
-        let mut first_issues: Vec<Option<Box<Publication>>> = Vec::new();
+        let mut partial_phases: Vec<Vec<Publication>> = Vec::new();
         let mut code = Vec::new();
         let mut repetition = None;
         let mut ones = Vec::new();
@@ -300,7 +306,7 @@ impl Context {
             scratch.fault = None;
             for time in 0..=span as usize {
                 let mut issues = 0;
-                let mut first_issue = None;
+                let mut partial_issues = Vec::new();
                 remember_code(scratch, &mut code)?;
                 for _ in 0..8 {
                     if scratch.cpu_ready[1] > scratch.bus.main_clocks {
@@ -312,8 +318,8 @@ impl Context {
                     issues += 1;
                     scratch.issue_cpu_with_inline(Processor::Slave, true).ok()?;
                     scratch.bus.grant_bus_transaction();
-                    if issues == 1 && scratch.cpu_ready[1] <= scratch.bus.main_clocks {
-                        first_issue = Some(State::capture(scratch)?);
+                    if scratch.cpu_ready[1] <= scratch.bus.main_clocks {
+                        partial_issues.push(State::capture(scratch)?);
                     }
                     remember_code(scratch, &mut code)?;
                 }
@@ -333,13 +339,16 @@ impl Context {
                             })
                             .map(|(index, _)| (index, time - index));
                     }
-                    first_issues.push(first_issue.map(|state| {
-                        Box::new(Publication {
-                            value: state.replacement,
-                            state,
-                            keep: [0; 64],
-                        })
-                    }));
+                    partial_phases.push(
+                        partial_issues
+                            .into_iter()
+                            .map(|state| Publication {
+                                value: state.replacement,
+                                state,
+                                keep: [0; 64],
+                            })
+                            .collect(),
+                    );
                     first.push(state);
                     issue_counts.push(issues);
                 } else {
@@ -353,20 +362,17 @@ impl Context {
                     {
                         return None;
                     }
-                    match (&mut first_issues[time], first_issue) {
-                        (Some(prior), Some(state)) => {
-                            if state.cpu.state().instructions
-                                != prior.state.cpu.state().instructions
-                                || !state.same_phase(&prior.state)
-                                || state.epoch != prior.state.epoch
-                            {
-                                return None;
-                            }
-                            prior.keep =
-                                std::array::from_fn(|i| prior.value[i] ^ state.replacement[i]);
+                    if partial_phases[time].len() != partial_issues.len() {
+                        return None;
+                    }
+                    for (prior, state) in partial_phases[time].iter_mut().zip(partial_issues) {
+                        if state.cpu.state().instructions != prior.state.cpu.state().instructions
+                            || !state.same_phase(&prior.state)
+                            || state.epoch != prior.state.epoch
+                        {
+                            return None;
                         }
-                        (None, None) => (),
-                        _ => return None,
+                        prior.keep = std::array::from_fn(|i| prior.value[i] ^ state.replacement[i]);
                     }
                     ones.push(state.replacement);
                 }
@@ -394,12 +400,12 @@ impl Context {
             .into_iter()
             .zip(ones)
             .zip(issue_counts)
-            .zip(first_issues)
-            .map(|(((state, ones), _issues), first)| {
+            .zip(partial_phases)
+            .map(|(((state, ones), _issues), partial)| {
                 let keep = std::array::from_fn(|i| state.replacement[i] ^ ones[i]);
                 let value = state.replacement;
                 Phase {
-                    first,
+                    partial,
                     #[cfg(test)]
                     issues: _issues,
                     state,
@@ -488,11 +494,12 @@ impl Machine {
         }
         #[cfg(test)]
         if batch.ready <= self.bus.main_clocks
-            && context.templates[index].phases[context.templates[index]
+            && batch.endpoint_issues == 1
+            && !context.templates[index].phases[context.templates[index]
                 .position((self.bus.main_clocks - now) as usize)
                 .0]
-                .first
-                .is_some()
+                .partial
+                .is_empty()
         {
             self.bus.cached_private_first_issue_endpoints += 1;
         }
@@ -501,6 +508,7 @@ impl Machine {
             self,
             self.bus.main_clocks - now,
             batch.ready > self.bus.main_clocks,
+            batch.endpoint_issues,
         );
         self.cpu_ready[0] = batch.ready;
         self.clocks += batch.reference;
