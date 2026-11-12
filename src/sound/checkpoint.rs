@@ -18,7 +18,7 @@ impl RamUndo {
 }
 
 pub(crate) struct SoundCheckpoint {
-    state: Sound,
+    state: Box<Sound>, // Keep large rollback state out of Result/Option moves.
     undo: RamUndo,
     output_len: usize,
     #[cfg(test)]
@@ -36,7 +36,7 @@ impl Sound {
         let scsp = self.scsp.clone();
         self.scsp.output = output;
         let mut checkpoint = SoundCheckpoint {
-            state: Self {
+            state: Box::new(Self {
                 cpu: self.cpu.clone(),
                 // CPU and DSP writes below record physical bytes before changing
                 // RAM. DMA and main-CPU RAM requests are excluded by admission.
@@ -54,7 +54,7 @@ impl Sound {
                 reset_output_start: self.reset_output_start,
                 reset_output_end: self.reset_output_end,
                 transactions: self.transactions.clone(),
-            },
+            }),
             undo: RamUndo::default(),
             output_len: self.scsp.output.len(),
             #[cfg(test)]
@@ -90,7 +90,7 @@ impl Sound {
             trace.truncate(checkpoint.trace_len);
             checkpoint.state.memory.trace = trace;
         }
-        *self = checkpoint.state;
+        *self = *checkpoint.state;
     }
 }
 
