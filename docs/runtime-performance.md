@@ -2279,71 +2279,87 @@ the focused regression. Exact-head hosted validation is recorded in the PR.
 additional throughput.
 
 
-## Ordered refills and scanline storage reuse
+## Borrowed comparison of private CPU and transaction state
 
-Related to #17. The normal Web field runner now admits a WRAM cache refill
-behind an already accepted, independent Master write. It waits for every
-remaining physical write beat and continues the predicted BSC read sequence.
-The complete refill line must be disjoint from the canonical physical range of
-all remaining write beats. Overlap, new staged stores and unavailable observer
-windows retain the ordinary path. Actual board catch-up still drains writes
-through the original arbiter; read completion, replacement state and strict
-device horizons remain observable.
+Related to #17. Private polling guards previously cloned a complete CPU and
+transaction journal, translated their timestamps, then compared them with the
+current state. The default runner now compares borrowed fields with the same
+clock translation. It preserves every CPU field except the same two cumulative
+counters already normalized by the old guard. Journal operations, values, phase
+indices, pending state and all other fields remain strict comparisons.
 
-VDP2 also retains the capacities of its four per-line captured-word and sample
-vectors. Every logical entry and other fetch state is reset at the same line
-boundaries before reuse. This removes repeated allocations without reusing
-prior-line operands or changing acquisition edges.
+Exhaustive destructuring makes a newly added field a compile-time review
+requirement. Every native unit-test invocation additionally compares the new
+answer with the old full clone/shift/derived-equality oracle. Existing code-byte,
+cache-way, FTCSR, global bus-owner and observer guards remain in place. This
+changes host validation work, not guest execution or timing.
 
-### Web comparison
+The selected combination also retains independent WRAM refills after an
+accepted Master write and reuse of VDP2 scanline vector capacities. Refills
+wait for every remaining physical write beat, continue its BSC protocol and
+reject overlap with the complete physical refill line. Actual writes still
+drain through the ordinary arbiter. VDP2 clears every logical entry and all
+other fetch state at the original boundaries before reusing storage.
 
-Chrome 157.0.8103.39 presented every field to Canvas with the normal local file
-pickers. Four rotated windows per variant compared main, each individual change
-and their combination. Timed windows ran without builds, tests or warm-ups.
-Every CPU/sound/clock/pixel endpoint matched.
+### Web comparison and adoption
+
+Chrome 157.0.8103.39 drew every field to Canvas through the normal local file
+pickers. Four rotated 120-field windows compared main, CPU-only matching,
+CPU+journal matching and matching on main without the two earlier changes.
+Timing did not overlap builds, tests or warm-ups. All 32 timed endpoints
+matched CPU, sound, clocks and pixels.
 
 | Variant | Game combined throughput change | Menu combined throughput change |
 | --- | ---: | ---: |
-| Refills after accepted writes | +1.37% | +0.07% |
-| Scanline allocation reuse | −1.59% | +1.15% |
-| Selected combination | +2.08% | +2.40% |
+| CPU comparison with the earlier changes | +3.90% | +1.82% |
+| Selected CPU+journal comparison with the earlier changes | +5.59% | +0.21% |
+| CPU+journal comparison on main alone | +2.99% | −0.11% |
 
-These changes are not additive. The selected combination's game median was
-10.555 → 10.760 fields/s over fields 1200–1440; median p95 fell from 145.85 to
-143.35 ms. Menu median was 25.002 → 25.729 over fields 1200–1680, with median
-p95 67.0 → 65.0 ms. An earlier three-window comparison measured a 4.62% gain
-for refills alone; the controlled repeat above gives the narrower final result.
-A known-opcode preflight regressed game throughput about 4.2%; broader passive
-RAM streams and a private-bus preflight gave only small preliminary differences
-and were not selected.
+The selected combination improved every paired game window. Game median was
+10.344 → 11.001 fields/s over fields 1200–1680; median p95 fell from 165.2 to
+159.6 ms. Menu median was 24.668 → 24.665, with median p95 67.8 → 67.4 ms.
+The menu result is effectively unchanged. Individual changes are not additive;
+the selected combination is the measured result.
 
-The standard build is byte-identical to the measured combination:
-1,808,470-byte Wasm, SHA-256
-`b3875696e2d94b7573000aa0816c2630cc0afccf9e4dd695adc51ff5fadd509c`.
-Personal media and generated captures are not included.
+The earlier refill/scanline combination initially measured +2.08% game and
++2.40% menu, but repeats measured only +0.12% game and then +0.03% game/+0.35%
+menu. Those measurements did not establish a stable isolated gain. They are
+retained here as part of the faster measured combination, whose main-only
+counterfactual is included above. A broader passive-RAM stream and a shared
+passive-read/refill sequence did not provide a selected improvement. Separating
+cold proof construction measured only a preliminary approximately 1% difference
+and is not included.
+
+The measured selected Wasm is 1,810,826 bytes, SHA-256
+`2697a2161dcba3aad01a0c061d8ef075e7d44d05fb1042630975b28774d86309`.
+Personal media and captures are not included.
 
 ### Validation and limits
 
-The new original guest compares independent and overlapping reads after actual
-accepted writes at both PLL settings with byte-wide and longword-wide buses.
-It requires a real accelerated refill for independent lines and fallback for
-overlap, then compares complete CPU, cache, BSC, RAM, readiness and clock state.
-The previous implementation fails its positive-path assertion. Removing the
-write-drain wait makes execution clocks differ by six states; removing overlap
-protection admits the prohibited stale line. Both negative controls fail and the
-restored source passes. Existing VDP2 multi-line capture and literal-pixel
-oracles cover allocation reuse without adding an implementation-mirroring test.
+The selected isolated source passed all 857 library tests, including the
+old/new full-state matching oracle on every call. The accepted-write/refill
+guest requires real accelerated independent reads and overlap fallback at both
+PLLs with byte-wide and longword-wide buses. It compares complete CPU, cache,
+BSC, RAM, readiness and clocks. The former implementation fails its positive-path
+assertion. Removing the drain wait makes execution clocks six states early;
+removing overlap protection admits the prohibited stale line. Both negative
+controls fail and restored-source validation passes. Existing original VDP2
+multi-line capture and literal-pixel oracles cover allocation reuse.
 
-The selected source passed all 1,326 native tests in 111 groups, formatting,
-native build, native all-target and Wasm Clippy with warnings denied, fixture
-reproduction, all 74 browser groups, 48 scheduler comparisons and 13 runner
-checks. The complete browser suite took 241,375 ms. All six extended selected-game
-checkpoints through field 3252 and three reference PNG byte comparisons passed.
-An initial unrestricted local native run stopped when its BSC test process was
-SIGKILLed, without an assertion failure. Repeating the complete native command
-with `RUST_TEST_THREADS=2` passed. The cause of the signal was not established;
-no test content, assertion or CI concurrency setting was changed.
+The selected implementation passed all 1,326 native tests in 111 groups,
+formatting/build, native all-target and Wasm Clippy with warnings denied,
+registered fixture reproduction, all 74 production-Wasm browser groups,
+48 scheduler comparisons and 13 runner checks. Browser elapsed was 207,100 ms.
+The standard JS/Wasm bytes are identical to the measured module. Five extended
+game checkpoints at fields 1800, 2100, 2400, 2824 and 3252 and three reference
+PNG byte comparisons passed.
+
+An earlier unrestricted native run on the preceding refill/scanline-only head
+was SIGKILLed in BSC without an assertion failure. Its full retry and this
+selected implementation's complete command passed at `RUST_TEST_THREADS=2`.
+The signal's cause was not established. No test content or CI concurrency was
+weakened. Hosted exact-head validation remains mandatory before normal merge.
 
 60 fields/s and hardware completion remain unmet. The measured game median
-still requires approximately 5.6× further throughput. Neither this increment
-nor an intermediate green workflow establishes general firmware compatibility.
+still requires approximately 5.5× further throughput. This increment does not
+establish general firmware compatibility.

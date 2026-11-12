@@ -255,6 +255,21 @@ impl LoadPipeline {
         self.next_ex.is_none() && (self.destination.is_none() || self.fetch_split)
     }
 
+    pub fn same_shifted(&self, prior: &Self, elapsed: u64) -> bool {
+        let Self {
+            destination,
+            forward_store_data,
+            fetch_split,
+            next_ex,
+            issue_overlap,
+        } = self;
+        *destination == prior.destination
+            && *forward_store_data == prior.forward_store_data
+            && *fetch_split == prior.fetch_split
+            && *issue_overlap == prior.issue_overlap
+            && *next_ex == prior.next_ex.map(|at| at + elapsed)
+    }
+
     pub fn shift_cached_clock(&mut self, clocks: u64) {
         self.next_ex = self.next_ex.map(|at| at + clocks);
     }

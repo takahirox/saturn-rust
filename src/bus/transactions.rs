@@ -139,6 +139,23 @@ struct ClockJournal {
     phase: usize,
 }
 impl ClockJournal {
+    fn same_shifted(&self, prior: &Self, elapsed: u64) -> bool {
+        let Self {
+            phases,
+            observed_through,
+            phase,
+        } = self;
+        *observed_through == prior.observed_through
+            && *phase == prior.phase
+            && phases.len() == prior.phases.len()
+            && phases
+                .iter()
+                .zip(&prior.phases)
+                .all(|(&(index, at), &(old_index, old_at))| {
+                    index == old_index && at == old_at + elapsed
+                })
+    }
+
     fn observe(&mut self, operation: usize, now: u64) -> u64 {
         if self.observed_through.is_some_and(|last| operation <= last) {
             while self
@@ -189,6 +206,79 @@ pub(super) struct Journal {
     current_operation: Option<Operation>,
 }
 impl Journal {
+    fn same_shifted(&self, prior: &Self, elapsed: u64) -> bool {
+        // Name every field: future journal state cannot silently escape proof
+        // matching. Timestamp translation does not need cloned vectors.
+        let Self {
+            irq,
+            nmi_cleared,
+            vector_waiting,
+            synchronous_stack,
+            operations,
+            clocks,
+            errors,
+            cursor,
+            beats,
+            beat_cursor,
+            waiting,
+            completed,
+            pipeline_wait,
+            operand_completion,
+            pending_write,
+            write_accepted,
+            write_context,
+            current_operation,
+        } = self;
+        let shifted = |op| match op {
+            Operation::MemoryAccess(address, write, at) => {
+                Operation::MemoryAccess(address, write, at + elapsed)
+            }
+            other => other,
+        };
+        (
+            irq,
+            nmi_cleared,
+            vector_waiting,
+            synchronous_stack,
+            errors,
+            cursor,
+            beats,
+        ) == (
+            &prior.irq,
+            &prior.nmi_cleared,
+            &prior.vector_waiting,
+            &prior.synchronous_stack,
+            &prior.errors,
+            &prior.cursor,
+            &prior.beats,
+        ) && (
+            beat_cursor,
+            waiting,
+            completed,
+            pipeline_wait,
+            pending_write,
+            write_accepted,
+            write_context,
+        ) == (
+            &prior.beat_cursor,
+            &prior.waiting,
+            &prior.completed,
+            &prior.pipeline_wait,
+            &prior.pending_write,
+            &prior.write_accepted,
+            &prior.write_context,
+        ) && *operand_completion == prior.operand_completion.map(|at| at + elapsed)
+            && *current_operation == prior.current_operation.map(shifted)
+            && clocks.same_shifted(&prior.clocks, elapsed)
+            && operations.len() == prior.operations.len()
+            && operations
+                .iter()
+                .zip(&prior.operations)
+                .all(|((op, result), (old, old_result))| {
+                    *op == shifted(*old) && result == old_result
+                })
+    }
+
     // Normal replay records carry four-byte values or indices. Keep the large
     // device diagnostic only on the exceptional path, without changing BusError.
     fn retain_result(&mut self, result: Result<u32, BusError>) -> Result<u32, u32> {
@@ -2888,9 +2978,18 @@ impl Bus {
         let Some(current) = self.private_journal() else {
             return false;
         };
-        let mut expected = prior.clone();
-        expected.shift_clock(elapsed);
-        *current == expected.journal
+        let same = current.same_shifted(&prior.journal, elapsed);
+        #[cfg(test)]
+        {
+            let mut expected = prior.clone();
+            expected.shift_clock(elapsed);
+            assert_eq!(
+                same,
+                *current == expected.journal,
+                "borrowed comparison disagrees with full shifted journal"
+            );
+        }
+        same
     }
     pub(crate) fn take_private_transaction(&mut self) -> PrivateTransaction {
         PrivateTransaction {
