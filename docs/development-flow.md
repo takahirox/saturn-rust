@@ -65,10 +65,12 @@ Target `main` unless the Issue identifies another integration branch. Use the
 - any genuinely required post-merge verification, reported separately as pending,
   or "None."
 
-Only claim to close an Issue when the implementation fully addresses it. State
-intentionally partial work clearly and leave the Issue open. Necessary pending
-post-merge checks do not make a complete implementation partial, but their results
-must not be claimed before they are performed.
+Use the normal closing reference, such as `Closes #123`, when the implementation
+fully addresses the Issue and applicable mandatory pre-merge checks are satisfied.
+For intentionally partial work, use a plain reference such as `Related to #123`,
+state the remaining scope and unmet acceptance criteria, and leave the parent
+Issue open. Pending post-merge-only checks do not make a complete implementation
+partial, but their results must not be claimed before they are performed.
 
 ## 4. Review and revise as needed
 
@@ -87,15 +89,45 @@ code fixes for a decision or confirmation that requires human input.
 
 Approve and merge when the implementation is complete, validation is sufficient,
 all mandatory pre-merge checks pass, and no blocking review findings remain.
-Checks possible only after merge are not pre-merge approval conditions.
+Required reviews, repository protections, applicable pre-merge tests and genuinely
+necessary pre-merge human acceptance remain blockers until satisfied. Checks
+possible only after merge are not pre-merge approval conditions.
+
+Preserve `Closes #N` for a fully implemented Issue with satisfied mandatory
+pre-merge acceptance, and close the original Issue after successful merge, before
+performing required post-merge verification. Do not remove the closing reference,
+keep the Issue open, or withhold approval solely because a post-merge-only check
+is pending. ProjectWeave publication adds the closing reference for complete work;
+review must not undo it for this reason and cause repeated Review → Fix → Publish
+→ Review rounds. This does not authorize closing intentionally partial work.
 
 ## 6. Perform required post-merge verification, if any
 
 Perform only the necessary checks recorded for the Issue. Keep them pending until
-performed, then record actual results, failures, and any required follow-up.
-Pre-merge validation does not prove deployment or publication succeeded.
-No post-merge verification is required for the collaboration templates and
-documentation introduced by Issue #1.
+performed, then record actual results, failures, and any required follow-up in the
+merged PR, closed Issue, or a linked validation report. Identify the checked
+revision and relevant environment. Report unperformed, pending or
+environment-blocked checks with reasons; Issue closure does not claim they passed.
+Pre-merge validation does not prove deployment or publication succeeded. An
+unavailable test environment alone is not evidence of a product defect.
+
+If verification finds an actual defect, first check for an existing equivalent
+Issue. Use that Issue or create a new one with reproduction steps, affected
+revision, expected and actual behavior, and links to the original Issue and PR.
+Record the follow-up link with the verification evidence. Do not reopen the
+original Issue solely for post-merge follow-up.
+
+Require post-merge verification only when the actual change needs it. Do not add
+routine manual approval, physical-device, heavyweight-model-download or deployment
+gates to documentation work. No post-merge verification is required for the
+documentation/template changes in Issues #1 and #142.
+
+This lifecycle supersedes older instructions to keep an implemented Issue open
+solely for post-merge verification. Preserve historical test outcomes and evidence,
+including pending or blocked results; do not rewrite them as passed. Actual missing
+implementation or mandatory pre-merge acceptance still blocks completion, including
+the partial hardware work tracked by #17 and the unresolved #81 evidence finding.
 
 The normal flow is: Issue → implementation → PR → review → revision as needed →
-merge → required post-merge verification, if any.
+merge and close the original Issue → required post-merge verification, if any →
+new linked defect Issue when needed (reuse an equivalent Issue if one exists).

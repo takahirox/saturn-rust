@@ -18,8 +18,9 @@ Describe what should be true when the Issue is resolved.
 ## Context and reproduction
 
 Add relevant context, examples, logs, or related Issues. For a reproducible problem,
-include steps, expected and actual results, and the relevant environment. State
-when reproduction steps are not applicable.
+include steps, affected revision, expected and actual results, and the relevant
+environment. For a post-merge defect, check for an existing equivalent Issue first
+and link the original Issue/PR. State when reproduction steps are not applicable.
 
 ## Pre-merge acceptance criteria
 
@@ -43,4 +44,7 @@ state that none are needed.
 Record only necessary checks that can happen only after merge, or state "None."
 For example, verification of a merge-triggered deployment belongs here. Report
 these checks as pending until performed; pre-merge validation does not prove
-publication succeeded. See the [review guidance](https://github.com/takahirox/saturn-rust/blob/main/docs/review-guidelines.md#check-pre-merge-acceptance-and-post-merge-verification).
+publication succeeded. Pending post-merge-only checks do not prevent closing a
+fully implemented Issue after merge once mandatory pre-merge acceptance is met.
+Follow the [post-merge lifecycle](https://github.com/takahirox/saturn-rust/blob/main/docs/development-flow.md#6-perform-required-post-merge-verification-if-any)
+for evidence and new linked defect Issues; do not reopen the original solely for follow-up.
