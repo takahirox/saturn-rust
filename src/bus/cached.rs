@@ -1345,6 +1345,7 @@ impl Bus {
         let mut skipped = 0;
         let mut store_pc = 0;
         let mut replay_cpu = false;
+        let mut solo_checkpoint: Option<Cpu> = None;
         while retired < count && memory.clock.get() < end {
             let Some(op) = cpu
                 .decoded_opcode()
@@ -1608,9 +1609,20 @@ impl Bus {
                 };
                 branch = Some(plan);
             } else {
+                if poll.is_none() {
+                    if let Some(checkpoint) = &mut solo_checkpoint {
+                        checkpoint.clone_from(&cpu);
+                    } else {
+                        solo_checkpoint = Some(cpu.clone());
+                    }
+                }
                 let instructions = cpu.state().instructions;
                 if !cpu.step_cached(&mut memory) || cpu.state().instructions != instructions + 1 {
-                    replay_cpu = true;
+                    if let Some(checkpoint) = &solo_checkpoint {
+                        cpu.clone_from(checkpoint);
+                    } else {
+                        replay_cpu = true;
+                    }
                     memory.restore(before);
                     break;
                 }
@@ -1629,7 +1641,13 @@ impl Bus {
                     && !checkpoint_sound
                     && reference.saturating_sub(points.last_reference) >= 9
                 {
-                    replay_cpu |= branch.is_none();
+                    if branch.is_none() {
+                        if let Some(checkpoint) = &solo_checkpoint {
+                            cpu.clone_from(checkpoint);
+                        } else {
+                            replay_cpu = true;
+                        }
+                    }
                     memory.restore(before);
                     break;
                 }

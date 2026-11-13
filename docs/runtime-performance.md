@@ -2848,7 +2848,7 @@ The original guest uses `--frames 60 --runs 4 --continuous --draw` without priva
 inputs. Throughput divides total measured fields by total elapsed time. Different
 scenes/inputs cannot be compared directly with historical rates above.
 
-A late-game baseline CPU profile attributes 23.8% of sampled self time to
+A Rust 1.99 late-game baseline CPU profile attributes 23.8% of sampled self time to
 cached-burst execution, 7.8% to display acquisition, 7.0% to sound advancement and
 5.9% to VDP1 advancement. These are sampled self times, not total subsystem shares.
 
@@ -2917,54 +2917,68 @@ identified explicitly; these independent trials cannot be multiplied together.
 | Retain per-instruction CPU copies and reuse checkpoints only for existing shortened-prefix replay | −0.13% on the original guest, −0.82% in the earlier game | No demonstrated benefit in those workloads; exclude this isolated variant. |
 | Box the detailed SMPC payload inside BusError | −2.02% on the original guest, −1.23% in the earlier game | Revert the payload/API and ownership changes; compact types alone did not help. |
 
-### Selected candidate: recover CPU state from retained checkpoints
+### CPU recovery prototype and final execution-class guard
 
-The general cached interpreter previously cloned the full CPU before each
-fallible instruction. The candidate retains the immutable burst origin and the
-existing cycle checkpoints, and marks CPU recovery necessary after a rejected
-step or a sound retirement-gap rejection. The local bus journal still rolls back
-immediately. Publication rebuilds the selected prefix from an eligible retained
-checkpoint, falling back to the burst origin when none lies at or before that endpoint.
-The same retained checkpoint can shorten an already-required shared-horizon
-replay. No additional periodic checkpoint or decoded instruction class is added.
+The initial CPU-recovery prototype removes full CPU copies before fallible
+ordinary instructions. After a rejected step or sound retirement-gap rejection,
+the local bus journal rolls back immediately. Publication reconstructs the
+selected prefix from an existing cycle checkpoint at or before that endpoint,
+falling back to the immutable burst origin. The same checkpoint can shorten an
+already-required shared-horizon replay. No periodic checkpoint or instruction
+class is added; reconstruction uses the ordinary CPU interpreter.
 
-Scalar/prepared paths, hardware deadlines, guest clocks, memory effects and
-ordinary error reporting retain their existing rules. The selected prefix still
-executes through the ordinary CPU interpreter when reconstruction is required.
-Reusing the existing checkpoint reduces the earlier game's measured replay
-penalty.
+With local Rust 1.100, the prototype improves the late-game interval from
+18.821 to 19.410 fields/s (+3.13%) in six 80-field windows. A fresh four-window
+120-field repeat reproduces 18.993 → 19.601 (+3.20%). Every paired window
+improves and exposed guest endpoints match. The repeat's median window p95/p99
+is 53.60/54.00 → 52.15/53.05 ms, with maxima 54.70 → 54.00 ms. Earlier game is
+flat (16.189 → 16.154, −0.22%); the original loop improves 64.137 → 67.314
+(+4.95%), but BIOS-only regresses 43.669 → 41.715 (−4.47%).
 
-Both builds below use local Rust 1.100.0 with the standard production flags.
-The local baseline is source `2d6b17f`; its Wasm SHA-256 is
+An uncached-ROM snapshot guard does not fix BIOS-only (43.166 → 40.745,
+−5.61%); its measured endpoint is outside ROM. That variant is excluded. It
+measures +5.03% on the original loop and +1.36% in the earlier game, illustrating
+why one scene alone is insufficient for selecting the recovery strategy.
+
+The final candidate uses the existing peer schedule to select recovery:
+private-peer bursts use deferred CPU recovery and retained checkpoints, while
+solo CPU execution keeps ordinary per-instruction rollback snapshots. A single
+lazy snapshot slot is reused within a solo burst. Scalar/prepared paths,
+hardware deadlines, guest clocks, memory effects and ordinary errors retain
+their existing rules.
+
+Both local baseline and final candidate use Rust 1.100.0 with unchanged
+production flags. Baseline source is `2d6b17f`; its Wasm SHA-256 is
 `d4190de73d52f737f526f285ade9ee91ab024c66f36b12a8bd4d04e13db16dd2`.
-The selected candidate's SHA-256 is
-`b5cd3badbdffc17787e9d2445fa19901625da3b4e6bd71f2d606bc773b60482e`.
-The local and hosted Rust 1.100 builds are distinct artifacts. Compare matched
-baseline/candidate pairs from each build environment.
+Final candidate SHA-256 is
+`778be960b1243209bdf90a16219dd3c63e9713c72cd290ab63ccfeaaf8c86532`.
+The earlier unconditional prototype has SHA-256
+`b5cd3badbdffc17787e9d2445fa19901625da3b4e6bd71f2d606bc773b60482e`;
+its game rates must not be attributed to the final candidate without measurement.
+Local and hosted builds are distinct artifacts; compare matched pairs from each
+build environment.
 
-| Initial comparison | Baseline fields/s | Candidate fields/s | Change |
+| Final candidate, local comparison | Baseline fields/s | Candidate fields/s | Change |
 | --- | ---: | ---: | ---: |
-| Earlier game, fields 600–920, four 80-field windows | 16.189 | 16.154 | −0.22% |
-| Late game, fields 3600–4080, six 80-field windows | 18.821 | 19.410 | +3.13% |
+| BIOS-only, fields 1200–1520, four 80-field windows | 43.342 | 43.509 | +0.38% |
+| Original loop, fields 0–240, four 60-field windows | 63.238 | 63.083 | −0.24% |
+| Earlier game, fields 600–920, four 80-field windows | 16.060 | 16.233 | +1.08% |
 
-Every initial late-game window improves; exposed CPU, sound, clock, pixel and
-PCM endpoints match. Median window p50/p95/p99 is 53.05/54.15/54.95 ms before and
-51.25/52.25/53.30 ms after; maximum observed field time is 55.70 → 54.00 ms.
-Earlier game is effectively flat. Fresh-browser repeats and actual hosted-build
-comparisons are recorded in the PR linked from #138 and are required before
-adopting this candidate. Initial gains alone are insufficient, as the rejected
-protocol-version trial demonstrates.
+The BIOS slowdown is removed and the original loop is effectively flat. Final
+private-peer game comparisons, fresh-browser repeats and actual hosted-artifact
+results are recorded in the PR linked from #138 and are required before adoption.
+Initial gains alone are insufficient, as the rejected protocol-version trial
+shows. All measured exposed guest endpoints match.
 
-The selected source passes the existing 52 cached-execution differential tests
-with Rust 1.100, preserving full CPU/cache/bus assertions against the independent
-ordinary-step scheduler. A negative control that restores the wrong checkpoint's
-CPU fails 12 existing cases; the correct version passes all 52. Prototype-stage
-negative controls also detect missing failed-step and sound-rejection recovery.
-Existing differential coverage detects the new failure cases without an
-additional test. Native all-target and Wasm
-Clippy with warnings denied pass, and the standard Web rebuild matches the frozen
-candidate JS/Wasm byte for byte. Complete native/Wasm/browser/aggregate
-CI for the final PR head remains mandatory; its actual results are recorded in the PR.
+The final candidate passes all 52 existing cached-execution differential tests
+with Rust 1.100, retaining full CPU/cache/bus assertions against the independent
+ordinary-step scheduler. A negative control restoring the wrong retained CPU fails two existing cases,
+covering polling/sound-control phases and uncached WRAM boundaries. Native
+all-target and Wasm Clippy with warnings denied pass. The standard Web rebuild
+matches the frozen final candidate JS/Wasm byte for byte. Complete
+native/Wasm/browser/aggregate CI must pass for the final PR head; its results
+are recorded in the PR. Earlier prototypes pass the full hosted suite, but those
+runs do not validate this execution-class guard.
 
 ### Acceptance limits
 
