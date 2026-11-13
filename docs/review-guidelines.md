@@ -59,8 +59,9 @@ documentation-only change.
 
 Require all mandatory pre-merge acceptance criteria to be achievable and verifiable
 before merge. Checks possible only after merge must not be pre-merge approval
-conditions. This separation does not waive implementation requirements or
-applicable pre-merge tests.
+conditions. This separation does not waive implementation requirements, applicable
+mandatory pre-merge tests, required reviews and protections, or genuinely necessary
+pre-merge human acceptance. Unmet requirements remain blockers until satisfied.
 
 Keep optional validation separate from mandatory criteria. Require human
 confirmation, physical-device testing, subjective evaluation, or external approval
@@ -89,7 +90,21 @@ Distinguish these outcomes clearly:
   is sufficient, all mandatory pre-merge checks pass, and no blocking findings
   remain.
 
-Pending checks possible only after merge do not block approval or merge when
-these conditions are met. Perform any required post-merge verification afterward
-and record actual results, including failures and follow-up. Do not report those
-checks as passed until they have been performed.
+Pending post-merge-only checks do not make an otherwise complete implementation
+partial or block approval or merge when these conditions are met. Preserve the
+normal `Closes #N` reference and close the original Issue after successful merge.
+Do not request removing that reference, keeping the Issue open, or withholding
+approval solely for pending post-merge-only verification. Doing so makes review
+and ProjectWeave publication undo each other in repeated Review → Fix → Publish
+→ Review rounds. Intentionally partial work still needs a plain reference,
+remaining scope and unmet acceptance criteria, and must leave its parent Issue open.
+
+Apply the [post-merge lifecycle](development-flow.md#6-perform-required-post-merge-verification-if-any):
+record accurate results in the merged PR, closed Issue or linked validation report;
+keep unperformed or environment-blocked checks explicit. Closure does not claim
+they passed, and an unavailable environment alone is not a product defect. For
+an actual defect, check for an equivalent Issue first, then use it or file a new
+linked Issue with reproduction steps, affected revision and expected/actual behavior.
+Do not reopen the original Issue solely for follow-up. This lifecycle supersedes
+older keep-open instructions solely for post-merge verification, while preserving
+historical evidence and all applicable pre-merge requirements.
