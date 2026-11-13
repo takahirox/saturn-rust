@@ -1755,8 +1755,8 @@ impl Bus {
             }
         }
         if replay_cpu || selected < retired as usize {
-            // Rebuild only after a failed speculative CPU step or a shortened
-            // shared horizon; successful ordinary instructions need no CPU copy.
+            // Rebuild a rejected private-peer attempt or a shortened shared
+            // prefix. Successful private-peer steps avoid per-instruction copies.
             // A retained cycle checkpoint already proves an earlier prefix.
             let first = if let Some(checkpoint) = &anchor
                 && checkpoint.retired as usize <= selected
