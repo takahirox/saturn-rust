@@ -296,3 +296,11 @@ measurement of our own implementation helps distinguish that work from host
 backend cost. Renderer threading, reduced cache fidelity, fused dispatch and
 compiler differences remain explicit comparison variables; none establishes a
 portable Web speedup on its own.
+
+The branch-admission/protocol-snapshot prototype is not adopted: after correcting
+the benchmark's initial preparation asymmetry, its apparent gain changes sign
+when initialization/execution order is reversed in a fresh browser. The final
+change retains the measurement correction and native game benchmark support;
+its emulator core remains identical to main `87a18a9`. The executed reference
+and native profiles justify further structural investigation, not an invented
+speedup or a claim that the Web 60 fields/s target is met.

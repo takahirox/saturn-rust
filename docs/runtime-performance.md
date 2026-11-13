@@ -3067,6 +3067,8 @@ The pinned reference is `libretro/beetle-saturn-libretro` at
 JIT and auto RTC, select full CPU cache emulation and retain the default exact
 interleave setting (`0`). Audio and software video remain enabled; the local
 frontend consumes PCM with a rolling checksum and copies every delivered frame.
+Both cores use the same authorized Japanese BIOS; the reference automatically
+selects Japan/NTSC from the disc and retains its default cartridge selection.
 There is no throttle, vsync or frameskip. Boot/loading and endpoint captures are
 outside timing. The core reports an NTSC target of 59.826503 Hz and 44,100 Hz audio.
 
@@ -3115,3 +3117,48 @@ this method and reverse the artifact assignments in a fresh browser to
 counterbalance initialization/execution order. Guest skip fields, input and
 state equality remain unchanged. A green earlier CI head or the initial
 prototype's +4.65% cannot substitute for this final performance validation.
+
+### Decision after corrected, counterbalanced comparisons
+
+Both runs use the corrected preparation method, standard production artifacts,
+the same input and fields 3600–4080, Canvas output and PCM checks. The first
+uses six 80-field windows; the fresh browser uses four 120-field windows with
+the artifact assignments reversed. The rates below identify the actual source
+artifact rather than the harness's swapped `baseline`/`pkg` labels.
+
+| Preparation and initial execution order | Main fields/s | Guarded prototype fields/s | Change |
+| --- | ---: | ---: | ---: |
+| Main then guarded prototype | 19.101 | 19.403 | +1.58% |
+| Guarded prototype then main, fresh browser | 19.542 | 19.396 | −0.75% |
+
+Every pair improves in the first run; every pair regresses in the reversed run.
+All exposed guest endpoints match. This is not an order-independent performance
+gain, so **the branch-admission/protocol-snapshot optimization is rejected**.
+Both runtime changes and the trial-specific alias regression are removed from
+the final implementation. Its emulator core equals main `87a18a9`; only the
+benchmark tools and investigation record change. Earlier prototype rates must
+not be described as adopted speedups.
+
+The preparation correction also equalizes live guest population. Previously,
+the first continuous baseline window had only one live guest, while the second
+runtime's first window had two. This and the multi-minute gap were actual
+measurement asymmetries. Correcting them does not identify the cause of the
+remaining order dependence; compiler placement, host state and memory effects
+are not individually isolated by these measurements.
+
+Five-second samples of the owned native processes supplement the source
+comparison. In our baseline, display acquisition is 11.41% inclusive and sound
+lookahead/checkpoint is 17.68% inclusive, including actual sound execution;
+VDP1 advancement is 8.37% inclusive. These overlap inside cached bursts and
+must not be added as CPU-only costs. Memory copying is 4.20% self time, with
+97 of 160 copy samples immediately attributed to sound lookahead/checkpoint.
+The reference profile instead concentrates in its compact master loop, slave
+continuation, instruction fetch and specialized memory handlers. Different
+inlining and timing models prevent a numerical attribution of the entire
+cross-core speed gap to one mechanism.
+
+The supported next targets are reusable execution/admission plans and resumable
+execution, narrower display capture and sound state preservation. Copying a
+native recompiler backend or moving rendering to a thread alone is not shown
+to solve the gap. Sustained Web 60 fields/s and production audio-delivery
+acceptance remain open under #138. Required post-merge verification: none.
