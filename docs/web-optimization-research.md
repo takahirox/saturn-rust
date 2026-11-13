@@ -304,3 +304,249 @@ change retains the measurement correction and native game benchmark support;
 its emulator core remains identical to main `87a18a9`. The executed reference
 and native profiles justify further structural investigation, not an invented
 speedup or a claim that the Web 60 fields/s target is met.
+
+## Detailed Beetle audit, 2026-11-14
+
+This audit compares main `2790789` with the same pinned Beetle revision,
+`30f4c12072d265c9e553dcb29386059114945dea`. It investigates how to reduce
+equivalent work, rather than treating its approximately 189 native fields/s as
+a forecast for this Web implementation. No emulator change is adopted here.
+
+### Execution without speculative restart
+
+The full-cache master loop runs one instruction, catches the slave up, and
+compares the effective timestamp with a retained global event deadline. Memory
+operations can also hand control to the slave before completing a shared-bus
+access. The slave records a numeric resume location and live operands when it
+reaches the supplied bound. On its next call, a switch returns directly to that
+location. The inspected non-debug resume table has 392 entries. This is a
+switch-based continuation, not a requirement for a native JIT or computed goto.
+[Master loop](https://github.com/libretro/beetle-saturn-libretro/blob/30f4c12072d265c9e553dcb29386059114945dea/mednafen/ss/ss.c),
+[resume implementation](https://github.com/libretro/beetle-saturn-libretro/blob/30f4c12072d265c9e553dcb29386059114945dea/mednafen/ss/sh7095s_rsu.inc),
+[resume points and saved operands](https://github.com/libretro/beetle-saturn-libretro/blob/30f4c12072d265c9e553dcb29386059114945dea/mednafen/ss/sh7095.inc).
+
+Our ordinary path clones the CPU and re-enters the interpreter through a bus
+journal; the cached path amortizes that cost with bounded private execution,
+cache versions, retirement records and publication/recovery. Replacing only a
+rare ordinary fallback will not remove the cached path's dominant bookkeeping.
+The larger experiment is a resumable execution path coupled to exact bus/device
+boundaries, so common execution can publish effects directly without needing
+the same speculative batch setup and reconstruction.
+[Our ordinary boundary](../src/lib.rs), [journals](../src/bus/transactions.rs),
+[cached execution](../src/bus/cached.rs).
+
+Start with one memory-instruction family and retain the existing engine as an
+independent fallback/oracle. A resume record must retain the accepted bus phase,
+sampled value, register-write stage, IF/delay-slot state and exception/interrupt
+eligibility. Do not repeat an accepted MMIO access or commit a younger register
+effect before its real boundary. This is the highest architectural opportunity,
+but a substantial implementation project rather than a small dispatch patch.
+
+### Predecode lifetime, fast memory and cache layout
+
+Beetle retains the instruction's raw word and decoded operation class together
+in `Pipe_ID`; dispatch consumes that class rather than repeating a literal
+decoder. Its class lookup has a two-level 4,864-byte representation instead of
+a flat 65,536-byte table. The useful idea is the lifetime of decoded information,
+not an assumption that table compression is always faster.
+[Decode and dispatch](https://github.com/libretro/beetle-saturn-libretro/blob/30f4c12072d265c9e553dcb29386059114945dea/mednafen/ss/sh7095.inc).
+
+We already have scalar and timing tables, prepared operations and retained IF
+words. A distinct experiment would retain a compact execution class with a
+ready fetched word and reuse it across preparation/dispatch. Check the actual
+`Cpu`/fetch-value layout before adding fields: larger rollback copies can cancel
+the saved classification work. Bind plans to CPU-visible cached/retained words,
+not merely the current contents of RAM at a PC.
+
+Beetle's external-memory table maps 64 KiB address regions to native base
+offsets, while specialized handlers retain cache, bus and on-chip behavior.
+Tags and data use separate arrays, with four aligned tags in each row; native
+SSE2/NEON compares the four ways together. The two-way mode and invalid-tag
+convention remain part of lookup. A Web implementation would use checked linear
+memory offsets and optionally Wasm SIMD, not copy native pointers or intrinsics.
+[Mapping](https://github.com/libretro/beetle-saturn-libretro/blob/30f4c12072d265c9e553dcb29386059114945dea/mednafen/ss/ss.c),
+[cache representation](https://github.com/libretro/beetle-saturn-libretro/blob/30f4c12072d265c9e553dcb29386059114945dea/mednafen/ss/sh7095.h).
+
+One narrow opportunity in our implementation is more specific than a wholesale
+memory-map rewrite: once `CachedLines` contains any shadow version, its lookup
+scans the selected set even when that particular set has no shadow version.
+The base cache's recent-hit hint is then unused for unchanged sets. Prototype
+falling back to the base lookup when that set's version head is zero; retain
+the current shadow lookup for changed sets. Verify duplicate-tag priority,
+two-way mode, purges, retained code and store forwarding against the current
+cache oracle. This is a small, testable experiment, not a demonstrated gain.
+[Base lookup](../src/cache.rs), [shadow lookup](../src/cache/shadow.rs).
+
+### Drawing: incremental arithmetic and specialized kernels
+
+VDP1 uses error accumulators for edges, texture position and Gouraud shading.
+Its inner stepping advances with additions/comparisons rather than recomputing
+a division for every dot. It also selects specialized drawing functions from
+the command's modes. Our `texture_coordinates` computes scaling/vertical
+interpolation divisions per dot and is used by acquisition and drawing.
+[Beetle stepping](https://github.com/libretro/beetle-saturn-libretro/blob/30f4c12072d265c9e553dcb29386059114945dea/mednafen/ss/vdp1_common.h),
+[our sampling](../src/vdp1.rs).
+
+A practical first prototype is a line-local quotient/remainder accumulator for
+our existing sampling formulas. Derive it from our current semantics, including
+reduction centers, expansion ties, reversed traversal, clipping, high-speed
+shrink and live control changes. Do not substitute Beetle's sampling formulas
+as a correctness oracle. Exhaustive small-line comparisons and the independent
+literal vectors in [VDP1 sampling](vdp1-sampling.md) can test arithmetic reuse
+without changing drawing timing or VRAM access order.
+
+VDP2 keeps renderer-side memory updated by write commands, converts changed
+CRAM entries into a 2,048-entry color cache, and selects normal-background
+functions by bitmap/color/transparency/priority/color-calculation modes. The
+normal-background dispatch has 240 combinations, moving many decisions out of
+the pixel loop. The 4-bit cell helper can decode/gather eight pixels together
+with NEON when the palette range permits it. Single-thread mode consumes the
+same commands synchronously; a render thread is not required for these gains.
+[Renderer implementation](https://github.com/libretro/beetle-saturn-libretro/blob/30f4c12072d265c9e553dcb29386059114945dea/mednafen/ss/vdp2_render.c).
+
+Our display acquisition deliberately records per-dot/path operands and VRAM
+timing, which differs from simply reading the renderer's current memory. Keep
+that acquisition behavior. Reuse derived address/format plans across unchanged
+fetch groups, specialize a few observed hot formats, and cache decoded palette
+values with the correct palette mode and color-calculation MSB. Preserve the
+existing captured-word lifetime across mid-line writes. We already cache linear
+tile runs, so another cache of only the same tile address is not a new design.
+Generating the entire native dispatch matrix could inflate Wasm compilation and
+instruction-cache costs; start with measured hot modes and a general fallback.
+[Acquisition](../src/vdp2/fetch.rs), [sampling/composition](../src/vdp2.rs).
+
+### Sound: distinguish faster organization from coarser observation
+
+`RunSCSP` calls a complete sample renderer and advances its next-sample counter
+by 256. The sample function runs DSP and voice loops together. Sound-CPU RAM
+instruction fetch has a direct RAM path; its SCSP catch-up call is commented
+out, while ordinary data accesses service the sample deadline. These are
+concrete scheduling differences from our distributed sound model, not just
+different spellings of identical hot loops.
+[Sound scheduling/fetch](https://github.com/libretro/beetle-saturn-libretro/blob/30f4c12072d265c9e553dcb29386059114945dea/mednafen/ss/sound.c),
+[sample renderer](https://github.com/libretro/beetle-saturn-libretro/blob/30f4c12072d265c9e553dcb29386059114945dea/mednafen/ss/scsp.inc).
+
+Our path advances 128 DSP slots per sample, distributes voice work, and models
+RAM grants, completion, resets and MIDI/interrupt edges. Its sound checkpoint
+also saves synthesis/CPU state and records undo data. Copying Beetle's whole
+sample schedule would change those observations. The transferable experiments
+are direct RAM data routing after proving the existing grant/completion, batching
+slots only inside a proven observer-free interval, and saving only changed
+synthesis/CPU components. Preserve real DSP/sample work rather than suppress it.
+The earlier 17.68% inclusive checkpoint profile contains sound execution; it is
+not a claim that eliminating copies alone removes 17.68% of runtime.
+[Our scheduling](../src/sound.rs), [slots](../src/sound/pcm.rs),
+[checkpoint](../src/sound/checkpoint.rs).
+
+There is also a more local opportunity: Beetle decodes dirty MPRO words into
+step descriptors and performs a liveness pass, preserving successors needed to
+complete delayed RAM operations. Our DSP decodes the four program words on
+each live step; its existing zero-program/zero-step optimizations are narrower.
+Start with predecoding only, preserving every current ALU effect and fault at
+its original execution edge. Invalidate the written row immediately, including
+partial-word writes. Keep coefficients, addresses, RAM and delayed state live.
+Do not copy whole-sample invalidation or dead-step elimination without proving
+behavior when the next MPRO step changes during a sample.
+
+The descriptor cache must not make every sound checkpoint larger. For example,
+an immutable shared descriptor array with copy-on-write on MPRO modification
+can preserve rollback while avoiding a second full per-checkpoint array copy.
+This is a design candidate, not a measured implementation. General dead-step
+elimination additionally needs correct live-out state for future program
+changes, slot/port timing and execution-time faults.
+[MPRO decode/liveness](https://github.com/libretro/beetle-saturn-libretro/blob/30f4c12072d265c9e553dcb29386059114945dea/mednafen/ss/scsp.inc),
+[our live decoder](../src/sound/dsp.rs).
+
+### Reference ablations and work counts
+
+Four counterfactual builds remove one mechanism at a time from the conservative
+reference configuration: full instruction-cache emulation, synchronous software
+rendering, JIT off, dispatch fusions off and zero interleave quantum. Production
+Rust/Wasm code is unchanged. Native runs use the same host, private input and
+controller timeline; boot 3600 fields before six continuous 240-field windows.
+Each comparison runs separate processes in A/B/B/A order, with A the unchanged
+reference and B the counterfactual. A fresh private save-directory copy is used
+per process. Audio, video and serialized-state checksums agree at every matching
+window, including the padded 6,323,164-byte save-state checksum. Hash agreement
+is supporting evidence, not a proof of complete hardware equivalence.
+
+| Mechanism removed | Reference fields/s | Counterfactual fields/s | Counterfactual change |
+| --- | ---: | ---: | ---: |
+| Explicit four-way SIMD tag path, retaining the scalar fallback | 192.926 | 188.220 | −2.44% |
+| Cached event-minimum update, recomputing the same minimum every update | 196.162 | 200.158 | +2.04% |
+| Compressed decode table, using the equivalent flat table | 198.952 | 206.127 | +3.61% |
+| Direct sound-RAM instruction fetch, using the existing general read helper | 196.804 | 188.091 | −4.43% |
+
+These are exploratory native ablations, not predicted Rust/Web gains. The
+compiler may still optimize/vectorize the scalar fallback; this is a source-path
+comparison, not an instruction-by-instruction ISA isolation. The
+event-minimum pair shows substantial run-to-run drift; no benefit from removing
+that cache is established. A smaller decode table is not an automatic win in
+this workload. Two reversed-order B/A/A/B repeats give:
+
+| Mechanism removed | Repeated reference fields/s | Repeated counterfactual fields/s | Counterfactual change |
+| --- | ---: | ---: | ---: |
+| SIMD tag match | 196.660 | 201.012 | +2.21% |
+| Direct sound-RAM instruction fetch | 193.272 | 195.291 | +1.04% |
+
+The signs reverse relative to the first runs. Consequently these native trials
+do **not** establish reproducible speedups for either small fast path. All
+matching audio, video and serialized-state checksums still agree. The source
+mechanisms remain candidates for targeted Rust/Web experiments, not adopted
+gains. The flat-table and event-minimum observations are exploratory and not
+independently confirmed. None of these few-percent observations explains the
+approximately eightfold native gap; copying small source optimizations blindly
+is not supported by this study.
+
+An instrumented build separately counts fresh master/slave instruction entries,
+samples, minimum reductions, cache probes and sound-RAM instruction fetches.
+The instrumented endpoints match the uninstrumented reference, including its
+serialized-state checksums; its elapsed times are excluded. Raw inputs, save
+states, images, patches and binaries remain under ignored local build output.
+
+For the exact common interval from field 3680 to 3760, counting our existing
+native benchmark endpoints and the separately instrumented reference gives:
+
+| Work per field | Our core | Beetle reference |
+| --- | ---: | ---: |
+| Master SH-2 instructions/normal instruction entries | 336,421.29 | 344,043.96 |
+| Slave SH-2 instructions/normal instruction entries | 192,516.01 | 84,225.75 |
+| Generated stereo sample frames | 737.1375 | 737.1375 |
+
+Our counters report completed instructions; the reference counts fresh normal
+instruction entries, excluding standby/DMA/exception pseudo-dispatch classes
+and resumed entries. Faults and interval-boundary instructions can differ.
+These are diagnostic work counts, not a cross-core retirement oracle. The
+master workload is of similar magnitude, while the slave does substantially
+different work. Both reach the same visible selection scene, but their CPU/bus
+timing models and internal states are not equivalent. This does not authorize
+skipping slave instructions or assert a defect in either core.
+
+The reference additionally performs about 376,292 cache probes and 21,700
+event-minimum reductions per field in this interval. This argues for inspecting
+the cost of each common boundary, not assuming a fast core avoids synchronization
+entirely. Its sound-CPU instruction-fetch count is not directly comparable with
+our completed-instruction counter. Matching generated sample rates also does
+not equate the distributed DSP/voice observation work described above.
+
+### Implementation order and acceptance
+
+Use three stages rather than promise one large multiplier:
+
+1. Narrow experiments: preserve the base cache hint for unchanged shadow sets;
+   replace repeated VDP1 divisions with exact incremental arithmetic; retain
+   decoded execution classes for the lifetime of fetched words.
+2. Kernel experiments: reuse captured-group plans and specialize hot VDP2 modes;
+   predecode live DSP words without increasing checkpoint copies; investigate
+   observer-bounded sound slot batching and narrower state saving.
+3. Architectural experiment: a resumable memory-instruction path coupled to
+   exact shared-bus/event boundaries, expanding only after independent original
+   guests establish effects, clocks, IF/MA order and interrupt/reset behavior.
+
+For each, count removed work first, then measure uninstrumented production Wasm
+with both initialization orders and an identical-artifact control. Require the
+existing native/Wasm/browser oracles and negative controls for the changed
+boundary. Keep general fallbacks. Reference timing/visibility approximations
+are not permission to weaken this project's established observations. The
+approximately 19 fields/s Web scene still needs roughly threefold throughput;
+no measured Web speedup or real-time completion is claimed by this research.
