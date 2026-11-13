@@ -262,3 +262,45 @@ Private BIOS and game files are available locally for the requested supplemental
 measurements. Original licensed guests remain the reproducible correctness and
 CI basis. This research does not establish general BIOS/game compatibility.
 Required post-merge verification: none.
+
+## Executed-core follow-up
+
+The follow-up from main `87a18a9` builds and runs the pinned Beetle Saturn
+revision above on the same host and authorized local game, with JIT disabled.
+See the [measurement record](runtime-performance.md#follow-up-from-main-87a18a9)
+for measurements and limits. This is executable reference evidence rather than
+an inferred performance claim from source inspection.
+
+Further inspected mechanisms in that revision are:
+
+- An event-bound interpreter dispatches the master and resumes the slave at
+  memory/issue boundaries. It does not construct our per-burst speculative
+  CPU/cache/protocol journal. The cached minimum event deadline and specialized
+  memory handlers keep common execution in a short loop.
+- Data-only and full instruction-cache emulation select separate interpreter
+  entry points. Results with the default data-only mode must not stand in for
+  a full-cache comparison. [Execution loop and cache selection](https://github.com/libretro/beetle-saturn-libretro/blob/30f4c12072d265c9e553dcb29386059114945dea/mednafen/ss/ss.c).
+- A two-level instruction-class table deduplicates 16-entry rows. Four-way
+  cache tags are stored together and compared with SSE2 or NEON where available.
+  Those native intrinsics need a separately measured Wasm implementation.
+  [Decode and memory implementation](https://github.com/libretro/beetle-saturn-libretro/blob/30f4c12072d265c9e553dcb29386059114945dea/mednafen/ss/sh7095.inc).
+- The master can fuse compare/conditional-branch pairs, load/compare/branch
+  triples and NOP delay slots. These macros are guarded by `_LOW_ACCURACY_` and
+  excluded from the slave's resumable interpreter. Their state/clock formulas
+  do not by themselves prove equivalence to our observer boundaries.
+  [Fusion implementation](https://github.com/libretro/beetle-saturn-libretro/blob/30f4c12072d265c9e553dcb29386059114945dea/mednafen/ss/sh7095_ops.inc).
+
+The transferable priority is to amortize common execution and synchronization
+without repeatedly reconstructing admission and rollback state. The native/Web
+measurement of our own implementation helps distinguish that work from host
+backend cost. Renderer threading, reduced cache fidelity, fused dispatch and
+compiler differences remain explicit comparison variables; none establishes a
+portable Web speedup on its own.
+
+The branch-admission/protocol-snapshot prototype is not adopted: after correcting
+the benchmark's initial preparation asymmetry, its apparent gain changes sign
+when initialization/execution order is reversed in a fresh browser. The final
+change retains the measurement correction and native game benchmark support;
+its emulator core remains identical to main `87a18a9`. The executed reference
+and native profiles justify further structural investigation, not an invented
+speedup or a claim that the Web 60 fields/s target is met.
