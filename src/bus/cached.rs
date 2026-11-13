@@ -1344,6 +1344,8 @@ impl Bus {
         let mut cycle_attempts = 0;
         let mut skipped = 0;
         let mut store_pc = 0;
+        let mut replay_cpu = false;
+        let mut solo_checkpoint: Option<Cpu> = None;
         while retired < count && memory.clock.get() < end {
             let Some(op) = cpu
                 .decoded_opcode()
@@ -1600,7 +1602,6 @@ impl Bus {
             let instruction_pc = cpu.state().pc;
             let interrupt_mask = cpu.state().sr & 0xF0;
             let mut branch = None;
-            let mut saved_cpu = None;
             if cpu.has_cached_control(op) {
                 let Some(plan) = cpu.prepare_cached_control(&mut memory) else {
                     memory.restore(before);
@@ -1608,15 +1609,23 @@ impl Bus {
                 };
                 branch = Some(plan);
             } else {
-                let prior = cpu.clone();
-                if !cpu.step_cached(&mut memory)
-                    || cpu.state().instructions != prior.state().instructions + 1
-                {
-                    cpu = prior;
+                if poll.is_none() {
+                    if let Some(checkpoint) = &mut solo_checkpoint {
+                        checkpoint.clone_from(&cpu);
+                    } else {
+                        solo_checkpoint = Some(cpu.clone());
+                    }
+                }
+                let instructions = cpu.state().instructions;
+                if !cpu.step_cached(&mut memory) || cpu.state().instructions != instructions + 1 {
+                    if let Some(checkpoint) = &solo_checkpoint {
+                        cpu.clone_from(checkpoint);
+                    } else {
+                        replay_cpu = true;
+                    }
                     memory.restore(before);
                     break;
                 }
-                saved_cpu = Some(prior);
             }
             let at = memory.clock.get();
             if memory.refill_count.get() != 0 {
@@ -1632,8 +1641,12 @@ impl Bus {
                     && !checkpoint_sound
                     && reference.saturating_sub(points.last_reference) >= 9
                 {
-                    if let Some(prior) = saved_cpu {
-                        cpu = prior;
+                    if branch.is_none() {
+                        if let Some(checkpoint) = &solo_checkpoint {
+                            cpu.clone_from(checkpoint);
+                        } else {
+                            replay_cpu = true;
+                        }
                     }
                     memory.restore(before);
                     break;
@@ -1741,11 +1754,24 @@ impl Bus {
                     .map_err(crate::MachineError::Scu)?;
             }
         }
-        if selected < retired as usize {
-            // Replay the prevalidated prefix at the shared retirement horizon.
-            memory.restore(origin);
-            cpu = initial.clone();
-            for _ in 0..selected {
+        if replay_cpu || selected < retired as usize {
+            // Rebuild a rejected private-peer attempt or a shortened shared
+            // prefix. Successful private-peer steps avoid per-instruction copies.
+            // A retained cycle checkpoint already proves an earlier prefix.
+            let first = if let Some(checkpoint) = &anchor
+                && checkpoint.retired as usize <= selected
+            {
+                memory.restore(checkpoint.local.clone());
+                cpu = checkpoint.cpu.clone();
+                retired_at = checkpoint.retired_at;
+                ready = checkpoint.ready;
+                checkpoint.retired as usize
+            } else {
+                memory.restore(origin);
+                cpu = initial.clone();
+                0
+            };
+            for _ in first..selected {
                 let start = memory.clock.get();
                 cpu.step(&mut memory)
                     .expect("prevalidated cache-only prefix");

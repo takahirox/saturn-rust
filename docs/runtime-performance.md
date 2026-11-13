@@ -1,5 +1,8 @@
 # Runtime performance investigation
 
+For the primary-source comparison of Saturn and general emulator techniques and
+the next experiment priorities, see [Web optimization research](web-optimization-research.md).
+
 Related to #17. BIOS initialization correctness and real-time throughput are
 separate requirements. This local follow-up does not close the hardware tracker.
 
@@ -76,18 +79,34 @@ The harness alternates baseline/optimized runs in one browser, warms each module
 for three fields, cold-resets each measured run, and requires equal selected
 guest results: clocks, retired instructions, exceptions, all master registers,
 a guest-written RAM counter and the complete framebuffer's FNV-1a checksum.
-Native emits the same state fields and checks repeated cold-run equality.
+Native emits the original core state fields and checks repeated cold-run equality.
 These snapshots supplement functional regressions, not prove complete state
 equivalence. No wall-clock threshold is a correctness test or CI gate.
 
 Both tools optionally accept `--bios FILE` for an authorized raw local BIOS.
+The browser harness also accepts `--disc FILE` and repeatable `--track FILE`
+arguments for CUE selections. With a BIOS it mounts the media without HLE;
+without one it uses the ordinary disc HLE reset. Files are selected through a
+browser-local file input, never exposed as HTTP resources. `--candidate DIRECTORY`
+selects a frozen candidate build instead of `web/pkg`. Both runtime files are
+loaded into the loopback server's immutable allowlist and their SHA-256 hashes
+are included in the report.
+
 Loading/reset is outside the measured interval. Native `--draw` includes
 framebuffer production/copying on every field. Browser `--draw` now also includes
-Canvas `putImageData`; the historical measurements below predate this addition. An
+Canvas `putImageData`; the first-pass measurements below predate this addition. An
 ending-frame checksum is always computed outside that interval. The browser
 tool's optional `--profile OUTPUT` saves a local DevTools CPU profile. Its server
 binds only to loopback and serves only the selected public Wasm runtime files;
 firmware is never an HTTP resource and no external request is allowed.
+Profiles now cover the first timed window after boot/skip and require a single
+runtime, so startup does not obscure a selected game scene. The browser harness
+always drains PCM and compares its rolling checksum, sample count and generated/
+dropped counters, along with both SH-2 register sets and instruction counts.
+It reports p50/p95/p99 field times per window and combined fields/elapsed-time
+throughput. `--capture OUTPUT --draw` optionally saves a local final Canvas image;
+private captures must remain unpublished. PCM draining measures core production
+and delivery overhead, not actual WebAudio playback or consumer underflows.
 
 The browser harness accepts `--skip FIELD` and optional `--buttons FILE` to
 measure initialization or a later menu rather than only cold startup. Button
@@ -2791,3 +2810,181 @@ review remain mandatory before merge.
 **Real Web 60 fields/s remains unmet**, as do umbrella hardware and general
 firmware compatibility criteria. Required post-merge verification: none.
 Related to #17.
+
+## Web optimization experiments (2026-11-13)
+
+Related to [#138](https://github.com/takahirox/saturn-rust/issues/138) and #17.
+The [primary-source research](web-optimization-research.md) compares Yabause,
+Kronos, Yaba Sanshiro, Beetle Saturn, QEMU and v86, including cached execution,
+JITs, idle recognition, SIMD, GPU rendering and host threading.
+
+### Reproducible game measurement
+
+Baseline source: `2d6b17f0979fb798dc826723fe7a50e44d1ffdc0`. Local measurements
+use macOS 27.2.1 and headless Chrome 157.0.8103.52. The exact processor model was
+unavailable to the sandbox. Production builds retain wasm-bindgen 0.2.129,
+Binaryen 127 and the unchanged build script; compiler versions below are explicit.
+These measurements characterize this host/toolchain rather than other devices.
+
+Each module warms for three fields, then cold boots independently. Comparisons
+alternate execution order over matching continuous windows. Boot/skip is outside
+timing. Every measured field includes Canvas upload and PCM draining/checksum;
+competing local builds, tests and profiles are stopped during timed intervals.
+The BIOS and mounted CUE/track data remain local. No game-specific reset or
+firmware patch is used. The late-game interval visibly reaches the game's book
+selection screen with both SH-2 processors running. It is one defined workload,
+not evidence covering arbitrary gameplay.
+
+To reproduce with authorized equivalent local media, save both runtime files
+from each build in separate directories, then use the benchmark's `--candidate`
+and `--baseline` arguments together with `--bios`, `--disc` and `--track`.
+The controller timeline uses Right (`0008`) at fields 300, 316, 332, 348, 364 and
+380, releasing eight fields after each; A (`0040`) at 416, released at 424; and
+Start (`0080`) at 2800, released at 2808. The late-game measurement uses
+`--skip 3600 --frames 80 --runs 6 --continuous --draw`. Earlier game measurements
+omit the later Start event and use `--skip 600 --frames 80 --runs 4`; BIOS-only
+uses `--skip 1200 --frames 80 --runs 4`. Both also use `--continuous --draw`.
+The original guest uses `--frames 60 --runs 4 --continuous --draw` without private
+inputs. Throughput divides total measured fields by total elapsed time. Different
+scenes/inputs cannot be compared directly with historical rates above.
+
+A Rust 1.99 late-game baseline CPU profile attributes 23.8% of sampled self time to
+cached-burst execution, 7.8% to display acquisition, 7.0% to sound advancement and
+5.9% to VDP1 advancement. These are sampled self times, not total subsystem shares.
+
+The benchmark now accepts mounted discs, freezes/hashes runtime files, records
+p50/p95/p99/max timing, and compares exposed master/slave CPU endpoints plus
+sound, clocks, framebuffer and PCM results. Browser endpoint equality supplements
+native ordinary-step differential oracles; it does not prove every internal
+state equal. ISO and multi-track CUE smoke checks use original repository fixtures
+and pass equality in cold and continuous modes. Syntax, local links and staged
+whitespace checks pass.
+
+### Rejected passive-read protocol versions
+
+A candidate replaced complete bus-protocol checkpoint copies with immutable
+version indices and reused vector capacity. The initial Rust 1.99 late-game
+comparison appeared promising, but fresh-browser and actual CI-artifact results
+did not reproduce it:
+
+| Comparison over fields 3600–4080 | Baseline fields/s | Candidate fields/s | Change |
+| --- | ---: | ---: | ---: |
+| Initial Rust 1.99, six 80-field windows | 18.229 | 19.076 | +4.65% |
+| Fresh Rust 1.99, four 120-field windows | 18.800 | 18.742 | −0.31% |
+| Actual Rust 1.100 CI artifacts, six 80-field windows | 18.938 | 18.611 | −1.73% |
+
+All six CI-artifact windows regress. The change is rejected, including its host
+scratch field and version-specific test. The initial median window p95/p99 of
+56.35/57.45 → 53.10/53.80 ms is not an adopted improvement. The fresh repeat has
+53.95/54.55 → 54.20/54.90 ms, with 56 ms maximum for both variants. These are
+medians of window percentiles, not pooled percentiles or long-run latency bounds.
+
+The initial candidate also measured 16.172 → 16.133 fields/s in the earlier game
+(−0.24%), 62.367 → 60.787 on the original loop (−2.53%), and 41.480 → 40.969 on
+BIOS-only (−1.23%). All comparisons preserve exposed guest endpoints.
+
+Artifact SHA-256 inventory for the rejected trial:
+
+- Rust 1.99 baseline: `033febfddf664aaabbbb9a4064bc117925fdbc62cfb7d417d6a6f54fc36102b1`.
+- Initially measured candidate: `092a447915aea1d4b80a1f5aff07c15b0c337a913c6d9a1698818824b90eb2da`.
+- Fresh-repeat candidate: `261e9f0e5f36c264110220bb87bd3067e0f44acb8d055f609b1476ea27112cee`.
+- Rust 1.100 CI baseline: `bba1401a67073fe75236d01afdbf2e840d4a72d37301964387a4fdf4da3bfdc7`.
+- Rust 1.100 CI candidate: `e83a9a56717edb81bdb7a9cc74dcb8734aace7d28084c0bbbbe88155e00cf52f`.
+
+The two Rust 1.99 candidates have identical JS and complete Wasm code sections;
+only 68 source-location data bytes differ after comments. Correctness passed
+1,338 native tests in 111 groups, native/Wasm Clippy, fixture checks, Web build,
+13 runner tests and focused read/repeat invalidation negative controls. The
+runner's first sandbox-restricted attempt failed at loopback listeners; rerunning
+with the required local access passed. Correctness alone did not justify adoption.
+
+### Other trials excluded from the implementation
+
+All comparisons use matching baseline/candidate endpoints. Different scenes are
+identified explicitly; these independent trials cannot be multiplied together.
+
+| Isolated trial | Observed throughput change | Decision |
+| --- | ---: | --- |
+| Borrow initial CPU/local cycle anchors | +0.53% in a historical game interval | Inconsistent windows; revert. |
+| Copy-free cycle repeat plus global SIMD128 | +0.73% in that interval | Inconsistent windows; revert both. |
+| Prepared MOV stores | +0.43% in that interval | Inconsistent windows; revert. |
+| Stage MOV bus phases before CPU publication | −2.76% in the late-game interval | Revert despite passing targeted correctness tests. |
+| Shared cached dispatcher with an outlined Wasm function | −0.78% in the earlier game | Revert; a smaller function did not improve throughput. |
+| Box the rare CPU fault payload | −0.21% in the earlier game | Revert; smaller CPU snapshots alone did not help. |
+| Cap one-caller inlining | −0.15% on the original guest | Keep standard settings. |
+| Rust opt-level 2 | +0.02% on the original guest | Keep standard settings. |
+| Replay every rejected CPU step from burst origin, without per-instruction CPU copies | +4.60% on the original guest, −2.83% in the earlier game | Reject the unbounded-replay design; evaluate retained checkpoints separately. |
+| Retain per-instruction CPU copies and reuse checkpoints only for existing shortened-prefix replay | −0.13% on the original guest, −0.82% in the earlier game | No demonstrated benefit in those workloads; exclude this isolated variant. |
+| Box the detailed SMPC payload inside BusError | −2.02% on the original guest, −1.23% in the earlier game | Revert the payload/API and ownership changes; compact types alone did not help. |
+
+### CPU recovery prototype and final execution-class guard
+
+The initial CPU-recovery prototype removes full CPU copies before fallible
+ordinary instructions. After a rejected step or sound retirement-gap rejection,
+the local bus journal rolls back immediately. Publication reconstructs the
+selected prefix from an existing cycle checkpoint at or before that endpoint,
+falling back to the immutable burst origin. The same checkpoint can shorten an
+already-required shared-horizon replay. No periodic checkpoint or instruction
+class is added; reconstruction uses the ordinary CPU interpreter.
+
+With local Rust 1.100, the prototype improves the late-game interval from
+18.821 to 19.410 fields/s (+3.13%) in six 80-field windows. A fresh four-window
+120-field repeat reproduces 18.993 → 19.601 (+3.20%). Every paired window
+improves and exposed guest endpoints match. The repeat's median window p95/p99
+is 53.60/54.00 → 52.15/53.05 ms, with maxima 54.70 → 54.00 ms. Earlier game is
+flat (16.189 → 16.154, −0.22%); the original loop improves 64.137 → 67.314
+(+4.95%), but BIOS-only regresses 43.669 → 41.715 (−4.47%).
+
+An uncached-ROM snapshot guard does not fix BIOS-only (43.166 → 40.745,
+−5.61%); its measured endpoint is outside ROM. That variant is excluded. It
+measures +5.03% on the original loop and +1.36% in the earlier game, illustrating
+why one scene alone is insufficient for selecting the recovery strategy.
+
+The final candidate uses the existing peer schedule to select recovery:
+private-peer bursts use deferred CPU recovery and retained checkpoints, while
+solo CPU execution keeps ordinary per-instruction rollback snapshots. A single
+lazy snapshot slot is reused within a solo burst. Scalar/prepared paths,
+hardware deadlines, guest clocks, memory effects and ordinary errors retain
+their existing rules.
+
+Both local baseline and final candidate use Rust 1.100.0 with unchanged
+production flags. Baseline source is `2d6b17f`; its Wasm SHA-256 is
+`d4190de73d52f737f526f285ade9ee91ab024c66f36b12a8bd4d04e13db16dd2`.
+Final candidate SHA-256 is
+`778be960b1243209bdf90a16219dd3c63e9713c72cd290ab63ccfeaaf8c86532`.
+The earlier unconditional prototype has SHA-256
+`b5cd3badbdffc17787e9d2445fa19901625da3b4e6bd71f2d606bc773b60482e`;
+its game rates must not be attributed to the final candidate without measurement.
+Local and hosted builds are distinct artifacts; compare matched pairs from each
+build environment.
+
+| Final candidate, local comparison | Baseline fields/s | Candidate fields/s | Change |
+| --- | ---: | ---: | ---: |
+| BIOS-only, fields 1200–1520, four 80-field windows | 43.342 | 43.509 | +0.38% |
+| Original loop, fields 0–240, four 60-field windows | 63.238 | 63.083 | −0.24% |
+| Earlier game, fields 600–920, four 80-field windows | 16.060 | 16.233 | +1.08% |
+
+The BIOS slowdown is removed and the original loop is effectively flat. Final
+private-peer game comparisons, fresh-browser repeats and actual hosted-artifact
+results are recorded in the PR linked from #138 and are required before adoption.
+Initial gains alone are insufficient, as the rejected protocol-version trial
+shows. All measured exposed guest endpoints match.
+
+The final candidate passes all 52 existing cached-execution differential tests
+with Rust 1.100, retaining full CPU/cache/bus assertions against the independent
+ordinary-step scheduler. A negative control restoring the wrong retained CPU fails two existing cases,
+covering polling/sound-control phases and uncached WRAM boundaries. Native
+all-target and Wasm Clippy with warnings denied pass. The standard Web rebuild
+matches the frozen final candidate JS/Wasm byte for byte. Complete
+native/Wasm/browser/aggregate CI must pass for the final PR head; its results
+are recorded in the PR. Earlier prototypes pass the full hosted suite, but those
+runs do not validate this execution-class guard.
+
+### Acceptance limits
+
+The benchmark drains audio but does not run the production AudioWorklet consumer
+or measure audible underflows. **Sustained real Web 60 fields/s remains unmet.**
+Broader gameplay, transition and audio-delivery acceptance remain open under
+#138; general hardware/firmware compatibility remains outside this increment.
+Private media, profiles, captures, logs and experiment artifacts are not published.
+Required post-merge verification: none.
