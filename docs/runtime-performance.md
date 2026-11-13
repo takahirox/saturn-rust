@@ -3093,3 +3093,25 @@ Only our repository's original licensed native/Wasm/browser guests gate changes.
 The externally built core and all private inputs, captures and raw logs remain
 local. These unthrottled reference measurements are not a claim that our Web
 implementation meets real-time or general compatibility acceptance.
+
+### Pair preparation correction
+
+The guarded prototype's first six-window comparison gives +1.88%, but a fresh
+four-window repeat gives only +0.11% overall (18.127 → 18.148 fields/s). It does
+not reproduce a convincing combined gain. The first pair is −6.00%, while the
+remaining pairs are positive. These results remain provisional rather than
+adoption evidence.
+
+Inspection finds that the old harness boots and measures the first runtime,
+then boots the second runtime before measuring its matching window. With 3600
+skipped fields, that first pair is separated by several minutes; subsequent
+pairs alternate nearby. This permits host-state drift to confound the first
+comparison. It does not prove that drift explains the discrepancy.
+
+The harness now prepares every runtime to the requested field before timing
+either one, for both cold and continuous runs. Reports identify this method as
+`preparation: "all-variants-before-timing"`. Repeat the guarded comparison with
+this method and reverse the artifact assignments in a fresh browser to
+counterbalance initialization/execution order. Guest skip fields, input and
+state equality remain unchanged. A green earlier CI head or the initial
+prototype's +4.65% cannot substitute for this final performance validation.

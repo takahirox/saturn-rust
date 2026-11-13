@@ -121,76 +121,83 @@ try {
   const references = new Map();
   const cdp = values.profile ? await page.context().newCDPSession(page) : null;
   if (cdp) await cdp.send("Profiler.enable");
-  for (let run = 0; run < runs; run++) for (const variant of run % 2 ? [...variants].reverse() : variants) {
-    // Boot/skip outside the profile as well as the throughput interval.
-    await page.evaluate(({ variant, skip, buttons, continuous }) => {
-      const runtime = runtimeBench[variant];
-      if (!continuous || !runtime.machine) {
-        runtime.machine = new runtime.Emulator();
-        runtime.reset(runtime.machine);
-      }
-      const m = runtime.machine, events = new Map(buttons);
-      while (Number(m.frames()) < skip) {
-        const field = Number(m.frames());
-        if (events.has(field)) m.set_buttons(events.get(field));
-        m.advance_frame();
-        m.audio_samples(8192);
-      }
-    }, { variant, skip, buttons, continuous: values.continuous });
-    if (cdp && run === 0) await cdp.send("Profiler.start");
-    const result = await page.evaluate(({ variant, frames, draw, buttons, continuous }) => {
-      const runtime = runtimeBench[variant];
-      const m = runtime.machine;
-      try {
-        const events = new Map(buttons);
-        const advance = () => {
+  for (let run = 0; run < runs; run++) {
+    const order = run % 2 ? [...variants].reverse() : variants;
+    // Finish every variant's boot before timing either one. Otherwise the
+    // first paired windows are separated by the second runtime's whole skip.
+    for (const variant of order) {
+      // Boot/skip outside the profile as well as the throughput interval.
+      await page.evaluate(({ variant, skip, buttons, continuous }) => {
+        const runtime = runtimeBench[variant];
+        if (!continuous || !runtime.machine) {
+          runtime.machine = new runtime.Emulator();
+          runtime.reset(runtime.machine);
+        }
+        const m = runtime.machine, events = new Map(buttons);
+        while (Number(m.frames()) < skip) {
           const field = Number(m.frames());
           if (events.has(field)) m.set_buttons(events.get(field));
           m.advance_frame();
-        };
-        const canvas = draw ? document.createElement("canvas") : null;
-        const context = canvas?.getContext("2d");
-        const timings = [];
-        let pcm = 2166136261, audioSamples = 0;
-        const start = performance.now();
-        for (let i = 0; i < frames; i++) {
-          const before = performance.now();
-          advance();
-          const audio = m.audio_samples(8192);
-          audioSamples += audio.length;
-          for (const value of audio) pcm = Math.imul(pcm ^ (value & 65535), 16777619) >>> 0;
-          if (draw) {
-            const width = m.video_width(), height = m.video_height();
-            if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
-            context.putImageData(new ImageData(new Uint8ClampedArray(m.framebuffer()), width, height), 0, 0);
-          }
-          timings.push(performance.now() - before);
+          m.audio_samples(8192);
         }
-        const ms = performance.now() - start;
-        if (canvas) document.body.replaceChildren(canvas);
-        const pixels = m.framebuffer().reduce((hash, byte) => Math.imul(hash ^ byte, 16777619) >>> 0, 2166136261);
-        timings.sort((a, b) => a - b);
-        return { ms, p50FrameMs: timings[Math.ceil(timings.length * 0.50) - 1],
-          p95FrameMs: timings[Math.ceil(timings.length * 0.95) - 1],
-          p99FrameMs: timings[Math.ceil(timings.length * 0.99) - 1], maxFrameMs: timings.at(-1),
-          state: { frames: Number(m.frames()), clocks: Number(m.peripheral_clocks()), instructions: Number(m.instruction_count()),
-          exceptions: Number(m.exception_count()), registers: [...m.registers()], special: [...m.special_registers()],
-          status: m.status(), addressErrorPending: m.address_error_pending(),
-          slaveRegisters: [...m.slave_registers()], slaveInstructions: m.slave_instruction_count(),
-          slavePc: m.slave_pc(), slaveExceptions: m.slave_exception_count(),
-          soundPc: m.sound_pc(), soundInstructions: m.sound_instruction_count(), soundRegisters: [...m.sound_registers()],
-          soundHalted: m.sound_halted(),
-          pcm, audioSamples, audioGenerated: m.audio_generated(), audioDropped: m.audio_dropped(),
-          mailbox: m.read_long(0x06020000), commandWord: m.read_long(0x05C02000), pixels } };
-      } finally { if (!continuous) { m.free(); delete runtime.machine; } }
-    }, { variant, frames, draw: values.draw, buttons, continuous: values.continuous });
-    const key = values.continuous ? run : 0;
-    if (!references.has(key)) references.set(key, result.state);
-    assert.deepEqual(result.state, references.get(key), `guest state changed: ${variant}, run ${run}`);
-    samples[variant].push({ ms: result.ms, p50FrameMs: result.p50FrameMs,
-      p95FrameMs: result.p95FrameMs, p99FrameMs: result.p99FrameMs, maxFrameMs: result.maxFrameMs });
-    if (cdp && run === 0) { const { profile } = await cdp.send("Profiler.stop"); await writeFile(values.profile, JSON.stringify(profile)); }
-    console.error(JSON.stringify({ variant, run, endField: result.state.frames, ms: result.ms, fps: frames * 1000 / result.ms }));
+      }, { variant, skip, buttons, continuous: values.continuous });
+    }
+    for (const variant of order) {
+      if (cdp && run === 0) await cdp.send("Profiler.start");
+      const result = await page.evaluate(({ variant, frames, draw, buttons, continuous }) => {
+        const runtime = runtimeBench[variant];
+        const m = runtime.machine;
+        try {
+          const events = new Map(buttons);
+          const advance = () => {
+            const field = Number(m.frames());
+            if (events.has(field)) m.set_buttons(events.get(field));
+            m.advance_frame();
+          };
+          const canvas = draw ? document.createElement("canvas") : null;
+          const context = canvas?.getContext("2d");
+          const timings = [];
+          let pcm = 2166136261, audioSamples = 0;
+          const start = performance.now();
+          for (let i = 0; i < frames; i++) {
+            const before = performance.now();
+            advance();
+            const audio = m.audio_samples(8192);
+            audioSamples += audio.length;
+            for (const value of audio) pcm = Math.imul(pcm ^ (value & 65535), 16777619) >>> 0;
+            if (draw) {
+              const width = m.video_width(), height = m.video_height();
+              if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+              context.putImageData(new ImageData(new Uint8ClampedArray(m.framebuffer()), width, height), 0, 0);
+            }
+            timings.push(performance.now() - before);
+          }
+          const ms = performance.now() - start;
+          if (canvas) document.body.replaceChildren(canvas);
+          const pixels = m.framebuffer().reduce((hash, byte) => Math.imul(hash ^ byte, 16777619) >>> 0, 2166136261);
+          timings.sort((a, b) => a - b);
+          return { ms, p50FrameMs: timings[Math.ceil(timings.length * 0.50) - 1],
+            p95FrameMs: timings[Math.ceil(timings.length * 0.95) - 1],
+            p99FrameMs: timings[Math.ceil(timings.length * 0.99) - 1], maxFrameMs: timings.at(-1),
+            state: { frames: Number(m.frames()), clocks: Number(m.peripheral_clocks()), instructions: Number(m.instruction_count()),
+            exceptions: Number(m.exception_count()), registers: [...m.registers()], special: [...m.special_registers()],
+            status: m.status(), addressErrorPending: m.address_error_pending(),
+            slaveRegisters: [...m.slave_registers()], slaveInstructions: m.slave_instruction_count(),
+            slavePc: m.slave_pc(), slaveExceptions: m.slave_exception_count(),
+            soundPc: m.sound_pc(), soundInstructions: m.sound_instruction_count(), soundRegisters: [...m.sound_registers()],
+            soundHalted: m.sound_halted(),
+            pcm, audioSamples, audioGenerated: m.audio_generated(), audioDropped: m.audio_dropped(),
+            mailbox: m.read_long(0x06020000), commandWord: m.read_long(0x05C02000), pixels } };
+        } finally { if (!continuous) { m.free(); delete runtime.machine; } }
+      }, { variant, frames, draw: values.draw, buttons, continuous: values.continuous });
+      const key = values.continuous ? run : 0;
+      if (!references.has(key)) references.set(key, result.state);
+      assert.deepEqual(result.state, references.get(key), `guest state changed: ${variant}, run ${run}`);
+      samples[variant].push({ ms: result.ms, p50FrameMs: result.p50FrameMs,
+        p95FrameMs: result.p95FrameMs, p99FrameMs: result.p99FrameMs, maxFrameMs: result.maxFrameMs });
+      if (cdp && run === 0) { const { profile } = await cdp.send("Profiler.stop"); await writeFile(values.profile, JSON.stringify(profile)); }
+      console.error(JSON.stringify({ variant, run, endField: result.state.frames, ms: result.ms, fps: frames * 1000 / result.ms }));
+    }
   }
   if (values.capture) await page.screenshot({ path: values.capture });
   if (values.continuous) await page.evaluate(() => {
@@ -201,7 +208,7 @@ try {
   });
   const median = times => [...times].sort((a, b) => a - b)[Math.floor(times.length / 2)];
   console.log(JSON.stringify({ guest: values.disc ? "user-provided-disc" : values.bios ? "user-provided" : values["vdp1-stores"] ? "original-vdp1-stores" : "original-runtime-loop", browser: browser.version(), frames, runs,
-    skip, continuous: values.continuous, draw: values.draw, artifacts, samples, medianMs: Object.fromEntries(variants.map(v => [v, median(samples[v].map(s => s.ms))])),
+    skip, continuous: values.continuous, draw: values.draw, preparation: "all-variants-before-timing", artifacts, samples, medianMs: Object.fromEntries(variants.map(v => [v, median(samples[v].map(s => s.ms))])),
     fps: Object.fromEntries(variants.map(v => [v, frames * 1000 / median(samples[v].map(s => s.ms))])),
     combinedFps: Object.fromEntries(variants.map(v => [v, frames * runs * 1000 / samples[v].reduce((sum, s) => sum + s.ms, 0)])),
     combinedSpeedup: values.baseline ? samples.baseline.reduce((sum, s) => sum + s.ms, 0) / samples.pkg.reduce((sum, s) => sum + s.ms, 0) : null,
