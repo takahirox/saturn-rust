@@ -37,12 +37,12 @@ impl PeerSchedule<'_> {
 }
 
 #[derive(Clone)]
-struct Local<Reads = usize> {
+struct Local {
     clock: u64,
     lru: [u8; 64],
     retained: Option<(u32, u16)>,
     epochs: u64,
-    reads: Option<Reads>,
+    reads: Option<crate::onchip::ReadSequence>,
     write_len: usize,
     fill_len: usize,
     bus_len: usize,
@@ -54,47 +54,7 @@ struct PassiveRead<'a> {
     allowed_widths: u8,
     little: bool,
     rom: Option<&'a [u8]>,
-    sequence: RefCell<ReadHistory>,
-}
-// A checkpoint stores an immutable version number rather than moving a full
-// bus protocol through every CPU/local snapshot. Checkpoints between read/repeat
-// operations share a version.
-struct ReadHistory {
-    current: crate::onchip::ReadSequence,
-    saved: Vec<crate::onchip::ReadSequence>,
-    changed: bool,
-}
-impl ReadHistory {
-    fn new(current: crate::onchip::ReadSequence) -> Self {
-        Self {
-            current,
-            saved: Vec::new(),
-            changed: false,
-        }
-    }
-    fn snapshot(&mut self) -> usize {
-        if self.changed || self.saved.is_empty() {
-            self.saved.push(self.current.clone());
-            self.changed = false;
-        }
-        self.saved.len() - 1
-    }
-    fn restore(&mut self, version: usize) {
-        self.current = self.saved[version].clone();
-        self.saved.truncate(version + 1);
-        self.changed = false;
-    }
-    fn read(&mut self, address: u32, width: usize, at: u64) -> u64 {
-        self.changed = true;
-        self.current.read(address, width, at)
-    }
-    fn repeats(&self, after: usize, before: usize, period: u64) -> bool {
-        self.saved[after].repeats(&self.saved[before], period)
-    }
-    fn repeat(&mut self, before: usize, period: u64, copies: u64) {
-        self.current.repeat(&self.saved[before], period, copies);
-        self.changed = true;
-    }
+    sequence: RefCell<crate::onchip::ReadSequence>,
 }
 impl PassiveRead<'_> {
     fn permits(&self, address: u32) -> bool {
@@ -273,7 +233,7 @@ impl Cached<'_> {
                 // Predict with the same scheduled MA boundary and BSC protocol
                 // as read(). Execution still consumes the real held operand.
                 let start = plan.issue_at() + u64::from(plan.load_wait(plan.issue_at(), true));
-                let mut sequence = passive.sequence.borrow().current.clone();
+                let mut sequence = passive.sequence.borrow().clone();
                 sequence
                     .read(address & 0x1FFF_FFFF, width as usize, start)
                     .max(plan.at)
@@ -289,10 +249,7 @@ impl Cached<'_> {
             lru: *self.lru.borrow(),
             retained: self.retained.get(),
             epochs: self.epochs.get(),
-            reads: self
-                .passive
-                .as_ref()
-                .map(|p| p.sequence.borrow_mut().snapshot()),
+            reads: self.passive.as_ref().map(|p| p.sequence.borrow().clone()),
             write_len: self.ram_stores.len(),
             fill_len: self.version_count.get(),
             bus_len: self.bus_events.borrow().len(),
@@ -312,17 +269,7 @@ impl Cached<'_> {
         self.version_count.set(state.fill_len);
         self.refill_count.set(self.fills.get_mut().read_count());
         if let Some(passive) = &mut self.passive {
-            passive
-                .sequence
-                .get_mut()
-                .restore(state.reads.expect("passive protocol snapshot"));
-        }
-    }
-    fn recycle_reads(&mut self, reuse: &mut Vec<crate::onchip::ReadSequence>) {
-        if let Some(passive) = &mut self.passive {
-            let history = passive.sequence.get_mut();
-            history.saved.clear();
-            *reuse = std::mem::take(&mut history.saved);
+            *passive.sequence.get_mut() = state.reads.expect("passive protocol snapshot");
         }
     }
     fn sequence_before(&self, count: usize) -> crate::onchip::ReadSequence {
@@ -342,20 +289,14 @@ impl Cached<'_> {
             .last()
             .map_or(self.store_ready, |event| event.ready)
     }
-    fn into_parts(
-        self,
-    ) -> (
-        Local<crate::onchip::ReadSequence>,
-        Option<RamPlan>,
-        CachedLines,
-    ) {
+    fn into_parts(self) -> (Local, Option<RamPlan>, CachedLines) {
         let before_last = self.ram_stores.last().map(|last| {
             let mut sequence = self.sequence_before(last.before_event);
             sequence.advance(last.store.at);
             sequence
         });
         let reads = if let Some(passive) = self.passive {
-            Some(passive.sequence.into_inner().current)
+            Some(passive.sequence.into_inner())
         } else {
             self.bus_events
                 .borrow()
@@ -430,7 +371,7 @@ impl Cached<'_> {
             || self
                 .passive
                 .as_ref()
-                .is_some_and(|p| p.rom.is_some() || p.sequence.borrow().current.beats != 0)
+                .is_some_and(|p| p.rom.is_some() || p.sequence.borrow().beats != 0)
         {
             return false;
         }
@@ -897,9 +838,7 @@ impl Bus {
                 allowed_widths: 1 | 2 | 4,
                 little: false,
                 rom: None,
-                sequence: RefCell::new(ReadHistory::new(
-                    self.onchip[0].plan_cached_reads(self.main_clocks),
-                )),
+                sequence: RefCell::new(self.onchip[0].plan_cached_reads(self.main_clocks)),
             });
         }
         let op = initial.decoded_opcode()?;
@@ -960,7 +899,7 @@ impl Bus {
             allowed_widths,
             rom: None,
             little: self.onchip[0].external_little_endian(Bus::physical(address)),
-            sequence: RefCell::new(ReadHistory::new(sequence)),
+            sequence: RefCell::new(sequence),
         })
     }
     pub(crate) fn cached_wait_allowed(&self) -> bool {
@@ -1385,10 +1324,6 @@ impl Bus {
         {
             return Ok(None);
         }
-        if let Some(passive) = &mut memory.passive {
-            passive.sequence.get_mut().saved = std::mem::take(&mut self.cached_read_snapshots);
-            debug_assert!(passive.sequence.get_mut().saved.is_empty());
-        }
         let origin = memory.snapshot();
         let mut points = Retirements {
             points: std::mem::take(&mut self.cached_retirement_points),
@@ -1409,6 +1344,7 @@ impl Bus {
         let mut cycle_attempts = 0;
         let mut skipped = 0;
         let mut store_pc = 0;
+        let mut replay_cpu = false;
         while retired < count && memory.clock.get() < end {
             let Some(op) = cpu
                 .decoded_opcode()
@@ -1464,13 +1400,7 @@ impl Bus {
                     && local.lru == previous.local.lru
                     && local.retained == previous.local.retained
                     && match (&local.reads, &previous.local.reads) {
-                        (Some(a), Some(b)) => memory
-                            .passive
-                            .as_ref()
-                            .unwrap()
-                            .sequence
-                            .borrow()
-                            .repeats(*a, *b, period),
+                        (Some(a), Some(b)) => a.repeats(b, period),
                         (None, None) => true,
                         _ => false,
                     }
@@ -1505,7 +1435,7 @@ impl Bus {
                             passive
                                 .sequence
                                 .borrow_mut()
-                                .repeat(*before, period, repetitions);
+                                .repeat(before, period, repetitions);
                         }
                         memory.epochs.set(
                             memory.epochs.get()
@@ -1671,7 +1601,6 @@ impl Bus {
             let instruction_pc = cpu.state().pc;
             let interrupt_mask = cpu.state().sr & 0xF0;
             let mut branch = None;
-            let mut saved_cpu = None;
             if cpu.has_cached_control(op) {
                 let Some(plan) = cpu.prepare_cached_control(&mut memory) else {
                     memory.restore(before);
@@ -1679,15 +1608,12 @@ impl Bus {
                 };
                 branch = Some(plan);
             } else {
-                let prior = cpu.clone();
-                if !cpu.step_cached(&mut memory)
-                    || cpu.state().instructions != prior.state().instructions + 1
-                {
-                    cpu = prior;
+                let instructions = cpu.state().instructions;
+                if !cpu.step_cached(&mut memory) || cpu.state().instructions != instructions + 1 {
+                    replay_cpu = true;
                     memory.restore(before);
                     break;
                 }
-                saved_cpu = Some(prior);
             }
             let at = memory.clock.get();
             if memory.refill_count.get() != 0 {
@@ -1703,9 +1629,7 @@ impl Bus {
                     && !checkpoint_sound
                     && reference.saturating_sub(points.last_reference) >= 9
                 {
-                    if let Some(prior) = saved_cpu {
-                        cpu = prior;
-                    }
+                    replay_cpu |= branch.is_none();
                     memory.restore(before);
                     break;
                 }
@@ -1737,7 +1661,6 @@ impl Bus {
         let mut selected = points.aligned_prefix(retired as usize, self.main_clocks, poll);
         if selected == 0 {
             points.recycle_into(&mut self.cached_retirement_points);
-            memory.recycle_reads(&mut self.cached_read_snapshots);
             return Ok(None);
         }
         if sound_lookahead {
@@ -1788,7 +1711,6 @@ impl Bus {
             {
                 self.sound.restore_cached_lookahead(checkpoint);
                 points.recycle_into(&mut self.cached_retirement_points);
-                memory.recycle_reads(&mut self.cached_read_snapshots);
                 return Ok(None);
             }
             let selected_reference = self.system_clock.deadline(
@@ -1814,11 +1736,24 @@ impl Bus {
                     .map_err(crate::MachineError::Scu)?;
             }
         }
-        if selected < retired as usize {
-            // Replay the prevalidated prefix at the shared retirement horizon.
-            memory.restore(origin);
-            cpu = initial.clone();
-            for _ in 0..selected {
+        if replay_cpu || selected < retired as usize {
+            // Rebuild only after a failed speculative CPU step or a shortened
+            // shared horizon; successful ordinary instructions need no CPU copy.
+            // A retained cycle checkpoint already proves an earlier prefix.
+            let first = if let Some(checkpoint) = &anchor
+                && checkpoint.retired as usize <= selected
+            {
+                memory.restore(checkpoint.local.clone());
+                cpu = checkpoint.cpu.clone();
+                retired_at = checkpoint.retired_at;
+                ready = checkpoint.ready;
+                checkpoint.retired as usize
+            } else {
+                memory.restore(origin);
+                cpu = initial.clone();
+                0
+            };
+            for _ in first..selected {
                 let start = memory.clock.get();
                 cpu.step(&mut memory)
                     .expect("prevalidated cache-only prefix");
@@ -1842,7 +1777,6 @@ impl Bus {
         };
         points.recycle_into(&mut self.cached_retirement_points);
         let store = memory.store.get();
-        memory.recycle_reads(&mut self.cached_read_snapshots);
         let (local, ram_plan, fills) = memory.into_parts();
         debug_assert!(store.is_none() || (ram_plan.is_none() && fills.read_count() == 0));
         drop(cache);

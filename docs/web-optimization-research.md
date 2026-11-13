@@ -128,6 +128,7 @@ if game profiles show significant media work. [Mednafen Saturn documentation](ht
 | Superinstructions: [Vmgen manual](https://www.complang.tuwien.ac.at/anton/vmgen/html-docs/Superinstructions.html) | Fuse measured common SH-2 sequences into one host dispatch, retaining each instruction's retirement and event boundaries. | Useful intermediate step before a full JIT; existing scalar blocks already amortize some work. |
 | Guest-to-Wasm JIT and hotness thresholds: [v86 design](https://github.com/copy/v86/blob/315b2b0b758703ef0e6cc7b4088d6068f83f3c20/docs/how-it-works.md) | Generate Wasm for hot SH-2 blocks and share runtime memory/helpers with the interpreter. | Credible larger experiment. Measure compilation latency, module/cache growth and side-exit costs. |
 | Guarded memory fast paths: [v86 design](https://github.com/copy/v86/blob/315b2b0b758703ef0e6cc7b4088d6068f83f3c20/docs/how-it-works.md) and Beetle mapping above | Specialize known RAM regions and cache hits, retaining permissions, aliasing, wait states and transactional writes. | Extend existing paths where profiles show repeated address/region dispatch. |
+| Compact hot data and result types: [Rust Clippy's large-error guidance](https://clippy.rust-lang.org/master/index.html#result_large_err) | Separate large, uncommon diagnostic payloads from results returned on every memory access. | Measure an indirect SMPC fault payload while preserving every diagnostic field and error/replay behavior; smaller types alone do not establish a speedup. |
 | Idle-loop recognition: Yabause source above | Reuse proofs for stable polling loops until the first event that can affect a read, interrupt, cache or peer CPU. | Already present in private-peer polling; expand only for measured uncovered loops. |
 | SIMD and regular data layouts: [WebAssembly SIMD documentation](https://emscripten.org/docs/porting/simd.html) | Vectorize independent pixel decode, color conversion and composition runs; consider audio only where dependencies allow. | Medium priority, contingent on hot kernels. Preserve integer widths, saturation and rounding. |
 | Parallel rendering: Beetle render queue above; [browser threading requirements](https://emscripten.org/docs/porting/pthreads.html) | Produce immutable display packets in emulated order, then decode/compose them in a Worker. | Later experiment. Shared Wasm memory needs deployment isolation and synchronization support. |
@@ -145,6 +146,13 @@ ARM/x86 code generators cannot execute directly in the browser; generated Wasm
 needs its own backend. Compiling the emulator itself to Wasm still leaves guest
 instruction decoding and dispatch in the interpreter.
 [v86 design](https://github.com/copy/v86/blob/315b2b0b758703ef0e6cc7b4088d6068f83f3c20/docs/how-it-works.md).
+
+Rust's large-error guidance explains that an uncommon error variant still sets
+the minimum size of a frequently returned `Result`, and demonstrates boxing its
+large payload. This is a general implementation technique, rather than a finding
+about a specific Saturn emulator. Its default lint threshold is not a performance
+boundary; evaluate actual target layouts, error allocation and production-Web
+timing before adopting it. [Clippy result-size guidance](https://clippy.rust-lang.org/master/index.html#result_large_err).
 
 Moving the entire emulator into one Worker can improve input/UI responsiveness,
 but does not parallelize its core work. Splitting Master and Slave SH-2 into
