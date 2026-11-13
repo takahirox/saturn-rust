@@ -79,14 +79,16 @@ The harness alternates baseline/optimized runs in one browser, warms each module
 for three fields, cold-resets each measured run, and requires equal selected
 guest results: clocks, retired instructions, exceptions, all master registers,
 a guest-written RAM counter and the complete framebuffer's FNV-1a checksum.
-Native emits the original core state fields and checks repeated cold-run equality.
+Native emits CPU, sound, audio and display endpoint fields and checks repeated
+cold-run equality, including PCM delivery.
 These snapshots supplement functional regressions, not prove complete state
 equivalence. No wall-clock threshold is a correctness test or CI gate.
 
 Both tools optionally accept `--bios FILE` for an authorized raw local BIOS.
-The browser harness also accepts `--disc FILE` and repeatable `--track FILE`
-arguments for CUE selections. With a BIOS it mounts the media without HLE;
-without one it uses the ordinary disc HLE reset. Files are selected through a
+Both harnesses accept `--disc FILE` and repeatable `--track FILE`
+arguments for CUE selections. Native disc measurements require `--bios` and
+mount media without HLE. The browser also supports BIOS-less HLE disc boot.
+Browser files are selected through a
 browser-local file input, never exposed as HTTP resources. `--candidate DIRECTORY`
 selects a frozen candidate build instead of `web/pkg`. Both runtime files are
 loaded into the loopback server's immutable allowlist and their SHA-256 hashes
@@ -2988,3 +2990,106 @@ Broader gameplay, transition and audio-delivery acceptance remain open under
 #138; general hardware/firmware compatibility remains outside this increment.
 Private media, profiles, captures, logs and experiment artifacts are not published.
 Required post-merge verification: none.
+
+## Follow-up from main 87a18a9
+
+This iteration uses the previous final local Wasm (`778be960…86532`) as its
+baseline, rather than the older pre-PR #139 artifact. A fresh 120-field Chrome
+profile after field 3600 attributes 23.76% of self samples to `cached_batch`,
+7.88% to sound-domain advancement, 7.74% to display acquisition, 5.96% to VDP1
+advancement and 1.66% to the local cached-memory snapshot helper. These are
+sampled self times, not additive inclusive costs of the CPU path.
+
+A separate temporary instrumented build counts work over the same interval.
+Its exposed endpoint equals the uninstrumented build; its timings are excluded.
+Of 1,301,046 attempted bursts, 935,668 are admitted and 839,485 publish a prefix.
+All admissions use a peer schedule. Published prefixes retire 39,899,601
+instructions, averaging 47.53 per publication. Preparation plans 40,611,050
+instructions, including 189,788 skipped through proven cycle repetition.
+Control preparation is attempted 10,362,123 times, ordinary fallback 2,987,094
+times, and local memory snapshots are taken 16,272,744 times. CPU recovery
+replays 1,812,881 instructions, 4.49% of physically planned instructions.
+The mixed prepared-load/scalar/control workload gives block reuse room beyond
+the existing register-only blocks. Replay alone cannot explain the whole cost.
+
+The first trial suppresses sound reference-clock conversions when only
+checkpointed sound can consume the retirement records. It passes the existing
+cached tests and Clippy but measures 16.383 → 16.422 fields/s (+0.24%) in the
+earlier game and 64.019 → 63.613 (−0.63%) on the original loop. Those four-window
+comparisons do not justify adoption; the trial is reverted.
+
+The native harness now supports mounted CUE media, explicit track files and
+continuous windows, and drains/checks PCM rather than leaving the output ring
+unconsumed. On the baseline implementation, the later game interval 3600–4080
+measures 23.799 fields/s across six 80-field native windows. Its existing master,
+clock, RAM and pixel endpoint fields equal the matching Web endpoint. Against
+the earlier approximately 19.8 fields/s Web result, native is only about 1.20×
+faster. This is evidence to prioritize core work, rather than attribute the
+remaining roughly threefold Web gap entirely to browser execution. Native
+framebuffer copying and browser Canvas presentation are different host paths;
+this is not a pure compiler/backend ablation.
+
+The next candidate recognizes an already-ready cached branch before broad
+operand admission. Those branch families have no operand transfer. Their IFs
+use the ordinary speculative-fetch filter, so they cannot consume a passive
+MMIO read sequence; uncached ROM and WRAM aliases explicitly retain the full
+protocol snapshot. Clock, replacement state, retained IF, epochs, refill/store journals
+and failure restoration remain active. This specializes the existing path
+rather than caching plans by raw RAM PC, which would lose cache visibility.
+
+With standard production flags, the initial branch prototype's Wasm SHA-256 is
+`261ffac04b81b41843eb01851cd91327972fc733dfc4b45f712fa9331713b25f`.
+Its six-window Web comparison improves 18.766 → 19.638 fields/s
+(+4.65%) over fields 3600–4080. Every paired window improves and exposed CPU,
+sound, PCM and display endpoints match. Existing cached-related tests pass
+(58 selected tests), as does native all-target Clippy with warnings denied.
+A negative control removing the uncached-ROM snapshot exception fails the
+existing ROM-fetch differential test on read-protocol clock rollback; the
+guard is required, rather than dead compatibility code. Review also found that
+a passive WRAM alias can be a branch target. The final guard retains that
+protocol too, with an original regression that actually fetches the alias and
+restores the consumed bus state. The initial prototype's timings do not validate
+this final guard and are not evidence for adopting the earlier variant.
+The guarded artifact is
+`5988f81b89b797aa7151217edb43c25b3a1c9a75900c3a4f4ab7c69107e0330e`;
+all 59 cached-related tests and native all-target Clippy pass for that source.
+Fresh-browser repeats, other workloads and final-head CI are required before
+adoption; their results belong in the linked validation PR. These absolute
+rates are from a different session than PR #139 and must not be combined into
+an additional unmeasured speedup.
+
+### Executed Beetle Saturn comparison
+
+The pinned reference is `libretro/beetle-saturn-libretro` at
+`30f4c12072d265c9e553dcb29386059114945dea`, built locally with Apple Clang,
+`make platform=osx LTO=1 WANT_JIT=0`, and, for the synchronous renderer,
+`NEED_THREADING=0`. The libretro runtime options also disable SH-2, SCU and SCSP
+JIT and auto RTC, select full CPU cache emulation and retain the default exact
+interleave setting (`0`). Audio and software video remain enabled; the local
+frontend consumes PCM with a rolling checksum and copies every delivered frame.
+There is no throttle, vsync or frameskip. Boot/loading and endpoint captures are
+outside timing. The core reports an NTSC target of 59.826503 Hz and 44,100 Hz audio.
+
+The original controller timeline and fields 3600–4080 reach the same visible
+book-selection scene with full-cache emulation. Six continuous 80-field windows
+give 198.982 fields/s with synchronous rendering and 176.286 with the render
+thread. Reference variants produce equal delivered PCM/pixel endpoints at each
+window, with 80 video callbacks per window. Thus renderer parallelism does not
+explain the reference's advantage in this scene; its queue costs more here.
+Default data-only cache runs reach a different point in the boot/game sequence
+under these inputs and are excluded from this scene's speed comparison.
+
+The reference is approximately 8.36× faster than our 23.799 native baseline on
+this host and visible workload. This is not a correctness equivalence claim:
+the cores have different timing models, display cropping and host delivery paths,
+and the reference's default `_LOW_ACCURACY_` dispatch fusions are enabled in
+these builds. Our native/Web ratio is much smaller. Together with the measured
+snapshot/admission counts and inspected reference event/dispatch loop, these
+results support investigating execution/synchronization overhead rather than
+assuming Web itself or lack of renderer threads causes the entire gap.
+They do not assign an exact portion of the gap to any one algorithm.
+
+Only our repository's original licensed native/Wasm/browser guests gate changes.
+The externally built core and all private inputs, captures and raw logs remain
+local. These unthrottled reference measurements are not a claim that our Web
+implementation meets real-time or general compatibility acceptance.

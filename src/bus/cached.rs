@@ -242,6 +242,16 @@ impl Cached<'_> {
         (at <= self.end.get()).then_some(at)
     }
     fn snapshot(&self) -> Local {
+        self.snapshot_with_reads(true)
+    }
+    fn control_snapshot(&self) -> Local {
+        self.snapshot_with_reads(
+            self.passive
+                .as_ref()
+                .is_some_and(|p| p.rom.is_some() || self.sh2_speculative_fetch(p.address)),
+        )
+    }
+    fn snapshot_with_reads(&self, include_reads: bool) -> Local {
         debug_assert_eq!(self.version_count.get(), self.fills.borrow().len());
         debug_assert_eq!(self.refill_count.get(), self.fills.borrow().read_count());
         Local {
@@ -249,7 +259,11 @@ impl Cached<'_> {
             lru: *self.lru.borrow(),
             retained: self.retained.get(),
             epochs: self.epochs.get(),
-            reads: self.passive.as_ref().map(|p| p.sequence.borrow().clone()),
+            reads: self
+                .passive
+                .as_ref()
+                .filter(|_| include_reads)
+                .map(|p| p.sequence.borrow().clone()),
             write_len: self.ram_stores.len(),
             fill_len: self.version_count.get(),
             bus_len: self.bus_events.borrow().len(),
@@ -268,8 +282,13 @@ impl Cached<'_> {
         self.fills.get_mut().truncate(state.fill_len);
         self.version_count.set(state.fill_len);
         self.refill_count.set(self.fills.get_mut().read_count());
-        if let Some(passive) = &mut self.passive {
-            *passive.sequence.get_mut() = state.reads.expect("passive protocol snapshot");
+        if let Some(reads) = state.reads {
+            *self
+                .passive
+                .as_mut()
+                .expect("passive protocol")
+                .sequence
+                .get_mut() = reads;
         }
     }
     fn sequence_before(&self, count: usize) -> crate::onchip::ReadSequence {
@@ -1588,21 +1607,29 @@ impl Bus {
             // Scalar blocks and prepared plans have already proved their own
             // legal opcode, operands, real IFs and observer bounds. Only the
             // general replay path needs this broader admission check.
-            if (!accepted_opcode(op))
-                || !(cached_operand(op, &cpu, &memory, store_available)
-                    || memory
-                        .passive
-                        .as_ref()
-                        .is_some_and(|p| cpu.cached_load_address(op).is_some_and(|a| p.permits(a))))
+            let control = cpu.has_cached_control(op);
+            if !control
+                && ((!accepted_opcode(op))
+                    || !(cached_operand(op, &cpu, &memory, store_available)
+                        || memory.passive.as_ref().is_some_and(|p| {
+                            cpu.cached_load_address(op).is_some_and(|a| p.permits(a))
+                        })))
             {
                 break;
             }
-            let before = memory.snapshot();
+            // A ready branch only issues speculative ROM/WRAM instruction
+            // fetches. Preserve uncached ROM/WRAM protocols, including RAM
+            // aliases used as branch targets. Passive MMIO cannot be fetched.
+            let before = if control {
+                memory.control_snapshot()
+            } else {
+                memory.snapshot()
+            };
             let started = before.clock;
             let instruction_pc = cpu.state().pc;
             let interrupt_mask = cpu.state().sr & 0xF0;
             let mut branch = None;
-            if cpu.has_cached_control(op) {
+            if control {
                 let Some(plan) = cpu.prepare_cached_control(&mut memory) else {
                     memory.restore(before);
                     break;

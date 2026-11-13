@@ -2726,6 +2726,69 @@ fn prepared_cached_loads_follow_a_passive_operand_in_the_same_burst() {
 }
 
 #[test]
+fn branch_target_fetch_restores_the_passive_ram_alias_protocol() {
+    for address in [0x26002000, 0x20202000] {
+        let base = HIGH_WRAM + 0x1000;
+        let mut cache = Cache::default();
+        cache.set_control(1);
+        cache
+            .read::<4>(base, true, |at| {
+                Ok(if at == base {
+                    [0x4F, 0x2B, 0, 9] // JMP @R15; NOP
+                } else {
+                    [0, 9, 0, 9]
+                })
+            })
+            .unwrap();
+        let chip = crate::onchip::OnChip::default();
+        let mut memory = Cached {
+            cache: &cache,
+            code: None,
+            fills: RefCell::default(),
+            version_count: Cell::new(0),
+            refill_count: Cell::new(0),
+            bus_events: RefCell::default(),
+            scalar_active: Cell::new(false),
+            clock: Cell::new(1000),
+            lru: RefCell::new(cache.replacement_state()),
+            retained: Cell::new(None),
+            epochs: Cell::new(0),
+            end: Cell::new(10000),
+            fill_end: 10000,
+            store: Cell::new(None),
+            store_ready: 0,
+            store_origin: 1000,
+            write_bus: None,
+            write_protocol: None,
+            idle_vdp1_vram: false,
+            ram_stores: Vec::new(),
+            write_pc: Cell::new(0),
+            passive: Some(PassiveRead {
+                address,
+                bytes: [0, 9, 0, 9],
+                allowed_widths: 4,
+                little: false,
+                rom: None,
+                sequence: RefCell::new(chip.plan_cached_reads(1000)),
+            }),
+        };
+        let mut cpu = Cpu::start(base, address);
+        cpu.prime_fetch(&memory);
+        assert!(cpu.has_cached_control(0x4F2B));
+        let expected = memory.passive.as_ref().unwrap().sequence.borrow().clone();
+        let before = memory.control_snapshot();
+        assert!(cpu.prepare_cached_control(&mut memory).is_some());
+        assert!(memory.passive.as_ref().unwrap().sequence.borrow().beats > expected.beats);
+        // Reject the prepared branch at publication: its target IF consumed
+        // the same passive RAM protocol as an operand, despite having no MA.
+        memory.restore(before);
+        let restored = memory.passive.as_ref().unwrap().sequence.borrow();
+        assert_eq!(restored.beats, expected.beats);
+        assert!(restored.repeats(&expected, 0));
+    }
+}
+
+#[test]
 fn prepared_passive_prediction_rejects_width_address_rom_and_deadline_before_consumption() {
     for (lane, width, expected) in [
         (0u16, 1u8, 0xFFFFFF89u32),

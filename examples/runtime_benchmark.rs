@@ -6,6 +6,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut frames = 60u64;
     let mut runs = 3u32;
     let mut bios = None;
+    let mut disc = None;
+    let mut tracks = Vec::new();
+    let mut continuous = false;
     let mut vdp1_stores = false;
     let mut draw = false;
     let mut skip = 0u64;
@@ -16,6 +19,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             "--frames" => frames = args.next().ok_or("missing frame count")?.parse()?,
             "--runs" => runs = args.next().ok_or("missing run count")?.parse()?,
             "--bios" => bios = Some(fs::read(args.next().ok_or("missing local BIOS path")?)?),
+            "--disc" => disc = Some(args.next().ok_or("missing local CUE path")?),
+            "--track" => tracks.push(args.next().ok_or("missing local track path")?),
+            "--continuous" => continuous = true,
             "--draw" => draw = true,
             "--vdp1-stores" => vdp1_stores = true,
             "--skip" => skip = args.next().ok_or("missing skipped fields")?.parse()?,
@@ -42,7 +48,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             _ => {
                 return Err(
-                    "usage: runtime_benchmark [--frames N] [--runs N] [--bios FILE] [--vdp1-stores] [--draw] [--skip N] [--buttons FILE]"
+                    "usage: runtime_benchmark [--frames N] [--runs N] [--bios FILE] [--disc CUE --track FILE ...] [--continuous] [--vdp1-stores] [--draw] [--skip N] [--buttons FILE]"
                         .into(),
                 );
             }
@@ -54,6 +60,38 @@ fn main() -> Result<(), Box<dyn Error>> {
     if vdp1_stores && bios.is_some() {
         return Err("--vdp1-stores uses the original guest; omit --bios".into());
     }
+    if disc.is_some() && bios.is_none() {
+        return Err("--disc requires --bios".into());
+    }
+    if disc.is_none() != tracks.is_empty() {
+        return Err("--disc requires --track; --track requires --disc".into());
+    }
+    let media = if let Some(path) = disc {
+        let cue = fs::read_to_string(path)?;
+        let mut names = Vec::new();
+        let mut ranges = Vec::new();
+        let mut bytes = Vec::new();
+        for path in tracks {
+            names.push(
+                std::path::Path::new(&path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or("invalid track filename")?
+                    .to_owned(),
+            );
+            let start = bytes.len();
+            bytes.extend(fs::read(path)?);
+            ranges.push(start..bytes.len());
+        }
+        let files = names
+            .iter()
+            .zip(ranges)
+            .map(|(name, range)| (name.as_str(), range))
+            .collect::<Vec<_>>();
+        Some(saturn_rust::media::Media::cue_owned(&cue, &files, bytes)?)
+    } else {
+        None
+    };
     let bytes = if let Some(bios) = bios {
         bios
     } else {
@@ -81,35 +119,61 @@ fn main() -> Result<(), Box<dyn Error>> {
         rom
     };
     let mut previous = None;
+    let mut machine = Machine::new();
     for run in 0..runs {
-        let mut machine = Machine::new();
-        machine.reset(Boot::ExternalBios(&bytes))?;
-        for _ in 0..skip {
-            if let Some(&mask) = buttons.get(&machine.frames()) {
-                machine.set_buttons(mask);
+        if !continuous || run == 0 {
+            machine = Machine::new();
+            machine.reset(Boot::ExternalBios(&bytes))?;
+            if let Some(media) = &media {
+                machine.mount_media(media.clone());
             }
-            machine.advance_frame()?;
+            for _ in 0..skip {
+                if let Some(&mask) = buttons.get(&machine.frames()) {
+                    machine.set_buttons(mask);
+                }
+                machine.advance_frame()?;
+                machine.drain_audio(8192);
+            }
         }
         let started = Instant::now();
+        let mut audio_samples = 0usize;
+        let mut pcm = 2166136261u32;
         for _ in 0..frames {
             if let Some(&mask) = buttons.get(&machine.frames()) {
                 machine.set_buttons(mask);
             }
             machine.advance_frame()?;
+            let audio = machine.drain_audio(8192);
+            audio_samples += audio.len();
+            for sample in audio {
+                pcm = (pcm ^ u32::from(sample as u16)).wrapping_mul(16777619);
+            }
             if draw {
                 std::hint::black_box(machine.framebuffer()?);
             }
         }
         let ms = started.elapsed().as_secs_f64() * 1000.0;
         let cpu = machine.cpu_state();
+        let slave = machine.slave_state();
+        let sound = machine.sound_state();
         let state = format!(
-            "{{\"frames\":{},\"clocks\":{},\"instructions\":{},\"exceptions\":{},\"registers\":{:?},\"special\":{:?},\"mailbox\":{},\"commandWord\":{},\"pixels\":{}}}",
+            "{{\"frames\":{},\"clocks\":{},\"instructions\":{},\"exceptions\":{},\"registers\":{:?},\"special\":{:?},\"slaveRegisters\":{:?},\"slaveInstructions\":{},\"slavePc\":{},\"slaveExceptions\":{},\"soundPc\":{},\"soundInstructions\":{},\"soundRegisters\":{:?},\"soundHalted\":{},\"pcm\":{pcm},\"audioSamples\":{audio_samples},\"audioGenerated\":{},\"audioDropped\":{},\"mailbox\":{},\"commandWord\":{},\"pixels\":{}}}",
             machine.frames(),
             machine.clocks(),
             cpu.instructions,
             cpu.exceptions,
             cpu.r,
             [cpu.pc, cpu.sr, cpu.pr, cpu.gbr, cpu.vbr, cpu.mach, cpu.macl],
+            slave.r,
+            slave.instructions,
+            slave.pc,
+            slave.exceptions,
+            sound.pc,
+            sound.instructions,
+            sound.d,
+            sound.halted,
+            machine.audio_generated(),
+            machine.audio_dropped(),
             machine.debug_read32(0x06020000)?,
             machine.debug_read32(0x05C02000)?,
             machine
@@ -118,7 +182,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .fold(2166136261u32, |hash, &byte| (hash ^ u32::from(byte))
                     .wrapping_mul(16777619)),
         );
-        if let Some(previous) = &previous {
+        if !continuous && let Some(previous) = &previous {
             assert_eq!(&state, previous, "cold runs changed guest results");
         }
         println!(
