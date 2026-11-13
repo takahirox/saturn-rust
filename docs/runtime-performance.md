@@ -1,5 +1,8 @@
 # Runtime performance investigation
 
+For the primary-source comparison of Saturn and general emulator techniques and
+the next experiment priorities, see [Web optimization research](web-optimization-research.md).
+
 Related to #17. BIOS initialization correctness and real-time throughput are
 separate requirements. This local follow-up does not close the hardware tracker.
 
@@ -76,18 +79,34 @@ The harness alternates baseline/optimized runs in one browser, warms each module
 for three fields, cold-resets each measured run, and requires equal selected
 guest results: clocks, retired instructions, exceptions, all master registers,
 a guest-written RAM counter and the complete framebuffer's FNV-1a checksum.
-Native emits the same state fields and checks repeated cold-run equality.
+Native emits the original core state fields and checks repeated cold-run equality.
 These snapshots supplement functional regressions, not prove complete state
 equivalence. No wall-clock threshold is a correctness test or CI gate.
 
 Both tools optionally accept `--bios FILE` for an authorized raw local BIOS.
+The browser harness also accepts `--disc FILE` and repeatable `--track FILE`
+arguments for CUE selections. With a BIOS it mounts the media without HLE;
+without one it uses the ordinary disc HLE reset. Files are selected through a
+browser-local file input, never exposed as HTTP resources. `--candidate DIRECTORY`
+selects a frozen candidate build instead of `web/pkg`. Both runtime files are
+loaded into the loopback server's immutable allowlist and their SHA-256 hashes
+are included in the report.
+
 Loading/reset is outside the measured interval. Native `--draw` includes
 framebuffer production/copying on every field. Browser `--draw` now also includes
-Canvas `putImageData`; the historical measurements below predate this addition. An
+Canvas `putImageData`; the first-pass measurements below predate this addition. An
 ending-frame checksum is always computed outside that interval. The browser
 tool's optional `--profile OUTPUT` saves a local DevTools CPU profile. Its server
 binds only to loopback and serves only the selected public Wasm runtime files;
 firmware is never an HTTP resource and no external request is allowed.
+Profiles now cover the first timed window after boot/skip and require a single
+runtime, so startup does not obscure a selected game scene. The browser harness
+always drains PCM and compares its rolling checksum, sample count and generated/
+dropped counters, along with both SH-2 register sets and instruction counts.
+It reports p50/p95/p99 field times per window and combined fields/elapsed-time
+throughput. `--capture OUTPUT --draw` optionally saves a local final Canvas image;
+private captures must remain unpublished. PCM draining measures core production
+and delivery overhead, not actual WebAudio playback or consumer underflows.
 
 The browser harness accepts `--skip FIELD` and optional `--buttons FILE` to
 measure initialization or a later menu rather than only cold startup. Button
@@ -2791,3 +2810,139 @@ review remain mandatory before merge.
 **Real Web 60 fields/s remains unmet**, as do umbrella hardware and general
 firmware compatibility criteria. Required post-merge verification: none.
 Related to #17.
+
+## Version passive-read protocol checkpoints (2026-11-13)
+
+Related to [#138](https://github.com/takahirox/saturn-rust/issues/138) and #17.
+The [primary-source research](web-optimization-research.md) compares Yabause,
+Kronos, Yaba Sanshiro, Beetle Saturn, QEMU and v86, including cached execution,
+JITs, idle recognition, SIMD, GPU rendering and host threading. The selected
+increment reduces execution bookkeeping; larger JIT/GPU work remains experimental.
+
+### Selected implementation
+
+Cached execution previously copied the complete passive-read bus protocol into
+each local checkpoint, including checkpoints where no operand read occurred.
+Checkpoints now hold an immutable version index. A read or repeated read cycle
+marks the current protocol changed; the next checkpoint saves that version once.
+Restoring a checkpoint restores its protocol and discards subsequent versions.
+The Bus retains the cleared version vector's capacity between admitted bursts.
+The final publication still consumes the actual protocol, with the existing
+read beats, wait states, retirement horizons and rollback behavior.
+
+A fresh late-game CPU profile of the baseline attributes 23.8% of sampled self
+time to cached-burst execution, 7.7% to display acquisition, 6.9% to sound
+advancement and 5.9% to VDP1 advancement. These are sampled self times, not total
+subsystem shares. Avoiding repeated checkpoint copies was a narrower experiment
+than replacing the execution or rendering backend.
+
+### Defined Web comparisons
+
+Baseline source: `2d6b17f0979fb798dc826723fe7a50e44d1ffdc0`. Both builds use
+Rust 1.99.0, wasm-bindgen 0.2.129, Binaryen 127 and the unchanged production build
+script. The local host runs macOS 27.2.1; browser is headless Chrome
+157.0.8103.52. The exact processor model was unavailable to the sandbox. These
+measurements characterize this host/toolchain, not other browsers or CI's current
+stable compiler.
+
+Wasm SHA-256:
+
+- Baseline: `033febfddf664aaabbbb9a4064bc117925fdbc62cfb7d417d6a6f54fc36102b1`.
+- Initially measured candidate: `092a447915aea1d4b80a1f5aff07c15b0c337a913c6d9a1698818824b90eb2da`.
+- Final rebuild: `261e9f0e5f36c264110220bb87bd3067e0f44acb8d055f609b1476ea27112cee`.
+
+The final rebuild has identical JS and identical Wasm sections except 68 data
+bytes reflecting source-location shifts after comments. The complete Wasm code
+section is byte-identical. A fresh browser comparison uses the final rebuild;
+repeat results and exact-head hosted validation are recorded in the PR linked
+from #138.
+
+Each module warms for three fields, then cold boots independently. Comparisons
+alternate execution order over matching continuous windows. Boot/skip is outside
+timing. Every measured field includes Canvas upload and PCM draining/checksum;
+competing local builds, tests and profiles are stopped during timed intervals.
+The BIOS and mounted CUE/track data remain local. No game-specific reset or
+firmware patch is used. The late-game interval visibly reaches the game's book
+selection screen with both SH-2 processors running. It is one defined game
+workload, not evidence covering arbitrary gameplay.
+
+To reproduce with authorized equivalent local media, save both runtime files
+from each build in separate directories, then use the benchmark's `--candidate`
+and `--baseline` arguments together with `--bios`, `--disc` and `--track`.
+The controller timeline uses Right (`0008`) at fields 300, 316, 332, 348, 364 and
+380, releasing eight fields after each; A (`0040`) at 416, released at 424; and
+Start (`0080`) at 2800, released at 2808. The late-game measurement uses
+`--skip 3600 --frames 80 --runs 6 --continuous --draw`. Earlier game measurements
+omit the later Start event and use `--skip 600 --frames 80 --runs 4`; BIOS-only
+uses `--skip 1200 --frames 80 --runs 4`. Both also use `--continuous --draw`.
+The original guest
+uses `--frames 60 --runs 4 --continuous --draw` without private inputs.
+
+Throughput divides total measured fields by total elapsed time. These scenes
+and inputs differ from historical records above; their absolute rates must not
+be compared across those different workloads.
+
+| Workload | Baseline fields/s | Selected fields/s | Change |
+| --- | ---: | ---: | ---: |
+| Game, fields 3600–4080, six 80-field windows | 18.229 | 19.076 | +4.65% |
+| Earlier game, fields 600–920, four 80-field windows | 16.172 | 16.133 | −0.24% |
+| Original runtime loop, fields 0–240, four 60-field windows | 62.367 | 60.787 | −2.53% |
+| BIOS date screen, fields 1200–1520, four 80-field windows | 41.480 | 40.969 | −1.23% |
+
+All six initial late-game windows improve. Their median window p50/p95/p99
+field times are 55.00/56.35/57.45 ms before and 52.30/53.10/53.80 ms after;
+maximum observed field time is 57.90 → 54.90 ms. These are medians of window
+percentiles, not pooled percentiles or stable long-run latency bounds. Earlier
+game is effectively flat; the original loop and BIOS measurements expose small
+regressions. Adoption is justified by the target game's measured benefit, not a
+claim that every workload improves.
+
+### Trials excluded from the implementation
+
+All comparisons use matching baseline/candidate endpoints. Different scenes are
+identified explicitly; these independent trials cannot be multiplied together.
+
+| Isolated trial | Observed throughput change | Decision |
+| --- | ---: | --- |
+| Borrow initial CPU/local cycle anchors | +0.53% in a historical game interval | Inconsistent windows; revert. |
+| Copy-free cycle repeat plus global SIMD128 | +0.73% in that interval | Inconsistent windows; revert both. |
+| Prepared MOV stores | +0.43% in that interval | Inconsistent windows; revert. |
+| Stage MOV bus phases before CPU publication | −2.76% in the late-game interval | Revert despite passing targeted correctness tests. |
+| Shared cached dispatcher with an outlined Wasm function | −0.78% in the earlier game | Revert; a smaller function did not improve throughput. |
+| Box the rare CPU fault payload | −0.21% in the earlier game | Revert; smaller CPU snapshots alone did not help. |
+| Cap one-caller inlining | −0.15% on the original guest | Keep standard settings. |
+| Rust opt-level 2 | +0.02% on the original guest | Keep standard settings. |
+
+No CPU layout, guest clock, instruction set, global SIMD, optimizer setting or
+rendering-backend change from these rejected trials is selected.
+
+### Correctness and acceptance limits
+
+The focused protocol test proves unchanged checkpoints share one version,
+reads/repeats create new versions and rollback restores prior protocol state.
+Existing native cached-execution differential tests retain their independent
+ordinary-step reference, full CPU/cache/bus assertions and deadline coverage.
+The benchmark now accepts mounted discs, freezes/hashes runtime files, records
+p50/p95/p99/max timing, and compares both SH-2 endpoints plus sound, clocks,
+framebuffer and PCM results. Browser endpoint equality supplements the native
+oracles; it does not prove every internal state equal.
+
+Local validation passes formatting, the native build and all 1,338 native tests
+in 111 groups, native all-target and Wasm Clippy with warnings denied, registered
+fixture reproduction, the standard Web build and all 13 runner tests. The
+focused protocol test also passes after adding its repeat-checkpoint assertion.
+Two negative controls independently remove read/repeat invalidation and fail the
+new protocol test; restoring each flag passes. The runner initially failed
+because the sandbox denied loopback listeners; rerunning with the required local
+network access passes. ISO and multi-track CUE benchmark smoke checks use original
+repository fixtures and match exposed baseline/candidate state in cold and
+continuous modes. The complete hosted browser suite and merge gate must pass
+for the final PR head before merge.
+
+The benchmark drains audio but does not run the production AudioWorklet consumer
+or measure audible underflows. **Sustained real Web 60 fields/s remains unmet.**
+The selected late-game result still needs roughly 3.15 times more throughput.
+Broader gameplay, transition and audio-delivery acceptance remain open under
+#138; general hardware/firmware compatibility remains outside this increment.
+Private media, profiles, captures, logs and experiment artifacts are not published.
+Required post-merge verification: none.

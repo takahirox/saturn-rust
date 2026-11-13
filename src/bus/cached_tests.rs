@@ -3,6 +3,39 @@ use super::*;
 use crate::{Boot, Machine, MachineError};
 
 #[test]
+fn passive_protocol_versions_reuse_unchanged_states_and_restore_after_reads_and_repeats() {
+    let chip = crate::onchip::OnChip::default();
+    let mut history = ReadHistory::new(chip.plan_cached_reads(1000));
+    let initial = history.snapshot();
+    for _ in 0..64 {
+        assert_eq!(history.snapshot(), initial);
+    }
+    assert_eq!(history.saved.len(), 1);
+    let mut expected = history.current.clone();
+    let end = expected.read(HIGH_WRAM, 4, 1000);
+    assert_eq!(history.read(HIGH_WRAM, 4, 1000), end);
+    let read = history.snapshot();
+    assert_ne!(read, initial);
+    history.read(HIGH_WRAM + 4, 4, end + 10);
+    history.snapshot();
+    history.restore(read);
+    assert!(history.current.repeats(&expected, 0));
+    assert_eq!(history.current.beats, expected.beats);
+    assert_eq!(history.saved.len(), 2);
+    expected.repeat(&history.saved[initial], end - 1000, 3);
+    history.repeat(initial, end - 1000, 3);
+    assert!(history.current.repeats(&expected, 0));
+    assert_eq!(history.current.beats, expected.beats);
+    let repeated = history.snapshot();
+    assert_ne!(repeated, read);
+    assert!(history.saved[repeated].repeats(&expected, 0));
+    assert_eq!(history.saved[repeated].beats, expected.beats);
+    history.restore(initial);
+    assert_eq!(history.current.beats, 0);
+    assert!(history.current.repeats(&chip.plan_cached_reads(1000), 0));
+}
+
+#[test]
 fn cd_hirq_polling_preserves_abus_protocol_width_and_command_edges() {
     let mut bytes = rom(include_str!("../../examples/runtime-poll.hex"));
     bytes[0x224..0x228].copy_from_slice(&0x25890008u32.to_be_bytes());
@@ -2774,7 +2807,7 @@ fn prepared_passive_prediction_rejects_width_address_rom_and_deadline_before_con
                 allowed_widths: width,
                 little: false,
                 rom: None,
-                sequence: RefCell::new(chip.plan_cached_reads(1000)),
+                sequence: RefCell::new(ReadHistory::new(chip.plan_cached_reads(1000))),
             }),
         };
         let mut actual = make();
@@ -2784,7 +2817,14 @@ fn prepared_passive_prediction_rejects_width_address_rom_and_deadline_before_con
         let mut reference = Cpu::start(base, address);
         reference.prime_fetch(&reference_memory);
         let plan = cpu.prepare_cached_instruction(0x60F0 | lane, 1000).unwrap();
-        let before = actual.passive.as_ref().unwrap().sequence.borrow().clone();
+        let before = actual
+            .passive
+            .as_ref()
+            .unwrap()
+            .sequence
+            .borrow()
+            .current
+            .clone();
         let at = actual.prepared_retirement(&plan).unwrap();
         assert!(
             at > plan.at,
@@ -2806,7 +2846,14 @@ fn prepared_passive_prediction_rejects_width_address_rom_and_deadline_before_con
         assert_eq!(actual.clock.get(), 1000);
         assert_eq!(actual.epochs.get(), 0);
         assert_eq!(
-            actual.passive.as_ref().unwrap().sequence.borrow().beats,
+            actual
+                .passive
+                .as_ref()
+                .unwrap()
+                .sequence
+                .borrow()
+                .current
+                .beats,
             before.beats
         );
         assert!(
@@ -2816,6 +2863,7 @@ fn prepared_passive_prediction_rejects_width_address_rom_and_deadline_before_con
                 .unwrap()
                 .sequence
                 .borrow()
+                .current
                 .repeats(&before, 0)
         );
         reference_memory.end.set(at);
@@ -2829,9 +2877,16 @@ fn prepared_passive_prediction_rejects_width_address_rom_and_deadline_before_con
         assert_eq!(actual.retained.get(), reference_memory.retained.get());
         let actual_sequence = actual.passive.as_ref().unwrap().sequence.borrow();
         let reference_sequence = reference_memory.passive.as_ref().unwrap().sequence.borrow();
-        assert!(actual_sequence.beats > before.beats);
-        assert_eq!(actual_sequence.beats, reference_sequence.beats);
-        assert!(actual_sequence.repeats(&reference_sequence, 0));
+        assert!(actual_sequence.current.beats > before.beats);
+        assert_eq!(
+            actual_sequence.current.beats,
+            reference_sequence.current.beats
+        );
+        assert!(
+            actual_sequence
+                .current
+                .repeats(&reference_sequence.current, 0)
+        );
     }
 }
 
