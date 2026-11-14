@@ -319,6 +319,12 @@ pub fn verify_owned_store_board() -> Vec<u32> {
     crate::kernel::verify_store_board()
 }
 
+#[cfg(feature = "kernel-experiment")]
+#[wasm_bindgen]
+pub fn verify_active_wram_board() -> Vec<u32> {
+    crate::kernel::verify_active_wram_board()
+}
+
 /// Original actual-board CPU experiment; not a game engine switch.
 #[cfg(feature = "kernel-experiment")]
 #[wasm_bindgen]

@@ -1229,3 +1229,16 @@ impl OnChip {
         self.instruction_epoch.set(epoch);
     }
 }
+
+#[cfg(any(test, feature = "kernel-experiment"))]
+impl OnChip {
+    pub(crate) fn kernel_advance_bus(&self, clocks: u32) {
+        self.bsc.advance_bus(clocks);
+    }
+    pub(crate) fn kernel_bus_clock(&self) -> bsc::KernelBusClock {
+        self.bsc.kernel_bus_clock()
+    }
+    pub(crate) fn restore_kernel_bus_clock(&self, clock: bsc::KernelBusClock) {
+        self.bsc.restore_kernel_bus_clock(clock);
+    }
+}

@@ -2086,3 +2086,18 @@ impl Bus {
             && self.cache[0].borrow().control() & 1 != 0
     }
 }
+
+#[cfg(any(test, feature = "kernel-experiment"))]
+impl Bus {
+    /// Physical WRAM requests/publications and BSC bus aging already ran at
+    /// their actual edges. Advance independent devices over the same interval,
+    /// preserving the final bus busy/gap state rather than aging it twice.
+    pub(crate) fn kernel_catchup_wram(&mut self, main: u32) -> Result<u64, ScuError> {
+        let clocks = self.onchip.each_ref().map(|chip| chip.kernel_bus_clock());
+        let result = self.advance_isolated_segment::<true>(main, false, false);
+        for (chip, clock) in self.onchip.iter().zip(clocks) {
+            chip.restore_kernel_bus_clock(clock);
+        }
+        result
+    }
+}
