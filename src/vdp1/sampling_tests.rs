@@ -1,5 +1,56 @@
 //! Integration with retained memory words, independent of sampling helpers.
 use super::*;
+
+#[test]
+fn incremental_texture_coordinates_match_division_at_every_phase_and_live_parity() {
+    for width in (8..=504).step_by(8) {
+        for steps in (0..=127).chain([255, 256, 511, 512, 1023, 4095, 8191]) {
+            for reverse in [false, true] {
+                for flags in [0, 0x10, 0x20, 0x30] {
+                    for hss in [0, 0x1000] {
+                        let mut c = [0; 16];
+                        c[0] = 2 | flags;
+                        c[2] = hss;
+                        c[5] = (width / 8) << 8 | 7;
+                        for start in [0, steps / 2, steps] {
+                            let mut line = RasterLine {
+                                a: Point::default(),
+                                b: Point { x: steps, y: 0 },
+                                uv0: (if reverse { i32::from(width) - 1 } else { 0 }, 3),
+                                uv1: (if reverse { 0 } else { i32::from(width) - 1 }, 3),
+                                shade0: [0; 3],
+                                shade1: [0; 3],
+                                textured: true,
+                                dot: start,
+                                last: steps,
+                                end_codes: 0,
+                                texture: None,
+                            };
+                            let mut texture = TextureLine::new(&c, &line);
+                            while line.dot <= line.last {
+                                // The original division kernel is independent
+                                // of the incremental quotient/remainder state.
+                                for control in [0, 16] {
+                                    let expected =
+                                        Vdp1::literal_texture_coordinates(&c, &line, control).0;
+                                    assert_eq!(
+                                        texture.pixel(&c, control),
+                                        expected,
+                                        "width={width} steps={steps} start={start} dot={} reverse={reverse} flags={flags:X} hss={hss:X}",
+                                        line.dot
+                                    );
+                                }
+                                texture.advance();
+                                line.dot += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn word(v: &mut Vdp1, at: usize, value: u16) {
     v.vram[at..at + 2].copy_from_slice(&value.to_be_bytes());
 }

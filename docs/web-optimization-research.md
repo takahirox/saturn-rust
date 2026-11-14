@@ -550,3 +550,85 @@ boundary. Keep general fallbacks. Reference timing/visibility approximations
 are not permission to weaken this project's established observations. The
 approximately 19 fields/s Web scene still needs roughly threefold throughput;
 no measured Web speedup or real-time completion is claimed by this research.
+
+## Implementation experiments following the Beetle audit
+
+The implementation increment uses main `5ff3de3` as its baseline. It selects
+two bounded changes from the audit, preserving the existing event/bus model:
+
+- Ordinary scalar retirement reuses the classification already present in the
+  instruction's timing descriptor. It adds no CPU/fetch fields or decode table.
+- VDP1 retains an exact texture quotient/remainder cursor per raster line.
+  Acquisition and drawing reuse its coordinate. Reversed pre-clipping uses a
+  signed increment with Euclidean remainder; reduction centers and expansion
+  ties remain the existing formulas. V is constant within these raster rows.
+  HSS parity still reads live draw control at each query. Transparent, clipped
+  and mesh dots advance the cursor; completed end-code rows discard it.
+
+Frozen production Wasm SHA-256 fingerprints:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Baseline | `778be960b1243209bdf90a16219dd3c63e9713c72cd290ab63ccfeaaf8c86532` |
+| Final classification/texture candidate | `0920c35a9f27c2d06e5a4da816c3dda5a024b75c8ff263284f3487c803fb685e` |
+
+The VDP1 numeric comparison retains the original division kernel only in tests.
+It checks all 63 nonzero character widths, small and extreme spans, forward and
+reversed traversal, clipped starting phases, both flips and both live parities.
+Existing literal Figure 6.5 rows, physical-word capture, contention, pre-clipping,
+stop/reset and pixel-publication guests remain the independent boundary checks.
+This changes host arithmetic, not emulated clocks or sampling rules.
+
+### Measured selection and rejected implementations
+
+All trials use production release Wasm, Rust 1.100.0, wasm-bindgen 0.2.129,
+Binaryen 127 and local headless Chrome 157.0.8103.52. Corresponding intervals
+must match every benchmark CPU/counter/PCM/pixel endpoint. Tests and compilation
+stop before throughput measurements. All runtimes finish preparation before
+either timed window, as corrected in PR #140.
+
+Short original-workload screens used five warmup fields and four continuous
+30-field windows. They are diagnostic: extending warmup to 120 fields with six
+60-field windows removes an apparent cache win in the simple store loop
+(+2.64% becomes −0.01%). The longer-warmup identical-artifact controls measure
+−0.03%, −0.22% and −0.12% in the loop, busy-sound/video and normal-bitmap scenes.
+Use the longer method for selection rather than claim the short-run difference.
+
+The cache candidate improves a source-authored refill loop by 1.62% in its
+initial long-warmup comparison, but changes −0.43% when initialization is
+reversed; its identical-artifact control changes +0.21%. No reproducible cache
+speedup is established, so that implementation is not retained.
+The CPU classification reuse improves
+the long-warmup loop by 0.97%; loading the candidate first in a fresh browser
+also improves it by 1.96%. These component observations are not additive
+predictions for the game. Final component repeats, final game comparisons,
+artifact fingerprints and exact-head CI are recorded in
+[Issue #138](https://github.com/takahirox/saturn-rust/issues/138).
+
+Several plausible implementations are deliberately absent from the selected
+production source:
+
+| Trial | Observation and selection |
+| --- | --- |
+| Base-cache lookup for unchanged shadow sets | The refill-loop effect reverses sign under reversed initialization; no reproducible gain was established. |
+| Predecoded SCSP instructions in an immutable shared program | Numeric, live-write, fault and snapshot checks passed; the short busy-sound/video screen slowed 1.65%, while normal bitmaps were effectively flat. No consistent gain was established. |
+| Share only raw MPRO with copy-on-write | The short busy scene changed −0.59%, normal bitmaps +0.85%; no consistent workload benefit justified the extra ownership machinery. |
+| Hoist VDP2 bitmap row/wrap/format arithmetic | Existing literal-fetch comparisons passed; the normal-bitmap screen changed −0.06%, providing no measured improvement. |
+| Incremental screen coordinates and Gouraud values in addition to texture coordinates | Exhaustive signed interpolation and existing drawing tests passed, but a long-warmup shaded scene slowed 3.44% versus texture stepping alone (51.352 → 49.583 fields/s); the ordinary busy scene was flat (52.049 → 52.006). The extra per-dot cursor state is not retained. |
+
+The last result is a concrete limit on transferring Beetle's raster organization:
+reducing divisions does not ensure a faster persistent per-dot implementation.
+These timings do not establish the exact machine-code cause. A future larger
+observer-bounded kernel could organize its local state differently, but is not
+an adopted speedup here. Likewise, a full resumable CPU/bus redesign remains
+separate from this increment's reuse of existing decoded metadata.
+
+The first cache/texture-only game trial improved 18.907 → 19.294 fields/s
+(+2.04%); a five-mechanism exploratory bundle improved 19.581 → 19.973 (+2.00%).
+Every matching endpoint agreed. Neither is the selected final artifact: the
+first still had a production division fallback, and the second included the
+subsequently rejected DSP/VDP2 trials. Final adoption requires both game
+initialization orders and an identical-artifact control on the selected source,
+with Canvas and audio draining enabled. The defined scene remains far below
+real-time throughput; #138's broader gameplay and audio-underflow criteria stay
+open. Private media, raw traces, captures and experimental builds remain local.

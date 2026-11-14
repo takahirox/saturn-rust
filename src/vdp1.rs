@@ -91,6 +91,76 @@ struct RasterLine {
     dot: i32,
     last: i32,
     end_codes: u8,
+    texture: Option<TextureLine>,
+}
+
+/// Exact quotient/remainder stepping of the existing texture formula. The
+/// signed increment also handles pre-clipping's reversed traversal. Division
+/// occurs only when entering a line, not at each acquisition/drawing query.
+struct TextureLine {
+    u: i32,
+    remainder: i32,
+    quotient: i32,
+    increment: i32,
+    denominator: i32,
+    source: usize,
+    row: usize,
+    filtered: bool,
+}
+impl TextureLine {
+    fn new(c: &[u16; 16], line: &RasterLine) -> Self {
+        let width = i32::from(c[5] >> 8 & 63) * 8;
+        let steps = line.a.distance(line.b);
+        let filtered = c[2] & 0x1000 != 0 && steps + 1 < width;
+        let source = if filtered { width / 2 } else { width };
+        let reverse = line.uv0.0 > line.uv1.0;
+        let dot = if reverse { steps - line.dot } else { line.dot };
+        let (scale, bias, denominator) = if source > steps + 1 {
+            (2 * source, source, 2 * (steps + 1))
+        } else if steps == 0 {
+            (0, 0, 1)
+        } else {
+            (2 * (source - 1), steps - 1, 2 * steps)
+        };
+        let numerator = scale * dot + bias;
+        let increment = if reverse { -scale } else { scale };
+        // Every textured raster row has constant V. Pre-clipping swaps the
+        // endpoints but preserves that row; flip bits are command-latched.
+        debug_assert_eq!(line.uv0.1, line.uv1.1);
+        let v = if c[0] & 0x20 != 0 {
+            i32::from(c[5] & 255) - 1 - line.uv0.1
+        } else {
+            line.uv0.1
+        };
+        Self {
+            u: numerator / denominator,
+            remainder: numerator % denominator,
+            quotient: increment.div_euclid(denominator),
+            increment: increment.rem_euclid(denominator),
+            denominator,
+            source: source as usize,
+            row: (v * width) as usize,
+            filtered,
+        }
+    }
+    fn advance(&mut self) {
+        self.u += self.quotient;
+        self.remainder += self.increment;
+        if self.remainder >= self.denominator {
+            self.remainder -= self.denominator;
+            self.u += 1;
+        }
+    }
+    fn pixel(&self, c: &[u16; 16], control: u16) -> usize {
+        let mut u = self.u as usize;
+        if c[0] & 0x10 != 0 {
+            u = self.source - 1 - u;
+        }
+        if self.filtered {
+            u = 2 * u + usize::from(control & 0x10 != 0);
+        }
+        self.row + u
+    }
 }
 
 impl RasterLine {
@@ -989,13 +1059,26 @@ impl Vdp1 {
             dot: 0,
             last: a.distance(b),
             end_codes: 0,
+            texture: None,
         };
         if let Some(clip) = draw.clip {
             line.preclip(clip);
         }
+        if line.textured && line.dot <= line.last {
+            line.texture = Some(TextureLine::new(c, &line));
+        }
         line
     }
     fn texture_coordinates(c: &[u16; 16], line: &RasterLine, control: u16) -> (usize, bool) {
+        let texture = line.texture.as_ref().expect("active textured raster row");
+        (texture.pixel(c, control), c[2] & 0x1000 != 0)
+    }
+    #[cfg(test)]
+    fn literal_texture_coordinates(
+        c: &[u16; 16],
+        line: &RasterLine,
+        control: u16,
+    ) -> (usize, bool) {
         let w = usize::from(c[5] >> 8 & 63) * 8;
         let h = usize::from(c[5] & 255);
         let steps = line.a.distance(line.b) as usize;
@@ -1100,6 +1183,9 @@ impl Vdp1 {
             self.plot(point, color, c[2], shade);
         })();
         line.dot += 1;
+        if let Some(texture) = &mut line.texture {
+            texture.advance();
+        }
         line.dot > line.last
     }
     fn plot(&mut self, p: Point, color: u16, mode: u16, shade: [i32; 3]) {
