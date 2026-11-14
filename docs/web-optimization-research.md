@@ -1246,3 +1246,187 @@ publications: these already reconstruct a proven slave polling microstate at an
 arbitrary admitted endpoint. This avoids interpreting both CPUs at every clock.
 The master can then use owned, preflighted instruction blocks inside the same
 observer proof. This is a design direction, not an implemented or measured gain.
+
+
+### Rejected in-place master-prefix screens
+
+The next prototype reuses the existing arbitrary-phase private-slave polling
+proof, mutably borrows the real master cache, and executes preflighted
+scalar/load/branch instructions and buffered WRAM stores in the actual CPU.
+Unsupported operations, misses and observer limits exit before that instruction
+changes state. Independent sound advances only through actual master retirements;
+there is no future sound snapshot/replay or per-instruction full CPU rollback.
+The normal frame API remains unchanged.
+
+Original native differentials cover 72 combinations of store/read loops, physical
+bus widths, instruction limits, entry halfword offsets and live sound programs.
+They compare full CPU/private pipeline/MDU state, cache contents/LRU, RAM, clocks,
+readiness and PCM against the existing optimized path and an independent one-clock
+replay. New versus existing optimized execution also agrees strictly on both
+CPUs' retained fetch words and instruction epochs. Pure replay has an inherited
+slave speculative-fetch/epoch difference at some pending branch phases, reproduced
+with the new executor disabled; that difference is excluded only from the replay
+comparison. Master fields, architectural/private CPU state, future execution,
+cache contents/LRU, observation flags and PCM remain checked.
+
+A shared eight-case original fixture includes real stores and nonzero live audio
+without test-only fetch priming. Native, browser main thread and Worker agree:
+`[8, 1587117688]` for the first variant and `[8, 408818393]` for the second.
+The digest includes intermediate cut points, which change when an existing-path
+fallback executes a larger prefix; each variant retains its own independent
+state/output comparisons. The first variant passes all 901 library tests before
+the shared fixture is added, and final-source native/Wasm all-feature Clippy.
+
+| Rejected same-interval game screen | Normal fields/s | Alternate fields/s | Owned clocks / 35,936,320 |
+| --- | ---: | ---: | ---: |
+| Owned prefix before both existing polling paths | 21.382 | 20.468 | 3,112,332 (8.66%) |
+| Retired-peer path first; reuse matched private proof on fallback | 21.494 | 20.685 | 2,861,635 (7.96%) |
+
+Both use six alternating 80-field windows over fields 3600–3680 after an
+unmeasured pair, Canvas presentation and PCM draining. The same instance's
+memory/exported globals/tables are restored outside throughput timing. All exposed
+SH-2/M68K, clock, PCM and pixel endpoints match, including extra counted windows.
+These are screening measurements, not continuous gameplay or adoption evidence.
+No builds, tests or profiles overlap preparation or throughput. The original
+single-CPU guest retains its old path and remains effectively flat in each
+variant (about 73 and 71 fields/s respectively).
+
+The first screen makes 1,215,379 attempts, commits 180,209 owned batches and
+retires 2,470,031 owned instructions. The second makes 1,141,207 attempts,
+commits 168,902 batches and retires 2,280,393 instructions. Unsupported/short
+prefixes return to the old path 516,124 and 459,275 times respectively.
+Limiting replacement to a small fraction of clocks while adding admission work
+fails to improve the game. Neither variant is adopted.
+
+Feature Wasm SHA-256 values, in table order:
+
+- `6d52acea1284b8d6a263e6e77803da6038b9dff3a425fcc8f9105808e572451f`
+- `7bc12a7d655a29d35bc9e8bc0d1d3c7dfdbe87005b52adb889189f59ee7fd3e9`
+
+A separate second-variant profile runs after all throughput/count windows and
+preserves the same exposed endpoint. Its exact artifact's function map resolves
+3,927.608 ms / 2,616 weighted samples. Existing `cached_batch` retains 21.373%
+self time, sound advancement 8.848%, display acquisition 7.752% and VDP1
+advancement 4.298%. These diagnostic sample shares are not a speedup or disjoint
+inclusive costs. The next admission experiment retains existing pending-store
+completion/acceptance times while allowing independent cache work to overlap.
+The default game remains around 21 fields/s; #138 and #17 remain open.
+
+
+The pending-store overlap variant also fails screening: 21.300 → 19.750 fields/s
+(−7.28%). It covers 12,340,264 / 35,936,320 main clocks (34.34%) and retires
+9,833,169 owned master instructions in 423,156 batches, including 248,927 batches
+entered with an active buffered transfer. It calls sound catch-up 1,058,191 times
+and stages 470,879 stores. Increasing coverage does not demonstrate a net gain.
+The six alternating windows, extra counted window and separate later profile all
+preserve exposed CPU/clock/PCM/pixel endpoints. Its 72-case native differential
+explicitly requires successful owned execution while a buffered write is active;
+the shared native/main-thread/Worker digest is `[8, 3213625458]`.
+Feature Wasm: `bc9dee8a074b5413aceb22f316b21da2e24fead692f561362606f14b282d7c4a`.
+
+In the counted 80-field window, the existing retired-peer path accounts for
+5,000,035 master instructions, the new private-proof wrapper (including its
+existing-path fallback) for 10,400,668, and remaining outer fallback execution
+for 11,512,933. These are runner-path work counts, not disjoint function-profile
+percentages. The separate exact-map profile samples 4,099.492 ms / 2,730 weighted
+samples: existing `cached_batch` has 15.287% self time, sound advancement 8.875%
+and display acquisition 7.750%; the exported alternate wrapper has 5.527%,
+including inlined runner work. No JS-marshaling attribution follows from that
+wrapper sample. The failed sources and artifacts remain local; the runtime
+changes are reverted. The next diagnostic collects frequent guest dispatcher
+locations separately from throughput to identify reusable instruction blocks.
+No new default-game improvement or real-time acceptance is claimed.
+
+
+A separate diagnostic of the unchanged runner counts 558,943 committed cached
+batches and 26,600,308 master instructions over fields 3600–3680. Only 125,712
+instructions are folded by the existing cycle proof; scalar blocks account for
+7,448,529. The frequent regions contain ordinary function prologues/epilogues,
+word loads, masks and conditional returns. Read-only local constant inspection
+identifies the hottest routine's operand as cacheable high WRAM, not a device
+status register. A follow-up diagnostic finds 1,036,123 cache hits and 84 misses
+among its 1,036,207 dispatcher load attempts. Across the top 256 dispatcher
+locations there are 5,868,804 load hits, 2,925 ordinary-memory misses and 5,262
+other routes. These are attempt counts and a frequency-limited subset, not all
+retired accesses or a globally measured miss ratio. Both diagnostics match all
+exposed uninstrumented endpoints; their elapsed times are excluded from
+performance evidence. CCR is 1 at the counted endpoint.
+
+The first diagnostic artifact is
+`3c99e45334734710809fbf934574e3d5eee123fef4e43e0eb4bcf2d0359ecb35`;
+the load-classification follow-up is
+`1650d9549c061072012061fe0432a975ec6e05f37f0a3e188ee6579f83d781c4`.
+The original active-board native/main-thread/Worker digest remains
+`[8, 3646496445]`. Raw guest locations, instruction words and operand addresses
+stay local. Diagnostic instrumentation is removed after preserving the evidence.
+
+This motivates evaluating unchanged-shadow-set lookup on the actual store-heavy
+game workload. The earlier refill-loop screen above did not establish a gain;
+it did not evaluate this actual game. The proposed path uses the real cache's
+existing lookup only when that particular set has no staged version. Modified
+sets retain the complete version chain, including replacement, aliases and
+rollback. Adoption still requires actual game comparisons and repeats.
+
+
+### Select unchanged-set lookup using actual game comparisons
+
+The selected implementation checks whether the addressed set has a staged
+version. Unmodified sets reuse the real cache's existing tag/way lookup;
+modified sets retain the version chain. A prior unrelated stack write therefore
+no longer sends every subsequent instruction/data lookup through the shadow
+set scan. No allocation, guest phase or cache-state field is added. Truncation
+restores the previous set head, and final shadow commitment still invalidates
+the affected real lookup. The now-unused whole-shadow emptiness helper is removed.
+
+The adopted baseline is the existing production package, SHA-256
+`464639fa99636abb0a2682c09a6cad87f01d94f6abd5d8f6af71d73fe2f09548`;
+intervening gated prototypes/rejection documentation preserve that default engine.
+Selected production Wasm:
+`0c205c8707a61e3d434cde157b91bb950631616a8c69ba42ec96991e1f920e54`.
+Rust 1.100.0, wasm-bindgen 0.2.129, Binaryen 127 and Chrome 157.0.8103.52
+match the preceding comparisons. This source builds without the experiment
+feature.
+
+| Actual continuous game comparison | Normal fields/s | Selected fields/s | Change |
+| --- | ---: | ---: | ---: |
+| Baseline initialized/prepared first | 21.405 | 21.523 | +0.55% |
+| Fresh browser, selected initialized/prepared first | 20.921 | 21.349 | +2.05% |
+
+Both comparisons independently boot both instances to field 3600 before either
+is measured, then alternate six successive 80-field windows through field 4080
+with the same authorized media/input, Canvas and PCM draining. All 12 paired
+windows favor the selected package, including one near-flat first-comparison
+window (+0.005%). All corresponding exposed CPU/clock/PCM/pixel endpoints agree.
+The different gain magnitudes limit precision; the result is a modest,
+workload-specific improvement. Candidate window p95 is 47.3–48.0 ms and p99
+47.7–49.7 ms across the two runs. No local builds/tests/profiles overlap
+preparation or throughput.
+
+Original workloads use 120 warmup fields and six continuous 60-field windows.
+Each row below is one alternating comparison, with matching exposed endpoints;
+these tradeoff observations are not fresh-order repeats or universal gains.
+
+| Original workload | Normal fields/s | Selected fields/s | Change |
+| --- | ---: | ---: | ---: |
+| CPU/store loop | 71.799 | 71.344 | −0.63% |
+| Active sound/video | 52.649 | 52.589 | −0.11% |
+| Normal bitmaps | 110.630 | 110.619 | −0.01% |
+
+Selection prioritizes the actual game gain and records the small original-loop
+tradeoff. The earlier artificial refill-loop rejection is preserved above;
+it did not establish a general cache win. Existing tests cover literal cache
+ways/LRU, duplicate tags, two-way/disabled modes, ordered writes/refills, rollback
+and warmed real lookups across shadow eviction. The selected source passes all
+900 all-feature library tests, the focused 8 cache and 52 cached-execution tests,
+formatting, native all-target/all-feature and Wasm all-feature Clippy with
+warnings denied, and the production build. Complete exact-head CI and review
+remain required before merge.
+
+This is a partial #138 increment, also related to #17. Sustained game 60 fields/s,
+broader gameplay/transitions and production audio-underflow evidence remain
+unmet. Host audio-queue drops are zero in these runs; that is not an AudioWorklet
+underflow measurement. No required post-merge verification is added. The next
+structural investigation is a persistent master-loop proof spanning ordinary
+observer windows, while replaying every buffered WRAM write on its real bus
+schedule. Long CPU/cache repetitions have not yet been demonstrated by this
+frequency-only diagnostic.
