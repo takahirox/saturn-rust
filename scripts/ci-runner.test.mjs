@@ -394,9 +394,9 @@ test("CI gates publication on both suites and retains the actually tested assets
   const workflow = await readFile(".github/workflows/pages.yml", "utf8");
   const job = name => workflow.split(`\n  ${name}:\n`)[1]?.split(/\n  \w+:\n/)[0];
   const native = job("native"), wasm = job("wasm"), browser = job("browser"), build = job("build"), site = job("site"), deploy = job("deploy");
-  for (const command of ["cargo fmt --check", "cargo build --locked", "cargo test --locked",
-    "cargo clippy --locked --all-targets -- -D warnings", "sh scripts/check-fixtures.sh"]) assert(native.includes(command));
-  for (const command of ["sh scripts/build-web.sh", "cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings"]) assert(wasm.includes(command));
+  for (const command of ["cargo fmt --check", "cargo build --locked", "cargo test --locked --all-features",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings", "sh scripts/check-fixtures.sh"]) assert(native.includes(command));
+  for (const command of ["sh scripts/build-web.sh", "cargo clippy --locked --target wasm32-unknown-unknown --all-features -- -D warnings"]) assert(wasm.includes(command));
   assert.match(wasm, /path: ~\/\.cargo\/bin\/wasm-bindgen/);
   assert.match(wasm, /key: wasm-bindgen-ubuntu24-\$\{\{ runner.os \}\}-\$\{\{ runner.arch \}\}-0.2.129/);
   assert.match(wasm, /if: steps.bindgen-cache.outputs.cache-hit != 'true'/);

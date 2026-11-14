@@ -763,3 +763,10 @@ the interpreter/event profile justifies its compilation and invalidation costs.
 Adoption still requires production Web game throughput, tail latency, audio
 and broader gameplay evidence under #138, without frame skipping or changed
 guest timing. These integrations are remaining work, not implemented here.
+
+A separate ten-second native mixed-path sample also locates substantial host
+work in continuation/event dispatch: 3,361 self samples in `Executor::poll` and
+1,483 in the inlined kernel loop, versus 710 in shared scalar execution across
+both kernel and reference paths. These are diagnostic self-sample counts, not
+Wasm percentages or additive inclusive timings. They support investigating
+event-exit frequency; raw process metadata/stacks remain local.
