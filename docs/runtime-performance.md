@@ -3318,3 +3318,66 @@ The selected Web game still runs near 21 fields/s, requiring about 2.86 times
 more throughput for 60. Representative broader gameplay/transitions and real-time
 audio-underflow acceptance remain unmet. #138, #17 and the active real-time goal
 stay open; no general firmware compatibility or hardware-completion claim is made.
+
+## Dispatch cached execution by the existing instruction class (2026-11-15)
+
+Related to #138 and #17. Baseline is main `6a90c1b`; this is another partial
+throughput increment. A fresh local diagnostic build counts 161,481,747 master
+retirements over fields 3600–4080. It attempts 152,579,210 scalar blocks, of which
+117,648,013 (77.1%) return zero. Successful blocks average 1.279 instructions.
+Prepared WB scalars, loads and resident branches account for another 29,995,187,
+34,151,807 and 41,340,704 planned instructions respectively. Its final exposed
+CPU/clock/PCM/pixel endpoint equals the corresponding uninstrumented run;
+instrumented elapsed times are excluded from throughput evidence.
+
+The candidate reads the existing instruction descriptor's execution class once
+before trying cached paths. Register-only instructions enter the scalar paths,
+ordinary MOV loads enter prepared execution, and recognized branches enter
+resident control preparation. RTE, TRAPA, system transfers and other instructions
+retain their existing fallback. Resident preparation already checks the running
+state, address error, delay slot and matching IF/ID pair, so its caller's duplicate
+control-readiness probe is removed. Cache reads, pipeline rules, sound guards,
+observer horizons, recovery and guest retirement positions keep their existing
+behavior. No address-indexed decoded-code cache is introduced.
+
+Production builds use Rust 1.100.0, wasm-bindgen 0.2.129 and Binaryen 127 with
+unchanged release flags; the browser is headless Chrome 157.0.8103.52. Baseline
+Wasm SHA-256 is
+`40bb2d54f694cf75ca3aa9ae1038e0e80bd430f806457779bd0c2d22c3e5ed30`;
+classification-only candidate is
+`464639fa99636abb0a2682c09a6cad87f01d94f6abd5d8f6af71d73fe2f09548`.
+Both use the workload/controller sequence above: cold boot, skip 3600 fields,
+then six continuous 80-field windows, drawing every field and draining/checking
+PCM. All variants finish preparation before timing, with no concurrent local
+builds, tests or profiles during preparation or measurement.
+
+| Comparison | Main fields/s | Classification fields/s | Change |
+| --- | ---: | ---: | ---: |
+| Alternating pair, main initialized first | 20.93976 | 21.45203 | +2.45% |
+| Fresh rotating three-way run, classification initialized first | 20.69938 | 21.44676 | +3.61% |
+| Original busy sound/video guest | 52.82310 | 53.11850 | +0.56% |
+
+All twelve paired game windows improve and corresponding exposed endpoints
+agree. Candidate window p95 ranges are 47.1–48.0 ms initially and 47.4–47.8 ms
+in the repeat; p99 ranges are 47.7–49.5 and 48.1–49.1 ms. Main's repeat includes
+a 55.9 ms field, so the larger second aggregate gain includes host variation;
+the candidate's absolute throughput is consistent across the two fresh runs.
+
+The third artifact adds an early check of the scalar block's existing pipeline
+readiness condition. It measures 21.04405 fields/s, 1.88% slower than the
+classification-only artifact, despite passing the targeted pipeline test and
+all 52 cached-execution differential tests. That addition is rejected. A prior
+resident MOV-load/WB-scalar proof-value reuse trial also passes corrected
+sign-extension and cached-execution checks but measures 20.94725 → 20.79065
+fields/s (−0.75%); it is excluded.
+
+The exhaustive instruction-descriptor test compares all 65,536 execution classes
+with independent literal scalar/load/control classifiers. All 52 cached-execution
+scheduler differential tests and native all-target Clippy pass. Exact-head
+native/Wasm/browser CI and final review remain required before merging.
+
+Approximately 21.45 fields/s still needs about 2.80 times more throughput for
+60. Sustained real-time, broader gameplay/transitions and production audio
+underflow acceptance remain unmet. #138, #17 and the active goal stay open.
+Private inputs, diagnostic traces and captures remain local and ignored.
+Required post-merge verification: none.

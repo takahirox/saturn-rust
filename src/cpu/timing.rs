@@ -127,6 +127,23 @@ impl Instruction {
         )
     }
 
+    pub fn cached_class(self, opcode: u16) -> super::CachedClass {
+        use super::CachedClass;
+        let class = (self.0 >> 56) as u8;
+        if class != 0 {
+            if class & 0x40 == 0 {
+                CachedClass::Scalar
+            } else {
+                CachedClass::Load
+            }
+        } else if self.control_flags() & REWRITES_PC != 0 && opcode != 0x002B && opcode >> 8 != 0xC3
+        {
+            CachedClass::Control
+        } else {
+            CachedClass::Other
+        }
+    }
+
     pub fn prepared_scalar(self) -> Option<super::scalar::Kind> {
         super::scalar::decode_prepared((self.0 >> 56) as u8)
     }
@@ -621,6 +638,20 @@ mod instruction_table_tests {
     fn every_instruction_matches_literal_timing_and_all_load_dependency_states() {
         for opcode in 0..=u16::MAX {
             let instruction = instruction(opcode);
+            use super::super::{Branch, CachedClass, CpuState};
+            let expected = if super::super::scalar::decode_literal(opcode).is_some() {
+                CachedClass::Scalar
+            } else if opcode & 0xF0FF != 0x4026
+                && mov_load_address(opcode, &CpuState::default()).is_some()
+            {
+                // LDS.L PR deliberately retains the dedicated MDU/system path.
+                CachedClass::Load
+            } else if Branch::recognized(opcode) {
+                CachedClass::Control
+            } else {
+                CachedClass::Other
+            };
+            assert_eq!(instruction.cached_class(opcode), expected, "{opcode:04X}");
             assert_eq!(
                 instruction.prepared_scalar().map(|k| k as u8),
                 super::super::scalar::decode_literal(opcode).map(|k| k as u8)

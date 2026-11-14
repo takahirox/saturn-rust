@@ -175,6 +175,14 @@ pub struct Cpu {
     execution_clock: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CachedClass {
+    Scalar,
+    Load, // Ordinary MOV; LDS.L PR retains the general MDU/system path.
+    Control,
+    Other,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 enum CachedEffect {
     Scalar(scalar::Kind),
@@ -678,6 +686,9 @@ impl Cpu {
             && !self.state.address_error_pending
             && self.state.delay_target.is_none()
             && self.decoded_opcode() == Some(opcode)
+    }
+    pub(crate) fn cached_class(opcode: u16) -> CachedClass {
+        timing::instruction(opcode).cached_class(opcode)
     }
     pub(crate) fn is_scalar(opcode: u16) -> bool {
         scalar::decode(opcode).is_some()
