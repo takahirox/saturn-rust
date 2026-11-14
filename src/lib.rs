@@ -1559,3 +1559,6 @@ impl Machine {
         Ok(())
     }
 }
+
+#[cfg(any(test, feature = "kernel-experiment"))]
+pub mod kernel;

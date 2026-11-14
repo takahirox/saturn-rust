@@ -632,3 +632,141 @@ initialization orders and an identical-artifact control on the selected source,
 with Canvas and audio draining enabled. The defined scene remains far below
 real-time throughput; #138's broader gameplay and audio-underflow criteria stay
 open. Private media, raw traces, captures and experimental builds remain local.
+
+## Resumable kernel experiment (#145)
+
+The user authorized trying a new execution architecture after the production
+optimizations above. The first vertical slice is `kernel-experiment`, an opt-in
+Cargo feature. Default native/Wasm builds continue to use `Machine`; there is
+no product engine selector. The rebuilt default production Wasm is byte-identical
+to the preceding selected artifact (`0920c35a…85e`); experimental declarations
+are appended to keep existing diagnostic source positions stable. This increment
+does not replace the game core or complete #138/#17.
+
+`src/cpu/resumable.rs` owns a CPU's architectural state and a fetch, operand or
+retirement continuation. Normal execution never clones the CPU, retries an
+instruction from its beginning or rolls back a completed device access. Only
+validated arithmetic, MOV decoding and branch semantics are reused from the
+existing interpreter. `src/kernel.rs` owns both CPUs, RAM, pending requests,
+one active transfer, replies and the earliest-event loop. Fixed CPU/bus slots
+avoid per-instruction allocation; optional diagnostic traces allocate only
+when explicitly enabled. Setup, reset and benchmark verification may copy state.
+
+The first board intentionally implements a **serial synthetic test contract**:
+fetch transfer, optional operand transfer, then the instruction's base execution
+states. It has 64 KiB of RAM and a synthetic side-effecting register, not a
+Saturn address map. Transfer latency is configurable, including zero. Requests
+are granted round-robin, with master first initially. Reads sample and writes
+publish at completion. External writes/resets occur before a completion at the
+same timestamp. Granted transfers drain once across CPU reset, while an epoch
+rejects stale delivery and queued requests are canceled. `run_until(T)` executes
+the half-open interval ending at T, preserving arbitrary split-run equivalence.
+
+This contract establishes ownership and continuation behavior; it does **not**
+model SH-2 IF/ID/MA overlap, load interlocks, instruction caches, BSC wait rules,
+write buffers, interrupts, exception entry, DMA or Saturn peripherals. Ordinary
+register operations, MOV addressing, branches/delay slots, MOVA and SLEEP are
+supported; other instructions or invalid addresses stop with a retained explicit
+error. Even a complete synthetic guest is not evidence of Saturn timing or
+media compatibility. A fetched opcode is retained from its completion-time
+bytes; there is no RAM-PC instruction cache that could hide later writes.
+
+### Correctness and measurements
+
+Original numeric tests check completion-time sampling, retained read/opcode
+values, exactly-once side effects, reset during granted reads/writes, cancellation
+of queued requests, a peer's store/read order and arbitrary one-clock splits.
+Additional original guests compare architectural state and RAM with `Cpu::step`
+at retirements, covering ordinary MOV widths/addressing and source/destination
+aliases, branch targets/links and PC-relative delay slots. Shared arithmetic
+helpers are not independent arithmetic or hardware-timing proof.
+
+The optional native example and `scripts/benchmark-kernel.mjs` compare two
+original six-instruction loops: register/branch work, and load/increment/store
+work on separate data words for the two CPUs. Each variant retires exactly
+5,000,000 instructions per CPU and drains before comparison. The comparison is
+the existing **ISA interpreter with immediate plain RAM**, not the production
+`Machine` or an equivalent timed Saturn board. It isolates the cost of this
+new scheduler versus the simpler architectural interpreter; it does not
+measure removal of production replay or establish a game speedup.
+
+Rust 1.100.0 release, wasm-bindgen 0.2.129, Binaryen 127 and local headless Chrome
+157.0.8103.52 were used. Both paths are warmed before either measurement, setup
+and verification are outside timing, and six rounds alternate execution order.
+The following are medians for 10,000,000 total retired instructions:
+
+| Host/workload | Continuation kernel | Immediate ISA reference | Kernel million instructions/s |
+| --- | ---: | ---: | ---: |
+| Native, register loop | 120.002 ms | 46.224 ms | 83.33 |
+| Native, memory loop | 172.511 ms | 62.588 ms | 57.97 |
+| Wasm main thread, register loop | 182.600 ms | 64.200 ms | 54.76 |
+| Wasm main thread, memory loop | 231.150 ms | 80.200 ms | 43.26 |
+| Wasm Worker, register loop | 182.700 ms | 64.150 ms | 54.73 |
+| Wasm Worker, memory loop | 231.400 ms | 79.800 ms | 43.22 |
+
+All state/RAM comparisons pass. Endpoint digests also agree between native,
+browser main thread and Worker across all rounds. A shorter fresh-browser run
+measured 54.27/42.11 million instructions/s in the Worker. The longer Worker run
+completed with `crossOriginIsolated=false`, one ordinary Wasm instance and 337
+main-thread timer ticks. This establishes a functioning independent Worker,
+not a measured production UI-latency or audio-underflow result. Moving to a
+Worker alone does not increase execution throughput in these observations.
+
+The experimental Wasm SHA-256 is
+`94e84d88b3379595fc4283875a16e70e09b3612ba24693d42e0c2b2e4496228b`.
+Raw local records remain under ignored `target/kernel-138/`.
+
+The kernel takes about 2.8–2.9 times the immediate reference's time in Wasm.
+Eliminating replay is therefore insufficient by itself: explicit bus and
+retirement event dispatch still has a substantial cost, even on simple loops.
+Keep this as an experimental foundation, not an adopted production speedup.
+Do not convert these synthetic clocks or instruction rates into game FPS.
+The existing game's roughly 20 fields/s result remains the relevant game
+measurement; this increment provides no new game FPS or 60-fps claim.
+
+### Reproduction and integration order
+
+Run the original native experiment with:
+
+```sh
+cargo run --locked --release --features kernel-experiment --example kernel_benchmark -- 5000000
+```
+
+For the browser harness, build a separate feature-enabled package (leave the
+default `scripts/build-web.sh` package untouched):
+
+```sh
+RUSTFLAGS='-C llvm-args=--inline-threshold=1000' cargo build --locked --release --target wasm32-unknown-unknown --features kernel-experiment
+wasm-bindgen --target web --out-dir target/kernel-138/pkg --no-typescript target/wasm32-unknown-unknown/release/saturn_rust.wasm
+wasm-opt target/kernel-138/pkg/saturn_rust_bg.wasm -O4 --enable-sign-ext --enable-mutable-globals --enable-nontrapping-float-to-int --enable-bulk-memory --enable-reference-types --enable-multivalue -o target/kernel-138/pkg/optimized.wasm
+mv target/kernel-138/pkg/optimized.wasm target/kernel-138/pkg/saturn_rust_bg.wasm
+BROWSER_CHANNEL=chrome node scripts/benchmark-kernel.mjs --pkg target/kernel-138/pkg --count 5000000 --runs 6
+```
+
+Next, replace the synthetic contract with the real SH-2 fetch/cache/pipeline and
+shared-bus boundaries. Add register-only execution spans bounded by the earliest
+possible peer/device effect, using decoded CPU-visible fetched bytes. Measure
+event exits and host work removed, not merely larger block sizes. Preserve
+the existing literal timing, contention, interrupt/reset and self-modifying-code
+oracles before connecting original board guests. Attach existing peripheral
+implementations through direct timed events; wrapping the old snapshot/replay
+`Machine` would not complete this redesign. Full instruction and exception
+coverage is required before authorized local game comparisons become meaningful.
+
+The browser destination remains one Emulation Worker owning both SH-2s,
+68000 and devices in one Wasm instance. The UI presents completed output; the
+existing AudioWorklet consumes bounded PCM, with real consumption/underrun
+measurements. Ordinary transferable buffers remain a viable fallback; shared
+buffers are optional. Start with CPU video kernels and GPU presentation, then
+evaluate safe rendering spans. Consider a hot-block Wasm compiler only after
+the interpreter/event profile justifies its compilation and invalidation costs.
+Adoption still requires production Web game throughput, tail latency, audio
+and broader gameplay evidence under #138, without frame skipping or changed
+guest timing. These integrations are remaining work, not implemented here.
+
+A separate ten-second native mixed-path sample also locates substantial host
+work in continuation/event dispatch: 3,361 self samples in `Executor::poll` and
+1,483 in the inlined kernel loop, versus 710 in shared scalar execution across
+both kernel and reference paths. These are diagnostic self-sample counts, not
+Wasm percentages or additive inclusive timings. They support investigating
+event-exit frequency; raw process metadata/stacks remain local.

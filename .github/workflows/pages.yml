@@ -32,8 +32,8 @@ jobs:
         run: |
           python3 scripts/ci-time.py fmt cargo fmt --check
           python3 scripts/ci-time.py native-build cargo build --locked
-          python3 scripts/ci-time.py native-tests cargo test --locked
-          python3 scripts/ci-time.py native-clippy cargo clippy --locked --all-targets -- -D warnings
+          python3 scripts/ci-time.py native-tests cargo test --locked --all-features
+          python3 scripts/ci-time.py native-clippy cargo clippy --locked --all-targets --all-features -- -D warnings
 
   wasm:
     # Playwright 1.58.2 supports Ubuntu 24.04, but not Ubuntu 26.04.
@@ -67,7 +67,7 @@ jobs:
       - name: Build browser client
         run: |
           python3 scripts/ci-time.py wasm-build sh scripts/build-web.sh
-          python3 scripts/ci-time.py wasm-clippy cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings
+          python3 scripts/ci-time.py wasm-clippy cargo clippy --locked --target wasm32-unknown-unknown --all-features -- -D warnings
       - name: Retain the exact browser build
         uses: actions/upload-artifact@v4
         with:
