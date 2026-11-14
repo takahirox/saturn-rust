@@ -1313,6 +1313,10 @@ fn cached_gbr_load_wait_loops_preserve_width_data_and_branch_controls() {
             a.cached_retired,
             a.cpu_state().instructions
         );
+        assert!(
+            a.bus.cached_resident_branches > 0,
+            "resident branch path must execute"
+        );
         assert_eq!(a.cpu_state().r[6], if data == 9 { 0x55 } else { 0 });
         assert!(
             a.bus.cached_cycle_skipped > 0,

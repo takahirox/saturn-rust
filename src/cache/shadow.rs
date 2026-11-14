@@ -1,5 +1,5 @@
 //! Transactional cache-line versions for an observer-bounded read/write burst.
-use super::{Cache, Line, Ordering};
+use super::{Cache, CacheTouch, Line, Ordering};
 
 struct SetVersion {
     index: usize,
@@ -68,6 +68,27 @@ impl CachedLines {
         let (_, line) = self.hit(cache, address)?;
         let offset = (address & 15) as usize;
         Some(line.data[offset..offset + N].try_into().unwrap())
+    }
+    pub fn peek_touch<const N: usize>(
+        &self,
+        cache: &Cache,
+        address: u32,
+    ) -> Option<([u8; N], CacheTouch)> {
+        if self.is_empty() {
+            return cache.peek_cached_touch(address);
+        }
+        if !address.is_multiple_of(N as u32) {
+            return None;
+        }
+        let (way, line) = self.hit(cache, address)?;
+        let (set, _, offset) = Cache::parts(address);
+        Some((
+            line.data[offset..offset + N].try_into().unwrap(),
+            CacheTouch {
+                set: set as u8,
+                way: way as u8,
+            },
+        ))
     }
     pub fn read<const N: usize>(
         &self,

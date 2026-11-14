@@ -3234,3 +3234,87 @@ Sustained 60 fields/s, broader gameplay/transitions and real-time audio delivery
 including underflows remain unmet. #138 and the active real-time goal stay open;
 this checkpoint does not establish general firmware compatibility or hardware
 completion.
+
+
+## Execute resident branches from proven cache words (2026-11-14)
+
+Continuation from main `b3ae14e` and the VDP2 ownership change, related to #138
+and #17. The production cached executor now constructs a complete resident-branch
+IF schedule before publishing CPU, replacement or retained-prefetch state. Its
+admission step resolves the actual
+cache words, retained halfword and ordered LRU edits once, including staged cache
+versions. Only after the complete schedule and existing sound/observer horizon
+are proven does it publish those edits and retire the branch. Cache misses,
+uncached/peripheral targets, unavailable IF/ID pairs and faults retain the original
+path. Branch conditions, delay slots, link state, WB interlocks, retained EX,
+interrupt inhibition, physical cache visibility and clock endpoints are preserved.
+This is a production optimization, not completion of the separate kernel prototype.
+
+An initial version proves each hit and then performs the original cache reads.
+Its first paired game observation is 19.91561 → 20.45086 fields/s (+2.69%), but
+it falls to 20.48236 → 20.52124 (+0.19%) in a fresh rotating-order comparison.
+That version is not selected. Reusing the proven words and LRU edits removes the
+second cache lookup and demonstrates the following repeated improvement:
+
+| Actual-game comparison, fields 3600–4080 | VDP2 baseline fields/s | Selected branch fields/s | Change |
+| --- | ---: | ---: | ---: |
+| Rotating-order baseline/initial/selected, six 80-field windows | 20.48236 | 20.95466 | +2.31% |
+| Fresh reversed-label pair, six 80-field windows | 20.51405 | 20.95923 | +2.17% |
+
+Every selected-candidate window improves and corresponding exposed CPU,
+clock/counter, PCM and pixel endpoints match. All runtimes finish preparation
+before measurement; local builds, tests and profiles remain separate from both
+preparation and timing. Chrome 157.0.8103.52, the same deterministic controller
+sequence, continuous execution, Canvas and PCM draining remain unchanged.
+The original busy video/audio guest measures 53.01446 → 52.90461 (−0.21%, flat).
+These observations are not a general gameplay or real-time audio acceptance claim.
+
+Median window p95/p99 is 49.65/50.25 → 48.50/49.60 ms in the rotating-order run,
+and 49.65/51.00 → 48.55/49.55 ms in the reversed pair. These are medians of window
+percentiles, not pooled distributions or long-run guarantees. The VDP2 baseline
+Wasm SHA-256 is
+`f3150bbb55ae15afe5040f4ab962bc826ddd4b183f8edc13286ffd117c131d20`;
+the rejected initial branch variant is
+`68e9104e53bb7b718b2ffb1fc22e556b65a8b5b5753cf8bc0bbc70e019c17562`;
+the selected word-reuse variant is
+`40bb2d54f694cf75ca3aa9ae1038e0e80bd430f806457779bd0c2d22c3e5ed30`.
+
+Local validation passes an exhaustive branch-encoding differential test against
+the original timed IF/ID helpers, with both conditional outcomes and nine WB/EX
+configurations. It compares complete CPU state, fetch/discard ordering and their
+clocks. The existing 52 cached-scheduler differential tests pass, including an
+assertion that the resident branch path executes. Eight cache tests pass; the
+existing peek/read oracle additionally verifies that applying an opaque LRU proof
+matches an ordinary cache read without publishing replacement changes early.
+Native all-target/all-feature Clippy, Wasm all-feature Clippy, formatting and
+whitespace checks pass. Complete exact-head CI and full review are required
+before merge.
+
+### Reference instruction-volume investigation
+
+A separate local diagnostic build of the pinned, synchronous, full-cache Beetle
+core disables JIT and SH-2 fusions and counts issued ISA words. Identical fresh
+SMPC save seeds and controller input produce matching PCM, pixel, audio-frame and
+field endpoints in all six windows against the unmodified conservative core.
+The instrumentation's FPS is excluded from performance evidence. Counting begins
+at instruction issue, so an unfinished field-boundary instruction can differ from
+a retirement count by about one per CPU.
+
+The reference issues approximately 345,330 master and 84,226 slave instructions
+per field in this book-selection interval. Our exposed logical retirement counts
+over the late 3840–4080 interval average approximately 336,419 master and 192,516
+slave instructions per field. The master volumes and dominant call/stack/poll
+instruction families are similar. The slave remains in a three-instruction FRT
+poll in the reference; our scheduler already folds proven peer polling periods
+while retaining logical retirement counts. These figures therefore do not measure
+host instruction executions equally, establish timing equivalence or identify a
+hardware defect. They support investigating the cost of host execution and
+synchronization, rather than attributing the large master throughput gap solely
+to a larger guest instruction volume. Private diagnostic code, inputs, saves,
+captures and raw counters remain ignored and local; no reference-core code is
+adopted.
+
+The selected Web game still runs near 21 fields/s, requiring about 2.86 times
+more throughput for 60. Representative broader gameplay/transitions and real-time
+audio-underflow acceptance remain unmet. #138, #17 and the active real-time goal
+stay open; no general firmware compatibility or hardware-completion claim is made.

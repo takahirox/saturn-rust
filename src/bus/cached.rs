@@ -6,8 +6,8 @@
 //! private until validated. A final store reuses the actual bus protocol.
 use super::poll_cycle::PollCycle;
 use super::*;
-use crate::cache::CachedLines;
-use crate::cpu::{CachedInstruction, Cpu, CpuStatus};
+use crate::cache::{CacheTouch, CachedLines};
+use crate::cpu::{CachedInstruction, Cpu, CpuStatus, ResidentControl};
 
 /// A ready peer publishes proven instruction retirements. A pending peer
 /// publishes a proven microstate after Master yields or after one ordinary peer issue.
@@ -62,6 +62,11 @@ impl PassiveRead<'_> {
             (address as usize) < rom.len()
         })
     }
+}
+struct ResidentFetches {
+    values: [u16; 3],
+    touches: [Option<CacheTouch>; 3],
+    retained: Option<(u32, u16)>,
 }
 struct CycleAnchor {
     cpu: Cpu,
@@ -217,6 +222,47 @@ pub(super) fn ordinary_memory(address: u32) -> bool {
             || (HIGH_WRAM..HIGH_WRAM + WRAM_SIZE as u32).contains(&address))
 }
 impl Cached<'_> {
+    // Inspect each real cache word once, retaining the exact LRU edit and
+    // second IF halfword. Publish only after the complete schedule is proven.
+    fn resident_control_reads(&self, plan: &ResidentControl) -> Option<ResidentFetches> {
+        if self.store.get().is_some() {
+            return None;
+        }
+        let mut result = ResidentFetches {
+            values: [0; 3],
+            touches: [None; 3],
+            retained: self.retained.get(),
+        };
+        for (i, &(address, _, discard)) in plan.fetches.iter().flatten().enumerate() {
+            if !ordinary_memory(address) || address & 1 != 0 {
+                return None;
+            }
+            if discard {
+                result.retained = None;
+            }
+            if let Some((at, word)) = result.retained
+                && at == address
+            {
+                result.retained = None;
+                result.values[i] = word;
+                continue;
+            }
+            let (bytes, touch): ([u8; 4], _) = if self.version_count.get() == 0 {
+                self.cache.peek_cached_touch(address & !3)?
+            } else {
+                self.fills.borrow().peek_touch(self.cache, address & !3)?
+            };
+            result.touches[i] = Some(touch);
+            if address & 2 == 0 {
+                result.values[i] = u16::from_be_bytes([bytes[0], bytes[1]]);
+                result.retained = Some((address + 2, u16::from_be_bytes([bytes[2], bytes[3]])));
+            } else {
+                result.values[i] = u16::from_be_bytes([bytes[2], bytes[3]]);
+                result.retained = None;
+            }
+        }
+        Some(result)
+    }
     fn prepared_retirement(&self, plan: &CachedInstruction) -> Option<u64> {
         let at = match plan.operand {
             None => plan.at,
@@ -1572,6 +1618,44 @@ impl Bus {
                         }
                     }
                     debug_assert_eq!(memory.clock.get(), at);
+                    retired_at = at;
+                    ready = (cpu.execution_clock().unwrap() + u64::from(cpu.last_clocks())).max(at);
+                    memory.clock.set(ready.min(end));
+                    retired += 1;
+                    if track_retirements {
+                        points.points.push(Retirement { at });
+                        points.last_reference = reference;
+                    }
+                    continue;
+                }
+            }
+            // Resident branches have a complete, infallible IF schedule. Prove
+            // its endpoint and all cache hits before touching LRU/prefetch state,
+            // so this path needs neither a local snapshot nor speculative replay.
+            if memory.passive.as_ref().is_none_or(|p| p.rom.is_none())
+                && cpu.has_cached_control(op)
+                && let Some(plan) = cpu.prepare_resident_control(memory.clock.get())
+                && plan.at <= memory.end.get()
+            {
+                let at = plan.at;
+                let reference = self.system_clock.deadline(
+                    ((at - self.main_clocks) as u32).saturating_sub(self.pending_main_clocks),
+                );
+                if (checkpoint_sound
+                    || !sound_lookahead
+                    || reference.saturating_sub(points.last_reference) < 9)
+                    && let Some(reads) = memory.resident_control_reads(&plan)
+                {
+                    memory.instruction_break(cpu.state().pc, false);
+                    for touch in reads.touches.into_iter().flatten() {
+                        touch.apply(&mut memory.lru.borrow_mut());
+                    }
+                    memory.retained.set(reads.retained);
+                    cpu.retire_cached_control(plan.finish(reads.values));
+                    #[cfg(test)]
+                    {
+                        self.cached_resident_branches += 1;
+                    }
                     retired_at = at;
                     ready = (cpu.execution_clock().unwrap() + u64::from(cpu.last_clocks())).max(at);
                     memory.clock.set(ready.min(end));
