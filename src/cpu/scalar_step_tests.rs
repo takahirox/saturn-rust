@@ -242,3 +242,93 @@ fn prepared_scalar_matches_complete_cpu_fetch_events_and_clocks_after_load_write
         }
     }
 }
+
+#[test]
+fn resident_control_matches_timed_reference_fetches_for_every_branch_encoding() {
+    // The oracle executes the original IF/ID helpers and pipeline waits. Check
+    // every encoding, both conditional outcomes, WB hazards and retained EX.
+    let timeline = |events: &[(u8, u32)]| {
+        let mut clock = 100u64;
+        let mut trace = Vec::new();
+        for &(kind, value) in events {
+            if kind == 1 {
+                clock += u64::from(value);
+            } else {
+                trace.push((clock, kind, value));
+            }
+        }
+        trace
+    };
+    for op in 0..=u16::MAX {
+        if !Branch::recognized(op) {
+            continue;
+        }
+        for t in [0, T] {
+            for mode in 0..9 {
+                let new_code = || Code {
+                    op,
+                    clock: Cell::new(100),
+                    clocked: true,
+                    fetch_clocks: false,
+                    events: RefCell::default(),
+                };
+                let (mut fast_bus, mut literal_bus) = (new_code(), new_code());
+                let mut fast = Cpu::start(0x100, 0x1000);
+                fast.state.sr = t;
+                fast.state.pr = 0x300;
+                fast.state.r = std::array::from_fn(|i| 0x200 + i as u32 * 4);
+                match mode {
+                    1 | 3 | 4 | 5 | 6 | 7 => {
+                        fast.load_pipeline.issue(0x6002 | (op & 0xF00));
+                    }
+                    2 | 8 => {
+                        fast.load_pipeline.issue(0x4F26);
+                    }
+                    _ => {}
+                }
+                fast.load_pipeline.load_split(mode == 3);
+                if mode >= 4 {
+                    fast.load_pipeline.retain_ex(match mode {
+                        5 => 100,
+                        6 => 98,
+                        _ => 99,
+                    });
+                }
+                fast.fetch.prime(&fast_bus, 0x100);
+                fast_bus.events.borrow_mut().clear();
+                let mut literal = fast.clone();
+                let expected = literal.prepare_cached_control(&mut literal_bus).unwrap();
+                literal.retire_cached_control(expected);
+                let plan = fast.prepare_resident_control(100).unwrap();
+                fast_bus.instruction_break(fast.state.pc, false);
+                fast_bus
+                    .sh2_pipeline_wait((plan.issue_at - fast_bus.clock.get()) as u32)
+                    .unwrap();
+                let mut values = [0; 3];
+                for (i, &(address, at, discard)) in plan.fetches.iter().flatten().enumerate() {
+                    if discard {
+                        fast_bus.sh2_discard_prefetch();
+                    }
+                    fast_bus
+                        .sh2_pipeline_wait((at - fast_bus.clock.get()) as u32)
+                        .unwrap();
+                    values[i] = fast_bus.fetch16(address).unwrap();
+                }
+                fast_bus
+                    .sh2_pipeline_wait((plan.at - fast_bus.clock.get()) as u32)
+                    .unwrap();
+                fast.retire_cached_control(plan.finish(values));
+                assert_eq!(fast, literal, "op={op:04X} t={t} mode={mode}");
+                assert_eq!(
+                    fast_bus.clock, literal_bus.clock,
+                    "op={op:04X} t={t} mode={mode}"
+                );
+                assert_eq!(
+                    timeline(&fast_bus.events.borrow()),
+                    timeline(&literal_bus.events.borrow()),
+                    "op={op:04X} t={t} mode={mode}"
+                );
+            }
+        }
+    }
+}

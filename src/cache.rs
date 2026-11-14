@@ -18,6 +18,12 @@ pub(crate) struct CacheTouch {
     set: u8,
     way: u8,
 }
+impl CacheTouch {
+    pub(crate) fn apply(self, lru: &mut [u8; 64]) {
+        let set = usize::from(self.set);
+        lru[set] = Cache::touch_replacement(lru[set], usize::from(self.way));
+    }
+}
 pub(crate) struct Cache {
     control: u8,
     lines: Vec<[Line; 4]>,
@@ -367,6 +373,15 @@ mod tests {
                                     cache.peek_cached::<$width>(address),
                                     cache.cached_only::<$width>(address, &mut hypothetical)
                                 );
+                                let mut prepared = before;
+                                let bytes = cache.peek_cached_touch::<$width>(address).map(
+                                    |(bytes, touch)| {
+                                        touch.apply(&mut prepared);
+                                        bytes
+                                    },
+                                );
+                                assert_eq!(bytes, cache.peek_cached::<$width>(address));
+                                assert_eq!(prepared, hypothetical);
                             };
                         }
                         check!(1);

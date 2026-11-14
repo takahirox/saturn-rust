@@ -242,6 +242,40 @@ pub(crate) struct PreparedBranch {
     states: u32,
     ex: u64,
 }
+/// A branch whose IF/ID words are already resident. Bus admission proves
+/// every read and its endpoint before any replacement/prefetch state changes.
+pub(crate) struct ResidentControl {
+    pub fetches: [Option<(u32, u64, bool)>; 3],
+    #[cfg(test)]
+    pub issue_at: u64,
+    pub at: u64,
+    branch: Branch,
+    pipeline: timing::LoadPipeline,
+    states: u32,
+    ex: u64,
+    decoded: (u32, Option<usize>, u16),
+    fetched: (u32, usize),
+    decode_ready: u64,
+}
+impl ResidentControl {
+    pub fn finish(self, values: [u16; 3]) -> PreparedBranch {
+        PreparedBranch {
+            branch: self.branch,
+            pipeline: self.pipeline,
+            states: self.states,
+            ex: self.ex,
+            fetch: fetch::Fetch::resident_pair(
+                (
+                    self.decoded.0,
+                    self.decoded.1.map_or(self.decoded.2, |i| values[i]),
+                ),
+                (self.fetched.0, values[self.fetched.1]),
+                self.decode_ready,
+            ),
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct CachedInstruction {
     pub at: u64,
@@ -535,6 +569,60 @@ impl Cpu {
         self.multiplier.clock += u64::from(self.last_clocks);
         self.fetch
             .finish_cached_pair(self.state.pc, (plan.words.1, future), plan.decode_ready);
+    }
+
+    pub(crate) fn prepare_resident_control(&self, now: u64) -> Option<ResidentControl> {
+        if self.state.status != CpuStatus::Running
+            || self.state.address_error_pending
+            || self.state.delay_target.is_some()
+        {
+            return None;
+        }
+        let pc = self.state.pc;
+        let words = self.fetch.cached_pair(pc, now)?;
+        let branch = Branch::decode(words.0, &self.state)?;
+        let instruction = timing::instruction(words.0);
+        let mut pipeline = self.load_pipeline.clone();
+        let ex = pipeline.issue_clock(now);
+        let interlock = pipeline.issue_instruction(instruction);
+        let issue_at = now + u64::from(interlock.saturating_sub(pipeline.issue_overlap));
+        let issue = ex + u64::from(interlock);
+        let mut fetches = [None; 3];
+        let mut index = 0;
+        let mut at = issue_at;
+        let mut decoded = (pc.wrapping_add(2), None, words.1);
+        let mut fetched = (pc.wrapping_add(4), 0);
+        let mut decode_ready = (issue + 1).max(issue_at);
+        if instruction.control_flags() & timing::UNCONDITIONAL == 0 {
+            fetches[index] = Some((pc.wrapping_add(4), at, false));
+            index += 1;
+        }
+        if let Some(target) = branch.target {
+            at = at.max(issue + 1);
+            fetches[index] = Some((target, at, true));
+            if branch.delayed {
+                fetched = (target, index);
+            } else {
+                decoded = (target, Some(index), 0);
+                fetches[index + 1] = Some((target.wrapping_add(2), at + 1, false));
+                fetched = (target.wrapping_add(2), index + 1);
+                at += 2;
+                decode_ready = 0;
+            }
+        }
+        Some(ResidentControl {
+            fetches,
+            #[cfg(test)]
+            issue_at,
+            at,
+            branch,
+            pipeline,
+            states: instruction.states(self.state.sr & T != 0) + interlock,
+            ex,
+            decoded,
+            fetched,
+            decode_ready,
+        })
     }
 
     pub(crate) fn prepare_cached_control(&self, bus: &mut impl Memory) -> Option<PreparedBranch> {

@@ -51,6 +51,20 @@ impl Fetch {
         Some((decoded.value.result().ok()?, fetched.value.result().ok()?))
     }
 
+    pub(super) fn resident_pair(decoded: (u32, u16), fetched: (u32, u16), ready: u64) -> Self {
+        Self {
+            decoded: Some(Word {
+                pc: decoded.0,
+                value: Value::Ready(decoded.1),
+            }),
+            fetched: Some(Word {
+                pc: fetched.0,
+                value: Value::Ready(fetched.1),
+            }),
+            decode_ready: ready,
+        }
+    }
+
     pub(super) fn finish_cached_pair(&mut self, pc: u32, words: (u16, u16), ready: u64) {
         self.decoded = Some(Word {
             pc,

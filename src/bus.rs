@@ -337,6 +337,8 @@ pub struct Bus {
     #[cfg(test)]
     cached_wb_scalars: u64,
     #[cfg(test)]
+    cached_resident_branches: u64,
+    #[cfg(test)]
     cached_prepared_loads: u64,
     #[cfg(test)]
     cached_prepared_passive: u64,
@@ -410,6 +412,8 @@ impl Default for Bus {
             cached_code_fills: 0,
             #[cfg(test)]
             cached_wb_scalars: 0,
+            #[cfg(test)]
+            cached_resident_branches: 0,
             #[cfg(test)]
             cached_prepared_loads: 0,
             #[cfg(test)]
