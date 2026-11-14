@@ -840,3 +840,106 @@ acceptance, then integrate the peripheral timeline without whole-instruction
 CPU copying/replay. The default game remains around 21 fields/s. Sustained Web
 60, broader gameplay/transitions and production audio-underflow acceptance stay
 open, as do #138/#17. No required post-merge verification is added.
+
+
+## Actual-board CPU continuations and private spans (2026-11-15)
+
+Related to #138 and #17. Building on PR #150 (main `3115cd2`), the opt-in
+`TimedExecutor` now connects IF/ID/EX/MA to the owned cache/read transport and
+production arbiter/BSC. It latches scalar, ordinary MOV-load and branch effects
+once; waits resume their phase without CPU cloning or instruction decode replay.
+Branch target IF, retained halves, delay-slot loads, cache refills and load
+WB/EX dependencies retain the established stage conventions in
+[the fetch contract](sh2-fetch-pipeline.md) and
+[the MOV-load contract](sh2-load-pipeline.md).
+
+`TimedExperiment` owns both CPUs and one actual board. Private cache-only work
+can advance together before the next observable event. A miss stops that
+continuation; board time catches up before issuing any physical request.
+Admission excludes active transfers/buffered writes, interfering DMA/on-chip
+states and non-reference/pending PLL ticks, and stays strictly before existing
+on-chip/interrupt/raster/SCU/VDP1, sound, CD and SMPC horizons. Ordinary catch-up
+still runs device edges. Private retirement epochs publish in one count per CPU;
+a resident scalar path avoids moving a latch through multiple phase tags.
+This does not add a speculative CPU snapshot, rollback journal or artificial
+bus latency. Range/alignment/unsupported failures remain terminal prototype
+host errors; they do not implement architectural exception entry.
+
+### Correctness and reproducible component comparison
+
+All 893 library tests pass, including six new native cases. The shared fixture
+compares 4,360 instruction
+retirements against the production replay interpreter: full CPU state, completion
+clock and next-issue clock match across both CPU identities, allocation controls,
+physical widths/waits, P1 aliases and both halfword alignments. It covers competing
+CPUs and taken/untaken conditional, delayed, relative, indirect, call and return
+branches. The digest is `[4360, 829066179]` on native, browser main and Worker.
+Additional cases preserve inherited literal cold/P1 NOP edges, early refill bytes,
+the requested-word-last sample, decoded successors and terminal failure behavior.
+Removing retained MA/EX overlap deliberately fails the shared oracle; restoring
+the exact source passes it.
+
+Original actual-board ALU/load loops also match the **normal production Machine**,
+including its cache batches and fallback, for single/both CPUs and cache/P1
+paths. Full architectural state, main/reference clocks, field count, generated
+sample count and delivered PCM agree. Two successive fields and 37-clock host
+splits pass; a separate streaming-load/second-code-line case verifies yielding
+at misses. Private fixtures/media are not needed or published.
+
+Run a feature production build and then:
+
+```sh
+BROWSER_CHANNEL=chrome node scripts/benchmark-timed-kernel.mjs \
+  --pkg path/to/feature-pkg --fields 2 --runs 6
+# Fresh browser, reverse the execution-context order:
+BROWSER_CHANNEL=chrome node scripts/benchmark-timed-kernel.mjs \
+  --pkg path/to/feature-pkg --fields 2 --runs 6 --worker-first
+```
+
+An independent, unmeasured normal-Machine control fixes each workload's final
+main clock. Both measured variants start initialized and cold, warm in a
+separate instance, alternate order, and settle zero-time CPU issue at that final
+edge. This handles the normal frame runner returning before/after issue or a
+clock after a field edge; no guest clocks are rounded or ignored. PCM/state
+checking is outside timing. Six fresh rounds per workload/context compare the
+same interval; these are repeated original fixtures, not twelve continuous game
+fields. No builds, tests or profiles overlap preparation or throughput.
+
+### Measured behavior and remaining limits
+
+Rust 1.100.0, wasm-bindgen 0.2.129, Binaryen 127, Chrome 157.0.8103.52; feature
+Wasm SHA-256 `28a50260c5f223d3fb3d4bf5f550cc5bf8c70d4ff229c4747dd80eb3839fe474`.
+Each ratio below is normal-Machine total time divided by continuation total time
+for six Worker rounds; values below one are regressions.
+
+| Original loop | CPUs | Fetch/data route | Main-first run | Fresh Worker-first run |
+| --- | --- | --- | ---: | ---: |
+| ALU | Master | Cache | 0.913× | 0.919× |
+| ALU | Master | P1 bypass | 1.363× | 1.382× |
+| ALU | Both | Cache | 7.647× | 7.484× |
+| ALU | Both | P1 bypass | 1.564× | 1.564× |
+| MOV load | Master | Cache | 0.805× | 0.784× |
+| MOV load | Master | P1 bypass | 1.277× | 1.283× |
+| MOV load | Both | Cache | 5.635× | 5.609× |
+| MOV load | Both | P1 bypass | 1.497× | 1.512× |
+
+The initial unbatched continuation improves both-CPU cache ALU/load loops only
+1.40×/1.65× while being 6–8× slower in the single-CPU cache cases. Repeated board
+exits were still dominant. The first private-span version raises both-CPU cache
+ratios to about 4.45×/4.72×; its single-CPU ALU Worker sample also contains three
+slower late rounds. The final resident-scalar path above improves that tradeoff
+but does not eliminate all single-CPU regressions. These are actual-board
+**component** comparisons against the production Machine, not game speedups.
+Worker/main contexts preserve all digests; main timers progress without shared
+memory or cross-origin isolation. Native/Wasm all-feature Clippy passes.
+Default production JS/Wasm remain byte-identical to the adopted game baseline
+(Wasm `464639fa99636abb0a2682c09a6cad87f01d94f6abd5d8f6af71d73fe2f09548`).
+Exact-head complete CI and final review remain required before merging.
+
+Writes/buffer acceptance, BIOS and devices, system/MDU instructions, interrupt/
+exception/UBC acceptance, DMA and coordinated reset integration remain pending.
+The default app still uses `Machine`, and the synthetic `Kernel` experiment is
+retained as a distinct earlier test contract. This new component cannot boot the
+private game yet. The actual game remains about 21 fields/s; sustained Web 60,
+broader gameplay/transitions and production audio-underflow acceptance remain
+unmet. #138/#17 and the active goal stay open. Required post-merge checks: none.

@@ -123,6 +123,22 @@ impl ReadPort {
         self.retained = None;
     }
 
+    pub(crate) fn resident(&self, address: u32) -> bool {
+        self.cache.read_hit(address)
+    }
+
+    pub(crate) fn enabled(&self) -> bool {
+        self.cache.control() & 1 != 0
+    }
+
+    pub(crate) fn private_read(&self, read: Read) -> Result<bool, Error> {
+        let (address, _, _) = read.parts()?;
+        Ok(
+            matches!(read, Read::Fetch16(at) if self.retained.is_some_and(|(pc,_)| pc == at))
+                || self.cache.read_hit(address),
+        )
+    }
+
     pub fn reset(&mut self) {
         self.pending = None;
         self.outgoing = None;

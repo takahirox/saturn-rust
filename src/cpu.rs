@@ -1864,3 +1864,6 @@ impl PreparedBranch {
 
 #[cfg(any(test, feature = "kernel-experiment"))]
 pub(crate) mod resumable;
+
+#[cfg(any(test, feature = "kernel-experiment"))]
+pub(crate) mod owned;
