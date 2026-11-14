@@ -5,9 +5,11 @@
 //! Its purpose is to validate ownership, interruption and completion semantics before
 //! attaching the real cache, backplane and peripherals. It cannot boot Saturn media.
 //! ReadPort and TimedExecutor use the actual cache/board and partial IF/MA.
-//! Writes, devices and interrupt integration remain pending.
+//! WRAM stores are connected; BIOS/devices and interrupt integration remain pending.
 pub use crate::cpu::owned::experiment::Experiment as TimedExperiment;
-pub use crate::cpu::owned::{TimedExecutor, verify_board as verify_timed_board};
+pub use crate::cpu::owned::{
+    TimedExecutor, verify_board as verify_timed_board, verify_store_board,
+};
 pub use crate::cpu::resumable::Executor;
 mod read_port;
 use crate::cpu::{Cpu, CpuState};

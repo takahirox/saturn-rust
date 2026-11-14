@@ -57,7 +57,7 @@ fn compare(owner: Processor, control: u8, select: u32, waits: u32, alias: u32, o
     compare_pair(actual, reference, state, owner, control)
 }
 
-fn compare_pair(
+pub(super) fn compare_pair(
     mut actual: Bus,
     mut reference: Bus,
     state: CpuState,
@@ -72,7 +72,16 @@ fn compare_pair(
     let mut reference_done = Vec::new();
     for _ in 0..4000 {
         assert_eq!(actual.main_clocks, reference.main_clocks);
-        while cpu.state().instructions < 10 && cpu.poll(&mut actual).unwrap() {
+        while cpu.state().instructions < 10
+            && cpu.poll(&mut actual).unwrap_or_else(|error| {
+                panic!(
+                    "original candidate pc={:X}, decoded={:?}, R4={:X}: {error:?}",
+                    cpu.state().pc,
+                    cpu.decoded,
+                    cpu.state().r[4]
+                )
+            })
+        {
             candidate_done.push((actual.main_clocks, cpu.ready, cpu.state().clone()));
         }
         while old.state().instructions < 10 && reference.main_clocks >= old_ready {
@@ -96,6 +105,14 @@ fn compare_pair(
         if candidate_done.len() == 10 && reference_done.len() == 10 {
             break;
         }
+        for at in (HIGH_WRAM + 0x2400..HIGH_WRAM + 0x2440).step_by(4) {
+            assert_eq!(
+                actual.read32(at),
+                reference.read32(at),
+                "physical RAM publication at {} / {at:X}",
+                actual.main_clocks
+            );
+        }
         actual.grant_bus_transaction();
         reference.grant_bus_transaction();
         actual.advance_clocks(1).unwrap();
@@ -104,6 +121,16 @@ fn compare_pair(
     assert_eq!(candidate_done.len(), 10);
     assert_eq!(reference_done.len(), 10);
     assert_eq!(candidate_done, reference_done, "{owner:?}/{control}");
+    // The last store can still drain after its instruction has retired.
+    for _ in 0..64 {
+        actual.grant_bus_transaction();
+        reference.grant_bus_transaction();
+        actual.advance_clocks(1).unwrap();
+        reference.advance_clocks(1).unwrap();
+        for at in (HIGH_WRAM + 0x2400..HIGH_WRAM + 0x2440).step_by(4) {
+            assert_eq!(actual.read32(at), reference.read32(at));
+        }
+    }
     candidate_done
         .iter()
         .fold(2166136261u32, |mut hash, (at, ready, state)| {
