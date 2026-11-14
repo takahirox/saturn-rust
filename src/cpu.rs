@@ -1164,7 +1164,7 @@ impl Cpu {
         // Register ALU operations have no operand or multiplier phases. Their
         // actual IF, WB interlock, break checks and EX timing already completed
         // above; retire here instead of entering memory/control dispatch.
-        if SCALAR_RETIRE && let Some(kind) = scalar::decode(opcode) {
+        if SCALAR_RETIRE && let Some(kind) = properties.and_then(|p| p.prepared_scalar()) {
             scalar::execute(kind, opcode, &mut self.state);
             if self.state.delay_target.is_some() && bus.sh2_clock().is_none() {
                 bus.sh2_discard_prefetch();
