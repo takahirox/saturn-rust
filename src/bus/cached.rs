@@ -7,7 +7,7 @@
 use super::poll_cycle::PollCycle;
 use super::*;
 use crate::cache::{CacheTouch, CachedLines};
-use crate::cpu::{CachedInstruction, Cpu, CpuStatus, ResidentControl};
+use crate::cpu::{CachedClass, CachedInstruction, Cpu, CpuStatus, ResidentControl};
 
 /// A ready peer publishes proven instruction retirements. A pending peer
 /// publishes a proven microstate after Master yields or after one ordinary peer issue.
@@ -1399,6 +1399,7 @@ impl Bus {
             else {
                 break;
             };
+            let class = Cpu::cached_class(op);
             if readonly_refresh.is_some() && store_width(op).is_some() {
                 if memory.clock.get() >= normal_end {
                     break;
@@ -1542,7 +1543,8 @@ impl Bus {
             // A straight register sequence shares ALU semantics with step(),
             // but needs no per-instruction CPU/local snapshot or pipeline setup.
             let scalar_start = memory.clock.get();
-            if memory.passive.as_ref().is_none_or(|p| p.rom.is_none())
+            if class == CachedClass::Scalar
+                && memory.passive.as_ref().is_none_or(|p| p.rom.is_none())
                 && (checkpoint_sound
                     || !sound_lookahead
                     || self
@@ -1580,7 +1582,8 @@ impl Bus {
             // Prepared register/load plans preserve retained WB/EX and legal
             // delay slots. Prove every actual operand and future IF hit before
             // executing a plan without full CPU/local rollback copies.
-            if memory.passive.as_ref().is_none_or(|p| p.rom.is_none())
+            if matches!(class, CachedClass::Scalar | CachedClass::Load)
+                && memory.passive.as_ref().is_none_or(|p| p.rom.is_none())
                 && let Some(plan) = cpu.prepare_cached_instruction(op, memory.clock.get())
                 && let Some(at) = memory.prepared_retirement(&plan)
             {
@@ -1632,8 +1635,8 @@ impl Bus {
             // Resident branches have a complete, infallible IF schedule. Prove
             // its endpoint and all cache hits before touching LRU/prefetch state,
             // so this path needs neither a local snapshot nor speculative replay.
-            if memory.passive.as_ref().is_none_or(|p| p.rom.is_none())
-                && cpu.has_cached_control(op)
+            if class == CachedClass::Control
+                && memory.passive.as_ref().is_none_or(|p| p.rom.is_none())
                 && let Some(plan) = cpu.prepare_resident_control(memory.clock.get())
                 && plan.at <= memory.end.get()
             {
