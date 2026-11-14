@@ -770,3 +770,73 @@ work in continuation/event dispatch: 3,361 self samples in `Executor::poll` and
 both kernel and reference paths. These are diagnostic self-sample counts, not
 Wasm percentages or additive inclusive timings. They support investigating
 event-exit frequency; raw process metadata/stacks remain local.
+
+## Owned cache read transport (2026-11-15)
+
+Related to #138 and #17. The next integration step adds `kernel::ReadPort` under
+the existing test/`kernel-experiment` boundary. It owns an actual SH7604 `Cache`,
+the retained instruction halfword and one pending read. It has no `Clone`
+implementation or CPU-instruction replay log. This component is separate from
+`Kernel`'s still-synthetic CPU execution schedule; CPU IF/ID/MA integration is
+not complete and this is not a new game engine or a measured game speedup.
+
+The supported surface is the canonical 1 MiB low/high WRAM windows and their
+cache-through aliases. Aligned byte/word/longword data reads and aligned-word
+instruction fetches use the existing cache's enable/allocation/two-way controls,
+victim selection, tags and LRU rules. A miss emits four real longword requests
+in the existing wrapped order, with the requested word last. A private 16-byte
+continuation collects completion values; the line becomes visible only after
+all four complete. Installation calls the original cache implementation with
+these already completed local bytes, without repeating physical bus reads.
+Retained instruction halves issue no extra cache read or LRU touch.
+
+Owner/sequence tickets bind each completion. Reset or duplicate replies cannot
+install an old line or complete a newer request. The real-board adapter also
+rejects changed transfer addresses, widths, instruction flags and grouping
+before touching the bus. The transport assigns no artificial latency: its
+adapter uses the production arbiter, BSC width/endian conversion and physical
+read completion. The existing physical-beat journal is retained only for an
+unfinished logical byte/word/longword unit and cleared after that unit succeeds;
+CPU decoding and earlier completed refill longwords are not replayed.
+
+### Evidence and limits
+
+All 18 kernel tests pass, including seven new port cases. The shared original
+fixture checks 900 reads across both CPU identities, cache controls, physical
+8/16/32-bit buses, supported 16/32-bit little-endian configurations and chunk
+limits, then two simultaneous CPU cache fills and an instruction-fetch/operand
+stream that shares one transaction boundary. Each value and each CPU's
+completion clock matches the existing production memory path. Additional cases
+compare full cache contents/replacement state, partial-line visibility, retained
+halves, bypass/purge behavior, stale replies and malformed transfers.
+
+The fixture returns `[904, 3497650377]` on native, browser main thread and Worker.
+The existing original CPU experiments also preserve their architectural digests
+in both browser contexts. Worker progress occurs without cross-origin isolation.
+These are component/experimental checks, not production-game timing acceptance.
+Native all-target and Wasm Clippy with all features and warnings denied pass.
+The native example uses `CARGO_PROFILE_RELEASE_STRIP=none` locally because the
+installed `rust-objcopy` cannot load its LLVM library; its conformance output
+succeeds. Native microbenchmark times from that check are not adopted as gains.
+
+The default production JS/Wasm remain byte-identical to main `86e55e3`; Wasm
+SHA-256 is `464639fa99636abb0a2682c09a6cad87f01d94f6abd5d8f6af71d73fe2f09548`.
+An initial placement of the adapter preserved executable sections but changed
+panic-source line constants. Moving the gated adapter into its own module,
+with its declaration appended after existing source, restores full identity.
+The feature-enabled browser artifact used for the final local check is
+`3ddcd29778eaf6925af15e6508aebea84556e3ea5331e803f94a2fa73595bbf8`.
+Exact-head complete CI and final review remain required before merging.
+
+Writes/buffered acceptance, BIOS and non-WRAM devices, cache arrays, CPU pipeline
+and exception/interrupt behavior, DMA and coordinated board-reset integration
+remain pending. Range/alignment failures here are prototype host errors, not
+synthesized SH-2 exceptions. Port ticket cancellation is tested; it does not
+establish complete board reset-drain behavior. Existing granted physical work
+remains the board's responsibility.
+
+The next step is to connect real IF/ID/MA continuations and write-buffer
+acceptance, then integrate the peripheral timeline without whole-instruction
+CPU copying/replay. The default game remains around 21 fields/s. Sustained Web
+60, broader gameplay/transitions and production audio-underflow acceptance stay
+open, as do #138/#17. No required post-merge verification is added.

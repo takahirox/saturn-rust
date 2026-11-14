@@ -4,8 +4,15 @@
 //! fetch, operand transfer, then ISA execution states, without cache or IF/MA overlap.
 //! Its purpose is to validate ownership, interruption and completion semantics before
 //! attaching the real cache, backplane and peripherals. It cannot boot Saturn media.
+//! The separate ReadPort now uses the actual cache and board arbiter/BSC; CPU
+//! IF/MA, writes and interrupt integration are still pending.
 pub use crate::cpu::resumable::Executor;
+mod read_port;
 use crate::cpu::{Cpu, CpuState};
+pub use read_port::{
+    Read, ReadError, ReadPoll, ReadPort, ReadTicket, ReadTransfer,
+    verify_board as verify_read_port_board,
+};
 use std::fmt;
 
 pub const RAM_BASE: u32 = 0x0600_0000;
