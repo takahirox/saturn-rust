@@ -3,6 +3,8 @@
 //! while its packed dots are consumed, independently of later CPU VRAM writes.
 use super::{Vdp2, rotation::RotationSample};
 use crate::vdp1::Vdp1;
+#[cfg(test)]
+use std::cell::RefCell;
 use std::{cell::Cell, num::NonZeroU8};
 
 pub(super) type NormalSample = (usize, usize, usize, u16, u16);
@@ -16,32 +18,35 @@ struct LinearTile {
     reverse: bool,
 }
 
-type Words = [Option<(usize, u16)>; 2];
+type Words = [Cell<Option<(usize, u16)>>; 2];
 
 // Standalone decoder tests keep their two-word serializers.
 // Clocked backgrounds retain physical transfers and per-dot address inputs.
 // Normal ports have separate acquisition cursors; rotation uses per-dot edges.
+// The port owns its buffers; decoder queries update only individual Copy cells.
+// Buffer resizing/reset still requires exclusive Vdp2 access. No whole-pipeline
+// borrow guard is needed for each word or dot.
 #[derive(Default)]
 pub(crate) struct DisplayFetch {
     words: [[Words; 3]; 5],
     #[cfg(test)]
-    pub trace: Vec<DisplayRead>,
-    pub pixel: usize,
+    pub trace: RefCell<Vec<DisplayRead>>,
+    pub pixel: Cell<usize>,
     pub rotation: Cell<bool>,
     scheduled: bool,
     pub prepared_line: Option<usize>,
     prepared_field: Option<u64>,
     planning: bool,
-    group: (usize, usize),
-    request: Option<(usize, usize)>,
+    group: Cell<(usize, usize)>,
+    request: Cell<Option<(usize, usize)>>,
     // Slot 5 is RBG1: it shares composition/register id0 with NBG0,
     // but must not replace NBG0 operands already in the normal pipeline.
-    pixels: Vec<[[Option<CapturedWords>; 3]; 6]>,
+    pixels: Vec<[[Cell<Option<CapturedWords>>; 3]; 6]>,
     samples: Vec<[Option<NormalSample>; 4]>,
-    planned_samples: Vec<[Option<PlannedSample>; 4]>,
-    linear_tiles: [Option<LinearTile>; 4],
+    planned_samples: Vec<[Cell<Option<PlannedSample>>; 4]>,
+    linear_tiles: [Cell<Option<LinearTile>>; 4],
     #[cfg(test)]
-    linear_tile_hits: u64,
+    linear_tile_hits: Cell<u64>,
     #[cfg(test)]
     literal_addresses: bool,
     #[cfg(test)]
@@ -125,12 +130,11 @@ impl Vdp2 {
     /// Snapshot decoding keeps an independent, non-mutating live-memory path.
     pub(super) fn fetch_word(&self, layer: usize, path: usize, address: usize) -> Option<u16> {
         let address = address & 0x7FFFE;
-        let mut fetch = self.display_fetch.borrow_mut();
+        let fetch = &self.display_fetch;
         if !self.beam_rendering || !(self.clocked || fetch.scheduled) {
-            drop(fetch);
             return Some(self.display_word(layer, path, address));
         }
-        let x = fetch.pixel;
+        let x = fetch.pixel.get();
         let storage = if fetch.rotation.get() && layer == 0 {
             5
         } else {
@@ -139,7 +143,7 @@ impl Vdp2 {
         if let Some(value) = fetch
             .pixels
             .get(x)
-            .and_then(|p| p[storage][path])
+            .and_then(|p| p[storage][path].get())
             .and_then(|v| v.word(address))
         {
             return Some(value);
@@ -174,7 +178,7 @@ impl Vdp2 {
                 #[cfg(test)]
                 let phase = fetch.rotation_edge.unwrap().2;
                 #[cfg(test)]
-                fetch.trace.push(DisplayRead {
+                fetch.trace.borrow_mut().push(DisplayRead {
                     phase,
                     slot: x,
                     layer,
@@ -182,20 +186,20 @@ impl Vdp2 {
                     address,
                     words: acquired.words,
                 });
-                fetch.pixels[x][storage][path] = Some(acquired);
+                fetch.pixels[x][storage][path].set(Some(acquired));
                 return acquired.word(requested);
             }
             return None;
         }
         if fetch.planning {
             if let Some(held) = fetch.retained[layer][path]
-                && held.group == fetch.group
+                && held.group == fetch.group.get()
                 && let Some(value) = held.word(address)
             {
-                fetch.pixels[x][layer][path] = Some(held.data);
+                fetch.pixels[x][layer][path].set(Some(held.data));
                 return Some(value);
             }
-            fetch.request = Some((path, address));
+            fetch.request.set(Some((path, address)));
         }
         None
     }
@@ -204,9 +208,9 @@ impl Vdp2 {
     // lookup. Repeated characters in later groups must issue fresh transfers;
     // enlargement may consume one group's packed data across multiple cycles.
     pub(super) fn fetch_group(&self, group: (usize, usize)) {
-        let mut fetch = self.display_fetch.borrow_mut();
+        let fetch = &self.display_fetch;
         if fetch.planning {
-            fetch.group = group;
+            fetch.group.set(group);
         }
     }
 
@@ -215,33 +219,33 @@ impl Vdp2 {
     }
 
     pub(super) fn scheduled_sample(&self, layer: usize) -> Option<Option<NormalSample>> {
-        let fetch = self.display_fetch.borrow();
+        let fetch = &self.display_fetch;
         if self.beam_rendering && (self.clocked || fetch.scheduled) && !fetch.planning {
-            Some(fetch.samples.get(fetch.pixel).and_then(|p| p[layer]))
+            Some(fetch.samples.get(fetch.pixel.get()).and_then(|p| p[layer]))
         } else {
             None
         }
     }
 
     pub(super) fn planned_sample(&self, layer: usize) -> Option<NormalSample> {
-        let mut fetch = self.display_fetch.borrow_mut();
+        let fetch = &self.display_fetch;
         #[cfg(test)]
         if fetch.literal_addresses {
             return None;
         }
         if self.beam_rendering && fetch.planning {
-            let (sample, group) = fetch.planned_samples.get(fetch.pixel)?[layer]?;
-            fetch.group = group;
+            let (sample, group) = fetch.planned_samples.get(fetch.pixel.get())?[layer].get()?;
+            fetch.group.set(group);
             Some(sample)
         } else {
             None
         }
     }
     pub(super) fn plan_sample(&self, layer: usize, sample: NormalSample) {
-        let mut fetch = self.display_fetch.borrow_mut();
+        let fetch = &self.display_fetch;
         if self.beam_rendering && fetch.planning {
-            let (pixel, group) = (fetch.pixel, fetch.group);
-            fetch.planned_samples[pixel][layer] = Some((sample, group));
+            let (pixel, group) = (fetch.pixel.get(), fetch.group.get());
+            fetch.planned_samples[pixel][layer].set(Some((sample, group)));
         }
     }
     pub(super) fn linear_tile_sample(
@@ -257,7 +261,7 @@ impl Vdp2 {
         if !self.beam_rendering {
             return None;
         }
-        let mut fetch = self.display_fetch.borrow_mut();
+        let fetch = &self.display_fetch;
         #[cfg(test)]
         if fetch.literal_addresses {
             return None;
@@ -265,15 +269,15 @@ impl Vdp2 {
         if !self.beam_rendering || !fetch.planning || fetch.rotation.get() {
             return None;
         }
-        let plan = fetch.linear_tiles[layer]?;
+        let plan = fetch.linear_tiles[layer].get()?;
         if x < plan.start || x >= plan.end || y != plan.y {
             return None;
         }
-        let (mut sample, group) = fetch.planned_samples.get(plan.start)?[layer]?;
-        let held = fetch.pixels.get(plan.start)?[layer][0]?;
+        let (mut sample, group) = fetch.planned_samples.get(plan.start)?[layer].get()?;
+        let held = fetch.pixels.get(plan.start)?[layer][0].get()?;
         // Historical per-dot names win over a later port value. A dot with
         // no capture may inherit only the currently retained physical word.
-        if let Some(current) = fetch.pixels.get(x)?[layer][0] {
+        if let Some(current) = fetch.pixels.get(x)?[layer][0].get() {
             if current != held {
                 return None;
             }
@@ -286,12 +290,12 @@ impl Vdp2 {
         } else {
             sample.1 + delta
         };
-        fetch.pixels[x][layer][0] = Some(held);
-        fetch.group = group;
-        fetch.planned_samples[x][layer] = Some((sample, group));
+        fetch.pixels[x][layer][0].set(Some(held));
+        fetch.group.set(group);
+        fetch.planned_samples[x][layer].set(Some((sample, group)));
         #[cfg(test)]
         {
-            fetch.linear_tile_hits += 1;
+            fetch.linear_tile_hits.set(fetch.linear_tile_hits.get() + 1);
         }
         Some(sample)
     }
@@ -320,19 +324,20 @@ impl Vdp2 {
         {
             return;
         }
-        let mut fetch = self.display_fetch.borrow_mut();
+        let fetch = &self.display_fetch;
         #[cfg(test)]
         if fetch.literal_addresses {
             return;
         }
-        if !self.beam_rendering || !fetch.planning || fetch.rotation.get() || x != fetch.pixel {
+        if !self.beam_rendering || !fetch.planning || fetch.rotation.get() || x != fetch.pixel.get()
+        {
             return;
         }
         // A mode change can mix an old first word with a newer second
         // packet. Seed a cross-dot run only when the held packet represents
         // both words actually consumed by the existing decoder.
         if let Some((address, words)) = name {
-            let Some(packet) = fetch.pixels.get(x).and_then(|p| p[layer][0]) else {
+            let Some(packet) = fetch.pixels.get(x).and_then(|p| p[layer][0].get()) else {
                 return;
             };
             if packet.word(address) != Some(words[0]) || packet.word(address + 2) != Some(words[1])
@@ -345,22 +350,22 @@ impl Vdp2 {
         if dot != source && dot != 7 - source {
             return;
         }
-        fetch.linear_tiles[layer] = Some(LinearTile {
+        fetch.linear_tiles[layer].set(Some(LinearTile {
             start: x,
             end: x + 8 - source,
             y,
             reverse: dot != source,
-        });
+        }));
     }
 
     pub(super) fn invalidate_planned_samples(&mut self) {
-        self.display_fetch.get_mut().planned_samples.fill([None; 4]);
-        self.display_fetch.get_mut().linear_tiles.fill(None);
+        self.display_fetch.planned_samples.fill(Default::default());
+        self.display_fetch.linear_tiles.fill(Cell::new(None));
     }
 
     pub(super) fn reconfigure_display(&mut self) {
         self.invalidate_planned_samples();
-        let fetch = self.display_fetch.get_mut();
+        let fetch = &mut self.display_fetch;
         for layer in 0..4 {
             let unfinished = fetch
                 .samples
@@ -387,7 +392,7 @@ impl Vdp2 {
     }
 
     fn prepare_display_line(&mut self, field: u64, line: usize) {
-        let fetch = self.display_fetch.get_mut();
+        let fetch = &mut self.display_fetch;
         fetch.reset();
         fetch.scheduled = true;
         fetch.prepared_line = Some(line);
@@ -426,7 +431,7 @@ impl Vdp2 {
         }
         #[cfg(test)]
         {
-            self.display_fetch.get_mut().direct_bitmaps += 1;
+            self.display_fetch.direct_bitmaps += 1;
         }
         let width = if ctl & 8 == 0 { 512 } else { 1024 };
         let height = if ctl & 4 == 0 { 256 } else { 512 };
@@ -440,7 +445,7 @@ impl Vdp2 {
         let special = self.word(0x2C) >> (layer * 8 + 4) & 3;
         let mut policies = [None; 4];
         loop {
-            let x = self.display_fetch.get_mut().cursor[layer][1];
+            let x = self.display_fetch.cursor[layer][1];
             if x >= horizon {
                 break;
             }
@@ -462,20 +467,21 @@ impl Vdp2 {
                 allowed
             };
             {
-                let fetch = self.display_fetch.get_mut();
-                fetch.pixel = x;
-                fetch.group = group;
-                fetch.request = None;
+                let fetch = &mut self.display_fetch;
+                fetch.pixel.set(x);
+                fetch.group.set(group);
+                fetch.request.set(None);
                 fetch.planning = false;
                 if !allowed {
                     fetch.cursor[layer][1] += 1;
                     continue;
                 }
-                fetch.planned_samples[x][layer] = Some((sample, group));
+                fetch.planned_samples[x][layer].set(Some((sample, group)));
             }
             let held = {
-                let fetch = self.display_fetch.get_mut();
+                let fetch = &mut self.display_fetch;
                 fetch.pixels[x][layer][1]
+                    .get()
                     .filter(|v| v.word(address).is_some())
                     .or_else(|| {
                         fetch.retained[layer][1]
@@ -486,7 +492,7 @@ impl Vdp2 {
             let acquired = if let Some(held) = held {
                 held
             } else {
-                self.display_fetch.get_mut().request = Some((1, address));
+                self.display_fetch.request.set(Some((1, address)));
                 if used[bank]
                     || self.rotation_bank(bank)
                     || self.access_command(bank, slot) != (4 + layer) as u16
@@ -498,7 +504,7 @@ impl Vdp2 {
                 let acquired =
                     CapturedWords::new(address, 4, [self.vword(address), self.vword(address + 2)]);
                 #[cfg(test)]
-                self.display_fetch.get_mut().trace.push(DisplayRead {
+                self.display_fetch.trace.borrow_mut().push(DisplayRead {
                     phase,
                     slot,
                     layer,
@@ -508,15 +514,15 @@ impl Vdp2 {
                 });
                 #[cfg(not(test))]
                 let _ = phase;
-                self.display_fetch.get_mut().retained[layer][1] = Some(Acquired {
+                self.display_fetch.retained[layer][1] = Some(Acquired {
                     group,
                     data: acquired,
                 });
                 acquired
             };
-            let fetch = self.display_fetch.get_mut();
-            fetch.request = None;
-            fetch.pixels[x][layer][1] = Some(acquired);
+            let fetch = &mut self.display_fetch;
+            fetch.request.set(None);
+            fetch.pixels[x][layer][1].set(Some(acquired));
             fetch.samples[x][layer] = Some(sample);
             fetch.cursor[layer][1] += 1;
         }
@@ -543,26 +549,26 @@ impl Vdp2 {
             return;
         }
         let edge = (field, line, phase);
-        if self.display_fetch.borrow().edge == Some(edge) {
+        if self.display_fetch.edge == Some(edge) {
             return;
         }
-        if self.display_fetch.borrow().prepared_line != Some(usize::from(line))
-            || self.display_fetch.borrow().prepared_field != Some(field)
+        if self.display_fetch.prepared_line != Some(usize::from(line))
+            || self.display_fetch.prepared_field != Some(field)
         {
             self.prepare_display_line(field, usize::from(line));
         }
         #[cfg(test)]
         {
-            self.display_fetch.get_mut().literal_addresses = !omit_unused;
+            self.display_fetch.literal_addresses = !omit_unused;
         }
         let width = self.dimensions().0;
         {
-            let fetch = self.display_fetch.get_mut();
+            let fetch = &mut self.display_fetch;
             fetch.scheduled = true;
             fetch.edge = Some(edge);
-            fetch.pixels.resize(width, [[None; 3]; 6]);
+            fetch.pixels.resize_with(width, Default::default);
             fetch.samples.resize(width, [None; 4]);
-            fetch.planned_samples.resize(width, [None; 4]);
+            fetch.planned_samples.resize_with(width, Default::default);
         }
         let y = if self.word(0) & 0xC0 == 0xC0 {
             usize::from(line) * 2 + usize::from(!field.is_multiple_of(2))
@@ -595,13 +601,10 @@ impl Vdp2 {
                             || self.word(0x22) & (1 << layer) != 0))
                         || (path == 0 && layer < 2 && self.character_control(layer).0 & 2 != 0))
                 {
-                    self.display_fetch.get_mut().cursor[layer][path] = horizon;
+                    self.display_fetch.cursor[layer][path] = horizon;
                     continue;
                 }
-                if path == 1
-                    && omit_unused
-                    && self.display_fetch.get_mut().cursor[layer][1] >= horizon
-                {
+                if path == 1 && omit_unused && self.display_fetch.cursor[layer][1] >= horizon {
                     continue;
                 }
                 if path == 1
@@ -611,15 +614,15 @@ impl Vdp2 {
                     continue;
                 }
                 loop {
-                    let x = self.display_fetch.borrow().cursor[layer][path];
+                    let x = self.display_fetch.cursor[layer][path];
                     if x >= horizon {
                         break;
                     }
                     {
-                        let fetch = self.display_fetch.get_mut();
-                        fetch.pixel = x;
+                        let fetch = &mut self.display_fetch;
+                        fetch.pixel.set(x);
                         fetch.planning = true;
-                        fetch.request = None;
+                        fetch.request.set(None);
                     }
                     if let Some(sample @ (base, pixel, _, _, format)) =
                         self.normal_sample(layer, x, y)
@@ -628,13 +631,13 @@ impl Vdp2 {
                         if self.fetch_word(layer, 1, address).is_some()
                             && (format != 4 || self.fetch_word(layer, 1, address + 2).is_some())
                         {
-                            self.display_fetch.get_mut().samples[x][layer] = Some(sample);
+                            self.display_fetch.samples[x][layer] = Some(sample);
                         }
                     }
-                    let request = self.display_fetch.borrow().request;
-                    self.display_fetch.get_mut().planning = false;
+                    let request = self.display_fetch.request.get();
+                    self.display_fetch.planning = false;
                     let Some((needed, address)) = request else {
-                        self.display_fetch.get_mut().cursor[layer][path] += 1;
+                        self.display_fetch.cursor[layer][path] += 1;
                         continue;
                     };
                     let order = |p| match p {
@@ -643,7 +646,7 @@ impl Vdp2 {
                         _ => 2,
                     };
                     if order(needed) > order(path) {
-                        self.display_fetch.get_mut().cursor[layer][path] += 1;
+                        self.display_fetch.cursor[layer][path] += 1;
                         continue;
                     }
                     if needed != path {
@@ -669,7 +672,7 @@ impl Vdp2 {
                     };
                     let address = if path == 1 { address & !3 } else { address };
                     let acquired = Acquired {
-                        group: self.display_fetch.borrow().group,
+                        group: self.display_fetch.group.get(),
                         data: CapturedWords::new(
                             address,
                             bytes,
@@ -684,7 +687,7 @@ impl Vdp2 {
                         ),
                     };
                     #[cfg(test)]
-                    self.display_fetch.get_mut().trace.push(DisplayRead {
+                    self.display_fetch.trace.borrow_mut().push(DisplayRead {
                         phase,
                         slot,
                         layer,
@@ -692,7 +695,7 @@ impl Vdp2 {
                         address,
                         words: acquired.data.words,
                     });
-                    self.display_fetch.get_mut().retained[layer][path] = Some(acquired);
+                    self.display_fetch.retained[layer][path] = Some(acquired);
                 }
             }
         }
@@ -700,12 +703,12 @@ impl Vdp2 {
     }
 
     pub(super) fn scheduled_rotation_sample(&self, rbg1: bool) -> Option<Option<RotationSample>> {
-        let fetch = self.display_fetch.borrow();
+        let fetch = &self.display_fetch;
         if self.beam_rendering && (self.clocked || fetch.scheduled) && !fetch.acquiring_rotation {
             Some(
                 fetch
                     .rotation_samples
-                    .get(fetch.pixel)
+                    .get(fetch.pixel.get())
                     .and_then(|p| p[usize::from(rbg1)]),
             )
         } else {
@@ -728,11 +731,11 @@ impl Vdp2 {
             return;
         }
         let edge = (field, line, phase);
-        if self.display_fetch.borrow().rotation_edge == Some(edge) {
+        if self.display_fetch.rotation_edge == Some(edge) {
             return;
         }
-        if self.display_fetch.borrow().prepared_line != Some(usize::from(line))
-            || self.display_fetch.borrow().prepared_field != Some(field)
+        if self.display_fetch.prepared_line != Some(usize::from(line))
+            || self.display_fetch.prepared_field != Some(field)
         {
             self.prepare_display_line(field, usize::from(line));
         }
@@ -754,12 +757,12 @@ impl Vdp2 {
             return;
         }
         {
-            let fetch = self.display_fetch.get_mut();
+            let fetch = &mut self.display_fetch;
             fetch.scheduled = true;
             fetch.rotation_edge = Some(edge);
-            fetch.pixels.resize(width, [[None; 3]; 6]);
+            fetch.pixels.resize_with(width, Default::default);
             fetch.rotation_samples.resize(width, [None; 2]);
-            fetch.pixel = x;
+            fetch.pixel.set(x);
             fetch.acquiring_rotation = true;
             fetch.rotation.set(true);
         }
@@ -770,22 +773,21 @@ impl Vdp2 {
             if self.word(0x20) & enable == 0 {
                 continue;
             }
-            self.display_fetch.get_mut().pixels[x][if rbg1 { 5 } else { 4 }] = [None; 3];
-            self.display_fetch.get_mut().rotation_samples[x][usize::from(rbg1)] = None;
+            self.display_fetch.pixels[x][if rbg1 { 5 } else { 4 }] = Default::default();
+            self.display_fetch.rotation_samples[x][usize::from(rbg1)] = None;
             if let Some(sample) = self.rotation_sample(rbg1, x, y, sprite_window) {
                 let (base, pixel, _, _, format) = sample.image;
                 let at = Self::dot_address(base, pixel, format);
                 if self.fetch_word(layer, 1, at).is_some()
                     && (format != 4 || self.fetch_word(layer, 1, at + 2).is_some())
                 {
-                    self.display_fetch.get_mut().rotation_samples[x][usize::from(rbg1)] =
-                        Some(sample);
+                    self.display_fetch.rotation_samples[x][usize::from(rbg1)] = Some(sample);
                 }
             }
         }
         self.beam_rendering = false;
         self.rotation_read.line = None;
-        let fetch = self.display_fetch.get_mut();
+        let fetch = &mut self.display_fetch;
         fetch.acquiring_rotation = false;
         fetch.rotation.set(false);
     }
@@ -795,15 +797,15 @@ impl Vdp2 {
             return self.vword(address);
         }
         let address = address & 0x7FFFE;
-        let mut fetch = self.display_fetch.borrow_mut();
-        let word = &mut fetch.words[layer][path][(address >> 1) & 1];
-        if let Some((old, value)) = *word
+        let fetch = &self.display_fetch;
+        let word = &fetch.words[layer][path][(address >> 1) & 1];
+        if let Some((old, value)) = word.get()
             && old == address
         {
             return value;
         }
         let value = self.vword(address);
-        *word = Some((address, value));
+        word.set(Some((address, value)));
         value
     }
 }
@@ -920,7 +922,7 @@ mod tests {
                                     "one={one},large={large},flip={flip},sx={sx},sy={sy},dot={x}"
                                 );
                             }
-                            hits += v.display_fetch.borrow().linear_tile_hits;
+                            hits += v.display_fetch.linear_tile_hits.get();
                         }
                     }
                 }
@@ -1004,8 +1006,8 @@ mod tests {
                     }
                     let reads: Vec<_> = v
                         .display_fetch
-                        .borrow()
                         .trace
+                        .borrow()
                         .iter()
                         .map(|r| (r.phase, r.path, r.address))
                         .collect();
@@ -1093,8 +1095,8 @@ mod tests {
             }
             let reads: Vec<_> = v
                 .display_fetch
-                .borrow()
                 .trace
+                .borrow()
                 .iter()
                 .map(|r| (r.phase, r.path, r.address))
                 .collect();
@@ -1136,7 +1138,11 @@ mod tests {
         literal.acquire_display_paths(0, 0, 0, 0, false);
         // A name/address is resolved before the character's T4 grant. The
         // line-start latch can reload scroll operands after normal prefetch.
-        assert!(optimized.display_fetch.borrow().planned_samples[0][0].is_some());
+        assert!(
+            optimized.display_fetch.planned_samples[0][0]
+                .get()
+                .is_some()
+        );
         for v in [&mut optimized, &mut literal] {
             v.vram[0x10000..0x10004].copy_from_slice(&0x0008_0000u32.to_be_bytes());
             v.read_line_tables(0);
@@ -1145,15 +1151,12 @@ mod tests {
             optimized.acquire_display(0, 0, phase, phase as usize / 4);
             literal.acquire_display_paths(0, 0, phase, phase as usize / 4, false);
         }
-        let (a, b) = (
-            optimized.display_fetch.borrow(),
-            literal.display_fetch.borrow(),
-        );
-        assert_eq!(a.trace, b.trace);
+        let (a, b) = (&optimized.display_fetch, &literal.display_fetch);
+        assert_eq!(*a.trace.borrow(), *b.trace.borrow());
         assert_eq!(a.pixels, b.pixels);
         assert_eq!(a.samples, b.samples);
-        assert_eq!(a.trace[0].address, 4);
-        assert_eq!(a.trace[0].words, [0x2222; 2]);
+        assert_eq!(a.trace.borrow()[0].address, 4);
+        assert_eq!(a.trace.borrow()[0].words, [0x2222; 2]);
     }
 
     #[test]
@@ -1200,13 +1203,12 @@ mod tests {
                             let slot = (phase as usize / 4) % 8;
                             fast.acquire_display(0, 7, phase, slot);
                             literal.acquire_display_paths(0, 7, phase, slot, false);
-                            let (a, b) =
-                                (fast.display_fetch.borrow(), literal.display_fetch.borrow());
-                            assert_eq!(a.trace, b.trace);
+                            let (a, b) = (&fast.display_fetch, &literal.display_fetch);
+                            assert_eq!(*a.trace.borrow(), *b.trace.borrow());
                             assert_eq!(a.pixels, b.pixels);
                             assert_eq!(a.samples, b.samples);
                         }
-                        assert!(fast.display_fetch.borrow().direct_bitmaps > 0);
+                        assert!(fast.display_fetch.direct_bitmaps > 0);
                     }
                 }
             }
@@ -1280,17 +1282,13 @@ mod tests {
                                 let slot = (phase as usize / 4) % 8;
                                 optimized.acquire_display(0, 0, phase, slot);
                                 literal.acquire_display_paths(0, 0, phase, slot, false);
-                                let (a, b) = (
-                                    optimized.display_fetch.borrow(),
-                                    literal.display_fetch.borrow(),
-                                );
-                                assert_eq!(a.trace, b.trace);
+                                let (a, b) = (&optimized.display_fetch, &literal.display_fetch);
+                                assert_eq!(*a.trace.borrow(), *b.trace.borrow());
                                 assert_eq!(
                                     a.pixels, b.pixels,
                                     "layer={layer}, bitmap={bitmap}, cell={cell}, mosaic={mosaic}, format={format}, phase={phase}"
                                 );
                                 assert_eq!(a.samples, b.samples);
-                                drop((a, b));
                                 // A write between acquisition edges must affect only
                                 // later transfers, including a live dependency change.
                                 for v in [&mut optimized, &mut literal] {
@@ -1309,7 +1307,7 @@ mod tests {
                             optimized.scan_to(&sprites, 0, 32);
                             literal.scan_to(&sprites, 0, 32);
                             assert_eq!(optimized.scanning, literal.scanning);
-                            direct_bitmaps += optimized.display_fetch.borrow().direct_bitmaps;
+                            direct_bitmaps += optimized.display_fetch.direct_bitmaps;
                         }
                     }
                 }
@@ -1396,8 +1394,8 @@ mod tests {
                     }
                     let chars: Vec<_> = v
                         .display_fetch
-                        .borrow()
                         .trace
+                        .borrow()
                         .iter()
                         .filter(|r| r.path == 1)
                         .map(|r| (r.phase, r.address, r.words))
@@ -1459,8 +1457,8 @@ mod tests {
             }
             let chars: Vec<_> = v
                 .display_fetch
-                .borrow()
                 .trace
+                .borrow()
                 .iter()
                 .filter(|r| r.path == 1)
                 .map(|r| (r.phase, r.address, r.words))
@@ -1504,8 +1502,8 @@ mod tests {
         }
         let trace: Vec<_> = v
             .display_fetch
-            .borrow()
             .trace
+            .borrow()
             .iter()
             .map(|r| (r.address, r.phase))
             .collect();
@@ -1554,7 +1552,7 @@ mod tests {
                 for slot in 0..8 {
                     v.acquire_display(0, 0, slot * 4, slot as usize);
                 }
-                let trace = &v.display_fetch.borrow().trace;
+                let trace = &v.display_fetch.trace.borrow();
                 assert_eq!(trace[0].path, 0);
                 let chars: Vec<_> = trace.iter().filter(|r| r.path == 1).collect();
                 assert_eq!(chars.len(), reads, "layer={layer}, format={format}");
@@ -1589,13 +1587,13 @@ mod tests {
                 let base = bank as usize * 0x20000;
                 v.vram[base..base + 4].fill(0x11);
                 v.acquire_display(0, 0, 0, 0);
-                assert_eq!(v.display_fetch.borrow().trace[0].address, base);
+                assert_eq!(v.display_fetch.trace.borrow()[0].address, base);
                 v.vram[base..base + 4].fill(0x22);
                 v.acquire_display(0, 0, 32, 0);
-                assert_eq!(v.display_fetch.borrow().trace[0].words, [0x1111; 2]);
+                assert_eq!(v.display_fetch.trace.borrow()[0].words, [0x1111; 2]);
                 v.begin_scanline(1);
                 v.acquire_display(0, 1, 0, 0);
-                assert_eq!(v.display_fetch.borrow().trace[0].words, [0x2222; 2]);
+                assert_eq!(v.display_fetch.trace.borrow()[0].words, [0x2222; 2]);
             }
         }
         for (reduction, dx, pattern, expected) in [
@@ -1622,8 +1620,8 @@ mod tests {
             }
             let actual: Vec<_> = v
                 .display_fetch
-                .borrow()
                 .trace
+                .borrow()
                 .iter()
                 .map(|r| (r.address, r.phase))
                 .collect();
@@ -1637,18 +1635,18 @@ mod tests {
         v.write16(VDP2 + 0x20, 0x111).unwrap();
         v.write16(VDP2 + 0xE, 3).unwrap();
         v.acquire_display(0, 0, 0, 0);
-        assert!(v.display_fetch.borrow().trace.is_empty());
+        assert!(v.display_fetch.trace.borrow().is_empty());
         v.write16(VDP2 + 0x3C, 2).unwrap();
         v.write16(VDP2 + 0x18, 0x4EEE).unwrap();
         // A separate line discards unfinished requests from the owned bank.
         v.acquire_display(0, 1, 0, 0);
-        assert_eq!(v.display_fetch.borrow().trace[0].address, 0x40100);
+        assert_eq!(v.display_fetch.trace.borrow()[0].address, 0x40100);
         v.write16(VDP2 + 0x20, 0).unwrap();
-        let trace = v.display_fetch.borrow().trace.clone();
+        let trace = v.display_fetch.trace.borrow().clone();
         for slot in 1..8 {
             v.acquire_display(0, 1, slot * 4, slot as usize);
         }
-        assert_eq!(v.display_fetch.borrow().trace, trace);
+        assert_eq!(*v.display_fetch.trace.borrow(), trace);
         assert_eq!(v.cpu_access_slots(0x05E00000), 255);
     }
 
@@ -1674,9 +1672,9 @@ mod tests {
                 let clocks = if mode & 4 == 0 { 4 } else { 2 };
                 for slot in 0..reads {
                     let phase = slot as u32 * clocks;
-                    assert_eq!(v.display_fetch.borrow().trace.len(), slot);
+                    assert_eq!(v.display_fetch.trace.borrow().len(), slot);
                     v.acquire_display(0, 0, phase, slot % count);
-                    let trace = &v.display_fetch.borrow().trace;
+                    let trace = &v.display_fetch.trace.borrow();
                     assert_eq!(trace.len(), slot + 1);
                     let read = &trace[slot];
                     assert_eq!(
@@ -1693,13 +1691,13 @@ mod tests {
                 }
                 // The decoder cannot acquire a new address; repeated debugger
                 // snapshots see live memory and cannot modify the trace/latches.
-                let trace = v.display_fetch.borrow().trace.clone();
+                let trace = v.display_fetch.trace.borrow().clone();
                 v.vram[..4].fill(255);
                 let _ = v.framebuffer();
                 let _ = v.framebuffer();
-                assert_eq!(v.display_fetch.borrow().trace, trace);
+                assert_eq!(*v.display_fetch.trace.borrow(), trace);
                 v.beam_rendering = true;
-                v.display_fetch.borrow_mut().pixel = 0;
+                v.display_fetch.pixel.set(0);
                 assert_eq!(v.fetch_word(0, 1, 0), Some(0x0001));
                 assert_eq!(v.fetch_word(0, 1, 124), None);
                 v.beam_rendering = false;
@@ -1735,22 +1733,22 @@ mod tests {
                 }
                 v.vram[0x40000..0x40004].fill(0x11);
                 v.acquire_display(0, 0, 4, 1);
-                assert!(v.display_fetch.borrow().trace.is_empty());
+                assert!(v.display_fetch.trace.borrow().is_empty());
                 v.acquire_display(0, 0, 8, 2);
-                assert_eq!(v.display_fetch.borrow().trace.len(), 1);
+                assert_eq!(v.display_fetch.trace.borrow().len(), 1);
                 // Mutation after name acquisition must not redirect characters.
                 v.vram[..4].fill(0xFF);
                 v.acquire_display(0, 0, 20, 5);
-                assert_eq!(v.display_fetch.borrow().trace.len(), 1);
+                assert_eq!(v.display_fetch.trace.borrow().len(), 1);
                 v.acquire_display(0, 0, 24, 6);
-                let trace = v.display_fetch.borrow().trace.clone();
+                let trace = v.display_fetch.trace.borrow().clone();
                 assert_eq!(
                     (trace[1].path, trace[1].address, trace[1].words),
                     (1, 0x40000, [0x1111; 2])
                 );
                 v.vram[0x40000..0x40004].fill(0x22);
                 v.beam_rendering = true;
-                v.display_fetch.borrow_mut().pixel = 7;
+                v.display_fetch.pixel.set(7);
                 assert_eq!(v.fetch_word(layer, 1, 0x40002), Some(0x1111));
                 v.beam_rendering = false;
             }
@@ -1782,7 +1780,7 @@ mod tests {
         for slot in 1..6 {
             v.acquire_display(0, 0, slot * 4, slot as usize);
         }
-        let trace = &v.display_fetch.borrow().trace;
+        let trace = &v.display_fetch.trace.borrow();
         assert_eq!(
             (trace[0].path, trace[0].address, trace[0].phase),
             (2, 0x10000, 0)

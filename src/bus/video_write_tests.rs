@@ -322,9 +322,8 @@ fn video_longword_second_publication_before_equal_after_display_acquisition() {
                 advance(&mut b, 8, chunk, true);
                 assert_eq!(b.read32(VRAM + 4), Ok(0x22221111));
                 advance(&mut b, 40 - start - 8, chunk, true);
-                let trace = b.vdp2.display_fetch.borrow();
+                let trace = b.vdp2.display_fetch.trace.borrow();
                 let packet = trace
-                    .trace
                     .iter()
                     .find(|r| r.path == 1 && r.layer == 0 && r.address == 4)
                     .unwrap();
@@ -533,7 +532,7 @@ fn video_display_trace_and_pixels_ignore_advancement_chunks_and_debugger_preview
             );
             advance(&mut b, 1400, chunk, preview);
             let actual = (
-                b.vdp2.display_fetch.borrow().trace.clone(),
+                b.vdp2.display_fetch.trace.borrow().clone(),
                 b.vdp2.scanning.clone(),
                 b.read32(VRAM + 4),
             );

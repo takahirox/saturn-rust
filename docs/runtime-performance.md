@@ -3162,3 +3162,75 @@ execution, narrower display capture and sound state preservation. Copying a
 native recompiler backend or moving rendering to a thread alone is not shown
 to solve the gap. Sustained Web 60 fields/s and production audio-delivery
 acceptance remain open under #138. Required post-merge verification: none.
+
+
+## Own VDP2 fetch state directly (2026-11-14)
+
+Continuation from main `bbd4a48`, related to #138 and #17. The actual Web game
+still runs near 20 fields/s; this is a small production improvement, not completion
+of the real-time objective. `DisplayFetch` now owns its buffers directly. Decoder
+queries update individual `Cell` values, while resize/reset still requires
+exclusive VDP2 access. This removes whole-pipeline runtime borrow guards from
+word/dot acquisition and composition. Physical read edges, retained words,
+per-dot captures, address planning, sample values and bus arbitration are unchanged.
+The existing literal-address, mosaic, rotation and contending-write oracles retain
+their expected results; only their access to the private representation changes.
+
+The workload remains the authorized BIOS-mounted CUE, the recorded controller
+sequence, skip 3600, and six continuous 80-field windows ending at 4080. Chrome
+157.0.8103.52 includes Canvas presentation and PCM generation/draining. Every
+variant completes boot before timing starts; no local compilation, tests or
+profiles run alongside either preparation or throughput measurement. Private
+inputs, captures, profiles, raw logs and the experimental reference port remain
+local and ignored.
+
+| Actual-game comparison | Baseline fields/s | VDP2 fields/s | Change |
+| --- | ---: | ---: | ---: |
+| Alternating pair | 20.16273 | 20.49942 | +1.67% |
+| Fresh rotating-order three-variant repeat | 19.90396 | 20.15587 | +1.27% |
+
+All six VDP2 windows improve in both runs, and every corresponding exposed CPU,
+clock/counter, PCM and pixel endpoint matches. The repeat also evaluates the
+independent rejected CPU trial below; all three variants are prepared before
+measurement and their order rotates across the six windows. Its third variant
+must not be counted as part of the VDP2 improvement. The original busy video/audio
+guest measures 53.20014 → 53.62090 fields/s (+0.79%).
+
+Median window p95/p99 field times are 50.50/51.40 → 49.65/51.10 ms in the first
+pair and 51.15/52.20 → 50.65/51.25 ms in the fresh repeat. These are medians of
+window percentiles, not pooled distributions or long-run latency guarantees.
+The baseline Wasm SHA-256 is
+`0920c35a9f27c2d06e5a4da816c3dda5a024b75c8ff263284f3487c803fb685e`;
+the first candidate is
+`e4ea32ada17549aded346085175075ea53e40615ee2642a154edca2317824e74`;
+the finalized candidate used in the repeat is
+`f3150bbb55ae15afe5040f4ab962bc826ddd4b183f8edc13286ffd117c131d20`.
+
+Local checks pass 65 VDP2 tests, 10 bus VDP2 acquisition tests, 12 video-write
+competition tests and all-target/all-feature Clippy. Two initial bus test filters
+matched zero tests; the corrected `bus::transactions` filters run all 22 tests.
+Complete native/Wasm/browser CI and full review remain required before merge.
+
+### Rejected independent trials
+
+| Trial | Actual-game baseline → candidate fields/s | Decision |
+| --- | ---: | --- |
+| Exact incremental rational sound-clock conversion with rewind/large-jump fallback | 20.17502 → 19.91528 (−1.29%) | Revert, despite clock/checkpoint/SCSP/cache differential tests passing. |
+| Real B-bus RAM load/store continuations retaining bus and sound arbitration | 20.17214 → 20.16358 (−0.04%) | Revert; no measured improvement. Both SH-2s, all transfer widths, B-bus endpoints and concurrent 68000 writes match the ordinary scheduler. |
+| Defer cycle anchors until a short backward branch appears | 20.15587 → 19.45147 (−3.49%, both include VDP2 ownership) | Revert; original-busy +0.21% does not carry over to the game. Existing 52 cached scheduler tests pass. |
+
+These variants preserve the measured endpoints but do not justify adoption.
+The last trial removes early recovery checkpoints as well as detection copies;
+its regression does not isolate those two effects.
+
+A local single-threaded, non-JIT Emscripten build of the pinned Beetle core has
+also been executed. Its apparent 226–230 fields/s is **invalid game evidence**:
+the captured screen is black, display remains disabled and the BIOS waits for
+SCU DSP completion. All 256 DSP program words are zero at the diagnostic boundary.
+The port's startup failure is still under investigation; native Beetle results
+above remain separate. No external core code is included in this change.
+
+Sustained 60 fields/s, broader gameplay/transitions and real-time audio delivery
+including underflows remain unmet. #138 and the active real-time goal stay open;
+this checkpoint does not establish general firmware compatibility or hardware
+completion.
