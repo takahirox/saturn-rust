@@ -22,15 +22,17 @@ impl CachedLines {
     pub fn read_count(&self) -> usize {
         self.reads
     }
-    pub fn is_empty(&self) -> bool {
-        self.versions.is_empty()
-    }
     pub fn truncate(&mut self, len: usize) {
         while self.versions.len() > len {
             let version = self.versions.pop().unwrap();
             self.reads -= usize::from(version.read);
             self.heads.as_mut().unwrap()[version.index] = version.previous;
         }
+    }
+    fn unchanged(&self, address: u32) -> bool {
+        self.heads
+            .as_ref()
+            .is_none_or(|heads| heads[((address >> 4) & 63) as usize] == 0)
     }
     fn set<'a>(&'a self, cache: &'a Cache, index: usize) -> &'a [Line; 4] {
         let head = self.heads.as_ref().map_or(0, |heads| heads[index]);
@@ -52,14 +54,14 @@ impl CachedLines {
             .find_map(|(way, line)| (line.valid && line.tag == tag).then_some((way, line)))
     }
     pub fn read_hit(&self, cache: &Cache, address: u32) -> bool {
-        if self.is_empty() {
+        if self.unchanged(address) {
             cache.read_hit(address)
         } else {
             self.hit(cache, address).is_some()
         }
     }
     pub fn peek<const N: usize>(&self, cache: &Cache, address: u32) -> Option<[u8; N]> {
-        if self.is_empty() {
+        if self.unchanged(address) {
             return cache.peek_cached(address);
         }
         if !address.is_multiple_of(N as u32) {
@@ -74,7 +76,7 @@ impl CachedLines {
         cache: &Cache,
         address: u32,
     ) -> Option<([u8; N], CacheTouch)> {
-        if self.is_empty() {
+        if self.unchanged(address) {
             return cache.peek_cached_touch(address);
         }
         if !address.is_multiple_of(N as u32) {
@@ -96,7 +98,7 @@ impl CachedLines {
         address: u32,
         lru: &mut [u8; 64],
     ) -> Option<[u8; N]> {
-        if self.is_empty() {
+        if self.unchanged(address) {
             return cache.cached_only(address, lru);
         }
         if !address.is_multiple_of(N as u32) {
