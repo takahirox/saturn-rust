@@ -97,7 +97,7 @@ fn names_cells_formats_tile_boundaries_and_fixed_rbg1_routes_have_literal_transf
                     for x in 0..2 {
                         acquire(&mut v, x);
                     }
-                    let traces = v.display_fetch.borrow().trace.clone();
+                    let traces = v.display_fetch.trace.borrow().clone();
                     for (layer, name, character) in if dual {
                         vec![(4, 0, 0x20000), (0, 0x60000, 0x40000)]
                     } else {
@@ -180,8 +180,8 @@ fn nonsequential_rows_and_revisited_addresses_issue_fresh_per_dot_transfers() {
     acquire(&mut v, 3);
     let got: Vec<_> = v
         .display_fetch
-        .borrow()
         .trace
+        .borrow()
         .iter()
         .map(|r| (r.phase, r.path, r.address, r.words[0]))
         .collect();
@@ -215,11 +215,11 @@ fn bitmap_formats_bank_eligibility_and_normal_companions_are_independent() {
             v.write16(VDP2 + 0xE, if split { 0x10C } else { 3 })
                 .unwrap();
             acquire(&mut v, 0);
-            assert_eq!(v.display_fetch.borrow().trace[0].address, 0x20000);
-            assert_eq!(v.display_fetch.borrow().trace.len(), 1);
+            assert_eq!(v.display_fetch.trace.borrow()[0].address, 0x20000);
+            assert_eq!(v.display_fetch.trace.borrow().len(), 1);
             v.write16(VDP2 + 0xE, 2).unwrap(); // names only, no image port
             acquire(&mut v, 1);
-            assert_eq!(v.display_fetch.borrow().trace.len(), 1);
+            assert_eq!(v.display_fetch.trace.borrow().len(), 1);
             v.vram.fill(0);
             v.scan_to(&Vdp1::default(), 0, 2);
             assert_eq!(pixel(&v, 0), [255, 0, 0, 255]);
@@ -243,17 +243,17 @@ fn bitmap_formats_bank_eligibility_and_normal_companions_are_independent() {
     acquire(&mut v, 0);
     let got: Vec<_> = v
         .display_fetch
-        .borrow()
         .trace
+        .borrow()
         .iter()
         .map(|r| (r.layer, r.path, r.address))
         .collect();
     assert_eq!(got, [(0, 1, 0x40000), (4, 0, 0), (4, 1, 0x20000)]);
-    let before = v.display_fetch.borrow().trace.clone();
+    let before = v.display_fetch.trace.borrow().clone();
     for _ in 0..2 {
         v.framebuffer().unwrap();
     }
-    assert_eq!(v.display_fetch.borrow().trace, before);
+    assert_eq!(*v.display_fetch.trace.borrow(), before);
 }
 
 #[test]
@@ -267,7 +267,7 @@ fn unsplit_tile_banks_and_repeated_line_zero_cannot_reuse_stale_operands() {
             word(&mut v, 2, 0x2000);
         }
         acquire(&mut v, 0);
-        let trace = v.display_fetch.borrow().trace.clone();
+        let trace = v.display_fetch.trace.borrow().clone();
         assert_eq!(
             trace
                 .iter()
@@ -280,7 +280,7 @@ fn unsplit_tile_banks_and_repeated_line_zero_cannot_reuse_stale_operands() {
         v.acquire_rotation_display(&Vdp1::default(), 2, 0, 0, 0);
         v.scan_to(&Vdp1::default(), 0, 1);
         assert_eq!(pixel(&v, 0), [0, 0, 0, 255]);
-        assert!(v.display_fetch.borrow().trace.iter().all(|r| r.path == 0));
+        assert!(v.display_fetch.trace.borrow().iter().all(|r| r.path == 0));
     }
 }
 
@@ -328,11 +328,11 @@ fn rbg1_cannot_overwrite_nbg0_operands_already_acquired_before_a_display_switch(
     v.write16(VDP2 + 0x20, 0x30).unwrap();
     acquire(&mut v, 0); // independent RBG1 port reads green at the same address
     v.beam_rendering = true;
-    v.display_fetch.get_mut().pixel = 0;
+    v.display_fetch.pixel.set(0);
     assert_eq!(v.fetch_word(0, 1, 0x40000), Some(0x1111));
-    v.display_fetch.borrow().rotation.set(true);
+    v.display_fetch.rotation.set(true);
     assert_eq!(v.fetch_word(0, 1, 0x40000), Some(0x2222));
-    v.display_fetch.borrow().rotation.set(false);
+    v.display_fetch.rotation.set(false);
     v.beam_rendering = false;
     // Returning to the normal screen consumes its original retained operand.
     v.write16(VDP2 + 0x28, 2).unwrap();
@@ -357,7 +357,7 @@ fn quarter_turn_sampling_acquires_vertical_source_rows_in_output_dot_order() {
         for x in 0..4 {
             acquire(&mut v, x);
         }
-        let reads = v.display_fetch.borrow().trace.clone();
+        let reads = v.display_fetch.trace.borrow().clone();
         for (layer, base) in if dual {
             vec![(4, 0x20000), (0, 0x40000)]
         } else {
@@ -515,7 +515,7 @@ fn high_resolution_full_spans_match_normal_picture_coordinates_on_every_image_pa
                     // Every physical acquisition has a literal independently
                     // expected name/address, including all right-edge dots.
                     let layer = if rbg1 { 0 } else { 4 };
-                    let reads = v.display_fetch.borrow().trace.clone();
+                    let reads = v.display_fetch.trace.borrow().clone();
                     for x in 0..width {
                         let sx = x / 2;
                         let image = if rbg1 { 0x40000 } else { 0x20000 };
@@ -705,9 +705,9 @@ fn high_resolution_missing_second_acquisition_stays_missing_and_new_field_is_fre
     v.acquire_rotation_display(&Vdp1::default(), 0, 0, 2, 1);
     v.write16(VDP2 + 0xE, 0x10E).unwrap();
     word(&mut v, 0x20000, 0xFC00);
-    let before = v.display_fetch.borrow().trace.clone();
+    let before = v.display_fetch.trace.borrow().clone();
     v.framebuffer().unwrap();
-    assert_eq!(v.display_fetch.borrow().trace, before);
+    assert_eq!(*v.display_fetch.trace.borrow(), before);
     v.scan_to(&Vdp1::default(), 0, 3);
     assert_eq!(pixel(&v, 0), spatial_expected(3, 0));
     assert_eq!(pixel(&v, 1), [0, 0, 0, 255]);

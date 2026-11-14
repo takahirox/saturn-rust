@@ -44,7 +44,7 @@ pub struct Vdp2 {
     beam_rendering: bool,
     clocked: bool,
     line_tables: tables::LineTables,
-    pub(crate) display_fetch: RefCell<fetch::DisplayFetch>,
+    pub(crate) display_fetch: fetch::DisplayFetch,
 }
 impl Default for Vdp2 {
     fn default() -> Self {
@@ -74,7 +74,7 @@ impl Default for Vdp2 {
             beam_rendering: false,
             clocked: false,
             line_tables: tables::LineTables::default(),
-            display_fetch: RefCell::default(),
+            display_fetch: fetch::DisplayFetch::default(),
         }
     }
 }
@@ -246,8 +246,8 @@ impl Vdp2 {
             .unwrap_or_else(|| self.composite(sprites))
     }
     pub(crate) fn begin_scanline(&mut self, line: usize) {
-        if self.display_fetch.borrow().prepared_line != Some(line) {
-            self.display_fetch.get_mut().reset();
+        if self.display_fetch.prepared_line != Some(line) {
+            self.display_fetch.reset();
         }
         self.scan_x = 0;
         self.scan_history = [[0; 3]; 2];
@@ -1006,7 +1006,7 @@ impl Vdp2 {
                 ))
             };
             for x in columns.clone() {
-                self.display_fetch.borrow_mut().pixel = x;
+                self.display_fetch.pixel.set(x);
                 if self.word(0) & 0x8000 == 0 {
                     pixels[((y - first) * width + x - columns.start) * 4..][..4]
                         .copy_from_slice(&[rgb555(back)[0], rgb555(back)[1], rgb555(back)[2], 255]);

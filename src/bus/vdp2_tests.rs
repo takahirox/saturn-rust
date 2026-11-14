@@ -44,8 +44,8 @@ fn advance(b: &mut Bus, mut clocks: u32, chunk: u32) {
 fn retained(b: &Bus, address: usize) -> u16 {
     b.vdp2
         .display_fetch
-        .borrow()
         .trace
+        .borrow()
         .iter()
         .find(|r| r.path == 1 && r.layer == 0 && r.address == address)
         .unwrap()
@@ -93,8 +93,8 @@ fn repeated_tile_addresses_refetch_after_cpu_publication_before_the_next_packet(
             let chars: Vec<_> = b
                 .vdp2
                 .display_fetch
-                .borrow()
                 .trace
+                .borrow()
                 .iter()
                 .filter(|r| r.path == 1)
                 .map(|r| (r.phase, r.address, r.words))
@@ -248,7 +248,7 @@ fn acquisition_and_completed_pixels_are_independent_of_chunks_and_debugger_reads
                 }
             }
             advance(&mut b, 1280 - 77, chunk);
-            let trace = b.vdp2.display_fetch.borrow().trace.clone();
+            let trace = b.vdp2.display_fetch.trace.borrow().clone();
             let pixels = b.vdp2.scanning.clone();
             let result = (trace, pixels);
             if let Some(expected) = &reference {
@@ -258,7 +258,7 @@ fn acquisition_and_completed_pixels_are_independent_of_chunks_and_debugger_reads
             }
             b.reset_volatile();
             advance(&mut b, 1800, chunk);
-            assert!(b.vdp2.display_fetch.borrow().trace.is_empty());
+            assert!(b.vdp2.display_fetch.trace.borrow().is_empty());
         }
     }
 }
@@ -282,8 +282,8 @@ fn a_busy_display_bank_does_not_stall_the_other_cpu_port() {
     assert!(
         b.vdp2
             .display_fetch
-            .borrow()
             .trace
+            .borrow()
             .iter()
             .any(|r| r.path == 1 && r.address == 8)
     );
@@ -316,8 +316,8 @@ fn rotation_board() -> Bus {
 fn rotation_word(b: &Bus, phase: u32) -> u16 {
     b.vdp2
         .display_fetch
-        .borrow()
         .trace
+        .borrow()
         .iter()
         .find(|r| r.layer == 4 && r.path == 1 && r.phase == phase)
         .unwrap()
@@ -468,7 +468,7 @@ fn rotation_chunks_previews_independent_bank_and_reset_have_identical_retained_s
             assert_eq!(b.read16(VRAM + 0x40000), Ok(0x1234));
             advance(&mut b, 2988 - 1809, chunk);
             let actual = (
-                b.vdp2.display_fetch.borrow().trace.clone(),
+                b.vdp2.display_fetch.trace.borrow().clone(),
                 b.vdp2.scanning.clone(),
             );
             if let Some(expected) = &reference {
@@ -485,7 +485,7 @@ fn rotation_chunks_previews_independent_bank_and_reset_have_identical_retained_s
             b.reset_volatile();
             advance(&mut b, 1800, chunk);
             assert_eq!(b.read16(VRAM + 0x20000), Ok(0));
-            assert!(b.vdp2.display_fetch.borrow().trace.is_empty());
+            assert!(b.vdp2.display_fetch.trace.borrow().is_empty());
         }
     }
 }
@@ -510,10 +510,10 @@ fn high_resolution_rotation_pairs_reacquire_at_two_clock_edges_and_reset_cancels
                     assert_eq!(b.replay_cpu(p).write16(0x25E20000, 0x2222), Ok(()));
                     b.finish_cpu_transaction(p);
                     if inspect {
-                        let before = b.vdp2.display_fetch.borrow().trace.clone();
+                        let before = b.vdp2.display_fetch.trace.borrow().clone();
                         b.vdp2.framebuffer().unwrap();
                         b.vdp2.framebuffer().unwrap();
-                        assert_eq!(b.vdp2.display_fetch.borrow().trace, before);
+                        assert_eq!(*b.vdp2.display_fetch.trace.borrow(), before);
                     }
                     advance(&mut b, 2988 - start - 8, chunk);
                     assert_eq!(rotation_word(&b, 0), if old { 0x1111 } else { 0x2222 });
@@ -529,7 +529,7 @@ fn high_resolution_rotation_pairs_reacquire_at_two_clock_edges_and_reset_cancels
                         }
                     );
                     let actual = (
-                        b.vdp2.display_fetch.borrow().trace.clone(),
+                        b.vdp2.display_fetch.trace.borrow().clone(),
                         b.vdp2.scanning.clone(),
                     );
                     if let Some(expected) = &reference {
@@ -545,7 +545,7 @@ fn high_resolution_rotation_pairs_reacquire_at_two_clock_edges_and_reset_cancels
                     b.reset_volatile();
                     advance(&mut b, 1800, chunk);
                     assert_eq!(b.read16(VRAM + 0x20000), Ok(0));
-                    assert!(b.vdp2.display_fetch.borrow().trace.is_empty());
+                    assert!(b.vdp2.display_fetch.trace.borrow().is_empty());
                 }
             }
         }

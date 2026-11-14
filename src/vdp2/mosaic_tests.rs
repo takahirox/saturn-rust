@@ -181,14 +181,14 @@ fn scheduled_normal_layers_use_selected_rows_retain_words_and_exclude_cell_scrol
                     };
                     assert!(
                         v.display_fetch
-                            .borrow()
                             .trace
+                            .borrow()
                             .iter()
                             .any(|r| r.path == 1 && r.address == expected_address),
                         "layer={layer}, bitmap={bitmap}, field={field}, code={code}, expected={expected_address:x}, trace={:?}",
-                        v.display_fetch.borrow().trace
+                        v.display_fetch.trace.borrow()
                     );
-                    assert!(!v.display_fetch.borrow().trace.iter().any(|r| r.path == 2));
+                    assert!(!v.display_fetch.trace.borrow().iter().any(|r| r.path == 2));
                     v.vram.fill(0); // Acquired bytes, not late RAM or duplicated rows.
                     v.begin_scanline(usize::from(line));
                     v.scan_to(&sprites, usize::from(line), 8);
@@ -404,8 +404,8 @@ fn field_boundary_size_enable_and_scroll_updates_refetch_normal_image_rows() {
         }
         assert!(
             v.display_fetch
-                .borrow()
                 .trace
+                .borrow()
                 .iter()
                 .any(|r| r.path == 1 && r.address == 0x20000 + expected_y * 512)
         );
@@ -498,8 +498,8 @@ fn minimum_mosaic_selects_source_row_before_each_applicable_color_decoder() {
                 }
                 assert!(
                     v.display_fetch
-                        .borrow()
                         .trace
+                        .borrow()
                         .iter()
                         .any(|r| r.path == 1 && r.address <= address && address < r.address + 4)
                 );
