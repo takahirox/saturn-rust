@@ -1762,3 +1762,6 @@ impl PreparedBranch {
         self.fetch.private_addresses()
     }
 }
+
+#[cfg(any(test, feature = "kernel-experiment"))]
+pub(crate) mod resumable;

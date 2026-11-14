@@ -299,3 +299,38 @@ fn standalone_media(bytes: Vec<u8>) -> Result<crate::media::Media, crate::disc::
         crate::media::Media::iso_owned(bytes)
     }
 }
+
+/// Optional research harness, absent from default browser builds.
+#[cfg(feature = "kernel-experiment")]
+#[wasm_bindgen]
+pub struct KernelExperiment {
+    inner: crate::kernel::experiment::Experiment,
+}
+#[cfg(feature = "kernel-experiment")]
+#[wasm_bindgen]
+impl KernelExperiment {
+    #[wasm_bindgen(constructor)]
+    pub fn new(memory: bool, latency: u32) -> Self {
+        Self {
+            inner: crate::kernel::experiment::Experiment::new(memory, latency),
+        }
+    }
+    pub fn run_kernel(&mut self, count: u32) -> Result<(), JsValue> {
+        self.inner
+            .run_kernel(count)
+            .map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+    pub fn run_reference(&mut self, count: u32) -> Result<(), JsValue> {
+        self.inner
+            .run_reference(count)
+            .map_err(|error| JsValue::from_str(&error))
+    }
+    pub fn verify(&self) -> Result<(), JsValue> {
+        self.inner
+            .verify()
+            .map_err(|error| JsValue::from_str(&error))
+    }
+    pub fn digest(&self) -> Vec<u32> {
+        self.inner.digest()
+    }
+}
