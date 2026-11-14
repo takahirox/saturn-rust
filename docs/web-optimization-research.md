@@ -1107,5 +1107,142 @@ BIOS, remaining ISA, non-WRAM device accesses, interrupt/exception and coordinat
 reset integration remain pending. The default app still uses Machine, and the
 actual game remains around 21 fields/s. Sustained Web 60, broader gameplay and
 production audio-underflow acceptance remain unmet. #138/#17 and the active goal
-remain open. Full exact-head CI and review are required before merging this
-increment; required post-merge verification: none.
+remain open. PR #153 passed full exact-head CI `43637051450` and author
+self-review, then merged as `ad11e0c`. No independent approval is asserted.
+Required post-merge verification: none.
+
+
+### Rejected initial production-Machine domain placements
+
+A follow-up connects the bounded WRAM domain to the existing complete Machine's
+prepared scalar/branch/load/store paths, retaining ordinary instruction, device,
+IRQ/exception and reset fallback. It avoids a cache-copy/CPU-state handoff while
+allowing BIOS/game execution immediately. The first two placements are rejected:
+
+| Trial | Original CPU loop | Actual selected game scene |
+| --- | --- | --- |
+| Domain before existing cached batches | 72.379 → 65.421 fields/s | 21.486 → 20.370 fields/s |
+| Existing cached batches first | 71.971 → 71.954 fields/s | 21.458 → 21.188 fields/s (screening only) |
+
+The first game comparison boots both variants independently to field 3600,
+then alternates two successive 80-field windows with Canvas/PCM. The same
+feature Wasm (`ea80e88ad294f642f4c816118cf5e3f1bd22bf10fa39b83699a1887b74e057ea`)
+selects ordinary versus alternate frame methods; exposed CPU/clock/PCM/pixel
+endpoints agree. The original loop uses three continuous 60-field windows after
+120-field preparation. Putting the old cached batches first removes the
+original-loop regression, but does not establish a game gain.
+
+The second game row uses an ignored **screening** harness: restore the same
+instance's memory/exported globals/tables, then execute ordinary/alternate
+methods over the same 80-field interval six times in alternating order after
+an unmeasured pair. It never restores state into a different instance/artifact.
+The original guest first validates identical end states across restores/methods;
+the game also preserves exposed endpoints. Feature Wasm:
+`72aee443760d4886875f4e2015745576bab0e53e092567dc66082984451f27fd`.
+This repeated-interval result is not continuous gameplay/adoption evidence.
+Private states, media and the harness stay ignored/local; all device time still
+executes. No build/test/profile overlaps preparation or throughput.
+
+Neither placement is adopted in the default app. A subsequent investigation
+retains WB/EX scalar interlocks and counts admitted clocks, completed operation
+classes and reasons for returning to the ordinary Machine, separately from
+uninstrumented timing. The actual default game remains around 21 fields/s and #138 stays open.
+
+The retained-WB scalar variant also fails screening: 21.277 → 20.914 fields/s
+(about 1.7% slower). Its six alternating
+same-instance 80-field windows preserve all exposed endpoints, as does an extra
+counted window excluded from throughput. Native tests compare the complete CPU,
+including private pipeline/MDU/fetch fields, across single/both CPUs, word/byte
+physical buses, original MUL.L/STS fallback and 300 cuts; all 901 library tests
+and all-target/all-feature Clippy pass. Feature Wasm:
+`faa0894b6a24963a3d7684483d2c92e190846abc61618281768899d2b8c4ce99`.
+These checks establish correctness of the prototype surface, not a reason to
+adopt a regression.
+
+A further diagnostic-only build separates bus admission failures from short
+observer horizons. In the selected 80-field interval, 531,718 attempts execute
+only 59,422 of 35,936,320 clocks in the new domain (0.165%). There are 90,595
+Machine-state rejections (90,588 have a pending master boundary; only seven a
+slave boundary). Another 392,987 attempts fail bus/deadline admission: 95,761
+fail cached-wait admission, 104,256 have a nonlocal active transfer, 32,390 a
+nonlocal internal transfer, six a nonlocal buffered write and 48 a replay
+journal; 160,526 have a horizon shorter than two usable clocks. Short-bound
+counts overlap: master on-chip 94,478, slave on-chip 78, IRQ 23,091, raster
+40,655, VDP1 814, CD 259, SMPC 85 and sound 1,799. MCIEB is zero at the diagnostic
+endpoint. Thus neither WRAM range alone nor sound alone explains the rejection
+rate. Master pending CPU work and on-chip event boundaries must be integrated;
+adding supported ALU instructions alone barely changes the covered interval.
+All diagnostic methods preserve the same exposed guest endpoints. No diagnostic
+timing is included in throughput.
+
+### Rejected CPU/on-chip domain integration variants
+
+A separate prototype permits real WRAM/on-chip physical transfers and full CPU
+replay fallback. On-chip events progress in the CPU domain; independent device
+catch-up skips that already advanced domain. A later variant ages only physical
+BSC busy/gap state per bus step and catches up other on-chip counters at their
+absolute deadlines, before MMIO grant/completion, before arbitrary legacy issue
+(including SLEEP), and on domain exit. It does not snapshot/restore on-chip state.
+BSC counter advancement explicitly excludes bus aging already charged at the
+physical edge. Single-CPU frame execution retains the normal cached path.
+
+Three native differentials compare complete CPU/private pipeline/MDU/fetch state,
+clocks, readiness, RAM/PCM and FRT counters: word/byte buses and MUL.L/STS fallback,
+FRT/DIVU accesses (quotient 14), and entering from a pending master replay boundary
+with a cold literal load of 42. All pass; the lazy variant passes all 903 native
+library tests and native/Wasm all-feature Clippy. These are original guests.
+
+An intended removal of the old pending-CPU entry guard was initially missed by
+a source replacement; the explicit pending-master test detects this missing
+coverage and the later variant removes the guard. The initial full-on-chip
+variant therefore cannot establish acceleration of pre-existing pending
+boundaries. All prototype source versions remain preserved locally.
+
+| Rejected game screening variant | Normal fields/s | Alternate fields/s | Covered main clocks / 35,936,320 |
+| --- | ---: | ---: | ---: |
+| Full on-chip update at every local step, cached batches first | 21.371 | 20.214 | 728,233 (2.03%) |
+| On-chip updates at events/accesses, pending entry fixed, cached batches first | 21.409 | 19.667 | 1,011,486 (2.81%) |
+| Same lazy local domain before cached batches in dual-CPU execution | 21.384 | 6.892 | 34,615,975 (96.33%) |
+
+Each row uses six alternating same-instance 80-field screening windows after an
+unmeasured pair, with Canvas/PCM and matching exposed endpoints; counted windows
+run afterwards and also match. These are repeated-interval screens, not new
+continuous adoption evidence. No builds/tests/profiles overlap preparation or
+throughput. The first full-on-chip variant also regresses the original single-CPU
+loop from about 72 to 53 fields/s; retaining its old path restores about 71 fields/s
+with no demonstrated gain. Different artifacts must be compared using each row's
+own normal control.
+
+Feature Wasm SHA-256 values, in table order:
+
+- `6d6b95048ad5c448a872147a823124856cec3cf2f523f499926993762c78e70f`
+- `1fe5572356dd14d83563b9b393a7551fa7f8689c38a3a682dbee3f481ee00f2c`
+- `be55d6ff5bf967588af7708cb995c292c7e195d3c1a44e1bd73c6c0ed9490933`
+
+Putting the new domain first reaches most guest clocks but executes 49,883,631
+local loop turns and 42,056,900 nonzero on-chip counter updates per 80 fields,
+retiring 40,661,164 total CPU instructions. The substantially worse throughput
+rules out adopting this fine-grained integration as the new production engine.
+Component-only cache/WRAM speedups did not predict game behavior. Further design
+work must reduce host dispatch/admission/device transitions across instruction
+blocks and proven polling intervals; covering more instructions alone is not
+sufficient. No variant changes the default game runner or completes #138.
+
+A matched-symbol Chrome profile is collected in a separate extra window after
+all throughput and counted runs; its exposed endpoint also matches the normal
+control. The function map comes from a byte-identical optimized rebuild of the
+last artifact. In 11,706.384 ms / 7,762 weighted samples, self time includes
+`kernel_local_allowed` 10.568%, `kernel_flush_local` 4.961%,
+`kernel_advance_local` 4.952%, bus allocation 4.451%, interrupt sampling 3.870%
+and local-deadline queries 2.696%. The exported wrapper has 11.147% self time,
+which includes inlined runner work; it must not be interpreted as JS marshaling
+cost. CPU step/replay, instruction execution and real device work remain too.
+Self samples are diagnostic estimates, not exact accounting or a speedup.
+
+The failed prototype sources are preserved locally and reverted from the working
+implementation. The default engine remains unchanged. A next block-level
+candidate can reuse the existing private-poll template's per-clock and partial
+publications: these already reconstruct a proven slave polling microstate at an
+arbitrary admitted endpoint. This avoids interpreting both CPUs at every clock.
+The master can then use owned, preflighted instruction blocks inside the same
+observer proof. This is a design direction, not an implemented or measured gain.
