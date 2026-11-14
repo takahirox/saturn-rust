@@ -303,6 +303,13 @@ fn standalone_media(bytes: Vec<u8>) -> Result<crate::media::Media, crate::disc::
 /// Optional research harness, absent from default browser builds.
 #[cfg(feature = "kernel-experiment")]
 #[wasm_bindgen]
+pub fn verify_owned_read_port() -> Vec<u32> {
+    crate::kernel::verify_read_port_board()
+}
+
+/// Optional research harness, absent from default browser builds.
+#[cfg(feature = "kernel-experiment")]
+#[wasm_bindgen]
 pub struct KernelExperiment {
     inner: crate::kernel::experiment::Experiment,
 }

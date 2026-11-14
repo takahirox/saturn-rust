@@ -7,6 +7,12 @@ fn main() {
         .map(|v| v.parse::<u32>().expect("instruction count"))
         .unwrap_or(1_000_000);
     assert!(count > 0);
+    // Component evidence is outside CPU dispatch timing and uses the actual
+    // board arbiter/BSC. Its digest can be compared with main-thread/Worker runs.
+    eprintln!(
+        "owned_read_port={:?}",
+        saturn_rust::kernel::verify_read_port_board()
+    );
     for memory in [false, true] {
         // Warm both implementations before either timed variant.
         let mut warm = Experiment::new(memory, 1);

@@ -21,9 +21,13 @@ for (const name of ["saturn_rust.js", "saturn_rust_bg.wasm"]) {
   sha256[name] = createHash("sha256").update(bytes).digest("hex");
 }
 async function benchmark({ count, runs }) {
-  const { default: init, KernelExperiment } = await import("/pkg/saturn_rust.js");
+  const { default: init, KernelExperiment, verify_owned_read_port } = await import("/pkg/saturn_rust.js");
   await init();
-  if (!KernelExperiment) throw new Error("Build with --features kernel-experiment first");
+  if (!KernelExperiment || !verify_owned_read_port) throw new Error("Build with --features kernel-experiment first");
+  // Component conformance precedes the timed rounds. These are actual board
+  // reads, separate from the CPU experiment's deliberately synthetic bus.
+  const read_port = [...verify_owned_read_port()];
+  if (read_port[0] !== 904) throw new Error("Owned read-port fixture did not finish");
   const results = [];
   for (const memory of [false, true]) {
     const warm = new KernelExperiment(memory, 1);
@@ -43,7 +47,7 @@ async function benchmark({ count, runs }) {
       experiment.free();
     }
   }
-  return results;
+  return { results, read_port };
 }
 assets.set("/worker.js", Buffer.from(`onmessage = async ({data}) => {
   try { postMessage({results: await (${benchmark.toString()})(data)}); }
@@ -66,7 +70,8 @@ try {
   const origin = `http://127.0.0.1:${server.address().port}`;
   await page.route("**/*", route => route.request().url().startsWith(origin + "/") && route.request().method() === "GET" ? route.continue() : route.abort());
   await page.goto(origin + "/");
-  const main = await page.evaluate(benchmark, { count, runs });
+  const mainResult = await page.evaluate(benchmark, { count, runs });
+  const main = mainResult.results;
   const worker = await page.evaluate(async ({ count, runs }) => {
     let ticks = 0;
     const timer = setInterval(() => ticks++, 10);
@@ -77,14 +82,17 @@ try {
         worker.onerror = event => reject(new Error(event.message));
         worker.postMessage({ count, runs });
       });
-      return { results, main_timer_ticks: ticks, cross_origin_isolated: crossOriginIsolated };
+      return { results: results.results, read_port: results.read_port,
+        main_timer_ticks: ticks, cross_origin_isolated: crossOriginIsolated };
     } finally { clearInterval(timer); worker.terminate(); }
   }, { count, runs });
   assert(worker.main_timer_ticks > 0, "main thread should service timers during Worker execution");
+  assert.deepEqual(worker.read_port, mainResult.read_port, "owned read-port digest differs between browser contexts");
   for (const memory of [false, true]) {
     const expected = main.find(row => row.memory === memory).digest;
     for (const row of [...main, ...worker.results].filter(row => row.memory === memory)) assert.deepEqual(row.digest, expected);
   }
   console.log(JSON.stringify({ contract: "serial synthetic bus; immediate-RAM ISA reference, not production Machine or game FPS",
-    browser: browser.version(), sha256, count, runs, main, worker }));
+    read_port_contract: "WRAM component: production arbiter/BSC read values and completion edges; CPU IF/MA integration remains pending",
+    read_port: mainResult.read_port, browser: browser.version(), sha256, count, runs, main, worker }));
 } finally { await browser?.close(); await new Promise(resolve => server.close(resolve)); }

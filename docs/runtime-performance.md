@@ -3381,3 +3381,73 @@ Approximately 21.45 fields/s still needs about 2.80 times more throughput for
 underflow acceptance remain unmet. #138, #17 and the active goal stay open.
 Private inputs, diagnostic traces and captures remain local and ignored.
 Required post-merge verification: none.
+
+## Rejected follow-ups and refreshed profile (2026-11-15)
+
+Baseline is the classification-only artifact above, now merged as main
+`86e55e3`. Two isolated follow-ups preserve their measured exposed endpoints but
+do not justify adoption:
+
+| Trial | First game comparison | Fresh rotating comparison | Decision |
+| --- | ---: | ---: | --- |
+| Keep scalar-run LRU borrow, retained IF and bookkeeping local when no shadow/passive/store path is active | 21.12564 → 21.27282 (+0.70%) | 21.39085 → 21.31922 (−0.33%) | Reject; five of six repeat windows regress. |
+| Precompute all 65,536 fractional Q30 sound gains with the original ordered integer truncation | Not previously measured | 21.39085 → 21.23255 (−0.74%) | Reject; all six game windows regress. |
+
+The scalar-fetch trial passes 53 cached-execution differential cases, including
+partial runs, a missing next line, retained words and LRU comparison with the old
+fetch path. The gain-table trial passes 134 sound cases, including every
+fractional value and integer exponents −20 through 1 against the original factor
+loop. Both pass native all-target and Wasm Clippy. The latter improves the
+original busy sound/video guest by 0.72%, but that does not establish a game gain.
+Their source changes and additional prototype tests are excluded.
+
+The repeat prepares all three variants before six rotating 80-field continuous
+windows at fields 3600–4080, with Canvas and PCM checking. It collects an
+additional **diagnostic-only** profile of the unchanged baseline at fields
+4080–4160 after all throughput measurements finish. Profiling time is excluded
+from the comparison. Sampled self shares are 22.2% in cached-batch execution,
+8.9% in sound-domain advancement, 8.8% in display acquisition and 3.9% in VDP1
+advancement. Cached-batch inclusive time is 72.3%, which contains sound/display
+catch-up and must not be presented as pure CPU execution or added to its child
+shares. These samples prioritize repeated event processing and scheduling work;
+they do not establish the cost of a particular statement or forecast a speedup.
+
+A subsequent sound experiment replaces the eleven-source IRQ-priority scan with
+three routing-bit intersections. Its extension also removes pin samples between
+source-changing events while retaining the pre-event sample at a MIDI completion.
+The routing oracle covers every 11-bit pending mask, 256 routing patterns, three
+enable masks and ignored high source bits. All 134 sound and 52 cached-execution
+cases, native/Wasm Clippy and production builds pass. Removing the real MIDI
+pre-edge sample is rejected by the inherited serial/CPU equal-edge oracle;
+restoring the exact selected source passes that case. An initial fully qualified
+test filter matched zero cases and was corrected before accepting this evidence.
+
+Despite those checks, a fresh rotating game run measures 21.42436 → 21.38161
+fields/s (−0.20%) for routing alone and 21.42953 (+0.02%) for the extension.
+Exposed endpoints agree. Original busy sound/video improves 1.17% and 1.00%,
+respectively, but neither variant demonstrates a game gain. Both changes and
+the additional routing test are excluded.
+
+Two VDP2 variants are also excluded: replacing the access-policy cache's
+whole `RefCell` with per-value cells measures 21.38656 → 21.20263 fields/s
+(−0.86%, all six windows regress), and additionally memoizing register-derived
+normal-layer availability measures 21.38275 (−0.02%, mixed signs). The former
+passes 65 VDP2 cases; the latter passes 66, including a literal register-change
+invalidation case, plus all 52 cached-execution cases. Both pass native/Wasm
+Clippy and preserve all measured exposed endpoints. Original busy-guest gains
+of 0.62%/1.17% do not change the game-based rejection. Their source/test changes
+are excluded. Bounded read-only configuration inspection outside timing confirms
+that this game interval uses the NBG1 RGB tile path; a unit-bitmap-only kernel
+would not target its active drawing path.
+
+Finally, display-buffer reuse tracks the layer/path columns written in the
+previous line, clears only those columns, and retains pixel-buffer lengths.
+Its extension applies the same treatment to normal and planned address samples.
+A line/width-change lifecycle case, all 66 VDP2 and 52 cached-execution cases,
+three original video integration suites, native/Wasm Clippy and production
+builds pass. All corresponding game endpoints match. However, the fresh rotating
+comparison is 21.42886 → 21.17074 fields/s (−1.20%) for pixel buffers and
+21.22701 (−0.94%) for the extension. The latter includes a slow final window;
+the other windows do not show a convincing gain either. Original busy-guest
+changes are −0.33%/+1.56%. Both variants and their prototype lifecycle test are
+excluded. Reducing bytes initialized alone does not establish faster execution.

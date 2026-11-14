@@ -3006,3 +3006,7 @@ impl Bus {
         self.cpu_bus_clocks[1].set(state.clocks);
     }
 }
+
+#[cfg(any(test, feature = "kernel-experiment"))]
+#[path = "kernel_port.rs"]
+mod kernel_port;
