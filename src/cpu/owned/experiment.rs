@@ -88,8 +88,8 @@ impl Experiment {
                 let words = [
                     if memory { 0x6042 } else { 0x7001 },
                     0x7001,
-                    0x310C,
-                    0x6203,
+                    if memory { 0x2402 } else { 0x310C },
+                    if memory { 0x310C } else { 0x6203 },
                     0xAFFA,
                     0x0009,
                 ];
@@ -212,6 +212,12 @@ impl Experiment {
         if self.dual {
             assert_eq!(self.cpus[1].state(), self.reference.slave.state());
         }
+        for address in [HIGH_WRAM + 0x2000, HIGH_WRAM + 0x3000] {
+            assert_eq!(
+                self.board.read32(address),
+                self.reference.bus.read32(address)
+            );
+        }
         assert_eq!(
             self.board.sound.scsp.generated,
             self.reference.audio_generated()
@@ -239,6 +245,21 @@ impl Experiment {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cache_loops_cross_byte_write_drains_without_moving_cpu_or_ram_endpoints() {
+        for dual in [false, true] {
+            let mut e = Experiment::new(true, dual, false);
+            for owner in [Processor::Master, Processor::Slave] {
+                for bus in [&mut e.board, &mut e.reference.bus] {
+                    bus.for_cpu(owner).write32(0xFFFFFFE4, 0xA55A007C).unwrap();
+                    bus.for_cpu(owner).write32(0xFFFFFFE8, 0xA55A00C0).unwrap();
+                }
+            }
+            e.run_reference(1);
+            e.run_candidate_until(e.reference_clock());
+            e.verify();
+        }
+    }
     #[test]
     fn real_board_field_loops_match_production_cache_batches_and_fallback() {
         for memory in [false, true] {

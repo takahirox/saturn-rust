@@ -794,8 +794,8 @@ Owner/sequence tickets bind each completion. Reset or duplicate replies cannot
 install an old line or complete a newer request. The real-board adapter also
 rejects changed transfer addresses, widths, instruction flags and grouping
 before touching the bus. The transport assigns no artificial latency: its
-adapter uses the production arbiter, BSC width/endian conversion and physical
-read completion. The existing physical-beat journal is retained only for an
+adapter uses the production arbiter/BSC path and physical read completion.
+WRAM exercises width/timing; active endian conversion is outside this port. The existing physical-beat journal is retained only for an
 unfinished logical byte/word/longword unit and cleared after that unit succeeds;
 CPU decoding and earlier completed refill longwords are not replayed.
 
@@ -803,7 +803,7 @@ CPU decoding and earlier completed refill longwords are not replayed.
 
 All 18 kernel tests pass, including seven new port cases. The shared original
 fixture checks 900 reads across both CPU identities, cache controls, physical
-8/16/32-bit buses, supported 16/32-bit little-endian configurations and chunk
+8/16/32-bit buses, BCR1 area-2 endian-flag controls and chunk
 limits, then two simultaneous CPU cache fills and an instruction-fetch/operand
 stream that shares one transaction boundary. Each value and each CPU's
 completion clock matches the existing production memory path. Additional cases
@@ -826,7 +826,8 @@ panic-source line constants. Moving the gated adapter into its own module,
 with its declaration appended after existing source, restores full identity.
 The feature-enabled browser artifact used for the final local check is
 `3ddcd29778eaf6925af15e6508aebea84556e3ea5331e803f94a2fa73595bbf8`.
-Exact-head complete CI and final review remain required before merging.
+PR #150 passed exact-head CI `43626150297` and final author self-review, then
+merged as `3115cd2`. No independent approval is asserted.
 
 Writes/buffered acceptance, BIOS and non-WRAM devices, cache arrays, CPU pipeline
 and exception/interrupt behavior, DMA and coordinated board-reset integration
@@ -886,7 +887,8 @@ sample count and delivered PCM agree. Two successive fields and 37-clock host
 splits pass; a separate streaming-load/second-code-line case verifies yielding
 at misses. Private fixtures/media are not needed or published.
 
-Run a feature production build and then:
+For the read-only loop results below, use revision `70ce4b1` (PR #151).
+Build that feature revision and run its matching script:
 
 ```sh
 BROWSER_CHANNEL=chrome node scripts/benchmark-timed-kernel.mjs \
@@ -934,7 +936,8 @@ Worker/main contexts preserve all digests; main timers progress without shared
 memory or cross-origin isolation. Native/Wasm all-feature Clippy passes.
 Default production JS/Wasm remain byte-identical to the adopted game baseline
 (Wasm `464639fa99636abb0a2682c09a6cad87f01d94f6abd5d8f6af71d73fe2f09548`).
-Exact-head complete CI and final review remain required before merging.
+PR #151 passed exact-head CI `43629080418` and final author self-review, then
+merged as `724840f`. No independent approval is asserted.
 
 Writes/buffer acceptance, BIOS and devices, system/MDU instructions, interrupt/
 exception/UBC acceptance, DMA and coordinated reset integration remain pending.
@@ -943,3 +946,90 @@ retained as a distinct earlier test contract. This new component cannot boot the
 private game yet. The actual game remains about 21 fields/s; sustained Web 60,
 broader gameplay/transitions and production audio-underflow acceptance remain
 unmet. #138/#17 and the active goal stay open. Required post-merge checks: none.
+
+
+### Correction: endian coverage of the owned WRAM fixtures
+
+The earlier read-port wording overstated active endian coverage. The
+[SH7604 manual](https://antime.kapsi.fi/sega/files/sh7604.pdf), BCR1 bit12 and
+§7.3.2 (printed pp.136/150), restricts conversion to CS2. Canonical WRAM is
+outside CS2. The existing flag-on/off WRAM matrix checks noninterference of that
+control; it does **not** exercise active little-endian transfers. The historical
+904-read digest and timing results remain valid under that narrower scope.
+A new store-fixture attempt incorrectly byte-swapped WRAM code when enabling
+this flag, failed on the resulting unrelated opcode, and was corrected to keep
+WRAM code/data big-endian. Active CS2 endian integration remains outside the
+owned port's supported surface. No production BSC behavior is changed.
+
+
+## Owned buffered WRAM stores (2026-11-15)
+
+The next opt-in increment latches ordinary MOV store addresses, widths, source
+payloads and predecrement updates before any buffer grant. The actual BSC's
+one-entry write-buffer protocol accepts the store and owns its physical drain.
+Only successful acceptance updates the issuing owned cache; a miss does not
+allocate a cache line, and cache-through stores do not update that cache.
+Architectural auto-update/retirement retains the original MA and load/store
+slot conventions. A private span stops before a store requests acceptance. Independent cache
+work can overlap an accepted WRAM data drain: it cannot observe backing RAM,
+and admitted devices cannot read WRAM while DMA/UBC and observer fences hold.
+Every byte still publishes at its actual board edge during catch-up. Non-WRAM
+writers, locks, pending requests and interfering devices prevent admission.
+
+The shared original matrix covers 2,560 programs / 5,120 stores across both
+CPUs, cache enabled/disabled, physical 8/16/32-bit buses, waits, aliases, entry
+alignment and sixteen ordinary MOV store forms. It compares full CPU states,
+completion/next-issue clocks, and every changed RAM word at each clock and for
+64 clocks after final retirement. The latter includes an outstanding buffer's
+remaining byte publication. Self-predecrement sources, cache forwarding and
+backpressure are included. BCR1 area-2 flag controls only check WRAM
+noninterference, as corrected above; active endian conversion is not covered.
+Native digest: `[5120, 2630414917]`. Removing accepted-cache publication fails
+the expected fixture; exact source restoration passes the owned-CPU suite.
+Native all-target and Wasm all-feature Clippy with warnings denied pass. The
+final source also passes literal 8/16/24/32-clock high-WRAM byte publication,
+non-WRAM writer rejection, queued/active UBC fences, byte-bus field endpoints
+and the inherited self-modifying branch-slot target-byte expectation.
+
+The timed original memory guest now includes MOV stores, matching the earlier
+synthetic experiment's instruction sequence. Its result is a **load/store**
+workload and must not be compared as the same work as PR #151's read-only loop.
+Two fields and 37-clock host splits preserve the normal Machine's full CPU,
+clock, field, PCM and backing-RAM endpoints in native tests. Native, main thread
+and Worker match `[5120, 2630414917]` and the earlier `[4360, 829066179]` CPU
+digest. Two fresh Chrome runs reverse the context order, each using six
+alternating two-field rounds per workload and normal-Machine controls. Worker
+main timers progress without cross-origin isolation. Builds/tests/profiles do
+not overlap preparation or throughput; checks are outside timing.
+
+Feature Wasm SHA-256:
+`3c549e2c9d44c88a8edca6b0517ce2473da2a6bdfe1bc450dc617a7a1a230e8c`.
+Toolchain remains Rust 1.100.0, wasm-bindgen 0.2.129, Binaryen 127 and Chrome
+157.0.8103.52. Ratios are normal-Machine total time / continuation total time;
+below one is a regression.
+
+| Original loop | CPUs | Route | Main-first run | Fresh Worker-first run |
+| --- | --- | --- | ---: | ---: |
+| ALU | Master | Cache | 0.813× | 0.820× |
+| ALU | Master | P1 | 1.312× | 1.308× |
+| ALU | Both | Cache | 6.529× | 6.509× |
+| ALU | Both | P1 | 1.502× | 1.501× |
+| Load/store | Master | Cache | 0.423× | 0.423× |
+| Load/store | Master | P1 | 1.239× | 1.228× |
+| Load/store | Both | Cache | 1.856× | 1.852× |
+| Load/store | Both | P1 | 1.417× | 1.421× |
+
+Before allowing WRAM-drain overlap, both-CPU cached load/store ratios are
+1.698×/1.696×; the final ratios above are 1.856×/1.852×. Candidate time drops
+about 8–9% between those source variants; the normal-Machine-relative improvement
+is about 9%. Single-CPU cached load/store remains substantially slower than the
+normal Machine. These limits are retained; the read-only 5.6× result from PR
+#151 cannot be applied to a workload with stores. No result is a game FPS claim.
+All 897 native library tests, native/Wasm all-feature Clippy, formatting and
+JS syntax checks pass. The final feature rebuild matches the measured artifact
+byte-for-byte; default production JS/Wasm remain byte-identical to the adopted
+baseline (`464639fa99636abb0a2682c09a6cad87f01d94f6abd5d8f6af71d73fe2f09548`).
+Full exact-head CI and final review remain required before merge. BIOS/devices,
+remaining instructions, IRQ/exception/reset integration and actual Web game
+real-time acceptance remain open. The default game remains around 21 fields/s.
+Required post-merge verification: none. #138/#17 and the active goal stay open.

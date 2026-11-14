@@ -1,19 +1,23 @@
 //! Actual-board IF/ID/EX/MA continuation slice. No CPU cloning or decode replay.
-//! Scalar instructions, branches and ordinary WRAM MOV loads are supported.
-//! Interrupts, exceptions and writes are not integrated.
+//! Scalar instructions, branches and ordinary WRAM MOV loads/stores are supported.
+//! Interrupts and exceptions are not integrated.
 use super::{Branch, CpuState, CpuStatus, commit_mov_load, scalar, timing};
-use crate::bus::{Bus, Processor};
+use crate::bus::{Bus, BusError, Processor};
 use crate::kernel::{Error, Read, ReadError, ReadPoll, ReadPort, ReadTransfer};
 
 pub mod experiment;
 mod fixture;
+mod store;
 pub use fixture::verify_board;
+use store::Store;
+pub use store::verify_board as verify_store_board;
 #[cfg(test)]
 mod tests;
 
 enum Effect {
     Scalar(scalar::Kind),
     Load { address: u32, width: u32 },
+    Store(Store),
     Branch(Branch),
 }
 
@@ -304,6 +308,10 @@ impl TimedExecutor {
                         Effect::Load { address, width }
                     } else if let Some(branch) = Branch::decode(opcode, &self.state) {
                         Effect::Branch(branch)
+                    } else if let Some(store) = Store::decode(opcode, &self.state) {
+                        ReadPort::validate_store(store.address, store.width)
+                            .map_err(ReadError::State)?;
+                        Effect::Store(store)
                     } else {
                         return Err(ReadError::State(Error::Unsupported {
                             pc: self.state.pc,
@@ -377,12 +385,13 @@ impl TimedExecutor {
                         }
                         continue;
                     }
-                    let Effect::Load { address, .. } = instruction.effect else {
-                        unreachable!()
+                    let resident = match &instruction.effect {
+                        Effect::Load { address, .. } => self.port.resident(*address),
+                        Effect::Store(_) => false,
+                        _ => unreachable!(),
                     };
                     let end =
                         instruction.ex + u64::from(instruction.interlock) + instruction.stretch + 2;
-                    let resident = self.port.resident(address);
                     self.phase = Phase::OperandStart {
                         instruction,
                         end: end - u64::from(!resident),
@@ -402,6 +411,35 @@ impl TimedExecutor {
                     };
                 }
                 Phase::Operand { instruction, end } => {
+                    if let Effect::Store(store) = &instruction.effect {
+                        if private {
+                            self.phase = Phase::Operand { instruction, end };
+                            return Ok(false);
+                        }
+                        match bus.resume_kernel_store(
+                            self.owner,
+                            store.address,
+                            store.width,
+                            store.value,
+                            self.state.pc,
+                        ) {
+                            Ok(()) => {
+                                self.port
+                                    .accepted_store(store.address, store.width, store.value);
+                                self.phase = Phase::OperandEnd {
+                                    instruction,
+                                    end,
+                                    value: 0,
+                                };
+                            }
+                            Err(BusError::Pending) => {
+                                self.phase = Phase::Operand { instruction, end };
+                                return Ok(false);
+                            }
+                            Err(error) => return Err(ReadError::Bus(Box::new(error))),
+                        }
+                        continue;
+                    }
                     let Effect::Load { address, width } = instruction.effect else {
                         unreachable!()
                     };
@@ -557,6 +595,17 @@ impl TimedExecutor {
                     } else {
                         sequential = target;
                     }
+                }
+            }
+            Effect::Store(store) => {
+                if let Some((register, address)) = store.update {
+                    self.state.r[register] = address;
+                }
+                let successor = self.state.delay_target.unwrap_or(sequential);
+                split = u32::from(successor & 2 == 0);
+                self.pipeline.load_split(split != 0);
+                if split == 0 {
+                    self.pipeline.retain_ex(now - 1);
                 }
             }
         }

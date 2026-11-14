@@ -87,7 +87,9 @@ pub fn verify_board() -> Vec<u32> {
             for little in [false, true] {
                 if little && select == 1 {
                     continue;
-                } // Reserved BSC mode.
+                }
+                // Flag-on controls cover word/long WRAM configurations. BCR1
+                // ENDIAN applies to CS2, outside this WRAM-only transport.
                 for chunk in [1, 7, u32::MAX] {
                     for control in [0, 1, 3, 5, 9] {
                         let setup = || {

@@ -8,6 +8,48 @@ fn actual_if_id_alu_and_load_ma_edges_match_production_without_instruction_repla
 }
 
 #[test]
+fn owned_stores_match_buffer_acceptance_cache_forwarding_aliases_and_byte_publication() {
+    assert_eq!(super::verify_store_board()[0], 5120);
+}
+
+#[test]
+fn branch_slot_store_preserves_the_target_bytes_already_fetched_before_acceptance() {
+    for owner in [Processor::Master, Processor::Slave] {
+        for alias in [0, 0x20000000] {
+            for offset in [0, 2] {
+                for waits in [0, 0xC0] {
+                    let (mut bus, mut state) = fixture::board(owner, 1, 3, waits, alias, offset);
+                    let start = HIGH_WRAM + offset;
+                    for (i, word) in [0xA000, 0x2321, 0xE607, 9, 9, 9].into_iter().enumerate() {
+                        bus.write16(start + i as u32 * 2, word).unwrap();
+                    }
+                    state.r[2] = 0xE62A;
+                    state.r[3] = state.pc + 4;
+                    let mut cpu = TimedExecutor::new(owner, state);
+                    cpu.set_cache_control(1).unwrap();
+                    for _ in 0..400 {
+                        cpu.poll(&mut bus).unwrap();
+                        if cpu.state().instructions == 3 {
+                            break;
+                        }
+                        bus.grant_bus_transaction();
+                        bus.advance_clocks(1).unwrap();
+                    }
+                    assert_eq!(cpu.state().instructions, 3);
+                    assert_eq!(
+                        cpu.state().r[6],
+                        7,
+                        "target IF preceded the self-modifying slot store"
+                    );
+                    bus.advance_clocks(64).unwrap();
+                    assert_eq!(bus.read16(start + 4), Ok(0xE62A));
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn early_refill_words_and_fetch_halves_keep_their_original_sampling_edges() {
     let owner = Processor::Master;
     let (mut bus, state) = fixture::board(owner, 1, 3, 0, 0, 0);

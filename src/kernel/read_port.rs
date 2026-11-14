@@ -131,6 +131,19 @@ impl ReadPort {
         self.cache.control() & 1 != 0
     }
 
+    pub(crate) fn validate_store(address: u32, width: u32) -> Result<(), Error> {
+        Read::Data { address, width }.parts().map(|_| ())
+    }
+
+    pub(crate) fn accepted_store(&mut self, address: u32, width: u32, value: u32) {
+        match width {
+            1 => self.cache.written(address, [value as u8]),
+            2 => self.cache.written(address, (value as u16).to_be_bytes()),
+            4 => self.cache.written(address, value.to_be_bytes()),
+            _ => unreachable!("validated store width"),
+        }
+    }
+
     pub(crate) fn private_read(&self, read: Read) -> Result<bool, Error> {
         let (address, _, _) = read.parts()?;
         Ok(
