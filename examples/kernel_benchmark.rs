@@ -13,6 +13,10 @@ fn main() {
         "owned_read_port={:?}",
         saturn_rust::kernel::verify_read_port_board()
     );
+    eprintln!(
+        "timed_board={:?}",
+        saturn_rust::kernel::verify_timed_board()
+    );
     for memory in [false, true] {
         // Warm both implementations before either timed variant.
         let mut warm = Experiment::new(memory, 1);

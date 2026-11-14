@@ -307,6 +307,46 @@ pub fn verify_owned_read_port() -> Vec<u32> {
     crate::kernel::verify_read_port_board()
 }
 
+#[cfg(feature = "kernel-experiment")]
+#[wasm_bindgen]
+pub fn verify_timed_board() -> Vec<u32> {
+    crate::kernel::verify_timed_board()
+}
+
+/// Original actual-board CPU experiment; not a game engine switch.
+#[cfg(feature = "kernel-experiment")]
+#[wasm_bindgen]
+pub struct TimedKernelExperiment {
+    inner: crate::kernel::TimedExperiment,
+}
+
+#[cfg(feature = "kernel-experiment")]
+#[wasm_bindgen]
+impl TimedKernelExperiment {
+    #[wasm_bindgen(constructor)]
+    pub fn new(memory: bool, dual: bool, bypass: bool) -> Self {
+        Self {
+            inner: crate::kernel::TimedExperiment::new(memory, dual, bypass),
+        }
+    }
+    pub fn run_candidate_until(&mut self, end: u32) {
+        self.inner.run_candidate_until(end);
+    }
+    pub fn run_reference(&mut self, fields: u32) {
+        assert!((1..=10).contains(&fields));
+        self.inner.run_reference(fields);
+    }
+    pub fn reference_clock(&self) -> u32 {
+        self.inner.reference_clock()
+    }
+    pub fn verify(&mut self) {
+        self.inner.verify();
+    }
+    pub fn digest(&self) -> Vec<u32> {
+        self.inner.digest()
+    }
+}
+
 /// Optional research harness, absent from default browser builds.
 #[cfg(feature = "kernel-experiment")]
 #[wasm_bindgen]
