@@ -14,6 +14,45 @@ pub struct Experiment {
 }
 
 impl Experiment {
+    fn wram_span(&mut self, end: u64) -> bool {
+        let start = self.board.main_clocks;
+        let span = u64::from(self.board.kernel_wram_horizon()).min(end - start);
+        if span < 2 {
+            return false;
+        }
+        let limit = start + span;
+        for _ in 0..8192 {
+            let now = self.board.main_clocks;
+            let mut committed = self.cpus[0].poll(&mut self.board).unwrap();
+            if self.dual {
+                committed |= self.cpus[1].poll(&mut self.board).unwrap();
+            }
+            self.board.grant_bus_transaction();
+            let next = self
+                .cpus
+                .iter()
+                .take(if self.dual { 2 } else { 1 })
+                .filter_map(TimedExecutor::deadline)
+                .min()
+                .unwrap_or(u64::MAX);
+            if committed && next <= now {
+                continue;
+            }
+            let delta = next
+                .saturating_sub(now)
+                .min(limit - now)
+                .min(u64::from(self.board.kernel_bus_deadline()))
+                .max(1) as u32;
+            self.board.kernel_advance_wram_bus(delta).unwrap();
+            if self.board.main_clocks == limit {
+                break;
+            }
+        }
+        let elapsed = (self.board.main_clocks - start) as u32;
+        self.clocks += self.board.kernel_catchup_wram(elapsed).unwrap();
+        elapsed != 0
+    }
+
     fn private_span(&mut self, end: u64) -> bool {
         if self
             .cpus
@@ -149,6 +188,9 @@ impl Experiment {
             if now < end && self.private_span(end) {
                 continue;
             }
+            if now < end && self.wram_span(end) {
+                continue;
+            }
             let mut committed = self.cpus[0].poll(&mut self.board).unwrap();
             if self.dual {
                 committed |= self.cpus[1].poll(&mut self.board).unwrap();
@@ -246,6 +288,10 @@ impl Experiment {
 mod tests {
     use super::*;
     #[test]
+    fn deferred_devices_keep_active_bitmap_drawing_sound_cpu_and_nonzero_pcm() {
+        assert_eq!(crate::kernel::verify_active_wram_board()[0], 8);
+    }
+    #[test]
     fn cache_loops_cross_byte_write_drains_without_moving_cpu_or_ram_endpoints() {
         for dual in [false, true] {
             let mut e = Experiment::new(true, dual, false);
@@ -315,3 +361,7 @@ mod tests {
         }
     }
 }
+
+#[path = "active.rs"]
+mod active;
+pub use active::verify as verify_active_wram_board;

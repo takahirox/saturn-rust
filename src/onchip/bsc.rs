@@ -975,3 +975,9 @@ mod mode_tests {
         }
     }
 }
+
+#[cfg(any(test, feature = "kernel-experiment"))]
+#[path = "bsc_kernel.rs"]
+mod kernel;
+#[cfg(any(test, feature = "kernel-experiment"))]
+pub(crate) use kernel::KernelBusClock;

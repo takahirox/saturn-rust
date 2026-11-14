@@ -1033,3 +1033,79 @@ Full exact-head CI and final review remain required before merge. BIOS/devices,
 remaining instructions, IRQ/exception/reset integration and actual Web game
 real-time acceptance remain open. The default game remains around 21 fields/s.
 Required post-merge verification: none. #138/#17 and the active goal stay open.
+
+
+## WRAM CPU/bus domain with bounded device catch-up (2026-11-15)
+
+PR #152 passed complete exact-head CI `43632815198` and author self-review,
+then merged as `52f225c`. No independent approval is asserted. Its default
+production artifact remains the adopted game baseline.
+
+The next opt-in increment runs the two owned CPUs and actual WRAM physical bus
+within a bounded domain. Cache misses, buffer acceptance, byte publication,
+shared arbitration and BSC busy/read-to-write gaps still occur at their real
+main-clock edges. Independent device domains catch up once at the end of the
+segment. Admission stops strictly before interrupt/on-chip/raster/SCU/VDP1,
+sound, CD and SMPC observer deadlines. Non-reference PLL, pending clock work,
+DMA faults/activity, reset, locks, non-WRAM transfers, replay journals and
+exception/interrupt entry prevent admission. This does not enlarge guest quanta
+across observations or defer visible WRAM publication.
+
+BSC bus aging runs with the physical domain. Catch-up preserves only its final
+busy/gap cell so the existing device advance does not age that cell twice;
+other on-chip counters still advance. A literal zero-Tw read/write case checks
+two transfer clocks plus one required idle clock, and whether elapsed physical
+idle time already paid that gap. Removing restoration fails this test; restoring
+the exact source passes. Debug builds also assert that the bounded interval
+crosses no BSC row event. New admission tests reject DMA faults, reset, PLL
+changes, queued B-bus reads and on-chip DMA.
+
+The shared original active-device differential runs eight fields: single/both
+SH-2 CPUs, live M68K NOP or SCSP software-interrupt set/clear programs, patterned
+NBG0 RGB bitmap, cyclic VDP1 polygon drawing and nonzero looping PCM. It compares
+full SH-2/M68K states, clocks/fields, backing RAM, delivered PCM, nonblack pixels,
+VDP1 draw-buffer bytes, SCSP pending state and recognized master interrupt.
+Native, browser main and Worker match `[8, 3646496445]`. SH-2 interrupt acceptance
+remains masked in this fixture; it does not validate interrupt entry or game
+compatibility. Inherited read, instruction and store digests remain respectively
+`[904, 3497650377]`, `[4360, 829066179]` and `[5120, 2630414917]`.
+
+All 900 native library tests and native all-target / Wasm all-feature Clippy
+with warnings denied pass. The benchmark method remains six alternating
+original two-field rounds, independently fixed end clocks, checking outside
+timing and fresh reversed context order. No build/test/profile overlaps
+preparation or throughput. Toolchain remains Rust 1.100.0, wasm-bindgen 0.2.129,
+Binaryen 127 and Chrome 157.0.8103.52. Final feature Wasm SHA-256:
+`301134870a947b3fd4cba61ea7091a96f94bbc7cd48459fd8e1147764a9393d0`.
+
+Worker ratios below are normal-Machine total time / continuation total time;
+values below one are regressions. These are component results, not game FPS.
+
+| Original loop | CPUs | Route | Main-first run | Fresh Worker-first run |
+| --- | --- | --- | ---: | ---: |
+| ALU | Master | Cache | 0.800× | 0.811× |
+| ALU | Master | P1 | 2.510× | 2.548× |
+| ALU | Both | Cache | 6.626× | 6.548× |
+| ALU | Both | P1 | 2.294× | 2.328× |
+| Load/store | Master | Cache | 0.657× | 0.635× |
+| Load/store | Master | P1 | 2.213× | 2.194× |
+| Load/store | Both | Cache | 2.627× | 2.599× |
+| Load/store | Both | P1 | 2.196× | 2.176× |
+
+Both-CPU cached load/store takes 105.40 / 103.47 ms per two fields, versus
+146.98 / 145.40 ms in the preceding store-overlap experiment (about 28–29% less
+candidate time across these separately measured versions). Single-CPU cached
+loops remain slower than the normal Machine, so no universal speedup is claimed.
+Both fresh browser contexts preserve all shared digests, and main timers
+progress during Worker execution without cross-origin isolation.
+
+The final feature rebuild is byte-identical to the measured artifact. Default
+production JS/Wasm remain byte-identical to the adopted baseline
+(`464639fa99636abb0a2682c09a6cad87f01d94f6abd5d8f6af71d73fe2f09548`).
+
+BIOS, remaining ISA, non-WRAM device accesses, interrupt/exception and coordinated
+reset integration remain pending. The default app still uses Machine, and the
+actual game remains around 21 fields/s. Sustained Web 60, broader gameplay and
+production audio-underflow acceptance remain unmet. #138/#17 and the active goal
+remain open. Full exact-head CI and review are required before merging this
+increment; required post-merge verification: none.

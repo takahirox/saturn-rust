@@ -8,7 +8,7 @@
 //! WRAM stores are connected; BIOS/devices and interrupt integration remain pending.
 pub use crate::cpu::owned::experiment::Experiment as TimedExperiment;
 pub use crate::cpu::owned::{
-    TimedExecutor, verify_board as verify_timed_board, verify_store_board,
+    TimedExecutor, verify_active_wram_board, verify_board as verify_timed_board, verify_store_board,
 };
 pub use crate::cpu::resumable::Executor;
 mod read_port;

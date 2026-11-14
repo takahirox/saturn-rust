@@ -21,6 +21,10 @@ fn main() {
         "store_board={:?}",
         saturn_rust::kernel::verify_store_board()
     );
+    eprintln!(
+        "active_board={:?}",
+        saturn_rust::kernel::verify_active_wram_board()
+    );
     for memory in [false, true] {
         // Warm both implementations before either timed variant.
         let mut warm = Experiment::new(memory, 1);

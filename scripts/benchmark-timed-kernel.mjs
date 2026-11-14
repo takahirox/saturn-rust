@@ -22,13 +22,15 @@ for (const name of ["saturn_rust.js", "saturn_rust_bg.wasm"]) {
   sha256[name] = createHash("sha256").update(bytes).digest("hex");
 }
 async function benchmark({ fields, runs }) {
-  const { default: init, TimedKernelExperiment, verify_timed_board, verify_owned_store_board } = await import("/pkg/saturn_rust.js");
+  const { default: init, TimedKernelExperiment, verify_timed_board, verify_owned_store_board, verify_active_wram_board } = await import("/pkg/saturn_rust.js");
   await init();
-  if (!TimedKernelExperiment || !verify_timed_board || !verify_owned_store_board) throw new Error("Use the matching --features kernel-experiment build");
+  if (!TimedKernelExperiment || !verify_timed_board || !verify_owned_store_board || !verify_active_wram_board) throw new Error("Use the matching --features kernel-experiment build");
   const conformance = [...verify_timed_board()];
   if (conformance[0] !== 4360) throw new Error("Actual-board CPU fixture did not finish");
   const store_conformance = [...verify_owned_store_board()];
   if (store_conformance[0] !== 5120) throw new Error("Owned-store fixture did not finish");
+  const active_conformance = [...verify_active_wram_board()];
+  if (active_conformance[0] !== 8) throw new Error("Active-device fixture did not finish");
   const results = [];
   for (const memory of [false, true]) for (const dual of [false, true]) for (const bypass of [false, true]) {
     // Separate, unmeasured normal-Machine control fixes the common end clock
@@ -53,7 +55,7 @@ async function benchmark({ fields, runs }) {
       experiment.free();
     }
   }
-  return { results, conformance, store_conformance };
+  return { results, conformance, store_conformance, active_conformance };
 }
 assets.set("/worker.js", Buffer.from(`onmessage = async ({data}) => {
   try { postMessage({results: await (${benchmark.toString()})(data)}); }
@@ -87,7 +89,7 @@ try {
         worker.onerror = event => reject(new Error(event.message));
         worker.postMessage({ fields, runs });
       });
-      return { results: results.results, conformance: results.conformance, store_conformance: results.store_conformance,
+      return { results: results.results, conformance: results.conformance, store_conformance: results.store_conformance, active_conformance: results.active_conformance,
         main_timer_ticks: ticks, cross_origin_isolated: crossOriginIsolated };
     } finally { clearInterval(timer); worker.terminate(); }
   }, { fields, runs });
@@ -98,6 +100,7 @@ try {
   assert(worker.main_timer_ticks > 0, "main thread should service timers during Worker execution");
   assert.deepEqual(worker.conformance, mainResult.conformance, "actual-board CPU digest differs between browser contexts");
   assert.deepEqual(worker.store_conformance, mainResult.store_conformance, "owned-store digest differs between browser contexts");
+  assert.deepEqual(worker.active_conformance, mainResult.active_conformance, "active-device digest differs between browser contexts");
   for (const memory of [false, true]) for (const dual of [false, true]) for (const bypass of [false, true]) {
     const rows = [...main, ...worker.results].filter(row => row.memory === memory && row.dual === dual && row.bypass === bypass);
     for (const row of rows) assert.deepEqual(row.digest, rows[0].digest);
@@ -105,5 +108,5 @@ try {
   console.log(JSON.stringify({ contract: "original register/load-store loops; same real board clocks and production Machine cache batches/fallback; not game FPS",
     endpoint: "independent control fixes main clock; both variants settle zero-time CPU issue at that edge; PCM checked outside timing",
     context_order: values["worker-first"] ? ["worker", "main"] : ["main", "worker"],
-    conformance: mainResult.conformance, store_conformance: mainResult.store_conformance, browser: browser.version(), sha256, fields, runs, main, worker }));
+    conformance: mainResult.conformance, store_conformance: mainResult.store_conformance, active_conformance: mainResult.active_conformance, browser: browser.version(), sha256, fields, runs, main, worker }));
 } finally { await browser?.close(); await new Promise(resolve => server.close(resolve)); }

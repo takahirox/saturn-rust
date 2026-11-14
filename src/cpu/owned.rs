@@ -6,6 +6,7 @@ use crate::bus::{Bus, BusError, Processor};
 use crate::kernel::{Error, Read, ReadError, ReadPoll, ReadPort, ReadTransfer};
 
 pub mod experiment;
+pub use experiment::verify_active_wram_board;
 mod fixture;
 mod store;
 pub use fixture::verify_board;
