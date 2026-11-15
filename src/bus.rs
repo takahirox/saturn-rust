@@ -16,6 +16,9 @@ mod cached_issue;
 mod dmac_tests;
 #[cfg(test)]
 mod hdtv_tests;
+mod loop_probe;
+#[cfg(any(test, feature = "kernel-experiment"))]
+pub use loop_probe::verify as verify_loop_probe;
 mod poll_cycle;
 pub(crate) mod private_poll;
 #[cfg(test)]
@@ -314,6 +317,7 @@ pub trait Memory {
 }
 
 pub struct Bus {
+    loop_probe: Option<Box<loop_probe::LoopProbe>>,
     transactions: transactions::Transactions,
     inline: Option<transactions::InlineProgress>,
     // Retain host retirement-buffer capacity between cached bursts.
@@ -391,6 +395,7 @@ pub(crate) struct InterruptRequest {
 impl Default for Bus {
     fn default() -> Self {
         Self {
+            loop_probe: Some(Box::new(loop_probe::LoopProbe::automatic())),
             transactions: transactions::Transactions::default(),
             inline: None,
             cached_retirement_points: Vec::new(),

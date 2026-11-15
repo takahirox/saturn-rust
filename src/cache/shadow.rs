@@ -189,6 +189,7 @@ mod tests {
     }
     fn duplicate(cache: &Cache) -> Cache {
         Cache {
+            loop_touches: None,
             control: cache.control,
             lines: cache.lines.clone(),
             lru: cache.lru,

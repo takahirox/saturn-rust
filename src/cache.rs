@@ -19,12 +19,25 @@ pub(crate) struct CacheTouch {
     way: u8,
 }
 impl CacheTouch {
+    pub(crate) fn apply_mapped(self, lru: &mut [u8; 64], ways: &[u8; 256]) -> bool {
+        let (set, old) = self.loop_key();
+        let way = ways[set * 4 + old];
+        if way >= 4 {
+            return false;
+        }
+        lru[set] = Cache::touch_replacement(lru[set], usize::from(way));
+        true
+    }
+    pub(crate) fn loop_key(self) -> (usize, usize) {
+        (usize::from(self.set), usize::from(self.way))
+    }
     pub(crate) fn apply(self, lru: &mut [u8; 64]) {
         let set = usize::from(self.set);
         lru[set] = Cache::touch_replacement(lru[set], usize::from(self.way));
     }
 }
 pub(crate) struct Cache {
+    loop_touches: Option<Vec<CacheTouch>>,
     control: u8,
     lines: Vec<[Line; 4]>,
     lru: [u8; 64],
@@ -33,6 +46,7 @@ pub(crate) struct Cache {
 impl Default for Cache {
     fn default() -> Self {
         Self {
+            loop_touches: None,
             control: 0,
             lines: (0..64)
                 .map(|_| std::array::from_fn(|_| Line::default()))
@@ -43,6 +57,66 @@ impl Default for Cache {
     }
 }
 impl Cache {
+    pub(crate) fn loop_guard_matches(
+        &self,
+        address: u32,
+        ways: u8,
+        mask: u16,
+        expected: &[u8; 16],
+    ) -> Option<u8> {
+        let actual = self.written_ways(address);
+        if (actual == 0) != (ways == 0) || actual.count_ones() > 1 {
+            return None;
+        }
+        if mask == 0 {
+            return Some(actual);
+        }
+        let bytes = self.peek_cached::<16>(address)?;
+        if mask == u16::MAX {
+            return (bytes == *expected).then_some(actual);
+        }
+        (0..16)
+            .all(|i| mask & (1 << i) == 0 || bytes[i] == expected[i])
+            .then_some(actual)
+    }
+    pub(crate) fn begin_loop_touches(&mut self) {
+        self.loop_touches = Some(Vec::new());
+    }
+    pub(crate) fn loop_touch_count(&self) -> usize {
+        self.loop_touches.as_ref().map_or(0, Vec::len)
+    }
+    pub(crate) fn end_loop_touches(&mut self) -> Vec<CacheTouch> {
+        self.loop_touches.take().unwrap_or_default()
+    }
+    pub(crate) fn loop_probe_snapshot(
+        &self,
+        lru: [u8; 64],
+        mut read: impl FnMut(u32) -> Option<([u8; 16], CacheTouch)>,
+    ) -> Option<Vec<u8>> {
+        let mut bytes = Vec::with_capacity(65 + 64 * 4 * 21);
+        bytes.push(self.control);
+        bytes.extend(lru);
+        for (set, ways) in self.lines.iter().enumerate() {
+            for (way, line) in ways.iter().enumerate().skip(self.first_cache_way()) {
+                bytes.extend(line.tag.to_be_bytes());
+                bytes.push(u8::from(line.valid));
+                if line.valid {
+                    let address = line.tag | (set as u32) << 4;
+                    let (data, touch) = read(address)?;
+                    // An ordinary lookup returns the first duplicate tag.
+                    // Reject an ambiguous snapshot rather than copy that
+                    // first way's bytes into a different way.
+                    if usize::from(touch.set) != set || usize::from(touch.way) != way {
+                        return None;
+                    }
+                    bytes.extend(data);
+                } else {
+                    bytes.extend(line.data);
+                }
+            }
+        }
+        Some(bytes)
+    }
     #[cfg(test)]
     pub(crate) fn assert_same_contents(&self, other: &Self) {
         assert_eq!(self.control, other.control);
@@ -87,6 +161,12 @@ impl Cache {
         )
     }
     fn touch(&mut self, set: usize, way: usize) {
+        if let Some(touches) = &mut self.loop_touches {
+            touches.push(CacheTouch {
+                set: set as u8,
+                way: way as u8,
+            });
+        }
         self.lru[set] = Self::touch_replacement(self.lru[set], way);
     }
     fn touch_replacement(lru: u8, way: usize) -> u8 {

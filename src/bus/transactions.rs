@@ -470,6 +470,31 @@ impl ScheduledMemory<'_> {
                 Ok(0)
             }
         };
+        if self.0.cached
+            && self.0.bus.loop_trace_active()
+            && let Ok(value) = result
+        {
+            match op {
+                Operation::Read(address, width, instruction, _) => self.0.bus.loop_trace_access(
+                    self.0.processor,
+                    address,
+                    width,
+                    false,
+                    instruction,
+                    value,
+                ),
+                Operation::Write(address, width, value)
+                | Operation::StackWrite(address, width, value) => self.0.bus.loop_trace_access(
+                    self.0.processor,
+                    address,
+                    width,
+                    true,
+                    false,
+                    value,
+                ),
+                _ => (),
+            }
+        }
         if result != Err(BusError::Pending) {
             let mut journal = self.0.bus.transactions.journals[i].borrow_mut();
             let retained = journal.retain_result(result);
@@ -996,6 +1021,13 @@ impl Bus {
         false
     }
     fn grant_cpu_beat(&mut self, processor: Processor, transfer: Transfer, dmac: bool) {
+        if processor == Processor::Master
+            && !dmac
+            && transfer.write.is_none()
+            && self.loop_trace_active()
+        {
+            self.loop_trace_external_read(processor, dmac);
+        }
         if !dmac && !transfer.last {
             self.transactions.cpu_group = Some(processor);
         }
@@ -1291,6 +1323,15 @@ impl Bus {
             beats: journal.pending_write.take().unwrap(),
             context: journal.write_context,
         });
+        if processor == Processor::Master && !dmac && self.loop_trace_active() {
+            let write = self.transactions.writes[i].as_ref().unwrap();
+            let first = write.beats.front().unwrap();
+            let width = write.beats.iter().map(|b| b.width).sum();
+            let value = write.beats.iter().fold(0u64, |v, b| {
+                (v << (b.width * 8)) | u64::from(b.write.unwrap())
+            }) as u32;
+            self.loop_trace_store_accepted(write.context.0, first.address, width, value);
+        }
         true
     }
     fn grant_buffered_write(&mut self, processor: Processor) -> bool {
@@ -2181,6 +2222,15 @@ impl CpuBus<'_> {
         let bridge = cpu_width == 4 && Self::video_memory(address);
         let width = if bridge { 2 } else { cpu_width };
         let payload = bridge.then(|| bytes.iter().fold(0, |v, b| v << 8 | u32::from(*b)));
+        if self.cached
+            && self.processor == Processor::Master
+            && journal.pending_write.is_none()
+            && self.bus.loop_trace_active()
+        {
+            let value = bytes.iter().fold(0u32, |v, b| (v << 8) | u32::from(*b));
+            self.bus
+                .loop_trace_store_request(journal.write_context.0, address, N, value);
+        }
         journal.pending_write.get_or_insert_with(|| {
             bytes
                 .chunks(width)

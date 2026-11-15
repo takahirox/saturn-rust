@@ -1430,3 +1430,176 @@ structural investigation is a persistent master-loop proof spanning ordinary
 observer windows, while replaying every buffered WRAM write on its real bus
 schedule. Long CPU/cache repetitions have not yet been demonstrated by this
 frequency-only diagnostic.
+
+### Guarded master-loop phase reuse (#138 continuation)
+
+The implementation retains the independent Rust core. It learns repeated
+resident CPU work and reuses verified instruction results across the existing
+hardware observer windows. The ordinary board scheduler still executes sound,
+display acquisition, refresh, interrupts and physical WRAM transactions.
+
+The initial game diagnostic found a recurring 200-instruction, 264-main-clock
+period. Complete CPU/private-pipeline state, next-ready timing and retained IF
+matched, while some cache data and LRU bits differed. A complete ordinary-issue
+trace then captured 246 logical reads and 13 buffered WRAM stores, including two
+write-buffer stalls, with no physical Master read or unsupported access.
+Endpoint repetition alone was insufficient evidence for execution reuse.
+
+Automatic retention requires at least 32 retired instructions and usable compiled
+guards. Two distant branch sites can execute a four-instruction cycle; retaining
+that cycle would displace the existing short-cycle folder. The original sparse
+branch control keeps the existing folder, and removing the minimum-size guard
+makes its negative control fail with 596,465 new-engine instructions instead of
+zero. The exact source is restored after that deliberate mutation.
+
+The runtime proof has the following boundaries:
+
+- Training runs on a private CPU/cache/SH7604 copy. The live Machine stays at its
+  original clock and field endpoint. Physical RAM is not cloned; a usable trace
+  must obtain its reads from resident ordinary-memory cache lines.
+- Each execution attempt matches the complete CPU/pipeline and retained IF under
+  clock translation. Instruction/local-clock counters are rebased; actual
+  exception diagnostics and an already completed multiplier deadline are kept.
+  Both the current and recorded entry require an idle multiplier, and the trace
+  must preserve its completion deadline.
+- Cache guards check the bytes read before the period overwrites them, plus the
+  required tag/hit identities. Guards apply through the selected instruction
+  prefix. Cache ways may move: actual way bindings translate the recorded LRU
+  touches, starting from the current replacement state. Duplicate tags and
+  self-modifying instruction inputs remain conservative rejection cases.
+- Every selected WRAM store goes through the existing BSC planning and real
+  commit path. Its nominal request, actual acceptance and owning instruction are
+  retained. A changed acceptance time in either direction rejects the attempt.
+  Selection uses instruction ownership, including stores sharing a clock with
+  the preceding retirement.
+- Existing IRQ, DMA, raster, BSC, UBC, reset and device horizons still bound the
+  attempt. The existing private-Slave proof publishes the matching peer phase.
+  A shortened Sound prefix truncates staged stores/cache versions and publishes
+  its exact CPU phase directly.
+
+Retirement times come from the retained phase table without a temporary vector
+per attempt. For a pending private peer, every positive retirement is eligible.
+When the maximum reference-clock retirement gap is below nine, the existing
+no-checkpoint Sound proof also applies: synthesis and the 68000 still execute,
+while the large rollback copy is omitted. Sparse gaps and other peer schedules
+keep the checkpoint path.
+
+#### Executed prototypes and rejected results
+
+These screening comparisons use one instrumented package, restoring that same
+instance's memory, globals and tables between variants. They repeat the same
+80-field interval and establish neither continuous throughput nor production
+adoption. Preparation precedes timing; profiles and work counts are separate.
+
+| Screening variant | Control fields/s | Candidate fields/s | Decision |
+| --- | ---: | ---: | --- |
+| Replay every memory operation, attempt at every instruction | 21.272 | 17.854 | Reject |
+| Attempt only at batch entry | 21.065 | 20.846 | Reject |
+| Preserve expired multiplier history across IRQs | 21.307 | 21.354 | Effect too small to establish |
+| Whole-suffix guards with fixed cache-way identities | 21.027 | 19.699 | Reject |
+| Prefix guards with actual LRU-way bindings | 21.432 | 21.956 | Advance to further validation |
+| Allocation-free times and direct shortened-prefix publication | 21.313 | 22.163 | Advance to normal-API validation |
+
+An earlier attempt aborted on an invalid assumption that rebuilding a shortened
+prefix would always reach the requested count within one retained suffix. It
+provided no throughput result. The selected-prefix implementation removes that
+assumption. Whole-suffix validation also rejected work beyond the actual window;
+fixed way identities rejected otherwise valid cache placements. Neither rejection
+was a reason to weaken cache visibility or guest timing.
+
+#### Normal-API evidence before production-package selection
+
+Independent instances boot normally from reset with the same media/controller
+schedule. Both finish preparation through field 3600 before either is measured.
+Six alternating continuous 80-field windows reach field 4080, including Canvas
+presentation and PCM draining. Automatic training runs inside the candidate;
+there is no manual capture, heap restoration or extra live-Machine advance.
+
+| Comparison | Control fields/s | Candidate fields/s | Change |
+| --- | ---: | ---: | ---: |
+| Same package, automatic loop engine disabled/enabled | 20.851 | 21.593 | +3.56% |
+| Loop engine already enabled, Sound checkpoint proof added | 21.987 | 22.153 | +0.75% |
+| Fresh browser, checkpoint candidate initialized/prepared first | 22.131 | 22.352 | +1.00% |
+
+All corresponding exposed endpoints and 64-bit fingerprints of complete private
+CPUs, effective cache data/tags/LRU, retained IF, instruction epochs, full WRAM
+and next-ready times agree. The checkpoint increment improves all 12 paired
+windows. Its candidate p95 ranges are 45.6–46.3 ms and 45.3–46.0 ms; p99 ranges
+are 46.1–47.2 ms and 45.8–47.4 ms. The initial automatic-engine comparison has
+candidate p95 47.0–47.5 ms and p99 47.6–48.7 ms. Host/run variation prevents
+combining absolute rates from different comparisons as one measured speedup.
+
+These packages use the diagnostic feature. The engine-disabled/enabled package
+is Wasm `0a47e8f971a556d3e8d470c2b63acbdc853803bee388febc3db8c6e7e05e1c95`;
+the checkpoint candidate is
+`a8b79fce759f17c6237e00df589c506253b95bb990c34bd33c92bab8db5bb8aa`.
+Rust 1.100.0, wasm-bindgen 0.2.129, Binaryen 127 and Chrome 157.0.8103.52 match
+the recorded build and browser setup. No local builds/tests/profiles overlap
+preparation or throughput.
+
+A separate profile after all timing, fields 4080–4160, covers 15,303,112 template
+instructions and 34,446 direct shortened-prefix publications. Its 25,839 samples
+span 3,970.342 ms. Self time is 20.660% in `Bus::cached_batch`, 8.427% in Sound
+advance, 8.270% in display acquisition and 4.052% in VDP1 advance. The 70.597%
+inclusive cached-batch figure contains these nested device paths; it is not a
+pure CPU percentage. Inlined work also prevents treating wrapper self time as
+JavaScript marshalling cost.
+
+#### Production integration and acceptance
+
+The normal package enables automatic phase learning and reuse. Diagnostic Wasm
+exports remain behind `kernel-experiment`. Ordinary memory operations skip trace
+recording unless a private capture is active. A native full-suite run passes
+1,372 all-feature tests in 111 result groups, with native/Wasm Clippy passing.
+
+Original portable controls cover a constant loop with nonzero WRAM writes,
+changing CPU state, changing cache inputs and adjacent stores with real buffer
+waiting. They additionally exercise ordinary NMI/MUL/RTE, a live multiplier
+before completion, cache address/data-array way relocation, changed input/BSC
+waits, automatic training and live 68000 SCSP writes selecting shorter prefixes.
+Native comparisons include full CPUs, caches, WRAM, clocks, Sound, PCM and BSC
+state. Native, Chrome main-thread and Worker results agree at `[4, 829299155]`.
+The existing timed-kernel runner supports `--verify-only` for these original
+controls without timed rounds; the native example prints the same loop digest.
+
+The final **default production** package is compared with main `b04287a`'s
+adopted unchanged-shadow-set package, using the unmodified production runtime
+benchmark. A fresh-browser repeat reverses initialization, preparation and first
+timing order. Both use the same field 3600–4080 continuous Canvas/PCM workload.
+All 12 paired windows improve, and corresponding exposed CPU/Slave, clock, PCM
+and pixel endpoints agree. The forward change is +4.68% (21.537 → 22.545
+fields/s); the fresh reverse is +5.12% (21.387 → 22.481). Candidate p95 ranges
+are 45.0–45.7 ms and 45.1–45.7 ms; p99 ranges are 45.6–46.9 ms and
+45.6–46.8 ms. Host queue drops are zero; production AudioWorklet underflows are
+not measured.
+
+The baseline Wasm is
+`0c205c8707a61e3d434cde157b91bb950631616a8c69ba42ec96991e1f920e54`.
+The selected production Wasm is
+`65c1d31bbcef21463cba7ee89c6588e9cbbe4ac31c534ebbe7710c48734e1177`;
+its feature-enabled verification companion is
+`9539038dbd2bcd499add8503e167de6b878af90fb172c85086945406178a7bb8`.
+The companion passes the same main-thread/Worker controls after the minimum-size
+guard is restored.
+
+Original workloads use 120 warmup fields and six alternating continuous 60-field
+windows with the same production packages and Canvas/PCM handling:
+
+| Original workload | Baseline fields/s | Selected fields/s | Change |
+| --- | ---: | ---: | ---: |
+| Short CPU/store loop | 69.870 | 67.806 | −2.96% |
+| Busy sound/video | 52.340 | 52.337 | −0.006% |
+| Normal bitmaps | 110.735 | 110.484 | −0.23% |
+
+All corresponding exposed endpoints agree. The short CPU/store workload is a
+measured regression in all six windows; it has no long reusable CPU cycle. The
+existing short-cycle folder remains available. Automatic discovery and the
+larger production execution path may contribute; their individual costs have not
+been isolated on this workload. The game gain is retained with
+this explicit tradeoff; this increment does not improve every workload. Exact-head
+native/Wasm/browser CI is required before merge and remains pending at publication.
+
+This remains partial work related to #138 and #17. Sustained 60 fields/s,
+representative broader gameplay/transitions, production audio underflows and
+hardware-completion acceptance remain open. Private inputs and raw diagnostics
+stay local. No required post-merge verification is added.

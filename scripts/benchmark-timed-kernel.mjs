@@ -11,6 +11,7 @@ import { chromium } from "playwright";
 
 const { values } = parseArgs({ options: { pkg: { type: "string", default: "web/pkg" },
   "worker-first": { type: "boolean", default: false },
+  "verify-only": { type: "boolean", default: false },
   fields: { type: "string", default: "2" }, runs: { type: "string", default: "6" } } });
 const fields = Number(values.fields), runs = Number(values.runs);
 assert(Number.isInteger(fields) && fields >= 1 && fields <= 10);
@@ -21,17 +22,20 @@ for (const name of ["saturn_rust.js", "saturn_rust_bg.wasm"]) {
   assets.set(`/pkg/${name}`, bytes);
   sha256[name] = createHash("sha256").update(bytes).digest("hex");
 }
-async function benchmark({ fields, runs }) {
-  const { default: init, TimedKernelExperiment, verify_timed_board, verify_owned_store_board, verify_active_wram_board } = await import("/pkg/saturn_rust.js");
+async function benchmark({ fields, runs, verifyOnly }) {
+  const { default: init, TimedKernelExperiment, verify_timed_board, verify_owned_store_board, verify_active_wram_board, verify_loop_probe } = await import("/pkg/saturn_rust.js");
   await init();
-  if (!TimedKernelExperiment || !verify_timed_board || !verify_owned_store_board || !verify_active_wram_board) throw new Error("Use the matching --features kernel-experiment build");
+  if (!TimedKernelExperiment || !verify_timed_board || !verify_owned_store_board || !verify_active_wram_board || !verify_loop_probe) throw new Error("Use the matching --features kernel-experiment build");
   const conformance = [...verify_timed_board()];
   if (conformance[0] !== 4360) throw new Error("Actual-board CPU fixture did not finish");
   const store_conformance = [...verify_owned_store_board()];
   if (store_conformance[0] !== 5120) throw new Error("Owned-store fixture did not finish");
   const active_conformance = [...verify_active_wram_board()];
   if (active_conformance[0] !== 8) throw new Error("Active-device fixture did not finish");
+  const loop_conformance = [...verify_loop_probe()];
+  if (loop_conformance[0] !== 4) throw new Error("Master-loop controls did not finish");
   const results = [];
+  if (verifyOnly) return { results, conformance, store_conformance, active_conformance, loop_conformance };
   for (const memory of [false, true]) for (const dual of [false, true]) for (const bypass of [false, true]) {
     // Separate, unmeasured normal-Machine control fixes the common end clock
     // and warms both variants before either timed round. No heaps are copied.
@@ -55,7 +59,7 @@ async function benchmark({ fields, runs }) {
       experiment.free();
     }
   }
-  return { results, conformance, store_conformance, active_conformance };
+  return { results, conformance, store_conformance, active_conformance, loop_conformance };
 }
 assets.set("/worker.js", Buffer.from(`onmessage = async ({data}) => {
   try { postMessage({results: await (${benchmark.toString()})(data)}); }
@@ -78,8 +82,8 @@ try {
   const origin = `http://127.0.0.1:${server.address().port}`;
   await page.route("**/*", route => route.request().url().startsWith(origin + "/") && route.request().method() === "GET" ? route.continue() : route.abort());
   await page.goto(origin + "/");
-  const runMain = () => page.evaluate(benchmark, { fields, runs });
-  const runWorker = () => page.evaluate(async ({ fields, runs }) => {
+  const runMain = () => page.evaluate(benchmark, { fields, runs, verifyOnly: values["verify-only"] });
+  const runWorker = () => page.evaluate(async ({ fields, runs, verifyOnly }) => {
     let ticks = 0;
     const timer = setInterval(() => ticks++, 10);
     const worker = new Worker("/worker.js", { type: "module" });
@@ -87,12 +91,12 @@ try {
       const results = await new Promise((resolve, reject) => {
         worker.onmessage = ({ data }) => data.error ? reject(new Error(data.error)) : resolve(data.results);
         worker.onerror = event => reject(new Error(event.message));
-        worker.postMessage({ fields, runs });
+        worker.postMessage({ fields, runs, verifyOnly });
       });
-      return { results: results.results, conformance: results.conformance, store_conformance: results.store_conformance, active_conformance: results.active_conformance,
+      return { results: results.results, conformance: results.conformance, store_conformance: results.store_conformance, active_conformance: results.active_conformance, loop_conformance: results.loop_conformance,
         main_timer_ticks: ticks, cross_origin_isolated: crossOriginIsolated };
     } finally { clearInterval(timer); worker.terminate(); }
-  }, { fields, runs });
+  }, { fields, runs, verifyOnly: values["verify-only"] });
   let mainResult, worker;
   if (values["worker-first"]) { worker = await runWorker(); mainResult = await runMain(); }
   else { mainResult = await runMain(); worker = await runWorker(); }
@@ -101,6 +105,7 @@ try {
   assert.deepEqual(worker.conformance, mainResult.conformance, "actual-board CPU digest differs between browser contexts");
   assert.deepEqual(worker.store_conformance, mainResult.store_conformance, "owned-store digest differs between browser contexts");
   assert.deepEqual(worker.active_conformance, mainResult.active_conformance, "active-device digest differs between browser contexts");
+  assert.deepEqual(worker.loop_conformance, mainResult.loop_conformance, "master-loop digest differs between browser contexts");
   for (const memory of [false, true]) for (const dual of [false, true]) for (const bypass of [false, true]) {
     const rows = [...main, ...worker.results].filter(row => row.memory === memory && row.dual === dual && row.bypass === bypass);
     for (const row of rows) assert.deepEqual(row.digest, rows[0].digest);
@@ -108,5 +113,6 @@ try {
   console.log(JSON.stringify({ contract: "original register/load-store loops; same real board clocks and production Machine cache batches/fallback; not game FPS",
     endpoint: "independent control fixes main clock; both variants settle zero-time CPU issue at that edge; PCM checked outside timing",
     context_order: values["worker-first"] ? ["worker", "main"] : ["main", "worker"],
-    conformance: mainResult.conformance, store_conformance: mainResult.store_conformance, active_conformance: mainResult.active_conformance, browser: browser.version(), sha256, fields, runs, main, worker }));
+    conformance: mainResult.conformance, store_conformance: mainResult.store_conformance, active_conformance: mainResult.active_conformance, loop_conformance: mainResult.loop_conformance,
+    verify_only: values["verify-only"], browser: browser.version(), sha256, fields, runs, main, worker }));
 } finally { await browser?.close(); await new Promise(resolve => server.close(resolve)); }

@@ -852,6 +852,7 @@ impl Machine {
     }
 
     fn try_cached_batch(&mut self, limit: u32) -> Result<u32, MachineError> {
+        self.maybe_learn_loop();
         let retired = self.try_retired_poll_batch(limit)?;
         if retired != 0 {
             return Ok(retired);

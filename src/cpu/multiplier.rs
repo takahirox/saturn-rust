@@ -38,6 +38,12 @@ impl Multiplier {
         let Self { ready, clock: _ } = self;
         *ready == prior.ready
     }
+    pub fn idle_at(&self, clock: Option<u64>) -> bool {
+        clock.is_some_and(|at| self.ready <= at)
+    }
+    pub fn retain_ready(&mut self, current: &Self) {
+        self.ready = current.ready;
+    }
 
     pub fn access(&self, op: u16, successor: u32, now: u64, fetch: bool) -> Option<(Access, u32)> {
         let word = matches!(op & 0xF00F, 0x200E | 0x200F);
