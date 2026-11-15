@@ -114,9 +114,18 @@ impl Cached<'_> {
                 self.clock.set(at);
                 self.write_pc.set(store.pc);
                 match store.width {
-                    1 => self.write8(store.address, store.value as u8).ok()?,
-                    2 => self.write16(store.address, store.value as u16).ok()?,
-                    4 => self.write32(store.address, store.value).ok()?,
+                    // All reads and final CPU phases are already proven.
+                    // Actual WRAM publication and buffer acceptance update
+                    // the live cache; this path consumes no private versions.
+                    1 => self
+                        .write::<1, false>(store.address, [store.value as u8])
+                        .ok()?,
+                    2 => self
+                        .write::<2, false>(store.address, (store.value as u16).to_be_bytes())
+                        .ok()?,
+                    4 => self
+                        .write::<4, false>(store.address, store.value.to_be_bytes())
+                        .ok()?,
                     _ => return None,
                 }
                 if self.ram_stores.last()?.store.at != store.accepted.checked_add(shift)? {
@@ -170,14 +179,10 @@ impl Cached<'_> {
             .partition_point(|s| s.owner <= (key.first + selected as usize) as u64)
             - data.stores.partition_point(|s| s.owner <= key.first as u64);
         assert!(keep <= self.ram_stores.len());
-        let versions = self.ram_stores[..keep]
-            .iter()
-            .filter(|s| self.cache.read_hit(s.store.address))
-            .count();
         self.ram_stores.truncate(keep);
         self.bus_events.get_mut().truncate(keep);
-        self.fills.get_mut().truncate(versions);
-        self.version_count.set(versions);
+        debug_assert_eq!(self.fills.get_mut().len(), 0);
+        debug_assert_eq!(self.version_count.get(), 0);
         self.write_pc
             .set(self.ram_stores.last().map_or(0, |s| s.pc));
         let mut lru = self.cache.replacement_state();

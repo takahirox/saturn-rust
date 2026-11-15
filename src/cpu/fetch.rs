@@ -119,7 +119,7 @@ impl Fetch {
         *self = Self::default();
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "kernel-experiment"))]
     pub fn prime(&mut self, bus: &impl Memory, pc: u32) {
         self.decoded = Some(Self::word(bus, pc).unwrap());
         self.fetched = Some(Self::word(bus, pc.wrapping_add(2)).unwrap());

@@ -2073,3 +2073,116 @@ recorded in the associated PR. Diagnostic-feature FPS is excluded from adoption
 evidence. Sustained 60 fields/s, broader gameplay/transitions, production audio
 underflows and hardware completion remain unmet. Private inputs/raw diagnostics
 stay local; no required post-merge verification is added.
+
+
+### Two-return increment merged and subsequent rejected trials (#138)
+
+[PR #160](https://github.com/takahirox/saturn-rust/pull/160) is merged as
+`253c7d1cbcc0a53a4f6fa74ad196a5ff48859a31`. Its final head
+`2157881c059a53a038e29cc695bbad2881d67cf7` passes
+[CI 43695778672](https://github.com/takahirox/saturn-rust/actions/runs/43695778672):
+1,373 native tests / 111 groups, Wasm, both browser shards and the aggregate
+revision/artifact gate. The six full-private-state game windows and all three
+original workload comparisons also pass. Original CPU/busy/normal throughput
+changes are −0.289% / −0.238% / −0.336%; these small differences are observations,
+not confirmed regressions. Author COMMENT self-review is recorded, without an
+independent approval claim. The matched production gain remains +3.27% above.
+
+Two additional isolated trials are rejected. Both preserve every corresponding
+production window hash and final state:
+
+- Enabling standard Wasm SIMD128 for unchanged source gives **26.537 → 26.644
+  fields/s (+0.402%)**, but the two standalone comparisons have opposite signs
+  (−0.209% / +1.017%). No reproducible gain is established and build defaults
+  remain unchanged. Rejected production Wasm:
+  `87d73cfbdd8bfd381cdc3bcfded10726adfff6a2be6b5db01a84ba0c6ce0eb54`.
+- Analytically advancing the BSC RTC counter and composing independent bus aging
+  gives **26.640 → 26.712 fields/s (+0.269%)**. Both pairs are slightly positive
+  (+0.373% / +0.167%), but individual windows are mixed. The benefit is too small
+  for adoption. Its literal old-tick-loop oracle, 904-library-test suite,
+  native/Wasm Clippy and native/main/Worker controls pass. Refresh compare,
+  pending/grant/recovery and IRQ deadlines were retained; this was arithmetic
+  replacement, not refresh omission. Rejected production Wasm:
+  `e52f436dae7cbac0530bffd785dca022ac32c1fb0930373ea32aa4cdc620b65b`.
+
+No further full-suite/CI adoption work is spent on those rejected implementations.
+
+### Avoid duplicate private cache versions during proven replay (#138)
+
+A successful guarded Master-loop replay validates every consumed cache input
+before planning its effects, obtains final CPU phases from the actual observation,
+then exits without executing additional private CPU reads. Nevertheless, each
+planned store previously cloned all four ways of its cache set into a private
+version and later committed those versions again. Real WRAM publication and
+actual write-buffer acceptance already update the live cache.
+
+Only guarded replay now omits those redundant versions. Ordinary interpreted
+writes retain their existing private versions and overlay reads. The BSC sequence,
+store acceptance checks, physical WRAM publication, CPU phases and mapped LRU
+updates are unchanged. A rejected replay restores its original snapshot. Sound
+prefix shortening truncates the same stores/bus events and requires an empty
+private version list; it continues to use the selected recorded CPU/LRU phase.
+No real memory transaction or guest event is removed.
+
+An original two-store loop checks a selected prefix whose accepted value is
+already visible in cache while its physical bus write is still buffered. It then
+compares complete CPU/cache/BSC/WRAM state, peer/ready/clock state and sound-CPU
+registers with ordinary execution over two fields. The fixture is first run against the old versioned
+implementation, before applying the optimization. Its portable vector remains
+**[4, 2337474100]** after the change, including native, Wasm main thread and Worker.
+The new vector includes this additional original control; existing assertions
+remain. Its fetch-initialization helpers are available only to tests and the
+verification feature. No product interface or engine option is added.
+
+Production measurement uses one Emulator per fresh owned Chrome process, the
+same authorized media/input, 3600 warmup fields and six continuous 80-field windows
+through 4080, with Canvas presentation and PCM draining. No local builds/tests/
+profiles overlap preparation or measurement. Initial A/B/B/A is followed by an
+independent reverse B/A pair:
+
+| Run | Production package | Fields/s |
+| --- | --- | ---: |
+| A1 | Main | 26.294 |
+| B1 | Omit duplicate versions | 26.899 |
+| B2 | Omit duplicate versions | 26.992 |
+| A2 | Main | 26.780 |
+| B3 | Omit duplicate versions, reverse repeat | 26.836 |
+| A3 | Main, reverse repeat | 26.547 |
+
+Summing elapsed time over **1,440 fields per package** gives **26.539 → 26.909
+fields/s (+1.395%)**. Pair gains are +2.299% / +0.794% / +1.089%. Seventeen of
+eighteen windows improve; one is effectively flat (−0.0034%). Every corresponding
+window hash and all six final states agree. Candidate p95 spans 37.5–39.4 ms;
+p99 spans 38.0–40.3 ms. Host queue drops are zero; these are not AudioWorklet
+underflow measurements.
+
+The separate verification-feature game comparison matches all six complete
+private CPU, effective cache data/tags/LRU, retained IF, instruction epoch, full
+WRAM and next-ready fingerprints. Its timings are excluded from adoption evidence.
+Three original production workloads use 120 warmup fields and six continuous
+60-field paired windows; all corresponding endpoints match:
+
+| Original workload | Baseline fields/s | Candidate fields/s | Change |
+| --- | ---: | ---: | ---: |
+| CPU loop | 67.863 | 67.866 | +0.004% |
+| Busy sound/video | 51.962 | 52.186 | +0.431% |
+| Normal bitmaps | 109.349 | 109.306 | −0.039% |
+
+These small original-workload differences are observations, not separately
+confirmed gains. Final local checks pass **1,373 native tests / 111 groups**, format,
+native all-target/all-feature and Wasm Clippy with warnings denied, the portable
+controls and the frozen 18-file source identity. Builds use an isolated worktree
+target directory. Toolchain: Rust 1.100.0, wasm-bindgen 0.2.129, Binaryen 127 and
+Chrome 157.0.8103.52. Baseline production Wasm:
+`9da3a15395c3db3d17f8c7d9345a3aee9040a629a876d3afdde11e44f23c24e1`.
+Candidate production:
+`d8325c1f1a554163c8b79a4340061f9091d808debe0fce406dcf902ece913002`.
+Verification companion:
+`807b11b571a1bd7c3342b34c4ca93567dad042d97bede0d258fd6a357a2a2daa`.
+Exact-head mandatory CI and final review remain required at this checkpoint;
+the associated PR records their final outcomes before merge.
+
+Sustained 60 fields/s still needs about 2.23 times this throughput. Broader gameplay,
+transitions, production audio underflows and hardware completion remain unmet.
+Issues #138 and #17 remain open. Private inputs, source snapshots and raw evidence
+remain ignored locally. No required post-merge verification is added.
