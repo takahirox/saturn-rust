@@ -575,7 +575,11 @@ impl Cached<'_> {
         self.clock.set(at);
         Ok(())
     }
-    fn write<const N: usize>(&mut self, address: u32, bytes: [u8; N]) -> Result<(), BusError> {
+    fn write<const N: usize, const VERSIONED: bool>(
+        &mut self,
+        address: u32,
+        bytes: [u8; N],
+    ) -> Result<(), BusError> {
         if !self.writable(address, N) {
             return Err(BusError::Pending);
         }
@@ -610,9 +614,11 @@ impl Cached<'_> {
                 read: false,
                 read_beats,
             });
-            let mut fills = self.fills.borrow_mut();
-            fills.written(self.cache, address, bytes, &mut self.lru.borrow_mut());
-            self.version_count.set(fills.len());
+            if VERSIONED {
+                let mut fills = self.fills.borrow_mut();
+                fills.written(self.cache, address, bytes, &mut self.lru.borrow_mut());
+                self.version_count.set(fills.len());
+            }
             self.ram_stores.push(RamStore {
                 store,
                 pc: self.write_pc.get(),
@@ -698,13 +704,13 @@ impl Memory for Cached<'_> {
         self.read_data(a).map(u32::from_be_bytes)
     }
     fn write8(&mut self, a: u32, v: u8) -> Result<(), BusError> {
-        self.write(a, [v])
+        self.write::<1, true>(a, [v])
     }
     fn write16(&mut self, a: u32, v: u16) -> Result<(), BusError> {
-        self.write(a, v.to_be_bytes())
+        self.write::<2, true>(a, v.to_be_bytes())
     }
     fn write32(&mut self, a: u32, v: u32) -> Result<(), BusError> {
-        self.write(a, v.to_be_bytes())
+        self.write::<4, true>(a, v.to_be_bytes())
     }
 }
 fn vdp1_vram(address: u32) -> bool {

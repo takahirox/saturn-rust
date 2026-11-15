@@ -942,7 +942,7 @@ impl Cpu {
         self.execution_clock
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "kernel-experiment"))]
     pub(crate) fn prime_fetch(&mut self, bus: &impl Memory) {
         self.fetch.prime(bus, self.state.pc);
     }

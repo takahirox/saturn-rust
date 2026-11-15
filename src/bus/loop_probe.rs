@@ -464,6 +464,86 @@ fn verify_refresh_prefix() -> Vec<u32> {
     vec![replayed as u32, clamps as u32, automatic.clocks as u32]
 }
 
+// Original write-only loop: cache data must change at buffer acceptance,
+// while physical WRAM can still be waiting for the real external bus.
+#[cfg(any(test, feature = "kernel-experiment"))]
+fn verify_pending_store_prefix() -> Vec<u32> {
+    fn make() -> Machine {
+        let mut machine = original_machine(false, false, false);
+        let mut words = vec![0xE011, 0x2F02, 0xE022, 0x2F02, 0xE000];
+        words.resize(32, 9);
+        words.extend([0xAFDE, 9]);
+        {
+            let mut memory = machine.bus.for_cpu(super::Processor::Master);
+            for (i, word) in words.iter().enumerate() {
+                super::Memory::write16(&mut memory, super::HIGH_WRAM + i as u32 * 2, *word)
+                    .unwrap();
+            }
+            super::Memory::write32(&mut memory, super::HIGH_WRAM + 0x1000, 0x22).unwrap();
+            super::Memory::write32(&mut memory, 0xFFFFFFE8, 0xA55A00FF).unwrap();
+        }
+        for owner in [super::Processor::Master, super::Processor::Slave] {
+            machine.bus.cpu_main_delay(owner, 0);
+        }
+        assert!(machine.bus.advance_clocks(256).unwrap().is_none());
+        machine.clocks += 256;
+        machine.cpu_ready = [machine.bus.main_clocks; 2];
+        machine.bus.instruction_word[0].set(None);
+        machine.cpu = Cpu::start(super::HIGH_WRAM, super::HIGH_WRAM + 0x1000);
+        machine
+            .cpu
+            .prime_fetch(&machine.bus.for_cpu(super::Processor::Master));
+        machine.bus.loop_probe.as_mut().unwrap().best = Some((super::HIGH_WRAM, 34));
+        machine
+    }
+    let mut replayed = make();
+    let mut reference = make();
+    for machine in [&mut replayed, &mut reference] {
+        let summary = machine.capture_loop_trace().unwrap();
+        assert_eq!(&summary[..2], &[1, 34]);
+    }
+    replayed.enable_loop_replay(true);
+    replayed.enable_loop_training(false);
+    let before = replayed.loop_replayed_instructions();
+    let retired = replayed.try_cached_batch(2).unwrap();
+    assert_eq!(retired, 2);
+    assert_eq!(replayed.loop_replayed_instructions() - before, 2);
+    assert_eq!(replayed.cpu.state().r[0], 0x11);
+    assert_eq!(
+        replayed.bus.cache[0]
+            .borrow()
+            .peek_cached::<4>(super::HIGH_WRAM + 0x1000),
+        Some(0x11_u32.to_be_bytes())
+    );
+    assert!(
+        replayed.bus.cached_isolated_write_pending(),
+        "write remains buffered after CPU acceptance"
+    );
+    for _ in 0..2 {
+        replayed.advance_frame().unwrap();
+        reference.advance_frame().unwrap();
+        assert_eq!(replayed.cpu, reference.cpu);
+        assert_eq!(replayed.slave, reference.slave);
+        assert_eq!(replayed.cpu_ready, reference.cpu_ready);
+        assert_eq!(replayed.clocks, reference.clocks);
+        assert_eq!(replayed.sound_state(), reference.sound_state());
+        assert_eq!(replayed.bus.high, reference.bus.high);
+        assert_eq!(replayed.bus.low, reference.bus.low);
+        #[cfg(test)]
+        for i in 0..2 {
+            replayed.bus.cache[i]
+                .borrow()
+                .assert_same_contents(&reference.bus.cache[i].borrow());
+            replayed.bus.onchip[i].assert_cached_read_bus_matches(&reference.bus.onchip[i]);
+        }
+    }
+    vec![
+        retired,
+        replayed.clocks as u32,
+        replayed.cpu.state().instructions as u32,
+    ]
+}
+
 /// Portable original positive and negative controls for tracing and replay.
 #[cfg(any(test, feature = "kernel-experiment"))]
 pub fn verify() -> Vec<u32> {
@@ -808,6 +888,9 @@ pub fn verify() -> Vec<u32> {
         {
             hash = (hash ^ value).wrapping_mul(16777619);
         }
+    }
+    for value in verify_pending_store_prefix() {
+        hash = (hash ^ value).wrapping_mul(16777619);
     }
     for value in verify_refresh_prefix() {
         hash = (hash ^ value).wrapping_mul(16777619);
