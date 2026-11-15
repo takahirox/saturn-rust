@@ -1817,3 +1817,75 @@ Sustained 60 fields/s, broader gameplay/transitions, production audio underflows
 and hardware completion remain unmet. This increment changes benchmark output
 and records rejected trials; it adds no emulator optimization. Private inputs/raw
 diagnostics stay local. No required post-merge verification is added.
+
+
+### Prefer private-peer scheduling for retained Master loops (#138 continuation)
+
+A separate diagnostic-only game interval, fields 4080–4160, observes 103,915
+peer-alignment clipping attempts versus 1,974 Sound-selection clipping attempts.
+These are attempted selections, not unique guest events or disjoint time costs.
+The earlier generic shortened-prefix count must not be attributed entirely to
+Sound. The dominant attempt category motivates testing peer-path selection.
+
+The existing retired-peer proof restricts publication to Slave retirements. The
+existing private-peer proof can publish a validated in-flight Slave microstate.
+When a complete retained Master loop has a compiled entry for the current PC,
+try the latter first, then fall back to the retired-peer path. Other Master
+entries preserve the old order. A failed first private attempt is not repeated
+at the same entry. All existing admission, cache, bus, interrupt, reset, Sound
+and endpoint proofs remain; no hardware horizon or guest clock is enlarged.
+
+Standalone production A/B/B/A uses one Emulator per fresh Chrome process, the
+same authorized media/controller input, 3600 warmup fields and six continuous
+80-field windows through 4080 with Canvas presentation and PCM draining. No
+local build, test or profile overlaps any preparation or timed interval.
+
+| Order | Production package | Fields/s |
+| --- | --- | ---: |
+| A1 | Current core | 24.593 |
+| B1 | Private-peer first | 25.432 |
+| B2 | Private-peer first, fresh process | 25.250 |
+| A2 | Current core, fresh process | 24.621 |
+
+Combining elapsed time over 960 fields per package gives **24.607 → 25.340
+fields/s (+2.98%)**. The two comparisons improve 3.411% and 2.553%; all twelve
+corresponding windows improve (1.946%–3.668%). Every corresponding exposed-state
+SHA-256 and all four final exposed states agree. Candidate per-window p95 is
+39.9–40.8 ms and p99 40.3–42.2 ms. Host audio queue drops are zero; production
+AudioWorklet underflows are not measured.
+
+The baseline production Wasm is
+`7a0c9e4c2a124e6c7a311445fac5b1d65164efa8e9ad0a33ce375922970a04d0`.
+The candidate is
+`ed052fc64bc1b0b82b0c40ec3a17a294d5af2342b95df50aa1dcd1f5ed74fcc1`;
+its verification companion is
+`6edc8f0c77b44a13b869e129a77ae4884ee9f7535cb725505a80155bcdaec588`.
+Rust 1.100.0, wasm-bindgen 0.2.129, Binaryen 127 and Chrome 157.0.8103.52 match
+the preceding builds. The complete all-feature native suite passes 1,372 tests
+in 111 result groups. Formatting and frozen-source checks pass. Original portable
+native/main-thread/Worker loop controls pass at `[4, 620407472]`; its digest
+includes execution-path counters and changes with the selected host path, while
+its full state assertions remain. Native all-target/all-feature and Wasm Clippy
+with warnings denied pass. The frozen 17-file source identity is checked.
+
+A separate feature-companion game comparison matches all six corresponding
+complete private CPU, effective cache data/tags/LRU, retained IF, instruction
+epoch, full WRAM and next-ready fingerprints. Its FPS is diagnostic only and
+is not used as adoption evidence. Three original production workload comparisons
+use 120 warmup fields and six continuous 60-field paired windows, with all
+corresponding endpoints matching:
+
+| Original workload | Baseline fields/s | Candidate fields/s | Change |
+| --- | ---: | ---: | ---: |
+| CPU loop | 67.995 | 67.769 | −0.33% |
+| Busy sound/video | 52.001 | 51.862 | −0.27% |
+| Normal bitmaps | 108.992 | 109.482 | +0.45% |
+
+These small original-workload differences are observations, not separately
+confirmed gains. Exact-head CI and final review remain required before merging
+the implementation.
+
+Sustained 60 fields/s, broader gameplay/transitions, production audio underflows
+and hardware completion remain unmet. At 25.34 fields/s this scene still needs
+about 2.37 times the throughput to reach 60. Private inputs and raw diagnostics
+remain ignored locally. No required post-merge verification is added.
