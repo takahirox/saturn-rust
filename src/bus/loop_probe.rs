@@ -25,6 +25,8 @@ pub(super) struct LoopProbe {
     pub(super) replayed: std::cell::Cell<u64>,
     pub(super) shortened: std::cell::Cell<u64>,
     pub(super) sound_elisions: std::cell::Cell<u64>,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(super) refresh_clamps: std::cell::Cell<u64>,
     retry: u64,
     last_training_count: u64,
     pub(super) diagnosing: bool,
@@ -365,6 +367,90 @@ fn relocate_cache_lines(cache: &mut crate::cache::Cache) {
     }
     cache.set_control(control);
 }
+// Original control for the refresh-clamped entry with live BSC refresh.
+#[cfg(any(test, feature = "kernel-experiment"))]
+fn verify_refresh_prefix() -> Vec<u32> {
+    let mut automatic = original_machine(false, false, false);
+    let mut reference = original_machine(false, false, false);
+    for machine in [&mut automatic, &mut reference] {
+        // Use the same SDRAM protocol when training and after refresh starts.
+        machine.bus.onchip[0]
+            .write32(0xFFFFFFE0, 0xA55A0001)
+            .unwrap();
+        machine.bus.onchip[0]
+            .write32(0xFFFFFFEC, 0xA55A0048)
+            .unwrap();
+    }
+    automatic.enable_loop_replay(true);
+    for _ in 0..3 {
+        automatic.advance_frame().unwrap();
+        reference.advance_frame().unwrap();
+        assert_eq!(automatic.cpu, reference.cpu);
+        assert_eq!(automatic.slave, reference.slave);
+        assert_eq!(automatic.cpu_ready, reference.cpu_ready);
+        assert_eq!(automatic.clocks, reference.clocks);
+        assert_eq!(automatic.sound_state(), reference.sound_state());
+        assert_eq!(automatic.bus.high, reference.bus.high);
+    }
+    assert!(automatic.loop_replayed_instructions() > 0);
+    automatic.enable_loop_training(false);
+    let before = automatic.loop_replayed_instructions();
+    let before_clamps = automatic
+        .bus
+        .loop_probe
+        .as_ref()
+        .unwrap()
+        .refresh_clamps
+        .get();
+    for machine in [&mut automatic, &mut reference] {
+        machine.bus.onchip[0]
+            .write32(0xFFFFFFF8, 0xA55A0010)
+            .unwrap();
+        machine.bus.onchip[0]
+            .write32(0xFFFFFFF4, 0xA55A0000)
+            .unwrap();
+        machine.bus.onchip[0]
+            .write32(0xFFFFFFF0, 0xA55A0008)
+            .unwrap();
+    }
+    for _ in 0..3 {
+        automatic.advance_frame().unwrap();
+        reference.advance_frame().unwrap();
+        assert_eq!(automatic.cpu, reference.cpu, "refresh-clamped Master");
+        assert_eq!(automatic.slave, reference.slave);
+        assert_eq!(automatic.cpu_ready, reference.cpu_ready);
+        assert_eq!(automatic.clocks, reference.clocks);
+        assert_eq!(automatic.sound_state(), reference.sound_state());
+        assert_eq!(automatic.bus.high, reference.bus.high);
+        assert_eq!(automatic.bus.low, reference.bus.low);
+        #[cfg(test)]
+        for i in 0..2 {
+            automatic.bus.cache[i]
+                .borrow()
+                .assert_same_contents(&reference.bus.cache[i].borrow());
+            automatic.bus.onchip[i].assert_cached_read_bus_matches(&reference.bus.onchip[i]);
+        }
+    }
+    let clamps = automatic
+        .bus
+        .loop_probe
+        .as_ref()
+        .unwrap()
+        .refresh_clamps
+        .get()
+        - before_clamps;
+    assert!(
+        clamps > 0,
+        "exercise the entry while readonly-refresh mode is available"
+    );
+    let replayed = automatic.loop_replayed_instructions() - before;
+    assert!(
+        replayed > 0,
+        "reuse the original proof with live refresh enabled"
+    );
+    vec![replayed as u32, clamps as u32, automatic.clocks as u32]
+}
+
 /// Portable original positive and negative controls for tracing and replay.
 #[cfg(any(test, feature = "kernel-experiment"))]
 pub fn verify() -> Vec<u32> {
@@ -699,6 +785,9 @@ pub fn verify() -> Vec<u32> {
         {
             hash = (hash ^ value).wrapping_mul(16777619);
         }
+    }
+    for value in verify_refresh_prefix() {
+        hash = (hash ^ value).wrapping_mul(16777619);
     }
     vec![4, hash]
 }

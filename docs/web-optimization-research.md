@@ -1603,3 +1603,88 @@ This remains partial work related to #138 and #17. Sustained 60 fields/s,
 representative broader gameplay/transitions, production audio underflows and
 hardware-completion acceptance remain open. Private inputs and raw diagnostics
 stay local. No required post-merge verification is added.
+
+
+### Reusing a guarded prefix before refresh (#138 continuation)
+
+The guarded Master-loop engine above is merged in [PR #156](https://github.com/takahirox/saturn-rust/pull/156)
+as `019b4f41693c17da10cd7cea63a760787a357f9c`. Its head
+`c364b8ee5bc009beebdc8c322b9092d692b52e4d` passes
+[CI 43674883895](https://github.com/takahirox/saturn-rust/actions/runs/43674883895):
+1,372 native tests in 111 result groups, Wasm, both browser shards and the aggregate
+revision/artifact gate. The full diff received an author self-review, not an
+independent approval. This checkpoint does not complete #138 or #17.
+
+The next candidate addresses a specific admission loss. Existing cache-only
+execution can cross a refresh request when refresh interrupts are disabled. That
+wider read-only mode previously rejected every long-template attempt, even when
+its selected stores and CPU retirements would finish before the ordinary BSC
+horizon. This made the optimization depend on which instruction was decoded at
+batch entry.
+
+The candidate temporarily bounds the attempt by the earlier of the existing
+batch end and `normal_end`. A rejected attempt restores the original wider end.
+A successful one keeps the strict end and uses ordinary hardware catch-up. It
+continues to reject changed cache inputs, CPU/pipeline state and BSC store timing.
+It neither models stores across refresh nor widens an observer deadline.
+
+An original control trains a resident SDRAM write loop with refresh disabled,
+then disables retraining and enables the real refresh timer (divide by four,
+compare 16). Full CPU/Slave state, caches, WRAM, BSC timing, clocks and Sound agree
+with ordinary execution. A test/diagnostic-only counter requires actual use of
+the newly admitted path. Restoring the old blanket rejection fails that positive
+control. Removing the strict horizon instead fails the on-chip
+`clocks <= clocks_to_event()` assertion. Both deliberate mutations are restored
+exactly before the candidate is built.
+
+The restored native controls and final Chrome main-thread/Worker controls agree
+at `[4, 1988463232]`. Native all-target/all-feature and Wasm Clippy with warnings
+denied, formatting and focused controls pass. The production package contains no
+new counter or UI setting. A comment-only cleanup rebuild produces byte-identical
+production and feature packages.
+
+The first final-production comparison against PR #156 uses the same authorized
+local game/controller schedule, both variants prepared through field 3600 before
+timing, six alternating continuous 80-field windows through field 4080, Canvas
+presentation and PCM draining. It improves **22.498 → 24.645 fields/s (+9.54%)**.
+Every paired window improves (+9.07% to +10.57%), and corresponding exposed
+CPU/Slave, clock, PCM and pixel endpoints agree. Candidate p95 ranges from
+41.0 to 41.8 ms and p99 from 41.7 to 43.3 ms. Host queue drops are zero;
+AudioWorklet underflows are not measured.
+
+The baseline production Wasm is
+`65c1d31bbcef21463cba7ee89c6588e9cbbe4ac31c534ebbe7710c48734e1177`.
+The candidate is
+`7a0c9e4c2a124e6c7a311445fac5b1d65164efa8e9ad0a33ce375922970a04d0`;
+its verification companion is
+`2104da5ba3c185be28a7e66dfb7d665ce3f4c0b04a25a252946d94eda77b7b1c`.
+Toolchain and Chrome versions match the preceding production comparison. No local
+builds/tests/profiles overlap browser preparation or throughput.
+
+A fresh browser reverses initialization, preparation and first timing order. It
+confirms **22.511 → 24.344 fields/s (+8.14%)**, with all six paired windows
+improving (+7.24% to +9.03%) and exposed endpoints agreeing. Candidate p95 ranges
+from 41.3 to 43.0 ms and p99 from 41.8 to 43.3 ms. All 12 production pairs across
+the two comparisons improve. Rates from different runs are not combined as one
+measured speedup.
+
+Original workloads use 120 warmup fields and six alternating continuous 60-field
+windows with the same production packages and Canvas/PCM handling. Corresponding
+exposed endpoints agree in every case:
+
+| Original workload | Baseline fields/s | Candidate fields/s | Change |
+| --- | ---: | ---: | ---: |
+| Short CPU/store loop | 68.150 | 69.016 | +1.27% |
+| Busy sound/video | 52.444 | 52.340 | −0.20% |
+| Normal bitmaps | 110.572 | 110.504 | −0.06% |
+
+These are workload observations; the CPU-loop gain is not attributed to long
+period reuse. The final source passes 1,372 all-feature native tests in 111 result
+groups, formatting, the registered fixture inventory and native/Wasm Clippy.
+The production packages are selected with the stated workload tradeoffs.
+Exact-head native/Wasm/browser CI and review are required before merge; their
+final results are recorded in the PR.
+
+Sustained 60 fields/s, broader gameplay/transitions, production audio underflows
+and hardware completion remain unmet. Private inputs and raw diagnostics stay
+local. No required post-merge verification is added.
