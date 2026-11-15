@@ -2390,3 +2390,65 @@ associated PR records their actual outcomes before merge. Diagnostic timings
 are excluded from adoption evidence. This is a small measured improvement, not
 sustained real-time execution. #138/#17 remain open; private inputs and raw
 artifacts remain ignored locally. No required post-merge verification is added.
+
+
+## Retain blocked normal-display requests until their real grant
+
+Measurements use Rust 1.100.0, wasm-bindgen 0.2.129, Binaryen 127 and
+Chrome 157.0.8103.52, with the existing production build flags.
+
+Based on main `46d3f831d6c065f9c4af8d135ac74bbd009bed33`, normal VDP2
+acquisition repeatedly reconstructs an address after its earlier dependencies
+have been captured but its bank or cycle command cannot yet grant a read.
+The increment retains only that request's pixel, address and source group for
+the same layer/path cursor. Every retry still checks current port ownership;
+VRAM words are read only at the original grant. Successful grants discard the
+request. Register writes, line-table reloads, reconfiguration and resets discard
+pending address metadata without discarding historical captured values.
+
+Two original guests compare every slot's physical read trace, captured words
+and samples against the literal decoder. One changes the name and character
+VRAM values while requests are blocked and requires the new values at T3/T7.
+The other changes scroll before the name grant and requires the new address.
+Both require actual pending-request reuse. Making invalidation a no-op fails
+the latter oracle; exact source restoration passes both. All 908 native library
+tests, native default/all-feature and Wasm Clippy, formatting and the existing
+browser main/Worker verifier pass. Its original digest remains `[4,2337474100]`.
+
+Default production timing uses one Emulator per fresh owned Chrome process,
+identical authorized media/input, 3600 warmup fields and six continuous 80-field
+Canvas/PCM windows. No local build, test or profile overlaps any owned browser.
+The initial A/B/B/A comparison is followed by fresh reverse and forward pairs:
+
+| Pair | Main fields/s | Candidate fields/s | Change |
+| --- | ---: | ---: | ---: |
+| Initial A1/B1 | 27.9127 | 27.8909 | -0.078% |
+| Initial A2/B2, reverse order | 27.2052 | 27.7728 | +2.086% |
+| Fresh A3/B3, reverse order | 27.5933 | 27.7876 | +0.704% |
+| Fresh A4/B4, forward order | 27.8079 | 28.0467 | +0.859% |
+
+The initial reverse pair includes a slow final baseline window. Independently,
+all twelve windows of the later opposite-order pairs improve. Summing elapsed
+time over 1920 fields per package gives **27.6271 to 27.8741 fields/s
+(+0.894%)**. Twenty of twenty-four paired windows improve; all corresponding
+window digests and all eight final states, pixels and PCM agree. Candidate p95
+is 36.2–37.3 ms and p99 is 36.7–38.9 ms. Host queue drops are zero; these are
+not measurements of AudioWorklet underflows.
+
+Production baseline Wasm:
+`489775841b0989d81332de5e821f704cff532f02d363856ed77ebbc7b041441e`.
+Candidate:
+`9f2400dc805ae370cb2630ef92b623a16fc2f623f543c37e096144abe5c44905`.
+Verification companion:
+`6a78222a56c07705628b27d3e1313143d38fbf1ec1c9126f4f146f2268619224`.
+A read-only configuration diagnostic outside timing identifies NBG1 RGB555 tile
+acquisition in this interval and preserves all 22 guest-state hash words and
+the ordinary endpoint. This is not a bitmap-only optimization.
+
+Complete private-state differential windows, fresh main-story comparisons,
+original workload tradeoffs and exact-head CI/review are pending at this
+checkpoint; the PR must record their actual outcomes before merge. Diagnostic
+timings are excluded. Sustained 60 fields/s, representative broader real-time
+play and production audio delivery remain unmet. Related to #138 and #17;
+leave both open. Private inputs and raw artifacts remain local. No required
+post-merge verification is added.
