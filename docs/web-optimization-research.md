@@ -2313,3 +2313,80 @@ about 2.18 times this candidate throughput; broader gameplay/transitions,
 production AudioWorklet underflows and hardware completion remain unmet.
 Issues #138/#17 remain open. Private inputs/raw diagnostics stay ignored locally.
 No required post-merge verification is added.
+
+
+### Indexed timelines merged and sparse Sound IRQ trial rejected (#138)
+
+[PR #162](https://github.com/takahirox/saturn-rust/pull/162) is merged as
+`bdd35af1e1aa53abee0dd7e3f812c736f2418be4`. Final head
+`75ced8178383c3c7c5f229f9abbf881dd5f3b0bd` passes
+[CI 43712102970](https://github.com/takahirox/saturn-rust/actions/runs/43712102970):
+1,375 native tests / 111 groups, native/Wasm Clippy, production Wasm, browser
+41 + 33 groups, 13 runner/gate tests and aggregate revision/artifact validation.
+All six private-state game windows match. Original CPU/busy/normal observations
+are +1.223% / −0.045% / +0.488%, with all corresponding endpoints matching.
+Author COMMENT self-review has no blocking findings; no independent approval is
+asserted. Sustained real-time, broader gameplay and AudioWorklet underflows remain
+unmet; #138/#17 stay open.
+
+A sparse-pending-bit Sound interrupt-level lookup is **rejected**. An independent
+literal scan oracle covers 1,638,400 combinations of pending bits, enables and
+routing, including the shared route for sources 7–10 and ignored high bits.
+Native library (905 tests), native/Wasm Clippy and native/main/Worker original
+controls pass. Standalone production A/B/B/A gives 27.5768 → 27.5998 fields/s
+(+0.083%), with opposite pair signs (+0.808% / −0.632%). All six windows of the
+second pair regress. Every window hash and all four final states match, but no
+reproducible speedup is established. This runtime is not included below; no
+further full-suite/CI adoption work is spent on it.
+
+### Compact exact cache replacement summaries (#138)
+
+Recorded replay applied every observed cache touch again, even when a later touch
+of the same set/way overwrote all of its replacement bits. Compile each phase's
+ordered last occurrences once. A selected prefix uses only occurrences at or
+after its starting touch index, preserving their original order and applying the
+existing runtime way mapping. Both full and shortened replay use this summary.
+The actual cache guards, data/store effects, retained IF, instruction epochs,
+BSC protocol, Sound/peer selection and hardware horizons remain unchanged.
+
+The original algebra control checks every prefix/suffix of an 18-touch sequence,
+all 24 way permutations and all 64 initial replacement-bit states against the
+literal touch sequence, across two sets. The mapped replacement state agrees.
+All 905 local native library tests, formatting, native all-target/all-feature and
+Wasm Clippy pass. Native/main-thread/Worker original controls agree at
+`[4, 2337474100]`. The frozen 22-file source identity and isolated worktree target
+match the production and verification artifacts.
+
+Production comparison uses one Emulator per fresh owned Chrome process, identical
+authorized media and controller input, 3600 warmup fields and six continuous
+80-field Canvas/PCM windows through 4080. No local build, test or profile overlaps
+preparation or timing. Initial A/B/B/A:
+
+| Order | Package | Fields/s |
+| --- | --- | ---: |
+| A1 | Main baseline | 27.5444 |
+| B1 | Compact replacement summaries | 27.6534 |
+| B2 | Compact replacement summaries | 27.3802 |
+| A2 | Main baseline | 27.2359 |
+
+The initial aggregate is 27.3893 → 27.5162 (+0.463%). An independent reverse B/A
+pair gives 27.5264 / 27.2963 (+0.843%). All three pair gains are positive
+(+0.396%, +0.530%, +0.843%). Summing elapsed time over 1,440 fields per package
+gives **27.3582 → 27.5196 fields/s (+0.590%)**. Seventeen of eighteen windows
+improve; the other is effectively flat at −0.017%. Every corresponding window
+hash and all six final states agree. Candidate p95 spans 36.6–37.9 ms and p99
+37.0–38.6 ms. Host queue drops are zero, not measured AudioWorklet underflows.
+
+Baseline production Wasm:
+`295d2cbdcdd6c0ac203fbf6ee136589dc063525e759287a1b141d343764a6f2e`.
+Candidate production:
+`489775841b0989d81332de5e821f704cff532f02d363856ed77ebbc7b041441e`.
+Verification companion:
+`2512b3c5f477828a479dfe573e708e8774634b1efb5a10b497d354190eecd13c`.
+Rust 1.100.0, wasm-bindgen 0.2.129, Binaryen 127 and Chrome 157.0.8103.52 match
+the preceding comparisons. Complete-private-state game windows, original workload
+tradeoffs, exact-head CI and final review remain pending at this checkpoint; the
+associated PR records their actual outcomes before merge. Diagnostic timings
+are excluded from adoption evidence. This is a small measured improvement, not
+sustained real-time execution. #138/#17 remain open; private inputs and raw
+artifacts remain ignored locally. No required post-merge verification is added.

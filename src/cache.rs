@@ -36,6 +36,94 @@ impl CacheTouch {
         lru[set] = Cache::touch_replacement(lru[set], usize::from(self.way));
     }
 }
+/// Keep the last touch of each set/way, in its original order. A later
+/// identical touch overwrites every replacement bit changed by an earlier one.
+pub(crate) fn compact_touch_prefixes(
+    touches: &[CacheTouch],
+    ends: impl IntoIterator<Item = usize>,
+) -> Vec<Vec<(usize, CacheTouch)>> {
+    let mut prefixes = Vec::new();
+    let mut summary = Vec::new();
+    let mut cursor = 0;
+    for end in ends {
+        for (index, &touch) in touches.iter().enumerate().take(end).skip(cursor) {
+            if let Some(at) = summary.iter().position(|&(_, old)| old == touch) {
+                summary.remove(at);
+            }
+            summary.push((index, touch));
+        }
+        prefixes.push(summary.clone());
+        cursor = end;
+    }
+    prefixes
+}
+#[cfg(test)]
+mod compact_touch_tests {
+    use super::*;
+
+    #[test]
+    fn every_prefix_suffix_and_way_permutation_preserves_replacement_bits() {
+        let keys = [
+            (0, 0),
+            (0, 1),
+            (0, 0),
+            (1, 3),
+            (0, 2),
+            (1, 1),
+            (0, 0),
+            (0, 3),
+            (1, 3),
+            (1, 0),
+            (0, 2),
+            (0, 1),
+            (1, 2),
+            (1, 0),
+            (0, 3),
+            (1, 2),
+            (1, 1),
+            (0, 0),
+        ];
+        let touches: Vec<_> = keys
+            .into_iter()
+            .map(|(set, way)| CacheTouch { set, way })
+            .collect();
+        let prefixes = compact_touch_prefixes(&touches, 0..=touches.len());
+        assert!(prefixes.last().unwrap().len() < touches.len());
+        for a in 0..4 {
+            for b in 0..4 {
+                for c in 0..4 {
+                    for d in 0..4 {
+                        let permutation = [a, b, c, d];
+                        if (0..4).any(|i| (i + 1..4).any(|j| permutation[i] == permutation[j])) {
+                            continue;
+                        }
+                        let mut ways = [u8::MAX; 256];
+                        ways[..4].copy_from_slice(&permutation);
+                        ways[4..8].copy_from_slice(&permutation);
+                        for first in 0..=touches.len() {
+                            for last in first..=touches.len() {
+                                let compact = &prefixes[last];
+                                let compact =
+                                    &compact[compact.partition_point(|&(at, _)| at < first)..];
+                                for state in 0..64 {
+                                    let mut expected = [state; 64];
+                                    let mut actual = expected;
+                                    for touch in &touches[first..last] {
+                                        assert!(touch.apply_mapped(&mut expected, &ways));
+                                    }
+                                    for (_, touch) in compact {
+                                        assert!(touch.apply_mapped(&mut actual, &ways));
+                                    }
+                                    assert_eq!(actual, expected);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 pub(crate) struct Cache {
     loop_touches: Option<Vec<CacheTouch>>,
     control: u8,

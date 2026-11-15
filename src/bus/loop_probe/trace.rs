@@ -49,10 +49,21 @@ pub(in crate::bus) struct CapturedLoop {
     pub(in crate::bus) complete: bool,
     pub(in crate::bus) header_checks: Vec<[u32; 9]>,
     pub(in crate::bus) touches: Vec<crate::cache::CacheTouch>,
+    compact_touches: Vec<Vec<(usize, crate::cache::CacheTouch)>>,
     pub(in crate::bus) by_pc: BTreeMap<u32, Vec<usize>>,
     pub(in crate::bus) multiplier_constant: bool,
     pub(in crate::bus) compiled: Vec<Vec<compiled::Guard>>,
     pub(in crate::bus) timeline: Option<timeline::Timeline>,
+}
+impl CapturedLoop {
+    pub(in crate::bus) fn replay_touches(
+        &self,
+        first: usize,
+        last: usize,
+    ) -> &[(usize, crate::cache::CacheTouch)] {
+        let touches = &self.compact_touches[last];
+        &touches[touches.partition_point(|&(at, _)| at < self.phases[first].touch_end)..]
+    }
 }
 pub(super) struct Capture {
     data: CapturedLoop,
@@ -244,6 +255,7 @@ impl Machine {
                             complete: false,
                             header_checks: Vec::new(),
                             touches: Vec::new(),
+                            compact_touches: Vec::new(),
                             by_pc: BTreeMap::new(),
                             multiplier_constant: false,
                             compiled: Vec::new(),
@@ -447,6 +459,10 @@ impl Machine {
         }
         data.compiled = data.compile().unwrap_or_default();
         if !data.compiled.is_empty() {
+            data.compact_touches = crate::cache::compact_touch_prefixes(
+                &data.touches,
+                data.phases.iter().map(|phase| phase.touch_end),
+            );
             data.timeline = timeline::Timeline::new(
                 data.phases
                     .iter()
