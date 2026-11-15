@@ -1398,11 +1398,15 @@ impl Bus {
         let mut solo_checkpoint: Option<Cpu> = None;
         while retired < count && memory.clock.get() < end {
             if retired == 0
-                && readonly_refresh.is_none()
                 && let Some(probe) = &self.loop_probe
                 && probe.replaying
                 && let Some(data) = &probe.captured
             {
+                // Reuse a store-bearing period only before the ordinary BSC
+                // horizon, even if cache-only execution may cross refresh.
+                let original_end = memory.end.get();
+                let loop_end = original_end.min(normal_end);
+                memory.end.set(loop_end);
                 let mut last_reference = points.last_reference;
                 if let Some(replayed) = memory.replay_loop(
                     data,
@@ -1424,6 +1428,12 @@ impl Bus {
                         allowed
                     },
                 ) {
+                    #[cfg(any(test, feature = "kernel-experiment"))]
+                    if readonly_refresh.is_some() {
+                        probe.refresh_clamps.set(probe.refresh_clamps.get() + 1);
+                    }
+                    readonly_refresh = None;
+                    end = loop_end;
                     cpu = replayed.cpu;
                     ready = replayed.ready;
                     retired_at = replayed.at;
@@ -1463,6 +1473,7 @@ impl Bus {
                     replay_key = Some(replayed.key);
                     break;
                 }
+                memory.end.set(original_end);
             }
             let Some(op) = cpu
                 .decoded_opcode()
