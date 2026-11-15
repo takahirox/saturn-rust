@@ -2186,3 +2186,130 @@ Sustained 60 fields/s still needs about 2.23 times this throughput. Broader game
 transitions, production audio underflows and hardware completion remain unmet.
 Issues #138 and #17 remain open. Private inputs, source snapshots and raw evidence
 remain ignored locally. No required post-merge verification is added.
+
+
+### Cache-version increment merged and subsequent work counts (#138)
+
+[PR #161](https://github.com/takahirox/saturn-rust/pull/161) is merged as
+`a5d849ad65a15fceae5a6cc9621b7d74a71bc454`. Final head
+`4344651f1177c44674910bbabcff9b671bec6e1a` passes
+[CI 43703869224](https://github.com/takahirox/saturn-rust/actions/runs/43703869224):
+1,373 native tests / 111 groups, Wasm, both browser shards (41 + 33 groups),
+13 runner/gate tests and aggregate revision/artifact validation. All local
+production/private-state/original-workload comparisons above pass. Author COMMENT
+self-review has no blocking findings; no independent approval is asserted.
+The adopted matched scene result is 26.539 → 26.909 fields/s (+1.395%).
+
+Two further runtime trials are rejected, with every corresponding window hash
+and all final states matching:
+
+| Rejected trial | Baseline fields/s | Candidate fields/s | Pair changes |
+| --- | ---: | ---: | --- |
+| Analytic Sound-CPU RAM-wait accounting | 26.935 | 26.824 | −1.159% / +0.340% |
+| Indexed timeline with whole-observation gap bound | 27.223 | 27.331 | +1.657% / −0.826% |
+
+The former is −0.410% overall; the latter is +0.399% with opposite pair signs.
+Neither establishes a reproducible production gain. Both pass 904 native library
+tests, native/Wasm Clippy and original native/main-thread/Worker controls at
+`[4, 2337474100]`. The Sound prototype additionally compares complete private
+M68k/SCSP/RAM/transaction/controller/clock state against the old one-clock wait
+scheduler at partial/equal edges, IRQ7, reset and checkpoint/rollback boundaries.
+Two deliberate mutations fail that oracle; exact source is restored. No further
+full-suite/CI adoption work is spent on either rejected runtime.
+
+A separate feature-only Sound observer records host attempts, retaining counters
+across lookahead rollback. Its FPS and time shares are excluded. Over fields
+4080–4160 of the same scene, it counts:
+
+| Host event/category | Count |
+| --- | ---: |
+| Domain advancement calls | 1,437,299 |
+| Scheduler turns, including no-event exits | 14,259,395 |
+| Selected SCSP service edges | 7,548,344 |
+| CPU RAM-stall ticks | 471,826 |
+| CPU advancement events | 4,804,362 |
+| Stopped before CPU advancement | 0 |
+| Stopped with empty journal before/after advancement | 0 |
+| Halted before CPU advancement | 0 |
+
+Categories overlap and include replayed lookahead work; these are neither time
+proportions nor unique physical events. Every common exposed guest endpoint agrees with
+the uninstrumented production measurement of the same interval. Main/Worker
+controls and native/Wasm Clippy pass. RAM stalls are only 3.31% of turns, and
+STOP/HALT has no target here. Prioritize event-selection/replay work over another
+RAM-wait-only or stopped-CPU optimization. A simpler inner-wait variant is prepared
+but unmeasured and unadopted.
+
+The pinned reference SCSP source itself lists cycle-level granularity and
+PCM/DSP-induced 68k waits as future work. This bounded source finding does not
+establish the absence of all timing in the reference or quantify its share of
+the native 189-fields/s gap. Preserve our existing physical Sound memory and IRQ
+oracles while reducing host scheduling work.
+[Reference TODO](https://github.com/libretro/beetle-saturn-libretro/blob/30f4c12072d265c9e553dcb29386059114945dea/mednafen/ss/scsp.inc#L22).
+No reference source is copied into the Rust core.
+
+### Indexed retirement selection with exact gap queries (#138)
+
+Guarded replay previously walked full CPU phase records to select a retirement
+endpoint, copied each selected timestamp into an owned vector, then scanned that
+vector to prove the Sound retirement-gap bound. Build compact chronological
+metadata once from the actual observation: timestamp values and the last index
+before each first interrupt-mask change. Binary selection preserves the existing
+count/end/mask limits; the old per-point predicate remains where needed.
+
+Successful replay borrows its timestamp slice only after the ordinary-discovery
+loop finishes. Owned/repeated retirement backends remain. Sound uses a precomputed
+range-maximum table of adjacent timestamp gaps, plus the first retirement's
+actual distance from the live board clock. This returns the same selected gap
+without scanning each point. The literal rule remains for a first retirement
+preceding the board clock. Invalid/nonchronological/overflowing metadata rejects
+that replay. CPU/cache/BSC/store/MDU/peer proofs, LRU and retained IF are unchanged;
+no execution quantum or hardware horizon is widened.
+
+Two new original controls compare every indexed count/time/mask boundary against
+the old chronological scan, every selected gap against literal adjacent pairs,
+and all borrowed retirement indices/through/prefix/peer-alignment results against
+materialized vectors. Duplicate timestamps and empty selections are included.
+Original portable controls remain `[4, 2337474100]` in native/main/Worker. Final
+local checks pass **1,375 native tests / 111 groups**, formatting, native
+all-target/all-feature and Wasm Clippy with warnings denied. Frozen 22-file source
+identity and isolated build directories match the measured artifacts.
+
+Initial production A/B/B/A uses one Emulator per fresh owned Chrome process,
+identical authorized media/controller input, 3600 warmup fields and six continuous
+80-field Canvas/PCM windows through 4080, with no overlapping local builds/tests/
+profiles:
+
+| Order | Package | Fields/s |
+| --- | --- | ---: |
+| A1 | Adopted main | 27.340 |
+| B1 | Exact gap queries | 27.578 |
+| B2 | Exact gap queries | 27.460 |
+| A2 | Adopted main | 26.722 |
+
+Summing elapsed time over 960 fields per package gives **27.027 → 27.519 fields/s
+(+1.819%)**. Both comparisons improve (+0.873% / +2.762%); all twelve windows
+improve (+0.405%–+3.405%). Every corresponding window hash and all four final
+states agree. Baseline production Wasm:
+`d8325c1f1a554163c8b79a4340061f9091d808debe0fce406dcf902ece913002`.
+Candidate:
+`295d2cbdcdd6c0ac203fbf6ee136589dc063525e759287a1b141d343764a6f2e`.
+Verification companion:
+`50f72f77aa2dcd561fdce5ee1f229948ac91688c59a6850fa88f8259d9707679`.
+Rust 1.100.0, wasm-bindgen 0.2.129, Binaryen 127 and Chrome 157.0.8103.52 match
+the preceding comparisons.
+
+An independent reverse B/A pair measures 27.462 / 27.183 fields/s (+1.027%),
+with all six windows improving (+0.385%–+1.560%). Its window hashes and final
+states also agree with the initial comparison. Across all three pairs, summing
+elapsed time over 1,440 fields per package gives **27.079 → 27.500 fields/s
+(+1.555%)**. All eighteen windows improve. Candidate p95 spans 36.9–37.6 ms and
+p99 37.3–39.4 ms; host queue drops are zero, not measured AudioWorklet underflows.
+
+The six complete-private-state game windows, original workload tradeoffs,
+exact-head CI and final review remain pending at this checkpoint. The associated PR records their actual outcomes before merge.
+Diagnostic-feature timings remain excluded. Sustained 60 fields/s still needs
+about 2.18 times this candidate throughput; broader gameplay/transitions,
+production AudioWorklet underflows and hardware completion remain unmet.
+Issues #138/#17 remain open. Private inputs/raw diagnostics stay ignored locally.
+No required post-merge verification is added.

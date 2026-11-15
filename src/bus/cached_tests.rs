@@ -358,6 +358,7 @@ fn compressed_retirement_cycles_preserve_every_sound_cutoff_position() {
     let mut points = Retirements {
         points: [5, 9, 11, 14].map(|at| Retirement { at }).to_vec(),
         repeated: Some((4, 3, 9, 7)),
+        recorded: None,
         last_reference: 0,
     };
     let mut literal = vec![5, 9, 11, 14];

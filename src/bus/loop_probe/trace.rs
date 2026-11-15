@@ -3,6 +3,7 @@ use super::*;
 use crate::bus::{Bus, Processor};
 mod compiled;
 mod dependencies;
+mod timeline;
 
 pub(in crate::bus) struct Phase {
     pub(in crate::bus) at: u64,
@@ -51,6 +52,7 @@ pub(in crate::bus) struct CapturedLoop {
     pub(in crate::bus) by_pc: BTreeMap<u32, Vec<usize>>,
     pub(in crate::bus) multiplier_constant: bool,
     pub(in crate::bus) compiled: Vec<Vec<compiled::Guard>>,
+    pub(in crate::bus) timeline: Option<timeline::Timeline>,
 }
 pub(super) struct Capture {
     data: CapturedLoop,
@@ -245,6 +247,7 @@ impl Machine {
                             by_pc: BTreeMap::new(),
                             multiplier_constant: false,
                             compiled: Vec::new(),
+                            timeline: None,
                         },
                         pending: None,
                         executing: 0,
@@ -443,6 +446,13 @@ impl Machine {
             cursor = phase.touch_end;
         }
         data.compiled = data.compile().unwrap_or_default();
+        if !data.compiled.is_empty() {
+            data.timeline = timeline::Timeline::new(
+                data.phases
+                    .iter()
+                    .map(|phase| (phase.at, phase.cpu.state().sr)),
+            );
+        }
         let first = &data.phases[0];
         let last = data.phases.last().unwrap();
         let missing = data.stores.iter().filter(|s| s.requested.is_none()).count();
