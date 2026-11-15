@@ -277,6 +277,13 @@ impl Machine {
         &mut self,
         turns: u32,
     ) -> Result<Vec<u32>, MachineError> {
+        self.capture_loop_trace_with_overlap(turns, false)
+    }
+    pub(super) fn capture_loop_trace_with_overlap(
+        &mut self,
+        turns: u32,
+        overlap: bool,
+    ) -> Result<Vec<u32>, MachineError> {
         if let Some(error) = &self.fault {
             return Err(error.clone());
         }
@@ -309,6 +316,7 @@ impl Machine {
         else {
             return Ok(vec![0]);
         };
+        let mut first_complete = None;
         for _ in 0..turns {
             self.loop_trace_turn(None)?;
             let probe = self.bus.loop_probe.as_ref().unwrap();
@@ -355,8 +363,27 @@ impl Machine {
                     && data.unsupported == 0
                     && dependencies::repeats(data)
                 {
-                    data.complete = true;
-                    break;
+                    let instructions = data.phases.len() - 1;
+                    let first_length = first_complete.map(|(n, _, _, _, _)| n);
+                    if !overlap
+                        || data.phases.len() <= 32
+                        || (first_length.is_none()
+                            && (instructions as u64).saturating_mul(2)
+                                > expected.saturating_mul(3).min(4096))
+                        || first_length.is_some_and(|n| data.phases.len() > n)
+                    {
+                        data.complete = true;
+                        break;
+                    }
+                    // Keep the first fully validated observation as a fallback.
+                    // Continue only private training, recording real effects.
+                    first_complete.get_or_insert((
+                        data.phases.len(),
+                        data.reads.len(),
+                        data.stores.len(),
+                        data.header_checks.len(),
+                        self.bus.cache[0].borrow().loop_touch_count(),
+                    ));
                 }
             }
             if last.cpu.state().exceptions != exceptions
@@ -375,6 +402,19 @@ impl Machine {
             .take()
             .unwrap();
         let mut data = capture.data;
+        let mut truncated_touches = None;
+        if !data.complete
+            && let Some((phases, reads, stores, headers, touches)) = first_complete
+        {
+            data.phases.truncate(phases);
+            data.reads.truncate(reads);
+            data.stores.truncate(stores);
+            data.header_checks.truncate(headers);
+            data.external_reads = 0;
+            data.unsupported = 0;
+            data.complete = true;
+            truncated_touches = Some(touches);
+        }
         self.bus.loop_probe.as_ref().unwrap().tracing.set(false);
         data.multiplier_constant = data
             .phases
@@ -387,6 +427,9 @@ impl Machine {
                 .push(index);
         }
         data.touches = self.bus.cache[0].borrow_mut().end_loop_touches();
+        if let Some(touches) = truncated_touches {
+            data.touches.truncate(touches);
+        }
         let mut lru: [u8; 64] = data.phases[0].cache[1..65].try_into().unwrap();
         let mut cursor = data.phases[0].touch_end;
         for phase in data.phases.iter().skip(1) {

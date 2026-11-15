@@ -27,6 +27,8 @@ pub(super) struct LoopProbe {
     pub(super) sound_elisions: std::cell::Cell<u64>,
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub(super) refresh_clamps: std::cell::Cell<u64>,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(super) longest_replay: std::cell::Cell<u32>,
     retry: u64,
     last_training_count: u64,
     pub(super) diagnosing: bool,
@@ -611,6 +613,16 @@ pub fn verify() -> Vec<u32> {
                 automatic.loop_replayed_instructions() > 0,
                 "normal API learns a private loop"
             );
+            let learned = automatic.bus.loop_probe.as_ref().unwrap();
+            assert_eq!(
+                learned.captured.as_ref().unwrap().phases.len() - 1,
+                68,
+                "private training observes two literal 34-instruction periods"
+            );
+            assert!(
+                learned.longest_replay.get() > 34,
+                "publish a proven prefix across the first observed period end"
+            );
             hash = (hash ^ automatic.loop_replayed_instructions() as u32).wrapping_mul(16777619);
             traced.enable_loop_replay(true);
             traced.enable_loop_training(false);
@@ -843,6 +855,46 @@ mod tests {
             automatic.bus.cached_cycle_skipped > 0,
             "retain the existing short-cycle folder"
         );
+    }
+    #[test]
+    fn incomplete_second_period_keeps_the_first_observation() {
+        let mut single = super::original_machine(false, false, false);
+        let mut overlap = super::original_machine(false, false, false);
+        for machine in [&mut single, &mut overlap] {
+            machine.bus.loop_probe.as_mut().unwrap().best = Some((super::super::HIGH_WRAM, 34));
+        }
+        // A trace turn retires at most one Master instruction. This permits
+        // the literal 34-instruction period but cannot complete two periods.
+        let expected = single.capture_loop_trace_bounded(67).unwrap();
+        assert_eq!(&expected[..2], &[1, 34]);
+        let truncated = overlap.capture_loop_trace_with_overlap(67, true).unwrap();
+        assert_eq!(truncated, expected);
+        let a = single
+            .bus
+            .loop_probe
+            .as_ref()
+            .unwrap()
+            .captured
+            .as_ref()
+            .unwrap();
+        let b = overlap
+            .bus
+            .loop_probe
+            .as_ref()
+            .unwrap()
+            .captured
+            .as_ref()
+            .unwrap();
+        assert_eq!(a.phases.len(), b.phases.len());
+        assert_eq!(a.touches.len(), b.touches.len());
+        for (a, b) in a.phases.iter().zip(&b.phases) {
+            assert_eq!(a.cpu, b.cpu);
+            assert_eq!(a.cache, b.cache);
+            assert_eq!(
+                (a.at, a.ready, a.retained, a.epoch, a.touch_end),
+                (b.at, b.ready, b.retained, b.epoch, b.touch_end)
+            );
+        }
     }
     #[test]
     fn shared_original_probe_and_negative_controls() {
