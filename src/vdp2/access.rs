@@ -23,7 +23,7 @@ impl Vdp2 {
             bank
         }
     }
-    fn command_slots(&self, bank: usize, command: u16) -> u8 {
+    pub(super) fn command_slots(&self, bank: usize, command: u16) -> u8 {
         let mut cache = self.access_cache.borrow_mut();
         let masks = cache.commands.get_or_insert_with(|| {
             let mut masks = [[0; 16]; 4];

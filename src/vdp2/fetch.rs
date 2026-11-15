@@ -61,6 +61,10 @@ pub(crate) struct DisplayFetch {
     cursor: [[usize; 3]; 4],
     retained: [[Option<Acquired>; 3]; 4],
     pending: [[Option<PendingRequest>; 3]; 4],
+    quiet_from: u32,
+    quiet_until: u32,
+    #[cfg(test)]
+    quiet_hits: u64,
     #[cfg(test)]
     pending_hits: u64,
     edge: Option<(u64, u16, u32)>,
@@ -72,6 +76,7 @@ pub(crate) struct DisplayFetch {
 impl DisplayFetch {
     pub(super) fn clear_pending(&mut self) {
         self.pending = [[None; 3]; 4];
+        self.quiet_until = 0;
     }
 
     pub(super) fn reset(&mut self) {
@@ -380,12 +385,17 @@ impl Vdp2 {
 
     pub(super) fn reconfigure_display(&mut self) {
         self.invalidate_planned_samples();
+        let alternating = self.word(0) & 6 == 6;
         let fetch = &mut self.display_fetch;
         for layer in 0..4 {
             let unfinished = fetch
                 .samples
                 .iter()
-                .position(|p| p[layer].is_none())
+                .enumerate()
+                // ST-058 §2.1: the other screen owns alternating dots in
+                // exclusive high resolution. Their empty samples must not
+                // rewind this screen across its already captured operands.
+                .position(|(x, p)| (!alternating || layer == x & 1) && p[layer].is_none())
                 .unwrap_or(fetch.samples.len());
             fetch.cursor[layer] = [unfinished; 3];
         }
@@ -576,6 +586,20 @@ impl Vdp2 {
         {
             self.display_fetch.literal_addresses = !omit_unused;
         }
+        // Keep every physical callback and its duplicate-edge marker. After
+        // settling the available operands, nothing can advance before the
+        // next grant or horizon, unless a control/latch change invalidates it.
+        if omit_unused
+            && phase > self.display_fetch.quiet_from
+            && phase < self.display_fetch.quiet_until
+        {
+            self.display_fetch.edge = Some(edge);
+            #[cfg(test)]
+            {
+                self.display_fetch.quiet_hits += 1;
+            }
+            return;
+        }
         let width = self.dimensions().0;
         {
             let fetch = &mut self.display_fetch;
@@ -595,6 +619,8 @@ impl Vdp2 {
         // Table3.3 defines an eight-dot source group. Keep the existing
         // exclusive-monitor output multiplexing in the coordinate decoder.
         let horizon = (((phase / (count * clocks) + 1) * 8) as usize).min(width);
+        let mut complete = true;
+        let mut next_grant = u32::MAX;
         self.beam_rendering = true;
         let mut used = [false; 4];
         // Cell scrolling feeds names, which feed character addressing.
@@ -626,6 +652,12 @@ impl Vdp2 {
                     && omit_unused
                     && self.acquire_unit_bitmap(layer, y, horizon, phase, slot, &mut used)
                 {
+                    if self.display_fetch.cursor[layer][1] < horizon {
+                        complete = false;
+                        // Keep the literal cadence for the separate bitmap
+                        // helper until its own pending-address proof exists.
+                        next_grant = next_grant.min(phase + clocks);
+                    }
                     continue;
                 }
                 loop {
@@ -684,6 +716,7 @@ impl Vdp2 {
                         continue;
                     }
                     if needed != path {
+                        complete = false;
                         break;
                     }
                     let bank = self.display_bank(address);
@@ -696,12 +729,24 @@ impl Vdp2 {
                         || self.rotation_bank(bank)
                         || self.access_command(bank, slot) != command as u16
                     {
+                        complete = false;
                         if omit_unused {
                             self.display_fetch.pending[layer][path] = Some(PendingRequest {
                                 pixel: x,
                                 address,
                                 group: self.display_fetch.group.get(),
                             });
+                            let mask = u32::from(self.command_slots(bank, command as u16));
+                            let after = mask >> (slot + 1);
+                            let distance = if after != 0 {
+                                after.trailing_zeros() + 1
+                            } else if mask != 0 {
+                                count - slot as u32 + mask.trailing_zeros()
+                            } else {
+                                u32::MAX
+                            };
+                            next_grant = next_grant
+                                .min(phase.saturating_add(distance.saturating_mul(clocks)));
                         }
                         break;
                     }
@@ -742,6 +787,21 @@ impl Vdp2 {
             }
         }
         self.beam_rendering = false;
+        if omit_unused && !self.rotation_display_active() {
+            self.display_fetch.quiet_from = phase;
+            let horizon_end = if horizon == width {
+                u32::MAX
+            } else {
+                (phase / (count * clocks) + 1) * count * clocks
+            };
+            self.display_fetch.quiet_until = if complete {
+                horizon_end
+            } else {
+                horizon_end.min(next_grant)
+            };
+        } else {
+            self.display_fetch.quiet_until = 0;
+        }
     }
 
     pub(super) fn scheduled_rotation_sample(&self, rbg1: bool) -> Option<Option<RotationSample>> {
@@ -888,6 +948,203 @@ mod tests {
         }
         v.vram[..4].copy_from_slice(&[0, 1, 0, 2]);
         v
+    }
+    #[test]
+    fn completed_horizons_preserve_physical_grants_across_bitmap_formats_and_modes() {
+        let mut total_hits = 0;
+        for mode in [0, 1, 2, 3, 4, 5, 6, 7, 0xC0] {
+            for format in 0..5 {
+                // RGB888 is reserved outside normal horizontal resolution.
+                if mode & 6 != 0 && format == 4 {
+                    continue;
+                }
+                let (mut fast, mut literal) = (setup(format), setup(format));
+                for v in [&mut fast, &mut literal] {
+                    v.write16(VDP2, 0x8000 | mode).unwrap();
+                    v.validate().unwrap();
+                    for (i, byte) in v.vram[..4096].iter_mut().enumerate() {
+                        *byte = (i.wrapping_mul(37) ^ (i >> 3)) as u8;
+                    }
+                }
+                let clocks = if mode & 4 == 0 { 4 } else { 2 };
+                let count = if mode & 6 == 0 { 8 } else { 4 };
+                for phase in (0..256).step_by(clocks) {
+                    if phase == 12 {
+                        for v in [&mut fast, &mut literal] {
+                            v.vram[..32].fill(0xA5);
+                        }
+                    }
+                    if phase == 76 {
+                        for v in [&mut fast, &mut literal] {
+                            v.write16(VDP2 + 0x70, 8).unwrap();
+                        }
+                    }
+                    let slot = (phase / clocks) % count;
+                    fast.acquire_display(1, 2, phase as u32, slot);
+                    literal.acquire_display_paths(1, 2, phase as u32, slot, false);
+                    assert_eq!(
+                        *fast.display_fetch.trace.borrow(),
+                        *literal.display_fetch.trace.borrow()
+                    );
+                    for (x, (actual, expected)) in fast
+                        .display_fetch
+                        .pixels
+                        .iter()
+                        .zip(&literal.display_fetch.pixels)
+                        .enumerate()
+                    {
+                        for (layer, (actual_paths, expected_paths)) in
+                            actual.iter().zip(expected).enumerate()
+                        {
+                            for (path, (actual_word, expected_word)) in
+                                actual_paths.iter().zip(expected_paths).enumerate()
+                            {
+                                assert_eq!(
+                                    actual_word.get(),
+                                    expected_word.get(),
+                                    "mode={mode:#X} format={format} phase={phase} pixel={x} layer={layer} path={path}"
+                                );
+                            }
+                        }
+                    }
+                    for (x, (actual, expected)) in fast
+                        .display_fetch
+                        .samples
+                        .iter()
+                        .zip(&literal.display_fetch.samples)
+                        .enumerate()
+                    {
+                        assert_eq!(
+                            actual, expected,
+                            "samples mode={mode:#X} format={format} phase={phase} pixel={x}"
+                        );
+                    }
+                }
+                total_hits += fast.display_fetch.quiet_hits;
+            }
+        }
+        assert!(total_hits > 0, "exercise completed-horizon body omission");
+    }
+
+    #[test]
+    fn exclusive_reconfigure_resumes_at_first_active_missing_dot() {
+        let mut v = setup(0);
+        v.write16(VDP2, 0x8006).unwrap();
+        for (i, byte) in v.vram[..4096].iter_mut().enumerate() {
+            *byte = (i.wrapping_mul(37) ^ (i >> 3)) as u8;
+        }
+        for phase in (0..76).step_by(2) {
+            v.acquire_display(1, 2, phase, (phase as usize / 2) % 4);
+        }
+        for (x, samples) in v.display_fetch.samples.iter().take(80).enumerate() {
+            assert_eq!(samples[0].is_some(), x % 2 == 0);
+        }
+        let captured = v.display_fetch.pixels[..80].to_vec();
+        let reads = v.display_fetch.trace.borrow().len();
+        v.write16(VDP2 + 0x70, 8).unwrap();
+        assert_eq!(v.display_fetch.cursor[0], [80; 3]);
+        v.acquire_display(1, 2, 76, 2);
+        assert_eq!(v.display_fetch.trace.borrow().len(), reads);
+        assert!(v.display_fetch.pixels[..80] == captured);
+        v.acquire_display(1, 2, 80, 0);
+        let trace = v.display_fetch.trace.borrow();
+        let last = trace.last().unwrap();
+        // Output dot80 maps to source x=80/2+8=48, on bitmap row2.
+        assert_eq!((last.phase, last.address), (80, (2 * 512 + 48) / 2));
+        assert_eq!(v.display_fetch.samples[80][0].unwrap().1, 2 * 512 + 48);
+    }
+
+    #[test]
+    fn completed_horizon_marks_empty_edge_before_same_edge_layer_enable() {
+        let (mut fast, mut literal) = (setup(0), setup(0));
+        for v in [&mut fast, &mut literal] {
+            v.write16(VDP2 + 0x28, 0x0202).unwrap();
+            v.write16(VDP2 + 0x10, 0x4555).unwrap();
+            v.validate().unwrap();
+            v.vram[..4].copy_from_slice(&[0x12, 0x34, 0x56, 0x71]);
+        }
+        for (phase, slot) in [(0, 0), (4, 1)] {
+            fast.acquire_display(0, 0, phase, slot);
+            literal.acquire_display_paths(0, 0, phase, slot, false);
+        }
+        assert_eq!(fast.display_fetch.quiet_hits, 1);
+        assert_eq!(fast.display_fetch.trace.borrow().len(), 1);
+        for v in [&mut fast, &mut literal] {
+            v.write16(VDP2 + 0x20, 0x303).unwrap();
+        }
+        fast.acquire_display(0, 0, 4, 1);
+        literal.acquire_display_paths(0, 0, 4, 1, false);
+        assert_eq!(
+            fast.display_fetch.trace.borrow().len(),
+            1,
+            "same edge stays consumed after the write"
+        );
+        fast.acquire_display(0, 0, 8, 2);
+        literal.acquire_display_paths(0, 0, 8, 2, false);
+        assert_eq!(
+            *fast.display_fetch.trace.borrow(),
+            *literal.display_fetch.trace.borrow()
+        );
+        assert_eq!(fast.display_fetch.pixels, literal.display_fetch.pixels);
+        let trace = fast.display_fetch.trace.borrow();
+        assert_eq!(
+            (trace[1].phase, trace[1].slot, trace[1].layer, trace[1].path),
+            (8, 2, 1, 1)
+        );
+        assert_eq!(trace[1].words, [0x1234, 0x5671]);
+    }
+    #[test]
+    fn blocked_requests_reopen_for_changed_cycle_and_preserve_late_vram() {
+        let (mut fast, mut literal) = (blocked_tile(), blocked_tile());
+        for v in [&mut fast, &mut literal] {
+            v.write16(VDP2 + 0x10, 0x0EEE).unwrap();
+            v.vram[32..36].copy_from_slice(&[0xFA, 0xCE, 0xBE, 0xEF]);
+            v.validate().unwrap();
+        }
+        for slot in 0..8 {
+            if slot == 3 {
+                for v in [&mut fast, &mut literal] {
+                    v.vram[32..36].copy_from_slice(&[0x12, 0x34, 0x56, 0x78]);
+                }
+            }
+            let phase = slot as u32 * 4;
+            fast.acquire_display(0, 0, phase, slot);
+            literal.acquire_display_paths(0, 0, phase, slot, false);
+            if slot == 4 {
+                // T4 was processed empty before this completion. Moving the
+                // character grant from T7 to T5 must invalidate the deadline,
+                // while the same T4 remains consumed.
+                for v in [&mut fast, &mut literal] {
+                    v.write16(VDP2 + 0x12, 0xE4EE).unwrap();
+                }
+                fast.acquire_display(0, 0, phase, slot);
+                literal.acquire_display_paths(0, 0, phase, slot, false);
+            }
+            assert_eq!(
+                *fast.display_fetch.trace.borrow(),
+                *literal.display_fetch.trace.borrow()
+            );
+            assert_eq!(fast.display_fetch.pixels, literal.display_fetch.pixels);
+            assert_eq!(fast.display_fetch.samples, literal.display_fetch.samples);
+        }
+        assert!(
+            fast.display_fetch.quiet_hits >= 3,
+            "exercise blocked-slot body omission"
+        );
+        let trace = fast.display_fetch.trace.borrow();
+        assert_eq!(
+            (trace[0].phase, trace[0].path, trace[0].words),
+            (0, 0, [1, 0])
+        );
+        assert_eq!(
+            (
+                trace[1].phase,
+                trace[1].path,
+                trace[1].address,
+                trace[1].words
+            ),
+            (20, 1, 32, [0x1234, 0x5678])
+        );
     }
     #[test]
     fn pending_normal_request_reads_live_data_only_at_the_original_grant() {
