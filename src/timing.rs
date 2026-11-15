@@ -187,8 +187,7 @@ impl Raster {
     }
     /// The last two cycles of horizontal blank prime the following line.
     /// Subsequent accesses share the line-relative CPU VRAM slot phase.
-    pub(crate) fn display_slot(&self) -> Option<(u64, u16, u32, usize)> {
-        let clocks = if self.mode & 4 == 0 { 4 } else { 2 };
+    pub(crate) fn normal_display_position(&self) -> Option<(u64, u16, u32)> {
         let lead = self.display_lead();
         let start = self.line_clocks() - lead;
         let (field, line, phase) = if self.phase >= start {
@@ -199,6 +198,11 @@ impl Raster {
         } else {
             return None;
         };
+        Some((field, line, phase))
+    }
+    pub(crate) fn display_slot(&self) -> Option<(u64, u16, u32, usize)> {
+        let (field, line, phase) = self.normal_display_position()?;
+        let clocks = if self.mode & 4 == 0 { 4 } else { 2 };
         if !phase.is_multiple_of(clocks) {
             return None;
         }

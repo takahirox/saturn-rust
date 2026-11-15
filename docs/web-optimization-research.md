@@ -2524,3 +2524,66 @@ six final state/pixel/PCM endpoints match. One reverse pair is flat; the
 other two opposite-order comparisons reproduce approximately 2.4% improvement.
 Main-story/private-state/original-workload and exact-head CI/review acceptance
 is still pending at this checkpoint and must be recorded in the PR.
+
+
+## Advance normal display only to its next real work deadline
+
+Based on main `0794b069ac05e9919b16442568a5d6551d11f45b`, the next increment
+uses the retained normal-display quiet interval in the board scheduler.
+Normal and cached catch-up can cross slots with no pending grant or new
+horizon. BSC, IRQ, DMA, Sound, VDP1 and raster observer limits remain intact.
+Rotation keeps its per-dot cadence. The Raster helper exposes the same logical
+field/line/phase between slots; buffered-WRAM catch-up uses that logical
+position even when the final board clock has already advanced.
+
+An omitted empty callback previously would have consumed its physical edge.
+Before a video write's existing flush/mutation, the board materializes that
+proven current empty edge. This preserves equal-edge duplicate suppression
+without adding Raster queries to every cached-deadline early return. CPU and
+SCU/DMA completed writes use this same write path. It does not read VRAM early,
+remove an actual grant or skip a completed output field.
+
+Three new originals compare against forced literal acquisition and cadence.
+They require actual coalesced spans, compare physical grant traces and scanned
+pixels, and cover both PLLs, PAL, horizontal modes, prefetch, partial advances,
+scroll/VRAM/cycle/TVMD/palette/region changes and both board-clock catch-up modes.
+A manual same-edge original consumes logical T3/phase76 before enabling NBG1
+and requires its first new read at T4/phase80. Deliberately omitting the lazy
+edge marker, delaying a work deadline by one clock, or retaining the stale
+board deadline after a control write fails executed originals. Exact source
+restoration passes the display originals. All 915 native library tests,
+native/Wasm Clippy, formatting and browser main/Worker verifier pass; the
+portable digest remains `[4,2337474100]`.
+
+Default production Web uses one Emulator per fresh owned Chrome process,
+identical authorized input/media, field3600 warmup, then six continuous
+80-field Canvas/PCM windows, without overlapping local build/test/profile work.
+
+| Pair | Main fields/s | Candidate fields/s | Change |
+| --- | ---: | ---: | ---: |
+| Forward | 28.3368 | 28.5993 | +0.926% |
+| Reverse | 27.8417 | 28.3945 | +1.985% |
+
+All twelve paired windows improve. Summed elapsed time over 960 fields per
+package gives **28.0871 to 28.4965 fields/s (+1.458%)**. All twelve endpoints
+and four final states/pixels/PCM match. Candidate p95 is 35.3–36.4 ms; p99 is
+35.6–37.7 ms. Host audio queue drops are zero; AudioWorklet underflows are
+not measured. This remains a modest incremental gain.
+
+Baseline Wasm:
+`9d744cc57931069e5e13d2d53a6d073dd93607535a22673f8ff9606d363cbab0`.
+Candidate:
+`d57a84db51106756ddcb85c869184dc46b9152c33b899914edae32f1fa8a09a0`.
+Verification companion:
+`60f9671cca64e5595347b0ee27b1a68fea6ff34c6aaf1b49c76e23de8f4c68cd`.
+
+The 22-word private-state comparison, fresh main-story and original-workload
+tradeoffs, and exact-head CI/review remain pending at this checkpoint. The PR
+must record their actual results before adoption. Additional profiling begins
+only after all primary timing windows and capture, in a separate diagnostic
+window excluded from adoption. The post-profile original endpoint agrees with
+uninstrumented execution. Broader game profiling is not yet claimed.
+The independent Rust core is retained. Sustained 60 fields/s, representative
+broader real-time play and production audio-underflow acceptance remain unmet.
+Related to #138 and #17; leave both open. Private media/raw evidence remain
+ignored locally. No required post-merge verification is added.

@@ -365,6 +365,10 @@ pub struct Bus {
     pub(crate) main_clocks: u64,
     pending_main_clocks: u32,
     display_deadline: u64,
+    #[cfg(test)]
+    literal_display: bool,
+    #[cfg(test)]
+    display_coalesced_spans: u64,
     system_clock: SystemClock,
     pub(crate) backup: BackupRam,
     onchip: [OnChip; 2],
@@ -441,6 +445,10 @@ impl Default for Bus {
             main_clocks: 0,
             pending_main_clocks: 0,
             display_deadline: 0,
+            #[cfg(test)]
+            literal_display: false,
+            #[cfg(test)]
+            display_coalesced_spans: 0,
             system_clock: SystemClock::default(),
             backup: BackupRam::default(),
             onchip: std::array::from_fn(|i| {
@@ -769,6 +777,13 @@ impl Bus {
             return;
         }
         if let Some((field, line, phase, slot)) = self.raster.display_slot() {
+            #[cfg(test)]
+            if self.literal_display {
+                self.vdp2.acquire_literal_display(field, line, phase, slot);
+            } else {
+                self.vdp2.acquire_display(field, line, phase, slot);
+            }
+            #[cfg(not(test))]
             self.vdp2.acquire_display(field, line, phase, slot);
         }
         if self.vdp2.rotation_display_active()
@@ -778,15 +793,23 @@ impl Bus {
                 .acquire_rotation_display(&self.vdp1, field, line, phase, x);
         }
         let next = self
-            .raster
-            .clocks_to_display_slot()
-            .min(if self.vdp2.rotation_display_active() {
-                self.raster.clocks_to_rotation_slot()
-            } else {
-                u32::MAX
-            })
+            .clocks_to_display_work()
             .min(self.raster.clocks_to_event());
         self.display_deadline = self.main_clocks + u64::from(next);
+    }
+    fn clocks_to_display_work(&self) -> u32 {
+        let literal = self.raster.clocks_to_display_slot();
+        if self.vdp2.rotation_display_active() {
+            return literal.min(self.raster.clocks_to_rotation_slot());
+        }
+        #[cfg(test)]
+        if self.literal_display {
+            return literal;
+        }
+        self.raster
+            .normal_display_position()
+            .and_then(|(field, line, phase)| self.vdp2.clocks_to_normal_work(field, line, phase))
+            .map_or(literal, |work| literal.max(work))
     }
     pub(crate) fn main_deadline(&self) -> u32 {
         self.onchip[0]
@@ -800,13 +823,7 @@ impl Bus {
             })
             .min(self.raster.clocks_to_event())
             .min(if self.vdp2.display_active() {
-                self.raster
-                    .clocks_to_display_slot()
-                    .min(if self.vdp2.rotation_display_active() {
-                        self.raster.clocks_to_rotation_slot()
-                    } else {
-                        u32::MAX
-                    })
+                self.clocks_to_display_work()
             } else {
                 u32::MAX
             })
@@ -872,6 +889,10 @@ impl Bus {
             } else {
                 remaining.min(self.main_deadline())
             };
+            #[cfg(test)]
+            if self.vdp2.display_active() && delta > self.raster.clocks_to_display_slot() {
+                self.display_coalesced_spans += 1;
+            }
             self.main_clocks = self.main_clocks.wrapping_add(u64::from(delta));
             self.onchip[0].advance_to_event(delta);
             if self.slave_enabled {
@@ -1429,6 +1450,13 @@ impl Bus {
         if (vdp1::FRAMEBUFFER..vdp1::REGISTERS + 0x18).contains(&address)
             || (VRAM..VDP2 + 0x120).contains(&address)
         {
+            // A deferred physical slot was already empty before this write's
+            // completion. Preserve its duplicate-edge marker before a flush
+            // or control write invalidates the proof. Other elapsed empty
+            // slots have no observable effect and need no replay.
+            if let Some((field, line, phase, _)) = self.raster.display_slot() {
+                self.vdp2.mark_empty_display_edge(field, line, phase);
+            }
             self.flush_video();
         }
         if !address.is_multiple_of(N as u32) {

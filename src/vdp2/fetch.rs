@@ -562,6 +562,34 @@ impl Vdp2 {
         self.acquire_display_paths(field, line, phase, slot, true);
     }
 
+    pub(crate) fn clocks_to_normal_work(&self, field: u64, line: u16, phase: u32) -> Option<u32> {
+        let fetch = &self.display_fetch;
+        (fetch.prepared_field == Some(field)
+            && fetch.prepared_line == Some(usize::from(line))
+            && phase >= fetch.quiet_from
+            && phase < fetch.quiet_until)
+            .then(|| fetch.quiet_until - phase)
+    }
+
+    pub(crate) fn mark_empty_display_edge(&mut self, field: u64, line: u16, phase: u32) {
+        if phase > self.display_fetch.quiet_from
+            && self.clocks_to_normal_work(field, line, phase).is_some()
+        {
+            self.display_fetch.edge = Some((field, line, phase));
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn acquire_literal_display(
+        &mut self,
+        field: u64,
+        line: u16,
+        phase: u32,
+        slot: usize,
+    ) {
+        self.acquire_display_paths(field, line, phase, slot, false);
+    }
+
     fn acquire_display_paths(
         &mut self,
         field: u64,
