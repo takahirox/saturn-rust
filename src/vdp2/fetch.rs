@@ -20,6 +20,13 @@ struct LinearTile {
 
 type Words = [Cell<Option<(usize, u16)>>; 2];
 
+#[derive(Clone, Copy)]
+struct PendingRequest {
+    pixel: usize,
+    address: usize,
+    group: (usize, usize),
+}
+
 // Standalone decoder tests keep their two-word serializers.
 // Clocked backgrounds retain physical transfers and per-dot address inputs.
 // Normal ports have separate acquisition cursors; rotation uses per-dot edges.
@@ -53,6 +60,9 @@ pub(crate) struct DisplayFetch {
     direct_bitmaps: usize,
     cursor: [[usize; 3]; 4],
     retained: [[Option<Acquired>; 3]; 4],
+    pending: [[Option<PendingRequest>; 3]; 4],
+    #[cfg(test)]
+    pending_hits: u64,
     edge: Option<(u64, u16, u32)>,
     rotation_edge: Option<(u64, u16, u32)>,
     acquiring_rotation: bool,
@@ -60,6 +70,10 @@ pub(crate) struct DisplayFetch {
 }
 
 impl DisplayFetch {
+    pub(super) fn clear_pending(&mut self) {
+        self.pending = [[None; 3]; 4];
+    }
+
     pub(super) fn reset(&mut self) {
         let mut pixels = std::mem::take(&mut self.pixels);
         let mut samples = std::mem::take(&mut self.samples);
@@ -359,6 +373,7 @@ impl Vdp2 {
     }
 
     pub(super) fn invalidate_planned_samples(&mut self) {
+        self.display_fetch.clear_pending();
         self.display_fetch.planned_samples.fill(Default::default());
         self.display_fetch.linear_tiles.fill(Cell::new(None));
     }
@@ -618,20 +633,39 @@ impl Vdp2 {
                     if x >= horizon {
                         break;
                     }
-                    {
+                    let pending = omit_unused
+                        .then_some(self.display_fetch.pending[layer][path])
+                        .flatten()
+                        .filter(|pending| pending.pixel == x);
+                    if let Some(pending) = pending {
+                        // Earlier dependencies were captured before this
+                        // request blocked. Retain its address, never its data;
+                        // port ownership and VRAM are sampled at the real grant.
                         let fetch = &mut self.display_fetch;
                         fetch.pixel.set(x);
-                        fetch.planning = true;
-                        fetch.request.set(None);
-                    }
-                    if let Some(sample @ (base, pixel, _, _, format)) =
-                        self.normal_sample(layer, x, y)
-                    {
-                        let address = Self::dot_address(base, pixel, format);
-                        if self.fetch_word(layer, 1, address).is_some()
-                            && (format != 4 || self.fetch_word(layer, 1, address + 2).is_some())
+                        fetch.group.set(pending.group);
+                        fetch.request.set(Some((path, pending.address)));
+                        #[cfg(test)]
                         {
-                            self.display_fetch.samples[x][layer] = Some(sample);
+                            fetch.pending_hits += 1;
+                        }
+                    } else {
+                        self.display_fetch.pending[layer][path] = None;
+                        {
+                            let fetch = &mut self.display_fetch;
+                            fetch.pixel.set(x);
+                            fetch.planning = true;
+                            fetch.request.set(None);
+                        }
+                        if let Some(sample @ (base, pixel, _, _, format)) =
+                            self.normal_sample(layer, x, y)
+                        {
+                            let address = Self::dot_address(base, pixel, format);
+                            if self.fetch_word(layer, 1, address).is_some()
+                                && (format != 4 || self.fetch_word(layer, 1, address + 2).is_some())
+                            {
+                                self.display_fetch.samples[x][layer] = Some(sample);
+                            }
                         }
                     }
                     let request = self.display_fetch.request.get();
@@ -662,8 +696,16 @@ impl Vdp2 {
                         || self.rotation_bank(bank)
                         || self.access_command(bank, slot) != command as u16
                     {
+                        if omit_unused {
+                            self.display_fetch.pending[layer][path] = Some(PendingRequest {
+                                pixel: x,
+                                address,
+                                group: self.display_fetch.group.get(),
+                            });
+                        }
                         break;
                     }
+                    self.display_fetch.pending[layer][path] = None;
                     used[bank] = true;
                     let bytes = if path == 0 && self.word(0x30 + layer * 2) & 0x8000 != 0 {
                         2
@@ -839,6 +881,98 @@ mod tests {
         v.scanning[at..at + 4].try_into().unwrap()
     }
 
+    fn blocked_tile() -> Vdp2 {
+        let mut v = setup(0);
+        for (offset, value) in [(0x28, 0), (0x30, 0x8000), (0x10, 0xEEE0), (0x12, 0xEEE4)] {
+            v.write16(VDP2 + offset, value).unwrap();
+        }
+        v.vram[..4].copy_from_slice(&[0, 1, 0, 2]);
+        v
+    }
+    #[test]
+    fn pending_normal_request_reads_live_data_only_at_the_original_grant() {
+        let (mut fast, mut literal) = (blocked_tile(), blocked_tile());
+        for slot in 0..8 {
+            if slot == 2 {
+                for v in [&mut fast, &mut literal] {
+                    v.vram[..2].copy_from_slice(&2u16.to_be_bytes());
+                }
+            }
+            if slot == 7 {
+                for v in [&mut fast, &mut literal] {
+                    v.vram[64..68].copy_from_slice(&[0x33, 0x44, 0x55, 0x66]);
+                }
+            }
+            fast.acquire_display(0, 0, slot * 4, slot as usize);
+            literal.acquire_display_paths(0, 0, slot * 4, slot as usize, false);
+            assert_eq!(
+                *fast.display_fetch.trace.borrow(),
+                *literal.display_fetch.trace.borrow()
+            );
+            assert_eq!(fast.display_fetch.pixels, literal.display_fetch.pixels);
+            assert_eq!(fast.display_fetch.samples, literal.display_fetch.samples);
+            if slot == 1 {
+                assert!(fast.display_fetch.pending[0][0].is_some());
+                assert!(fast.display_fetch.trace.borrow().is_empty());
+            }
+        }
+        assert!(
+            fast.display_fetch.pending_hits >= 2,
+            "exercise blocked-request reuse"
+        );
+        let trace = fast.display_fetch.trace.borrow();
+        assert_eq!(
+            (
+                trace[0].phase,
+                trace[0].path,
+                trace[0].address,
+                trace[0].words
+            ),
+            (12, 0, 0, [2, 0])
+        );
+        assert_eq!(
+            (
+                trace[1].phase,
+                trace[1].path,
+                trace[1].address,
+                trace[1].words
+            ),
+            (28, 1, 64, [0x3344, 0x5566])
+        );
+    }
+    #[test]
+    fn pending_normal_request_replans_after_scroll_changes_before_grant() {
+        let (mut fast, mut literal) = (blocked_tile(), blocked_tile());
+        for slot in 0..8 {
+            if slot == 2 {
+                for v in [&mut fast, &mut literal] {
+                    v.write16(VDP2 + 0x70, 8).unwrap();
+                }
+            }
+            fast.acquire_display(0, 0, slot * 4, slot as usize);
+            literal.acquire_display_paths(0, 0, slot * 4, slot as usize, false);
+            assert_eq!(
+                *fast.display_fetch.trace.borrow(),
+                *literal.display_fetch.trace.borrow()
+            );
+            assert_eq!(fast.display_fetch.pixels, literal.display_fetch.pixels);
+            assert_eq!(fast.display_fetch.samples, literal.display_fetch.samples);
+        }
+        assert!(
+            fast.display_fetch.pending_hits >= 2,
+            "exercise pending requests on both sides of reconfiguration"
+        );
+        let trace = fast.display_fetch.trace.borrow();
+        assert_eq!(
+            (
+                trace[0].phase,
+                trace[0].path,
+                trace[0].address,
+                trace[0].words
+            ),
+            (12, 0, 2, [2, 0])
+        );
+    }
     #[test]
     fn unit_tile_runs_follow_independent_one_two_word_flip_and_subcell_pixels() {
         let colors = [

@@ -218,6 +218,7 @@ impl Vdp2 {
     pub fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
         Self::validate_value(address, value)?;
         self.validated_pal.set(None);
+        self.display_fetch.clear_pending();
         *self.access_cache.get_mut() = access::AccessCache::default();
         let offset = (address - VDP2) as usize;
         // TVSTAT/HCNT/VCNT have no write function. Initialization stores must
