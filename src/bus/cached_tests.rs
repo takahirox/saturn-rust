@@ -2897,3 +2897,207 @@ fn prepared_passive_all_widths_keep_both_plls_and_bsc_interfaces() {
         }
     }
 }
+
+fn display_deadline_board(fast: bool, pal: bool, mode: u16, literal: bool) -> Bus {
+    let mut b = Bus::default();
+    b.change_system_clock(fast);
+    b.set_pal(pal);
+    for (offset, value) in [
+        (0, 0x8000 | mode),
+        (0xE, 0x300),
+        (0x10, 0x0EEE),
+        (0x12, 0xEEEE),
+        (0x18, 0x4EEE),
+        (0x1A, 0xEEEE),
+        (0x20, 0x101),
+        (0x28, 0),
+        (0x30, 0x8008),
+        (0x78, 1),
+        (0x7C, 1),
+        (0xF8, 1),
+    ] {
+        b.write16(VDP2 + offset, value).unwrap();
+    }
+    b.vdp2.vram[0x40000..0x40100].fill(0x11);
+    b.write16(crate::vdp2::CRAM + 2, 0x801F).unwrap();
+    b.write16(crate::vdp2::CRAM + 4, 0x83E0).unwrap();
+    b.literal_display = literal;
+    b
+}
+
+fn assert_display_deadline_matches(actual: &Bus, literal: &Bus) {
+    assert_eq!(actual.main_clocks, literal.main_clocks);
+    assert_eq!(actual.raster.counters(), literal.raster.counters());
+    assert_eq!(actual.raster.display_slot(), literal.raster.display_slot());
+    let actual_trace = actual.vdp2.display_fetch.trace.borrow();
+    let literal_trace = literal.vdp2.display_fetch.trace.borrow();
+    assert_eq!(
+        actual_trace.len(),
+        literal_trace.len(),
+        "physical grant count"
+    );
+    for (index, (actual_read, literal_read)) in
+        actual_trace.iter().zip(literal_trace.iter()).enumerate()
+    {
+        assert_eq!(actual_read, literal_read, "physical grant index={index}");
+    }
+    assert_eq!(actual.vdp2.scanning.len(), literal.vdp2.scanning.len());
+    let first_difference = actual
+        .vdp2
+        .scanning
+        .iter()
+        .zip(&literal.vdp2.scanning)
+        .enumerate()
+        .find(|(_, (a, b))| a != b);
+    assert!(
+        first_difference.is_none(),
+        "first scanned byte mismatch={first_difference:?}"
+    );
+}
+
+#[test]
+fn display_work_deadlines_match_literal_clocks_through_writes_and_line_prefetch() {
+    let mut coalesced = 0;
+    for fast in [false, true] {
+        for pal in [false, true] {
+            for mode in [0, 1, 2, 3, 4, 5, 6, 7, 0xC0] {
+                let mut a = display_deadline_board(fast, pal, mode, false);
+                let mut b = display_deadline_board(fast, pal, mode, true);
+                let mut previous = 0;
+                for target in [
+                    3, 7, 31, 33, 63, 75, 127, 512, 1023, 1279, 1280, 1340, 1643, 1644, 1645, 1675,
+                    1715, 1716, 1900, 3000,
+                ] {
+                    a.advance_main_clocks(target - previous, 0).unwrap();
+                    for _ in previous..target {
+                        b.advance_main_clocks(1, 0).unwrap();
+                    }
+                    assert_display_deadline_matches(&a, &b);
+                    if target == 75 {
+                        for board in [&mut a, &mut b] {
+                            board.write16(VDP2 + 0x70, 8).unwrap();
+                        }
+                    }
+                    if target == 127 {
+                        for board in [&mut a, &mut b] {
+                            board.write32(VRAM + 0x40000, 0x22222222).unwrap();
+                        }
+                    }
+                    if target == 512 {
+                        for board in [&mut a, &mut b] {
+                            board.write16(VDP2 + 0x10, 0xE0EE).unwrap();
+                        }
+                    }
+                    if target == 1023 {
+                        for board in [&mut a, &mut b] {
+                            board.write16(VDP2, 0x8000 | (mode ^ 1)).unwrap();
+                        }
+                    }
+                    if target == 1279 {
+                        for board in [&mut a, &mut b] {
+                            board.write16(crate::vdp2::CRAM + 2, 0x83E0).unwrap();
+                        }
+                    }
+                    if target == 1340 {
+                        for board in [&mut a, &mut b] {
+                            board.set_pal(!pal);
+                        }
+                    }
+                    previous = target;
+                }
+                coalesced += a.display_coalesced_spans;
+                assert_eq!(b.display_coalesced_spans, 0);
+            }
+        }
+    }
+    assert!(
+        coalesced > 0,
+        "exercise actual advances across physical empty slots"
+    );
+}
+
+#[test]
+fn cached_display_deadlines_match_literal_positions_with_both_board_clock_modes() {
+    let mut coalesced = 0;
+    for fast in [false, true] {
+        for pal in [false, true] {
+            for mode in [0, 2, 6] {
+                for advanced in [false, true] {
+                    let mut a = display_deadline_board(fast, pal, mode, false);
+                    let mut b = display_deadline_board(fast, pal, mode, true);
+                    for span in [1, 3, 7, 13, 31, 64] {
+                        let (ra, rb) = if advanced {
+                            a.main_clocks += u64::from(span);
+                            b.main_clocks += u64::from(span);
+                            (
+                                a.advance_isolated_segment::<true>(span, false, false)
+                                    .unwrap(),
+                                b.advance_isolated_segment::<true>(span, false, false)
+                                    .unwrap(),
+                            )
+                        } else {
+                            (
+                                a.advance_isolated_segment::<false>(span, false, false)
+                                    .unwrap(),
+                                b.advance_isolated_segment::<false>(span, false, false)
+                                    .unwrap(),
+                            )
+                        };
+                        assert_eq!(ra, rb);
+                        assert_display_deadline_matches(&a, &b);
+                        assert_eq!(
+                            a.display_deadline,
+                            a.main_clocks
+                                + u64::from(
+                                    a.clocks_to_display_work().min(a.raster.clocks_to_event())
+                                )
+                        );
+                    }
+                    coalesced += a.display_coalesced_spans;
+                }
+            }
+        }
+    }
+    assert!(coalesced > 0);
+}
+
+#[test]
+fn deferred_display_marks_empty_edge_before_same_edge_register_completion() {
+    let (mut a, mut b) = (Bus::default(), Bus::default());
+    for board in [&mut a, &mut b] {
+        for (offset, value) in [
+            (0, 0x8000),
+            (0x10, 0x4445),
+            (0x12, 0x5555),
+            (0x20, 0x101),
+            (0x28, 0x0202),
+            (0x78, 1),
+            (0x7C, 1),
+        ] {
+            board.write16(VDP2 + offset, value).unwrap();
+        }
+        board.vdp2.vram[..4].copy_from_slice(&[0x12, 0x34, 0x56, 0x71]);
+    }
+    b.literal_display = true;
+    for board in [&mut a, &mut b] {
+        board.advance_main_clocks(12, 0).unwrap();
+    }
+    assert_eq!(a.vdp2.display_fetch.trace.borrow().len(), 3);
+    for board in [&mut a, &mut b] {
+        board.write16(VDP2 + 0x20, 0x303).unwrap();
+        board.acquire_display();
+        assert_eq!(
+            board.vdp2.display_fetch.trace.borrow().len(),
+            3,
+            "the already processed T3 remains consumed after the write"
+        );
+        board.advance_main_clocks(4, 0).unwrap();
+    }
+    assert_display_deadline_matches(&a, &b);
+    let trace = a.vdp2.display_fetch.trace.borrow();
+    assert_eq!(
+        (trace[3].phase, trace[3].slot, trace[3].layer, trace[3].path),
+        (80, 4, 1, 1)
+    );
+    assert_eq!(trace[3].words, [0x1234, 0x5671]);
+}

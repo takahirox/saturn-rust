@@ -1193,17 +1193,19 @@ impl Bus {
         self.acquire_display();
         while remaining != 0 {
             let display = if self.vdp2.display_active() {
-                self.raster
-                    .clocks_to_display_slot()
-                    .min(if self.vdp2.rotation_display_active() {
-                        self.raster.clocks_to_rotation_slot()
-                    } else {
-                        u32::MAX
-                    })
+                if CLOCK_ADVANCED {
+                    self.clocks_to_display_work()
+                } else {
+                    self.clocks_to_cached_display_work()
+                }
             } else {
                 u32::MAX
             };
             let delta = remaining.min(display);
+            #[cfg(test)]
+            if self.vdp2.display_active() && delta > self.raster.clocks_to_display_slot() {
+                self.display_coalesced_spans += 1;
+            }
             if !CLOCK_ADVANCED {
                 self.main_clocks += u64::from(delta);
             }
