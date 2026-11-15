@@ -1889,3 +1889,187 @@ Sustained 60 fields/s, broader gameplay/transitions, production audio underflows
 and hardware completion remain unmet. At 25.34 fields/s this scene still needs
 about 2.37 times the throughput to reach 60. Private inputs and raw diagnostics
 remain ignored locally. No required post-merge verification is added.
+
+
+### Rejected checkpoint-copy trial (#138 continuation)
+
+The private-peer ordering increment is merged in
+[PR #159](https://github.com/takahirox/saturn-rust/pull/159) as
+`fe3e1eb677aac691179c84d32d34916c6216a497`. Its exact head
+`6b7d4b1460bca99dacc111f71691603fd37fdac3` passes
+[CI 43689208723](https://github.com/takahirox/saturn-rust/actions/runs/43689208723):
+1,372 native tests / 111 groups, Wasm, both browser shards and the aggregate
+revision/artifact gate. Author COMMENT self-review is recorded; no independent
+approval is asserted. The adopted scene result is about 25.34 fields/s.
+
+A separate prototype defers the ordinary short-cycle CPU/local-state checkpoint
+until retained-loop replay fails. Successful long-loop replay already discards
+that checkpoint, so it can avoid the initial copy. The ordinary fallback keeps
+its exact original state. All 902 native library tests, native/Wasm Clippy and
+original native/main-thread/Worker controls pass; the latter remains
+`[4, 620407472]`.
+
+Four fresh single-Emulator production runs, using the same 3600-field warmup and
+six continuous 80-field Canvas/PCM windows, produce 25.145 / 25.254 / 25.133 /
+25.191 fields/s in A/B/B/A order. Summed elapsed time gives **25.168 → 25.193
+fields/s (+0.10%)**, with opposite signs in the two comparisons (+0.434% and
+−0.232%). Every corresponding window state digest and all final states agree.
+No material reproducible gain is established; the checkpoint change is rejected.
+Its production Wasm is
+`d522d62695fa88d4088c84f192297b2f784fb3f734a9e21d338a77307807b8cc`.
+No additional full-suite/CI adoption checks are spent on this rejected runtime
+trial. The adopted implementation remains unchanged. Sustained 60 fields/s,
+broader gameplay, production audio underflows and hardware completion remain
+unmet. Private inputs/raw evidence stay local; no required post-merge
+verification is added.
+
+
+### Rejected chronological-guard scan (#138 continuation)
+
+Sorting each compiled suffix's guards by first use and stopping at the first
+future guard preserves the checked predicate set, but the measured implementation
+regresses. All 902 native library tests, native/Wasm Clippy and native/main/Worker
+portable controls pass at `[4, 620407472]`. Standalone A/B/B/A with one production
+Emulator per fresh Chrome process measures 25.023 / 24.889 / 24.083 / 25.231
+fields/s. Summed elapsed time gives **25.127 → 24.479 fields/s (−2.58%)**; both
+comparisons regress (−0.536% / −4.551%). All corresponding window state hashes
+and all final states match. The change is rejected; no further full-suite/CI
+adoption work is spent on it. Main keeps the earlier validated guard traversal.
+The rejected production Wasm is
+`dc12f99098fceffc02784a1a12a69f51daac85427760067d747ba658eae5bba1`.
+
+### Successful-prefix deadline observations (#138 continuation)
+
+A separate feature-only observer measures successful guarded-replay work over
+fields 4080–4160 of the same authorized game, excluding its FPS and time shares
+from production evidence. It records **476,603 successful batches, 24,495,515
+reused instructions and 31,766,689 covered main clocks**. Average batch length is
+51.396 instructions / 66.652 covered main clocks; the average planned budget is
+90.807 main clocks. Of these, 214,129 batches retire fewer than 16 instructions;
+476,573 use a Pending private peer, and 131,150 finish at the captured suffix end.
+
+The refined observer compares every admission source against each successful
+batch's planned end. Sources can tie; these counts are neither disjoint time
+shares nor unique hardware-event counts:
+
+| Source tied to planned end | Successful batches |
+| --- | ---: |
+| Master chip, including BSC | 265,930 |
+| Master local peripheral, directly observed | 5 |
+| Master BSC, directly observed | 265,925 |
+| Slave chip / local peripheral | 28 / 28 |
+| Slave BSC | 0 |
+| Bus deadline when a new store window is unavailable | 137,594 |
+| Private-peer span | 53,843 |
+| Raster | 53,754 |
+| Interrupt recognition | 17,195 |
+| VDP1 observable edge | 1,525 |
+| Fixed-domain bound | 767 |
+| SCU / 1024-clock cap | 0 / 0 |
+| No matching source | 0 |
+
+The BSC bound is the existing RTC compare/refresh recovery deadline. Direct BSC
+and local getters remove the earlier observer's optional-readonly-local
+ambiguity. Master BSC ties occur in 55.80% of successful batches; bus-deadline
+ties in 28.87%, with overlap. Captured-suffix ends occur in 27.52%. These results
+motivate evaluating longer actual observations and refresh-aware protocol plans,
+rather than attributing all short work to Sound or removing real event fences.
+They do not establish how much host time any one source consumes.
+
+The correct refined observer Wasm is
+`de26326857718199ca18021fccd1080a72ca429956fb2fb3d363f0f63920937f`.
+Original native/main-thread/Worker controls remain `[4, 620407472]`; native/Wasm
+Clippy and the required exported counter shape pass. Its common work counts
+match the earlier 18-counter observer exactly. A shared Cargo target directory
+had initially reused a sibling artifact; a missing diagnostic getter exposed
+that before any game run. The observer was rebuilt and checked in its dedicated
+target directory. Subsequent variants use isolated build directories. Invalid
+stale outputs are excluded. Private inputs/raw profiles/source snapshots remain
+ignored locally. No new production optimization is claimed by these counts.
+
+
+#### Bounded reference BSC source revisit
+
+The same pinned Beetle SH2 core exposes RTCNT/RTCSR/RTCOR and WCR as stored
+register state. The identified RTCNT/WCR uses in the reviewed non-JIT core are
+reset, register reads/writes and serialization; no RTCNT increment or equivalent
+refresh-grant loop was found across the SH2 core/header, opcode/resume/memory
+dispatch paths and Saturn scheduler reviewed here. Its memory paths do retain
+region-specific timestamps, SDRAM finish times and access delays. This is a
+bounded source finding, not a claim that the reference has no memory timing.
+[Register paths](https://github.com/libretro/beetle-saturn-libretro/blob/30f4c12072d265c9e553dcb29386059114945dea/mednafen/ss/sh7095.inc#L1954),
+[memory timing](https://github.com/libretro/beetle-saturn-libretro/blob/30f4c12072d265c9e553dcb29386059114945dea/mednafen/ss/sh7095.inc#L3314),
+[SH2 state](https://github.com/libretro/beetle-saturn-libretro/blob/30f4c12072d265c9e553dcb29386059114945dea/mednafen/ss/sh7095.h#L180),
+[Saturn scheduler](https://github.com/libretro/beetle-saturn-libretro/blob/30f4c12072d265c9e553dcb29386059114945dea/mednafen/ss/ss.c).
+
+Our BSC compare/grant/recovery and buffered-write oracles cover a different
+surface. The native 189-fields/s reference therefore remains evidence of broader
+optimization opportunity, with these model differences retained. This source
+finding does not isolate their share of the measured performance gap. Evaluate
+exact deferred updates, protocol plans or reusable transitions while preserving
+our refresh/IRQ/bus observations; omitting those observations is not adopted.
+
+
+### Overlapping actual Master-loop observations (#138 continuation)
+
+The successful-prefix counts above show that 27.52% of batches finish at the
+captured suffix end. Private automatic training now continues past its first
+complete observed return to collect a second complete return. Every CPU phase,
+cache image, read, write and bus acceptance is recorded through the ordinary
+interpreter; no additional period is synthesized. The runtime keeps the same
+cache-input, CPU/pipeline, MDU, bus, Sound, IRQ/reset and observer proofs.
+
+Public/manual capture retains its original one-period behavior. Small periods
+retain the existing compiled-backend threshold. If doubling the first window
+would exceed the existing capture cap, use the first valid window. A bounded
+incomplete second observation falls back to the exact first prefix, including
+its read/store/header and cache-touch counts. Training faults conservatively
+reject that attempt. Live guest clocks and the execution quantum are unchanged.
+
+The inherited original 34-instruction WRAM guest now also requires 68 actually
+observed instructions and a replay longer than 34, proving publication across
+the old end. A new 67-turn bounded collector test compares the returned summary
+and every CPU/cache/clock/ready/retained/epoch/touch phase against one-period
+capture. Three deliberate mutations—old one-period learning, a 34-instruction
+replay cap and disabled first-prefix fallback—fail the intended controls. All
+mutations are restored byte-for-byte. Final checks pass **903 library tests**
+and the **complete 1,373-test / 111-group all-feature native suite**, formatting
+and native all-target/all-feature plus Wasm Clippy with warnings denied. Portable
+native/main-thread/Worker controls pass at `[4, 1329973432]`; path-count digests
+change while complete-state assertions remain.
+
+Four standalone production runs use one Emulator per fresh Chrome process,
+the same authorized media/controller input, 3600-field warmup and six continuous
+80-field windows through 4080, including Canvas presentation and PCM draining:
+
+| Order | Production package | Fields/s |
+| --- | --- | ---: |
+| A1 | Current main | 25.354 |
+| B1 | Two-return observation | 26.016 |
+| B2 | Two-return observation, fresh process | 26.277 |
+| A2 | Current main, fresh process | 25.282 |
+
+Combining elapsed time over 960 fields per package gives **25.318 → 26.146
+fields/s (+3.27%)**. Both comparisons improve (+2.613% / +3.936%); all twelve
+windows improve (+2.182%–+4.912%). Every corresponding exposed-state SHA-256 and
+all four final states agree. Candidate per-window p95 is 38.6–39.6 ms and p99
+39.2–40.2 ms. Host queue drops are zero; production AudioWorklet underflows are
+not measured. No local builds/tests/profiles overlap preparation or timing.
+
+Baseline production Wasm:
+`ed052fc64bc1b0b82b0c40ec3a17a294d5af2342b95df50aa1dcd1f5ed74fcc1`.
+Final candidate:
+`9da3a15395c3db3d17f8c7d9345a3aee9040a629a876d3afdde11e44f23c24e1`.
+Verification companion:
+`a6617fece5a3d0227e41542096ddcffa3e0d0fb644b713174df58a08e4c9b6b0`.
+Rust 1.100.0, wasm-bindgen 0.2.129, Binaryen 127 and Chrome 157.0.8103.52 match
+the preceding comparisons. Final 17-file source fingerprints match the tested
+builds, produced in an isolated worktree target directory.
+
+The separate feature-companion full-private-state game check and three original
+workload comparisons are pending at this checkpoint. Exact-head mandatory CI
+and final review remain required before adoption; their final outcomes are
+recorded in the associated PR. Diagnostic-feature FPS is excluded from adoption
+evidence. Sustained 60 fields/s, broader gameplay/transitions, production audio
+underflows and hardware completion remain unmet. Private inputs/raw diagnostics
+stay local; no required post-merge verification is added.

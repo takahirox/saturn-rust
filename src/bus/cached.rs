@@ -2067,6 +2067,10 @@ impl Bus {
         let _ = skipped;
         if let Some(probe) = &mut self.loop_probe {
             if fast_replayed {
+                #[cfg(any(test, feature = "kernel-experiment"))]
+                probe
+                    .longest_replay
+                    .set(probe.longest_replay.get().max(retired));
                 probe
                     .replayed
                     .set(probe.replayed.get() + u64::from(retired));

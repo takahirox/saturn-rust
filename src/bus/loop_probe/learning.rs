@@ -59,7 +59,7 @@ impl Machine {
             best: Some((self.cpu.state().pc, 512)),
             ..LoopProbe::default()
         }));
-        if scratch.capture_loop_trace_bounded(4096).is_ok()
+        if scratch.capture_loop_trace_with_overlap(4096, true).is_ok()
             && let Some(data) = scratch.bus.loop_probe.as_mut().unwrap().captured.take()
             && data.complete
             && !data.compiled.is_empty()
