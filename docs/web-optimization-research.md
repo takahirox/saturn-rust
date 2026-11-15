@@ -2452,3 +2452,75 @@ timings are excluded. Sustained 60 fields/s, representative broader real-time
 play and production audio delivery remain unmet. Related to #138 and #17;
 leave both open. Private inputs and raw artifacts remain local. No required
 post-merge verification is added.
+
+
+## Settle normal display planning only when its next grant can arrive
+
+Based on main `f541e9696d30a582e960f4dd8cd9012ac37c4cb2`, the selected NBG1
+RGB555 tile interval makes 6,021,120 normal acquisition calls per 80 fields,
+with 3,584,000 physical grants. Only 268,800 calls (4.464%) start with every
+applicable cursor already complete; at least 40.48% have no physical read.
+Six diagnostic windows preserve the 22 CPU/cache/RAM state hash words and
+ordinary state/pixel/PCM endpoints; the completed-cursor predicate has zero
+contradictions. Diagnostic timings are excluded from adoption evidence.
+
+The next candidate keeps every existing Bus/raster callback. After settling
+available dependencies, it records the earliest future matching cycle-command
+slot of blocked requests, bounded by the next eight-dot horizon. Before that
+point the body can return while still recording the consumed physical edge.
+All register writes, table reloads, preparation and resets invalidate this
+quiet metadata. Rotation retains literal cadence. An incomplete unit-bitmap
+helper conservatively requests the next literal slot. No RAM value is sampled
+early, no actual grant is removed, and no CPU/audio/device horizon is widened.
+This is a planning-body experiment, not yet Bus deadline coalescing.
+
+The extended literal matrix also finds an inherited exclusive-high-resolution
+cursor defect, reproducible with the new shortcut disabled. Alternating dots
+belong to different normal screens; a control write previously treated the
+other screen's empty dot as unfinished and rewound across captured operands.
+Reconfiguration now selects the first missing active dot. An independent
+original requires captured output dots0–79 to survive scroll changes and dot80
+to map to source x48 on bitmap row2. The matrix compares each captured operand,
+sample and physical grant across horizontal modes, formats, VRAM changes and
+scroll writes. Two further originals cover consumed empty edges before a
+same-edge layer enable, and a cycle change advancing a blocked grant.
+
+All 912 native library tests and native/Wasm Clippy pass. Four deliberate
+mutants fail executed originals: missing empty-edge recording, stale quiet
+invalidation, a late grant deadline, and inactive-dot cursor selection. For the
+late-deadline mutant, the initial changed-cycle original invalidated the
+prediction before its target edge and therefore did not detect the mutation;
+the existing independent T3/T7 live-data original does detect it. Exact source
+restoration passes all 24 acquisition originals. The browser main/Worker
+portable digest remains `[4,2337474100]`.
+
+The first fresh standalone production comparison, with identical authorized
+media/input and six continuous 80-field Canvas/PCM windows after field3600,
+measures **27.6789 to 28.3782 fields/s (+2.526%)**, all six windows positive.
+All corresponding states, pixels and PCM match; host audio queue drops are
+zero. This is preliminary: the opposite-order pair, 22-word private-state
+comparison, main-story/original-workload tradeoffs and exact-head CI/review
+must be recorded in the associated PR before adoption. No local build, test
+or profile overlaps owned Chrome, including warmup.
+
+Baseline Wasm:
+`9f2400dc805ae370cb2630ef92b623a16fc2f623f543c37e096144abe5c44905`.
+Candidate:
+`9d744cc57931069e5e13d2d53a6d073dd93607535a22673f8ff9606d363cbab0`.
+Verification companion:
+`d457b1f704eba77eba274250b19c294a4759aec09359e78d5c80d95f0207a283`.
+
+The independent Rust core is retained. Sustained 60 fields/s, representative
+broader real-time play and production AudioWorklet underflow acceptance remain
+unmet. Related to #138 and #17; leave both open. Private media and raw evidence
+remain ignored locally. No required post-merge verification is added.
+
+The initial reverse pair is effectively flat: 27.7575 to 27.7330 fields/s
+(-0.088%). A fresh additional reverse pair improves 27.5935 to 28.2494
+(+2.377%), all six windows positive. Summing all three pairs gives
+**27.6765 to 28.1174 fields/s (+1.593%)** across 1,440 fields per package.
+Fourteen of eighteen paired windows improve. All eighteen window pairs and
+six final state/pixel/PCM endpoints match. One reverse pair is flat; the
+other two opposite-order comparisons reproduce approximately 2.4% improvement.
+Main-story/private-state/original-workload and exact-head CI/review acceptance
+is still pending at this checkpoint and must be recorded in the PR.
