@@ -132,6 +132,17 @@ impl LoopProbe {
         self.stores += stores;
     }
 }
+impl super::Bus {
+    pub(crate) fn has_master_loop_phase(&self, pc: u32) -> bool {
+        self.loop_probe.as_ref().is_some_and(|probe| {
+            probe.replaying
+                && probe.captured.as_ref().is_some_and(|data| {
+                    data.complete && !data.compiled.is_empty() && data.by_pc.contains_key(&pc)
+                })
+        })
+    }
+}
+
 impl Machine {
     pub fn loop_state_hashes(&self) -> Vec<u32> {
         fn digest(bytes: impl IntoIterator<Item = u8>) -> [u32; 2] {

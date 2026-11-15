@@ -853,8 +853,17 @@ impl Machine {
 
     fn try_cached_batch(&mut self, limit: u32) -> Result<u32, MachineError> {
         self.maybe_learn_loop();
+        // A retained Master phase can end between Slave retirements. Prefer
+        // the existing complete private-peer proof before clipping that work.
+        let private_first = self.bus.has_master_loop_phase(self.cpu.state().pc);
+        if private_first {
+            let retired = self.try_private_poll_batch(limit)?;
+            if retired != 0 {
+                return Ok(retired);
+            }
+        }
         let retired = self.try_retired_poll_batch(limit)?;
-        if retired != 0 {
+        if retired != 0 || private_first {
             return Ok(retired);
         }
         self.try_private_poll_batch(limit)
