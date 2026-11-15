@@ -317,6 +317,49 @@ impl CachedInstruction {
 }
 
 impl Cpu {
+    pub(crate) fn cached_cycle_differences(&self, prior: &Self, elapsed: u64) -> [u32; 3] {
+        let mut expected = prior.clone();
+        expected.state.instructions = self.state.instructions;
+        expected.multiplier.clock = self.multiplier.clock;
+        expected.shift_cached_clock(elapsed);
+        let registers = self
+            .state
+            .r
+            .iter()
+            .zip(expected.state.r)
+            .enumerate()
+            .fold(0, |mask, (i, (a, b))| mask | (u32::from(*a != b) << i));
+        let architecture = [
+            self.state.pc != expected.state.pc,
+            self.state.sr != expected.state.sr,
+            self.state.pr != expected.state.pr,
+            self.state.gbr != expected.state.gbr,
+            self.state.vbr != expected.state.vbr,
+            self.state.mach != expected.state.mach,
+            self.state.macl != expected.state.macl,
+            self.state.delay_target != expected.state.delay_target,
+            self.state.exceptions != expected.state.exceptions,
+            self.state.last_exception != expected.state.last_exception,
+            self.state.address_error_pending != expected.state.address_error_pending,
+            self.state.status != expected.state.status,
+        ]
+        .into_iter()
+        .enumerate()
+        .fold(0, |mask, (i, different)| mask | (u32::from(different) << i));
+        let private = [
+            self.interrupt_inhibited != expected.interrupt_inhibited,
+            self.address_error_inhibited != expected.address_error_inhibited,
+            self.last_clocks != expected.last_clocks,
+            self.load_pipeline != expected.load_pipeline,
+            self.multiplier != expected.multiplier,
+            self.fetch != expected.fetch,
+            self.execution_clock != expected.execution_clock,
+        ]
+        .into_iter()
+        .enumerate()
+        .fold(0, |mask, (i, different)| mask | (u32::from(different) << i));
+        [registers, architecture, private]
+    }
     pub fn state(&self) -> &CpuState {
         &self.state
     }
@@ -750,6 +793,12 @@ impl Cpu {
         self.execution_clock = self.execution_clock.map(|at| at + clocks);
     }
     pub(crate) fn same_cached_cycle_origin(&self, prior: &Self, elapsed: u64) -> bool {
+        self.same_cycle_origin::<true>(prior, elapsed)
+    }
+    pub(crate) fn same_loop_origin(&self, prior: &Self, elapsed: u64) -> bool {
+        self.same_cycle_origin::<false>(prior, elapsed)
+    }
+    fn same_cycle_origin<const HISTORY: bool>(&self, prior: &Self, elapsed: u64) -> bool {
         // Exhaustive destructuring makes new CPU fields a compile-time review
         // requirement. Only the two cumulative counters are intentionally free.
         let Self {
@@ -792,21 +841,20 @@ impl Cpu {
                     &prior.state.mach,
                     &prior.state.macl,
                 )
-            && (
-                delay_target,
-                exceptions,
-                last_exception,
-                address_error_pending,
-                status,
-            ) == (
-                &prior.state.delay_target,
-                &prior.state.exceptions,
-                &prior.state.last_exception,
-                &prior.state.address_error_pending,
-                &prior.state.status,
-            )
+            && (delay_target, address_error_pending, status)
+                == (
+                    &prior.state.delay_target,
+                    &prior.state.address_error_pending,
+                    &prior.state.status,
+                )
+            && (!HISTORY
+                || (exceptions, last_exception)
+                    == (&prior.state.exceptions, &prior.state.last_exception))
             && load_pipeline.same_shifted(&prior.load_pipeline, elapsed)
-            && multiplier.same_ready(&prior.multiplier)
+            && (multiplier.same_ready(&prior.multiplier)
+                || (!HISTORY
+                    && multiplier.idle_at(*execution_clock)
+                    && prior.multiplier.idle_at(prior.execution_clock)))
             && fetch.same_shifted(&prior.fetch, elapsed)
             && *execution_clock == prior.execution_clock.map(|at| at + elapsed);
         #[cfg(test)]
@@ -814,6 +862,15 @@ impl Cpu {
             let mut expected = prior.clone();
             expected.state.instructions = self.state.instructions;
             expected.multiplier.clock = self.multiplier.clock;
+            if !HISTORY {
+                expected.state.exceptions = self.state.exceptions;
+                expected.state.last_exception = self.state.last_exception.clone();
+                if multiplier.idle_at(*execution_clock)
+                    && prior.multiplier.idle_at(prior.execution_clock)
+                {
+                    expected.multiplier.retain_ready(multiplier);
+                }
+            }
             expected.shift_cached_clock(elapsed);
             assert_eq!(
                 same,
@@ -843,6 +900,21 @@ impl Cpu {
         self.multiplier.clock =
             current.multiplier.clock + (self.multiplier.clock - prior.multiplier.clock);
         self.shift_cached_clock(elapsed);
+    }
+    pub(crate) fn rebase_loop_prefix(&mut self, prior: &Self, current: &Self, elapsed: u64) {
+        assert_eq!(self.state.exceptions, prior.state.exceptions);
+        assert_eq!(self.state.last_exception, prior.state.last_exception);
+        assert!(self.multiplier.same_ready(&prior.multiplier));
+        self.rebase_poll_prefix(prior, current, elapsed);
+        self.state.exceptions = current.state.exceptions;
+        self.state.last_exception = current.state.last_exception.clone();
+        self.multiplier.retain_ready(&current.multiplier);
+    }
+    pub(crate) fn loop_multiplier_unchanged(&self, prior: &Self) -> bool {
+        self.multiplier.same_ready(&prior.multiplier)
+    }
+    pub(crate) fn loop_multiplier_idle(&self) -> bool {
+        self.multiplier.idle_at(self.execution_clock)
     }
     pub(crate) fn cached_load_address(&self, opcode: u16) -> Option<u32> {
         timing::mov_load_address(opcode, &self.state).or_else(|| {

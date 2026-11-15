@@ -25,6 +25,7 @@ fn main() {
         "active_board={:?}",
         saturn_rust::kernel::verify_active_wram_board()
     );
+    eprintln!("master_loop={:?}", saturn_rust::bus::verify_loop_probe());
     for memory in [false, true] {
         // Warm both implementations before either timed variant.
         let mut warm = Experiment::new(memory, 1);

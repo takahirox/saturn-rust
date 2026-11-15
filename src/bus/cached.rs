@@ -8,6 +8,7 @@ use super::poll_cycle::PollCycle;
 use super::*;
 use crate::cache::{CacheTouch, CachedLines};
 use crate::cpu::{CachedClass, CachedInstruction, Cpu, CpuStatus, ResidentControl};
+mod loop_replay;
 
 /// A ready peer publishes proven instruction retirements. A pending peer
 /// publishes a proven microstate after Master yields or after one ordinary peer issue.
@@ -1370,6 +1371,7 @@ impl Bus {
         {
             return Ok(None);
         }
+        let mut probe_records = Vec::new();
         let origin = memory.snapshot();
         let mut points = Retirements {
             points: std::mem::take(&mut self.cached_retirement_points),
@@ -1391,14 +1393,111 @@ impl Bus {
         let mut skipped = 0;
         let mut store_pc = 0;
         let mut replay_cpu = false;
+        let mut fast_replayed = false;
+        let mut replay_key = None;
         let mut solo_checkpoint: Option<Cpu> = None;
         while retired < count && memory.clock.get() < end {
+            if retired == 0
+                && readonly_refresh.is_none()
+                && let Some(probe) = &self.loop_probe
+                && probe.replaying
+                && let Some(data) = &probe.captured
+            {
+                let mut last_reference = points.last_reference;
+                if let Some(replayed) = memory.replay_loop(
+                    data,
+                    &cpu,
+                    count - retired,
+                    probe.diagnosing.then_some(&probe.mismatches),
+                    |at| {
+                        if checkpoint_sound || !sound_lookahead {
+                            return true;
+                        }
+                        let reference = self.system_clock.deadline(
+                            ((at - self.main_clocks) as u32)
+                                .saturating_sub(self.pending_main_clocks),
+                        );
+                        let allowed = reference.saturating_sub(last_reference) < 9;
+                        if allowed {
+                            last_reference = reference;
+                        }
+                        allowed
+                    },
+                ) {
+                    cpu = replayed.cpu;
+                    ready = replayed.ready;
+                    retired_at = replayed.at;
+                    retired += replayed.retired;
+                    if track_retirements {
+                        points.points.extend(
+                            data.phases[replayed.key.first + 1..=replayed.last]
+                                .iter()
+                                .map(|phase| Retirement {
+                                    at: phase.at + replayed.key.shift,
+                                }),
+                        );
+                        points.last_reference = self.system_clock.deadline(
+                            ((retired_at - self.main_clocks) as u32)
+                                .saturating_sub(self.pending_main_clocks),
+                        );
+                        if checkpoint_sound && matches!(poll, Some(PeerSchedule::Pending { .. })) {
+                            // Every positive retirement is eligible for this
+                            // private peer. Reuse the ordinary no-checkpoint
+                            // proof: each reference-clock gap is below nine.
+                            let mut previous = self.main_clocks;
+                            let mut gap = 0;
+                            for point in &points.points {
+                                if point.at > previous {
+                                    gap = gap.max(point.at - previous);
+                                    previous = point.at;
+                                }
+                            }
+                            if gap != 0 && self.system_clock.reference_span_bound(gap as u32) < 9 {
+                                checkpoint_sound = false;
+                                probe.sound_elisions.set(probe.sound_elisions.get() + 1);
+                            }
+                        }
+                    }
+                    anchor = None;
+                    fast_replayed = true;
+                    replay_key = Some(replayed.key);
+                    break;
+                }
+            }
             let Some(op) = cpu
                 .decoded_opcode()
                 .or_else(|| memory.opcode(cpu.state().pc))
             else {
                 break;
             };
+            if let Some(probe) = &mut self.loop_probe
+                && probe.replaying
+                && probe.learning
+            {
+                probe.discover(cpu.state().pc, op);
+            }
+            if let Some(probe) = &mut self.loop_probe
+                && probe.observing
+            {
+                probe.discover(cpu.state().pc, op);
+                if probe.is_header(cpu.state().pc)
+                    && memory.refill_count.get() == 0
+                    && let Some(snapshot) = cache
+                        .loop_probe_snapshot(*memory.lru.borrow(), |address| {
+                            memory.fills.borrow().peek_touch::<16>(&cache, address)
+                        })
+                {
+                    probe_records.push(super::loop_probe::Record {
+                        ordinal: retired,
+                        at: memory.clock.get(),
+                        cpu: cpu.clone(),
+                        cache: snapshot,
+                        retained: memory.retained.get(),
+                        stores: memory.ram_stores.len() as u64,
+                        gaps: 0,
+                    });
+                }
+            }
             let class = Cpu::cached_class(op);
             if readonly_refresh.is_some() && store_width(op).is_some() {
                 if memory.clock.get() >= normal_end {
@@ -1841,6 +1940,19 @@ impl Bus {
                     .map_err(crate::MachineError::Scu)?;
             }
         }
+        if selected < retired as usize
+            && let Some(key) = replay_key
+        {
+            (cpu, ready, retired_at) = memory.select_loop_prefix(
+                self.loop_probe.as_ref().unwrap().captured.as_ref().unwrap(),
+                key,
+                initial,
+                selected as u32,
+            );
+            retired = selected as u32;
+            let probe = self.loop_probe.as_ref().unwrap();
+            probe.shortened.set(probe.shortened.get() + 1);
+        }
         if replay_cpu || selected < retired as usize {
             // Rebuild a rejected private-peer attempt or a shortened shared
             // prefix. Successful private-peer steps avoid per-instruction copies.
@@ -1882,6 +1994,14 @@ impl Bus {
         };
         points.recycle_into(&mut self.cached_retirement_points);
         let store = memory.store.get();
+        let probe_eligible = memory.passive.is_none()
+            && memory.refill_count.get() == 0
+            && store.is_none()
+            && memory
+                .ram_stores
+                .iter()
+                .all(|s| work_ram(Bus::physical(s.store.address)));
+        let probe_stores = memory.ram_stores.len() as u64;
         let (local, ram_plan, fills) = memory.into_parts();
         debug_assert!(store.is_none() || (ram_plan.is_none() && fills.read_count() == 0));
         drop(cache);
@@ -1934,6 +2054,21 @@ impl Bus {
         }
         #[cfg(not(test))]
         let _ = skipped;
+        if let Some(probe) = &mut self.loop_probe {
+            if fast_replayed {
+                probe
+                    .replayed
+                    .set(probe.replayed.get() + u64::from(retired));
+            }
+            probe.commit(
+                probe_records,
+                initial.state().instructions,
+                cpu.state().instructions,
+                retired,
+                probe_stores,
+                probe_eligible,
+            );
+        }
         Ok(Some(CachedBatch {
             cpu,
             ready,

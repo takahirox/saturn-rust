@@ -325,6 +325,20 @@ pub fn verify_active_wram_board() -> Vec<u32> {
     crate::kernel::verify_active_wram_board()
 }
 
+#[cfg(feature = "kernel-experiment")]
+#[wasm_bindgen]
+impl Emulator {
+    pub fn advance_frame_probe(&mut self) -> Result<(), JsValue> {
+        self.machine.advance_frame_probe().map_err(js_error)
+    }
+    pub fn loop_probe_counts(&self) -> Vec<u32> {
+        self.machine.loop_probe_counts()
+    }
+    pub fn loop_probe_periods(&self) -> Vec<u32> {
+        self.machine.loop_probe_periods()
+    }
+}
+
 /// Original actual-board CPU experiment; not a game engine switch.
 #[cfg(feature = "kernel-experiment")]
 #[wasm_bindgen]
@@ -391,5 +405,43 @@ impl KernelExperiment {
     }
     pub fn digest(&self) -> Vec<u32> {
         self.inner.digest()
+    }
+}
+
+#[cfg(feature = "kernel-experiment")]
+#[wasm_bindgen]
+pub fn verify_loop_probe() -> Vec<u32> {
+    crate::bus::verify_loop_probe()
+}
+
+#[cfg(feature = "kernel-experiment")]
+#[wasm_bindgen]
+impl Emulator {
+    pub fn loop_state_hashes(&self) -> Vec<u32> {
+        self.machine.loop_state_hashes()
+    }
+    pub fn enable_loop_replay(&mut self, enabled: bool) {
+        self.machine.enable_loop_replay(enabled);
+    }
+    pub fn enable_loop_training(&mut self, enabled: bool) {
+        self.machine.enable_loop_training(enabled);
+    }
+    pub fn loop_replayed_instructions(&self) -> u64 {
+        self.machine.loop_replayed_instructions()
+    }
+    pub fn loop_shortened_batches(&self) -> u64 {
+        self.machine.loop_shortened_batches()
+    }
+    pub fn loop_sound_elisions(&self) -> u64 {
+        self.machine.loop_sound_elisions()
+    }
+    pub fn diagnose_loop_replay(&mut self, enabled: bool) {
+        self.machine.diagnose_loop_replay(enabled);
+    }
+    pub fn loop_replay_mismatches(&self) -> Vec<u32> {
+        self.machine.loop_replay_mismatches()
+    }
+    pub fn capture_loop_trace(&mut self) -> Result<Vec<u32>, JsValue> {
+        self.machine.capture_loop_trace().map_err(js_error)
     }
 }
