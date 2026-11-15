@@ -213,5 +213,7 @@ try {
     combinedFps: Object.fromEntries(variants.map(v => [v, frames * runs * 1000 / samples[v].reduce((sum, s) => sum + s.ms, 0)])),
     combinedSpeedup: values.baseline ? samples.baseline.reduce((sum, s) => sum + s.ms, 0) / samples.pkg.reduce((sum, s) => sum + s.ms, 0) : null,
     speedup: values.baseline ? median(samples.baseline.map(s => s.ms)) / median(samples.pkg.map(s => s.ms)) : null,
+    windowStateDigests: [...references].map(([window, state]) => ({ window,
+      sha256: createHash("sha256").update(JSON.stringify(state)).digest("hex") })),
     state: references.get(values.continuous ? runs - 1 : 0) }, null, 2));
 } finally { await browser?.close(); await new Promise(resolve => server.close(resolve)); }

@@ -1688,3 +1688,132 @@ final results are recorded in the PR.
 Sustained 60 fields/s, broader gameplay/transitions, production audio underflows
 and hardware completion remain unmet. Private inputs and raw diagnostics stay
 local. No required post-merge verification is added.
+
+
+### Standalone game comparison and rejected storage trial (#138 continuation)
+
+The strict pre-refresh prefix is merged in [PR #157](https://github.com/takahirox/saturn-rust/pull/157)
+as `00b221d6abccb8184004d4b0767089c77264c997`. Head
+`82a018680d8f141e3c4c9b04979978d17f017822` passes
+[CI 43678546792](https://github.com/takahirox/saturn-rust/actions/runs/43678546792),
+including 1,372 native tests / 111 result groups, Wasm, both browser shards and
+the aggregate revision/artifact gate. Author self-review is recorded; no
+independent approval is asserted. An additional feature-companion game comparison
+matches complete private CPU, effective cache data/tags/LRU, retained IF,
+instruction epochs, full WRAM and next-ready fingerprints in all six windows.
+
+The separate post-throughput profile, fields 4080–4160, covers 24,487,717 reused
+instructions and 49,355 direct shortened-prefix publications. Those publications
+can include peer alignment as well as Sound selection. Its 22,793 samples span
+3,500.762 ms. Self time is 17.541% in cached batch, 9.408% in Sound advance and
+8.806% in display acquisition. Disjoint path grouping assigns display acquisition
+and its callees to VDP2: 31.986% remains in cached batch/bus planning, 21.596%
+in other execution/presentation, 21.577% in VDP2, 17.301% in Sound and 7.540%
+in VDP1. A name-only grouping had left the display wrapper in its enclosing
+cached path; that grouping is corrected here. The remaining cached path still
+contains board/bus work and must not be treated as pure CPU time. This diagnostic
+profile is separate from all production throughput intervals.
+
+#### Rejected prefix-before-BSC-mismatch trial
+
+A prototype retained the proven instruction prefix before a changed buffered
+store acceptance, removed that failed store/event/cache version and selected
+its owner minus one. An original distinct-destination two-store control changes
+only the BSC wait configuration and compares full CPUs, caches, WRAM, BSC, clocks
+and Sound. Native/main-thread/Worker controls pass; deliberate old-abort and
+failed-store-retention mutations fail their coverage/timing checks respectively.
+
+The actual default-production game comparison nevertheless regresses
+**24.547 → 24.371 fields/s (−0.72%)**. All six alternating continuous 80-field
+pairs regress (−0.20% to −1.07%), with exposed endpoints agreeing. The added
+per-store metadata bookkeeping may contribute, but that cause is not isolated.
+The runtime change is rejected; private source snapshots and raw evidence stay
+local. No improvement or main adoption is claimed for this trial.
+
+#### Cache-version arena trial
+
+Cached bursts previously allocated their version vector and set-head index
+storage afresh. The candidate retains the empty storage returned by a successful
+commit. Commit drains versions in the same order, applies the same guest cache
+updates and host lookup invalidations, clears each touched head and resets the
+read count. The next burst takes that empty arena. Early rejected admission may
+drop capacity, limiting reuse without changing guest state.
+
+The existing independent ordinary-cache comparison reuses one arena across cache
+modes, refills and evictions. Omitting head reset deliberately fails that test
+with a stale index into an empty vector; exact restoration passes. All four
+shadow-cache controls and the portable native/main-thread/Worker loop controls
+pass, with the latter unchanged at `[4, 1988463232]`. Native all-target/all-feature
+and Wasm Clippy with warnings denied pass.
+
+The first final-production comparison against PR #157 improves
+**24.071 → 24.394 fields/s (+1.34%)**. All six paired continuous windows improve
+(+0.42% to +2.33%); corresponding exposed CPU/Slave, clock, PCM and pixel endpoints
+agree. Candidate p95 is 41.7–42.2 ms and p99 42.3–43.4 ms. Both variants finish
+preparation through field 3600 before timing six alternating 80-field windows
+through 4080, with Canvas presentation and PCM draining. Host queue drops are
+zero; production AudioWorklet underflows are not measured.
+
+The baseline production Wasm is
+`7a0c9e4c2a124e6c7a311445fac5b1d65164efa8e9ad0a33ce375922970a04d0`.
+The arena candidate is
+`83d564e9b9630d0dec3c7f5b1abde19d28447065d7d71c196a2f2103ecf6d0b1`;
+its verification companion is
+`1e31892babeb9562a75402d4d38e41f72ac632e84cac922511aea97d8fb76916`.
+Toolchain and Chrome versions match the preceding comparisons. No local
+builds/tests/profiles overlap browser preparation or throughput.
+
+A fresh reversed-order comparison also improves all six pairs, reporting
+22.692 → 24.481 fields/s (+7.88%). Candidate p95 is 41.3–42.4 ms and p99
+41.7–42.8 ms. However, the baseline shifts from 24.071 to 22.692 while the
+candidate remains near 24.4. Exact Wasm hashes match the intended packages, and
+all exposed endpoints agree. The large baseline variation prevents attributing
+this larger percentage solely to storage reuse.
+
+Standalone A/B/B/A confirmation runs one Emulator per fresh Chrome process with
+the same 3600-field warmup and six continuous 80-field measured windows:
+
+| Order | Production package | Fields/s |
+| --- | --- | ---: |
+| A1 | Current main | 24.724 |
+| B1 | Arena candidate | 24.496 |
+| B2 | Arena candidate, fresh process | 24.837 |
+| A2 | Current main, fresh process | 24.575 |
+
+Combining elapsed time over the two 480-field runs per package gives
+**24.650 → 24.666 fields/s (+0.064%)**. The two comparisons have opposite signs
+(−0.923% and +1.065%). All four final exposed guest states agree. These results
+fail to establish a reproducible gain in the one-Emulator workload. The arena
+runtime change is rejected and is absent from main. Its additional original
+workload/full-suite/CI adoption checks are not run, because no justified game gain
+remains. The cause of the dual-package baseline variation is not isolated.
+
+#### Per-window validation for standalone runs
+
+The runtime benchmark now emits `windowStateDigests` after all timing and cleanup.
+Each entry is SHA-256 of the same complete exposed state already compared by the
+paired runner, keyed by its continuous window. This allows future independent
+A/B/B/A outputs to validate every corresponding window without adding raw guest
+traces or new timed work. Existing output fields and paired checks remain.
+Historical standalone outputs above contain the final state only; no intermediate
+state digests are reconstructed or claimed for them.
+
+For defined game adoption, prefer one production Emulator per fresh browser
+process, identical media/controller/warmup/Canvas/PCM settings, alternating process
+order and matching per-window state digests. Keep profiles and diagnostic-feature
+counts in separate intervals. Dual-package comparisons remain available, but a
+small gain with unexplained instance/order sensitivity is insufficient adoption
+evidence. The standalone main result is about 24.65 fields/s in this scene.
+
+A separate older-production single-instance control uses Wasm
+`65c1d31bbcef21463cba7ee89c6588e9cbbe4ac31c534ebbe7710c48734e1177`
+(before the strict refresh-prefix entry). It measures 22.177 fields/s with the
+same defined workload, versus current-main standalone runs at 24.724 and 24.575;
+all three final exposed states agree. This additional method control supports
+the direction of the already adopted refresh-prefix gain. It is one historical
+control run, not a new counterbalanced percentage or a hardware-completion claim.
+
+Sustained 60 fields/s, broader gameplay/transitions, production audio underflows
+and hardware completion remain unmet. This increment changes benchmark output
+and records rejected trials; it adds no emulator optimization. Private inputs/raw
+diagnostics stay local. No required post-merge verification is added.
