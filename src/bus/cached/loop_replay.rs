@@ -141,7 +141,7 @@ impl Cached<'_> {
             }
             let last = &data.phases[last_index];
             let mut lru = origin.lru;
-            for touch in &data.touches[first.touch_end..last.touch_end] {
+            for (_, touch) in data.replay_touches(first_index, last_index) {
                 if !touch.apply_mapped(&mut lru, &way_map) {
                     return None;
                 }
@@ -193,7 +193,7 @@ impl Cached<'_> {
         self.write_pc
             .set(self.ram_stores.last().map_or(0, |s| s.pc));
         let mut lru = self.cache.replacement_state();
-        for touch in &data.touches[first.touch_end..last.touch_end] {
+        for (_, touch) in data.replay_touches(key.first, key.first + selected as usize) {
             assert!(touch.apply_mapped(&mut lru, &key.ways));
         }
         *self.lru.get_mut() = lru;
