@@ -84,20 +84,29 @@ pub(super) struct Retirement {
     at: u64,
 }
 #[derive(Default)]
-struct Retirements {
+struct Retirements<'a> {
     points: Vec<Retirement>,
     repeated: Option<(usize, usize, u64, usize)>, // prefix, pattern, period, copies
+    recorded: Option<(&'a [u64], u64)>,
     last_reference: u32,
 }
-impl Retirements {
+impl Retirements<'_> {
     fn recycle_into(mut self, reuse: &mut Vec<Retirement>) {
         self.points.clear();
         *reuse = self.points;
     }
     fn len(&self) -> usize {
+        if let Some((clocks, _)) = self.recorded {
+            return clocks.len();
+        }
         self.points.len() + self.repeated.map_or(0, |(_, n, _, copies)| n * copies)
     }
     fn point(&self, index: usize) -> Retirement {
+        if let Some((clocks, shift)) = self.recorded {
+            return Retirement {
+                at: clocks[index] + shift,
+            };
+        }
         if let Some((prefix, n, period, copies)) = self.repeated
             && index >= prefix
         {
@@ -140,6 +149,59 @@ impl Retirements {
                 poll.permits(clocks)
             })
             .map_or(0, |i| i + 1)
+    }
+}
+#[cfg(test)]
+mod retirement_view_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_timestamps_preserve_every_prefix_and_peer_alignment() {
+        let clocks = [0, 0, 2, 5, 5, 7, 12];
+        let shift = 17;
+        for first in 0..=clocks.len() {
+            for last in first..=clocks.len() {
+                let times = &clocks[first..last];
+                let borrowed = Retirements {
+                    recorded: Some((times, shift)),
+                    ..Retirements::default()
+                };
+                let materialized = Retirements {
+                    points: times
+                        .iter()
+                        .map(|&at| Retirement { at: at + shift })
+                        .collect(),
+                    ..Retirements::default()
+                };
+                assert_eq!(borrowed.len(), materialized.len());
+                for i in 0..times.len() {
+                    assert_eq!(borrowed.at(i), materialized.at(i));
+                }
+                if !times.is_empty() {
+                    assert_eq!(borrowed.last(), materialized.last());
+                }
+                for through in 0..=40 {
+                    assert_eq!(borrowed.through(through), materialized.through(through));
+                    let peer = PeerSchedule::Pending {
+                        mask: 0,
+                        span: through as u32,
+                    };
+                    for limit in 0..=times.len() {
+                        assert_eq!(
+                            borrowed.aligned_prefix(limit, shift, Some(&peer)),
+                            materialized.aligned_prefix(limit, shift, Some(&peer))
+                        );
+                        assert_eq!(
+                            borrowed.aligned_prefix(limit, shift, None),
+                            materialized.aligned_prefix(limit, shift, None)
+                        );
+                    }
+                }
+                let mut reuse = vec![Retirement { at: 123 }];
+                borrowed.recycle_into(&mut reuse);
+                assert!(reuse.is_empty());
+            }
+        }
     }
 }
 struct WramInstructions<'a> {
@@ -1401,6 +1463,7 @@ impl Bus {
         let mut replay_cpu = false;
         let mut fast_replayed = false;
         let mut replay_key = None;
+        let mut recorded_range = None;
         let mut solo_checkpoint: Option<Cpu> = None;
         while retired < count && memory.clock.get() < end {
             if retired == 0
@@ -1419,10 +1482,7 @@ impl Bus {
                     &cpu,
                     count - retired,
                     probe.diagnosing.then_some(&probe.mismatches),
-                    |at| {
-                        if checkpoint_sound || !sound_lookahead {
-                            return true;
-                        }
+                    (!checkpoint_sound && sound_lookahead).then_some(|at| {
                         let reference = self.system_clock.deadline(
                             ((at - self.main_clocks) as u32)
                                 .saturating_sub(self.pending_main_clocks),
@@ -1432,7 +1492,7 @@ impl Bus {
                             last_reference = reference;
                         }
                         allowed
-                    },
+                    }),
                 ) {
                     #[cfg(any(test, feature = "kernel-experiment"))]
                     if readonly_refresh.is_some() {
@@ -1445,13 +1505,10 @@ impl Bus {
                     retired_at = replayed.at;
                     retired += replayed.retired;
                     if track_retirements {
-                        points.points.extend(
-                            data.phases[replayed.key.first + 1..=replayed.last]
-                                .iter()
-                                .map(|phase| Retirement {
-                                    at: phase.at + replayed.key.shift,
-                                }),
-                        );
+                        let timeline = data.timeline.as_ref().expect("validated replay timeline");
+                        recorded_range =
+                            Some((replayed.key.first + 1, replayed.last, replayed.key.shift));
+                        let clocks = &timeline.clocks[replayed.key.first + 1..=replayed.last];
                         points.last_reference = self.system_clock.deadline(
                             ((retired_at - self.main_clocks) as u32)
                                 .saturating_sub(self.pending_main_clocks),
@@ -1460,14 +1517,25 @@ impl Bus {
                             // Every positive retirement is eligible for this
                             // private peer. Reuse the ordinary no-checkpoint
                             // proof: each reference-clock gap is below nine.
-                            let mut previous = self.main_clocks;
-                            let mut gap = 0;
-                            for point in &points.points {
-                                if point.at > previous {
-                                    gap = gap.max(point.at - previous);
-                                    previous = point.at;
+                            let first_at = clocks[0] + replayed.key.shift;
+                            let gap = if first_at >= self.main_clocks {
+                                timeline
+                                    .retirement_gap(replayed.key.first, replayed.last)
+                                    .max(first_at - self.main_clocks)
+                            } else {
+                                // Retain the literal rule if an already elapsed
+                                // retirement precedes the live board clock.
+                                let mut previous = self.main_clocks;
+                                let mut gap = 0;
+                                for &at in clocks {
+                                    let at = at + replayed.key.shift;
+                                    if at > previous {
+                                        gap = gap.max(at - previous);
+                                        previous = at;
+                                    }
                                 }
-                            }
+                                gap
+                            };
                             if gap != 0 && self.system_clock.reference_span_bound(gap as u32) < 9 {
                                 checkpoint_sound = false;
                                 probe.sound_elisions.set(probe.sound_elisions.get() + 1);
@@ -1878,6 +1946,13 @@ impl Bus {
             if cpu.state().sr & 0xF0 != interrupt_mask {
                 break;
             }
+        }
+        if let Some((first, last, shift)) = recorded_range {
+            // Borrow only after the ordinary-discovery loop is finished.
+            // A successful replay breaks without changing its observation.
+            let data = self.loop_probe.as_ref().unwrap().captured.as_ref().unwrap();
+            let timeline = data.timeline.as_ref().unwrap();
+            points.recorded = Some((&timeline.clocks[first..=last], shift));
         }
         let mut selected = points.aligned_prefix(retired as usize, self.main_clocks, poll);
         if selected == 0 {

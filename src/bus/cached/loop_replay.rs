@@ -24,7 +24,7 @@ impl Cached<'_> {
         initial: &Cpu,
         count: u32,
         diagnostics: Option<&crate::bus::loop_probe::Mismatches>,
-        mut permitted: impl FnMut(u64) -> bool,
+        mut permitted: Option<impl FnMut(u64) -> bool>,
     ) -> Option<Replayed> {
         if !data.complete
             || !data.multiplier_constant
@@ -62,17 +62,24 @@ impl Cached<'_> {
             .then_some((i, shift))
         })?;
         let first = &data.phases[first_index];
-        let mut last_index = first_index;
-        for (index, phase) in data.phases.iter().enumerate().skip(first_index + 1) {
-            let at = phase.at.checked_add(shift)?;
-            if index - first_index > count as usize
-                || at > self.end.get()
-                || (phase.cpu.state().sr ^ initial.state().sr) & 0xF0 != 0
-                || !permitted(at)
+        if (first.cpu.state().sr ^ initial.state().sr) & 0xF0 != 0 {
+            return None;
+        }
+        let timeline = data.timeline.as_ref()?;
+        let mut last_index = timeline.prefix_end(first_index, count, self.end.get(), shift)?;
+        if let Some(permitted) = &mut permitted {
+            for (index, &at) in timeline
+                .clocks
+                .iter()
+                .enumerate()
+                .take(last_index + 1)
+                .skip(first_index + 1)
             {
-                break;
+                if !permitted(at + shift) {
+                    last_index = index - 1;
+                    break;
+                }
             }
-            last_index = index;
         }
         if last_index == first_index {
             return None;
