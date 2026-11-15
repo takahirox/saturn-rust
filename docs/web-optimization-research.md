@@ -2126,8 +2126,8 @@ No real memory transaction or guest event is removed.
 
 An original two-store loop checks a selected prefix whose accepted value is
 already visible in cache while its physical bus write is still buffered. It then
-compares complete CPU/peer/ready/clock/Sound/WRAM/cache/BSC state with ordinary
-execution over two fields. The fixture is first run against the old versioned
+compares complete CPU/cache/BSC/WRAM state, peer/ready/clock state and sound-CPU
+registers with ordinary execution over two fields. The fixture is first run against the old versioned
 implementation, before applying the optimization. Its portable vector remains
 **[4, 2337474100]** after the change, including native, Wasm main thread and Worker.
 The new vector includes this additional original control; existing assertions
