@@ -1193,7 +1193,11 @@ impl Bus {
         self.acquire_display();
         while remaining != 0 {
             let display = if self.vdp2.display_active() {
-                self.clocks_to_display_work()
+                if CLOCK_ADVANCED {
+                    self.clocks_to_display_work()
+                } else {
+                    self.clocks_to_cached_display_work()
+                }
             } else {
                 u32::MAX
             };

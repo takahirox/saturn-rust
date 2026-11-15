@@ -811,6 +811,16 @@ impl Bus {
             .and_then(|(field, line, phase)| self.vdp2.clocks_to_normal_work(field, line, phase))
             .map_or(literal, |work| literal.max(work))
     }
+    fn clocks_to_cached_display_work(&self) -> u32 {
+        // Ordinary advances share board and beam time. Catch-up with an
+        // already advanced board must instead query the logical Raster.
+        let remaining = self.display_deadline.saturating_sub(self.main_clocks);
+        if remaining == 0 {
+            self.clocks_to_display_work()
+        } else {
+            remaining.min(u64::from(u32::MAX)) as u32
+        }
+    }
     pub(crate) fn main_deadline(&self) -> u32 {
         self.onchip[0]
             .clocks_to_event()
@@ -823,7 +833,7 @@ impl Bus {
             })
             .min(self.raster.clocks_to_event())
             .min(if self.vdp2.display_active() {
-                self.clocks_to_display_work()
+                self.clocks_to_cached_display_work()
             } else {
                 u32::MAX
             })
@@ -1458,6 +1468,9 @@ impl Bus {
                 self.vdp2.mark_empty_display_edge(field, line, phase);
             }
             self.flush_video();
+            // A flush can discard planned operands before the write. Keep
+            // the board prediction conservative for every video mutation.
+            self.display_deadline = 0;
         }
         if !address.is_multiple_of(N as u32) {
             return Err(BusError::Unaligned { address, width: N });
@@ -1578,7 +1591,6 @@ impl Bus {
                 let target = address + i as u32 * 2;
                 let value = u16::from_be_bytes([pair[0], pair[1]]);
                 self.vdp2.write16(target, value)?;
-                self.display_deadline = 0;
                 if target == VDP2 {
                     self.raster.configure(value);
                 }

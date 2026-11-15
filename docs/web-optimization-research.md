@@ -2587,3 +2587,60 @@ The independent Rust core is retained. Sustained 60 fields/s, representative
 broader real-time play and production audio-underflow acceptance remain unmet.
 Related to #138 and #17; leave both open. Private media/raw evidence remain
 ignored locally. No required post-merge verification is added.
+
+
+### Reuse the absolute board deadline after scheduler coalescing
+
+The first scheduler-only head above passes correctness and complete exact-head
+CI, but is **not adopted**: fresh main-story measurement changes 31.3471 to
+31.1921 fields/s (-0.495%), with all six paired windows slower. Its original
+CPU, busy sound/video and normal bitmap results are +0.252%, -0.371% and
++4.488%. All corresponding endpoints agree. Separate post-timing profiles
+suggest more board planning work despite less acquisition; they do not prove
+precise causal costs. The draft PR is held rather than selecting only the
+positive selection-scene result.
+
+The followup reuses the board's absolute display deadline in ordinary
+`main_deadline` and cached advancement with an unadvanced board clock. An
+already advanced board still queries the Raster's logical position. Every
+video-range write clears the board prediction after its existing flush and
+before mutation. The lazy consumed-edge marker still precedes that flush.
+No additional guest instruction, memory grant or output field is omitted.
+The same 915 native tests, native/Wasm Clippy, formatting and three executed
+negative controls pass; the restored originals pass. The browser main/Worker
+control remains `[4,2337474100]`. All runtime source/Cargo hashes in the PR
+worktree match the frozen measured followup.
+
+Production selection uses the same fresh-process A/B/B/A protocol above.
+Both pairs improve: 28.2664 to 28.8114 (+1.928%) and 28.0022 to 28.4794
+(+1.704%). Summed elapsed time gives **28.1337 to 28.6444 fields/s (+1.815%)**.
+All twelve paired windows improve and all twelve window/four final endpoints
+match. Candidate p95 is 35.1-36.2 ms; p99 is 35.7-37.1 ms. Six additional
+feature-enabled windows match all 22 CPU/cache/RAM digest words and PCM/video
+state; the ordinary exposed endpoint agrees with the default build.
+
+Followup default Wasm:
+`b07222ca19a4555da4430a0eec4c6ff0239596390bb25fcbbbc0dab20e3dc8ec`.
+Verification companion:
+`76d8bf2214d19ff846c369f3e291689fc4070f3c2c2d42e98c90fe0bcdc4c77d`.
+Main-story uses the saved controller path through field12814, then the same
+six 80-field Canvas/PCM windows ending at13294. A/B/B/A gives 31.1347 to
+31.5810 (+1.434%) and 31.3453 to31.4556 (+0.352%). Summed elapsed time gives
+**31.2396 to31.5182 fields/s (+0.892%)**. Eleven of twelve paired windows
+improve; the remaining window changes -0.043%. All twelve window/four final
+states and outputs match the previously adopted main-story reference.
+Candidate p95 is42.8-44.6 ms; p99 is45.0-48.0 ms. This resolves the earlier
+scheduler-only story regression without claiming its selected-scene gain alone
+was sufficient. Original CPU changes67.8835 to68.3112 (+0.630%), busy
+sound/video52.6400 to52.3400 (-0.570%) and normal bitmaps119.7963 to128.4155
+(+7.195%); all six endpoints per workload match. Record the observed small
+busy-scene loss as a tradeoff, rather than asserting all workloads improve.
+
+Aggregation initially rejected the story files because its selection-scene
+helper required warmup3600. The local helper now accepts an explicit expected
+warmup12814 while retaining endpoint/output checks. The saved measurements
+were aggregated without rerunning or changing their timings.
+New exact-head CI and final review are still required before adoption.
+Sustained 60 fields/s, broader real-time play, AudioWorklet underflow and #17
+hardware acceptance remain open. Private inputs and raw evidence remain local.
+No required post-merge verification is added.
