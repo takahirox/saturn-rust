@@ -27,12 +27,12 @@ export async function vdp1Vbe(page) {
     for(let repeat=0;repeat<2;repeat++) {
       const result=await page.evaluate(async image=>{
         const {emulator,advanceFrame}=await import("./app.js");
-        emulator.set_pal(false);emulator.reset_bios(Uint8Array.from(image));
-        for(let i=0;i<100 && emulator.read_long(0x0600E888)!==0x600D;i++)emulator.run_steps(5000);
-        const records=Array.from({length:35},(_,i)=>emulator.read_long(0x0600E800+i*4));
-        const exceptions=emulator.exception_count();
-        advanceFrame();
-        const f=emulator.framebuffer(),ctx=document.getElementById("screen").getContext("2d");
+        (await emulator.set_pal(false));(await emulator.reset_bios(Uint8Array.from(image)));
+        for(let i=0;i<100 && (await emulator.read_long(0x0600E888))!==0x600D;i++)(await emulator.run_steps(5000));
+        const records=(await Promise.all(Array.from({length:35},async (_,i)=>(await emulator.read_long(0x0600E800+i*4)))));
+        const exceptions=(await emulator.exception_count());
+        (await advanceFrame());
+        const f=(await emulator.framebuffer()),ctx=document.getElementById("screen").getContext("2d");
         return {records,exceptions,
           rows:Array.from({length:6},(_,y)=>Array.from(f.slice(y*320*4,y*320*4+160))),
           canvas:Array.from({length:6},(_,y)=>Array.from(ctx.getImageData(0,y,40,1).data))};

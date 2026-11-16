@@ -23,14 +23,14 @@ export async function rotationHighResolution(page) {
         for (const [at, value] of [[0x100, tv], [0x102, seed], [0x104, shift], [0x106, enable], [0x108, mode === "rbg1" ? 0 : parameter]]) image.writeUInt16BE(value, at);
         const actual = await page.evaluate(async rom => {
           const { emulator, advanceFrame } = await import("./app.js");
-          emulator.reset_bios(Uint8Array.from(rom));
-          for (let i = 0; i < 300 && emulator.read_long(0x0600DE1C) !== 0x600D; i++) emulator.run_steps(10000);
-          if (emulator.read_long(0x0600DE1C) !== 0x600D) throw new Error("High-resolution rotation guest did not complete");
-          const records = Array.from({ length: 8 }, (_, i) => emulator.read_long(0x0600DE00 + i * 4));
-          advanceFrame();
+          (await emulator.reset_bios(Uint8Array.from(rom)));
+          for (let i = 0; i < 300 && (await emulator.read_long(0x0600DE1C)) !== 0x600D; i++) (await emulator.run_steps(10000));
+          if ((await emulator.read_long(0x0600DE1C)) !== 0x600D) throw new Error("High-resolution rotation guest did not complete");
+          const records = (await Promise.all(Array.from({ length: 8 }, async (_, i) => (await emulator.read_long(0x0600DE00 + i * 4)))));
+          (await advanceFrame());
           const canvas = document.getElementById("screen");
           return { records, width: canvas.width, height: canvas.height,
-            frame: Array.from(emulator.framebuffer()),
+            frame: Array.from((await emulator.framebuffer())),
             canvas: Array.from(canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data) };
         }, [...image]);
         const context = `${mode}, boot=${boot}, tv=${tv.toString(16)}, seed=${seed}, shift=${shift}, enabled=${enabled}`;

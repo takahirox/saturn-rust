@@ -59,27 +59,27 @@ export async function scspMvol(page) {
     if(changedAudio) for(let at=data.length;at<input.length;at+=4) input.writeInt16LE(2048,at);
     return page.evaluate(async ({bytes,cue,media,lengths,fullTrace})=>{
       const { emulator }=await import("./app.js");
-      emulator.reset_bios(Uint8Array.from(bytes));
-      if(emulator.audio_generated()!=="0" || emulator.audio_dropped()!=="0" || emulator.audio_samples(8192).length) throw new Error("MVOL cold reset retained audio");
-      emulator.mount_cue(cue,"mvol-data.bin\0mvol-audio.bin",Uint32Array.from(lengths),Uint8Array.from(media));
+      (await emulator.reset_bios(Uint8Array.from(bytes)));
+      if((await emulator.audio_generated())!=="0" || (await emulator.audio_dropped())!=="0" || (await emulator.audio_samples(8192)).length) throw new Error("MVOL cold reset retained audio");
+      (await emulator.mount_cue(cue,"mvol-data.bin\0mvol-audio.bin",Uint32Array.from(lengths),Uint8Array.from(media)));
       const trace=[];
       for(let i=0;i<40;i++) {
-        emulator.run_steps(10000);
-        const block=emulator.audio_samples(8192);
+        (await emulator.run_steps(10000));
+        const block=(await emulator.audio_samples(8192));
         if(fullTrace) trace.push(...block);
-        if(!fullTrace && emulator.read_long(0x06009100)===4) break;
+        if(!fullTrace && (await emulator.read_long(0x06009100))===4) break;
       }
-      assertDone();
-      function assertDone() {if(emulator.read_long(0x06009100)!==4) throw new Error("MVOL guest stalled");}
-      emulator.run_steps(10000);
-      const samples=Array.from(emulator.audio_samples(8192));
+      (await assertDone());
+      async function assertDone() {if((await emulator.read_long(0x06009100))!==4) throw new Error("MVOL guest stalled");}
+      (await emulator.run_steps(10000));
+      const samples=Array.from((await emulator.audio_samples(8192)));
       // Verified guest PCM is retained solely for production worklet delivery.
       window.mvolPcm=Int16Array.from(samples);
-      return {samples,trace,records:[0,4,0x14,0x18,0x1c].map(at=>emulator.read_long(0x06009100+at)),
-        instructions:emulator.sound_instruction_count(),generated:emulator.audio_generated(),
-        dropped:emulator.audio_dropped(),halted:emulator.sound_halted(),exceptions:emulator.exception_count(),
-        geometry:[emulator.read_long(0x05a00808),emulator.read_long(0x06009120)],
-        register:emulator.read_long(0x05b00400) >>> 16};
+      return {samples,trace,records:(await Promise.all([0,4,0x14,0x18,0x1c].map(async at=>(await emulator.read_long(0x06009100+at))))),
+        instructions:(await emulator.sound_instruction_count()),generated:(await emulator.audio_generated()),
+        dropped:(await emulator.audio_dropped()),halted:(await emulator.sound_halted()),exceptions:(await emulator.exception_count()),
+        geometry:[(await emulator.read_long(0x05a00808)),(await emulator.read_long(0x06009120))],
+        register:(await emulator.read_long(0x05b00400)) >>> 16};
     },{bytes:[...image],cue,media:[...input],lengths:[data.length,audio.length],fullTrace});
   }
   async function worklet(gain,samples) {

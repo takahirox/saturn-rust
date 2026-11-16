@@ -113,15 +113,17 @@ test("shared versus fresh contexts retain complete guest clock, DMAC, Canvas and
     }
     const captureSound = page => page.evaluate(async bytes => {
       const { emulator } = await import("./app.js");
-      emulator.reset_bios(Uint8Array.from(bytes));
-      return Array.from({ length: 10 }, () => {
-        emulator.run_steps(10000);
-        return { clocks: emulator.peripheral_clocks(), retired: emulator.instruction_count(),
-          registers: [...emulator.registers()], special: [...emulator.special_registers()],
-          exceptions: [emulator.exception_count(), emulator.slave_exception_count()],
-          records: [emulator.read_long(0x0600EA00), emulator.read_long(0x0600EA04)],
-          generated: emulator.audio_generated(), pcm: [...emulator.audio_samples(8192)] };
-      });
+      (await emulator.reset_bios(Uint8Array.from(bytes)));
+      const captures = [];
+      for (let i = 0; i < 10; i++) {
+        (await emulator.run_steps(10000));
+        captures.push({ clocks: (await emulator.peripheral_clocks()), retired: (await emulator.instruction_count()),
+          registers: [...(await emulator.registers())], special: [...(await emulator.special_registers())],
+          exceptions: [(await emulator.exception_count()), (await emulator.slave_exception_count())],
+          records: [(await emulator.read_long(0x0600EA00)), (await emulator.read_long(0x0600EA04))],
+          generated: (await emulator.audio_generated()), pcm: [...(await emulator.audio_samples(8192))] });
+      }
+      return captures;
     }, [...rom]);
     const shared = await fresh();
     await vdp2Status(shared); // Prior independent guest on the original shared page.

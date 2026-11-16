@@ -10,7 +10,8 @@ export async function vdp2Status(page) {
     words.forEach((word, i) => original.writeUInt16BE(word, at + i * 2));
   }
   const traces = await page.evaluate(async rom => {
-    const { Emulator } = await import("./pkg/saturn_rust.js");
+    const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+    await init();
     const m = new Emulator(), results = [];
     try {
       for (const operand of [0, 0, 0x8000, 0x8000]) {

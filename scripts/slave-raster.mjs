@@ -19,14 +19,14 @@ export async function slaveRaster(page) {
     for(let repeat=0;repeat<2;repeat++) {
       const result=await page.evaluate(async bytes=>{
         const {emulator}=await import('./app.js');
-        emulator.set_pal(false);emulator.reset_bios(Uint8Array.from(bytes));
-        for(let i=0;i<600&&emulator.read_long(0x0600E044)!==0x600D;i++) {
-          emulator.run_steps(500);
+        (await emulator.set_pal(false));(await emulator.reset_bios(Uint8Array.from(bytes)));
+        for(let i=0;i<600&&(await emulator.read_long(0x0600E044))!==0x600D;i++) {
+          (await emulator.run_steps(500));
           // Read-only debugger inspections do not manufacture IRQs or records.
-          emulator.read_word(0x25F80004);
+          (await emulator.read_word(0x25F80004));
         }
-        return {r:Array.from({length:18},(_,i)=>emulator.read_long(0x0600E000+i*4)),
-          master:emulator.exception_count(),slave:emulator.slave_exception_count()};
+        return {r:(await Promise.all(Array.from({length:18},async (_,i)=>(await emulator.read_long(0x0600E000+i*4))))),
+          master:(await emulator.exception_count()),slave:(await emulator.slave_exception_count())};
       },[...image]);
       const {r}=result;
       assert.equal(result.master,'0');

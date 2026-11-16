@@ -248,6 +248,7 @@ pub(super) struct Domain {
     journal: Journal,
     renderer: Renderer,
     external: bool,
+    pending_clocks: u32,
     #[cfg(not(target_arch = "wasm32"))]
     outgoing: VecDeque<Vec<u8>>,
 }
@@ -265,11 +266,21 @@ impl Domain {
             journal: Journal::default(),
             renderer,
             external: false,
+            pending_clocks: 0,
             #[cfg(not(target_arch = "wasm32"))]
             outgoing: VecDeque::new(),
         })
     }
     pub(super) fn push(&mut self, command: Command) {
+        if self.external
+            && let Command::Advance { clocks, .. } = &command
+        {
+            assert!(*clocks <= wire::MAX_CLOCKS, "bounded raster segment");
+            if self.pending_clocks > wire::MAX_CLOCKS - clocks {
+                self.drain();
+            }
+            self.pending_clocks += clocks;
+        }
         self.journal.push(command);
         if self.journal.len() >= 4096 {
             self.drain();
@@ -281,6 +292,7 @@ impl Domain {
                 return;
             }
             let bytes = wire::encode(&mut self.journal);
+            self.pending_clocks = 0;
             #[cfg(target_arch = "wasm32")]
             crate::wasm::emit_video_chunk(&bytes);
             #[cfg(not(target_arch = "wasm32"))]
@@ -422,6 +434,10 @@ impl crate::Machine {
     }
     pub fn video_transport_enabled(&self) -> bool {
         self.bus.video_transport_enabled()
+    }
+    /// Publish the exact current video prefix for paused debugger queries.
+    pub fn flush_video_output(&self) {
+        self.bus.drain_video_journal();
     }
     #[cfg(not(target_arch = "wasm32"))]
     pub fn take_video_chunks(&mut self) -> Vec<Vec<u8>> {

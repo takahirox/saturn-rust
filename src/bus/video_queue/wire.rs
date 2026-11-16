@@ -4,7 +4,7 @@ use super::*;
 
 const MAGIC: &[u8; 4] = b"SRV1";
 const MAX_BYTES: usize = 16 * 1024 * 1024;
-const MAX_CLOCKS: u32 = 2_000_000;
+pub(super) const MAX_CLOCKS: u32 = 2_000_000;
 
 fn number(out: &mut Vec<u8>, value: u32) {
     out.extend_from_slice(&value.to_le_bytes());

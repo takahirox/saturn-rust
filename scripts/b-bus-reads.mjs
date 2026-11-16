@@ -25,10 +25,10 @@ export async function bBusReads(page) {
     for(let repeat=0;repeat<2;repeat++) {
       const result=await page.evaluate(async bytes=>{
         const {emulator}=await import("./app.js");
-        emulator.set_pal(false); emulator.reset_bios(Uint8Array.from(bytes));
-        for(let i=0;i<100 && emulator.read_long(0x0600E190)!==0x600D;i++) emulator.run_steps(5000);
-        return {records:[0x0600E000,0x0600E100].map(base=>Array.from({length:37},(_,i)=>emulator.read_long(base+i*4))),
-          exceptions:emulator.exception_count(),slaveExceptions:emulator.slave_exception_count(),slaveInstructions:emulator.slave_instruction_count()};
+        (await emulator.set_pal(false)); (await emulator.reset_bios(Uint8Array.from(bytes)));
+        for(let i=0;i<100 && (await emulator.read_long(0x0600E190))!==0x600D;i++) (await emulator.run_steps(5000));
+        return {records:(await Promise.all([0x0600E000,0x0600E100].map(async base=>(await Promise.all(Array.from({length:37},async (_,i)=>(await emulator.read_long(base+i*4)))))))),
+          exceptions:(await emulator.exception_count()),slaveExceptions:(await emulator.slave_exception_count()),slaveInstructions:(await emulator.slave_instruction_count())};
       },[...image]);
       const times=[];
       for(const actual of result.records) {

@@ -18,10 +18,10 @@ export async function abusTiming(page) {
     }
     const actual=await page.evaluate(async image=>{
       const {emulator}=await import("./app.js");
-      emulator.reset_bios(Uint8Array.from(image));
-      emulator.run_steps(10000);
-      return {records:Array.from({length:13},(_,i)=>emulator.read_long(0x0600D700+i*4)),
-        exceptions:emulator.exception_count()};
+      (await emulator.reset_bios(Uint8Array.from(image)));
+      (await emulator.run_steps(10000));
+      return {records:(await Promise.all(Array.from({length:13},async (_,i)=>(await emulator.read_long(0x0600D700+i*4))))),
+        exceptions:(await emulator.exception_count())};
     },[...image]);
     assert.deepEqual(actual,{records:golden,exceptions:"0"});
   }

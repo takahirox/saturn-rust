@@ -216,7 +216,8 @@ export async function cachedScheduler(page) {
       bytes.writeUInt16BE(0x0009, 0x20C);
     }
     const result = await page.evaluate(async bytes => {
-      const { Emulator } = await import("./pkg/saturn_rust.js");
+      const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+      await init();
       const fast = new Emulator(), reference = new Emulator();
       try {
         for (const m of [fast, reference]) m.reset_bios(Uint8Array.from(bytes));

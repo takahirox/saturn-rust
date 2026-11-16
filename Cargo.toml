@@ -17,8 +17,10 @@ sha1 = "=0.10.6"
 claxon = "=0.4.3"
 
 [features]
+# Ordered video transport used by the browser player.
+video-worker = []
 # Independent execution-kernel experiment; not a production engine switch.
-kernel-experiment = []
+kernel-experiment = ["video-worker"]
 
 [[example]]
 name = "kernel_benchmark"

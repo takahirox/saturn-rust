@@ -16,6 +16,40 @@ fn original_image(source: &str) -> Vec<u8> {
 }
 
 #[test]
+fn long_paused_self_refresh_run_stays_within_each_video_chunk_clock_budget() {
+    let mut image = original_image(include_str!("../../../tests/fixtures/refresh.hex"));
+    assert_eq!(&image[0x4242..0x4244], &0x2A92u16.to_be_bytes());
+    image[0x4242..0x4244].copy_from_slice(&9u16.to_be_bytes());
+    let (mut reference, mut producer) = (crate::Machine::new(), crate::Machine::new());
+    let mut consumer = Renderer::default();
+    assert!(producer.enable_video_transport(true));
+    for _ in 0..2 {
+        for m in [&mut reference, &mut producer] {
+            m.reset(crate::Boot::ExternalBios(&image)).unwrap();
+            m.run_steps(6000).unwrap();
+        }
+        let chunks = producer.take_video_chunks();
+        assert!(
+            chunks.len() > 1,
+            "clock budget must split long debugger runs"
+        );
+        for bytes in chunks {
+            consumer.replay_bytes(&bytes).unwrap();
+        }
+        assert_eq!(reference.cpu, producer.cpu);
+        assert_eq!(reference.slave, producer.slave);
+        assert_eq!(reference.clocks, producer.clocks);
+        assert_eq!(reference.loop_state_hashes(), producer.loop_state_hashes());
+        assert_eq!(
+            reference.framebuffer().unwrap(),
+            consumer.framebuffer().unwrap()
+        );
+        assert_eq!(reference.drain_audio(8192), producer.drain_audio(8192));
+        assert_eq!(producer.frames(), consumer.frames());
+    }
+}
+
+#[test]
 fn external_video_chunks_replay_original_guests_and_cold_reset_without_live_ram() {
     for (source, marker) in [
         (

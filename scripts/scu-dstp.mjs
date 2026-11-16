@@ -23,12 +23,12 @@ export async function scuDstp(page) {
     const results = await page.evaluate(async ({ image, chunk }) => {
       const { emulator: m } = await import("./app.js");
       const results = [];
-      m.clear_media();
+      (await m.clear_media());
       for (let boot = 0; boot < 2; boot++) {
-        m.reset_bios(Uint8Array.from(image));
-        for (let i = 0; i < 30000; i += chunk) m.run_steps(Math.min(chunk, 30000 - i));
-        results.push({ records: Array.from({ length: 25 }, (_, i) => m.read_long(0x0600d000 + i * 4)),
-          exceptions: m.exception_count() });
+        (await m.reset_bios(Uint8Array.from(image)));
+        for (let i = 0; i < 30000; i += chunk) (await m.run_steps(Math.min(chunk, 30000 - i)));
+        results.push({ records: (await Promise.all(Array.from({ length: 25 }, async (_, i) => (await m.read_long(0x0600d000 + i * 4))))),
+          exceptions: (await m.exception_count()) });
       }
       return results;
     }, { image: [...startup], chunk });
@@ -43,21 +43,21 @@ export async function scuDstp(page) {
       for (const media of [false,true]) {
         const result=await page.evaluate(async ({image,disc,media,chunk,count})=>{
           const {emulator:m}=await import("./app.js");
-          m.clear_media();
-          if (media) m.mount_disc(Uint8Array.from(disc));
-          m.reset_bios(Uint8Array.from(image));
-          if (m.dstp_trace()!==undefined) throw Error("cold reset retained developer trace");
-          m.set_dstp_trace(media);
+          (await m.clear_media());
+          if (media) (await m.mount_disc(Uint8Array.from(disc)));
+          (await m.reset_bios(Uint8Array.from(image)));
+          if ((await m.dstp_trace())!==undefined) throw Error("cold reset retained developer trace");
+          (await m.set_dstp_trace(media));
           for (let i=0;i<10000;i+=chunk) {
-            m.run_steps(Math.min(chunk,10000-i));
-            m.registers();m.dstp_trace(); // observation must not change progress
+            (await m.run_steps(Math.min(chunk,10000-i)));
+            (await m.registers());(await m.dstp_trace()); // observation must not change progress
           }
-          const trace=m.dstp_trace();
-          for (let i=0;i<100;i++) m.read_long(0x25fe0060);
-          if (trace!==m.dstp_trace()) throw Error("debug inspection recorded guest cycles");
-          return {records:Array.from({length:count},(_,i)=>m.read_long(0x0600d000+i*4)),
-            clocks:m.peripheral_clocks(),instructions:m.instruction_count(),exceptions:m.exception_count(),
-            registers:[...m.registers()],status:m.status(),irq:m.read_long(0x25fe00a4)&0xe00,trace};
+          const trace=(await m.dstp_trace());
+          for (let i=0;i<100;i++) (await m.read_long(0x25fe0060));
+          if (trace!==(await m.dstp_trace())) throw Error("debug inspection recorded guest cycles");
+          return {records:(await Promise.all(Array.from({length:count},async (_,i)=>(await m.read_long(0x0600d000+i*4))))),
+            clocks:(await m.peripheral_clocks()),instructions:(await m.instruction_count()),exceptions:(await m.exception_count()),
+            registers:[...(await m.registers())],status:(await m.status()),irq:(await m.read_long(0x25fe00a4))&0xe00,trace};
         },{image,disc,media,chunk,count:expected.length});
         assert.deepEqual(result.records,expected);
         assert.equal(result.exceptions,name==="access"?"3":"0");
@@ -82,12 +82,12 @@ export async function scuDstp(page) {
   const image=await rom("refill");
   const negative=await page.evaluate(async image=>{
     const {emulator:m}=await import("./app.js");
-    m.reset_bios(Uint8Array.from(image));m.set_dstp_trace(true);
+    (await m.reset_bios(Uint8Array.from(image)));(await m.set_dstp_trace(true));
     let message,repeated;
-    try {m.run_steps(10000);} catch(e) {message=String(e);}
-    const clocks=m.peripheral_clocks();
-    try {m.run_steps(1);} catch(e) {repeated=String(e);}
-    return {message,repeated,trace:m.dstp_trace(),unchanged:clocks===m.peripheral_clocks(),status:m.status()};
+    try {(await m.run_steps(10000));} catch(e) {message=String(e);}
+    const clocks=(await m.peripheral_clocks());
+    try {(await m.run_steps(1));} catch(e) {repeated=String(e);}
+    return {message,repeated,trace:(await m.dstp_trace()),unchanged:clocks===(await m.peripheral_clocks()),status:(await m.status())};
   },image);
   assert.match(negative.message,/0x05FE0064/);
   assert.equal(negative.message,negative.repeated);

@@ -18,17 +18,17 @@ export async function scspCpuMemory(page) {
     for (let repeat=0;repeat<2;repeat++) {
       const result=await page.evaluate(async ({bytes,a,b})=>{
         const { emulator }=await import("./app.js");
-        emulator.reset_bios(Uint8Array.from(bytes));
-        for (let i=0;i<20;i++) emulator.run_steps(10000);
-        const audio=emulator.audio_samples(8192);
+        (await emulator.reset_bios(Uint8Array.from(bytes)));
+        for (let i=0;i<20;i++) (await emulator.run_steps(10000));
+        const audio=(await emulator.audio_samples(8192));
         let first=false,second=false,valid=true;
         for (let i=0;i+1<audio.length;i+=2) {
           first ||= audio[i]===a && audio[i+1]===a/2;
           second ||= audio[i]===b && audio[i+1]===b/2;
           valid &&= [0,0x2000,a,b,(a+b)/2].includes(audio[i]) && [0,0x1000,a/2,b/2].includes(audio[i+1]);
         }
-        return {records:[0,1,2].map(i=>emulator.read_long(0x0600ef00+i*4)),
-          first,second,valid,exceptions:emulator.exception_count(),halted:emulator.sound_halted()};
+        return {records:(await Promise.all([0,1,2].map(async i=>(await emulator.read_long(0x0600ef00+i*4))))),
+          first,second,valid,exceptions:(await emulator.exception_count()),halted:(await emulator.sound_halted())};
       },{bytes:[...image],a,b});
       assert.deepEqual(result.records.slice(1),[0x20002000,0x600d]);
       // 512 * 26874100 / 5644800 / 8 >304 FRT counts, before refresh.
@@ -44,7 +44,7 @@ export async function scspCpuMemory(page) {
       const output=new AudioOutput();
       try {
         await output.enable(); output.setPaused(false);
-        emulator.run_steps(10000); output.deliver(emulator.audio_samples(8192));
+        (await emulator.run_steps(10000)); output.deliver((await emulator.audio_samples(8192)));
         for (let i=0;i<200;i++) {
           if (output.stats.rendered>128 && output.stats.state==="underflow") break;
           await new Promise(resolve=>setTimeout(resolve,25));
@@ -65,10 +65,10 @@ export async function scspCpuMemory(page) {
   const absent=Buffer.from(original); absent.writeUInt16BE(9,offsets[2]);
   const result=await page.evaluate(async bytes=>{
     const { emulator }=await import("./app.js");
-    emulator.reset_bios(Uint8Array.from(bytes));
-    for (let i=0;i<2;i++) emulator.run_steps(10000);
-    return {done:emulator.read_long(0x0600ef08),wave:emulator.read_long(0x05a01000),
-      silent:emulator.audio_samples(8192).every(v=>v===0),exceptions:emulator.exception_count()};
+    (await emulator.reset_bios(Uint8Array.from(bytes)));
+    for (let i=0;i<2;i++) (await emulator.run_steps(10000));
+    return {done:(await emulator.read_long(0x0600ef08)),wave:(await emulator.read_long(0x05a01000)),
+      silent:(await emulator.audio_samples(8192)).every(v=>v===0),exceptions:(await emulator.exception_count())};
   },[...absent]);
   assert.deepEqual(result,{done:0,wave:0,silent:true,exceptions:"0"});
   console.log("SCSP CPU memory guest passed: finite 512-cycle DRAM budget, SH-2 DMAC/68k shared operands, timed sample writes, executing PCM/DSP stereo, changed operands, omitted start, repeated cold boots and production AudioWorklet rendering/underflow/blocked assertions.");

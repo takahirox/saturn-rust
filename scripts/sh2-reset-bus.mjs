@@ -26,11 +26,11 @@ export async function sh2ResetBus(page) {
       for (let reset = 0; reset < 2; reset++) {
         const actual = await page.evaluate(async image => {
           const {emulator} = await import("./app.js");
-          emulator.reset_bios(Uint8Array.from(image));
-          emulator.run_steps(10000);
+          (await emulator.reset_bios(Uint8Array.from(image)));
+          (await emulator.run_steps(10000));
           return {
-            words: [0x0601E000, 0x0601E100].map(base => Array.from({length: 6}, (_, i) => emulator.read_long(base + i * 4))),
-            exceptions: [emulator.exception_count(), emulator.slave_exception_count()]
+            words: (await Promise.all([0x0601E000, 0x0601E100].map(async base => (await Promise.all(Array.from({length: 6}, async (_, i) => (await emulator.read_long(base + i * 4)))))))),
+            exceptions: [(await emulator.exception_count()), (await emulator.slave_exception_count())]
           };
         }, [...image]);
         assert.deepEqual(actual, {words: [expected, expected], exceptions: ["0", "0"]});
@@ -49,7 +49,8 @@ export async function sh2ResetBus(page) {
     const image = Buffer.from(vectorRom);
     image.writeUInt32BE(stack, 4);
     const traces = await page.evaluate(async image => {
-      const { Emulator } = await import("./pkg/saturn_rust.js");
+      const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+      await init();
       const m = new Emulator();
       try {
         const traces = [];
@@ -107,7 +108,8 @@ export async function sh2ResetBus(page) {
     }
     assert.equal(controls, 2);
     const traces = await page.evaluate(async image => {
-      const { Emulator } = await import("./pkg/saturn_rust.js");
+      const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+      await init();
       const m = new Emulator();
       try {
         return Array.from({length: 2}, () => {

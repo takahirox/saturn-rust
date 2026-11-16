@@ -1,11 +1,12 @@
 // Optional renderer transport. Call waitForCapacity before advancing a field,
 // activate while running that producer, then submit its ordered field marker.
 export class VideoRenderClient {
-  constructor({ maxFrames = 2, maxBytes = 64 * 1024 * 1024 } = {}) {
+  constructor({ maxFrames = 2, maxBytes = 64 * 1024 * 1024, presentationPort = null } = {}) {
     if (!Number.isInteger(maxFrames) || maxFrames < 1 || maxFrames > 8
         || !Number.isSafeInteger(maxBytes) || maxBytes < 1048576) {
       throw new Error("Invalid video queue capacity");
     }
+    this.directPresentation = Boolean(presentationPort);
     this.maxFrames = maxFrames;
     this.maxBytes = maxBytes;
     this.chunkSequence = 0;
@@ -24,6 +25,7 @@ export class VideoRenderClient {
     });
     this.ready.catch(() => {});
     this.worker = new Worker(new URL("./video-worker.js", import.meta.url), { type: "module" });
+    if (presentationPort) this.worker.postMessage({ type: "presentation-port", port: presentationPort }, [presentationPort]);
     this.worker.onerror = event => this.fail(new Error(event.message || "Video Worker failed"));
     this.worker.onmessage = ({ data }) => {
       if (this.closed || this.error) return;
@@ -36,7 +38,7 @@ export class VideoRenderClient {
             || data.bytes < this.acknowledgedBytes || data.bytes > this.postedBytes) {
           throw new Error("Video receipt does not match its field");
         }
-        if (item.capture && (!(data.pixels instanceof Uint8Array)
+        if (item.capture && !item.direct && (!(data.pixels instanceof Uint8Array)
             || data.pixels.byteLength !== data.width * data.height * 4)) {
           throw new Error("Incomplete video field");
         }
@@ -78,16 +80,17 @@ export class VideoRenderClient {
     if (this.closed || this.error) throw this.error ?? new Error("Video Worker is closed");
   }
 
-  submit(fields, { capture = true } = {}) {
+  submit(fields, { capture = true, presentation = null } = {}) {
     if (this.closed || this.error) throw this.error ?? new Error("Video Worker is closed");
     if (this.pending.size >= this.maxFrames) throw new Error("Wait for video capacity before advancing");
     const sequence = this.frameSequence++;
     let resolve, reject;
     const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
     promise.catch(() => {});
-    this.pending.set(sequence, { promise, resolve, reject, fields, chunks: this.chunkSequence, capture });
+    this.pending.set(sequence, { promise, resolve, reject, fields, chunks: this.chunkSequence, capture,
+      direct: this.directPresentation && presentation !== null });
     this.peakPendingFrames = Math.max(this.peakPendingFrames, this.pending.size);
-    this.worker.postMessage({ type: "frame", sequence, fields, capture });
+    this.worker.postMessage({ type: "frame", sequence, fields, capture, presentation });
     return promise;
   }
 

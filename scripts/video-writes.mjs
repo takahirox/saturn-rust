@@ -19,13 +19,13 @@ export async function videoWrites(page) {
     for(let repeat=0;repeat<2;repeat++) {
       const result=await page.evaluate(async bytes=>{
         const {emulator,advanceFrame}=await import('./app.js');
-        emulator.set_pal(false);emulator.reset_bios(Uint8Array.from(bytes));
-        for(let i=0;i<4000&&emulator.read_long(0x0600E150)!==0x600D;i++) emulator.run_steps(500);
-        const records=[0x0600E000,0x0600E100].flatMap(base=>Array.from({length:21},(_,i)=>emulator.read_long(base+i*4)));
-        records.push(emulator.read_long(0x0600E200),emulator.read_long(0x0600E204));
-        const done=emulator.read_long(0x0600E208),exceptions=emulator.exception_count(),slaveExceptions=emulator.slave_exception_count();
-        advanceFrame();
-        const f=emulator.framebuffer(),ctx=document.getElementById('screen').getContext('2d');
+        (await emulator.set_pal(false));(await emulator.reset_bios(Uint8Array.from(bytes)));
+        for(let i=0;i<4000&&(await emulator.read_long(0x0600E150))!==0x600D;i++) (await emulator.run_steps(500));
+        const records=(await Promise.all([0x0600E000,0x0600E100].map(async base=>(await Promise.all(Array.from({length:21},async (_,i)=>(await emulator.read_long(base+i*4)))))))).flat();
+        records.push((await emulator.read_long(0x0600E200)),(await emulator.read_long(0x0600E204)));
+        const done=(await emulator.read_long(0x0600E208)),exceptions=(await emulator.exception_count()),slaveExceptions=(await emulator.slave_exception_count());
+        (await advanceFrame());
+        const f=(await emulator.framebuffer()),ctx=document.getElementById('screen').getContext('2d');
         return {records,done,exceptions,slaveExceptions,row:Array.from(f.slice(16*320*4,17*320*4)),
           canvas:Array.from(ctx.getImageData(0,16,320,1).data)};
       },[...image]);

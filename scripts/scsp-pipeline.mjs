@@ -21,13 +21,13 @@ export async function scspPipeline(page) {
       for (let repeat=0;repeat<2;repeat++) {
         const result=await page.evaluate(async ({bytes,left,right})=>{
           const { emulator }=await import("./app.js");
-          emulator.reset_bios(Uint8Array.from(bytes));
-          for (let i=0;i<10;i++) emulator.run_steps(10000);
-          const records=Array.from({length:4},(_,i)=>emulator.read_long(0x0600EF00+i*4));
-          emulator.audio_samples(8192); emulator.run_steps(10000);
-          const audio=emulator.audio_samples(8192);
+          (await emulator.reset_bios(Uint8Array.from(bytes)));
+          for (let i=0;i<10;i++) (await emulator.run_steps(10000));
+          const records=(await Promise.all(Array.from({length:4},async (_,i)=>(await emulator.read_long(0x0600EF00+i*4)))));
+          (await emulator.audio_samples(8192)); (await emulator.run_steps(10000));
+          const audio=(await emulator.audio_samples(8192));
           return {records,frames:audio.length/2,stereo:audio.length>=128 && audio.every((v,i)=>v===(i%2 ? right : left)),
-            exceptions:emulator.exception_count(),halted:emulator.sound_halted()};
+            exceptions:(await emulator.exception_count()),halted:(await emulator.sound_halted())};
         },{bytes:[...image],left,right});
         assert.deepEqual(result.records,[right&65535,left&65535,0x30060000,0x600D]);
         assert(result.stereo); assert.equal(result.exceptions,"0");
@@ -41,7 +41,7 @@ export async function scspPipeline(page) {
         const output=new AudioOutput();
         try {
           await output.enable(); output.setPaused(false);
-          emulator.run_steps(10000); output.deliver(emulator.audio_samples(8192));
+          (await emulator.run_steps(10000)); output.deliver((await emulator.audio_samples(8192)));
           for (let i=0;i<200;i++) {
             if (output.stats.rendered>128 && output.stats.state==="underflow") break;
             await new Promise(resolve=>setTimeout(resolve,25));

@@ -16,16 +16,16 @@ export async function scspClock(page) {
     for (let repeat = 0; repeat < 2; repeat++) {
       const result = await page.evaluate(async ({ bytes, late }) => {
         const { emulator } = await import("./app.js");
-        emulator.reset_bios(Uint8Array.from(bytes));
-        for (let i = 0; i < 10; i++) emulator.run_steps(10000);
-        const audio = emulator.audio_samples(8192);
+        (await emulator.reset_bios(Uint8Array.from(bytes)));
+        for (let i = 0; i < 10; i++) (await emulator.run_steps(10000));
+        const audio = (await emulator.audio_samples(8192));
         let stereo = false;
         for (let i = 0; i + 1 < audio.length; i += 2) {
           stereo ||= audio[i] === late * 2 && audio[i + 1] === late * 2;
         }
-        return { records: [emulator.read_long(0x0600EA00), emulator.read_long(0x0600EA04)],
-          input: emulator.read_long(0x05A01000) >>> 16, stereo, halted: emulator.sound_halted(),
-          exceptions: emulator.exception_count() };
+        return { records: [(await emulator.read_long(0x0600EA00)), (await emulator.read_long(0x0600EA04))],
+          input: (await emulator.read_long(0x05A01000)) >>> 16, stereo, halted: (await emulator.sound_halted()),
+          exceptions: (await emulator.exception_count()) };
       }, { bytes: [...image], late });
       assert.deepEqual(result, { records: [0x091A0000 + late, 0x600D], input: value,
         stereo: true, halted: false, exceptions: "0" });
@@ -36,8 +36,8 @@ export async function scspClock(page) {
       const output = new AudioOutput();
       try {
         await output.enable(); output.setPaused(false);
-        emulator.run_steps(10000);
-        output.deliver(emulator.audio_samples(8192));
+        (await emulator.run_steps(10000));
+        output.deliver((await emulator.audio_samples(8192)));
         for (let i = 0; i < 200; i++) {
           if (output.stats.rendered > 128 && output.stats.state === "underflow") break;
           await new Promise(resolve => setTimeout(resolve, 25));
@@ -75,14 +75,14 @@ export async function scspEffects(page) {
       for (let repeat = 0; repeat < 2; repeat++) {
         const result = await page.evaluate(async ({ bytes, left, right }) => {
           const { emulator } = await import("./app.js");
-          emulator.reset_bios(Uint8Array.from(bytes));
-          for (let i = 0; i < 10; i++) emulator.run_steps(10000);
-          emulator.audio_samples(8192);
-          emulator.run_steps(10000);
-          const audio = emulator.audio_samples(8192);
-          return { records: [0, 4, 8].map(i => emulator.read_long(0x0600EB00 + i)),
+          (await emulator.reset_bios(Uint8Array.from(bytes)));
+          for (let i = 0; i < 10; i++) (await emulator.run_steps(10000));
+          (await emulator.audio_samples(8192));
+          (await emulator.run_steps(10000));
+          const audio = (await emulator.audio_samples(8192));
+          return { records: (await Promise.all([0, 4, 8].map(async i => (await emulator.read_long(0x0600EB00 + i))))),
             stereo: audio.length >= 128 && audio.every((v, i) => v === (i % 2 ? right : left)),
-            halted: emulator.sound_halted(), exceptions: emulator.exception_count() };
+            halted: (await emulator.sound_halted()), exceptions: (await emulator.exception_count()) };
         }, { bytes: [...image], left, right });
         assert.deepEqual(result, { records: [((left & 65535) * 65536 + right) >>> 0, 0, 0x600D],
           stereo: true, halted: false, exceptions: "0" });
@@ -93,8 +93,8 @@ export async function scspEffects(page) {
         const output = new AudioOutput();
         try {
           await output.enable(); output.setPaused(false);
-          emulator.run_steps(10000);
-          output.deliver(emulator.audio_samples(8192));
+          (await emulator.run_steps(10000));
+          output.deliver((await emulator.audio_samples(8192)));
           for (let i = 0; i < 200; i++) {
             if (output.stats.rendered > 128 && output.stats.state === "underflow") break;
             await new Promise(resolve => setTimeout(resolve, 25));

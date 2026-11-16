@@ -25,9 +25,9 @@ export async function sh2Load(page) {
     await page.locator("#bios").setInputFiles({name:`original-sh2-load-${variant}.bin`,mimeType:"application/octet-stream",buffer:image});
     await page.waitForFunction(()=>document.getElementById("status").textContent.startsWith("Resetting"));
     const run=()=>page.evaluate(async(count)=>{
-      const {emulator}=await import("./app.js");emulator.run_steps(10000);
-      return {words:[0x0600EC00,0x0600ED00].map(base=>Array.from({length:count},(_,i)=>emulator.read_long(base+i*4))),
-        exceptions:[emulator.exception_count(),emulator.slave_exception_count()]};
+      const {emulator}=await import("./app.js");(await emulator.run_steps(10000));
+      return {words:(await Promise.all([0x0600EC00,0x0600ED00].map(async base=>(await Promise.all(Array.from({length:count},async (_,i)=>(await emulator.read_long(base+i*4)))))))),
+        exceptions:[(await emulator.exception_count()),(await emulator.slave_exception_count())]};
     },vectors.length);
     const actual=await run();
     assert.deepEqual(actual,{words:[expected,expected],exceptions:["0","0"]},variant);

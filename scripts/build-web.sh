@@ -25,7 +25,7 @@ fi
 # Keep hot CPU/bus helpers visible to LLVM before Wasm tiering. An explicit
 # caller RUSTFLAGS retains control of code generation; see runtime-performance.
 RUSTFLAGS="${RUSTFLAGS--C llvm-args=--inline-threshold=1000}" \
-  cargo build --locked --release --target wasm32-unknown-unknown
+  cargo build --locked --release --target wasm32-unknown-unknown --features video-worker
 wasm-bindgen --target web --out-dir web/pkg --no-typescript "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/saturn_rust.wasm"
 
 # Every browser build uses the measured optimizer and retains traps/features.

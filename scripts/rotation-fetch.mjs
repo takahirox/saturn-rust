@@ -20,14 +20,14 @@ export async function rotationFetch(page, modes = ["tile", "bitmap", "rbg1"]) {
           image.writeUInt16BE(Number(write), 0x104);
           const actual = await page.evaluate(async rom => {
             const { emulator, advanceFrame } = await import("./app.js");
-            emulator.reset_bios(Uint8Array.from(rom));
-            for (let i = 0; i < 400 && emulator.read_long(0x0600DC0C) !== 0x600D; i++) emulator.run_steps(5000);
-            if (emulator.read_long(0x0600DC0C) !== 0x600D) throw new Error("Rotation image guest did not complete");
-            const records = Array.from({ length: 4 }, (_, i) => emulator.read_long(0x0600DC00 + i * 4));
-            advanceFrame();
+            (await emulator.reset_bios(Uint8Array.from(rom)));
+            for (let i = 0; i < 400 && (await emulator.read_long(0x0600DC0C)) !== 0x600D; i++) (await emulator.run_steps(5000));
+            if ((await emulator.read_long(0x0600DC0C)) !== 0x600D) throw new Error("Rotation image guest did not complete");
+            const records = (await Promise.all(Array.from({ length: 4 }, async (_, i) => (await emulator.read_long(0x0600DC00 + i * 4)))));
+            (await advanceFrame());
             return {
               records,
-              frame: Array.from(emulator.framebuffer()),
+              frame: Array.from((await emulator.framebuffer())),
               canvas: Array.from(document.getElementById("screen").getContext("2d").getImageData(0, 0, 320, 224).data),
             };
           }, [...image]);

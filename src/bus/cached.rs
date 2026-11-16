@@ -1227,7 +1227,7 @@ impl Bus {
                 self.raster.advance(delta).is_none(),
                 "cached catch-up crossed blanking"
             );
-            #[cfg(any(test, feature = "kernel-experiment"))]
+            #[cfg(any(test, feature = "video-worker"))]
             {
                 let before = self.vdp1.take_display_journal();
                 self.record_video_advance(delta, before, None);

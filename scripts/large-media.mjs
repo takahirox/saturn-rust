@@ -1,6 +1,7 @@
 // Original MIT guest/media: tests/fixtures/LICENSE + build_large_media.py.
 // Actual production picker, Wasm execution and AudioWorklet at project prefix.
 import assert from "node:assert/strict";
+import { waitForLoadedDisc } from "./browser-transport.mjs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, open, rm } from "node:fs/promises";
@@ -43,21 +44,21 @@ export async function largeMedia(browser, url) {
         await page.evaluate(async () => { await window.finishLargeRead(); window.restoreLargeRead(); });
         assert.match(await page.locator("#status").textContent(), /Reset/);
         await page.locator("#disc").setInputFiles(mixed ? [cue, iso, audio] : iso);
-        await page.waitForFunction(() => document.getElementById("status").textContent === "Ready", null, { timeout:60000 });
+        await waitForLoadedDisc(page, { timeout: 60000 });
         assert.equal(await page.locator("#error").textContent(), "");
         const execute = async (sysres = false) => page.evaluate(async (sysres) => {
           const { emulator } = await import("./app.js");
           if (sysres) {
-            const old = emulator.export_backup_ram()[0];
-            emulator.set_buttons(128);
-            for(let i=0;i<80 && emulator.export_backup_ram()[0] === old;i++) emulator.run_steps(10000);
-            emulator.set_buttons(0);
+            const old = (await emulator.export_backup_ram())[0];
+            (await emulator.set_buttons(128));
+            for(let i=0;i<80 && (await emulator.export_backup_ram())[0] === old;i++) (await emulator.run_steps(10000));
+            (await emulator.set_buttons(0));
           }
-          for(let i=0;i<80 && emulator.read_long(0x0601000C)!==0x600D;i++) emulator.run_steps(10000);
-          return { sum:emulator.read_long(0x06010000), dma:emulator.read_long(0x06010004),
-            irq:emulator.read_long(0x06010008), done:emulator.read_long(0x0601000C),
-            first:emulator.read_long(0x06011000), last:emulator.read_long(0x060117FC),
-            backup:emulator.export_backup_ram()[0], mode:emulator.mode() };
+          for(let i=0;i<80 && (await emulator.read_long(0x0601000C))!==0x600D;i++) (await emulator.run_steps(10000));
+          return { sum:(await emulator.read_long(0x06010000)), dma:(await emulator.read_long(0x06010004)),
+            irq:(await emulator.read_long(0x06010008)), done:(await emulator.read_long(0x0601000C)),
+            first:(await emulator.read_long(0x06011000)), last:(await emulator.read_long(0x060117FC)),
+            backup:(await emulator.export_backup_ram())[0], mode:(await emulator.mode()) };
         }, sysres);
         function check(result, backup) {
           assert.equal(result.sum, 393991); // 3*(1+...+512) + guest literal 7
@@ -73,9 +74,9 @@ export async function largeMedia(browser, url) {
         if (mixed) {
           const samples = await page.evaluate(async () => {
             const { emulator, audio } = await import("./app.js");
-            emulator.audio_samples(8192);
-            for(let i=0;i<3;i++) emulator.advance_frame();
-            const samples = emulator.audio_samples(8192);
+            (await emulator.audio_samples(8192));
+            for(let i=0;i<3;i++) (await emulator.advance_frame());
+            const samples = (await emulator.audio_samples(8192));
             audio.setPaused(false); audio.deliver(samples);
             window.largeAudio = audio;
             return [...samples];
@@ -90,7 +91,7 @@ export async function largeMedia(browser, url) {
         assert.equal(await page.locator("#run").isDisabled(), true);
         const resetState = await page.evaluate(async () => {
           const { emulator } = await import("./app.js");
-          return [emulator.status(), emulator.instruction_count()];
+          return [(await emulator.status()), (await emulator.instruction_count())];
         });
         assert.match(resetState[0], /Reset/); assert.equal(resetState[1], "0");
         assert.deepEqual(errors, []);
@@ -111,11 +112,11 @@ export async function largeMedia(browser, url) {
         await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
         await page.locator("#view-debug").click(); await page.locator("#settings > summary").click();
         await page.locator("#disc").setInputFiles(iso);
-        await page.waitForFunction(() => document.getElementById("status").textContent === "Ready", null, {timeout:60000});
+        await waitForLoadedDisc(page, { timeout: 60000 });
         const result = await page.evaluate(async () => {
           const { emulator } = await import("./app.js");
-          for(let i=0;i<80 && emulator.read_long(0x0601000C)!==0x600D;i++) emulator.run_steps(10000);
-          return [emulator.read_long(0x06010000), emulator.read_long(0x0601000C)];
+          for(let i=0;i<80 && (await emulator.read_long(0x0601000C))!==0x600D;i++) (await emulator.run_steps(10000));
+          return [(await emulator.read_long(0x06010000)), (await emulator.read_long(0x0601000C))];
         });
         if(mutation==="omit") assert.notEqual(result[1], 0x600D);
         else assert.deepEqual(result, [mutation==="literal" ? 393995 : 393997, 0x600D]);

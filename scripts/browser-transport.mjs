@@ -29,7 +29,41 @@ export function unpack(value) {
   return value;
 }
 
+// Playwright's synchronous polling treats an async predicate's Promise as
+// truthy. Await the real Worker result before accepting a guest condition.
+export async function waitForGuest(page, predicate, argument, {timeout = 30000} = {}) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (await page.evaluate(predicate, argument)) return;
+    await page.waitForTimeout(10);
+  }
+  throw new Error(`Guest predicate did not become true within ${timeout} ms`);
+}
+
+// Machine status alone can still describe the preceding disc during an async
+// local replacement. Only query the new guest after the selection is accepted.
+export function waitForLoadedDisc(page, { timeout = 30000 } = {}) {
+  return page.waitForFunction(() =>
+    document.getElementById("status").textContent === "Ready"
+    && document.getElementById("disc-selection").textContent.includes("Loaded locally.")
+    && document.getElementById("main").getAttribute("aria-busy") === "false"
+    && !document.getElementById("start").disabled, undefined, { timeout });
+}
+
 export function instrumentPage(page, { compact, record }) {
+  // A control action now finishes after its Worker operation. Keep ordinary
+  // click assertions at that completed UI boundary; tests observing an in-flight
+  // transition use evaluate(button => button.click()) explicitly.
+  const locator = page.locator.bind(page);
+  page.locator = (...args) => {
+    const target = locator(...args), click = target.click.bind(target);
+    target.click = async (...options) => {
+      const result = await click(...options);
+      await page.waitForFunction(() => document.getElementById("main")?.getAttribute("aria-busy") !== "true", undefined, {polling:10});
+      return result;
+    };
+    return target;
+  };
   const evaluate = page.evaluate.bind(page);
   page.evaluate = async (callback, argument) => {
     if (typeof callback !== "function") throw new Error("Expected a serializable browser callback");

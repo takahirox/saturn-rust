@@ -12,25 +12,33 @@ export async function cdStream(page){
  const requests=[];const observe=r=>requests.push({method:r.method(),body:r.postData()});page.on("request",observe);
  const run=(image,{chunk=10000,fixed=0,inspect=false,milestone=false,resetTransfer=false}={})=>page.evaluate(async args=>{
   const {emulator:m,advanceFrame}=await import("./app.js");
-  const O=0x06070000,rom=Uint8Array.from(args.rom);m.reset_bios(rom);m.mount_disc(Uint8Array.from(args.image));
-  const words=(at,n)=>Array.from({length:n},(_,i)=>m.read_long(at+i*4));
-  const bytes=(at,n)=>Array.from({length:n},(_,i)=>(m.read_long((at+i)&~3)>>>(24-((at+i)%4)*8))&255);
+  const O=0x06070000,rom=Uint8Array.from(args.rom);(await m.reset_bios(rom));(await m.mount_disc(Uint8Array.from(args.image)));
+  const words=async (at,n)=>(await Promise.all(Array.from({length:n},async (_,i)=>(await m.read_long(at+i*4)))));
+  const bytes=async (at,n)=>(await Promise.all(Array.from({length:n},async (_,i)=>((await m.read_long((at+i)&~3))>>>(24-((at+i)%4)*8))&255)));
   let intermediate=null;
-  if(args.resetTransfer){let reached=false;for(let i=0;i<3000000;i++){m.step();if(m.read_long(O+4)===3&&(m.read_long(O+0x20)&12)===12&&(m.read_word(0x25890008)&2)!==0&&m.read_long(0x25818000)!==m.read_long(0x06080004)&&m.read_long(0x06010204)<m.read_long(O+0x40)){reached=true;break;}}if(!reached)throw new Error("slow FIFO not reached");m.reset_bios(rom);if(m.read_long(O)!==0||m.read_long(0x25818000)!==0xFFFFFFFF)throw new Error("stale reset publication");}
-  if(args.milestone){let reached=false;for(let i=0;i<3000;i++){m.run_steps(1000);if(m.read_long(0x06071060)!==0){reached=true;break;}}if(!reached)throw new Error("guest computation milestone missing");
-   const before=m.instruction_count();advanceFrame();advanceFrame();
-   intermediate={phase:m.read_long(O+4),hirq:m.read_word(0x25890008),instructions:m.instruction_count()-before,frames:m.frames(),
-    color:m.read_word(0x25E00000),canvas:Array.from(document.getElementById("screen").getContext("2d").getImageData(0,0,320,224).data)};
+  if(args.resetTransfer){let reached=false;for(let i=0;i<3000000;i++){(await m.step());if((await m.read_long(O+4))===3&&((await m.read_long(O+0x20))&12)===12&&((await m.read_word(0x25890008))&2)!==0&&(await m.read_long(0x25818000))!==(await m.read_long(0x06080004))&&(await m.read_long(0x06010204))<(await m.read_long(O+0x40))){reached=true;break;}}if(!reached)throw new Error("slow FIFO not reached");(await m.reset_bios(rom));if((await m.read_long(O))!==0||(await m.read_long(0x25818000))!==0xFFFFFFFF)throw new Error("stale reset publication");}
+  if(args.milestone){let reached=false;for(let i=0;i<3000;i++){(await m.run_steps(1000));if((await m.read_long(0x06071060))!==0){reached=true;break;}}if(!reached)throw new Error("guest computation milestone missing");
+   const before=(await m.instruction_count());(await advanceFrame());(await advanceFrame());
+   intermediate={phase:(await m.read_long(O+4)),hirq:(await m.read_word(0x25890008)),instructions:(await m.instruction_count())-before,frames:(await m.frames()),
+    color:(await m.read_word(0x25E00000)),canvas:Array.from(document.getElementById("screen").getContext("2d").getImageData(0,0,320,224).data)};
   }
-  let left=args.fixed||8000000;while(left>0){const n=Math.min(left,args.chunk);m.run_steps(n);left-=n;if(args.inspect){m.read_long(0x25818000);m.read_word(0x25890024);}if(!args.fixed&&(m.read_long(O+0xFC)!==0||m.read_long(0x060100FC)!==0))break;}
-  const end=m.read_long(O+0x24)&0x1FFFFFFF,commandEnd=m.read_long(O+0x2c)&0x1FFFFFFF;
-  const result={fields:words(O,64),bootError:m.read_long(0x060100FC),mode:m.mode(),hle:m.read_long(0x06000320),aip:m.read_long(0x060102f0),
-   program:bytes(0x06020000,args.codeLength),buffers:bytes(0x06080000,65536),fifo:m.read_long(0x25818000),
-   records:words(0x06071000,end>=0x06071000&&end<0x06072000?(end-0x06071000)/4:0),
-   commands:words(0x06074000,commandEnd>=0x06074000&&commandEnd<0x06078000?(commandEnd-0x06074000)/4:0),
-   dma:words(0x25fe0000,2),irq:[m.read_long(0x06010204),m.read_long(0x06010208),m.read_long(0x25fe00a4)&0x10800],intermediate,
-   ...(args.fixed?{clocks:m.peripheral_clocks(),registers:Array.from(m.registers()),special:Array.from(m.special_registers()),instructions:m.instruction_count(),slave:Array.from(m.slave_registers()),log:words(O,0x8000/4)}:{})};
-  advanceFrame();advanceFrame();result.canvas=Array.from(document.getElementById("screen").getContext("2d").getImageData(0,0,320,224).data);return result;
+  let left=args.fixed||8000000;while(left>0){
+   const pending=[];
+   for(let batch=0;batch<(args.fixed?1024:1)&&left>0;batch++){
+    const n=Math.min(left,args.chunk);pending.push(m.run_steps(n));left-=n;
+    if(args.inspect)pending.push(m.read_long(0x25818000),m.read_word(0x25890024));
+   }
+   await Promise.all(pending);
+   if(!args.fixed&&((await m.read_long(O+0xFC))!==0||(await m.read_long(0x060100FC))!==0))break;
+  }
+  const end=(await m.read_long(O+0x24))&0x1FFFFFFF,commandEnd=(await m.read_long(O+0x2c))&0x1FFFFFFF;
+  const result={fields:(await words(O,64)),bootError:(await m.read_long(0x060100FC)),mode:(await m.mode()),hle:(await m.read_long(0x06000320)),aip:(await m.read_long(0x060102f0)),
+   program:(await bytes(0x06020000,args.codeLength)),buffers:(await bytes(0x06080000,65536)),fifo:(await m.read_long(0x25818000)),
+   records:(await words(0x06071000,end>=0x06071000&&end<0x06072000?(end-0x06071000)/4:0)),
+   commands:(await words(0x06074000,commandEnd>=0x06074000&&commandEnd<0x06078000?(commandEnd-0x06074000)/4:0)),
+   dma:(await words(0x25fe0000,2)),irq:[(await m.read_long(0x06010204)),(await m.read_long(0x06010208)),(await m.read_long(0x25fe00a4))&0x10800],intermediate,
+   ...(args.fixed?{clocks:(await m.peripheral_clocks()),registers:Array.from((await m.registers())),special:Array.from((await m.special_registers())),instructions:(await m.instruction_count()),slave:Array.from((await m.slave_registers())),log:(await words(O,0x8000/4))}:{})};
+  (await advanceFrame());(await advanceFrame());result.canvas=Array.from(document.getElementById("screen").getContext("2d").getImageData(0,0,320,224).data);return result;
  },{image:[...image],rom:[...rom],codeLength:executable.length,chunk,fixed,inspect,milestone,resetTransfer});
  function success(got,layout,data){
   const f=got.fields,n=Math.ceil(data.length/2048),sum=[...data].reduce((a,b)=>a+b,0);

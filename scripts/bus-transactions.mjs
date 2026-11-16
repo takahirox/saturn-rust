@@ -14,15 +14,15 @@ export async function busTransactions(page) {
     image[at + 1] = increments;
     const actual = await page.evaluate(async image => {
       const { emulator } = await import("./app.js");
-      emulator.reset_bios(Uint8Array.from(image));
-      emulator.run_steps(10000);
+      (await emulator.reset_bios(Uint8Array.from(image)));
+      (await emulator.run_steps(10000));
       return {
-        records: [0x0600ED00, 0x0600ED10].map(base => [emulator.read_long(base), emulator.read_long(base + 4), emulator.read_long(base + 8), emulator.read_long(base + 12)]),
-        counter: emulator.read_long(0x0600F004),
-        lock: emulator.read_long(0x0600F000),
-        exceptions: [emulator.exception_count(), emulator.slave_exception_count()],
-        dma: [emulator.read_long(0x0600ED30), ...Array.from({length:3}, (_,i) => emulator.read_long(0x0600ED20+i*4)),
-          ...Array.from({length:6}, (_,i) => emulator.read_long(0x0600ED40+i*4))]
+        records: (await Promise.all([0x0600ED00, 0x0600ED10].map(async base => [(await emulator.read_long(base)), (await emulator.read_long(base + 4)), (await emulator.read_long(base + 8)), (await emulator.read_long(base + 12))]))),
+        counter: (await emulator.read_long(0x0600F004)),
+        lock: (await emulator.read_long(0x0600F000)),
+        exceptions: [(await emulator.exception_count()), (await emulator.slave_exception_count())],
+        dma: [(await emulator.read_long(0x0600ED30)), ...(await Promise.all(Array.from({length:3}, async (_,i) => (await emulator.read_long(0x0600ED20+i*4))))),
+          ...(await Promise.all(Array.from({length:6}, async (_,i) => (await emulator.read_long(0x0600ED40+i*4)))))]
       };
     }, [...image]);
     assert.deepEqual(actual, {records: [[increments, 0x600D, 6, 0], [increments, 0x600D, 6, 0]], counter: increments * 2, lock: 0, exceptions: ["3", "0"], dma: [0x600D, 1, 1, 1, 0x11223344, 0xAABBCCDD, 0x11223344, 0xAABBCCDD, 0x11223344, 0xAABBCCDD]});

@@ -12,31 +12,37 @@ export async function biosInitialization(page) {
   const expected = (await readFile("tests/fixtures/bios-initialization.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v, 16));
   const run = async (bytes, chunk, resetPending = false) => page.evaluate(async ({bytes, chunk, resetPending, count}) => {
     const {emulator: m, advanceFrame} = await import("./app.js");
-    m.clear_media();
-    m.reset_bios(Uint8Array.from(bytes));
+    (await m.clear_media());
+    (await m.reset_bios(Uint8Array.from(bytes)));
     if (resetPending) {
       // Cold cancellation during active status acquisition, before the deferred
       // control takes effect. The guest's subsequent run must start from reset.
       for (let i = 0; i < 400000; i++) {
-        m.run_steps(1);
+        (await m.run_steps(1));
         // The firmware writes its marker immediately after the queued store;
         // stop during status collection, without injecting a result.
-        if (m.read_long(0x06020ff4) === 1) break;
+        if ((await m.read_long(0x06020ff4)) === 1) break;
       }
-      if (m.read_long(0x06020ff4) !== 1) throw Error("pending status marker missing");
-      m.reset_bios(Uint8Array.from(bytes));
+      if ((await m.read_long(0x06020ff4)) !== 1) throw Error("pending status marker missing");
+      (await m.reset_bios(Uint8Array.from(bytes)));
     }
-    for (let i = 0; i < 400000; i += chunk) {
-      m.run_steps(Math.min(chunk, 400000-i));
-      m.read_word(0x25890024); // passive production debugger CR4 preview
-      m.registers();
+    // Queue an ordered batch without a transport round trip after every
+    // instruction. Each native run still has its original passive CR4 and
+    // register reads before the next run; no guest operation is combined.
+    for (let i = 0; i < 400000;) {
+      const pending = [];
+      for (let batch = 0; batch < 128 && i < 400000; batch++, i += chunk) {
+        pending.push(m.run_steps(Math.min(chunk, 400000-i)));
+        pending.push(m.read_word(0x25890024), m.registers());
+      }
+      await Promise.all(pending);
     }
-    advanceFrame(); advanceFrame();
+    (await advanceFrame()); (await advanceFrame());
     const pixel = [...document.getElementById("screen").getContext("2d").getImageData(0,0,1,1).data];
-    return {pixel, records: Array.from({length: count}, (_, i) => m.read_long(0x06020000+i*4)),
-      marker: m.read_long(0x06020ffc), sound: m.read_long(0x05a00804),
-      exceptions: m.exception_count(), status: m.status(), mode: m.mode(),
-      clocks: m.peripheral_clocks()};
+    return {pixel, records: (await Promise.all(Array.from({length: count}, async (_, i) => (await m.read_long(0x06020000+i*4))))),
+      marker: (await m.read_long(0x06020ffc)), sound: (await m.read_long(0x05a00804)),
+      exceptions: (await m.exception_count()), status: (await m.status()), mode: (await m.mode()),
+      clocks: (await m.peripheral_clocks())};
   }, {bytes: [...bytes], chunk, resetPending, count: expected.length});
   let reference;
   for (const chunk of [1, 127, 10000]) for (let boot = 0; boot < 2; boot++) {

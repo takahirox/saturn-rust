@@ -24,11 +24,11 @@ export async function dmacBus(page) {
     }
     const actual = await page.evaluate(async image => {
       const { emulator } = await import("./app.js");
-      emulator.reset_bios(Uint8Array.from(image));
-      emulator.run_steps(10000);
+      (await emulator.reset_bios(Uint8Array.from(image)));
+      (await emulator.run_steps(10000));
       return {
-        records: [0x0601C000, 0x0601C100].map(base => Array.from({ length: 15 }, (_, i) => emulator.read_long(base + i * 4))),
-        exceptions: [emulator.exception_count(), emulator.slave_exception_count()]
+        records: (await Promise.all([0x0601C000, 0x0601C100].map(async base => (await Promise.all(Array.from({ length: 15 }, async (_, i) => (await emulator.read_long(base + i * 4)))))))),
+        exceptions: [(await emulator.exception_count()), (await emulator.slave_exception_count())]
       };
     }, [...image]);
     const expected = golden.map(word => changed ? new Map([

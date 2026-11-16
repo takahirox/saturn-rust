@@ -14,7 +14,8 @@ export async function hleDual(page) {
     assert.deepEqual([r[11] & 8, r[13] & 8], [8, 8]);
   };
   const run = async (image, { sysres = false, retain = false, short = false } = {}) => page.evaluate(async ({ bytes, addresses, sysres, retain, short }) => {
-    const { Emulator } = await import('./pkg/saturn_rust.js');
+    const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+    await init();
     const m = new Emulator(), traces = [];
     try {
       m.import_backup_ram(new Uint8Array(32768).fill(0xA5));

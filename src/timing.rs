@@ -89,7 +89,7 @@ pub struct Raster {
     mode: u16,
 }
 impl Raster {
-    #[cfg(any(test, feature = "kernel-experiment"))]
+    #[cfg(any(test, feature = "video-worker"))]
     pub(crate) fn renderer_clock_fast(&self) -> bool {
         self.fast
     }

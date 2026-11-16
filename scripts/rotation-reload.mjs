@@ -16,14 +16,14 @@ export async function rotationReload(page) {
       image.writeUInt32BE(delta << 16, 0x100);
       const actual = await page.evaluate(async rom => {
         const { emulator, advanceFrame } = await import("./app.js");
-        emulator.reset_bios(Uint8Array.from(rom));
-        for (let i = 0; i < 2000 && emulator.read_long(0x0600DD24) !== 0x600D; i++) emulator.run_steps(500);
-        if (emulator.read_long(0x0600DD24) !== 0x600D) throw new Error("Rotation reload guest did not complete");
-        advanceFrame();
+        (await emulator.reset_bios(Uint8Array.from(rom)));
+        for (let i = 0; i < 2000 && (await emulator.read_long(0x0600DD24)) !== 0x600D; i++) (await emulator.run_steps(500));
+        if ((await emulator.read_long(0x0600DD24)) !== 0x600D) throw new Error("Rotation reload guest did not complete");
+        (await advanceFrame());
         const canvas = document.getElementById("screen").getContext("2d");
         return {
-          records: Array.from({ length: 10 }, (_, i) => emulator.read_long(0x0600DD00 + i * 4)),
-          frame: Array.from(emulator.framebuffer()),
+          records: (await Promise.all(Array.from({ length: 10 }, async (_, i) => (await emulator.read_long(0x0600DD00 + i * 4))))),
+          frame: Array.from((await emulator.framebuffer())),
           canvas: Array.from(canvas.getImageData(0, 0, 320, 224).data),
         };
       }, [...image]);

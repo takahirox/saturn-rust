@@ -4,7 +4,7 @@ import nodeAssert from "node:assert/strict";
 import { selection, sharedScenarios } from "./browser-selection.mjs";
 import { siteDigest } from "./browser-results.mjs";
 import { BrowserTimings } from "./browser-timings.mjs";
-import { instrumentBrowser } from "./browser-transport.mjs";
+import { instrumentBrowser, waitForGuest, waitForLoadedDisc } from "./browser-transport.mjs";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { lstat, mkdtemp, readFile, readdir, rm, symlink } from "node:fs/promises";
@@ -67,7 +67,7 @@ const assert = timings.instrumentAssertions(nodeAssert);
 
 setup("assets");
 // Fail before upload if web/ includes anything beyond the public runtime assets.
-const assets = ["audio.js", "audio-worklet.js", "video-render-client.js", "video-worker.js", "app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt", "prism-courier.iso", "prism-courier-LICENSE.txt", "hardware-lab.iso", "hardware-lab-audio.bin", "hardware-lab.cue", "hardware-lab-LICENSE.txt"];
+const assets = ["worker-emulator.js", "playback-client.js", "playback-worker.js", "audio.js", "audio-worklet.js", "video-render-client.js", "video-worker.js", "app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt", "prism-courier.iso", "prism-courier-LICENSE.txt", "hardware-lab.iso", "hardware-lab-audio.bin", "hardware-lab.cue", "hardware-lab-LICENSE.txt"];
 assert.deepEqual((await readdir("web", { recursive: true })).sort(), [...assets, "pkg"].sort());
 assert((await lstat("web/pkg")).isDirectory());
 for (const asset of assets) {
@@ -85,6 +85,8 @@ let browser;
 try {
   await symlink(resolve("web"), join(mount, "saturn-rust"), "dir");
   server = spawn("python3", ["-u", "-m", "http.server", "0", "--bind", "127.0.0.1", "--directory", mount], { stdio: ["ignore", "pipe", "pipe"] });
+  // Worker module requests also produce server logs; never let its pipe fill.
+  server.stderr.resume();
   const address = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("Static server did not start")), 10000);
     server.once("error", (error) => { clearTimeout(timer); reject(error); });
@@ -170,16 +172,16 @@ try {
   const settings = page.locator("#settings > summary");
   const machine = () => page.evaluate(async () => {
     const { emulator } = await import("./app.js");
-    return { registers: Array.from(emulator.registers()), special: Array.from(emulator.special_registers()),
-      retired: String(emulator.instruction_count()), frames: String(emulator.frames()),
-      exceptions: emulator.exception_count(), lastException: emulator.last_exception(),
-      addressErrorPending: emulator.address_error_pending(),
-      delay: emulator.delay_target() ?? null, mode: emulator.mode(), status: emulator.status() };
+    return { registers: Array.from((await emulator.registers())), special: Array.from((await emulator.special_registers())),
+      retired: String((await emulator.instruction_count())), frames: String((await emulator.frames())),
+      exceptions: (await emulator.exception_count()), lastException: (await emulator.last_exception()),
+      addressErrorPending: (await emulator.address_error_pending()),
+      delay: (await emulator.delay_target()) ?? null, mode: (await emulator.mode()), status: (await emulator.status()) };
   });
   // waitForFunction predicates must be synchronous in this Playwright version.
   await page.evaluate(async () => {
     const { emulator } = await import("./app.js");
-    window.emulatedFrames = () => Number(emulator.frames());
+    window.emulatedFrames = () => emulator.state.frames;
   });
   const responsive = async (isPlay) => {
     for (const [width, height] of [[1440, 900], [768, 1024], [390, 844]]) {
@@ -319,7 +321,7 @@ try {
   assert.equal(await value("error"), "");
   assert.equal(await value("instructions"), "2");
   assert.equal(await page.evaluate(async()=>{
-    const {emulator}=await import("./app.js");return emulator.read_long(0x28);
+    const {emulator}=await import("./app.js");return (await emulator.read_long(0x28));
   }),0);
   await page.locator("#step").click();
   await page.locator("#step").click(); // buffered write acceptance
@@ -366,9 +368,9 @@ try {
   const sleeping = await machine();
   await page.evaluate(async () => {
     const { emulator } = await import("./app.js");
-    if (emulator.read_long(0x06001000) !== 35) throw new Error("Guest result was not stored");
-    emulator.run_steps(10000);
-    emulator.advance_frame();
+    if ((await emulator.read_long(0x06001000)) !== 35) throw new Error("Guest result was not stored");
+    (await emulator.run_steps(10000));
+    (await emulator.advance_frame());
   });
   const afterSleep = await machine();
   assert.deepEqual({ ...afterSleep, frames: sleeping.frames }, sleeping);
@@ -415,8 +417,8 @@ try {
   assert.match(await value("status"), /Sleeping/);
   const addressTrace = await page.evaluate(async () => {
     const { emulator } = await import("./app.js");
-    return { frames: Array.from({length: 6}, (_, i) => emulator.read_long(0x06002000 + i * 4)),
-      neighbors: [emulator.read_long(0x06001000), emulator.read_long(0x06001004)] };
+    return { frames: (await Promise.all(Array.from({length: 6}, async (_, i) => (await emulator.read_long(0x06002000 + i * 4))))),
+      neighbors: [(await emulator.read_long(0x06001000)), (await emulator.read_long(0x06001004))] };
   });
   assert.deepEqual(addressTrace, { frames: [0x108, 0xF0, 0x112, 0xF0, 0x11B, 0xF0], neighbors: [0, 0] });
   const addressSleeping = await machine();
@@ -463,22 +465,22 @@ try {
     await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const trace = await page.evaluate(async (compare) => {
       const { emulator } = await import("./app.js");
-      const pc = () => emulator.special_registers()[0];
-      for (let i = 0; i < 100 && pc() !== 0x13C; i++) emulator.step();
-      if (pc() !== 0x13C) throw new Error("Guest did not reach timer start");
-      const state = () => [pc(), emulator.exception_count()];
-      emulator.step(); // Start timer after the ordinary ROM fetch completes.
-      const deadline = Number(emulator.peripheral_clocks()) + 128 * (compare + 1);
-      emulator.step(); // SLEEP fetch includes its waits; sleeping turns do not.
-      while (Number(emulator.peripheral_clocks()) + 8 < deadline) emulator.step();
-      const beforeEdge = state();
-      emulator.step();
-      const onEdge = state();
-      emulator.step();
-      const accepted = [...state(), emulator.read_long(0x060FFFF8), emulator.read_long(0x060FFFFC)];
-      emulator.run_steps(100);
+      const pc = async () => (await emulator.special_registers())[0];
+      for (let i = 0; i < 100 && (await pc()) !== 0x13C; i++) (await emulator.step());
+      if ((await pc()) !== 0x13C) throw new Error("Guest did not reach timer start");
+      const state = async () => [(await pc()), (await emulator.exception_count())];
+      (await emulator.step()); // Start timer after the ordinary ROM fetch completes.
+      const deadline = Number((await emulator.peripheral_clocks())) + 128 * (compare + 1);
+      (await emulator.step()); // SLEEP fetch includes its waits; sleeping turns do not.
+      while (Number((await emulator.peripheral_clocks())) + 8 < deadline) (await emulator.step());
+      const beforeEdge = (await state());
+      (await emulator.step());
+      const onEdge = (await state());
+      (await emulator.step());
+      const accepted = [...(await state()), (await emulator.read_long(0x060FFFF8)), (await emulator.read_long(0x060FFFFC))];
+      (await emulator.run_steps(100));
       return { beforeEdge, onEdge, accepted,
-        done: [...state(), emulator.read_long(0x06002000), emulator.registers()[15]] };
+        done: [...(await state()), (await emulator.read_long(0x06002000)), (await emulator.registers())[15]] };
     }, compare);
     assert.deepEqual(trace, { beforeEdge: [0x140, "0"], onEdge: [0x140, "0"],
       accepted: [0x200, "1", 0x140, 0], done: [0x142, "1", 9, 0x06100000] });
@@ -504,7 +506,8 @@ try {
     const at=image.indexOf(literal);
     assert(at>=0 && image.indexOf(literal,at+1)===-1);image.writeUInt32BE(value,at);
     const result=await page.evaluate(async rom=>{
-      const {Emulator}=await import("./pkg/saturn_rust.js");
+      const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+      await init();
       const m=new Emulator(),trace=[];
       for(let repetition=0;repetition<2;repetition++) {
         m.reset_bios(new Uint8Array(rom));m.run_steps(1000);
@@ -522,7 +525,8 @@ try {
     words.forEach((w,i)=>dackRom.writeUInt16BE(w,at+i*2));
   }
   const dack=await page.evaluate(async rom=>{
-    const {Emulator}=await import("./pkg/saturn_rust.js");
+    const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+    await init();
     const guest=new Emulator();
     try {
       const trace=[];
@@ -547,7 +551,8 @@ try {
     const image = Buffer.from(offset === "descriptors" ? descriptorIso : directoryIso);
     if (typeof offset === "number") image.fill(255, offset, offset + 8);
     const trace = await page.evaluate(async ({ rom, image }) => {
-      const { Emulator } = await import("./pkg/saturn_rust.js");
+      const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+      await init();
       const emulator = new Emulator();
       try {
         emulator.reset_bios(Uint8Array.from(rom));
@@ -576,7 +581,8 @@ try {
     const rom = Buffer.from(scheduledRom);
     rom.writeUInt16BE(fid,0x100); rom.writeUInt16BE(command,0x102); rom.writeUInt16BE(abort,0x104);
     const traces = await page.evaluate(async ({rom, image}) => {
-      const {Emulator} = await import("./pkg/saturn_rust.js");
+      const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+      await init();
       const emulator = new Emulator(), traces = [];
       try {
         for (let boot=0; boot<2; boot++) {
@@ -616,7 +622,8 @@ try {
     assert(at >= 0 && rom.indexOf(Buffer.from([0xE6,0]), at+1) < 0);
     rom[at+1] = offset;
     const results = await page.evaluate(async ({rom, raw, cue}) => {
-      const {Emulator} = await import("./pkg/saturn_rust.js");
+      const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+      await init();
       const emulator = new Emulator(), results = [];
       try {
         for (let repetition = 0; repetition < 2; repetition++) {
@@ -638,7 +645,8 @@ try {
   timings.group("boot-layout");
   // Both startup paths below execute original AIP instructions in Wasm.
   const startup=await page.evaluate(async images=>{
-    const {Emulator}=await import("./pkg/saturn_rust.js");
+    const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+    await init();
     return images.map(image=>{
       const emulator=new Emulator();
       try {
@@ -663,7 +671,8 @@ try {
     image.fill(0,0xE00,0xF00); layoutIso.copy(image,entry,0xE80,0xE8C);
     image.writeUInt32BE(stack,0xEC); image.writeUInt32BE(value,36*2048);
     const result = await page.evaluate(async ({image,entry})=>{
-      const {Emulator} = await import("./pkg/saturn_rust.js");
+      const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+      await init();
       const m = new Emulator(), results=[];
       try {
         for (let repeat=0;repeat<2;repeat++) {
@@ -687,7 +696,8 @@ try {
   const hleSystemExpected=(await readFile("tests/fixtures/hle-system.tsv","utf8")).trim()
     .split(/\r?\n/).map(line=>parseInt(line.split("\t")[1],16));
   const hleSystemRun=async image=>page.evaluate(async ({image,count})=>{
-    const {Emulator}=await import("./pkg/saturn_rust.js");
+    const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+    await init();
     const m=new Emulator(),traces=[];
     try {
       for(let repeat=0;repeat<2;repeat++) {
@@ -726,7 +736,8 @@ try {
   const hleResetImage=Buffer.from(hleSystemIso);
   hleResetImage.writeUInt32BE(0x06009600,0xE28);
   const hleResetTrace=await page.evaluate(async image=>{
-    const {Emulator}=await import("./pkg/saturn_rust.js");
+    const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+    await init();
     const m=new Emulator(),traces=[];
     try {
       for(let repeat=0;repeat<2;repeat++) {
@@ -748,7 +759,8 @@ try {
   const backupExpected=(await readFile("tests/fixtures/hle-backup.tsv","utf8")).trim()
     .split(/\r?\n/).map(line=>parseInt(line.split("\t")[1],16));
   const backupRun=async image=>page.evaluate(async ({image,count})=>{
-    const {Emulator}=await import("./pkg/saturn_rust.js");
+    const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+    await init();
     const m=new Emulator();
     const finish=(machine,last)=>{
       for(let i=0;i<300;i++) {
@@ -833,7 +845,8 @@ try {
   const clockExpected=(await readFile("tests/fixtures/clock.tsv","utf8")).trim().split(/\r?\n/).map(v=>parseInt(v,16));
   const lifecycleExpected=(await readFile("tests/fixtures/clock-lifecycle.tsv","utf8")).trim().split(/\r?\n/).map(v=>parseInt(v,16));
   const clockTraces=await page.evaluate(async ({iso,rom,count,lifecycleExpected})=>{
-    const {Emulator}=await import("./pkg/saturn_rust.js");
+    const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+    await init();
     const m=new Emulator(),traces=[];
     try {
       for(const pal of [false,true]) for(const hle of [false,true]) for(let repeat=0;repeat<2;repeat++) {
@@ -889,9 +902,9 @@ try {
       }
       // Production draw path must use the emulated dimensions on Canvas.
       const {emulator,advanceFrame}=await import("./app.js");
-      emulator.reset_disc(Uint8Array.from(iso));
-      while(Number(emulator.peripheral_clocks())<9000000)emulator.run_steps(10000);
-      advanceFrame();
+      (await emulator.reset_disc(Uint8Array.from(iso)));
+      while(Number((await emulator.peripheral_clocks()))<9000000)(await emulator.run_steps(10000));
+      (await advanceFrame());
       const canvas=document.getElementById("screen");
       traces.push({canvas:[canvas.width,canvas.height],
         edge:Array.from(canvas.getContext("2d").getImageData(351,223,1,1).data)});
@@ -912,7 +925,8 @@ try {
     for(const word of words){displayRom.writeUInt16BE(parseInt(word,16),at);at+=2;}
   }
   const displayTraces=await page.evaluate(async rom=>{
-    const {Emulator}=await import("./pkg/saturn_rust.js");
+    const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+    await init();
     const {emulator,advanceFrame}=await import("./app.js");
     const m=new Emulator(),traces=[];
     try {
@@ -935,12 +949,12 @@ try {
       }
       // Production Canvas follows guest-selected high-resolution dimensions.
       const bytes=Uint8Array.from(rom);bytes[0x100]=0x80;bytes[0x101]=0xD3;
-      emulator.set_pal(false);emulator.reset_bios(bytes);
-      for(let n=0;n<60 && emulator.read_long(0x0600E088)!==0x600D;n++)emulator.run_steps(10000);
-      advanceFrame();
+      (await emulator.set_pal(false));(await emulator.reset_bios(bytes));
+      for(let n=0;n<60 && (await emulator.read_long(0x0600E088))!==0x600D;n++)(await emulator.run_steps(10000));
+      (await advanceFrame());
       const canvas=document.getElementById("screen");
       traces.push({canvas:[canvas.width,canvas.height],edge:Array.from(canvas.getContext("2d").getImageData(1,479,1,1).data)});
-      emulator.set_pal(false);
+      (await emulator.set_pal(false));
       return traces;
     }finally{m.free();}
   },[...displayRom]);
@@ -1016,7 +1030,8 @@ try {
   }
   const digitalExpected=(await readFile("tests/fixtures/digital-timing.tsv","utf8")).trim().split(/\r?\n/).map(v=>parseInt(v,16));
   const digitalTrace=await page.evaluate(async ({rom,count})=>{
-    const {Emulator}=await import("./pkg/saturn_rust.js");
+    const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+    await init();
     const m=new Emulator(),traces=[];
     try {
       for(const buttons of [[0x842,0x184],[0x842,0x184],[0,0]]) {
@@ -1037,7 +1052,8 @@ try {
     if (damage === "correctable") raw[20 * 2352 + 16 + 70] ^= 0x5A;
     if (damage === "uncorrectable") raw.fill(0xB7, 20 * 2352 + 16, 20 * 2352 + 2064);
     const trace = await page.evaluate(async ({ rom, raw }) => {
-      const { Emulator } = await import("./pkg/saturn_rust.js");
+      const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+      await init();
       const emulator = new Emulator();
       try {
         emulator.reset_bios(Uint8Array.from(rom));
@@ -1074,7 +1090,8 @@ try {
     const raw = Buffer.from(decodeMedia);
     for (const offset of offsets) raw[offset] ^= delta;
     const traces = await page.evaluate(async ({ rom, raw }) => {
-      const { Emulator } = await import("./pkg/saturn_rust.js");
+      const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+      await init();
       const emulator = new Emulator();
       const traces = [];
       try {
@@ -1115,8 +1132,8 @@ try {
   const resetSteps = await page.evaluate(async () => {
     const { emulator } = await import("./app.js");
     for (let i = 1; i <= 10000; i++) {
-      emulator.step();
-      if (emulator.status().startsWith("Resetting")) return i;
+      (await emulator.step());
+      if ((await emulator.status()).startsWith("Resetting")) return i;
     }
     throw new Error("SH7604 guest did not assert the watchdog reset");
   });
@@ -1128,11 +1145,11 @@ try {
   assert.equal(await page.locator("#run").isEnabled(), true);
   const peripherals = () => page.evaluate(async () => {
     const { emulator } = await import("./app.js");
-    emulator.run_steps(10000);
-    return { mailbox: Array.from({length: 16}, (_, i) => emulator.read_long(0x06003000 + i*4)),
-      copy: Array.from({length: 4}, (_, i) => emulator.read_long(0x06005000 + i*4)),
-      exceptions: emulator.exception_count(), last: emulator.last_exception(),
-      sp: emulator.registers()[15], pending: emulator.address_error_pending() };
+    (await emulator.run_steps(10000));
+    return { mailbox: (await Promise.all(Array.from({length: 16}, async (_, i) => (await emulator.read_long(0x06003000 + i*4))))),
+      copy: (await Promise.all(Array.from({length: 4}, async (_, i) => (await emulator.read_long(0x06005000 + i*4))))),
+      exceptions: (await emulator.exception_count()), last: (await emulator.last_exception()),
+      sp: (await emulator.registers())[15], pending: (await emulator.address_error_pending()) };
   });
   const peripheralResult = await peripherals();
   assert.deepEqual(peripheralResult.mailbox, [0xFFFFFFF2, 0xFFFFFFFE, 0x55555555, 1, 1, 1, 0xFFFFFF84, 1, 0xFFFFFFFF, 1, 0x600D, 0, 0, 0x12345678, 0, 1]);
@@ -1154,7 +1171,8 @@ try {
   const divuExpected = (await readFile("tests/fixtures/divu.tsv","utf8")).trim()
     .split(/\r?\n/).map(word => parseInt(word,16));
   const runDivu = async rom => page.evaluate(async ({rom, count}) => {
-    const { Emulator } = await import("./pkg/saturn_rust.js");
+    const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+    await init();
     const guest = new Emulator();
     const runs = [];
     try {
@@ -1197,7 +1215,8 @@ try {
     words.forEach((w,i)=>statusRom.writeUInt16BE(w,at+i*2));
   }
   const statuses = await page.evaluate(async rom => {
-    const { Emulator } = await import("./pkg/saturn_rust.js");
+    const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+    await init();
     const guest = new Emulator();
     const results=[];
     try {
@@ -1236,12 +1255,12 @@ try {
   await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   const bscTrace = () => page.evaluate(async () => {
     const { emulator } = await import("./app.js");
-    emulator.run_steps(3000);
-    return { mailboxes: [0x06008000, 0x06008040].map((base) =>
-      Array.from({length: 8}, (_, i) => emulator.read_long(base + i * 4))),
-      exceptions: [emulator.exception_count(), emulator.slave_exception_count()],
-      stacks: [emulator.registers()[15], emulator.slave_registers()[15]],
-      clocks: emulator.peripheral_clocks() };
+    (await emulator.run_steps(3000));
+    return { mailboxes: (await Promise.all([0x06008000, 0x06008040].map(async (base) =>
+      (await Promise.all(Array.from({length: 8}, async (_, i) => (await emulator.read_long(base + i * 4)))))))),
+      exceptions: [(await emulator.exception_count()), (await emulator.slave_exception_count())],
+      stacks: [(await emulator.registers())[15], (await emulator.slave_registers())[15]],
+      clocks: (await emulator.peripheral_clocks()) };
   });
   const bscFirst = await bscTrace();
   for (const [i, id] of [0x3F0, 0x83F0].entries()) {
@@ -1292,9 +1311,9 @@ try {
     await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const run = () => page.evaluate(async () => {
       const { emulator } = await import("./app.js");
-      emulator.run_steps(3000);
-      return { traces: [0x0600E000, 0x0600E100].map(base => Array.from({length: 24}, (_, i) => emulator.read_long(base + i * 4))),
-        exceptions: [emulator.exception_count(), emulator.slave_exception_count()] };
+      (await emulator.run_steps(3000));
+      return { traces: (await Promise.all([0x0600E000, 0x0600E100].map(async base => (await Promise.all(Array.from({length: 24}, async (_, i) => (await emulator.read_long(base + i * 4)))))))),
+        exceptions: [(await emulator.exception_count()), (await emulator.slave_exception_count())] };
     });
     const actual = await run();
     assert.deepEqual(actual.exceptions, ["0", "0"]);
@@ -1320,7 +1339,8 @@ try {
     assert(at >= 0 && rom.indexOf(needle, at+1) < 0);
     rom.writeUInt32BE(0xA55A0000 + bits, at);
     const results = await page.evaluate(async rom => {
-      const {Emulator} = await import("./pkg/saturn_rust.js");
+      const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+      await init();
       const emulator = new Emulator(), results = [];
       try {
         for (let repetition=0; repetition<2; repetition++) {
@@ -1358,9 +1378,9 @@ try {
     await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const runIdle = () => page.evaluate(async () => {
       const { emulator } = await import("./app.js");
-      emulator.run_steps(3000);
-      return { traces: [0x0600E200, 0x0600E300].map(base => Array.from({length: 6}, (_, i) => emulator.read_long(base + i * 4))),
-        exceptions: [emulator.exception_count(), emulator.slave_exception_count()] };
+      (await emulator.run_steps(3000));
+      return { traces: (await Promise.all([0x0600E200, 0x0600E300].map(async base => (await Promise.all(Array.from({length: 6}, async (_, i) => (await emulator.read_long(base + i * 4)))))))),
+        exceptions: [(await emulator.exception_count()), (await emulator.slave_exception_count())] };
     });
     const actual = await runIdle();
     assert.deepEqual(actual.exceptions, ["0", "0"]);
@@ -1440,9 +1460,9 @@ try {
     await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const runTiming=()=>page.evaluate(async(count)=>{
       const {emulator}=await import("./app.js");
-      emulator.run_steps(10000);
-      return {words:[0x0600E600,0x0600E700].map(base=>Array.from({length:count},(_,i)=>emulator.read_long(base+i*4))),
-        exceptions:[emulator.exception_count(),emulator.slave_exception_count()]};
+      (await emulator.run_steps(10000));
+      return {words:(await Promise.all([0x0600E600,0x0600E700].map(async base=>(await Promise.all(Array.from({length:count},async (_,i)=>(await emulator.read_long(base+i*4)))))))),
+        exceptions:[(await emulator.exception_count()),(await emulator.slave_exception_count())]};
     },timingVectors.length);
     const actual=await runTiming();
     assert.deepEqual(actual,{words:[expected,expected],exceptions:["0","0"]});
@@ -1473,9 +1493,9 @@ try {
     await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const runDspDma = () => page.evaluate(async () => {
       const { emulator } = await import("./app.js");
-      emulator.run_steps(10000);
-      return { trace: Array.from({length: 13}, (_, i) => emulator.read_long(0x0600E400 + i * 4)),
-        exceptions: emulator.exception_count() };
+      (await emulator.run_steps(10000));
+      return { trace: (await Promise.all(Array.from({length: 13}, async (_, i) => (await emulator.read_long(0x0600E400 + i * 4))))),
+        exceptions: (await emulator.exception_count()) };
     });
     const actual = await runDspDma();
     const expected = [...dspDmaVectors]; expected[index] = value;
@@ -1498,8 +1518,8 @@ try {
   const conflictStopped = await machine();
   await page.evaluate(async () => {
     const {emulator} = await import("./app.js");
-    try { emulator.run_steps(4000); } catch { /* Sticky diagnostic. */ }
-    if (emulator.read_long(0x0600E400) !== 0) throw Error("Conflicting DSP fabricated a result");
+    try { (await emulator.run_steps(4000)); } catch { /* Sticky diagnostic. */ }
+    if ((await emulator.read_long(0x0600E400)) !== 0) throw Error("Conflicting DSP fabricated a result");
   });
   assert.deepEqual(await machine(), conflictStopped);
   await page.locator("#reset").click();
@@ -1539,9 +1559,9 @@ try {
     await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const runDspBus = () => page.evaluate(async count => {
       const {emulator} = await import("./app.js");
-      emulator.run_steps(10000);
-      return {trace:Array.from({length:count}, (_, i) => emulator.read_long(0x0600E800 + i * 4)),
-        exceptions:emulator.exception_count()};
+      (await emulator.run_steps(10000));
+      return {trace:(await Promise.all(Array.from({length:count}, async (_, i) => (await emulator.read_long(0x0600E800 + i * 4))))),
+        exceptions:(await emulator.exception_count())};
     }, dspBusVectors.length);
     assert.deepEqual(await runDspBus(), {trace:expected, exceptions:"0"});
     await page.locator("#reset").click();
@@ -1559,9 +1579,9 @@ try {
   await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   const ubcTrace = () => page.evaluate(async () => {
     const { emulator } = await import("./app.js");
-    emulator.run_steps(2000);
-    return { mailbox: Array.from({length: 21}, (_, i) => emulator.read_long(0x0600A000 + i * 4)),
-      exceptions: emulator.exception_count(), sp: emulator.registers()[15] };
+    (await emulator.run_steps(2000));
+    return { mailbox: (await Promise.all(Array.from({length: 21}, async (_, i) => (await emulator.read_long(0x0600A000 + i * 4))))),
+      exceptions: (await emulator.exception_count()), sp: (await emulator.registers())[15] };
   });
   const ubcFirst = await ubcTrace();
   assert.deepEqual(ubcFirst.mailbox, [0x1000, 0, 0x9000, 0, 0x1102, 22, 0x9400, 0,
@@ -1592,9 +1612,9 @@ try {
     await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const result = await page.evaluate(async ({base, count, steps}) => {
       const { emulator } = await import("./app.js");
-      for (let done = 0; done < steps; done += 10000) emulator.run_steps(Math.min(10000, steps - done));
-      return { mailbox: Array.from({length: count}, (_, i) => emulator.read_long(base + i * 4)),
-        sp: emulator.registers()[15], exceptions: emulator.exception_count() };
+      for (let done = 0; done < steps; done += 10000) (await emulator.run_steps(Math.min(10000, steps - done)));
+      return { mailbox: (await Promise.all(Array.from({length: count}, async (_, i) => (await emulator.read_long(base + i * 4))))),
+        sp: (await emulator.registers())[15], exceptions: (await emulator.exception_count()) };
     }, {base, count, steps});
     assert.deepEqual(result.mailbox, expected);
     assert.equal(result.sp, 0x06100000);
@@ -1603,7 +1623,8 @@ try {
       const disc = Buffer.from(await readFile("web/star-collector.iso"));
       rom.copy(disc, 21 * 2048, 0x200, 0x39C);
       const hleResult = await page.evaluate(async (bytes) => {
-        const { Emulator } = await import("./pkg/saturn_rust.js");
+        const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+        await init();
         const guest = new Emulator();
         guest.reset_disc(new Uint8Array(bytes));
         for (let i = 0; i < 35; i++) guest.run_steps(10000);
@@ -1630,7 +1651,8 @@ try {
     const raw=Buffer.from(await readFile("tests/fixtures/mode2.bin"));
     if(mutated){raw[16]=0xAA;raw[2351]=0x55;}
     const result=await page.evaluate(async ({rom,raw,audio,cue})=>{
-      const {Emulator}=await import("./pkg/saturn_rust.js");
+      const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+      await init();
       const guest=new Emulator();
       try {
         const traces=[];
@@ -1679,13 +1701,13 @@ try {
       const {emulator}=await import("./app.js");
       const disc=new Uint8Array(2048*100);
       if(payload===0x2468)disc.set(new TextEncoder().encode("SEGA SEGASATURN "));
-      emulator.mount_disc(disc);
-      for(let i=0;i<80 && emulator.read_long(0x060090F0)!==0x600D;i++) emulator.run_steps(10000);
+      (await emulator.mount_disc(disc));
+      for(let i=0;i<80 && (await emulator.read_long(0x060090F0))!==0x600D;i++) (await emulator.run_steps(10000));
       {
-        const pixel=Array.from(emulator.framebuffer().slice(0,4));
+        const pixel=Array.from((await emulator.framebuffer()).slice(0,4));
         if(String(pixel)!=="0,255,0,255")throw new Error(`Unused BGON bit changed back screen: ${pixel}`);
       }
-      return Array.from({length:280},(_,i)=>emulator.read_long(0x06009000+i*4));
+      return (await Promise.all(Array.from({length:280},async (_,i)=>(await emulator.read_long(0x06009000+i*4)))));
     },payload);
     assert.equal(result[0xF0/4],0x600D);
     for (const [offset,status] of [[0,0x0180],[0x10,0x0500],[0x30,0x0500],[0x50,0x0400],
@@ -1739,16 +1761,16 @@ try {
     await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const result=await page.evaluate(async ys=>{
       const {emulator,advanceFrame}=await import("./app.js");
-      for(let i=0;i<400 && emulator.read_long(0x0600D900)!==0x600D;i++)emulator.run_steps(500);
-      if(emulator.read_long(0x0600D900)!==0x600D)throw new Error("Raster guest did not complete");
-      advanceFrame();
-      const frame=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
+      for(let i=0;i<400 && (await emulator.read_long(0x0600D900))!==0x600D;i++)(await emulator.run_steps(500));
+      if((await emulator.read_long(0x0600D900))!==0x600D)throw new Error("Raster guest did not complete");
+      (await advanceFrame());
+      const frame=(await emulator.framebuffer()),canvas=document.getElementById("screen").getContext("2d");
       const pixels=ys.map(y=>Array.from(frame.slice((y*320+159)*4,(y*320+159)*4+4)));
       const presented=ys.map(y=>Array.from(canvas.getImageData(159,y,1,1).data));
-      advanceFrame();
+      (await advanceFrame());
       return {pixels,presented,rows: [64,128,192].map(y => Array.from(frame.slice(y*320*4,(y+1)*320*4))),
         next:Array.from(canvas.getImageData(0,100,1,1).data),
-        finalVram:emulator.read_long(0x25E60000)>>>16};
+        finalVram:(await emulator.read_long(0x25E60000))>>>16};
     },rasterYs);
     const expected=rasterYs.map(y=>y<=64?[255,0,0,255]:y<=128?(mutated?[255,0,0,255]:[0,255,0,255]):y<=192?[0,0,255,255]:[255,255,255,255]);
     assert.deepEqual(result.pixels,expected);assert.deepEqual(result.presented,expected);
@@ -1774,16 +1796,16 @@ try {
       if(changed)image.writeUInt32BE(0,0x104);
       const result=await page.evaluate(async rom=>{
         const {emulator,advanceFrame}=await import("./app.js");
-        emulator.reset_bios(Uint8Array.from(rom));
-        for(let i=0;i<500 && emulator.read_long(0x0600DE18)!==0x600D;i++)emulator.run_steps(500);
-        if(emulator.read_long(0x0600DE18)!==0x600D)throw new Error("VDP1 rotation guest did not complete");
-        advanceFrame();
-        const frame=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
+        (await emulator.reset_bios(Uint8Array.from(rom)));
+        for(let i=0;i<500 && (await emulator.read_long(0x0600DE18))!==0x600D;i++)(await emulator.run_steps(500));
+        if((await emulator.read_long(0x0600DE18))!==0x600D)throw new Error("VDP1 rotation guest did not complete");
+        (await advanceFrame());
+        const frame=(await emulator.framebuffer()),canvas=document.getElementById("screen").getContext("2d");
         const points=[0,63,64,127,128,129,130,191,192,193,194,223].flatMap(y=>[0,127,128,255,256,319].map(x=>[x,y]));
         const pixels=points.map(([x,y])=>Array.from(frame.slice((y*320+x)*4,(y*320+x)*4+4)));
         const presented=points.map(([x,y])=>Array.from(canvas.getImageData(x,y,1,1).data));
-        const records=Array.from({length:7},(_,i)=>emulator.read_long(0x0600DE00+i*4));
-        advanceFrame();
+        const records=(await Promise.all(Array.from({length:7},async (_,i)=>(await emulator.read_long(0x0600DE00+i*4)))));
+        (await advanceFrame());
         return {records,pixels,presented,next:Array.from(canvas.getImageData(0,0,320,224).data)};
       },[...image]);
       const expected=[0,63,64,127,128,129,130,191,192,193,194,223].flatMap(y=>[0,127,128,255,256,319].map(x=>{
@@ -1821,16 +1843,16 @@ try {
     if(changed)interlaceImage.writeUInt32BE(0xF,0x100);
     const result=await page.evaluate(async rom=>{
       const {emulator,advanceFrame}=await import("./app.js");
-      emulator.reset_bios(Uint8Array.from(rom));
-      for(let i=0;i<1000 && emulator.read_long(0x0600DF34)!==0x600D;i++)emulator.run_steps(500);
-      if(emulator.read_long(0x0600DF34)!==0x600D)throw new Error("VDP1 interlace guest did not complete");
-      advanceFrame();
-      const frame=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
+      (await emulator.reset_bios(Uint8Array.from(rom)));
+      for(let i=0;i<1000 && (await emulator.read_long(0x0600DF34))!==0x600D;i++)(await emulator.run_steps(500));
+      if((await emulator.read_long(0x0600DF34))!==0x600D)throw new Error("VDP1 interlace guest did not complete");
+      (await advanceFrame());
+      const frame=(await emulator.framebuffer()),canvas=document.getElementById("screen").getContext("2d");
       const pixels=Array.from({length:10},(_,i)=>Array.from(frame.slice(((429+i)*320+10)*4,((429+i)*320+10)*4+4)));
       const presented=Array.from({length:10},(_,i)=>Array.from(canvas.getImageData(10,429+i,1,1).data));
-      const records=Array.from({length:14},(_,i)=>emulator.read_long(0x0600DF00+i*4));
+      const records=(await Promise.all(Array.from({length:14},async (_,i)=>(await emulator.read_long(0x0600DF00+i*4)))));
       const dimensions=[canvas.canvas.width,canvas.canvas.height];
-      advanceFrame();
+      (await advanceFrame());
       return {records,pixels,presented,dimensions,next:Array.from(canvas.getImageData(10,430,1,8).data)};
     },[...interlaceImage]);
     const records=[...interlaceRecords];if(changed)records.fill(0x83E0,1,5);
@@ -1861,10 +1883,10 @@ try {
     assert.equal(await value("error"), "");
     const pixels = await page.evaluate(async () => {
       const { emulator, advanceFrame } = await import("./app.js");
-      advanceFrame(); advanceFrame(); // Present through the same production path used by Play.
-      const frame = emulator.framebuffer();
+      (await advanceFrame()); (await advanceFrame()); // Present through the same production path used by Play.
+      const frame = (await emulator.framebuffer());
       const canvas = document.getElementById("screen").getContext("2d");
-      return { done: emulator.read_long(0x06009000),
+      return { done: (await emulator.read_long(0x06009000)),
         wasm: [0,8,16,24,32,36,40].map((x) => Array.from(frame.slice(x*4,x*4+4))),
         canvas: [0,8,16,24,32,36,40].map((x) => Array.from(canvas.getImageData(x,0,1,1).data)) };
     });
@@ -1887,10 +1909,10 @@ try {
     await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     return page.evaluate(async()=>{
       const {emulator,advanceFrame}=await import("./app.js");
-      emulator.run_steps(3000); advanceFrame(); advanceFrame();
-      const wasm=Array.from(emulator.framebuffer().slice(0,32));
+      (await emulator.run_steps(3000)); (await advanceFrame()); (await advanceFrame());
+      const wasm=Array.from((await emulator.framebuffer()).slice(0,32));
       const canvas=Array.from(document.getElementById("screen").getContext("2d").getImageData(0,0,8,1).data);
-      return {done:emulator.read_long(0x0600B000),wasm,canvas};
+      return {done:(await emulator.read_long(0x0600B000)),wasm,canvas};
     });
   };
   const spriteGolden=[255,0,0,255, 0,127,127,255, 0,0,127,255, 127,127,0,255,
@@ -1942,11 +1964,11 @@ try {
     await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const result = await page.evaluate(async (points) => {
       const { emulator, advanceFrame } = await import("./app.js");
-      emulator.run_steps(10000);
-      advanceFrame(); advanceFrame();
-      const frame = emulator.framebuffer();
+      (await emulator.run_steps(10000));
+      (await advanceFrame()); (await advanceFrame());
+      const frame = (await emulator.framebuffer());
       const canvas = document.getElementById("screen").getContext("2d");
-      return {done:emulator.read_long(0x0600A000),matrix:emulator.read_long(0x25E70048),
+      return {done:(await emulator.read_long(0x0600A000)),matrix:(await emulator.read_long(0x25E70048)),
         wasm:points.map(([x,y]) => Array.from(frame.slice((y*320+x)*4,(y*320+x)*4+4))),
         canvas:points.map(([x,y]) => Array.from(canvas.getImageData(x,y,1,1).data))};
     },effectsPoints);
@@ -1974,10 +1996,10 @@ try {
     await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const result=await page.evaluate(async()=>{
       const {emulator,advanceFrame}=await import("./app.js");
-      emulator.run_steps(10000); advanceFrame(); advanceFrame();
-      const frame=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
+      (await emulator.run_steps(10000)); (await advanceFrame()); (await advanceFrame());
+      const frame=(await emulator.framebuffer()),canvas=document.getElementById("screen").getContext("2d");
       const points=[[0,0],[8,0],[0,8],[8,8],[16,0]];
-      return {done:emulator.read_long(0x0600A100),
+      return {done:(await emulator.read_long(0x0600A100)),
         wasm:points.map(([x,y])=>Array.from(frame.slice((y*320+x)*4,(y*320+x)*4+4))),
         canvas:points.map(([x,y])=>Array.from(canvas.getImageData(x,y,1,1).data))};
     });
@@ -2016,10 +2038,10 @@ try {
       await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
       const result=await page.evaluate(async()=>{
         const {emulator,advanceFrame}=await import("./app.js");
-        emulator.run_steps(10000); advanceFrame(); advanceFrame();
-        const frame=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
+        (await emulator.run_steps(10000)); (await advanceFrame()); (await advanceFrame());
+        const frame=(await emulator.framebuffer()),canvas=document.getElementById("screen").getContext("2d");
         const points=Array.from({length:8},(_,i)=>[i%4,Math.floor(i/4)]);
-        return {done:emulator.read_long(0x0600A200),
+        return {done:(await emulator.read_long(0x0600A200)),
           wasm:points.map(([x,y])=>Array.from(frame.slice((y*320+x)*4,(y*320+x)*4+4))),
           canvas:points.map(([x,y])=>Array.from(canvas.getImageData(x,y,1,1).data))};
       });
@@ -2055,9 +2077,9 @@ try {
       await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
       const result=await page.evaluate(async()=>{
         const {emulator,advanceFrame}=await import("./app.js");
-        emulator.run_steps(10000); advanceFrame(); advanceFrame();
-        const frame=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
-        return {done:emulator.read_long(0x0600A400),
+        (await emulator.run_steps(10000)); (await advanceFrame()); (await advanceFrame());
+        const frame=(await emulator.framebuffer()),canvas=document.getElementById("screen").getContext("2d");
+        return {done:(await emulator.read_long(0x0600A400)),
           wasm:[0,1].map(y=>Array.from(frame.slice((y*320+2)*4,(y*320+8)*4))),
           canvas:[0,1].map(y=>Array.from(canvas.getImageData(2,y,6,1).data))};
       });
@@ -2098,9 +2120,9 @@ try {
       await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
       const result=await page.evaluate(async()=>{
         const {emulator,advanceFrame}=await import("./app.js");
-        emulator.run_steps(10000); advanceFrame(); advanceFrame();
-        const frame=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
-        return {done:emulator.read_long(0x0600A300),wasm:Array.from(frame.slice(0,32)),
+        (await emulator.run_steps(10000)); (await advanceFrame()); (await advanceFrame());
+        const frame=(await emulator.framebuffer()),canvas=document.getElementById("screen").getContext("2d");
+        return {done:(await emulator.read_long(0x0600A300)),wasm:Array.from(frame.slice(0,32)),
           canvas:Array.from(canvas.getImageData(0,0,8,1).data)};
       });
       assert.equal(result.done,0x600D);
@@ -2122,11 +2144,11 @@ try {
   await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   const scuResult = () => page.evaluate(async () => {
     const { emulator } = await import("./app.js");
-    emulator.run_steps(10000);
-    return { mailbox: Array.from({length: 11}, (_, i) => emulator.read_long(0x06004000 + i * 4)),
-      pixels: Array.from({length: 4}, (_, i) => emulator.read_long(0x05E00090 + i * 4)),
-      dspSum: emulator.read_long(0x06006000), exceptions: emulator.exception_count(),
-      sp: emulator.registers()[15], status: emulator.status() };
+    (await emulator.run_steps(10000));
+    return { mailbox: (await Promise.all(Array.from({length: 11}, async (_, i) => (await emulator.read_long(0x06004000 + i * 4))))),
+      pixels: (await Promise.all(Array.from({length: 4}, async (_, i) => (await emulator.read_long(0x05E00090 + i * 4))))),
+      dspSum: (await emulator.read_long(0x06006000)), exceptions: (await emulator.exception_count()),
+      sp: (await emulator.registers())[15], status: (await emulator.status()) };
   });
   const scuFinished = await scuResult();
   assert.deepEqual(scuFinished.mailbox, [2, 2, 1, 84, 7, 48, 0x600D, 1, 0x40015, 7, 11]);
@@ -2150,7 +2172,7 @@ try {
   const scuStopped = await machine();
   await page.evaluate(async () => {
     const { emulator } = await import("./app.js");
-    try { emulator.run_steps(10); } catch { /* Sticky hardware fault. */ }
+    try { (await emulator.run_steps(10)); } catch { /* Sticky hardware fault. */ }
   });
   assert.deepEqual(await machine(), scuStopped);
   timings.group("sound-and-memory");
@@ -2166,14 +2188,14 @@ try {
   await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   const soundResult = () => page.evaluate(async () => {
     const { emulator } = await import("./app.js");
-    for (let i = 0; i < 10; i++) emulator.run_steps(10000);
-    const audio = Array.from(emulator.audio_samples(8192));
+    for (let i = 0; i < 10; i++) (await emulator.run_steps(10000));
+    const audio = Array.from((await emulator.audio_samples(8192)));
     const first = audio.findIndex((v) => v !== 0);
-    return { mailbox: [emulator.read_long(0x06007000), emulator.read_long(0x06007004)],
-      waveform: [emulator.read_long(0x05A04000), emulator.read_long(0x05A04004)],
-      samples: audio.slice(first, first + 16), generated: emulator.audio_generated(),
-      dropped: emulator.audio_dropped(), count: emulator.sound_instruction_count(), irqs:emulator.read_long(0x05A00804),
-      irqReturn: emulator.read_long(0x05A7FEFC) };
+    return { mailbox: [(await emulator.read_long(0x06007000)), (await emulator.read_long(0x06007004))],
+      waveform: [(await emulator.read_long(0x05A04000)), (await emulator.read_long(0x05A04004))],
+      samples: audio.slice(first, first + 16), generated: (await emulator.audio_generated()),
+      dropped: (await emulator.audio_dropped()), count: (await emulator.sound_instruction_count()), irqs:(await emulator.read_long(0x05A00804)),
+      irqReturn: (await emulator.read_long(0x05A7FEFC)) };
   });
   const soundFinished = await soundResult();
   assert.deepEqual(soundFinished.mailbox, [1, 0x600D]);
@@ -2192,8 +2214,8 @@ try {
   await page.evaluate(async () => {
     const { emulator, audio, pumpAudio } = await import("./app.js");
     audio.setPaused(false);
-    for (let i = 0; i < 4; i++) emulator.run_steps(10000);
-    pumpAudio();
+    for (let i = 0; i < 4; i++) (await emulator.run_steps(10000));
+    (await pumpAudio());
   });
   await page.evaluate(async () => {
     const { audio } = await import("./app.js");
@@ -2266,7 +2288,8 @@ try {
       assert.equal(count,2);
     }
     const result=await page.evaluate(async image=>{
-      const {Emulator}=await import("./pkg/saturn_rust.js");
+      const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+      await init();
       const {AudioOutput}=await import("./audio.js");
       const guest=new Emulator(),output=new AudioOutput();
       try {
@@ -2306,7 +2329,8 @@ try {
   const divisions=(await readFile("tests/fixtures/signed-divisions.tsv","utf8")).trim().split(/\r?\n/)
     .flatMap(line=>line.split("\t").slice(1).map(w=>parseInt(w,16)));
   const intcResult=async rom=>page.evaluate(async ({rom,divisionWords})=>{
-    const {Emulator}=await import("./pkg/saturn_rust.js");
+    const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+    await init();
     const guest=new Emulator();
     try {
       guest.reset_bios(Uint8Array.from(rom));
@@ -2364,11 +2388,11 @@ try {
     await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     return page.evaluate(async()=>{
       const {emulator}=await import("./app.js");
-      for(let i=0;i<10;i++) emulator.run_steps(10000);
-      const samples=Array.from(emulator.audio_samples(8192));
-      return {done:emulator.read_long(0x06007004),
-        words:Array.from({length:41},(_,i)=>emulator.read_long(0x05A00800+i*4)),
-        halted:emulator.sound_halted(),count:emulator.sound_instruction_count(),
+      for(let i=0;i<10;i++) (await emulator.run_steps(10000));
+      const samples=Array.from((await emulator.audio_samples(8192)));
+      return {done:(await emulator.read_long(0x06007004)),
+        words:(await Promise.all(Array.from({length:41},async (_,i)=>(await emulator.read_long(0x05A00800+i*4))))),
+        halted:(await emulator.sound_halted()),count:(await emulator.sound_instruction_count()),
         peak:Math.max(...samples.map(Math.abs))};
     });
   };
@@ -2439,7 +2463,8 @@ try {
     return {name,words:values.map(v=>parseInt(v,16))};
   });
   const familyResult=async rom=>page.evaluate(async ({rom,count,faultCount})=>{
-    const {Emulator}=await import("./pkg/saturn_rust.js");
+    const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+    await init();
     const guest=new Emulator();
     try {
       guest.reset_bios(Uint8Array.from(rom));
@@ -2532,13 +2557,13 @@ try {
     await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     return page.evaluate(async()=>{
       const {emulator}=await import("./app.js");
-      for(let i=0;i<20;i++) emulator.run_steps(10000);
-      const audio=Array.from(emulator.audio_samples(8192));
+      for(let i=0;i<20;i++) (await emulator.run_steps(10000));
+      const audio=Array.from((await emulator.audio_samples(8192)));
       const frames=Array.from({length:audio.length/2},(_,i)=>audio.slice(i*2,i*2+2));
       const first=frames.findIndex(s=>s[1]!==0);
-      return {mailbox:emulator.read_long(0x06007004),waveform:emulator.read_long(0x05A04300),
+      return {mailbox:(await emulator.read_long(0x06007004)),waveform:(await emulator.read_long(0x05A04300)),
         first:frames.slice(first,first+16),right:[...new Set(frames.slice(first).map(s=>s[1]))].sort((a,b)=>a-b),
-        tail:frames.slice(-100),count:frames.length-first,dropped:emulator.audio_dropped()};
+        tail:frames.slice(-100),count:frames.length-first,dropped:(await emulator.audio_dropped())};
     });
   };
   const synthesis=await synthesisResult(synthesisRom);
@@ -2607,9 +2632,9 @@ try {
   await page.evaluate(async()=>{
     const {emulator,audio,pumpAudio}=await import("./app.js");
     audio.setMuted(false); audio.setPaused(false);
-    for(let i=0;i<4;i++) emulator.run_steps(10000);
+    for(let i=0;i<4;i++) (await emulator.run_steps(10000));
     const before=audio.stats.received;
-    pumpAudio();
+    (await pumpAudio());
     for(let i=0;i<100;i++) {
       if(audio.stats.received>before && audio.stats.peak>0.1) {audio.setPaused(true); return;}
       await new Promise(resolve=>setTimeout(resolve,25));
@@ -2630,11 +2655,11 @@ try {
   await page.locator("#screen").focus();
   const smpcResult = () => page.evaluate(async () => {
     const { emulator } = await import("./app.js");
-    for (let i = 0; i < 10; i++) emulator.run_steps(10000);
+    for (let i = 0; i < 10; i++) (await emulator.run_steps(10000));
     // Read-only debugger longwords; mailbox contents came entirely from guest.
-    const bytes = (address) => Array.from({length:4}, (_,i) => emulator.read_long(address+i*4))
+    const bytes = async (address) => (await Promise.all(Array.from({length:4}, async (_,i) => (await emulator.read_long(address+i*4)))))
       .flatMap((word) => [word>>>24,(word>>>16)&255,(word>>>8)&255,word&255]);
-    return { status: bytes(0x06008000), packet: bytes(0x06008020), irq: emulator.read_long(0x06008040), done: emulator.read_long(0x06008044) };
+    return { status: (await bytes(0x06008000)), packet: (await bytes(0x06008020)), irq: (await emulator.read_long(0x06008040)), done: (await emulator.read_long(0x06008044)) };
   });
   await page.evaluate(async () => {
     const pads = [
@@ -2683,12 +2708,12 @@ try {
     if (x===0x56) await page.locator("#reset").click();
     const result=await page.evaluate(async (x)=>{
       const {emulator}=await import("./app.js");
-      emulator.set_buttons(1|16|4096);emulator.set_port2_buttons(8|128|2048);
-      emulator.set_3d_pad(0,true,x,0x34,0xAB,0xCD);emulator.set_analog(1,true,0xFE,0xDC,0xBA);
-      emulator.run_steps(10000);
-      const bytes=(address,count)=>Array.from({length:Math.ceil(count/4)},(_,i)=>emulator.read_long(address+i*4))
+      (await emulator.set_buttons(1|16|4096));(await emulator.set_port2_buttons(8|128|2048));
+      (await emulator.set_3d_pad(0,true,x,0x34,0xAB,0xCD));(await emulator.set_analog(1,true,0xFE,0xDC,0xBA));
+      (await emulator.run_steps(10000));
+      const bytes=async (address,count)=>(await Promise.all(Array.from({length:Math.ceil(count/4)},async (_,i)=>(await emulator.read_long(address+i*4)))))
         .flatMap((n)=>[n>>>24,(n>>>16)&255,(n>>>8)&255,n&255]).slice(0,count);
-      return {done:emulator.read_long(0x0600B040),first:bytes(0x0600B000,16),second:bytes(0x0600B020,14)};
+      return {done:(await emulator.read_long(0x0600B040)),first:(await bytes(0x0600B000,16)),second:(await bytes(0x0600B020,14))};
     },x);
     assert.equal(result.done,0x600D);
     assert.deepEqual(result.first,[1,0x36,14,0x3E,7,0x37,x>>4,0x30|(x&15),3,0x34,10,0x3B,12,0x3D,0,0x31]);
@@ -2706,9 +2731,9 @@ try {
   await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   const dualStarted = await page.evaluate(async () => {
     const { emulator } = await import("./app.js");
-    for (let i = 0; i < 2000 && emulator.read_long(0x06002004) !== 1; i++) emulator.step();
-    return { boots: emulator.read_long(0x06002004), master: Array.from(emulator.registers()),
-      slave: Array.from(emulator.slave_registers()), retired: Number(emulator.slave_instruction_count()) };
+    for (let i = 0; i < 2000 && (await emulator.read_long(0x06002004)) !== 1; i++) (await emulator.step());
+    return { boots: (await emulator.read_long(0x06002004)), master: Array.from((await emulator.registers())),
+      slave: Array.from((await emulator.slave_registers())), retired: Number((await emulator.slave_instruction_count())) };
   });
   assert.equal(dualStarted.boots, 1);
   assert(dualStarted.retired > 0);
@@ -2722,10 +2747,10 @@ try {
   assert.match(await value("status"), /Sleeping/);
   const dualResult = () => page.evaluate(async () => {
     const { emulator } = await import("./app.js");
-    return { mailbox: Array.from({length: 14}, (_, i) => emulator.read_long(0x06002000 + i * 4)),
-      slaveRetired: emulator.slave_instruction_count(), slavePc: emulator.slave_pc(),
-      slaveExceptions: emulator.slave_exception_count(), masterExceptions: emulator.exception_count(),
-      masterSp: emulator.registers()[15], clocks: Number(emulator.peripheral_clocks()) };
+    return { mailbox: (await Promise.all(Array.from({length: 14}, async (_, i) => (await emulator.read_long(0x06002000 + i * 4))))),
+      slaveRetired: (await emulator.slave_instruction_count()), slavePc: (await emulator.slave_pc()),
+      slaveExceptions: (await emulator.slave_exception_count()), masterExceptions: (await emulator.exception_count()),
+      masterSp: (await emulator.registers())[15], clocks: Number((await emulator.peripheral_clocks())) };
   });
   const dualFinished = await dualResult();
   assert.deepEqual(dualFinished.mailbox.slice(0, 11), [1, 2, 35, 42, 2, 0x1234, 2, 0x5678, 2, 42, 0x600D]);
@@ -2756,7 +2781,7 @@ try {
   const stoppedAfterSlaveFault = await machine();
   await page.evaluate(async () => {
     const { emulator } = await import("./app.js");
-    try { emulator.run_steps(10); } catch { /* Sticky error expected. */ }
+    try { (await emulator.run_steps(10)); } catch { /* Sticky error expected. */ }
   });
   assert.deepEqual(await machine(), stoppedAfterSlaveFault);
   await page.locator("#count").fill("6");
@@ -2845,17 +2870,25 @@ try {
   await page.locator("#pause").click();
   await page.waitForFunction((frames) => window.emulatedFrames() >= frames + 5, observedFrames);
   assert.equal(await page.evaluate(() => window.registerChanges), 0);
-  // Switch while running/holding input in one event turn, so no timer races
-  // intervene between the machine snapshots. Other navigation uses real clicks.
+  // Navigation drains at most the two already committed Worker fields. Once
+  // paused, it preserves the exact CPU state while held input is released.
   const switchState = await page.evaluate(async () => {
     const { emulator } = await import("./app.js");
-    const before = String(emulator.instruction_count());
+    const fields = emulator.state.frames;
     document.getElementById("screen").focus();
     window.dispatchEvent(new KeyboardEvent("keydown", {key: "ArrowRight", code: "ArrowRight"}));
     document.getElementById("view-debug").click();
-    return [before, String(emulator.instruction_count())];
+    const deadline = performance.now() + 30000;
+    while (document.getElementById("main").getAttribute("aria-busy") === "true") {
+      if (performance.now() > deadline) throw new Error("Navigation did not drain playback");
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
+    const before = await emulator.instruction_count(), stopped = emulator.state.frames;
+    await new Promise(resolve => setTimeout(resolve, 60));
+    return {before:String(before),after:String(await emulator.instruction_count()),fields:stopped-fields};
   });
-  assert.equal(switchState[0], switchState[1]);
+  assert.equal(switchState.before, switchState.after);
+  assert(switchState.fields >= 0 && switchState.fields <= 2, "Navigation must respect the two-field drain bound");
   assert.equal(await value("pause"), "Resume");
   const pausedMachine = await machine();
   await showView("play");
@@ -2867,14 +2900,14 @@ try {
     const pixels = document.getElementById("screen").getContext("2d").getImageData(0,0,320,224).data;
     let hash = 2166136261;
     for (const byte of pixels) hash = Math.imul(hash ^ byte, 16777619) >>> 0;
-    return { state: Array.from({length: 5}, (_, i) => emulator.read_long(0x06010000 + i*4)),
-      instructions: Number(emulator.instruction_count()), hash,
+    return { state: (await Promise.all(Array.from({length: 5}, async (_, i) => (await emulator.read_long(0x06010000 + i*4))))),
+      instructions: Number((await emulator.instruction_count())), hash,
       progress: Array.from(pixels.slice((27*320+45)*4, (27*320+45)*4+4)),
       banner: Array.from(pixels.slice((150*320+100)*4, (150*320+100)*4+4)) };
   });
   const stepFrames = (n) => page.evaluate(async (n) => {
     const { advanceFrame } = await import("./app.js");
-    for (let i = 0; i < n; i++) advanceFrame();
+    for (let i = 0; i < n; i++) (await advanceFrame());
   }, n);
   const hold = async (key, n) => {
     await page.locator("#screen").focus();
@@ -2927,18 +2960,31 @@ try {
   await stepFrames(4);
   assert.deepEqual((await gameState()).state.slice(0,4), [64,112,1,0]);
   await page.keyboard.up("ArrowRight");
-  const stationary = (await gameState()).state.slice(0,4);
+  let stationary = (await gameState()).state.slice(0,4);
   // Held buttons release on view changes, pause, settings and window blur.
   for (const action of ["view-play", "settings", "pause", "window-blur"]) {
     await page.locator("#screen").focus();
     await page.keyboard.down("ArrowRight");
     if (action === "window-blur") await page.evaluate(() => window.dispatchEvent(new Event("blur")));
     else if (action === "pause") {
-      // Click resume and pause in one task; no real-time frame can run between.
-      await page.evaluate(() => {
-        document.getElementById("pause").click();
-        document.getElementById("pause").click();
+      // Wait for Resume before requesting Pause; then drain its bounded
+      // committed fields before checking that held input was released.
+      const drained = await page.evaluate(async () => {
+        const {emulator} = await import("./app.js");
+        const idle = async () => {
+          const deadline = performance.now() + 30000;
+          while (document.getElementById("main").getAttribute("aria-busy") === "true") {
+            if (performance.now() > deadline) throw new Error("Playback control did not settle");
+            await new Promise(resolve => setTimeout(resolve, 1));
+          }
+        };
+        document.getElementById("pause").click(); await idle();
+        const before = emulator.state.frames;
+        document.getElementById("pause").click(); await idle();
+        return emulator.state.frames - before;
       });
+      assert(drained >= 0 && drained <= 2, "Pause must drain at most two committed fields");
+      stationary = (await gameState()).state.slice(0,4);
     } else if (action === "settings") {
       await settings.click();
       await page.locator("#disc").focus();
@@ -3019,7 +3065,7 @@ try {
     root.copy(compact, (sectors - 1) * 2048 + 34);
     compact[(sectors - 1) * 2048 + 34 + 33] = 1;
     await page.locator("#disc").setInputFiles({ name:`compact-${sectors}.iso`, mimeType:"application/octet-stream", buffer:compact });
-    await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
+    await waitForLoadedDisc(page);
     assert.equal(await value("error"), "");
     await page.locator("#count").fill("100");
     await page.locator("#run").click();
@@ -3050,7 +3096,7 @@ try {
   await page.locator("#disc").setInputFiles({ name:"invalid-structure.iso", mimeType:"application/octet-stream", buffer:Buffer.alloc(18 * 2048) });
   await page.waitForFunction(() => /missing Saturn hardware identifier/.test(document.getElementById("error").textContent));
   await page.locator("#disc").setInputFiles({name:"authorized-homebrew.iso", mimeType:"application/octet-stream", buffer:disc});
-  await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
+  await waitForLoadedDisc(page);
   assert.equal(await value("start"), "Start");
   await settings.click();
   const localMachine = await machine();
@@ -3089,7 +3135,7 @@ try {
 
   // Explicit backup import/export stays local and preserves machine state.
   const backupBytes = Buffer.from(Array.from({length: 32768}, (_, i) => (i ^ (i >> 8)) & 255));
-  const backup = () => page.evaluate(async () => Array.from((await import("./app.js")).emulator.export_backup_ram()));
+  const backup = () => page.evaluate(async () => Array.from(await (await import("./app.js")).emulator.export_backup_ram()));
   const beforeImport = await machine();
   await context.setOffline(true);
   await page.locator("#backup-import").setInputFiles({name:"original-backup.bin", mimeType:"application/octet-stream", buffer:backupBytes});
@@ -3139,6 +3185,26 @@ try {
   assert.match(await value("backup-status"), /cancelled by boot change/);
   assert.deepEqual(Buffer.from(await backup()), backupBytes);
   assert.match(await value("error"), /512 KiB/);
+  // An import accepted before a boot change remains committed even if its
+  // acknowledgement arrives late; report retention rather than cancellation.
+  await page.evaluate(async () => {
+    const {emulator:m} = await import("./app.js");
+    const original = m.import_backup_ram.bind(m);
+    m.import_backup_ram = async bytes => {
+      await original(bytes);
+      window.backupCommitted = true;
+      await new Promise(resolve => { window.releaseBackupImport = resolve; });
+    };
+    window.restoreBackupImport = () => { m.import_backup_ram = original; };
+  });
+  await page.locator("#backup-import").setInputFiles(replacement);
+  await page.waitForFunction(() => window.backupCommitted);
+  await page.locator("#reset").click();
+  await page.evaluate(() => { window.releaseBackupImport(); window.restoreBackupImport(); });
+  assert.match(await value("backup-status"), /Accepted backup import retained/);
+  assert.deepEqual(Buffer.from(await backup()), replacement.buffer);
+  await page.locator("#backup-import").setInputFiles({name:"restore-backup.bin", mimeType:"application/octet-stream", buffer:backupBytes});
+  await page.waitForFunction(() => document.getElementById("backup-status").textContent.startsWith("Imported"));
   // The shared original guest executes real MOV.B instructions on Wasm too.
   const backupRom = Buffer.alloc(524288);
   for (const line of (await readFile("tests/fixtures/backup-pad.hex", "utf8")).split(/\r?\n/)) {
@@ -3150,9 +3216,9 @@ try {
   await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
   const romResults = await page.evaluate(async () => {
     const { emulator } = await import("./app.js");
-    emulator.set_port2_buttons(1);
-    emulator.run_steps(83);
-    return [emulator.export_backup_ram()[0], emulator.read_long(0x06001004)];
+    (await emulator.set_port2_buttons(1));
+    (await emulator.run_steps(83));
+    return [(await emulator.export_backup_ram())[0], (await emulator.read_long(0x06001004))];
   });
   assert.deepEqual(romResults, [1, 0x3E]);
   await page.locator("#reset").click();
@@ -3166,11 +3232,11 @@ try {
   backupDisc.writeUInt32BE(0x50, 20 * 2048 + 68 + 14);
   await page.locator("#bios").setInputFiles([]);
   await page.locator("#disc").setInputFiles({name:"original-backup-pad-test.iso", mimeType:"application/octet-stream", buffer:backupDisc});
-  await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
+  await waitForLoadedDisc(page);
   const samplePad = () => page.evaluate(async () => {
     const { emulator } = await import("./app.js");
-    emulator.run_steps(167); // Include the original 67-instruction HLE reset.
-    return emulator.read_long(0x06001004);
+    (await emulator.run_steps(167)); // Include the original 67-instruction HLE reset.
+    return (await emulator.read_long(0x06001004));
   });
   await settings.click(); // Close settings; local discs remain paused.
   await showView("play");
@@ -3208,7 +3274,7 @@ try {
   await context.setOffline(false);
   await anotherTab.goto(address + prefix);
   await anotherTab.waitForFunction(() => document.getElementById("status").textContent === "Ready");
-  assert(await anotherTab.evaluate(async () => (await import("./app.js")).emulator.export_backup_ram().every((byte) => byte === 0)));
+  assert(await anotherTab.evaluate(async () => (await (await import("./app.js")).emulator.export_backup_ram()).every((byte) => byte === 0)));
   await anotherTab.close();
   timings.group("prism-courier");
   // Original playable VDP1+VDP2+SCSP disc. UI selects the fixture as a local file; only
@@ -3221,12 +3287,12 @@ try {
   await courier.waitForFunction(() => document.getElementById("status").textContent === "Ready");
   await courier.evaluate(async () => {
     const { emulator } = await import("./app.js");
-    window.courierState = () => [0,4,8,12,16].map((offset) => emulator.read_long(0x06018000+offset));
+    window.courierState = async () => (await Promise.all([0,4,8,12,16].map(async (offset) => (await emulator.read_long(0x06018000+offset)))));
   });
   await courier.locator("#disc").setInputFiles({name:"prism-courier.iso", mimeType:"application/octet-stream", buffer:await readFile("web/prism-courier.iso")});
   await courier.waitForFunction(() => !document.getElementById("start").disabled);
   await courier.locator("#start").click();
-  await courier.waitForFunction(() => window.courierState()[4] > 2, null, { timeout: 30000 });
+  await waitForGuest(courier, async () => (await window.courierState())[4] > 2);
   await courier.locator("#pause").click();
   const courierState = () => courier.evaluate(() => window.courierState());
   assert.deepEqual((await courierState()).slice(0,4), [24,112,0,0]);
@@ -3234,13 +3300,13 @@ try {
     const { emulator } = await import("./app.js");
     let stereo = false;
     for (let i=0; i<n; i++) {
-      emulator.advance_frame();
-      const pcm = emulator.audio_samples(8192);
+      (await emulator.advance_frame());
+      const pcm = (await emulator.audio_samples(8192));
       for (let p=0; p<pcm.length; p+=2) stereo ||= pcm[p] !== 0 && pcm[p+1] !== 0 && pcm[p] !== pcm[p+1];
     }
-    const pixels = emulator.framebuffer();
-    return { state: window.courierState(), stereo, pixels: [[27,115],[150,50],[285,110],[100,20]].map(([x,y]) => Array.from(pixels.slice((y*320+x)*4,(y*320+x)*4+4))),
-      count: emulator.sound_instruction_count(), waveform: emulator.read_long(0x05A04000), drawIrqs: emulator.read_long(0x06018014) };
+    const pixels = (await emulator.framebuffer());
+    return { state: await window.courierState(), stereo, pixels: [[27,115],[150,50],[285,110],[100,20]].map(([x,y]) => Array.from(pixels.slice((y*320+x)*4,(y*320+x)*4+4))),
+      count: (await emulator.sound_instruction_count()), waveform: (await emulator.read_long(0x05A04000)), drawIrqs: (await emulator.read_long(0x06018014)) };
   },n);
   const courierInitial = await courierFrames(3);
   assert.deepEqual(courierInitial.pixels.slice(0,3), [[0,255,255,255],[255,0,0,255],[0,255,0,255]]);
@@ -3283,8 +3349,8 @@ try {
   await courier.evaluate(async () => {
     const { emulator, audio } = await import("./app.js");
     audio.setPaused(false);
-    emulator.advance_frame();
-    audio.deliver(emulator.audio_samples(8192));
+    (await emulator.advance_frame());
+    audio.deliver((await emulator.audio_samples(8192)));
     window.courierAudioReady = () => audio.stats.rendered > 128 && audio.stats.peak > 0.1;
   });
   await courier.waitForFunction(() => window.courierAudioReady());
@@ -3295,7 +3361,7 @@ try {
   }
   await courier.locator("#settings > summary").click();
   await courier.locator("#disc").setInputFiles({ name:"original-changed-prism.iso",mimeType:"application/octet-stream",buffer:changedCourier });
-  await courier.waitForFunction(() => window.courierState()[4] === 0);
+  await waitForGuest(courier, async () => (await window.courierState())[4] === 0);
   let mutatedCourier;
   for (let i = 0; i < 100; i++) {
     mutatedCourier = await courierFrames(1);
@@ -3350,20 +3416,21 @@ try {
     [0,255,0,255],[0,0,0,255],[0,255,0,255],[255,0,0,255],
     [0,0,0,255],[0,0,0,255],
   ];
+  const labLoaded = () => waitForLoadedDisc(lab);
   const labTrace = (points = labPoints) => lab.evaluate(async points => {
     const {emulator,advanceFrame} = await import("./app.js");
-    for(let i=0;i<40 && emulator.read_long(0x06010020)!==0x600D;i++) emulator.run_steps(10000);
-    emulator.advance_frame();
-    const samples=Array.from(emulator.audio_samples(8192));
-    advanceFrame();
-    const frame=emulator.framebuffer();
+    for(let i=0;i<40 && (await emulator.read_long(0x06010020))!==0x600D;i++) (await emulator.run_steps(10000));
+    (await emulator.advance_frame());
+    const samples=Array.from((await emulator.audio_samples(8192)));
+    (await advanceFrame());
+    const frame=(await emulator.framebuffer());
     const canvas=document.getElementById("screen").getContext("2d");
-    return {results:Array.from({length:11},(_,i)=>emulator.read_long(0x06010000+i*4)),
-      slave:Number(emulator.slave_instruction_count()),sound:Number(emulator.sound_instruction_count()),
+    return {results:(await Promise.all(Array.from({length:11},async (_,i)=>(await emulator.read_long(0x06010000+i*4))))),
+      slave:Number((await emulator.slave_instruction_count())),sound:Number((await emulator.sound_instruction_count())),
       pcmNonzero:samples.some(v=>v!==0),stereo:samples.some((v,i)=>i%2===0&&v!==samples[i+1]),
       wasm:points.map(([x,y])=>Array.from(frame.slice((y*320+x)*4,(y*320+x)*4+4))),
       canvas:points.map(([x,y])=>Array.from(canvas.getImageData(x,y,1,1).data)),
-      backup:emulator.export_backup_ram()[0]};
+      backup:(await emulator.export_backup_ram())[0]};
   }, points);
   const assertLab = result => {
     assert.deepEqual(result.results.slice(0,6),[1,1,84,35,42,393984]);
@@ -3375,13 +3442,13 @@ try {
     assert.deepEqual(result.canvas,result.wasm);
   };
   await lab.locator("#disc").setInputFiles(labFiles());
-  await lab.waitForFunction(()=>document.getElementById("status").textContent==="Ready");
+  await labLoaded();
   const labResult=await labTrace();
   assertLab(labResult);
   assert.equal(labResult.backup,1);
   assert.deepEqual(labResult.wasm,labPixels);
   // Restart uses controller pins, not a host write to the result table.
-  await lab.evaluate(async()=>{const {emulator}=await import("./app.js");emulator.set_buttons(1<<7);emulator.run_steps(50);emulator.set_buttons(0);});
+  await lab.evaluate(async()=>{const {emulator}=await import("./app.js");(await emulator.set_buttons(1<<7));(await emulator.run_steps(50));(await emulator.set_buttons(0));});
   const labRestart=await labTrace();
   assertLab(labRestart);
   assert.equal(labRestart.backup,2);
@@ -3399,7 +3466,7 @@ try {
     assert.equal(changed.readUInt32BE(at),before);
     changed.writeUInt32BE(after,at);
     await lab.locator("#disc").setInputFiles(labFiles(changed));
-    await lab.waitForFunction(()=>document.getElementById("status").textContent==="Ready");
+    await labLoaded();
     const result=await labTrace(points);
     assertLab(result);
     assert.deepEqual(result.wasm,expected);
@@ -3408,8 +3475,8 @@ try {
   await lab.waitForFunction(()=>document.getElementById("audio-status").textContent.includes("paused"));
   await lab.evaluate(async()=>{
     const {emulator,audio}=await import("./app.js");audio.setPaused(false);
-    for(let i=0;i<4;i++)emulator.advance_frame();
-    audio.deliver(emulator.audio_samples(8192));
+    for(let i=0;i<4;i++)(await emulator.advance_frame());
+    audio.deliver((await emulator.audio_samples(8192)));
     window.labAudioReady=()=>audio.stats.rendered>128&&audio.stats.peak>0.05;
   });
   await lab.waitForFunction(()=>window.labAudioReady());
@@ -3418,12 +3485,12 @@ try {
   const labBuffers=[];
   for(const zeroAudio of [false,true]) {
     await lab.locator("#disc").setInputFiles(labFiles(labIso,zeroAudio?Buffer.alloc(labAudio.length):labAudio));
-    await lab.waitForFunction(()=>document.getElementById("status").textContent==="Ready");
+    await labLoaded();
     labBuffers.push(await lab.evaluate(async()=>{
       const {emulator}=await import("./app.js");
-      for(let i=0;i<40&&emulator.read_long(0x06010020)!==0x600D;i++)emulator.run_steps(10000);
-      emulator.audio_samples(8192);emulator.advance_frame();
-      return Array.from(emulator.audio_samples(8192));
+      for(let i=0;i<40&&(await emulator.read_long(0x06010020))!==0x600D;i++)(await emulator.run_steps(10000));
+      (await emulator.audio_samples(8192));(await emulator.advance_frame());
+      return Array.from((await emulator.audio_samples(8192)));
     }));
   }
   assert.equal(labBuffers[0].length,labBuffers[1].length);
@@ -3437,12 +3504,12 @@ try {
   for(const [coef,result,left] of [[0x4000,0x900,2304],[0x2000,0x480,1280],[0,0,256]]) {
     const effectIso=Buffer.from(labIso);effectIso.writeUInt16BE(coef,effectAt+2);
     await lab.locator("#disc").setInputFiles(labFiles(effectIso,Buffer.alloc(labAudio.length)));
-    await lab.waitForFunction(()=>document.getElementById("status").textContent==="Ready");
+    await labLoaded();
     const effect=await lab.evaluate(async()=>{
       const {emulator}=await import("./app.js");
-      for(let i=0;i<40&&emulator.read_long(0x06010020)!==0x600D;i++)emulator.run_steps(10000);
-      emulator.audio_samples(8192);emulator.advance_frame();emulator.advance_frame();
-      return {result:emulator.read_long(0x06010028),samples:Array.from(emulator.audio_samples(8192))};
+      for(let i=0;i<40&&(await emulator.read_long(0x06010020))!==0x600D;i++)(await emulator.run_steps(10000));
+      (await emulator.audio_samples(8192));(await emulator.advance_frame());(await emulator.advance_frame());
+      return {result:(await emulator.read_long(0x06010028)),samples:Array.from((await emulator.audio_samples(8192)))};
     });
     assert.equal(effect.result,result);
     const expected=[left,4096,-left,-4096,-left*2,-8192,left*2,8192];
@@ -3450,16 +3517,16 @@ try {
   }
   const changedLab=Buffer.from(labIso);changedLab[60*2048+3]=9;
   await lab.locator("#disc").setInputFiles(labFiles(changedLab));
-  await lab.waitForFunction(()=>document.getElementById("status").textContent==="Ready");
+  await labLoaded();
   assert.equal((await labTrace()).results[5],393990);
   // Extra CUE indices retain sector layout and guest results through Wasm.
   // The native command vectors separately assert seek/status/Q index numbers.
   const indexedCue=Buffer.from(labCue.toString()+"    INDEX 02 00:00:02\n    INDEX 99 00:00:07\n");
   const beforeIndexedBackup=await lab.evaluate(async()=>
-    (await import("./app.js")).emulator.export_backup_ram()[0]);
+    (await (await import("./app.js")).emulator.export_backup_ram())[0]);
   await lab.locator("#disc").setInputFiles([
     {name:"hardware-lab.cue",mimeType:"text/plain",buffer:indexedCue},...labFiles().slice(1)]);
-  await lab.waitForFunction(()=>document.getElementById("status").textContent==="Ready");
+  await labLoaded();
   const indexedResult=await labTrace();
   assert.deepEqual(indexedResult.results.slice(0,9),labResult.results.slice(0,9));
   assert.equal(indexedResult.results[10],labResult.results[10]);
@@ -3472,7 +3539,7 @@ try {
   await lab.waitForFunction(()=>document.getElementById("error").textContent.includes("increasing index numbers"));
   await lab.locator("#disc").setInputFiles(labFiles().slice(0,2));
   await lab.waitForFunction(()=>document.getElementById("error").textContent.includes("Missing CUE file reference"));
-  const rejected=await lab.evaluate(async()=>{const {emulator}=await import("./app.js");return {state:emulator.status(),retired:emulator.instruction_count()};});
+  const rejected=await lab.evaluate(async()=>{const {emulator}=await import("./app.js");return {state:(await emulator.status()),retired:(await emulator.instruction_count())};});
   assert.match(rejected.state,/Reset/);assert.equal(rejected.retired,"0");
   assert(labRequests.every(r=>r.method==="GET"&&!r.body&&r.url.startsWith(address+prefix)));
   await lab.close();
@@ -3500,7 +3567,8 @@ try {
   await cddaPage.locator("#audio-enable").click();
   for (const pre of [false, true]) {
     const samples = await cddaPage.evaluate(async ({ rom, track, pre }) => {
-      const { Emulator } = await import("./pkg/saturn_rust.js");
+      const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+      await init();
       const { audio } = await import("./app.js");
       const emulator = new Emulator();
       try {

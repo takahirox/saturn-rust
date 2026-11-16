@@ -25,10 +25,10 @@ export async function interruptEntry(page) {
     if(control===4) patch(image,0x00000101,0x00000100,4);
     for(let boot=0;boot<2;boot++) {
       const got=await page.evaluate(async image=>{
-        const {emulator}=await import("./app.js");emulator.reset_bios(Uint8Array.from(image));
-        emulator.run_steps(10000);
-        return {words:[0x0600D000,0x0600D100].map(base=>Array.from({length:7},(_,i)=>emulator.read_long(base+i*4))),
-          data:emulator.read_long(0x0600D204),exceptions:[emulator.exception_count(),emulator.slave_exception_count()]};
+        const {emulator}=await import("./app.js");(await emulator.reset_bios(Uint8Array.from(image)));
+        (await emulator.run_steps(10000));
+        return {words:(await Promise.all([0x0600D000,0x0600D100].map(async base=>(await Promise.all(Array.from({length:7},async (_,i)=>(await emulator.read_long(base+i*4)))))))),
+          data:(await emulator.read_long(0x0600D204)),exceptions:[(await emulator.exception_count()),(await emulator.slave_exception_count())]};
       },[...image]);
       const record=[control===1?51:35,0x50,0xC000050C,control===1?0xA0:0x60,control===1?11:7,0x600D];
       const expected=control===3?{words:[Array(7).fill(0),Array(7).fill(0)],data:0,exceptions:["0","0"]}:
