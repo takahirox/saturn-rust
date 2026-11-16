@@ -4,7 +4,7 @@ import nodeAssert from "node:assert/strict";
 import { selection, sharedScenarios } from "./browser-selection.mjs";
 import { siteDigest } from "./browser-results.mjs";
 import { BrowserTimings } from "./browser-timings.mjs";
-import { instrumentBrowser, waitForGuest } from "./browser-transport.mjs";
+import { instrumentBrowser, waitForGuest, waitForLoadedDisc } from "./browser-transport.mjs";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { lstat, mkdtemp, readFile, readdir, rm, symlink } from "node:fs/promises";
@@ -3065,7 +3065,7 @@ try {
     root.copy(compact, (sectors - 1) * 2048 + 34);
     compact[(sectors - 1) * 2048 + 34 + 33] = 1;
     await page.locator("#disc").setInputFiles({ name:`compact-${sectors}.iso`, mimeType:"application/octet-stream", buffer:compact });
-    await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
+    await waitForLoadedDisc(page);
     assert.equal(await value("error"), "");
     await page.locator("#count").fill("100");
     await page.locator("#run").click();
@@ -3096,7 +3096,7 @@ try {
   await page.locator("#disc").setInputFiles({ name:"invalid-structure.iso", mimeType:"application/octet-stream", buffer:Buffer.alloc(18 * 2048) });
   await page.waitForFunction(() => /missing Saturn hardware identifier/.test(document.getElementById("error").textContent));
   await page.locator("#disc").setInputFiles({name:"authorized-homebrew.iso", mimeType:"application/octet-stream", buffer:disc});
-  await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
+  await waitForLoadedDisc(page);
   assert.equal(await value("start"), "Start");
   await settings.click();
   const localMachine = await machine();
@@ -3232,7 +3232,7 @@ try {
   backupDisc.writeUInt32BE(0x50, 20 * 2048 + 68 + 14);
   await page.locator("#bios").setInputFiles([]);
   await page.locator("#disc").setInputFiles({name:"original-backup-pad-test.iso", mimeType:"application/octet-stream", buffer:backupDisc});
-  await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
+  await waitForLoadedDisc(page);
   const samplePad = () => page.evaluate(async () => {
     const { emulator } = await import("./app.js");
     (await emulator.run_steps(167)); // Include the original 67-instruction HLE reset.
@@ -3416,6 +3416,7 @@ try {
     [0,255,0,255],[0,0,0,255],[0,255,0,255],[255,0,0,255],
     [0,0,0,255],[0,0,0,255],
   ];
+  const labLoaded = () => waitForLoadedDisc(lab);
   const labTrace = (points = labPoints) => lab.evaluate(async points => {
     const {emulator,advanceFrame} = await import("./app.js");
     for(let i=0;i<40 && (await emulator.read_long(0x06010020))!==0x600D;i++) (await emulator.run_steps(10000));
@@ -3441,7 +3442,7 @@ try {
     assert.deepEqual(result.canvas,result.wasm);
   };
   await lab.locator("#disc").setInputFiles(labFiles());
-  await lab.waitForFunction(()=>document.getElementById("status").textContent==="Ready");
+  await labLoaded();
   const labResult=await labTrace();
   assertLab(labResult);
   assert.equal(labResult.backup,1);
@@ -3465,7 +3466,7 @@ try {
     assert.equal(changed.readUInt32BE(at),before);
     changed.writeUInt32BE(after,at);
     await lab.locator("#disc").setInputFiles(labFiles(changed));
-    await lab.waitForFunction(()=>document.getElementById("status").textContent==="Ready");
+    await labLoaded();
     const result=await labTrace(points);
     assertLab(result);
     assert.deepEqual(result.wasm,expected);
@@ -3484,7 +3485,7 @@ try {
   const labBuffers=[];
   for(const zeroAudio of [false,true]) {
     await lab.locator("#disc").setInputFiles(labFiles(labIso,zeroAudio?Buffer.alloc(labAudio.length):labAudio));
-    await lab.waitForFunction(()=>document.getElementById("status").textContent==="Ready");
+    await labLoaded();
     labBuffers.push(await lab.evaluate(async()=>{
       const {emulator}=await import("./app.js");
       for(let i=0;i<40&&(await emulator.read_long(0x06010020))!==0x600D;i++)(await emulator.run_steps(10000));
@@ -3503,7 +3504,7 @@ try {
   for(const [coef,result,left] of [[0x4000,0x900,2304],[0x2000,0x480,1280],[0,0,256]]) {
     const effectIso=Buffer.from(labIso);effectIso.writeUInt16BE(coef,effectAt+2);
     await lab.locator("#disc").setInputFiles(labFiles(effectIso,Buffer.alloc(labAudio.length)));
-    await lab.waitForFunction(()=>document.getElementById("status").textContent==="Ready");
+    await labLoaded();
     const effect=await lab.evaluate(async()=>{
       const {emulator}=await import("./app.js");
       for(let i=0;i<40&&(await emulator.read_long(0x06010020))!==0x600D;i++)(await emulator.run_steps(10000));
@@ -3516,7 +3517,7 @@ try {
   }
   const changedLab=Buffer.from(labIso);changedLab[60*2048+3]=9;
   await lab.locator("#disc").setInputFiles(labFiles(changedLab));
-  await lab.waitForFunction(()=>document.getElementById("status").textContent==="Ready");
+  await labLoaded();
   assert.equal((await labTrace()).results[5],393990);
   // Extra CUE indices retain sector layout and guest results through Wasm.
   // The native command vectors separately assert seek/status/Q index numbers.
@@ -3525,7 +3526,7 @@ try {
     (await (await import("./app.js")).emulator.export_backup_ram())[0]);
   await lab.locator("#disc").setInputFiles([
     {name:"hardware-lab.cue",mimeType:"text/plain",buffer:indexedCue},...labFiles().slice(1)]);
-  await lab.waitForFunction(()=>document.getElementById("status").textContent==="Ready");
+  await labLoaded();
   const indexedResult=await labTrace();
   assert.deepEqual(indexedResult.results.slice(0,9),labResult.results.slice(0,9));
   assert.equal(indexedResult.results[10],labResult.results[10]);

@@ -1,5 +1,6 @@
 // Original SYS_EXECDMP caller, real local CUE/Wasm/Canvas/WebAudio path.
 import assert from "node:assert/strict";
+import { waitForLoadedDisc } from "./browser-transport.mjs";
 import { readFile } from "node:fs/promises";
 
 export async function hlePlayer(page, url) {
@@ -17,6 +18,7 @@ export async function hlePlayer(page, url) {
     {name:"hle-player-audio.bin",mimeType:"application/octet-stream",buffer:track},
   ];
   const ready = async expected => {
+    await waitForLoadedDisc(page);
     await page.waitForFunction(()=>document.getElementById("status").textContent==="Ready"&&document.getElementById("pc").textContent==="0x00000100");
     const result = await page.evaluate(async expected => {
       const {emulator}=await import("./app.js");

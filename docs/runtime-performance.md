@@ -3635,6 +3635,15 @@ stationarity after pause. It does not set a host-speed floor. This change does
 not relax the separate game/SCSP real-time acceptance or native guest timing
 oracles; those remain measured and unmet where reported above.
 
+The next CI shared shard reaches the hardware-lab trace, then exposes a valid-disc
+replacement race: a status-only wait can accept the old Machine before the new
+selection finishes resetting, and the test issues a step against the stopped
+intermediate CPU. Valid-selection waits now require the accepted local-disc
+message, completed UI action and enabled Start in addition to native Ready. The
+same correction covers equivalent original-disc, large-media and HLE-player
+waits. All original hardware-lab assertions pass in a focused run with local
+File reads delayed 100 ms; guest expected values are unchanged.
+
 Feature-enabled original-guest browser comparisons preserve all 22 device
 hashes, CPU clocks/registers, every returned image and PCM through direct/relay
 paths, pause, in-flight reset and delayed receipts. The equal-100-ms delay control

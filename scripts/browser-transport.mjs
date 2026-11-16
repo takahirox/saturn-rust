@@ -40,6 +40,16 @@ export async function waitForGuest(page, predicate, argument, {timeout = 30000} 
   throw new Error(`Guest predicate did not become true within ${timeout} ms`);
 }
 
+// Machine status alone can still describe the preceding disc during an async
+// local replacement. Only query the new guest after the selection is accepted.
+export function waitForLoadedDisc(page, { timeout = 30000 } = {}) {
+  return page.waitForFunction(() =>
+    document.getElementById("status").textContent === "Ready"
+    && document.getElementById("disc-selection").textContent.includes("Loaded locally.")
+    && document.getElementById("main").getAttribute("aria-busy") === "false"
+    && !document.getElementById("start").disabled, undefined, { timeout });
+}
+
 export function instrumentPage(page, { compact, record }) {
   // A control action now finishes after its Worker operation. Keep ordinary
   // click assertions at that completed UI boundary; tests observing an in-flight

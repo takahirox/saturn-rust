@@ -1,6 +1,7 @@
 // Original MIT guest/media: tests/fixtures/LICENSE + build_large_media.py.
 // Actual production picker, Wasm execution and AudioWorklet at project prefix.
 import assert from "node:assert/strict";
+import { waitForLoadedDisc } from "./browser-transport.mjs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, open, rm } from "node:fs/promises";
@@ -43,7 +44,7 @@ export async function largeMedia(browser, url) {
         await page.evaluate(async () => { await window.finishLargeRead(); window.restoreLargeRead(); });
         assert.match(await page.locator("#status").textContent(), /Reset/);
         await page.locator("#disc").setInputFiles(mixed ? [cue, iso, audio] : iso);
-        await page.waitForFunction(() => document.getElementById("status").textContent === "Ready", null, { timeout:60000 });
+        await waitForLoadedDisc(page, { timeout: 60000 });
         assert.equal(await page.locator("#error").textContent(), "");
         const execute = async (sysres = false) => page.evaluate(async (sysres) => {
           const { emulator } = await import("./app.js");
@@ -111,7 +112,7 @@ export async function largeMedia(browser, url) {
         await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
         await page.locator("#view-debug").click(); await page.locator("#settings > summary").click();
         await page.locator("#disc").setInputFiles(iso);
-        await page.waitForFunction(() => document.getElementById("status").textContent === "Ready", null, {timeout:60000});
+        await waitForLoadedDisc(page, { timeout: 60000 });
         const result = await page.evaluate(async () => {
           const { emulator } = await import("./app.js");
           for(let i=0;i<80 && (await emulator.read_long(0x0601000C))!==0x600D;i++) (await emulator.run_steps(10000));
