@@ -494,6 +494,9 @@ impl Emulator {
     pub fn loop_shortened_batches(&self) -> u64 {
         self.machine.loop_shortened_batches()
     }
+    pub fn sound_gap_elisions(&self) -> u64 {
+        self.machine.sound_gap_elisions()
+    }
     pub fn loop_sound_elisions(&self) -> u64 {
         self.machine.loop_sound_elisions()
     }

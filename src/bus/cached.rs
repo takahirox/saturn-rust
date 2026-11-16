@@ -140,6 +140,20 @@ impl Retirements<'_> {
         }
         lo
     }
+    /// Include the initial gap and only endpoints accepted by the peer.
+    /// Dense master retirements alone do not prove a usable sound horizon.
+    fn admissible_gap(&self, limit: usize, origin: u64, permits: impl Fn(u64) -> bool) -> u64 {
+        let mut previous = origin;
+        let mut gap = 0;
+        for index in 0..limit {
+            let at = self.at(index);
+            if at >= origin && permits(at - origin) {
+                gap = gap.max(at - previous);
+                previous = at;
+            }
+        }
+        gap
+    }
     fn aligned_prefix(&self, limit: usize, origin: u64, poll: Option<&PeerSchedule<'_>>) -> usize {
         let Some(poll) = poll else { return limit };
         (0..limit)
@@ -1983,6 +1997,23 @@ impl Bus {
                         u64::from(desired > 0 && desired >= self.sound.clocks_to_event());
                 }
             }
+            // A control write/reset needs at least four 68000 clocks (nine
+            // reference clocks) after lookahead stops. If usable master/peer
+            // endpoints have smaller gaps, selection can always reach one at
+            // or after advanced without crossing that write. No rollback copy
+            // is needed, including a Retired peer and a non-recorded burst.
+            if checkpoint_sound {
+                let gap = points.admissible_gap(selected, self.main_clocks, |elapsed| {
+                    poll.is_none_or(|peer| peer.permits(elapsed))
+                });
+                if self.system_clock.reference_span_bound(gap as u32) < 9 {
+                    checkpoint_sound = false;
+                    #[cfg(any(test, feature = "kernel-experiment"))]
+                    {
+                        self.cached_sound_gap_elisions += 1;
+                    }
+                }
+            }
             let (advanced, checkpoint) = if checkpoint_sound {
                 let (advanced, checkpoint) = self
                     .sound
@@ -2337,5 +2368,35 @@ impl Bus {
             chip.restore_kernel_bus_clock(clock);
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod sound_gap_tests {
+    use super::*;
+    #[test]
+    fn sound_gaps_include_origin_and_only_peer_admissible_endpoints() {
+        let points = Retirements {
+            points: (1..=32).map(|at| Retirement { at: 100 + at }).collect(),
+            ..Retirements::default()
+        };
+        assert_eq!(points.admissible_gap(32, 100, |_| true), 1);
+        assert_eq!(
+            points.admissible_gap(32, 100, |elapsed| elapsed % 16 == 0),
+            16
+        );
+        assert_eq!(
+            points.admissible_gap(32, 100, |elapsed| elapsed == 9 || elapsed == 10),
+            9
+        );
+        assert_eq!(
+            points.admissible_gap(32, 100, |elapsed| elapsed == 8 || elapsed == 16),
+            8
+        );
+        let late = Retirements {
+            points: vec![Retirement { at: 120 }, Retirement { at: 121 }],
+            ..Retirements::default()
+        };
+        assert_eq!(late.admissible_gap(2, 100, |_| true), 20);
     }
 }

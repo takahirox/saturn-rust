@@ -199,6 +199,10 @@ impl Machine {
             .as_ref()
             .map_or(0, |p| p.shortened.get())
     }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn sound_gap_elisions(&self) -> u64 {
+        self.bus.cached_sound_gap_elisions
+    }
     pub fn loop_sound_elisions(&self) -> u64 {
         self.bus
             .loop_probe

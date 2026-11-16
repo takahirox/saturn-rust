@@ -326,6 +326,8 @@ pub struct Bus {
     cached_retirement_points: Vec<cached::Retirement>,
     #[cfg(test)]
     cached_sound_event_elisions: u64,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    cached_sound_gap_elisions: u64,
     #[cfg(test)]
     inline_resumes: u64,
     #[cfg(test)]
@@ -409,6 +411,8 @@ impl Default for Bus {
             cached_retirement_points: Vec::new(),
             #[cfg(test)]
             cached_sound_event_elisions: 0,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            cached_sound_gap_elisions: 0,
             #[cfg(test)]
             inline_resumes: 0,
             #[cfg(test)]

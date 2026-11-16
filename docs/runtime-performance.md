@@ -3464,3 +3464,78 @@ A separate every-frame-image-sequence check also agrees. These measurements
 include Canvas presentation and PCM draining, but the normal player is not yet
 connected to this optional path. They do not replace the current production
 selection/story results or establish real-time or AudioWorklet acceptance.
+
+
+### Peer-admissible sound checkpoint elision (#138)
+
+This increment retains the original Rust core and its existing guest clock/bus
+schedule. After planning a cached SH-2 burst, it measures the largest gap between
+usable retirement endpoints, including the initial gap from the board clock and
+filtering endpoints through the peer's eligibility rule. If the existing PLL
+reference-span bound is strictly less than nine clocks, the existing four-clock
+68000 control-write/reset phase guarantees a usable endpoint at or after sound
+lookahead stops and before the control effect. The full Sound rollback snapshot
+is unnecessary in that case. Larger gaps retain checkpoint/rollback; the existing
+specialized Pending-peer certificate remains available. SCSP ticks, DSP/PCM work,
+RAM arbitration, interrupts and guest retirement positions keep their schedules.
+A feature-only diagnostic counter records the new elisions without adding
+counter storage to normal builds.
+
+Frozen baseline source is main `f25b2199bf2cfa6bd022a049c070aae2a7c0fa80`.
+Local builds use Rust 1.100.0, wasm-bindgen 0.2.129 and Binaryen 127 with unchanged
+release flags and LLVM inline threshold 1000; Chrome is 157.0.8103.52. Production
+Wasm SHA-256 values are:
+
+- Baseline: `87b5bf7dac8ec709be0008800bd132052b32d5e6c373262668e8ecae73f00098`.
+- Candidate: `ad3c2111d3ac3d6f10bdca70b4acf4338a9474f91d8e6d9d75209cae94a1ba75`.
+
+The authorized BIOS/CUE selection workload uses the established deterministic
+input, 3600 warmup fields and six continuous 80-field windows with Canvas and
+PCM checking. Both variants finish preparation before either is timed. No local
+native build/test/profile or second owned Chrome runs during preparation, timing
+or browser cleanup.
+
+| Production-artifact comparison | Baseline fields/s | Candidate fields/s | Change |
+| --- | ---: | ---: | ---: |
+| Baseline initialized first | 27.67703 | 28.64030 | +3.4804% |
+| Candidate initialized first | 28.10815 | 28.20659 | +0.3502% |
+| Fresh candidate-first repeat | 28.46705 | 28.69303 | +0.7938% |
+
+All corresponding CPU/video/PCM endpoints agree. Six, five and six paired windows
+improve respectively; the slower reverse window remains in its aggregate.
+Candidate p95 ranges in the first two runs are 35.3–36.2 and 35.6–42.1 ms; p99
+ranges are 36.1–37.0 and 36.0–42.4 ms. The first 3.48% result is not a stable gain
+forecast. A separate feature-enabled run matches all 22 device hashes at every
+window and the final normal-build endpoint. It records 75013, 75037, 77326,
+76249, 75238 and 76434 newly avoided snapshots per 80 fields. Its timing is
+instrumented diagnostic evidence, separate from the production comparisons.
+
+All 57 cached-execution native tests pass, including the full-board dual-poll
+PCM/control/reset/both-PLL differential that now asserts the new path executes.
+Executed mutants ignoring peer eligibility or the initial gap fail the new
+boundary oracle. A mutant relaxing the horizon to 1000 reference clocks fails
+the inherited long-refill/MCIEB guest because a sound control write precedes the
+next valid CPU retirement. Exact byte restoration, targeted positive controls,
+native all-target Clippy and Wasm Clippy pass. A separate initial zero-match
+filter is not counted among the 57. Main/Worker browser conformance digests stay
+unchanged. Final-head CI, review and the continued story comparison are recorded
+in the associated pull request before adoption.
+
+Original production controls change from 65.93648 to 66.70125 fields/s for the CPU
+loop (+1.16%), 51.98931 to 51.65289 for busy sound/video (−0.65%), and 127.17702 to
+126.80075 for normal video (−0.30%). Corresponding CPU/video/PCM endpoints agree.
+These synthetic results do not establish game real-time execution.
+
+Independent follow-ups remain excluded: empty SCSP tick coalescing improves an
+original audio fixture but regresses the game 28.08299 to 27.93394 (−0.53%);
+STOP/HALT poll coalescing changes 27.25554 to 26.19315 (−3.90%); retaining the
+completed 68000 opcode-fetch prefix changes 27.45634 to 27.47552 (+0.07%) and
+26.30151 to 27.00999 (+2.69%), with an effectively flat first comparison.
+
+This is a partial #138/#17 increment. Around 28.7 fields/s in this production-Wasm
+benchmark still needs about 2.09 times more throughput for 60. The normal player's
+paced animation loop and live AudioWorklet underflows are not measured by these
+comparisons; sustained real-time, broader playback/transitions and hardware
+completion remain unmet. The optional renderer Worker remains a separate path.
+Private inputs, raw traces/counters/captures and external builds stay local and
+ignored. Required post-merge verification: none.
