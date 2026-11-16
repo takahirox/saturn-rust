@@ -47,7 +47,8 @@ pub(super) fn enveloped(sample: i16, attenuation: u32) -> i16 {
 }
 
 #[derive(Clone, Copy)]
-#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+#[cfg_attr(any(test, feature = "kernel-experiment"), derive(Debug))]
 pub(super) struct Lfo {
     // Rational cycles: one cycle is 44100*100; frequencies in table 4.21
     // are stated to .01 Hz. Carry the remainder, rather than rounding a period.
@@ -153,7 +154,8 @@ impl Lfo {
 /// Sound-stack data are output five slot clocks before OP2 can consume them
 /// (fig.4.31). Keep two committed generations and the pending OP pipeline.
 #[derive(Clone)]
-#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+#[cfg_attr(any(test, feature = "kernel-experiment"), derive(Debug))]
 pub(super) struct Stack {
     pub data: [i16; 64],
     bank: [usize; 32],
@@ -219,3 +221,13 @@ impl Stack {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::structure!(Lfo { phase, noise });
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::structure!(Stack {
+    data,
+    bank,
+    pending,
+    frame_bank
+});

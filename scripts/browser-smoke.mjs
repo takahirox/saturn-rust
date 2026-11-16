@@ -67,7 +67,7 @@ const assert = timings.instrumentAssertions(nodeAssert);
 
 setup("assets");
 // Fail before upload if web/ includes anything beyond the public runtime assets.
-const assets = ["worker-emulator.js", "playback-client.js", "playback-worker.js", "audio.js", "audio-worklet.js", "video-render-client.js", "video-worker.js", "app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt", "prism-courier.iso", "prism-courier-LICENSE.txt", "hardware-lab.iso", "hardware-lab-audio.bin", "hardware-lab.cue", "hardware-lab-LICENSE.txt"];
+const assets = ["worker-emulator.js", "playback-client.js", "playback-worker.js", "sound-client.js", "sound-worker.js", "audio.js", "audio-worklet.js", "video-render-client.js", "video-worker.js", "app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt", "prism-courier.iso", "prism-courier-LICENSE.txt", "hardware-lab.iso", "hardware-lab-audio.bin", "hardware-lab.cue", "hardware-lab-LICENSE.txt"];
 assert.deepEqual((await readdir("web", { recursive: true })).sort(), [...assets, "pkg"].sort());
 assert((await lstat("web/pkg")).isDirectory());
 for (const asset of assets) {
@@ -3361,6 +3361,7 @@ try {
   }
   await courier.locator("#settings > summary").click();
   await courier.locator("#disc").setInputFiles({ name:"original-changed-prism.iso",mimeType:"application/octet-stream",buffer:changedCourier });
+  await waitForLoadedDisc(courier);
   await waitForGuest(courier, async () => (await window.courierState())[4] === 0);
   let mutatedCourier;
   for (let i = 0; i < 100; i++) {

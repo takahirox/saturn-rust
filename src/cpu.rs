@@ -1044,6 +1044,16 @@ impl Cpu {
         Ok(true)
     }
 
+    /// A completed zero-state SLEEP poll is a fixed point until an input.
+    #[cfg(any(test, feature = "sound-worker"))]
+    pub(crate) fn sleep_poll_is_stable(&self) -> bool {
+        self.state.status == CpuStatus::Sleeping
+            && !self.state.address_error_pending
+            && self.last_clocks == 0
+            && self.execution_clock.is_none()
+            && self.load_pipeline.issue_overlap == 0
+    }
+
     /// Bounded: sleeping calls return without fetching or retiring an instruction.
     /// Faults caused by unavailable host bus/device behavior stay sticky until reset.
     pub fn step(&mut self, bus: &mut impl Memory) -> Result<(), CpuError> {

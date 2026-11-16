@@ -19,8 +19,10 @@ claxon = "=0.4.3"
 [features]
 # Ordered video transport used by the browser player.
 video-worker = []
+# Owned sound forecasting and compact state transport for browser playback.
+sound-worker = ["video-worker"]
 # Independent execution-kernel experiment; not a production engine switch.
-kernel-experiment = ["video-worker"]
+kernel-experiment = ["sound-worker"]
 
 [[example]]
 name = "kernel_benchmark"

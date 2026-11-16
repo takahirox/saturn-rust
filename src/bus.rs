@@ -17,6 +17,8 @@ mod dmac_tests;
 #[cfg(test)]
 mod hdtv_tests;
 mod loop_probe;
+#[cfg(any(test, feature = "sound-worker"))]
+mod sound_rendezvous;
 #[cfg(any(test, feature = "video-worker"))]
 pub mod video_queue;
 #[cfg(any(test, feature = "kernel-experiment"))]
@@ -319,6 +321,8 @@ pub trait Memory {
 }
 
 pub struct Bus {
+    #[cfg(any(test, feature = "sound-worker"))]
+    pub(crate) sound_rendezvous: sound_rendezvous::Rendezvous,
     loop_probe: Option<Box<loop_probe::LoopProbe>>,
     transactions: transactions::Transactions,
     inline: Option<transactions::InlineProgress>,
@@ -405,6 +409,8 @@ pub(crate) struct InterruptRequest {
 impl Default for Bus {
     fn default() -> Self {
         Self {
+            #[cfg(any(test, feature = "sound-worker"))]
+            sound_rendezvous: sound_rendezvous::Rendezvous::default(),
             loop_probe: Some(Box::new(loop_probe::LoopProbe::automatic())),
             transactions: transactions::Transactions::default(),
             inline: None,
@@ -895,6 +901,11 @@ impl Bus {
         clocks: u32,
         sound_advanced: bool,
     ) -> Result<Option<u8>, ScuError> {
+        #[cfg(test)]
+        assert!(
+            self.sound_rendezvous.pending.is_empty(),
+            "rendezvous advanced after admission"
+        );
         self.cd.advance(clocks);
         if self.cd.interrupt() {
             self.scu.signal(16);
@@ -903,7 +914,7 @@ impl Bus {
             self.sound.main_ram_request(self.sound_ram_request());
             self.sound.advance_with_cd(clocks, &mut self.cd)?;
         }
-        if self.sound.scsp.main_interrupt() {
+        if self.sound.main_interrupt() {
             self.scu.signal(6);
         }
         let command = self.smpc.advance_clocks(clocks);
@@ -1229,6 +1240,8 @@ impl Bus {
     /// ST-169 §2.3.8: SYSRES restarts the installed ROM, clears volatile
     /// hardware/memory and retains the physical disc and battery-backed state.
     pub(crate) fn system_reset(&mut self) {
+        #[cfg(any(test, feature = "sound-worker"))]
+        let sound_rendezvous = std::mem::take(&mut self.sound_rendezvous);
         let bios = self.bios.take();
         let media = self.cd.media().cloned();
         let pal = self.raster.pal;
@@ -1238,6 +1251,8 @@ impl Bus {
         let mut smpc = std::mem::take(&mut self.smpc);
         smpc.system_reset();
         *self = Self {
+            #[cfg(any(test, feature = "sound-worker"))]
+            sound_rendezvous,
             #[cfg(any(test, feature = "video-worker"))]
             video_domain,
             bios,
@@ -1448,16 +1463,18 @@ impl Bus {
         if (SCSP..SCSP + 0x1000).contains(&address) {
             let mut bytes = [0; N];
             if N == 1 {
-                bytes[0] = self.sound.scsp.read8(address - SCSP)?;
+                let result = self.sound.scsp.read8(address - SCSP).map(u32::from);
+                #[cfg(any(test, feature = "kernel-experiment"))]
+                self.sound
+                    .record_domain_scsp(false, address - SCSP, 1, &result);
+                bytes[0] = result? as u8;
             } else {
                 for (i, pair) in bytes.as_chunks_mut::<2>().0.iter_mut().enumerate() {
-                    pair.copy_from_slice(
-                        &self
-                            .sound
-                            .scsp
-                            .read16(address - SCSP + i as u32 * 2)?
-                            .to_be_bytes(),
-                    );
+                    let offset = address - SCSP + i as u32 * 2;
+                    let result = self.sound.scsp.read16(offset).map(u32::from);
+                    #[cfg(any(test, feature = "kernel-experiment"))]
+                    self.sound.record_domain_scsp(false, offset, 2, &result);
+                    pair.copy_from_slice(&(result? as u16).to_be_bytes());
                 }
             }
             return Ok(bytes);
@@ -1628,12 +1645,34 @@ impl Bus {
         }
         if (SCSP..SCSP + 0x1000).contains(&address) {
             if N == 1 {
-                return self.sound.scsp.write8(address - SCSP, bytes[0]);
+                let result = self.sound.scsp.write8(address - SCSP, bytes[0]);
+                #[cfg(any(test, feature = "kernel-experiment"))]
+                self.sound.record_domain_scsp(
+                    true,
+                    address - SCSP,
+                    1,
+                    &result
+                        .as_ref()
+                        .map(|()| u32::from(bytes[0]))
+                        .map_err(Clone::clone),
+                );
+                return result;
             }
             for (i, pair) in bytes.as_chunks::<2>().0.iter().enumerate() {
-                self.sound
-                    .scsp
-                    .write16(address - SCSP + i as u32 * 2, u16::from_be_bytes(*pair))?;
+                let offset = address - SCSP + i as u32 * 2;
+                let value = u16::from_be_bytes(*pair);
+                let result = self.sound.scsp.write16(offset, value);
+                #[cfg(any(test, feature = "kernel-experiment"))]
+                self.sound.record_domain_scsp(
+                    true,
+                    offset,
+                    2,
+                    &result
+                        .as_ref()
+                        .map(|()| u32::from(value))
+                        .map_err(Clone::clone),
+                );
+                result?;
             }
             return Ok(());
         }

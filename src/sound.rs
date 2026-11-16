@@ -2,9 +2,13 @@
 //! Primary references: ST-077 §§1.2, 3, 4.2; M68000PRM §§2–4.
 //! PCM, slot modulation/LFO/noise and the effects processor execute here.
 mod checkpoint;
+#[cfg(any(test, feature = "sound-worker"))]
+pub(crate) mod delta;
 mod dma;
 mod dsp;
 mod envelope;
+#[cfg(any(test, feature = "sound-worker"))]
+pub(crate) mod forecast;
 pub(crate) mod memory;
 mod pcm;
 mod synthesis;
@@ -27,6 +31,7 @@ const BUFFER_FRAMES: usize = 8192;
 /// geometry, including the chip-select bit. The standard board installs only
 /// the first chip. Unconnected expansion-chip data pins read high.
 #[derive(Clone, Copy)]
+#[cfg_attr(any(test, feature = "kernel-experiment"), derive(Debug))]
 struct RamConfig {
     four_mbit: bool,
 }
@@ -79,7 +84,8 @@ fn mix_sample(mix: &mut [i64; 2], sample: i16, send: u16, pan: u16) {
 }
 
 #[derive(Default, Clone, Copy)]
-#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+#[cfg_attr(any(test, feature = "kernel-experiment"), derive(Debug))]
 struct Voice {
     generation: u64,
     active: bool,
@@ -91,6 +97,7 @@ struct Voice {
     envelope: envelope::Envelope,
 }
 #[derive(Clone)]
+#[cfg_attr(any(test, feature = "kernel-experiment"), derive(Debug))]
 pub struct Scsp {
     reset_held: bool,
     dsp: dsp::Dsp,
@@ -549,6 +556,10 @@ impl Scsp {
 }
 
 pub struct Sound {
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    domain_trace: Option<std::rc::Rc<std::cell::RefCell<domain::Trace>>>,
+    #[cfg(any(test, feature = "sound-worker"))]
+    projection: Option<forecast::Projection>,
     pub cpu: M68k,
     pub ram: Vec<u8>,
     pub scsp: Scsp,
@@ -568,6 +579,10 @@ pub struct Sound {
 impl Default for Sound {
     fn default() -> Self {
         Self {
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            domain_trace: None,
+            #[cfg(any(test, feature = "sound-worker"))]
+            projection: None,
             cpu: M68k::default(),
             ram: vec![0; SOUND_RAM_SIZE],
             scsp: Scsp::default(),
@@ -685,12 +700,31 @@ impl Scsp {
     }
 }
 impl Sound {
+    #[cfg(all(
+        feature = "sound-worker",
+        not(any(test, feature = "kernel-experiment"))
+    ))]
+    pub fn domain_reference_time(&self) -> u64 {
+        self.time
+    }
+    pub(crate) fn main_interrupt(&self) -> bool {
+        #[cfg(any(test, feature = "sound-worker"))]
+        if let Some(p) = &self.projection {
+            return p.irq;
+        }
+        self.scsp.main_interrupt()
+    }
     /// Main CPU/SCU and sound CPU use the same SCSP DRAM controller.
     pub fn read_ram8(&self, address: usize) -> u8 {
-        self.scsp.ram_config().read8(&self.ram, address)
+        let value = self.scsp.ram_config().read8(&self.ram, address);
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        self.record_domain_event(1, [address as u32, 1, u32::from(value), 0]);
+        value
     }
     pub fn write_ram8(&mut self, address: usize, value: u8) {
         self.scsp.ram_config().write8(&mut self.ram, address, value);
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        self.record_domain_event(2, [address as u32, 1, u32::from(value), 0]);
     }
     /// ST-077 §3.2/fig3.2: PCM, DSP, refresh and internal DMA precede the
     /// main and sound CPU. Each owns one of the 128 DRAM cycles/Fs.
@@ -733,6 +767,10 @@ impl Sound {
     /// DMA disabled. Every synthesis, refresh and MIDI edge still executes;
     /// only its independent scheduling within cache-only CPU work is batched.
     pub(crate) fn cached_lookahead_allowed(&self) -> bool {
+        #[cfg(any(test, feature = "sound-worker"))]
+        if self.projection.is_some() {
+            return false;
+        }
         self.scsp.common[21] == 0
             && !self.scsp.dma_active()
             && self.scsp.dsp.program_cannot_fault()
@@ -756,6 +794,10 @@ impl Sound {
             && self.reset_output_end.is_none()
     }
     pub(crate) fn cached_cpu_deadline(&self) -> u32 {
+        #[cfg(any(test, feature = "sound-worker"))]
+        if let Some(p) = &self.projection {
+            return (p.through - self.time).min(u64::from(u32::MAX)) as u32;
+        }
         if self.scsp.common[21] == 0
             && !self.scsp.dma_active()
             && self.scsp.dsp.program_cannot_fault()
@@ -777,6 +819,10 @@ impl Sound {
     }
 
     pub(crate) fn clocks_to_event(&self) -> u32 {
+        #[cfg(any(test, feature = "sound-worker"))]
+        if let Some(p) = &self.projection {
+            return (p.through - self.time).min(u64::from(u32::MAX)) as u32;
+        }
         (self
             .scsp_deadline()
             .min(self.next_cpu)
@@ -787,6 +833,13 @@ impl Sound {
             .min(u64::from(self.scsp.midi_clocks_to_event())) as u32
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<(), BusError> {
+        #[cfg(any(test, feature = "sound-worker"))]
+        assert!(
+            self.projection.is_none(),
+            "sound control requires canonical ownership"
+        );
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        self.record_domain_event(8, [u32::from(enabled), 0, 0, 0]);
         if enabled && !self.enabled {
             self.cpu.assert_reset();
             self.memory.cancel(memory::Owner::Cpu);
@@ -818,6 +871,10 @@ impl Sound {
         clocks: u32,
         cd: &mut crate::cd::CdBlock,
     ) -> Result<(), BusError> {
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        if self.domain_trace.is_some() && !cd.audio_quiet() {
+            self.record_domain_event(0, [2, 0, 0, 0]);
+        }
         self.advance_domain(clocks, Some(cd))
     }
     fn advance_domain(
@@ -825,6 +882,15 @@ impl Sound {
         clocks: u32,
         cd: Option<&mut crate::cd::CdBlock>,
     ) -> Result<(), BusError> {
+        #[cfg(any(test, feature = "sound-worker"))]
+        if let Some(p) = &self.projection {
+            assert!(
+                u64::from(clocks) <= p.through - self.time,
+                "main crossed verified sound frontier"
+            );
+            self.time += u64::from(clocks);
+            return Ok(());
+        }
         self.advance_domain_until_control(clocks, cd, false)
     }
     fn advance_domain_until_control(
@@ -838,12 +904,23 @@ impl Sound {
     fn advance_domain_recorded(
         &mut self,
         clocks: u32,
+        cd: Option<&mut crate::cd::CdBlock>,
+        stop_control: bool,
+        undo: Option<&mut checkpoint::RamUndo>,
+    ) -> Result<(), BusError> {
+        self.advance_domain_observed(clocks, cd, stop_control, undo, |_, _| {})
+    }
+    fn advance_domain_observed(
+        &mut self,
+        clocks: u32,
         mut cd: Option<&mut crate::cd::CdBlock>,
         stop_control: bool,
         mut undo: Option<&mut checkpoint::RamUndo>,
+        mut observe: impl FnMut(u64, bool),
     ) -> Result<(), BusError> {
         // Main-CPU MMIO may have changed output since the previous advance.
         self.sample_interrupt_input();
+        observe(self.time, self.scsp.main_interrupt());
         let mut target = self.time + u64::from(clocks);
         let mut now = self.time;
         loop {
@@ -943,6 +1020,7 @@ impl Sound {
             }
             // Device events and completed CPU MMIO update pins during replay.
             self.sample_interrupt_input();
+            observe(now, self.scsp.main_interrupt());
             if stop_control
                 && (self.transactions.control_write_pending()
                     || self.reset_output_start.is_some()
@@ -956,6 +1034,7 @@ impl Sound {
         self.sample_interrupt_input();
         self.scsp_tick = target * DSP_HZ / REFERENCE_HZ;
         self.time = target;
+        observe(target, self.scsp.main_interrupt());
         Ok(())
     }
     fn sample_interrupt_input(&mut self) {
@@ -968,3 +1047,24 @@ impl Sound {
 mod reset_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(any(test, feature = "kernel-experiment"))]
+pub(crate) mod domain;
+#[cfg(any(test, feature = "sound-worker"))]
+pub(crate) mod wire;
+
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::structure!(RamConfig { four_mbit });
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::structure!(Voice {
+    generation,
+    active,
+    phase,
+    call_address,
+    reverse,
+    envelope
+});
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::structure!(Scsp { reset_held, dsp, slots, voices, common, timer_phase, pending, main_pending, midi_in, midi_overflow, midi_out, midi_sent, midi_phase, stack, lfo, dma_remaining, dma_word, pcm_pipeline, pcm_slots, pcm_free, pcm_word, refresh_pending, memory_owner, external, frame_mix, generated, dropped, output } defaults { pcm_quiescent: Cell::new(None), #[cfg(test)] full_pcm_slots: false });
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::structure!(Sound { cpu, scsp, enabled, time, cpu_ticks, cpu_origin, next_cpu, first_cpu_request, ram_busy_until, memory, scsp_tick, reset_output_start, reset_output_end, transactions } bytes { ram } defaults { #[cfg(any(test, feature = "kernel-experiment"))] domain_trace: None, projection: None });

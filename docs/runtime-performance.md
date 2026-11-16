@@ -3644,8 +3644,7 @@ same correction covers equivalent original-disc, large-media and HLE-player
 waits. All original hardware-lab assertions pass in a focused run with local
 File reads delayed 100 ms; guest expected values are unchanged.
 
-Feature-enabled original-guest browser comparisons preserve all 22 device
-hashes, CPU clocks/registers, every returned image and PCM through direct/relay
+Feature-enabled original-guest browser comparisons preserve all 22 private CPU/cache/memory hash words, CPU clocks/registers, every returned image and PCM through direct/relay
 paths, pause, in-flight reset and delayed receipts. The equal-100-ms delay control
 initially failed to expose an early-credit mutant; the retained 250-ms renderer
 receipt versus 100-ms PCM control passes normally and detects that mutant at the
@@ -3659,3 +3658,219 @@ remain pre-merge requirements. This increment does not establish general
 stock-firmware compatibility or hardware completion. Private inputs, captures
 and raw profiles remain local.
 Required post-merge verification: none.
+
+### Owned Sound Worker and deadline-bounded SLEEP waits (2026-11-17, partial)
+
+The original Rust Sound domain now has an experimental browser integration in a
+separate `sound-worker` feature, which includes `video-worker`. Kernel tracing
+and full-state diagnostics remain under `kernel-experiment`; normal playback
+uses the same SH-2, M68000, SCSP and device implementations as before.
+
+Sound runs ahead on a dedicated Worker only while no new shared inputs are
+known. The main board consumes an already computed prefix with a constant,
+verified Sound interrupt level. Sound RAM/SCSP, SMPC writes and CD accesses
+that can supply CD-DA stop Main before their effects. An outstanding admitted access also prevents starting
+another forecast. Pending control/device deadlines and the first Sound IRQ
+transition bound the prefix. At the next input or field end, the Sound owner
+rewinds to Main's actual reference time and returns canonical hardware and PCM.
+No future field, PCM or backup state is published early.
+
+The bounded Sound history preserves CPU replay, synthesis, DMA RAM writes and
+PCM overflow with checkpoints and physical RAM undo. Handoffs carry hardware
+metadata and only changed 4 KiB RAM pages. Packet generations, checksum, page
+order/index, size, framing and expected committed time are checked before state
+mutation. Main retains its hardware at the remote origin; if transport fails,
+it recomputes that prefix without shared inputs and finishes the field on the
+ordinary synchronous core. Native CPU errors still propagate. Public reset and
+paused reset batches reset the owner's state and transport generations. A healthy
+Worker retains its loaded module; a failed owner is replaced.
+
+The first implementation copied 512 KiB RAM on every handoff and regressed the
+local game comparison from 35.31 to 24.36 fields/s. Across 160 measured fields it
+transferred approximately 1.61 GB. Page differences reduced that overhead; the
+corresponding six-window diagnostic reached 41.80 versus 36.27 fields/s. Avoiding
+handoffs for idle CD status/report ticks reached 44.13 versus 35.05 fields/s.
+Those ticks and their interrupts still execute on Main. An original CD-DA guest
+checks that a new play command still ends the forecast before real nonzero audio
+starts. These direct diagnostics are separate from normal-player performance.
+
+Starting speculative handoffs during upload/control clusters was also costly.
+The integrated player keeps an ordinary whole-field path when the Sound CPU is
+disabled or the boot mode is HLE. Eligible runs wait for 512 reference clocks
+without a shared access before another handoff. This is a performance policy;
+all synthesis and guest timing continue on the synchronous fallback.
+
+Ordinary cooperative waits initially stopped at every main clock. That was
+nearly flat in the busy game diagnostic, but the normal SCSP AudioWorklet probe
+regressed to 85 fields in 5041.6 ms with 154913 underflow output frames. Strictly
+bounding projected waits before main, bus and fixed-domain events improved it
+to 270 fields in 5014.3 ms, still failing the unchanged real-time assertions.
+
+The remaining overhead included repeated zero-state SLEEP polls every eight
+clocks. Only an already settled sleeping Master, with Slave disabled and no
+eligible IRQ, NMI, reset, DMA, UBC or journal/bus debt, may skip those fixed-point
+polls. Hardware still stops before every possible input/event and the Sound
+frontier. The original CPU readiness phase is reconstructed, including a poll
+that is due exactly at the endpoint. Native checks compare all CPU fields,
+readiness, all four CPU/DMA replay journals, Sound, SCU interrupt/status/pending
+signals, PCM and images against ordinary execution. Both PLL domains include
+SCU/on-chip DMA and an original FRT guest that actually wakes through vector 32.
+A positive witness requires waits longer than the ordinary eight-clock budget.
+
+The resulting normal-build AudioWorklet probe passes without changing its
+280–320-field or zero-underflow/no-drop assertions: 297 fields in 5000.8 ms,
+zero underflow, zero drops, nonzero waveform peak 0.75, drained queues, and at
+most one pending field. This is an original-guest result, not game acceptance.
+Healthy browser playback and injected Sound return failure both preserve
+registers, clocks, private CPU/cache hashes, PCM, images, pause and in-flight
+reset. Sound job counts prove the original SCSP fixtures exercise actual offload;
+the failure case proves synchronous recovery rather than an unexercised branch.
+
+The first **normal UI** local-game menu comparison uses 3600 startup fields,
+the same recorded button sequence and six five-second windows, with Canvas and
+an actual AudioWorklet enabled throughout:
+
+| Runtime | Fields/s | Presentation gap p95 | Presentation gap p99 | Underflow frames / 30 s | Audio drops |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Main `f6eb28b`, production Wasm `8b433ede…` | 36.25 | 28.3–28.7 ms | 29.0–29.5 ms | 522570 | 0 |
+| Isolated Sound candidate, production Wasm `356f9acc…` | 42.67 | 24.3–25.4 ms | 24.9–26.1 ms | 379826 | 0 |
+
+Every measured field is drawn. The aggregate improvement is 17.74% in this first
+sequential pair; it needs reverse-order and gameplay-scene follow-up before
+adoption. The actual game still does not sustain real time or zero underflow.
+Normal UI timing does not assert exact private state equality for asynchronous
+host input; independent native, original-browser and controlled local-game
+comparisons provide the state/PCM/image evidence described above. The 22 hash
+words cover private CPU/cache/memory/readiness state, not every device.
+
+A separate normal-player story interval uses 12814 startup fields, 109 recorded
+input changes and six five-second windows. Baseline runs first in this pair:
+39.61 → 42.45 fields/s (+7.17%). Candidate presentation gaps are p95
+36.2–37.5 ms and p99 38.9–40.8 ms. Every field is drawn; both captures contain
+937 colors. Audio underflows decrease from 447863 to 384725 output frames over
+30 seconds; audio drops remain zero. The actual owner completes 144951 jobs
+including startup, with the owner healthy at the final paused inspection.
+This validates another scene improvement, while substantial tail latency and
+audio starvation remain.
+
+A separate diagnostic attaches matching-symbol CPU profilers to the two owned
+Workers. Main spends 36.81% of samples in cached CPU planning, excluding nested
+Sound and VDP work, and 12.75% in VDP1; 10.08% is idle. The Sound owner is 52.74%
+idle. These are disjoint sample groups, not summed inclusive percentages.
+Profile timings are excluded from speedup claims. CPU planning is the next
+measured bottleneck; no additional CPU optimization is adopted by this record.
+
+The first complete browser run caught an unwanted network side effect: public
+reset recreated the Sound Worker and fetched its modules again during local CUE
+replacement. The unchanged no-network assertion failed. Healthy reset now clears
+the Rust owner through an acknowledged command on the existing Worker; only a
+failed owner is replaced. This lifecycle correction is separate from the v3
+throughput results above, which used the earlier reset implementation. The full browser regression and the subsequent contracts and performance checks
+below pass for the corrected JS.
+
+Complete native validation passes 1422 tests in 111 result groups, all registered
+fixture checks, formatting, native build and all-target/all-feature Clippy with
+warnings denied. Wasm production/all-feature Clippy and builds also pass.
+The browser runner's 13 regression tests and all 74 registered browser groups
+pass with the corrected reset lifecycle.
+
+The corrected lifecycle also passes the healthy/fault-injected Worker contracts,
+paused facade and unchanged real AudioWorklet assertions: 297 fields/5003.5 ms,
+zero audio underflow/drops, p95 21.3 ms and p99 23.0 ms presentation gaps.
+A fresh normal-player menu pair reverses the earlier execution order, running
+baseline first: 36.55 → 43.01 fields/s (+17.69%). Candidate p95 is 23.9–24.3 ms
+and p99 is 24.2–25.0 ms; every measured field is drawn. Both captures retain
+2840 colors. Audio underflows decrease from 514722 to 372291 output frames over
+30 seconds, with zero drops. The final inspection reports 62977 actual Sound
+jobs including startup and a healthy owner. The repeat corroborates the earlier
+menu gain, while game real time and zero-underflow acceptance remain unmet.
+
+Hosted run 43900313512 subsequently fails the shared browser shard's initial
+250 ms no-RAF progress check; Wasm succeeds. The same CI-produced artifact
+passes three local pacing repeats. A controlled 500 ms host delay reproduces
+the old failure despite 101 fields completing over 2254.8 ms: its first 250 ms
+contain zero fields, which does not establish RAF dependence. The test now
+requires two completed fields with RAF still withheld before its unchanged
+250 ms and rounded/duplicate-callback cadence checks. This is a readiness
+barrier, not a real-time benchmark or a guest timing change. With the injected
+cold delay, all eight cadence cases pass; a deliberately stopped producer still
+fails the readiness wait. The hosted failure remains historical evidence; a
+fresh complete exact-head run is required before merge.
+
+A separate CPU experiment tries the last selected captured-loop phase before
+the ordinary PC-index search, retaining every private-state/cache/timing guard.
+It compares flag on/off in the identical feature-enabled Wasm on main f6eb28b.
+Native positive/stale-input and cached-execution checks pass, and all six local
+game windows match private CPU/cache/memory hashes, PCM and image endpoints.
+However, 29.1857 → 29.1949 fields/s (+0.032%) is effectively flat, despite
+2274192 successful hints out of 6883741 attempts including startup. The original
+guest control is also flat (+0.081%) and does not exercise the hint. This direct
+feature diagnostic is separate from normal-player metrics. The CPU change is
+excluded.
+
+Run 43903382086 passes native/Wasm and the corrected no-RAF UI checks, but
+later fails both browser shards when the changed Prism Courier disc and the
+CD-RW companion case step a temporarily stopped CPU during asynchronous media
+replacement. An empty error or a zeroed old guest marker is not an accepted-disc
+signal. Both cases now use the existing `waitForLoadedDisc` boundary before
+querying/advancing the replacement guest. The external-startup selection setup
+likewise waits for the enabled Start control before capture. With controlled
+350 ms local-file and 100 ms reset delays, both old cases reproduce the stopped-
+CPU error; both corrected cases pass all their CD-RW/changed-texture assertions.
+The complete external-startup scenario, including both selection orders and
+overlapping reads, also passes. Guest operands, expected state/pixels/PCM and
+all hardware timing checks are unchanged. Fresh complete exact-head CI remains
+a pre-merge requirement.
+
+Run 43908500995 passes native, Wasm and all 41 independent browser groups,
+including the repaired CD-RW selection. The shared trace passes Prism Courier
+and the subsequent hardware cases, then catches another asynchronous selection
+wait in CHD rejection: the old guest still reports Ready before the new parser
+has produced the expected cyclic-self error. The CHD selection helper now also
+requires `aria-busy=false` before accepting its Ready/error condition. Its exact
+rejection expressions and stale-state checks are retained. The complete controlled CHD scenario now reproduces the old premature-result
+failure with 100 ms reset delays and passes all original codec, rejection and
+stale-state assertions with the corrected wait. Complete fresh exact-head CI
+remains required before merge.
+
+A subsequent dependency audit removes handoffs for read-only SMPC operations
+and CD accesses on immutable media without Audio tracks. SMPC reads take `&self`
+and cannot issue a Sound command; all writes and pending control deadlines keep
+their cuts. `CdBlock::audio_source` requires `TrackMode::Audio`, including audible
+scan. With data-only/no media, its external SCSP input is always zero. Main still
+executes every CD register effect, clock, DMA and interrupt. All Sound RAM/SCSP
+accesses and CD accesses on media with Audio tracks remain fenced, including
+already admitted beats. A kernel-only switch retains the old dependency cuts
+for comparisons in the identical Wasm; production uses the proven narrower set.
+
+Ten native rendezvous cases pass, including the new read-only/write/Audio-track
+negative control and inherited full CPU/journal/Sound/SCU/PCM/image comparisons,
+both PLLs, DMA, FRT wake and actual nonzero CD-DA. In six alternating 80-field
+windows after 3600 startup fields, the same-Wasm real-owner comparison improves
+42.86 → 45.18 fields/s (+5.43%), with full Sound byte equality and private CPU,
+PCM and image checks. Owner jobs decrease from 2880 to 1920 across 480 fields.
+The original busy guest is flat (−0.073%), with 360 actual projections per route.
+
+Normal production playback confirms the gain with actual AudioWorklet and
+every-field Canvas in six five-second windows:
+
+| Scene | Previous Sound Worker fields/s | Dependency-filter fields/s | Change | Underflow output frames / 30 s, before → after |
+| --- | ---: | ---: | ---: | ---: |
+| Menu, baseline first, 3600 startup fields | 42.47 | 44.97 | +5.89% | 383065 → 328518 |
+| Story, candidate first, 12814 startup fields and 109 inputs | 42.71 | 45.61 | +6.78% | 379216 → 314159 |
+
+Both owners remain healthy and audio drops are zero. Menu candidate gaps are
+p95 22.9–23.1 ms / p99 23.6–24.6 ms; story gaps are p95 34.5–35.6 ms / p99
+37.8–38.8 ms. Corresponding captures retain 2840 and 937 colors respectively.
+Normal UI measurements retain the asynchronous-input limitation stated above.
+This dependency filter is selected for the implementation. Final-source native
+validation passes 1423 tests in 111 result groups, fixture regeneration checks,
+formatting, build and all-target/all-feature Clippy. Final browser regression
+and exact-head CI are pending. The game still has audio starvation
+and remains below real time.
+
+The game 60-fields/s objective, broader gameplay/transitions, exact-head CI
+and final review remain unmet at this checkpoint. No change is
+merged by this record. Related to #138 and #17; both remain open. Local inputs,
+raw profiles, packets and captures are not published. Required post-merge
+verification: none.

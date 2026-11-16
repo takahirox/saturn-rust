@@ -14,7 +14,7 @@ const assets = new Map(), sha256 = {};
 for (const [url, file] of [
   ["/pkg/saturn_rust.js", resolve(values.pkg, "saturn_rust.js")],
   ["/pkg/saturn_rust_bg.wasm", resolve(values.pkg, "saturn_rust_bg.wasm")],
-  ...["video-worker.js", "video-render-client.js", "playback-worker.js", "playback-client.js", "audio.js", "audio-worklet.js"].map(name => ["/" + name, resolve("web", name)]),
+  ...["video-worker.js", "video-render-client.js", "playback-worker.js", "playback-client.js", "sound-client.js", "sound-worker.js", "audio.js", "audio-worklet.js"].map(name => ["/" + name, resolve("web", name)]),
 ]) {
   const bytes = await readFile(file);
   assets.set(url, bytes);

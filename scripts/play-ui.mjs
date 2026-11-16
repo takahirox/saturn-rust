@@ -525,9 +525,16 @@ async function framePacing(browser, url) {
     await page.evaluate(async () => { window.pacingMachine = (await import("./app.js")).emulator; });
     let started = false;
     for (const quantum of [0.1, 1]) for (const hz of [30, 60, 120, 144]) {
+      const resumeFrom = await page.evaluate(() => pacingMachine.state.frames);
       await page.locator(started ? "#pause" : "#start").evaluate(button => button.click());
       started = true;
       await settled();
+      // Require actual progress with RAF still withheld before measuring the
+      // running cadence. Cold Wasm compilation/Worker scheduling can exceed
+      // 250 ms on a shared host. Two completed fields also rule out observing
+      // only one already admitted field; a RAF-dependent loop times out here.
+      await page.waitForFunction(from => pacingMachine.state.frames >= from + 2,
+        resumeFrom, {polling:10});
       const data = await page.evaluate(async ({hz, quantum}) => {
         const before = pacingMachine.state.frames, start = performance.now();
         // No RAF callback is delivered during this interval. Guest execution
@@ -550,7 +557,7 @@ async function framePacing(browser, url) {
         return {fields, elapsed, callbacks, withoutRaf, burst: pacingMachine.state.frames - burstFrom};
       }, {hz, quantum});
       const fps = data.fields * 1000 / data.elapsed;
-      assert(data.withoutRaf > 0, "Worker fields must progress without RAF");
+      assert(data.withoutRaf > 0, `Worker fields must progress without RAF: ${JSON.stringify({hz, quantum, ...data})}`);
       assert(fps > 0 && fps <= 62, JSON.stringify({hz, quantum, fps, ...data}));
       assert(data.callbacks > hz, "driver must deliver real rounded/duplicate RAF callbacks");
       assert.equal(data.burst, 0, "RAF cannot execute a guest field");

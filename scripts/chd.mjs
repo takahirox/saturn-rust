@@ -78,7 +78,8 @@ export async function chd(page) {
   const chd=await readFile('tests/fixtures/chd/mixed-cdlz.chd');
   const select=async(buffer,name='ordinary.chd')=>{
     await page.locator('#disc').setInputFiles({name,mimeType:'application/octet-stream',buffer});
-    await page.waitForFunction(()=>document.getElementById('status').textContent==='Ready'||document.getElementById('error').textContent.includes('CHD')||document.getElementById('error').textContent.includes('Select one'));
+    await page.waitForFunction(()=>document.getElementById('main').getAttribute('aria-busy')==='false'
+      && (document.getElementById('status').textContent==='Ready'||document.getElementById('error').textContent.includes('CHD')||document.getElementById('error').textContent.includes('Select one')));
   };
   await select(chd);assert.equal(await page.locator('#error').textContent(),'');
   const lab=()=>page.evaluate(async()=>{

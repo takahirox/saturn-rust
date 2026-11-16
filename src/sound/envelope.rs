@@ -14,7 +14,8 @@ enum Stage {
 const MAX: u32 = 1023 << 16;
 
 #[derive(Clone, Copy)]
-#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+#[cfg_attr(any(test, feature = "kernel-experiment"), derive(Debug))]
 pub(super) struct Envelope {
     stage: Stage,
     attenuation: u32,
@@ -233,3 +234,14 @@ mod tests {
         }
     }
 }
+
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::structure!(Envelope {
+    stage,
+    attenuation,
+    linked,
+    decay_target
+});
+
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::enumeration!(Stage { Attack=0, Decay1=1, Decay2=2, Release=3 });

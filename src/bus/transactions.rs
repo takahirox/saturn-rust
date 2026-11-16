@@ -851,6 +851,10 @@ impl Bus {
             }
             self.grant_bus_transaction();
             // Shared sound RAM retains every sound/DRAM arbitration edge.
+            #[cfg(any(test, feature = "sound-worker"))]
+            if self.sound_rendezvous_blocked() {
+                return false;
+            }
             // Only the host interpreter continuation stays in place; the
             // iteration budget still yields a blocked transaction to Machine.
             let shared_sound_ram = self.sound_ram_request().is_some();
@@ -864,6 +868,12 @@ impl Bus {
                 .min(self.bus_main_deadline())
                 .min(fixed)
                 .min(crate::CLOCKS_PER_STEP);
+            #[cfg(any(test, feature = "sound-worker"))]
+            let main = if self.sound_rendezvous.enabled {
+                main.min(1)
+            } else {
+                main
+            };
             if main == 0 {
                 return false;
             }
@@ -1240,6 +1250,31 @@ impl Bus {
             scheduled: true,
         }
     }
+    #[cfg(any(test, feature = "sound-worker"))]
+    pub(crate) fn master_sleep_journal_is_stable(&self) -> bool {
+        let journal = self.transactions.journals[0].borrow();
+        let stable = Journal {
+            write_context: journal.write_context,
+            current_operation: Some(Operation::BreakPending),
+            synchronous_stack: journal.synchronous_stack,
+            ..Journal::default()
+        };
+        *journal == stable
+            && !self.onchip[0].break_pending()
+            && self.cpu_bus_clocks[0].get() == 0
+            && self.transactions.lock.is_none()
+            && self.transactions.cpu_group.is_none()
+            && self.transactions.writes[0].is_none()
+            && self.transactions.internal[0].is_none()
+    }
+    #[cfg(test)]
+    pub(crate) fn same_cpu_journals(&self, other: &Self) -> bool {
+        self.transactions
+            .journals
+            .iter()
+            .zip(&other.transactions.journals)
+            .all(|(a, b)| *a.borrow() == *b.borrow())
+    }
     pub(crate) fn finish_cpu_transaction(&mut self, processor: Processor) {
         let journal = self.transactions.journals[processor as usize].get_mut();
         journal.operations.clear();
@@ -1457,6 +1492,8 @@ impl Bus {
         // Drop canceled DRAM work before allocating a replacement bus beat.
         // A retained manual-reset drain is still active and keeps its grant.
         self.sound.main_ram_request(self.sound_ram_request());
+        #[cfg(any(test, feature = "sound-worker"))]
+        self.observe_sound_rendezvous();
         if self.transactions.active.is_some()
             && [Processor::Master, Processor::Slave].into_iter().all(|p| {
                 let i = p as usize;
@@ -1493,8 +1530,44 @@ impl Bus {
         {
             return;
         }
+        #[cfg(any(test, feature = "sound-worker"))]
+        let had_active = self.transactions.active.is_some();
         self.allocate_bus_transaction();
+        #[cfg(any(test, feature = "sound-worker"))]
+        if !had_active && self.transactions.active.is_some() {
+            self.sound_rendezvous.next_id += 1;
+            self.sound_rendezvous.active_id = self.sound_rendezvous.next_id;
+        }
         self.sound.main_ram_request(self.sound_ram_request());
+        #[cfg(any(test, feature = "sound-worker"))]
+        self.observe_sound_rendezvous();
+    }
+    #[cfg(any(test, feature = "sound-worker"))]
+    pub(super) fn sound_input_inflight(&self) -> bool {
+        self.transactions.active.as_ref().is_some_and(|active| {
+            self.sound_input_address(active.transfer.address & 0x1FFF_FFFF, active.transfer.write)
+        })
+    }
+    #[cfg(any(test, feature = "sound-worker"))]
+    fn observe_sound_rendezvous(&mut self) {
+        if !self.sound_rendezvous.enabled {
+            return;
+        }
+        if let Some(active) = &self.transactions.active {
+            let address = active.transfer.address & 0x1FFF_FFFF;
+            if self.sound_input_address(address, active.transfer.write) {
+                self.sound_rendezvous.last_input = self.sound.domain_reference_time();
+                self.sound_rendezvous
+                    .expose(super::sound_rendezvous::Boundary {
+                        kind: 0,
+                        id: self.sound_rendezvous.active_id,
+                        at: self.sound.domain_reference_time(),
+                        address,
+                        width: active.transfer.width as u32,
+                        write: active.transfer.write,
+                    });
+            }
+        }
     }
     fn allocate_bus_transaction(&mut self) {
         for processor in [Processor::Master, Processor::Slave] {

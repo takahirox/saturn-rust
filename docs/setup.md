@@ -117,10 +117,14 @@ client needs browser support for ES modules, module Workers, Wasm and the
 `wasm-unsafe-eval` CSP directive; the tested browser is recorded in
 [validation results](validation-issue-9.md).
 
-`build-web.sh` enables the `video-worker` feature. One module Worker owns the
-original Rust Machine during playback, pause and debugging; another consumes its
-ordered video commands. Serve the Worker modules alongside the other `web/`
-assets. Shared memory and cross-origin isolation headers are not required.
+`build-web.sh` enables `sound-worker`, which includes `video-worker`. One module
+Worker owns the original Rust Machine during playback, pause and debugging;
+another consumes its ordered video commands. A third Worker can own the original
+Rust Sound domain between verified shared-input boundaries. It returns canonical
+Sound state before input effects and completed fields. Transport failure recovers
+the verified prefix locally and continues synchronously. Serve all Worker modules
+alongside the other `web/` assets. Shared memory and cross-origin isolation headers
+are not required.
 The debugger's `emulator` export from `app.js` returns promises for native
 operations; await their results. Independent reads can use `Promise.all` to share
 an ordered batch. Input setters remain synchronous host updates. Pause waits for

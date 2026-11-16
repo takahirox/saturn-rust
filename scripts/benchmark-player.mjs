@@ -14,6 +14,7 @@ const {values} = parseArgs({options:{
   track:{type:"string",multiple:true},buttons:{type:"string"},warmup:{type:"string",default:"120"},
   seconds:{type:"string",default:"5"},runs:{type:"string",default:"6"},capture:{type:"string"},
   "min-colors":{type:"string",default:"1"},label:{type:"string",default:"player"},
+  unpaced:{type:"boolean",default:false},"expect-sound-worker":{type:"boolean",default:false},
 }});
 const web = resolve(values.web), pkg = resolve(values.pkg ?? web + "/pkg"), label = values.label;
 const warmup = Number(values.warmup), seconds = Number(values.seconds), runs = Number(values.runs), minColors = Number(values["min-colors"]);
@@ -39,9 +40,9 @@ const events = values.buttons ? (await readFile(values.buttons,"utf8")).split(/\
 }) : [];
 assert(events.every((event,i)=>!i||event[0]>events[i-1][0]),"controller fields must increase");
 const assets = new Map(), hashes = {};
-for (const file of ["index.html", "style.css", "app.js", "audio.js", "audio-worklet.js", "video-render-client.js", "video-worker.js", "worker-emulator.js", "playback-client.js", "playback-worker.js"]) {
+for (const file of ["index.html", "style.css", "app.js", "audio.js", "audio-worklet.js", "video-render-client.js", "video-worker.js", "worker-emulator.js", "playback-client.js", "playback-worker.js", "sound-client.js", "sound-worker.js"]) {
   try { const bytes = await readFile(web + "/" + file); assets.set("/" + file, bytes); hashes[file] = createHash("sha256").update(bytes).digest("hex"); }
-  catch (error) { if (error.code !== "ENOENT" || !["worker-emulator.js", "playback-client.js", "playback-worker.js"].includes(file)) throw error; }
+  catch (error) { if (error.code !== "ENOENT" || !["worker-emulator.js", "playback-client.js", "playback-worker.js", "sound-client.js", "sound-worker.js"].includes(file)) throw error; }
 }
 for (const file of ["saturn_rust.js", "saturn_rust_bg.wasm"]) {
   const bytes = await readFile(pkg + "/" + file); assets.set("/pkg/" + file, bytes); hashes[file] = createHash("sha256").update(bytes).digest("hex");
@@ -101,6 +102,11 @@ try {
   await page.locator("#audio-enable").click();
   await page.waitForFunction(() => playbackMeasurement.app.audio.context?.state === "running");
   await page.locator("#start").click();
+  if (values.unpaced) await page.evaluate(async () => {
+    const client = playbackMeasurement.app.emulator.client;
+    if (!client) throw new Error("Unpaced capacity requires Worker playback");
+    await client.play({paced:false});
+  });
   progress = setInterval(() => page.evaluate(() => playbackMeasurement.fields()).then(fields => console.error(JSON.stringify({warmupFields:fields,target:warmup}))).catch(()=>{}), 10000);
   await page.waitForFunction(warmup => playbackMeasurement.fields() >= warmup || document.getElementById("error").textContent, warmup, {timeout:Math.max(240000,warmup*1000/15)});
   clearInterval(progress); progress = null;
@@ -118,18 +124,21 @@ try {
   }, seconds));
   await page.locator("#pause").click();
   await page.waitForFunction(() => document.getElementById("main").getAttribute("aria-busy") !== "true");
-  const final = await page.evaluate(() => {
+  const final = await page.evaluate(async () => {
     const s = playbackMeasurement; clearInterval(s.timer);
     const canvas = document.getElementById("screen"), data = canvas.getContext("2d").getImageData(0,0,canvas.width,canvas.height).data;
     const colors = new Set(); for(let i=0;i<data.length;i+=4)colors.add(`${data[i]},${data[i+1]},${data[i+2]}`);
-    return {fields:s.fields(),draws:s.draws,inputEvents:s.events,colors:colors.size,audio:{...s.app.audio.stats}};
+    const producer = s.app.emulator.client ? await s.app.emulator.client.inspect() : null;
+    return {fields:s.fields(),draws:s.draws,inputEvents:s.events,colors:colors.size,audio:{...s.app.audio.stats},
+      soundTransport:producer?.soundTransport ?? null};
   });
   if (values.capture) await page.locator("#screen").screenshot({path:resolve(values.capture)});
   assert.equal(errors.length, 0, JSON.stringify(errors)); assert.equal(requests.length, 0);
   assert.equal(final.inputEvents.length, events.filter(event=>event[0]<=final.fields).length);
   assert(final.colors >= minColors, "image has fewer colors than requested");
+  if (values["expect-sound-worker"]) assert(final.soundTransport?.jobs > 0 && !final.soundTransport.disabled, "actual Sound Worker must remain active");
   assert(windows.every(window=>window.fields>0&&window.fields===window.draws), "every measured field must be presented");
-  const result = { label,normalProductionUi:true,localBiosProvided:Boolean(values.bios),localMediaProvided:Boolean(values.disc),AudioWorklet:true,notStrictPrivateStateDifferential:true,
+  const result = { label,normalProductionUi:true,paced:!values.unpaced,localBiosProvided:Boolean(values.bios),localMediaProvided:Boolean(values.disc),AudioWorklet:true,notStrictPrivateStateDifferential:true,
     browser:browser.version(),hashes,warmup,inputEvents:events.length,windows,final,errors,
     combinedFps:windows.reduce((sum,w)=>sum+w.fields,0)*1000/windows.reduce((sum,w)=>sum+w.elapsed,0) };
   console.log(JSON.stringify(result,null,2));

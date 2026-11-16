@@ -43,6 +43,7 @@ impl Default for State {
     }
 }
 #[derive(Clone, Default)]
+#[cfg_attr(any(test, feature = "kernel-experiment"), derive(Debug))]
 pub struct M68k {
     pub state: State,
     opcode: u16,
@@ -66,6 +67,7 @@ pub struct M68k {
 /// The 68000 retains at most its instruction word and one lookahead word.
 /// Keep both inline: instruction/bus replay clones this queue very frequently.
 #[derive(Clone, Copy, Default)]
+#[cfg_attr(any(test, feature = "kernel-experiment"), derive(Debug))]
 struct Prefetch([Option<(u32, u16)>; 2]);
 impl Prefetch {
     fn len(&self) -> usize {
@@ -1669,3 +1671,47 @@ impl M68k {
 mod bus_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::structure!(State {
+    d,
+    a,
+    pc,
+    sr,
+    usp,
+    ssp,
+    stopped,
+    halted,
+    instructions,
+    exceptions,
+    last_vector
+});
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::structure!(M68k {
+    state,
+    opcode,
+    start_pc,
+    irq,
+    level7_edge,
+    reset_output,
+    prefetch,
+    bus_pc,
+    exception_activity,
+    defer_prefetch,
+    predecrement_waited,
+    retired_state
+});
+
+#[cfg(any(test, feature = "sound-worker"))]
+mod sound_wire {
+    use super::*;
+    use crate::sound::wire::{Error, Input, Wire};
+    impl Wire for Prefetch {
+        fn put(&self, out: &mut Vec<u8>) {
+            self.0.put(out);
+        }
+        fn get(input: &mut Input<'_>) -> ::core::result::Result<Self, Error> {
+            Ok(Self(<[Option<(u32, u16)>; 2]>::get(input)?))
+        }
+    }
+}

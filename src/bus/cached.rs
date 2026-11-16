@@ -1046,7 +1046,7 @@ impl Bus {
     fn observable_deadline_with_onchip(&self, onchip: u32) -> u32 {
         onchip
             .min(
-                if (self.sound.scsp.main_interrupt() && self.scu.device_signal_pending(6))
+                if (self.sound.main_interrupt() && self.scu.device_signal_pending(6))
                     || (self.cd.interrupt() && self.scu.device_signal_pending(16))
                 {
                     1

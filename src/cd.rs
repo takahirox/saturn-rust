@@ -987,6 +987,28 @@ impl CdBlock {
         Some((media, track))
     }
 
+    /// audio_source() requires an Audio track. Media metadata is immutable
+    /// between serialized host replacement operations with canonical Sound.
+    #[cfg(any(test, feature = "sound-worker"))]
+    pub(crate) fn sound_can_receive_cd_audio(&self) -> bool {
+        self.media.as_ref().is_some_and(|media| {
+            media
+                .tracks()
+                .iter()
+                .any(|track| track.mode == TrackMode::Audio)
+        })
+    }
+    #[cfg(any(test, feature = "sound-worker"))]
+    pub(crate) fn sound_source_deadline(&self, strict_inputs: bool) -> u32 {
+        // Media is immutable between canonical, serialized host replacements.
+        // audio_source() requires an Audio track even for audible scanning.
+        if self.active() && (strict_inputs || self.sound_can_receive_cd_audio()) {
+            self.clocks_to_event()
+        } else {
+            u32::MAX
+        }
+    }
+
     /// Audio is constant zero until a CD event or a guest CD register access.
     pub(crate) fn audio_quiet(&self) -> bool {
         self.audio_source().is_none()

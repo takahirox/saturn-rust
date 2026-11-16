@@ -5,6 +5,7 @@
 use super::*;
 
 #[derive(Clone)]
+#[cfg_attr(any(test, feature = "kernel-experiment"), derive(Debug))]
 pub(super) struct Word {
     address: usize,
     register: u32,
@@ -16,7 +17,11 @@ impl Scsp {
     pub(super) fn dma_active(&self) -> bool {
         self.dma_remaining != 0 || self.dma_word.is_some()
     }
-    pub(super) fn complete_dma(&mut self, ram: &mut [u8]) -> Result<(), BusError> {
+    pub(super) fn complete_dma(
+        &mut self,
+        ram: &mut [u8],
+        undo: Option<&mut checkpoint::RamUndo>,
+    ) -> Result<(), BusError> {
         if let Some(word) = self.dma_word.take() {
             let value = if word.gate {
                 0
@@ -26,6 +31,9 @@ impl Scsp {
                 word.config.read16(ram, word.address)
             };
             if word.to_memory {
+                if let Some(undo) = undo {
+                    undo.record(ram, word.config, word.address, 2);
+                }
                 word.config.write16(ram, word.address, value);
             } else {
                 self.write16(word.register, value)?;
@@ -86,3 +94,12 @@ impl Scsp {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::structure!(Word {
+    address,
+    register,
+    gate,
+    to_memory,
+    config
+});
