@@ -341,6 +341,18 @@ impl Cache {
     pub(crate) fn commit_replacement_state(&mut self, lru: [u8; 64]) {
         self.lru = lru;
     }
+    pub(crate) fn commit_private_replacement(
+        &mut self,
+        keep: &[u8; 64],
+        value: &[u8; 64],
+        mut changed: u64,
+    ) {
+        while changed != 0 {
+            let set = changed.trailing_zeros() as usize;
+            self.lru[set] = (self.lru[set] & keep[set]) | value[set];
+            changed &= changed - 1;
+        }
+    }
     pub fn read_hit(&self, address: u32) -> bool {
         address < 0x2000_0000 && self.control & 1 != 0 && self.hit_way(address).is_some()
     }

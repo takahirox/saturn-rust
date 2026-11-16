@@ -499,38 +499,36 @@ impl Bsc {
         Some(self.refresh_clocks())
     }
     pub fn advance(&mut self, clocks: u32) {
+        // Requests do not grant refresh or close rows. No observer or arbiter
+        // runs within this call, so age the bus/recovery once and count edges.
+        self.advance_bus(clocks);
+        self.refresh_remaining
+            .set(self.refresh_remaining.get().saturating_sub(clocks));
         let select = (self.registers[4] >> 3) as usize & 7;
-        let divisor = [0, 4, 16, 64, 256, 1024, 2048, 4096][select];
-        if divisor == 0 {
-            self.advance_bus(clocks);
-            self.refresh_remaining
-                .set(self.refresh_remaining.get().saturating_sub(clocks));
+        let shift = [0, 2, 4, 6, 8, 10, 11, 12][select];
+        if shift == 0 {
             return;
         }
-        self.phase %= divisor as u32;
-        let mut remaining = clocks;
-        while remaining != 0 {
-            let delta = remaining.min(divisor as u32 - self.phase);
-            self.advance_bus(delta);
-            self.refresh_remaining
-                .set(self.refresh_remaining.get().saturating_sub(delta));
-            self.phase += delta;
-            remaining -= delta;
-            if self.phase < divisor as u32 {
-                continue;
-            }
-            self.phase = 0;
-            // §7.5.7: RTCOR-1 causes refresh on the next count edge.
-            self.registers[5] = (self.registers[5] + 1) & 255;
-            if self.registers[5] == self.registers[6] {
-                self.registers[5] = 0;
-                self.registers[4] |= 0x80;
-                if !self.slave && self.registers[3] & 12 == 8 && self.registers[0] & 7 != 0 {
-                    // A later match replaces the unserved request. Neither
-                    // rows nor elapsed bus time change before it is granted.
-                    self.refresh_pending.set(true);
-                }
-            }
+        let mask = (1u32 << shift) - 1;
+        let total = u64::from(self.phase & mask) + u64::from(clocks);
+        self.phase = total as u32 & mask;
+        let ticks = (total >> shift) as u32;
+        let counter = u32::from(self.registers[5]);
+        let compare = u32::from(self.registers[6]);
+        let distance = compare.wrapping_sub(counter) & 255;
+        let first = if distance == 0 { 256 } else { distance };
+        if ticks < first {
+            self.registers[5] = ((counter + ticks) & 255) as u16;
+            return;
+        }
+        // §7.5.7: the edge incrementing RTCNT to RTCOR latches a request
+        // and clears RTCNT. Subsequent matches repeat after RTCOR ticks,
+        // or 256 ticks when RTCOR is zero. Unserved requests coalesce.
+        let period = if compare == 0 { 256 } else { compare };
+        self.registers[5] = ((ticks - first) % period) as u16;
+        self.registers[4] |= 0x80;
+        if !self.slave && self.registers[3] & 12 == 8 && self.registers[0] & 7 != 0 {
+            self.refresh_pending.set(true);
         }
     }
 }
@@ -775,6 +773,79 @@ mod tests {
 #[cfg(test)]
 mod memory_tests {
     use super::*;
+
+    // Independent phi-clock oracle retains every increment and comparison.
+    fn literal_advance(b: &mut Bsc, clocks: u32) {
+        let divisor = [0, 4, 16, 64, 256, 1024, 2048, 4096][((b.registers[4] >> 3) & 7) as usize];
+        if divisor != 0 {
+            b.phase %= divisor;
+        }
+        for _ in 0..clocks {
+            b.advance_bus(1);
+            b.refresh_remaining
+                .set(b.refresh_remaining.get().saturating_sub(1));
+            if divisor == 0 {
+                continue;
+            }
+            b.phase += 1;
+            if b.phase != divisor {
+                continue;
+            }
+            b.phase = 0;
+            b.registers[5] = (b.registers[5] + 1) & 255;
+            if b.registers[5] == b.registers[6] {
+                b.registers[5] = 0;
+                b.registers[4] |= 0x80;
+                if !b.slave && b.registers[3] & 12 == 8 && b.registers[0] & 7 != 0 {
+                    b.refresh_pending.set(true);
+                }
+            }
+        }
+    }
+    #[test]
+    fn arithmetic_refresh_matches_literal_edges_and_bus_aging() {
+        for select in 0..8 {
+            for compare in [0, 1, 7, 31, 255] {
+                for counter in [0, 1, 6, 7, 30, 31, 254, 255] {
+                    for phase in [0, 1, 3, 4095] {
+                        for slave in [false, true] {
+                            for mode in [0x48, 0x4C] {
+                                let mut seed = configured(1, mode, 0);
+                                seed.set_slave(slave);
+                                seed.registers[4] = select << 3;
+                                seed.registers[5] = counter;
+                                seed.registers[6] = compare;
+                                seed.phase = phase;
+                                seed.refresh_remaining.set(5);
+                                cycle(&seed, 0x0600_0000, true, true, true);
+                                for clocks in [0, 1, 2, 3, 4, 7, 8, 31, 63, 255, 256, 511, 1025] {
+                                    let (mut actual, mut expected) = (seed.clone(), seed.clone());
+                                    actual.advance(clocks);
+                                    literal_advance(&mut expected, clocks);
+                                    assert_eq!(actual, expected, "select={select} clocks={clocks}");
+                                    assert_eq!(actual.grant_refresh(), expected.grant_refresh());
+                                    assert_eq!(actual, expected);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn arithmetic_refresh_accepts_full_width_clock_intervals() {
+        let mut b = configured(1, 0x48, 0);
+        b.registers[4] = 8;
+        b.registers[5] = 255;
+        b.registers[6] = 1;
+        b.phase = 3;
+        b.advance(u32::MAX);
+        assert_eq!(b.phase, 2);
+        assert_eq!(b.registers[5], 0);
+        assert_eq!(b.registers[4], 0x88);
+        assert!(b.refresh_pending.get());
+    }
 
     fn configured(mode: u32, mcr: u32, wcr: u32) -> Bsc {
         let mut b = Bsc::default();

@@ -87,6 +87,13 @@ impl State {
         self.transaction == transaction
     }
 }
+// LRU state uses six replacement bits. The two probe seeds prove that
+// untouched sets keep all six bits and supply no constant replacement bits.
+fn replacement_changes(keep: &[u8; 64], value: &[u8; 64]) -> u64 {
+    (0..64).fold(0, |changed, set| {
+        changed | (u64::from(keep[set] != 0x3F || value[set] != 0) << set)
+    })
+}
 #[derive(Clone, PartialEq, Eq)]
 struct Code {
     address: u32,
@@ -97,6 +104,7 @@ struct Publication {
     state: State,
     keep: [u8; 64],
     value: [u8; 64],
+    changed: u64,
 }
 struct Phase {
     partial: Vec<Publication>,
@@ -105,6 +113,7 @@ struct Phase {
     state: State,
     keep: [u8; 64],
     value: [u8; 64],
+    changed: u64,
 }
 struct Template {
     initial: State,
@@ -174,15 +183,16 @@ impl Template {
         let elapsed = elapsed as usize;
         let (index, copies) = self.position(elapsed);
         let phase = &self.phases[index];
-        let (state, keep, value) = if !master_waiting {
+        let (state, keep, value, changed) = if !master_waiting {
             phase
                 .partial
                 .get(endpoint_issues.saturating_sub(1) as usize)
-                .map_or((&phase.state, &phase.keep, &phase.value), |first| {
-                    (&first.state, &first.keep, &first.value)
-                })
+                .map_or(
+                    (&phase.state, &phase.keep, &phase.value, phase.changed),
+                    |first| (&first.state, &first.keep, &first.value, first.changed),
+                )
         } else {
-            (&phase.state, &phase.keep, &phase.value)
+            (&phase.state, &phase.keep, &phase.value, phase.changed)
         };
         let first = &self.phases[self.prefix].state;
         let second = &self.phases[self.prefix + self.period].state;
@@ -212,7 +222,9 @@ impl Template {
         let epoch = machine.bus.onchip[1].private_poll_epoch() + state.epoch - self.initial.epoch
             + (second.epoch - first.epoch) * copies as u64;
         machine.bus.onchip[1].publish_private_poll(state.observed, epoch);
-        machine.bus.publish_private_replacement(keep, value);
+        machine
+            .bus
+            .publish_private_replacement(keep, value, changed);
     }
 }
 fn remember_code(machine: &Machine, code: &mut Vec<Code>) -> Option<()> {
@@ -346,6 +358,7 @@ impl Context {
                                 value: state.replacement,
                                 state,
                                 keep: [0; 64],
+                                changed: 0,
                             })
                             .collect(),
                     );
@@ -373,6 +386,7 @@ impl Context {
                             return None;
                         }
                         prior.keep = std::array::from_fn(|i| prior.value[i] ^ state.replacement[i]);
+                        prior.changed = replacement_changes(&prior.keep, &prior.value);
                     }
                     ones.push(state.replacement);
                 }
@@ -409,6 +423,7 @@ impl Context {
                     #[cfg(test)]
                     issues: _issues,
                     state,
+                    changed: replacement_changes(&keep, &value),
                     keep,
                     value,
                 }
@@ -633,12 +648,10 @@ impl Bus {
     fn private_code(&self, address: u32) -> Option<([u8; 4], crate::cache::CacheTouch)> {
         self.cache[1].borrow().peek_cached_touch(address & !3)
     }
-    fn publish_private_replacement(&mut self, keep: &[u8; 64], value: &[u8; 64]) {
-        let mut lru = self.cache[1].borrow().replacement_state();
-        for i in 0..64 {
-            lru[i] = (lru[i] & keep[i]) | value[i];
-        }
-        self.cache[1].get_mut().commit_replacement_state(lru);
+    fn publish_private_replacement(&mut self, keep: &[u8; 64], value: &[u8; 64], changed: u64) {
+        self.cache[1]
+            .get_mut()
+            .commit_private_replacement(keep, value, changed);
     }
 }
 
@@ -654,6 +667,9 @@ mod resume_tests {
         machine
             .slave
             .prime_fetch(&machine.bus.for_cpu(Processor::Slave));
+        machine.bus.cache[1]
+            .get_mut()
+            .commit_replacement_state(std::array::from_fn(|set| ((set * 13 + 7) & 63) as u8));
         let mut context = Context::default();
         context
             .prepare(&machine, machine.bus.private_probe_span())
@@ -667,6 +683,12 @@ mod resume_tests {
         let mut optimized = polling_machine();
         let mut reference = polling_machine();
         let templates = optimized.private_poll.templates.len();
+        assert!(optimized.private_poll.templates.iter().any(|template| {
+            template
+                .phases
+                .iter()
+                .any(|phase| phase.changed != 0 && phase.changed.count_ones() < 64)
+        }));
         assert!(optimized.try_private_poll_batch(32).unwrap() > 0);
         assert_eq!(optimized.private_poll.templates.len(), templates);
         for _ in 0..2 {

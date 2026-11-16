@@ -3926,3 +3926,81 @@ CI and final review are pending at this checkpoint. No adoption or merge of this
 candidate is claimed here. Sustained game real time and zero underflow remain
 unmet; #138 and #17 stay open. Private inputs and raw captures remain local.
 Required post-merge verification: none.
+
+
+## Exact private scheduling arithmetic (2026-11-17 checkpoint)
+
+Related to #138 and #17. This candidate combines two independently measured
+reductions in repeated CPU scheduling work, continuing from main `dedc8cd`.
+It preserves the original Rust core and every guest-visible clock boundary.
+
+The BSC refresh counter now counts divided-clock edges with integer arithmetic
+instead of looping over every divider edge. It retains the first wrapped compare,
+subsequent RTCOR periods, match flag, request eligibility, divider phase and
+self-refresh recovery. Requests still wait for the real board arbiter; calculating
+a request does not close SDRAM rows or grant refresh. The unchanged bus-aging
+operation composes exactly across the former subdivisions. A 64-bit intermediate
+handles the entire 32-bit input-clock range.
+
+Private Slave publications retain the existing masks derived from zero/63 cache
+replacement seeds. Each full or partial publication also retains a 64-bit set
+bitmap. Publication updates only sets whose six replacement bits can change,
+without copying and transforming all 64 sets. Code, cache-way, CPU, transaction,
+interrupt and deadline guards remain unchanged.
+
+The original BSC regression compares complete state against a separate phi-clock
+oracle across clock selections, zero/nonzero/wrapped compare values, counter and
+phase boundaries, Master/Slave mode, refresh/self-refresh and real bus aging. It
+also compares subsequent refresh grants. A literal full-width clock case covers
+overflow. The existing per-publication CPU regression now starts every cache set
+with nonuniform replacement bits and compares all intermediate states against
+ordinary execution, covering untouched sets and partial/delayed publications.
+
+Negative controls separately shorten the wrapped compare period, overflow the
+clock sum and omit one changed cache set. Each is detected by its targeted oracle;
+source bytes are restored exactly before successful tests. A final-field-only
+cache test did not detect the omitted-set control, so the effective control uses
+the existing per-publication comparison. An initial new BSC test-helper scope
+compile error was corrected before the positive tests.
+
+Combined local checks pass formatting, 59 on-chip tests, 57 cached-scheduler
+tests, 4 private-poll tests and 4 loop-probe tests. Normal and all-feature Wasm
+Clippy and both release builds pass. Each source tree uses its own Cargo target
+directory. An incorrectly reused normal artifact was caught before measurement
+and discarded; the corrected sparse normal build and the previously measured
+sparse feature build both contain the expected set-bit traversal.
+
+Separate diagnostic game comparisons use six alternating 80-field windows after
+field 3600 with the same mounted game and controller inputs. Every paired window
+matches full Sound bytes, 22 private CPU/cache hashes, rolling PCM and final
+image. All six pairs improve for each independent candidate:
+
+| Independent diagnostic | Baseline fields/s | Candidate fields/s | Change |
+| --- | ---: | ---: | ---: |
+| Sparse private cache publication | 48.3978 | 48.8913 | +1.02% |
+| BSC counter arithmetic | 47.4627 | 48.0418 | +1.22% |
+
+These are separate comparisons; their baseline values must not be compared across
+runs and their gains must not be added. Original-busy controls change −0.63% and
+−0.25%, respectively. A separate six-pair combined diagnostic improves 47.8302
+to 49.0161 fields/s (+2.48%), with every pair faster and all corresponding Sound,
+private CPU/cache, PCM and image endpoints matching. Its original-busy control
+changes +0.29%. Normal-player comparisons remain pending at this checkpoint.
+Normal-player acceptance requires the real
+AudioWorklet, every measured field drawn, a fresh reversed order and story
+input/scene coverage; diagnostic timing alone is insufficient.
+
+A separate early private-peer planning gate remains unadopted. Its normal menu
+comparisons improve +3.61% and +1.28%, but its first story comparison regresses
+47.5402 to 47.0050 fields/s (−1.13%) and increases underflows. That gate is absent
+from this combined candidate. Its guard-order revision remains a separate local
+experiment.
+
+Combined normal Wasm SHA-256:
+`715e48cf521c7b95d7ae454aecd210d7a80df6d6fb42c4d9b7c3db3b1669b05e`.
+Combined experimental Wasm:
+`2591097cb5104871ca8597a411c95ec0b08f6933dbe9481c72c1d42e512bbdde`.
+Complete exact-head CI and final review are pending. Sustained 60 fields/s,
+zero audio underflows, broader gameplay and hardware completion remain unmet;
+#138 and #17 remain open. Private inputs and raw captures/profiles stay local
+and ignored. No post-merge verification is required.

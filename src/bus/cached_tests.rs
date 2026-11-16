@@ -1923,6 +1923,13 @@ fn private_pending_poll_phases_match_each_published_microstate() {
                         m.bus.set_pal(pal);
                         m.bus.set_slave_enabled(true);
                         m.bus.cache[1].get_mut().set_control(1);
+                        // Keep unrelated sets nonuniform, so sparse publication
+                        // must preserve every untouched replacement bit.
+                        m.bus.cache[1]
+                            .get_mut()
+                            .commit_replacement_state(std::array::from_fn(|set| {
+                                ((set * 13 + 7) & 63) as u8
+                            }));
                         m.bus.onchip[1].write32(0xFFFFFFE8, 0xA55A0000).unwrap();
                         m
                     };
