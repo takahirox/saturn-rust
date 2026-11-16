@@ -3874,3 +3874,55 @@ and final review remain unmet at this checkpoint. No change is
 merged by this record. Related to #138 and #17; both remain open. Local inputs,
 raw profiles, packets and captures are not published. Required post-merge
 verification: none.
+
+PR #170 was subsequently merged as `d6b0fdca5f0532ec7fa3dad97006a6f61408751a`.
+Its final head `2a35526bb5aaace1e2d4385c6e4f4b1f00dc3acd` passes
+[complete native/Wasm/browser/aggregate CI](https://github.com/takahirox/saturn-rust/actions/runs/43916103336).
+Final local validation passes 1423 native tests in 111 result groups and all
+74 browser groups. The final original AudioWorklet guest delivers 298 fields in
+5009.2 ms with zero underflow/drops. The recorded author self-review finds no
+blocking findings; it does not claim independent approval. Game real time,
+zero game underflow and broader gameplay acceptance remain open.
+
+## Compare Sound RAM pages eight bytes at a time (checkpoint)
+
+The normal Sound handoff compares all 128 RAM pages against the previous
+owner's mirror. Each page has 4096 bytes. Inspection of the frozen production
+Wasm `a5fd3157…` finds that `Delta::export` calls a 67-byte, byte-at-a-time
+`memcmp` with length 4096. This is the actual page comparison, rather than an
+unrelated library function. The earlier normal-player profile attributes 3.82%
+of main-board Worker samples to `Delta::export` itself; that percentage is not
+an isolated attribution to the comparison loop.
+
+The candidate compares each complete page as 512 exact `u64::from_le_bytes`
+values, with early exit on a difference. It uses safe Rust and requires neither
+SIMD nor aligned input. Changed-page selection/order, packet checksums,
+generations, ownership, emulated clocks and all sound execution are preserved.
+The generated candidate replaces the page's `memcmp` call with unaligned i64
+loads and comparisons. Small fixed CPU comparisons already have wide generated
+loads; this finding does not justify changing their guards or replacing libc.
+
+The two existing delta tests and three complete-state wire tests pass. The
+alternating-owner fixture now changes one byte per page at offsets selected
+from 0, 7, 8, 31, 2048 and 4095, covering word boundaries and the page end.
+Deliberately omitting the last word fails that actual handoff fixture; exact
+source restoration passes. Production/all-feature Wasm Clippy and optimized
+builds also pass.
+
+A first normal UI menu pair runs baseline first, then candidate, with the same
+3600-field startup, recorded inputs, six five-second windows, every-field Canvas
+and a real AudioWorklet:
+
+| Runtime | Fields/s | Presentation gap p95 | Presentation gap p99 | Underflow output frames / 30 s | Audio drops |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Main, production Wasm `a5fd3157…` | 44.81 | 22.9–23.2 ms | 23.4–24.8 ms | 332071 | 0 |
+| Word comparison, production Wasm `3d1e7ea5…` | 47.05 | 22.0–22.3 ms | 22.7–23.5 ms | 282519 | 0 |
+
+This first pair improves 4.98%; both Sound owners remain healthy and captures
+retain 2840 colors. Normal UI retains its asynchronous-input limitation and does
+not establish a strict private-state differential. Reversed execution order,
+full Sound/private CPU/PCM/image comparisons, the story scene, complete exact-head
+CI and final review are pending at this checkpoint. No adoption or merge of this
+candidate is claimed here. Sustained game real time and zero underflow remain
+unmet; #138 and #17 stay open. Private inputs and raw captures remain local.
+Required post-merge verification: none.

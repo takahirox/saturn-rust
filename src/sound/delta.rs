@@ -4,6 +4,17 @@ use wire::{Error, Input, LIMIT, Wire, checksum};
 const PAGE: usize = 4096;
 const HEADER: &[u8; 8] = b"SRDP\x01\0\0\0";
 
+// The generic Wasm memcmp scans bytes. Compare complete, equal-sized pages
+// in words, retaining exact equality and early exit without SIMD or alignment.
+fn same_page(current: &[u8; PAGE], prior: &[u8; PAGE]) -> bool {
+    current
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .zip(prior.as_chunks::<8>().0)
+        .all(|(a, b)| u64::from_le_bytes(*a) == u64::from_le_bytes(*b))
+}
+
 pub(crate) struct Delta {
     generation: u64,
     ram: Vec<u8>,
@@ -36,7 +47,7 @@ impl Delta {
             .iter()
             .zip(self.ram.as_chunks::<PAGE>().0.iter())
             .enumerate()
-            .filter_map(|(index, (current, prior))| (current != prior).then_some(index))
+            .filter_map(|(index, (current, prior))| (!same_page(current, prior)).then_some(index))
             .collect();
         let mut out = Vec::with_capacity(32 + metadata.len() + pages.len() * (PAGE + 4));
         out.extend_from_slice(HEADER);
@@ -199,7 +210,8 @@ mod tests {
             }
         }
         for (index, page) in left.ram.as_chunks_mut::<PAGE>().0.iter_mut().enumerate() {
-            page[7] ^= (index as u8).wrapping_add(1);
+            let offset = [0, 7, 8, 31, PAGE / 2, PAGE - 1][index % 6];
+            page[offset] ^= (index as u8).wrapping_add(1);
         }
         let packet = a.export(&mut left).unwrap();
         assert!(packet.len() > SOUND_RAM_SIZE);
