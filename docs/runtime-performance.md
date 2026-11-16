@@ -3785,6 +3785,29 @@ and p99 is 24.2–25.0 ms; every measured field is drawn. Both captures retain
 jobs including startup and a healthy owner. The repeat corroborates the earlier
 menu gain, while game real time and zero-underflow acceptance remain unmet.
 
+Hosted run 43900313512 subsequently fails the shared browser shard's initial
+250 ms no-RAF progress check; Wasm succeeds. The same CI-produced artifact
+passes three local pacing repeats. A controlled 500 ms host delay reproduces
+the old failure despite 101 fields completing over 2254.8 ms: its first 250 ms
+contain zero fields, which does not establish RAF dependence. The test now
+requires two completed fields with RAF still withheld before its unchanged
+250 ms and rounded/duplicate-callback cadence checks. This is a readiness
+barrier, not a real-time benchmark or a guest timing change. With the injected
+cold delay, all eight cadence cases pass; a deliberately stopped producer still
+fails the readiness wait. The hosted failure remains historical evidence; a
+fresh complete exact-head run is required before merge.
+
+A separate CPU experiment tries the last selected captured-loop phase before
+the ordinary PC-index search, retaining every private-state/cache/timing guard.
+It compares flag on/off in the identical feature-enabled Wasm on main f6eb28b.
+Native positive/stale-input and cached-execution checks pass, and all six local
+game windows match private CPU/cache/memory hashes, PCM and image endpoints.
+However, 29.1857 → 29.1949 fields/s (+0.032%) is effectively flat, despite
+2274192 successful hints out of 6883741 attempts including startup. The original
+guest control is also flat (+0.081%) and does not exercise the hint. This direct
+feature diagnostic is separate from normal-player metrics. The CPU change is
+excluded.
+
 The game 60-fields/s objective, broader gameplay/transitions, exact-head CI
 and final review remain unmet at this checkpoint. No change is
 merged by this record. Related to #138 and #17; both remain open. Local inputs,
