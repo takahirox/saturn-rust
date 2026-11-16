@@ -1150,7 +1150,7 @@ impl Bus {
         }
         Ok(reference)
     }
-    fn advance_isolated_segment<const CLOCK_ADVANCED: bool>(
+    pub(super) fn advance_isolated_segment<const CLOCK_ADVANCED: bool>(
         &mut self,
         main: u32,
         sound_advanced: bool,
@@ -1192,7 +1192,7 @@ impl Bus {
         }
         self.acquire_display();
         while remaining != 0 {
-            let display = if self.vdp2.display_active() {
+            let display = if self.render_video() && self.vdp2.display_active() {
                 if CLOCK_ADVANCED {
                     self.clocks_to_display_work()
                 } else {
@@ -1213,6 +1213,11 @@ impl Bus {
                 self.raster.advance(delta).is_none(),
                 "cached catch-up crossed blanking"
             );
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            {
+                let before = self.vdp1.take_display_journal();
+                self.record_video_advance(delta, before, None);
+            }
             if CLOCK_ADVANCED {
                 self.display_deadline = 0;
             }

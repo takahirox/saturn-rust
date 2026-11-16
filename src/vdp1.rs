@@ -10,6 +10,12 @@ pub const FRAMEBUFFER: u32 = 0x05C8_0000;
 pub const REGISTERS: u32 = 0x05D0_0000;
 pub const VRAM_SIZE: usize = 0x80000;
 pub const BUFFER_SIZE: usize = 0x40000;
+/// Owned readout state for the optional renderer-domain experiment.
+#[cfg(any(test, feature = "kernel-experiment"))]
+pub struct DisplaySurface {
+    pub mode: u16,
+    pub bytes: Vec<u8>,
+}
 const COMMAND_CLOCKS: u32 = 32;
 const COMMAND_WORD_CLOCKS: u32 = COMMAND_CLOCKS / 16;
 
@@ -233,6 +239,8 @@ struct Erasing {
 }
 
 pub struct Vdp1 {
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    display_journal: Option<Vec<crate::bus::video_queue::FrontPatch>>,
     pub vram: Vec<u8>,
     buffers: [Vec<u8>; 2],
     draw: usize,
@@ -269,6 +277,8 @@ pub struct Vdp1 {
 impl Default for Vdp1 {
     fn default() -> Self {
         Self {
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            display_journal: None,
             vram: vec![0; VRAM_SIZE],
             buffers: std::array::from_fn(|_| vec![0; BUFFER_SIZE]),
             draw: 0,
@@ -340,6 +350,56 @@ impl Vdp1 {
         } else {
             u16::from_be_bytes([buffer[offset], buffer[offset + 1]])
         }
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn display_surface(&self) -> DisplaySurface {
+        DisplaySurface {
+            mode: self.tvmr,
+            bytes: self.buffers[self.draw ^ 1].clone(),
+        }
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn enable_display_journal(&mut self, enabled: bool) {
+        self.display_journal = enabled.then(Vec::new);
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    /// Drain endpoint-local front changes before a framebuffer swap. The
+    /// producer must publish a new surface snapshot after that swap; patch
+    /// offsets refer to the front that existed when the write completed.
+    pub fn take_display_journal(&mut self) -> Vec<crate::bus::video_queue::FrontPatch> {
+        self.display_journal
+            .as_mut()
+            .map_or_else(Vec::new, std::mem::take)
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    fn record_display_write(&mut self, buffer: usize, offset: usize, width: usize) {
+        if buffer != (self.draw ^ 1) {
+            return;
+        }
+        let Some(journal) = &mut self.display_journal else {
+            return;
+        };
+        let bytes = &self.buffers[buffer][offset..offset + width];
+        if let Some(last) = journal.last_mut()
+            && last.offset + last.bytes.len() == offset
+        {
+            last.bytes.extend_from_slice(bytes);
+        } else {
+            journal.push(crate::bus::video_queue::FrontPatch {
+                offset,
+                bytes: bytes.to_vec(),
+            });
+        }
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) fn install_display_surface(&mut self, surface: DisplaySurface) {
+        assert_eq!(surface.bytes.len(), BUFFER_SIZE);
+        self.tvmr = surface.mode;
+        self.buffers[self.draw ^ 1] = surface.bytes;
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) fn patch_display_surface(&mut self, offset: usize, bytes: &[u8]) {
+        self.buffers[self.draw ^ 1][offset..offset + bytes.len()].copy_from_slice(bytes);
     }
     pub fn read16(&self, address: u32) -> Result<u16, BusError> {
         match address - REGISTERS {
@@ -472,6 +532,8 @@ impl Vdp1 {
         } else {
             self.buffers[area.buffer][at] = area.color.to_be_bytes()[x & 1];
         }
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        self.record_display_write(area.buffer, at, area.bytes);
     }
     /// §4.4: display erase follows readout; it must not erase future lines.
     pub(crate) fn erase_display_line(&mut self, line: usize, display_width: usize) {
@@ -805,6 +867,8 @@ impl Vdp1 {
                 if let Some(color) = pixel.color {
                     self.buffers[pixel.buffer][pixel.address..pixel.address + 2]
                         .copy_from_slice(&color.to_be_bytes());
+                    #[cfg(any(test, feature = "kernel-experiment"))]
+                    self.record_display_write(pixel.buffer, pixel.address, 2);
                 }
                 if self
                     .drawing
@@ -1273,6 +1337,8 @@ impl Vdp1 {
     }
 }
 
+#[cfg(test)]
+mod display_journal_tests;
 #[cfg(test)]
 mod erase_tests;
 #[cfg(test)]

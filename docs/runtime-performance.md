@@ -3451,3 +3451,16 @@ comparison is 21.42886 → 21.17074 fields/s (−1.20%) for pixel buffers and
 the other windows do not show a convincing gain either. Original busy-guest
 changes are −0.33%/+1.56%. Both variants and their prototype lifecycle test are
 excluded. Reducing bytes initialized alone does not establish faster execution.
+
+
+### Ordered video Worker vertical slice (#138)
+
+The [renderer Worker record](video-render-worker.md) describes an original-Rust,
+feature-enabled producer/consumer split with immutable ordered payloads and a
+bounded two-field transferable queue. Same-feature exact-field game comparisons
+improve 27.6823 to 35.1764 fields/s and 28.5930 to 36.6049 in reverse initialization
+and execution order; all twelve full-device/CPU/PCM/final-image endpoints agree.
+A separate every-frame-image-sequence check also agrees. These measurements
+include Canvas presentation and PCM draining, but the normal player is not yet
+connected to this optional path. They do not replace the current production
+selection/story results or establish real-time or AudioWorklet acceptance.

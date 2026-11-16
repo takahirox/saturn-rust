@@ -2,6 +2,13 @@
 use crate::{Boot, BootMode, Machine, cpu::CpuStatus};
 use wasm_bindgen::prelude::*;
 
+#[cfg(feature = "kernel-experiment")]
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = globalThis, js_name = __saturnVideoChunk)]
+    pub(crate) fn emit_video_chunk(bytes: &[u8]);
+}
+
 #[wasm_bindgen]
 #[derive(Default)]
 pub struct Emulator {
@@ -331,11 +338,66 @@ impl Emulator {
     pub fn advance_frame_probe(&mut self) -> Result<(), JsValue> {
         self.machine.advance_frame_probe().map_err(js_error)
     }
+    pub fn enable_video_journal(&mut self, enabled: bool) -> bool {
+        self.machine.enable_video_journal(enabled)
+    }
+    pub fn enable_video_transport(&mut self, enabled: bool) -> bool {
+        self.machine.enable_video_transport(enabled)
+    }
+    pub fn video_transport_enabled(&self) -> bool {
+        self.machine.video_transport_enabled()
+    }
+    pub fn advance_video_field(&mut self) -> Result<(), JsValue> {
+        self.machine.advance_video_field().map_err(js_error)
+    }
+    pub fn video_journal_enabled(&self) -> bool {
+        self.machine.video_journal_enabled()
+    }
     pub fn loop_probe_counts(&self) -> Vec<u32> {
         self.machine.loop_probe_counts()
     }
     pub fn loop_probe_periods(&self) -> Vec<u32> {
         self.machine.loop_probe_periods()
+    }
+}
+
+/// Independent renderer instance for the optional owned-command Worker.
+#[cfg(feature = "kernel-experiment")]
+#[wasm_bindgen]
+pub struct VideoRenderer {
+    inner: crate::bus::video_queue::Renderer,
+}
+#[cfg(feature = "kernel-experiment")]
+#[wasm_bindgen]
+impl VideoRenderer {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self {
+            inner: crate::bus::video_queue::Renderer::default(),
+        }
+    }
+    pub fn replay(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+        self.inner
+            .replay_bytes(bytes)
+            .map_err(|e| JsValue::from_str(&e))
+    }
+    pub fn frames(&self) -> u64 {
+        self.inner.frames()
+    }
+    pub fn width(&self) -> u32 {
+        self.inner.dimensions().0 as u32
+    }
+    pub fn height(&self) -> u32 {
+        self.inner.dimensions().1 as u32
+    }
+    pub fn framebuffer(&self) -> Result<Vec<u8>, JsValue> {
+        self.inner.framebuffer().map_err(|e| JsValue::from_str(&e))
+    }
+}
+#[cfg(feature = "kernel-experiment")]
+impl Default for VideoRenderer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

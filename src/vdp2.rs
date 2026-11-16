@@ -123,6 +123,55 @@ fn rgb555(color: u16) -> [u8; 3] {
     })
 }
 impl Vdp2 {
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) fn renderer_setup_commands(&self) -> Vec<crate::bus::video_queue::Command> {
+        use crate::bus::video_queue::Command;
+        let mut commands = vec![
+            Command::Vram {
+                offset: 0,
+                bytes: self.vram.clone(),
+            },
+            Command::Cram {
+                offset: 0,
+                bytes: self.cram.clone(),
+            },
+        ];
+        for offset in (0..self.registers.len()).step_by(2) {
+            if Self::supported(offset) && !matches!(offset, 4 | 6 | 8 | 0xA | 0xC | 0xFE) {
+                commands.push(Command::Register {
+                    address: VDP2 + offset as u32,
+                    value: self.word(offset),
+                });
+            }
+        }
+        commands
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) fn renderer_seed(&self) -> Option<Self> {
+        if self.completed.is_some()
+            || self.scan_x != 0
+            || self.display_fetch.prepared_line.is_some()
+            || self.line_tables.line.is_some()
+        {
+            return None;
+        }
+        Some(Self {
+            registers: self.registers,
+            vram: self.vram.clone(),
+            cram: self.cram.clone(),
+            vblank: self.vblank,
+            hblank: self.hblank,
+            live_counters: self.live_counters,
+            pal: self.pal,
+            odd: self.odd,
+            latched_counters: Cell::new(self.latched_counters.get()),
+            external_latched: Cell::new(self.external_latched.get()),
+            scanning: self.scanning.clone(),
+            scan_size: self.scan_size,
+            clocked: self.clocked,
+            ..Self::default()
+        })
+    }
     pub(crate) fn cram_offset(&self, offset: usize) -> usize {
         offset
             & if self.word(0xE) & 0x3000 == 0 {
