@@ -19,21 +19,21 @@ export async function cdReports(page) {
       const { emulator } = await import('./app.js');
       const traces = [];
       for (const preview of [false, false, true, true]) {
-        emulator.reset_bios(Uint8Array.from(image));
-        emulator.mount_cue(cue, 'cd-reports.bin', new Uint32Array([raw.length]), Uint8Array.from(raw));
+        (await emulator.reset_bios(Uint8Array.from(image)));
+        (await emulator.mount_cue(cue, 'cd-reports.bin', new Uint32Array([raw.length]), Uint8Array.from(raw)));
         const steps = preview ? 17 : 10000;
         let qPreviews = 0;
-        for (let i = 0; i < 1500000 / steps && emulator.read_long(0x0600EFFC) !== 0x600D; i++) {
+        for (let i = 0; i < 1500000 / steps && (await emulator.read_long(0x0600EFFC)) !== 0x600D; i++) {
           if (preview) {
-            emulator.read_word(0x05890024); // Must not release CR4.
-            const value = emulator.read_long(0x05818000);
-            if (value !== emulator.read_long(0x25818000)) throw new Error('Debugger consumed CD FIFO');
+            (await emulator.read_word(0x05890024)); // Must not release CR4.
+            const value = (await emulator.read_long(0x05818000));
+            if (value !== (await emulator.read_long(0x25818000))) throw new Error('Debugger consumed CD FIFO');
             if (value === 0x41010100) qPreviews++;
           }
-          emulator.run_steps(steps);
+          (await emulator.run_steps(steps));
         }
         if (preview && qPreviews === 0) throw new Error('No pending guest Q transfer previewed');
-        traces.push({ records: Array.from({ length: 1024 }, (_, i) => emulator.read_long(0x0600E000 + i * 4)), exceptions: emulator.exception_count() });
+        traces.push({ records: (await Promise.all(Array.from({ length: 1024 }, async (_, i) => (await emulator.read_long(0x0600E000 + i * 4))))), exceptions: (await emulator.exception_count()) });
       }
       return traces;
     }, { image: [...image], raw: [...raw], cue });

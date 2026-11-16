@@ -123,7 +123,7 @@ fn rgb555(color: u16) -> [u8; 3] {
     })
 }
 impl Vdp2 {
-    #[cfg(any(test, feature = "kernel-experiment"))]
+    #[cfg(any(test, feature = "video-worker"))]
     pub(crate) fn renderer_setup_commands(&self) -> Vec<crate::bus::video_queue::Command> {
         use crate::bus::video_queue::Command;
         let mut commands = vec![
@@ -146,7 +146,7 @@ impl Vdp2 {
         }
         commands
     }
-    #[cfg(any(test, feature = "kernel-experiment"))]
+    #[cfg(any(test, feature = "video-worker"))]
     pub(crate) fn renderer_seed(&self) -> Option<Self> {
         if self.completed.is_some()
             || self.scan_x != 0

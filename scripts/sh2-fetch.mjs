@@ -36,12 +36,12 @@ export async function sh2Fetch(page) {
     for(let boot=0;boot<2;boot++) {
       const result=await page.evaluate(async ({image,count})=>{
         const {emulator}=await import("./app.js");
-        emulator.reset_bios(Uint8Array.from(image));
-        for(let i=0;i<3;i++) emulator.run_steps(10000);
+        (await emulator.reset_bios(Uint8Array.from(image)));
+        for(let i=0;i<3;i++) (await emulator.run_steps(10000));
         return {
-          words:[0x0600D800,0x0600D900].map(base=>Array.from({length:count},(_,i)=>emulator.read_long(base+i*4))),
-          handoff:[emulator.read_long(0x0600D800+count*4),emulator.read_long(0x0600D804+count*4),emulator.read_long(0x0600D900+count*4)],
-          exceptions:[emulator.exception_count(),emulator.slave_exception_count()],
+          words:(await Promise.all([0x0600D800,0x0600D900].map(async base=>(await Promise.all(Array.from({length:count},async (_,i)=>(await emulator.read_long(base+i*4)))))))),
+          handoff:[(await emulator.read_long(0x0600D800+count*4)),(await emulator.read_long(0x0600D804+count*4)),(await emulator.read_long(0x0600D900+count*4))],
+          exceptions:[(await emulator.exception_count()),(await emulator.slave_exception_count())],
         };
       },{image:[...image],count:expected.length});
       assert.deepEqual(result,{words:[expected,expected],handoff:[0x600D,0x12345679,0x12345679],exceptions:["1","0"]},`control ${control}, boot ${boot}`);

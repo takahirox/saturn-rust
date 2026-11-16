@@ -3539,3 +3539,105 @@ comparisons; sustained real-time, broader playback/transitions and hardware
 completion remain unmet. The optional renderer Worker remains a separate path.
 Private inputs, raw traces/counters/captures and external builds stay local and
 ignored. Required post-merge verification: none.
+
+### Worker-owned normal player (#138)
+
+The normal player now keeps one original Rust Machine in a module Worker during
+play, pause and debugging, and enables the existing original Rust VDP2 renderer
+Worker. Input, media, backup RAM and CPU/device state stay with that Machine.
+The main thread presents every completed field on Canvas and sends its PCM to
+the normal AudioWorklet. The two-field credit is released after both the renderer
+receipt and main-thread presentation; separate ports join image and PCM streams
+before presenting. This uses owned transfers without shared memory or special
+cross-origin isolation headers. The production build enables `video-worker`;
+the separate `kernel-experiment` engine and diagnostic exports remain disabled.
+
+Paused native operations use an asynchronous facade with ordered, bounded
+batches. Large reads split at 4096 operations, and a callback from an early chunk
+cannot move a later reset ahead of the remaining reads. Actual raster-field
+playback retains the native clock and device boundaries. Host pause/navigation
+waits for at most two already committed fields; the paused CPU then remains
+exactly stationary. Existing eight-field movement and guest CPU/RAM/pixel/PCM
+expectations are retained. Navigation preserves existing faults, and backup
+reads cancelled before acceptance are distinguished from accepted imports whose
+acknowledgement arrives after a boot change.
+
+The current normal Wasm SHA-256 is
+`8b433ede11998b45f572c368dc3c86d98069dab1defa519a5ff8654540644fd4`.
+Main uses the preceding production Wasm
+`ad3c2111d3ac3d6f10bdca70b4acf4338a9474f91d8e6d9d75209cae94a1ba75`.
+In Chrome 157.0.8103.52, the authorized game menu uses a target warmup of 3600
+fields, its existing local controller sequence and six 5-second intervals.
+Both players use their actual UI pacing, every Canvas presentation and an enabled
+AudioWorklet. Each owned browser exits before another browser or native job.
+
+| Normal UI menu measurement | Main | Worker player |
+| --- | ---: | ---: |
+| Initial observed fields/s | 28.1267 | 36.7111 |
+| Subsequent fresh-browser fields/s | 28.4721 | 36.5827 |
+| Subsequent measured underflow output frames, approximately 30 s | 696274 | 514143 |
+| Host audio drops in measured intervals | 0 | 0 |
+
+The subsequent observations give a 28.49% throughput difference. The Worker
+player's p95 presentation-gap range is 28.0–28.4 ms and p99 is 28.3–29.2 ms.
+Every measured field count equals its Canvas presentation count. The initial
+Worker measurement predates the later paused-UI/input corrections; the subsequent
+Worker measurement uses the final production JavaScript. The normal UI input
+threshold follows presented fields and can reach the two architectures at
+different in-flight field edges, so these runs do not claim a strict private
+CPU/device endpoint differential. **60 fields/s and normal-audio real time remain
+unmet.** No emulated field or timing edge is discarded to improve FPS.
+
+A separate normal-player narrative run reaches the photographed character and
+Japanese text after the 12814-field warmup and 109 local input events. The same
+six 5-second measurement intervals yield 39.0438 fields/s, with every field
+presented, p95 gaps of 37.1–37.7 ms, p99 gaps of 39.9–43.1 ms, 460045 underflow
+output frames and zero host drops. The local final image was inspected. This is
+a broader actual-game observation, not a comparison with the menu throughput.
+A fresh-browser main run with that input and warmup reaches the same inspected
+photo/text scene and measures 31.3459 fields/s (the Worker observation is 24.56%
+faster), p95 gaps 43.5–45.6 ms, p99 46.4–47.4 ms and 636838 underflow output
+frames. It also presents every field and has zero host drops. This narrative
+comparison is one sequential pair, distinct from the repeated menu observations;
+the same presentation-relative input and private-endpoint limitation applies.
+
+`node scripts/benchmark-player.mjs` reproduces the actual-player measurement with
+an original licensed firmware fixture by default. It reports runtime hashes,
+field/draw counts, p95/p99 presentation gaps and real Worklet counters. Optional
+local `--bios`, `--disc`, repeated `--track` and `--buttons` paths select an
+authorized workload; `--web` and `--pkg` select frozen runtime assets. `--warmup`,
+`--seconds` and `--runs` define the interval, and optional `--capture` stays local.
+Controller TSV rows are a presented-field threshold and a hexadecimal port-1
+mask. Default/original-fixture results do not establish game throughput. No local
+firmware/media is served or uploaded by the measurement tool.
+
+Local validation passes 1400 native tests in 111 result groups, formatting,
+native all-target/all-feature Clippy, production Wasm Clippy/build, the shared
+33-group browser trace and 13 runner/publication-gate tests. The independent
+41-group shard passed before the final large-batch facade correction; that
+correction separately passes complete CHD byte/TOC/PCM checks. Exact-head CI must
+rerun both shards against one artifact digest before merging.
+
+The stricter original-SCSP real-time probe
+`node scripts/verify-playback-audio.mjs --direct` is also executed against the
+normal production package. It **fails** its real-time pacing assertion: 240
+fields in 5083 ms, 43985 Worklet underflow output frames, zero drops, nonzero
+original waveform peak 0.75, and both pending queues drained. This is an unmet
+performance acceptance probe, not a passing correctness check or a CI gate.
+Its pacing/zero-underflow requirements remain intact.
+
+Feature-enabled original-guest browser comparisons preserve all 22 device
+hashes, CPU clocks/registers, every returned image and PCM through direct/relay
+paths, pause, in-flight reset and delayed receipts. The equal-100-ms delay control
+initially failed to expose an early-credit mutant; the retained 250-ms renderer
+receipt versus 100-ms PCM control passes normally and detects that mutant at the
+ownership-drain assertion. A real callback-triggered reset following 8193 queued
+reads preserves their original values; the executed interleaving mutant fails.
+The new native long self-refresh regression also checks exact CPU/clock/device/
+image/PCM state while transport respects its existing per-chunk clock budget.
+
+This is partial work related to #138 and #17. Exact-head CI and normal PR review
+remain pre-merge requirements. This increment does not establish general
+stock-firmware compatibility or hardware completion. Private inputs, captures
+and raw profiles remain local.
+Required post-merge verification: none.

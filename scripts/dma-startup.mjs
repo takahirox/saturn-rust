@@ -15,13 +15,13 @@ export async function dmaStartup(page) {
     for(let repeat=0;repeat<2;repeat++) {
       const r=await page.evaluate(async ({cue,media,lengths})=>{
         const {emulator,advanceFrame}=await import('./app.js');
-        emulator.set_pal(false);
-        emulator.reset_cue(cue,'dma-startup.iso\0dma-startup-audio.bin',Uint32Array.from(lengths),Uint8Array.from(media));
-        for(let i=0;i<300&&emulator.read_long(0x06010014)!==0x600D;i++) emulator.run_steps(10000);
-        const records=Array.from({length:6},(_,i)=>emulator.read_long(0x06010000+i*4));
-        const exceptions=emulator.exception_count();
-        advanceFrame();advanceFrame();
-        const frame=Array.from(emulator.framebuffer().slice(0,8*4));
+        (await emulator.set_pal(false));
+        (await emulator.reset_cue(cue,'dma-startup.iso\0dma-startup-audio.bin',Uint32Array.from(lengths),Uint8Array.from(media)));
+        for(let i=0;i<300&&(await emulator.read_long(0x06010014))!==0x600D;i++) (await emulator.run_steps(10000));
+        const records=(await Promise.all(Array.from({length:6},async (_,i)=>(await emulator.read_long(0x06010000+i*4)))));
+        const exceptions=(await emulator.exception_count());
+        (await advanceFrame());(await advanceFrame());
+        const frame=Array.from((await emulator.framebuffer()).slice(0,8*4));
         const canvas=Array.from(document.getElementById('screen').getContext('2d').getImageData(0,0,8,1).data);
         return {records,exceptions,frame,canvas};
       },{cue,media:[...media],lengths:[iso.length,audio.length]});

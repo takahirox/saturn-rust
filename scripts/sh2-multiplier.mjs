@@ -31,9 +31,9 @@ export async function sh2Multiplier(page) {
     await page.waitForFunction(()=>document.getElementById("status").textContent.startsWith("Resetting"));
     const run=()=>page.evaluate(async(count)=>{
       const {emulator}=await import("./app.js");
-      for(let i=0;i<30;i++)emulator.run_steps(10000);
-      return {words:[0x0600E900,0x0600EB00].map(base=>Array.from({length:count},(_,i)=>emulator.read_long(base+i*4))),
-        exceptions:[emulator.exception_count(),emulator.slave_exception_count()]};
+      for(let i=0;i<30;i++)(await emulator.run_steps(10000));
+      return {words:(await Promise.all([0x0600E900,0x0600EB00].map(async base=>(await Promise.all(Array.from({length:count},async (_,i)=>(await emulator.read_long(base+i*4)))))))),
+        exceptions:[(await emulator.exception_count()),(await emulator.slave_exception_count())]};
     },vectors.length);
     const actual=await run();
     assert.deepEqual(actual,{words:[expected,expected],exceptions:[variant==="fast"?"1":"0","0"]},variant);

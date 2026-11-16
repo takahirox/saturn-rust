@@ -25,7 +25,8 @@ export async function cs0Transfers(page) {
       assert.equal(n,16);
     }
     const traces=await page.evaluate(async image => {
-      const {Emulator}=await import("./pkg/saturn_rust.js");
+      const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+      await init();
       const m=new Emulator();
       try {
         return Array.from({length:2},()=>{

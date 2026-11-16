@@ -40,12 +40,12 @@ export async function vdp1Hdtv(page) {
       for(let repeat=0;repeat<2;repeat++) {
         const result=await page.evaluate(async ({bytes,samples})=>{
           const {emulator,advanceFrame}=await import("./app.js");
-          emulator.set_pal(false);emulator.reset_bios(Uint8Array.from(bytes));
-          for(let i=0;i<100&&emulator.read_long(0x0600EA68)!==0x600D;i++)emulator.run_steps(5000);
-          const records=Array.from({length:27},(_,i)=>emulator.read_long(0x0600EA00+i*4));
-          advanceFrame();
-          const f=emulator.framebuffer(),width=emulator.video_width(),ctx=document.getElementById("screen").getContext("2d");
-          return {records,width,height:emulator.video_height(),exceptions:emulator.exception_count(),
+          (await emulator.set_pal(false));(await emulator.reset_bios(Uint8Array.from(bytes)));
+          for(let i=0;i<100&&(await emulator.read_long(0x0600EA68))!==0x600D;i++)(await emulator.run_steps(5000));
+          const records=(await Promise.all(Array.from({length:27},async (_,i)=>(await emulator.read_long(0x0600EA00+i*4)))));
+          (await advanceFrame());
+          const f=(await emulator.framebuffer()),width=(await emulator.video_width()),ctx=document.getElementById("screen").getContext("2d");
+          return {records,width,height:(await emulator.video_height()),exceptions:(await emulator.exception_count()),
             pixels:samples.map(([x,y])=>Array.from(f.slice((y*width+x)*4,(y*width+x)*4+4))),
             canvas:samples.map(([x,y])=>Array.from(ctx.getImageData(x,y,1,1).data))};
         },{bytes:[...bytes],samples});
@@ -63,9 +63,9 @@ export async function vdp1Hdtv(page) {
     for(let repeat=0;repeat<2;repeat++) {
       const result=await page.evaluate(async bytes=>{
         const {emulator}=await import("./app.js");
-        emulator.set_pal(false);emulator.reset_bios(Uint8Array.from(bytes));
-        for(let i=0;i<100&&emulator.read_long(0x0600EB2C)!==0x600D;i++)emulator.run_steps(5000);
-        return {records:Array.from({length:12},(_,i)=>emulator.read_long(0x0600EB00+i*4)),exceptions:emulator.exception_count()};
+        (await emulator.set_pal(false));(await emulator.reset_bios(Uint8Array.from(bytes)));
+        for(let i=0;i<100&&(await emulator.read_long(0x0600EB2C))!==0x600D;i++)(await emulator.run_steps(5000));
+        return {records:(await Promise.all(Array.from({length:12},async (_,i)=>(await emulator.read_long(0x0600EB00+i*4))))),exceptions:(await emulator.exception_count())};
       },[...bytes]);
       assert.deepEqual(result.records,expected);assert.equal(result.exceptions,"0");
     }

@@ -50,19 +50,25 @@ export class AudioOutput {
     this.node?.port.postMessage({ muted });
     this.status(this.paused ? "paused" : muted ? "muted" : "ready");
   }
-  deliver(pcm) {
+  // Queue the first PCM and resume in one Worklet message. No empty
+  // rendering quantum can occur between an unpause and its initial data.
+  start(pcm) { return this.deliver(pcm, true); }
+  deliver(pcm, resume = false) {
     const frames = pcm.length >>> 1;
-    if (!frames || !this.node || this.paused || this.context.state !== "running") return;
+    if (!frames || !this.node || (this.paused && !resume) || this.context.state !== "running") return false;
     // Bound transferable messages waiting for the audio thread, in addition to
     // the consumer's fixed ring. Saturation is visible in diagnostics.
     if (this.pending + frames > 8192) {
       this.producerDropped += frames;
       this.stats.dropped += frames;
       this.status();
-      return;
+      return false;
     }
     this.pending += frames;
     const copy = new Int16Array(pcm);
-    this.node.port.postMessage({ pcm: copy }, [copy.buffer]);
+    if (resume) this.paused = false;
+    this.node.port.postMessage(resume ? { pcm: copy, paused: false } : { pcm: copy }, [copy.buffer]);
+    if (resume) this.status("ready");
+    return true;
   }
 }

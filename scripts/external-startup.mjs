@@ -32,13 +32,13 @@ export async function externalStartup(page) {
   ].flat();
   const capture=async()=>page.evaluate(async()=>{
     const {emulator:m,advanceFrame}=await import("./app.js");
-    for(let i=0;i<200 && m.read_long(0x060100FC)===0;i++)m.run_steps(10000);
-    advanceFrame(); advanceFrame();
-    return {records:Array.from({length:12},(_,i)=>m.read_long(0x06010000+i*4)),
-      trace:Array.from({length:264},(_,i)=>m.read_long(0x06010400+i*4)),
-      marker:m.read_long(0x060100FC),mode:m.mode(),exceptions:m.exception_count(),
-      smpc:[0x248,0x25C,0x264,0x260,0x218].map(off=>m.read_long(0x06010000+off)),
-      hle:m.read_long(0x06000320),frame:[...document.getElementById("screen").getContext("2d").getImageData(0,0,320,224).data],
+    for(let i=0;i<200 && (await m.read_long(0x060100FC))===0;i++)(await m.run_steps(10000));
+    (await advanceFrame()); (await advanceFrame());
+    return {records:(await Promise.all(Array.from({length:12},async (_,i)=>(await m.read_long(0x06010000+i*4))))),
+      trace:(await Promise.all(Array.from({length:264},async (_,i)=>(await m.read_long(0x06010400+i*4))))),
+      marker:(await m.read_long(0x060100FC)),mode:(await m.mode()),exceptions:(await m.exception_count()),
+      smpc:(await Promise.all([0x248,0x25C,0x264,0x260,0x218].map(async off=>(await m.read_long(0x06010000+off))))),
+      hle:(await m.read_long(0x06000320)),frame:[...document.getElementById("screen").getContext("2d").getImageData(0,0,320,224).data],
       pixel:[...document.getElementById("screen").getContext("2d").getImageData(0,0,1,1).data]};
   });
   const green=Buffer.from(Array.from({length:320*224*4},(_,i)=>[0,255,0,255][i%4]));
@@ -114,7 +114,8 @@ export async function externalStartup(page) {
     }
     if(control===4)firmware.writeUInt32BE(1,0x7F00);
     const got=await page.evaluate(async({rom,image,control})=>{
-      const {Emulator}=await import("./pkg/saturn_rust.js");const m=new Emulator();
+      const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+      await init();const m=new Emulator();
       m.reset_bios(Uint8Array.from(rom));
       if(control!==0)m.mount_disc(Uint8Array.from(image));
       if(control===5) {
@@ -130,8 +131,8 @@ export async function externalStartup(page) {
   // The existing HLE path still installs its own services; no external ROM survives.
   const star=await readFile("web/star-collector.iso");
   const hle=await page.evaluate(async image=>{
-    const {emulator:m}=await import("./app.js");m.reset_disc(Uint8Array.from(image));m.run_steps(10000);
-    return {mode:m.mode(),service:m.read_long(0x06000320)};
+    const {emulator:m}=await import("./app.js");(await m.reset_disc(Uint8Array.from(image)));(await m.run_steps(10000));
+    return {mode:(await m.mode()),service:(await m.read_long(0x06000320))};
   },[...star]);
   assert.equal(hle.mode,"BIOS-less HLE disc");assert(hle.service>0);
   assert(requests.every(r=>r.method==="GET" && r.body===null),"local images must not be uploaded");

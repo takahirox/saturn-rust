@@ -29,14 +29,14 @@ export async function cdRw(page) {
    const {emulator} = await import('./app.js');
    const traces = [];
    for (let boot=0;boot<2;boot++) {
-    emulator.reset_cue(cue,'cd-rw.iso\0cd-rw-audio.bin\0cd-rw.srw',new Uint32Array([iso.length,audio.length,sub.length]),Uint8Array.from([...iso,...audio,...sub]));
-    for(let i=0;i<400 && emulator.read_long(0x060103fc)!==0x600d;i++) {
-     emulator.read_long(0x05818000); // Passive inspection cannot duplicate/consume a FIFO word.
-     emulator.read_word(0x05890024);
-     emulator.run_steps(10000);
+    (await emulator.reset_cue(cue,'cd-rw.iso\0cd-rw-audio.bin\0cd-rw.srw',new Uint32Array([iso.length,audio.length,sub.length]),Uint8Array.from([...iso,...audio,...sub])));
+    for(let i=0;i<400 && (await emulator.read_long(0x060103fc))!==0x600d;i++) {
+     (await emulator.read_long(0x05818000)); // Passive inspection cannot duplicate/consume a FIFO word.
+     (await emulator.read_word(0x05890024));
+     (await emulator.run_steps(10000));
     }
-    emulator.run_steps(10000);
-    traces.push({records:Array.from({length:256},(_,i)=>emulator.read_long(0x06010000+i*4)), exceptions:emulator.exception_count(), samples:[...emulator.audio_samples(8192)]});
+    (await emulator.run_steps(10000));
+    traces.push({records:(await Promise.all(Array.from({length:256},async (_,i)=>(await emulator.read_long(0x06010000+i*4))))), exceptions:(await emulator.exception_count()), samples:[...(await emulator.audio_samples(8192))]});
    }
    return traces;
   },{iso:[...iso],audio:[...audio],sub:[...sub],cue});
@@ -59,12 +59,12 @@ export async function cdRw(page) {
  assert.deepEqual(transfers[0],transfers[2]);
  const atomic = await page.evaluate(async ({cue,iso,audio}) => {
   const {emulator}=await import('./app.js');
-  const before=emulator.read_long(0x060103fc);
+  const before=(await emulator.read_long(0x060103fc));
   let rejected=false;
   try {
-   emulator.mount_cue(cue,'cd-rw.iso\0cd-rw-audio.bin\0cd-rw.srw',new Uint32Array([iso.length,audio.length,11]),Uint8Array.from([...iso,...audio,...Array(11).fill(0)]));
+   (await emulator.mount_cue(cue,'cd-rw.iso\0cd-rw-audio.bin\0cd-rw.srw',new Uint32Array([iso.length,audio.length,11]),Uint8Array.from([...iso,...audio,...Array(11).fill(0)])));
   } catch { rejected=true; }
-  return [rejected,before,emulator.read_long(0x060103fc)];
+  return [rejected,before,(await emulator.read_long(0x060103fc))];
  },{cue,iso:[...original],audio:[...audio]});
  assert.deepEqual(atomic,[true,0x600d,0x600d],'Failed mount must preserve executing guest state');
  // Exercise the production local-file UI: missing and ASCII-case companion lookup.
@@ -78,8 +78,8 @@ export async function cdRw(page) {
  await page.waitForFunction(()=>document.getElementById('error').textContent==='');
  const loaded=await page.evaluate(async()=>{
   const {emulator}=await import('./app.js');
-  for(let i=0;i<400 && emulator.read_long(0x060103fc)!==0x600d;i++)emulator.run_steps(10000);
-  return [emulator.read_long(0x060103fc),emulator.read_long(0x06010000)];
+  for(let i=0;i<400 && (await emulator.read_long(0x060103fc))!==0x600d;i++)(await emulator.run_steps(10000));
+  return [(await emulator.read_long(0x060103fc)),(await emulator.read_long(0x06010000))];
  });
  assert.deepEqual(loaded,[0x600d,0x3800]);
  page.off('request',listener);assert.deepEqual(requests,[],'Local companion data must stay in the browser');

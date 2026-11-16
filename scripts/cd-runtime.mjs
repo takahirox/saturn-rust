@@ -29,45 +29,51 @@ export async function cdRuntime(page) {
   const run=(image,{bios=rom,raw=false,restart=false,sysres=false,chunk=10000,fixed=0,inspect=false,draw=false,resetTransfer=false,noMedia=false}={})=>page.evaluate(async args=>{
     const {emulator:m,advanceFrame}=await import("./app.js");
     const O=0x06070000,rom=Uint8Array.from(args.bios);
-    m.reset_bios(rom);
-    if(args.noMedia)m.clear_media();
-    else if(args.raw)m.mount_cue('FILE "d" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00',"d",new Uint32Array([args.image.length]),Uint8Array.from(args.image));
-    else m.mount_disc(Uint8Array.from(args.image));
-    if(args.sysres)m.import_backup_ram(new Uint8Array(32768).fill(0xA5));
-    const advance=()=>{
+    (await m.reset_bios(rom));
+    if(args.noMedia)(await m.clear_media());
+    else if(args.raw)(await m.mount_cue('FILE "d" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00',"d",new Uint32Array([args.image.length]),Uint8Array.from(args.image)));
+    else (await m.mount_disc(Uint8Array.from(args.image)));
+    if(args.sysres)(await m.import_backup_ram(new Uint8Array(32768).fill(0xA5)));
+    const advance=async ()=>{
       let left=args.fixed||6000000;
       while(left>0) {
-        const n=Math.min(left,args.chunk);m.run_steps(n);left-=n;
-        if(args.inspect){m.read_long(0x25818000);m.read_word(0x25890024);}
-        if(!args.fixed && (m.read_long(O+0xFC)!==0 || m.read_long(0x060100FC)!==0))return;
+        const pending=[];
+        // Fixed-length runs retain every odd-sized native step/read in order;
+        // only transport is batched. Completion-sensitive runs still poll each chunk.
+        for(let batch=0;batch<(args.fixed?1024:1)&&left>0;batch++) {
+          const n=Math.min(left,args.chunk);pending.push(m.run_steps(n));left-=n;
+          if(args.inspect)pending.push(m.read_long(0x25818000),m.read_word(0x25890024));
+        }
+        await Promise.all(pending);
+        if(!args.fixed && ((await m.read_long(O+0xFC))!==0 || (await m.read_long(0x060100FC))!==0))return;
       }
     };
     if(args.resetTransfer) {
       let reached=false;
       for(let i=0;i<1600000;i++) {
-        m.step();
-        if(m.read_long(O+4)===2 && (m.read_word(0x25890008)&2)!==0){reached=true;break;}
+        (await m.step());
+        if((await m.read_long(O+4))===2 && ((await m.read_word(0x25890008))&2)!==0){reached=true;break;}
       }
       if(!reached)throw new Error("runtime FIFO boundary not reached");
-      m.reset_bios(rom);
-      if(m.read_long(O)!==0 || m.read_long(0x25818000)!==0xFFFFFFFF)throw new Error("stale runtime reset bytes");
+      (await m.reset_bios(rom));
+      if((await m.read_long(O))!==0 || (await m.read_long(0x25818000))!==0xFFFFFFFF)throw new Error("stale runtime reset bytes");
     }
-    advance();
-    if(args.restart){m.reset_bios(rom);advance();}
-    const words=(at,n)=>Array.from({length:n},(_,i)=>m.read_long(at+i*4));
-    const bytes=(at,n)=>Array.from({length:n},(_,i)=>(m.read_long((at+i)&~3)>>>(24-((at+i)%4)*8))&255);
-    const end=m.read_long(O+0x28)&0x1FFFFFFF;
-    const result={records:words(O,0x100/4),bootError:m.read_long(0x060100FC),aip:m.read_long(0x060102F0),
-      loaded:m.read_long(0x06010328),program:bytes(0x06020000,args.executableLength),
-      handles:words(O+0x800,14),buffers:bytes(0x06080000,65536),
-      mode:m.mode(),hle:m.read_long(0x06000320),fifo:m.read_long(0x25818000),hirq:m.read_word(0x25890008)&0x82,
-      dma:words(0x25FE0000,2),irq:[m.read_long(0x06010204),m.read_long(0x06010208),m.read_long(0x25FE00A4)&0x10800],
-      trace:words(0x06072000,end>=0x06072000&&end<0x06074000?(end-0x06072000)/4:0),
-      ...(args.sysres?{backup:Array.from(m.export_backup_ram())}:{}),
-      ...(args.fixed?{clocks:m.peripheral_clocks(),registers:Array.from(m.registers()),special:Array.from(m.special_registers()),
-        instructions:m.instruction_count(),slaveRegisters:Array.from(m.slave_registers()),log:words(O,0x4000/4)}:{})};
+    (await advance());
+    if(args.restart){(await m.reset_bios(rom));(await advance());}
+    const words=async (at,n)=>(await Promise.all(Array.from({length:n},async (_,i)=>(await m.read_long(at+i*4)))));
+    const bytes=async (at,n)=>(await Promise.all(Array.from({length:n},async (_,i)=>((await m.read_long((at+i)&~3))>>>(24-((at+i)%4)*8))&255)));
+    const end=(await m.read_long(O+0x28))&0x1FFFFFFF;
+    const result={records:(await words(O,0x100/4)),bootError:(await m.read_long(0x060100FC)),aip:(await m.read_long(0x060102F0)),
+      loaded:(await m.read_long(0x06010328)),program:(await bytes(0x06020000,args.executableLength)),
+      handles:(await words(O+0x800,14)),buffers:(await bytes(0x06080000,65536)),
+      mode:(await m.mode()),hle:(await m.read_long(0x06000320)),fifo:(await m.read_long(0x25818000)),hirq:(await m.read_word(0x25890008))&0x82,
+      dma:(await words(0x25FE0000,2)),irq:[(await m.read_long(0x06010204)),(await m.read_long(0x06010208)),(await m.read_long(0x25FE00A4))&0x10800],
+      trace:(await words(0x06072000,end>=0x06072000&&end<0x06074000?(end-0x06072000)/4:0)),
+      ...(args.sysres?{backup:Array.from((await m.export_backup_ram()))}:{}),
+      ...(args.fixed?{clocks:(await m.peripheral_clocks()),registers:Array.from((await m.registers())),special:Array.from((await m.special_registers())),
+        instructions:(await m.instruction_count()),slaveRegisters:Array.from((await m.slave_registers())),log:(await words(O,0x4000/4))}:{})};
     if(args.draw) {
-      advanceFrame();advanceFrame();
+      (await advanceFrame());(await advanceFrame());
       result.canvas=Array.from(document.getElementById("screen").getContext("2d").getImageData(0,0,320,224).data);
     }
     return result;

@@ -27,12 +27,12 @@ export async function spriteShrink(page) {
       const {emulator,advanceFrame}=await import("./app.js");
       const traces=[];
       for(let repeat=0;repeat<2;repeat++) {
-        emulator.reset_bios(Uint8Array.from(rom));
-        for(let i=0;i<1200 && emulator.read_long(0x0600DFFC)!==0x600D;i++)emulator.run_steps(5000);
-        emulator.advance_frame();advanceFrame();
-        const f=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
-        traces.push({done:emulator.read_long(0x0600DFFC),
-          words:Array.from({length:count},(_,i)=>emulator.read_long(0x0600D000+i*4)),
+        (await emulator.reset_bios(Uint8Array.from(rom)));
+        for(let i=0;i<1200 && (await emulator.read_long(0x0600DFFC))!==0x600D;i++)(await emulator.run_steps(5000));
+        (await emulator.advance_frame());(await advanceFrame());
+        const f=(await emulator.framebuffer()),canvas=document.getElementById("screen").getContext("2d");
+        traces.push({done:(await emulator.read_long(0x0600DFFC)),
+          words:(await Promise.all(Array.from({length:count},async (_,i)=>(await emulator.read_long(0x0600D000+i*4))))),
           pixels:Array.from(f.slice((20*320+10)*4,(20*320+15)*4)),
           canvas:Array.from(canvas.getImageData(10,20,5,1).data)});
       }

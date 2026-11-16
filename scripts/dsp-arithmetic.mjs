@@ -28,7 +28,8 @@ export async function dspArithmetic(page) {
       expected.splice(2, 5, 0, 0, 0, 0x7fffffff, 0x7fff);
     }
     const traces = await page.evaluate(async ({ image, length }) => {
-      const { Emulator } = await import("./pkg/saturn_rust.js");
+      const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+      await init();
       const m = new Emulator();
       try {
         return Array.from({ length: 2 }, () => {

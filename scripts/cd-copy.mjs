@@ -17,12 +17,12 @@ export async function cdCopy(page) {
     await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const result = await page.evaluate(async () => {
       const { emulator } = await import("./app.js");
-      emulator.mount_disc(new Uint8Array(2048 * 100));
-      for (let i = 0; i < 100 && emulator.read_long(0x0600A80C) !== 0x600D; i++) emulator.run_steps(10000);
+      (await emulator.mount_disc(new Uint8Array(2048 * 100)));
+      for (let i = 0; i < 100 && (await emulator.read_long(0x0600A80C)) !== 0x600D; i++) (await emulator.run_steps(10000));
       return {
-        trace: Array.from({ length: 46 * 4 }, (_, i) => emulator.read_long(0x0600A000 + i * 4)),
-        data: Array.from({ length: 4 }, (_, i) => emulator.read_long(0x0600A800 + i * 4)),
-        exceptions: emulator.exception_count(),
+        trace: (await Promise.all(Array.from({ length: 46 * 4 }, async (_, i) => (await emulator.read_long(0x0600A000 + i * 4))))),
+        data: (await Promise.all(Array.from({ length: 4 }, async (_, i) => (await emulator.read_long(0x0600A800 + i * 4))))),
+        exceptions: (await emulator.exception_count()),
       };
     });
     assert.equal(result.exceptions, "0");

@@ -20,23 +20,23 @@ export async function hlePlayer(page, url) {
     await page.waitForFunction(()=>document.getElementById("status").textContent==="Ready"&&document.getElementById("pc").textContent==="0x00000100");
     const result = await page.evaluate(async expected => {
       const {emulator}=await import("./app.js");
-      const state=()=>[0,4,8].map(offset=>emulator.read_long(0x06000F00+offset));
+      const state=async ()=>(await Promise.all([0,4,8].map(async offset=>(await emulator.read_long(0x06000F00+offset)))));
       for(let i=0;i<100;i++) {
-        emulator.advance_frame();
-        if(state().every((v,j)=>v===expected[j])) {
-          for(let k=0;k<3;k++)emulator.advance_frame();
-          return {state:state(),returned:emulator.read_long(0x06009010),
-            power:emulator.read_long(0x06000C00),backup:emulator.export_backup_ram()[0]};
+        (await emulator.advance_frame());
+        if((await state()).every((v,j)=>v===expected[j])) {
+          for(let k=0;k<3;k++)(await emulator.advance_frame());
+          return {state:(await state()),returned:(await emulator.read_long(0x06009010)),
+            power:(await emulator.read_long(0x06000C00)),backup:(await emulator.export_backup_ram())[0]};
         }
       }
-      throw new Error(`SYS_EXECDMP startup failed: ${state()}, PC=${emulator.pc()}`);
+      throw new Error(`SYS_EXECDMP startup failed: ${(await state())}, PC=${(await emulator.pc())}`);
     },expected);
     assert.deepEqual(result,{state:expected,returned:0,power:0x13579BDF,backup:42});
   };
   const frames = (count, buttons=null) => page.evaluate(async ({count,buttons}) => {
     const {emulator}=await import("./app.js");
-    if(buttons!==null)emulator.set_buttons(buttons);
-    for(let i=0;i<count;i++)emulator.advance_frame();
+    if(buttons!==null)(await emulator.set_buttons(buttons));
+    for(let i=0;i<count;i++)(await emulator.advance_frame());
   },{count,buttons});
   const key = async (name,count=4) => {
     await page.locator("#screen").focus();
@@ -45,13 +45,13 @@ export async function hlePlayer(page, url) {
   const image = async (track,playing) => {
     const result=await page.evaluate(async()=>{
       const {emulator,advanceFrame}=await import("./app.js");
-      advanceFrame();
-      const frame=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
+      (await advanceFrame());
+      const frame=(await emulator.framebuffer()),canvas=document.getElementById("screen").getContext("2d");
       const points=[[32,32],[40,32],[24,96],[32,100],[36,100],[38,100],[41,123],[43,123],[44,123],[279,127]];
-      return {state:[0,4,8].map(o=>emulator.read_long(0x06000F00+o)),
+      return {state:(await Promise.all([0,4,8].map(async o=>(await emulator.read_long(0x06000F00+o))))),
         wasm:points.map(([x,y])=>Array.from(frame.slice((y*320+x)*4,(y*320+x)*4+4))),
         canvas:points.map(([x,y])=>Array.from(canvas.getImageData(x,y,1,1).data)),
-        size:[emulator.video_width(),emulator.video_height()],returned:emulator.read_long(0x06009010)};
+        size:[(await emulator.video_width()),(await emulator.video_height())],returned:(await emulator.read_long(0x06009010))};
     });
     const expected=[[255,255,255,255],[8,16,16,255],[33,33,33,255]];
     const cursor=track===0?[255,0,0,255]:playing?[0,255,0,255]:[255,255,0,255];
@@ -67,8 +67,8 @@ export async function hlePlayer(page, url) {
       const {AudioOutput}=await import("./audio.js");
       // The production Canvas presenter drains its audio producer even while
       // paused. Generate the next guest buffers for the independent consumer.
-      emulator.advance_frame();emulator.advance_frame();
-      const pcm=emulator.audio_samples(8192);
+      (await emulator.advance_frame());(await emulator.advance_frame());
+      const pcm=(await emulator.audio_samples(8192));
       let nonzero=0;
       for(let i=0;i<pcm.length;i+=2) {
         if(pcm[i]!==0||pcm[i+1]!==0) {
@@ -96,17 +96,17 @@ export async function hlePlayer(page, url) {
   await image(2,false);
   await key("z");await image(2,true);await signal([4096,-8192]);
   await frames(4,16);await frames(2,0);await image(2,false);
-  await page.evaluate(async()=>{const {emulator}=await import("./app.js");emulator.audio_samples(8192);});
+  await page.evaluate(async()=>{const {emulator}=await import("./app.js");(await emulator.audio_samples(8192));});
   await frames(3);
-  assert(await page.evaluate(async()=>{const {emulator}=await import("./app.js");return Array.from(emulator.audio_samples(8192)).every(v=>v===0);}));
+  assert(await page.evaluate(async()=>{const {emulator}=await import("./app.js");return Array.from((await emulator.audio_samples(8192))).every(v=>v===0);}));
   await key("Enter");await signal([4096,-8192]);
   await key("ArrowRight",8);await image(3,false); // one selection per press
-  await page.evaluate(async()=>{const {emulator}=await import("./app.js");emulator.audio_samples(8192);});
+  await page.evaluate(async()=>{const {emulator}=await import("./app.js");(await emulator.audio_samples(8192));});
   await key("z");await image(3,true);await signal([-12288,16384]);
   await key("ArrowLeft");await image(2,false);
   await key("ArrowLeft");await image(3,false); // wrap skips data track1
   await key("z",75);await image(3,false); // real end, then restart
-  await page.evaluate(async()=>{const {emulator}=await import("./app.js");emulator.audio_samples(8192);});
+  await page.evaluate(async()=>{const {emulator}=await import("./app.js");(await emulator.audio_samples(8192));});
   await key("z");await signal([-12288,16384]);
   await page.locator("#settings > summary").click();
   await page.locator("#reset").click();await ready([2,0,3]);await image(2,false);
@@ -128,7 +128,7 @@ export async function hlePlayer(page, url) {
     await frames(6);await image(3,false);await frames(4);await image(3,false);
     await axis(0);await frames(3);await axis(-1);await frames(6);await image(2,false);
     await axis(0);await frames(3);
-    await page.evaluate(async()=>{const {emulator}=await import("./app.js");emulator.audio_samples(8192);});
+    await page.evaluate(async()=>{const {emulator}=await import("./app.js");(await emulator.audio_samples(8192));});
     await button(0);await frames(4);await signal([4096,-8192]);
     await button(1);await frames(4);await image(2,false);
   }

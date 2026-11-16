@@ -17,7 +17,7 @@ mod dmac_tests;
 #[cfg(test)]
 mod hdtv_tests;
 mod loop_probe;
-#[cfg(any(test, feature = "kernel-experiment"))]
+#[cfg(any(test, feature = "video-worker"))]
 pub mod video_queue;
 #[cfg(any(test, feature = "kernel-experiment"))]
 pub use loop_probe::verify as verify_loop_probe;
@@ -369,7 +369,7 @@ pub struct Bus {
     pub(crate) main_clocks: u64,
     pending_main_clocks: u32,
     display_deadline: u64,
-    #[cfg(any(test, feature = "kernel-experiment"))]
+    #[cfg(any(test, feature = "video-worker"))]
     video_domain: Option<Box<RefCell<video_queue::Domain>>>,
     #[cfg(test)]
     literal_display: bool,
@@ -453,7 +453,7 @@ impl Default for Bus {
             main_clocks: 0,
             pending_main_clocks: 0,
             display_deadline: 0,
-            #[cfg(any(test, feature = "kernel-experiment"))]
+            #[cfg(any(test, feature = "video-worker"))]
             video_domain: None,
             #[cfg(test)]
             literal_display: false,
@@ -776,7 +776,7 @@ impl Bus {
         error
     }
     fn flush_video(&mut self) {
-        #[cfg(any(test, feature = "kernel-experiment"))]
+        #[cfg(any(test, feature = "video-worker"))]
         if self.video_domain.is_some() {
             self.record_video_command(video_queue::Command::Flush);
             return;
@@ -865,11 +865,11 @@ impl Bus {
             .min(self.vdp1.clocks_to_event())
     }
     fn render_video(&self) -> bool {
-        #[cfg(any(test, feature = "kernel-experiment"))]
+        #[cfg(any(test, feature = "video-worker"))]
         {
             self.video_domain.is_none()
         }
-        #[cfg(not(any(test, feature = "kernel-experiment")))]
+        #[cfg(not(any(test, feature = "video-worker")))]
         {
             true
         }
@@ -956,7 +956,7 @@ impl Bus {
             if let Some(clocks) = reference_clocks.take() {
                 command = self.advance_fixed_clocks(clocks)?;
             }
-            #[cfg(any(test, feature = "kernel-experiment"))]
+            #[cfg(any(test, feature = "video-worker"))]
             let video_before = self.vdp1.take_display_journal();
             let raster_event = self.raster.advance(delta);
             match raster_event {
@@ -1011,7 +1011,7 @@ impl Bus {
             let (h, v) = self.raster.counters();
             self.vdp2.counters(h, v);
             self.vdp2.scan_field(self.raster.odd());
-            #[cfg(any(test, feature = "kernel-experiment"))]
+            #[cfg(any(test, feature = "video-worker"))]
             self.record_video_advance(delta, video_before, raster_event);
             // Display samples (including rotation-parameter request reads)
             // precede transaction completion at equal edges. This is the
@@ -1037,7 +1037,7 @@ impl Bus {
         self.system_clock.select(fast);
         self.raster.select_clock(fast);
         self.vdp1 = Vdp1::default();
-        #[cfg(any(test, feature = "kernel-experiment"))]
+        #[cfg(any(test, feature = "video-worker"))]
         {
             self.vdp1
                 .enable_display_journal(self.video_domain.is_some());
@@ -1167,7 +1167,7 @@ impl Bus {
     }
     /// Physical video standard strap, independent of software region flags.
     pub fn set_pal(&mut self, pal: bool) {
-        #[cfg(any(test, feature = "kernel-experiment"))]
+        #[cfg(any(test, feature = "video-worker"))]
         self.record_video_command(video_queue::Command::Pal(pal));
         self.display_deadline = 0;
         self.raster.pal = pal;
@@ -1205,19 +1205,19 @@ impl Bus {
     /// when a subsequent boot image is rejected.
     pub(crate) fn reset_volatile(&mut self) {
         let pal = self.raster.pal;
-        #[cfg(any(test, feature = "kernel-experiment"))]
+        #[cfg(any(test, feature = "video-worker"))]
         let video_domain = self.video_domain.take();
         let backup = std::mem::take(&mut self.backup);
         let mut smpc = std::mem::take(&mut self.smpc);
         smpc.reset_volatile();
         *self = Self {
-            #[cfg(any(test, feature = "kernel-experiment"))]
+            #[cfg(any(test, feature = "video-worker"))]
             video_domain,
             backup,
             smpc,
             ..Self::default()
         };
-        #[cfg(any(test, feature = "kernel-experiment"))]
+        #[cfg(any(test, feature = "video-worker"))]
         {
             self.vdp1
                 .enable_display_journal(self.video_domain.is_some());
@@ -1232,20 +1232,20 @@ impl Bus {
         let bios = self.bios.take();
         let media = self.cd.media().cloned();
         let pal = self.raster.pal;
-        #[cfg(any(test, feature = "kernel-experiment"))]
+        #[cfg(any(test, feature = "video-worker"))]
         let video_domain = self.video_domain.take();
         let backup = std::mem::take(&mut self.backup);
         let mut smpc = std::mem::take(&mut self.smpc);
         smpc.system_reset();
         *self = Self {
-            #[cfg(any(test, feature = "kernel-experiment"))]
+            #[cfg(any(test, feature = "video-worker"))]
             video_domain,
             bios,
             backup,
             smpc,
             ..Self::default()
         };
-        #[cfg(any(test, feature = "kernel-experiment"))]
+        #[cfg(any(test, feature = "video-worker"))]
         {
             self.vdp1
                 .enable_display_journal(self.video_domain.is_some());
@@ -1594,7 +1594,7 @@ impl Bus {
                 .vdp2
                 .cram_offset((address - crate::vdp2::CRAM) as usize);
             self.vdp2.cram[offset..offset + N].copy_from_slice(&bytes);
-            #[cfg(any(test, feature = "kernel-experiment"))]
+            #[cfg(any(test, feature = "video-worker"))]
             if self.video_domain.is_some() {
                 self.record_video_command(video_queue::Command::Cram {
                     offset,
@@ -1619,7 +1619,7 @@ impl Bus {
                 let target = address + i as u32 * 2;
                 let value = u16::from_be_bytes(*pair);
                 self.vdp1.write16(target, value)?;
-                #[cfg(any(test, feature = "kernel-experiment"))]
+                #[cfg(any(test, feature = "video-worker"))]
                 if target == vdp1::REGISTERS {
                     self.record_video_command(video_queue::Command::FrontMode(value));
                 }
@@ -1676,7 +1676,7 @@ impl Bus {
                 let target = address + i as u32 * 2;
                 let value = u16::from_be_bytes([pair[0], pair[1]]);
                 self.vdp2.write16(target, value)?;
-                #[cfg(any(test, feature = "kernel-experiment"))]
+                #[cfg(any(test, feature = "video-worker"))]
                 self.record_video_command(video_queue::Command::Register {
                     address: target,
                     value,
@@ -1696,7 +1696,7 @@ impl Bus {
             _ => &mut self.vdp2.vram,
         };
         memory[offset..offset + N].copy_from_slice(&bytes);
-        #[cfg(any(test, feature = "kernel-experiment"))]
+        #[cfg(any(test, feature = "video-worker"))]
         if id == 3 && self.video_domain.is_some() {
             self.record_video_command(video_queue::Command::Vram {
                 offset,

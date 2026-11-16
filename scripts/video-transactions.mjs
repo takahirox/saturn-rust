@@ -25,13 +25,13 @@ function patch(bytes, before, after, count = 1) {
 async function run(page, bytes, base, count, pixels = false) {
   return page.evaluate(async ({ bytes, base, count, pixels }) => {
     const { emulator, advanceFrame } = await import("./app.js");
-    emulator.set_pal(false);
-    emulator.reset_bios(Uint8Array.from(bytes));
-    for (let i = 0; i < 100 && emulator.read_long(base + (count - 1) * 4) !== 0x600D; i++) emulator.run_steps(5000);
-    const records = Array.from({ length: count }, (_, i) => emulator.read_long(base + i * 4));
+    (await emulator.set_pal(false));
+    (await emulator.reset_bios(Uint8Array.from(bytes)));
+    for (let i = 0; i < 100 && (await emulator.read_long(base + (count - 1) * 4)) !== 0x600D; i++) (await emulator.run_steps(5000));
+    const records = (await Promise.all(Array.from({ length: count }, async (_, i) => (await emulator.read_long(base + i * 4)))));
     if (!pixels) return { records };
-    advanceFrame();
-    const f = emulator.framebuffer(), width = emulator.video_width(), height = emulator.video_height();
+    (await advanceFrame());
+    const f = (await emulator.framebuffer()), width = (await emulator.video_width()), height = (await emulator.video_height());
     const canvas = document.getElementById("screen").getContext("2d");
     return { records, width, height, length: f.length,
       rows: [0, 479].map(y => Array.from(f.slice(y * width * 4, y * width * 4 + 16))),
@@ -61,12 +61,12 @@ export async function videoTransactions(page) {
     for(let repeat=0;repeat<2;repeat++) {
       const result=await page.evaluate(async image=>{
         const {emulator,advanceFrame}=await import("./app.js");
-        emulator.set_pal(false);emulator.reset_bios(Uint8Array.from(image));
-        for(let i=0;i<100&&emulator.read_long(0x0600E758)!==0x600D;i++)emulator.run_steps(5000);
-        const records=Array.from({length:23},(_,i)=>emulator.read_long(0x0600E700+i*4));
-        advanceFrame();
-        const f=emulator.framebuffer(),ctx=document.getElementById("screen").getContext("2d");
-        return {records,exceptions:emulator.exception_count(),
+        (await emulator.set_pal(false));(await emulator.reset_bios(Uint8Array.from(image)));
+        for(let i=0;i<100&&(await emulator.read_long(0x0600E758))!==0x600D;i++)(await emulator.run_steps(5000));
+        const records=(await Promise.all(Array.from({length:23},async (_,i)=>(await emulator.read_long(0x0600E700+i*4)))));
+        (await advanceFrame());
+        const f=(await emulator.framebuffer()),ctx=document.getElementById("screen").getContext("2d");
+        return {records,exceptions:(await emulator.exception_count()),
           rows:Array.from({length:6},(_,y)=>Array.from(f.slice(y*320*4,y*320*4+160))),
           canvas:Array.from({length:6},(_,y)=>Array.from(ctx.getImageData(0,y,40,1).data))};
       },[...image]);
@@ -84,14 +84,14 @@ export async function videoTransactions(page) {
       if(slot===7) {image.writeUInt16BE(0xEEEE,0x106);image.writeUInt16BE(0xEEE4,0x108);}
       const result=await page.evaluate(async image=>{
         const {emulator,advanceFrame}=await import("./app.js");
-        emulator.reset_bios(Uint8Array.from(image));
-        for(let i=0;i<100 && emulator.read_long(0x0600DF14)!==0x600D;i++)emulator.run_steps(5000);
-        const records=Array.from({length:4},(_,i)=>emulator.read_long(0x0600DF08+i*4));
+        (await emulator.reset_bios(Uint8Array.from(image)));
+        for(let i=0;i<100 && (await emulator.read_long(0x0600DF14))!==0x600D;i++)(await emulator.run_steps(5000));
+        const records=(await Promise.all(Array.from({length:4},async (_,i)=>(await emulator.read_long(0x0600DF08+i*4)))));
         // This is production presentation. The guest parks during active
         // display; advanceFrame completes that field and presents its pixels.
-        advanceFrame();
-        const f=emulator.framebuffer(),ctx=document.getElementById("screen").getContext("2d");
-        return {records,exceptions:emulator.exception_count(),
+        (await advanceFrame());
+        const f=(await emulator.framebuffer()),ctx=document.getElementById("screen").getContext("2d");
+        return {records,exceptions:(await emulator.exception_count()),
           rows:[0,15,16,17,223].map(y=>Array.from(f.slice(y*320*4,(y+1)*320*4))),
           canvas:[0,15,16,17,223].map(y=>Array.from(ctx.getImageData(0,y,320,1).data))};
       },[...image]);
@@ -111,10 +111,10 @@ export async function videoTransactions(page) {
     const image = Buffer.from(heldWord);image.writeUInt16BE(initial,0x100);
     const result = await page.evaluate(async image => {
       const {emulator} = await import("./app.js");
-      emulator.reset_bios(Uint8Array.from(image));
-      for(let i=0;i<100 && emulator.read_long(0x0600DF04)!==0x600D;i++)emulator.run_steps(5000);
-      const f=emulator.framebuffer();
-      return {done:emulator.read_long(0x0600DF04),exceptions:emulator.exception_count(),
+      (await emulator.reset_bios(Uint8Array.from(image)));
+      for(let i=0;i<100 && (await emulator.read_long(0x0600DF04))!==0x600D;i++)(await emulator.run_steps(5000));
+      const f=(await emulator.framebuffer());
+      return {done:(await emulator.read_long(0x0600DF04)),exceptions:(await emulator.exception_count()),
         rows:[0,15,16,17,223].map(y=>Array.from(f.slice(y*320*4,(y+1)*320*4)))};
     },[...image]);
     const old=initial===0x1111?[255,0,0,255]:[0,0,255,255],green=[0,255,0,255];
@@ -238,12 +238,12 @@ export async function videoTransactions(page) {
     const bytes = changed ? patch(fetchRom,0x801F,0x83E0,5) : fetchRom;
     const result = await page.evaluate(async ({bytes,rows}) => {
       const {emulator,advanceFrame} = await import("./app.js");
-      emulator.reset_bios(Uint8Array.from(bytes));
-      for (let i=0;i<500 && emulator.read_long(0x0600DF00)!==0x600D;i++) emulator.run_steps(500);
-      if (emulator.read_long(0x0600DF00)!==0x600D) throw new Error("Display-fetch guest did not complete");
-      advanceFrame();
-      const f=emulator.framebuffer(),canvas=document.getElementById("screen").getContext("2d");
-      return {exceptions:Number(emulator.exception_count()),
+      (await emulator.reset_bios(Uint8Array.from(bytes)));
+      for (let i=0;i<500 && (await emulator.read_long(0x0600DF00))!==0x600D;i++) (await emulator.run_steps(500));
+      if ((await emulator.read_long(0x0600DF00))!==0x600D) throw new Error("Display-fetch guest did not complete");
+      (await advanceFrame());
+      const f=(await emulator.framebuffer()),canvas=document.getElementById("screen").getContext("2d");
+      return {exceptions:Number((await emulator.exception_count())),
         pixels:rows.flatMap(y=>[159,319].map(x=>Array.from(f.slice((y*320+x)*4,(y*320+x)*4+4)))),
         canvas:rows.flatMap(y=>[159,319].map(x=>Array.from(canvas.getImageData(x,y,1,1).data)))};
     },{bytes:[...bytes],rows});

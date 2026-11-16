@@ -24,10 +24,10 @@ export async function m68kIrq(page) {
     for (let repeat = 0; repeat < 2; repeat++) {
       const actual = await page.evaluate(async bytes => {
         const { emulator } = await import("./app.js");
-        emulator.reset_bios(Uint8Array.from(bytes));
-        for (let i = 0; i < 3; i++) emulator.run_steps(10000);
-        return { records: Array.from({length: 14}, (_, i) => emulator.read_word(0x05a00900 + i * 2)),
-          result: emulator.read_long(0x05a00944), halted: emulator.sound_halted(), exceptions: emulator.exception_count() };
+        (await emulator.reset_bios(Uint8Array.from(bytes)));
+        for (let i = 0; i < 3; i++) (await emulator.run_steps(10000));
+        return { records: (await Promise.all(Array.from({length: 14}, async (_, i) => (await emulator.read_word(0x05a00900 + i * 2))))),
+          result: (await emulator.read_long(0x05a00944)), halted: (await emulator.sound_halted()), exceptions: (await emulator.exception_count()) };
       }, [...image]);
       assert.deepEqual(actual, {records: expected, result: omit === null ? 0 : result, halted: false, exceptions: "0"});
     }

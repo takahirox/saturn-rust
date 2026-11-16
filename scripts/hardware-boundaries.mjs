@@ -36,7 +36,8 @@ export async function hardwareBoundaries(page) {
     let reference;
     for (const chunk of [1, 3, 127, 10000]) {
       const result = await page.evaluate(async ({image, chunk, count}) => {
-        const {Emulator} = await import("./pkg/saturn_rust.js"); const m = new Emulator();
+        const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+        await init(); const m = new Emulator();
         const bios = Uint8Array.from(atob(image), c => c.charCodeAt(0));
         try {
           // Cancel guest-issued pending RESDISA through a real cold reset.
@@ -70,7 +71,8 @@ export async function hardwareBoundaries(page) {
     // Native smpc_transactions keeps the full chunk/inspection matrix.
     for (const [chunk, observe] of [[1, true], [3, true], [127, true], [10000, false]]) {
       const result = await page.evaluate(async ({image, chunk, observe, count}) => {
-        const {Emulator} = await import("./pkg/saturn_rust.js");
+        const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+        await init();
         const m = new Emulator();
         const bios = Uint8Array.from(atob(image), c => c.charCodeAt(0));
         try {
@@ -111,7 +113,8 @@ export async function hardwareBoundaries(page) {
     for (let i = 0; i < changed.length-3; i++) if (changed.readUInt32BE(i) === 0x1a) operands.push(i);
     assert.equal(operands.length, 1); changed[operands[0]+3] = 0x19;
     const result = await page.evaluate(async image => {
-      const {Emulator} = await import("./pkg/saturn_rust.js"); const m = new Emulator();
+      const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+      await init(); const m = new Emulator();
       try {
         m.reset_bios(Uint8Array.from(atob(image), c => c.charCodeAt(0)));
         for (let i = 0; i < 25; i++) m.run_steps(10000);
@@ -133,7 +136,8 @@ export async function hardwareBoundaries(page) {
     for (const chunk of [1, 3, 127, 10000]) {
       for (const observe of [false, true]) {
         const result = await page.evaluate(async ({image, chunk, observe}) => {
-          const {Emulator} = await import("./pkg/saturn_rust.js");
+          const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+          await init();
           const emulator = new Emulator();
           try {
             emulator.reset_bios(Uint8Array.from(atob(image), c => c.charCodeAt(0)));
@@ -210,7 +214,8 @@ export async function hardwareBoundaries(page) {
     for (const chunk of [1, 3, 127, 10000]) {
       for (const observe of [false, true]) {
         const result = await page.evaluate(async ({image, chunk, observe}) => {
-          const {Emulator} = await import("./pkg/saturn_rust.js");
+          const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+          await init();
           const emulator = new Emulator();
           try {
             emulator.reset_bios(Uint8Array.from(atob(image), c => c.charCodeAt(0)));
@@ -259,7 +264,8 @@ export async function hardwareBoundaries(page) {
     // Native smpc_transactions keeps every chunk x inspection combination.
     for (const [chunk, observe] of [[1, true], [3, true], [127, true], [10000, false]]) {
       const result = await page.evaluate(async ({image, chunk, observe, count}) => {
-        const {Emulator} = await import("./pkg/saturn_rust.js");
+        const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+        await init();
         const emulator = new Emulator();
         try {
           emulator.reset_bios(Uint8Array.from(atob(image), c => c.charCodeAt(0)));
@@ -316,7 +322,8 @@ export async function hardwareBoundaries(page) {
         const result = await page.evaluate(async ({chunk, extra, observer, producer, count, command, observe}) => {
           // Each case owns a fresh production machine, as in native tests.
           // Cold resets retain battery state; separate cases must not share RTC time.
-          const {Emulator} = await import("./pkg/saturn_rust.js");
+          const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+          await init();
           const emulator = new Emulator();
           try {
             emulator.reset_bios(Uint8Array.from(atob(producer), c => c.charCodeAt(0)));
@@ -358,14 +365,22 @@ export async function hardwareBoundaries(page) {
       const result = await page.evaluate(async ({chunk, count, observe}) => {
         const {emulator} = await import("./app.js");
         for (let left = 2000000; left > 0;) {
-          const n = Math.min(left, chunk); emulator.run_steps(n); left -= n;
-          if (observe) {
-            emulator.registers(); emulator.read_long(0x0601b000);
-            if (emulator.smpc_fault_diagnostics() !== undefined) throw Error("byte audit fault");
+          const pending = [];
+          // Preserve every native run/read in order, without a transport
+          // round trip for each instruction and passive debugger read.
+          for (let batch = 0; batch < 1024 && left > 0; batch++) {
+            const n = Math.min(left, chunk); pending.push(emulator.run_steps(n)); left -= n;
+            if (observe) {
+              pending.push(emulator.registers(), emulator.read_long(0x0601b000));
+              pending.push(emulator.smpc_fault_diagnostics().then(value => {
+                if (value !== undefined) throw Error("byte audit fault");
+              }));
+            }
           }
+          await Promise.all(pending);
         }
-        return {trace: Array.from({length: count}, (_, i) => emulator.read_long(0x0601b000 + i*4)),
-          exceptions: emulator.exception_count(), clocks: emulator.peripheral_clocks(), instructions: emulator.instruction_count()};
+        return {trace: (await Promise.all(Array.from({length: count}, async (_, i) => (await emulator.read_long(0x0601b000 + i*4))))),
+          exceptions: (await emulator.exception_count()), clocks: (await emulator.peripheral_clocks()), instructions: (await emulator.instruction_count())};
       }, {chunk, observe, count: byteExpected.length});
       assert.deepEqual(result.trace, byteExpected);
       assertProgress("smpc-byte-audit", 2000000, result);
@@ -383,11 +398,15 @@ export async function hardwareBoundaries(page) {
     const result = await page.evaluate(async ({chunk, observe, count}) => {
       const {emulator} = await import("./app.js");
       for (let left = 500000; left > 0;) {
-        const n = Math.min(left, chunk); emulator.run_steps(n); left -= n;
-        if (observe) { emulator.registers(); emulator.read_long(0x0601d000); emulator.smpc_fault_diagnostics(); }
+        const pending = [];
+        for (let batch = 0; batch < 1024 && left > 0; batch++) {
+          const n = Math.min(left, chunk); pending.push(emulator.run_steps(n)); left -= n;
+          if (observe) pending.push(emulator.registers(), emulator.read_long(0x0601d000), emulator.smpc_fault_diagnostics());
+        }
+        await Promise.all(pending);
       }
-      return {trace: Array.from({length: count}, (_, i) => emulator.read_long(0x0601d000 + i*4)),
-        exceptions: emulator.exception_count(), clocks: emulator.peripheral_clocks(), instructions: emulator.instruction_count()};
+      return {trace: (await Promise.all(Array.from({length: count}, async (_, i) => (await emulator.read_long(0x0601d000 + i*4))))),
+        exceptions: (await emulator.exception_count()), clocks: (await emulator.peripheral_clocks()), instructions: (await emulator.instruction_count())};
     }, {chunk, observe, count: timedExpected.length});
     assert.deepEqual(result.trace, timedExpected);
     assertProgress("smpc-timed-peripherals", 500000, result);
@@ -403,12 +422,18 @@ export async function hardwareBoundaries(page) {
     const result = await page.evaluate(async ({chunk, count}) => {
       const {emulator} = await import("./app.js");
       for (let left = 10000; left > 0;) {
-        const n = Math.min(left, chunk); emulator.run_steps(n); left -= n;
-        emulator.registers(); emulator.read_long(0x0601a000);
-        if (emulator.smpc_fault_diagnostics() !== undefined) throw Error("unexpected SMPC fault");
+        const pending = [];
+        for (let batch = 0; batch < 1024 && left > 0; batch++) {
+          const n = Math.min(left, chunk); pending.push(emulator.run_steps(n)); left -= n;
+          pending.push(emulator.registers(), emulator.read_long(0x0601a000));
+          pending.push(emulator.smpc_fault_diagnostics().then(value => {
+            if (value !== undefined) throw Error("unexpected SMPC fault");
+          }));
+        }
+        await Promise.all(pending);
       }
-      return {trace: Array.from({length: count}, (_, i) => emulator.read_long(0x0601a000 + i*4)),
-        exceptions: emulator.exception_count(), clocks: emulator.peripheral_clocks(), instructions: emulator.instruction_count()};
+      return {trace: (await Promise.all(Array.from({length: count}, async (_, i) => (await emulator.read_long(0x0601a000 + i*4))))),
+        exceptions: (await emulator.exception_count()), clocks: (await emulator.peripheral_clocks()), instructions: (await emulator.instruction_count())};
     }, {chunk, count: transactionExpected.length});
     assert.deepEqual(result.trace, transactionExpected);
     assert.equal(result.exceptions, "1");
@@ -434,18 +459,18 @@ export async function hardwareBoundaries(page) {
           const {emulator} = await import("./app.js");
           let message;
           for (let i = 0; i < 10000; i++) {
-            try { emulator.run_steps(chunk); } catch (error) { message = String(error); }
-            if (observe) { emulator.registers(); emulator.read_long(0x0601a200); emulator.smpc_fault_diagnostics(); }
+            try { (await emulator.run_steps(chunk)); } catch (error) { message = String(error); }
+            if (observe) { (await emulator.registers()); (await emulator.read_long(0x0601a200)); (await emulator.smpc_fault_diagnostics()); }
             if (message) break;
           }
-          const clocks = emulator.peripheral_clocks();
-          const details = emulator.smpc_fault_diagnostics();
-          const before = emulator.read_long(0x0601a200);
-          const detailsAgain = emulator.smpc_fault_diagnostics();
+          const clocks = (await emulator.peripheral_clocks());
+          const details = (await emulator.smpc_fault_diagnostics());
+          const before = (await emulator.read_long(0x0601a200));
+          const detailsAgain = (await emulator.smpc_fault_diagnostics());
           let repeated;
-          try { emulator.run_steps(1); } catch (error) { repeated = String(error); }
-          return {message, repeated, details, clocks, stationary: clocks === emulator.peripheral_clocks() && details === detailsAgain, before,
-            operand: emulator.registers()[1], exceptions: emulator.exception_count()};
+          try { (await emulator.run_steps(1)); } catch (error) { repeated = String(error); }
+          return {message, repeated, details, clocks, stationary: clocks === (await emulator.peripheral_clocks()) && details === detailsAgain, before,
+            operand: (await emulator.registers())[1], exceptions: (await emulator.exception_count())};
         }, {chunk, observe});
         assert.match(result.message, new RegExp(`${width}-byte ${direction}.*${reason}`));
         assert.match(result.details, /Master SH-2 PC=0x.*main_clock: Some/);
@@ -475,8 +500,8 @@ export async function hardwareBoundaries(page) {
   const commandExpected=(await readFile("tests/fixtures/smpc-command-report.tsv","utf8")).trim().split(/\r?\n/).map(v=>parseInt(v,16));
   await load(page,"smpc-command-report",commandReport);
   const runReport=()=>page.evaluate(async count=>{
-    const {emulator}=await import("./app.js");emulator.run_steps(10000);
-    return {trace:Array.from({length:count},(_,i)=>emulator.read_long(0x0600ED00+i*4)),exceptions:emulator.exception_count()};
+    const {emulator}=await import("./app.js");(await emulator.run_steps(10000));
+    return {trace:(await Promise.all(Array.from({length:count},async (_,i)=>(await emulator.read_long(0x0600ED00+i*4))))),exceptions:(await emulator.exception_count())};
   },commandExpected.length);
   const reportResult=await runReport();
   assert.deepEqual(reportResult,{trace:commandExpected,exceptions:"0"});
@@ -495,9 +520,9 @@ export async function hardwareBoundaries(page) {
     await load(page,name,image);
     const run=()=>page.evaluate(async()=>{
       const {emulator}=await import("./app.js");
-      emulator.run_steps(4000);
-      return {traces:[0x0600E800,0x0600E900].map(base=>Array.from({length:6},(_,i)=>emulator.read_long(base+i*4))),
-        exceptions:[emulator.exception_count(),emulator.slave_exception_count()]};
+      (await emulator.run_steps(4000));
+      return {traces:(await Promise.all([0x0600E800,0x0600E900].map(async base=>(await Promise.all(Array.from({length:6},async (_,i)=>(await emulator.read_long(base+i*4)))))))),
+        exceptions:[(await emulator.exception_count()),(await emulator.slave_exception_count())]};
     });
     const result=await run();
     assert.deepEqual(result.exceptions,["0","0"],name);
@@ -513,8 +538,8 @@ export async function hardwareBoundaries(page) {
   assert.equal(mutations,4);
   await load(page,"bsc-memory-mutation",mutated);
   assert.deepEqual(await page.evaluate(async()=>{
-    const {emulator}=await import("./app.js");emulator.run_steps(4000);
-    return [0x0600E800,0x0600E900].map(base=>[emulator.read_long(base+12),emulator.read_long(base+16),emulator.read_long(base+20)]);
+    const {emulator}=await import("./app.js");(await emulator.run_steps(4000));
+    return (await Promise.all([0x0600E800,0x0600E900].map(async base=>[(await emulator.read_long(base+12)),(await emulator.read_long(base+16)),(await emulator.read_long(base+20))])));
   }),[[0x87654308,0x87654308,0x600D],[0x87654308,0x87654308,0x600D]]);
 
   const smpc=await rom("smpc-boundaries");
@@ -522,18 +547,18 @@ export async function hardwareBoundaries(page) {
   await load(page,"smpc-boundaries",smpc);
   const runSmpc=()=>page.evaluate(async count=>{
     const {emulator}=await import("./app.js");
-    emulator.set_buttons(0x11);emulator.set_port2_buttons(0x88);
-    emulator.set_3d_pad(1,true,0x12,0x34,0x56,0x78);
+    (await emulator.set_buttons(0x11));(await emulator.set_port2_buttons(0x88));
+    (await emulator.set_3d_pad(1,true,0x12,0x34,0x56,0x78));
     const marker=0x0600EC00+(count-1)*4;
     for (let i=0;i<100;i++) {
-      emulator.run_steps(10000);
-      if (emulator.read_long(marker)===0x600D) break;
+      (await emulator.run_steps(10000));
+      if ((await emulator.read_long(marker))===0x600D) break;
     }
-    return {trace:Array.from({length:count},(_,i)=>emulator.read_long(0x0600EC00+i*4)),exceptions:emulator.exception_count()};
+    return {trace:(await Promise.all(Array.from({length:count},async (_,i)=>(await emulator.read_long(0x0600EC00+i*4))))),exceptions:(await emulator.exception_count())};
   },expected.length);
   const result=await runSmpc();
   assert.equal(result.exceptions,"0");assert.deepEqual(result.trace,expected);
   await page.locator("#reset").click();assert.deepEqual(await runSmpc(),result);
   // Leave the existing synthetic browser gamepad/focus checks a released pad.
-  await page.evaluate(async()=>{const {emulator}=await import("./app.js");emulator.set_buttons(0);emulator.set_port2_buttons(0);emulator.set_3d_pad(1,false,128,128,0,0);});
+  await page.evaluate(async()=>{const {emulator}=await import("./app.js");(await emulator.set_buttons(0));(await emulator.set_port2_buttons(0));(await emulator.set_3d_pad(1,false,128,128,0,0));});
 }

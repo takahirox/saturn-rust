@@ -29,11 +29,11 @@ export async function sh2BusPipeline(page) {
     }
     const actual = await page.evaluate(async ({image, count}) => {
       const {emulator} = await import("./app.js");
-      emulator.reset_bios(Uint8Array.from(image));
-      emulator.run_steps(10000);
+      (await emulator.reset_bios(Uint8Array.from(image)));
+      (await emulator.run_steps(10000));
       return {
-        words: [0x0601D000, 0x0601D100].map(base => Array.from({length: count}, (_, i) => emulator.read_long(base + i * 4))),
-        exceptions: [emulator.exception_count(), emulator.slave_exception_count()]
+        words: (await Promise.all([0x0601D000, 0x0601D100].map(async base => (await Promise.all(Array.from({length: count}, async (_, i) => (await emulator.read_long(base + i * 4)))))))),
+        exceptions: [(await emulator.exception_count()), (await emulator.slave_exception_count())]
       };
     }, {image: [...image], count: expected.length});
     assert.deepEqual(actual, {words: [expected, expected], exceptions: ["0", "0"]});

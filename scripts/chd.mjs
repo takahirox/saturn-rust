@@ -25,18 +25,18 @@ export async function chd(page) {
   const requests=[];page.on('request',r=>requests.push({method:r.method(),body:r.postData()}));
   const probe=(image,expected,{cue=null,gaps=false,files=null,names=null,audioFad=expected.length===data.length?0:214}={})=>page.evaluate(async args=>{
     const {emulator:m}=await import('./app.js');
-    m.reset_bios(Uint8Array.from(args.rom));
+    (await m.reset_bios(Uint8Array.from(args.rom)));
     if(args.cue){
       const files=args.files||(args.gaps?[args.expected,args.audio,args.mode2]:[args.expected,args.audio]);
       const bytes=files.flat();
-      m.mount_cue(args.cue,args.names||(args.gaps?'data.iso\0audio.bin\0mode2.bin':'data.iso\0audio.bin'),new Uint32Array(files.map(f=>f.length)),Uint8Array.from(bytes));
-    }else m.mount_disc(Uint8Array.from(args.image));
-    for(let i=0;i<800&&m.read_long(0x0601fffc)!==0x600d;i++)m.run_steps(10000);
-    if(m.read_long(0x0601fffc)!==0x600d)throw new Error(`probe timeout ${m.special_registers()[0].toString(16)}`);
-    const bytes=(at,n)=>Array.from({length:n},(_,i)=>(m.read_long((at+i)&~3)>>>(24-(at+i)%4*8))&255);
-    const toc=bytes(0x06020000,408),data=bytes(0x06021000,args.expected.length);
-    for(let i=0;i<20;i++)m.run_steps(10000);
-    return {toc,data,pcm:Array.from(m.audio_samples(8192)),mode:m.mode(),hle:m.read_long(0x06000320),fifo:m.read_long(0x25818000)};
+      (await m.mount_cue(args.cue,args.names||(args.gaps?'data.iso\0audio.bin\0mode2.bin':'data.iso\0audio.bin'),new Uint32Array(files.map(f=>f.length)),Uint8Array.from(bytes)));
+    }else (await m.mount_disc(Uint8Array.from(args.image)));
+    for(let i=0;i<800&&(await m.read_long(0x0601fffc))!==0x600d;i++)(await m.run_steps(10000));
+    if((await m.read_long(0x0601fffc))!==0x600d)throw new Error(`probe timeout ${(await m.special_registers())[0].toString(16)}`);
+    const bytes=async (at,n)=>(await Promise.all(Array.from({length:n},async (_,i)=>((await m.read_long((at+i)&~3))>>>(24-(at+i)%4*8))&255)));
+    const toc=(await bytes(0x06020000,408)),data=(await bytes(0x06021000,args.expected.length));
+    for(let i=0;i<20;i++)(await m.run_steps(10000));
+    return {toc,data,pcm:Array.from((await m.audio_samples(8192))),mode:(await m.mode()),hle:(await m.read_long(0x06000320)),fifo:(await m.read_long(0x25818000))};
   },{image:[...image],expected:[...expected],audio:[...audio],mode2:[...mode2],cue,gaps,files:files?.map(f=>[...f]),names,rom:[...rom(source,expected.length/2048,audioFad)]});
   const check=(got,expected,table,hasAudio)=>{
     assert.deepEqual(Buffer.from(got.data),expected,'complete first-track FIFO bytes');
@@ -83,12 +83,12 @@ export async function chd(page) {
   await select(chd);assert.equal(await page.locator('#error').textContent(),'');
   const lab=()=>page.evaluate(async()=>{
     const {emulator:m}=await import('./app.js');
-    for(let i=0;i<40&&m.read_long(0x06010020)!==0x600d;i++)m.run_steps(10000);
-    return {fields:Array.from({length:11},(_,i)=>m.read_long(0x06010000+i*4)),pcm:Array.from(m.audio_samples(8192)),mode:m.mode()};
+    for(let i=0;i<40&&(await m.read_long(0x06010020))!==0x600d;i++)(await m.run_steps(10000));
+    return {fields:(await Promise.all(Array.from({length:11},async (_,i)=>(await m.read_long(0x06010000+i*4))))),pcm:Array.from((await m.audio_samples(8192))),mode:(await m.mode())};
   });
   const result=await lab();assert.deepEqual(result.fields.slice(0,6),[1,1,84,35,42,393984]);
   assert.equal(result.fields[8],0x600d);assert.equal(result.fields[10],0x900);assert(result.pcm.some(v=>v!==0));assert.equal(result.mode,'BIOS-less HLE disc');
-  for(const button of ['#reset','#restart']){await page.click(button);assert.equal((await lab()).fields[8],0x600d);}
+  for(const button of ['#reset','#restart']){await page.locator(button).click();assert.equal((await lab()).fields[8],0x600d);}
   const variants=[[await readFile('tests/fixtures/chd/self-cycle.chd'),/cyclic self/]];
   const flac=await readFile('tests/fixtures/chd/mixed-cdfl.chd');
   const flacStart=flac.indexOf(Buffer.from([0xFF,0xF8]),124);
@@ -102,7 +102,7 @@ export async function chd(page) {
   for(const [bytes,message] of variants){
     await select(bytes);assert.match(await page.locator('#error').textContent(),message);
     assert(await page.locator('#run').isDisabled());
-    const stopped=await page.evaluate(async()=>{const {emulator:m}=await import('./app.js');return [m.instruction_count(),m.read_long(0x06010020)];});
+    const stopped=await page.evaluate(async()=>{const {emulator:m}=await import('./app.js');return [(await m.instruction_count()),(await m.read_long(0x06010020))];});
     assert.deepEqual(stopped,['0',0],'failed load discarded stale guest state');
   }
   await select(Buffer.alloc(18*2048),'lonely.bin');assert.match(await page.locator('#error').textContent(),/BIN needs its CUE/);

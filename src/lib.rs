@@ -803,7 +803,7 @@ impl Machine {
     }
 
     pub fn framebuffer(&self) -> Result<Vec<u8>, MachineError> {
-        #[cfg(any(test, feature = "kernel-experiment"))]
+        #[cfg(any(test, feature = "video-worker"))]
         if let Some(output) = self.bus.queued_framebuffer() {
             return output.map_err(MachineError::Video);
         }
@@ -814,7 +814,7 @@ impl Machine {
     }
 
     pub fn video_dimensions(&self) -> (usize, usize) {
-        #[cfg(any(test, feature = "kernel-experiment"))]
+        #[cfg(any(test, feature = "video-worker"))]
         if let Some(size) = self.bus.queued_dimensions() {
             return size;
         }
@@ -859,7 +859,7 @@ impl Machine {
             }
             steps += count.max(1);
             if self.frames() >= target {
-                #[cfg(any(test, feature = "kernel-experiment"))]
+                #[cfg(any(test, feature = "video-worker"))]
                 self.bus.drain_video_journal();
                 return Ok(());
             }

@@ -43,7 +43,8 @@ export async function externalDiscovery(page) {
   const rom=decode(await readFile("tests/fixtures/external-startup.hex","utf8"));
   const images=await Promise.all(discs.map(d=>readFile(`tests/fixtures/${d.name}.iso`)));
   const run=async (image,disc,{firmware=rom,raw=false,restart=false,chunk=10000,inspect=false,fixedSteps=0,resetPhase=0}={})=>page.evaluate(async args=>{
-    const {Emulator}=await import("./pkg/saturn_rust.js");
+    const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+    await init();
     const m=new Emulator();
     try {
       const rom=Uint8Array.from(args.rom);

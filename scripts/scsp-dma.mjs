@@ -16,17 +16,17 @@ export async function scspDma(page) {
     for (let repeat = 0; repeat < 2; repeat++) {
       const result = await page.evaluate(async ({ bytes, value }) => {
         const { emulator } = await import("./app.js");
-        emulator.reset_bios(Uint8Array.from(bytes));
-        for (let i = 0; i < 10; i++) emulator.run_steps(10000);
-        const samples = emulator.audio_samples(8192);
+        (await emulator.reset_bios(Uint8Array.from(bytes)));
+        for (let i = 0; i < 10; i++) (await emulator.run_steps(10000));
+        const samples = (await emulator.audio_samples(8192));
         let positive = false, negative = false, valid = true;
         for (let i = 0; i + 1 < samples.length; i += 2) {
           positive ||= samples[i] === value && samples[i + 1] === value;
           negative ||= samples[i] === -value && samples[i + 1] === -value;
           valid &&= samples[i] === samples[i + 1] && [0, value, -value].includes(samples[i]);
         }
-        return { records: Array.from({ length: 6 }, (_, i) => emulator.read_long(0x0600EC00 + i * 4)),
-          positive, negative, valid, halted: emulator.sound_halted(), exceptions: emulator.exception_count() };
+        return { records: (await Promise.all(Array.from({ length: 6 }, async (_, i) => (await emulator.read_long(0x0600EC00 + i * 4))))),
+          positive, negative, valid, halted: (await emulator.sound_halted()), exceptions: (await emulator.exception_count()) };
       }, { bytes: [...image], value });
       assert(result.records[0] >= 32 && result.records[0] < 100, `DMA FRT interval ${result.records[0]}`);
       assert.equal(result.records[1], value); assert.equal(result.records[2], 0x1428);
@@ -43,8 +43,8 @@ export async function scspDma(page) {
       const output = new AudioOutput();
       try {
         await output.enable(); output.setPaused(false);
-        emulator.run_steps(10000);
-        output.deliver(emulator.audio_samples(8192));
+        (await emulator.run_steps(10000));
+        output.deliver((await emulator.audio_samples(8192)));
         for (let i = 0; i < 200; i++) {
           if (output.stats.rendered > 128 && output.stats.state === "underflow") break;
           await new Promise(resolve => setTimeout(resolve, 25));
@@ -62,12 +62,12 @@ export async function scspDma(page) {
   control.writeUInt16BE(9, start);
   const absent = await page.evaluate(async bytes => {
     const { emulator } = await import("./app.js");
-    emulator.reset_bios(Uint8Array.from(bytes));
-    for (let i = 0; i < 10; i++) emulator.run_steps(10000);
-    return { done: emulator.read_long(0x0600EC14),
-      coefficient: emulator.read_long(0x05B00700) >>> 16,
-      silent: emulator.audio_samples(8192).every(v => v === 0),
-      halted: emulator.sound_halted(), exceptions: emulator.exception_count() };
+    (await emulator.reset_bios(Uint8Array.from(bytes)));
+    for (let i = 0; i < 10; i++) (await emulator.run_steps(10000));
+    return { done: (await emulator.read_long(0x0600EC14)),
+      coefficient: (await emulator.read_long(0x05B00700)) >>> 16,
+      silent: (await emulator.audio_samples(8192)).every(v => v === 0),
+      halted: (await emulator.sound_halted()), exceptions: (await emulator.exception_count()) };
   }, [...control]);
   assert.deepEqual(absent, { done: 0, coefficient: 0, silent: true, halted: false, exceptions: "0" });
   console.log("SCSP shared-memory DMA passed: SH-2 FRT times 64 real words, actual 68k computes bipolar stereo from a transferred coefficient; mutations, cold resets and production AudioWorklet peak/underflow/drop assertions in Wasm.");

@@ -73,12 +73,12 @@ export async function digitalInput(browser, url) {
     const sample = async (masks, packets, label) => {
       const result = await page.evaluate(async () => {
         const {emulator:m} = await import("./app.js");
-        const before = m.read_long(0x06008044);
+        const before = (await m.read_long(0x06008044));
         // Two completed reports ensure a command in flight at keyup is retired.
-        for (let i=0; i<100 && m.read_long(0x06008044)<before+2; i++) m.run_steps(1000);
-        const packet = Array.from({length:4}, (_, i) => m.read_long(0x06008020+i*4))
+        for (let i=0; i<100 && (await m.read_long(0x06008044))<before+2; i++) (await m.run_steps(1000));
+        const packet = (await Promise.all(Array.from({length:4}, async (_, i) => (await m.read_long(0x06008020+i*4)))))
           .flatMap(w => [w>>>24, (w>>>16)&255, (w>>>8)&255, w&255]);
-        return {masks:window.inputMasks, packet, fresh:m.read_long(0x06008044)>=before+2};
+        return {masks:window.inputMasks, packet, fresh:(await m.read_long(0x06008044))>=before+2};
       });
       assert(result.fresh, `${label}: guest must complete fresh INTBACK reports`);
       assert.deepEqual(result.masks, masks, `${label}: frontend masks`);
@@ -235,8 +235,17 @@ export async function digitalInput(browser, url) {
         await focus(); await key("KeyW"); await key("ShiftRight");
         await gamepads([[0], [1]]);
         await sample([4096|64, 128|16], [[0xfb,0xf7], [0xf6,255]], `${action} held`);
-        await page.evaluate(action => {
+        await page.evaluate(async action => {
           const $ = id => document.getElementById(id);
+          const idle = async () => {
+            // Let toggle events run, then await the actual Worker control.
+            await new Promise(resolve => setTimeout(resolve, 0));
+            const deadline = performance.now() + 30000;
+            while ($("main").getAttribute("aria-busy") === "true") {
+              if (performance.now() > deadline) throw new Error("UI action did not settle");
+              await new Promise(resolve => setTimeout(resolve, 1));
+            }
+          };
           if (action === "canvas-blur") $("disc").focus();
           if (action === "window-blur") window.dispatchEvent(new Event("blur"));
           if (action === "hidden") {
@@ -244,10 +253,14 @@ export async function digitalInput(browser, url) {
             document.dispatchEvent(new Event("visibilitychange"));
             delete document.hidden;
           }
-          if (action === "pause") { if ($("pause").textContent === "Resume") $("pause").click(); $("pause").click(); }
+          if (action === "pause") {
+            if ($("pause").textContent === "Resume") { $("pause").click(); await idle(); }
+            $("pause").click();
+          }
           if (action === "settings") $("settings").open = true;
           if (action === "view") $("view-debug").click();
           if (action === "restart") $("restart").click();
+          await idle();
         }, action);
         if (action === "boot-change") await selectBoot(mode === "bios" ? "disc" : "bios");
         if (action === "settings") await page.waitForFunction(() => document.getElementById("pause").textContent === "Resume", undefined, {polling:10});

@@ -11,7 +11,7 @@ pub const REGISTERS: u32 = 0x05D0_0000;
 pub const VRAM_SIZE: usize = 0x80000;
 pub const BUFFER_SIZE: usize = 0x40000;
 /// Owned readout state for the optional renderer-domain experiment.
-#[cfg(any(test, feature = "kernel-experiment"))]
+#[cfg(any(test, feature = "video-worker"))]
 pub struct DisplaySurface {
     pub mode: u16,
     pub bytes: Vec<u8>,
@@ -239,7 +239,7 @@ struct Erasing {
 }
 
 pub struct Vdp1 {
-    #[cfg(any(test, feature = "kernel-experiment"))]
+    #[cfg(any(test, feature = "video-worker"))]
     display_journal: Option<Vec<crate::bus::video_queue::FrontPatch>>,
     pub vram: Vec<u8>,
     buffers: [Vec<u8>; 2],
@@ -277,7 +277,7 @@ pub struct Vdp1 {
 impl Default for Vdp1 {
     fn default() -> Self {
         Self {
-            #[cfg(any(test, feature = "kernel-experiment"))]
+            #[cfg(any(test, feature = "video-worker"))]
             display_journal: None,
             vram: vec![0; VRAM_SIZE],
             buffers: std::array::from_fn(|_| vec![0; BUFFER_SIZE]),
@@ -351,18 +351,18 @@ impl Vdp1 {
             u16::from_be_bytes([buffer[offset], buffer[offset + 1]])
         }
     }
-    #[cfg(any(test, feature = "kernel-experiment"))]
+    #[cfg(any(test, feature = "video-worker"))]
     pub fn display_surface(&self) -> DisplaySurface {
         DisplaySurface {
             mode: self.tvmr,
             bytes: self.buffers[self.draw ^ 1].clone(),
         }
     }
-    #[cfg(any(test, feature = "kernel-experiment"))]
+    #[cfg(any(test, feature = "video-worker"))]
     pub fn enable_display_journal(&mut self, enabled: bool) {
         self.display_journal = enabled.then(Vec::new);
     }
-    #[cfg(any(test, feature = "kernel-experiment"))]
+    #[cfg(any(test, feature = "video-worker"))]
     /// Drain endpoint-local front changes before a framebuffer swap. The
     /// producer must publish a new surface snapshot after that swap; patch
     /// offsets refer to the front that existed when the write completed.
@@ -371,7 +371,7 @@ impl Vdp1 {
             .as_mut()
             .map_or_else(Vec::new, std::mem::take)
     }
-    #[cfg(any(test, feature = "kernel-experiment"))]
+    #[cfg(any(test, feature = "video-worker"))]
     fn record_display_write(&mut self, buffer: usize, offset: usize, width: usize) {
         if buffer != (self.draw ^ 1) {
             return;
@@ -391,13 +391,13 @@ impl Vdp1 {
             });
         }
     }
-    #[cfg(any(test, feature = "kernel-experiment"))]
+    #[cfg(any(test, feature = "video-worker"))]
     pub(crate) fn install_display_surface(&mut self, surface: DisplaySurface) {
         assert_eq!(surface.bytes.len(), BUFFER_SIZE);
         self.tvmr = surface.mode;
         self.buffers[self.draw ^ 1] = surface.bytes;
     }
-    #[cfg(any(test, feature = "kernel-experiment"))]
+    #[cfg(any(test, feature = "video-worker"))]
     pub(crate) fn patch_display_surface(&mut self, offset: usize, bytes: &[u8]) {
         self.buffers[self.draw ^ 1][offset..offset + bytes.len()].copy_from_slice(bytes);
     }
@@ -532,7 +532,7 @@ impl Vdp1 {
         } else {
             self.buffers[area.buffer][at] = area.color.to_be_bytes()[x & 1];
         }
-        #[cfg(any(test, feature = "kernel-experiment"))]
+        #[cfg(any(test, feature = "video-worker"))]
         self.record_display_write(area.buffer, at, area.bytes);
     }
     /// §4.4: display erase follows readout; it must not erase future lines.
@@ -867,7 +867,7 @@ impl Vdp1 {
                 if let Some(color) = pixel.color {
                     self.buffers[pixel.buffer][pixel.address..pixel.address + 2]
                         .copy_from_slice(&color.to_be_bytes());
-                    #[cfg(any(test, feature = "kernel-experiment"))]
+                    #[cfg(any(test, feature = "video-worker"))]
                     self.record_display_write(pixel.buffer, pixel.address, 2);
                 }
                 if self

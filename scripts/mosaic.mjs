@@ -23,21 +23,21 @@ export async function mosaic(page) {
         for (const [at, value] of [[0x100, tv], [0x102, seed], [0x104, mz], [0x106, parameter]]) image.writeUInt16BE(value, at);
         const actual = await page.evaluate(async rom => {
           const { emulator, advanceFrame } = await import("./app.js");
-          emulator.reset_bios(Uint8Array.from(rom));
-          for (let i = 0; i < 300 && emulator.read_long(0x0600dc1c) !== 0x600d; i++) emulator.run_steps(10000);
-          if (emulator.read_long(0x0600dc1c) !== 0x600d) throw new Error("Mosaic guest did not complete");
-          const records = Array.from({ length: 8 }, (_, i) => emulator.read_long(0x0600dc00 + i * 4));
+          (await emulator.reset_bios(Uint8Array.from(rom)));
+          for (let i = 0; i < 300 && (await emulator.read_long(0x0600dc1c)) !== 0x600d; i++) (await emulator.run_steps(10000));
+          if ((await emulator.read_long(0x0600dc1c)) !== 0x600d) throw new Error("Mosaic guest did not complete");
+          const records = (await Promise.all(Array.from({ length: 8 }, async (_, i) => (await emulator.read_long(0x0600dc00 + i * 4)))));
           const base64 = bytes => {
             let binary = "";
             for (let i = 0; i < bytes.length; i += 16384) binary += String.fromCharCode(...bytes.subarray(i, i + 16384));
             return btoa(binary);
           };
-          advanceFrame(); advanceFrame();
+          (await advanceFrame()); (await advanceFrame());
           const frames = [];
           const canvas = document.getElementById("screen");
           for (let i = 0; i < 2; i++) {
-            advanceFrame();
-            frames.push({ frame: base64(emulator.framebuffer()), canvas: base64(canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data) });
+            (await advanceFrame());
+            frames.push({ frame: base64((await emulator.framebuffer())), canvas: base64(canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data) });
           }
           return { records, width: canvas.width, height: canvas.height, frames };
         }, [...image]);

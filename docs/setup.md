@@ -112,9 +112,19 @@ its public license, then creates
 `target/wasm32-unknown-unknown/release/saturn_rust.wasm` and the generated
 `web/pkg/saturn_rust.js` / `saturn_rust_bg.wasm`. Generated Wasm bindings are ignored
 by Git; the reproducible ISO and its license are committed. Rebuild after changing
-Rust or guest source. Opening `index.html` as a `file:` URL will not work. The client needs browser support for ES modules, Wasm and the
+Rust or guest source. Opening `index.html` as a `file:` URL will not work. The
+client needs browser support for ES modules, module Workers, Wasm and the
 `wasm-unsafe-eval` CSP directive; the tested browser is recorded in
 [validation results](validation-issue-9.md).
+
+`build-web.sh` enables the `video-worker` feature. One module Worker owns the
+original Rust Machine during playback, pause and debugging; another consumes its
+ordered video commands. Serve the Worker modules alongside the other `web/`
+assets. Shared memory and cross-origin isolation headers are not required.
+The debugger's `emulator` export from `app.js` returns promises for native
+operations; await their results. Independent reads can use `Promise.all` to share
+an ordered batch. Input setters remain synchronous host updates. Pause waits for
+already committed fields to finish without resetting the Machine.
 
 The default page is an idle **Saturn Disc Player**. It does not select, fetch or
 run a bundled sample. On desktop the player is beside the three-step setup; on

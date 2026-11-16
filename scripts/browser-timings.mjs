@@ -38,7 +38,8 @@ export class BrowserTimings {
   async instrument(page) {
     const evaluate = page.evaluate.bind(page);
     await evaluate(async () => {
-      const { Emulator } = await import("./pkg/saturn_rust.js");
+      const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
+      await init();
       window.browserWasmTimings = {};
       for (const name of ["run_steps", "advance_frame", "reset_bios", "reset_hle", "framebuffer", "mount_disc", "mount_cue", "audio_samples"]) {
         const original = Emulator.prototype[name];

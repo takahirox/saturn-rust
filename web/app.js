@@ -1,4 +1,5 @@
 import { AudioOutput } from "./audio.js";
+import { WorkerEmulator } from "./worker-emulator.js";
 const $ = (id) => document.getElementById(id);
 const hex = (value) => `0x${value.toString(16).toUpperCase().padStart(8, "0")}`;
 export let emulator;
@@ -55,7 +56,10 @@ export function pollGamepads() {
   emulator.set_buttons(buttons | gamepadMasks[0]);
   emulator.set_port2_buttons(port2Buttons | gamepadMasks[1]);
 }
-let lastFrame = 0;
+let pendingActions = 0;
+let bootGeneration = 0;
+let resetting = false;
+let queuedAudio = [];
 const context = $("screen").getContext("2d");
 let biosBytes = null;
 let biosSelected = false;
@@ -78,10 +82,11 @@ function playerInputReady(mode = effectiveBootMode()) {
   return mode === "bios" || (mode === "disc" && loadedDisc);
 }
 function acceptsInput() {
-  return bootValid && playerInputReady() && !loadingFile() && !loadingBackup && !selectionError();
+  return bootValid && playerInputReady() && !loadingFile() && !loadingBackup && pendingActions === 0 && !selectionError();
 }
 let backupGeneration = 0;
 let loadingBackup = false;
+let readingBackup = false;
 let view = "play";
 
 export const audio = new AudioOutput((stats) => {
@@ -92,12 +97,13 @@ $("audio-enable").addEventListener("click", async () => {
   try {
     if (!audio.node || audio.context.state !== "running") {
       await audio.enable();
-      audio.setPaused(!playing);
+      queuedAudio = [];
+      audio.setPaused(true);
     } else audio.setMuted(!audio.muted);
     $("audio-enable").textContent = audio.muted ? "Unmute audio" : "Mute audio";
   } catch (error) { $("audio-status").textContent = `Audio: blocked · ${error}`; }
 });
-export function pumpAudio() { audio.deliver(emulator.audio_samples(8192)); }
+export async function pumpAudio() { audio.deliver(await emulator.audio_samples(8192)); }
 
 function rows(target, names, values) {
   target.replaceChildren(...names.map((name, i) => {
@@ -128,10 +134,23 @@ function releaseButtons() {
   }
 }
 
-function pause() {
+async function pause() {
   playing = false;
+  queuedAudio = [];
   audio.setPaused(true);
   releaseButtons();
+  render();
+  if (emulator) await emulator.pause();
+}
+function deliverAudio({ pcm }) {
+  if (!playing || !audio.node || audio.context.state !== "running") return;
+  if (!audio.paused) { audio.deliver(pcm); return; }
+  queuedAudio.push(pcm);
+  if (queuedAudio.reduce((sum, part) => sum + (part.length >>> 1), 0) < 1024) return;
+  const samples = new Int16Array(queuedAudio.reduce((sum, part) => sum + part.length, 0));
+  let at = 0;
+  for (const part of queuedAudio) { samples.set(part, at); at += part.length; }
+  if (audio.start(samples)) queuedAudio = [];
 }
 
 function setDisplayRatio(width, height) {
@@ -140,36 +159,32 @@ function setDisplayRatio(width, height) {
   $("player-shell").style.setProperty("--display-ratio", ratio);
 }
 
-export function advanceFrame() {
+function presentFrame({ pixels, width, height }) {
+  if (resetting) return;
   $("empty-state").hidden = true;
-  pollGamepads();
-  emulator.advance_frame();
-  audio.setPaused(!playing);
-  pumpAudio();
-  const pixels = new Uint8ClampedArray(emulator.framebuffer());
-  const width = emulator.video_width(), height = emulator.video_height();
   const canvas = $("screen");
   if (canvas.width !== width || canvas.height !== height) {
     canvas.width = width;
     canvas.height = height;
     setDisplayRatio(width, height);
   }
-  context.putImageData(new ImageData(pixels, width, height), 0, 0);
+  context.putImageData(new ImageData(new Uint8ClampedArray(pixels), width, height), 0, 0);
+  render();
 }
-
-function animate(now) {
-  const period = 1000 / 60;
-  const rounding = 1;
-  const elapsed = now - lastFrame;
-  // Keep fractional time across callbacks, including millisecond timestamp
-  // rounding. A stalled host advances one field without a catch-up burst.
-  if (playing && elapsed >= period - rounding) {
-    // Apply the same rounding boundary when rebasing: the residual must be
-    // below the next due threshold, even if a timestamp is delivered twice.
-    lastFrame = elapsed >= period * 2 - rounding ? now : lastFrame + period;
-    act(advanceFrame);
-  }
+export async function advanceFrame() {
+  pollGamepads();
+  await emulator.advanceField();
+}
+function animate() {
+  if (playing) pollGamepads();
   requestAnimationFrame(animate);
+}
+async function startPlaying() {
+  playing = true;
+  queuedAudio = [];
+  audio.setPaused(true);
+  $("screen").focus();
+  await emulator.play();
 }
 
 function setText(id, text) {
@@ -177,14 +192,15 @@ function setText(id, text) {
   if ($(id).textContent !== text) $(id).textContent = text;
 }
 
-function canExecute(status = emulator.status()) {
-  return status === "Ready" || (status.startsWith("Resetting") && emulator.hardware_wake_possible()) || (status.startsWith("Sleeping") && (emulator.address_error_pending() || emulator.hardware_wake_possible()));
+function canExecute(status = emulator.state.status) {
+  return status === "Ready" || (status.startsWith("Resetting") && emulator.state.hardwareWakePossible) || (status.startsWith("Sleeping") && (emulator.state.addressErrorPending || emulator.state.hardwareWakePossible));
 }
 
 function render() {
-  if (!emulator) return;
-  const machineStatus = attemptedBoot ? emulator.status() : "Ready";
-  const mode = bootValid ? emulator.mode() : "Not started";
+  if (!emulator?.state) return;
+  $("main").setAttribute("aria-busy", String(pendingActions > 0));
+  const machineStatus = attemptedBoot ? emulator.state.status : "Ready";
+  const mode = bootValid ? emulator.state.mode : "Not started";
   const bootMode = effectiveBootMode();
   const bootMethod = bootMode === "fixture" ? "Debug · HLE bootstrap fixture" :
     bootMode === "blocked" ? (loadingBios ? "Auto · BIOS loading" : "Auto · BIOS selection blocked") :
@@ -194,18 +210,18 @@ function render() {
   setText("status", machineStatus);
   // Keep register allocation and Wasm register reads out of the playback loop.
   if (view === "debug") {
-    $("instructions").textContent = emulator.instruction_count();
-    $("exceptions").textContent = emulator.exception_count();
-    $("last-exception").textContent = emulator.last_exception();
-    const target = emulator.delay_target();
+    $("instructions").textContent = emulator.state.instructions;
+    $("exceptions").textContent = emulator.state.exceptions;
+    $("last-exception").textContent = emulator.state.lastException;
+    const target = emulator.state.delayTarget;
     $("delay").textContent = target === undefined ? "none" : hex(target);
-    rows($("registers"), Array.from({ length: 16 }, (_, i) => `R${i}`), emulator.registers());
-    rows($("special"), ["PC", "SR", "PR", "GBR", "VBR", "MACH", "MACL"], emulator.special_registers());
-    $("frames").textContent = emulator.frames();
+    rows($("registers"), Array.from({ length: 16 }, (_, i) => `R${i}`), emulator.state.registers);
+    rows($("special"), ["PC", "SR", "PR", "GBR", "VBR", "MACH", "MACL"], emulator.state.special);
+    $("frames").textContent = emulator.state.frames;
   }
   $("bios-clear").disabled = !biosSelected;
   $("disc-clear").disabled = !loadedDisc && !loadingDisc && !selectionErrors.disc;
-  const busy = loadingFile() || loadingBackup;
+  const busy = loadingFile() || loadingBackup || pendingActions > 0;
   const ready = bootValid && !busy && !selectionError() && canExecute(machineStatus);
   $("step").disabled = !ready;
   $("run").disabled = !ready;
@@ -222,7 +238,7 @@ function render() {
   $("start").hidden = sessionStarted;
   $("backup-export").disabled = busy;
   const needsInput = "Select a disc or add a 512 KiB BIOS to begin";
-  const state = loadingFile() ? "Loading image…" : loadingBackup ? "Reading backup RAM…" : $("error").textContent ? "Stopped — check the error" :
+  const state = pendingActions > 0 && !loadingFile() && !loadingBackup ? "Working…" : loadingFile() ? "Loading image…" : loadingBackup ? "Reading backup RAM…" : $("error").textContent ? "Stopped — check the error" :
     playing ? `Running${machineStatus === "Ready" ? "" : ` · ${machineStatus}`}` : launchReady ? (sessionStarted ? "Paused — Resume to play" : `${bootMode === "bios" ? "BIOS" : "Disc"} ready — press Start`) :
     bootValid ? machineStatus : needsInput;
   setText("player-status", `${state} · ${bootMethod}`);
@@ -239,7 +255,7 @@ function render() {
 for (const nextView of ["play", "debug"]) {
   $(`view-${nextView}`).addEventListener("click", () => {
     if (view === nextView) return;
-    pause();
+    void act(pause, { clearError: false });
     view = nextView;
     $("main").className = `view-${view}`;
     for (const name of ["play", "debug"]) $(`view-${name}`).setAttribute("aria-pressed", String(view === name));
@@ -248,7 +264,7 @@ for (const nextView of ["play", "debug"]) {
   });
 }
 $("settings").addEventListener("toggle", () => {
-  if ($("settings").open) { pause(); render(); }
+  if ($("settings").open) void act(pause, { clearError: false });
 });
 
 let fullscreenReturnFocus;
@@ -277,69 +293,87 @@ document.addEventListener("fullscreenchange", () => {
   else fullscreenReturnFocus?.focus();
 });
 
-function act(operation) {
-  $("error").textContent = selectionError();
-  try { operation(); } catch (error) { pause(); $("error").textContent = selectionError() || String(error); }
+async function act(operation, { current = () => true, clearError = true } = {}) {
+  pendingActions++;
+  if (current() && clearError) $("error").textContent = selectionError();
   render();
+  try { await operation(); }
+  catch (error) {
+    if (current()) {
+      await pause().catch(() => {});
+      $("error").textContent = selectionError() || String(error);
+    }
+  } finally { pendingActions--; render(); }
 }
 
-function mountSelectedDisc() {
-  try {
-    if (cueMedia) emulator.mount_cue(cueMedia.cue, cueMedia.names, cueMedia.lengths, cueMedia.bytes);
-    else if (discBytes) emulator.mount_disc(discBytes);
-    loadedDisc = loadedDisc || Boolean(cueMedia || discBytes);
-  } catch (error) {
-    selectionErrors.disc = String(error);
-    throw error;
-  }
-}
-
-function reset() {
-  if (loadingBackup) $("backup-status").textContent = "Backup import cancelled by boot change; backup RAM was preserved.";
+async function reset({ clearMedia = false } = {}) {
+  const generation = ++bootGeneration;
+  resetting = true;
+  const current = () => generation === bootGeneration;
+  const media = { cue: cueMedia, bytes: discBytes }, discToken = discGeneration;
+  discBytes = cueMedia = null;
+  if (loadingBackup) $("backup-status").textContent = readingBackup
+    ? "Backup import cancelled by boot change; backup RAM was preserved."
+    : "Accepted backup import retained through the boot change.";
   backupGeneration++;
-  loadingBackup = false;
-  pause();
+  loadingBackup = readingBackup = false;
+  playing = false;
+  queuedAudio = [];
+  audio.setPaused(true);
+  releaseButtons();
   const canvas = $("screen");
   context.clearRect(0, 0, canvas.width, canvas.height);
   attemptedBoot = true;
   bootValid = false;
   $("empty-state").hidden = false;
-  const mode = effectiveBootMode();
-  act(() => {
-    // Stop and clear the previous guest immediately, preserving the Wasm medium.
-    // The deliberately empty BIOS resets execution without installing any HLE.
-    try { emulator.reset_bios(new Uint8Array()); } catch { /* Expected size rejection. */ }
-    // Mount validation remains independent of boot choice, even while BIOS loads.
-    mountSelectedDisc();
-    discBytes = null;
-    cueMedia = null;
-    if (loadingFile() || selectionError() || mode === "blocked") return;
-    if (mode === "fixture") emulator.reset_hle();
-    else if (mode === "bios") emulator.reset_bios(biosBytes);
-    else if (loadedDisc) emulator.reset_loaded_disc();
+  const mode = effectiveBootMode(), rom = biosBytes;
+  await act(async () => {
+    if (clearMedia) await emulator.clear_media();
+    if (!current()) return;
+    // The rejected empty ROM clears execution while retaining mounted media.
+    try { await emulator.reset_bios(new Uint8Array()); } catch { /* Expected size rejection. */ }
+    if (!current()) return;
+    try {
+      if (media.cue) await emulator.mount_cue(media.cue.cue, media.cue.names, media.cue.lengths, media.cue.bytes);
+      else if (media.bytes) await emulator.mount_disc(media.bytes);
+      if (discToken === discGeneration) loadedDisc = loadedDisc || Boolean(media.cue || media.bytes);
+      if (!current()) return;
+    } catch (error) {
+      if (discToken === discGeneration) selectionErrors.disc = String(error);
+      throw error;
+    }
+    if (!current() || loadingFile() || selectionError() || mode === "blocked") return;
+    if (mode === "fixture") await emulator.reset_hle();
+    else if (mode === "bios") await emulator.reset_bios(rom);
+    else if (loadedDisc) await emulator.reset_loaded_disc();
     else return;
-    bootValid = true;
-  });
-  // Failed validation must not keep a second unvalidated JS copy alive.
-  discBytes = null;
-  cueMedia = null;
-  canvas.width = emulator.video_width();
-  canvas.height = emulator.video_height();
-  setDisplayRatio(canvas.width, canvas.height);
+    if (current()) bootValid = true;
+  }, { current });
+  if (current()) {
+    resetting = false;
+    canvas.width = emulator.state.width;
+    canvas.height = emulator.state.height;
+    setDisplayRatio(canvas.width, canvas.height);
+  }
 }
 
 try {
-  const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
-  await init();
-  emulator = new Emulator();
+  emulator = new WorkerEmulator({ onFrame: presentFrame, onAudio: deliverAudio,
+    onError: error => {
+      // The ready rejection below owns actionable startup diagnostics.
+      if (emulator?.state) void act(async () => { throw error; });
+    } });
+  await emulator.ready;
   $("backup-import").addEventListener("change", async () => {
     const generation = ++backupGeneration;
     const file = $("backup-import").files[0];
     $("backup-import").value = ""; // Selecting the same file again must work.
-    loadingBackup = false;
-    pause();
+    loadingBackup = readingBackup = Boolean(file);
+    await pause();
+    if (generation !== backupGeneration) return;
     if (!file) { render(); return; }
     if (file.size !== 32768) {
+      loadingBackup = readingBackup = false;
       $("backup-status").textContent = `Backup unchanged: select a packed 32 KiB file (32768 bytes); received ${file.size} bytes.`;
       render();
       return;
@@ -350,20 +384,23 @@ try {
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       if (generation !== backupGeneration) return;
-      emulator.import_backup_ram(bytes);
+      readingBackup = false;
+      $("backup-status").textContent = "Importing 32768 backup bytes…";
+      await emulator.import_backup_ram(bytes);
+      if (generation !== backupGeneration) return;
       $("backup-status").textContent = "Imported 32768 backup bytes. Playback is paused; Reset to let the guest read the new data.";
     } catch (error) {
       if (generation !== backupGeneration) return;
       $("backup-status").textContent = `Backup unchanged: could not import locally: ${error}`;
     } finally {
-      if (generation === backupGeneration) { loadingBackup = false; render(); }
+      if (generation === backupGeneration) { loadingBackup = readingBackup = false; render(); }
     }
   });
-  $("backup-export").addEventListener("click", () => {
-    pause();
+  $("backup-export").addEventListener("click", async () => {
+    await pause();
     let url;
     try {
-      const bytes = emulator.export_backup_ram();
+      const bytes = await emulator.export_backup_ram();
       url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
       const link = document.createElement("a");
       link.href = url;
@@ -389,11 +426,7 @@ try {
   $("start").addEventListener("click", () => {
     if ($("start").disabled) return;
     sessionStarted = true;
-    playing = true;
-    lastFrame = 0;
-    audio.setPaused(false);
-    $("screen").focus();
-    render();
+    void act(startPlaying);
   });
   $("fixture").addEventListener("click", () => {
     sessionStarted = false;
@@ -403,21 +436,17 @@ try {
     selectionErrors.bios = selectionErrors.disc = "";
     biosBytes = discBytes = cueMedia = null;
     biosSelected = loadedDisc = false;
-    emulator.clear_media();
     $("disc").value = $("bios").value = "";
     $("disc-selection").textContent = "No disc selected.";
     $("bios-selection").textContent = "No BIOS selected.";
     debugFixture = true;
-    reset();
+    void reset({ clearMedia: true });
   });
-  $("restart").addEventListener("click", () => {
+  $("restart").addEventListener("click", async () => {
     if ($("restart").disabled) return;
-    reset();
+    await reset();
     if (sessionStarted && bootValid && !selectionError() && playerInputReady() && canExecute() && !$("settings").open && view === "play") {
-      playing = true;
-      lastFrame = 0;
-      $("screen").focus();
-      render();
+      await act(startPlaying);
     }
   });
   $("step").addEventListener("click", () => act(() => emulator.step()));
@@ -426,7 +455,7 @@ try {
     if (!Number.isInteger(count) || count < 1 || count > 10000) {
       throw new Error("Enter a whole instruction count from 1 to 10000.");
     }
-    emulator.run_steps(count);
+    return emulator.run_steps(count);
   }));
   $("bios").addEventListener("change", async () => {
     selectionErrors.bios = "";
@@ -456,7 +485,7 @@ try {
       biosBytes = bytes;
       $("bios-selection").textContent = `${file.name} · 512 KiB · loaded locally`;
       loadingBios = false;
-      reset();
+      await reset();
     } catch (error) {
       if (generation !== biosGeneration) return;
       loadingBios = false;
@@ -474,9 +503,8 @@ try {
     discBytes = null;
     cueMedia = null;
     loadedDisc = false;
-    emulator.clear_media();
     loadingDisc = Boolean(files.length);
-    reset();
+    void reset({ clearMedia: true });
     if (!files.length) return;
     const cueFiles = files.filter((file) => /\.cue$/i.test(file.name));
     const cue = cueFiles.length === 1 ? cueFiles[0] : null;
@@ -510,7 +538,7 @@ try {
         discBytes = bytes;
       }
       loadingDisc = false;
-      reset();
+      await reset();
       if (loadedDisc) $("disc-selection").textContent = files.map(file => `${file.name} · ${file.size.toLocaleString()} bytes`).join("\n") + "\nLoaded locally. Replacement stops playback.";
     } catch (error) {
       if (generation !== discGeneration) return;
@@ -541,9 +569,7 @@ try {
   for (const type of ["dragover", "drop"]) window.addEventListener(type, event => event.preventDefault());
   $("pause").addEventListener("click", () => {
     if ($("pause").disabled) return;
-    if (playing) pause();
-    else { playing = true; lastFrame = 0; $("screen").focus(); }
-    render();
+    void act(playing ? pause : startPlaying);
   });
   $("frame").addEventListener("click", () => act(advanceFrame));
   const keys = { ArrowUp: 1, ArrowDown: 2, ArrowLeft: 4, ArrowRight: 8,
@@ -567,7 +593,7 @@ try {
   }
   $("screen").addEventListener("blur", releaseButtons);
   window.addEventListener("blur", releaseButtons);
-  document.addEventListener("visibilitychange", () => { if (document.hidden) { pause(); render(); } });
+  document.addEventListener("visibilitychange", () => { if (document.hidden) void act(pause, { clearError: false }); });
   requestAnimationFrame(animate);
   $("controls").disabled = false;
   $("debug-controls").disabled = false;

@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { digitalInput } from "./digital-input.mjs";
+import { waitForGuest } from "./browser-transport.mjs";
 
 export async function playUi(browser, url) {
   const context = await browser.newContext();
@@ -24,7 +25,7 @@ export async function playUi(browser, url) {
     assert.equal(requests.some(r => /\.(iso|chd|bin)$/.test(r.url)), false);
     const idle = await page.evaluate(async () => {
       const {emulator} = await import("./app.js");
-      return [String(emulator.frames()), String(emulator.instruction_count())];
+      return [String((await emulator.frames())), String((await emulator.instruction_count()))];
     });
     assert.deepEqual(idle, ["0", "0"]);
     const iso = await readFile("web/hardware-lab.iso");
@@ -63,13 +64,13 @@ export async function playUi(browser, url) {
     assert.match(await page.locator("#launch-status").textContent(), /Disc optional/);
     assert.match(await page.locator("#status").textContent(), /Resetting/);
     await page.evaluate(async () => { window.biosMachine = (await import("./app.js")).emulator; });
-    const state = () => page.evaluate(() => ({
-      count:window.biosMachine.instruction_count(), counter:window.biosMachine.read_long(0x06001000),
-      frames:window.biosMachine.frames(), mode:window.biosMachine.mode(),
+    const state = () => page.evaluate(async () => ({
+      count:(await window.biosMachine.instruction_count()), counter:(await window.biosMachine.read_long(0x06001000)),
+      frames:(await window.biosMachine.frames()), mode:(await window.biosMachine.mode()),
     }));
     assert.deepEqual(await state(), {count:"0", counter:0, frames:"0", mode:"User-provided BIOS"});
     await page.locator("#start").click();
-    await page.waitForFunction(() => window.biosMachine.read_long(0x06001000) > 0);
+    await waitForGuest(page, async () => (await window.biosMachine.read_long(0x06001000)) > 0);
     assert.match(await page.locator("#player-status").textContent(), /Running/);
     assert(await page.locator("#empty-state").isHidden());
     await page.locator("#pause").click();
@@ -79,14 +80,11 @@ export async function playUi(browser, url) {
     await page.waitForTimeout(50);
     assert.deepEqual(await state(), paused, "Pause stops guest execution");
     await page.locator("#pause").click();
-    await page.waitForFunction(count => Number(window.biosMachine.instruction_count()) > Number(count), paused.count);
-    // Observe the synchronous UI reset before its next animation frame executes.
-    const restarted = await page.locator("#restart").evaluate(button => {
-      button.click();
-      return [window.biosMachine.instruction_count(), window.biosMachine.read_long(0x06001000), window.biosMachine.frames()];
-    });
+    await waitForGuest(page, async count => Number((await window.biosMachine.instruction_count())) > Number(count), paused.count);
+    // Observe the completed Worker reset at the boundary before playback resumes.
+    const restarted = await restartRecord(page, 0x06001000);
     assert.deepEqual(restarted, ["0",0,"0"]);
-    await page.waitForFunction(() => window.biosMachine.read_long(0x06001000) > 0);
+    await waitForGuest(page, async () => (await window.biosMachine.read_long(0x06001000)) > 0);
     await page.locator("#view-debug").click();
     assert(Number(await page.locator("#instructions").textContent()) > 100);
     await page.locator("#reset").click();
@@ -109,19 +107,16 @@ export async function playUi(browser, url) {
       await page.locator("#bios").setInputFiles({...firmware,buffer:await rom(name)});
       await ready();
       await page.locator("#view-play").click();
-      const resetState = () => page.evaluate(base => [window.biosMachine.instruction_count(), window.biosMachine.read_long(base), window.biosMachine.smpc_fault_diagnostics()], base);
+      const resetState = () => page.evaluate(async base => [(await window.biosMachine.instruction_count()), (await window.biosMachine.read_long(base)), (await window.biosMachine.smpc_fault_diagnostics())], base);
       assert.deepEqual(await resetState(), ["0", 0, undefined]);
       for (let boot = 0; boot < 2; boot++) {
         if (boot === 0) await page.locator("#start").click();
         else {
-          const reset = await page.locator("#restart").evaluate((button, base) => {
-            button.click();
-            return [window.biosMachine.instruction_count(), window.biosMachine.read_long(base), window.biosMachine.smpc_fault_diagnostics()];
-          }, base);
+          const reset = await restartRecord(page, base, true);
           assert.deepEqual(reset, ["0", 0, undefined]);
         }
-        await page.waitForFunction(({base, length}) => window.biosMachine.read_long(base+(length-1)*4) === 0x600d, {base, length:expected.length});
-        const records = await page.evaluate(({base, length}) => Array.from({length}, (_,i) => window.biosMachine.read_long(base+i*4)), {base, length:expected.length});
+        await waitForGuest(page, async ({base, length}) => (await window.biosMachine.read_long(base+(length-1)*4)) === 0x600d, {base, length:expected.length});
+        const records = await page.evaluate(async ({base, length}) => (await Promise.all(Array.from({length}, async (_,i) => (await window.biosMachine.read_long(base+i*4))))), {base, length:expected.length});
         assert.deepEqual(records, expected);
         assert.equal(await page.locator("#error").textContent(), "");
         assert.equal(await page.locator("#disc-selection").textContent(), "No disc selected.");
@@ -133,7 +128,7 @@ export async function playUi(browser, url) {
     await ready();
     await page.locator("#view-play").click();
     await page.locator("#start").click();
-    await page.waitForFunction(() => window.biosMachine.read_long(0x060100FC) === 0xE001);
+    await waitForGuest(page, async () => (await window.biosMachine.read_long(0x060100FC)) === 0xE001);
     assert.equal(await page.locator("#error").textContent(), "");
     assert.equal(await page.locator("#disc-selection").textContent(), "No disc selected.");
     // A sleeping guest with no wake source can still be paused. Resume must
@@ -280,14 +275,14 @@ export async function playUi(browser, url) {
     })));
     const guest = () => page.evaluate(async () => {
       const {emulator:m, advanceFrame} = await import("./app.js");
-      for (let i=0; i<40 && m.read_long(0x06010020)!==0x600D; i++) m.run_steps(10000);
-      m.advance_frame();
-      const pcm = Array.from(m.audio_samples(8192));
-      advanceFrame();
-      const frame = m.framebuffer();
+      for (let i=0; i<40 && (await m.read_long(0x06010020))!==0x600D; i++) (await m.run_steps(10000));
+      (await m.advance_frame());
+      const pcm = Array.from((await m.audio_samples(8192)));
+      (await advanceFrame());
+      const frame = (await m.framebuffer());
       const canvas = document.getElementById("screen").getContext("2d");
-      return {fields:Array.from({length:11},(_,i)=>m.read_long(0x06010000+i*4)),
-        mode:m.mode(), stereo:pcm.some((v,i)=>i%2===0 && v!==pcm[i+1]),
+      return {fields:(await Promise.all(Array.from({length:11},async (_,i)=>(await m.read_long(0x06010000+i*4))))),
+        mode:(await m.mode()), stereo:pcm.some((v,i)=>i%2===0 && v!==pcm[i+1]),
         wasm:Array.from(frame.slice(0,4)), canvas:Array.from(canvas.getImageData(0,0,1,1).data)};
     });
     const checkGuest = async () => {
@@ -343,11 +338,31 @@ export async function playUi(browser, url) {
         assert(box.x >= 0 && box.x+box.width <= width && box.height >= 44, `${id} at ${width}`);
       }
     }
-    await framePacing(browser, url, bios);
+    await framePacing(browser, url);
     await digitalInput(browser, url);
     assert.deepEqual(errors,[]);
     assert(requests.every(r => r.url.startsWith(url) && r.method === "GET" && r.body === null));
   } finally { await context.close(); }
+}
+
+// Inspect the real reset Machine before its first resumed instruction. The
+// adapter hook observes the public play boundary and still starts the Worker.
+async function restartRecord(page, base, diagnostics = false) {
+  return page.locator("#restart").evaluate(async (button, {base, diagnostics}) => {
+    const m = window.biosMachine, play = m.play.bind(m);
+    const snapshot = new Promise((resolve, reject) => {
+      m.play = async () => {
+        m.play = play;
+        try {
+          resolve(await Promise.all([m.instruction_count(), m.read_long(base),
+            diagnostics ? m.smpc_fault_diagnostics() : m.frames()]));
+        } catch (error) { reject(error); throw error; }
+        return play();
+      };
+    });
+    button.click();
+    return snapshot;
+  }, {base, diagnostics});
 }
 
 // Exercise selection transitions through the production UI. Delayed/rejected
@@ -358,7 +373,7 @@ async function automaticBootSelections(page, firmware, iso) {
   const ready = () => page.waitForFunction(() => !document.getElementById("start").disabled);
   const snapshot = () => page.evaluate(async () => {
     const {emulator:m} = await import("./app.js");
-    return {mode:m.mode(), count:m.instruction_count(), frames:m.frames(), pc:m.special_registers()[0]};
+    return {mode:(await m.mode()), count:(await m.instruction_count()), frames:(await m.frames()), pc:(await m.special_registers())[0]};
   });
   const blocked = async pattern => {
     assert(await input("start").isDisabled());
@@ -479,65 +494,72 @@ async function automaticBootSelections(page, firmware, iso) {
   } finally { await page.evaluate(() => window.restoreSelectionReads()); }
 }
 
-// Preserve 60 Hz phase across rounded RAF timestamps and faster displays.
-async function framePacing(browser,url,firmware) {
-  const context=await browser.newContext();
+// RAF schedules host input polling only. Real Worker fields retain their pace
+// on slower/faster displays, rounded timestamps and duplicate callbacks.
+async function framePacing(browser, url) {
+  // This pacing fixture has measured CPU headroom; BIOS-only acceptance above
+  // exercises the separate, bus-heavy firmware without a host-speed assertion.
+  const firmware = Buffer.alloc(524288);
+  for (const line of (await readFile("examples/runtime-loop.hex", "utf8")).split(/\r?\n/)) {
+    if (!line.trim() || line.startsWith("#")) continue;
+    const [at, ...words] = line.trim().split(/\s+/).map(word => parseInt(word, 16));
+    words.forEach((word, i) => firmware.writeUInt16BE(word, at + i * 2));
+  }
+  const context = await browser.newContext();
   try {
-    await context.addInitScript(()=>{
+    await context.addInitScript(() => {
       let pending;
-      window.requestAnimationFrame=callback=>{pending=callback;return 1};
-      window.deliverFrame=timestamp=>{const cb=pending;pending=null;cb(timestamp)};
+      window.requestAnimationFrame = callback => { pending = callback; return 1; };
+      window.deliverFrame = timestamp => {
+        const callback = pending; pending = null; callback?.(timestamp);
+      };
     });
-    const page=await context.newPage();
-    const errors=[];page.on('pageerror',e=>errors.push(e.message));
+    const page = await context.newPage(), errors = [];
+    page.on("pageerror", error => errors.push(error.message));
     await page.goto(url);
-    // RAF belongs to this test driver; readiness polling uses real timers.
-    await page.waitForFunction(()=>!document.getElementById('controls').disabled,undefined,{polling:10});
-    await page.locator('#settings > summary').evaluate(button=>button.click());
-    await page.locator('#bios').setInputFiles({name:'original-loop.bin',mimeType:'application/octet-stream',buffer:firmware});
-    await page.waitForFunction(()=>!document.getElementById('start').disabled,undefined,{polling:10});
-    await page.evaluate(async()=>{
-      const {emulator}=await import('./app.js');
-      emulator.advance_frame();
-      window.pacingCalls=0;
-      // Count requests independently of core speed; the real Canvas presenter,
-      // audio draining, status and public playback controls still run.
-      emulator.advance_frame=()=>{window.pacingCalls++};
-    });
-    const results=[];
-    for(const quantum of [.1,1])for(const hz of [30,60,120,144]) {
-      await page.locator(results.length?'#pause':'#start').evaluate(button=>button.click());
-      const base=1000+results.length*10000;
-      const data=await page.evaluate(({hz,quantum,base})=>{
-        window.deliverFrame(base);
-        const start=window.pacingCalls;
-        let maxPerCallback=0;
-        for(let i=1;i<=hz*3;i++) {
-          const before=window.pacingCalls;
-          const timestamp=base+Math.round(i*1000/hz/quantum)*quantum;
-          window.deliverFrame(timestamp);
-          maxPerCallback=Math.max(maxPerCallback,window.pacingCalls-before);
-          const presented=window.pacingCalls;
-          window.deliverFrame(timestamp);
-          if(window.pacingCalls!==presented)throw new Error(`Duplicate RAF advanced at ${hz} Hz, ${quantum} ms rounding`);
-        }
-        const frames=window.pacingCalls-start;
-        const beforeStall=window.pacingCalls;
-        window.deliverFrame(base+3500);
-        const afterStall=window.pacingCalls;
-        window.deliverFrame(base+3500);
-        return {frames,maxPerCallback,stall:afterStall-beforeStall,duplicate:window.pacingCalls-afterStall};
-      },{hz,quantum,base});
-      assert.equal(data.frames,Math.min(hz,60)*3,JSON.stringify({hz,quantum,...data}));
-      assert.equal(data.maxPerCallback,1);assert.equal(data.stall,1);assert.equal(data.duplicate,0);
-      await page.locator('#pause').evaluate(button=>button.click());
-      const paused=await page.evaluate(base=>{
-        const before=window.pacingCalls;window.deliverFrame(base+3600);window.deliverFrame(base+3700);return window.pacingCalls-before;
-      },base);
-      assert.equal(paused,0);
-      results.push({hz,quantum,...data});
+    const settled = () => page.waitForFunction(() => document.getElementById("main").getAttribute("aria-busy") === "false", undefined, {polling:10});
+    await page.waitForFunction(() => !document.getElementById("controls").disabled, undefined, {polling:10});
+    await page.locator("#settings > summary").evaluate(button => button.click());
+    await page.locator("#bios").setInputFiles({name:"original-loop.bin", mimeType:"application/octet-stream", buffer:firmware});
+    await page.waitForFunction(() => !document.getElementById("start").disabled, undefined, {polling:10});
+    await page.evaluate(async () => { window.pacingMachine = (await import("./app.js")).emulator; });
+    let started = false;
+    for (const quantum of [0.1, 1]) for (const hz of [30, 60, 120, 144]) {
+      await page.locator(started ? "#pause" : "#start").evaluate(button => button.click());
+      started = true;
+      await settled();
+      const data = await page.evaluate(async ({hz, quantum}) => {
+        const before = pacingMachine.state.frames, start = performance.now();
+        let callbacks = 0;
+        const deliver = () => {
+          const timestamp = Math.round(performance.now() / quantum) * quantum;
+          window.deliverFrame(timestamp); window.deliverFrame(timestamp);
+          callbacks++;
+        };
+        const timer = setInterval(deliver, 1000 / hz);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        clearInterval(timer);
+        const elapsed = performance.now() - start, fields = pacingMachine.state.frames - before;
+        // A burst of future RAF timestamps must never advance guest time.
+        const burstFrom = pacingMachine.state.frames;
+        for (let i = 0; i < 100; i++) window.deliverFrame(performance.now() + i * 500);
+        return {fields, elapsed, callbacks, burst: pacingMachine.state.frames - burstFrom};
+      }, {hz, quantum});
+      const fps = data.fields * 1000 / data.elapsed;
+      assert(fps >= 58 && fps <= 62, JSON.stringify({hz, quantum, fps, ...data}));
+      assert(data.callbacks > hz, "driver must deliver real rounded/duplicate RAF callbacks");
+      assert.equal(data.burst, 0, "RAF cannot execute a guest field");
+      await page.locator("#pause").evaluate(button => button.click());
+      await settled();
+      const paused = await page.evaluate(async () => {
+        const before = pacingMachine.state.frames;
+        for (let i = 0; i < 10; i++) window.deliverFrame(performance.now() + i * 1000);
+        await new Promise(resolve => setTimeout(resolve, 60));
+        return pacingMachine.state.frames - before;
+      });
+      assert.equal(paused, 0);
     }
-    assert.deepEqual(errors,[]);
-    assert.equal(await page.locator('#error').textContent(),'');
-  } finally {await context.close()}
+    assert.deepEqual(errors, []);
+    assert.equal(await page.locator("#error").textContent(), "");
+  } finally { await context.close(); }
 }

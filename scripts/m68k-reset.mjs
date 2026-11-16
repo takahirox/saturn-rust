@@ -28,9 +28,9 @@ export async function m68kReset(page) {
     await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const run = () => page.evaluate(async () => {
       const { emulator } = await import("./app.js");
-      for (let i = 0; i < 10; i++) emulator.run_steps(10000);
-      return { records: Array.from({ length: 19 }, (_, i) => emulator.read_long(0x0600EB00 + i * 4)),
-        halted: emulator.sound_halted(), exceptions: emulator.exception_count() };
+      for (let i = 0; i < 10; i++) (await emulator.run_steps(10000));
+      return { records: (await Promise.all(Array.from({ length: 19 }, async (_, i) => (await emulator.read_long(0x0600EB00 + i * 4))))),
+        halted: (await emulator.sound_halted()), exceptions: (await emulator.exception_count()) };
     });
     const result = await run();
     assert.deepEqual(result.records, expected);
@@ -49,10 +49,10 @@ export async function m68kReset(page) {
     for (let repeat = 0; repeat < 2; repeat++) {
       const result = await page.evaluate(async bytes => {
         const { emulator } = await import("./app.js");
-        emulator.reset_bios(Uint8Array.from(bytes));
-        for (let i = 0; i < 10; i++) emulator.run_steps(10000);
-        return { record: emulator.read_long(0x0600ED00), halted: emulator.sound_halted(),
-          exceptions: emulator.exception_count() };
+        (await emulator.reset_bios(Uint8Array.from(bytes)));
+        for (let i = 0; i < 10; i++) (await emulator.run_steps(10000));
+        return { record: (await emulator.read_long(0x0600ED00)), halted: (await emulator.sound_halted()),
+          exceptions: (await emulator.exception_count()) };
       }, [...image]);
       assert.deepEqual(result, { record: operand ?? 0xBAD, halted: false, exceptions: "0" });
     }
@@ -64,10 +64,10 @@ export async function m68kReset(page) {
     for (let repeat = 0; repeat < 2; repeat++) {
       const result = await page.evaluate(async bytes => {
         const { emulator } = await import("./app.js");
-        emulator.reset_bios(Uint8Array.from(bytes));
-        for (let i = 0; i < 10; i++) emulator.run_steps(10000);
-        return { records: Array.from({length: 4}, (_, i) => emulator.read_long(0x0600EE00 + i * 4)),
-          halted: emulator.sound_halted(), exceptions: emulator.exception_count() };
+        (await emulator.reset_bios(Uint8Array.from(bytes)));
+        for (let i = 0; i < 10; i++) (await emulator.run_steps(10000));
+        return { records: (await Promise.all(Array.from({length: 4}, async (_, i) => (await emulator.read_long(0x0600EE00 + i * 4))))),
+          halted: (await emulator.sound_halted()), exceptions: (await emulator.exception_count()) };
       }, [...image]);
       assert.deepEqual(result, { records: [0xA700, 0x20C, operand, 0x600D], halted: false, exceptions: "0" });
     }
@@ -90,10 +90,10 @@ export async function m68kReset(page) {
       for (let repeat = 0; repeat < 2; repeat++) {
         const result = await page.evaluate(async bytes => {
           const { emulator } = await import("./app.js");
-          emulator.reset_bios(Uint8Array.from(bytes));
-          for (let i = 0; i < 10; i++) emulator.run_steps(10000);
-          return { records: Array.from({length: 4}, (_, i) => emulator.read_long(0x0600EF00 + i * 4)),
-            halted: emulator.sound_halted(), exceptions: emulator.exception_count() };
+          (await emulator.reset_bios(Uint8Array.from(bytes)));
+          for (let i = 0; i < 10; i++) (await emulator.run_steps(10000));
+          return { records: (await Promise.all(Array.from({length: 4}, async (_, i) => (await emulator.read_long(0x0600EF00 + i * 4))))),
+            halted: (await emulator.sound_halted()), exceptions: (await emulator.exception_count()) };
         }, [...image]);
         assert.deepEqual(result, { records: [results[omitWrite ? 0 : variant], sr, 0x20E, omitWrite ? 0xBAD : 0x600D], halted: false, exceptions: "0" }, name);
       }

@@ -25,10 +25,10 @@ export async function scuFringe(page) {
     }
     const actual = await page.evaluate(async ({image,count}) => {
       const { emulator } = await import("./app.js");
-      emulator.reset_bios(Uint8Array.from(image));
-      for (let i=0; i<8; i++) emulator.run_steps(10000);
-      return {records: Array.from({length:count}, (_,i) => emulator.read_long(0x0600D000+i*4)),
-        exceptions: emulator.exception_count(), sp: emulator.registers()[15], status: emulator.status()};
+      (await emulator.reset_bios(Uint8Array.from(image)));
+      for (let i=0; i<8; i++) (await emulator.run_steps(10000));
+      return {records: (await Promise.all(Array.from({length:count}, async (_,i) => (await emulator.read_long(0x0600D000+i*4))))),
+        exceptions: (await emulator.exception_count()), sp: (await emulator.registers())[15], status: (await emulator.status())};
     }, {image:[...image],count:expected.length});
     assert.deepEqual(actual.records, expected);
     assert.equal(actual.exceptions,"480");

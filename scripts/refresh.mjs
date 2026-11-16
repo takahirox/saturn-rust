@@ -25,10 +25,10 @@ export async function refreshArbitration(page) {
     await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const run = () => page.evaluate(async () => {
       const { emulator } = await import("./app.js");
-      emulator.run_steps(6000);
-      return { traces: [[0x0600E400, 7], [0x0600E500, 4]].map(([at, n]) =>
-        Array.from({ length: n }, (_, i) => emulator.read_long(at + i * 4))),
-      exceptions: [emulator.exception_count(), emulator.slave_exception_count()] };
+      (await emulator.run_steps(6000));
+      return { traces: (await Promise.all([[0x0600E400, 7], [0x0600E500, 4]].map(async ([at, n]) =>
+        (await Promise.all(Array.from({ length: n }, async (_, i) => (await emulator.read_long(at + i * 4)))))))),
+      exceptions: [(await emulator.exception_count()), (await emulator.slave_exception_count())] };
     });
     const result = await run(), [master, slave] = result.traces;
     assert.deepEqual(result.exceptions, ["0", "0"]);
@@ -52,9 +52,9 @@ export async function refreshArbitration(page) {
   held.writeUInt16BE(9, 0x4242); // omit guest self-refresh exit
   const blocked = await page.evaluate(async image => {
     const { emulator } = await import("./app.js");
-    emulator.reset_bios(Uint8Array.from(image));
-    emulator.run_steps(6000);
-    return [emulator.read_long(0x0600E408), emulator.read_long(0x0600E418), emulator.read_long(0x0600E50C)];
+    (await emulator.reset_bios(Uint8Array.from(image)));
+    (await emulator.run_steps(6000));
+    return [(await emulator.read_long(0x0600E408)), (await emulator.read_long(0x0600E418)), (await emulator.read_long(0x0600E50C))];
   }, [...held]);
   assert.deepEqual(blocked, [0, 0, 0]);
 
@@ -74,10 +74,10 @@ export async function refreshArbitration(page) {
       image[at + 1] = value;
       const execute = () => page.evaluate(async image => {
         const { emulator } = await import("./app.js");
-        emulator.reset_bios(Uint8Array.from(image));
-        emulator.run_steps(6000);
-        return { trace: [0x0600E600, 0x0600E604, 0x0600E608, 0x0600E700].map(at => emulator.read_long(at)),
-          exceptions: [emulator.exception_count(), emulator.slave_exception_count()] };
+        (await emulator.reset_bios(Uint8Array.from(image)));
+        (await emulator.run_steps(6000));
+        return { trace: (await Promise.all([0x0600E600, 0x0600E604, 0x0600E608, 0x0600E700].map(async at => (await emulator.read_long(at))))),
+          exceptions: [(await emulator.exception_count()), (await emulator.slave_exception_count())] };
       }, [...image]);
       const result = await execute();
       assert.deepEqual(result.exceptions, ["0", "0"]);

@@ -33,11 +33,11 @@ export async function scspMonitor(page) {
     await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
     const run = () => page.evaluate(async () => {
       const { emulator } = await import("./app.js");
-      for (let i = 0; i < 20; i++) emulator.run_steps(10000);
-      const pcm = emulator.audio_samples(8192);
-      return { records: Array.from({ length: 64 }, (_, i) => emulator.read_long(0x05A05000 + i * 4)),
-        done: emulator.read_long(0x06007004), exceptions: emulator.exception_count(),
-        halted: emulator.sound_halted(), instructions: emulator.sound_instruction_count(),
+      for (let i = 0; i < 20; i++) (await emulator.run_steps(10000));
+      const pcm = (await emulator.audio_samples(8192));
+      return { records: (await Promise.all(Array.from({ length: 64 }, async (_, i) => (await emulator.read_long(0x05A05000 + i * 4))))),
+        done: (await emulator.read_long(0x06007004)), exceptions: (await emulator.exception_count()),
+        halted: (await emulator.sound_halted()), instructions: (await emulator.sound_instruction_count()),
         tail: Array.from(pcm.slice(-128)) };
     });
     const result = await run();
@@ -57,8 +57,8 @@ export async function scspMonitor(page) {
       const output = new AudioOutput();
       try {
         await output.enable(); output.setPaused(false);
-        emulator.run_steps(10000);
-        output.deliver(emulator.audio_samples(8192));
+        (await emulator.run_steps(10000));
+        output.deliver((await emulator.audio_samples(8192)));
         for (let i = 0; i < 200; i++) {
           if (output.stats.rendered > 128 && output.stats.state === "underflow") break;
           await new Promise(resolve => setTimeout(resolve, 25));
