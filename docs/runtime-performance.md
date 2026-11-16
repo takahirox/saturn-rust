@@ -3626,6 +3626,15 @@ original waveform peak 0.75, and both pending queues drained. This is an unmet
 performance acceptance probe, not a passing correctness check or a CI gate.
 Its pacing/zero-underflow requirements remain intact.
 
+Initial PR CI at `ea3429a` passes Wasm and the 13 runner tests, then rejects a
+shared-shard scheduler test that incorrectly requires host throughput of at least
+58 fields/s: the CI host achieves 27.50 fields/s. The scheduler regression now
+requires real Worker progress with RAF withheld, no synchronous guest advance
+from future/duplicate RAF callbacks, the 62-fields/s upper bound and exact
+stationarity after pause. It does not set a host-speed floor. This change does
+not relax the separate game/SCSP real-time acceptance or native guest timing
+oracles; those remain measured and unmet where reported above.
+
 Feature-enabled original-guest browser comparisons preserve all 22 device
 hashes, CPU clocks/registers, every returned image and PCM through direct/relay
 paths, pause, in-flight reset and delayed receipts. The equal-100-ms delay control
