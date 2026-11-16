@@ -18,6 +18,7 @@ pub(crate) enum Owner {
     Cpu,
 }
 #[derive(Default, Clone)]
+#[cfg_attr(any(test, feature = "kernel-experiment"), derive(Debug))]
 struct Port {
     request: Option<Request>,
     result: Option<u32>,
@@ -25,12 +26,14 @@ struct Port {
     sampled: u32,
 }
 #[derive(Clone)]
+#[cfg_attr(any(test, feature = "kernel-experiment"), derive(Debug))]
 struct Admitted {
     owner: Owner,
     request: Request,
     config: RamConfig,
 }
 #[derive(Default)]
+#[cfg_attr(any(test, feature = "kernel-experiment"), derive(Debug))]
 pub(super) struct Controller {
     main: Port,
     cpu: Port,
@@ -181,7 +184,31 @@ impl Sound {
         &self.memory.trace
     }
 
+    #[cfg(any(test, feature = "sound-worker"))]
+    pub(crate) fn main_port_idle(&self) -> bool {
+        self.memory.main.request.is_none() && self.memory.main.result.is_none()
+    }
     pub(crate) fn main_ram_request(&mut self, request: Option<Request>) {
+        #[cfg(any(test, feature = "sound-worker"))]
+        if self.projection.is_some() {
+            return;
+        }
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        if request != self.memory.main.request {
+            if let Some(r) = request {
+                self.record_domain_event(
+                    5,
+                    [
+                        r.address as u32,
+                        r.width as u32,
+                        r.write.unwrap_or(0),
+                        u32::from(r.write.is_some()),
+                    ],
+                );
+            } else {
+                self.record_domain_event(6, [0; 4]);
+            }
+        }
         if let Some(request) = request {
             self.memory.submit(Owner::Main, request);
         } else {
@@ -192,12 +219,40 @@ impl Sound {
         self.memory.ready(Owner::Main)
     }
     pub(crate) fn complete_main_ram(&mut self) -> Result<u32, BusError> {
-        Ok(self
+        let value = self
             .memory
             .take(Owner::Main)
-            .expect("DRAM completion before interface acknowledgement"))
+            .expect("DRAM completion before interface acknowledgement");
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        self.record_domain_event(7, [0, 0, value, 0]);
+        Ok(value)
     }
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::structure!(Request {
+    address,
+    width,
+    write
+});
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::structure!(Port {
+    request,
+    result,
+    offset,
+    sampled
+});
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::structure!(Admitted {
+    owner,
+    request,
+    config
+});
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::structure!(Controller { main, cpu, admitted } defaults { #[cfg(test)] trace: Vec::new() });
+
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::enumeration!(Owner { Pcm=0, Dsp=1, Refresh=2, Dma=3, Main=4, Cpu=5 });

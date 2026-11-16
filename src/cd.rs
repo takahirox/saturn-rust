@@ -987,6 +987,18 @@ impl CdBlock {
         Some((media, track))
     }
 
+    /// Idle drive/report ticks update status and HIRQ, but cannot start audio:
+    /// advance() enters playback only through an already active command/work.
+    /// The caller separately fences new CD MMIO and SMPC power commands.
+    #[cfg(any(test, feature = "sound-worker"))]
+    pub(crate) fn sound_source_deadline(&self) -> u32 {
+        if self.active() {
+            self.clocks_to_event()
+        } else {
+            u32::MAX
+        }
+    }
+
     /// Audio is constant zero until a CD event or a guest CD register access.
     pub(crate) fn audio_quiet(&self) -> bool {
         self.audio_source().is_none()

@@ -29,17 +29,34 @@ impl Sound {
         &mut self,
         clocks: u32,
     ) -> Result<(u32, SoundCheckpoint), BusError> {
+        let mut checkpoint = self.capture_sound_checkpoint();
+        debug_assert!(self.cached_lookahead_allowed());
+        let start = self.time;
+        if let Err(error) =
+            self.advance_domain_recorded(clocks, None, true, Some(&mut checkpoint.undo))
+        {
+            self.restore_cached_lookahead(checkpoint);
+            return Err(error);
+        }
+        Ok(((self.time - start) as u32, checkpoint))
+    }
+
+    fn capture_sound_checkpoint(&mut self) -> SoundCheckpoint {
         // Snapshot before diagnostic admission, which memoizes DSP validity.
         // Keep host samples in place and journal overwritten ones instead of
         // cloning the 32 KiB queue; independent synthesis state still clones.
         let output = std::mem::take(&mut self.scsp.output);
         let scsp = self.scsp.clone();
         self.scsp.output = output;
-        let mut checkpoint = SoundCheckpoint {
+        SoundCheckpoint {
             state: Box::new(Self {
+                #[cfg(any(test, feature = "kernel-experiment"))]
+                domain_trace: self.domain_trace.clone(),
+                #[cfg(any(test, feature = "sound-worker"))]
+                projection: None,
                 cpu: self.cpu.clone(),
-                // CPU and DSP writes below record physical bytes before changing
-                // RAM. DMA and main-CPU RAM requests are excluded by admission.
+                // CPU, DSP and DMA writes record physical bytes before changing
+                // RAM. The private cached admission remains stricter.
                 ram: Vec::new(),
                 scsp,
                 enabled: self.enabled,
@@ -59,16 +76,22 @@ impl Sound {
             output_len: self.scsp.output.len(),
             #[cfg(test)]
             trace_len: self.memory.trace.len(),
-        };
-        debug_assert!(self.cached_lookahead_allowed());
-        let start = self.time;
+        }
+    }
+    #[cfg(any(test, feature = "sound-worker"))]
+    pub(super) fn forecast_segment(
+        &mut self,
+        clocks: u32,
+        observe: impl FnMut(u64, bool),
+    ) -> Result<SoundCheckpoint, BusError> {
+        let mut checkpoint = self.capture_sound_checkpoint();
         if let Err(error) =
-            self.advance_domain_recorded(clocks, None, true, Some(&mut checkpoint.undo))
+            self.advance_domain_observed(clocks, None, false, Some(&mut checkpoint.undo), observe)
         {
             self.restore_cached_lookahead(checkpoint);
             return Err(error);
         }
-        Ok(((self.time - start) as u32, checkpoint))
+        Ok(checkpoint)
     }
 
     pub(crate) fn restore_cached_lookahead(&mut self, mut checkpoint: SoundCheckpoint) {
@@ -91,6 +114,13 @@ impl Sound {
             checkpoint.state.memory.trace = trace;
         }
         *self = *checkpoint.state;
+    }
+}
+
+#[cfg(any(test, feature = "sound-worker"))]
+impl SoundCheckpoint {
+    pub(super) fn reference_time(&self) -> u64 {
+        self.state.time
     }
 }
 

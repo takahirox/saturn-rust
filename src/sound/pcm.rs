@@ -7,6 +7,7 @@
 use super::*;
 
 #[derive(Clone)]
+#[cfg_attr(any(test, feature = "kernel-experiment"), derive(Debug))]
 pub(super) struct Slot {
     pub slot: usize,
     pub regs: [u16; 12],
@@ -29,6 +30,7 @@ pub(super) struct Slot {
 // their operands in a fixed pool; inactive voices still publish their
 // captured stack inhibition and DSP routing at the original edges.
 #[derive(Clone, Copy)]
+#[cfg_attr(any(test, feature = "kernel-experiment"), derive(Debug))]
 pub(super) struct PipelineSlot {
     slot: u8,
     inhibit: bool,
@@ -46,6 +48,7 @@ impl PipelineSlot {
     }
 }
 #[derive(Clone)]
+#[cfg_attr(any(test, feature = "kernel-experiment"), derive(Debug))]
 pub(super) struct Word {
     operand: usize,
     address: usize,
@@ -385,12 +388,8 @@ impl Scsp {
         ram: &mut [u8],
         mut undo: Option<&mut checkpoint::RamUndo>,
     ) -> Result<bool, BusError> {
-        debug_assert!(
-            undo.is_none() || !self.dma_active(),
-            "lookahead excludes SCSP DMA"
-        );
         self.complete_pcm(ram);
-        self.complete_dma(ram)?;
+        self.complete_dma(ram, undo.as_deref_mut())?;
         if step == 0 {
             self.begin_sample();
         }
@@ -414,3 +413,36 @@ impl Scsp {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::structure!(Slot {
+    slot,
+    regs,
+    attenuation,
+    lfo,
+    addresses,
+    fraction,
+    samples,
+    fetch,
+    active,
+    phase,
+    reverse,
+    envelope,
+    value,
+    generation,
+    started
+});
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::structure!(PipelineSlot {
+    slot,
+    inhibit,
+    routing,
+    work
+});
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::structure!(Word {
+    operand,
+    address,
+    control,
+    config
+});

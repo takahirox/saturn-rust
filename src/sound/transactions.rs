@@ -46,6 +46,7 @@ impl Operation {
 }
 
 #[derive(Clone, Copy)]
+#[cfg_attr(any(test, feature = "kernel-experiment"), derive(Debug))]
 struct Completed {
     key: u64,
     result: Result<u32, u32>,
@@ -55,6 +56,7 @@ struct Completed {
 }
 
 #[derive(Default, Clone)]
+#[cfg_attr(any(test, feature = "kernel-experiment"), derive(Debug))]
 pub(super) struct Transactions {
     // Successful replay is the hot path. Keep large diagnostic errors out of
     // each completed access; their original values remain available by index.
@@ -72,11 +74,27 @@ pub(super) struct Transactions {
     cpu: Option<M68k>,
 }
 #[derive(Default, Clone)]
+#[cfg_attr(any(test, feature = "kernel-experiment"), derive(Debug))]
 struct ResetSequence {
     word: usize,
     high: u16,
 }
 impl Transactions {
+    #[cfg(test)]
+    pub(super) fn domain_error_count(&self) -> usize {
+        self.errors.len()
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(super) fn domain_diagnostic_state(&self) -> Self {
+        #[allow(unused_mut)]
+        let mut state = self.clone();
+        #[cfg(test)]
+        {
+            state.literal_finishes = false;
+            state.elided_finishes = 0;
+        }
+        state
+    }
     /// A RAM transfer cannot change SCSP configuration or signal the main CPU.
     /// A newly issued control write/reset needs at least four sound CPU clocks.
     pub fn control_write_pending(&self) -> bool {
@@ -359,6 +377,90 @@ mod key_tests {
                     check(Operation::Write(n, width, value));
                 }
             }
+        }
+    }
+}
+
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::structure!(Transactions { completed, errors, cursor, waiting, start, stalls, reset, cpu } defaults { #[cfg(test)] literal_finishes: false, #[cfg(test)] elided_finishes: 0 });
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::structure!(ResetSequence { word, high });
+
+#[cfg(any(test, feature = "sound-worker"))]
+mod sound_wire {
+    use super::*;
+    use crate::sound::wire::{Error, Input, Wire};
+    impl Wire for Operation {
+        fn put(&self, out: &mut Vec<u8>) {
+            match self {
+                Self::InternalWait(n) => {
+                    0u8.put(out);
+                    n.put(out)
+                }
+                Self::FinishClocks(n) => {
+                    1u8.put(out);
+                    n.put(out)
+                }
+                Self::Read(a, w) => {
+                    2u8.put(out);
+                    a.put(out);
+                    w.put(out)
+                }
+                Self::Write(a, w, v) => {
+                    3u8.put(out);
+                    a.put(out);
+                    w.put(out);
+                    v.put(out)
+                }
+                Self::ResetOutput => 4u8.put(out),
+                Self::InterruptAcknowledge(level) => {
+                    5u8.put(out);
+                    level.put(out)
+                }
+            }
+        }
+        fn get(input: &mut Input<'_>) -> Result<Self, Error> {
+            Ok(match u8::get(input)? {
+                0 => Self::InternalWait(u32::get(input)?),
+                1 => Self::FinishClocks(u32::get(input)?),
+                2 => Self::Read(u32::get(input)?, usize::get(input)?),
+                3 => Self::Write(u32::get(input)?, usize::get(input)?, u32::get(input)?),
+                4 => Self::ResetOutput,
+                5 => Self::InterruptAcknowledge(u8::get(input)?),
+                _ => return Err("invalid sound transaction operation"),
+            })
+        }
+    }
+    impl Wire for Completed {
+        fn put(&self, out: &mut Vec<u8>) {
+            self.key.put(out);
+            self.result.put(out);
+        }
+        fn get(input: &mut Input<'_>) -> Result<Self, Error> {
+            let key = u64::get(input)?;
+            let result = Result::<u32, u32>::get(input)?;
+            Ok(Self {
+                key,
+                result,
+                #[cfg(test)]
+                operation: {
+                    let a = key as u32;
+                    let w = 1 + ((key >> 48) & 1) as usize;
+                    let op = match key >> 49 {
+                        0 => Operation::InternalWait(a),
+                        1 => Operation::FinishClocks(a),
+                        2 => Operation::Read(a, w),
+                        3 => Operation::Write(a, w, ((key >> 32) & 65535) as u32),
+                        4 => Operation::ResetOutput,
+                        5 => Operation::InterruptAcknowledge(a as u8),
+                        _ => return Err("invalid packed sound operation"),
+                    };
+                    if op.key() != key {
+                        return Err("noncanonical packed sound operation");
+                    }
+                    op
+                },
+            })
         }
     }
 }

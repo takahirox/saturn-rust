@@ -9,12 +9,12 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { chromium } from "playwright";
 
-const { values } = parseArgs({ options: { pkg: { type: "string", default: "web/pkg" }, direct: { type: "boolean", default: false }, "delay-audio": { type: "boolean", default: false }, "delay-receipt": { type: "boolean", default: false }, "early-credit": { type: "boolean", default: false } } });
+const { values } = parseArgs({ options: { pkg: { type: "string", default: "web/pkg" }, direct: { type: "boolean", default: false }, "delay-audio": { type: "boolean", default: false }, "delay-receipt": { type: "boolean", default: false }, "early-credit": { type: "boolean", default: false }, "sound-error": { type: "boolean", default: false } } });
 const assets = new Map(), sha256 = {};
 for (const [url, file] of [
   ["/pkg/saturn_rust.js", resolve(values.pkg, "saturn_rust.js")],
   ["/pkg/saturn_rust_bg.wasm", resolve(values.pkg, "saturn_rust_bg.wasm")],
-  ...["video-worker.js", "video-render-client.js", "playback-worker.js", "playback-client.js"].map(name => ["/" + name, resolve("web", name)]),
+  ...["video-worker.js", "video-render-client.js", "playback-worker.js", "playback-client.js", "sound-client.js", "sound-worker.js"].map(name => ["/" + name, resolve("web", name)]),
 ]) {
   let bytes = await readFile(file);
   if (url === "/playback-worker.js" && values["delay-audio"]) {
@@ -39,12 +39,17 @@ for (const [url, file] of [
     assert(send.endsWith(";"));
     bytes = Buffer.from(source.slice(0, start) + "    " + send.replace("self.postMessage(", "((...args) => setTimeout(() => self.postMessage(...args), 250))(") + source.slice(close));
   }
+  if (url === "/sound-worker.js" && values["sound-error"]) {
+    const finish = "const state=actor.snapshot_at(data.at); owned=false;";
+    assert(bytes.toString().includes(finish), "controlled Sound failure must alter the served return");
+    bytes = Buffer.from(bytes.toString().replace(finish, 'throw new Error("Controlled Sound return failure");'));
+  }
   assets.set(url, bytes);
   sha256[url] = createHash("sha256").update(bytes).digest("hex");
 }
 const fixtures = [];
 for (const [name, marker] of [["rotation-fetch-tile", 0x0600DC0C], ["rotation-fetch-rbg1", 0x0600DC0C],
-  ["sprite-rotation16", 0x0600DE18], ["sprite-interlace", 0x0600DF34], ["scsp-pcm", 0x0600ED00]]) {
+  ["sprite-rotation16", 0x0600DE18], ["sprite-interlace", 0x0600DF34], ["scsp-pcm", 0x0600ED00], ["scsp-clock", 0x05A00804]]) {
   const bytes = Buffer.alloc(524288);
   for (const line of (await readFile(`tests/fixtures/${name}.hex`, "utf8")).split(/\r?\n/)) {
     if (!line.trim() || line.startsWith("#")) continue;
@@ -70,7 +75,7 @@ try {
   const origin = `http://127.0.0.1:${server.address().port}`;
   await page.route("**/*", route => route.request().url().startsWith(origin + "/") && route.request().method() === "GET" ? route.continue() : route.abort());
   await page.goto(origin + "/");
-  const result = await page.evaluate(async ({ fixtures, direct }) => {
+  const result = await page.evaluate(async ({ fixtures, direct, soundError }) => {
     const { default: init, Emulator } = await import("./pkg/saturn_rust.js");
     const { PlaybackClient } = await import("./playback-client.js");
     await init();
@@ -106,8 +111,8 @@ try {
           },
         });
         const compare = state => {
-          if (state.coreHashes?.length !== 22 || reference.loop_state_hashes().length !== 22) throw new Error("Full device hash coverage missing");
-          same(state.coreHashes, [...reference.loop_state_hashes()], "Full device state changed");
+          if (state.coreHashes?.length !== 22 || reference.loop_state_hashes().length !== 22) throw new Error("Private CPU/cache hash coverage missing");
+          same(state.coreHashes, [...reference.loop_state_hashes()], "Private CPU/cache state changed");
           same(state.registers, [...reference.registers()], "Master registers changed");
           same(state.special, [...reference.special_registers()], "Special registers changed");
           same(state.slaveRegisters, [...reference.slave_registers()], "Slave registers changed");
@@ -159,13 +164,18 @@ try {
           reference.set_buttons(0); reference.set_port2_buttons(0);
           client.setInput({ buttons: 0, port2Buttons: 0 });
           compare(await timed(client.advance(2)));
+          const final = await timed(client.inspect());
+          if (name === "scsp-clock") {
+            if (!(final.soundTransport.jobs > 0)) throw new Error("Original sound CPU must exercise actual offload");
+            if (final.soundTransport.disabled !== soundError) throw new Error("Sound failure/fallback policy was not exercised");
+          }
           results.push({ name, fields, nonzero, stopped: fields, inFlightReset: true,
-            peak: (await timed(client.inspect())).peakPendingFrames });
+            soundTransport: final.soundTransport, peak: final.peakPendingFrames });
         } finally { client.close(); reference.free(); }
       }
       return { fixtures: results, mainTimerTicks: ticks };
     } finally { clearInterval(timer); }
-  }, { fixtures, direct: values.direct });
+  }, { fixtures, direct: values.direct, soundError: values["sound-error"] });
   assert.equal(result.fixtures.length, fixtures.length);
   assert(result.mainTimerTicks > 0, "main thread must service timers");
   console.log(JSON.stringify({ browser: browser.version(), cross_origin_isolated: await page.evaluate(() => crossOriginIsolated),

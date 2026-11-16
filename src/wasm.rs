@@ -490,6 +490,32 @@ impl Emulator {
     pub fn loop_state_hashes(&self) -> Vec<u32> {
         self.machine.loop_state_hashes()
     }
+    pub fn begin_sound_domain_trace(&mut self) -> Result<(), JsValue> {
+        self.machine
+            .begin_sound_domain_trace()
+            .map_err(|e| JsValue::from_str(&e))
+    }
+    pub fn take_sound_domain_trace(&mut self) -> Vec<u32> {
+        self.machine.take_sound_domain_trace()
+    }
+    pub fn sound_domain_snapshot(&self) -> Result<Vec<u8>, JsValue> {
+        self.machine
+            .sound_domain_snapshot()
+            .map_err(JsValue::from_str)
+    }
+
+    pub fn restore_remote_sound_projection(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+        self.machine
+            .restore_remote_sound_projection(bytes)
+            .map_err(JsValue::from_str)
+    }
+    pub fn begin_sound_projection(&mut self, clocks: u32) -> bool {
+        self.machine.begin_sound_projection(clocks)
+    }
+    pub fn finish_sound_projection(&mut self) -> bool {
+        self.machine.finish_sound_projection()
+    }
+
     pub fn enable_loop_replay(&mut self, enabled: bool) {
         self.machine.enable_loop_replay(enabled);
     }
@@ -516,5 +542,177 @@ impl Emulator {
     }
     pub fn capture_loop_trace(&mut self) -> Result<Vec<u32>, JsValue> {
         self.machine.capture_loop_trace().map_err(js_error)
+    }
+}
+
+#[cfg(feature = "kernel-experiment")]
+#[derive(Default)]
+#[wasm_bindgen]
+pub struct SoundDomain {
+    sound: crate::sound::Sound,
+}
+
+#[cfg(feature = "kernel-experiment")]
+#[wasm_bindgen]
+impl SoundDomain {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn replay_forecast(&mut self, words: &[u32]) -> Result<u32, JsValue> {
+        self.sound
+            .replay_domain_trace_forecast(words)
+            .map_err(|e| JsValue::from_str(&e))
+    }
+    pub fn replay(&mut self, words: &[u32]) -> Result<(), JsValue> {
+        self.sound
+            .replay_domain_trace(words)
+            .map_err(|e| JsValue::from_str(&e))
+    }
+    pub fn digest(&self) -> Vec<u32> {
+        self.sound.domain_digest().to_vec()
+    }
+    pub fn snapshot(&self) -> Result<Vec<u8>, JsValue> {
+        self.sound.domain_snapshot().map_err(JsValue::from_str)
+    }
+    pub fn load_state(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+        self.sound
+            .restore_domain_snapshot(bytes)
+            .map_err(JsValue::from_str)
+    }
+}
+
+#[cfg(feature = "kernel-experiment")]
+#[wasm_bindgen]
+pub struct SoundForecaster {
+    forecast: crate::sound::forecast::Forecast,
+}
+#[cfg(feature = "kernel-experiment")]
+#[wasm_bindgen]
+impl SoundForecaster {
+    #[wasm_bindgen(constructor)]
+    pub fn new(bytes: &[u8]) -> Result<SoundForecaster, JsValue> {
+        let sound = crate::sound::Sound::from_domain_snapshot(bytes).map_err(JsValue::from_str)?;
+        Ok(Self {
+            forecast: crate::sound::forecast::Forecast::new(sound),
+        })
+    }
+    pub fn extend(&mut self, through: u64) -> Result<(), JsValue> {
+        self.forecast
+            .extend(through)
+            .map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+    pub fn prefix(&self) -> Vec<u32> {
+        let origin = self.forecast.origin();
+        let through = self.forecast.through();
+        let stable = self.forecast.stable_frontier();
+        vec![
+            origin as u32,
+            (origin >> 32) as u32,
+            through as u32,
+            (through >> 32) as u32,
+            stable as u32,
+            (stable >> 32) as u32,
+            u32::from(self.forecast.initial_irq()),
+        ]
+    }
+    pub fn snapshot_at(&mut self, at: u64) -> Result<Vec<u8>, JsValue> {
+        self.forecast
+            .snapshot_at(at)
+            .map_err(|error| JsValue::from_str(&error))
+    }
+}
+
+#[cfg(feature = "sound-worker")]
+#[derive(Default)]
+#[wasm_bindgen]
+pub struct SoundDeltaOwner {
+    owner: crate::sound::delta::DeltaOwner,
+}
+#[cfg(feature = "sound-worker")]
+#[wasm_bindgen]
+impl SoundDeltaOwner {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn begin(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+        self.owner.begin(bytes).map_err(JsValue::from_str)
+    }
+    pub fn extend(&mut self, to: u64) -> Result<(), JsValue> {
+        self.owner
+            .extend(to)
+            .map_err(|error| JsValue::from_str(&error))
+    }
+    pub fn prefix(&self) -> Result<Vec<u32>, JsValue> {
+        self.owner.prefix().map_err(JsValue::from_str)
+    }
+    pub fn snapshot_at(&mut self, at: u64) -> Result<Vec<u8>, JsValue> {
+        self.owner
+            .finish(at)
+            .map_err(|error| JsValue::from_str(&error))
+    }
+}
+
+#[cfg(feature = "sound-worker")]
+#[wasm_bindgen]
+impl Emulator {
+    pub fn advance_sound_rendezvous_field(&mut self) -> Result<bool, JsValue> {
+        self.machine
+            .advance_sound_rendezvous_field()
+            .map_err(js_error)
+    }
+    pub fn reset_sound_transport(&mut self) -> Result<(), JsValue> {
+        self.machine
+            .reset_sound_transport()
+            .map_err(JsValue::from_str)
+    }
+    pub fn abort_sound_transport(&mut self) -> Result<(), JsValue> {
+        self.machine.abort_sound_transport().map_err(js_error)
+    }
+
+    pub fn sound_worker_field_eligible(&self) -> bool {
+        self.machine.sound_worker_field_eligible()
+    }
+    pub fn export_sound_delta(&mut self) -> Result<Vec<u8>, JsValue> {
+        self.machine.export_sound_delta().map_err(JsValue::from_str)
+    }
+    pub fn restore_remote_sound_delta(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+        self.machine
+            .restore_remote_sound_delta(bytes)
+            .map_err(JsValue::from_str)
+    }
+    pub fn remote_sound_projection_range(&self, clocks: u32) -> Vec<u32> {
+        self.machine.remote_sound_projection_range(clocks)
+    }
+    pub fn accept_remote_sound_projection(
+        &mut self,
+        origin: u64,
+        end: u64,
+        through: u64,
+        irq: bool,
+    ) -> Result<(), JsValue> {
+        self.machine
+            .accept_remote_sound_projection(origin, end, through, irq)
+            .map_err(JsValue::from_str)
+    }
+    pub fn extend_remote_sound_projection(&mut self, through: u64) -> Result<(), JsValue> {
+        self.machine
+            .extend_remote_sound_projection(through)
+            .map_err(JsValue::from_str)
+    }
+    pub fn remote_sound_projection_time(&self) -> u64 {
+        self.machine.remote_sound_projection_time()
+    }
+    pub fn advance_sound_projection_field(&mut self) -> Result<bool, JsValue> {
+        self.machine
+            .advance_sound_projection_field()
+            .map_err(js_error)
+    }
+    pub fn sound_rendezvous_boundary(&self) -> Vec<u32> {
+        self.machine.sound_rendezvous_boundary()
+    }
+    pub fn acknowledge_sound_rendezvous(&mut self) -> bool {
+        self.machine.acknowledge_sound_rendezvous()
     }
 }

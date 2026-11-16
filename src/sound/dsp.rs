@@ -6,7 +6,8 @@
 use super::{BusError, RamConfig, Scsp};
 
 #[derive(Clone)]
-#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+#[cfg_attr(any(test, feature = "kernel-experiment"), derive(Debug))]
 pub(super) struct Dsp {
     coefficients: [u16; 64],
     addresses: [u16; 32],
@@ -86,6 +87,10 @@ fn pack(value: i32) -> u16 {
         | ((mantissa >> 11) as u16 & 0x7FF)
 }
 impl Dsp {
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(super) fn normalize_domain_memo(&mut self) {
+        self.validated_program.set(None);
+    }
     pub fn read(&self, offset: u32) -> Result<u16, BusError> {
         let index = offset as usize;
         let part = |v: i32, low_bits: u32| {
@@ -426,3 +431,6 @@ impl Dsp {
 mod clock_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(any(test, feature = "sound-worker"))]
+crate::sound::wire::structure!(Dsp { coefficients, addresses, program, temp, mems, mix, effects, decrement, accumulator, y, fraction, address, memory, reads, programmed, nonzero_program, live_steps, nonzero_temp } defaults { validated_program: std::cell::Cell::new(None) });

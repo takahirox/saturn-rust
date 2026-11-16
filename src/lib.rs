@@ -12,6 +12,10 @@ mod hle;
 #[cfg(test)]
 mod load_scheduler_tests;
 pub mod m68k;
+#[cfg(feature = "sound-worker")]
+pub use sound::delta::DeltaOwner as SoundDomainOwner;
+#[cfg(any(test, feature = "sound-worker"))]
+pub use sound::forecast::Forecast as SoundDomainForecast;
 pub mod media;
 #[cfg(test)]
 mod multiplier_scheduler_tests;
@@ -742,7 +746,14 @@ impl Machine {
         &self.bus.sound.cpu.state
     }
     pub fn drain_audio(&mut self, frames: usize) -> Vec<i16> {
-        self.bus.sound.scsp.drain(frames)
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        {
+            self.bus.sound.drain_domain_audio(frames)
+        }
+        #[cfg(not(any(test, feature = "kernel-experiment")))]
+        {
+            self.bus.sound.scsp.drain(frames)
+        }
     }
     pub fn audio_generated(&self) -> u64 {
         self.bus.sound.scsp.generated
@@ -830,10 +841,39 @@ impl Machine {
         self.advance_frame_mode::<false>()
     }
     fn advance_frame_mode<const FIELD_BOUNDARY: bool>(&mut self) -> Result<(), MachineError> {
-        let target = self.frames() + 1;
-        let mut steps = 0;
+        self.advance_frame_bounded::<FIELD_BOUNDARY, false>(self.frames() + 1, 0)
+            .map(|_| ())
+    }
+    fn advance_frame_bounded<const FIELD_BOUNDARY: bool, const STOP_SOUND: bool>(
+        &mut self,
+        target: u64,
+        mut steps: u32,
+    ) -> Result<bool, MachineError> {
+        #[cfg(any(test, feature = "sound-worker"))]
+        let cooperative_stop = if STOP_SOUND && self.bus.sound_rendezvous.cooperative {
+            steps.saturating_add(64)
+        } else {
+            u32::MAX
+        };
         while steps < 1_000_000 {
+            #[cfg(any(test, feature = "sound-worker"))]
+            if STOP_SOUND && steps >= cooperative_stop {
+                self.bus.sound_rendezvous.steps = steps;
+                return Ok(false);
+            }
+            #[cfg(any(test, feature = "sound-worker"))]
+            if STOP_SOUND && self.bus.sound_rendezvous_blocked() {
+                self.bus.sound_rendezvous.steps = steps;
+                return Ok(false);
+            }
+            if self.frames() >= target {
+                #[cfg(any(test, feature = "video-worker"))]
+                self.bus.drain_video_journal();
+                return Ok(true);
+            }
             let limit = (1_000_000 - steps).min(512);
+            #[cfg(any(test, feature = "sound-worker"))]
+            let limit = limit.min(cooperative_stop.saturating_sub(steps));
             let mut count = if self.bus.slave_enabled
                 && (((self.cpu_ready[1] != self.bus.main_clocks
                     || self.bus.main_clocks < self.slave_poll_retry)
@@ -846,6 +886,12 @@ impl Machine {
             } else {
                 self.try_cached_batch(limit)?
             };
+            #[cfg(any(test, feature = "sound-worker"))]
+            if STOP_SOUND && self.bus.sound_rendezvous_blocked() {
+                steps += count.max(1);
+                self.bus.sound_rendezvous.steps = steps;
+                return Ok(false);
+            }
             if count == 0 {
                 if let Some(error) = &self.fault {
                     return Err(error.clone());
@@ -858,10 +904,15 @@ impl Machine {
                 .inspect_err(|error| self.fault = Some(error.clone()))?;
             }
             steps += count.max(1);
+            #[cfg(any(test, feature = "sound-worker"))]
+            if STOP_SOUND && self.bus.sound_rendezvous_blocked() {
+                self.bus.sound_rendezvous.steps = steps;
+                return Ok(false);
+            }
             if self.frames() >= target {
                 #[cfg(any(test, feature = "video-worker"))]
                 self.bus.drain_video_journal();
-                return Ok(());
+                return Ok(true);
             }
         }
         Err(MachineError::StepLimit(1_000_000))
@@ -1401,7 +1452,37 @@ impl Machine {
         coalesced: bool,
     ) -> Result<bool, MachineError> {
         self.bus.grant_bus_transaction();
-        let next = if self.bus.slave_enabled {
+        #[cfg(any(test, feature = "sound-worker"))]
+        if self.bus.sound_rendezvous_blocked() {
+            return Ok(committed);
+        }
+        #[cfg(any(test, feature = "sound-worker"))]
+        let sleep_ready = if coalesced
+            && self.bus.sound.projected()
+            && !self.bus.slave_enabled
+            && self.cpu.sleep_poll_is_stable()
+            && self.cpu_ready[0] > self.bus.main_clocks
+            && self.cpu_boundary[0].is_none()
+            && self.cached_issue[0].is_none()
+            && !self.dma_errors[0]
+            && !self.nmi_pending
+            && self.cpu_reset_vectors[0].is_none()
+            && self.bus.cached_wait_allowed()
+            && self.bus.master_sleep_journal_is_stable()
+            && self
+                .bus
+                .recognized_interrupt(Processor::Master)
+                .is_none_or(|irq| u32::from(irq.level) <= (self.cpu.state().sr >> 4) & 15)
+        {
+            Some(self.cpu_ready[0])
+        } else {
+            None
+        };
+        #[cfg(not(any(test, feature = "sound-worker")))]
+        let sleep_ready: Option<u64> = None;
+        let next = if sleep_ready.is_some() {
+            u64::MAX
+        } else if self.bus.slave_enabled {
             self.cpu_ready[0].min(self.cpu_ready[1])
         } else {
             self.cpu_ready[0]
@@ -1411,13 +1492,35 @@ impl Machine {
         }
         // Even an earlier event would be handled by the bus scheduler inside
         // the minimum one-clock advance. Avoid querying all horizons twice.
-        let can_coalesce = self.can_coalesce_wait(next, committed, coalesced);
+        let can_coalesce =
+            self.can_coalesce_wait(next, committed && sleep_ready.is_none(), coalesced);
         let elapsed = if next.saturating_sub(self.bus.main_clocks) <= 1 {
             1
         } else {
             self.hardware_idle_span(next, can_coalesce)
         };
-        let short_wait = coalesced
+        #[cfg(any(test, feature = "sound-worker"))]
+        let rendezvous = self.bus.sound_rendezvous.enabled;
+        #[cfg(not(any(test, feature = "sound-worker")))]
+        let rendezvous = false;
+        #[cfg(any(test, feature = "sound-worker"))]
+        let elapsed = if rendezvous {
+            if can_coalesce {
+                self.bus.projected_idle_span(elapsed)
+            } else {
+                elapsed.min(1)
+            }
+        } else {
+            elapsed
+        };
+        #[cfg(test)]
+        if rendezvous && elapsed > 1 {
+            self.bus.sound_rendezvous.projected_idle_batches += 1;
+            self.bus.sound_rendezvous.projected_idle_max =
+                self.bus.sound_rendezvous.projected_idle_max.max(elapsed);
+        }
+        let short_wait = !rendezvous
+            && coalesced
             && committed
             && elapsed == 1
             && next > self.bus.main_clocks
@@ -1426,13 +1529,21 @@ impl Machine {
             self.bus
                 .try_retirement_wait()
                 .unwrap_or_else(|| self.bus.advance_cpu_clocks(elapsed))
-        } else if can_coalesce {
+        } else if can_coalesce && !rendezvous {
             self.bus.advance_cpu_clocks_with_sound(elapsed, true)
         } else {
             self.bus.advance_cpu_clocks(elapsed)
         };
         let (reference, command) = result.map_err(MachineError::Scu)?;
         self.clocks += u64::from(reference);
+        if let Some(ready) = sleep_ready {
+            // Polls exactly at the endpoint have not executed yet. Preserve
+            // their original eight-clock phase for interrupts and inspection.
+            let elapsed = self.bus.main_clocks.saturating_sub(ready);
+            self.cpu_ready[0] = ready.saturating_add(
+                elapsed.div_ceil(u64::from(CLOCKS_PER_STEP)) * u64::from(CLOCKS_PER_STEP),
+            );
+        }
         self.complete_hardware_boundary(command)?;
         Ok(committed)
     }
@@ -1449,6 +1560,15 @@ impl Machine {
     }
 
     fn hardware_idle_span(&self, next: u64, can_coalesce: bool) -> u32 {
+        #[cfg(any(test, feature = "sound-worker"))]
+        let limit =
+            if can_coalesce && self.bus.sound_rendezvous.enabled && self.bus.sound.projected() {
+                1024
+            } else {
+                CLOCKS_PER_STEP
+            };
+        #[cfg(not(any(test, feature = "sound-worker")))]
+        let limit = CLOCKS_PER_STEP;
         let nmi_wait = self.nmi_detected.map_or(u64::MAX, |r| {
             let remaining = (r + 2).saturating_sub(self.bus.main_clocks);
             if remaining == 0 { u64::MAX } else { remaining }
@@ -1466,7 +1586,7 @@ impl Machine {
             .min(u64::from(main_deadline))
             .min(u64::from(self.bus.bus_transaction_deadline()))
             .max(1)
-            .min(u64::from(CLOCKS_PER_STEP)) as u32
+            .min(u64::from(limit)) as u32
     }
 
     fn complete_hardware_boundary(&mut self, command: Option<u8>) -> Result<(), MachineError> {
@@ -1569,6 +1689,10 @@ impl Machine {
             if self.bus.take_cpu_transaction_completion(processor) {
                 self.cpu_ready[processor as usize] = self.bus.main_clocks;
             }
+        }
+        #[cfg(any(test, feature = "sound-worker"))]
+        if let Some(command @ (0x06 | 0x07 | 0x0D | 0x0E | 0x0F)) = command {
+            self.bus.sound_control_boundary(command);
         }
         Ok(())
     }
