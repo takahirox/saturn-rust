@@ -1105,6 +1105,11 @@ impl Bus {
     pub(super) fn cached_transfer_active(&self) -> bool {
         self.transactions.active.is_some()
     }
+    pub(super) fn cached_master_write_pending(&self) -> bool {
+        self.transactions.writes[0]
+            .as_ref()
+            .is_some_and(|write| !write.dmac)
+    }
     pub(super) fn cached_reads_quiet(&self) -> bool {
         self.cached_readonly_bus_quiet() && self.external_owner.get() == Some(Processor::Master)
     }
