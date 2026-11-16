@@ -3765,18 +3765,28 @@ reset recreated the Sound Worker and fetched its modules again during local CUE
 replacement. The unchanged no-network assertion failed. Healthy reset now clears
 the Rust owner through an acknowledged command on the existing Worker; only a
 failed owner is replaced. This lifecycle correction is separate from the v3
-throughput results above, which used the earlier reset implementation. The full browser regression passes for the corrected JS; final performance and
-additional Worker-contract confirmation are pending.
+throughput results above, which used the earlier reset implementation. The full browser regression and the subsequent contracts and performance checks
+below pass for the corrected JS.
 
 Complete native validation passes 1422 tests in 111 result groups, all registered
 fixture checks, formatting, native build and all-target/all-feature Clippy with
 warnings denied. Wasm production/all-feature Clippy and builds also pass.
 The browser runner's 13 regression tests and all 74 registered browser groups
-pass with the corrected reset lifecycle. Corrected-lifecycle performance and
-additional Worker-contract confirmation remain pending at this checkpoint.
+pass with the corrected reset lifecycle.
 
-The game 60-fields/s objective, broader gameplay/transitions, complete
-pre-merge validation, exact-head CI and review remain unmet here. No change is
+The corrected lifecycle also passes the healthy/fault-injected Worker contracts,
+paused facade and unchanged real AudioWorklet assertions: 297 fields/5003.5 ms,
+zero audio underflow/drops, p95 21.3 ms and p99 23.0 ms presentation gaps.
+A fresh normal-player menu pair reverses the earlier execution order, running
+baseline first: 36.55 → 43.01 fields/s (+17.69%). Candidate p95 is 23.9–24.3 ms
+and p99 is 24.2–25.0 ms; every measured field is drawn. Both captures retain
+2840 colors. Audio underflows decrease from 514722 to 372291 output frames over
+30 seconds, with zero drops. The final inspection reports 62977 actual Sound
+jobs including startup and a healthy owner. The repeat corroborates the earlier
+menu gain, while game real time and zero-underflow acceptance remain unmet.
+
+The game 60-fields/s objective, broader gameplay/transitions, exact-head CI
+and final review remain unmet at this checkpoint. No change is
 merged by this record. Related to #138 and #17; both remain open. Local inputs,
 raw profiles, packets and captures are not published. Required post-merge
 verification: none.
