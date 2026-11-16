@@ -487,6 +487,15 @@ pub fn verify_loop_probe() -> Vec<u32> {
 #[cfg(feature = "kernel-experiment")]
 #[wasm_bindgen]
 impl Emulator {
+    pub fn enable_private_burst_cost_gate(&mut self, enabled: bool) {
+        self.machine.enable_private_burst_cost_gate(enabled);
+    }
+    pub fn private_burst_cost_gate_enabled(&self) -> bool {
+        self.machine.private_burst_cost_gate_enabled()
+    }
+    pub fn private_burst_cost_gate_skips(&self) -> u64 {
+        self.machine.private_burst_cost_gate_skips()
+    }
     pub fn enable_sound_dependency_filter(&mut self, enabled: bool) {
         self.machine.enable_sound_dependency_filter(enabled);
     }

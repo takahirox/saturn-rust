@@ -990,3 +990,56 @@ mod tests {
         assert_eq!(result[0], 4);
     }
 }
+
+#[cfg(test)]
+#[test]
+fn private_cost_gate_keeps_live_refresh_write_and_peer_endpoints() {
+    let mut witnessed = 0;
+    for fast in [false, true] {
+        for compare in [7, 31] {
+            let (mut a, mut b) = (
+                original_machine(false, false, true),
+                original_machine(false, false, true),
+            );
+            for m in [&mut a, &mut b] {
+                m.bus.change_system_clock(fast);
+                m.bus.onchip[0].write32(0xFFFFFFE0, 0xA55A0001).unwrap();
+                m.bus.onchip[0].write32(0xFFFFFFEC, 0xA55AC048).unwrap();
+                m.bus.onchip[0]
+                    .write32(0xFFFFFFF8, 0xA55A0000 | compare)
+                    .unwrap();
+                m.bus.onchip[0].write32(0xFFFFFFF4, 0xA55A0000).unwrap();
+                m.bus.onchip[0].write32(0xFFFFFFF0, 0xA55A0008).unwrap();
+                m.enable_loop_replay(true);
+            }
+            a.enable_private_burst_cost_gate(true);
+            b.enable_private_burst_cost_gate(false);
+            for _ in 0..2 {
+                a.advance_frame().unwrap();
+                b.advance_frame().unwrap();
+                assert_eq!(a.cpu, b.cpu);
+                assert_eq!(a.slave, b.slave);
+                assert_eq!(a.cpu_ready, b.cpu_ready);
+                assert!(a.cpu_boundary == b.cpu_boundary, "CPU boundary endpoints");
+                assert!(a.cached_issue == b.cached_issue, "cached issue endpoints");
+                assert_eq!(a.clocks, b.clocks);
+                assert_eq!(a.bus.main_clocks, b.bus.main_clocks);
+                assert_eq!(a.bus.high, b.bus.high);
+                assert_eq!(a.bus.low, b.bus.low);
+                for i in 0..2 {
+                    a.bus.cache[i]
+                        .borrow()
+                        .assert_same_contents(&b.bus.cache[i].borrow());
+                    a.bus.onchip[i].assert_cached_read_bus_matches(&b.bus.onchip[i]);
+                }
+                assert_eq!(a.bus.sound.domain_snapshot(), b.bus.sound.domain_snapshot());
+                assert_eq!(a.drain_audio(8192), b.drain_audio(8192));
+            }
+            witnessed += a.private_burst_cost_gate_skips();
+            assert_eq!(b.private_burst_cost_gate_skips(), 0);
+        }
+    }
+    // The focused private-poll fixture exercises the gate directly; this
+    // longer store/refresh workload checks end-to-end endpoint parity.
+    eprintln!("private_cost_gate_long_workload_skips={witnessed}");
+}

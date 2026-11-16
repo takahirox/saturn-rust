@@ -3926,3 +3926,64 @@ CI and final review are pending at this checkpoint. No adoption or merge of this
 candidate is claimed here. Sustained game real time and zero underflow remain
 unmet; #138 and #17 stay open. Private inputs and raw captures remain local.
 Required post-merge verification: none.
+
+
+## Avoid private-peer planning at tiny store horizons (2026-11-17 checkpoint)
+
+Related to #138 and #17. Main `dedc8cd` still falls short of sustained real-time
+execution. A fresh, normal-player profile attributes 41.05% of sampled Main time
+to cached planning excluding nested Sound and VDP1 calls; VDP1 accounts for
+13.81% and Sound for 1.91%. These are profile fractions, not predicted speedups.
+
+The candidate falls back to ordinary issue before matching a private Slave
+schedule when the Master on-chip event is at most two clocks away and a normal
+Master write is pending or the next decoded instruction is a store. Those stores
+exclude the existing readonly-refresh extension, leaving an ordinary cached
+execution interval shorter than two clocks. The cost policy preserves all event,
+write-buffer, cache, interrupt and refresh timing. The on/off control and monotonic
+skip counter exist only in test/experimental builds.
+
+A focused original test exercises an immediate store before SDRAM refresh,
+requires an enabled skip and a disabled non-skip, and compares two subsequent
+fields including both CPUs, readiness, private boundaries, RAM, caches, BSC,
+Sound and PCM. A longer store/refresh matrix covers both PLL selections and two
+refresh periods; it checks endpoint parity but does not witness the gate itself.
+The focused groups pass 2 cost-gate, 57 cached, 5 private-poll and 5 loop-probe
+tests. Formatting and normal/all-feature Wasm Clippy pass. Earlier active-write
+and pending-write-only test attempts failed the required nonzero skip witness;
+those failures are not counted as passing validation.
+
+The experimental module is identical for both diagnostic routes, with its flag
+set after warmup in each window. Six alternating 80-field game windows after
+field 3600 improve 47.5017 to 47.9832 fields/s (+1.01%); every pair improves and
+90,798–93,768 plans are skipped per window. Full Sound bytes, 22 private CPU/cache
+hashes, rolling PCM and the final image match at every paired endpoint. The
+original busy guest has no skips and changes +0.25%, which is a variation control,
+not evidence of an optimization there. This diagnostic is not AudioWorklet
+throughput evidence.
+
+The first separate normal-player comparison uses the real AudioWorklet, all
+fields presented, the authorized mounted game, the recorded menu inputs and
+3600 warmup fields. Each variant measures six 5-second windows:
+
+| Normal Web menu | Baseline | Candidate |
+| --- | ---: | ---: |
+| Combined fields/s | 46.0418 | 47.7036 |
+| Audio underflow samples, measured windows | 304,986 | 268,964 |
+| Dropped audio samples | 0 | 0 |
+| Window p95 field time | 22.4–22.6 ms | 21.6–21.9 ms |
+| Window p99 field time | 22.6–23.4 ms | 22.1–22.8 ms |
+
+Every measured field is drawn and both menu captures contain 2840 colors. This
+normal asynchronous-input comparison does not replace the separate private-state
+differential. A fresh reverse-order repeat, story gameplay, exact-head complete
+CI and final review remain pending at this checkpoint. Private inputs, profiles,
+captures and raw traces remain local and ignored.
+
+Normal candidate Wasm SHA-256:
+`c8758abbe7ff9cf10f34e432ba74f5900c186762e80a6a465a9cc7cfafac3886`.
+Experimental module:
+`5cb7fc5d3c237bd01a5d0adc0b62f84f83ff5b6cdb44b3427d508ec24d220af1`.
+Sustained 60 fields/s, zero audio underflows, broader gameplay and hardware
+completion remain unmet; #138 and #17 remain open. No post-merge verification is
+required.

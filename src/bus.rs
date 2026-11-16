@@ -321,6 +321,10 @@ pub trait Memory {
 }
 
 pub struct Bus {
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    disable_private_burst_cost_gate: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    private_burst_cost_gate_skips: Cell<u64>,
     #[cfg(any(test, feature = "sound-worker"))]
     pub(crate) sound_rendezvous: sound_rendezvous::Rendezvous,
     loop_probe: Option<Box<loop_probe::LoopProbe>>,
@@ -409,6 +413,10 @@ pub(crate) struct InterruptRequest {
 impl Default for Bus {
     fn default() -> Self {
         Self {
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            disable_private_burst_cost_gate: false,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            private_burst_cost_gate_skips: Cell::new(0),
             #[cfg(any(test, feature = "sound-worker"))]
             sound_rendezvous: sound_rendezvous::Rendezvous::default(),
             loop_probe: Some(Box::new(loop_probe::LoopProbe::automatic())),

@@ -432,6 +432,18 @@ impl Context {
     }
 }
 impl Machine {
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn enable_private_burst_cost_gate(&mut self, enabled: bool) {
+        self.bus.disable_private_burst_cost_gate = !enabled;
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn private_burst_cost_gate_enabled(&self) -> bool {
+        !self.bus.disable_private_burst_cost_gate
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn private_burst_cost_gate_skips(&self) -> u64 {
+        self.bus.private_burst_cost_gate_skips.get()
+    }
     pub(crate) fn try_private_poll_batch(&mut self, limit: u32) -> Result<u32, MachineError> {
         let now = self.bus.main_clocks;
         if !self.bus.slave_enabled
@@ -448,6 +460,20 @@ impl Machine {
         }
         let span = self.bus.private_probe_span();
         if span < 2 {
+            return Ok(0);
+        }
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        let cost_gate = !self.bus.disable_private_burst_cost_gate;
+        #[cfg(not(any(test, feature = "kernel-experiment")))]
+        let cost_gate = true;
+        // A pending or immediate Master store excludes readonly-refresh
+        // widening. A two-clock on-chip horizon cannot admit a useful batch;
+        // prefer ordinary issue before matching the private peer schedule.
+        if cost_gate && self.bus.cached_private_burst_too_short(&self.cpu) {
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            self.bus
+                .private_burst_cost_gate_skips
+                .set(self.bus.private_burst_cost_gate_skips.get() + 1);
             return Ok(0);
         }
         let mut context = std::mem::take(&mut self.private_poll);
@@ -661,6 +687,61 @@ mod resume_tests {
         context.retry = machine.bus.main_clocks + 64;
         machine.private_poll = context;
         machine
+    }
+    #[test]
+    fn cost_gate_exercises_store_before_refresh() {
+        let mut optimized = polling_machine();
+        let mut reference = polling_machine();
+        for m in [&mut optimized, &mut reference] {
+            m.bus
+                .for_cpu(Processor::Master)
+                .write16(HIGH_WRAM, 0x2F02)
+                .unwrap();
+            m.cpu = Cpu::start(HIGH_WRAM, HIGH_WRAM + 0x1000);
+            m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
+            m.bus.onchip[0].write32(0xFFFFFFE0, 0xA55A0001).unwrap();
+            m.bus.onchip[0].write32(0xFFFFFFEC, 0xA55AC048).unwrap();
+            m.bus.onchip[0].write32(0xFFFFFFF8, 0xA55A0001).unwrap();
+            m.bus.onchip[0].write32(0xFFFFFFF4, 0xA55A0000).unwrap();
+            m.bus.onchip[0].write32(0xFFFFFFF0, 0xA55A0008).unwrap();
+            m.bus.advance_clocks(2).unwrap();
+            m.clocks += 2;
+            m.cpu_ready = [m.bus.main_clocks; 2];
+            assert_eq!(m.cpu.decoded_opcode(), Some(0x2F02));
+            assert_eq!(m.bus.onchip[0].clocks_to_event(), 2);
+            assert!(m.bus.private_probe_span() >= 2);
+        }
+        optimized.enable_private_burst_cost_gate(true);
+        reference.enable_private_burst_cost_gate(false);
+        assert_eq!(optimized.try_private_poll_batch(32).unwrap(), 0);
+        assert_eq!(optimized.private_burst_cost_gate_skips(), 1);
+        assert_eq!(reference.try_private_poll_batch(32).unwrap(), 0);
+        assert_eq!(reference.private_burst_cost_gate_skips(), 0);
+        for _ in 0..2 {
+            optimized.advance_frame().unwrap();
+            reference.advance_frame().unwrap();
+            assert_eq!(optimized.cpu, reference.cpu);
+            assert_eq!(optimized.slave, reference.slave);
+            assert_eq!(optimized.cpu_ready, reference.cpu_ready);
+            assert!(optimized.cpu_boundary == reference.cpu_boundary);
+            assert!(optimized.cached_issue == reference.cached_issue);
+            assert_eq!(optimized.bus.main_clocks, reference.bus.main_clocks);
+            assert_eq!(optimized.clocks, reference.clocks);
+            assert_eq!(optimized.bus.high, reference.bus.high);
+            assert_eq!(optimized.bus.low, reference.bus.low);
+            for index in 0..2 {
+                optimized.bus.cache[index]
+                    .borrow()
+                    .assert_same_contents(&reference.bus.cache[index].borrow());
+                optimized.bus.onchip[index]
+                    .assert_cached_read_bus_matches(&reference.bus.onchip[index]);
+            }
+            assert_eq!(
+                optimized.bus.sound.domain_snapshot(),
+                reference.bus.sound.domain_snapshot()
+            );
+            assert_eq!(optimized.drain_audio(8192), reference.drain_audio(8192));
+        }
     }
     #[test]
     fn known_private_proof_runs_while_new_probes_are_throttled() {

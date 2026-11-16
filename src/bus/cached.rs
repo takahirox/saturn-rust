@@ -2344,6 +2344,13 @@ impl Bus {
 mod tests;
 
 impl Bus {
+    pub(super) fn cached_private_burst_too_short(&self, initial: &Cpu) -> bool {
+        self.onchip[0].clocks_to_event() <= 2
+            && (self.cached_master_write_pending()
+                || initial
+                    .decoded_opcode()
+                    .is_some_and(|op| store_width(op).is_some()))
+    }
     pub(crate) fn cached_private_master_candidate(&self, initial: &Cpu) -> bool {
         initial.decoded_opcode().is_some_and(accepted_opcode)
             && ordinary_memory(initial.state().pc)
