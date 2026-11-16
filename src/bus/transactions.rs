@@ -1544,10 +1544,9 @@ impl Bus {
     }
     #[cfg(any(test, feature = "sound-worker"))]
     pub(super) fn sound_input_inflight(&self) -> bool {
-        self.transactions
-            .active
-            .as_ref()
-            .is_some_and(|active| Self::sound_input_address(active.transfer.address & 0x1FFF_FFFF))
+        self.transactions.active.as_ref().is_some_and(|active| {
+            self.sound_input_address(active.transfer.address & 0x1FFF_FFFF, active.transfer.write)
+        })
     }
     #[cfg(any(test, feature = "sound-worker"))]
     fn observe_sound_rendezvous(&mut self) {
@@ -1556,7 +1555,7 @@ impl Bus {
         }
         if let Some(active) = &self.transactions.active {
             let address = active.transfer.address & 0x1FFF_FFFF;
-            if Self::sound_input_address(address) {
+            if self.sound_input_address(address, active.transfer.write) {
                 self.sound_rendezvous.last_input = self.sound.domain_reference_time();
                 self.sound_rendezvous
                     .expose(super::sound_rendezvous::Boundary {

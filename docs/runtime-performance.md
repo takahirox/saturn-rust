@@ -3668,8 +3668,8 @@ uses the same SH-2, M68000, SCSP and device implementations as before.
 
 Sound runs ahead on a dedicated Worker only while no new shared inputs are
 known. The main board consumes an already computed prefix with a constant,
-verified Sound interrupt level. Sound RAM/SCSP, CD and SMPC bus admissions stop
-Main before their effects. An outstanding admitted access also prevents starting
+verified Sound interrupt level. Sound RAM/SCSP, SMPC writes and CD accesses
+that can supply CD-DA stop Main before their effects. An outstanding admitted access also prevents starting
 another forecast. Pending control/device deadlines and the first Sound IRQ
 transition bound the prefix. At the next input or field end, the Sound owner
 rewinds to Main's actual reference time and returns canonical hardware and PCM.
@@ -3828,9 +3828,46 @@ and the subsequent hardware cases, then catches another asynchronous selection
 wait in CHD rejection: the old guest still reports Ready before the new parser
 has produced the expected cyclic-self error. The CHD selection helper now also
 requires `aria-busy=false` before accepting its Ready/error condition. Its exact
-rejection expressions and stale-state checks are retained. Local controlled CHD
-verification is queued behind the isolated game comparisons; the complete fresh
-exact-head CI remains required before merge.
+rejection expressions and stale-state checks are retained. The complete controlled CHD scenario now reproduces the old premature-result
+failure with 100 ms reset delays and passes all original codec, rejection and
+stale-state assertions with the corrected wait. Complete fresh exact-head CI
+remains required before merge.
+
+A subsequent dependency audit removes handoffs for read-only SMPC operations
+and CD accesses on immutable media without Audio tracks. SMPC reads take `&self`
+and cannot issue a Sound command; all writes and pending control deadlines keep
+their cuts. `CdBlock::audio_source` requires `TrackMode::Audio`, including audible
+scan. With data-only/no media, its external SCSP input is always zero. Main still
+executes every CD register effect, clock, DMA and interrupt. All Sound RAM/SCSP
+accesses and CD accesses on media with Audio tracks remain fenced, including
+already admitted beats. A kernel-only switch retains the old dependency cuts
+for comparisons in the identical Wasm; production uses the proven narrower set.
+
+Ten native rendezvous cases pass, including the new read-only/write/Audio-track
+negative control and inherited full CPU/journal/Sound/SCU/PCM/image comparisons,
+both PLLs, DMA, FRT wake and actual nonzero CD-DA. In six alternating 80-field
+windows after 3600 startup fields, the same-Wasm real-owner comparison improves
+42.86 → 45.18 fields/s (+5.43%), with full Sound byte equality and private CPU,
+PCM and image checks. Owner jobs decrease from 2880 to 1920 across 480 fields.
+The original busy guest is flat (−0.073%), with 360 actual projections per route.
+
+Normal production playback confirms the gain with actual AudioWorklet and
+every-field Canvas in six five-second windows:
+
+| Scene | Previous Sound Worker fields/s | Dependency-filter fields/s | Change | Underflow output frames / 30 s, before → after |
+| --- | ---: | ---: | ---: | ---: |
+| Menu, baseline first, 3600 startup fields | 42.47 | 44.97 | +5.89% | 383065 → 328518 |
+| Story, candidate first, 12814 startup fields and 109 inputs | 42.71 | 45.61 | +6.78% | 379216 → 314159 |
+
+Both owners remain healthy and audio drops are zero. Menu candidate gaps are
+p95 22.9–23.1 ms / p99 23.6–24.6 ms; story gaps are p95 34.5–35.6 ms / p99
+37.8–38.8 ms. Corresponding captures retain 2840 and 937 colors respectively.
+Normal UI measurements retain the asynchronous-input limitation stated above.
+This dependency filter is selected for the implementation. Final-source native
+validation passes 1423 tests in 111 result groups, fixture regeneration checks,
+formatting, build and all-target/all-feature Clippy. Final browser regression
+and exact-head CI are pending. The game still has audio starvation
+and remains below real time.
 
 The game 60-fields/s objective, broader gameplay/transitions, exact-head CI
 and final review remain unmet at this checkpoint. No change is

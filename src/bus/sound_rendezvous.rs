@@ -15,6 +15,8 @@ pub(crate) struct Boundary {
 #[derive(Default)]
 pub(crate) struct Rendezvous {
     pub enabled: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub strict_inputs: bool,
     pub pending: VecDeque<Boundary>,
     pub target: Option<u64>,
     pub steps: u32,
@@ -43,10 +45,25 @@ impl Rendezvous {
     }
 }
 impl Bus {
-    pub(crate) fn sound_input_address(address: u32) -> bool {
+    fn strict_sound_inputs(&self) -> bool {
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        {
+            self.sound_rendezvous.strict_inputs
+        }
+        #[cfg(not(any(test, feature = "kernel-experiment")))]
+        {
+            false
+        }
+    }
+    pub(crate) fn sound_input_address(&self, address: u32, write: Option<u32>) -> bool {
+        let strict = self.strict_sound_inputs();
         (crate::sound::SOUND_RAM..crate::sound::SCSP + 0x1000).contains(&address)
-            || (0x0580_0000..0x0590_0000).contains(&address)
-            || (SMPC..SMPC + 0x80).contains(&address)
+            || ((0x0580_0000..0x0590_0000).contains(&address)
+                && (strict || self.cd.sound_can_receive_cd_audio()))
+            // SMPC reads take &self and cannot start or complete a Sound command.
+            // All writes, pending device deadlines and completed controls retain
+            // their original cuts; this also applies to an already admitted beat.
+            || ((SMPC..SMPC + 0x80).contains(&address) && (strict || write.is_some()))
     }
     /// Stay strictly before every possible new bus grant/device input and
     /// before the verified Sound frontier. The next event uses one real tick.
@@ -93,6 +110,10 @@ impl Bus {
     }
 }
 impl crate::Machine {
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn enable_sound_dependency_filter(&mut self, enabled: bool) {
+        self.bus.sound_rendezvous.strict_inputs = !enabled;
+    }
     fn sound_projection_range(&self, clocks: u32) -> Option<(u64, u64)> {
         if self.mode != Some(crate::BootMode::ExternalBios)
             || self.bus.sound.projected()
@@ -107,7 +128,12 @@ impl crate::Machine {
         }
         let clocks = clocks
             .min(524288)
-            .min(self.bus.cd.sound_source_deadline().saturating_sub(1))
+            .min(
+                self.bus
+                    .cd
+                    .sound_source_deadline(self.bus.strict_sound_inputs())
+                    .saturating_sub(1),
+            )
             .min(self.bus.smpc.clocks_to_event().saturating_sub(1));
         let origin = self.bus.sound.domain_reference_time();
         (clocks >= 512).then_some((origin, origin + u64::from(clocks)))
@@ -403,6 +429,36 @@ mod tests {
             paused.framebuffer().unwrap()
         );
         assert_eq!(reference.drain_audio(8192), paused.drain_audio(8192));
+    }
+    #[test]
+    fn dependency_filter_retains_writes_and_all_audio_track_accesses() {
+        let mut machine = Machine::new();
+        for strict in [false, true] {
+            machine.enable_sound_dependency_filter(!strict);
+            assert_eq!(machine.bus.sound_input_address(SMPC + 0x63, None), strict);
+            assert!(machine.bus.sound_input_address(SMPC + 0x1F, Some(6)));
+            assert!(
+                machine
+                    .bus
+                    .sound_input_address(crate::sound::SCSP + 0x400, None)
+            );
+            assert_eq!(
+                machine.bus.sound_input_address(crate::cd::REGISTERS, None),
+                strict
+            );
+        }
+        let data = vec![0; 2352 * 3];
+        for mode in ["MODE1/2352", "AUDIO"] {
+            let cue = format!("FILE \"a\" BINARY\nTRACK 01 {mode}\nINDEX 01 00:00:00");
+            machine.mount_media(crate::media::Media::cue(&cue, &[("a", &data)]).unwrap());
+            machine.enable_sound_dependency_filter(true);
+            for write in [None, Some(0x100)] {
+                assert_eq!(
+                    machine.bus.sound_input_address(crate::cd::REGISTERS, write),
+                    mode == "AUDIO"
+                );
+            }
+        }
     }
     #[test]
     fn ram_and_register_requests_pause_without_clock_motion_or_repeated_admission() {

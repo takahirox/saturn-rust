@@ -487,6 +487,9 @@ pub fn verify_loop_probe() -> Vec<u32> {
 #[cfg(feature = "kernel-experiment")]
 #[wasm_bindgen]
 impl Emulator {
+    pub fn enable_sound_dependency_filter(&mut self, enabled: bool) {
+        self.machine.enable_sound_dependency_filter(enabled);
+    }
     pub fn loop_state_hashes(&self) -> Vec<u32> {
         self.machine.loop_state_hashes()
     }
