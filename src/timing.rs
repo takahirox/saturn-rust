@@ -89,6 +89,10 @@ pub struct Raster {
     mode: u16,
 }
 impl Raster {
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) fn renderer_clock_fast(&self) -> bool {
+        self.fast
+    }
     pub(crate) fn select_clock(&mut self, fast: bool) {
         self.fast = fast;
         self.phase = 0;

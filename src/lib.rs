@@ -803,6 +803,10 @@ impl Machine {
     }
 
     pub fn framebuffer(&self) -> Result<Vec<u8>, MachineError> {
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        if let Some(output) = self.bus.queued_framebuffer() {
+            return output.map_err(MachineError::Video);
+        }
         self.bus
             .vdp2
             .scanout(&self.bus.vdp1)
@@ -810,6 +814,10 @@ impl Machine {
     }
 
     pub fn video_dimensions(&self) -> (usize, usize) {
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        if let Some(size) = self.bus.queued_dimensions() {
+            return size;
+        }
         self.bus.vdp2.output_dimensions()
     }
 
@@ -819,6 +827,9 @@ impl Machine {
     /// phases. External CPU and SCU cycles share arbitration; this bound keeps
     /// the caller responsive while detailed chip pipelines remain independent.
     pub fn advance_frame(&mut self) -> Result<(), MachineError> {
+        self.advance_frame_mode::<false>()
+    }
+    fn advance_frame_mode<const FIELD_BOUNDARY: bool>(&mut self) -> Result<(), MachineError> {
         let target = self.frames() + 1;
         let mut steps = 0;
         while steps < 1_000_000 {
@@ -839,12 +850,17 @@ impl Machine {
                 if let Some(error) = &self.fault {
                     return Err(error.clone());
                 }
-                count = self
-                    .step_inner_with_retry(true, limit)
-                    .inspect_err(|error| self.fault = Some(error.clone()))?;
+                count = if FIELD_BOUNDARY {
+                    self.step_hardware_boundary_with_idle(true).map(|_| 1)
+                } else {
+                    self.step_inner_with_retry(true, limit)
+                }
+                .inspect_err(|error| self.fault = Some(error.clone()))?;
             }
             steps += count.max(1);
             if self.frames() >= target {
+                #[cfg(any(test, feature = "kernel-experiment"))]
+                self.bus.drain_video_journal();
                 return Ok(());
             }
         }
