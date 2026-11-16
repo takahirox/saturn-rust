@@ -3822,6 +3822,16 @@ overlapping reads, also passes. Guest operands, expected state/pixels/PCM and
 all hardware timing checks are unchanged. Fresh complete exact-head CI remains
 a pre-merge requirement.
 
+Run 43908500995 passes native, Wasm and all 41 independent browser groups,
+including the repaired CD-RW selection. The shared trace passes Prism Courier
+and the subsequent hardware cases, then catches another asynchronous selection
+wait in CHD rejection: the old guest still reports Ready before the new parser
+has produced the expected cyclic-self error. The CHD selection helper now also
+requires `aria-busy=false` before accepting its Ready/error condition. Its exact
+rejection expressions and stale-state checks are retained. Local controlled CHD
+verification is queued behind the isolated game comparisons; the complete fresh
+exact-head CI remains required before merge.
+
 The game 60-fields/s objective, broader gameplay/transitions, exact-head CI
 and final review remain unmet at this checkpoint. No change is
 merged by this record. Related to #138 and #17; both remain open. Local inputs,
