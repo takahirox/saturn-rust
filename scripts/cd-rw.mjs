@@ -1,6 +1,7 @@
 // Original MIT SH-2/media fixture. Independent literal IEC matrix codewords.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { waitForLoadedDisc } from './browser-transport.mjs';
 const codewords = [
  [56,0,46,22,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,39,59,11,23],
  [56,1,45,20,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,44,32,12,16],
@@ -75,7 +76,7 @@ export async function cdRw(page) {
  await page.waitForFunction(()=>document.getElementById('error').textContent.includes('Missing SRW1'));
  const requests=[];const listener=req=>requests.push(req.url());page.on('request',listener);
  await page.locator('#disc').setInputFiles([...files,file('CD-RW.SRW',await readFile('tests/fixtures/cd-rw.srw'))]);
- await page.waitForFunction(()=>document.getElementById('error').textContent==='');
+ await waitForLoadedDisc(page);
  const loaded=await page.evaluate(async()=>{
   const {emulator}=await import('./app.js');
   for(let i=0;i<400 && (await emulator.read_long(0x060103fc))!==0x600d;i++)(await emulator.run_steps(10000));

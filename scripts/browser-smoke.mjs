@@ -3361,6 +3361,7 @@ try {
   }
   await courier.locator("#settings > summary").click();
   await courier.locator("#disc").setInputFiles({ name:"original-changed-prism.iso",mimeType:"application/octet-stream",buffer:changedCourier });
+  await waitForLoadedDisc(courier);
   await waitForGuest(courier, async () => (await window.courierState())[4] === 0);
   let mutatedCourier;
   for (let i = 0; i < 100; i++) {

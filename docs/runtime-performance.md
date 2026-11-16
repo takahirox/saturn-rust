@@ -3808,6 +3808,20 @@ guest control is also flat (+0.081%) and does not exercise the hint. This direct
 feature diagnostic is separate from normal-player metrics. The CPU change is
 excluded.
 
+Run 43903382086 passes native/Wasm and the corrected no-RAF UI checks, but
+later fails both browser shards when the changed Prism Courier disc and the
+CD-RW companion case step a temporarily stopped CPU during asynchronous media
+replacement. An empty error or a zeroed old guest marker is not an accepted-disc
+signal. Both cases now use the existing `waitForLoadedDisc` boundary before
+querying/advancing the replacement guest. The external-startup selection setup
+likewise waits for the enabled Start control before capture. With controlled
+350 ms local-file and 100 ms reset delays, both old cases reproduce the stopped-
+CPU error; both corrected cases pass all their CD-RW/changed-texture assertions.
+The complete external-startup scenario, including both selection orders and
+overlapping reads, also passes. Guest operands, expected state/pixels/PCM and
+all hardware timing checks are unchanged. Fresh complete exact-head CI remains
+a pre-merge requirement.
+
 The game 60-fields/s objective, broader gameplay/transitions, exact-head CI
 and final review remain unmet at this checkpoint. No change is
 merged by this record. Related to #138 and #17; both remain open. Local inputs,

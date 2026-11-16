@@ -55,7 +55,7 @@ export async function externalStartup(page) {
     const loadRom=()=>page.locator("#bios").setInputFiles({name:"original-bios.bin",mimeType:"application/octet-stream",buffer:rom});
     const loadDisc=()=>page.locator("#disc").setInputFiles({name:"original-disc.iso",mimeType:"application/octet-stream",buffer:image});
     if(discFirst) {await loadDisc();await loadRom();} else {await loadRom();await loadDisc();}
-    await page.waitForFunction(()=>document.getElementById("error").textContent==="");
+    await page.waitForFunction(()=>!document.getElementById("start").disabled);
     for(let boot=0;boot<2;boot++) {
       const got=await run();
       assert.deepEqual(got,{records:expected,trace,marker:0x600D,mode:"User-provided BIOS",exceptions:"9",smpc:[2,7,9,8,0x35],hle:0,pixel:[0,255,0,255]},`local order ${discFirst}, boot ${boot}`);
