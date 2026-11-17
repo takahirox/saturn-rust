@@ -9,7 +9,7 @@ assert.deepEqual(Object.values(shards).flat().sort(), [...groups].sort(), "Shard
 
 // Hosted timings balance these modules plus the shared UI trace against the
 // remaining independent modules. Keep two workers and the 20-minute budget.
-export const sharedScenarios = ["hardwareBoundaries", "chd", "cdStream"];
+export const sharedScenarios = ["chd", "cdStream"];
 export const scenarioGroups = groups.filter(name => shards.scenarios.includes(name) || sharedScenarios.includes(name));
 assert(sharedScenarios.every(name => shards.shared.includes(name)));
 

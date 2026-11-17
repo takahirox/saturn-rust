@@ -162,9 +162,11 @@ test("complete-suite inventory covers all original groups and missing groups fai
   assert.deepEqual([...scenarioRegistry, "largeMedia"].sort(), [...scenarioGroups].sort());
   assert.equal((source.match(/if \(includeScenarios\) await timings.measure/g) ?? []).length, 44);
   assert.deepEqual(selection([]).groups, groups);
-  assert.equal(shards.shared.length, 33);
-  assert.equal(shards.scenarios.length, 41);
-  assert.deepEqual(sharedScenarios, ["hardwareBoundaries", "chd", "cdStream"]);
+  assert.equal(shards.shared.length, 32);
+  assert.equal(shards.scenarios.length, 42);
+  assert(shards.scenarios.includes("hardwareBoundaries"));
+  assert(!shards.shared.includes("hardwareBoundaries"));
+  assert.deepEqual(sharedScenarios, ["chd", "cdStream"]);
   for (const name of sharedScenarios) {
     assert.deepEqual(selection([`--group=${name}`]), { mode: "scenarios", groups: [name], report: undefined });
     assert(!shards.scenarios.includes(name), "Moved modules must run only once in the complete suite");
