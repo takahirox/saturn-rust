@@ -10,6 +10,7 @@ use crate::vdp2::Vdp2;
 use std::collections::VecDeque;
 mod wire;
 
+#[cfg_attr(test, derive(PartialEq, Eq))]
 pub struct FrontPatch {
     pub offset: usize,
     pub bytes: Vec<u8>,

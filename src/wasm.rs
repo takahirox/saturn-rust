@@ -525,6 +525,12 @@ impl Emulator {
     pub fn sound_controller_independence_enabled(&self) -> bool {
         self.machine.sound_controller_independence_enabled()
     }
+    pub fn enable_owned_texture_runs(&mut self, enabled: bool) {
+        self.machine.enable_owned_texture_runs(enabled);
+    }
+    pub fn owned_texture_runs_enabled(&self) -> bool {
+        self.machine.owned_texture_runs_enabled()
+    }
     pub fn enable_display_erase_rows(&mut self, enabled: bool) {
         self.machine.enable_display_erase_rows(enabled);
     }
