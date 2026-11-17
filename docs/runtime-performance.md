@@ -4467,3 +4467,42 @@ transient is reported, and the remaining 25 seconds have none. The longer
 conversation-input measurement and final exact-head CI are outside this
 checkpoint record; the implementation PR reports their actual results. This
 record does not claim general firmware compatibility or hardware completion.
+
+
+## Private peer bus admission before proof lookup (2026-11-17)
+
+Related to #138 and #17. Heavy conversation profiling identifies Main CPU and
+bus scheduling as the main remaining cost. A temporary production-path observer
+counts about 9,285 cached-batch calls per field, including 3,876 initial admission
+rejections, after private Slave proof matching has already run.
+
+The private-peer path now checks the same bus predicate before proof lookup.
+This preliminary check ignores exactly the Slave journal and internal phase
+that the existing path temporarily removes before final admission. It retains
+all Master and shared-bus conditions. A passing check still requires the full
+Slave CPU, pipeline, code, cache and transaction proof and the ordinary cached
+burst admission. This changes host preparation work without enlarging guest
+execution intervals.
+
+Three focused regressions verify rejection before proof construction without
+guest changes, actual private polling batches against ordinary execution, and
+130 bus-phase cuts against the real remove/check/restore sequence. Two actual
+mutants fail the phase-cut assertion: retaining the removable Slave state, and
+ignoring Master state as well. Restoring the exact source passes. The focused
+native and scheduler groups total 17 passing tests; native and Wasm Clippy and
+the feature build pass. The public normal/direct/Sound-return-failure contracts
+pass all seven original fixtures in each mode.
+
+One feature artifact compares the flag disabled/enabled during 12 alternating
+80-field windows after 14,700 fields of the 157-event conversation input script.
+Every field is drawn; both modes use owned Sound and Video Workers. Full Sound
+bytes, 22 CPU/cache fingerprints, PCM and images match at every endpoint, also
+matching the preceding canonical build at all 12 endpoints. Aggregate diagnostic
+throughput rises from 41.5254 to 42.5604 fields/s (+2.4924%); all 12 windows improve.
+The busiest windows remain near 19 fields/s. These capacity diagnostics have no
+AudioWorklet and do not establish normal playback speed or the 60-fps objective.
+The original busy-scene control has zero private-peer admission coverage and
+its +0.23% difference is not evidence of this optimization.
+
+Normal production-player evidence and exact-head CI belong to the associated
+PR. The broader game-performance and hardware-completion Issues remain open.

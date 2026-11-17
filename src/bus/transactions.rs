@@ -1069,12 +1069,27 @@ impl Bus {
         });
     }
     pub(super) fn cached_bus_compatible(&self) -> bool {
+        self.cached_bus_compatible_with_private_slave::<false>()
+    }
+    pub(super) fn cached_private_peer_bus_compatible(&self) -> bool {
+        // The private polling path removes exactly these Slave-owned fields
+        // before cached_batch admission. Its complete proof still checks them.
+        self.cached_bus_compatible_with_private_slave::<true>()
+    }
+    fn cached_bus_compatible_with_private_slave<const PRIVATE_SLAVE: bool>(&self) -> bool {
         self.transactions.active.as_ref().is_none_or(|a| {
             matches!(a.owner, Owner::Refresh)
                 || (matches!(a.owner, Owner::WriteBuffer(Processor::Master, false))
                     && !(crate::sound::SOUND_RAM..crate::sound::SCSP)
                         .contains(&Bus::physical(a.transfer.address)))
-        }) && self.transactions.internal.iter().all(Option::is_none)
+        }) && self
+            .transactions
+            .internal
+            .iter()
+            .enumerate()
+            .all(|(i, active)| {
+                (PRIVATE_SLAVE && i == Processor::Slave as usize) || active.is_none()
+            })
             && self
                 .transactions
                 .writes
@@ -1095,7 +1110,10 @@ impl Bus {
                         !w.dmac && (w.beats.len() == 1 || self.cached_isolated_write_pending())
                     })))
             && self.transactions.write_errors.iter().all(Option::is_none)
-            && self.transactions.journals.iter().all(|j| {
+            && self.transactions.journals.iter().enumerate().all(|(i, j)| {
+                if PRIVATE_SLAVE && i == Processor::Slave as usize {
+                    return true;
+                }
                 let j = j.borrow();
                 j.waiting.is_none()
                     && j.pipeline_wait.is_none()
@@ -3171,5 +3189,69 @@ impl Bus {
             j.completed = false;
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod private_peer_admission_tests {
+    use super::*;
+
+    #[test]
+    fn precheck_matches_actual_slave_removal_through_bus_phase_cuts() {
+        let mut accepted = 0;
+        let mut rejected = 0;
+        for slave_pending in [false, true] {
+            for master in 0..5 {
+                for cut in 0..=12 {
+                    let mut bus = Bus {
+                        slave_enabled: true,
+                        ..Bus::default()
+                    };
+                    if slave_pending {
+                        let _ = bus
+                            .replay_cpu(Processor::Slave)
+                            .read8(crate::onchip::FRT + 1);
+                    }
+                    match master {
+                        0 => (),
+                        1 => {
+                            let _ = bus
+                                .replay_cpu(Processor::Master)
+                                .read8(crate::onchip::FRT + 1);
+                        }
+                        2 => {
+                            let _ = bus.replay_cpu(Processor::Master).read32(HIGH_WRAM + 0x800);
+                        }
+                        3 => {
+                            let _ = bus
+                                .replay_cpu(Processor::Master)
+                                .write32(HIGH_WRAM + 0x800, 0x12345678);
+                        }
+                        4 => {
+                            let _ = bus
+                                .replay_cpu(Processor::Master)
+                                .write16(crate::sound::SOUND_RAM, 0x1234);
+                        }
+                        _ => unreachable!(),
+                    }
+                    bus.grant_bus_transaction();
+                    bus.advance_clocks(cut).unwrap();
+                    let predicted = bus.cached_private_peer_bus_compatible();
+                    let saved = bus.take_private_transaction();
+                    assert_eq!(
+                        predicted,
+                        bus.cached_bus_compatible(),
+                        "slave={slave_pending} master={master} cut={cut}"
+                    );
+                    bus.restore_private_transaction(saved);
+                    if predicted {
+                        accepted += 1;
+                    } else {
+                        rejected += 1;
+                    }
+                }
+            }
+        }
+        assert!(accepted > 0 && rejected > 0);
     }
 }

@@ -528,6 +528,15 @@ impl Emulator {
     pub fn enable_owned_texture_runs(&mut self, enabled: bool) {
         self.machine.enable_owned_texture_runs(enabled);
     }
+    pub fn enable_private_bus_admission(&mut self, enabled: bool) {
+        self.machine.enable_private_bus_admission(enabled);
+    }
+    pub fn private_bus_admission_counts(&self) -> Vec<u64> {
+        self.machine.private_bus_admission_counts()
+    }
+    pub fn private_bus_admission_enabled(&self) -> bool {
+        self.machine.private_bus_admission_enabled()
+    }
     pub fn owned_texture_runs_enabled(&self) -> bool {
         self.machine.owned_texture_runs_enabled()
     }

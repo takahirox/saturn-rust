@@ -6,12 +6,27 @@ use crate::cache::CacheTouch;
 use crate::onchip;
 use crate::{CachedIssue, Cpu, CpuBoundary, Machine, MachineError};
 
-#[derive(Default)]
 pub(crate) struct Context {
+    bus_admission: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    bus_admission_counts: [u64; 2],
     templates: Vec<Template>,
     recent: Option<usize>,
     scratch: Option<Box<Machine>>,
     pub(crate) retry: u64,
+}
+impl Default for Context {
+    fn default() -> Self {
+        Self {
+            bus_admission: true,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            bus_admission_counts: [0; 2],
+            templates: Vec::new(),
+            recent: None,
+            scratch: None,
+            retry: 0,
+        }
+    }
 }
 #[derive(Clone)]
 struct State {
@@ -447,6 +462,18 @@ impl Context {
     }
 }
 impl Machine {
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn enable_private_bus_admission(&mut self, enabled: bool) {
+        self.private_poll.bus_admission = enabled;
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn private_bus_admission_counts(&self) -> Vec<u64> {
+        self.private_poll.bus_admission_counts.to_vec()
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn private_bus_admission_enabled(&self) -> bool {
+        self.private_poll.bus_admission
+    }
     pub(crate) fn try_private_poll_batch(&mut self, limit: u32) -> Result<u32, MachineError> {
         let now = self.bus.main_clocks;
         if !self.bus.slave_enabled
@@ -460,6 +487,19 @@ impl Machine {
             || !self.bus.cached_private_master_candidate(&self.cpu)
         {
             return Ok(0);
+        }
+        if self.private_poll.bus_admission {
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            {
+                self.private_poll.bus_admission_counts[0] += 1;
+            }
+            if !self.bus.cached_private_peer_bus_compatible() {
+                #[cfg(any(test, feature = "kernel-experiment"))]
+                {
+                    self.private_poll.bus_admission_counts[1] += 1;
+                }
+                return Ok(0);
+            }
         }
         let span = self.bus.private_probe_span();
         if span < 2 {
@@ -677,6 +717,56 @@ mod resume_tests {
         context.retry = machine.bus.main_clocks + 64;
         machine.private_poll = context;
         machine
+    }
+    #[test]
+    fn bus_rejection_precedes_private_proof_construction_without_guest_changes() {
+        let mut machine = polling_machine();
+        machine.private_poll = Context::default();
+        machine.enable_private_bus_admission(true);
+        assert_eq!(
+            machine
+                .bus
+                .replay_cpu(Processor::Master)
+                .read32(HIGH_WRAM + 0x800),
+            Err(BusError::Pending)
+        );
+        assert!(!machine.bus.cached_private_peer_bus_compatible());
+        let hashes = machine.loop_state_hashes();
+        let slave = machine.bus.private_transaction().unwrap();
+        let retry = machine.private_poll.retry;
+        assert_eq!(machine.try_private_poll_batch(32).unwrap(), 0);
+        assert_eq!(machine.private_bus_admission_counts(), [1, 1]);
+        assert!(machine.private_poll.templates.is_empty());
+        assert!(machine.private_poll.scratch.is_none());
+        assert_eq!(machine.private_poll.retry, retry);
+        assert_eq!(machine.loop_state_hashes(), hashes);
+        assert!(machine.bus.private_transaction().unwrap() == slave);
+    }
+
+    #[test]
+    fn bus_precheck_preserves_real_private_poll_batches() {
+        let mut optimized = polling_machine();
+        let mut reference = polling_machine();
+        optimized.enable_private_bus_admission(true);
+        for _ in 0..2 {
+            optimized.advance_frame().unwrap();
+            while reference.frames() < optimized.frames() {
+                reference.step().unwrap();
+            }
+            assert_eq!(optimized.cpu, reference.cpu);
+            assert_eq!(optimized.slave, reference.slave);
+            assert_eq!(optimized.cpu_ready, reference.cpu_ready);
+            assert_eq!(optimized.bus.main_clocks, reference.bus.main_clocks);
+            assert_eq!(optimized.clocks, reference.clocks);
+            for i in 0..2 {
+                optimized.bus.cache[i]
+                    .borrow()
+                    .assert_same_contents(&reference.bus.cache[i].borrow());
+                optimized.bus.onchip[i].assert_cached_read_bus_matches(&reference.bus.onchip[i]);
+            }
+        }
+        assert!(optimized.private_bus_admission_counts()[0] > 0);
+        assert!(optimized.cached_private_phases > 0);
     }
     #[test]
     fn known_private_proof_runs_while_new_probes_are_throttled() {
