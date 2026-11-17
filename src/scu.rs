@@ -290,6 +290,12 @@ impl Scu {
     pub(crate) fn plan_cached_abus(&self) -> Abus {
         self.abus.clone()
     }
+    pub(crate) fn copy_live_write_abus(&mut self, source: &Self) {
+        self.abus.clone_from(&source.abus);
+    }
+    pub(crate) fn advance_live_write_abus(&self, clocks: u32) {
+        self.abus.advance(clocks);
+    }
     pub(crate) fn commit_cached_abus(&self, planned: &Abus) {
         self.abus.commit_cached(planned);
     }

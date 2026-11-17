@@ -27,6 +27,7 @@ mod fetch_tests;
 #[cfg(test)]
 #[path = "interrupt_tests.rs"]
 mod interrupt_tests;
+pub(in crate::bus) mod live_write_probe;
 #[cfg(test)]
 #[path = "load_tests.rs"]
 mod load_tests;
@@ -303,6 +304,7 @@ enum Owner {
     WriteAccept(Processor, bool), // processor, DMAC
     WriteBuffer(Processor, bool),
 }
+#[derive(Clone)]
 struct BufferedWrite {
     dmac: bool,
     beats: WriteBeats,
@@ -3133,3 +3135,41 @@ impl Bus {
 #[cfg(any(test, feature = "kernel-experiment"))]
 #[path = "kernel_port.rs"]
 mod kernel_port;
+
+impl Bus {
+    /// Retry CPU buffer admission through the canonical scheduled write path.
+    /// Accepted stores retain their ordinary physical beat timing.
+    pub(crate) fn resume_planned_write(
+        &mut self,
+        owner: Processor,
+        address: u32,
+        width: u32,
+        value: u32,
+        pc: u32,
+    ) -> Result<(), BusError> {
+        let j = self.transactions.journals[owner as usize].get_mut();
+        j.current_operation = Some(Operation::Write(address, width as usize, value));
+        j.write_context = (pc, None);
+        let mut memory = CpuBus {
+            bus: self,
+            processor: owner,
+            cached: true,
+            scheduled: true,
+        };
+        let result = match width {
+            1 => memory.external_write(address, [value as u8]),
+            2 => memory.external_write(address, (value as u16).to_be_bytes()),
+            4 => memory.external_write(address, value.to_be_bytes()),
+            _ => Err(BusError::UnsupportedDevice {
+                address,
+                width: width as usize,
+            }),
+        };
+        if result.is_ok() {
+            let j = self.transactions.journals[owner as usize].get_mut();
+            j.current_operation = None;
+            j.completed = false;
+        }
+        result
+    }
+}

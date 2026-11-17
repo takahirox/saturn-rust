@@ -1170,6 +1170,21 @@ impl Bus {
         sound_advanced: bool,
         transactions: bool,
     ) -> Result<u64, ScuError> {
+        self.advance_isolated_segment_mode::<CLOCK_ADVANCED, false>(
+            main,
+            sound_advanced,
+            transactions,
+        )
+    }
+    pub(super) fn advance_isolated_segment_mode<
+        const CLOCK_ADVANCED: bool,
+        const PLANNED_BSC: bool,
+    >(
+        &mut self,
+        main: u32,
+        sound_advanced: bool,
+        transactions: bool,
+    ) -> Result<u64, ScuError> {
         if main == 0 {
             return Ok(0);
         }
@@ -1185,9 +1200,17 @@ impl Bus {
             .deadline(main.saturating_sub(self.pending_main_clocks));
         self.pending_main_clocks =
             self.pending_main_clocks + self.system_clock.advance(reference) - main;
-        self.onchip[0].advance_to_event(main);
+        if PLANNED_BSC {
+            self.onchip[0].advance_clocks(main);
+        } else {
+            self.onchip[0].advance_to_event(main);
+        }
         if self.slave_enabled {
-            self.onchip[1].advance_to_event(main);
+            if PLANNED_BSC {
+                self.onchip[1].advance_clocks(main);
+            } else {
+                self.onchip[1].advance_to_event(main);
+            }
         }
         self.scu.advance_clocks(main)?;
         let (vram_busy, framebuffer_busy) = self.vdp1_bus_ownership();
@@ -1486,6 +1509,7 @@ impl Bus {
         let mut replay_key = None;
         let mut recorded_range = None;
         let mut solo_checkpoint: Option<Cpu> = None;
+        let mut live_write_plan = None;
         while retired < count && memory.clock.get() < end {
             if retired == 0
                 && let Some(probe) = &self.loop_probe
@@ -1515,12 +1539,77 @@ impl Bus {
                         allowed
                     }),
                 ) {
+                    let replayed = {
+                        let prepared = (original_end > loop_end
+                            && !sound_lookahead
+                            && matches!(poll, None | Some(PeerSchedule::Pending { .. })))
+                        .then(|| {
+                            self.prepare_live_write_runtime(
+                                data,
+                                super::transactions::live_write_probe::Opportunity {
+                                    first: replayed.key.first,
+                                    legacy_last: replayed.last,
+                                    shift: replayed.key.shift,
+                                    count,
+                                    end: original_end,
+                                },
+                            )
+                        })
+                        .flatten();
+                        if let Some(prepared) = prepared {
+                            let first = &data.phases[replayed.key.first];
+                            let last = &data.phases[prepared.last];
+                            let mut cpu = last.cpu.clone();
+                            cpu.rebase_loop_prefix(&first.cpu, initial, replayed.key.shift);
+                            let ready = last.ready + replayed.key.shift;
+                            memory.restore(origin.clone());
+                            *memory.lru.get_mut() = prepared.lru;
+                            memory.retained.set(last.retained);
+                            memory.epochs.set(origin.epochs + last.epoch - first.epoch);
+                            memory.end.set(original_end);
+                            memory.clock.set(ready.min(original_end));
+                            live_write_plan = Some(prepared.plan);
+                            loop_replay::Replayed {
+                                cpu,
+                                ready,
+                                at: last.at + replayed.key.shift,
+                                retired: (prepared.last - replayed.key.first) as u32,
+                                last: prepared.last,
+                                key: loop_replay::ReplayKey {
+                                    first: replayed.key.first,
+                                    shift: replayed.key.shift,
+                                    ways: prepared.ways,
+                                },
+                            }
+                        } else {
+                            replayed
+                        }
+                    };
                     #[cfg(any(test, feature = "kernel-experiment"))]
                     if readonly_refresh.is_some() {
                         probe.refresh_clamps.set(probe.refresh_clamps.get() + 1);
                     }
+                    #[cfg(any(test, feature = "kernel-experiment"))]
+                    if original_end > loop_end
+                        && !sound_lookahead
+                        && matches!(poll, Some(PeerSchedule::Pending { .. }))
+                    {
+                        self.observe_live_write_probe(
+                            data,
+                            super::transactions::live_write_probe::Opportunity {
+                                first: replayed.key.first,
+                                legacy_last: replayed.last,
+                                shift: replayed.key.shift,
+                                count,
+                                end: original_end,
+                            },
+                        );
+                    }
                     readonly_refresh = None;
                     end = loop_end;
+                    if live_write_plan.is_some() {
+                        end = original_end;
+                    }
                     cpu = replayed.cpu;
                     ready = replayed.ready;
                     retired_at = replayed.at;
@@ -1976,6 +2065,14 @@ impl Bus {
             points.recorded = Some((&timeline.clocks[first..=last], shift));
         }
         let mut selected = points.aligned_prefix(retired as usize, self.main_clocks, poll);
+        if live_write_plan.is_some() {
+            // This first slice admits an arbitrary private-peer endpoint and
+            // has no Sound lookahead, so the full positive prefix is retained.
+            assert_eq!(
+                selected, retired as usize,
+                "live private WRAM endpoint shortened"
+            );
+        }
         if selected == 0 {
             points.recycle_into(&mut self.cached_retirement_points);
             return Ok(None);
@@ -2140,7 +2237,15 @@ impl Bus {
         // Display acquisition and silent sound microcycles cannot observe
         // cached CPU registers or cache hits. The ordinary board scheduler
         // still executes every such edge, including all memory acquisitions.
-        let reference = if let Some(plan) = ram_plan {
+        let live_reference = if let Some(plan) = live_write_plan {
+            debug_assert!(ram_plan.is_none() && store.is_none() && local.reads.is_none());
+            Some(self.commit_live_write_plan(plan, retired_at))
+        } else {
+            None
+        };
+        let reference = if let Some(reference) = live_reference {
+            reference
+        } else if let Some(plan) = ram_plan {
             self.commit_ram_plan(plan, retired_at, sound_lookahead, transfer_active)
         } else if let Some(store) = store {
             self.commit_planned_store(

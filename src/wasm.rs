@@ -519,6 +519,18 @@ impl Emulator {
         self.machine.finish_sound_projection()
     }
 
+    pub fn enable_live_write_runtime(&mut self, enabled: bool) {
+        self.machine.enable_live_write_runtime(enabled);
+    }
+    pub fn live_write_runtime_counts(&self) -> Vec<u64> {
+        self.machine.live_write_runtime_counts()
+    }
+    pub fn enable_live_write_probe(&mut self, enabled: bool) {
+        self.machine.enable_live_write_probe(enabled);
+    }
+    pub fn live_write_probe_stats(&self) -> Vec<u64> {
+        self.machine.live_write_probe_stats()
+    }
     pub fn enable_loop_replay(&mut self, enabled: bool) {
         self.machine.enable_loop_replay(enabled);
     }

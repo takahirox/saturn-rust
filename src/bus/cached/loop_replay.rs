@@ -6,7 +6,7 @@ use crate::bus::loop_probe::trace::CapturedLoop;
 pub(super) struct ReplayKey {
     pub first: usize,
     pub shift: u64,
-    ways: [u8; 256],
+    pub(super) ways: [u8; 256],
 }
 pub(super) struct Replayed {
     pub cpu: Cpu,

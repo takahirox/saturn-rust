@@ -18,6 +18,15 @@ pub(super) struct Record {
 }
 #[derive(Default)]
 pub(super) struct LoopProbe {
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(super) live_write_enabled: bool,
+    pub(super) live_write_runtime: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(super) live_write_runtime_counts: [std::cell::Cell<u64>; 4],
+    pub(super) live_write_scratch:
+        std::cell::RefCell<Option<Box<super::transactions::live_write_probe::Probe>>>,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(super) live_write_stats: [std::cell::Cell<u64>; 16],
     pub(super) observing: bool,
     tracing: std::cell::Cell<bool>,
     pub(super) replaying: bool,
@@ -46,6 +55,7 @@ pub(super) struct LoopProbe {
 impl LoopProbe {
     pub(super) fn automatic() -> Self {
         Self {
+            live_write_runtime: true,
             replaying: true,
             learning: true,
             ..Self::default()
@@ -178,6 +188,44 @@ impl Machine {
             self.cpu_ready.iter().flat_map(|at| at.to_le_bytes()),
         ));
         hashes
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn enable_live_write_runtime(&mut self, enabled: bool) {
+        self.bus
+            .loop_probe
+            .get_or_insert_with(Default::default)
+            .live_write_runtime = enabled;
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn live_write_runtime_counts(&self) -> Vec<u64> {
+        self.bus.loop_probe.as_ref().map_or_else(
+            || vec![0; 4],
+            |p| {
+                p.live_write_runtime_counts
+                    .iter()
+                    .map(std::cell::Cell::get)
+                    .collect()
+            },
+        )
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn enable_live_write_probe(&mut self, enabled: bool) {
+        self.bus
+            .loop_probe
+            .get_or_insert_with(Default::default)
+            .live_write_enabled = enabled;
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn live_write_probe_stats(&self) -> Vec<u64> {
+        self.bus.loop_probe.as_ref().map_or_else(
+            || vec![0; 16],
+            |p| {
+                p.live_write_stats
+                    .iter()
+                    .map(std::cell::Cell::get)
+                    .collect()
+            },
+        )
     }
     pub fn enable_loop_replay(&mut self, enabled: bool) {
         let probe = self.bus.loop_probe.get_or_insert_with(Default::default);
@@ -988,5 +1036,176 @@ mod tests {
         let result = super::verify();
         eprintln!("loop_probe={result:?}");
         assert_eq!(result[0], 4);
+    }
+
+    #[test]
+    fn live_write_probe_observes_wider_original_spans_without_changing_execution() {
+        let make = |sdram| {
+            let mut machine = super::original_machine(false, false, false);
+            machine.bus.loop_probe.as_mut().unwrap().best = Some((crate::bus::HIGH_WRAM, 34));
+            assert_eq!(machine.capture_loop_trace().unwrap()[0], 1);
+            machine.enable_loop_replay(true);
+            machine.enable_loop_training(false);
+            for (offset, value) in [
+                (0, 0x3F4 | u32::from(sdram)),
+                (12, 0x48 | if sdram { 0x200 } else { 0 }),
+                (24, 16),
+                (20, 0),
+                (16, 8),
+            ] {
+                machine.bus.onchip[0]
+                    .write32(0xFFFF_FFE0 + offset, 0xA55A_0000 | value)
+                    .unwrap();
+            }
+            if sdram {
+                machine
+                    .bus
+                    .scu
+                    .write32(crate::scu::SCU + 0xB0, 0x93240324)
+                    .unwrap();
+                machine
+                    .bus
+                    .scu
+                    .write32(crate::scu::SCU + 0xB8, 0x1F)
+                    .unwrap();
+                machine.bus.scu.abus_access(0x0200_0000, 4, false);
+                machine.bus.scu.refresh_abus();
+            }
+            machine
+        };
+        for (runtime, sdram) in [(false, false), (true, false), (true, true)] {
+            let mut observed = make(sdram);
+            let mut control = make(sdram);
+            control.enable_live_write_runtime(false);
+            observed.enable_live_write_probe(!runtime);
+            observed.enable_live_write_runtime(runtime);
+            for _ in 0..3 {
+                observed.advance_frame().unwrap();
+                control.advance_frame().unwrap();
+                assert_eq!(observed.loop_state_hashes(), control.loop_state_hashes());
+                assert_eq!(observed.cpu, control.cpu);
+                assert_eq!(observed.slave, control.slave);
+                assert_eq!(observed.clocks, control.clocks);
+                assert_eq!(observed.cpu_ready, control.cpu_ready);
+                observed.bus.assert_live_write_active_matches(&control.bus);
+                for processor in 0..2 {
+                    observed.bus.onchip[processor]
+                        .assert_cached_read_bus_matches(&control.bus.onchip[processor]);
+                    observed.bus.cache[processor]
+                        .borrow()
+                        .assert_same_contents(&control.bus.cache[processor].borrow());
+                }
+                assert_eq!(
+                    observed.bus.sound.domain_snapshot().unwrap(),
+                    control.bus.sound.domain_snapshot().unwrap()
+                );
+                assert_eq!(observed.drain_audio(8192), control.drain_audio(8192));
+            }
+            if runtime {
+                let stats = observed.live_write_runtime_counts();
+                eprintln!("live_write_runtime={stats:?}");
+                assert!(stats[0] != 0 && stats[1] != 0 && stats[3] != 0);
+            } else {
+                let stats = observed.live_write_probe_stats();
+                assert!(stats[0] != 0 && stats[7] != 0 && stats[8] != 0);
+            }
+        }
+    }
+
+    #[test]
+    fn live_write_runtime_keeps_partial_physical_words_at_burst_exit() {
+        let mut used = 0;
+        let mut halfwords = 0;
+        for narrow in [false, true] {
+            for fast in [false, true] {
+                for limit in (1..=40).chain([63, 64, 65, 128]) {
+                    let make = || {
+                        let mut m = super::original_machine(false, false, false);
+                        m.bus.set_slave_enabled(false);
+                        m.bus.change_system_clock(fast);
+                        if narrow {
+                            m.bus.onchip[0].write32(0xFFFF_FFE4, 0xA55A_00BC).unwrap();
+                        }
+                        m.bus.loop_probe.as_mut().unwrap().best = Some((crate::bus::HIGH_WRAM, 34));
+                        assert_eq!(m.capture_loop_trace().unwrap()[0], 1);
+                        m.enable_loop_replay(true);
+                        m.enable_loop_training(false);
+                        if m.cpu_ready[0] > m.bus.main_clocks {
+                            let wait = (m.cpu_ready[0] - m.bus.main_clocks) as u32;
+                            let (reference, command) = m.bus.advance_cpu_clocks(wait).unwrap();
+                            assert!(command.is_none());
+                            m.clocks += u64::from(reference);
+                        }
+                        for (offset, value) in [(0, 0x3F4), (12, 0x48), (24, 16), (20, 15), (16, 8)]
+                        {
+                            m.bus.onchip[0]
+                                .write32(0xFFFF_FFE0 + offset, 0xA55A_0000 | value)
+                                .unwrap();
+                        }
+                        m.bus.high[0x1000..0x1004].fill(0xA5);
+                        m
+                    };
+                    let mut actual = make();
+                    let mut reference = make();
+                    actual.enable_live_write_runtime(true);
+                    let origin = actual.bus.main_clocks.max(actual.cpu_ready[0]);
+                    let batch = actual
+                        .bus
+                        .cached_batch(&actual.cpu, limit, None, origin)
+                        .unwrap()
+                        .unwrap();
+                    actual.cpu = batch.cpu;
+                    actual.cpu_ready[0] = batch.ready;
+                    actual.clocks += batch.reference;
+                    used += usize::from(actual.live_write_runtime_counts()[1] != 0);
+                    for _ in 0..10000 {
+                        if reference.cpu.state().instructions >= actual.cpu.state().instructions {
+                            break;
+                        }
+                        let committed = reference.issue_cpu(crate::bus::Processor::Master).unwrap();
+                        if reference.cpu.state().instructions >= actual.cpu.state().instructions {
+                            break;
+                        }
+                        reference
+                            .finish_hardware_boundary_with_idle(committed, false)
+                            .unwrap();
+                    }
+                    assert_eq!(
+                        actual.cpu, reference.cpu,
+                        "limit={limit}, narrow={narrow}, fast={fast}"
+                    );
+                    assert_eq!(actual.cpu_ready, reference.cpu_ready);
+                    assert_eq!(actual.clocks, reference.clocks);
+                    assert_eq!(actual.bus.main_clocks, reference.bus.main_clocks);
+                    assert_eq!(actual.bus.high, reference.bus.high);
+                    actual.bus.assert_live_write_active_matches(&reference.bus);
+                    actual.bus.cache[0]
+                        .borrow()
+                        .assert_same_contents(&reference.bus.cache[0].borrow());
+                    for processor in 0..2 {
+                        actual.bus.onchip[processor]
+                            .assert_cached_read_bus_matches(&reference.bus.onchip[processor]);
+                    }
+                    if narrow
+                        && actual.live_write_runtime_counts()[1] != 0
+                        && actual.bus.high[0x1000..0x1004] == [0x12, 0x34, 0xA5, 0xA5]
+                    {
+                        halfwords += 1;
+                    }
+                    if matches!(limit, 4 | 31 | 128) {
+                        actual.advance_frame().unwrap();
+                        reference.advance_frame().unwrap();
+                        assert_eq!(actual.loop_state_hashes(), reference.loop_state_hashes());
+                        assert_eq!(actual.bus.high, reference.bus.high);
+                        assert_eq!(actual.drain_audio(8192), reference.drain_audio(8192));
+                    }
+                }
+            }
+        }
+        assert!(used != 0, "exercise actual widened publication");
+        assert!(
+            halfwords != 0,
+            "observe upper half with the lower half still poisoned"
+        );
     }
 }

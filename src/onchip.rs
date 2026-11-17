@@ -1230,14 +1230,31 @@ impl OnChip {
     }
 }
 
-#[cfg(any(test, feature = "kernel-experiment"))]
+#[derive(Clone)]
+pub(crate) struct LiveWriteBsc(bsc::Bsc);
+
 impl OnChip {
+    pub(crate) fn live_write_bsc(&self) -> LiveWriteBsc {
+        LiveWriteBsc(self.bsc.clone())
+    }
+    pub(crate) fn live_write_bus_deadline(&self) -> u32 {
+        self.bsc.clocks_to_event()
+    }
+    pub(crate) fn advance_live_write_bus(&mut self, clocks: u32) {
+        self.bsc.advance(clocks);
+    }
+    pub(crate) fn publish_live_write_bsc(&mut self, state: LiveWriteBsc) {
+        self.bsc = state.0;
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
     pub(crate) fn kernel_advance_bus(&self, clocks: u32) {
         self.bsc.advance_bus(clocks);
     }
+    #[cfg(any(test, feature = "kernel-experiment"))]
     pub(crate) fn kernel_bus_clock(&self) -> bsc::KernelBusClock {
         self.bsc.kernel_bus_clock()
     }
+    #[cfg(any(test, feature = "kernel-experiment"))]
     pub(crate) fn restore_kernel_bus_clock(&self, clock: bsc::KernelBusClock) {
         self.bsc.restore_kernel_bus_clock(clock);
     }
