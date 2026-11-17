@@ -525,6 +525,15 @@ impl Emulator {
     pub fn enable_sound_cd_quiet(&mut self, enabled: bool) {
         self.machine.enable_sound_cd_quiet(enabled);
     }
+    pub fn enable_sound_cd_queries(&mut self, enabled: bool) {
+        self.machine.enable_sound_cd_queries(enabled);
+    }
+    pub fn sound_cd_queries_enabled(&self) -> bool {
+        self.machine.sound_cd_queries_enabled()
+    }
+    pub fn sound_cd_query_counts(&self) -> Vec<u64> {
+        self.machine.sound_cd_query_counts()
+    }
     pub fn sound_cd_quiet_enabled(&self) -> bool {
         self.machine.sound_cd_quiet_enabled()
     }
