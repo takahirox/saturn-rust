@@ -4417,3 +4417,53 @@ compact-PC proof-search trial gives only 0.2951%/0.4977% and is held. Neither is
 included here. Final full-suite, normal-player, CI and review results belong to
 the implementation PR. Both source Issues remain open while their broader
 acceptance criteria remain unmet.
+
+
+### Preserve Worker pacing debt through short slow fields (2026-11-17)
+
+Related to #138 and #17. Main `93f78fd` retains the normal Wasm
+`231dc41a3839365d10ecd57603063688573ba43f2de3805e2935a6f6ed26a65a`.
+Its normal player reaches about 54.3 fields/s even though an identical-instance
+capacity diagnostic, with Canvas and real AudioWorklet, measures 54.2761 paced
+and 60.1699 uncapped fields/s. Reversing the mode order with temporary scheduling
+counters measures 59.7757 uncapped and 54.1796 paced. These are diagnostics, not
+uncapped playback acceptance: underflows/drops and timing remain recorded.
+
+The paced observer averages 16.6720 ms in field advancement, versus a 16.7151 ms
+emulated period, but adds 1.7702 ms of waiting per produced field. Presentation
+and renderer-capacity waits are negligible. It rebases wall time 73 times in
+30 seconds. The two-field lag cutoff discards the phase after ordinary slow
+fields, so subsequent fast fields wait instead of recovering the delay.
+
+The Worker now retains debt up to eight actual field periods, about 134 ms in
+the measured NTSC mode. Longer stalls still rebase; every guest field, clock,
+PCM packet and picture is produced normally. The two-field transport bound is
+unchanged. This changes host pacing only, with no Rust/Wasm or guest-timing
+change and no dependence on RAF frequency.
+
+Four deterministic tests execute the actual production start loop with a virtual
+host clock: NTSC/PAL mixed-cost cadence, long-stall rebasing, permanently slow
+hosts, and uncapped operation. They do not require CI CPU headroom. Restoring
+the old two-field policy makes the mixed-cost cadence assertion fail; restoring
+the candidate passes. The CI JavaScript command runs the 13 existing runner
+checks plus these four checks. The initial isolated-worktree runs lacked local
+dependencies and generated assets; supplying the existing dependencies and
+licensed build outputs gives 17 passing tests without weakening assertions.
+
+A separate real Worker/Canvas/AudioWorklet experiment imposes 14 ms fields and
+one 54 ms field every 22 fields on the original SCSP PCM guest. The old policy
+produces 271 fields in 5015.7 ms and 19509 underflow output frames, failing the
+unchanged cadence assertion. The candidate produces 300 fields in 5014.4 ms,
+with zero underflows/drops and the original nonzero waveform. Normal and direct
+public audio checks each produce 299 fields in about 5001 ms with zero
+underflows/drops. All three public playback modes over seven original guests
+also preserve pixels, PCM, state, reset and bounded drain behavior.
+
+The first normal actual-game waiting run improves approximately 54.3 to
+59.7945 fields/s over six five-second windows, with every field drawn, an actual
+AudioWorklet, zero drops/errors and 937 final colors. p95 is 30.1–30.7 ms and
+p99 31.6–32.6 ms. Underflow output frames are [147, 0, 0, 0, 0, 0]: the initial
+transient is reported, and the remaining 25 seconds have none. The longer
+conversation-input measurement and final exact-head CI are outside this
+checkpoint record; the implementation PR reports their actual results. This
+record does not claim general firmware compatibility or hardware completion.
