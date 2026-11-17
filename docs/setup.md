@@ -215,7 +215,7 @@ After building `web/pkg`:
 ```sh
 npm ci --ignore-scripts
 npx playwright install chromium
-node --test scripts/ci-runner.test.mjs
+node --test scripts/ci-runner.test.mjs scripts/playback-pacing.test.mjs
 npm run test:browser
 ```
 

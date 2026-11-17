@@ -5,6 +5,7 @@ import { VideoRenderClient } from "./video-render-client.js";
 import { SoundClient, SOUND_TRANSPORT_METHODS } from "./sound-client.js";
 
 const REFERENCE_HZ = 26874100;
+const MAX_PACING_LAG_FIELDS = 8;
 let machine, video, sound, epoch = 0, sequence = 0, playing = false, input = {};
 let lastSize = [320, 224], peakPendingFrames = 0;
 let run = Promise.resolve(), failed = false;
@@ -187,8 +188,9 @@ async function start({ paced = true } = {}) {
       const period = await produce(true);
       if (period == null) break;
       due += period;
-      // A slow host advances every field without a catch-up burst.
-      if (performance.now() - due >= period * 2) due = performance.now();
+      // Keep the phase through short slow fields so later fast fields can
+      // recover. Rebase long stalls without skipping any guest field.
+      if (performance.now() - due >= period * MAX_PACING_LAG_FIELDS) due = performance.now();
     }
   })().catch(error => {
     playing = false;
