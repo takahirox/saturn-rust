@@ -2814,6 +2814,7 @@ try {
   assert.equal(await page.locator("#reset").isDisabled(), false);
   assert.match(await value("error"), /received 1 bytes/);
   await page.evaluate(async () => { await window.finishBiosRead(); });
+  await page.waitForFunction(() => document.getElementById("main").getAttribute("aria-busy") === "false");
   assert.equal(await value("pc"), "0x00000000");
   assert.equal(await page.locator("#step").isDisabled(), true);
   await page.locator("#bios").setInputFiles({ name: "delayed-again.bin", mimeType: "application/octet-stream", buffer: bios });
