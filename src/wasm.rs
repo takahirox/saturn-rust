@@ -519,6 +519,12 @@ impl Emulator {
         self.machine.finish_sound_projection()
     }
 
+    pub fn enable_sound_controller_independence(&mut self, enabled: bool) {
+        self.machine.enable_sound_controller_independence(enabled);
+    }
+    pub fn sound_controller_independence_enabled(&self) -> bool {
+        self.machine.sound_controller_independence_enabled()
+    }
     pub fn enable_display_erase_rows(&mut self, enabled: bool) {
         self.machine.enable_display_erase_rows(enabled);
     }

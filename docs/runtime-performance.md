@@ -4270,3 +4270,90 @@ repeat remain pending. Menu and advancing-story effects are not yet measured.
 This is partial work related to #138 and #17. Sustained real-time narrative
 execution, zero sustained audio underflows and broader gameplay acceptance
 remain unmet; neither Issue is closed. No required post-merge verification.
+
+
+## Controller-independent Sound ownership checkpoint (#138, 2026-11-17)
+
+The normal narrative workload still needs more throughput after the VDP1 row
+increment. An actual normal-player observer records 3255 Sound jobs over 787
+fields (4.136 per field): 787 field returns, 787 admitted-range returns and
+1681 shared-input returns. The leading input cuts are one SF write per field
+and the Sound RAM mailbox read at offset 0x404. Main awaits total approximately
+0.770 ms for job starts, 0.637 ms for prefixes and 0.783 ms for returns per
+field; serialization adds approximately 0.143 ms export and 0.137 ms import.
+These are instrumented wall-time observations, not CPU self-time or adoption FPS.
+
+An IRQ-calendar prototype does not address those cuts: 51.977 to 52.074
+fields/s (+0.19%) with exactly the same 1986 jobs, 7112 extensions and byte
+counts over 480 fields. All six full-state endpoints match. It is held locally
+and is not adopted. Its original workload also keeps the same jobs and varies
+by -0.25%. Native/Worker correctness alone does not establish a performance gain.
+
+### Focused change
+
+The proposed default permits owned Sound to continue across pure SMPC
+controller-data and INTBACK accesses. This applies only when the SMPC has no
+pending non-INTBACK command and no deferred control. Sound/CD enable, reset,
+clock changes, unknown commands and pending/deferred controls retain the
+original cuts and conservative deadlines. Sound RAM/SCSP accesses retain their
+existing rendezvous. The controller deadline is omitted only from the Sound
+forecast's independent horizon; Main still executes every SMPC clock, IRQ,
+physical transfer and device deadline at the original time.
+
+The original-controller browser fixture completes the real SCSP boot and then
+runs an original SH-2 INTBACK loop. The new policy uses 21 jobs over 22 presented
+fields. Its image, PCM, CPU/register/cache fingerprints and reset/drain behavior
+match canonical execution. Selecting the old policy actually fails the fixture's
+ownership-count assertion. Normal, direct-presentation and forced Sound-return
+failure variants pass all seven original fixtures.
+
+### Measured opt-in evidence
+
+One identical feature artifact uses the policy off/on, with both runtimes fully
+prepared before timing. On the narrative scene, six alternating continuous
+80-field windows improve 52.587 to 56.774 fields/s (+7.96%); every window
+improves. Full Sound snapshot bytes, all 22 CPU/cache fingerprints, rolling PCM
+and final image endpoints match in all six windows. Jobs decrease 1986 to 1026
+over 480 fields, as expected from removing two controller cuts per field.
+Extensions are 7112 and 7134. This diagnostic has no actual AudioWorklet.
+
+The original busy sound/video control changes 113.558 to 114.723 (+1.03%),
+with identical 360 jobs and six matching state endpoints. No controller-cut
+reduction is claimed for that control; this small difference is not isolated
+performance evidence.
+
+The feature artifact SHA-256 is
+`48c4ec27d48d6ecf032b20d08729efb35561cd5cd3746e2581c594c017ee9bad`.
+Toolchain: Rust 1.100.0, wasm-bindgen 0.2.129, Binaryen 127 `-O4`, inline
+threshold 1000, Chrome 157.0.8103.52. The narrative input has 109 events, a
+12,900-field warmup, six continuous 80-field windows, Canvas and PCM draining.
+Private media, firmware, controller inputs and raw evidence remain local.
+
+### Correctness and remaining acceptance
+
+The opt-in candidate passes 60 focused native tests, formatting, native
+all-target/all-feature Clippy, both Wasm Clippy configurations and the feature
+build. Original SMPC status, Sound/CD controls, peripheral acquisition, SCU/FRT
+interrupts, Sound RAM/SCSP arbitration and failed transport are compared across
+full-board fields. Tests require real ownership across controller event edges.
+A literal deferred INTBACK/SOUNDON oracle retains 8600 then 807 reference clocks.
+Rejected Main accesses execute with a running original 68k; after ownership
+returns, error, CPU/cache, clocks, full Sound and PCM match canonical execution.
+An initial test checked the retained origin CPU count before handback; the same
+activity assertion now runs after handback, preserving all state comparisons.
+Two initial Clippy test-initializer findings are corrected.
+
+Three actually executed mutants fail assertions: ignoring control deadlines,
+ignoring deferred controls and treating every command as controller-only.
+All 118 frozen inputs are restored, and all 60 native tests pass again.
+The first mutation script scopes matched too many or no sites after formatting;
+it stopped without accepting those attempts and restored the source. The final
+mutations each change the intended predicate and fail their expected assertions.
+
+The production-default candidate additionally extends the original controller
+and rejected-access comparisons to PAL/NTSC and both PLLs. Its full native suite,
+normal release build, actual normal UI/AudioWorklet comparisons, exact-head CI
+and final review remain pending at this checkpoint. Sustained real time, zero
+sustained audio underflows and broader gameplay acceptance remain unmet. This
+partial work is related to #138 and #17; both stay open. No required post-merge
+verification is added.

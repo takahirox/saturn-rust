@@ -253,6 +253,34 @@ impl Smpc {
     pub(crate) fn busy(&self) -> bool {
         self.pending.is_some() || self.await_continue || self.await_vblank
     }
+    #[cfg(any(test, feature = "sound-worker"))]
+    fn controller_only(&self) -> bool {
+        self.deferred_control.is_none() && self.pending.is_none_or(|(command, _)| command == 0x10)
+    }
+    /// Controller transactions have no Sound/CD/clock/reset output. Keep all
+    /// pending or deferred controls on the original conservative deadline.
+    #[cfg(any(test, feature = "sound-worker"))]
+    pub(crate) fn sound_controller_deadline(&self) -> u32 {
+        if self.controller_only() {
+            u32::MAX
+        } else {
+            let deadline = self.clocks_to_event();
+            if deadline == u32::MAX { 1 } else { deadline }
+        }
+    }
+    #[cfg(any(test, feature = "sound-worker"))]
+    pub(crate) fn sound_independent_controller_write(&self, address: u32, value: u32) -> bool {
+        if !self.controller_only() {
+            return false;
+        }
+        match address - SMPC {
+            offset @ 1..=0x0D if offset & 1 != 0 => true,
+            0x63 => value == 1,
+            0x1F => value == 0x10,
+            0x75 | 0x77 | 0x79 | 0x7B | 0x7D | 0x7F => true,
+            _ => false,
+        }
+    }
     pub(crate) fn clocks_to_event(&self) -> u32 {
         self.digital
             .iter()
