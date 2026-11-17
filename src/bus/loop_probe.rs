@@ -18,11 +18,17 @@ pub(super) struct Record {
 }
 #[derive(Default)]
 pub(super) struct LoopProbe {
+    pub(super) short_cycle_learning: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    short_cycle_counts: [u64; 3],
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub(super) live_write_enabled: bool,
     pub(super) live_write_runtime: bool,
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub(super) live_write_runtime_counts: [std::cell::Cell<u64>; 4],
+    pub(super) pending_write_runtime: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(super) pending_write_counts: [std::cell::Cell<u64>; 2],
     pub(super) live_write_scratch:
         std::cell::RefCell<Option<Box<super::transactions::live_write_probe::Probe>>>,
     #[cfg(any(test, feature = "kernel-experiment"))]
@@ -53,9 +59,20 @@ pub(super) struct LoopProbe {
     pub(super) captured: Option<trace::CapturedLoop>,
 }
 impl LoopProbe {
+    pub(super) fn note_short_cycle(&mut self, pc: u32) {
+        if self.short_cycle_learning && (self.headers.len() < 128 || self.headers.contains(&pc)) {
+            self.headers.insert(pc);
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            {
+                self.short_cycle_counts[0] += 1;
+            }
+        }
+    }
     pub(super) fn automatic() -> Self {
         Self {
+            short_cycle_learning: true,
             live_write_runtime: true,
+            pending_write_runtime: true,
             replaying: true,
             learning: true,
             ..Self::default()
@@ -188,6 +205,39 @@ impl Machine {
             self.cpu_ready.iter().flat_map(|at| at.to_le_bytes()),
         ));
         hashes
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn enable_short_cycle_learning(&mut self, enabled: bool) {
+        self.bus
+            .loop_probe
+            .get_or_insert_with(Default::default)
+            .short_cycle_learning = enabled;
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn short_cycle_learning_counts(&self) -> Vec<u64> {
+        self.bus
+            .loop_probe
+            .as_ref()
+            .map_or_else(|| vec![0; 3], |p| p.short_cycle_counts.to_vec())
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn enable_pending_write_runtime(&mut self, enabled: bool) {
+        self.bus
+            .loop_probe
+            .get_or_insert_with(Default::default)
+            .pending_write_runtime = enabled;
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn pending_write_runtime_counts(&self) -> Vec<u64> {
+        self.bus.loop_probe.as_ref().map_or_else(
+            || vec![0; 2],
+            |p| {
+                p.pending_write_counts
+                    .iter()
+                    .map(std::cell::Cell::get)
+                    .collect()
+            },
+        )
     }
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub fn enable_live_write_runtime(&mut self, enabled: bool) {
@@ -952,12 +1002,12 @@ pub fn verify() -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn short_sparse_cycle_keeps_existing_folding() {
+    fn short_sparse_cycle_matches_with_capture_or_existing_folding() {
         use super::*;
         let make = || {
             let mut machine = original_machine(false, false, false);
             // Two distant BRA/NOP pairs execute only four instructions per
-            // cycle. Their address span must not select the long-loop engine.
+            // cycle. Compare both certified capture and the existing folder.
             for (offset, word) in [(0, 0xA01Eu16), (2, 9), (0x40, 0xAFDE), (0x42, 9)] {
                 let address = crate::bus::HIGH_WRAM + offset;
                 machine.bus.write16(address, word).unwrap();
@@ -967,29 +1017,38 @@ mod tests {
             }
             machine
         };
-        let mut automatic = make();
-        let mut reference = make();
-        automatic.enable_loop_replay(true);
-        for _ in 0..2 {
-            automatic.advance_frame().unwrap();
-            reference.advance_frame().unwrap();
-            assert_eq!(automatic.cpu, reference.cpu);
-            assert_eq!(automatic.slave, reference.slave);
-            assert_eq!(automatic.cpu_ready, reference.cpu_ready);
-            assert_eq!(automatic.clocks, reference.clocks);
-            assert_eq!(automatic.bus.high, reference.bus.high);
-            for i in 0..2 {
-                automatic.bus.cache[i]
-                    .borrow()
-                    .assert_same_contents(&reference.bus.cache[i].borrow());
-                automatic.bus.onchip[i].assert_cached_read_bus_matches(&reference.bus.onchip[i]);
+        for capture in [false, true] {
+            let mut automatic = make();
+            let mut reference = make();
+            automatic.enable_loop_replay(true);
+            automatic.enable_short_cycle_learning(capture);
+            reference.enable_short_cycle_learning(false);
+            for _ in 0..2 {
+                automatic.advance_frame().unwrap();
+                reference.advance_frame().unwrap();
+                assert_eq!(automatic.cpu, reference.cpu);
+                assert_eq!(automatic.slave, reference.slave);
+                assert_eq!(automatic.cpu_ready, reference.cpu_ready);
+                assert_eq!(automatic.clocks, reference.clocks);
+                assert_eq!(automatic.bus.high, reference.bus.high);
+                for i in 0..2 {
+                    automatic.bus.cache[i]
+                        .borrow()
+                        .assert_same_contents(&reference.bus.cache[i].borrow());
+                    automatic.bus.onchip[i]
+                        .assert_cached_read_bus_matches(&reference.bus.onchip[i]);
+                }
             }
+            if capture {
+                assert!(automatic.loop_replayed_instructions() > 0);
+            } else {
+                assert_eq!(automatic.loop_replayed_instructions(), 0);
+            }
+            assert!(
+                automatic.bus.cached_cycle_skipped > 0,
+                "retain the existing short-cycle folder"
+            );
         }
-        assert_eq!(automatic.loop_replayed_instructions(), 0);
-        assert!(
-            automatic.bus.cached_cycle_skipped > 0,
-            "retain the existing short-cycle folder"
-        );
     }
     #[test]
     fn incomplete_second_period_keeps_the_first_observation() {
@@ -1073,12 +1132,19 @@ mod tests {
             }
             machine
         };
-        for (runtime, sdram) in [(false, false), (true, false), (true, true)] {
+        for (runtime, sdram, pending) in [
+            (false, false, false),
+            (true, false, false),
+            (true, true, false),
+            (true, false, true),
+            (true, true, true),
+        ] {
             let mut observed = make(sdram);
             let mut control = make(sdram);
             control.enable_live_write_runtime(false);
             observed.enable_live_write_probe(!runtime);
             observed.enable_live_write_runtime(runtime);
+            observed.enable_pending_write_runtime(pending);
             for _ in 0..3 {
                 observed.advance_frame().unwrap();
                 control.advance_frame().unwrap();
@@ -1105,11 +1171,45 @@ mod tests {
                 let stats = observed.live_write_runtime_counts();
                 eprintln!("live_write_runtime={stats:?}");
                 assert!(stats[0] != 0 && stats[1] != 0 && stats[3] != 0);
+                if pending {
+                    let counts = observed.pending_write_runtime_counts();
+                    eprintln!("pending_origin={counts:?}");
+                    assert!(
+                        counts[1] != 0,
+                        "exercise actual pending-origin runtime publication"
+                    );
+                }
             } else {
                 let stats = observed.live_write_probe_stats();
                 assert!(stats[0] != 0 && stats[7] != 0 && stats[8] != 0);
             }
         }
+    }
+
+    fn trained_live_write_machine(narrow: bool, fast: bool) -> crate::Machine {
+        let mut m = super::original_machine(false, false, false);
+        m.bus.set_slave_enabled(false);
+        m.bus.change_system_clock(fast);
+        if narrow {
+            m.bus.onchip[0].write32(0xFFFF_FFE4, 0xA55A_00BC).unwrap();
+        }
+        m.bus.loop_probe.as_mut().unwrap().best = Some((crate::bus::HIGH_WRAM, 34));
+        assert_eq!(m.capture_loop_trace().unwrap()[0], 1);
+        m.enable_loop_replay(true);
+        m.enable_loop_training(false);
+        if m.cpu_ready[0] > m.bus.main_clocks {
+            let wait = (m.cpu_ready[0] - m.bus.main_clocks) as u32;
+            let (reference, command) = m.bus.advance_cpu_clocks(wait).unwrap();
+            assert!(command.is_none());
+            m.clocks += u64::from(reference);
+        }
+        for (offset, value) in [(0, 0x3F4), (12, 0x48), (24, 16), (20, 15), (16, 8)] {
+            m.bus.onchip[0]
+                .write32(0xFFFF_FFE0 + offset, 0xA55A_0000 | value)
+                .unwrap();
+        }
+        m.bus.high[0x1000..0x1004].fill(0xA5);
+        m
     }
 
     #[test]
@@ -1119,32 +1219,7 @@ mod tests {
         for narrow in [false, true] {
             for fast in [false, true] {
                 for limit in (1..=40).chain([63, 64, 65, 128]) {
-                    let make = || {
-                        let mut m = super::original_machine(false, false, false);
-                        m.bus.set_slave_enabled(false);
-                        m.bus.change_system_clock(fast);
-                        if narrow {
-                            m.bus.onchip[0].write32(0xFFFF_FFE4, 0xA55A_00BC).unwrap();
-                        }
-                        m.bus.loop_probe.as_mut().unwrap().best = Some((crate::bus::HIGH_WRAM, 34));
-                        assert_eq!(m.capture_loop_trace().unwrap()[0], 1);
-                        m.enable_loop_replay(true);
-                        m.enable_loop_training(false);
-                        if m.cpu_ready[0] > m.bus.main_clocks {
-                            let wait = (m.cpu_ready[0] - m.bus.main_clocks) as u32;
-                            let (reference, command) = m.bus.advance_cpu_clocks(wait).unwrap();
-                            assert!(command.is_none());
-                            m.clocks += u64::from(reference);
-                        }
-                        for (offset, value) in [(0, 0x3F4), (12, 0x48), (24, 16), (20, 15), (16, 8)]
-                        {
-                            m.bus.onchip[0]
-                                .write32(0xFFFF_FFE0 + offset, 0xA55A_0000 | value)
-                                .unwrap();
-                        }
-                        m.bus.high[0x1000..0x1004].fill(0xA5);
-                        m
-                    };
+                    let make = || trained_live_write_machine(narrow, fast);
                     let mut actual = make();
                     let mut reference = make();
                     actual.enable_live_write_runtime(true);
@@ -1207,5 +1282,146 @@ mod tests {
             halfwords != 0,
             "observe upper half with the lower half still poisoned"
         );
+    }
+    #[test]
+    fn pending_origin_runtime_keeps_buffered_bytes_at_raw_cpu_exits() {
+        let mut buffered_exits = 0;
+        for narrow in [false, true] {
+            for fast in [false, true] {
+                for first_count in [3, 4, 5, 6, 7, 8, 12] {
+                    for count in [1, 2, 4, 8, 16, 32] {
+                        let mut actual = trained_live_write_machine(narrow, fast);
+                        let mut reference = trained_live_write_machine(narrow, fast);
+                        actual.enable_pending_write_runtime(true);
+                        let origin = actual.bus.main_clocks.max(actual.cpu_ready[0]);
+                        let Some(first) = actual
+                            .bus
+                            .cached_batch(&actual.cpu, first_count, None, origin)
+                            .unwrap()
+                        else {
+                            continue;
+                        };
+                        actual.cpu = first.cpu;
+                        actual.cpu_ready[0] = first.ready;
+                        actual.clocks += first.reference;
+                        let before = actual.pending_write_runtime_counts()[1];
+                        let origin = actual.bus.main_clocks.max(actual.cpu_ready[0]);
+                        let Some(next) = actual
+                            .bus
+                            .cached_batch(&actual.cpu, count, None, origin)
+                            .unwrap()
+                        else {
+                            continue;
+                        };
+                        actual.cpu = next.cpu;
+                        actual.cpu_ready[0] = next.ready;
+                        actual.clocks += next.reference;
+                        if actual.pending_write_runtime_counts()[1] == before {
+                            continue;
+                        }
+                        for _ in 0..10000 {
+                            if reference.cpu.state().instructions >= actual.cpu.state().instructions
+                            {
+                                break;
+                            }
+                            let committed =
+                                reference.issue_cpu(crate::bus::Processor::Master).unwrap();
+                            if reference.cpu.state().instructions >= actual.cpu.state().instructions
+                            {
+                                break;
+                            }
+                            reference
+                                .finish_hardware_boundary_with_idle(committed, false)
+                                .unwrap();
+                        }
+                        assert_eq!(actual.cpu, reference.cpu);
+                        assert_eq!(actual.cpu_ready, reference.cpu_ready);
+                        assert_eq!(actual.clocks, reference.clocks);
+                        assert_eq!(actual.bus.main_clocks, reference.bus.main_clocks);
+                        assert_eq!(actual.bus.high, reference.bus.high);
+                        actual.bus.assert_live_write_active_matches(&reference.bus);
+                        actual.bus.cache[0]
+                            .borrow()
+                            .assert_same_contents(&reference.bus.cache[0].borrow());
+                        for processor in 0..2 {
+                            actual.bus.onchip[processor]
+                                .assert_cached_read_bus_matches(&reference.bus.onchip[processor]);
+                        }
+                        buffered_exits += usize::from(actual.bus.live_write_buffer_pending());
+                    }
+                }
+            }
+        }
+        assert!(
+            buffered_exits != 0,
+            "require a pending-origin commit ending with a buffered write"
+        );
+    }
+    #[test]
+    fn certified_short_cache_loop_training_matches_original_execution() {
+        let make = || {
+            let mut m = super::original_machine(false, false, false);
+            let base = crate::bus::HIGH_WRAM;
+            for (i, word) in [0x60F2u16, 0x2008, 0x8BFC, 9].into_iter().enumerate() {
+                let at = base + i as u32 * 2;
+                crate::bus::Memory::write16(&mut m.bus, at, word).unwrap();
+                m.bus.cache[0].get_mut().written(at, word.to_be_bytes());
+            }
+            m.bus.instruction_word[0].set(None);
+            m.enable_loop_replay(true);
+            m
+        };
+        let mut actual = make();
+        let mut reference = make();
+        actual.enable_short_cycle_learning(true);
+        reference.enable_short_cycle_learning(false);
+        let check = |a: &mut crate::Machine, b: &mut crate::Machine| {
+            a.advance_frame().unwrap();
+            b.advance_frame().unwrap();
+            assert_eq!(a.loop_state_hashes(), b.loop_state_hashes());
+            assert_eq!(a.cpu, b.cpu);
+            assert_eq!(a.slave, b.slave);
+            assert_eq!(a.cpu_ready, b.cpu_ready);
+            assert_eq!(a.clocks, b.clocks);
+            assert_eq!(
+                a.bus.sound.domain_snapshot().unwrap(),
+                b.bus.sound.domain_snapshot().unwrap()
+            );
+            a.bus.assert_live_write_active_matches(&b.bus);
+            for processor in 0..2 {
+                a.bus.cache[processor]
+                    .borrow()
+                    .assert_same_contents(&b.bus.cache[processor].borrow());
+                a.bus.onchip[processor].assert_cached_read_bus_matches(&b.bus.onchip[processor]);
+            }
+            assert_eq!(a.drain_audio(8192), b.drain_audio(8192));
+        };
+        for _ in 0..3 {
+            check(&mut actual, &mut reference);
+        }
+        let stats = actual.short_cycle_learning_counts();
+        eprintln!(
+            "short_cycle_learning={stats:?}, replayed={}",
+            actual.loop_replayed_instructions()
+        );
+        assert!(stats[0] != 0 && stats[1] != 0 && stats[2] >= 513);
+        assert!(actual.loop_replayed_instructions() > 0);
+        assert_eq!(reference.loop_replayed_instructions(), 0);
+        // Changing a cached input or code word must reject the old trace;
+        // these are actual guest input bytes, not a second replay oracle.
+        for m in [&mut actual, &mut reference] {
+            let at = crate::bus::HIGH_WRAM + 0x1000;
+            crate::bus::Memory::write32(&mut m.bus, at, 0).unwrap();
+            m.bus.cache[0].get_mut().written(at, 0u32.to_be_bytes());
+        }
+        check(&mut actual, &mut reference);
+        for m in [&mut actual, &mut reference] {
+            let at = crate::bus::HIGH_WRAM + 4;
+            crate::bus::Memory::write16(&mut m.bus, at, 0xAFFC).unwrap();
+            m.bus.cache[0]
+                .get_mut()
+                .written(at, 0xAFFCu16.to_be_bytes());
+        }
+        check(&mut actual, &mut reference);
     }
 }

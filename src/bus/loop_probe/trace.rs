@@ -380,12 +380,19 @@ impl Machine {
                 {
                     let instructions = data.phases.len() - 1;
                     let first_length = first_complete.map(|(n, _, _, _, _)| n);
+                    // Only expand a short period after its full CPU/cache
+                    // recurrence has actually been proved. The recorded prefix
+                    // covers the existing 512-instruction batch cap.
+                    let expand_short = probe.short_cycle_learning
+                        && first_length.unwrap_or(data.phases.len()) <= 17
+                        && instructions < 512;
                     if !overlap
-                        || data.phases.len() <= 32
-                        || (first_length.is_none()
-                            && (instructions as u64).saturating_mul(2)
-                                > expected.saturating_mul(3).min(4096))
-                        || first_length.is_some_and(|n| data.phases.len() > n)
+                        || (!expand_short
+                            && (data.phases.len() <= 32
+                                || (first_length.is_none()
+                                    && (instructions as u64).saturating_mul(2)
+                                        > expected.saturating_mul(3).min(4096))
+                                || first_length.is_some_and(|n| data.phases.len() > n)))
                     {
                         data.complete = true;
                         break;

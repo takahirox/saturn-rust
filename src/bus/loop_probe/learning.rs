@@ -59,6 +59,12 @@ impl Machine {
             best: Some((self.cpu.state().pc, 512)),
             ..LoopProbe::default()
         }));
+        scratch
+            .bus
+            .loop_probe
+            .as_mut()
+            .unwrap()
+            .short_cycle_learning = probe.short_cycle_learning;
         if scratch.capture_loop_trace_with_overlap(4096, true).is_ok()
             && let Some(data) = scratch.bus.loop_probe.as_mut().unwrap().captured.take()
             && data.complete
@@ -66,6 +72,12 @@ impl Machine {
             && data.external_reads == 0
             && data.unsupported == 0
         {
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            if probe.short_cycle_learning && data.header_checks.first().is_some_and(|r| r[0] <= 16)
+            {
+                probe.short_cycle_counts[1] += 1;
+                probe.short_cycle_counts[2] += data.phases.len() as u64;
+            }
             probe.captured = Some(data);
         }
         self.bus.loop_probe = Some(probe);
