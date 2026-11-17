@@ -15,7 +15,11 @@ async function rom(name) {
 }
 async function load(page,name,image) {
   await page.locator("#bios").setInputFiles({name:`original-${name}.bin`,mimeType:"application/octet-stream",buffer:image});
-  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));
+  // Resetting can still describe the empty reset while the new file is read.
+  await page.waitForFunction(() =>
+    document.getElementById("status").textContent.startsWith("Resetting")
+    && document.getElementById("bios-selection").textContent.includes("loaded locally")
+    && document.getElementById("main").getAttribute("aria-busy") === "false");
 }
 
 export async function hardwareBoundaries(page) {
