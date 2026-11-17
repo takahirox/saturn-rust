@@ -525,6 +525,15 @@ impl Emulator {
     pub fn enable_sound_cd_quiet(&mut self, enabled: bool) {
         self.machine.enable_sound_cd_quiet(enabled);
     }
+    pub fn enable_sound_canonical_prefix(&mut self, enabled: bool) {
+        self.machine.enable_sound_canonical_prefix(enabled);
+    }
+    pub fn sound_canonical_prefix_enabled(&self) -> bool {
+        self.machine.sound_canonical_prefix_enabled()
+    }
+    pub fn sound_canonical_prefix_counts(&self) -> Vec<u64> {
+        self.machine.sound_canonical_prefix_counts()
+    }
     pub fn sound_cd_quiet_enabled(&self) -> bool {
         self.machine.sound_cd_quiet_enabled()
     }

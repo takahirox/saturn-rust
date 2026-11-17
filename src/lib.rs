@@ -850,14 +850,28 @@ impl Machine {
         mut steps: u32,
     ) -> Result<bool, MachineError> {
         #[cfg(any(test, feature = "sound-worker"))]
+        let cooperative_budget = if self.bus.sound_rendezvous.canonical_prefix
+            && self.bus.sound_rendezvous.cd_quiet
+            && self.bus.sound_rendezvous.last_input_cd
+        {
+            512
+        } else {
+            64
+        };
+        #[cfg(any(test, feature = "sound-worker"))]
         let cooperative_stop = if STOP_SOUND && self.bus.sound_rendezvous.cooperative {
-            steps.saturating_add(64)
+            steps.saturating_add(cooperative_budget)
         } else {
             u32::MAX
         };
         while steps < 1_000_000 {
             #[cfg(any(test, feature = "sound-worker"))]
             if STOP_SOUND && steps >= cooperative_stop {
+                #[cfg(any(test, feature = "kernel-experiment"))]
+                if cooperative_budget == 512 {
+                    let count = &self.bus.sound_rendezvous.canonical_prefix_counts[1];
+                    count.set(count.get() + 1);
+                }
                 self.bus.sound_rendezvous.steps = steps;
                 return Ok(false);
             }

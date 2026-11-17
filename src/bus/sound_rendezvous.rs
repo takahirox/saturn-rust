@@ -16,6 +16,9 @@ pub(crate) struct Boundary {
 pub(crate) struct Rendezvous {
     pub independent_controller: bool,
     pub cd_quiet: bool,
+    pub canonical_prefix: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub canonical_prefix_counts: [Cell<u64>; 2],
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub cd_quiet_skips: Cell<u64>,
     pub enabled: bool,
@@ -45,6 +48,7 @@ impl Rendezvous {
         Self {
             independent_controller: true,
             cd_quiet: true,
+            canonical_prefix: true,
             ..Self::default()
         }
     }
@@ -52,6 +56,17 @@ impl Rendezvous {
         if self.enabled && boundary.id > self.exposed {
             assert!(self.pending.len() < 64, "bounded sound rendezvous queue");
             self.exposed = boundary.id;
+            // Cooperative prefixes execute on canonical Sound. Keep the real
+            // input and its timestamp, without returning to an external owner.
+            // Projected Sound and the raw rendezvous API still expose inputs.
+            if self.canonical_prefix && self.cooperative {
+                #[cfg(any(test, feature = "kernel-experiment"))]
+                {
+                    let count = &self.canonical_prefix_counts[0];
+                    count.set(count.get() + 1);
+                }
+                return;
+            }
             self.pending.push_back(boundary);
         }
     }
@@ -134,6 +149,23 @@ impl Bus {
     }
 }
 impl crate::Machine {
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn enable_sound_canonical_prefix(&mut self, enabled: bool) {
+        self.bus.sound_rendezvous.canonical_prefix = enabled;
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn sound_canonical_prefix_enabled(&self) -> bool {
+        self.bus.sound_rendezvous.canonical_prefix
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn sound_canonical_prefix_counts(&self) -> Vec<u64> {
+        self.bus
+            .sound_rendezvous
+            .canonical_prefix_counts
+            .iter()
+            .map(Cell::get)
+            .collect()
+    }
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub fn enable_sound_cd_quiet(&mut self, enabled: bool) {
         self.bus.sound_rendezvous.cd_quiet = enabled;
@@ -746,15 +778,44 @@ mod tests {
 
     #[test]
     fn delta_owner_returns_exact_sound_across_main_inputs_and_field_drains() {
-        check_delta_owner_controller(false, false);
+        check_delta_owner_controller(false, false, false);
     }
     #[test]
     fn controller_independence_keeps_shared_inputs_device_edges_and_transport_recovery() {
-        check_delta_owner_controller(true, false);
+        check_delta_owner_controller(true, false, false);
     }
     #[test]
     fn cd_quiet_keeps_owned_sound_inputs_device_edges_and_transport_recovery_exact() {
-        check_delta_owner_controller(true, true);
+        check_delta_owner_controller(true, true, false);
+    }
+    #[test]
+    fn canonical_prefix_keeps_owned_inputs_irqs_field_results_and_recovery_exact() {
+        check_delta_owner_controller(true, true, true);
+    }
+    #[test]
+    fn canonical_prefix_never_consumes_an_already_pending_input() {
+        let mut m = Machine::new();
+        let mut rom = image(CD_QUIET_GUEST);
+        rom[0x208..0x20C].copy_from_slice(&0x25A0_0000u32.to_be_bytes());
+        m.reset(Boot::ExternalBios(&rom)).unwrap();
+        assert!(!m.advance_sound_rendezvous_field().unwrap());
+        let boundary = m.sound_rendezvous_boundary();
+        assert!(!boundary.is_empty());
+        m.enable_sound_canonical_prefix(true);
+        let cpu = m.cpu.clone();
+        let time = m.clocks;
+        let sound = m.sound_domain_snapshot().unwrap();
+        for _ in 0..2 {
+            assert!(!m.advance_sound_projection_field().unwrap());
+            assert_eq!(m.sound_rendezvous_boundary(), boundary);
+            assert_eq!(m.cpu, cpu);
+            assert_eq!(m.clocks, time);
+            assert_eq!(m.sound_domain_snapshot().unwrap(), sound);
+        }
+        assert!(m.acknowledge_sound_rendezvous());
+        while !m.advance_sound_projection_field().unwrap() {
+            m.acknowledge_sound_rendezvous();
+        }
     }
     #[test]
     fn cd_quiet_threshold_changes_only_the_host_admission_policy() {
@@ -809,7 +870,7 @@ mod tests {
             assert!(!m.bus.sound_rendezvous.last_input_cd);
         }
     }
-    fn check_delta_owner_controller(independent: bool, cd_quiet: bool) {
+    fn check_delta_owner_controller(independent: bool, cd_quiet: bool, canonical_prefix: bool) {
         let mut controller_crossings = 0;
         let mut jobs = 0;
         let mut extensions = 0;
@@ -818,6 +879,7 @@ mod tests {
         let mut lost_at_field_end = 0;
         let mut idle_batches = 0;
         let mut idle_max = 0;
+        let mut canonical_counts = [0; 2];
         for source in [
             CD_QUIET_GUEST,
             include_str!("../../examples/runtime-poll-sound-busy-scene.hex"),
@@ -841,6 +903,7 @@ mod tests {
                     m.bus.change_system_clock(fast);
                     m.enable_sound_controller_independence(independent);
                     m.enable_sound_cd_quiet(cd_quiet);
+                    m.enable_sound_canonical_prefix(canonical_prefix);
                     if source == CD_QUIET_GUEST {
                         let audio = vec![0; 2352 * 3];
                         m.mount_media(
@@ -971,6 +1034,12 @@ mod tests {
                 }
                 idle_batches += remote.bus.sound_rendezvous.projected_idle_batches;
                 idle_max = idle_max.max(remote.bus.sound_rendezvous.projected_idle_max);
+                for (sum, count) in canonical_counts
+                    .iter_mut()
+                    .zip(remote.sound_canonical_prefix_counts())
+                {
+                    *sum += count;
+                }
             }
         }
         assert!(idle_batches > 0, "must exercise projected idle batches");
@@ -986,6 +1055,16 @@ mod tests {
             );
         }
         assert!(lost_before_accept > 0 && lost_during_execution > 0 && lost_at_field_end > 0);
+        if canonical_prefix {
+            assert!(
+                canonical_counts[0] > 0,
+                "must process real canonical inputs without host returns"
+            );
+            assert!(
+                canonical_counts[1] > 0,
+                "must use real larger CD prefix budgets"
+            );
+        }
     }
 
     #[test]
