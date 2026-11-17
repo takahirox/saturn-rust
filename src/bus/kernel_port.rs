@@ -99,30 +99,7 @@ impl Bus {
         value: u32,
         pc: u32,
     ) -> Result<(), BusError> {
-        let j = self.transactions.journals[owner as usize].get_mut();
-        j.current_operation = Some(Operation::Write(address, width as usize, value));
-        j.write_context = (pc, None);
-        let mut memory = CpuBus {
-            bus: self,
-            processor: owner,
-            cached: true,
-            scheduled: true,
-        };
-        let result = match width {
-            1 => memory.external_write(address, [value as u8]),
-            2 => memory.external_write(address, (value as u16).to_be_bytes()),
-            4 => memory.external_write(address, value.to_be_bytes()),
-            _ => Err(BusError::UnsupportedDevice {
-                address,
-                width: width as usize,
-            }),
-        };
-        if result.is_ok() {
-            let j = self.transactions.journals[owner as usize].get_mut();
-            j.current_operation = None;
-            j.completed = false;
-        }
-        result
+        self.resume_planned_write(owner, address, width, value, pc)
     }
 
     pub(crate) fn kernel_deadline(&self) -> u32 {

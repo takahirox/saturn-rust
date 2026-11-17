@@ -4004,3 +4004,88 @@ Complete exact-head CI and final review are pending. Sustained 60 fields/s,
 zero audio underflows, broader gameplay and hardware completion remain unmet;
 #138 and #17 remain open. Private inputs and raw captures/profiles stay local
 and ignored. No post-merge verification is required.
+
+
+## Live-origin WRAM write plans (2026-11-17 checkpoint)
+
+Related to #138 and #17. Both remain open. The original Rust core is retained.
+This checkpoint is below real time; it does not establish hardware completion
+or general firmware/game compatibility.
+
+Captured CPU replay previously ended before the strict BSC event even when its
+cache inputs stayed unchanged. The new path upgrades a successful replay by
+validating a longer CPU prefix against the canonical arbiter in a persistent
+private board initialized from the **live** BSC and A-bus state. Captured store
+request and acceptance times must match. Physical byte completions, refresh
+row closure, ownership and the final pending write buffer are recomputed;
+physical writes are never copied from an old captured bus trace.
+
+This first slice requires an empty initial external transfer/buffer,
+cache-resident inputs, big-endian WRAM stores, a private Pending peer or no peer,
+and no Sound lookahead. Complete CPU-origin, cache-input and mapped LRU proofs
+remain required. Existing IRQ/DMA/UBC/reset, PLL, device and observer horizons
+remain. The model clocks only BSC/A-bus state; real OnChip peripherals, Sound,
+VDP/raster, CD and SMPC advance during ordinary independent catch-up. Rejection
+uses the previous execution path. No frame skipping or timing quantum change
+is introduced. Initially pending WRAM buffers/refresh remain future work.
+
+### Measured evidence
+
+Rust 1.100.0, wasm-bindgen 0.2.129, Binaryen 127 `-O4`, inline threshold 1000,
+headless Chrome 157.0.8103.52. Each source uses a unique Cargo target and frozen
+inputs. Private media, captures, snapshots and raw measurements stay local.
+
+Normal baseline Wasm SHA-256:
+`715e48cf521c7b95d7ae454aecd210d7a80df6d6fb42c4d9b7c3db3b1669b05e`.
+First production candidate:
+`92c86c76a2ec41a4cc8e4f74bb4f948a2c27c3228a30ae4381991c89a89c332a`.
+Its feature companion:
+`9ef4fa17502d4414f018b01237cf41f609ae2f851cf93f48e23b81a12ad79666`.
+
+Normal UI measurements use separate fresh Chrome processes with one page each,
+the authorized mounted game and existing 16-event menu input, 3600 warmup fields,
+six consecutive five-second windows, every field drawn, actual AudioWorklet and
+active Rust Sound Worker. Repeating reverses the process order.
+
+| Normal player comparison | Baseline fields/s | Candidate fields/s | Change | Audio underflow sample frames, baseline / candidate |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline first | 47.402 | 53.205 | +12.24% | 274892 / 146537 |
+| Candidate first | 46.471 | 53.499 | +15.12% | 295342 / 139903 |
+
+All twelve normal windows draw every field; audio drops are zero. Display-gap
+p95 ranges improve from 21.6–22.8 to 19.2–19.7 ms in the first comparison and
+22.2–22.4 to 19.2–20.0 ms in the repeat. Corresponding p99 ranges are 22.1–23.6
+to 19.4–20.5 ms and 22.8–23.8 to 19.8–21.4 ms. These are Canvas delivery gaps,
+not isolated CPU latency. Normal UI measurements do not claim strict private
+state equivalence; use the native and feature companions for that proof.
+
+The preceding opt-in Lite prototype, one identical diagnostic feature artifact
+with the flag off/on, improves 47.348 to 56.098 fields/s (+18.48%) across six
+alternating 80-field windows after 3600 warmup fields; all six pairs improve.
+Full Sound snapshot bytes, CPU/cache fingerprints, rolling PCM and image
+endpoints match in every window. The original fixture changes 123.900 to
+124.150 (+0.20%) with zero optimized commits. These prototype timings do not
+include a real AudioWorklet and must not stand in for normal-player FPS.
+
+### Correctness and remaining acceptance
+
+The production-default path passes all 958 native library tests, formatting,
+normal/all-feature Wasm Clippy and both normal/feature release builds. New
+checks cover literal byte publication at 8/16/24/32 clocks, wrong accepted-time
+rejection, and 4096 every-clock comparisons against ordinary bus operation
+across bus widths, RTC phases, refresh, SDRAM row history and nondefault A-bus
+configuration/protocol. Dual-SH2 execution compares full Sound bytes, PCM,
+CPU/cache/BSC and active-buffer state, including SDRAM and nondefault A-bus.
+Another 176 actual burst exits cover both PLLs and 16/32-bit buses. They require
+an actual optimized commit with physical `1234A5A5` before the low half drains,
+and compare active/buffer/context/ownership before the caller's next tick.
+
+Three executed final-source mutants fail assertions for premature whole-word
+publication, omitted final BSC state and a dropped pending write buffer.
+Exact source restoration passes the positive controls. The additional row/A-bus
+checks are test-only; final production artifact identity is being rechecked.
+Complete all-feature native/integration checks, exact-head CI, full review and
+meaningful story measurements are pending at this checkpoint. PR evidence must
+record their actual results before merge. Sustained 60 fields/s, broader gameplay
+and real-time audio/latency acceptance remain unmet. No post-merge verification
+is required.

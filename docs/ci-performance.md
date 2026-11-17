@@ -69,7 +69,7 @@ no benchmark, hardware, human-approval or post-merge gate.
 
 ## Issue #107 execution cost and shard balance
 
-The current inventory is **74 groups: 33 shared / 41 scenarios**. The baseline
+The current inventory is **74 groups: 32 shared / 42 scenarios**. The baseline
 assignment was 31/43; do not infer today's counts from historical records below.
 The [validation record](validation-issue-107.md) and
 [per-group measurements](ci-performance-issue-107.json) distinguish work reduction,
@@ -897,3 +897,24 @@ PR; its native/Wasm/browser/runner commands were executed locally. These local
 concurrent timings are not hosted-CI performance claims. No live Pages, personal
 BIOS, commercial game, hardware or human approval gate is required. Required
 post-merge verification: none.
+
+
+## Restore browser shard balance without reducing coverage (2026-11-17)
+
+PR #174 head `587d66f` passed native, Wasm and all 41 scenario groups, but
+shared reached the unchanged 1,200-second worker budget during `cdStream`.
+[Run 44002453376](https://github.com/takahirox/saturn-rust/actions/runs/44002453376)
+reports scenarios at 568.808 seconds. Shared had already spent 178.140 seconds
+in `hardwareBoundaries` before CHD and streaming; streaming was interrupted
+at 328.923 seconds. A previous same-runtime attempt also hit the total budget,
+while a faster rerun exposed and allowed correction of an asynchronous BIOS
+load fence. These are not waived validation results.
+
+Move only the independently isolated `hardwareBoundaries` module to scenarios.
+The assignment becomes 32 shared / 42 scenarios, retaining all 74 groups,
+all assertions and guest intervals, two workers and the 20-minute budget.
+Using the observed module time shifts roughly 178 seconds from the constrained
+worker to the worker with over 600 seconds remaining. The manifest union,
+selection rules and existing runner regressions validate the assignment; exact
+head CI must pass before merge. Historical timings above retain their original
+assignments. No post-merge verification is required.

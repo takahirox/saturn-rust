@@ -2787,6 +2787,8 @@ try {
   await page.locator("#count").fill("6");
   // A malformed replacement must clear the previously running external ROM.
   await page.locator("#bios").setInputFiles({ name: "wrong.bin", mimeType: "application/octet-stream", buffer: Buffer.from([0, 0]) });
+  // File selection returns before the Worker reset reply refreshes the debugger.
+  await page.waitForFunction(() => document.getElementById("main").getAttribute("aria-busy") === "false");
   assert.equal(await value("pc"), "0x00000000");
   assert.equal(await page.locator("#step").isDisabled(), true);
   await page.locator("#fixture").click();
@@ -2812,6 +2814,7 @@ try {
   assert.equal(await page.locator("#reset").isDisabled(), false);
   assert.match(await value("error"), /received 1 bytes/);
   await page.evaluate(async () => { await window.finishBiosRead(); });
+  await page.waitForFunction(() => document.getElementById("main").getAttribute("aria-busy") === "false");
   assert.equal(await value("pc"), "0x00000000");
   assert.equal(await page.locator("#step").isDisabled(), true);
   await page.locator("#bios").setInputFiles({ name: "delayed-again.bin", mimeType: "application/octet-stream", buffer: bios });
