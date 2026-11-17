@@ -152,7 +152,7 @@ try {
         try {
           await timed(client.ready);
           for (let boot = 0; boot < 2; boot++) {
-            reference.reset_bios(Uint8Array.from(rom));
+            reference.reset_bios(Uint8Array.from(rom)); reference.enable_owned_texture_runs(false);
             await timed(client.reset({ mode: "bios", rom: Uint8Array.from(rom) }));
             reference.set_buttons(boot ? 0x80 : 0); reference.set_port2_buttons(0x10);
             client.setInput({ buttons: boot ? 0x80 : 0, port2Buttons: 0x10 });
@@ -175,7 +175,7 @@ try {
             afterAudio = () => {
               afterAudio = null;
               resetting = client.reset({ mode: "bios", rom: Uint8Array.from(rom) });
-              reference.reset_bios(Uint8Array.from(rom));
+              reference.reset_bios(Uint8Array.from(rom)); reference.enable_owned_texture_runs(false);
               lastFrame = 0;
               audio.clear();
               resolve();

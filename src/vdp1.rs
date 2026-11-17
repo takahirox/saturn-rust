@@ -20,6 +20,7 @@ const COMMAND_CLOCKS: u32 = 32;
 const COMMAND_WORD_CLOCKS: u32 = COMMAND_CLOCKS / 16;
 
 #[derive(Clone, Copy, Default)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 struct Point {
     x: i32,
     y: i32,
@@ -39,6 +40,7 @@ fn lerp(a: i32, b: i32, n: i32, d: i32) -> i32 {
     if d == 0 { a } else { a + (b - a) * n / d }
 }
 
+#[cfg_attr(test, derive(PartialEq, Eq))]
 struct Drawing {
     command: [u16; 16],
     points: [Point; 4],
@@ -86,6 +88,7 @@ impl Drawing {
     }
 }
 
+#[cfg_attr(test, derive(PartialEq, Eq))]
 struct RasterLine {
     a: Point,
     b: Point,
@@ -103,6 +106,7 @@ struct RasterLine {
 /// Exact quotient/remainder stepping of the existing texture formula. The
 /// signed increment also handles pre-clipping's reversed traversal. Division
 /// occurs only when entering a line, not at each acquisition/drawing query.
+#[cfg_attr(test, derive(PartialEq, Eq))]
 struct TextureLine {
     u: i32,
     remainder: i32,
@@ -210,6 +214,7 @@ impl RasterLine {
     }
 }
 
+#[cfg_attr(test, derive(PartialEq, Eq))]
 struct PendingPixel {
     buffer: usize,
     address: usize,
@@ -218,6 +223,7 @@ struct PendingPixel {
 }
 
 #[derive(Clone, Copy)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 struct EraseArea {
     buffer: usize,
     width: usize,
@@ -228,6 +234,7 @@ struct EraseArea {
     top: usize,
     bottom: usize,
 }
+#[cfg_attr(test, derive(PartialEq, Eq))]
 struct Erasing {
     area: EraseArea,
     x: usize,
@@ -238,7 +245,9 @@ struct Erasing {
     words_left: u32,
 }
 
+#[cfg_attr(test, derive(PartialEq, Eq))]
 pub struct Vdp1 {
+    owned_texture_runs: bool,
     display_erase_rows: bool,
     #[cfg(any(test, feature = "kernel-experiment"))]
     display_erase_row_counts: [u64; 3],
@@ -280,6 +289,7 @@ pub struct Vdp1 {
 impl Default for Vdp1 {
     fn default() -> Self {
         Self {
+            owned_texture_runs: true,
             display_erase_rows: true,
             #[cfg(any(test, feature = "kernel-experiment"))]
             display_erase_row_counts: [0; 3],
@@ -800,22 +810,27 @@ impl Vdp1 {
         let mut remaining = clocks;
         let mut ended = false;
         while remaining != 0 {
-            let drawn = self.try_draw_run(remaining, framebuffer_busy);
+            let drawn = self.try_draw_run(remaining, vram_busy, framebuffer_busy);
             if drawn != 0 {
                 remaining -= drawn;
                 continue;
             }
-            let delta = remaining.min(self.clocks_to_event());
+            let mut delta = remaining.min(self.clocks_to_event());
+            // Retire the work before ENDR's final clock. Stopping a multi-clock
+            // phase at once would discard its already elapsed prefix.
+            if delta > 1 && self.stop_remaining == Some(delta) {
+                delta -= 1;
+            }
             ended |= self.advance_phase(delta, vram_busy, framebuffer_busy)?;
             remaining -= delta;
         }
         Ok(ended)
     }
     /// No other master observes an intermediate point inside this call. Keep
-    /// every pixel and stop before the next texture/table bus phase, pending
-    /// six-state pixel, forced stop or erase phase. Cached texture words remain
-    /// usable even when the VRAM port belongs to the system controller.
-    fn try_draw_run(&mut self, clocks: u32, framebuffer_busy: bool) -> u32 {
+    /// every pixel, texture word's two clocks and any unfinished final fetch.
+    /// Stop before a table fetch, pending six-state pixel, forced stop or erase.
+    /// A busy VRAM port stops new texture fetches; cached words remain usable.
+    fn try_draw_run(&mut self, clocks: u32, vram_busy: bool, framebuffer_busy: bool) -> u32 {
         if clocks < 2
             || framebuffer_busy
             || !self.running
@@ -830,7 +845,25 @@ impl Vdp1 {
             return 0;
         };
         let mut used = 0;
-        while used < clocks && !draw.tables_pending() && !draw.texture_pending(self.draw_control) {
+        while used < clocks && !draw.tables_pending() {
+            let missing = draw
+                .texture_address(self.draw_control)
+                .filter(|&address| draw.texture.is_none_or(|(old, _)| old != address));
+            if let Some(address) = missing {
+                if !self.owned_texture_runs || vram_busy {
+                    break;
+                }
+                // No other master observes this interval. Keep every physical
+                // word's two-clock phase, including an unfinished last fetch.
+                let delta = (clocks - used).min(COMMAND_WORD_CLOCKS - self.phase);
+                self.phase += delta;
+                used += delta;
+                if self.phase == COMMAND_WORD_CLOCKS {
+                    self.phase = 0;
+                    draw.texture = Some((address, self.word(address)));
+                }
+                continue;
+            }
             self.draw_next(&mut draw);
             used += 1;
             if draw.row > draw.rows || self.pending_pixel.is_some() {
@@ -1395,6 +1428,8 @@ mod display_journal_tests;
 #[cfg(test)]
 mod erase_tests;
 #[cfg(test)]
+mod owned_texture_run_tests;
+#[cfg(test)]
 mod preclip_tests;
 #[cfg(test)]
 mod progress_tests;
@@ -1411,6 +1446,12 @@ mod display_erase_row_tests;
 
 #[cfg(any(test, feature = "kernel-experiment"))]
 impl crate::Machine {
+    pub fn enable_owned_texture_runs(&mut self, enabled: bool) {
+        self.bus.vdp1.owned_texture_runs = enabled;
+    }
+    pub fn owned_texture_runs_enabled(&self) -> bool {
+        self.bus.vdp1.owned_texture_runs
+    }
     pub fn enable_display_erase_rows(&mut self, enabled: bool) {
         self.bus.vdp1.enable_display_erase_rows(enabled);
     }

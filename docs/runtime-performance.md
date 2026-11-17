@@ -4357,3 +4357,63 @@ and final review remain pending at this checkpoint. Sustained real time, zero
 sustained audio underflows and broader gameplay acceptance remain unmet. This
 partial work is related to #138 and #17; both stay open. No required post-merge
 verification is added.
+
+
+### Retain VDP1 texture ownership inside drawing runs (2026-11-17)
+
+Related to #138 and #17. The accepted normal artifact at this checkpoint is
+`d9231cc6b0a38f4ce28173d7c96688760312d86d6d329f3cedfcf39d044751b0`
+from main `8385628`. Its simultaneous 15-second worker profile attributes
+12.435% of Main samples to VDP1 and 25.864% to remaining cached-batch planning;
+Main is idle 4.293%, Sound 56.941%, and Video 61.101%. Profiling timings are
+not throughput evidence.
+
+The candidate retains the drawing cursor while an already admitted private
+interval crosses texture fetches. Every word still consumes two main clocks;
+an unfinished final word keeps its partial phase. A busy VRAM port prevents
+new fetches while retained words remain usable. Table reads, pending six-state
+pixels, forced stops and erase use the existing phase engine. Every pixel,
+ordered display patch and blanking-clock deduction remains accounted for.
+
+An original full-state differential test also finds that the old unfused
+multi-clock engine can discard the prefix before ENDR's final clock. Disabling
+the new run reproduces the same failure. Splitting immediately before that last
+clock preserves one-clock execution's retained state. An independent 36+30-clock
+vector checks the partial texture phase and absence of a fabricated draw-end
+interrupt with both run settings. This does not establish physical-hardware
+stop latency or general hardware completion.
+
+The focused native checks pass 60 tests, including three new tests with 96
+mode/port scenarios and comparison of every retained VDP1 field against the
+original one-clock engine. Native all-target/all-feature Clippy, both Wasm
+Clippy configurations, formatting and the feature build pass. Five executed
+mutants fail assertions: dropping the pre-stop prefix, ignoring VRAM ownership,
+completing a partial fetch early, fetching the wrong word and omitting blanking
+clocks. All 119 frozen inputs are restored. Three browser modes over seven
+original guests preserve full private CPU/cache hashes, PCM, every-frame pixels,
+reset and drain behavior. The public verifier now forces the reference's old
+run setting after each reset while the owned player keeps the candidate.
+
+The identical-feature artifact is
+`801f388840e4e1c74592279023d03d25252ecb0d1316c10f3c56de3415787cef`.
+Six alternating 80-field windows per scene produce:
+
+| Diagnostic scene | Old run fields/s | Owned run fields/s | Change |
+| --- | ---: | ---: | ---: |
+| Actual game, waiting | 56.5604 | 60.0510 | +6.1715% |
+| Actual game, advancing conversation | 55.3710 | 58.8740 | +6.3265% |
+| Original busy drawing/sound guest | 119.4069 | 147.1069 | +23.1979% |
+
+Every game window improves; all 12 game endpoints and six original endpoints
+match full Sound bytes, 22 CPU/cache hashes, rolling PCM and image results.
+Preparation uses the production Sound owner; every endpoint additionally matches
+the saved canonical-boot run. Ownership counters therefore include preparation
+and must not be compared directly with older steady-only counters.
+
+These diagnostics draw every field but do not run an actual AudioWorklet. They
+are not normal-player FPS or evidence of real-time completion. The prior local
+phase/address-reuse trial improves waiting/advancing by 2.7326%/2.2514%; the
+compact-PC proof-search trial gives only 0.2951%/0.4977% and is held. Neither is
+included here. Final full-suite, normal-player, CI and review results belong to
+the implementation PR. Both source Issues remain open while their broader
+acceptance criteria remain unmet.
