@@ -9,7 +9,7 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { chromium } from "playwright";
 
-const { values } = parseArgs({ options: { pkg: { type: "string", default: "web/pkg" }, direct: { type: "boolean", default: false }, "delay-audio": { type: "boolean", default: false }, "delay-receipt": { type: "boolean", default: false }, "early-credit": { type: "boolean", default: false }, "sound-error": { type: "boolean", default: false } } });
+const { values } = parseArgs({ options: { pkg: { type: "string", default: "web/pkg" }, direct: { type: "boolean", default: false }, "delay-audio": { type: "boolean", default: false }, "delay-receipt": { type: "boolean", default: false }, "early-credit": { type: "boolean", default: false }, "sound-error": { type: "boolean", default: false }, "controller-disabled": { type: "boolean", default: false } } });
 const assets = new Map(), sha256 = {};
 for (const [url, file] of [
   ["/pkg/saturn_rust.js", resolve(values.pkg, "saturn_rust.js")],
@@ -44,17 +44,40 @@ for (const [url, file] of [
     assert(bytes.toString().includes(finish), "controlled Sound failure must alter the served return");
     bytes = Buffer.from(bytes.toString().replace(finish, 'throw new Error("Controlled Sound return failure");'));
   }
+  if (url === "/playback-worker.js" && values["controller-disabled"]) {
+    const old = "  await sound.reset();"; assert(bytes.toString().includes(old));
+    bytes = Buffer.from(bytes.toString().replace(old, old + `\n  machine.enable_sound_controller_independence(${!values["controller-disabled"]});`));
+  }
   assets.set(url, bytes);
   sha256[url] = createHash("sha256").update(bytes).digest("hex");
 }
 const fixtures = [];
 for (const [name, marker] of [["rotation-fetch-tile", 0x0600DC0C], ["rotation-fetch-rbg1", 0x0600DC0C],
-  ["sprite-rotation16", 0x0600DE18], ["sprite-interlace", 0x0600DF34], ["scsp-pcm", 0x0600ED00], ["scsp-clock", 0x05A00804]]) {
+  ["sprite-rotation16", 0x0600DE18], ["sprite-interlace", 0x0600DF34], ["scsp-pcm", 0x0600ED00], ["scsp-clock", 0x05A00804], ["scsp-clock-controller", 0x05A00804]]) {
   const bytes = Buffer.alloc(524288);
-  for (const line of (await readFile(`tests/fixtures/${name}.hex`, "utf8")).split(/\r?\n/)) {
+  for (const line of (await readFile(`tests/fixtures/${name === "scsp-clock-controller" ? "scsp-clock" : name}.hex`, "utf8")).split(/\r?\n/)) {
     if (!line.trim() || line.startsWith("#")) continue;
     const [at, ...words] = line.trim().split(/\s+/).map(word => parseInt(word, 16));
     words.forEach((word, i) => bytes.writeUInt16BE(word, at + i * 2));
+  }
+  if (name === "scsp-clock-controller") {
+    assert.equal(bytes.readUInt16BE(0x294), 0x001B);
+    [0xD101, 0x412B, 9, 9, 0, 0x8000].forEach((word, i) => bytes.writeUInt16BE(word, 0x294 + i*2));
+    const words = [], fixes = [];
+    for (const [offset, value] of [[1,1],[3,0],[5,0xF0],[0x63,1],[0x1F,0x10]]) {
+      fixes.push([words.length, 0x20100000 + offset]); words.push(0, 0xE000 | value, 0x2100);
+    }
+    fixes.push([words.length,0x20100063]); words.push(0);
+    const poll = words.length; words.push(0x6010,0xC801);
+    words.push(0x8B00 | ((poll - words.length - 2) & 255));
+    words.push(0xA000 | ((-words.length - 2) & 4095),9);
+    if (words.length % 2) words.push(9);
+    for (const [at, value] of fixes) {
+      const target = 0x8000 + words.length*2, pc = (0x8000 + at*2 + 4) & ~3;
+      assert((target-pc)%4===0 && target>=pc && target-pc<1024);
+      words[at] = 0xD100 | ((target-pc)/4); words.push(value >>> 16,value & 65535);
+    }
+    words.forEach((word,i)=>bytes.writeUInt16BE(word,0x8000+i*2));
   }
   fixtures.push({ name, marker, rom: [...bytes] });
 }
@@ -165,10 +188,11 @@ try {
           client.setInput({ buttons: 0, port2Buttons: 0 });
           compare(await timed(client.advance(2)));
           const final = await timed(client.inspect());
-          if (name === "scsp-clock") {
+          if (name === "scsp-clock" || name === "scsp-clock-controller") {
             if (!(final.soundTransport.jobs > 0)) throw new Error("Original sound CPU must exercise actual offload");
             if (final.soundTransport.disabled !== soundError) throw new Error("Sound failure/fallback policy was not exercised");
           }
+          if (name === "scsp-clock-controller" && !soundError && final.soundTransport.jobs > fields * 2) throw new Error("Controller-only guest must avoid per-command Sound ownership returns");
           results.push({ name, fields, nonzero, stopped: fields, inFlightReset: true,
             soundTransport: final.soundTransport, peak: final.peakPendingFrames });
         } finally { client.close(); reference.free(); }

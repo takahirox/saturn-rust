@@ -410,7 +410,7 @@ impl Default for Bus {
     fn default() -> Self {
         Self {
             #[cfg(any(test, feature = "sound-worker"))]
-            sound_rendezvous: sound_rendezvous::Rendezvous::default(),
+            sound_rendezvous: sound_rendezvous::Rendezvous::production(),
             loop_probe: Some(Box::new(loop_probe::LoopProbe::automatic())),
             transactions: transactions::Transactions::default(),
             inline: None,

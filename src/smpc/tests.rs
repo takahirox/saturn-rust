@@ -1104,3 +1104,43 @@ fn status_mailbox_has_one_slot_real_deadlines_and_cancels_on_reset() {
         assert!(!s.take_irq());
     }
 }
+
+#[test]
+fn sound_controller_dependencies_keep_controls_and_deferred_deadlines() {
+    let chip = Smpc::default();
+    assert_eq!(chip.sound_controller_deadline(), u32::MAX);
+    for offset in [1, 3, 5, 7, 9, 11, 13, 0x75, 0x77, 0x79, 0x7B, 0x7D, 0x7F] {
+        assert!(chip.sound_independent_controller_write(SMPC + offset, 1));
+    }
+    assert!(chip.sound_independent_controller_write(SMPC + 0x63, 1));
+    assert!(!chip.sound_independent_controller_write(SMPC + 0x63, 0));
+    assert!(chip.sound_independent_controller_write(SMPC + 0x1F, 0x10));
+    for command in [0, 2, 3, 6, 7, 8, 9, 0x0D, 0x0E, 0x0F, 0x17, 0xFF] {
+        assert!(!chip.sound_independent_controller_write(SMPC + 0x1F, command));
+        let pending = Smpc {
+            pending: Some((command as u8, 100)),
+            ..Smpc::default()
+        };
+        assert_eq!(pending.sound_controller_deadline(), 100);
+        assert!(!pending.sound_independent_controller_write(SMPC + 0x63, 1));
+    }
+    let mut deferred = Smpc {
+        command: 0x10,
+        input: [1, 8, 0xF0, 0, 0, 0, 0],
+        pending: Some((0x10, 8600)),
+        deferred_control: Some(6),
+        ..Smpc::default()
+    };
+    assert_eq!(deferred.sound_controller_deadline(), 8600);
+    assert!(!deferred.sound_independent_controller_write(SMPC + 1, 0x41));
+    assert_eq!(deferred.advance_clocks(8599), None);
+    assert_eq!(deferred.advance_clocks(1), Some(0x10));
+    assert_eq!(deferred.sound_controller_deadline(), 807);
+    assert_eq!(deferred.advance_clocks(806), None);
+    assert!(!deferred.sound_enabled);
+    assert_eq!(deferred.advance_clocks(1), Some(6));
+    assert!(deferred.sound_enabled);
+    assert_eq!(deferred.sound_controller_deadline(), u32::MAX);
+    deferred.deferred_control = Some(7);
+    assert_eq!(deferred.sound_controller_deadline(), 1);
+}

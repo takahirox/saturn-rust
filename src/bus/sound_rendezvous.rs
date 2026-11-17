@@ -14,6 +14,7 @@ pub(crate) struct Boundary {
 }
 #[derive(Default)]
 pub(crate) struct Rendezvous {
+    pub independent_controller: bool,
     pub enabled: bool,
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub strict_inputs: bool,
@@ -36,6 +37,12 @@ pub(crate) struct Rendezvous {
     pub projected_idle_max: u32,
 }
 impl Rendezvous {
+    pub(super) fn production() -> Self {
+        Self {
+            independent_controller: true,
+            ..Self::default()
+        }
+    }
     pub fn expose(&mut self, boundary: Boundary) {
         if self.enabled && boundary.id > self.exposed {
             assert!(self.pending.len() < 64, "bounded sound rendezvous queue");
@@ -60,10 +67,21 @@ impl Bus {
         (crate::sound::SOUND_RAM..crate::sound::SCSP + 0x1000).contains(&address)
             || ((0x0580_0000..0x0590_0000).contains(&address)
                 && (strict || self.cd.sound_can_receive_cd_audio()))
-            // SMPC reads take &self and cannot start or complete a Sound command.
-            // All writes, pending device deadlines and completed controls retain
-            // their original cuts; this also applies to an already admitted beat.
-            || ((SMPC..SMPC + 0x80).contains(&address) && (strict || write.is_some()))
+            // Retain real controls and unknown/faulting command writes. Pure
+            // controller data/INTBACK writes commute with owned Sound, including
+            // an already admitted beat. Main still executes every SMPC edge.
+            || ((SMPC..SMPC + 0x80).contains(&address)
+                && (strict || write.is_some_and(|value| {
+                    !self.sound_rendezvous.independent_controller
+                        || !self.smpc.sound_independent_controller_write(address, value)
+                })))
+    }
+    fn sound_smpc_deadline(&self) -> u32 {
+        if self.sound_rendezvous.independent_controller && !self.strict_sound_inputs() {
+            self.smpc.sound_controller_deadline()
+        } else {
+            self.smpc.clocks_to_event()
+        }
     }
     /// Stay strictly before every possible new bus grant/device input and
     /// before the verified Sound frontier. The next event uses one real tick.
@@ -111,6 +129,14 @@ impl Bus {
 }
 impl crate::Machine {
     #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn enable_sound_controller_independence(&mut self, enabled: bool) {
+        self.bus.sound_rendezvous.independent_controller = enabled;
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn sound_controller_independence_enabled(&self) -> bool {
+        self.bus.sound_rendezvous.independent_controller
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
     pub fn enable_sound_dependency_filter(&mut self, enabled: bool) {
         self.bus.sound_rendezvous.strict_inputs = !enabled;
     }
@@ -134,7 +160,7 @@ impl crate::Machine {
                     .sound_source_deadline(self.bus.strict_sound_inputs())
                     .saturating_sub(1),
             )
-            .min(self.bus.smpc.clocks_to_event().saturating_sub(1));
+            .min(self.bus.sound_smpc_deadline().saturating_sub(1));
         let origin = self.bus.sound.domain_reference_time();
         (clocks >= 512).then_some((origin, origin + u64::from(clocks)))
     }
@@ -431,6 +457,100 @@ mod tests {
         assert_eq!(reference.drain_audio(8192), paused.drain_audio(8192));
     }
     #[test]
+    fn controller_independence_restores_owned_sound_on_rejected_main_accesses() {
+        let mut rejected_while_owned = 0;
+        for source in [
+            include_str!("../../tests/fixtures/smpc-fault-parameters.hex"),
+            include_str!("../../tests/fixtures/smpc-fault-busy-set.hex"),
+            include_str!("../../tests/fixtures/smpc-fault-invalid-sf.hex"),
+        ] {
+            for (pal, fast) in [(false, false), (false, true), (true, false), (true, true)] {
+                let mut rom = image(source);
+                let entry = u32::from_be_bytes(rom[..4].try_into().unwrap());
+                rom[..4].copy_from_slice(&0x10000u32.to_be_bytes());
+                let mut words = vec![0x0009u16; 1024];
+                words.extend([
+                    0xD101,
+                    0x412B,
+                    0xE100,
+                    0x0009,
+                    (entry >> 16) as u16,
+                    entry as u16,
+                ]);
+                for (i, word) in words.into_iter().enumerate() {
+                    rom[0x10000 + 2 * i..0x10002 + 2 * i].copy_from_slice(&word.to_be_bytes());
+                }
+                let (mut reference, mut projected) = (Machine::new(), Machine::new());
+                for m in [&mut reference, &mut projected] {
+                    m.reset(Boot::ExternalBios(&rom)).unwrap();
+                    m.set_pal(pal);
+                    m.bus.change_system_clock(fast);
+                    m.bus.sound.ram[..4].copy_from_slice(&0x7000u32.to_be_bytes());
+                    m.bus.sound.ram[4..8].copy_from_slice(&0x100u32.to_be_bytes());
+                    m.bus.sound.ram[0x100..0x104].copy_from_slice(&[0x4E, 0x71, 0x60, 0xFC]);
+                    m.bus.write8(SMPC + 0x63, 1).unwrap();
+                    m.bus.write8(SMPC + 0x1F, 6).unwrap();
+                }
+                projected.enable_sound_controller_independence(true);
+                let expected = reference.advance_video_field().unwrap_err();
+                let actual = loop {
+                    let owned = projected.begin_sound_projection(32768);
+                    let result = projected.advance_sound_projection_field();
+                    let rejected_owned = owned && result.is_err();
+                    projected.finish_sound_projection();
+                    if rejected_owned {
+                        assert!(projected.bus.sound.enabled);
+                        assert!(projected.bus.sound.cpu.state.instructions > 0);
+                        rejected_while_owned += 1;
+                    }
+                    match result {
+                        Err(error) => break error,
+                        Ok(done) => {
+                            assert!(!done, "original rejected-access guest must fail");
+                        }
+                    }
+                    projected.acknowledge_sound_rendezvous();
+                };
+                assert_eq!(format!("{expected:?}"), format!("{actual:?}"));
+                same(&mut reference, &mut projected);
+            }
+        }
+        assert!(
+            rejected_while_owned > 0,
+            "must reject actual Main writes while the Sound CPU is owned"
+        );
+    }
+    #[test]
+    fn controller_filter_keeps_sound_ports_controls_and_strict_negative_control() {
+        let mut m = Machine::new();
+        for independent in [false, true] {
+            m.enable_sound_controller_independence(independent);
+            for strict in [false, true] {
+                m.enable_sound_dependency_filter(!strict);
+                assert_eq!(
+                    m.bus.sound_input_address(SMPC + 0x63, Some(1)),
+                    !independent || strict
+                );
+                assert_eq!(
+                    m.bus.sound_input_address(SMPC + 0x1F, Some(0x10)),
+                    !independent || strict
+                );
+                for command in [0, 2, 3, 6, 7, 8, 9, 0x0D, 0x0E, 0x0F, 0xFF] {
+                    assert!(m.bus.sound_input_address(SMPC + 0x1F, Some(command)));
+                }
+                assert!(m.bus.sound_input_address(SMPC + 0x63, Some(0)));
+                assert!(
+                    m.bus
+                        .sound_input_address(crate::sound::SOUND_RAM + 0x404, None)
+                );
+                assert!(
+                    m.bus
+                        .sound_input_address(crate::sound::SCSP + 0x42A, Some(0))
+                );
+            }
+        }
+    }
+    #[test]
     fn dependency_filter_retains_writes_and_all_audio_track_accesses() {
         let mut machine = Machine::new();
         for strict in [false, true] {
@@ -593,6 +713,14 @@ mod tests {
 
     #[test]
     fn delta_owner_returns_exact_sound_across_main_inputs_and_field_drains() {
+        check_delta_owner_controller(false);
+    }
+    #[test]
+    fn controller_independence_keeps_shared_inputs_device_edges_and_transport_recovery() {
+        check_delta_owner_controller(true);
+    }
+    fn check_delta_owner_controller(independent: bool) {
+        let mut controller_crossings = 0;
         let mut jobs = 0;
         let mut extensions = 0;
         let mut lost_before_accept = 0;
@@ -606,13 +734,21 @@ mod tests {
             include_str!("../../tests/fixtures/scsp-clock.hex"),
             include_str!("../../tests/fixtures/scu-fringe.hex"),
             include_str!("../../tests/fixtures/frt-compare.hex"),
+            include_str!("../../tests/fixtures/smpc-status.hex"),
+            include_str!("../../tests/fixtures/smpc-sf-activity.hex"),
+            include_str!("../../tests/fixtures/smpc-boundaries.hex"),
         ] {
-            for fast in [false, true] {
+            for (pal, fast) in [(false, false), (false, true), (true, false), (true, true)] {
+                if pal && !independent {
+                    continue;
+                }
                 let rom = image(source);
                 let (mut reference, mut remote) = (Machine::new(), Machine::new());
                 for m in [&mut reference, &mut remote] {
                     m.reset(Boot::ExternalBios(&rom)).unwrap();
+                    m.set_pal(pal);
                     m.bus.change_system_clock(fast);
+                    m.enable_sound_controller_independence(independent);
                 }
                 let mut owner = crate::sound::delta::DeltaOwner::default();
                 let mut active = false;
@@ -650,6 +786,12 @@ mod tests {
                                             prefix[6] != 0,
                                         )
                                         .unwrap();
+                                    if independent
+                                        && frontier - origin
+                                            > u64::from(remote.bus.smpc.clocks_to_event())
+                                    {
+                                        controller_crossings += 1;
+                                    }
                                     active = true;
                                     jobs += 1;
                                 } else {
@@ -668,6 +810,11 @@ mod tests {
                                 && stable > frontier
                             {
                                 assert_eq!(at, frontier);
+                                if independent
+                                    && stable - at > u64::from(remote.bus.smpc.clocks_to_event())
+                                {
+                                    controller_crossings += 1;
+                                }
                                 remote.extend_remote_sound_projection(stable).unwrap();
                                 frontier = stable;
                                 extensions += 1;
@@ -720,6 +867,12 @@ mod tests {
             "must exercise event-bounded waits beyond the ordinary step budget"
         );
         assert!(jobs > 10 && extensions > 10);
+        if independent {
+            assert!(
+                controller_crossings > 0,
+                "must retain ownership across real controller device deadlines"
+            );
+        }
         assert!(lost_before_accept > 0 && lost_during_execution > 0 && lost_at_field_end > 0);
     }
 
