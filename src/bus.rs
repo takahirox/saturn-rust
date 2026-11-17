@@ -17,6 +17,8 @@ mod dmac_tests;
 #[cfg(test)]
 mod hdtv_tests;
 mod loop_probe;
+#[cfg(test)]
+mod settled_grant_tests;
 #[cfg(any(test, feature = "sound-worker"))]
 mod sound_rendezvous;
 #[cfg(any(test, feature = "video-worker"))]
@@ -321,6 +323,9 @@ pub trait Memory {
 }
 
 pub struct Bus {
+    pub(crate) reuse_settled_grant: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) settled_grant_counts: [Cell<u64>; 2],
     #[cfg(any(test, feature = "sound-worker"))]
     pub(crate) sound_rendezvous: sound_rendezvous::Rendezvous,
     loop_probe: Option<Box<loop_probe::LoopProbe>>,
@@ -409,6 +414,9 @@ pub(crate) struct InterruptRequest {
 impl Default for Bus {
     fn default() -> Self {
         Self {
+            reuse_settled_grant: true,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            settled_grant_counts: Default::default(),
             #[cfg(any(test, feature = "sound-worker"))]
             sound_rendezvous: sound_rendezvous::Rendezvous::production(),
             loop_probe: Some(Box::new(loop_probe::LoopProbe::automatic())),
@@ -931,8 +939,16 @@ impl Bus {
 
     fn advance_main_clocks(
         &mut self,
+        remaining: u32,
+        reference_clocks: u32,
+    ) -> Result<Option<u8>, ScuError> {
+        self.advance_main_clocks_after_grant(remaining, reference_clocks, false)
+    }
+    fn advance_main_clocks_after_grant(
+        &mut self,
         mut remaining: u32,
         reference_clocks: u32,
+        mut already_settled: bool,
     ) -> Result<Option<u8>, ScuError> {
         if remaining == 0 {
             return self.advance_fixed_clocks(reference_clocks);
@@ -942,7 +958,24 @@ impl Bus {
         while remaining != 0 {
             self.sample_interrupts();
             self.acquire_display();
-            self.grant_bus_transaction();
+            let reusable = already_settled && !self.render_video();
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            if reusable {
+                let count = &self.settled_grant_counts[0];
+                count.set(count.get() + 1);
+            }
+            if reusable && self.reuse_settled_grant {
+                #[cfg(any(test, feature = "kernel-experiment"))]
+                {
+                    let count = &self.settled_grant_counts[1];
+                    count.set(count.get() + 1);
+                }
+            } else {
+                self.grant_bus_transaction();
+            }
+            // The proof covers only the first unchanged clock. Every later
+            // iteration samples/grants again after actual hardware progress.
+            already_settled = false;
             let delta = if remaining == 1 {
                 debug_assert!(self.main_deadline() > 0);
                 1
@@ -1081,13 +1114,15 @@ impl Bus {
         let mut remaining = clocks;
         let mut command = None;
         while remaining != 0 {
-            self.grant_bus_transaction();
+            let settled = self.grant_bus_transaction_settled();
             let delta = self.reference_deadline_with_sound(
                 remaining.min(self.system_clock.deadline(self.main_deadline()).max(1)),
                 coalesced,
             );
             let main_clocks = self.system_clock.advance(delta);
-            if let Some(completed) = self.advance_main_clocks(main_clocks, delta)? {
+            if let Some(completed) =
+                self.advance_main_clocks_after_grant(main_clocks, delta, settled)?
+            {
                 if matches!(completed, 0x0E | 0x0F) {
                     self.change_system_clock(completed == 0x0E);
                 }
@@ -1115,8 +1150,8 @@ impl Bus {
             if self.system_clock.is_reference() {
                 let reference = self.reference_deadline_with_sound(main, coalesced);
                 if reference == 1 {
-                    self.grant_bus_transaction();
-                    let command = self.advance_main_clocks(1, 1)?;
+                    let settled = self.grant_bus_transaction_settled();
+                    let command = self.advance_main_clocks_after_grant(1, 1, settled)?;
                     if let Some(completed @ (0x0E | 0x0F)) = command {
                         self.change_system_clock(completed == 0x0E);
                     }
