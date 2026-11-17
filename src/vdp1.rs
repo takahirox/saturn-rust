@@ -239,6 +239,9 @@ struct Erasing {
 }
 
 pub struct Vdp1 {
+    display_erase_rows: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    display_erase_row_counts: [u64; 3],
     #[cfg(any(test, feature = "video-worker"))]
     display_journal: Option<Vec<crate::bus::video_queue::FrontPatch>>,
     pub vram: Vec<u8>,
@@ -277,6 +280,9 @@ pub struct Vdp1 {
 impl Default for Vdp1 {
     fn default() -> Self {
         Self {
+            display_erase_rows: true,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            display_erase_row_counts: [0; 3],
             #[cfg(any(test, feature = "video-worker"))]
             display_journal: None,
             vram: vec![0; VRAM_SIZE],
@@ -541,10 +547,57 @@ impl Vdp1 {
             && (area.top..area.bottom).contains(&line)
         {
             let trailing = if area.bytes == 2 { 4 } else { 8 };
-            for x in area.left..area.right.min(display_width + trailing) {
-                self.erase_dot(area, x, line);
+            let end = area.right.min(display_width + trailing);
+            if self.display_erase_rows {
+                self.erase_display_run(area, line, end);
+            } else {
+                for x in area.left..end {
+                    self.erase_dot(area, x, line);
+                }
             }
         }
+    }
+    fn erase_display_run(&mut self, area: EraseArea, line: usize, end: usize) {
+        if area.left >= end {
+            return;
+        }
+        let offset = (line * area.width + area.left) * area.bytes;
+        let length = (end - area.left) * area.bytes;
+        let color = area.color.to_be_bytes();
+        {
+            let row = &mut self.buffers[area.buffer][offset..offset + length];
+            if color[0] == color[1] {
+                row.fill(color[0]);
+            } else {
+                let phase = if area.bytes == 1 { area.left & 1 } else { 0 };
+                row[0] = color[phase];
+                if length > 1 {
+                    row[1] = color[phase ^ 1];
+                }
+                let mut filled = length.min(2);
+                while filled < length {
+                    let count = filled.min(length - filled);
+                    row.copy_within(..count, filled);
+                    filled += count;
+                }
+            }
+        }
+        #[cfg(any(test, feature = "video-worker"))]
+        self.record_display_write(area.buffer, offset, length);
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        {
+            self.display_erase_row_counts[0] += 1;
+            self.display_erase_row_counts[1] += (end - area.left) as u64;
+            self.display_erase_row_counts[2] += length as u64;
+        }
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) fn enable_display_erase_rows(&mut self, enabled: bool) {
+        self.display_erase_rows = enabled;
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) fn display_erase_row_counts(&self) -> Vec<u64> {
+        self.display_erase_row_counts.to_vec()
     }
     /// Ch.4 p.35/§4.1: written VBE is sampled after one line's display,
     /// not by the CPU write or the VBlank-in edge. See docs/vdp1-vbe-timing.md.
@@ -1352,3 +1405,16 @@ mod table_tests;
 
 #[cfg(test)]
 mod vbe_tests;
+
+#[cfg(test)]
+mod display_erase_row_tests;
+
+#[cfg(any(test, feature = "kernel-experiment"))]
+impl crate::Machine {
+    pub fn enable_display_erase_rows(&mut self, enabled: bool) {
+        self.bus.vdp1.enable_display_erase_rows(enabled);
+    }
+    pub fn display_erase_row_counts(&self) -> Vec<u64> {
+        self.bus.vdp1.display_erase_row_counts()
+    }
+}

@@ -519,6 +519,12 @@ impl Emulator {
         self.machine.finish_sound_projection()
     }
 
+    pub fn enable_display_erase_rows(&mut self, enabled: bool) {
+        self.machine.enable_display_erase_rows(enabled);
+    }
+    pub fn display_erase_row_counts(&self) -> Vec<u64> {
+        self.machine.display_erase_row_counts()
+    }
     pub fn enable_short_cycle_learning(&mut self, enabled: bool) {
         self.machine.enable_short_cycle_learning(enabled);
     }
