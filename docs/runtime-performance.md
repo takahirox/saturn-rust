@@ -4200,3 +4200,73 @@ Exact-head CI, final review, repeated production comparisons, combined menu and
 advancing-story checks remain pending at this checkpoint. Neither this PR nor
 menu real time satisfies the outstanding story/audio/latency and broader-gameplay
 acceptance. No required post-merge verification is added.
+
+
+## VDP1 display erase rows checkpoint (#138, 2026-11-17)
+
+The current narrative workload makes 72,576 display erase pixel calls per field.
+This candidate writes each clipped row as one contiguous run and records the
+same front-buffer patch. Uniform bytes use a fill; other colors repeat their
+big-endian two-byte pattern, retaining odd indexed-pixel phase and trailing
+bytes. The timed erase engine, drawing phases, bus contention and event
+boundaries retain their existing execution.
+
+The proposed default is enabled. The old pixel path and counters remain
+available to tests and the opt-in kernel experiment. The production candidate
+is based on main `9de019ee33df765ac2abf110a5396827b32715d5`.
+
+### Measured results and artifacts
+
+An identical feature artifact with the flag disabled/enabled improves the
+narrative scene from 51.993 to 53.058 fields/s (+2.05%). Every one of six
+alternating continuous 80-field windows improves; full Sound snapshot bytes,
+all 22 CPU/cache fingerprints, rolling PCM and image endpoints match. Each
+candidate window records 17,920 rows and 11,612,160 bytes, exactly 224 rows and
+72,576 pixels per field. This diagnostic has no real AudioWorklet.
+
+The first normal-player comparison uses the same 109 controller events,
+12,900-field warmup and six five-second windows in fresh browser processes.
+Every measured field is drawn, the actual AudioWorklet and Sound Worker remain
+active, and errors and audio queue drops are zero.
+
+| Normal narrative workload | Main | Candidate |
+| --- | ---: | ---: |
+| Fields/s | 50.736 | 52.471 |
+| Per-window p95 (ms) | 30.9–33.4 | 30.5–32.8 |
+| Per-window p99 (ms) | 33.9–36.4 | 33.5–35.0 |
+| Audio underflow sample frames over 30 s | 200,859 | 163,333 |
+
+The aggregate first-order gain is 3.42%; five of six corresponding windows
+improve. **A fresh reverse-order normal comparison remains pending.** These
+normal UI measurements are throughput/audio observations, not strict private
+state differentials. Do not treat this checkpoint as final adoption evidence.
+
+Wasm SHA-256:
+
+- Normal main: `1deb04a3dac2a59a72aca3ba5746746ac270f0d1f92420897f6c47fe5dcb033f`.
+- Normal candidate: `158d14e03570d9554706ab228be489c2dd00fb2a698288d08f1ae99134940a5c`.
+- Paired diagnostic: `1e8c07c62bf9ce88953e643449832b6c329c4f6edeacb9b6c1effaa0cf05d4f4`.
+
+Toolchain: Rust 1.100.0, wasm-bindgen 0.2.129, Binaryen 127 with `-O4`,
+inline threshold 1000, Chrome 157.0.8103.52. Private firmware, mounted media,
+controller scripts, captures and raw measurements remain local and ignored.
+
+### Correctness and remaining scope
+
+An original 144-case matrix covers framebuffer widths, indexed/RGB modes,
+uniform/nonuniform colors, both buffers and display clips. It compares every
+byte against independently computed expected writes and the prior pixel path,
+and compares the exact front-buffer journal offsets and bytes after each line.
+Three actually executed mutants fail assertions: swapped color bytes, omitted
+front patches and writes beyond the display clip. Exact source restoration
+passes the positive control.
+
+The default-enabled candidate passes all 1433 native tests in 111 result groups,
+native all-target/all-feature Clippy, formatting, normal/all-feature Wasm Clippy
+and both release builds. The feature comparison also passes all six complete
+state endpoints. Exact-head CI, final review and the reverse-order production
+repeat remain pending. Menu and advancing-story effects are not yet measured.
+
+This is partial work related to #138 and #17. Sustained real-time narrative
+execution, zero sustained audio underflows and broader gameplay acceptance
+remain unmet; neither Issue is closed. No required post-merge verification.
