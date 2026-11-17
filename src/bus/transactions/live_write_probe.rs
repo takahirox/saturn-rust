@@ -23,6 +23,7 @@ pub(in crate::bus) struct PreparedWrites {
 
 pub(in crate::bus) struct LiveWritePlan {
     origin: u64,
+    pending_origin: bool,
     end: u64,
     bsc: [crate::onchip::LiveWriteBsc; 2],
     active: Option<Active>,
@@ -37,6 +38,10 @@ pub(in crate::bus) struct LiveWritePlan {
 }
 
 impl Bus {
+    #[cfg(test)]
+    pub(in crate::bus) fn live_write_buffer_pending(&self) -> bool {
+        self.transactions.writes[0].is_some()
+    }
     #[cfg(test)]
     pub(in crate::bus) fn assert_live_write_active_matches(&self, other: &Self) {
         assert!(self.transactions.active == other.transactions.active);
@@ -124,9 +129,16 @@ impl Bus {
         if end <= self.main_clocks {
             return None;
         }
+        let pending = owner.pending_write_runtime;
+        let pending_origin =
+            self.transactions.active.is_some() || self.transactions.writes[0].is_some();
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        if pending && pending_origin {
+            owner.pending_write_counts[0].set(owner.pending_write_counts[0].get() + 1);
+        }
         let mut scratch = owner.live_write_scratch.borrow_mut();
         let probe = scratch.get_or_insert_with(|| Box::new(Probe::new()));
-        if !probe.run(self, &stores, end) {
+        if !probe.run_with_pending(self, &stores, end, pending) {
             return None;
         }
         if probe.board.transactions.internal[0].is_some() {
@@ -134,6 +146,7 @@ impl Bus {
         }
         let plan = LiveWritePlan {
             origin: self.main_clocks,
+            pending_origin,
             end,
             bsc: std::array::from_fn(|i| probe.board.onchip[i].live_write_bsc()),
             active: probe.board.transactions.active.clone(),
@@ -154,6 +167,10 @@ impl Bus {
             owner.live_write_runtime_counts[3]
                 .set(owner.live_write_runtime_counts[3].get() + (last - window.legacy_last) as u64);
         }
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        if pending && pending_origin {
+            owner.pending_write_counts[1].set(owner.pending_write_counts[1].get() + 1);
+        }
         Some(PreparedWrites {
             last,
             ways,
@@ -169,10 +186,19 @@ impl Bus {
     ) -> Result<u64, ScuError> {
         assert_eq!(self.main_clocks, plan.origin);
         assert_eq!(retired_at, plan.end);
-        assert!(
-            self.transactions.active.is_none()
-                && self.transactions.writes.iter().all(Option::is_none)
-        );
+        if plan.pending_origin {
+            // The private plan already owns all remaining WRAM/refresh beats.
+            // Independent catch-up must not drain them a second time.
+            assert!(Probe::pending_scope(self));
+            self.transactions.active = None;
+            self.transactions.writes[0] = None;
+            self.transactions.cpu_group = None;
+        } else {
+            assert!(
+                self.transactions.active.is_none()
+                    && self.transactions.writes.iter().all(Option::is_none)
+            );
+        }
         // Independent domains still run normally. BSC counters are aged here
         // without bus grants, then replaced by the exact live-derived protocol.
         let reference = self.advance_isolated_segment_mode::<false, true>(
@@ -361,12 +387,38 @@ impl Probe {
         }
     }
 
-    fn reset_from(&mut self, live: &Bus) -> bool {
+    fn pending_scope(live: &Bus) -> bool {
+        let wram = |t: &Transfer| {
+            let at = Bus::physical(t.address);
+            t.write.is_some()
+                && matches!(t.width, 1 | 2 | 4)
+                && !live.onchip[0].external_little_endian(at)
+                && [LOW_WRAM, HIGH_WRAM]
+                    .into_iter()
+                    .any(|base| at >= base && at + t.width as u32 <= base + WRAM_SIZE as u32)
+        };
+        live.transactions.active.as_ref().is_none_or(|a| {
+            a.owner == Owner::Refresh
+                || (a.owner == Owner::WriteBuffer(Processor::Master, false) && wram(&a.transfer))
+        }) && live.transactions.writes[0]
+            .as_ref()
+            .is_none_or(|w| !w.dmac && !w.beats.is_empty() && w.beats.iter().all(wram))
+            && live.transactions.writes[1].is_none()
+            && live
+                .transactions
+                .cpu_group
+                .is_none_or(|g| g == Processor::Master && live.transactions.writes[0].is_some())
+    }
+    fn reset_from(&mut self, live: &Bus, pending: bool) -> bool {
         if !live.cached_bus_compatible()
-            || live.transactions.active.is_some()
-            || live.transactions.writes.iter().any(Option::is_some)
+            || if pending {
+                !Self::pending_scope(live)
+            } else {
+                live.transactions.active.is_some()
+                    || live.transactions.writes.iter().any(Option::is_some)
+                    || live.transactions.cpu_group.is_some()
+            }
             || live.transactions.internal.iter().any(Option::is_some)
-            || live.transactions.cpu_group.is_some()
             || live.cpu_bus_clocks.iter().any(|clock| clock.get() != 0)
             || live.onchip.iter().any(|chip| !chip.cached_batch_allowed())
             || live.scu.dma_pending()
@@ -375,6 +427,11 @@ impl Probe {
         }
         self.report = Report::default();
         self.board.transactions = Transactions::default();
+        if pending {
+            self.board.transactions.active = live.transactions.active.clone();
+            self.board.transactions.writes[0] = live.transactions.writes[0].clone();
+            self.board.transactions.cpu_group = live.transactions.cpu_group;
+        }
         self.board.transactions.previous = live.transactions.previous;
         self.board.transactions.dmac_yield = live.transactions.dmac_yield;
         self.board.onchip.clone_from(&live.onchip);
@@ -446,8 +503,15 @@ impl Probe {
         }
     }
 
+    #[cfg(any(test, feature = "kernel-experiment"))]
     fn run(&mut self, live: &Bus, stores: &[Store], end: u64) -> bool {
-        if end < live.main_clocks || end - live.main_clocks > 1024 || !self.reset_from(live) {
+        self.run_with_pending(live, stores, end, false)
+    }
+    fn run_with_pending(&mut self, live: &Bus, stores: &[Store], end: u64, pending: bool) -> bool {
+        if end < live.main_clocks
+            || end - live.main_clocks > 1024
+            || !self.reset_from(live, pending)
+        {
             return false;
         }
         for store in stores {
@@ -745,4 +809,107 @@ fn live_origin_probe_matches_real_refresh_and_buffer_protocol_at_every_clock_cut
             }
         }
     }
+}
+
+#[test]
+fn pending_origin_keeps_prior_bytes_and_every_remaining_buffer_beat() {
+    let mut probe = Probe::new();
+    let mut used = 0;
+    let mut refresh_origins = 0;
+    for byte_bus in [false, true] {
+        for refresh in [false, true] {
+            for delay in [0, 3, 7, 8, 15, 23, 31, 35] {
+                let setup = || {
+                    let mut bus = configured(byte_bus, refresh);
+                    bus.high[..64].fill(0xA5);
+                    canonical_store(&mut bus, HIGH_WRAM, 4, 0x12345678);
+                    bus.advance_clocks(delay).unwrap();
+                    bus
+                };
+                let live = setup();
+                if !live.cached_bus_compatible()
+                    || !live.onchip.iter().all(|c| c.cached_batch_allowed())
+                    || (live.transactions.active.is_none() && live.transactions.writes[0].is_none())
+                {
+                    continue;
+                }
+                let origin = live.main_clocks;
+                let mut traced = setup();
+                let mut stores = Vec::new();
+                for (i, request) in [0, 12, 36, 64].into_iter().enumerate() {
+                    let at = origin + request;
+                    if at > traced.main_clocks {
+                        traced
+                            .advance_clocks((at - traced.main_clocks) as u32)
+                            .unwrap();
+                    }
+                    stores.push(canonical_store(
+                        &mut traced,
+                        HIGH_WRAM + 8 + i as u32 * 8,
+                        4,
+                        0x89ABCDEF + i as u32,
+                    ));
+                }
+                for cut in 1..=96 {
+                    let end = origin + cut;
+                    let selected: Vec<_> = stores
+                        .iter()
+                        .copied()
+                        .filter(|s| s.accepted < end)
+                        .collect();
+                    let mut reference = setup();
+                    for store in &selected {
+                        if store.requested > reference.main_clocks {
+                            reference
+                                .advance_clocks((store.requested - reference.main_clocks) as u32)
+                                .unwrap();
+                        }
+                        let actual = canonical_store(
+                            &mut reference,
+                            store.address,
+                            store.width,
+                            store.value,
+                        );
+                        assert_eq!(actual.accepted, store.accepted);
+                    }
+                    if reference.main_clocks < end {
+                        reference
+                            .advance_clocks((end - reference.main_clocks) as u32)
+                            .unwrap();
+                    }
+                    assert!(
+                        probe.run_with_pending(&live, &selected, end, true),
+                        "byte={byte_bus}, refresh={refresh}, delay={delay}, cut={cut}"
+                    );
+                    probe.board.assert_live_write_active_matches(&reference);
+                    for processor in 0..2 {
+                        probe.board.onchip[processor]
+                            .assert_cached_read_bus_matches(&reference.onchip[processor]);
+                    }
+                    let mut physical = live.high[..64].to_vec();
+                    for write in &probe.report.physical {
+                        let at = (write.address - HIGH_WRAM) as usize;
+                        physical[at..at + write.width]
+                            .copy_from_slice(&write.value.to_be_bytes()[4 - write.width..]);
+                    }
+                    assert_eq!(
+                        physical,
+                        reference.high[..64],
+                        "byte={byte_bus}, refresh={refresh}, delay={delay}, cut={cut}"
+                    );
+                    used += 1;
+                    refresh_origins += usize::from(
+                        live.transactions
+                            .active
+                            .as_ref()
+                            .is_some_and(|a| a.owner == Owner::Refresh),
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        used != 0 && refresh_origins != 0,
+        "exercise buffered writes and active refresh"
+    );
 }

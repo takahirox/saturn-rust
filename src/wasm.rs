@@ -519,6 +519,18 @@ impl Emulator {
         self.machine.finish_sound_projection()
     }
 
+    pub fn enable_short_cycle_learning(&mut self, enabled: bool) {
+        self.machine.enable_short_cycle_learning(enabled);
+    }
+    pub fn short_cycle_learning_counts(&self) -> Vec<u64> {
+        self.machine.short_cycle_learning_counts()
+    }
+    pub fn enable_pending_write_runtime(&mut self, enabled: bool) {
+        self.machine.enable_pending_write_runtime(enabled);
+    }
+    pub fn pending_write_runtime_counts(&self) -> Vec<u64> {
+        self.machine.pending_write_runtime_counts()
+    }
     pub fn enable_live_write_runtime(&mut self, enabled: bool) {
         self.machine.enable_live_write_runtime(enabled);
     }

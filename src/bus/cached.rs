@@ -1413,6 +1413,25 @@ impl Bus {
                     .min(1024)
             })
             .filter(|&wider| wider > span);
+        let pending_write_end = self
+            .loop_probe
+            .as_ref()
+            .filter(|p| p.pending_write_runtime)
+            .filter(|_| {
+                passive.is_none()
+                    && !sound_lookahead
+                    && matches!(poll, None | Some(PeerSchedule::Pending { .. }))
+            })
+            .and_then(|_| self.onchip[0].readonly_refresh_deadline())
+            .map(|local| {
+                self.observable_deadline_with_onchip(local)
+                    .saturating_sub(1)
+                    .min(fixed_span)
+                    .min(1024)
+                    .min(poll.map_or(u32::MAX, PeerSchedule::span))
+            })
+            .filter(|&wide| wide > span)
+            .map(|wide| self.main_clocks + u64::from(wide));
         let normal_end = self.main_clocks + u64::from(span);
         let span = readonly_refresh
             .unwrap_or(span)
@@ -1540,7 +1559,8 @@ impl Bus {
                     }),
                 ) {
                     let replayed = {
-                        let prepared = (original_end > loop_end
+                        let write_end = pending_write_end.unwrap_or(original_end);
+                        let prepared = (write_end > loop_end
                             && !sound_lookahead
                             && matches!(poll, None | Some(PeerSchedule::Pending { .. })))
                         .then(|| {
@@ -1551,7 +1571,7 @@ impl Bus {
                                     legacy_last: replayed.last,
                                     shift: replayed.key.shift,
                                     count,
-                                    end: original_end,
+                                    end: write_end,
                                 },
                             )
                         })
@@ -1566,8 +1586,8 @@ impl Bus {
                             *memory.lru.get_mut() = prepared.lru;
                             memory.retained.set(last.retained);
                             memory.epochs.set(origin.epochs + last.epoch - first.epoch);
-                            memory.end.set(original_end);
-                            memory.clock.set(ready.min(original_end));
+                            memory.end.set(write_end);
+                            memory.clock.set(ready.min(write_end));
                             live_write_plan = Some(prepared.plan);
                             loop_replay::Replayed {
                                 cpu,
@@ -1608,7 +1628,7 @@ impl Bus {
                     readonly_refresh = None;
                     end = loop_end;
                     if live_write_plan.is_some() {
-                        end = original_end;
+                        end = pending_write_end.unwrap_or(original_end);
                     }
                     cpu = replayed.cpu;
                     ready = replayed.ready;
@@ -1769,6 +1789,12 @@ impl Bus {
                     if repetitions != 0
                         && cpu.repeat_cached_cycle(&previous.cpu, period, repetitions, countdown)
                     {
+                        if countdown.is_none()
+                            && memory.passive.is_none()
+                            && let Some(probe) = &mut self.loop_probe
+                        {
+                            probe.note_short_cycle(previous.cpu.state().pc);
+                        }
                         let clocks = period * repetitions;
                         memory.clock.set(memory.clock.get() + clocks);
                         if let (Some(passive), Some(before)) =

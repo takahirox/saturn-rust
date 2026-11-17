@@ -4089,3 +4089,114 @@ meaningful story measurements are pending at this checkpoint. PR evidence must
 record their actual results before merge. Sustained 60 fields/s, broader gameplay
 and real-time audio/latency acceptance remain unmet. No post-merge verification
 is required.
+
+
+## Certified short CPU cycles and pending-origin writes (2026-11-17 checkpoint)
+
+Related to #138 and #17; both remain open. This is an original Rust-core
+increment. Meaningful story execution remains below real time.
+
+The preceding quiet-origin write plan improves the menu but does not improve
+all scenes. A fresh normal-player story comparison of the prior main, quiet
+plan and pending-origin prototype measures 47.581, 46.177 and 46.638 fields/s,
+respectively. Those results are a scene tradeoff, not a story speedup.
+A production-path diagnostic on the story finds no commits through either new
+write-plan path. Instead, most Master instructions use the older short-cycle
+folder, while captured replay never succeeds. Main execution is the bottleneck;
+Sound and Video workers remain approximately 48% and 66% idle. Profiling and
+instrumented timings are excluded from adoption FPS.
+
+This increment makes two bounded changes:
+
+- A short cache-only cycle becomes a learning header only after the existing
+  folder has actually proved its complete CPU/local-cache recurrence. Countdown
+  and passive external-read cycles are excluded. Private learning records at
+  least 512 actual retirements of the proved recurrence, reusing the existing
+  guarded captured-loop backend and its unchanged instruction/boundary caps.
+  CPU-origin, input bytes, cache identities/LRU, pipeline, IRQ/DMA/UBC/reset,
+  PLL, Sound and observer proofs remain required. Failed proofs use the existing
+  paths; learning does not advance the live machine.
+- The live canonical write plan can begin with a pending Master WRAM buffer or
+  refresh. It preserves initial ownership, accepted beats and bus context,
+  independently computes completion of older accepted bytes without reapplying
+  their cache acceptance, and retains the final active/buffer state. A separate
+  end limit keeps the general non-replay store path unchanged.
+
+### Measurements
+
+Rust 1.100.0, wasm-bindgen 0.2.129, Binaryen 127 `-O4`, LLVM inline threshold
+1000 and Chrome 157.0.8103.52. Each build uses unique Cargo targets and frozen
+inputs. All private media, raw profiles, snapshots and captures remain ignored
+locally. Normal player timings use a fresh Chrome process/page for each variant,
+all-field Canvas presentation, the actual AudioWorklet and active Rust Sound
+Worker. They do not claim private-state equality; separate differential evidence
+below supplies that proof.
+
+| Normal workload | Baseline fields/s | Candidate fields/s | Change | Underflow sample frames, baseline / candidate |
+| --- | ---: | ---: | ---: | ---: |
+| Menu, pending-origin only, candidate first | 52.036 | 59.829 | +14.98% | nonzero / 0 |
+| Menu, pending-origin only, baseline first | 54.833 | 59.835 | +9.12% | nonzero / 0 |
+| Story, pending-origin baseline then short-cycle candidate | 47.638 | 52.178 | +9.53% | 270178 / 168708 |
+
+Menu runs use the existing 16-event input, 3600 warmup fields and six five-second
+windows. All twelve pending-origin candidate windows sustain 59.756–59.965
+fields/s with zero underflows and drops. The unchanged slow PLL and raster
+period imply `26874100 / (427 * 4 * 263) = 59.826` fields/s, the nominal 60-Hz
+rate; no guest clocks were accelerated. This menu evidence precedes the
+short-cycle addition and does not prove that the combined candidate preserves
+menu performance. That check is pending.
+
+Story runs use 109 deterministic input events, 12900 warmup fields and six
+five-second windows after actual narrative gameplay has begun. Every window
+draws every field; drops and browser errors are zero. Combined-candidate windows
+range 51.996–52.368 fields/s. Display-gap p95 improves from 32.7–34.2 to
+31.0–31.6 ms and p99 from 35.9–37.6 to 33.7–34.8 ms. A fresh reverse-order
+production comparison and a direct comparison with current main are pending.
+
+Normal Wasm SHA-256:
+
+- Current main quiet-origin plan: `92c86c76a2ec41a4cc8e4f74bb4f948a2c27c3228a30ae4381991c89a89c332a`.
+- Pending-origin-only baseline: `325076cd0cce8fdd8bad79db1cbec5ac6b21082f67feb5123e81b14c332fd5cf`.
+- Combined candidate: `1deb04a3dac2a59a72aca3ba5746746ac270f0d1f92420897f6c47fe5dcb033f`.
+- Combined feature companion: `6b23b4e62f46c0ce65adbb4b66a2addaff3c0b2ed6c52703c367d4e2d48d87d4`.
+
+The opt-in short-cycle screen uses one identical feature artifact
+`336062f2198d97a07cc42ab44992b1c2b5bb1a0b6db8c87256dad83c0e894b8e`
+with the flag off/on from boot. All variants finish preparation before timing.
+Across six alternating 80-field story windows it improves 45.444 to 49.578
+fields/s (+9.10%). Full Sound snapshot **bytes**, all 22 CPU/cache fingerprints,
+rolling PCM and image endpoints match in every window. Roughly 17 million
+instructions per candidate window use captured replay; the control uses none.
+Original-guest endpoints also match, with zero short-cycle captures and −0.35%
+variation. This diagnostic has no real AudioWorklet; it is not production FPS.
+The separate pending-origin feature screen improves 55.518 to 61.617 (+10.99%)
+in the menu with all six corresponding full-state endpoints equal; its original
+control is flat (−0.28%).
+
+### Correctness and outstanding acceptance
+
+The combined-default candidate passes all 1432 native tests in 111 result
+groups, native all-target/all-feature Clippy, formatting, normal/all-feature Wasm
+Clippy and both release builds. Three original dual-SH2 fields prove actual
+short-cycle capture/replay and compare full CPU, readiness, cache/LRU, both BSCs,
+active bus state, full Sound bytes and PCM with the older folder. Changing real
+cached input and code bytes compares subsequent execution again. Another sparse
+four-instruction cycle checks both certified capture and the old folder against
+ordinary execution. The first default-enabled test run passes 961 library tests
+and fails the old assertion that sparse cycles never use capture; no guest-state
+comparison fails. The updated test preserves both paths and their state oracles.
+
+Two actually executed short-cycle mutants fail assertions: ignoring cached
+input/code bytes and publishing the wrong CPU-ready clock. Exact source
+restoration passes the positive control and matches all 115 frozen build inputs.
+Pending-origin coverage adds 96-clock-cut canonical bus comparisons and 168
+actual two-burst exits across both PLLs and bus widths, requiring a real
+pending-origin commit that ends with buffered data. An earlier field-end-only
+check let the dropped-final-buffer mutant survive; the raw-exit test closes
+that demonstrated coverage gap. All three final pending-origin mutants fail,
+with exact source restoration. Inherited quiet-origin controls remain intact.
+
+Exact-head CI, final review, repeated production comparisons, combined menu and
+advancing-story checks remain pending at this checkpoint. Neither this PR nor
+menu real time satisfies the outstanding story/audio/latency and broader-gameplay
+acceptance. No required post-merge verification is added.
