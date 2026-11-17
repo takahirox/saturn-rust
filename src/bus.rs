@@ -906,6 +906,11 @@ impl Bus {
             self.sound_rendezvous.pending.is_empty(),
             "rendezvous advanced after admission"
         );
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        if self.sound.projected() && self.cd.sound_neutral_query_due_within(clocks) {
+            let count = &self.sound_rendezvous.cd_query_counts[2];
+            count.set(count.get() + 1);
+        }
         self.cd.advance(clocks);
         if self.cd.interrupt() {
             self.scu.signal(16);
@@ -1418,6 +1423,11 @@ impl Bus {
             let mut bytes = [0; N];
             for pair in bytes.as_chunks_mut::<2>().0 {
                 pair.copy_from_slice(&self.cd.read16(address)?.to_be_bytes());
+                #[cfg(any(test, feature = "kernel-experiment"))]
+                if self.sound.projected() && self.cd.sound_independent_query_access(address, None) {
+                    let count = &self.sound_rendezvous.cd_query_counts[0];
+                    count.set(count.get() + 1);
+                }
             }
             return Ok(bytes);
         }
@@ -1577,6 +1587,16 @@ impl Bus {
             }
             for pair in bytes.as_chunks::<2>().0 {
                 self.cd.write16(address, u16::from_be_bytes(*pair))?;
+                #[cfg(any(test, feature = "kernel-experiment"))]
+                if self.sound.projected()
+                    && self.cd.sound_independent_query_access(
+                        address,
+                        Some(u32::from(u16::from_be_bytes(*pair))),
+                    )
+                {
+                    let count = &self.sound_rendezvous.cd_query_counts[1];
+                    count.set(count.get() + 1);
+                }
             }
             return Ok(());
         }

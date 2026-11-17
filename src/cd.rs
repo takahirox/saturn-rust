@@ -411,6 +411,10 @@ impl CdBlock {
         self.phase_deadline(limit, 75 * u64::from(self.drive_speed()))
     }
     fn command_deadline(&self, limit: u32) -> u32 {
+        self.non_command_deadline(limit)
+            .min(self.pending.map_or(u32::MAX, |(_, n)| n))
+    }
+    fn non_command_deadline(&self, limit: u32) -> u32 {
         let standby = if self.status == 1 && !self.playing {
             (u64::from(self.standby_seconds) * HZ - self.pause_clocks).min(u64::from(u32::MAX))
                 as u32
@@ -419,7 +423,6 @@ impl CdBlock {
         };
         limit
             .min(standby)
-            .min(self.pending.map_or(u32::MAX, |(_, n)| n))
             .min(self.copying.as_ref().map_or(u32::MAX, |job| job.clocks))
             .min(self.authentication.map_or(u32::MAX, |(clocks, _)| clocks))
             .min(self.rw.clocks())
@@ -999,14 +1002,59 @@ impl CdBlock {
         })
     }
     #[cfg(any(test, feature = "sound-worker"))]
-    pub(crate) fn sound_source_deadline(&self, strict_inputs: bool) -> u32 {
+    pub(crate) fn sound_source_deadline(
+        &self,
+        strict_inputs: bool,
+        independent_queries: bool,
+    ) -> u32 {
         // Media is immutable between canonical, serialized host replacements.
         // audio_source() requires an Audio track even for audible scanning.
         if self.active() && (strict_inputs || self.sound_can_receive_cd_audio()) {
+            if independent_queries
+                && !strict_inputs
+                && self
+                    .pending
+                    .is_some_and(|(command, _)| Self::sound_neutral_query(command))
+            {
+                // Only this query's completion is irrelevant to silent CD-DA.
+                // Retain every drive/report, seek, copy, R-W and other deadline.
+                // The main CD scheduler always uses command_deadline unchanged.
+                return self.phase_deadline(
+                    self.non_command_deadline(u32::MAX),
+                    75 * u64::from(self.drive_speed()),
+                );
+            }
             self.clocks_to_event()
         } else {
             u32::MAX
         }
+    }
+
+    #[cfg(any(test, feature = "sound-worker"))]
+    fn sound_neutral_query(command: [u16; 4]) -> bool {
+        // Get Status and Get Sector Number update only report/response state.
+        matches!(command[0] >> 8, 0x00 | 0x51)
+    }
+
+    #[cfg(any(test, feature = "sound-worker"))]
+    pub(crate) fn sound_independent_query_access(&self, address: u32, write: Option<u32>) -> bool {
+        let offset = address.wrapping_sub(REGISTERS);
+        if write.is_none() {
+            // CR4 releases only the response latch; FIFO reads only its cursor.
+            return data_port(address) || matches!(offset, 8 | 12 | 0x18 | 0x1C | 0x20 | 0x24);
+        }
+        // IRQ controls and request parameters do not start a command. CR4 is
+        // independent only for the two proven queries, using the live request.
+        matches!(offset, 8 | 12 | 0x18 | 0x1C | 0x20)
+            || (offset == 0x24 && Self::sound_neutral_query(self.request))
+    }
+
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) fn sound_neutral_query_due_within(&self, clocks: u32) -> bool {
+        self.enabled
+            && self
+                .pending
+                .is_some_and(|(command, n)| n <= clocks && Self::sound_neutral_query(command))
     }
 
     /// Audio is constant zero until a CD event or a guest CD register access.

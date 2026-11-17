@@ -16,6 +16,9 @@ pub(crate) struct Boundary {
 pub(crate) struct Rendezvous {
     pub independent_controller: bool,
     pub cd_quiet: bool,
+    pub independent_cd_queries: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub cd_query_counts: [Cell<u64>; 3],
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub cd_quiet_skips: Cell<u64>,
     pub enabled: bool,
@@ -45,6 +48,7 @@ impl Rendezvous {
         Self {
             independent_controller: true,
             cd_quiet: true,
+            independent_cd_queries: true,
             ..Self::default()
         }
     }
@@ -71,7 +75,9 @@ impl Bus {
         let strict = self.strict_sound_inputs();
         (crate::sound::SOUND_RAM..crate::sound::SCSP + 0x1000).contains(&address)
             || ((0x0580_0000..0x0590_0000).contains(&address)
-                && (strict || self.cd.sound_can_receive_cd_audio()))
+                && (strict || self.cd.sound_can_receive_cd_audio())
+                && (strict || !self.sound_rendezvous.independent_cd_queries
+                    || !self.cd.sound_independent_query_access(address, write)))
             // Retain real controls and unknown/faulting command writes. Pure
             // controller data/INTBACK writes commute with owned Sound, including
             // an already admitted beat. Main still executes every SMPC edge.
@@ -135,6 +141,23 @@ impl Bus {
 }
 impl crate::Machine {
     #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn enable_sound_cd_queries(&mut self, enabled: bool) {
+        self.bus.sound_rendezvous.independent_cd_queries = enabled;
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn sound_cd_queries_enabled(&self) -> bool {
+        self.bus.sound_rendezvous.independent_cd_queries
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn sound_cd_query_counts(&self) -> Vec<u64> {
+        self.bus
+            .sound_rendezvous
+            .cd_query_counts
+            .iter()
+            .map(Cell::get)
+            .collect()
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
     pub fn enable_sound_cd_quiet(&mut self, enabled: bool) {
         self.bus.sound_rendezvous.cd_quiet = enabled;
     }
@@ -175,7 +198,10 @@ impl crate::Machine {
             .min(
                 self.bus
                     .cd
-                    .sound_source_deadline(self.bus.strict_sound_inputs())
+                    .sound_source_deadline(
+                        self.bus.strict_sound_inputs(),
+                        self.bus.sound_rendezvous.independent_cd_queries,
+                    )
                     .saturating_sub(1),
             )
             .min(self.bus.sound_smpc_deadline().saturating_sub(1));
@@ -443,6 +469,7 @@ impl crate::Machine {
 mod tests {
     use super::*;
     use crate::{Boot, Machine};
+    mod cd_queries;
     // Original guest: read CD HIRQ once, then sleep while the Sound CPU runs.
     const CD_QUIET_GUEST: &str = "0000 0000 0200 0610 0000\n0200 D101 6211 001B 0009 2589 0008";
     fn image(source: &str) -> Vec<u8> {
@@ -746,15 +773,15 @@ mod tests {
 
     #[test]
     fn delta_owner_returns_exact_sound_across_main_inputs_and_field_drains() {
-        check_delta_owner_controller(false, false);
+        check_delta_owner_controller(false, false, false);
     }
     #[test]
     fn controller_independence_keeps_shared_inputs_device_edges_and_transport_recovery() {
-        check_delta_owner_controller(true, false);
+        check_delta_owner_controller(true, false, false);
     }
     #[test]
     fn cd_quiet_keeps_owned_sound_inputs_device_edges_and_transport_recovery_exact() {
-        check_delta_owner_controller(true, true);
+        check_delta_owner_controller(true, true, false);
     }
     #[test]
     fn cd_quiet_threshold_changes_only_the_host_admission_policy() {
@@ -809,7 +836,7 @@ mod tests {
             assert!(!m.bus.sound_rendezvous.last_input_cd);
         }
     }
-    fn check_delta_owner_controller(independent: bool, cd_quiet: bool) {
+    fn check_delta_owner_controller(independent: bool, cd_quiet: bool, independent_queries: bool) {
         let mut controller_crossings = 0;
         let mut jobs = 0;
         let mut extensions = 0;
@@ -833,7 +860,17 @@ mod tests {
                 if pal && !independent {
                     continue;
                 }
-                let rom = image(source);
+                let mut rom = image(source);
+                if independent_queries && source == CD_QUIET_GUEST {
+                    // Admit the owner before the original CD read, to witness
+                    // an actual independent CD access rather than just a flag.
+                    rom[..4].copy_from_slice(&0x10000u32.to_be_bytes());
+                    let mut words = vec![0x0009u16; 1024];
+                    words.extend([0xD101, 0x412B, 0x0009, 0x0009, 0x0000, 0x0200]);
+                    for (i, word) in words.into_iter().enumerate() {
+                        rom[0x10000 + 2 * i..0x10002 + 2 * i].copy_from_slice(&word.to_be_bytes());
+                    }
+                }
                 let (mut reference, mut remote) = (Machine::new(), Machine::new());
                 for m in [&mut reference, &mut remote] {
                     m.reset(Boot::ExternalBios(&rom)).unwrap();
@@ -841,6 +878,7 @@ mod tests {
                     m.bus.change_system_clock(fast);
                     m.enable_sound_controller_independence(independent);
                     m.enable_sound_cd_quiet(cd_quiet);
+                    m.enable_sound_cd_queries(independent_queries);
                     if source == CD_QUIET_GUEST {
                         let audio = vec![0; 2352 * 3];
                         m.mount_media(
@@ -951,7 +989,13 @@ mod tests {
                     }
                     same(&mut reference, &mut remote);
                 }
-                if source == CD_QUIET_GUEST && cd_quiet {
+                if source == CD_QUIET_GUEST && independent_queries {
+                    assert!(
+                        remote.sound_cd_query_counts()[0] > 0,
+                        "must complete a real CD read with the DeltaOwner active"
+                    );
+                }
+                if source == CD_QUIET_GUEST && cd_quiet && !independent_queries {
                     assert!(
                         remote.sound_cd_quiet_skips() > 0,
                         "must reject real short CD gaps before handing ownership off"
