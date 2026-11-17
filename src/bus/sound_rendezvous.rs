@@ -15,6 +15,9 @@ pub(crate) struct Boundary {
 #[derive(Default)]
 pub(crate) struct Rendezvous {
     pub independent_controller: bool,
+    pub cd_quiet: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub cd_quiet_skips: Cell<u64>,
     pub enabled: bool,
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub strict_inputs: bool,
@@ -31,6 +34,7 @@ pub(crate) struct Rendezvous {
     delta: Option<crate::sound::delta::Delta>,
     delta_inflight: bool,
     pub last_input: u64,
+    pub last_input_cd: bool,
     #[cfg(test)]
     pub projected_idle_batches: u64,
     #[cfg(test)]
@@ -40,6 +44,7 @@ impl Rendezvous {
     pub(super) fn production() -> Self {
         Self {
             independent_controller: true,
+            cd_quiet: true,
             ..Self::default()
         }
     }
@@ -116,6 +121,7 @@ impl Bus {
             return;
         }
         self.sound_rendezvous.last_input = self.sound.domain_reference_time();
+        self.sound_rendezvous.last_input_cd = false;
         self.sound_rendezvous.next_id += 1;
         self.sound_rendezvous.expose(Boundary {
             kind: 1,
@@ -128,6 +134,18 @@ impl Bus {
     }
 }
 impl crate::Machine {
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn enable_sound_cd_quiet(&mut self, enabled: bool) {
+        self.bus.sound_rendezvous.cd_quiet = enabled;
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn sound_cd_quiet_enabled(&self) -> bool {
+        self.bus.sound_rendezvous.cd_quiet
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn sound_cd_quiet_skips(&self) -> u64 {
+        self.bus.sound_rendezvous.cd_quiet_skips.get()
+    }
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub fn enable_sound_controller_independence(&mut self, enabled: bool) {
         self.bus.sound_rendezvous.independent_controller = enabled;
@@ -171,13 +189,26 @@ impl crate::Machine {
         self.mode == Some(crate::BootMode::ExternalBios) && self.bus.sound.enabled
     }
     pub fn remote_sound_projection_range(&self, clocks: u32) -> Vec<u32> {
-        if self
+        let quiet = self
             .bus
             .sound
             .domain_reference_time()
-            .saturating_sub(self.bus.sound_rendezvous.last_input)
-            < 512
-        {
+            .saturating_sub(self.bus.sound_rendezvous.last_input);
+        // Host cost policy only: avoid short ownership transfers inside CD
+        // bursts. Other inputs retain the ordinary 512-clock quiet interval.
+        // Physical input fences and the admitted projection range stay intact.
+        let minimum =
+            if self.bus.sound_rendezvous.cd_quiet && self.bus.sound_rendezvous.last_input_cd {
+                4096
+            } else {
+                512
+            };
+        if quiet < minimum {
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            if quiet >= 512 {
+                let count = &self.bus.sound_rendezvous.cd_quiet_skips;
+                count.set(count.get() + 1);
+            }
             return Vec::new();
         }
         self.sound_projection_range(clocks)
@@ -412,6 +443,8 @@ impl crate::Machine {
 mod tests {
     use super::*;
     use crate::{Boot, Machine};
+    // Original guest: read CD HIRQ once, then sleep while the Sound CPU runs.
+    const CD_QUIET_GUEST: &str = "0000 0000 0200 0610 0000\n0200 D101 6211 001B 0009 2589 0008";
     fn image(source: &str) -> Vec<u8> {
         let mut bytes = vec![0; BIOS_SIZE];
         for line in source.lines().filter(|line| !line.starts_with('#')) {
@@ -713,13 +746,70 @@ mod tests {
 
     #[test]
     fn delta_owner_returns_exact_sound_across_main_inputs_and_field_drains() {
-        check_delta_owner_controller(false);
+        check_delta_owner_controller(false, false);
     }
     #[test]
     fn controller_independence_keeps_shared_inputs_device_edges_and_transport_recovery() {
-        check_delta_owner_controller(true);
+        check_delta_owner_controller(true, false);
     }
-    fn check_delta_owner_controller(independent: bool) {
+    #[test]
+    fn cd_quiet_keeps_owned_sound_inputs_device_edges_and_transport_recovery_exact() {
+        check_delta_owner_controller(true, true);
+    }
+    #[test]
+    fn cd_quiet_threshold_changes_only_the_host_admission_policy() {
+        let rom = image(include_str!("../../examples/runtime-loop.hex"));
+        let mut m = Machine::new();
+        m.reset(Boot::ExternalBios(&rom)).unwrap();
+        m.bus.sound.ram[..4].copy_from_slice(&0x7000u32.to_be_bytes());
+        m.bus.sound.ram[4..8].copy_from_slice(&0x100u32.to_be_bytes());
+        m.bus.sound.ram[0x100..0x104].copy_from_slice(&[0x4E, 0x71, 0x60, 0xFC]);
+        m.bus.sound.set_enabled(true).unwrap();
+        m.advance_video_field().unwrap();
+        let now = m.bus.sound.domain_reference_time();
+        let before = m.sound_domain_snapshot().unwrap();
+        let cpu = m.cpu.clone();
+        let clocks = m.clocks;
+        for (enabled, cd, threshold) in [
+            (false, false, 512),
+            (false, true, 512),
+            (true, false, 512),
+            (true, true, 4096),
+        ] {
+            m.enable_sound_cd_quiet(enabled);
+            m.bus.sound_rendezvous.last_input_cd = cd;
+            m.bus.sound_rendezvous.last_input = now - threshold + 1;
+            assert!(m.remote_sound_projection_range(32768).is_empty());
+            m.bus.sound_rendezvous.last_input = now - threshold;
+            assert!(!m.remote_sound_projection_range(32768).is_empty());
+        }
+        assert!(m.sound_cd_quiet_skips() > 0);
+        assert_eq!(m.sound_domain_snapshot().unwrap(), before);
+        assert_eq!(m.cpu, cpu);
+        assert_eq!(m.clocks, clocks);
+    }
+    #[test]
+    fn cd_quiet_records_actual_cd_and_sound_ram_inputs_and_clears_controls() {
+        for (address, cd) in [(0x2589_0008u32, true), (0x25A0_0000, false)] {
+            let mut rom = image(CD_QUIET_GUEST);
+            rom[0x208..0x20C].copy_from_slice(&address.to_be_bytes());
+            let mut m = Machine::new();
+            m.reset(Boot::ExternalBios(&rom)).unwrap();
+            m.enable_sound_dependency_filter(false);
+            // Require a real input to overwrite the opposite classification.
+            m.bus.sound_rendezvous.last_input_cd = !cd;
+            while !m.advance_sound_rendezvous_field().unwrap() {
+                m.acknowledge_sound_rendezvous();
+            }
+            assert!(m.bus.sound_rendezvous.last_input > 0);
+            assert_eq!(m.bus.sound_rendezvous.last_input_cd, cd);
+            m.bus.sound_rendezvous.enabled = true;
+            m.bus.sound_rendezvous.last_input_cd = true;
+            m.bus.sound_control_boundary(6);
+            assert!(!m.bus.sound_rendezvous.last_input_cd);
+        }
+    }
+    fn check_delta_owner_controller(independent: bool, cd_quiet: bool) {
         let mut controller_crossings = 0;
         let mut jobs = 0;
         let mut extensions = 0;
@@ -729,6 +819,7 @@ mod tests {
         let mut idle_batches = 0;
         let mut idle_max = 0;
         for source in [
+            CD_QUIET_GUEST,
             include_str!("../../examples/runtime-poll-sound-busy-scene.hex"),
             include_str!("../../tests/fixtures/scsp-cpu-memory.hex"),
             include_str!("../../tests/fixtures/scsp-clock.hex"),
@@ -749,6 +840,21 @@ mod tests {
                     m.set_pal(pal);
                     m.bus.change_system_clock(fast);
                     m.enable_sound_controller_independence(independent);
+                    m.enable_sound_cd_quiet(cd_quiet);
+                    if source == CD_QUIET_GUEST {
+                        let audio = vec![0; 2352 * 3];
+                        m.mount_media(
+                            crate::media::Media::cue(
+                                "FILE \"original\" BINARY\nTRACK 01 AUDIO\nINDEX 01 00:00:00",
+                                &[("original", &audio)],
+                            )
+                            .unwrap(),
+                        );
+                        m.bus.sound.ram[..4].copy_from_slice(&0x7000u32.to_be_bytes());
+                        m.bus.sound.ram[4..8].copy_from_slice(&0x100u32.to_be_bytes());
+                        m.bus.sound.ram[0x100..0x104].copy_from_slice(&[0x4E, 0x71, 0x60, 0xFC]);
+                        m.bus.sound.set_enabled(true).unwrap();
+                    }
                 }
                 let mut owner = crate::sound::delta::DeltaOwner::default();
                 let mut active = false;
@@ -844,6 +950,12 @@ mod tests {
                         remote.acknowledge_sound_rendezvous();
                     }
                     same(&mut reference, &mut remote);
+                }
+                if source == CD_QUIET_GUEST && cd_quiet {
+                    assert!(
+                        remote.sound_cd_quiet_skips() > 0,
+                        "must reject real short CD gaps before handing ownership off"
+                    );
                 }
                 if source == include_str!("../../tests/fixtures/frt-compare.hex") {
                     assert!(reference.cpu.state().exceptions > 0);
