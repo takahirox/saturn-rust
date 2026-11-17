@@ -493,6 +493,15 @@ impl Emulator {
     pub fn loop_state_hashes(&self) -> Vec<u32> {
         self.machine.loop_state_hashes()
     }
+    pub fn enable_settled_grant_reuse(&mut self, enabled: bool) {
+        self.machine.enable_settled_grant_reuse(enabled);
+    }
+    pub fn settled_grant_reuse_enabled(&self) -> bool {
+        self.machine.settled_grant_reuse_enabled()
+    }
+    pub fn settled_grant_reuse_counts(&self) -> Vec<u64> {
+        self.machine.settled_grant_reuse_counts()
+    }
     pub fn begin_sound_domain_trace(&mut self) -> Result<(), JsValue> {
         self.machine
             .begin_sound_domain_trace()

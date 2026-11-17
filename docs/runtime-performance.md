@@ -4506,3 +4506,56 @@ its +0.23% difference is not evidence of this optimization.
 
 Normal production-player evidence and exact-head CI belong to the associated
 PR. The broader game-performance and hardware-completion Issues remain open.
+
+## Reuse settled bus arbitration at the same clock (2026-11-18)
+
+Related to #138 and #17. The accepted parent is `59f427c`, whose normal
+player reaches about 51.1 fields/s in the 157-input conversation workload.
+A new owned-worker profile of the accepted production Wasm attributes 89.3%
+of Main samples inclusively to field execution. Sound and Video workers are
+idle for about 70.6% and 80.4% respectively. Main self samples include bus
+granting (2.89%), allocation/arbitration (2.77%) and main-clock advancement
+(5.51%). These categories are host samples, not guest-clock accounting, and
+inclusive costs must not be added to their descendants.
+
+Hardware advancement previously called the arbiter before selecting its next
+deadline and again at the start of the same main-clock interval. The first
+call now reports whether it took an existing quiescent early return. Only
+that result can omit the second call, and only while Video owns display
+acquisition. IRQ sampling still runs, but changes only the observed IRQ
+record; owned display acquisition is a no-op. New allocations never supply
+this proof. The proof expires after the first interval, so every subsequent
+hardware edge arbitrates normally. Sound request observation, bus completion,
+guest clocks, event deadlines and all scheduling quanta are preserved.
+
+Three original native witnesses cover owned/unowned display, actual allocation,
+expiry across an FRT interrupt boundary, and full-board CPU/cache/BSC/Sound/PCM
+agreement for three licensed guests in all four PAL/PLL combinations. Actual
+source mutants that treat allocation as settled, retain the proof after clock
+progress, or ignore display ownership fail assertions. Exact source restoration
+passes all three witnesses. The prototype also passes native/Wasm Clippy and
+21 browser contracts over seven original guests, including direct presentation
+and Sound-owner return failure.
+
+A single feature artifact, SHA-256
+`d4a4e5acea7d4740bfaed2d078da34479a6f11d743324cc9416d2788b40ddfbc`,
+compares the flag disabled/enabled after both variants finish 14,700 fields of
+the same conversation input script. Twelve alternating 80-field windows draw
+every field and preserve full Sound bytes, all 22 CPU/cache fingerprints,
+PCM and images; all twelve canonical cross-build endpoints also agree.
+Diagnostic throughput improves 48.6386 to 49.0547 fields/s (+0.8554%), with
+all twelve windows positive. The two busiest windows improve 27.5986 to
+27.7383 (+0.5062%) and 27.3121 to 27.6319 (+1.1709%). Approximately 21,743
+and 18,982 redundant grants per field are omitted there. Sound jobs remain
+exactly 6.25 and 5.3375 per field in both variants. The original busy-scene
+control changes 148.1238 to 148.6191 (+0.3344%).
+
+These capacity comparisons use the production Sound owner and renderer but no
+AudioWorklet. They are not normal-player FPS or evidence of real-time playback.
+Final normal-player, exact-head CI and review results belong to the associated
+implementation PR. The first default-enabled native run exposed a test setup
+error: resetting the guest restored the production flag after the reference
+had disabled it. The reference now disables it after reset; the failed run is
+preserved locally. No guest-state assertion was weakened. Private firmware,
+media and raw diagnostics remain local. Sustained real-time, heavy-scene
+latency, audio-underflow and hardware-completion criteria remain open.

@@ -1509,6 +1509,11 @@ impl Bus {
         }
     }
     pub(crate) fn grant_bus_transaction(&mut self) {
+        self.grant_bus_transaction_settled();
+    }
+    /// True only for an existing fixed-point early return. Allocation itself
+    /// is not assumed idempotent and never supplies this proof.
+    pub(super) fn grant_bus_transaction_settled(&mut self) -> bool {
         // Drop canceled DRAM work before allocating a replacement bus beat.
         // A retained manual-reset drain is still active and keeps its grant.
         self.sound.main_ram_request(self.sound_ram_request());
@@ -1523,7 +1528,7 @@ impl Bus {
                     && self.dmac_quiescent(p)
             })
         {
-            return;
+            return true;
         }
         // Cache hits and internal execution do not queue an external cycle.
         // An accepted group/drain, pending refresh or DMA still needs the
@@ -1548,7 +1553,7 @@ impl Bus {
                     && self.dmac_quiescent(p)
             })
         {
-            return;
+            return true;
         }
         #[cfg(any(test, feature = "sound-worker"))]
         let had_active = self.transactions.active.is_some();
@@ -1561,6 +1566,7 @@ impl Bus {
         self.sound.main_ram_request(self.sound_ram_request());
         #[cfg(any(test, feature = "sound-worker"))]
         self.observe_sound_rendezvous();
+        false
     }
     #[cfg(any(test, feature = "sound-worker"))]
     pub(super) fn sound_input_inflight(&self) -> bool {

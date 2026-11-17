@@ -173,6 +173,22 @@ impl super::Bus {
 }
 
 impl Machine {
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn enable_settled_grant_reuse(&mut self, enabled: bool) {
+        self.bus.reuse_settled_grant = enabled;
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn settled_grant_reuse_enabled(&self) -> bool {
+        self.bus.reuse_settled_grant
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn settled_grant_reuse_counts(&self) -> Vec<u64> {
+        self.bus
+            .settled_grant_counts
+            .iter()
+            .map(std::cell::Cell::get)
+            .collect()
+    }
     pub fn loop_state_hashes(&self) -> Vec<u32> {
         fn digest(bytes: impl IntoIterator<Item = u8>) -> [u32; 2] {
             let hash = bytes.into_iter().fold(0xCBF29CE484222325u64, |h, b| {
