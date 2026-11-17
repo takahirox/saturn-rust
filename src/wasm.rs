@@ -522,6 +522,15 @@ impl Emulator {
     pub fn enable_sound_controller_independence(&mut self, enabled: bool) {
         self.machine.enable_sound_controller_independence(enabled);
     }
+    pub fn enable_sound_cd_quiet(&mut self, enabled: bool) {
+        self.machine.enable_sound_cd_quiet(enabled);
+    }
+    pub fn sound_cd_quiet_enabled(&self) -> bool {
+        self.machine.sound_cd_quiet_enabled()
+    }
+    pub fn sound_cd_quiet_skips(&self) -> u64 {
+        self.machine.sound_cd_quiet_skips()
+    }
     pub fn sound_controller_independence_enabled(&self) -> bool {
         self.machine.sound_controller_independence_enabled()
     }

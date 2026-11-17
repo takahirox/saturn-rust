@@ -1577,6 +1577,7 @@ impl Bus {
             let address = active.transfer.address & 0x1FFF_FFFF;
             if self.sound_input_address(address, active.transfer.write) {
                 self.sound_rendezvous.last_input = self.sound.domain_reference_time();
+                self.sound_rendezvous.last_input_cd = (0x0580_0000..0x0590_0000).contains(&address);
                 self.sound_rendezvous
                     .expose(super::sound_rendezvous::Boundary {
                         kind: 0,
