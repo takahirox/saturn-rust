@@ -4506,3 +4506,86 @@ its +0.23% difference is not evidence of this optimization.
 
 Normal production-player evidence and exact-head CI belong to the associated
 PR. The broader game-performance and hardware-completion Issues remain open.
+
+
+## Resume completed SH-2 DMA operations without replaying their prefix (2026-11-18)
+
+Related to #138 and #17. Offline analysis of the accepted main's previously
+recorded long-stall profile finds that its longest 552 ms consecutive burst
+without an idle sample spends 28.82% inclusive in on-chip DMA transfer and
+14.42% self in the scheduled-memory operation adapter. This sample burst is
+not exactly aligned to individual guest fields, so it alone does not identify
+the cause of a particular stall.
+
+An accepted two-address DMA unit now retains completed read values and its
+logical read/write position. Its channel/source/destination/count/control
+signature must still match. The bus resumes the retained journal at that
+completed prefix; the pending operation still uses ordinary physical beats,
+grants, sampling, write-buffer acceptance, publication and errors. The complete
+journal remains available for conservative fallback. Configuration/request
+changes, NMI, reset/cancellation, standby and buffer errors invalidate the host
+continuation. Single-address/DACK transfers keep the original replay path.
+The two paths use a compile-time mode rather than a new per-operation dispatch.
+
+The existing 22 literal bus-DMA tests explicitly enable the candidate. A new
+test compares the original replay path and the candidate at every clock across
+both CPUs, all transfer sizes, three external widths, short final counts and
+burst/cycle-steal selection. It also changes source bytes after read sampling
+and compares complete transaction journals, active/internal phases, BSC, DMA
+registers, IRQs, errors and affected RAM, with positive replay-removal coverage.
+Together with two on-chip DACK/address-error tests, 25 native tests pass.
+Five executed negative controls detect lost retained data, a wrong journal
+cursor, repeated completed writes, missing required short-unit reads and
+aborting an accepted unit on NMI. Exact restoration and 25 fresh positives pass.
+Formatting, native/all-Wasm Clippy and the feature build pass. A test-initializer
+Clippy finding was corrected before freezing; no lint suppression was added.
+
+The opt-in feature Wasm is
+`5e66b9a2059212b060301b75ad638d8ed1490bd5080c7dfd64e56176d4062e4f`.
+Chrome 157.0.8103.52 passes seven original public browser fixtures in each of
+normal, direct and forced Sound-return-failure modes. The original [continuous DMA guest](../examples/runtime-dmac-stream.s), built with
+`python3 examples/build-runtime-dmac.py --binary target/runtime-dmac-stream.bin`,
+initializes its own source RAM, transfers 16,384 words per
+block and increments its own completion counter. Both runtimes prepare 20
+fields before six alternating 10-field windows. Exact first/last destination
+words, positive completion/replay-removal counts and all paired states match.
+Throughput improves **7.3672 -> 8.5014 fields/s (+15.3945%)**, positive in all
+six windows. About 2.928 million completed logical operations per field avoid
+host replay; no architectural transfer or physical beat is omitted. The
+existing non-DMA busy guest is flat (-0.0446%) with zero new-path coverage.
+
+The usual actual-game conversation diagnostic, after both runtimes prepare
+14,700 fields, is effectively flat: **46.5660 -> 46.6180 (+0.1117%)**, seven of
+twelve alternating 80-field windows positive. The two heavy windows improve
+by 1.2633% and 2.1450%, with about 42,868 and 137,291 host prefix operations
+avoided per field. All twelve full Sound/22 CPU-cache/PCM/image endpoints also
+match saved canonical endpoints. This aggregate result alone does not justify
+adoption.
+
+A targeted comparison of the profiled stall interval prepares both runtimes
+through field 13,710 and measures three alternating 80-field windows using
+the same frozen feature artifact. Aggregate throughput improves only 0.6744%,
+but the corresponding long produced-field times decrease:
+
+| Produced field | Original ms | Continuation ms |
+| --- | ---: | ---: |
+| 13720 | 131.4 | 125.2 |
+| 13721 | 138.6 | 127.0 |
+| 13868 | 184.7 | 159.8 |
+| 13869 | 183.5 | 161.2 |
+| 13870 | 179.3 | 155.3 |
+
+All three live paired endpoints match full Sound, 22 CPU/cache fingerprints,
+PCM and images. No saved historical canonical endpoint exists for these three
+window ends; the broader twelve-endpoint check above is separate evidence.
+These ordered field timings include advancement, PCM draining and the bounded
+renderer-credit pipeline, not normal-player presentation gaps. Their indexes
+must not be conflated with the old normal-player profile's draw indexes.
+
+All preceding throughput/tail observations are capacity diagnostics without
+an AudioWorklet. The production-configuration normal-player comparisons in both
+orders, matching presentation-field gaps, actual audio underflows, and exact-head
+CI/review results are reported in the implementation PR. They remain adoption
+gates; these diagnostics do not establish sustained real-time playback or
+hardware completion. The source Issues remain open, private inputs/captures
+stay local, and no post-merge verification is required.

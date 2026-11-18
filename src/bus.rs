@@ -321,6 +321,9 @@ pub trait Memory {
 }
 
 pub struct Bus {
+    pub(crate) dmac_unit_continuation: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) dmac_unit_continuation_counts: [u64; 4],
     #[cfg(any(test, feature = "sound-worker"))]
     pub(crate) sound_rendezvous: sound_rendezvous::Rendezvous,
     loop_probe: Option<Box<loop_probe::LoopProbe>>,
@@ -409,6 +412,9 @@ pub(crate) struct InterruptRequest {
 impl Default for Bus {
     fn default() -> Self {
         Self {
+            dmac_unit_continuation: true,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            dmac_unit_continuation_counts: [0; 4],
             #[cfg(any(test, feature = "sound-worker"))]
             sound_rendezvous: sound_rendezvous::Rendezvous::production(),
             loop_probe: Some(Box::new(loop_probe::LoopProbe::automatic())),
