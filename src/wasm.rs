@@ -490,6 +490,15 @@ impl Emulator {
     pub fn enable_sound_dependency_filter(&mut self, enabled: bool) {
         self.machine.enable_sound_dependency_filter(enabled);
     }
+    pub fn enable_paired_irq_sampling(&mut self, enabled: bool) {
+        self.machine.enable_paired_irq_sampling(enabled);
+    }
+    pub fn paired_irq_reuses(&self) -> u64 {
+        self.machine.paired_irq_reuses()
+    }
+    pub fn board_irq_reuses(&self) -> u64 {
+        self.machine.board_irq_reuses()
+    }
     pub fn loop_state_hashes(&self) -> Vec<u32> {
         self.machine.loop_state_hashes()
     }

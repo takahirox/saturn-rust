@@ -789,3 +789,139 @@ fn peripheral_vector_twelve_is_not_mistaken_for_the_user_break_source() {
         InterruptSource::Scu
     );
 }
+
+#[test]
+fn paired_irq_sampling_preserves_each_issue_boundary() {
+    use crate::scheduling_tests::cached_pair;
+
+    for (fast, pure) in [(false, false), (true, false), (false, true), (true, true)] {
+        let make = || {
+            let mut m = cached_pair(
+                if pure {
+                    &[0x7001, 0x7101, 0x7201, 0xAFFB, 9]
+                } else {
+                    &[0x60F2, 0x7001, 0x2F02, 0xAFFB, 9]
+                },
+                if pure {
+                    &[0x7301, 0x7401, 0x7501, 0xAFFB, 9]
+                } else {
+                    &[0x60F0, 0xC880, 0x89FC, 0xAFFB, 9]
+                },
+            );
+            m.cpu = Cpu::start(HIGH_WRAM, 0x26002000);
+            m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
+            m.slave = Cpu::start(HIGH_WRAM + 0x100, onchip::FRT + 1);
+            m.slave.prime_fetch(&m.bus.for_cpu(Processor::Slave));
+            m.bus.system_clock.select(fast);
+            m.bus.raster.select_clock(fast);
+            if pure {
+                // Projected playback uses board advancement instead of
+                // the short local retirement path, which already avoids it.
+                m.mode = Some(crate::BootMode::ExternalBios);
+                m.bus.sound.ram[..4].copy_from_slice(&0x7000u32.to_be_bytes());
+                m.bus.sound.ram[4..8].copy_from_slice(&0x100u32.to_be_bytes());
+                m.bus.sound.ram[0x100..0x104].copy_from_slice(&[0x4E, 0x71, 0x60, 0xFC]);
+                m.bus.sound.set_enabled(true).unwrap();
+                assert!(m.begin_sound_projection(32768));
+                m.bus.sound_rendezvous.enabled = true;
+            }
+            m
+        };
+        let (mut candidate, mut reference) = (make(), make());
+        candidate.enable_paired_irq_sampling(true);
+        for _ in 0..12_000 {
+            let a = candidate.step_hardware_boundary_with_idle(true).unwrap();
+            let b = reference.step_hardware_boundary_with_idle(true).unwrap();
+            assert_eq!(a, b);
+            assert_eq!(candidate.cpu, reference.cpu);
+            assert_eq!(candidate.slave, reference.slave);
+            assert_eq!(candidate.cpu_ready, reference.cpu_ready);
+            assert!(candidate.cpu_boundary == reference.cpu_boundary);
+            assert!(candidate.cached_issue == reference.cached_issue);
+            assert_eq!(candidate.bus.irq_observed, reference.bus.irq_observed);
+            assert_eq!(candidate.bus.main_clocks, reference.bus.main_clocks);
+            assert_eq!(candidate.clocks, reference.clocks);
+        }
+        assert!(candidate.paired_irq_reuses() > 100);
+        if pure {
+            assert!(
+                candidate.board_irq_reuses() > 100,
+                "actual board reuse must run"
+            );
+        }
+        assert_eq!(reference.board_irq_reuses(), 0);
+        assert_eq!(reference.paired_irq_reuses(), 0);
+        assert_eq!(candidate.loop_state_hashes(), reference.loop_state_hashes());
+        if pure {
+            assert!(candidate.finish_sound_projection());
+            assert!(reference.finish_sound_projection());
+        }
+        assert_eq!(
+            candidate.sound_domain_snapshot().unwrap(),
+            reference.sound_domain_snapshot().unwrap()
+        );
+        assert_eq!(candidate.drain_audio(8192), reference.drain_audio(8192));
+    }
+}
+
+#[test]
+fn paired_irq_sampling_resamples_master_after_a_same_clock_watchdog_reset() {
+    let mut m = crate::scheduling_tests::cached_pair(&[9, 9], &[9, 9]);
+    let p = Processor::Master;
+    let chip = &mut m.bus.onchip[0];
+    chip.write16(onchip::IPRB, 0x0600).unwrap();
+    chip.write8(onchip::FRT, 0x80).unwrap();
+    chip.capture_strobe();
+    chip.write16(onchip::WDT + 2, 0x5A5F).unwrap();
+    chip.write16(onchip::WDT, 0xA578).unwrap();
+    chip.write16(onchip::WDT, 0x5AFF).unwrap();
+    chip.advance_clocks(2);
+    assert!(m.bus.cpu_reset_active(p));
+    assert_eq!(m.bus.interrupt_request(p).unwrap().level, 6);
+
+    let origin = m.bus.main_clocks;
+    let mut irq_samples_current = false;
+    assert!(
+        m.issue_cpu_with_irq_sample(p, true, &mut irq_samples_current)
+            .unwrap()
+    );
+    assert!(m.bus.irq_observed[0].is_some());
+    assert!(m.bus.interrupt_request(p).is_none());
+    m.issue_cpu_with_irq_sample(Processor::Slave, true, &mut irq_samples_current)
+        .unwrap();
+    assert_eq!(m.bus.main_clocks, origin);
+    assert!(m.bus.irq_observed[0].is_none());
+    assert_eq!(m.paired_irq_reuses(), 0);
+}
+
+#[test]
+fn paired_irq_sampling_board_input_requires_a_settled_external_grant() {
+    let make = || {
+        let mut bus = crate::scheduling_tests::cached_pair(&[9, 9], &[9, 9]).bus;
+        // Issue a real cold external CPU read at this clock. Allocation is
+        // still pending even though the pin inputs have just been sampled.
+        assert_eq!(
+            bus.replay_cpu(Processor::Master)
+                .read32(HIGH_WRAM | 0x2000_1000),
+            Err(BusError::Pending)
+        );
+        assert!(bus.transactions.active.is_none());
+        bus.sample_interrupts();
+        bus
+    };
+    let (mut candidate, mut reference) = (make(), make());
+    assert_eq!(
+        candidate
+            .advance_cpu_clocks_after_irq_sample(1, true)
+            .unwrap(),
+        reference.advance_cpu_clocks(1).unwrap()
+    );
+    assert_eq!(
+        candidate.board_irq_reuses(),
+        0,
+        "new allocation requires a fresh board sample"
+    );
+    assert!(candidate.transactions.active.is_some());
+    assert_eq!(candidate.irq_observed, reference.irq_observed);
+    assert_eq!(candidate.main_clocks, reference.main_clocks);
+}
