@@ -398,6 +398,16 @@ pub struct Bus {
     pub(crate) boundary_grant_reuse: bool,
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub(crate) boundary_grant_reuses: [u64; 2],
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) direct_wram_access: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) direct_wram_reads: Cell<u64>,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) direct_wram_writes: u64,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) cached_cycle_anchor_borrowed: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) cached_cycle_anchor_borrows: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -498,6 +508,16 @@ impl Default for Bus {
             boundary_grant_reuse: false,
             #[cfg(any(test, feature = "kernel-experiment"))]
             boundary_grant_reuses: [0; 2],
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            direct_wram_access: false,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            direct_wram_reads: Cell::new(0),
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            direct_wram_writes: 0,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            cached_cycle_anchor_borrowed: false,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            cached_cycle_anchor_borrows: 0,
         }
     }
 }
@@ -1538,10 +1558,40 @@ impl Bus {
             || (0x0590_0000..0x05A0_0000).contains(&address)
     }
 
-    fn read<const N: usize>(&self, address: u32) -> Result<[u8; N], BusError> {
-        self.check_smpc_width(address, N, None)?;
-        let guest_address = address;
-        let address = Self::physical(address);
+    #[inline]
+    fn direct_wram_access_enabled(&self) -> bool {
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        {
+            self.direct_wram_access
+        }
+        #[cfg(not(any(test, feature = "kernel-experiment")))]
+        {
+            true
+        }
+    }
+
+    fn wram_port<const N: usize>(address: u32) -> Option<(bool, usize)> {
+        // The preceding physical decode has already applied CS0/CS3 mirrors.
+        let bank = address & !(WRAM_SIZE as u32 - 1);
+        let offset = (address & (WRAM_SIZE as u32 - 1)) as usize;
+        (N <= 16
+            && offset + N <= WRAM_SIZE
+            && address.is_multiple_of(N as u32)
+            && matches!(bank, LOW_WRAM | HIGH_WRAM))
+        .then_some((bank == HIGH_WRAM, offset))
+    }
+
+    fn read<const N: usize>(&self, guest_address: u32) -> Result<[u8; N], BusError> {
+        let address = Self::physical(guest_address);
+        if self.direct_wram_access_enabled()
+            && let Some((high, offset)) = Self::wram_port::<N>(address)
+        {
+            let ram = if high { &self.high } else { &self.low };
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            self.direct_wram_reads.set(self.direct_wram_reads.get() + 1);
+            return Ok(ram[offset..offset + N].try_into().unwrap());
+        }
+        self.check_smpc_width(guest_address, N, None)?;
         if !address.is_multiple_of(N as u32) {
             return Err(BusError::Unaligned { address, width: N });
         }
@@ -1688,13 +1738,23 @@ impl Bus {
     fn write_from<const N: usize>(
         &mut self,
         issuer: Processor,
-        address: u32,
+        guest_address: u32,
         bytes: [u8; N],
     ) -> Result<(), BusError> {
+        let address = Self::physical(guest_address);
+        if self.direct_wram_access_enabled()
+            && let Some((high, offset)) = Self::wram_port::<N>(address)
+        {
+            let ram = if high { &mut self.high } else { &mut self.low };
+            ram[offset..offset + N].copy_from_slice(&bytes);
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            {
+                self.direct_wram_writes += 1;
+            }
+            return Ok(());
+        }
         let value = bytes.iter().fold(0u32, |v, b| v << 8 | u32::from(*b));
-        self.check_smpc_width(address, N, Some(value))?;
-        let guest_address = address;
-        let address = Self::physical(address);
+        self.check_smpc_width(guest_address, N, Some(value))?;
         if (vdp1::FRAMEBUFFER..vdp1::REGISTERS + 0x18).contains(&address)
             || (VRAM..VDP2 + 0x120).contains(&address)
         {
@@ -3034,6 +3094,54 @@ mod vram_grant_tests;
 #[cfg(test)]
 mod bsc_memory_tests {
     use super::*;
+
+    #[test]
+    fn direct_wram_port_preserves_raw_sdram_timing_mirrors_and_device_errors() {
+        let mut normal = Bus::default();
+        let mut direct = Bus {
+            direct_wram_access: true,
+            ..Bus::default()
+        };
+        for bus in [&mut normal, &mut direct] {
+            for (at, configuration) in [
+                (0xFFFFFFE8, 0xA55A0000),
+                (0xFFFFFFE0, 0xA55A0401),
+                (0xFFFFFFEC, 0xA55A0240),
+            ] {
+                bus.for_cpu(Processor::Master)
+                    .write32(at, configuration)
+                    .unwrap();
+            }
+            for (at, expected_clocks) in [(0x26000000, 2), (0x26000004, 1), (0x26200000, 2)] {
+                bus.for_cpu(Processor::Master)
+                    .write32(at, 0x12345678)
+                    .unwrap();
+                assert_eq!(bus.cpu_delay(Processor::Master, 1), expected_clocks);
+            }
+            for (alias, physical) in [(0x203FFFFC, LOW_WRAM), (0x27FFFFFC, HIGH_WRAM)] {
+                bus.write32(alias, 0x11223344).unwrap();
+                assert_eq!(bus.read16(physical + WRAM_SIZE as u32 - 2), Ok(0x3344));
+                assert_eq!(bus.read8(alias + 1), Ok(0x22));
+                assert!(matches!(
+                    bus.read32(alias + 1),
+                    Err(BusError::Unaligned { width: 4, .. })
+                ));
+            }
+        }
+        assert_eq!(direct.low, normal.low);
+        assert_eq!(direct.high, normal.high);
+        let read_count = direct.direct_wram_reads.get();
+        let write_count = direct.direct_wram_writes;
+        assert!(read_count >= 4 && write_count >= 2);
+        assert_eq!(direct.read16(SMPC + 0x81), normal.read16(SMPC + 0x81));
+        assert_eq!(
+            direct.write32(SMPC + 0x9F, 0x01020304),
+            normal.write32(SMPC + 0x9F, 0x01020304)
+        );
+        assert_eq!(direct.direct_wram_reads.get(), read_count);
+        assert_eq!(direct.direct_wram_writes, write_count);
+    }
+
     #[test]
     fn cache_line_is_one_sdram_burst_and_hits_issue_no_external_cycles_on_either_cpu() {
         // H §§7.5.3/7.5.4, fig8.4: four longword refill callbacks

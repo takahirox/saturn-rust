@@ -514,6 +514,27 @@ impl Emulator {
     pub fn cd_quiet_clock_steps(&self) -> u64 {
         self.machine.bus.cd.quiet_clock_steps
     }
+    pub fn enable_direct_wram_access(&mut self, enabled: bool) {
+        self.machine.bus.direct_wram_access = enabled;
+    }
+    pub fn direct_wram_access_enabled(&self) -> bool {
+        self.machine.bus.direct_wram_access
+    }
+    pub fn direct_wram_access_counts(&self) -> Vec<u64> {
+        vec![
+            self.machine.bus.direct_wram_reads.get(),
+            self.machine.bus.direct_wram_writes,
+        ]
+    }
+    pub fn enable_borrowed_cycle_anchor(&mut self, enabled: bool) {
+        self.machine.bus.cached_cycle_anchor_borrowed = enabled;
+    }
+    pub fn borrowed_cycle_anchor_enabled(&self) -> bool {
+        self.machine.bus.cached_cycle_anchor_borrowed
+    }
+    pub fn borrowed_cycle_anchor_count(&self) -> u64 {
+        self.machine.bus.cached_cycle_anchor_borrows
+    }
     pub fn dmac_pending_write_wait_enabled(&self) -> bool {
         self.machine.dmac_pending_write_wait_enabled()
     }
