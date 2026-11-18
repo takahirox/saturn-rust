@@ -328,6 +328,11 @@ pub struct Bus {
     inline: Option<transactions::InlineProgress>,
     // Retain host retirement-buffer capacity between cached bursts.
     cached_retirement_points: Vec<cached::Retirement>,
+    cached_storage: cached::CachedStorage,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) reuse_cached_storage: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) cached_storage_reuses: [u64; 3],
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub(crate) reversible_cached_loads: bool,
     #[cfg(any(test, feature = "kernel-experiment"))]
@@ -435,6 +440,11 @@ impl Default for Bus {
             transactions: transactions::Transactions::default(),
             inline: None,
             cached_retirement_points: Vec::new(),
+            cached_storage: cached::CachedStorage::default(),
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            reuse_cached_storage: false,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            cached_storage_reuses: [0; 3],
             #[cfg(any(test, feature = "kernel-experiment"))]
             reversible_cached_loads: false,
             #[cfg(any(test, feature = "kernel-experiment"))]

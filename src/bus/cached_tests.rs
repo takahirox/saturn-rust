@@ -2498,6 +2498,7 @@ fn independent_refill_waits_for_every_accepted_write_beat() {
 
 #[test]
 fn alternating_stores_and_refills_preserve_aliases_evictions_and_pipeline() {
+    let mut reuses = [0; 3];
     for fast in [false, true] {
         for (stride, narrow, overlap, bypass, live_sound) in [
             (4, false, false, false, false),
@@ -2563,12 +2564,17 @@ fn alternating_stores_and_refills_preserve_aliases_evictions_and_pipeline() {
                     m
                 };
                 let (mut a, mut b) = (make(), make());
+                a.bus.reuse_cached_storage = true;
                 let mut mixed = 0;
                 let mut turns = 0;
                 while a.cpu.state().status == CpuStatus::Running {
                     let fills = a.bus.cached_code_fills;
                     let writes = a.bus.cached_stores;
                     let count = a.try_cached_batch(128).unwrap();
+                    assert_eq!(a.bus.cached_storage.fills.len(), 0);
+                    assert_eq!(a.bus.cached_storage.fills.read_count(), 0);
+                    assert!(a.bus.cached_storage.bus_events.is_empty());
+                    assert!(a.bus.cached_storage.ram_stores.is_empty());
                     if count == 0 {
                         a.step_inner_with_idle(true).unwrap();
                     } else if a.bus.cached_code_fills > fills && a.bus.cached_stores > writes {
@@ -2597,9 +2603,13 @@ fn alternating_stores_and_refills_preserve_aliases_evictions_and_pipeline() {
                     mixed > 0,
                     "fast={fast},stride={stride},narrow={narrow},overlap={overlap},bypass={bypass},control={control}"
                 );
+                for (sum, count) in reuses.iter_mut().zip(a.bus.cached_storage_reuses) {
+                    *sum += count;
+                }
             }
         }
     }
+    assert!(reuses.into_iter().all(|count| count > 0), "{reuses:?}");
 }
 
 #[test]

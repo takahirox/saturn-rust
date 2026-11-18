@@ -553,6 +553,15 @@ impl Emulator {
     pub fn reversible_cached_load_counts(&self) -> Vec<u64> {
         self.machine.bus.reversible_cached_load_counts.to_vec()
     }
+    pub fn enable_cached_storage_reuse(&mut self, enabled: bool) {
+        self.machine.bus.reuse_cached_storage = enabled;
+    }
+    pub fn cached_storage_reuse_enabled(&self) -> bool {
+        self.machine.bus.reuse_cached_storage
+    }
+    pub fn cached_storage_reuses(&self) -> Vec<u64> {
+        self.machine.bus.cached_storage_reuses.to_vec()
+    }
     pub fn local_journal_enabled(&self) -> bool {
         self.machine.local_journal_enabled()
     }

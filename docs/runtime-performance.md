@@ -4653,3 +4653,29 @@ Each also matches the independently retained endpoint from the prior build.
 Production player performance and AudioWorklet evidence are recorded in the
 associated pull request. Sustained 60 fields/s, continuous audio delivery and
 the broader hardware acceptance criteria remain open.
+
+## Reuse cached work buffers between bursts (2026-11-19)
+
+Related to #138 and #17. An admitted SH-2 burst can reuse empty storage for
+cache versions, ordered bus protocol events and planned RAM writes. Rejected
+bursts discard unpublished records before returning storage. Successful
+bursts retain the existing cache and bus publication order. Each committed
+cache version clears the host index for its old shadow set.
+
+The native comparison exercises alternating stores and refills against
+ordinary instruction execution, including RAM aliases, cache evictions,
+transfer widths and both PLL settings. Deliberately retaining a stale cache
+shadow index fails this test. All 56 cached-burst tests and four cache version
+tests pass after restoring the change. Both Wasm build configurations pass.
+
+The paired game diagnostic keeps the accepted WRAM and cycle improvements
+enabled in both modes. Across 2,240 fields, throughput increases from 53.555
+to 54.250 fields/s (+1.30%). All 28 windows improve, with gains of 0.76% to
+1.99% in the four slowest intervals. A field reuses about 3,657 cache
+versions, 5,863 bus protocol events and 4,320 RAM write records. CPU, cache,
+RAM, clocks, pixels, PCM and full Sound bytes agree at each paired endpoint
+and at all 28 independently recorded endpoints.
+
+Production playback and AudioWorklet measurements are recorded in the
+associated pull request. Sustained 60 fields/s, continuous audio delivery and
+the broader hardware acceptance criteria remain open.

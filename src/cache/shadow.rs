@@ -22,6 +22,10 @@ impl CachedLines {
     pub fn read_count(&self) -> usize {
         self.reads
     }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn capacity(&self) -> usize {
+        self.versions.capacity()
+    }
     pub fn truncate(&mut self, len: usize) {
         while self.versions.len() > len {
             let version = self.versions.pop().unwrap();
@@ -169,11 +173,17 @@ impl CachedLines {
         self.reads += 1;
         self.heads.get_or_insert_with(|| Box::new([0; 64]))[index] = self.versions.len();
     }
-    pub fn commit(self, cache: &mut Cache) {
-        for version in self.versions {
+    pub fn commit(&mut self, cache: &mut Cache) {
+        let Some(heads) = self.heads.as_deref_mut() else {
+            debug_assert!(self.versions.is_empty());
+            return;
+        };
+        for version in self.versions.drain(..) {
             cache.lines[version.index] = version.ways;
             cache.lookup[version.index].store(0, Ordering::Relaxed);
+            heads[version.index] = 0;
         }
+        self.reads = 0;
     }
 }
 
