@@ -939,18 +939,42 @@ impl Bus {
         if self.dmac_quiescent(processor) {
             return;
         }
-        self.transactions.journals[i + 2].get_mut().cursor = 0;
+        // Skip only completed logical operations. The pending operation's
+        // physical beats, sampling time, grant and buffered-write acceptance
+        // still use the ordinary scheduler. Configuration/reset invalidation
+        // falls back to the retained complete journal.
+        let mut cursor = self.onchip[i]
+            .dma
+            .continuation_cursor(self.dmac_unit_continuation);
+        if cursor > self.transactions.journals[i + 2].borrow().operations.len() {
+            self.onchip[i].dma.clear_continuation();
+            cursor = 0;
+        }
+        self.transactions.journals[i + 2].get_mut().cursor = cursor;
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        if self.dmac_unit_continuation {
+            self.dmac_unit_continuation_counts[0] += 1;
+            self.dmac_unit_continuation_counts[1] += u64::from(cursor != 0);
+            self.dmac_unit_continuation_counts[2] += cursor as u64;
+        }
         let requests = self.onchip[i].serial_dma_requests();
         let mut dma = std::mem::take(&mut self.onchip[i].dma);
-        let acknowledged = dma.transfer(
-            &mut ReplayMemory(RefCell::new(ScheduledMemory(CpuBus {
-                bus: self,
-                processor,
-                cached: false,
-                scheduled: true,
-            }))),
-            requests,
-        );
+        let resume = self.dmac_unit_continuation;
+        let mut memory = ReplayMemory(RefCell::new(ScheduledMemory(CpuBus {
+            bus: self,
+            processor,
+            cached: false,
+            scheduled: true,
+        })));
+        let acknowledged = if resume {
+            dma.transfer_resuming(&mut memory, requests)
+        } else {
+            dma.transfer(&mut memory, requests)
+        };
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        if resume && acknowledged.is_some() {
+            self.dmac_unit_continuation_counts[3] += 1;
+        }
         self.cpu_dma_errors[i] |= std::mem::take(&mut dma.address_error);
         let in_progress = dma.in_progress();
         let burst = dma.burst_requested(requests);
@@ -967,6 +991,7 @@ impl Bus {
         }
     }
     pub(super) fn cancel_dmac_transaction(&mut self, processor: Processor) {
+        self.onchip[processor as usize].dma.clear_continuation();
         if self.transactions.internal[processor as usize]
             .as_ref()
             .is_some_and(|a| matches!(a.owner, Owner::Dmac(p) | Owner::WriteAccept(p, true) if p == processor))
@@ -2999,6 +3024,20 @@ mod vbe_tests;
 
 #[cfg(test)]
 impl Bus {
+    pub(super) fn assert_dmac_continuation_matches(&self, other: &Self) {
+        self.assert_cached_refresh_arbiter_matches(other);
+        assert!(self.transactions.internal == other.transactions.internal);
+        assert!(self.transactions.dmac_owner == other.transactions.dmac_owner);
+        assert!(self.transactions.previous_dmac == other.transactions.previous_dmac);
+        for i in 0..4 {
+            assert!(
+                self.transactions.journals[i]
+                    .borrow()
+                    .eq(&other.transactions.journals[i].borrow()),
+                "transaction journal {i} differs"
+            );
+        }
+    }
     pub(super) fn assert_cached_refresh_arbiter_matches(&self, other: &Self) {
         let active = |b: &Self| {
             b.transactions

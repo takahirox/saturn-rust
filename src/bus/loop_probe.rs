@@ -173,6 +173,23 @@ impl super::Bus {
 }
 
 impl Machine {
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn enable_dmac_unit_continuation(&mut self, enabled: bool) {
+        if self.bus.dmac_unit_continuation != enabled {
+            for chip in &mut self.bus.onchip {
+                chip.dma.clear_continuation();
+            }
+        }
+        self.bus.dmac_unit_continuation = enabled;
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn dmac_unit_continuation_enabled(&self) -> bool {
+        self.bus.dmac_unit_continuation
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn dmac_unit_continuation_counts(&self) -> Vec<u64> {
+        self.bus.dmac_unit_continuation_counts.to_vec()
+    }
     pub fn loop_state_hashes(&self) -> Vec<u32> {
         fn digest(bytes: impl IntoIterator<Item = u8>) -> [u32; 2] {
             let hash = bytes.into_iter().fold(0xCBF29CE484222325u64, |h, b| {

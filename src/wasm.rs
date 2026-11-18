@@ -490,6 +490,15 @@ impl Emulator {
     pub fn enable_sound_dependency_filter(&mut self, enabled: bool) {
         self.machine.enable_sound_dependency_filter(enabled);
     }
+    pub fn enable_dmac_unit_continuation(&mut self, enabled: bool) {
+        self.machine.enable_dmac_unit_continuation(enabled);
+    }
+    pub fn dmac_unit_continuation_enabled(&self) -> bool {
+        self.machine.dmac_unit_continuation_enabled()
+    }
+    pub fn dmac_unit_continuation_counts(&self) -> Vec<u64> {
+        self.machine.dmac_unit_continuation_counts()
+    }
     pub fn loop_state_hashes(&self) -> Vec<u32> {
         self.machine.loop_state_hashes()
     }

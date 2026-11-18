@@ -42,6 +42,17 @@ pub(crate) struct Dma {
     pub address_error: bool,
     selected: Option<usize>,
     cycle_previous: bool,
+    progress: Option<UnitProgress>,
+}
+#[derive(Clone)]
+struct UnitProgress {
+    // Completed logical operations remain in the bus journal for a guarded
+    // fallback. Their read values and resume position need not be replayed
+    // while the accepted unit's channel configuration is unchanged.
+    signature: [u32; 5],
+    values: [u32; 4],
+    reads: u8,
+    writes: u8,
 }
 impl Default for Dma {
     fn default() -> Self {
@@ -55,11 +66,30 @@ impl Default for Dma {
             address_error: false,
             selected: None,
             cycle_previous: false,
+            progress: None,
         }
     }
 }
 impl Dma {
+    fn unit_signature(&self) -> Option<[u32; 5]> {
+        let selected = self.selected?;
+        let c = &self.channels[selected];
+        Some([selected as u32, c.source, c.destination, c.count, c.control])
+    }
+    pub(crate) fn continuation_cursor(&self, enabled: bool) -> usize {
+        if !enabled {
+            return 0;
+        }
+        self.progress
+            .as_ref()
+            .filter(|p| Some(p.signature) == self.unit_signature())
+            .map_or(0, |p| usize::from(p.reads + p.writes))
+    }
+    pub(crate) fn clear_continuation(&mut self) {
+        self.progress = None;
+    }
     pub(crate) fn buffer_error(&mut self) {
+        self.clear_continuation();
         self.operation |= 4;
         self.address_error = true;
         self.selected = None;
@@ -67,6 +97,7 @@ impl Dma {
     /// H table 14.3: address/count/vector registers survive software standby;
     /// CHCR0/1 and DMAOR initialize, aborting any outstanding request.
     pub fn standby(&mut self) {
+        self.clear_continuation();
         for channel in &mut self.channels {
             channel.control = 0;
             channel.observed.set(false);
@@ -105,6 +136,7 @@ impl Dma {
         })
     }
     pub fn write(&mut self, offset: u32, value: u32) -> bool {
+        self.clear_continuation();
         match offset {
             0..=0x1F => {
                 let c = &mut self.channels[(offset / 16) as usize];
@@ -144,9 +176,13 @@ impl Dma {
         self.channels[channel].request
     }
     pub fn write_request(&mut self, channel: usize, value: u8) {
+        self.clear_continuation();
         self.channels[channel].request = value & 3;
     }
     pub fn set_request_pin(&mut self, channel: usize, level: bool) {
+        if self.channels[channel].external_level != level {
+            self.clear_continuation();
+        }
         let c = &mut self.channels[channel];
         let rising = !c.external_level && level;
         let falling = c.external_level && !level;
@@ -156,6 +192,7 @@ impl Dma {
         c.external_level = level;
     }
     pub fn nmi(&mut self) {
+        self.clear_continuation();
         self.operation |= 2;
     }
     pub fn interrupt(&self) -> Option<u8> {
@@ -222,6 +259,20 @@ impl Dma {
     /// Returns the SCI request acknowledged, if any. Errors abort DMA and latch
     /// AE; they are not propagated as a host CPU bus failure.
     pub fn transfer(&mut self, memory: &mut impl Memory, serial: [bool; 2]) -> Option<u8> {
+        self.transfer_mode::<false>(memory, serial)
+    }
+    pub(crate) fn transfer_resuming(
+        &mut self,
+        memory: &mut impl Memory,
+        serial: [bool; 2],
+    ) -> Option<u8> {
+        self.transfer_mode::<true>(memory, serial)
+    }
+    fn transfer_mode<const RESUME: bool>(
+        &mut self,
+        memory: &mut impl Memory,
+        serial: [bool; 2],
+    ) -> Option<u8> {
         // H §9.3.8: finish the accepted unit on NMI, but DME=0 aborts
         // at the current bus boundary. A negated DREQ cannot discard a read
         // already accepted for this unit.
@@ -262,6 +313,17 @@ impl Dma {
         let width = size.min(4);
         let single = c.control & 8 != 0;
         let input = c.control & 0x100 != 0;
+        let signature = [selected as u32, c.source, c.destination, c.count, c.control];
+        let mut progress = self
+            .progress
+            .take()
+            .filter(|p| RESUME && !single && p.signature == signature)
+            .unwrap_or(UnitProgress {
+                signature,
+                values: [0; 4],
+                reads: 0,
+                writes: 0,
+            });
         let address = if input { c.destination } else { c.source };
         // H §§9.2.4/9.3.4 table9.7: single-address transfers use external
         // DREQ, no SCI/auto requests, no 16-byte bursts or on-chip endpoints.
@@ -306,29 +368,33 @@ impl Dma {
             }
         } else {
             (|| {
-                let mut values = [0u32; 4];
-                for i in 0..if size == 16 { 4 } else { 1 } {
+                for i in u32::from(progress.reads)..if size == 16 { 4 } else { 1 } {
                     let src = c.source.wrapping_add(i * width);
-                    values[i as usize] = match width {
+                    progress.values[i as usize] = match width {
                         1 => u32::from(memory.read8(src)?),
                         2 => u32::from(memory.read16(src)?),
                         _ if size == 16 => memory.dma_read32(src, i == 0, i == 3)?,
                         _ => memory.read32(src)?,
                     };
+                    progress.reads += 1;
                 }
-                for i in 0..count {
+                for i in u32::from(progress.writes)..count {
                     let dst = c.destination.wrapping_add(i * width);
-                    let value = values[i as usize];
+                    let value = progress.values[i as usize];
                     match width {
                         1 => memory.write8(dst, value as u8)?,
                         2 => memory.write16(dst, value as u16)?,
                         _ => memory.write32(dst, value)?,
                     }
+                    progress.writes += 1;
                 }
                 Ok(())
             })()
         };
         if result == Err(BusError::Pending) {
+            if RESUME && !single && valid && can_continue {
+                self.progress = Some(progress);
+            }
             if !can_continue {
                 self.selected = None;
                 c.burst = false;

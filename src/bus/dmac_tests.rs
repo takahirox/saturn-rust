@@ -182,7 +182,10 @@ fn internal_divu_dma_waits_for_division_without_premature_result_irq_or_cpu_wait
 }
 
 fn setup(processor: Processor, size: u32, count: u32, burst: bool) -> Bus {
-    let mut bus = Bus::default();
+    let mut bus = Bus {
+        dmac_unit_continuation: true,
+        ..Bus::default()
+    };
     bus.set_slave_enabled(true);
     for p in [Processor::Master, Processor::Slave] {
         // H §7.3: ordinary 32-bit, no software waits, no programmed idle
@@ -207,6 +210,67 @@ fn setup(processor: Processor, size: u32, count: u32, burst: bool) -> Bus {
         chip.write32(DMAC + off, value).unwrap();
     }
     bus
+}
+
+#[test]
+fn dmac_continuation_keeps_every_bus_clock_and_completed_read_value() {
+    let mut avoided = 0;
+    for p in [Processor::Master, Processor::Slave] {
+        for size in 0..4 {
+            for count in [1, 3, 4, 5] {
+                for burst in [false, true] {
+                    for width in [1, 2, 3] {
+                        let (mut actual, mut reference) =
+                            (setup(p, size, count, burst), setup(p, size, count, burst));
+                        reference.dmac_unit_continuation = false;
+                        for b in [&mut actual, &mut reference] {
+                            b.onchip[p as usize]
+                                .write32(0xFFFFFFE4, 0xA55A003C | width << 6)
+                                .unwrap();
+                            b.onchip[p as usize]
+                                .write32(0xFFFFFFE8, 0xA55A0040)
+                                .unwrap();
+                        }
+                        for clock in 0..256 {
+                            if clock == 8 {
+                                // Changes after a physical read must never
+                                // replace a value retained by that read.
+                                for b in [&mut actual, &mut reference] {
+                                    b.write32(SOURCE, 0x88776655).unwrap();
+                                }
+                            }
+                            actual.advance_clocks(1).unwrap();
+                            reference.advance_clocks(1).unwrap();
+                            assert_eq!(actual.main_clocks, reference.main_clocks);
+                            assert_eq!(actual.high[0x100..0x240], reference.high[0x100..0x240]);
+                            actual.assert_dmac_continuation_matches(&reference);
+                            for i in 0..2 {
+                                actual.onchip[i]
+                                    .assert_cached_read_bus_matches(&reference.onchip[i]);
+                                assert_eq!(
+                                    actual.onchip[i].interrupt(),
+                                    reference.onchip[i].interrupt()
+                                );
+                                for off in [0, 4, 8, 12, 0x10, 0x14, 0x18, 0x1C, 0x30] {
+                                    assert_eq!(
+                                        actual.onchip[i].read32(DMAC + off),
+                                        reference.onchip[i].read32(DMAC + off)
+                                    );
+                                }
+                            }
+                            assert_eq!(actual.take_dma_errors(), reference.take_dma_errors());
+                        }
+                        assert_eq!(actual.onchip[p as usize].read32(DMAC + 8), Ok(0));
+                        avoided += actual.dmac_unit_continuation_counts[2];
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        avoided > 100,
+        "require actual completed-prefix replay removal"
+    );
 }
 
 #[test]
