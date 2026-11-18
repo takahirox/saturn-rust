@@ -505,6 +505,15 @@ impl Emulator {
     pub fn boundary_grant_reuse_counts(&self) -> Vec<u64> {
         self.machine.bus.boundary_grant_reuses.to_vec()
     }
+    pub fn enable_cd_quiet_clock(&mut self, enabled: bool) {
+        self.machine.bus.cd.set_quiet_clock_enabled(enabled);
+    }
+    pub fn cd_quiet_clock_enabled(&self) -> bool {
+        self.machine.bus.cd.quiet_clock_enabled
+    }
+    pub fn cd_quiet_clock_steps(&self) -> u64 {
+        self.machine.bus.cd.quiet_clock_steps
+    }
     pub fn dmac_pending_write_wait_enabled(&self) -> bool {
         self.machine.dmac_pending_write_wait_enabled()
     }

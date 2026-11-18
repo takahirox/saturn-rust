@@ -4597,3 +4597,32 @@ to `c1f744eddeb35d9d6d058814245bff0f1ba6f5e2c8b9e18b86aa747802535cc1`.
 
 The measured game still falls short of 60 fields/s and continues to have audio
 underflows. The broader performance and hardware-completion Issues remain open.
+
+## Accumulate CD clocks between events (2026-11-19)
+
+Related to #138 and #17. When the drive is idle, a sequence of small board
+advances can accumulate the CD elapsed clocks until the earliest drive phase,
+report, standby transition or command completion. The countdown exposes the
+same next event to the board and to the Sound projection. At the deadline,
+the CD block settles the retained clocks through the existing event scheduler.
+Starting a command or replacing media settles the previous interval first.
+Playback, scanning, seeking, copying, authentication and R-W transfer activity
+continue to advance through the existing scheduler on every call.
+
+The native tests check simultaneous idle edges, a new command's full latency
+after a retained interval and the remaining CD deadline seen by owned Sound.
+An original mixed-mode CD guest produces the expected nonzero CD-DA samples
+through owned Sound with NTSC and PAL and both PLL settings. Three mutations
+fail the relevant assertions by crossing the event edge, starting a command
+before settling the previous clocks or exposing an outdated Sound deadline.
+The restored implementation passes all focused tests and both Wasm builds.
+
+The diagnostic comparison uses the same cached-load recovery and bus grant
+settings in both modes. The 28 continuous 80-field game windows improve from
+51.501 to 52.869 fields/s (+2.66%). Every window improves, including 1.54% to
+2.59% in the four slowest windows. The candidate combines about 24,780 CD
+advance calls per field. CPU, cache, RAM, clocks, images, PCM and full Sound
+state match at every paired endpoint and at 12 independently recorded endpoints.
+The production Web player measurements and AudioWorklet results are recorded
+in the associated pull request. Sustained real-time and the broader hardware
+acceptance criteria remain open.

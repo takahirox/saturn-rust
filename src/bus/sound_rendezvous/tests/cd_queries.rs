@@ -78,6 +78,7 @@ fn cd_query_forecast_excludes_only_neutral_completion_and_preserves_main_deadlin
             for m in [&mut pending, &mut ordinary] {
                 m.mount_media(mixed_media());
             }
+            pending.bus.cd.set_quiet_clock_enabled(true);
             for (offset, value) in [(24, command), (28, 153), (32, 0x80), (36, 3)] {
                 pending
                     .bus
@@ -125,6 +126,7 @@ fn cd_queries_complete_while_owned_and_later_audio_play_still_matches() {
             }
             remote.enable_sound_cd_queries(true);
             remote.enable_sound_dependency_filter(!strict);
+            remote.bus.cd.set_quiet_clock_enabled(true);
             let mut owner = crate::sound::delta::DeltaOwner::default();
             let mut active = false;
             let mut frontier = 0;
@@ -204,6 +206,7 @@ fn cd_queries_complete_while_owned_and_later_audio_play_still_matches() {
             }
             assert_eq!(reference.debug_read32(0x0600_D008).unwrap(), 0);
             assert!(nonzero, "CD Play still starts real original audio");
+            assert!(remote.bus.cd.quiet_clock_steps > 0);
             let counts = remote.sound_cd_query_counts();
             if strict {
                 assert_eq!(counts, [0, 0, 0]);

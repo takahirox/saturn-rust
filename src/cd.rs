@@ -94,6 +94,12 @@ struct SelectorTransfer {
     clocks: u32,
 }
 
+#[derive(Clone, Copy)]
+struct QuietClocks {
+    next_event: u32,
+    elapsed: u32,
+}
+
 pub struct CdBlock {
     media: Option<Media>,
     audio_track_at: Cell<Option<(u32, bool)>>,
@@ -116,6 +122,11 @@ pub struct CdBlock {
     phase: u64,
     report_phase: u64,
     pause_clocks: u64,
+    quiet_clocks: Option<QuietClocks>,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) quiet_clock_enabled: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) quiet_clock_steps: u64,
     standby_seconds: u16,
     init_flags: u8,
     rw: crate::cd_rw::Decoder,
@@ -281,6 +292,11 @@ impl Default for CdBlock {
             phase: 0,
             report_phase: 0,
             pause_clocks: 0,
+            quiet_clocks: None,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            quiet_clock_enabled: false,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            quiet_clock_steps: 0,
             standby_seconds: 180,
             init_flags: 0,
             rw: crate::cd_rw::Decoder::default(),
@@ -318,8 +334,10 @@ impl Default for CdBlock {
         }
     }
 }
+
 impl CdBlock {
     pub fn mount(&mut self, media: Media) {
+        self.settle_quiet_clocks();
         self.cancel_rw_transfer();
         self.rw = crate::cd_rw::Decoder::default();
         self.rw_active = false;
@@ -364,11 +382,16 @@ impl CdBlock {
     }
     pub fn set_enabled(&mut self, enabled: bool) {
         if self.enabled && !enabled {
+            self.settle_quiet_clocks();
             let media = self.media.take();
             *self = Self {
                 end: media.as_ref().map_or(150, |m| m.leadout),
                 media,
                 enabled: false,
+                #[cfg(any(test, feature = "kernel-experiment"))]
+                quiet_clock_enabled: self.quiet_clock_enabled,
+                #[cfg(any(test, feature = "kernel-experiment"))]
+                quiet_clock_steps: self.quiet_clock_steps,
                 ..Self::default()
             };
         } else if !self.enabled && enabled {
@@ -398,6 +421,9 @@ impl CdBlock {
         self.clocks_to_event_up_to(u32::MAX)
     }
     pub(crate) fn clocks_to_event_up_to(&self, limit: u32) -> u32 {
+        if let Some(quiet) = self.quiet_clocks {
+            return limit.min(quiet.next_event - quiet.elapsed);
+        }
         if !self.enabled {
             return limit;
         }
@@ -594,6 +620,7 @@ impl CdBlock {
                 }
                 self.request[((n - 0x18) / 4) as usize] = value;
                 if n == 0x24 {
+                    self.settle_quiet_clocks();
                     self.hirq.set(self.hirq.get() & !CMOK);
                     // Bounded functional command latency within the documented
                     // command response envelope; no instantaneous host callback.
@@ -604,7 +631,63 @@ impl CdBlock {
         }
         Ok(())
     }
-    pub fn advance(&mut self, mut clocks: u32) {
+    #[cfg(any(test, all(target_arch = "wasm32", feature = "kernel-experiment")))]
+    pub(crate) fn set_quiet_clock_enabled(&mut self, enabled: bool) {
+        self.settle_quiet_clocks();
+        self.quiet_clock_enabled = enabled;
+    }
+
+    fn settle_quiet_clocks(&mut self) {
+        if let Some(quiet) = self.quiet_clocks.take() {
+            self.advance_exact(quiet.elapsed);
+        }
+    }
+
+    pub fn advance(&mut self, clocks: u32) {
+        if clocks == 0 || !self.enabled {
+            return;
+        }
+        if let Some(quiet) = &mut self.quiet_clocks {
+            if clocks < quiet.next_event - quiet.elapsed {
+                quiet.elapsed += clocks;
+                #[cfg(any(test, feature = "kernel-experiment"))]
+                {
+                    self.quiet_clock_steps += 1;
+                }
+                return;
+            }
+            self.settle_quiet_clocks();
+        } else if self.can_defer_clocks() {
+            let next_event = self.clocks_to_event();
+            if clocks < next_event {
+                self.quiet_clocks = Some(QuietClocks {
+                    next_event,
+                    elapsed: clocks,
+                });
+                return;
+            }
+        }
+        self.advance_exact(clocks);
+    }
+
+    fn can_defer_clocks(&self) -> bool {
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        if !self.quiet_clock_enabled {
+            return false;
+        }
+        // Idle drive phases and a pending command can age together until
+        // their earliest exact edge. There are no CDDA samples, sector
+        // transfers or R-W state changes in the deferred interval.
+        !self.playing
+            && self.scan.is_none()
+            && self.seeking == 0
+            && self.copying.is_none()
+            && self.authentication.is_none()
+            && !self.rw_active
+            && self.rw.is_idle()
+    }
+
+    fn advance_exact(&mut self, mut clocks: u32) {
         if !self.enabled {
             return;
         }
@@ -1019,10 +1102,12 @@ impl CdBlock {
                 // Only this query's completion is irrelevant to silent CD-DA.
                 // Retain every drive/report, seek, copy, R-W and other deadline.
                 // The main CD scheduler always uses command_deadline unchanged.
-                return self.phase_deadline(
-                    self.non_command_deadline(u32::MAX),
-                    75 * u64::from(self.drive_speed()),
-                );
+                return self
+                    .phase_deadline(
+                        self.non_command_deadline(u32::MAX),
+                        75 * u64::from(self.drive_speed()),
+                    )
+                    .saturating_sub(self.quiet_clocks.map_or(0, |quiet| quiet.elapsed));
             }
             self.clocks_to_event()
         } else {
@@ -1052,9 +1137,10 @@ impl CdBlock {
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub(crate) fn sound_neutral_query_due_within(&self, clocks: u32) -> bool {
         self.enabled
-            && self
-                .pending
-                .is_some_and(|(command, n)| n <= clocks && Self::sound_neutral_query(command))
+            && self.pending.is_some_and(|(command, n)| {
+                n.saturating_sub(self.quiet_clocks.map_or(0, |quiet| quiet.elapsed)) <= clocks
+                    && Self::sound_neutral_query(command)
+            })
     }
 
     /// Audio is constant zero until a CD event or a guest CD register access.
@@ -2202,5 +2288,80 @@ impl CdBlock {
         }
         self.fad = job.next;
         Some(false)
+    }
+}
+
+#[cfg(test)]
+mod quiet_clock_tests {
+    use super::*;
+
+    #[test]
+    fn deferred_clocks_keep_simultaneous_idle_edges_and_command_latency() {
+        let make = || {
+            let mut cd = CdBlock {
+                status: 1,
+                phase: HZ - 150 * 5,
+                report_phase: HZ - 60 * 5,
+                pause_clocks: 180 * HZ - 5,
+                ..CdBlock::default()
+            };
+            cd.write16(REGISTERS + 8, 0).unwrap();
+            cd.write16(REGISTERS + 12, SCDQ | CMOK).unwrap();
+            cd
+        };
+        let mut reference = make();
+        let mut optimized = make();
+        optimized.set_quiet_clock_enabled(true);
+        for delta in [1, 2, 1] {
+            reference.advance(delta);
+            optimized.advance(delta);
+            assert_eq!(optimized.clocks_to_event(), reference.clocks_to_event());
+            assert_eq!(optimized.peek16(REGISTERS + 8), Ok(0));
+            assert_eq!(optimized.audio_sample(), [0, 0]);
+        }
+        assert_eq!(optimized.quiet_clock_steps, 2);
+        assert_eq!(optimized.clocks_to_event(), 1);
+        assert_eq!(optimized.status, 1);
+        optimized.advance(1);
+        reference.advance(1);
+        assert_eq!(optimized.status, 2);
+        assert_eq!(optimized.pause_clocks, 180 * HZ);
+        assert_eq!(optimized.phase, 0);
+        assert_eq!(optimized.report_phase, 0);
+        assert_eq!(optimized.response.get(), reference.response.get());
+        assert_eq!(optimized.peek16(REGISTERS + 8), Ok(SCDQ));
+
+        // A command established after a deferred interval sees its full
+        // 1075-clock latency, while the old drive/report phases still age.
+        for cd in [&mut reference, &mut optimized] {
+            cd.advance(48);
+            cd.write16(REGISTERS + 8, 0).unwrap();
+            for offset in [0x18, 0x1C, 0x20, 0x24] {
+                cd.write16(REGISTERS + offset, 0).unwrap();
+            }
+        }
+        assert_eq!(optimized.phase, reference.phase);
+        assert_eq!(optimized.report_phase, reference.report_phase);
+        assert_eq!(optimized.clocks_to_event(), 1075);
+        for delta in [2, 500, 572] {
+            optimized.advance(delta);
+            reference.advance(delta);
+            assert_eq!(optimized.clocks_to_event(), reference.clocks_to_event());
+            assert_eq!(optimized.peek16(REGISTERS + 8), Ok(0));
+            assert_eq!(
+                optimized.sound_neutral_query_due_within(1),
+                reference.sound_neutral_query_due_within(1)
+            );
+        }
+        assert_eq!(optimized.clocks_to_event(), 1);
+        assert_eq!(optimized.sound_source_deadline(true, true), 1);
+        optimized.advance(1);
+        reference.advance(1);
+        assert_eq!(optimized.peek16(REGISTERS + 8), Ok(CMOK));
+        assert!(optimized.interrupt());
+        assert_eq!(optimized.pending, None);
+        assert_eq!(optimized.phase, reference.phase);
+        assert_eq!(optimized.report_phase, reference.report_phase);
+        assert_eq!(optimized.response.get(), reference.response.get());
     }
 }
