@@ -496,6 +496,15 @@ impl Emulator {
     pub fn enable_dmac_pending_write_wait(&mut self, enabled: bool) {
         self.machine.enable_dmac_pending_write_wait(enabled);
     }
+    pub fn enable_boundary_grant_reuse(&mut self, enabled: bool) {
+        self.machine.bus.boundary_grant_reuse = enabled;
+    }
+    pub fn boundary_grant_reuse_enabled(&self) -> bool {
+        self.machine.bus.boundary_grant_reuse
+    }
+    pub fn boundary_grant_reuse_counts(&self) -> Vec<u64> {
+        self.machine.bus.boundary_grant_reuses.to_vec()
+    }
     pub fn dmac_pending_write_wait_enabled(&self) -> bool {
         self.machine.dmac_pending_write_wait_enabled()
     }

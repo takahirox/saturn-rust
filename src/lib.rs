@@ -1523,7 +1523,8 @@ impl Machine {
         coalesced: bool,
         mut irq_samples_current: bool,
     ) -> Result<bool, MachineError> {
-        irq_samples_current &= self.bus.grant_bus_transaction();
+        let quiet_grant = self.bus.grant_bus_transaction();
+        irq_samples_current &= quiet_grant;
         #[cfg(any(test, feature = "sound-worker"))]
         if self.bus.sound_rendezvous_blocked() {
             return Ok(committed);
@@ -1605,7 +1606,7 @@ impl Machine {
             self.bus.advance_cpu_clocks_with_sound(elapsed, true)
         } else {
             self.bus
-                .advance_cpu_clocks_after_irq_sample(elapsed, irq_samples_current)
+                .advance_cpu_clocks_after_irq_sample(elapsed, irq_samples_current, quiet_grant)
         };
         let (reference, command) = result.map_err(MachineError::Scu)?;
         self.clocks += u64::from(reference);
