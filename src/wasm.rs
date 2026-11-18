@@ -535,6 +535,15 @@ impl Emulator {
     pub fn borrowed_cycle_anchor_count(&self) -> u64 {
         self.machine.bus.cached_cycle_anchor_borrows
     }
+    pub fn enable_smpc_quiet_interval(&mut self, enabled: bool) {
+        self.machine.bus.set_smpc_quiet_interval(enabled);
+    }
+    pub fn smpc_quiet_interval_enabled(&self) -> bool {
+        self.machine.bus.smpc_quiet_interval().0
+    }
+    pub fn smpc_quiet_interval_steps(&self) -> u64 {
+        self.machine.bus.smpc_quiet_interval().1
+    }
     pub fn dmac_pending_write_wait_enabled(&self) -> bool {
         self.machine.dmac_pending_write_wait_enabled()
     }
@@ -632,6 +641,15 @@ impl Emulator {
     }
     pub fn owned_texture_runs_enabled(&self) -> bool {
         self.machine.owned_texture_runs_enabled()
+    }
+    pub fn enable_vdp1_geometry_deadlines(&mut self, enabled: bool) {
+        self.machine.enable_vdp1_geometry_deadlines(enabled);
+    }
+    pub fn vdp1_geometry_deadlines_enabled(&self) -> bool {
+        self.machine.vdp1_geometry_deadlines_enabled()
+    }
+    pub fn vdp1_geometry_deadline_queries(&self) -> u64 {
+        self.machine.vdp1_geometry_deadline_queries()
     }
     pub fn enable_display_erase_rows(&mut self, enabled: bool) {
         self.machine.enable_display_erase_rows(enabled);

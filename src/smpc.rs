@@ -174,6 +174,12 @@ impl Battery {
     }
 }
 
+#[derive(Clone, Copy)]
+struct QuietInterval {
+    deadline: u32,
+    elapsed: u32,
+}
+
 pub struct Smpc {
     buttons: [u16; 2],
     analog: [Option<Analog>; 2],
@@ -187,6 +193,11 @@ pub struct Smpc {
     sf: bool,
     command: u8,
     pending: Option<(u8, u32)>,
+    quiet_interval: Option<QuietInterval>,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) quiet_interval_enabled: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) quiet_interval_steps: u64,
     // One parameterless category-B command behind INTBACK status only.
     // Explicit compatibility mailbox; ST-169 prohibits software double issue
     // but does not specify the electrical outcome. See bios-startup.md.
@@ -223,6 +234,11 @@ impl Default for Smpc {
             sf: false,
             command: 0,
             pending: None,
+            quiet_interval: None,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            quiet_interval_enabled: false,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            quiet_interval_steps: 0,
             deferred_control: None,
             input: [0; 7],
             output: [0; 32],
@@ -282,6 +298,12 @@ impl Smpc {
         }
     }
     pub(crate) fn clocks_to_event(&self) -> u32 {
+        if let Some(interval) = self.quiet_interval {
+            if interval.deadline == u32::MAX {
+                return u32::MAX;
+            }
+            return interval.deadline - interval.elapsed;
+        }
         self.digital
             .iter()
             .map(DigitalMux::clocks_to_event)
@@ -289,14 +311,16 @@ impl Smpc {
             .fold(self.pending.map_or(u32::MAX, |(_, n)| n), u32::min)
     }
     pub(crate) fn clocks_to_cpu_reset(&self) -> Option<u32> {
+        let elapsed = self.quiet_interval.map_or(0, |interval| interval.elapsed);
         self.pending
             .filter(|&(command, _)| matches!(command, 0x03 | 0x0D..=0x0F))
-            .map(|(_, clocks)| clocks)
+            .map(|(_, clocks)| clocks - elapsed)
     }
     pub fn set_region(&mut self, region: Region) {
         self.region = region;
     }
     pub(crate) fn system_reset(&mut self) {
+        self.settle_quiet_interval();
         let region = self.region;
         let battery = self.battery.clone();
         let buttons = self.buttons;
@@ -308,16 +332,25 @@ impl Smpc {
             buttons,
             analog,
             th,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            quiet_interval_enabled: self.quiet_interval_enabled,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            quiet_interval_steps: self.quiet_interval_steps,
             ..Self::default()
         };
         self.output[31] = 0x0D;
     }
     pub(crate) fn reset_volatile(&mut self) {
+        self.settle_quiet_interval();
         let region = self.region;
         let battery = self.battery.clone();
         *self = Self {
             region,
             battery,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            quiet_interval_enabled: self.quiet_interval_enabled,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            quiet_interval_steps: self.quiet_interval_steps,
             ..Self::default()
         };
     }
@@ -329,6 +362,7 @@ impl Smpc {
     pub(crate) fn vblank_in(&mut self) {
         self.latched_reset_button = self.reset_button;
         if self.peripheral_phase && self.pending.is_some_and(|(command, _)| command == 0x10) {
+            self.settle_quiet_interval();
             // ST-169 §3.2, termination condition 2: collection cannot spill
             // past VBlank-in and later publish a stale packet. Re-measure
             // collection next time after a timeout (§3.3).
@@ -350,6 +384,7 @@ impl Smpc {
     }
     pub(crate) fn vblank_out_after(&mut self, active_clocks: u32) {
         if self.await_vblank {
+            self.settle_quiet_interval();
             self.await_vblank = false;
             // ST-169 §3.2: first measure collection; optimization then places
             // readiness one millisecond before the selected VBlank-in deadline.
@@ -362,6 +397,56 @@ impl Smpc {
         }
     }
     pub(crate) fn advance_clocks(&mut self, clocks: u32) -> Option<u8> {
+        if let Some(interval) = &mut self.quiet_interval {
+            if clocks < interval.deadline - interval.elapsed {
+                interval.elapsed += clocks;
+                #[cfg(any(test, feature = "kernel-experiment"))]
+                {
+                    self.quiet_interval_steps += u64::from(clocks != 0);
+                }
+                return None;
+            }
+            self.settle_quiet_interval();
+        } else if self.quiet_interval_enabled() && clocks != 0 {
+            let deadline = self.clocks_to_event();
+            if clocks < deadline {
+                // Before any controller or command edge, only private clocks
+                // and RTC phase change. Guest packet bytes and pins are held.
+                self.quiet_interval = Some(QuietInterval {
+                    deadline,
+                    elapsed: clocks,
+                });
+                return None;
+            }
+        }
+        self.advance_exact(clocks)
+    }
+
+    pub(crate) fn quiet_interval_enabled(&self) -> bool {
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        {
+            self.quiet_interval_enabled
+        }
+        #[cfg(not(any(test, feature = "kernel-experiment")))]
+        {
+            true
+        }
+    }
+
+    #[cfg(any(test, all(target_arch = "wasm32", feature = "kernel-experiment")))]
+    pub(crate) fn set_quiet_interval_enabled(&mut self, enabled: bool) {
+        self.settle_quiet_interval();
+        self.quiet_interval_enabled = enabled;
+    }
+
+    fn settle_quiet_interval(&mut self) {
+        if let Some(interval) = self.quiet_interval.take() {
+            let command = self.advance_exact(interval.elapsed);
+            debug_assert!(command.is_none());
+        }
+    }
+
+    fn advance_exact(&mut self, clocks: u32) -> Option<u8> {
         for port in &mut self.digital {
             port.advance(clocks);
         }
@@ -453,6 +538,7 @@ impl Smpc {
         if port >= 2 {
             return false;
         }
+        self.settle_quiet_interval();
         let previous = std::mem::replace(&mut self.th[port], high);
         self.digital[port].select(self.port_select(port));
         previous && !high && self.exle & (1 << port) != 0 && self.ddr[port] & 0x40 == 0
@@ -468,6 +554,7 @@ impl Smpc {
         if port < 2 {
             self.analog[port] = axes.map(Analog::Joystick);
             if axes.is_none() {
+                self.settle_quiet_interval();
                 self.handshake[port] = Handshake::default();
             }
         }
@@ -477,6 +564,7 @@ impl Smpc {
         if port < 2 {
             self.analog[port] = axes.map(|a| Analog::pad(self.analog[port], a));
             if axes.is_none() {
+                self.settle_quiet_interval();
                 self.handshake[port] = Handshake::default();
             }
         }
@@ -575,6 +663,7 @@ impl Smpc {
         address: u32,
         value: u8,
     ) -> Result<(), BusError> {
+        self.settle_quiet_interval();
         match address - SMPC {
             offset @ 1..=0x0D if offset & 1 != 0 => {
                 let i = ((offset - 1) / 2) as usize;

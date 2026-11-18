@@ -1351,6 +1351,19 @@ impl Bus {
     pub fn set_region(&mut self, region: crate::smpc::Region) {
         self.smpc.set_region(region);
     }
+
+    #[cfg(all(target_arch = "wasm32", feature = "kernel-experiment"))]
+    pub(crate) fn set_smpc_quiet_interval(&mut self, enabled: bool) {
+        self.smpc.set_quiet_interval_enabled(enabled);
+    }
+
+    #[cfg(all(target_arch = "wasm32", feature = "kernel-experiment"))]
+    pub(crate) fn smpc_quiet_interval(&self) -> (bool, u64) {
+        (
+            self.smpc.quiet_interval_enabled(),
+            self.smpc.quiet_interval_steps,
+        )
+    }
     pub fn set_analog(&mut self, port: usize, axes: Option<[u8; 3]>) {
         self.smpc.set_analog(port, axes);
     }

@@ -4653,3 +4653,28 @@ Each also matches the independently retained endpoint from the prior build.
 Production player performance and AudioWorklet evidence are recorded in the
 associated pull request. Sustained 60 fields/s, continuous audio delivery and
 the broader hardware acceptance criteria remain open.
+
+## Reduce VDP1 and SMPC deadline work (2026-11-19)
+
+Related to #138 and #17. VDP1 calculates a newly needed row's command-deadline
+bound from the same clipped dot positions without preparing texture or Gouraud
+values for the estimate. An already retained partial row still supplies its
+current dot position. The actual draw path prepares and consumes all pixel
+inputs at the original phases.
+
+SMPC accumulates elapsed clocks before its earliest controller or command
+event. The existing clock update settles the interval at an event or before
+a change that alters it. The board sees the remaining command and CPU reset
+deadlines, and RTC state is settled before commands can observe it.
+
+The restored source passes 52 VDP1, 40 SMPC and 22 Sound rendezvous tests.
+Increasing the VDP1 bound by a clock or exposing an unadjusted SMPC reset
+deadline fails the relevant native original. Both Wasm configurations pass.
+
+The browser diagnostic improves from 53.334 to 53.791 fields/s over 2,240
+game fields (+0.86%). Twenty-six of 28 paired windows improve. The four
+slow intervals improve from 0.85% to 1.64%. CPU, cache, RAM, clocks, pixels,
+PCM and full Sound state agree in all pairs and with the independently
+retained reference. Production player and AudioWorklet results are recorded
+in the associated pull request. Sustained 60 fields/s, continuous audio
+delivery and the broader hardware acceptance criteria remain open.
