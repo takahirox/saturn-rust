@@ -340,6 +340,17 @@ impl Cached<'_> {
         }
         Some(result)
     }
+    /// The real write waits for MA and any earlier accepted write, then
+    /// occupies one clock. Prove that whole prefix before mutating CPU/cache.
+    fn prepared_store_retirement(&self, plan: &CachedInstruction) -> Option<u64> {
+        let (address, width) = plan.operand?;
+        if plan.store_value().is_none() || !self.writable(address, width as usize) {
+            return None;
+        }
+        let start = plan.issue_at() + u64::from(plan.load_wait(plan.issue_at(), true));
+        let at = (start.max(self.bus_ready()) + 1).max(plan.at);
+        (at <= self.end.get()).then_some(at)
+    }
     fn prepared_retirement(&self, plan: &CachedInstruction) -> Option<u64> {
         let at = match plan.operand {
             None => plan.at,
@@ -1899,13 +1910,23 @@ impl Bus {
                     continue;
                 }
             }
-            // Prepared register/load plans preserve retained WB/EX and legal
+            // Prepared register/load/store plans preserve retained WB/EX and legal
             // delay slots. Prove every actual operand and future IF hit before
             // executing a plan without full CPU/local rollback copies.
-            if matches!(class, CachedClass::Scalar | CachedClass::Load)
-                && memory.passive.as_ref().is_none_or(|p| p.rom.is_none())
-                && let Some(plan) = cpu.prepare_cached_instruction(op, memory.clock.get())
-                && let Some(at) = memory.prepared_retirement(&plan)
+            if memory.passive.as_ref().is_none_or(|p| p.rom.is_none())
+                && let Some(plan) = if matches!(class, CachedClass::Scalar | CachedClass::Load) {
+                    cpu.prepare_cached_instruction(op, memory.clock.get())
+                } else if self.prepare_batch_stores && store_available && store_width(op).is_some()
+                {
+                    cpu.prepare_cached_store(op, memory.clock.get())
+                } else {
+                    None
+                }
+                && let Some(at) = if plan.store_value().is_some() {
+                    memory.prepared_store_retirement(&plan)
+                } else {
+                    memory.prepared_retirement(&plan)
+                }
             {
                 let future = plan.future;
                 let reference = self.system_clock.deadline(
@@ -1919,15 +1940,23 @@ impl Bus {
                         || !sound_lookahead
                         || reference.saturating_sub(points.last_reference) < 9)
                 {
+                    #[cfg(any(test, feature = "kernel-experiment"))]
+                    let storing = plan.store_value().is_some();
                     #[cfg(test)]
-                    let loading = plan.operand.is_some();
+                    let loading = plan.operand.is_some() && !storing;
                     #[cfg(test)]
                     let passive_load = plan
                         .operand
                         .is_some_and(|(address, _)| !ordinary_memory(address));
                     #[cfg(test)]
                     let slot = cpu.state().delay_target.is_some();
+                    let prepared_pc = cpu.state().pc;
                     cpu.execute_cached_instruction(plan, &mut memory);
+                    #[cfg(any(test, feature = "kernel-experiment"))]
+                    if storing {
+                        self.prepared_batch_store_count
+                            .set(self.prepared_batch_store_count.get() + 1);
+                    }
                     #[cfg(test)]
                     {
                         if slot {
@@ -1936,7 +1965,7 @@ impl Bus {
                         if loading {
                             self.cached_prepared_loads += 1;
                             self.cached_prepared_passive += u64::from(passive_load);
-                        } else {
+                        } else if !storing {
                             self.cached_wb_scalars += 1;
                         }
                     }
@@ -1948,6 +1977,12 @@ impl Bus {
                     if track_retirements {
                         points.points.push(Retirement { at });
                         points.last_reference = reference;
+                    }
+                    // A peripheral write is the final instruction of this
+                    // private interval. Publish it before any later CPU work.
+                    if memory.store.get().is_some() {
+                        store_pc = prepared_pc;
+                        break;
                     }
                     continue;
                 }

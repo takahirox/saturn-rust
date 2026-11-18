@@ -4506,3 +4506,49 @@ its +0.23% difference is not evidence of this optimization.
 
 Normal production-player evidence and exact-head CI belong to the associated
 PR. The broader game-performance and hardware-completion Issues remain open.
+
+
+## Prepared MOV stores in bounded CPU batches (2026-11-18)
+
+Related to #138 and #17. A diagnostic of the accepted `59f427c` core found
+roughly 6,700–7,600 general private executions per heavy game field in just three
+ordinary MOV store families. Most attempts complete; failed admission is a small
+part of this work. High-nibble counts alone had not distinguished these stores
+from multiply instructions.
+
+The selected implementation reuses the existing prepared MOV store semantics
+inside bounded cached execution. Before mutating the CPU it proves writable
+memory, the actual prefetched pair, the future instruction hit, write-buffer
+readiness and the complete MA/retirement time. Existing peer, Sound, device,
+interrupt and refresh limits still apply. The real private write protocol retains
+cache versions, accepted bus beats and address updates. A peripheral store ends
+the private interval immediately, with its actual instruction PC. System-register
+stores retain the general path.
+
+Native evidence covers all twelve existing ordinary store width/address vectors,
+WRAM aliases, cache forwarding, endian/narrow-bus configurations, Sound-shortened
+prefixes, cold self-modified targets, missing/resident future instruction words,
+peripheral termination, and GBR stores in redirected delay slots under both
+clock multipliers. Five actual unsafe source changes fail runtime assertions:
+ignoring a pending write, removing its occupancy clock, bypassing write admission
+or future instruction residency, and continuing past a peripheral write.
+Restoring the exact source passes the positive cases. The initial prototype
+missed peripheral termination and failed a browser image comparison; it was
+rejected before game timing. The corrected prototype passes all 21 original
+normal/direct/Sound-return-failure browser fixtures.
+
+In twelve alternating 80-field game windows after 14,700 warmup fields, the
+corrected feature artifact improves diagnostic capacity from 47.3777 to 47.7363
+fields/s (+0.7568%), with nine windows positive. Heavy windows change by +0.6270%
+and −0.3928%. About 4,300–10,200 host prepared-store executions occur per field;
+these count private executions before possible clipping, not committed guest
+instructions. All twelve canonical endpoints match full Sound bytes, 22 CPU/cache
+fingerprints, PCM and images, with unchanged Sound job counts. The original busy
+control has zero new-store coverage and is only a regression control.
+
+These diagnostics have no AudioWorklet and do not establish normal playback
+speed. Final production-player measurements in both orders and exact-head CI
+are recorded in the associated PR; adoption requires those checks. The sustained
+60-field goal, audio-underflow limits and broader hardware criteria remain open.
+Private firmware, media and raw captures remain local. No post-merge verification
+is required.

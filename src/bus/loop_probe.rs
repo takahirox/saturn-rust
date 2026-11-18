@@ -173,6 +173,19 @@ impl super::Bus {
 }
 
 impl Machine {
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn enable_prepared_batch_stores(&mut self, enabled: bool) {
+        self.bus.prepare_batch_stores = enabled;
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn prepared_batch_stores_enabled(&self) -> bool {
+        self.bus.prepare_batch_stores
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn prepared_batch_store_count(&self) -> u64 {
+        self.bus.prepared_batch_store_count.get()
+    }
+
     pub fn loop_state_hashes(&self) -> Vec<u32> {
         fn digest(bytes: impl IntoIterator<Item = u8>) -> [u32; 2] {
             let hash = bytes.into_iter().fold(0xCBF29CE484222325u64, |h, b| {
