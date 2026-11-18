@@ -493,6 +493,15 @@ impl Emulator {
     pub fn enable_paired_irq_sampling(&mut self, enabled: bool) {
         self.machine.enable_paired_irq_sampling(enabled);
     }
+    pub fn enable_dmac_pending_write_wait(&mut self, enabled: bool) {
+        self.machine.enable_dmac_pending_write_wait(enabled);
+    }
+    pub fn dmac_pending_write_wait_enabled(&self) -> bool {
+        self.machine.dmac_pending_write_wait_enabled()
+    }
+    pub fn dmac_pending_write_wait_counts(&self) -> Vec<u64> {
+        self.machine.dmac_pending_write_wait_counts()
+    }
     pub fn enable_local_journal(&mut self, enabled: bool) {
         self.machine.enable_local_journal(enabled);
     }

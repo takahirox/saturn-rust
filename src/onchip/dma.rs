@@ -58,7 +58,35 @@ impl Default for Dma {
         }
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PendingWriteKey {
+    selected: usize,
+    operation: u32,
+    source: u32,
+    destination: u32,
+    count: u32,
+    control: u32,
+}
+
 impl Dma {
+    pub(crate) fn pending_write_key(&self) -> Option<PendingWriteKey> {
+        let selected = self.selected?;
+        let channel = &self.channels[selected];
+        // Only an accepted dual-address unit with DME and DE still set.
+        // DREQ and DACK do not act again before this unit finishes.
+        if self.address_error || self.operation & 1 == 0 || channel.control & 0xB != 1 {
+            return None;
+        }
+        Some(PendingWriteKey {
+            selected,
+            operation: self.operation,
+            source: channel.source,
+            destination: channel.destination,
+            count: channel.count,
+            control: channel.control,
+        })
+    }
+
     pub(crate) fn buffer_error(&mut self) {
         self.operation |= 4;
         self.address_error = true;
