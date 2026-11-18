@@ -290,9 +290,32 @@ struct BusEvent {
     read: bool,
     read_beats: u64,
 }
-struct RamPlan {
-    stores: Vec<RamStore>,
-    before_last: crate::onchip::ReadSequence,
+#[derive(Default)]
+pub(super) struct CachedStorage {
+    fills: CachedLines,
+    bus_events: Vec<BusEvent>,
+    ram_stores: Vec<RamStore>,
+}
+impl CachedStorage {
+    fn clear(&mut self) {
+        self.fills.truncate(0);
+        self.bus_events.clear();
+        self.ram_stores.clear();
+    }
+
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    fn capacity(&self) -> [usize; 3] {
+        [
+            self.fills.capacity(),
+            self.bus_events.capacity(),
+            self.ram_stores.capacity(),
+        ]
+    }
+}
+struct BurstPlan {
+    local: Local,
+    storage: CachedStorage,
+    before_last_store: Option<crate::onchip::ReadSequence>,
 }
 pub(super) fn ordinary_memory(address: u32) -> bool {
     address < 0x2000_0000
@@ -414,13 +437,20 @@ impl Cached<'_> {
             .last()
             .map_or(self.store_ready, |event| event.ready)
     }
-    fn into_parts(self) -> (Local, Option<RamPlan>, CachedLines) {
+    fn into_storage(self) -> CachedStorage {
+        CachedStorage {
+            fills: self.fills.into_inner(),
+            bus_events: self.bus_events.into_inner(),
+            ram_stores: self.ram_stores,
+        }
+    }
+    fn into_plan(mut self) -> BurstPlan {
         let before_last = self.ram_stores.last().map(|last| {
             let mut sequence = self.sequence_before(last.before_event);
             sequence.advance(last.store.at);
             sequence
         });
-        let reads = if let Some(passive) = self.passive {
+        let reads = if let Some(passive) = self.passive.take() {
             Some(passive.sequence.into_inner())
         } else {
             self.bus_events
@@ -438,7 +468,6 @@ impl Cached<'_> {
                     sequence
                 })
         };
-        let fills = self.fills.into_inner();
         let local = Local {
             clock: self.clock.get(),
             lru: self.lru.into_inner(),
@@ -446,15 +475,19 @@ impl Cached<'_> {
             epochs: self.epochs.get(),
             reads,
             write_len: self.ram_stores.len(),
-            fill_len: fills.len(),
+            fill_len: self.version_count.get(),
             bus_len: self.bus_events.borrow().len(),
             write_pc: self.write_pc.get(),
         };
-        let plan = before_last.map(|before_last| RamPlan {
-            stores: self.ram_stores,
-            before_last,
-        });
-        (local, plan, fills)
+        BurstPlan {
+            local,
+            storage: CachedStorage {
+                fills: self.fills.into_inner(),
+                bus_events: self.bus_events.into_inner(),
+                ram_stores: self.ram_stores,
+            },
+            before_last_store: before_last,
+        }
     }
     fn record_read(&self, sequence: crate::onchip::ReadSequence, at: u64, read_beats: u64) {
         self.bus_events.borrow_mut().push(BusEvent {
@@ -1504,6 +1537,20 @@ impl Bus {
         {
             return Ok(None);
         }
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        let reuse_storage = self.reuse_cached_storage;
+        #[cfg(not(any(test, feature = "kernel-experiment")))]
+        let reuse_storage = true;
+        let storage = if reuse_storage {
+            std::mem::take(&mut self.cached_storage)
+        } else {
+            CachedStorage::default()
+        };
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        let retained_capacity = storage.capacity();
+        *memory.fills.get_mut() = storage.fills;
+        *memory.bus_events.get_mut() = storage.bus_events;
+        memory.ram_stores = storage.ram_stores;
         let mut probe_records = Vec::new();
         let origin = memory.snapshot();
         let mut points = Retirements {
@@ -2133,6 +2180,11 @@ impl Bus {
         }
         if selected == 0 {
             points.recycle_into(&mut self.cached_retirement_points);
+            if reuse_storage {
+                let mut storage = memory.into_storage();
+                storage.clear();
+                self.cached_storage = storage;
+            }
             return Ok(None);
         }
         if sound_lookahead {
@@ -2200,6 +2252,11 @@ impl Bus {
             {
                 self.sound.restore_cached_lookahead(checkpoint);
                 points.recycle_into(&mut self.cached_retirement_points);
+                if reuse_storage {
+                    let mut storage = memory.into_storage();
+                    storage.clear();
+                    self.cached_storage = storage;
+                }
                 return Ok(None);
             }
             let selected_reference = self.system_clock.deadline(
@@ -2295,8 +2352,21 @@ impl Bus {
                 .iter()
                 .all(|s| work_ram(Bus::physical(s.store.address)));
         let probe_stores = memory.ram_stores.len() as u64;
-        let (local, ram_plan, fills) = memory.into_parts();
-        debug_assert!(store.is_none() || (ram_plan.is_none() && fills.read_count() == 0));
+        let BurstPlan {
+            local,
+            mut storage,
+            before_last_store,
+        } = memory.into_plan();
+        debug_assert!(
+            store.is_none() || (before_last_store.is_none() && storage.fills.read_count() == 0)
+        );
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        for (i, used) in [local.fill_len, local.bus_len, local.write_len]
+            .into_iter()
+            .enumerate()
+        {
+            self.cached_storage_reuses[i] += retained_capacity[i].min(used) as u64;
+        }
         drop(cache);
         self.instruction_word[0].set(local.retained);
         self.onchip[0].count_cached_instructions(local.epochs);
@@ -2304,15 +2374,21 @@ impl Bus {
         // cached CPU registers or cache hits. The ordinary board scheduler
         // still executes every such edge, including all memory acquisitions.
         let live_reference = if let Some(plan) = live_write_plan {
-            debug_assert!(ram_plan.is_none() && store.is_none() && local.reads.is_none());
+            debug_assert!(before_last_store.is_none() && store.is_none() && local.reads.is_none());
             Some(self.commit_live_write_plan(plan, retired_at))
         } else {
             None
         };
         let reference = if let Some(reference) = live_reference {
             reference
-        } else if let Some(plan) = ram_plan {
-            self.commit_ram_plan(plan, retired_at, sound_lookahead, transfer_active)
+        } else if let Some(before_last) = before_last_store {
+            self.commit_ram_plan(
+                &mut storage.ram_stores,
+                before_last,
+                retired_at,
+                sound_lookahead,
+                transfer_active,
+            )
         } else if let Some(store) = store {
             self.commit_planned_store(
                 store,
@@ -2345,9 +2421,14 @@ impl Bus {
         }
         #[cfg(test)]
         {
-            self.cached_code_fills += fills.read_count() as u64;
+            self.cached_code_fills += storage.fills.read_count() as u64;
         }
-        fills.commit(self.cache[0].get_mut());
+        storage.fills.commit(self.cache[0].get_mut());
+        if reuse_storage {
+            storage.bus_events.clear();
+            debug_assert!(storage.ram_stores.is_empty());
+            self.cached_storage = storage;
+        }
         self.cache[0].get_mut().commit_replacement_state(local.lru);
         #[cfg(test)]
         {
@@ -2392,12 +2473,13 @@ impl Bus {
     }
     fn commit_ram_plan(
         &mut self,
-        mut plan: RamPlan,
+        stores: &mut Vec<RamStore>,
+        before_last: crate::onchip::ReadSequence,
         retired_at: u64,
         sound_advanced: bool,
         transfer_active: bool,
     ) -> Result<u64, ScuError> {
-        let last = plan.stores.pop().expect("nonempty WRAM plan");
+        let last = stores.pop().expect("nonempty WRAM plan");
         let prefix = self.advance_isolated_clocks(
             (last.store.at - self.main_clocks) as u32,
             sound_advanced,
@@ -2408,7 +2490,7 @@ impl Bus {
         // VDP1 command/texture RAM joins this set only while drawing is idle;
         // blanking/CPU-visible events end the burst before drawing can start.
         // Cache hits and retained IF consumed the private ordered overlay.
-        for ram in plan.stores {
+        for ram in stores.drain(..) {
             let store = ram.store;
             match store.width {
                 1 => self.publish_ram_store(store, [store.value as u8]),
@@ -2420,7 +2502,7 @@ impl Bus {
                 self.cached_stores += 1;
             }
         }
-        self.commit_cached_read_sequence(plan.before_last);
+        self.commit_cached_read_sequence(before_last);
         self.commit_planned_store(last.store, last.pc, retired_at, sound_advanced, false)
             .map(|reference| prefix + reference)
     }
