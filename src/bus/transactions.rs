@@ -342,9 +342,20 @@ struct ScuUnit {
     offset: usize,
     sampled: u32,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DmacWriteWait {
+    unit: crate::onchip::PendingWriteKey,
+    operation: Operation,
+}
+
 #[derive(Default)]
 pub(super) struct Transactions {
     journals: [RefCell<Journal>; 4],
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    dmac_write_wait_enabled: bool,
+    dmac_write_wait: [Option<DmacWriteWait>; 2],
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    dmac_write_wait_counts: [u64; 2],
     #[cfg(any(test, feature = "kernel-experiment"))]
     local_journal: bool,
     #[cfg(any(test, feature = "kernel-experiment"))]
@@ -711,6 +722,21 @@ impl Memory for ReplayMemory<'_> {
 }
 #[cfg(any(test, feature = "kernel-experiment"))]
 impl crate::Machine {
+    pub fn enable_dmac_pending_write_wait(&mut self, enabled: bool) {
+        self.bus.transactions.dmac_write_wait_enabled = enabled;
+        if !enabled {
+            self.bus.transactions.dmac_write_wait = [None; 2];
+        }
+    }
+
+    pub fn dmac_pending_write_wait_enabled(&self) -> bool {
+        self.bus.transactions.dmac_write_wait_enabled
+    }
+
+    pub fn dmac_pending_write_wait_counts(&self) -> Vec<u64> {
+        self.bus.transactions.dmac_write_wait_counts.to_vec()
+    }
+
     pub fn enable_local_journal(&mut self, enabled: bool) {
         self.bus.transactions.local_journal = enabled;
     }
@@ -997,6 +1023,40 @@ impl Bus {
             && journal.pending_write.is_none()
             && journal.pipeline_wait.is_none()
     }
+    #[inline]
+    fn dmac_pending_write_runtime(&self) -> bool {
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        {
+            self.transactions.dmac_write_wait_enabled
+        }
+        #[cfg(not(any(test, feature = "kernel-experiment")))]
+        {
+            true
+        }
+    }
+
+    fn dmac_write_wait(&self, processor: Processor) -> Option<DmacWriteWait> {
+        let i = processor as usize;
+        let journal = self.transactions.journals[i + 2].borrow();
+        let operation = journal.current_operation?;
+        if !matches!(operation, Operation::Write(..))
+            || journal.pending_write.is_none()
+            || journal.write_accepted
+            || journal.synchronous_stack
+            || journal.waiting.is_some()
+            || journal.cursor != journal.operations.len()
+            || journal.beat_cursor != 0
+            || self.transactions.lock == Some(processor)
+            || self.inline.is_some()
+        {
+            return None;
+        }
+        Some(DmacWriteWait {
+            unit: self.onchip[i].dma.pending_write_key()?,
+            operation,
+        })
+    }
+
     fn prepare_dmac(&mut self, processor: Processor) {
         let i = processor as usize;
         if (i == 1 && !self.slave_enabled)
@@ -1009,6 +1069,21 @@ impl Bus {
         // retained grant/journal, preparation has no effect. In particular,
         // keep accepted units on the normal path after DME or DREQ changes.
         if self.dmac_quiescent(processor) {
+            return;
+        }
+        // A queued write retains the request already built by the adapter.
+        // The arbiter takes that queue, and the real acceptance callback
+        // runs preparation before issuing the next operation.
+        if self.dmac_pending_write_runtime()
+            && let Some(proof) = self.transactions.dmac_write_wait[i]
+            && self.dmac_write_wait(processor) == Some(proof)
+        {
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            {
+                self.transactions.dmac_write_wait_counts[0] += 1;
+                self.transactions.dmac_write_wait_counts[1] +=
+                    self.transactions.journals[i + 2].get_mut().operations.len() as u64 + 1;
+            }
             return;
         }
         self.transactions.journals[i + 2].get_mut().cursor = 0;
@@ -1037,8 +1112,13 @@ impl Bus {
                 self.transactions.dmac_yield = acknowledged.is_some();
             }
         }
+        if self.dmac_pending_write_runtime() {
+            let next = self.dmac_write_wait(processor);
+            self.transactions.dmac_write_wait[i] = next;
+        }
     }
     pub(super) fn cancel_dmac_transaction(&mut self, processor: Processor) {
+        self.transactions.dmac_write_wait[processor as usize] = None;
         if self.transactions.internal[processor as usize]
             .as_ref()
             .is_some_and(|a| matches!(a.owner, Owner::Dmac(p) | Owner::WriteAccept(p, true) if p == processor))
@@ -3329,6 +3409,143 @@ mod private_peer_admission_tests {
             }
         }
         assert!(accepted > 0 && rejected > 0);
+    }
+}
+
+#[cfg(test)]
+mod dmac_write_wait_tests {
+    use super::*;
+    use crate::onchip::DMAC;
+
+    #[test]
+    fn dmac_pending_write_gate_retains_the_real_acceptance_and_revalidates_dmaor() {
+        for processor in [Processor::Master, Processor::Slave] {
+            for burst in [false, true] {
+                let make = || crate::bus::dmac_tests::setup(processor, 3, 7, burst);
+                let (mut reference, mut candidate) = (make(), make());
+                candidate.transactions.dmac_write_wait_enabled = true;
+                let i = processor as usize;
+                let mut saw_wait = false;
+                for _ in 0..192 {
+                    assert_eq!(candidate.advance_clocks(1), reference.advance_clocks(1));
+                    if !saw_wait && candidate.dmac_write_wait(processor).is_some() {
+                        saw_wait = true;
+                        assert!(candidate.transactions.dmac_write_wait[i].is_some());
+                        let before_retry = candidate.transactions.dmac_write_wait_counts;
+                        for bus in [&mut reference, &mut candidate] {
+                            // Only arbitration preference changes. A retained
+                            // unit still resumes, but needs a new proof.
+                            bus.onchip[i].write32(DMAC + 0x30, 9).unwrap();
+                            bus.prepare_dmac(processor);
+                        }
+                        assert_eq!(candidate.transactions.dmac_write_wait_counts, before_retry);
+                        assert!(candidate.same_cpu_journals(&reference));
+                        for _ in 0..16 {
+                            reference.prepare_dmac(processor);
+                            candidate.prepare_dmac(processor);
+                            assert!(candidate.same_cpu_journals(&reference));
+                        }
+                        assert_eq!(
+                            candidate.transactions.dmac_write_wait_counts[0] - before_retry[0],
+                            16
+                        );
+                        assert!(
+                            candidate.transactions.dmac_write_wait_counts[1] - before_retry[1]
+                                >= 80
+                        );
+                    }
+                    assert!(candidate.same_cpu_journals(&reference));
+                    candidate.assert_live_write_active_matches(&reference);
+                    assert_eq!(
+                        candidate.transactions.dmac_owner,
+                        reference.transactions.dmac_owner
+                    );
+                    assert_eq!(
+                        candidate.transactions.dmac_yield,
+                        reference.transactions.dmac_yield
+                    );
+                    assert_eq!(candidate.main_clocks, reference.main_clocks);
+                    assert_eq!(
+                        candidate.onchip[i].interrupt(),
+                        reference.onchip[i].interrupt()
+                    );
+                    for offset in [0, 4, 8, 12, 0x30] {
+                        assert_eq!(
+                            candidate.onchip[i].read32(DMAC + offset),
+                            reference.onchip[i].read32(DMAC + offset)
+                        );
+                    }
+                    assert_eq!(candidate.high[0x200..0x220], reference.high[0x200..0x220]);
+                }
+                assert!(saw_wait);
+                assert_eq!(candidate.onchip[i].read32(DMAC + 8), Ok(0));
+                assert_eq!(candidate.onchip[i].interrupt(), Some((6, 0x44)));
+                assert!(candidate.transactions.dmac_write_wait[i].is_none());
+                assert_eq!(reference.transactions.dmac_write_wait_counts, [0, 0]);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod dmac_write_wait_request_tests {
+    use super::*;
+    use crate::onchip::DMAC;
+
+    #[test]
+    fn dmac_pending_write_preserves_a_new_edge_for_the_following_unit() {
+        for processor in [Processor::Master, Processor::Slave] {
+            for later_edge in [false, true] {
+                let i = processor as usize;
+                let make = |enabled| {
+                    let mut bus = crate::bus::dmac_tests::setup(processor, 3, 8, false);
+                    bus.transactions.dmac_write_wait_enabled = enabled;
+                    // Sixteen-byte, dual-address, edge-triggered cycle steal.
+                    bus.onchip[i].write32(DMAC + 12, 0x5C45).unwrap();
+                    bus.advance_clocks(8).unwrap();
+                    assert_eq!(bus.onchip[i].read32(DMAC + 8), Ok(8));
+                    bus.onchip[i].set_dma_request_pin(0, false);
+                    bus
+                };
+                let (mut reference, mut candidate) = (make(false), make(true));
+                let mut during_pending = false;
+                for _ in 0..192 {
+                    assert_eq!(candidate.advance_clocks(1), reference.advance_clocks(1));
+                    if !during_pending && candidate.dmac_write_wait(processor).is_some() {
+                        during_pending = true;
+                        let skipped = candidate.transactions.dmac_write_wait_counts[0];
+                        for bus in [&mut reference, &mut candidate] {
+                            if later_edge {
+                                bus.onchip[i].set_dma_request_pin(0, true);
+                                bus.onchip[i].set_dma_request_pin(0, false);
+                            }
+                            bus.prepare_dmac(processor);
+                        }
+                        assert_eq!(
+                            candidate.transactions.dmac_write_wait_counts[0],
+                            skipped + 1
+                        );
+                    }
+                    assert!(candidate.same_cpu_journals(&reference));
+                    candidate.assert_live_write_active_matches(&reference);
+                    assert_eq!(
+                        candidate.onchip[i].interrupt(),
+                        reference.onchip[i].interrupt()
+                    );
+                    assert_eq!(candidate.high[0x200..0x220], reference.high[0x200..0x220]);
+                }
+                assert!(during_pending);
+                assert_eq!(
+                    candidate.onchip[i].read32(DMAC + 8),
+                    Ok(if later_edge { 0 } else { 4 })
+                );
+                assert_eq!(candidate.read32(HIGH_WRAM + 0x200), Ok(0x11223344));
+                assert_eq!(
+                    candidate.read32(HIGH_WRAM + 0x210),
+                    Ok(if later_edge { 0x11223348 } else { 0 })
+                );
+            }
+        }
     }
 }
 

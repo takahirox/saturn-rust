@@ -12,6 +12,7 @@ mod wdt;
 pub(crate) use cached::ReadSequence;
 use divu::Division;
 use dma::Dma;
+pub(crate) use dma::PendingWriteKey;
 use sci::Serial;
 pub use wdt::ResetRequest;
 use wdt::Watchdog;

@@ -181,7 +181,7 @@ fn internal_divu_dma_waits_for_division_without_premature_result_irq_or_cpu_wait
     }
 }
 
-fn setup(processor: Processor, size: u32, count: u32, burst: bool) -> Bus {
+pub(super) fn setup(processor: Processor, size: u32, count: u32, burst: bool) -> Bus {
     let mut bus = Bus::default();
     bus.set_slave_enabled(true);
     for p in [Processor::Master, Processor::Slave] {
