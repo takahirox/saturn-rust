@@ -493,6 +493,15 @@ impl Emulator {
     pub fn enable_paired_irq_sampling(&mut self, enabled: bool) {
         self.machine.enable_paired_irq_sampling(enabled);
     }
+    pub fn enable_local_journal(&mut self, enabled: bool) {
+        self.machine.enable_local_journal(enabled);
+    }
+    pub fn local_journal_enabled(&self) -> bool {
+        self.machine.local_journal_enabled()
+    }
+    pub fn local_journal_counts(&self) -> Vec<u64> {
+        self.machine.local_journal_counts()
+    }
     pub fn paired_irq_reuses(&self) -> u64 {
         self.machine.paired_irq_reuses()
     }

@@ -207,6 +207,26 @@ pub(super) struct Journal {
     current_operation: Option<Operation>,
 }
 impl Journal {
+    #[inline]
+    fn replay_operation(&mut self, op: Operation) -> Option<Result<u32, BusError>> {
+        if let Some(&(recorded, result)) = self.operations.get(self.cursor) {
+            assert_eq!(op, recorded, "instruction replay changed its bus sequence");
+            self.cursor += 1;
+            return Some(self.resolve_result(result));
+        }
+        self.beat_cursor = 0;
+        self.current_operation = Some(op);
+        None
+    }
+
+    #[inline]
+    fn retain_operation(&mut self, op: Operation, result: Result<u32, BusError>) {
+        let retained = self.retain_result(result);
+        self.operations.push((op, retained));
+        self.cursor += 1;
+        self.beats.clear();
+    }
+
     fn same_shifted(&self, prior: &Self, elapsed: u64) -> bool {
         // Name every field: future journal state cannot silently escape proof
         // matching. Timestamp translation does not need cloned vectors.
@@ -325,6 +345,10 @@ struct ScuUnit {
 #[derive(Default)]
 pub(super) struct Transactions {
     journals: [RefCell<Journal>; 4],
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    local_journal: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    local_journal_counts: [Cell<u64>; 2],
     dmac_owner: Option<Processor>,
     dmac_yield: bool,
     previous_dmac: Option<Processor>,
@@ -360,6 +384,48 @@ pub(crate) struct InlineProgress {
 
 struct ScheduledMemory<'a>(CpuBus<'a>);
 impl ScheduledMemory<'_> {
+    // These operations can update UBC or the retained IF word, but never
+    // queue a bus beat, contribute a trace sample or drive inline clocks.
+    #[inline]
+    fn local_operation(&mut self, op: Operation) -> u32 {
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        if !self.0.bus.transactions.local_journal {
+            return self.operation(op).unwrap();
+        }
+        let transactions = &self.0.bus.transactions;
+        let mut journal = transactions.journals[self.0.journal_index()].borrow_mut();
+        if let Some(result) = journal.replay_operation(op) {
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            {
+                let count = &transactions.local_journal_counts[1];
+                count.set(count.get() + 1);
+            }
+            return result.unwrap();
+        }
+        let value = match op {
+            Operation::BreakPending => u32::from(self.0.break_pending()),
+            Operation::InstructionBreak(pc, after) => {
+                u32::from(self.0.instruction_break(pc, after))
+            }
+            Operation::DiscardPrefetch => {
+                self.0.sh2_discard_prefetch();
+                0
+            }
+            Operation::WriteContext(pc, vector) => {
+                journal.write_context = (pc, vector);
+                0
+            }
+            _ => unreachable!("nonlocal operation"),
+        };
+        journal.retain_operation(op, Ok(value));
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        {
+            let count = &transactions.local_journal_counts[0];
+            count.set(count.get() + 1);
+        }
+        value
+    }
+
     fn operation(&mut self, op: Operation) -> Result<u32, BusError> {
         loop {
             let result = self.operation_once(op);
@@ -370,16 +436,11 @@ impl ScheduledMemory<'_> {
     }
     fn operation_once(&mut self, op: Operation) -> Result<u32, BusError> {
         let i = self.0.journal_index();
+        if let Some(result) = self.0.bus.transactions.journals[i]
+            .borrow_mut()
+            .replay_operation(op)
         {
-            let mut journal = self.0.bus.transactions.journals[i].borrow_mut();
-            let cursor = journal.cursor;
-            if let Some(&(recorded, result)) = journal.operations.get(cursor) {
-                assert_eq!(op, recorded, "instruction replay changed its bus sequence");
-                journal.cursor += 1;
-                return journal.resolve_result(result);
-            }
-            journal.beat_cursor = 0;
-            journal.current_operation = Some(op);
+            return result;
         }
         let result = match op {
             Operation::ClearNmi => {
@@ -498,11 +559,9 @@ impl ScheduledMemory<'_> {
             }
         }
         if result != Err(BusError::Pending) {
-            let mut journal = self.0.bus.transactions.journals[i].borrow_mut();
-            let retained = journal.retain_result(result);
-            journal.operations.push((op, retained));
-            journal.cursor += 1;
-            journal.beats.clear();
+            self.0.bus.transactions.journals[i]
+                .borrow_mut()
+                .retain_operation(op, result);
         }
         result
     }
@@ -563,14 +622,12 @@ impl Memory for ReplayMemory<'_> {
     fn sh2_write_context(&self, pc: u32, vector: Option<u8>) {
         self.0
             .borrow_mut()
-            .operation(Operation::WriteContext(pc, vector))
-            .unwrap();
+            .local_operation(Operation::WriteContext(pc, vector));
     }
     fn sh2_discard_prefetch(&self) {
         self.0
             .borrow_mut()
-            .operation(Operation::DiscardPrefetch)
-            .unwrap();
+            .local_operation(Operation::DiscardPrefetch);
     }
     fn sh2_pipeline_wait(&mut self, clocks: u32) -> Result<(), BusError> {
         if clocks == 0 {
@@ -637,17 +694,12 @@ impl Memory for ReplayMemory<'_> {
         self.0.get_mut().operation(Operation::Sleep).unwrap();
     }
     fn break_pending(&self) -> bool {
-        self.0
-            .borrow_mut()
-            .operation(Operation::BreakPending)
-            .unwrap()
-            != 0
+        self.0.borrow_mut().local_operation(Operation::BreakPending) != 0
     }
     fn instruction_break(&self, pc: u32, after: bool) -> bool {
         self.0
             .borrow_mut()
-            .operation(Operation::InstructionBreak(pc, after))
-            .unwrap()
+            .local_operation(Operation::InstructionBreak(pc, after))
             != 0
     }
     fn acknowledge_break(&self) {
@@ -657,6 +709,26 @@ impl Memory for ReplayMemory<'_> {
             .unwrap();
     }
 }
+#[cfg(any(test, feature = "kernel-experiment"))]
+impl crate::Machine {
+    pub fn enable_local_journal(&mut self, enabled: bool) {
+        self.bus.transactions.local_journal = enabled;
+    }
+
+    pub fn local_journal_enabled(&self) -> bool {
+        self.bus.transactions.local_journal
+    }
+
+    pub fn local_journal_counts(&self) -> Vec<u64> {
+        self.bus
+            .transactions
+            .local_journal_counts
+            .iter()
+            .map(Cell::get)
+            .collect()
+    }
+}
+
 impl Bus {
     pub(crate) fn prepare_interrupt(
         &mut self,
@@ -3257,5 +3329,83 @@ mod private_peer_admission_tests {
             }
         }
         assert!(accepted > 0 && rejected > 0);
+    }
+}
+
+#[cfg(test)]
+mod local_journal_tests {
+    use super::*;
+
+    #[test]
+    fn local_journal_replays_the_latched_ubc_result_once_across_a_real_operand_wait() {
+        let pc = HIGH_WRAM + 0x100;
+        let address = HIGH_WRAM + 0x230;
+        for processor in [Processor::Master, Processor::Slave] {
+            for after_match in [false, true] {
+                let make = |optimized| {
+                    let mut machine = crate::Machine::new();
+                    machine.enable_local_journal(optimized);
+                    machine.bus.set_slave_enabled(true);
+                    let i = processor as usize;
+                    let chip = &mut machine.bus.onchip[i];
+                    chip.write32(0xFFFF_FF40, pc).unwrap();
+                    chip.write16(0xFFFF_FF48, 0x56).unwrap();
+                    chip.write16(0xFFFF_FF78, 0x1000 | if after_match { 0x400 } else { 0 })
+                        .unwrap();
+                    chip.read16(0xFFFF_FF78).unwrap();
+                    machine.bus.write8(address, 0xD6).unwrap();
+                    machine.bus.instruction_word[i].set(Some((pc + 2, 0x1234)));
+                    machine
+                };
+                let (mut reference, mut candidate) = (make(false), make(true));
+                let i = processor as usize;
+                let attempt = |machine: &mut crate::Machine| {
+                    let adapter = machine.bus.replay_cpu(processor);
+                    assert!(
+                        !adapter.break_pending(),
+                        "did not replay initial sampled UBC result"
+                    );
+                    adapter.sh2_write_context(pc, Some(0x24));
+                    adapter.sh2_discard_prefetch();
+                    assert_eq!(adapter.instruction_break(pc, false), !after_match);
+                    let value = adapter.read8(address)?;
+                    assert!(adapter.instruction_break(pc, true));
+                    Ok(value)
+                };
+                for machine in [&mut reference, &mut candidate] {
+                    assert_eq!(attempt(machine), Err(BusError::Pending));
+                    assert!(machine.bus.instruction_word[i].get().is_none());
+                    assert_eq!(machine.bus.onchip[i].private_poll_epoch(), 1);
+                    assert_eq!(machine.bus.onchip[i].break_pending(), !after_match);
+                }
+                assert!(reference.bus.same_cpu_journals(&candidate.bus));
+                let mut results = [Err(BusError::Pending); 2];
+                for _ in 0..32 {
+                    for (j, machine) in [&mut reference, &mut candidate].into_iter().enumerate() {
+                        machine.bus.grant_bus_transaction();
+                        machine.bus.advance_clocks(1).unwrap();
+                        if machine.bus.take_cpu_transaction_completion(processor) {
+                            results[j] = attempt(machine);
+                        }
+                        assert_eq!(machine.bus.onchip[i].private_poll_epoch(), 1);
+                    }
+                    assert_eq!(results[0], results[1]);
+                    assert!(reference.bus.same_cpu_journals(&candidate.bus));
+                    assert_eq!(
+                        reference.bus.bus_transaction_deadline(),
+                        candidate.bus.bus_transaction_deadline()
+                    );
+                    assert_eq!(reference.bus.main_clocks, candidate.bus.main_clocks);
+                    if results[0].is_ok() {
+                        break;
+                    }
+                }
+                assert_eq!(results, [Ok(0xD6); 2]);
+                assert!(candidate.bus.onchip[i].break_pending());
+                assert!(candidate.local_journal_enabled());
+                assert_eq!(candidate.local_journal_counts(), [5, 4]);
+                assert_eq!(reference.local_journal_counts(), [0, 0]);
+            }
+        }
     }
 }
