@@ -4506,3 +4506,45 @@ its +0.23% difference is not evidence of this optimization.
 
 Normal production-player evidence and exact-head CI belong to the associated
 PR. The broader game-performance and hardware-completion Issues remain open.
+
+## Reuse quiet bus arbitration at the same clock (2026-11-19)
+
+Related to #138 and #17. CPU issue, reference-clock conversion and board
+advancement can consult the arbiter at the same main clock. When the first
+consultation runs no allocator, its result can serve the later calls at that
+clock. Display acquisition only changes VDP2 fetch state. Synchronization of the
+Sound RAM request and reporting of the current Sound boundary have already
+occurred. The first board slice consumes the result. A later slice consults
+the arbiter at its own clock. A consultation that ran the allocator retains
+the existing checks. IRQ sampling keeps its independent guard.
+
+The native comparison gives the arbiter a Master WRAM read followed by a Slave
+Sound RAM read. The later clock grants the first Sound bridge word, and resuming
+the read grants the second word. Both PLL settings preserve the two sampled
+words, clock, IRQ observations and complete Sound state. Retaining the result
+across clocks or disabling board reuse fails the focused test. Restoring the
+source passes. Native and Wasm Clippy pass. The normal, direct and forced
+Sound-return-failure browser checks pass on all seven original fixtures.
+
+The feature diagnostic improves 51.73 to 52.20 fields/s over 28 continuous
+80-field windows. Every window improves. The four slow windows gain 0.58% to
+1.24%. Full Sound, PCM, image and CPU/cache/RAM endpoints match in both modes
+and at 12 independently recorded overlapping endpoints.
+
+The normal Web player runs six 10-second windows after 12,900 warmup fields in
+each order. Each comparison applies the same 151 input events and draws every
+emulated field. These results use the normal AudioWorklet.
+
+| Measurement | Main first | Candidate first |
+| --- | ---: | ---: |
+| Mean fields/s | 51.450 → 51.535 | 51.352 → 51.720 |
+| Same 361 slow fields, fields/s | 38.823 → 39.402 | 39.253 → 39.651 |
+| Four matched slow windows, fields/s | 27.434 → 27.558 | 27.381 → 27.816 |
+| AudioWorklet underflow output frames | 367087 → 362929 | 369997 → 355188 |
+
+Both orders have zero audio drops and zero runtime errors. The highest
+10-second p99 moves from 107.8 to 110.0 ms in the first order and from 109.9 to
+104.4 ms in the reverse order. Fields 13821–13900 regress by 0.55% in the first
+normal order and improve by 1.44% in the reverse order. The Web player continues
+to miss 60 fields/s and the audio supply target during the measured gameplay.
+The broader performance and hardware-completion Issues remain open.

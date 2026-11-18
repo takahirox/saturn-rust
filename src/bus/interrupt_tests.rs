@@ -912,7 +912,7 @@ fn paired_irq_sampling_board_input_requires_a_settled_external_grant() {
     let (mut candidate, mut reference) = (make(), make());
     assert_eq!(
         candidate
-            .advance_cpu_clocks_after_irq_sample(1, true)
+            .advance_cpu_clocks_after_irq_sample(1, true, false)
             .unwrap(),
         reference.advance_cpu_clocks(1).unwrap()
     );
@@ -924,4 +924,78 @@ fn paired_irq_sampling_board_input_requires_a_settled_external_grant() {
     assert!(candidate.transactions.active.is_some());
     assert_eq!(candidate.irq_observed, reference.irq_observed);
     assert_eq!(candidate.main_clocks, reference.main_clocks);
+}
+
+#[test]
+fn same_clock_grant_reuse_stops_at_the_next_transaction_boundary() {
+    let master_address = (HIGH_WRAM + 0x1000) | 0x2000_0000;
+    let slave_address = crate::sound::SOUND_RAM | 0x2000_0000;
+    let master_value = 0x1357_2468;
+    let slave_value = 0xB3CF_8292;
+    for fast in [false, true] {
+        let make = || {
+            let mut m = crate::scheduling_tests::cached_pair(&[9, 9], &[9, 9]);
+            if fast {
+                m.bus.change_system_clock(true);
+                m.bus.set_slave_enabled(true);
+            }
+            m.bus.write32(master_address, master_value).unwrap();
+            m.bus.write32(slave_address, slave_value).unwrap();
+            assert_eq!(
+                m.bus.replay_cpu(Processor::Master).read32(master_address),
+                Err(BusError::Pending),
+            );
+            assert!(!m.bus.grant_bus_transaction());
+            assert!(m.bus.transactions.active.is_some());
+            assert_eq!(
+                m.bus.replay_cpu(Processor::Slave).read32(slave_address),
+                Err(BusError::Pending),
+            );
+            // The pending peer can only acquire an external grant once the
+            // first request releases it. The current grant really is settled.
+            assert!(m.bus.grant_bus_transaction());
+            assert!(m.bus.sound_ram_request().is_none());
+            m.bus.sample_interrupts();
+            m
+        };
+        let (mut candidate, mut reference) = (make(), make());
+        candidate.bus.boundary_grant_reuse = true;
+        assert_eq!(
+            candidate
+                .bus
+                .advance_clocks_with_sound(96, false, true, true),
+            reference.bus.advance_clocks(96),
+        );
+        assert_eq!(candidate.bus.boundary_grant_reuses[0], 1);
+        assert!(candidate.bus.boundary_grant_reuses[1] > 0);
+        assert_eq!(reference.bus.boundary_grant_reuses, [0; 2]);
+        for m in [&mut reference, &mut candidate] {
+            assert_eq!(
+                m.bus.replay_cpu(Processor::Master).read32(master_address),
+                Ok(master_value),
+            );
+            // The first bridge word must have completed inside the advance.
+            // Reissue the architectural read to queue its second real beat.
+            {
+                let journal = m.bus.transactions.journals[1].borrow();
+                assert_eq!(journal.beats.len(), 1);
+                assert_eq!(journal.beats[0].1, Ok(0xB3CF));
+            }
+            assert_eq!(
+                m.bus.replay_cpu(Processor::Slave).read32(slave_address),
+                Err(BusError::Pending),
+            );
+            m.bus.advance_clocks(96).unwrap();
+            assert_eq!(
+                m.bus.replay_cpu(Processor::Slave).read32(slave_address),
+                Ok(slave_value),
+            );
+        }
+        assert_eq!(candidate.bus.main_clocks, reference.bus.main_clocks);
+        assert_eq!(candidate.bus.irq_observed, reference.bus.irq_observed);
+        assert_eq!(
+            candidate.sound_domain_snapshot().unwrap(),
+            reference.sound_domain_snapshot().unwrap(),
+        );
+    }
 }
