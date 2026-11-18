@@ -537,6 +537,10 @@ enum CachedIssue {
 #[derive(Default)]
 pub struct Machine {
     private_poll: bus::private_poll::Context,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    paired_irq_sampling: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    paired_irq_reuses: u64,
     #[cfg(test)]
     cached_private_phases: u64,
     #[cfg(test)]
@@ -568,6 +572,28 @@ pub struct Machine {
 impl Machine {
     pub fn new() -> Self {
         Self::default()
+    }
+    fn paired_irq_sampling_enabled(&self) -> bool {
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        {
+            self.paired_irq_sampling
+        }
+        #[cfg(not(any(test, feature = "kernel-experiment")))]
+        {
+            true
+        }
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn enable_paired_irq_sampling(&mut self, enabled: bool) {
+        self.paired_irq_sampling = enabled;
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn paired_irq_reuses(&self) -> u64 {
+        self.paired_irq_reuses
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn board_irq_reuses(&self) -> u64 {
+        self.bus.board_irq_reuses()
     }
     pub fn cpu_state(&self) -> &CpuState {
         self.cpu.state()
@@ -1056,9 +1082,27 @@ impl Machine {
         processor: Processor,
         optimized: bool,
     ) -> Result<bool, MachineError> {
+        self.issue_cpu_with_irq_sample(processor, optimized, &mut false)
+    }
+
+    fn issue_cpu_with_irq_sample(
+        &mut self,
+        processor: Processor,
+        optimized: bool,
+        irq_samples_current: &mut bool,
+    ) -> Result<bool, MachineError> {
         let i = processor as usize;
         let slave = processor == Processor::Slave;
-        if optimized && !slave && self.bus.slave_enabled {
+        let reused_master = slave && std::mem::take(irq_samples_current);
+        if reused_master {
+            #[cfg(debug_assertions)]
+            debug_assert!(self.bus.irq_sample_current(Processor::Master));
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            {
+                self.paired_irq_reuses += 1;
+            }
+            self.bus.sample_interrupt(Processor::Slave);
+        } else if optimized && !slave && self.bus.slave_enabled {
             // Master issue uses its own IRQ. An effect on the slave from a
             // shared bus access only publishes at the hardware completion.
             self.bus.sample_interrupt(Processor::Master);
@@ -1104,9 +1148,13 @@ impl Machine {
             return Ok(true);
         }
         if self.cpu_ready[i] > self.bus.main_clocks {
+            // A readiness wait only updates Machine bookkeeping above.
+            *irq_samples_current = true;
             return Ok(false);
         }
-        if self.cached_issue[i].is_some() {
+        if let Some(issue) = &self.cached_issue[i] {
+            // Branch retirement touches only the CPU, IF cache and journal.
+            *irq_samples_current = matches!(issue, CachedIssue::Branch(_));
             return self.resume_cached_issue(processor);
         }
         if !self.bus.nmi_ready(processor) {
@@ -1177,9 +1225,12 @@ impl Machine {
                 {
                     self.cached_dual_scalars += 1;
                 }
+                // Prepared resident scalar execution cannot signal an IRQ.
+                *irq_samples_current = true;
                 return Ok(true);
             }
             if let Some((branch, waiting)) = self.bus.prepare_cached_branch(processor, cpu) {
+                *irq_samples_current = true;
                 self.cached_issue[i] = Some(CachedIssue::Branch(branch));
                 if waiting {
                     self.cpu_ready[i] = u64::MAX;
@@ -1432,15 +1483,27 @@ impl Machine {
         self.step_hardware_boundary_with_idle(false)
     }
     fn step_hardware_boundary_with_idle(&mut self, coalesced: bool) -> Result<bool, MachineError> {
+        let mut irq_samples_current = false;
         let mut committed = if coalesced {
-            self.issue_cpu_with_inline(Processor::Master, true)?
+            self.issue_cpu_with_irq_sample(Processor::Master, true, &mut irq_samples_current)?
         } else {
             self.issue_cpu(Processor::Master)?
         };
-        if self.bus.slave_enabled {
-            committed |= self.issue_cpu_with_inline(Processor::Slave, coalesced)?;
+        let dual = self.bus.slave_enabled;
+        let reuse = self.paired_irq_sampling_enabled();
+        if dual {
+            irq_samples_current &= reuse;
+            committed |= self.issue_cpu_with_irq_sample(
+                Processor::Slave,
+                coalesced,
+                &mut irq_samples_current,
+            )?;
         }
-        self.finish_hardware_boundary_with_idle(committed, coalesced)
+        self.finish_hardware_boundary_with_irq_sample(
+            committed,
+            coalesced,
+            reuse && coalesced && dual && irq_samples_current,
+        )
     }
 
     fn finish_hardware_boundary(&mut self, committed: bool) -> Result<bool, MachineError> {
@@ -1451,7 +1514,16 @@ impl Machine {
         committed: bool,
         coalesced: bool,
     ) -> Result<bool, MachineError> {
-        self.bus.grant_bus_transaction();
+        self.finish_hardware_boundary_with_irq_sample(committed, coalesced, false)
+    }
+
+    fn finish_hardware_boundary_with_irq_sample(
+        &mut self,
+        committed: bool,
+        coalesced: bool,
+        mut irq_samples_current: bool,
+    ) -> Result<bool, MachineError> {
+        irq_samples_current &= self.bus.grant_bus_transaction();
         #[cfg(any(test, feature = "sound-worker"))]
         if self.bus.sound_rendezvous_blocked() {
             return Ok(committed);
@@ -1532,7 +1604,8 @@ impl Machine {
         } else if can_coalesce && !rendezvous {
             self.bus.advance_cpu_clocks_with_sound(elapsed, true)
         } else {
-            self.bus.advance_cpu_clocks(elapsed)
+            self.bus
+                .advance_cpu_clocks_after_irq_sample(elapsed, irq_samples_current)
         };
         let (reference, command) = result.map_err(MachineError::Scu)?;
         self.clocks += u64::from(reference);

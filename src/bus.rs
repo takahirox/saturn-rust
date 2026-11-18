@@ -388,6 +388,8 @@ pub struct Bus {
     external_owner: Cell<Option<Processor>>,
     pub(crate) slave_enabled: bool,
     irq_observed: [Option<(InterruptRequest, u64)>; 2],
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    board_irq_reuses: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -478,6 +480,8 @@ impl Default for Bus {
             external_owner: Cell::new(None),
             slave_enabled: false,
             irq_observed: [None; 2],
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            board_irq_reuses: 0,
         }
     }
 }
@@ -639,6 +643,17 @@ impl Bus {
             *observed = request.map(|r| (r, self.main_clocks));
         }
     }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) fn board_irq_reuses(&self) -> u64 {
+        self.board_irq_reuses
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn irq_sample_current(&self, processor: Processor) -> bool {
+        self.irq_observed[processor as usize].map(|(irq, _)| irq)
+            == self.interrupt_request(processor)
+    }
+
     pub(crate) fn recognized_interrupt(&self, processor: Processor) -> Option<InterruptRequest> {
         let (r, since) = self.irq_observed[processor as usize]?;
         (self.main_clocks >= since + 5).then_some(r)
@@ -929,10 +944,20 @@ impl Bus {
         Ok(command)
     }
 
+    #[cfg(test)]
     fn advance_main_clocks(
+        &mut self,
+        remaining: u32,
+        reference_clocks: u32,
+    ) -> Result<Option<u8>, ScuError> {
+        self.advance_main_clocks_with_irq_sample(remaining, reference_clocks, false)
+    }
+
+    fn advance_main_clocks_with_irq_sample(
         &mut self,
         mut remaining: u32,
         reference_clocks: u32,
+        mut irq_samples_current: bool,
     ) -> Result<Option<u8>, ScuError> {
         if remaining == 0 {
             return self.advance_fixed_clocks(reference_clocks);
@@ -940,7 +965,19 @@ impl Bus {
         let mut reference_clocks = Some(reference_clocks);
         let mut command = None;
         while remaining != 0 {
-            self.sample_interrupts();
+            if std::mem::take(&mut irq_samples_current) {
+                #[cfg(debug_assertions)]
+                debug_assert!(
+                    self.irq_sample_current(Processor::Master)
+                        && self.irq_sample_current(Processor::Slave)
+                );
+                #[cfg(any(test, feature = "kernel-experiment"))]
+                {
+                    self.board_irq_reuses += 1;
+                }
+            } else {
+                self.sample_interrupts();
+            }
             self.acquire_display();
             self.grant_bus_transaction();
             let delta = if remaining == 1 {
@@ -1071,23 +1108,26 @@ impl Bus {
     /// Advance attached hardware in reference clocks without issuing CPU
     /// instructions. Machine coordinates command completions with CPU state.
     pub fn advance_clocks(&mut self, clocks: u32) -> Result<Option<u8>, ScuError> {
-        self.advance_clocks_with_sound(clocks, false)
+        self.advance_clocks_with_sound(clocks, false, false)
     }
     fn advance_clocks_with_sound(
         &mut self,
         clocks: u32,
         coalesced: bool,
+        mut irq_samples_current: bool,
     ) -> Result<Option<u8>, ScuError> {
         let mut remaining = clocks;
         let mut command = None;
         while remaining != 0 {
-            self.grant_bus_transaction();
+            let current = std::mem::take(&mut irq_samples_current) & self.grant_bus_transaction();
             let delta = self.reference_deadline_with_sound(
                 remaining.min(self.system_clock.deadline(self.main_deadline()).max(1)),
                 coalesced,
             );
             let main_clocks = self.system_clock.advance(delta);
-            if let Some(completed) = self.advance_main_clocks(main_clocks, delta)? {
+            if let Some(completed) =
+                self.advance_main_clocks_with_irq_sample(main_clocks, delta, current)?
+            {
                 if matches!(completed, 0x0E | 0x0F) {
                     self.change_system_clock(completed == 0x0E);
                 }
@@ -1103,10 +1143,25 @@ impl Bus {
     pub(crate) fn advance_cpu_clocks(&mut self, main: u32) -> Result<(u32, Option<u8>), ScuError> {
         self.advance_cpu_clocks_with_sound(main, false)
     }
+    pub(crate) fn advance_cpu_clocks_after_irq_sample(
+        &mut self,
+        main: u32,
+        irq_samples_current: bool,
+    ) -> Result<(u32, Option<u8>), ScuError> {
+        self.advance_cpu_clocks_with_irq_sample(main, false, irq_samples_current)
+    }
     pub(crate) fn advance_cpu_clocks_with_sound(
         &mut self,
         main: u32,
         coalesced: bool,
+    ) -> Result<(u32, Option<u8>), ScuError> {
+        self.advance_cpu_clocks_with_irq_sample(main, coalesced, false)
+    }
+    fn advance_cpu_clocks_with_irq_sample(
+        &mut self,
+        main: u32,
+        coalesced: bool,
+        irq_samples_current: bool,
     ) -> Result<(u32, Option<u8>), ScuError> {
         if coalesced && let Some(result) = self.try_coalesced_wait(main) {
             return result;
@@ -1115,15 +1170,15 @@ impl Bus {
             if self.system_clock.is_reference() {
                 let reference = self.reference_deadline_with_sound(main, coalesced);
                 if reference == 1 {
-                    self.grant_bus_transaction();
-                    let command = self.advance_main_clocks(1, 1)?;
+                    let current = irq_samples_current & self.grant_bus_transaction();
+                    let command = self.advance_main_clocks_with_irq_sample(1, 1, current)?;
                     if let Some(completed @ (0x0E | 0x0F)) = command {
                         self.change_system_clock(completed == 0x0E);
                     }
                     return Ok((1, command));
                 }
                 return self
-                    .advance_clocks_with_sound(reference, coalesced)
+                    .advance_clocks_with_sound(reference, coalesced, irq_samples_current)
                     .map(|command| (reference, command));
             }
             // Fixed-domain events can establish a new recognition deadline.
@@ -1135,15 +1190,17 @@ impl Bus {
                 .saturating_sub(1);
             if reference > 0 {
                 return self
-                    .advance_clocks_with_sound(reference, coalesced)
+                    .advance_clocks_with_sound(reference, coalesced, irq_samples_current)
                     .map(|command| (reference, command));
             }
             self.pending_main_clocks = self.system_clock.advance(1);
             if self.pending_main_clocks == 0 {
-                return self.advance_main_clocks(0, 1).map(|command| (1, command));
+                return self
+                    .advance_main_clocks_with_irq_sample(0, 1, false)
+                    .map(|command| (1, command));
             }
             self.pending_main_clocks -= 1;
-            let command = self.advance_main_clocks(1, 1)?;
+            let command = self.advance_main_clocks_with_irq_sample(1, 1, irq_samples_current)?;
             if let Some(completed @ (0x0E | 0x0F)) = command {
                 self.change_system_clock(completed == 0x0E);
                 self.pending_main_clocks = 0;
@@ -1151,7 +1208,8 @@ impl Bus {
             return Ok((1, command));
         }
         self.pending_main_clocks -= 1;
-        self.advance_main_clocks(1, 0).map(|command| (0, command))
+        self.advance_main_clocks_with_irq_sample(1, 0, irq_samples_current)
+            .map(|command| (0, command))
     }
     /// Replaces ROM atomically. Machine reset separately discards old ROM first.
     pub fn load_bios(&mut self, bytes: &[u8]) -> Result<(), BusError> {
