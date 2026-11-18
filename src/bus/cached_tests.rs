@@ -538,6 +538,7 @@ fn planned_special_store_preserves_self_modifying_successor_and_retained_if_word
         let pointer = ((store_pc + 4) & !3) + 4;
         words.extend([0xE033, 0x0009, (pointer >> 16) as u16, pointer as u16]);
         let (mut a, mut b) = pair(&bytes);
+        a.enable_prepared_batch_stores(true);
         a.advance_frame().unwrap();
         reference_frame(&mut b).unwrap();
         let before = a.bus.cached_stores;
@@ -584,6 +585,7 @@ fn multiple_work_ram_stores_preserve_bus_protocol_aliases_and_cache_forwarding()
                             );
                             bytes[0x238..0x23C].copy_from_slice(&physical.to_be_bytes());
                             let (mut a, mut b) = pair(&bytes);
+                            a.enable_prepared_batch_stores(true);
                             // Establish resident, big-endian IF lines before changing
                             // the external data interface, as real cache hits do.
                             for _ in 0..200 {
@@ -679,6 +681,7 @@ fn planned_work_ram_stores_keep_width_updates_and_buffer_configuration() {
             bytes[0x224..0x228].copy_from_slice(&0x060F_0000u32.to_be_bytes());
         }
         let (mut a, mut b) = pair(&bytes);
+        a.enable_prepared_batch_stores(true);
         for field in 0..2 {
             a.advance_frame().unwrap();
             reference_frame(&mut b).unwrap();
@@ -699,6 +702,10 @@ fn planned_work_ram_stores_keep_width_updates_and_buffer_configuration() {
             }
         }
         assert!(a.bus.cached_stores > 0, "opcode={opcode:04X}");
+        assert!(
+            a.prepared_batch_store_count() > 0,
+            "prepared opcode={opcode:04X}"
+        );
     }
 }
 
@@ -2309,6 +2316,7 @@ fn cached_replay_restores_cpu_when_sound_bounds_a_buffered_store() {
             m
         };
         let (mut a, mut b) = (make(), make());
+        a.enable_prepared_batch_stores(true);
         let mut batches = 0;
         for _ in 0..256 {
             let retired = a.try_cached_batch(128).unwrap();
@@ -2672,6 +2680,7 @@ fn self_modified_cold_target_refills_after_the_buffered_write() {
                 m
             };
             let (mut a, mut b) = (make(), make());
+            a.enable_prepared_batch_stores(true);
             let mut mixed = 0;
             let mut turns = 0;
             while a.cpu.state().status == CpuStatus::Running {
@@ -3110,4 +3119,131 @@ fn deferred_display_marks_empty_edge_before_same_edge_register_completion() {
         (80, 4, 1, 1)
     );
     assert_eq!(trace[3].words, [0x1234, 0x5671]);
+}
+
+#[test]
+fn prepared_batch_stores_require_resident_future_if_before_any_mutation() {
+    for resident in [false, true] {
+        let make = || {
+            let mut words = [9; 12];
+            words[6] = 0x2F02;
+            let mut m = crate::scheduling_tests::cached_pair(&words, &[0xAFFE, 9]);
+            m.bus.set_slave_enabled(false);
+            let mut memory = m.bus.for_cpu(Processor::Master);
+            memory.write8(crate::cache::CCR, 0x11).unwrap();
+            memory.fetch16(HIGH_WRAM).unwrap();
+            if resident {
+                memory.fetch16(HIGH_WRAM + 16).unwrap();
+            }
+            m.bus.cpu_delay(Processor::Master, 0);
+            m.cpu = Cpu::start(HIGH_WRAM + 12, HIGH_WRAM + 0x1000);
+            m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
+            assert_eq!(m.bus.cache[0].borrow().read_hit(HIGH_WRAM + 16), resident);
+            m
+        };
+        let (mut a, mut b) = (make(), make());
+        a.enable_prepared_batch_stores(true);
+        let retired = a.try_cached_batch(1).unwrap();
+        if retired == 0 {
+            a.step_inner_with_idle(true).unwrap();
+        }
+        while b.cpu.state().instructions < a.cpu.state().instructions {
+            b.step().unwrap();
+        }
+        same(&mut a, &mut b);
+        a.bus.cache[0]
+            .borrow()
+            .assert_same_contents(&b.bus.cache[0].borrow());
+        a.bus.onchip[0].assert_cached_read_bus_matches(&b.bus.onchip[0]);
+        assert_eq!(a.prepared_batch_store_count(), u64::from(resident));
+    }
+}
+
+#[test]
+fn prepared_batch_stores_end_before_peripheral_effects_and_later_cpu_work() {
+    let words = [
+        0xD103,
+        0xE001,
+        0x2101,
+        0x7001,
+        0xAFFE,
+        9,
+        9,
+        9,
+        (VDP2 >> 16) as u16,
+        VDP2 as u16,
+    ];
+    let make = || {
+        let mut m = crate::scheduling_tests::cached_pair(&words, &[0xAFFE, 9]);
+        m.bus.set_slave_enabled(false);
+        m
+    };
+    let (mut a, mut b) = (make(), make());
+    a.enable_prepared_batch_stores(true);
+    assert_eq!(
+        a.try_cached_batch(128).unwrap(),
+        3,
+        "the peripheral store must end the admitted private prefix"
+    );
+    assert_eq!(a.cpu_state().pc, HIGH_WRAM + 6);
+    assert_eq!(
+        a.cpu_state().r[0],
+        1,
+        "later ADD must not execute privately"
+    );
+    assert_eq!(a.prepared_batch_store_count(), 1);
+    while b.cpu.state().instructions < a.cpu.state().instructions {
+        b.step().unwrap();
+    }
+    same(&mut a, &mut b);
+    a.bus.onchip[0].assert_cached_read_bus_matches(&b.bus.onchip[0]);
+    assert_eq!(a.bus.vdp2.read16(VDP2), b.bus.vdp2.read16(VDP2));
+}
+
+#[test]
+fn prepared_batch_stores_keep_gbr_widths_and_redirected_delay_slot_fetch() {
+    for op in [0xC001, 0xC101, 0xC201] {
+        for fast in [false, true] {
+            let words = [
+                0xD205,
+                0xE001,
+                0x421E,
+                0xA001,
+                op,
+                0x7001,
+                0x7001,
+                0xAFFA,
+                9,
+                9,
+                9,
+                9,
+                (HIGH_WRAM >> 16) as u16,
+                0x2000,
+            ];
+            let make = || {
+                let mut m = crate::scheduling_tests::cached_pair(&words, &[0xAFFE, 9]);
+                m.bus.set_slave_enabled(false);
+                m.bus.change_system_clock(fast);
+                m
+            };
+            let (mut a, mut b) = (make(), make());
+            a.enable_prepared_batch_stores(true);
+            b.enable_prepared_batch_stores(false);
+            while a.cpu.state().instructions < 1000 {
+                if a.try_cached_batch(32).unwrap() == 0 {
+                    a.step_inner_with_idle(true).unwrap();
+                }
+                while b.cpu.state().instructions < a.cpu.state().instructions {
+                    b.step().unwrap();
+                }
+                same(&mut a, &mut b);
+                a.bus.cache[0]
+                    .borrow()
+                    .assert_same_contents(&b.bus.cache[0].borrow());
+                a.bus.onchip[0].assert_cached_read_bus_matches(&b.bus.onchip[0]);
+            }
+            assert!(a.prepared_batch_store_count() > 50, "GBR store {op:04X}");
+            assert_eq!(b.prepared_batch_store_count(), 0);
+        }
+    }
 }

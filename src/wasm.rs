@@ -490,6 +490,15 @@ impl Emulator {
     pub fn enable_sound_dependency_filter(&mut self, enabled: bool) {
         self.machine.enable_sound_dependency_filter(enabled);
     }
+    pub fn enable_prepared_batch_stores(&mut self, enabled: bool) {
+        self.machine.enable_prepared_batch_stores(enabled);
+    }
+    pub fn prepared_batch_stores_enabled(&self) -> bool {
+        self.machine.prepared_batch_stores_enabled()
+    }
+    pub fn prepared_batch_store_count(&self) -> u64 {
+        self.machine.prepared_batch_store_count()
+    }
     pub fn loop_state_hashes(&self) -> Vec<u32> {
         self.machine.loop_state_hashes()
     }

@@ -321,6 +321,9 @@ pub trait Memory {
 }
 
 pub struct Bus {
+    pub(crate) prepare_batch_stores: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) prepared_batch_store_count: Cell<u64>,
     #[cfg(any(test, feature = "sound-worker"))]
     pub(crate) sound_rendezvous: sound_rendezvous::Rendezvous,
     loop_probe: Option<Box<loop_probe::LoopProbe>>,
@@ -409,6 +412,9 @@ pub(crate) struct InterruptRequest {
 impl Default for Bus {
     fn default() -> Self {
         Self {
+            prepare_batch_stores: true,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            prepared_batch_store_count: Cell::new(0),
             #[cfg(any(test, feature = "sound-worker"))]
             sound_rendezvous: sound_rendezvous::Rendezvous::production(),
             loop_probe: Some(Box::new(loop_probe::LoopProbe::automatic())),
