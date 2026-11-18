@@ -1529,6 +1529,10 @@ impl Bus {
         let mut recorded_range = None;
         let mut solo_checkpoint: Option<Cpu> = None;
         let mut live_write_plan = None;
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        let reversible_loads = self.reversible_cached_loads;
+        #[cfg(not(any(test, feature = "kernel-experiment")))]
+        let reversible_loads = true;
         while retired < count && memory.clock.get() < end {
             if retired == 0
                 && let Some(probe) = &self.loop_probe
@@ -2023,12 +2027,27 @@ impl Bus {
                         solo_checkpoint = Some(cpu.clone());
                     }
                 }
-                let instructions = cpu.state().instructions;
-                if !cpu.step_cached(&mut memory) || cpu.state().instructions != instructions + 1 {
-                    if let Some(checkpoint) = &solo_checkpoint {
-                        cpu.clone_from(checkpoint);
-                    } else {
-                        replay_cpu = true;
+                let reversible = (reversible_loads && poll.is_some() && class == CachedClass::Load)
+                    .then(|| cpu.step_cached_reversible_load(&mut memory, op))
+                    .flatten();
+                let completed = if let Some(completed) = reversible {
+                    #[cfg(any(test, feature = "kernel-experiment"))]
+                    {
+                        self.reversible_cached_load_counts[0] += 1;
+                        self.reversible_cached_load_counts[1] += u64::from(!completed);
+                    }
+                    completed
+                } else {
+                    let instructions = cpu.state().instructions;
+                    cpu.step_cached(&mut memory) && cpu.state().instructions == instructions + 1
+                };
+                if !completed {
+                    if reversible.is_none() {
+                        if let Some(checkpoint) = &solo_checkpoint {
+                            cpu.clone_from(checkpoint);
+                        } else {
+                            replay_cpu = true;
+                        }
                     }
                     memory.restore(before);
                     break;
@@ -2223,6 +2242,10 @@ impl Bus {
                 cpu = initial.clone();
                 0
             };
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            {
+                self.reversible_cached_load_counts[2] += (selected - first) as u64;
+            }
             for _ in first..selected {
                 let start = memory.clock.get();
                 cpu.step(&mut memory)
