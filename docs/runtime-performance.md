@@ -4506,3 +4506,68 @@ its +0.23% difference is not evidence of this optimization.
 
 Normal production-player evidence and exact-head CI belong to the associated
 PR. The broader game-performance and hardware-completion Issues remain open.
+
+
+## Commute cache/WRAM CPU work with quiet horizontal edges (2026-11-18)
+
+Related to #138 and #17. A temporary observer of main `59f427c` finds about
+3,262 and 2,791 raster-limited cached scheduling opportunities per field in
+the two heavy conversation windows. These are tied limiting-cause tags, not
+independent costs. Approximately 2,892 and 2,478 also have no passive operand,
+active transfer or conflicting shared-bus work. Every such raster-limited
+opportunity has a private Slave peer, so extending only the Master horizon
+would leave the peer horizon as a bound.
+
+The selected trial gives cache/WRAM CPU work an exact next-vertical-event
+horizon when horizontal control cannot interrupt or start new observable
+work: SCU HBlank IRQ masked, timer disabled, no pending DMA/DSP execution,
+no channel armed for HBlank/Timer0/Timer1 triggers, and no pending VDP1 VBE
+sample. A private Slave must mask its independent horizontal DCC IRL2.
+Every other CPU, bus, sound, device and field boundary remains a bound.
+Non-WRAM stores restore the original horizon, or end the prefix before the
+store if that horizon has elapsed. Existing BSC refresh and write/refill
+proofs still apply.
+
+This does not omit horizontal events. Ordinary and cached catch-up share the
+same raster-event handler, and cached catch-up splits at each actual edge.
+Scanout, display erase, raw SCU timer/status updates and IRQ recognition still
+execute. Buffered writes may already have advanced the board clock; IRQ
+recognition uses the actual horizontal edge time rather than that future
+clock. Vertical events and field endpoints remain strict bounds.
+
+Six focused native tests and two existing video/publication regressions pass.
+They cover PAL/NTSC, both PLLs, vertical modes and field parity, literal IRQ,
+timer and HBlank DMA behavior, a real private peer, non-WRAM store publication,
+and both board-clock modes. Positive assertions require actual horizontal
+crossings. Six executed negative controls fail runtime assertions when the
+HBlank mask, Slave mask, vertical bound, store scope, IRQ sampling, or absolute
+recognition time is broken. Exact source restoration and eight fresh positive
+tests pass. Formatting, native and both Wasm Clippy variants pass.
+
+Early native checks exposed the inherited no-raster-event catch-up assumption
+and the independent Slave DCC recognition edge; both were fixed before timing.
+Fixture-only zero-coverage failures were corrected by restoring the Slave/cache
+setup and Master bus ownership, retaining full-state and positive assertions.
+The first sound-worker Clippy run found an unused diagnostic variable; its
+conditional compilation was fixed before freezing or measuring that build.
+
+The frozen opt-in prototype Wasm is
+`35dd5aecf62017ee6f146b4f61ba6bf7a5d8d814b7e3c6aae2662ac375ddec27`.
+Chrome 157.0.8103.52 runs all seven original browser fixtures in each normal,
+direct and forced Sound-return-failure mode. With both game instances prepared
+through field 14,700 before any timing, twelve alternating continuous 80-field
+windows give **48.0632 -> 50.4811 fields/s (+5.0308%)**. All twelve improve;
+the two heaviest windows improve by 2.0801% and 2.6933%. Every field is drawn.
+Full Sound bytes, 22 CPU/cache fingerprints, rolling PCM and images match
+both variants and all twelve saved canonical endpoints. The original CPU
+control improves by 0.7599% and has actual Master crossings, but no private
+Slave extension; it is not evidence of the dual-CPU mechanism.
+
+These are capacity diagnostics without an AudioWorklet, not normal-player
+FPS. Their host counters count extended horizon proposals and selected
+prefixes, not architectural instructions omitted or committed. Normal-player
+comparisons in both execution orders, AudioWorklet underflows and tail latency,
+and exact-head CI/review results are reported separately in the implementation
+PR. Sustained real-time execution and hardware completion remain open; this
+checkpoint alone does not justify adoption. Private media, traces and captures
+remain local. No post-merge verification is required.

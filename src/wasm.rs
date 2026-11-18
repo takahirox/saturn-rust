@@ -490,6 +490,15 @@ impl Emulator {
     pub fn enable_sound_dependency_filter(&mut self, enabled: bool) {
         self.machine.enable_sound_dependency_filter(enabled);
     }
+    pub fn enable_quiet_horizontal_cpu(&mut self, enabled: bool) {
+        self.machine.enable_quiet_horizontal_cpu(enabled);
+    }
+    pub fn quiet_horizontal_cpu_enabled(&self) -> bool {
+        self.machine.quiet_horizontal_cpu_enabled()
+    }
+    pub fn quiet_horizontal_cpu_counts(&self) -> Vec<u64> {
+        self.machine.quiet_horizontal_cpu_counts()
+    }
     pub fn loop_state_hashes(&self) -> Vec<u32> {
         self.machine.loop_state_hashes()
     }

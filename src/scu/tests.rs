@@ -960,3 +960,29 @@ fn ist_zero_clear_preserves_masks_dma_and_later_edges() {
     assert_eq!(b.read32(HIGH_WRAM + 0x200), Ok(0x13579bdf));
     assert_eq!(s.read32(SCU + 0xa4), Ok(0x880));
 }
+
+#[test]
+fn quiet_horizontal_scu_guards_keep_timer_irq_and_dma_triggers() {
+    let mut s = Scu::default();
+    assert!(s.horizontal_events_quiet());
+    s.write32(SCU + 0xA0, 0xBFFB).unwrap();
+    assert!(!s.horizontal_events_quiet());
+    s.write32(SCU + 0xA0, 0xBFFF).unwrap();
+    s.write32(SCU + 0x98, 1).unwrap();
+    assert!(!s.horizontal_events_quiet());
+    s.write32(SCU + 0x98, 0).unwrap();
+    for channel in 0..3 {
+        for trigger in 0..=4 {
+            let base = SCU + channel * 32;
+            s.write32(base + 0x14, trigger).unwrap();
+            s.write32(base + 0x10, 0x100).unwrap();
+            assert_eq!(
+                s.horizontal_events_quiet(),
+                trigger < 2,
+                "masked IRQ must not hide armed DMA event {trigger}"
+            );
+            s.write32(base + 0x10, 0).unwrap();
+            assert!(s.horizontal_events_quiet());
+        }
+    }
+}

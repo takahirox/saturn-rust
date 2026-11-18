@@ -132,6 +132,16 @@ impl Scu {
     pub(crate) fn dma_pending(&self) -> bool {
         self.dsp.dma_pending() || self.channels.iter().any(|c| c.pending())
     }
+    pub(crate) fn horizontal_events_quiet(&self) -> bool {
+        self.mask & 4 != 0
+            && self.timer_mode & 1 == 0
+            && !self.dma_pending()
+            && !self.dsp.running()
+            && !self
+                .channels
+                .iter()
+                .any(|c| (2..=4).any(|event| c.accepts_trigger(event)))
+    }
     pub(crate) fn can_wake(&self) -> bool {
         self.interrupt().is_some()
             || self.dsp.running()

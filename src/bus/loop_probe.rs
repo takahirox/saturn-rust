@@ -173,6 +173,23 @@ impl super::Bus {
 }
 
 impl Machine {
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn enable_quiet_horizontal_cpu(&mut self, enabled: bool) {
+        self.bus.batch_quiet_horizontal = enabled;
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn quiet_horizontal_cpu_enabled(&self) -> bool {
+        self.bus.batch_quiet_horizontal
+    }
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub fn quiet_horizontal_cpu_counts(&self) -> Vec<u64> {
+        self.bus
+            .quiet_horizontal_counts
+            .iter()
+            .map(std::cell::Cell::get)
+            .collect()
+    }
+
     pub fn loop_state_hashes(&self) -> Vec<u32> {
         fn digest(bytes: impl IntoIterator<Item = u8>) -> [u32; 2] {
             let hash = bytes.into_iter().fold(0xCBF29CE484222325u64, |h, b| {

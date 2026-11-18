@@ -321,6 +321,9 @@ pub trait Memory {
 }
 
 pub struct Bus {
+    pub(crate) batch_quiet_horizontal: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) quiet_horizontal_counts: [Cell<u64>; 4],
     #[cfg(any(test, feature = "sound-worker"))]
     pub(crate) sound_rendezvous: sound_rendezvous::Rendezvous,
     loop_probe: Option<Box<loop_probe::LoopProbe>>,
@@ -409,6 +412,9 @@ pub(crate) struct InterruptRequest {
 impl Default for Bus {
     fn default() -> Self {
         Self {
+            batch_quiet_horizontal: true,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            quiet_horizontal_counts: Default::default(),
             #[cfg(any(test, feature = "sound-worker"))]
             sound_rendezvous: sound_rendezvous::Rendezvous::production(),
             loop_probe: Some(Box::new(loop_probe::LoopProbe::automatic())),
@@ -975,55 +981,7 @@ impl Bus {
             #[cfg(any(test, feature = "video-worker"))]
             let video_before = self.vdp1.take_display_journal();
             let raster_event = self.raster.advance(delta);
-            match raster_event {
-                Some(RasterEvent::HBlankIn) => {
-                    if self.raster.line < self.raster.display_lines() {
-                        if self.render_video() {
-                            self.vdp2
-                                .scanline(&self.vdp1, usize::from(self.raster.line));
-                        }
-                        self.vdp1.erase_display_line(
-                            usize::from(self.raster.line),
-                            self.vdp2.dimensions().0,
-                        );
-                    }
-                    self.vdp1.hblank_in();
-                    self.vdp2.hblank = true;
-                    self.scu.hblank_in();
-                }
-                Some(RasterEvent::VBlankIn) => {
-                    self.vdp1.vblank_in(
-                        self.raster.line_clocks(),
-                        u32::from(self.raster.blank_lines()),
-                    );
-                    if self.render_video() {
-                        self.vdp2.finish_field();
-                    }
-                    self.vdp2.hblank = false;
-                    self.vdp2.vblank = true;
-                    self.smpc.vblank_in();
-                    self.scu.signal(0);
-                }
-                Some(RasterEvent::VBlankOut) => {
-                    self.vdp2.hblank = false;
-                    self.vdp2.vblank = false;
-                    self.scu.vblank_out();
-                    let active = self.system_clock.deadline(self.raster.active_clocks());
-                    self.smpc.vblank_out_after(active);
-                    self.vdp1.vblank_out();
-                    self.vdp2.scan_field(self.raster.odd());
-                    if self.render_video() {
-                        self.vdp2.begin_scanline(0);
-                    }
-                }
-                Some(RasterEvent::LineStart) => {
-                    self.vdp2.hblank = false;
-                    if self.render_video() && self.raster.line < self.raster.display_lines() {
-                        self.vdp2.begin_scanline(usize::from(self.raster.line));
-                    }
-                }
-                None => (),
-            }
+            self.process_raster_event(raster_event);
             let (h, v) = self.raster.counters();
             self.vdp2.counters(h, v);
             self.vdp2.scan_field(self.raster.odd());
@@ -1044,6 +1002,58 @@ impl Bus {
             remaining -= delta;
         }
         Ok(command)
+    }
+
+    pub(super) fn process_raster_event(&mut self, raster_event: Option<RasterEvent>) {
+        match raster_event {
+            Some(RasterEvent::HBlankIn) => {
+                if self.raster.line < self.raster.display_lines() {
+                    if self.render_video() {
+                        self.vdp2
+                            .scanline(&self.vdp1, usize::from(self.raster.line));
+                    }
+                    self.vdp1.erase_display_line(
+                        usize::from(self.raster.line),
+                        self.vdp2.dimensions().0,
+                    );
+                }
+                self.vdp1.hblank_in();
+                self.vdp2.hblank = true;
+                self.scu.hblank_in();
+            }
+            Some(RasterEvent::VBlankIn) => {
+                self.vdp1.vblank_in(
+                    self.raster.line_clocks(),
+                    u32::from(self.raster.blank_lines()),
+                );
+                if self.render_video() {
+                    self.vdp2.finish_field();
+                }
+                self.vdp2.hblank = false;
+                self.vdp2.vblank = true;
+                self.smpc.vblank_in();
+                self.scu.signal(0);
+            }
+            Some(RasterEvent::VBlankOut) => {
+                self.vdp2.hblank = false;
+                self.vdp2.vblank = false;
+                self.scu.vblank_out();
+                let active = self.system_clock.deadline(self.raster.active_clocks());
+                self.smpc.vblank_out_after(active);
+                self.vdp1.vblank_out();
+                self.vdp2.scan_field(self.raster.odd());
+                if self.render_video() {
+                    self.vdp2.begin_scanline(0);
+                }
+            }
+            Some(RasterEvent::LineStart) => {
+                self.vdp2.hblank = false;
+                if self.render_video() && self.raster.line < self.raster.display_lines() {
+                    self.vdp2.begin_scanline(usize::from(self.raster.line));
+                }
+            }
+            None => (),
+        }
     }
 
     /// SMPC §§2.3.9–10: PLL change resets the listed LSIs, not work RAM,
