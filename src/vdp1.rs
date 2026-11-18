@@ -619,6 +619,9 @@ impl Vdp1 {
         self.blank_capacity = line_clocks.saturating_sub(200) * blank_lines;
         self.blank_remaining = line_clocks * blank_lines;
     }
+    pub(crate) fn horizontal_events_quiet(&self) -> bool {
+        !self.vbe_sample_pending
+    }
     pub(crate) fn hblank_in(&mut self) {
         if !self.vbe_sample_pending {
             return;

@@ -1044,6 +1044,9 @@ impl Bus {
         self.observable_deadline_with_onchip(self.onchip[0].clocks_to_event())
     }
     fn observable_deadline_with_onchip(&self, onchip: u32) -> u32 {
+        self.observable_deadline_with_raster(onchip, self.raster.clocks_to_event())
+    }
+    fn observable_deadline_with_raster(&self, onchip: u32, raster: u32) -> u32 {
         onchip
             .min(
                 if (self.sound.main_interrupt() && self.scu.device_signal_pending(6))
@@ -1060,7 +1063,7 @@ impl Bus {
                 u32::MAX
             })
             .min(self.interrupt_deadline())
-            .min(self.raster.clocks_to_event())
+            .min(raster)
             .min(self.scu.clocks_to_event())
             // Drawing updates the back buffer; rotation/sprite-window reads
             // use the other buffer. VDP1 retains the exceptional deadline for
@@ -1185,11 +1188,51 @@ impl Bus {
         sound_advanced: bool,
         transactions: bool,
     ) -> Result<u64, ScuError> {
+        if !self.batch_quiet_horizontal || main < self.raster.clocks_to_event() {
+            let origin = if CLOCK_ADVANCED {
+                self.main_clocks - u64::from(main)
+            } else {
+                self.main_clocks
+            };
+            return self.advance_isolated_single_segment_mode::<CLOCK_ADVANCED, PLANNED_BSC>(
+                main,
+                sound_advanced,
+                transactions,
+                origin,
+            );
+        }
+        let mut origin = if CLOCK_ADVANCED {
+            self.main_clocks - u64::from(main)
+        } else {
+            self.main_clocks
+        };
+        let mut remaining = main;
+        let mut reference = 0;
+        while remaining != 0 {
+            let delta = remaining.min(self.raster.clocks_to_event());
+            reference += self.advance_isolated_single_segment_mode::<CLOCK_ADVANCED, PLANNED_BSC>(
+                delta,
+                sound_advanced,
+                transactions,
+                origin,
+            )?;
+            remaining -= delta;
+            origin += u64::from(delta);
+        }
+        Ok(reference)
+    }
+    fn advance_isolated_single_segment_mode<const CLOCK_ADVANCED: bool, const PLANNED_BSC: bool>(
+        &mut self,
+        main: u32,
+        sound_advanced: bool,
+        transactions: bool,
+        origin: u64,
+    ) -> Result<u64, ScuError> {
         if main == 0 {
             return Ok(0);
         }
         #[cfg(debug_assertions)]
-        let interrupt_sources = (!transactions).then(|| {
+        let mut interrupt_sources = (!transactions).then(|| {
             [
                 self.interrupt_request(Processor::Master),
                 self.interrupt_request(Processor::Slave),
@@ -1246,15 +1289,47 @@ impl Bus {
             if !CLOCK_ADVANCED {
                 self.main_clocks += u64::from(delta);
             }
-            assert!(
-                self.raster.advance(delta).is_none(),
-                "cached catch-up crossed blanking"
-            );
             #[cfg(any(test, feature = "video-worker"))]
-            {
-                let before = self.vdp1.take_display_journal();
-                self.record_video_advance(delta, before, None);
+            let video_before = self.vdp1.take_display_journal();
+            let raster_event = self.raster.advance(delta);
+            assert!(
+                raster_event.is_none()
+                    || (self.batch_quiet_horizontal
+                        && self.scu.horizontal_events_quiet()
+                        && self.vdp1.horizontal_events_quiet()
+                        && matches!(
+                            raster_event,
+                            Some(RasterEvent::HBlankIn | RasterEvent::LineStart)
+                        )),
+                "cached catch-up crossed an observable raster control edge"
+            );
+            self.process_raster_event(raster_event);
+            if raster_event.is_some() {
+                // Slave DCC IRL2 changes at horizontal edges independently of
+                // SCU masking. Publish its ordinary recognition edge even
+                // when the private peer's SR masks acceptance.
+                let board_clock = self.main_clocks;
+                self.main_clocks = origin + u64::from(main - remaining + delta);
+                self.sample_interrupts();
+                #[cfg(debug_assertions)]
+                if let Some(before) = &mut interrupt_sources {
+                    let after = [
+                        self.interrupt_request(Processor::Master),
+                        self.interrupt_request(Processor::Slave),
+                    ];
+                    debug_assert_eq!(before[0], after[0]);
+                    debug_assert!(
+                        before[1] == after[1]
+                            || before[1]
+                                .is_some_and(|r| matches!(r.source, InterruptSource::Slave))
+                            || after[1].is_some_and(|r| matches!(r.source, InterruptSource::Slave))
+                    );
+                    *before = after;
+                }
+                self.main_clocks = board_clock;
             }
+            #[cfg(any(test, feature = "video-worker"))]
+            self.record_video_advance(delta, video_before, raster_event);
             if CLOCK_ADVANCED {
                 self.display_deadline = 0;
             }
@@ -1369,6 +1444,20 @@ impl Bus {
         } else {
             None
         };
+        let mut quiet_horizontal = self.batch_quiet_horizontal
+            && passive.is_none()
+            && !transfer_active
+            && self.cached_readonly_bus_quiet()
+            && self.scu.horizontal_events_quiet()
+            && self.vdp1.horizontal_events_quiet()
+            && poll.is_none_or(|peer| peer.mask() >= 2);
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        let horizontal_end = self.main_clocks + u64::from(self.raster.clocks_to_event());
+        let cpu_raster = if quiet_horizontal {
+            self.raster.clocks_to_vertical_event()
+        } else {
+            self.raster.clocks_to_event()
+        };
         // Cache-only work cannot access CD registers. The CD deadline below
         // keeps the whole span before a possible change of audio source.
         let cd_quiet = self.cd.audio_quiet() && !self.cd.interrupt();
@@ -1395,19 +1484,30 @@ impl Bus {
             .system_clock
             .preview(reference_span)
             .saturating_add(self.pending_main_clocks);
-        let span = self
+        let bus_limit = if store_available {
+            u32::MAX
+        } else {
+            self.bus_main_deadline()
+        };
+        let legacy_span = self
             .observable_main_deadline()
-            .min(if store_available {
-                u32::MAX
-            } else {
-                self.bus_main_deadline()
-            })
+            .min(bus_limit)
             .saturating_sub(1)
             .min(fixed_span)
             .min(1024);
+        let legacy_end = self.main_clocks + u64::from(legacy_span);
+        let span = if quiet_horizontal {
+            self.observable_deadline_with_raster(self.onchip[0].clocks_to_event(), cpu_raster)
+                .min(bus_limit)
+                .saturating_sub(1)
+                .min(fixed_span)
+                .min(1024)
+        } else {
+            legacy_span
+        };
         let mut readonly_refresh = readonly_refresh
             .map(|local| {
-                self.observable_deadline_with_onchip(local)
+                self.observable_deadline_with_raster(local, cpu_raster)
                     .saturating_sub(1)
                     .min(fixed_span)
                     .min(1024)
@@ -1424,7 +1524,7 @@ impl Bus {
             })
             .and_then(|_| self.onchip[0].readonly_refresh_deadline())
             .map(|local| {
-                self.observable_deadline_with_onchip(local)
+                self.observable_deadline_with_raster(local, cpu_raster)
                     .saturating_sub(1)
                     .min(fixed_span)
                     .min(1024)
@@ -1438,6 +1538,11 @@ impl Bus {
             .min(poll.map_or(u32::MAX, PeerSchedule::span));
         if span < 2 {
             return Ok(None);
+        }
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        if quiet_horizontal && span > legacy_span {
+            let count = &self.quiet_horizontal_counts[0];
+            count.set(count.get() + 1);
         }
         let mut end = self.main_clocks + u64::from(span);
         if master_start > end {
@@ -1714,6 +1819,23 @@ impl Bus {
                 }
             }
             let class = Cpu::cached_class(op);
+            if quiet_horizontal
+                && store_width(op).is_some()
+                && cpu
+                    .cached_store_address(op)
+                    .is_none_or(|address| !work_ram(Bus::physical(address)))
+            {
+                // Non-WRAM writes can affect scanout or future device work.
+                // Keep their original raster/BSC horizon and publish first.
+                if memory.clock.get() >= legacy_end {
+                    break;
+                }
+                quiet_horizontal = false;
+                readonly_refresh = None;
+                end = legacy_end;
+                memory.end.set(end);
+                memory.fill_end = legacy_end;
+            }
             if readonly_refresh.is_some() && store_width(op).is_some() {
                 if memory.clock.get() >= normal_end {
                     break;
@@ -2258,6 +2380,12 @@ impl Bus {
         let (local, ram_plan, fills) = memory.into_parts();
         debug_assert!(store.is_none() || (ram_plan.is_none() && fills.read_count() == 0));
         drop(cache);
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        if quiet_horizontal && retired_at >= horizontal_end {
+            let counts = &self.quiet_horizontal_counts;
+            counts[2].set(counts[2].get() + 1);
+            counts[3].set(counts[3].get() + u64::from(retired));
+        }
         self.instruction_word[0].set(local.retained);
         self.onchip[0].count_cached_instructions(local.epochs);
         // Display acquisition and silent sound microcycles cannot observe

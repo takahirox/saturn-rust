@@ -167,6 +167,17 @@ impl Raster {
         };
         (horizontal as u16, vertical)
     }
+    /// Cache/WRAM-only CPU work may commute with quiet horizontal edges.
+    /// Vertical control transitions and the exact field endpoint remain bounds.
+    pub(crate) fn clocks_to_vertical_event(&self) -> u32 {
+        let field = self.field_lines();
+        let next = if self.line < self.display_lines() {
+            self.display_lines().min(field)
+        } else {
+            field
+        };
+        u32::from(next - self.line) * self.line_clocks() - self.phase
+    }
     pub fn clocks_to_event(&self) -> u32 {
         if self.phase < self.hblank_clock() {
             self.hblank_clock() - self.phase
@@ -304,6 +315,60 @@ impl Raster {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn quiet_horizontal_vertical_deadline_matches_next_real_vertical_event() {
+        for pal in [false, true] {
+            for fast in [false, true] {
+                for mode in [0, 1, 2, 3, 4, 5, 6, 7, 0x80, 0xC0, 0x90, 0xD4] {
+                    for field in [0, 1] {
+                        let mut base = Raster {
+                            pal,
+                            fields: field,
+                            ..Raster::default()
+                        };
+                        base.select_clock(fast);
+                        base.configure(mode);
+                        for line in [
+                            0,
+                            base.display_lines() - 1,
+                            base.display_lines(),
+                            base.field_lines() - 1,
+                        ] {
+                            if line >= base.field_lines() {
+                                continue;
+                            }
+                            for phase in [
+                                0,
+                                base.hblank_clock() - 1,
+                                base.hblank_clock(),
+                                base.line_clocks() - 1,
+                            ] {
+                                let mut r = base.clone();
+                                r.line = line;
+                                r.phase = phase;
+                                let expected = r.clocks_to_vertical_event();
+                                let mut literal = 0;
+                                loop {
+                                    let clocks = r.clocks_to_event();
+                                    literal += clocks;
+                                    if matches!(
+                                        r.advance(clocks),
+                                        Some(RasterEvent::VBlankIn | RasterEvent::VBlankOut)
+                                    ) {
+                                        break;
+                                    }
+                                }
+                                assert_eq!(
+                                    expected, literal,
+                                    "pal={pal} fast={fast} mode={mode:X} field={field} line={line} phase={phase}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn reference_span_bound_covers_fractional_phase_and_double_tick_distances() {

@@ -501,7 +501,9 @@ impl Machine {
                 return Ok(0);
             }
         }
-        let span = self.bus.private_probe_span();
+        let span = self
+            .bus
+            .private_probe_span_for_mask((self.slave.state().sr >> 4) & 15);
         if span < 2 {
             return Ok(0);
         }
@@ -672,18 +674,38 @@ impl Bus {
             .copy_private(&source.cache[1].borrow(), replacement);
         Some(())
     }
+    #[cfg(test)]
     fn private_probe_span(&self) -> u32 {
+        self.private_probe_span_for_mask(0)
+    }
+    fn private_probe_span_for_mask(&self, mask: u32) -> u32 {
         if self.smpc.clocks_to_cpu_reset().is_some()
             || !self.onchip[1].cached_batch_allowed()
             || self.onchip[1].monitors_external_bus()
         {
             return 0;
         }
-        self.onchip[1]
+        let raster = if mask >= 2
+            && self.batch_quiet_horizontal
+            && self.cached_readonly_bus_quiet()
+            && self.scu.horizontal_events_quiet()
+            && self.vdp1.horizontal_events_quiet()
+        {
+            self.raster.clocks_to_vertical_event()
+        } else {
+            self.raster.clocks_to_event()
+        };
+        let span = self.onchip[1]
             .clocks_to_event()
             .saturating_sub(9)
-            .min(self.raster.clocks_to_event().saturating_sub(1))
-            .min(1024)
+            .min(raster.saturating_sub(1))
+            .min(1024);
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        if span > self.raster.clocks_to_event().saturating_sub(1) {
+            let count = &self.quiet_horizontal_counts[1];
+            count.set(count.get() + 1);
+        }
+        span
     }
     fn private_code(&self, address: u32) -> Option<([u8; 4], crate::cache::CacheTouch)> {
         self.cache[1].borrow().peek_cached_touch(address & !3)
@@ -698,6 +720,20 @@ impl Bus {
 #[cfg(test)]
 mod resume_tests {
     use super::*;
+    #[test]
+    fn quiet_horizontal_unmasked_slave_keeps_original_probe_limit() {
+        let mut m = polling_machine();
+        while m.bus.raster.clocks_to_event() > 64 {
+            m.bus.advance_clocks(1).unwrap();
+            m.clocks += 1;
+        }
+        let original = m.bus.private_probe_span_for_mask(0);
+        m.enable_quiet_horizontal_cpu(true);
+        assert_eq!(m.bus.private_probe_span_for_mask(0), original);
+        assert_eq!(m.bus.private_probe_span_for_mask(1), original);
+        assert!(m.bus.private_probe_span_for_mask(2) > original);
+    }
+
     fn polling_machine() -> Machine {
         let mut machine = crate::scheduling_tests::cached_pair(
             &[0x7001, 0x7101, 0x7201, 0xAFFB, 9],

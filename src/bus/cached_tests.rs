@@ -799,6 +799,7 @@ fn cached_video_stores_publish_before_later_command_and_texture_acquisition() {
         bytes[0x190..0x194].copy_from_slice(&0xFFFF_FE92u32.to_be_bytes());
         bytes[0x194..0x198].copy_from_slice(&entry.to_be_bytes());
         let (mut a, mut b) = pair(&bytes);
+        a.enable_quiet_horizontal_cpu(true);
         for _ in 0..3 {
             assert_eq!(a.advance_frame(), reference_frame(&mut b));
             same(&mut a, &mut b);
@@ -813,6 +814,7 @@ fn rotation_acquisition_and_continuous_back_buffer_drawing_commute_with_cached_c
         "../../tests/fixtures/rotation-fetch-bitmap.hex"
     ));
     let (mut a, mut b) = pair(&bytes);
+    a.enable_quiet_horizontal_cpu(true);
     a.advance_frame().unwrap();
     reference_frame(&mut b).unwrap();
     same(&mut a, &mut b);
@@ -3110,4 +3112,170 @@ fn deferred_display_marks_empty_edge_before_same_edge_register_completion() {
         (80, 4, 1, 1)
     );
     assert_eq!(trace[3].words, [0x1234, 0x5671]);
+}
+
+#[test]
+fn quiet_horizontal_cpu_fields_preserve_literal_clocks_irq_and_dma() {
+    let mut crossed = 0;
+    for pal in [false, true] {
+        for fast in [false, true] {
+            for guard in 0..4 {
+                let make = || {
+                    let mut m = crate::scheduling_tests::cached_pair(
+                        &[0x7001, 0x7101, 0x7201, 0xAFFB, 9],
+                        &[0xAFFE, 9],
+                    );
+                    m.bus.set_slave_enabled(false);
+                    m.set_pal(pal);
+                    m.bus.change_system_clock(fast);
+                    match guard {
+                        1 => m.bus.scu.write32(SCU + 0xA0, 0xBFFB).unwrap(),
+                        2 => {
+                            m.bus.scu.write32(SCU + 0x94, 2).unwrap();
+                            m.bus.scu.write32(SCU + 0x98, 1).unwrap();
+                        }
+                        3 => {
+                            m.bus.write32(HIGH_WRAM + 0x3000, 0x12345678).unwrap();
+                            for (offset, value) in [
+                                (0, HIGH_WRAM + 0x3000),
+                                (4, HIGH_WRAM + 0x4000),
+                                (8, 4),
+                                (12, 0x102),
+                                (20, 2),
+                                (16, 0x100),
+                            ] {
+                                m.bus.scu.write32(SCU + offset, value).unwrap();
+                            }
+                        }
+                        _ => (),
+                    }
+                    assert_eq!(m.bus.scu.horizontal_events_quiet(), guard == 0);
+                    m
+                };
+                let (mut a, mut b) = (make(), make());
+                a.enable_quiet_horizontal_cpu(true);
+                b.enable_quiet_horizontal_cpu(false);
+                for _ in 0..2 {
+                    a.advance_frame().unwrap();
+                    reference_frame(&mut b).unwrap();
+                    same(&mut a, &mut b);
+                    assert_eq!(a.loop_state_hashes(), b.loop_state_hashes());
+                    a.bus.onchip[0].assert_cached_read_bus_matches(&b.bus.onchip[0]);
+                }
+                if guard == 0 {
+                    crossed += a.quiet_horizontal_cpu_counts()[2];
+                }
+                if guard == 1 || guard == 2 {
+                    assert_eq!(a.quiet_horizontal_cpu_counts()[0], 0);
+                }
+                if guard == 3 {
+                    assert_eq!(a.bus.read32(HIGH_WRAM + 0x4000), Ok(0x12345678));
+                }
+                assert_eq!(b.quiet_horizontal_cpu_counts(), vec![0; 4]);
+            }
+        }
+    }
+    assert!(
+        crossed > 10,
+        "must actually pass horizontal control boundaries"
+    );
+}
+
+#[test]
+fn quiet_horizontal_private_peer_fields_keep_every_cpu_cache_and_bus_phase() {
+    let mut crossed = 0;
+    let mut leases = 0;
+    for pal in [false, true] {
+        for fast in [false, true] {
+            let make = || {
+                let mut m = crate::scheduling_tests::cached_pair(
+                    &[0x7001, 0x7101, 0x7201, 0xAFFB, 9],
+                    &[0x60F0, 0xC880, 0x89FC, 0xAFFB, 9],
+                );
+                m.set_pal(pal);
+                m.bus.change_system_clock(fast);
+                m.bus.set_slave_enabled(true);
+                let mut memory = m.bus.for_cpu(Processor::Slave);
+                memory.write8(crate::cache::CCR, 0x11).unwrap();
+                memory.fetch16(HIGH_WRAM + 0x100).unwrap();
+                m.bus.cpu_delay(Processor::Slave, 0);
+                m.slave = Cpu::start(HIGH_WRAM + 0x100, crate::onchip::FRT + 1);
+                m.slave.prime_fetch(&m.bus.for_cpu(Processor::Slave));
+                m
+            };
+            let (mut a, mut b) = (make(), make());
+            a.enable_quiet_horizontal_cpu(true);
+            b.enable_quiet_horizontal_cpu(false);
+            for _ in 0..2 {
+                a.advance_frame().unwrap();
+                b.advance_frame().unwrap();
+                same(&mut a, &mut b);
+                assert_eq!(a.loop_state_hashes(), b.loop_state_hashes());
+                for i in 0..2 {
+                    a.bus.cache[i]
+                        .borrow()
+                        .assert_same_contents(&b.bus.cache[i].borrow());
+                    a.bus.onchip[i].assert_cached_read_bus_matches(&b.bus.onchip[i]);
+                }
+            }
+            crossed += a.quiet_horizontal_cpu_counts()[2];
+            leases += a.quiet_horizontal_cpu_counts()[1];
+            assert_eq!(b.quiet_horizontal_cpu_counts(), vec![0; 4]);
+        }
+    }
+    assert!(
+        crossed > 10 && leases > 10,
+        "new Master and private Slave spans must both execute: crossed={crossed} leases={leases}"
+    );
+}
+
+#[test]
+fn quiet_horizontal_non_wram_write_stops_before_its_device_effect() {
+    for posted in [false, true] {
+        let make = || {
+            let mut words = [9u16; 34];
+            words[0] = 0xD10F;
+            if posted {
+                words[2] = 0x2F02;
+            }
+            words[1] = 0xE001;
+            words[18] = 0x2101;
+            words[19] = 0x7001;
+            words[20] = 0xAFFE;
+            words[32] = (VDP2 >> 16) as u16;
+            words[33] = VDP2 as u16;
+            let mut m = crate::scheduling_tests::cached_pair(&words, &[0xAFFE, 9]);
+            m.bus.set_slave_enabled(false);
+            let mut memory = m.bus.for_cpu(Processor::Master);
+            memory.write8(crate::cache::CCR, 0x11).unwrap();
+            for offset in (0..words.len() * 2 + 4).step_by(16) {
+                memory.fetch16(HIGH_WRAM + offset as u32).unwrap();
+            }
+            m.bus.cpu_delay(Processor::Master, 0);
+            while m.bus.raster.clocks_to_event() > 8 {
+                m.bus.advance_clocks(1).unwrap();
+                m.clocks += 1;
+            }
+            m.cpu = Cpu::start(HIGH_WRAM, HIGH_WRAM + 0x1000);
+            m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
+            m.cpu_ready[0] = m.bus.main_clocks;
+            m
+        };
+        let (mut a, mut b) = (make(), make());
+        a.enable_quiet_horizontal_cpu(true);
+        b.enable_quiet_horizontal_cpu(false);
+        assert_eq!(a.try_cached_batch(128).unwrap(), 18);
+        assert_eq!(a.cpu_state().pc, HIGH_WRAM + 36);
+        assert_eq!(a.cpu_state().r[0], 1);
+        assert!(a.quiet_horizontal_cpu_counts()[2] > 0);
+        assert_eq!(a.bus.vdp2.read16(VDP2), Ok(0));
+        while b.cpu.state().instructions < a.cpu.state().instructions {
+            b.step().unwrap();
+        }
+        same(&mut a, &mut b);
+        assert_eq!(a.loop_state_hashes(), b.loop_state_hashes());
+        if posted {
+            assert_eq!(a.bus.read32(HIGH_WRAM + 0x1000), Ok(1));
+        }
+    }
 }
