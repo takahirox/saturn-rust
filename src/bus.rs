@@ -408,6 +408,10 @@ pub struct Bus {
     pub(crate) cached_cycle_anchor_borrowed: bool,
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub(crate) cached_cycle_anchor_borrows: u64,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) resident_branch_issues: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) resident_branch_issue_count: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -518,6 +522,10 @@ impl Default for Bus {
             cached_cycle_anchor_borrowed: false,
             #[cfg(any(test, feature = "kernel-experiment"))]
             cached_cycle_anchor_borrows: 0,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            resident_branch_issues: false,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            resident_branch_issue_count: 0,
         }
     }
 }

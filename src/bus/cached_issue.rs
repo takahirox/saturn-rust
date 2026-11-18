@@ -33,6 +33,34 @@ struct BranchMemory<'a> {
     retained: Cell<Option<(u32, u16)>>,
 }
 
+impl BranchMemory<'_> {
+    fn resident_plan(&mut self, cpu: &Cpu) -> Option<PreparedBranch> {
+        let plan = cpu.prepare_resident_control(self.clock)?;
+        if plan.at > self.end {
+            return None;
+        }
+        let mut words = [0; 3];
+        for (i, &(address, _, discard)) in plan.fetches.iter().flatten().enumerate() {
+            if discard {
+                self.sh2_discard_prefetch();
+            }
+            words[i] = self.fetch16(address).ok()?;
+        }
+        // Every IF above used a retained or resident cache word. The plan
+        // already accounts for the pipeline waits between those same reads.
+        self.clock = plan.at;
+        Some(plan.finish(words))
+    }
+
+    fn into_branch(self, plan: PreparedBranch) -> CachedBranch {
+        CachedBranch {
+            plan,
+            touches: self.touches.into_inner(),
+            retained: self.retained.get(),
+        }
+    }
+}
+
 impl Memory for BranchMemory<'_> {
     fn sh2_clock(&self) -> Option<u64> {
         Some(self.clock)
@@ -216,20 +244,46 @@ impl Bus {
             .min(fixed)
             .min(8);
         let cache = self.cache[index].borrow();
-        let mut memory = BranchMemory {
+        let clock = self.main_clocks;
+        let retained = self.instruction_word[index].get();
+        let make_memory = || BranchMemory {
             cache: &cache,
-            clock: self.main_clocks,
-            end: self.main_clocks + u64::from(span),
+            clock,
+            end: clock + u64::from(span),
             touches: Cell::new([None; 5]),
-            retained: Cell::new(self.instruction_word[index].get()),
+            retained: Cell::new(retained),
         };
-        let plan = initial.prepare_cached_control(&mut memory)?;
-        let wait = (memory.clock - self.main_clocks) as u32;
-        let branch = CachedBranch {
-            plan,
-            touches: memory.touches.into_inner(),
-            retained: memory.retained.get(),
+        let mut memory = make_memory();
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        let try_resident = self.resident_branch_issues;
+        #[cfg(not(any(test, feature = "kernel-experiment")))]
+        let try_resident = true;
+        let plan = if try_resident {
+            if let Some(plan) = memory.resident_plan(initial) {
+                #[cfg(debug_assertions)]
+                {
+                    let mut literal = make_memory();
+                    let expected = initial.prepare_cached_control(&mut literal).unwrap();
+                    debug_assert!(plan == expected && memory.clock == literal.clock);
+                    debug_assert!(memory.touches.get() == literal.touches.get());
+                    debug_assert!(memory.retained.get() == literal.retained.get());
+                }
+                #[cfg(any(test, feature = "kernel-experiment"))]
+                {
+                    self.resident_branch_issue_count += 1;
+                }
+                plan
+            } else {
+                // A denied operand can follow successful IF peeks. Discard
+                // those private touches before retrying the original plan.
+                memory = make_memory();
+                initial.prepare_cached_control(&mut memory)?
+            }
+        } else {
+            initial.prepare_cached_control(&mut memory)?
         };
+        let wait = (memory.clock - clock) as u32;
+        let branch = memory.into_branch(plan);
         drop(cache);
         if wait != 0 {
             self.queue_cached_pipeline_wait(processor, wait);

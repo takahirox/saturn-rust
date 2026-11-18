@@ -111,6 +111,7 @@ mod scheduling_tests {
         };
         let mut reference = make();
         let mut optimized = make();
+        optimized.bus.resident_branch_issues = true;
         let mut continued_branch = false;
         for _ in 0..512 {
             optimized.step_inner_with_idle(true).unwrap();
@@ -127,6 +128,7 @@ mod scheduling_tests {
         }
         assert!(optimized.cached_dual_scalars > 100);
         assert!(continued_branch);
+        assert!(optimized.bus.resident_branch_issue_count > 0);
     }
 
     #[test]

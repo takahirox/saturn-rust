@@ -4678,3 +4678,27 @@ PCM and full Sound state agree in all pairs and with the independently
 retained reference. Production player and AudioWorklet results are recorded
 in the associated pull request. Sustained 60 fields/s, continuous audio
 delivery and the broader hardware acceptance criteria remain open.
+
+## Reuse resident branch schedules during dual-CPU issue (2026-11-19)
+
+Related to #138 and #17. A branch at an ordinary dual-CPU issue boundary can
+use the resident instruction schedule already used inside cached bursts. The
+proof uses the existing bounded BranchMemory cache reads, including the
+retained halfword and ordered replacement touches. It queues the original
+wait and then publishes the effects through the existing branch continuation.
+A failed resident proof restarts the original branch planning path with its
+initial private state.
+
+Native validation compared the live prepared state, wait, retained halfword
+and replacement edits with the original. It passed 58 cached-burst tests, 10
+scheduling tests and the exhaustive branch-encoding test. An executed
+one-clock-early mutation failed the dual-CPU interleave original. The restored
+source passed that original and native and Wasm Clippy.
+
+The real-game diagnostic improved from 53.940 to 54.175 fields/s over 2,240
+paired game fields (+0.44%), with 24 of 28 faster windows. The four matched
+slow ranges together improved by 0.10%. All corresponding CPU, cache, RAM,
+clock, pixel, PCM and full Sound checks matched the paired and independent
+reference. Six original browser pairs also matched. Production results are
+recorded in the associated pull request. Sustained 60 fields/s, continuous
+audio delivery and broader hardware acceptance remain open.
