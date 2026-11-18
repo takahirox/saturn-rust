@@ -248,6 +248,10 @@ struct Erasing {
 #[cfg_attr(test, derive(PartialEq, Eq))]
 pub struct Vdp1 {
     owned_texture_runs: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    geometry_deadlines: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    geometry_deadline_queries: std::cell::Cell<u64>,
     display_erase_rows: bool,
     #[cfg(any(test, feature = "kernel-experiment"))]
     display_erase_row_counts: [u64; 3],
@@ -290,6 +294,10 @@ impl Default for Vdp1 {
     fn default() -> Self {
         Self {
             owned_texture_runs: true,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            geometry_deadlines: false,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            geometry_deadline_queries: std::cell::Cell::new(0),
             display_erase_rows: true,
             #[cfg(any(test, feature = "kernel-experiment"))]
             display_erase_row_counts: [0; 3],
@@ -729,15 +737,29 @@ impl Vdp1 {
                     return 0;
                 }
                 let no_end_codes = draw.command[0] & 15 > 2 || draw.command[2] & 0x1080 != 0;
-                let row = if no_end_codes {
-                    let owned;
-                    let line = if let Some(line) = &draw.line {
-                        line
+                #[cfg(any(test, feature = "kernel-experiment"))]
+                let geometry_only = self.geometry_deadlines;
+                #[cfg(not(any(test, feature = "kernel-experiment")))]
+                let geometry_only = true;
+                let mut complete_row = None;
+                let mut full_row_dots = || {
+                    if geometry_only {
+                        *complete_row.get_or_insert_with(|| {
+                            #[cfg(any(test, feature = "kernel-experiment"))]
+                            self.geometry_deadline_queries
+                                .set(self.geometry_deadline_queries.get() + 1);
+                            let line = Self::build_raster_line::<false>(draw);
+                            (line.last - line.dot + 1).max(1) as u32
+                        })
                     } else {
-                        owned = Self::raster_line(draw);
-                        &owned
-                    };
-                    (line.last - line.dot + 1).max(1) as u32
+                        let line = Self::raster_line(draw);
+                        (line.last - line.dot + 1).max(1) as u32
+                    }
+                };
+                let row = if no_end_codes {
+                    draw.line.as_ref().map_or_else(&mut full_row_dots, |line| {
+                        (line.last - line.dot + 1).max(1) as u32
+                    })
                 } else {
                     1
                 };
@@ -752,8 +774,7 @@ impl Vdp1 {
                     });
                 let rows = (draw.rows - draw.row) as u32;
                 let width = if rows != 0 && no_end_codes && rectangle {
-                    let first = Self::raster_line(draw);
-                    (first.last - first.dot + 1).max(1) as u32
+                    full_row_dots()
                 } else {
                     1
                 };
@@ -1175,6 +1196,9 @@ impl Vdp1 {
         Ok(())
     }
     fn raster_line(draw: &Drawing) -> RasterLine {
+        Self::build_raster_line::<true>(draw)
+    }
+    fn build_raster_line<const PIXEL_INPUTS: bool>(draw: &Drawing) -> RasterLine {
         let Drawing {
             command: c,
             points: p,
@@ -1193,10 +1217,16 @@ impl Vdp1 {
         } else {
             let a = p[0].lerp(p[3], *row, *rows);
             let b = p[1].lerp(p[2], *row, *rows);
-            let sa = std::array::from_fn(|ch| lerp(shade[0][ch], shade[3][ch], *row, *rows));
-            let sb = std::array::from_fn(|ch| lerp(shade[1][ch], shade[2][ch], *row, *rows));
-            let v = lerp(0, i32::from(c[5] & 255) - 1, *row, *rows);
-            (a, b, (0, v), (i32::from(c[5] >> 8 & 63) * 8 - 1, v), sa, sb)
+            if PIXEL_INPUTS {
+                let sa = std::array::from_fn(|ch| lerp(shade[0][ch], shade[3][ch], *row, *rows));
+                let sb = std::array::from_fn(|ch| lerp(shade[1][ch], shade[2][ch], *row, *rows));
+                let v = lerp(0, i32::from(c[5] & 255) - 1, *row, *rows);
+                (a, b, (0, v), (i32::from(c[5] >> 8 & 63) * 8 - 1, v), sa, sb)
+            } else {
+                // Pre-clipping selects dot boundaries using only A and B.
+                // Deadline queries do not need the data used to draw a dot.
+                (a, b, (0, 0), (0, 0), [0; 3], [0; 3])
+            }
         };
         let mut line = RasterLine {
             a,
@@ -1214,7 +1244,7 @@ impl Vdp1 {
         if let Some(clip) = draw.clip {
             line.preclip(clip);
         }
-        if line.textured && line.dot <= line.last {
+        if PIXEL_INPUTS && line.textured && line.dot <= line.last {
             line.texture = Some(TextureLine::new(c, &line));
         }
         line
@@ -1451,6 +1481,15 @@ impl crate::Machine {
     }
     pub fn owned_texture_runs_enabled(&self) -> bool {
         self.bus.vdp1.owned_texture_runs
+    }
+    pub fn enable_vdp1_geometry_deadlines(&mut self, enabled: bool) {
+        self.bus.vdp1.geometry_deadlines = enabled;
+    }
+    pub fn vdp1_geometry_deadlines_enabled(&self) -> bool {
+        self.bus.vdp1.geometry_deadlines
+    }
+    pub fn vdp1_geometry_deadline_queries(&self) -> u64 {
+        self.bus.vdp1.geometry_deadline_queries.get()
     }
     pub fn enable_display_erase_rows(&mut self, enabled: bool) {
         self.bus.vdp1.enable_display_erase_rows(enabled);

@@ -80,6 +80,49 @@ fn output(s: &Smpc, count: usize) -> Vec<u8> {
         .map(|i| s.read(SMPC + 0x21 + i as u32 * 2).unwrap())
         .collect()
 }
+
+#[test]
+fn quiet_clocks_keep_controller_reset_and_battery_boundaries() {
+    let mut reference = Smpc::default();
+    let mut optimized = Smpc::default();
+    optimized.set_quiet_interval_enabled(true);
+    for smpc in [&mut reference, &mut optimized] {
+        smpc.battery.phase = REFERENCE_HZ - 54 - 807;
+        smpc.set_analog(0, Some([0x12, 0x34, 0xAB]));
+        for (offset, value) in [(0x79, 0x60), (0x7D, 1), (0x75, 0x60), (0x75, 0x20)] {
+            smpc.write(SMPC + offset, value).unwrap();
+        }
+        assert_eq!(smpc.advance_clocks(54), None);
+        smpc.write(SMPC + 0x75, 0).unwrap();
+        issue(smpc, 3);
+        assert_eq!(smpc.read(SMPC + 0x75).unwrap() & 31, 0x11);
+        assert_eq!(smpc.clocks_to_cpu_reset(), Some(807));
+        assert_eq!(smpc.clocks_to_event(), 54);
+        for clocks in [17, 36] {
+            assert_eq!(smpc.advance_clocks(clocks), None);
+        }
+        assert_eq!(smpc.read(SMPC + 0x75).unwrap() & 31, 0x11);
+        assert_eq!(smpc.clocks_to_event(), 1);
+        assert_eq!(smpc.clocks_to_cpu_reset(), Some(754));
+        assert_eq!(smpc.advance_clocks(1), None);
+        assert_eq!(smpc.read(SMPC + 0x75).unwrap() & 31, 0x01);
+        assert_eq!(smpc.clocks_to_event(), 753);
+        for clocks in [500, 252] {
+            assert_eq!(smpc.advance_clocks(clocks), None);
+        }
+        assert_eq!(smpc.read(SMPC + 0x63), Ok(1));
+        assert_eq!(smpc.clocks_to_cpu_reset(), Some(1));
+        assert_eq!(smpc.advance_clocks(1), Some(3));
+        assert_eq!(smpc.read(SMPC + 0x63), Ok(0));
+        assert_eq!(smpc.battery.second, 1);
+        assert_eq!(smpc.battery.phase, 0);
+        assert_eq!(smpc.advance_clocks(7), None);
+        assert_eq!(smpc.clocks_to_event(), u32::MAX);
+        smpc.reset_volatile();
+        assert_eq!(smpc.battery.phase, 7);
+    }
+    assert_eq!(optimized.quiet_interval_steps, 2);
+}
 #[test]
 fn command_report_survives_status_publication_continue_break_and_rejected_writes() {
     // ST-169 §§2.3/2.4: OREG31 publishes at processing start; SF

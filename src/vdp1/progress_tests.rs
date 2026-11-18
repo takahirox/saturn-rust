@@ -73,6 +73,7 @@ fn pending_translucent_pixel_becomes_observable_when_its_buffer_is_swapped() {
 
 #[test]
 fn pixel_runs_match_single_clocks_across_texture_ports_and_six_state_effects() {
+    let mut geometry_queries = 0;
     for mode in [0x40, 0xC0, 0xC1, 0xC3, 0xC4] {
         for chunk in [3u32, 8, 31, 128] {
             let make = || {
@@ -96,6 +97,7 @@ fn pixel_runs_match_single_clocks_across_texture_ports_and_six_state_effects() {
                 bus.vdp1
             };
             let (mut batched, mut single) = (make(), make());
+            batched.geometry_deadlines = true;
             let mut horizons = Vec::new();
             let mut clock = 0u32;
             let mut completion = None;
@@ -116,6 +118,10 @@ fn pixel_runs_match_single_clocks_across_texture_ports_and_six_state_effects() {
                     ended |= edge;
                 }
                 assert_eq!(result, Ok(ended));
+                assert_eq!(
+                    batched.clocks_to_observable_event(),
+                    single.clocks_to_observable_event()
+                );
                 assert_eq!(batched.buffers, single.buffers);
                 assert_eq!(
                     (
@@ -147,12 +153,66 @@ fn pixel_runs_match_single_clocks_across_texture_ports_and_six_state_effects() {
                 }
             }
             assert!(!single.busy());
+            assert_eq!(batched.buffers, single.buffers);
+            geometry_queries += batched.geometry_deadline_queries.get();
             let completion = completion.unwrap();
             for (at, bound) in horizons {
                 assert!(
                     at + bound <= completion,
                     "mode={mode:X}, at={at}, bound={bound}, end={completion}"
                 );
+            }
+        }
+    }
+    assert!(geometry_queries > 0);
+}
+
+#[test]
+fn deadline_geometry_preserves_dot_bounds_without_pixel_inputs() {
+    use super::{Drawing, Point, Vdp1};
+
+    let make_point = |(x, y)| Point { x, y };
+    for points in [
+        [(-11, 0), (23, 0), (23, 9), (-11, 9)],
+        [(23, 0), (-11, 0), (-11, 9), (23, 9)],
+        [(3, -15), (3, 23), (17, 27), (17, -20)],
+        [(-9, -5), (29, 14), (21, 26), (-3, 9)],
+    ] {
+        for clip in [
+            None,
+            Some([(0, 0), (15, 9)]),
+            Some([(-3, -3), (17, 19)]),
+            Some([(100, 100), (110, 110)]),
+        ] {
+            for kind in [0, 1, 2, 4, 5, 6] {
+                let mut command = [0; 16];
+                command[0] = kind | 0x30;
+                command[2] = 0x10C4;
+                command[5] = 0x0309;
+                let rows = match kind {
+                    5 => 3,
+                    6 => 0,
+                    _ => 9,
+                };
+                let mut draw = Drawing {
+                    command,
+                    points: points.map(make_point),
+                    shade: [[-16, 2, 12], [15, -4, 0], [0, 15, -15], [-3, 8, 4]],
+                    shade_read: 4,
+                    lookup: [0; 16],
+                    lookup_read: 16,
+                    texture: None,
+                    row: 0,
+                    rows,
+                    line: None,
+                    clip: clip.map(|points| points.map(make_point)),
+                };
+                for row in 0..=rows {
+                    draw.row = row;
+                    let full = Vdp1::raster_line(&draw);
+                    let geometry = Vdp1::build_raster_line::<false>(&draw);
+                    assert_eq!((geometry.dot, geometry.last), (full.dot, full.last));
+                }
             }
         }
     }
