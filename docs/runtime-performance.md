@@ -4548,3 +4548,52 @@ Both orders have zero audio drops and zero runtime errors. The highest
 normal order and improve by 1.44% in the reverse order. The Web player continues
 to miss 60 fields/s and the audio supply target during the measured gameplay.
 The broader performance and hardware-completion Issues remain open.
+
+## Restore a rejected cached MOV load (2026-11-19)
+
+Related to #138 and #17. When a cached batch uses a proven peer schedule, an
+ordinary MOV load can sample its operand and then run out of time for the
+remaining memory phase. The original path restores the private bus state and
+replays the accepted CPU prefix. The new path saves the destination, optional
+postincrement source and private IF, MA and issue state. A rejected load
+restores those fields with the existing private bus snapshot. The actual load
+and fetch use the existing interpreter. A shorter endpoint selected by Sound
+or peer timing still uses the existing prefix rebuild.
+
+The native regression stops four MOV forms after operand sampling and checks
+the complete CPU and the sampled address and clock. The forms exercise signed
+word reads, postincrement, overlapping registers and R0-indexed addressing.
+Omitting destination, source or fetch restoration independently fails the
+regression. Restoring the exact source passes. The focused load, cached batch
+and private polling groups pass. Native and Wasm Clippy pass. The normal,
+direct and forced Sound-return-failure browser checks pass for seven original
+fixtures in each mode.
+
+The feature diagnostic runs 28 continuous 80-field windows after 13,420 warmup
+fields with Sound and Video Workers active. Throughput improves from 52.229 to
+52.659 fields/s. Twenty-seven windows improve. In fields 13821–13900 the
+candidate restores about 750 rejected loads per field and reduces the mean
+number of rebuilt instructions from 16,052 to 6,188 per field. Every pair
+agrees on CPU, cache, RAM, clocks, images, generated PCM and full Sound state.
+The last 12 pairs agree with independently recorded endpoints.
+
+The production player draws every field and applies the same 151 inputs in
+both orders. Each order uses six 10-second windows after 12,900 warmup fields.
+Chrome 157.0.8103.52 runs the normal player with its AudioWorklet.
+
+| Measurement | Main first | Candidate first |
+| --- | ---: | ---: |
+| Mean fields/s | 51.623 → 51.742 | 51.619 → 51.686 |
+| Four matched slow windows, fields/s | 27.726 → 27.792 | 27.687 → 27.750 |
+| Same 361 slow fields, fields/s | 39.477 → 39.080 | 39.013 → 39.570 |
+| AudioWorklet underflow output frames | 358334 → 356720 | 359120 → 358743 |
+| Highest 10-second p99, ms | 103.9 → 105.3 | 104.6 → 85.4 |
+
+Both orders have zero dropped audio frames and zero runtime errors. Across the
+same 3,101 fields, p95/p99 move from 41.7/62.5 to 42.1/62.8 ms in the first
+order and from 42.7/64.0 to 42.1/63.5 ms in the reverse order. The normal Wasm
+changes from `9e8293c7aaeb9d72c7bf3cebba1d164c62d91b080e920c12662a429c34745777`
+to `c1f744eddeb35d9d6d058814245bff0f1ba6f5e2c8b9e18b86aa747802535cc1`.
+
+The measured game still falls short of 60 fields/s and continues to have audio
+underflows. The broader performance and hardware-completion Issues remain open.

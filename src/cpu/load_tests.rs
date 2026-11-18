@@ -8,6 +8,7 @@ struct Clocked {
     clock: Cell<u64>,
     reads: RefCell<Vec<(u32, u64)>>,
     events: RefCell<Vec<(bool, u32, u64)>>,
+    reject_ma_tail: bool,
 }
 impl Memory for Clocked {
     fn write16(&mut self, a: u32, v: u16) -> Result<(), BusError> {
@@ -25,7 +26,13 @@ impl Memory for Clocked {
     fn sh2_speculative_fetch(&self, _address: u32) -> bool {
         true
     }
+    fn sh2_schedule_memory_access(&self, _address: u32, write: bool, _completion: u64) -> bool {
+        !write && self.reject_ma_tail
+    }
     fn sh2_pipeline_wait(&mut self, clocks: u32) -> Result<(), BusError> {
+        if clocks > 0 && self.reject_ma_tail && !self.reads.get_mut().is_empty() {
+            return Err(BusError::Pending);
+        }
         self.clock.set(self.clock.get() + u64::from(clocks));
         Ok(())
     }
@@ -50,6 +57,51 @@ impl Memory for Clocked {
     }
     fn write8(&mut self, a: u32, v: u8) -> Result<(), BusError> {
         self.data.write8(a, v)
+    }
+}
+
+#[test]
+fn reversible_load_restores_both_registers_and_if_after_a_late_ma_rejection() {
+    let pc = 0x100;
+    for (opcode, address, destination, r1) in [
+        (0x6211, 0x800, 2, 0x800),
+        (0x6215, 0x800, 2, 0x802),
+        (0x6115, 0x800, 1, 0xFFFF8123),
+        (0x021D, 0x804, 2, 0x800),
+    ] {
+        let make = || {
+            let mut memory = Clocked {
+                data: FlatMemory(vec![0; 65536]),
+                clock: Cell::new(32),
+                reads: RefCell::default(),
+                events: RefCell::default(),
+                reject_ma_tail: true,
+            };
+            memory.data.write16(pc, opcode).unwrap();
+            memory.data.write16(address, 0x8123).unwrap();
+            memory
+        };
+        let (mut ordinary_bus, mut reversible_bus) = (make(), make());
+        let mut initial = Cpu::start(pc, 0xF000);
+        initial.prime_fetch(&ordinary_bus);
+        ordinary_bus.events.get_mut().clear();
+        initial.state.r[0] = 4;
+        initial.state.r[1] = 0x800;
+        initial.state.r[2] = 0x1234;
+        initial.last_clocks = 5;
+        initial.execution_clock = Some(31);
+        let (mut ordinary, mut reversible) = (initial.clone(), initial.clone());
+        assert!(!ordinary.step_cached(&mut ordinary_bus));
+        assert_eq!(ordinary.state.r[destination], 0xFFFF8123);
+        assert_eq!(ordinary.state.r[1], r1);
+        assert_eq!(
+            reversible.step_cached_reversible_load(&mut reversible_bus, opcode),
+            Some(false)
+        );
+        assert_eq!(reversible, initial);
+        assert_eq!(&*ordinary_bus.reads.borrow(), &[(address, 33)]);
+        assert_eq!(ordinary_bus.reads, reversible_bus.reads);
+        assert_eq!(ordinary_bus.events, reversible_bus.events);
     }
 }
 
@@ -84,6 +136,7 @@ fn every_mov_load_addressing_form_samples_at_ma_end_and_preserves_sign_and_updat
                 clock: Cell::new(32),
                 reads: RefCell::default(),
                 events: RefCell::default(),
+                reject_ma_tail: false,
             };
             memory.data.write16(pc, op).unwrap();
             let expected = match width {
@@ -125,6 +178,7 @@ fn pc_relative_delay_slot_uses_branch_target_and_register_transfers_have_no_ma()
             clock: Cell::new(32),
             reads: RefCell::default(),
             events: RefCell::default(),
+            reject_ma_tail: false,
         };
         memory.data.write16(0x102, op).unwrap();
         memory.data.write32(address, 0x12345678).unwrap();
@@ -141,6 +195,7 @@ fn pc_relative_delay_slot_uses_branch_target_and_register_transfers_have_no_ma()
             clock: Cell::new(32),
             reads: RefCell::default(),
             events: RefCell::default(),
+            reject_ma_tail: false,
         };
         memory.data.write16(0x102, op).unwrap();
         let mut c = Cpu::start(0x102, 0xF000);
@@ -169,6 +224,7 @@ fn prepared_indirect_load_matches_complete_cpu_and_ma_events_for_all_registers_a
                         clock: Cell::new(100),
                         reads: RefCell::default(),
                         events: RefCell::default(),
+                        reject_ma_tail: false,
                     }
                 };
                 let (mut a_bus, mut b_bus) = (make_bus(), make_bus());
@@ -220,6 +276,7 @@ fn all_prepared_mov_load_encodings_match_literal_execution_and_bus_addresses() {
                         clock: Cell::new(100),
                         reads: RefCell::default(),
                         events: RefCell::default(),
+                        reject_ma_tail: false,
                     }
                 };
                 let (mut a_bus, mut b_bus) = (make_bus(), make_bus());
@@ -276,6 +333,7 @@ fn prepared_delay_slots_keep_redirected_prefetch_and_literal_register_load_resul
                         clock: Cell::new(100),
                         reads: RefCell::default(),
                         events: RefCell::default(),
+                        reject_ma_tail: false,
                     }
                 };
                 let (mut a_bus, mut b_bus) = (make_bus(), make_bus());

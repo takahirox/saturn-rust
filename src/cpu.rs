@@ -1078,6 +1078,53 @@ impl Cpu {
         }
         completed
     }
+
+    /// Attempt an ordinary decoded MOV load in the caller's speculative bus.
+    /// Before retirement, its only architectural writes are the destination
+    /// and the optional source postincrement. A rejected MA tail restores
+    /// those registers and the in-progress fetch and issue state.
+    #[inline]
+    pub(crate) fn step_cached_reversible_load(
+        &mut self,
+        bus: &mut impl Memory,
+        opcode: u16,
+    ) -> Option<bool> {
+        debug_assert_eq!(Self::cached_class(opcode), CachedClass::Load);
+        if self.decoded_opcode() != Some(opcode)
+            || self.state.pc & 1 != 0
+            || self.state.pc >= 0xFFFF_FE00
+        {
+            return None;
+        }
+        let destination = if matches!(opcode >> 12, 8 | 0xC) {
+            0
+        } else {
+            usize::from(opcode >> 8 & 15)
+        };
+        let source = usize::from(opcode >> 4 & 15);
+        let destination_before = self.state.r[destination];
+        let source_before = self.state.r[source];
+        let fetch = self.fetch.clone();
+        let pipeline = self.load_pipeline.clone();
+        let last_clocks = self.last_clocks;
+        let execution_clock = self.execution_clock;
+        #[cfg(debug_assertions)]
+        let retired = self.state.instructions;
+        if self.step_cached(bus) {
+            #[cfg(debug_assertions)]
+            debug_assert_eq!(self.state.instructions, retired + 1);
+            return Some(true);
+        }
+        self.state.r[destination] = destination_before;
+        self.state.r[source] = source_before;
+        self.fetch = fetch;
+        self.load_pipeline = pipeline;
+        self.last_clocks = last_clocks;
+        self.execution_clock = execution_clock;
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(self.state.instructions, retired);
+        Some(false)
+    }
     fn step_mode<const SCALAR_RETIRE: bool>(
         &mut self,
         bus: &mut impl Memory,

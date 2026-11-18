@@ -514,6 +514,15 @@ impl Emulator {
     pub fn enable_local_journal(&mut self, enabled: bool) {
         self.machine.enable_local_journal(enabled);
     }
+    pub fn enable_reversible_cached_loads(&mut self, enabled: bool) {
+        self.machine.bus.reversible_cached_loads = enabled;
+    }
+    pub fn reversible_cached_loads_enabled(&self) -> bool {
+        self.machine.bus.reversible_cached_loads
+    }
+    pub fn reversible_cached_load_counts(&self) -> Vec<u64> {
+        self.machine.bus.reversible_cached_load_counts.to_vec()
+    }
     pub fn local_journal_enabled(&self) -> bool {
         self.machine.local_journal_enabled()
     }
