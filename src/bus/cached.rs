@@ -70,8 +70,10 @@ struct ResidentFetches {
     retained: Option<(u32, u16)>,
 }
 struct CycleAnchor {
-    cpu: Cpu,
-    local: Local,
+    // The entry CPU and local state already live for the whole batch.
+    // Only an anchor moved inside the batch needs an owned snapshot.
+    snapshot: Option<(Cpu, Local)>,
+    pc: u32,
     ready: u64,
     retired_at: u64,
     retired: u32,
@@ -1513,9 +1515,17 @@ impl Bus {
         let mut ready = self.main_clocks;
         let mut retired_at = self.main_clocks;
         let mut retired = 0;
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        let borrow_origin = self.cached_cycle_anchor_borrowed;
+        #[cfg(not(any(test, feature = "kernel-experiment")))]
+        let borrow_origin = true;
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        if borrow_origin {
+            self.cached_cycle_anchor_borrows += 1;
+        }
         let mut anchor = Some(CycleAnchor {
-            cpu: initial.clone(),
-            local: origin.clone(),
+            snapshot: (!borrow_origin).then(|| (initial.clone(), origin.clone())),
+            pc: initial.state().pc,
             ready,
             retired_at,
             retired,
@@ -1731,17 +1741,21 @@ impl Bus {
             }
             if anchor.as_ref().is_some_and(|a| retired - a.retired > 16) {
                 anchor = Some(CycleAnchor {
-                    cpu: cpu.clone(),
-                    local: memory.snapshot(),
+                    snapshot: Some((cpu.clone(), memory.snapshot())),
+                    pc: cpu.state().pc,
                     ready,
                     retired_at,
                     retired,
                 });
             }
             if let Some(previous) = &anchor
-                && previous.cpu.state().pc == cpu.state().pc
+                && previous.pc == cpu.state().pc
                 && retired > previous.retired
             {
+                let (prior_cpu, prior_local) = previous
+                    .snapshot
+                    .as_ref()
+                    .map_or((initial, &origin), |(cpu, local)| (cpu, local));
                 let instructions = retired - previous.retired;
                 let dt = if instructions == 2
                     && op & 0xF0FF == 0x4010
@@ -1757,15 +1771,15 @@ impl Bus {
                 };
                 let countdown = dt.map(|op| ((op >> 8) & 15) as usize);
                 let local = memory.snapshot();
-                let period = local.clock - previous.local.clock;
+                let period = local.clock - prior_local.clock;
                 let stable_local = instructions <= 16
                     && period != 0
-                    && local.write_len == previous.local.write_len
-                    && local.fill_len == previous.local.fill_len
-                    && local.bus_len == previous.local.bus_len
-                    && local.lru == previous.local.lru
-                    && local.retained == previous.local.retained
-                    && match (&local.reads, &previous.local.reads) {
+                    && local.write_len == prior_local.write_len
+                    && local.fill_len == prior_local.fill_len
+                    && local.bus_len == prior_local.bus_len
+                    && local.lru == prior_local.lru
+                    && local.retained == prior_local.retained
+                    && match (&local.reads, &prior_local.reads) {
                         (Some(a), Some(b)) => a.repeats(b, period),
                         (None, None) => true,
                         _ => false,
@@ -1791,18 +1805,17 @@ impl Bus {
                         }
                     }
                     if repetitions != 0
-                        && cpu.repeat_cached_cycle(&previous.cpu, period, repetitions, countdown)
+                        && cpu.repeat_cached_cycle(prior_cpu, period, repetitions, countdown)
                     {
                         if countdown.is_none()
                             && memory.passive.is_none()
                             && let Some(probe) = &mut self.loop_probe
                         {
-                            probe.note_short_cycle(previous.cpu.state().pc);
+                            probe.note_short_cycle(previous.pc);
                         }
                         let clocks = period * repetitions;
                         memory.clock.set(memory.clock.get() + clocks);
-                        if let (Some(passive), Some(before)) =
-                            (&memory.passive, &previous.local.reads)
+                        if let (Some(passive), Some(before)) = (&memory.passive, &prior_local.reads)
                         {
                             passive
                                 .sequence
@@ -1811,7 +1824,7 @@ impl Bus {
                         }
                         memory.epochs.set(
                             memory.epochs.get()
-                                + (memory.epochs.get() - previous.local.epochs) * repetitions,
+                                + (memory.epochs.get() - prior_local.epochs) * repetitions,
                         );
                         ready += clocks;
                         retired_at += clocks;
@@ -1839,8 +1852,8 @@ impl Bus {
                         cycle_attempts += 1;
                         anchor = if cycle_attempts < 2 {
                             Some(CycleAnchor {
-                                cpu: cpu.clone(),
-                                local: memory.snapshot(),
+                                snapshot: Some((cpu.clone(), memory.snapshot())),
+                                pc: cpu.state().pc,
                                 ready,
                                 retired_at,
                                 retired,
@@ -1853,8 +1866,8 @@ impl Bus {
                     cycle_attempts += 1;
                     anchor = if cycle_attempts < 2 {
                         Some(CycleAnchor {
-                            cpu: cpu.clone(),
-                            local: memory.snapshot(),
+                            snapshot: Some((cpu.clone(), memory.snapshot())),
+                            pc: cpu.state().pc,
                             ready,
                             retired_at,
                             retired,
@@ -2232,8 +2245,12 @@ impl Bus {
             let first = if let Some(checkpoint) = &anchor
                 && checkpoint.retired as usize <= selected
             {
-                memory.restore(checkpoint.local.clone());
-                cpu = checkpoint.cpu.clone();
+                let (checkpoint_cpu, checkpoint_local) = checkpoint
+                    .snapshot
+                    .as_ref()
+                    .map_or((initial, &origin), |(cpu, local)| (cpu, local));
+                memory.restore(checkpoint_local.clone());
+                cpu = checkpoint_cpu.clone();
                 retired_at = checkpoint.retired_at;
                 ready = checkpoint.ready;
                 checkpoint.retired as usize

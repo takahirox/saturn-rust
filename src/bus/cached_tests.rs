@@ -1330,6 +1330,28 @@ fn cached_gbr_load_wait_loops_preserve_width_data_and_branch_controls() {
 }
 
 #[test]
+fn borrowed_cycle_entry_keeps_cpu_state_and_cycle_fold_count() {
+    let mut bytes = rom(include_str!("../../examples/runtime-countdown.hex"));
+    bytes[0x244..0x248].copy_from_slice(&0x100000u32.to_be_bytes());
+    for (pal, fast) in [(false, false), (true, true)] {
+        let (mut borrowed, mut owned) = pair(&bytes);
+        borrowed.bus.cached_cycle_anchor_borrowed = true;
+        for machine in [&mut borrowed, &mut owned] {
+            machine.set_pal(pal);
+            machine.bus.change_system_clock(fast);
+            machine.advance_frame().unwrap();
+        }
+        same(&mut borrowed, &mut owned);
+        assert!(borrowed.bus.cached_cycle_anchor_borrows > 0);
+        assert!(borrowed.bus.cached_cycle_skipped > 0);
+        assert_eq!(
+            borrowed.bus.cached_cycle_skipped,
+            owned.bus.cached_cycle_skipped
+        );
+    }
+}
+
+#[test]
 fn countdown_cycle_acceleration_keeps_the_zero_exit_and_both_pll_domains() {
     let source = include_str!("../../examples/runtime-countdown.hex");
     for counter in [1u32, 2, 3, 0x10000, 0x100000] {

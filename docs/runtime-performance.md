@@ -4626,3 +4626,30 @@ state match at every paired endpoint and at 12 independently recorded endpoints.
 The production Web player measurements and AudioWorklet results are recorded
 in the associated pull request. Sustained real-time and the broader hardware
 acceptance criteria remain open.
+
+## Shorten physical WRAM access and borrow the cached entry state (2026-11-19)
+
+Related to #138 and #17. Once the existing physical address decoder selects
+aligned work RAM, the byte transfer can address the decoded bank directly.
+The arbiter still observes the raw bus address and schedules its ordinary BSC
+grant, wait states and completion. The cached SH-2 scheduler now borrows its
+entry CPU and local state as the first cycle anchor. An anchor moved inside
+the burst retains an owned snapshot for cycle folding and prefix recovery.
+
+The native tests exercise SDRAM bank timing, cached and uncached aliases,
+physical widths and device errors, and compare the two anchor modes during
+countdown loops across both PLL settings. Reversing the WRAM bank selection
+and offsetting the borrowed cycle period each fail their focused test.
+Restoring the implementation passes all 60 related native tests and both
+Wasm build configurations.
+
+The same-build browser comparison enables both changes against the previously
+accepted CPU and CD paths. The original workload improves from 148.112 to
+148.717 fields/s. The game improves from 53.168 to 53.926 fields/s over 28
+continuous 80-field windows (+1.43%). All 28 windows improve. CPU, cache, RAM,
+clock, pixel and PCM results and the full Sound state match at each endpoint.
+Each also matches the independently retained endpoint from the prior build.
+
+Production player performance and AudioWorklet evidence are recorded in the
+associated pull request. Sustained 60 fields/s, continuous audio delivery and
+the broader hardware acceptance criteria remain open.
