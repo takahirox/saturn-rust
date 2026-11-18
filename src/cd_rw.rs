@@ -132,6 +132,10 @@ pub(crate) struct Decoder {
     packs: u64,
 }
 impl Decoder {
+    pub fn is_idle(&self) -> bool {
+        self.input.is_none() && self.stream.is_none()
+    }
+
     pub fn stop(&mut self) {
         self.stream = None;
         self.input = None;
