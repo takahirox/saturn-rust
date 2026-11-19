@@ -1,9 +1,9 @@
 //! Transactional cache-line versions for an observer-bounded read/write burst.
-use super::{Cache, CacheTouch, Line, Ordering};
+use super::{Cache, CacheSet, CacheTouch, Ordering};
 
 struct SetVersion {
     index: usize,
-    ways: [Line; 4],
+    ways: CacheSet,
     previous: usize,
     read: bool,
 }
@@ -34,24 +34,22 @@ impl CachedLines {
             .as_ref()
             .is_none_or(|heads| heads[((address >> 4) & 63) as usize] == 0)
     }
-    fn set<'a>(&'a self, cache: &'a Cache, index: usize) -> &'a [Line; 4] {
+    fn set<'a>(&'a self, cache: &'a Cache, index: usize) -> &'a CacheSet {
         let head = self.heads.as_ref().map_or(0, |heads| heads[index]);
         if head == 0 {
-            &cache.lines[index]
+            &cache.sets[index]
         } else {
             &self.versions[head - 1].ways
         }
     }
-    fn hit<'a>(&'a self, cache: &'a Cache, address: u32) -> Option<(usize, &'a Line)> {
+    fn hit<'a>(&'a self, cache: &'a Cache, address: u32) -> Option<(usize, &'a [u8; 16])> {
         if address >= 0x2000_0000 || cache.control & 1 == 0 {
             return None;
         }
         let (set, tag, _) = Cache::parts(address);
-        self.set(cache, set)
-            .iter()
-            .enumerate()
-            .skip(cache.first_cache_way())
-            .find_map(|(way, line)| (line.valid && line.tag == tag).then_some((way, line)))
+        let set = self.set(cache, set);
+        let way = set.first_match(tag, cache.first_cache_way())?;
+        Some((way, &set.data[way]))
     }
     pub fn read_hit(&self, cache: &Cache, address: u32) -> bool {
         if self.unchanged(address) {
@@ -69,7 +67,7 @@ impl CachedLines {
         }
         let (_, line) = self.hit(cache, address)?;
         let offset = (address & 15) as usize;
-        Some(line.data[offset..offset + N].try_into().unwrap())
+        Some(line[offset..offset + N].try_into().unwrap())
     }
     pub fn peek_touch<const N: usize>(
         &self,
@@ -85,7 +83,7 @@ impl CachedLines {
         let (way, line) = self.hit(cache, address)?;
         let (set, _, offset) = Cache::parts(address);
         Some((
-            line.data[offset..offset + N].try_into().unwrap(),
+            line[offset..offset + N].try_into().unwrap(),
             CacheTouch {
                 set: set as u8,
                 way: way as u8,
@@ -106,7 +104,7 @@ impl CachedLines {
         }
         let (way, line) = self.hit(cache, address)?;
         let (set, _, offset) = Cache::parts(address);
-        let bytes = line.data[offset..offset + N].try_into().unwrap();
+        let bytes = line[offset..offset + N].try_into().unwrap();
         lru[set] = Cache::touch_replacement(lru[set], way);
         Some(bytes)
     }
@@ -122,21 +120,16 @@ impl CachedLines {
         }
         let (index, tag, offset) = Cache::parts(address);
         let current = self.set(cache, index);
-        let mut mask = 0;
-        for (way, line) in current.iter().enumerate().skip(cache.first_cache_way()) {
-            if line.valid && line.tag == tag {
-                mask |= 1 << way;
-            }
-        }
+        let mut mask = current.matching_ways(tag, cache.first_cache_way());
         if mask == 0 {
             return;
         }
         let mut ways = current.clone();
-        for (way, line) in ways.iter_mut().enumerate() {
-            if mask & (1 << way) != 0 {
-                line.data[offset..offset + N].copy_from_slice(&bytes);
-                lru[index] = Cache::touch_replacement(lru[index], way);
-            }
+        while mask != 0 {
+            let way = mask.trailing_zeros() as usize;
+            ways.data[way][offset..offset + N].copy_from_slice(&bytes);
+            lru[index] = Cache::touch_replacement(lru[index], way);
+            mask &= mask - 1;
         }
         let previous = self.heads.as_ref().map_or(0, |heads| heads[index]);
         self.versions.push(SetVersion {
@@ -152,11 +145,7 @@ impl CachedLines {
         let (index, tag, _) = Cache::parts(address);
         let mut ways = self.set(cache, index).clone();
         let way = Cache::victim_from(cache.control, lru[index]);
-        ways[way] = Line {
-            tag,
-            valid: true,
-            data: bytes,
-        };
+        ways.fill(way, tag, bytes);
         // Append even when this set already has a version. A rejected CPU
         // attempt restores its prefix by truncation without copying the cache.
         let previous = self.heads.as_ref().map_or(0, |heads| heads[index]);
@@ -174,7 +163,7 @@ impl CachedLines {
             cache.record_loop_contents_change();
         }
         for version in self.versions {
-            cache.lines[version.index] = version.ways;
+            cache.sets[version.index] = version.ways;
             cache.lookup[version.index].store(0, Ordering::Relaxed);
         }
     }
@@ -194,7 +183,7 @@ mod tests {
         Cache {
             loop_touches: None,
             control: cache.control,
-            lines: cache.lines.clone(),
+            sets: cache.sets.clone(),
             lru: cache.lru,
             lookup: std::array::from_fn(|_| std::sync::atomic::AtomicU32::new(0)),
         }
@@ -233,13 +222,7 @@ mod tests {
             }
             shadow.commit(&mut base);
             base.commit_replacement_state(lru);
-            for set in 0..64 {
-                for way in 0..4 {
-                    let (a, b) = (&base.lines[set][way], &literal.lines[set][way]);
-                    assert_eq!((a.tag, a.valid, a.data), (b.tag, b.valid, b.data));
-                }
-            }
-            assert_eq!(base.lru, literal.lru);
+            base.assert_same_contents(&literal);
         }
     }
 

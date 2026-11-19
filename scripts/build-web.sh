@@ -22,9 +22,9 @@ if ! command -v wasm-bindgen >/dev/null 2>&1 || [ "$(wasm-bindgen --version)" !=
   echo "Install the matching CLI: cargo install wasm-bindgen-cli --version 0.2.129 --locked" >&2
   exit 1
 fi
-# Keep hot CPU/bus helpers visible to LLVM before Wasm tiering. An explicit
-# caller RUSTFLAGS retains control of code generation; see runtime-performance.
-RUSTFLAGS="${RUSTFLAGS--C llvm-args=--inline-threshold=1000}" \
+# Keep hot CPU/bus helpers visible to LLVM and enable the four-way cache tag
+# comparison. Explicit caller RUSTFLAGS still control code generation.
+RUSTFLAGS="${RUSTFLAGS--C llvm-args=--inline-threshold=1000 -C target-feature=+simd128}" \
   cargo build --locked --release --target wasm32-unknown-unknown --features sound-worker
 wasm-bindgen --target web --out-dir web/pkg --no-typescript "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/saturn_rust.wasm"
 
@@ -34,7 +34,7 @@ trap 'rm -f "$optimized_wasm"' EXIT HUP INT TERM
 wasm-opt web/pkg/saturn_rust_bg.wasm -O4 \
   --enable-sign-ext --enable-mutable-globals \
   --enable-nontrapping-float-to-int --enable-bulk-memory \
-  --enable-reference-types --enable-multivalue -o "$optimized_wasm"
+  --enable-reference-types --enable-multivalue --enable-simd -o "$optimized_wasm"
 chmod 644 "$optimized_wasm"
 mv "$optimized_wasm" web/pkg/saturn_rust_bg.wasm
 trap - EXIT HUP INT TERM
