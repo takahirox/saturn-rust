@@ -1,6 +1,7 @@
 //! Capture a complete observed period through ordinary, unbatched CPU issue.
 use super::*;
 use crate::bus::{Bus, Processor};
+use std::sync::Arc;
 mod compiled;
 mod dependencies;
 mod timeline;
@@ -9,10 +10,27 @@ pub(in crate::bus) struct Phase {
     pub(in crate::bus) at: u64,
     pub(in crate::bus) ready: u64,
     pub(in crate::bus) cpu: Cpu,
-    pub(in crate::bus) cache: Vec<u8>,
+    pub(in crate::bus) cache: PhaseCache,
     pub(in crate::bus) retained: Option<(u32, u16)>,
     pub(in crate::bus) epoch: u64,
     pub(in crate::bus) touch_end: usize,
+}
+pub(in crate::bus) struct PhaseCache {
+    pub(in crate::bus) control: u8,
+    replacement: [u8; 64],
+    contents_version: u64,
+    image: Arc<Vec<u8>>,
+}
+impl PhaseCache {
+    fn lines(&self) -> &[u8] {
+        &self.image[65..]
+    }
+    #[cfg(test)]
+    pub(super) fn assert_same_contents(&self, other: &Self) {
+        assert_eq!(self.control, other.control);
+        assert_eq!(self.replacement, other.replacement);
+        assert_eq!(self.lines(), other.lines());
+    }
 }
 pub(in crate::bus) struct Read {
     pub(in crate::bus) owner: u64,
@@ -203,15 +221,35 @@ impl Bus {
     }
 }
 impl Machine {
-    fn loop_trace_phase(&self) -> Option<Phase> {
+    fn loop_trace_phase(&self, prior: Option<&Phase>) -> Option<Phase> {
         let cache = self.bus.cache[0].borrow();
+        let replacement = cache.replacement_state();
+        let contents_version = cache.loop_contents_version();
+        let image = if let Some(prior) =
+            prior.filter(|p| p.cache.contents_version == contents_version)
+        {
+            Arc::clone(&prior.cache.image)
+        } else {
+            Arc::new(cache.loop_probe_snapshot(replacement, |a| cache.peek_cached_touch::<16>(a))?)
+        };
+        #[cfg(test)]
+        assert_eq!(
+            Some(&image[65..]),
+            cache
+                .loop_probe_snapshot(replacement, |a| cache.peek_cached_touch::<16>(a))
+                .as_deref()
+                .map(|image| &image[65..]),
+        );
         Some(Phase {
             at: self.bus.main_clocks,
             ready: self.cpu_ready[0],
             cpu: self.cpu.clone(),
-            cache: cache.loop_probe_snapshot(cache.replacement_state(), |a| {
-                cache.peek_cached_touch::<16>(a)
-            })?,
+            cache: PhaseCache {
+                control: cache.control(),
+                replacement,
+                contents_version,
+                image,
+            },
             retained: self.bus.instruction_word[0].get(),
             epoch: self.bus.onchip[0].private_poll_epoch(),
             touch_end: cache.loop_touch_count(),
@@ -229,42 +267,42 @@ impl Machine {
             capture.executing = before.saturating_sub(initial) + 1;
         }
         let mut committed = self.issue_cpu(Processor::Master)?;
-        if self.cpu.state().instructions != before {
-            let phase = self.loop_trace_phase();
-            if let Some(probe) = &self.bus.loop_probe {
-                let mut slot = probe.capture.borrow_mut();
-                if let Some(capture) = slot.as_mut() {
-                    if self.cpu.state().instructions != before + 1 || phase.is_none() {
-                        capture.data.unsupported += 1;
-                    }
-                    if let Some(phase) = phase {
-                        capture.data.phases.push(phase);
-                    }
-                } else if let Some(phase) = phase
-                    && start == Some(phase.cpu.state().pc)
-                {
-                    self.bus.cache[0].borrow_mut().begin_loop_touches();
-                    probe.tracing.set(true);
-                    *slot = Some(Capture {
-                        data: CapturedLoop {
-                            phases: vec![phase],
-                            reads: Vec::new(),
-                            stores: Vec::new(),
-                            external_reads: 0,
-                            unsupported: 0,
-                            complete: false,
-                            header_checks: Vec::new(),
-                            touches: Vec::new(),
-                            compact_touches: Vec::new(),
-                            by_pc: BTreeMap::new(),
-                            multiplier_constant: false,
-                            compiled: Vec::new(),
-                            timeline: None,
-                        },
-                        pending: None,
-                        executing: 0,
-                    });
+        if self.cpu.state().instructions != before
+            && let Some(probe) = &self.bus.loop_probe
+        {
+            let mut slot = probe.capture.borrow_mut();
+            if let Some(capture) = slot.as_mut() {
+                let phase = self.loop_trace_phase(capture.data.phases.last());
+                if self.cpu.state().instructions != before + 1 || phase.is_none() {
+                    capture.data.unsupported += 1;
                 }
+                if let Some(phase) = phase {
+                    capture.data.phases.push(phase);
+                }
+            } else if start == Some(self.cpu.state().pc)
+                && let Some(phase) = self.loop_trace_phase(None)
+            {
+                self.bus.cache[0].borrow_mut().begin_loop_touches();
+                probe.tracing.set(true);
+                *slot = Some(Capture {
+                    data: CapturedLoop {
+                        phases: vec![phase],
+                        reads: Vec::new(),
+                        stores: Vec::new(),
+                        external_reads: 0,
+                        unsupported: 0,
+                        complete: false,
+                        header_checks: Vec::new(),
+                        touches: Vec::new(),
+                        compact_touches: Vec::new(),
+                        by_pc: BTreeMap::new(),
+                        multiplier_constant: false,
+                        compiled: Vec::new(),
+                        timeline: None,
+                    },
+                    pending: None,
+                    executing: 0,
+                });
             }
         }
         if self.bus.slave_enabled {
@@ -348,11 +386,11 @@ impl Machine {
                 {
                     let [registers, architecture, private] =
                         last.cpu.cached_cycle_differences(&first.cpu, period);
-                    let mut cache = u32::from(last.cache.first() != first.cache.first());
-                    if last.cache[1..65] != first.cache[1..65] {
+                    let mut cache = u32::from(last.cache.control != first.cache.control);
+                    if last.cache.replacement != first.cache.replacement {
                         cache |= 2;
                     }
-                    if last.cache[65..] != first.cache[65..] {
+                    if last.cache.lines() != first.cache.lines() {
                         cache |= 4;
                     }
                     let ready = (i128::from(last.ready)
@@ -452,13 +490,13 @@ impl Machine {
         if let Some(touches) = truncated_touches {
             data.touches.truncate(touches);
         }
-        let mut lru: [u8; 64] = data.phases[0].cache[1..65].try_into().unwrap();
+        let mut lru = data.phases[0].cache.replacement;
         let mut cursor = data.phases[0].touch_end;
         for phase in data.phases.iter().skip(1) {
             for touch in &data.touches[cursor..phase.touch_end] {
                 touch.apply(&mut lru);
             }
-            if lru.as_slice() != &phase.cache[1..65] {
+            if lru != phase.cache.replacement {
                 data.unsupported += 1;
                 data.complete = false;
             }
@@ -535,5 +573,59 @@ impl Machine {
         );
         self.bus.loop_probe.as_mut().unwrap().captured = Some(data);
         Ok(summary)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn captured_cache_contents_are_shared_only_until_a_mutation() {
+        let address = crate::bus::HIGH_WRAM;
+        let mut machine = Machine::new();
+        {
+            let cache = machine.bus.cache[0].get_mut();
+            cache.set_control(1);
+            cache.read::<4>(address, false, |_| Ok([0x21; 4])).unwrap();
+        }
+        let initial = machine.loop_trace_phase(None).unwrap();
+        {
+            let cache = machine.bus.cache[0].get_mut();
+            cache.begin_loop_touches();
+            cache.commit_replacement_state([0; 64]);
+            assert_eq!(
+                cache.read::<4>(address, false, |_| unreachable!()).unwrap(),
+                Some([0x21; 4])
+            );
+        }
+        let touched = machine.loop_trace_phase(Some(&initial)).unwrap();
+        assert!(Arc::ptr_eq(&initial.cache.image, &touched.cache.image));
+        assert_eq!(touched.touch_end, 1);
+        machine.bus.cache[0]
+            .get_mut()
+            .written(address + 4, [0xB7; 4]);
+        let written = machine.loop_trace_phase(Some(&touched)).unwrap();
+        assert!(!Arc::ptr_eq(&touched.cache.image, &written.cache.image));
+        assert_eq!(written.touch_end, 2);
+        assert_ne!(touched.cache.lines(), written.cache.lines());
+        {
+            let cache = machine.bus.cache[0].get_mut();
+            let mut shadow = crate::cache::CachedLines::default();
+            let lru = cache.replacement_state();
+            shadow.fill(cache, address + 16, [0x89; 16], &lru);
+            shadow.commit(cache);
+        }
+        let refilled = machine.loop_trace_phase(Some(&written)).unwrap();
+        assert_ne!(refilled.cache.lines(), written.cache.lines());
+        machine.bus.cache[0].get_mut().set_control(9);
+        let two_way = machine.loop_trace_phase(Some(&refilled)).unwrap();
+        assert_eq!(
+            two_way.cache.lines().len() * 2,
+            refilled.cache.lines().len()
+        );
+        assert_eq!(two_way.cache.control, 9);
+        machine.bus.cache[0].get_mut().reset_control();
+        assert!(machine.loop_trace_phase(Some(&two_way)).is_none());
     }
 }

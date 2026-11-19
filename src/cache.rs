@@ -124,8 +124,14 @@ mod compact_touch_tests {
         }
     }
 }
+#[derive(Default)]
+struct LoopTouches {
+    touches: Vec<CacheTouch>,
+    contents_version: u64,
+}
+
 pub(crate) struct Cache {
-    loop_touches: Option<Vec<CacheTouch>>,
+    loop_touches: Option<LoopTouches>,
     control: u8,
     lines: Vec<[Line; 4]>,
     lru: [u8; 64],
@@ -168,13 +174,27 @@ impl Cache {
             .then_some(actual)
     }
     pub(crate) fn begin_loop_touches(&mut self) {
-        self.loop_touches = Some(Vec::new());
+        self.loop_touches = Some(LoopTouches::default());
     }
     pub(crate) fn loop_touch_count(&self) -> usize {
-        self.loop_touches.as_ref().map_or(0, Vec::len)
+        self.loop_touches
+            .as_ref()
+            .map_or(0, |log| log.touches.len())
+    }
+    pub(crate) fn loop_contents_version(&self) -> u64 {
+        self.loop_touches
+            .as_ref()
+            .map_or(0, |log| log.contents_version)
+    }
+    fn record_loop_contents_change(&mut self) {
+        if let Some(log) = &mut self.loop_touches {
+            log.contents_version += 1;
+        }
     }
     pub(crate) fn end_loop_touches(&mut self) -> Vec<CacheTouch> {
-        self.loop_touches.take().unwrap_or_default()
+        self.loop_touches
+            .take()
+            .map_or_else(Vec::new, |log| log.touches)
     }
     pub(crate) fn loop_probe_snapshot(
         &self,
@@ -222,6 +242,7 @@ impl Cache {
         self.control
     }
     pub fn set_control(&mut self, value: u8) {
+        self.record_loop_contents_change();
         for lookup in &self.lookup {
             lookup.store(0, Ordering::Relaxed);
         }
@@ -236,6 +257,7 @@ impl Cache {
         }
     }
     pub fn reset_control(&mut self) {
+        self.record_loop_contents_change();
         self.control = 0;
         for lookup in &self.lookup {
             lookup.store(0, Ordering::Relaxed);
@@ -249,8 +271,8 @@ impl Cache {
         )
     }
     fn touch(&mut self, set: usize, way: usize) {
-        if let Some(touches) = &mut self.loop_touches {
-            touches.push(CacheTouch {
+        if let Some(log) = &mut self.loop_touches {
+            log.touches.push(CacheTouch {
                 set: set as u8,
                 way: way as u8,
             });
@@ -383,6 +405,7 @@ impl Cache {
                 data[at as usize..at as usize + 4].copy_from_slice(&fetch((address & !15) | at)?);
             }
             let way = self.victim(set);
+            self.record_loop_contents_change();
             self.lines[set][way] = Line {
                 tag,
                 valid: true,
@@ -399,6 +422,9 @@ impl Cache {
     pub fn written<const N: usize>(&mut self, address: u32, bytes: [u8; N]) {
         let ways = self.written_ways(address);
         let (set, _, offset) = Self::parts(address);
+        if ways != 0 {
+            self.record_loop_contents_change();
+        }
         for way in 0..4 {
             if ways & (1 << way) != 0 {
                 self.lines[set][way].data[offset..offset + N].copy_from_slice(&bytes);
@@ -489,12 +515,14 @@ impl Cache {
             }
             _ => return Ok(false),
         }
+        self.record_loop_contents_change();
         Ok(true)
     }
 }
 
 impl Cache {
     pub(crate) fn copy_private(&mut self, source: &Self, replacement: u8) {
+        self.record_loop_contents_change();
         self.control = source.control;
         self.lines.clone_from(&source.lines);
         self.lru.fill(replacement);

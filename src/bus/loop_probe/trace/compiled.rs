@@ -22,14 +22,15 @@ impl Guard {
             .fold(0, |mask, (bit, &at)| mask | (u16::from(at <= owner) << bit))
     }
 }
-fn metadata(image: &[u8], address: u32) -> Option<Guard> {
-    let control = *image.first()?;
+fn metadata(cache: &PhaseCache, address: u32) -> Option<Guard> {
+    let control = cache.control;
+    let image = cache.lines();
     if control & 1 == 0 || address >= 0x20000000 {
         return None;
     }
     let first = if control & 8 == 0 { 0 } else { 2 };
     let active = 4 - first;
-    if image.len() != 65 + 64 * active * 21 {
+    if image.len() != 64 * active * 21 {
         return None;
     }
     let mut guard = Guard {
@@ -42,7 +43,7 @@ fn metadata(image: &[u8], address: u32) -> Option<Guard> {
         last_input: 0,
     };
     for way in first..4 {
-        let at = 65 + (((address >> 4 & 63) as usize) * active + way - first) * 21;
+        let at = (((address >> 4 & 63) as usize) * active + way - first) * 21;
         let tag = u32::from_be_bytes(image[at..at + 4].try_into().ok()?);
         if image[at + 4] != 0 && tag == address & 0x1FFFFC00 {
             guard.ways |= 1 << way;
@@ -52,13 +53,14 @@ fn metadata(image: &[u8], address: u32) -> Option<Guard> {
     // Snapshot construction already rejects aliases; retain this boundary too.
     (guard.ways.count_ones() <= 1).then_some(guard)
 }
-fn touch_address(image: &[u8], touch: crate::cache::CacheTouch) -> Option<u32> {
+fn touch_address(cache: &PhaseCache, touch: crate::cache::CacheTouch) -> Option<u32> {
+    let image = cache.lines();
     let (set, way) = touch.loop_key();
-    let first = if image[0] & 8 == 0 { 0 } else { 2 };
+    let first = if cache.control & 8 == 0 { 0 } else { 2 };
     if way < first {
         return None;
     }
-    let at = 65 + (set * (4 - first) + way - first) * 21;
+    let at = (set * (4 - first) + way - first) * 21;
     if *image.get(at + 4)? == 0 {
         return None;
     }
@@ -333,7 +335,12 @@ mod tests {
                     at: u64::from(index) * 8,
                     ready: u64::from(index) * 8,
                     cpu: Cpu::start(base, 0),
-                    cache,
+                    cache: PhaseCache {
+                        control: 1,
+                        replacement: [0; 64],
+                        contents_version: u64::from(index),
+                        image: Arc::new(cache),
+                    },
                     retained: None,
                     epoch: u64::from(index),
                     touch_end: 0,

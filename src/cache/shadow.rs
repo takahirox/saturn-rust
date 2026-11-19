@@ -170,6 +170,9 @@ impl CachedLines {
         self.heads.get_or_insert_with(|| Box::new([0; 64]))[index] = self.versions.len();
     }
     pub fn commit(self, cache: &mut Cache) {
+        if !self.versions.is_empty() {
+            cache.record_loop_contents_change();
+        }
         for version in self.versions {
             cache.lines[version.index] = version.ways;
             cache.lookup[version.index].store(0, Ordering::Relaxed);
