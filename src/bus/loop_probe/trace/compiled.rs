@@ -1,6 +1,7 @@
 //! Inputs and line identities for a suffix of the observed period.
 use super::*;
 
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub(in crate::bus) struct Guard {
     pub(in crate::bus) address: u32,
     pub(in crate::bus) ways: u8,
@@ -73,15 +74,152 @@ impl CapturedLoop {
         }
         // Retained IF is handled exactly, but this first compiled backend
         // conservatively leaves self-modifying instructions on the interpreter.
-        if self.stores.iter().any(|s| {
-            self.reads.iter().any(|r| {
-                r.instruction
-                    && s.address < (r.address & !3) + 4
-                    && (r.address & !3) < s.address + s.width as u32
-            })
-        }) {
-            return None;
+        if !self.stores.is_empty() {
+            let instruction_words: BTreeSet<_> = self
+                .reads
+                .iter()
+                .filter(|read| read.instruction)
+                .map(|read| read.address & !3)
+                .collect();
+            let changes_code = self.stores.iter().any(|store| {
+                instruction_words
+                    .range((store.address & !3)..store.address + store.width as u32)
+                    .next()
+                    .is_some()
+            });
+            #[cfg(test)]
+            assert_eq!(
+                changes_code,
+                self.stores
+                    .iter()
+                    .any(|store| self.reads.iter().any(|read| {
+                        read.instruction
+                            && store.address < (read.address & !3) + 4
+                            && (read.address & !3) < store.address + store.width as u32
+                    }))
+            );
+            if changes_code {
+                return None;
+            }
         }
+        // Real CPU stores are naturally aligned. Retain the literal plan for
+        // any observation that spans two lines, since the first line's cache
+        // residency governs whether that store overwrites its input bytes.
+        if self
+            .stores
+            .iter()
+            .any(|store| (store.address & 15) as usize + store.width > 16)
+        {
+            return self.compile_literal();
+        }
+        let compiled = self.compile_backward();
+        #[cfg(test)]
+        assert_eq!(compiled, self.compile_literal());
+        compiled
+    }
+
+    fn compile_backward(&self) -> Option<Vec<Vec<Guard>>> {
+        enum Event<'a> {
+            Read(&'a Read),
+            Write(&'a Store),
+        }
+        impl Event<'_> {
+            fn position(&self) -> (u64, u64, u8) {
+                match self {
+                    Self::Read(read) => (read.owner, read.at, 0),
+                    Self::Write(store) => {
+                        (store.owner, store.requested.unwrap_or(store.accepted), 1)
+                    }
+                }
+            }
+        }
+        struct Inputs {
+            needed_by: u32,
+            read: bool,
+            lanes: [u32; 16],
+        }
+        let mut events: Vec<_> = self
+            .reads
+            .iter()
+            .map(Event::Read)
+            .chain(self.stores.iter().map(Event::Write))
+            .collect();
+        events.sort_unstable_by_key(Event::position);
+        let mut inputs = BTreeMap::<u32, Inputs>::new();
+        let mut touched = BTreeMap::new();
+        let mut suffixes = Vec::with_capacity(self.phases.len() - 1);
+        for index in (0..self.phases.len() - 1).rev() {
+            let phase = &self.phases[index];
+            let following = &self.phases[index + 1];
+            for &touch in &self.touches[phase.touch_end..following.touch_end] {
+                touched.insert(touch.loop_key(), (touch, (index + 1) as u32));
+            }
+            // Prepend only newly visible events to this suffix. A read needs
+            // the entry byte until the preceding store overwrites it. Keep
+            // read presence as well, since even a fully overwritten read
+            // needs a real cached line at the suffix entry.
+            while events
+                .last()
+                .is_some_and(|event| event.position().0 > index as u64)
+            {
+                let event = events.pop().unwrap();
+                let owner = event.position().0 as u32;
+                let (address, width, read) = match event {
+                    Event::Read(read) if read.instruction => (read.address & !3, 4, true),
+                    Event::Read(read) => (read.address, read.width, true),
+                    Event::Write(store) if store.address < 0x20000000 => {
+                        (store.address, store.width, false)
+                    }
+                    Event::Write(_) => continue,
+                };
+                let offset = (address & 15) as usize;
+                if offset + width > 16 {
+                    return None;
+                }
+                let line = inputs.entry(address & !15).or_insert(Inputs {
+                    needed_by: owner,
+                    read: false,
+                    lanes: [u32::MAX; 16],
+                });
+                line.needed_by = owner;
+                line.read |= read;
+                line.lanes[offset..offset + width].fill(if read { owner } else { u32::MAX });
+            }
+            let mut guards = BTreeMap::new();
+            for (&address, line) in &inputs {
+                let mut guard = metadata(&phase.cache, address)?;
+                if line.read && guard.ways == 0 {
+                    return None;
+                }
+                guard.needed_by = line.needed_by;
+                guard.input_by = line.lanes;
+                for (lane, &owner) in line.lanes.iter().enumerate() {
+                    if owner != u32::MAX {
+                        guard.mask |= 1 << lane;
+                        guard.last_input = guard.last_input.max(owner);
+                    }
+                }
+                guards.insert(address, guard);
+            }
+            // A touch identifies a physical way. Resolve its tag at each
+            // suffix's real entry image rather than assuming stable tags.
+            for &(touch, owner) in touched.values() {
+                let address = touch_address(&phase.cache, touch)?;
+                let guard = match guards.entry(address) {
+                    std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(metadata(&phase.cache, address)?)
+                    }
+                };
+                guard.needed_by = guard.needed_by.min(owner);
+            }
+            suffixes.push(guards.into_values().collect());
+        }
+        suffixes.reverse();
+        Some(suffixes)
+    }
+
+    fn compile_literal(&self) -> Option<Vec<Vec<Guard>>> {
         let mut suffixes = Vec::new();
         for (index, phase) in self.phases.iter().enumerate().take(self.phases.len() - 1) {
             let mut guards = BTreeMap::<u32, Guard>::new();
@@ -173,5 +311,87 @@ impl CapturedLoop {
             suffixes.push(guards.into_values().collect());
         }
         Some(suffixes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suffix_inputs_keep_read_before_write_and_store_acceptance_order() {
+        let base = crate::bus::HIGH_WRAM;
+        let mut image = vec![0; 65 + 64 * 4 * 21];
+        image[0] = 1;
+        image[65..69].copy_from_slice(&base.to_be_bytes());
+        image[69] = 1;
+        let phases = (0..34)
+            .map(|index| {
+                let mut cache = image.clone();
+                cache[70] = index;
+                Phase {
+                    at: u64::from(index) * 8,
+                    ready: u64::from(index) * 8,
+                    cpu: Cpu::start(base, 0),
+                    cache,
+                    retained: None,
+                    epoch: u64::from(index),
+                    touch_end: 0,
+                }
+            })
+            .collect();
+        let read = |owner, at, address, width| Read {
+            owner,
+            at,
+            address,
+            width,
+            value: 0,
+            instruction: false,
+        };
+        let store = |owner, requested, accepted, address, width| Store {
+            owner,
+            requested: Some(requested),
+            accepted,
+            pc: base + 0x100,
+            address,
+            width,
+            value: 0,
+        };
+        let trace = CapturedLoop {
+            phases,
+            reads: vec![
+                read(4, 30, base, 4),
+                read(1, 7, base, 1),
+                read(3, 25, base + 2, 2),
+                read(3, 26, base + 4, 1),
+            ],
+            stores: vec![
+                store(3, 25, 27, base, 4),
+                store(2, 17, 24, base + 2, 2),
+                store(3, 24, 29, base + 4, 1),
+            ],
+            external_reads: 0,
+            unsupported: 0,
+            complete: true,
+            header_checks: Vec::new(),
+            touches: Vec::new(),
+            compact_touches: Vec::new(),
+            by_pc: BTreeMap::new(),
+            multiplier_constant: true,
+            compiled: Vec::new(),
+            timeline: None,
+        };
+        let compiled = trace.compile().unwrap();
+        for (index, (owner, mask)) in [(1, 1), (2, 0), (3, 12), (4, 15)].into_iter().enumerate() {
+            let [guard] = compiled[index].as_slice() else {
+                panic!("expected one guard for suffix {index}");
+            };
+            assert_eq!(guard.needed_by, owner);
+            assert_eq!(guard.mask, mask);
+            assert_eq!(guard.input_mask(owner - 1), 0);
+            assert_eq!(guard.input_mask(owner), mask);
+            assert_eq!(guard.bytes[0], index as u8);
+        }
+        assert!(compiled[4..].iter().all(Vec::is_empty));
     }
 }

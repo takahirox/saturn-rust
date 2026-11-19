@@ -4800,3 +4800,44 @@ request records the matched slow ranges and the timing outliers.
 
 Game real time, continuous sound delivery and broader hardware acceptance
 remain open.
+
+## Compile captured loop suffixes in one backward pass (2026-11-19)
+
+Related to #138 and #17. Sort the captured reads and writes once and walk
+backward through their suffixes. Track which entry bytes are still needed
+and the first owner of each replacement touch. Build each guard from the
+original cache image for that phase, including the tag at its physical way.
+Stores and instruction reads still use their observed order. The existing
+literal algorithm handles observations with stores spanning a cache line.
+
+The native suite compares the new guard vectors against the literal
+algorithm. A separate original checks byte overlaps and same-clock
+read-before-write ordering using distinct store request and acceptance
+clocks. Changing the compiler to sort a store by acceptance time fails that
+case. The restored source passes the loop and cached-bus tests, formatting,
+and native and both Wasm Clippy configurations.
+
+The matched Chrome game diagnostic on Machi Disc 1 improves from 53.341 to
+54.347 fields/s over 2,240 drawn fields. It is faster in 25 of 28 intervals.
+The four slow intervals improve from 28.978 to 29.366 fields/s. All 28 CPU,
+cache, RAM, clock, pixel, PCM and complete Sound endpoints match. The six
+original browser diagnostics also match and run at 148.093 and 147.765
+fields/s respectively. Standard Wasm matches seven original fixtures in each
+of the normal worker, direct, and forced Sound-return failure modes.
+
+The production player draws every field and applies the same 151 controller
+inputs across both fresh launch orders. Each run measures six ten-second
+windows after a 12,900-field warmup with the real AudioWorklet active.
+
+| Production player | Main → candidate fields/s | Audio underflow sample frames | Matched field-gap p99 |
+| --- | ---: | ---: | ---: |
+| Forward order | 52.084 → 52.266 | 340,445 → 333,149 | 60.6 → 62.8 ms |
+| Reverse order | 52.669 → 52.803 | 316,815 → 307,825 | 59.0 → 59.1 ms |
+
+Both orders have zero audio queue drops and browser errors. Matched gap
+statistics cover the same 3,128 field positions. The four slow ranges gain
+0.11% and 2.06% in the two orders. The earlier 361-field range regresses by
+0.91% in the first order and improves by 1.17% in reverse. The normal player
+shows a small aggregate gain and a lower audio deficit in both orders.
+Sustained real-time gameplay, continuous audio delivery, and broader
+hardware acceptance remain open.
