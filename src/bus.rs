@@ -412,6 +412,10 @@ pub struct Bus {
     pub(crate) resident_branch_issues: bool,
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub(crate) resident_branch_issue_count: u64,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) prepared_cd_load: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) prepared_cd_loads: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -526,6 +530,10 @@ impl Default for Bus {
             resident_branch_issues: false,
             #[cfg(any(test, feature = "kernel-experiment"))]
             resident_branch_issue_count: 0,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            prepared_cd_load: false,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            prepared_cd_loads: 0,
         }
     }
 }
