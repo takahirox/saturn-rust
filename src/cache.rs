@@ -7,6 +7,7 @@ mod shadow;
 pub(crate) use shadow::CachedLines;
 
 pub const CCR: u32 = 0xFFFF_FE92;
+static NEXT_CODE_REVISION: AtomicU32 = AtomicU32::new(1);
 // Keep the four address-array words contiguous. Bit 2 is the hardware
 // valid bit and is disjoint from every address tag.
 const VALID: u32 = 4;
@@ -167,6 +168,7 @@ struct LoopTouches {
 
 pub(crate) struct Cache {
     loop_touches: Option<LoopTouches>,
+    code_revision: AtomicU32,
     control: u8,
     sets: Vec<CacheSet>,
     lru: [u8; 64],
@@ -176,6 +178,7 @@ impl Default for Cache {
     fn default() -> Self {
         Self {
             loop_touches: None,
+            code_revision: AtomicU32::new(0),
             control: 0,
             sets: vec![CacheSet::default(); 64],
             lru: [0; 64],
@@ -219,9 +222,32 @@ impl Cache {
             .as_ref()
             .map_or(0, |log| log.contents_version)
     }
-    fn record_loop_contents_change(&mut self) {
+    fn record_contents_change(&mut self) {
+        *self.code_revision.get_mut() = 0;
         if let Some(log) = &mut self.loop_touches {
             log.contents_version += 1;
+        }
+    }
+    // Reuse a proof only for the same cache image, even if a template is
+    // checked against another cache. Exhaustion leaves the literal check active.
+    pub(crate) fn code_revision(&self) -> u32 {
+        let revision = self.code_revision.load(Ordering::Relaxed);
+        if revision != 0 {
+            return revision;
+        }
+        let Ok(next) =
+            NEXT_CODE_REVISION.try_update(Ordering::Relaxed, Ordering::Relaxed, |revision| {
+                revision.checked_add(1)
+            })
+        else {
+            return 0;
+        };
+        match self
+            .code_revision
+            .compare_exchange(0, next, Ordering::Relaxed, Ordering::Relaxed)
+        {
+            Ok(_) => next,
+            Err(existing) => existing,
         }
     }
     pub(crate) fn end_loop_touches(&mut self) -> Vec<CacheTouch> {
@@ -272,7 +298,7 @@ impl Cache {
         self.control
     }
     pub fn set_control(&mut self, value: u8) {
-        self.record_loop_contents_change();
+        self.record_contents_change();
         for lookup in &self.lookup {
             lookup.store(0, Ordering::Relaxed);
         }
@@ -287,7 +313,7 @@ impl Cache {
         }
     }
     pub fn reset_control(&mut self) {
-        self.record_loop_contents_change();
+        self.record_contents_change();
         self.control = 0;
         for lookup in &self.lookup {
             lookup.store(0, Ordering::Relaxed);
@@ -431,7 +457,7 @@ impl Cache {
                 data[at as usize..at as usize + 4].copy_from_slice(&fetch((address & !15) | at)?);
             }
             let way = self.victim(set);
-            self.record_loop_contents_change();
+            self.record_contents_change();
             self.sets[set].fill(way, tag, data);
             self.lookup[set].store(tag | VALID | way as u32, Ordering::Relaxed);
             way
@@ -445,7 +471,7 @@ impl Cache {
         let mut ways = self.written_ways(address);
         let (set, _, offset) = Self::parts(address);
         if ways != 0 {
-            self.record_loop_contents_change();
+            self.record_contents_change();
         }
         while ways != 0 {
             let way = ways.trailing_zeros() as usize;
@@ -523,14 +549,14 @@ impl Cache {
             }
             _ => return Ok(false),
         }
-        self.record_loop_contents_change();
+        self.record_contents_change();
         Ok(true)
     }
 }
 
 impl Cache {
     pub(crate) fn copy_private(&mut self, source: &Self, replacement: u8) {
-        self.record_loop_contents_change();
+        self.record_contents_change();
         self.control = source.control;
         self.sets.clone_from(&source.sets);
         self.lru.fill(replacement);

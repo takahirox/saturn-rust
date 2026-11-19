@@ -160,7 +160,7 @@ impl CachedLines {
     }
     pub fn commit(self, cache: &mut Cache) {
         if !self.versions.is_empty() {
-            cache.record_loop_contents_change();
+            cache.record_contents_change();
         }
         for version in self.versions {
             cache.sets[version.index] = version.ways;
@@ -182,6 +182,7 @@ mod tests {
     fn duplicate(cache: &Cache) -> Cache {
         Cache {
             loop_touches: None,
+            code_revision: std::sync::atomic::AtomicU32::new(0),
             control: cache.control,
             sets: cache.sets.clone(),
             lru: cache.lru,
