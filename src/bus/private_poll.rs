@@ -11,6 +11,13 @@ pub(crate) struct Context {
     #[cfg(any(test, feature = "kernel-experiment"))]
     bus_admission_counts: [u64; 2],
     templates: Vec<Template>,
+    // Keep the necessary inputs together for a lookup without loading every
+    // template's full CPU and bus snapshot. Indices retain template order.
+    lookup_keys: Vec<u64>,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) lookup_prefilter: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) omitted_template_checks: u64,
     recent: Option<usize>,
     scratch: Option<Box<Machine>>,
     pub(crate) retry: u64,
@@ -22,6 +29,11 @@ impl Default for Context {
             #[cfg(any(test, feature = "kernel-experiment"))]
             bus_admission_counts: [0; 2],
             templates: Vec::new(),
+            lookup_keys: Vec::new(),
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            lookup_prefilter: false,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            omitted_template_checks: 0,
             recent: None,
             scratch: None,
             retry: 0,
@@ -140,6 +152,14 @@ struct Template {
     prefix: usize,
     period: usize,
 }
+
+fn template_key(pc: u32, control: u8, status: u8, observed: u8) -> u64 {
+    u64::from(pc)
+        | (u64::from(control) << 32)
+        | (u64::from(status) << 40)
+        | (u64::from(observed) << 48)
+}
+
 impl Template {
     fn matches(&self, machine: &Machine) -> bool {
         let prior = &self.initial;
@@ -312,6 +332,42 @@ impl Context {
         {
             return Some(index);
         }
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        let use_prefilter = self.lookup_prefilter;
+        #[cfg(not(any(test, feature = "kernel-experiment")))]
+        let use_prefilter = true;
+        if use_prefilter && !self.templates.is_empty() {
+            let key = template_key(
+                machine.slave.state().pc,
+                machine.bus.cache[1].borrow().control(),
+                machine.bus.onchip[1].ftcsr(),
+                machine.bus.onchip[1].private_poll_observed(),
+            );
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            let mut omitted = 0;
+            let index = (0..self.lookup_keys.len()).find(|&index| {
+                if Some(index) == self.recent {
+                    return false;
+                }
+                if self.lookup_keys[index] != key {
+                    #[cfg(any(test, feature = "kernel-experiment"))]
+                    {
+                        omitted += 1;
+                    }
+                    false
+                } else {
+                    self.templates[index].matches(machine)
+                }
+            });
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            {
+                self.omitted_template_checks += omitted;
+            }
+            if let Some(i) = index {
+                self.recent = Some(i);
+            }
+            return index;
+        }
         if let Some(index) = self
             .templates
             .iter()
@@ -459,12 +515,21 @@ impl Context {
             .collect();
         if self.templates.len() == 32 {
             self.templates.remove(0);
+            self.lookup_keys.remove(0);
         }
         let index = self.templates.len();
+        let control = machine.bus.cache[1].borrow().control();
+        let status = machine.bus.onchip[1].ftcsr();
+        self.lookup_keys.push(template_key(
+            initial.cpu.state().pc,
+            control,
+            status,
+            initial.observed,
+        ));
         self.templates.push(Template {
             initial,
-            control: machine.bus.cache[1].borrow().control(),
-            status: machine.bus.onchip[1].ftcsr(),
+            control,
+            status,
             code,
             code_revision: Cell::new(0),
             phases,
@@ -610,6 +675,8 @@ mod tests {
             let mut context = Context::default();
             let index = context.prepare(&m, m.bus.private_probe_span()).unwrap();
             assert!(context.templates[index].matches(&m));
+            context.lookup_prefilter = true;
+            assert_eq!(context.matching(&m), Some(index));
             match change {
                 0 => m.bus.write16(0x21000000, 0).unwrap(),
                 1 => m
@@ -625,6 +692,7 @@ mod tests {
                 _ => unreachable!(),
             }
             assert!(!context.templates[index].matches(&m), "change={change}");
+            assert_eq!(context.matching(&m), None, "change={change}");
         }
     }
 
@@ -772,6 +840,39 @@ mod resume_tests {
         context.retry = machine.bus.main_clocks + 64;
         machine.private_poll = context;
         machine
+    }
+
+    #[test]
+    fn lookup_prefilter_skips_unrelated_origins_before_matching_the_live_proof() {
+        let mut m = polling_machine();
+        let mut context = std::mem::take(&mut m.private_poll);
+        let mut middle = None;
+        for (index, offset) in [(1, 0x200), (2, 0x300)] {
+            let pc = HIGH_WRAM + offset;
+            for (i, opcode) in [0x60F0, 0xC880, 0x89FC, 0xAFFB, 9].into_iter().enumerate() {
+                m.bus.write16(pc + i as u32 * 2, opcode).unwrap();
+            }
+            m.bus.for_cpu(Processor::Slave).fetch16(pc).unwrap();
+            m.bus.cpu_delay(Processor::Slave, 0);
+            m.slave = Cpu::start(pc, onchip::FRT + 1);
+            m.slave.prime_fetch(&m.bus.for_cpu(Processor::Slave));
+            assert_eq!(context.prepare(&m, m.bus.private_probe_span()), Some(index));
+            if index == 1 {
+                middle = Some(m.slave.clone());
+            }
+        }
+        m.slave = middle.unwrap();
+        assert_eq!(context.matching(&m), Some(1));
+        context.recent = Some(2);
+        context.lookup_prefilter = true;
+        assert_eq!(context.matching(&m), Some(1));
+        assert_eq!(context.omitted_template_checks, 1);
+
+        let code = &context.templates[1].code[0];
+        m.bus.cache[1].get_mut().written(code.address, [0x18; 4]);
+        assert!(!context.templates[1].matches_code(&m.bus.cache[1].borrow()));
+        context.recent = Some(2);
+        assert_eq!(context.matching(&m), None);
     }
     #[test]
     fn bus_rejection_precedes_private_proof_construction_without_guest_changes() {
