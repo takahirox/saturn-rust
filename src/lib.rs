@@ -594,6 +594,10 @@ enum CachedIssue {
 pub struct Machine {
     private_poll: bus::private_poll::Context,
     #[cfg(any(test, feature = "kernel-experiment"))]
+    one_tick_worker_wait: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    one_tick_worker_waits: u64,
+    #[cfg(any(test, feature = "kernel-experiment"))]
     paired_irq_sampling: bool,
     #[cfg(any(test, feature = "kernel-experiment"))]
     paired_irq_reuses: u64,
@@ -1623,17 +1627,37 @@ impl Machine {
         // the minimum one-clock advance. Avoid querying all horizons twice.
         let can_coalesce =
             self.can_coalesce_wait(next, committed && sleep_ready.is_none(), coalesced);
-        let elapsed = if next.saturating_sub(self.bus.main_clocks) <= 1 {
-            1
-        } else {
-            self.hardware_idle_span(next, can_coalesce)
-        };
+        let ready_wait = next.saturating_sub(self.bus.main_clocks);
         #[cfg(any(test, feature = "sound-worker"))]
         let rendezvous = self.bus.sound_rendezvous.enabled;
         #[cfg(not(any(test, feature = "sound-worker")))]
         let rendezvous = false;
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        let fold_worker_wait = self.one_tick_worker_wait;
+        #[cfg(all(
+            feature = "sound-worker",
+            not(any(test, feature = "kernel-experiment"))
+        ))]
+        let fold_worker_wait = true;
+        // The Sound rendezvous uses exactly one main tick when it cannot
+        // coalesce or when the live board still owns Sound. Wider device
+        // deadlines cannot change that interval.
         #[cfg(any(test, feature = "sound-worker"))]
-        let elapsed = if rendezvous {
+        let fixed_worker_wait =
+            fold_worker_wait && rendezvous && (!can_coalesce || !self.bus.sound.projected());
+        #[cfg(not(any(test, feature = "sound-worker")))]
+        let fixed_worker_wait = false;
+        let elapsed = if ready_wait <= 1 || fixed_worker_wait {
+            1
+        } else {
+            self.hardware_idle_span(next, can_coalesce)
+        };
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        if fold_worker_wait && rendezvous && elapsed == 1 && (ready_wait > 1 || can_coalesce) {
+            self.one_tick_worker_waits += 1;
+        }
+        #[cfg(any(test, feature = "sound-worker"))]
+        let elapsed = if rendezvous && (!fold_worker_wait || elapsed > 1) {
             if can_coalesce {
                 self.bus.projected_idle_span(elapsed)
             } else {

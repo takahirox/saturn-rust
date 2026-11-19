@@ -580,6 +580,24 @@ impl Emulator {
     pub fn enable_local_journal(&mut self, enabled: bool) {
         self.machine.enable_local_journal(enabled);
     }
+    pub fn enable_private_lookup_prefilter(&mut self, enabled: bool) {
+        self.machine.private_poll.lookup_prefilter = enabled;
+    }
+    pub fn private_lookup_prefilter_enabled(&self) -> bool {
+        self.machine.private_poll.lookup_prefilter
+    }
+    pub fn omitted_private_template_checks(&self) -> u64 {
+        self.machine.private_poll.omitted_template_checks
+    }
+    pub fn enable_one_tick_worker_wait(&mut self, enabled: bool) {
+        self.machine.one_tick_worker_wait = enabled;
+    }
+    pub fn one_tick_worker_wait_enabled(&self) -> bool {
+        self.machine.one_tick_worker_wait
+    }
+    pub fn one_tick_worker_waits(&self) -> u64 {
+        self.machine.one_tick_worker_waits
+    }
     pub fn enable_reversible_cached_loads(&mut self, enabled: bool) {
         self.machine.bus.reversible_cached_loads = enabled;
     }

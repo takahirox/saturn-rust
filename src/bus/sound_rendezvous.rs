@@ -518,6 +518,44 @@ mod tests {
         );
         assert_eq!(reference.drain_audio(8192), paused.drain_audio(8192));
     }
+
+    #[test]
+    fn one_tick_worker_wait_preserves_dual_cpu_readiness_and_pll() {
+        for pal in [false, true] {
+            for fast in [false, true] {
+                for (lead, committed) in [(1, false), (8, false), (8, true)] {
+                    let mut reference = Machine::new();
+                    let mut candidate = Machine::new();
+                    candidate.one_tick_worker_wait = true;
+                    for machine in [&mut reference, &mut candidate] {
+                        machine.bus.set_pal(pal);
+                        machine.bus.change_system_clock(fast);
+                        machine.bus.set_slave_enabled(lead > 1);
+                        machine.bus.sound.set_enabled(true).unwrap();
+                        machine.bus.sound_rendezvous.enabled = true;
+                    }
+                    for _ in 0..128 {
+                        for machine in [&mut reference, &mut candidate] {
+                            machine.cpu_ready = [machine.bus.main_clocks + lead; 2];
+                            assert_eq!(
+                                machine.finish_hardware_boundary_with_idle(committed, true),
+                                Ok(committed)
+                            );
+                        }
+                        assert_eq!(candidate.bus.main_clocks, reference.bus.main_clocks);
+                        assert_eq!(
+                            candidate.bus.pending_main_clocks,
+                            reference.bus.pending_main_clocks
+                        );
+                        assert_eq!(candidate.bus.irq_observed, reference.bus.irq_observed);
+                    }
+                    assert_eq!(candidate.one_tick_worker_waits, 128);
+                    assert_eq!(reference.one_tick_worker_waits, 0);
+                    same(&mut reference, &mut candidate);
+                }
+            }
+        }
+    }
     #[test]
     fn controller_independence_restores_owned_sound_on_rejected_main_accesses() {
         let mut rejected_while_owned = 0;

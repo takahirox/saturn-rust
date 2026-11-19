@@ -5092,3 +5092,61 @@ and Wasm Clippy with warnings denied.
 
 Related to #138 and #17. Sustained real-time throughput, continuous audio
 and hardware completion remain open. Private media and captures stay local.
+
+
+## Reuse private-poll keys and one-clock Worker waits (2026-11-20)
+
+After a miss on the most recent Slave polling proof, a compact key
+compares PC, cache control, FTCSR and the recorded peripheral observation.
+The lookup preserves template order and runs the full CPU, cache, clock
+and journal validation on each matching key. When Sound rendezvous
+already limits an advance to one main tick, the board omits the wider
+deadline calculation and advances through its existing clock path.
+
+The 28 consecutive 80-field diagnostic game windows on Machi Disc 1
+match CPU, cache, WRAM, clocks, pixels, PCM and full Sound state. Combined
+throughput improves from 55.552 to 55.967 fields/s, with 24 of 28 windows
+faster. The four slow windows improve from 31.208 to 31.623 fields/s.
+The original diagnostic workload improves from 149.819 to 150.458 fields/s.
+The slow game windows average 155,667 skipped key mismatches and 30,260
+avoided wider deadline checks per field. Separate switch tests in the same
+Wasm reproduce a 0.39% improvement for lookup and 1.29% for the one-tick
+wait in the selected 80-field slow window. The adjacent window changes
+by +0.02% and +0.68%, respectively.
+
+The standard Chrome 157.0.8103.79 player warms each fresh instance to
+field 12,900, then runs six ten-second windows with normal pacing,
+Canvas presentation, both Workers and an active AudioWorklet. Both
+orders replay the same 153 controller events through field 16,096.
+Every completed field is drawn. Audio queue drops and browser errors
+are zero.
+
+| Measure | Main to candidate, forward | Main to candidate, reverse |
+| --- | ---: | ---: |
+| Matched 3,196 fields, fields/s | 53.201 to 53.663 | 53.599 to 53.683 |
+| Four matched slow ranges, fields/s | 30.669 to 31.528 | 31.518 to 31.643 |
+| Matched p95 / p99 field time, ms | 37.4 / 56.7 to 36.5 / 54.3 | 36.2 / 54.3 to 36.5 / 54.2 |
+| Slow ranges p95 / p99 field time, ms | 61.3 / 118.7 to 58.7 / 112.4 | 58.2 / 117.8 to 58.8 / 112.0 |
+| Worklet underflow sample frames | 291,029 to 273,109 | 276,340 to 272,116 |
+
+Seven of the eight slow comparisons improve. The range starting at
+field 13,661 loses 0.55% in the reverse order, as does the separately
+reported 361-field range by 0.31%. Nine matched gaps exceed 100 ms in
+each run, including eight in the four slow ranges.
+
+Baseline Wasm SHA-256 is
+`737d791bf8e7ad7d5f5357fbb314b7e14199de4ae25d32ce9366ebe117a672c5`.
+Candidate Wasm is
+`63d484e87c607452e102fd26e4959c86c404a9b832c741991051e16a212edefd`.
+The standard build uses Rust 1.100.0, wasm-bindgen 0.2.129 and Binaryen 127,
+with byte-identical JavaScript bindings. Seven original guests match in all
+three standard browser modes, including forced Sound return. The native
+tests verify a matching nonrecent key still rejects changed cache bytes
+and compare real one-tick waits in both PLLs and video regions. A mutation
+bypassing the full proof and a mutation disabling the one-tick path fail
+their intended fixtures. The restored native tests and native/Wasm Clippy
+pass with warnings denied.
+
+Related to #138 and #17. Sustained real-time execution, continuous
+audio and hardware completion remain open. Private media and raw
+captures stay local.
