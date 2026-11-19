@@ -1418,8 +1418,8 @@ impl Bus {
             .system_clock
             .preview(reference_span)
             .saturating_add(self.pending_main_clocks);
-        let span = self
-            .observable_main_deadline()
+        let observable = self.observable_main_deadline();
+        let span = observable
             .min(if store_available {
                 u32::MAX
             } else {
@@ -1436,12 +1436,27 @@ impl Bus {
                     .min(1024)
             })
             .filter(|&wider| wider > span);
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        let allow_neutral_cd = self.allow_cached_neutral_cd_write;
+        #[cfg(not(any(test, feature = "kernel-experiment")))]
+        let allow_neutral_cd = true;
+        // Keep the ordinary horizon for learning/replaying physical writes,
+        // cache fills and passive reads. Only a cache-only retired prefix may
+        // proceed across this already admitted quiet CD write.
+        let neutral_cd_span = (allow_neutral_cd
+            && transfer_active
+            && !store_available
+            && passive.is_none()
+            && self.cached_neutral_cd_write_active())
+        .then(|| observable.saturating_sub(1).min(fixed_span).min(1024))
+        .filter(|&wider| wider > span);
         let pending_write_end = self
             .loop_probe
             .as_ref()
             .filter(|p| p.pending_write_runtime)
             .filter(|_| {
                 passive.is_none()
+                    && neutral_cd_span.is_none()
                     && !sound_lookahead
                     && matches!(poll, None | Some(PeerSchedule::Pending { .. }))
             })
@@ -1457,6 +1472,7 @@ impl Bus {
             .map(|wide| self.main_clocks + u64::from(wide));
         let normal_end = self.main_clocks + u64::from(span);
         let span = readonly_refresh
+            .or(neutral_cd_span)
             .unwrap_or(span)
             .min(poll.map_or(u32::MAX, PeerSchedule::span));
         if span < 2 {
@@ -2331,6 +2347,12 @@ impl Bus {
         } else {
             None
         };
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        if neutral_cd_span.is_some()
+            && retired_at - self.main_clocks > u64::from(self.bus_main_deadline())
+        {
+            self.cached_neutral_cd_write_crossings += 1;
+        }
         let reference = if let Some(reference) = live_reference {
             reference
         } else if let Some(plan) = ram_plan {

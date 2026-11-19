@@ -1521,6 +1521,79 @@ fn readonly_cache_bursts_preserve_refresh_grants_and_keep_enabled_irq_horizons()
 }
 
 #[test]
+fn cache_only_work_crosses_an_exact_quiet_cd_write() {
+    let address = crate::cd::REGISTERS + 8;
+    let through = address | 0x2000_0000;
+    let make = |fast, line_high| {
+        let mut m = crate::scheduling_tests::cached_pair(&[0x7001; 64], &[0x0009; 4]);
+        m.bus.set_slave_enabled(false);
+        m.bus.change_system_clock(fast);
+        m.bus.cd.set_enabled(true);
+        m.bus
+            .cd
+            .write16(
+                crate::cd::REGISTERS + 12,
+                if line_high { 0x3FFF } else { 0 },
+            )
+            .unwrap();
+        assert_ne!(m.bus.cd.peek16(address).unwrap(), 0);
+        assert_eq!(m.bus.cd.interrupt(), line_high);
+
+        let mut accepted = false;
+        for _ in 0..8 {
+            match m.bus.replay_cpu(Processor::Master).write16(through, 0) {
+                Ok(()) => {
+                    accepted = true;
+                    break;
+                }
+                Err(BusError::Pending) => {
+                    m.bus.grant_bus_transaction();
+                    let (reference, command) = m.bus.advance_cpu_clocks(1).unwrap();
+                    assert!(command.is_none());
+                    m.clocks += u64::from(reference);
+                }
+                result => panic!("unexpected buffered CD result: {result:?}"),
+            }
+        }
+        assert!(accepted);
+        m.bus.finish_cpu_transaction(Processor::Master);
+        m.bus.grant_bus_transaction();
+        assert!(m.bus.cached_transfer_active());
+        assert_ne!(m.bus.cd.peek16(address).unwrap(), 0);
+        assert_eq!(m.bus.cached_neutral_cd_write_active(), !line_high);
+        m.cpu_ready[0] = m.bus.main_clocks;
+        m
+    };
+    for fast in [false, true] {
+        for line_high in [false, true] {
+            let mut a = make(fast, line_high);
+            let mut b = make(fast, line_high);
+            a.bus.allow_cached_neutral_cd_write = true;
+            let retired = a.try_cached_batch(48).unwrap();
+            if !line_high {
+                assert!(
+                    retired > 0 && a.bus.cached_neutral_cd_write_crossings > 0,
+                    "must cross the real quiet buffered CD completion"
+                );
+            } else {
+                assert_eq!(a.bus.cached_neutral_cd_write_crossings, 0);
+                if retired == 0 {
+                    a.step().unwrap();
+                }
+            }
+            while b.cpu_state().instructions < a.cpu_state().instructions {
+                b.step().unwrap();
+            }
+            same(&mut a, &mut b);
+            assert_eq!(a.bus.cd.peek16(address), b.bus.cd.peek16(address));
+            if !line_high {
+                assert_eq!(a.bus.cd.peek16(address), Ok(0));
+            }
+        }
+    }
+}
+
+#[test]
 fn cached_memory_mac_keeps_aliasing_saturation_multiplier_and_if_timing() {
     for fast in [false, true] {
         for saturate in [false, true] {

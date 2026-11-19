@@ -614,6 +614,16 @@ impl CdBlock {
     pub(crate) fn peek_data32(&self) -> u32 {
         u32::from(self.peek_data(0)) << 16 | u32::from(self.peek_data(2))
     }
+    pub(crate) fn quiet_buffered_register_write(&self, address: u32, value: u16) -> bool {
+        match address.wrapping_sub(REGISTERS) {
+            // HIRQ acknowledge can cross only if the CD IRQ line keeps its level.
+            8 => self.interrupt() == (self.enabled && (self.hirq.get() & self.mask & value != 0)),
+            // Request parameters have no deadline, response or clock effect.
+            // An outstanding packet makes these addresses fault.
+            0x18 | 0x1C | 0x20 => self.enabled && self.pending.is_none(),
+            _ => false,
+        }
+    }
     pub fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
         if address & 1 != 0 {
             return Err(BusError::Unaligned { address, width: 2 });
@@ -2507,5 +2517,27 @@ mod quiet_clock_tests {
         assert!(cd.audio_quiet());
         cd.advance(1);
         assert!(!cd.audio_quiet());
+    }
+
+    #[test]
+    fn buffered_cd_register_guard_preserves_irq_and_pending_packet_dependencies() {
+        let mut cd = CdBlock::default();
+        cd.set_enabled(true);
+        let address = REGISTERS;
+        cd.write16(address + 12, 0x3FFF).unwrap();
+        assert!(cd.interrupt());
+        assert!(!cd.quiet_buffered_register_write(address + 8, 0));
+        assert!(cd.quiet_buffered_register_write(address + 8, 0xFFFF));
+        cd.write16(address + 12, 0).unwrap();
+        assert!(cd.quiet_buffered_register_write(address + 8, 0));
+        for request in [0x18, 0x1C, 0x20] {
+            assert!(cd.quiet_buffered_register_write(address + request, 0));
+        }
+        assert!(!cd.quiet_buffered_register_write(address + 12, 0));
+        assert!(!cd.quiet_buffered_register_write(address + 0x24, 0));
+        cd.write16(address + 0x24, 0).unwrap();
+        for request in [0x18, 0x1C, 0x20] {
+            assert!(!cd.quiet_buffered_register_write(address + request, 0));
+        }
     }
 }

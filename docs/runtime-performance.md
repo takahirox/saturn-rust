@@ -5034,3 +5034,61 @@ restoring it passes. Native and Wasm Clippy pass with warnings denied.
 Related to #138 and #17. Sustained real-time throughput, continuous
 production audio, and hardware completion remain open. Private media
 and raw captures stay local.
+
+
+## Run resident SH-2 work across quiet buffered CD writes (2026-11-20)
+
+A granted final 16-bit Master write to CD HIRQ or a command parameter
+can complete while the SH-2 retires instructions using only resident
+cache data. An HIRQ acknowledgment must preserve the CD interrupt level.
+Command parameters require an enabled CD block with no outstanding
+packet. The ordinary horizon still bounds physical CPU stores, cache
+fills and passive reads. The physical write, A-bus timing and IRQ
+sampling use their existing paths.
+
+In 28 consecutive 80-field diagnostic windows on Machi Disc 1, all
+compared CPU, cache, WRAM, clock, image, PCM and complete Sound endpoints
+match. Overall throughput is 56.128 to 56.212 fields/s and the four slow
+windows are 31.522 to 31.781 fields/s. The original diagnostic workload
+is 150.357 to 148.970 fields/s. A separate same-instance test switches the
+optimization in both orders. All four repeats improve in the selected
+slow window, from 23.028 to 23.104 fields/s pooled, with 9,970 real
+buffered completions crossed per 80 fields. The adjacent window and
+original workload are effectively flat in that same-instance test,
+with no such crossings. The diagnostic and normal player timings measure
+different paths.
+
+The standard Chrome 157.0.8103.79 player warms each fresh instance to
+field 12,900 and measures six ten-second windows in both execution orders.
+Canvas presentation, both Workers and an active AudioWorklet run normally.
+Both orders replay the same 153 controller events through field 16,113.
+The player draws every field with zero audio queue drops or browser errors.
+
+| Measure | Main to candidate, forward | Main to candidate, reverse |
+| --- | ---: | ---: |
+| Matched 3,213 fields, fields/s | 53.621 to 53.707 | 53.477 to 53.818 |
+| Four matched slow ranges, fields/s | 31.289 to 31.543 | 31.453 to 31.806 |
+| Matched p95 / p99 field time, ms | 36.3 / 54.6 to 36.5 / 54.1 | 36.2 / 53.7 to 35.9 / 53.3 |
+| Slow ranges p95 / p99, ms | 59.4 / 117.3 to 59.6 / 117.4 | 58.6 / 117.7 to 58.1 / 116.9 |
+| Worklet underflow sample frames | 275,956 to 271,701 | 278,594 to 266,484 |
+
+The slow ranges start at fields 13,661, 13,821, 14,861 and 15,341.
+Each improves in both orders. Nine matched gaps exceed 100 ms per run,
+including eight in these ranges.
+
+The baseline Wasm SHA-256 is
+`c78e701ba2d74701ffd29340fe135fe21167ea18765e83dca4dbfffccd4ed4c0`.
+The candidate is
+`737d791bf8e7ad7d5f5357fbb314b7e14199de4ae25d32ce9366ebe117a672c5`.
+The standard build uses Rust 1.100.0, wasm-bindgen 0.2.129 and Binaryen 127.
+The JavaScript binding is byte-identical. The seven original guests match
+in all three standard browser modes, including forced Sound return.
+The native buffered-write fixture crosses an actual A-bus completion in
+both PLL modes and checks complete machine state against ordinary steps.
+A separate guard test covers IRQ and pending command cases. Disabling the
+new path and permitting unsafe HIRQ writes each fail the intended
+original. The restored source passes the focused native tests and native
+and Wasm Clippy with warnings denied.
+
+Related to #138 and #17. Sustained real-time throughput, continuous audio
+and hardware completion remain open. Private media and captures stay local.

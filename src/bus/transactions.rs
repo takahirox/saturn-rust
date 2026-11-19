@@ -1314,6 +1314,34 @@ impl Bus {
                 })
         })
     }
+    pub(super) fn cached_neutral_cd_write_active(&self) -> bool {
+        let Some(active) = &self.transactions.active else {
+            return false;
+        };
+        let t = active.transfer;
+        if active.owner != Owner::WriteBuffer(Processor::Master, false)
+            || t.width != 2
+            || !t.first
+            || !t.last
+            || !(crate::cd::REGISTERS..crate::cd::REGISTERS + 0x24)
+                .contains(&Bus::physical(t.address))
+            || self.transactions.writes[0]
+                .as_ref()
+                .is_none_or(|write| write.beats.len() != 1)
+            || !self.onchip[1].cached_batch_allowed()
+        {
+            return false;
+        }
+        let address = Bus::physical(t.address);
+        let Some(value) = t.write else {
+            return false;
+        };
+        #[cfg(any(test, feature = "sound-worker"))]
+        if self.sound.projected() && self.sound_input_address(address, Some(value)) {
+            return false;
+        }
+        self.cd.quiet_buffered_register_write(address, value as u16)
+    }
     pub(super) fn cached_store_window(&self) -> Option<(u32, Option<crate::onchip::ReadSequence>)> {
         if self.external_monitor_owns_internal(Processor::Master) {
             return None;
