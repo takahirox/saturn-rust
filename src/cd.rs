@@ -131,6 +131,8 @@ pub struct CdBlock {
     pub(crate) quiet_data_enabled: bool,
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub(crate) quiet_data_steps: u64,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) sound_data_commands: bool,
     standby_seconds: u16,
     init_flags: u8,
     rw: crate::cd_rw::Decoder,
@@ -305,6 +307,8 @@ impl Default for CdBlock {
             quiet_data_enabled: false,
             #[cfg(any(test, feature = "kernel-experiment"))]
             quiet_data_steps: 0,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            sound_data_commands: false,
             standby_seconds: 180,
             init_flags: 0,
             rw: crate::cd_rw::Decoder::default(),
@@ -1120,9 +1124,9 @@ impl CdBlock {
                 && !strict_inputs
                 && self
                     .pending
-                    .is_some_and(|(command, _)| Self::sound_neutral_query(command))
+                    .is_some_and(|(command, _)| self.sound_neutral_query(command))
             {
-                // Only this query's completion is irrelevant to silent CD-DA.
+                // This command's completion is irrelevant to silent CD-DA.
                 // Retain every drive/report, seek, copy, R-W and other deadline.
                 // The main CD scheduler always uses command_deadline unchanged.
                 return self
@@ -1139,9 +1143,32 @@ impl CdBlock {
     }
 
     #[cfg(any(test, feature = "sound-worker"))]
-    fn sound_neutral_query(command: [u16; 4]) -> bool {
-        // Get Status and Get Sector Number update only report/response state.
+    fn sound_neutral_query(&self, command: [u16; 4]) -> bool {
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        let data_commands = self.sound_data_commands;
+        #[cfg(not(any(test, feature = "kernel-experiment")))]
+        let data_commands = true;
+        // Status, selector reports, GET and DELETE affect only responses,
+        // buffer/FIFO data and the CD IRQ. A freed buffer can resume the
+        // drive only at its existing next event, which still bounds Sound.
         matches!(command[0] >> 8, 0x00 | 0x51)
+            || (data_commands && Self::sound_neutral_data_command(command))
+    }
+
+    #[cfg(any(test, feature = "sound-worker"))]
+    fn sound_neutral_data_command(command: [u16; 4]) -> bool {
+        matches!(command[0] >> 8, 0x50 | 0x52 | 0x53 | 0x61 | 0x62)
+    }
+
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) fn sound_neutral_data_due_within(&self, clocks: u32) -> bool {
+        self.sound_data_commands
+            && self.enabled
+            && self.pending.is_some_and(|(command, remaining)| {
+                Self::sound_neutral_data_command(command)
+                    && remaining.saturating_sub(self.quiet_clocks.map_or(0, |quiet| quiet.elapsed))
+                        <= clocks
+            })
     }
 
     #[cfg(any(test, feature = "sound-worker"))]
@@ -1152,9 +1179,9 @@ impl CdBlock {
             return data_port(address) || matches!(offset, 8 | 12 | 0x18 | 0x1C | 0x20 | 0x24);
         }
         // IRQ controls and request parameters do not start a command. CR4 is
-        // independent only for the two proven queries, using the live request.
+        // independent only for proven commands, using the live request.
         matches!(offset, 8 | 12 | 0x18 | 0x1C | 0x20)
-            || (offset == 0x24 && Self::sound_neutral_query(self.request))
+            || (offset == 0x24 && self.sound_neutral_query(self.request))
     }
 
     #[cfg(any(test, feature = "kernel-experiment"))]
@@ -1162,7 +1189,7 @@ impl CdBlock {
         self.enabled
             && self.pending.is_some_and(|(command, n)| {
                 n.saturating_sub(self.quiet_clocks.map_or(0, |quiet| quiet.elapsed)) <= clocks
-                    && Self::sound_neutral_query(command)
+                    && self.sound_neutral_query(command)
             })
     }
 
@@ -2443,5 +2470,42 @@ mod quiet_clock_tests {
         assert_eq!(optimized.phase, reference.phase);
         assert_eq!(optimized.report_phase, reference.report_phase);
         assert_eq!(optimized.response.get(), reference.response.get());
+    }
+    #[test]
+    fn data_delete_keeps_the_existing_audio_resume_edge() {
+        let mut cd = CdBlock::default();
+        let bytes = vec![0; 3 * RAW_SECTOR];
+        cd.mount(
+            Media::cue(
+                "FILE \"fixture\" BINARY\nTRACK 01 AUDIO\nINDEX 01 00:00:00",
+                &[("fixture", &bytes)],
+            )
+            .unwrap(),
+        );
+        cd.sound_data_commands = true;
+        cd.playing = true;
+        cd.buffer_paused = true;
+        cd.status = 1;
+        for n in 0..POOL {
+            let sector = cd.new_sector(150 + n as u32, [0; RAW_SECTOR]);
+            cd.partitions[0].push(sector);
+        }
+        for (offset, value) in [(0x18, 0x6200), (0x1C, 0), (0x20, 0), (0x24, 1)] {
+            cd.write16(REGISTERS + offset, value).unwrap();
+        }
+        let drive = cd.sound_source_deadline(false, true);
+        assert!(drive > 1075);
+        assert_eq!(cd.sound_source_deadline(true, true), 1075);
+        cd.advance(1074);
+        assert_eq!(cd.used(), POOL);
+        assert!(cd.audio_quiet());
+        cd.advance(1);
+        assert_eq!(cd.used(), POOL - 1);
+        assert!(cd.audio_quiet());
+        assert_eq!(cd.clocks_to_event(), drive - 1075);
+        cd.advance(drive - 1076);
+        assert!(cd.audio_quiet());
+        cd.advance(1);
+        assert!(!cd.audio_quiet());
     }
 }

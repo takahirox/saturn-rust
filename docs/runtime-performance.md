@@ -4977,3 +4977,60 @@ passes that test. Native and Wasm Clippy pass with warnings denied.
 Related to #138 and #17. Sustained 60 fields/s through the measured game,
 continuous production audio, and hardware completion remain open.
 Private media and raw diagnostic inputs stay local.
+
+
+
+## Keep Sound ownership across CD buffer commands (2026-11-20)
+
+CD buffer queries, sector reads into DATATRNS, and sector deletion can
+complete while a Sound forecast owns the audio domain. Keep the original
+A-bus grant, command deadline, FIFO and selector state, response latch,
+and interrupt delivery on the main board. Deleting a sector can free
+space for playback, which still resumes at the next existing drive edge.
+Commands that can change CD-DA and the strict dependency controls retain
+their existing Sound boundaries.
+
+The diagnostic comparison covers 28 consecutive 80-field windows on
+Machi Disc 1. Full CPU, cache, WRAM, clock, image, PCM, and Sound endpoints
+match in every window. Throughput improves from 55.740 to 56.402 fields/s,
+with 22 of 28 windows faster. The four slow windows improve from 30.569
+to 31.608 fields/s. Sound jobs fall from 6,362 to 5,816 overall and from
+1,912 to 1,434 in the slow windows. A total of 844 newly admitted commands
+complete while Sound is owned, including 741 in the slow windows.
+
+The standard Chrome 157.0.8103.79 player warms each fresh instance to
+field 12,900 and then runs six ten-second windows with ordinary pacing,
+Canvas presentation, both Workers, and an active AudioWorklet. Both orders
+apply the same 151 controller events through the common endpoint. Every
+field is drawn. Audio queue drops and browser errors are zero.
+
+| Measure | Main to candidate, forward | Main to candidate, reverse |
+| --- | ---: | ---: |
+| Six-window mean, fields/s | 52.985 to 53.417 | 52.858 to 53.256 |
+| Matched fields 12,901–16,075, fields/s | 52.989 to 53.364 | 52.856 to 53.229 |
+| Four matched slow ranges, fields/s | 30.240 to 31.036 | 29.993 to 30.766 |
+| Matched p95 field time, ms | 36.6 to 36.7 | 36.9 to 37.3 |
+| Matched p99 field time, ms | 56.1 to 55.7 | 57.7 to 55.7 |
+| Slow ranges p95 / p99 field time, ms | 62.2 / 118.5 to 59.9 / 117.9 | 62.8 / 118.2 to 60.7 / 117.4 |
+| Worklet underflow sample frames | 300,354 to 281,693 | 306,684 to 288,597 |
+
+The slow ranges start at fields 13,661, 13,821, 14,861, and 15,341. Their
+pooled throughput improves by 2.63% and 2.58%. The final slow range loses
+0.10% in the reverse order. Each run has nine matched gaps above 100 ms.
+
+The baseline Wasm SHA-256 is
+`0ea017dfc9918976a65b5c1330f9011d7f6e520f18798d2cf5e98a5476a39c09`.
+The candidate is
+`c78e701ba2d74701ffd29340fe135fe21167ea18765e83dca4dbfffccd4ed4c0`.
+The standard build uses Rust 1.100.0, wasm-bindgen 0.2.129, and Binaryen 127.
+The JavaScript binding matches the baseline byte for byte. All seven
+original guests match in each standard browser mode, including forced
+Sound return. The native test submits each changed command through a real
+SH-2 A-bus write in both PLL modes and compares the complete Sound state.
+A separate native test verifies the earliest CD-DA resume after deletion.
+Removing command 0x52 from the allowed set fails the focused test, and
+restoring it passes. Native and Wasm Clippy pass with warnings denied.
+
+Related to #138 and #17. Sustained real-time throughput, continuous
+production audio, and hardware completion remain open. Private media
+and raw captures stay local.
