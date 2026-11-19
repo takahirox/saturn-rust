@@ -978,6 +978,10 @@ impl Bus {
             let count = &self.sound_rendezvous.cd_query_counts[2];
             count.set(count.get() + 1);
         }
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        if self.sound.projected() && self.cd.sound_neutral_data_due_within(clocks) {
+            self.sound_rendezvous.cd_neutral_data_completions += 1;
+        }
         self.cd.advance(clocks);
         if self.cd.interrupt() {
             self.scu.signal(16);

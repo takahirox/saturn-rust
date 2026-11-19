@@ -20,6 +20,8 @@ pub(crate) struct Rendezvous {
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub cd_query_counts: [Cell<u64>; 3],
     #[cfg(any(test, feature = "kernel-experiment"))]
+    pub cd_neutral_data_completions: u64,
+    #[cfg(any(test, feature = "kernel-experiment"))]
     pub cd_quiet_skips: Cell<u64>,
     pub enabled: bool,
     #[cfg(any(test, feature = "kernel-experiment"))]
@@ -610,6 +612,73 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn original_cd_data_commands_complete_during_an_owned_sound_prefix() {
+        // Set CR4 through a real SH-2 A-bus write, then sleep. Both boards
+        // retain the physical write, IRQ, command latency and response.
+        let rom = image("0000 0000 0200 0610 0000\n0200 D101 E201 2121 001B 2589 0024");
+        let cd = crate::cd::REGISTERS;
+        let raw = vec![0; 2352 * 3];
+        for command in [0x50u16, 0x52, 0x53, 0x61, 0x62] {
+            for fast in [false, true] {
+                let mut reference = Machine::new();
+                let mut projected = Machine::new();
+                for m in [&mut reference, &mut projected] {
+                    m.reset(Boot::ExternalBios(&rom)).unwrap();
+                    m.bus.change_system_clock(fast);
+                    m.enable_sound_dependency_filter(true);
+                    m.enable_sound_cd_queries(true);
+                    m.mount_media(
+                        crate::media::Media::cue(
+                            "FILE \"fixture\" BINARY\nTRACK 01 AUDIO\nINDEX 01 00:00:00",
+                            &[("fixture", &raw)],
+                        )
+                        .unwrap(),
+                    );
+                    m.bus.sound.ram[..4].copy_from_slice(&0x7000u32.to_be_bytes());
+                    m.bus.sound.ram[4..8].copy_from_slice(&0x100u32.to_be_bytes());
+                    m.bus.sound.ram[0x100..0x104].copy_from_slice(&[0x4E, 0x71, 0x60, 0xFC]);
+                    m.bus.sound.set_enabled(true).unwrap();
+                    m.bus.cd.write16(cd + 8, 0).unwrap();
+                    m.bus.cd.write16(cd + 0x18, command << 8).unwrap();
+                }
+                projected.bus.cd.sound_data_commands = true;
+                assert!(reference.bus.sound_input_address(cd + 0x24, Some(1)));
+                assert!(!projected.bus.sound_input_address(cd + 0x24, Some(1)));
+                projected.enable_sound_dependency_filter(false);
+                assert!(projected.bus.sound_input_address(cd + 0x24, Some(1)));
+                projected.enable_sound_dependency_filter(true);
+
+                reference.advance_video_field().unwrap();
+                loop {
+                    projected.begin_sound_projection(32768);
+                    let done = projected.advance_sound_projection_field().unwrap();
+                    projected.finish_sound_projection();
+                    if done {
+                        break;
+                    }
+                    projected.acknowledge_sound_rendezvous();
+                }
+                assert_eq!(
+                    projected.bus.sound_rendezvous.cd_neutral_data_completions, 1,
+                    "command {command:02X} must complete in the Sound prefix"
+                );
+                assert_eq!(reference.bus.cd.peek16(cd + 8).unwrap() & 1, 1);
+                for offset in [8, 0x18, 0x1C, 0x20, 0x24] {
+                    assert_eq!(
+                        projected.bus.cd.peek16(cd + offset),
+                        reference.bus.cd.peek16(cd + offset)
+                    );
+                }
+                same(&mut reference, &mut projected);
+                assert_eq!(
+                    reference.sound_domain_snapshot().unwrap(),
+                    projected.sound_domain_snapshot().unwrap()
+                );
+            }
+        }
+    }
+
     #[test]
     fn dependency_filter_retains_writes_and_all_audio_track_accesses() {
         let mut machine = Machine::new();

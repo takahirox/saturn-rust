@@ -639,6 +639,18 @@ impl Emulator {
     pub fn enable_sound_cd_queries(&mut self, enabled: bool) {
         self.machine.enable_sound_cd_queries(enabled);
     }
+    pub fn enable_sound_cd_neutral_data(&mut self, enabled: bool) {
+        self.machine.bus.cd.sound_data_commands = enabled;
+    }
+    pub fn sound_cd_neutral_data_enabled(&self) -> bool {
+        self.machine.bus.cd.sound_data_commands
+    }
+    pub fn sound_cd_neutral_data_completions(&self) -> u64 {
+        self.machine
+            .bus
+            .sound_rendezvous
+            .cd_neutral_data_completions
+    }
     pub fn sound_cd_queries_enabled(&self) -> bool {
         self.machine.sound_cd_queries_enabled()
     }
