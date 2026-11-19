@@ -127,6 +127,10 @@ pub struct CdBlock {
     pub(crate) quiet_clock_enabled: bool,
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub(crate) quiet_clock_steps: u64,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) quiet_data_enabled: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) quiet_data_steps: u64,
     standby_seconds: u16,
     init_flags: u8,
     rw: crate::cd_rw::Decoder,
@@ -297,6 +301,10 @@ impl Default for CdBlock {
             quiet_clock_enabled: false,
             #[cfg(any(test, feature = "kernel-experiment"))]
             quiet_clock_steps: 0,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            quiet_data_enabled: false,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            quiet_data_steps: 0,
             standby_seconds: 180,
             init_flags: 0,
             rw: crate::cd_rw::Decoder::default(),
@@ -392,6 +400,10 @@ impl CdBlock {
                 quiet_clock_enabled: self.quiet_clock_enabled,
                 #[cfg(any(test, feature = "kernel-experiment"))]
                 quiet_clock_steps: self.quiet_clock_steps,
+                #[cfg(any(test, feature = "kernel-experiment"))]
+                quiet_data_enabled: self.quiet_data_enabled,
+                #[cfg(any(test, feature = "kernel-experiment"))]
+                quiet_data_steps: self.quiet_data_steps,
                 ..Self::default()
             };
         } else if !self.enabled && enabled {
@@ -637,6 +649,12 @@ impl CdBlock {
         self.quiet_clock_enabled = enabled;
     }
 
+    #[cfg(any(test, all(target_arch = "wasm32", feature = "kernel-experiment")))]
+    pub(crate) fn set_quiet_data_enabled(&mut self, enabled: bool) {
+        self.settle_quiet_clocks();
+        self.quiet_data_enabled = enabled;
+    }
+
     fn settle_quiet_clocks(&mut self) {
         if let Some(quiet) = self.quiet_clocks.take() {
             self.advance_exact(quiet.elapsed);
@@ -653,6 +671,7 @@ impl CdBlock {
                 #[cfg(any(test, feature = "kernel-experiment"))]
                 {
                     self.quiet_clock_steps += 1;
+                    self.quiet_data_steps += u64::from(self.playing);
                 }
                 return;
             }
@@ -675,10 +694,14 @@ impl CdBlock {
         if !self.quiet_clock_enabled {
             return false;
         }
-        // Idle drive phases and a pending command can age together until
-        // their earliest exact edge. There are no CDDA samples, sector
-        // transfers or R-W state changes in the deferred interval.
-        !self.playing
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        let defer_data = self.quiet_data_enabled;
+        #[cfg(not(any(test, feature = "kernel-experiment")))]
+        let defer_data = true;
+        // Sector, report and command clocks can age together up to their
+        // first edge. While a data track owns the pickup, neither CD-DA nor
+        // R-W starts before a drive or command transition.
+        (!self.playing || (defer_data && !self.at_audio_track()))
             && self.scan.is_none()
             && self.seeking == 0
             && self.copying.is_none()
@@ -2294,6 +2317,63 @@ impl CdBlock {
 #[cfg(test)]
 mod quiet_clock_tests {
     use super::*;
+
+    #[test]
+    fn deferred_data_clocks_keep_the_sector_and_audio_track_boundary() {
+        let data = [0; 2048];
+        let audio = [0x12; 2352 * 2];
+        let media = Media::cue(
+            "FILE \"data.bin\" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n\
+             FILE \"audio.bin\" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n",
+            &[("data.bin", &data), ("audio.bin", &audio)],
+        )
+        .unwrap();
+        let audio_start = media.tracks()[1].start;
+        assert_eq!(media.track(audio_start - 1).unwrap().mode, TrackMode::Mode1);
+        for rw_enabled in [false, true] {
+            let make = || {
+                let mut cd = CdBlock::default();
+                cd.mount(media.clone());
+                cd.playing = true;
+                cd.status = 3;
+                cd.init_flags = if rw_enabled { 2 } else { 0 };
+                cd.fad = audio_start - 1;
+                cd.phase = HZ - 150 * 5;
+                cd
+            };
+            let mut reference = make();
+            let mut optimized = make();
+            for cd in [&mut reference, &mut optimized] {
+                cd.set_quiet_clock_enabled(true);
+                cd.write16(REGISTERS + 8, 0).unwrap();
+            }
+            optimized.set_quiet_data_enabled(true);
+            for delta in [1, 2, 1] {
+                for cd in [&mut reference, &mut optimized] {
+                    cd.advance(delta);
+                    assert_eq!(cd.fad, audio_start - 1);
+                    assert_eq!(cd.peek16(REGISTERS + 8).unwrap() & CSCT, 0);
+                    assert_eq!(cd.audio_sample(), [0, 0]);
+                    assert!(!cd.rw_active);
+                }
+                assert_eq!(optimized.clocks_to_event(), reference.clocks_to_event());
+            }
+            assert_eq!(optimized.quiet_data_steps, 2);
+            assert_eq!(optimized.clocks_to_event(), 1);
+            for cd in [&mut reference, &mut optimized] {
+                cd.advance(1);
+                assert_eq!(cd.fad, audio_start);
+                assert_ne!(cd.peek16(REGISTERS + 8).unwrap() & CSCT, 0);
+                assert_eq!(cd.audio_sample(), [0x1212, 0x1212]);
+                assert_eq!(cd.rw_active, rw_enabled);
+                cd.advance(1);
+                cd.advance(1);
+                assert!(cd.quiet_clocks.is_none());
+            }
+            assert_eq!(optimized.quiet_data_steps, 2);
+            assert_eq!(optimized.clocks_to_event(), reference.clocks_to_event());
+        }
+    }
 
     #[test]
     fn deferred_clocks_keep_simultaneous_idle_edges_and_command_latency() {

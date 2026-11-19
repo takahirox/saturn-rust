@@ -4702,3 +4702,33 @@ clock, pixel, PCM and full Sound checks matched the paired and independent
 reference. Six original browser pairs also matched. Production results are
 recorded in the associated pull request. Sustained 60 fields/s, continuous
 audio delivery and broader hardware acceptance remain open.
+
+## Accumulate CD clocks during data-track playback (2026-11-19)
+
+Related to #138 and #17. The CD scheduler can accumulate elapsed clocks
+while the pickup plays data and the next sector, report, or command edge
+is still ahead. It keeps the existing deadlines and settles elapsed
+clocks before using the original edge handler. Seek, scan, copy,
+authentication, and R-W activity retain their dedicated progression.
+An exact sector transition can enter an audio track and start CD-DA
+and R-W at the same edge as the reference.
+
+Native tests cover data delivery, command and report ordering, and
+the transition from a data track to an audio track with R-W enabled
+and disabled. Deliberately allowing the deferred interval on an audio
+track fails the transition test. The restored implementation passes it,
+the 58 cached CPU cases, 49 CD cases, the CD-DA case, and the relevant
+native and Wasm lint and build checks.
+
+The browser comparison improved from 54.298 to 54.662 fields/s over
+2,240 actual game fields (+0.67%). The four slow intervals together
+improved from 29.256 to 29.864 fields/s (+2.08%). All six intervals
+that used the path improved, with a combined gain of 1.78%. The other
+22 intervals combined gained 0.11%. All 28 endpoint comparisons retain
+the same CPU, cache, RAM, clocks, pixels, PCM, and complete Sound state
+as the paired run and the independently retained reference. Six original
+browser pairs also matched.
+
+The associated pull request records the standard Web player comparison
+and AudioWorklet results. Sustained 60 fields/s, continuous audio delivery,
+and broader hardware acceptance remain open.
