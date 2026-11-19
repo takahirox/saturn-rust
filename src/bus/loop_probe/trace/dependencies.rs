@@ -2,19 +2,20 @@
 use super::*;
 use std::collections::BTreeSet;
 
-fn byte_index(image: &[u8], address: u32) -> Option<usize> {
-    let control = *image.first()?;
+fn byte_index(cache: &PhaseCache, address: u32) -> Option<usize> {
+    let control = cache.control;
+    let image = cache.lines();
     if address >= 0x20000000 || control & 1 == 0 {
         return None;
     }
     let first = if control & 8 == 0 { 0 } else { 2 };
-    if image.len() != 65 + 64 * (4 - first) * 21 {
+    if image.len() != 64 * (4 - first) * 21 {
         return None;
     }
     let set = (address >> 4 & 63) as usize;
     let tag = address & 0x1FFFFC00;
     for way in first..4 {
-        let at = 65 + (set * (4 - first) + way - first) * 21;
+        let at = (set * (4 - first) + way - first) * 21;
         let found = u32::from_be_bytes(image[at..at + 4].try_into().unwrap());
         if image[at + 4] != 0 && found == tag {
             return Some(at + 5 + (address & 15) as usize);
@@ -25,13 +26,15 @@ fn byte_index(image: &[u8], address: u32) -> Option<usize> {
 pub(super) fn repeats(data: &CapturedLoop) -> bool {
     let first = &data.phases[0];
     let last = data.phases.last().unwrap();
-    if first.cache.len() != last.cache.len() || first.cache[0] != last.cache[0] {
+    let initial = first.cache.lines();
+    let final_lines = last.cache.lines();
+    if initial.len() != final_lines.len() || first.cache.control != last.cache.control {
         return false;
     }
     // Without cache fills/control writes, tag/way identity is invariant.
-    if (65..first.cache.len())
+    if (0..initial.len())
         .step_by(21)
-        .any(|at| first.cache[at..at + 5] != last.cache[at..at + 5])
+        .any(|at| initial[at..at + 5] != final_lines[at..at + 5])
     {
         return false;
     }
@@ -57,7 +60,7 @@ pub(super) fn repeats(data: &CapturedLoop) -> bool {
                     let Some(at) = byte_index(&first.cache, read.address + offset as u32) else {
                         return false;
                     };
-                    if !written.contains(&at) && first.cache[at] != last.cache[at] {
+                    if !written.contains(&at) && initial[at] != final_lines[at] {
                         return false;
                     }
                 }

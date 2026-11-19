@@ -1083,7 +1083,7 @@ mod tests {
         assert_eq!(a.touches.len(), b.touches.len());
         for (a, b) in a.phases.iter().zip(&b.phases) {
             assert_eq!(a.cpu, b.cpu);
-            assert_eq!(a.cache, b.cache);
+            a.cache.assert_same_contents(&b.cache);
             assert_eq!(
                 (a.at, a.ready, a.retained, a.epoch, a.touch_end),
                 (b.at, b.ready, b.retained, b.epoch, b.touch_end)

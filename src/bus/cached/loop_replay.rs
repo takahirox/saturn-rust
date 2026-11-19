@@ -88,7 +88,7 @@ impl Cached<'_> {
         let result = (|| {
             let first_owner = first_index as u64 + 1;
             let last_owner = last_index as u64;
-            if self.cache.control() != first.cache[0] || self.version_count.get() != 0 {
+            if self.cache.control() != first.cache.control || self.version_count.get() != 0 {
                 return None;
             }
             let mut way_map = [u8::MAX; 256];

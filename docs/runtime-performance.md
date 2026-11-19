@@ -4841,3 +4841,45 @@ statistics cover the same 3,128 field positions. The four slow ranges gain
 shows a small aggregate gain and a lower audio deficit in both orders.
 Sustained real-time gameplay, continuous audio delivery, and broader
 hardware acceptance remain open.
+
+
+## Share unchanged cache lines across captured loop phases (2026-11-19)
+
+Related to #138 and #17. During Master SH-2 loop capture, consecutive phases
+share immutable cache tag and data bytes while the contents version is stable.
+Each phase records its own control and replacement state. Refills, cached
+writes, array writes and purges, cache control changes, and shadow publication
+invalidate the shared contents. Capture reads the initial cache image when it
+reaches the requested start and records images for the ensuing phases.
+
+Native checks compare shared images against a full serialization. The focused
+test exercises writes, refills, array data, shadow publication and cache
+control, with replacement-only changes retaining the shared allocation.
+Removing write-hit invalidation fails that test. The restored source passes
+the cache, loop and cached-burst suites, formatting and native/Wasm Clippy.
+
+The 2,240-field Chrome diagnostic on Machi Disc 1 improves from 54.381 to
+54.662 fields/s, with 23 of 28 intervals faster. The four slow intervals
+improve from 29.775 to 30.050 fields/s. All 28 CPU, cache, RAM, clock, image,
+PCM and complete Sound endpoints match. Six original diagnostic fixtures
+match, with 148.173 and 148.307 fields/s respectively. The standard Wasm build
+matches seven original fixtures in each of the normal, direct, and forced
+Sound-return failure modes.
+
+The production player draws every field and applies the same 151 controller
+inputs. It runs six ten-second windows after a 12,900-field warmup with the
+real AudioWorklet. The reverse comparison was rerun after a local build
+overlapped the first attempt. Only the isolated comparisons are shown.
+
+| Launch order | Main → candidate fields/s | Audio underflow sample frames | Matched gap p95 / p99 |
+| --- | ---: | ---: | ---: |
+| Forward | 52.704 → 52.854 | 313,053 → 306,002 | 39.6 / 58.8 → 37.9 / 58.7 ms |
+| Reverse | 52.584 → 52.853 | 318,379 → 305,905 | 39.8 / 59.1 → 38.0 / 59.7 ms |
+
+Both comparisons have zero audio queue drops and browser errors. Across the
+same 3,159 field positions, each run has nine gaps above 100 ms. The four
+selected slow ranges improve by 2.04% and 1.72%. For the earlier 361-field
+range, forward p99 increases from 67.6 to 100.9 ms, with one additional gap
+above 100 ms and a lower maximum gap. Reverse p99 in that range decreases
+from 115.0 to 100.7 ms. Sustained real-time throughput, continuous audio and
+broader hardware acceptance remain open.
