@@ -4930,3 +4930,50 @@ same test. Native and Wasm Clippy pass with warnings denied.
 Related to #138 and #17. Sustained 60 fields/s through the measured game,
 continuous production audio, and hardware completion remain open.
 Private firmware, media, controller timelines and raw captures stay local.
+
+
+## Reuse validated private SH-2 code until the cache changes (2026-11-19)
+
+A private Slave polling template validates the exact instruction bytes and
+physical cache ways required for replay. Retain a successful comparison for
+the current cache revision. Cache-content, tag, and control mutations clear
+the revision through the existing mutation sites. LRU-only updates preserve it.
+Distinct cache instances receive distinct revisions. The complete CPU,
+transaction, interrupt, timer, and publication checks still run.
+
+Chrome 157.0.8103.79 runs the normal paced player on Machi Disc 1 with Canvas,
+Sound and Video Workers, and an active AudioWorklet. Each fresh instance warms
+to field 12,900 and runs six continuous ten-second windows. Both orders apply
+the same 151 controller events across their common fields, and each field is
+drawn. Queue drops and runtime errors are zero.
+
+| Measure | Main to candidate, forward | Main to candidate, reverse |
+| --- | ---: | ---: |
+| Mean fields/s | 52.718 to 53.034 | 52.867 to 52.884 |
+| Matched fields 12,901–16,067, fields/s | 52.718 to 52.971 | 52.820 to 52.855 |
+| Four matched slow ranges, fields/s | 29.774 to 30.381 | 30.047 to 30.093 |
+| Matched p95 field time, ms | 36.8 to 36.7 | 37.2 to 36.8 |
+| Matched p99 field time, ms | 57.8 to 57.2 | 56.7 to 56.7 |
+| Worklet underflow sample frames | 311,901 to 299,644 | 306,940 to 305,020 |
+
+The four slow ranges begin at fields 13,661, 13,821, 14,861, and 15,341 and
+each includes 80 fields. Two of those ranges lose throughput in the reverse
+order. Pooled slow-range p99 changes 119.7 to 118.5 ms and 117.8 to 119.2 ms.
+Each order retains eight field gaps above 100 ms across the slow ranges.
+The differential companion measures 55.560 to 55.727 fields/s over 28 windows
+and matches the independent CPU, cache, WRAM, clock, pixel, PCM, and complete
+Sound endpoints in every window. Original production browser cases match in
+normal, direct, and forced Sound return modes.
+
+The baseline Wasm SHA-256 is
+`f8f7bc0c1fc70176925a21f43d84a5201be3c7c7f6177719ce446a8996a72c76`.
+The candidate is
+`0ea017dfc9918976a65b5c1330f9011d7f6e520f18798d2cf5e98a5476a39c09`.
+The standard Web build reproduces the measured Wasm and JavaScript binding.
+Native cache, private-poll, cached scheduler, and loop tests pass. Omitting
+revision invalidation fails the original code-mutation test. Restoring it
+passes that test. Native and Wasm Clippy pass with warnings denied.
+
+Related to #138 and #17. Sustained 60 fields/s through the measured game,
+continuous production audio, and hardware completion remain open.
+Private media and raw diagnostic inputs stay local.

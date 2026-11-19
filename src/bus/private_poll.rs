@@ -135,6 +135,7 @@ struct Template {
     control: u8,
     status: u8,
     code: Vec<Code>,
+    code_revision: Cell<u32>,
     phases: Vec<Phase>,
     prefix: usize,
     period: usize,
@@ -169,9 +170,21 @@ impl Template {
             && machine
                 .bus
                 .private_transaction_matches(&prior.transaction, elapsed)
-            && self.code.iter().all(|code| {
-                machine.bus.private_code(code.address) == Some((code.bytes, code.touch))
-            })
+            && self.matches_code(&machine.bus.cache[1].borrow())
+    }
+    fn matches_code(&self, cache: &Cache) -> bool {
+        let revision = cache.code_revision();
+        if revision != 0 && self.code_revision.get() == revision {
+            return true;
+        }
+        let matched = self
+            .code
+            .iter()
+            .all(|code| cache.peek_cached_touch(code.address) == Some((code.bytes, code.touch)));
+        if matched {
+            self.code_revision.set(revision);
+        }
+        matched
     }
     #[cfg(test)]
     fn issue_count_at(&self, elapsed: u64) -> u8 {
@@ -453,6 +466,7 @@ impl Context {
             control: machine.bus.cache[1].borrow().control(),
             status: machine.bus.onchip[1].ftcsr(),
             code,
+            code_revision: Cell::new(0),
             phases,
             prefix,
             period,
@@ -611,6 +625,47 @@ mod tests {
                 _ => unreachable!(),
             }
             assert!(!context.templates[index].matches(&m), "change={change}");
+        }
+    }
+
+    #[test]
+    fn cached_private_code_proof_expires_on_content_change_and_cache_replacement() {
+        let mut machine = crate::scheduling_tests::cached_pair(
+            &[0x7001, 0x7101, 0x7201, 0xAFFB, 9],
+            &[0x60F0, 0xC880, 0x89FC, 0xAFFB, 9],
+        );
+        machine.slave = Cpu::start(HIGH_WRAM + 0x100, onchip::FRT + 1);
+        machine
+            .slave
+            .prime_fetch(&machine.bus.for_cpu(Processor::Slave));
+        let mut context = Context::default();
+        let index = context
+            .prepare(&machine, machine.bus.private_probe_span())
+            .unwrap();
+        let template = &context.templates[index];
+        let changed = template.code.first().unwrap();
+        let mut unrelated = Cache::default();
+        {
+            let cache = machine.bus.cache[1].get_mut();
+            assert!(template.matches_code(cache));
+            let original = template.code_revision.get();
+            assert_ne!(original, 0);
+            let mut lru = cache.replacement_state();
+            assert!(cache.cached_only::<4>(changed.address, &mut lru).is_some());
+            cache.commit_replacement_state(lru);
+            assert_eq!(cache.code_revision(), original);
+            unrelated.copy_private(cache, 0);
+            unrelated.written(changed.address, [0xAB; 4]);
+            assert!(!template.matches_code(&unrelated));
+            // The original template used this same physical word and way.
+            // Changing only its bytes invalidates the cached success.
+            cache.written(changed.address, [0xAB; 4]);
+            assert!(!template.matches_code(cache));
+            cache.written(changed.address, changed.bytes);
+            assert!(template.matches_code(cache));
+            assert_ne!(template.code_revision.get(), original);
+            cache.set_control(cache.control() | 0x10);
+            assert!(!template.matches_code(cache));
         }
     }
 }
