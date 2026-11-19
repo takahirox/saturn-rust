@@ -544,6 +544,15 @@ impl Emulator {
     pub fn smpc_quiet_interval_steps(&self) -> u64 {
         self.machine.bus.smpc_quiet_interval().1
     }
+    pub fn enable_resident_branch_issues(&mut self, enabled: bool) {
+        self.machine.bus.resident_branch_issues = enabled;
+    }
+    pub fn resident_branch_issues_enabled(&self) -> bool {
+        self.machine.bus.resident_branch_issues
+    }
+    pub fn resident_branch_issue_count(&self) -> u64 {
+        self.machine.bus.resident_branch_issue_count
+    }
     pub fn dmac_pending_write_wait_enabled(&self) -> bool {
         self.machine.dmac_pending_write_wait_enabled()
     }
