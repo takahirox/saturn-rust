@@ -1356,6 +1356,16 @@ impl Bus {
         self.vdp2.pal = pal;
         self.system_clock.set_pal(pal);
     }
+    #[cfg(all(target_arch = "wasm32", feature = "kernel-experiment"))]
+    pub(crate) fn set_cd_quiet_data(&mut self, enabled: bool) {
+        self.cd.set_quiet_data_enabled(enabled);
+    }
+
+    #[cfg(all(target_arch = "wasm32", feature = "kernel-experiment"))]
+    pub(crate) fn cd_quiet_data(&self) -> (bool, u64) {
+        (self.cd.quiet_data_enabled, self.cd.quiet_data_steps)
+    }
+
     pub fn set_region(&mut self, region: crate::smpc::Region) {
         self.smpc.set_region(region);
     }

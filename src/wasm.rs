@@ -535,6 +535,15 @@ impl Emulator {
     pub fn borrowed_cycle_anchor_count(&self) -> u64 {
         self.machine.bus.cached_cycle_anchor_borrows
     }
+    pub fn enable_cd_quiet_data(&mut self, enabled: bool) {
+        self.machine.bus.set_cd_quiet_data(enabled);
+    }
+    pub fn cd_quiet_data_enabled(&self) -> bool {
+        self.machine.bus.cd_quiet_data().0
+    }
+    pub fn cd_quiet_data_count(&self) -> u64 {
+        self.machine.bus.cd_quiet_data().1
+    }
     pub fn enable_smpc_quiet_interval(&mut self, enabled: bool) {
         self.machine.bus.set_smpc_quiet_interval(enabled);
     }
