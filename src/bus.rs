@@ -329,6 +329,10 @@ pub struct Bus {
     // Retain host retirement-buffer capacity between cached bursts.
     cached_retirement_points: Vec<cached::Retirement>,
     #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) allow_cached_neutral_cd_write: bool,
+    #[cfg(any(test, feature = "kernel-experiment"))]
+    pub(crate) cached_neutral_cd_write_crossings: u64,
+    #[cfg(any(test, feature = "kernel-experiment"))]
     pub(crate) reversible_cached_loads: bool,
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub(crate) reversible_cached_load_counts: [u64; 3],
@@ -443,6 +447,10 @@ impl Default for Bus {
             transactions: transactions::Transactions::default(),
             inline: None,
             cached_retirement_points: Vec::new(),
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            allow_cached_neutral_cd_write: false,
+            #[cfg(any(test, feature = "kernel-experiment"))]
+            cached_neutral_cd_write_crossings: 0,
             #[cfg(any(test, feature = "kernel-experiment"))]
             reversible_cached_loads: false,
             #[cfg(any(test, feature = "kernel-experiment"))]

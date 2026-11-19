@@ -568,6 +568,15 @@ impl Emulator {
     pub fn dmac_pending_write_wait_counts(&self) -> Vec<u64> {
         self.machine.dmac_pending_write_wait_counts()
     }
+    pub fn enable_cached_neutral_cd_write(&mut self, enabled: bool) {
+        self.machine.bus.allow_cached_neutral_cd_write = enabled;
+    }
+    pub fn cached_neutral_cd_write_enabled(&self) -> bool {
+        self.machine.bus.allow_cached_neutral_cd_write
+    }
+    pub fn cached_neutral_cd_write_crossings(&self) -> u64 {
+        self.machine.bus.cached_neutral_cd_write_crossings
+    }
     pub fn enable_local_journal(&mut self, enabled: bool) {
         self.machine.enable_local_journal(enabled);
     }
