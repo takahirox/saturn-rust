@@ -586,6 +586,15 @@ impl Emulator {
     pub fn local_journal_counts(&self) -> Vec<u64> {
         self.machine.local_journal_counts()
     }
+    pub fn enable_prepared_cd_loads(&mut self, enabled: bool) {
+        self.machine.bus.prepared_cd_load = enabled;
+    }
+    pub fn prepared_cd_loads_enabled(&self) -> bool {
+        self.machine.bus.prepared_cd_load
+    }
+    pub fn prepared_cd_load_count(&self) -> u64 {
+        self.machine.bus.prepared_cd_loads
+    }
     pub fn paired_irq_reuses(&self) -> u64 {
         self.machine.paired_irq_reuses()
     }

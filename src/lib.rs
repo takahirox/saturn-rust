@@ -168,6 +168,60 @@ mod scheduling_tests {
     }
 
     #[test]
+    fn prepared_cd_operand_keeps_fifo_sampling_and_cpu_clocks() {
+        for (port, op, expected, next) in [
+            (cd::WORD_DATA, 0x60F1, 0x4100, 150),
+            (cd::REGISTERS + 8, 0x60F1, 0xBE3, 0x4100),
+            (cd::DATA, 0x60F2, 0x41000096, 0xFFFF),
+        ] {
+            let make = || {
+                let mut machine = cached_pair(&[op, 0xE255, 0x001B, 9], &[0xAFFE, 9]);
+                let mut master = Cpu::start(HIGH_WRAM, port | 0x2000_0000);
+                master.prime_fetch(&machine.bus.for_cpu(Processor::Master));
+                machine.cpu = master;
+                machine
+                    .bus
+                    .cd
+                    .mount(media::Media::iso(include_bytes!("../web/star-collector.iso")).unwrap());
+                for (offset, value) in [(0x18, 0x0200), (0x1C, 0), (0x20, 0), (0x24, 0)] {
+                    machine
+                        .bus
+                        .cd
+                        .write16(cd::REGISTERS + offset, value)
+                        .unwrap();
+                }
+                machine.bus.cd.set_quiet_clock_enabled(true);
+                machine.bus.cd.set_quiet_data_enabled(true);
+                machine.bus.cd.advance(1075);
+                machine
+            };
+            let mut reference = make();
+            let mut optimized = make();
+            optimized.bus.prepared_cd_load = true;
+            for _ in 0..128 {
+                reference.step_hardware_boundary_with_idle(true).unwrap();
+                optimized.step_hardware_boundary_with_idle(true).unwrap();
+                assert_eq!(optimized.cpu, reference.cpu);
+                assert_eq!(optimized.slave, reference.slave);
+                assert_eq!(optimized.cpu_ready, reference.cpu_ready);
+                assert_eq!(optimized.clocks, reference.clocks);
+                assert_eq!(optimized.bus.main_clocks, reference.bus.main_clocks);
+                assert_eq!(
+                    optimized.bus.cd.peek16(cd::DATA),
+                    reference.bus.cd.peek16(cd::DATA)
+                );
+                if optimized.cpu.state().instructions != 0 {
+                    break;
+                }
+            }
+            assert_eq!(optimized.bus.prepared_cd_loads, 1);
+            assert_eq!(optimized.cpu.state().instructions, 1);
+            assert_eq!(optimized.cpu.state().r[0], expected);
+            assert_eq!(optimized.bus.cd.peek16(cd::DATA), Ok(next));
+        }
+    }
+
+    #[test]
     fn aligned_slave_poll_batches_match_independent_retirement_and_capture() {
         for destination in [
             None,

@@ -143,14 +143,26 @@ impl Bus {
     ) -> Option<(CachedLoad, bool)> {
         let op = cpu.decoded_opcode()?;
         let index = processor as usize;
-        // Only ordinary memory and the byte-wide FRT status endpoint have
-        // this continuation. Each operand keeps its real MA and bus phases.
+        // Each admitted operand keeps its real MA and external bus phases.
         let address = cpu.cached_load_address(op)?;
         let physical = Bus::physical(address);
         let ftcsr = address == crate::onchip::FRT + 1;
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        let prepared_cd_load = self.prepared_cd_load;
+        #[cfg(not(any(test, feature = "kernel-experiment")))]
+        let prepared_cd_load = true;
+        let cd = prepared_cd_load
+            && (0x2000_0000..0x4000_0000).contains(&address)
+            && (matches!(physical, crate::cd::DATA | crate::cd::WORD_DATA)
+                || physical == crate::cd::DATA + 2
+                || matches!(
+                    physical.wrapping_sub(crate::cd::REGISTERS),
+                    8 | 12 | 0x18 | 0x1C | 0x20 | 0x24
+                ));
         if !ordinary_memory(cpu.state().pc)
             || !self.onchip[index].cached_batch_allowed()
             || (!ftcsr
+                && !cd
                 && (address >= 0x4000_0000
                     || !ordinary_memory(physical)
                     || (physical < super::BIOS_SIZE as u32 && self.bios.is_none())))
@@ -160,12 +172,19 @@ impl Bus {
         let now = self.main_clocks;
         let plan = cpu.prepare_cached_instruction(op, now)?;
         let (_, width) = plan.operand?;
-        if (ftcsr && width != 1) || plan.issue_at() != now {
+        if (ftcsr && width != 1)
+            || (cd && width != 2 && !(width == 4 && physical == crate::cd::DATA))
+            || plan.issue_at() != now
+        {
             return None;
         }
         let scheduled = !self.cache[index].borrow().read_hit(address);
         let future = self.fetch_resident_instruction(processor, plan.future)?;
         self.onchip[index].count_cached_instructions(1);
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        if cd {
+            self.prepared_cd_loads += 1;
+        }
         let wait = plan.load_wait(now, scheduled);
         if wait != 0 {
             self.queue_cached_pipeline_wait(processor, wait);

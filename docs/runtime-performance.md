@@ -4732,3 +4732,32 @@ browser pairs also matched.
 The associated pull request records the standard Web player comparison
 and AudioWorklet results. Sustained 60 fields/s, continuous audio delivery,
 and broader hardware acceptance remain open.
+
+## Resume prepared SH-2 CD reads (2026-11-19)
+
+Related to #138 and #17. The ordinary dual-SH-2 issue path can prepare a
+MOV read from the cache-through CD window when the instruction and its
+following fetch satisfy the existing readiness checks. The admitted
+operands are the existing halfword interrupt, mask, and command response
+registers, and the supported FIFO lanes. A longword FIFO read retains
+both physical phases. The existing bus journal still performs arbitration,
+device sampling, read effects, and retirement in their original order.
+
+The native original compares both CPUs and the board at each boundary for
+an interrupt register load, a halfword FIFO read, and a longword FIFO read.
+It also checks the next FIFO value. Adding a clock to the prepared wait
+fails that original. Restoring the implementation passes all 11 scheduling
+cases, the CD A-bus timing case, 49 CD cases, native and Wasm
+lint, and both Wasm builds.
+
+The repeated two-window screen improved the heavy interval by 1.13%,
+with all four pairs faster. A subsequent 2,240-field game comparison
+improved from 53.381 to 53.714 fields/s (+0.62%). The four slow ranges
+improved from 28.952 to 29.437 fields/s (+1.68%) and executed about
+717 prepared loads per field. All 28 CPU, cache, RAM, clock, image, PCM,
+and complete Sound endpoints match the paired and independently retained
+reference. Six original browser pairs also matched.
+
+The associated pull request records standard player and AudioWorklet
+results. Sustained 60 fields/s, continuous audio delivery, and the
+broader hardware acceptance criteria remain open.
