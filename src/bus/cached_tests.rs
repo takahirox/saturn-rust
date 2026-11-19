@@ -2811,7 +2811,10 @@ fn prepared_passive_prediction_rejects_width_address_rom_and_deadline_before_con
                 allowed_widths: width,
                 little: false,
                 rom: None,
-                sequence: RefCell::new(chip.plan_cached_reads(1000)),
+                sequence: RefCell::new(PassiveSequence {
+                    bsc: chip.plan_cached_reads(1000),
+                    abus: None,
+                }),
             }),
         };
         let mut actual = make();
@@ -2843,8 +2846,8 @@ fn prepared_passive_prediction_rejects_width_address_rom_and_deadline_before_con
         assert_eq!(actual.clock.get(), 1000);
         assert_eq!(actual.epochs.get(), 0);
         assert_eq!(
-            actual.passive.as_ref().unwrap().sequence.borrow().beats,
-            before.beats
+            actual.passive.as_ref().unwrap().sequence.borrow().bsc.beats,
+            before.bsc.beats
         );
         assert!(
             actual
@@ -2866,8 +2869,8 @@ fn prepared_passive_prediction_rejects_width_address_rom_and_deadline_before_con
         assert_eq!(actual.retained.get(), reference_memory.retained.get());
         let actual_sequence = actual.passive.as_ref().unwrap().sequence.borrow();
         let reference_sequence = reference_memory.passive.as_ref().unwrap().sequence.borrow();
-        assert!(actual_sequence.beats > before.beats);
-        assert_eq!(actual_sequence.beats, reference_sequence.beats);
+        assert!(actual_sequence.bsc.beats > before.bsc.beats);
+        assert_eq!(actual_sequence.bsc.beats, reference_sequence.bsc.beats);
         assert!(actual_sequence.repeats(&reference_sequence, 0));
     }
 }

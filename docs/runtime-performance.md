@@ -4761,3 +4761,42 @@ reference. Six original browser pairs also matched.
 The associated pull request records standard player and AudioWorklet
 results. Sustained 60 fields/s, continuous audio delivery, and the
 broader hardware acceptance criteria remain open.
+
+## Keep A-bus state with passive CD reads (2026-11-19)
+
+Related to #138 and #17. The staged WRAM and video bus sequence now contains
+the SH-2 BSC state and its timing only. The passive CD interrupt-register
+path continues to carry the SCU A-bus state through each physical beat and
+commit it at the original boundary. The existing CPU write plans and held
+read horizons still govern which transfers can be prepared.
+
+The native cached-bus suite passes 58 cases. The existing CD
+interrupt-register original rejects a build that omits the A-bus snapshot.
+Restoring it passes the original, native lint, both Wasm lint
+configurations, and standard and instrumented Web builds.
+
+In a matched 2,240-field Chrome game diagnostic, throughput improves from
+54.577 to 54.759 fields/s, with 18 of 28 intervals faster. The four slow
+intervals together improve from 29.954 to 30.192 fields/s. Their individual
+gains are 0.32%, 1.01%, 0.78%, and 1.07%. The original comparison is 148.613
+to 148.588 fields/s. All six original pairs and 28 game pairs match the
+independent CPU, cache, RAM, clock, pixel, PCM and complete Sound endpoints.
+The three standard browser modes pass across seven original fixtures each.
+
+The normal Chrome player drew every field and applied the same 151
+controller
+inputs in both fresh launch orders. It improved from 52.750 to 52.868
+fields/s
+forward and from 52.603 to 52.835 in reverse. AudioWorklet underflow sample
+frames fell from 310,307 to 305,009 forward and 317,277 to 306,940 in
+reverse.
+There were zero PCM drops and browser errors. Over the same 3,161 field
+positions, presentation throughput rose by 0.20% and 0.41%, respectively.
+Matched field-gap p99 improved from 58.0 to 57.3 ms and from 59.8 to 57.2
+ms.
+Both versions recorded nine gaps over 100 ms in each order. The slowest
+10 seconds in the reverse run changed from 42.99 to 42.89 fields/s. The pull
+request records the matched slow ranges and the timing outliers.
+
+Game real time, continuous sound delivery and broader hardware acceptance
+remain open.

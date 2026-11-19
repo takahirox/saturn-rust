@@ -43,7 +43,7 @@ struct Local {
     lru: [u8; 64],
     retained: Option<(u32, u16)>,
     epochs: u64,
-    reads: Option<crate::onchip::ReadSequence>,
+    reads: Option<PassiveSequence>,
     write_len: usize,
     fill_len: usize,
     bus_len: usize,
@@ -55,7 +55,22 @@ struct PassiveRead<'a> {
     allowed_widths: u8,
     little: bool,
     rom: Option<&'a [u8]>,
-    sequence: RefCell<crate::onchip::ReadSequence>,
+    sequence: RefCell<PassiveSequence>,
+}
+// Only a passive CD HIRQ read needs A-bus state. Staged WRAM and video
+// operations carry the ordinary SH-2 BSC sequence without that extra state.
+#[derive(Clone)]
+struct PassiveSequence {
+    bsc: crate::onchip::ReadSequence,
+    abus: Option<crate::scu::Abus>,
+}
+impl PassiveSequence {
+    fn read(&mut self, address: u32, width: usize, at: u64) -> u64 {
+        self.bsc.read(address, width, at, self.abus.as_ref())
+    }
+    fn repeats(&self, before: &Self, period: u64) -> bool {
+        self.bsc.repeats(&before.bsc, period) && self.abus == before.abus
+    }
 }
 impl PassiveRead<'_> {
     fn permits(&self, address: u32) -> bool {
@@ -435,7 +450,10 @@ impl Cached<'_> {
                 .map(|event| {
                     let mut sequence = event.sequence.clone();
                     sequence.beats = event.read_beats;
-                    sequence
+                    PassiveSequence {
+                        bsc: sequence,
+                        abus: None,
+                    }
                 })
         };
         let fills = self.fills.into_inner();
@@ -496,7 +514,7 @@ impl Cached<'_> {
             || self
                 .passive
                 .as_ref()
-                .is_some_and(|p| p.rom.is_some() || p.sequence.borrow().beats != 0)
+                .is_some_and(|p| p.rom.is_some() || p.sequence.borrow().bsc.beats != 0)
         {
             return false;
         }
@@ -969,7 +987,10 @@ impl Bus {
                 allowed_widths: 1 | 2 | 4,
                 little: false,
                 rom: None,
-                sequence: RefCell::new(self.onchip[0].plan_cached_reads(self.main_clocks)),
+                sequence: RefCell::new(PassiveSequence {
+                    bsc: self.onchip[0].plan_cached_reads(self.main_clocks),
+                    abus: None,
+                }),
             });
         }
         let op = initial.decoded_opcode()?;
@@ -1020,10 +1041,10 @@ impl Bus {
         } else {
             return None;
         };
-        let mut sequence = self.onchip[0].plan_cached_reads(self.main_clocks);
-        if physical == crate::cd::REGISTERS + 8 {
-            sequence = sequence.with_abus(self.scu.plan_cached_abus());
-        }
+        let sequence = PassiveSequence {
+            bsc: self.onchip[0].plan_cached_reads(self.main_clocks),
+            abus: (physical == crate::cd::REGISTERS + 8).then(|| self.scu.plan_cached_abus()),
+        };
         Some(PassiveRead {
             address,
             bytes,
@@ -1817,10 +1838,11 @@ impl Bus {
                         memory.clock.set(memory.clock.get() + clocks);
                         if let (Some(passive), Some(before)) = (&memory.passive, &prior_local.reads)
                         {
-                            passive
-                                .sequence
-                                .borrow_mut()
-                                .repeat(before, period, repetitions);
+                            passive.sequence.borrow_mut().bsc.repeat(
+                                &before.bsc,
+                                period,
+                                repetitions,
+                            );
                         }
                         memory.epochs.set(
                             memory.epochs.get()
@@ -2335,13 +2357,13 @@ impl Bus {
         }
         .map_err(crate::MachineError::Scu)?;
         if let Some(reads) = local.reads
-            && reads.beats != 0
+            && reads.bsc.beats != 0
         {
             #[cfg(test)]
             {
-                self.cached_read_beats += reads.beats;
+                self.cached_read_beats += reads.bsc.beats;
             }
-            self.commit_cached_read_sequence(reads);
+            self.commit_cached_read_sequence(reads.bsc, reads.abus.as_ref());
         }
         #[cfg(test)]
         {
@@ -2420,7 +2442,7 @@ impl Bus {
                 self.cached_stores += 1;
             }
         }
-        self.commit_cached_read_sequence(plan.before_last);
+        self.commit_cached_read_sequence(plan.before_last, None);
         self.commit_planned_store(last.store, last.pc, retired_at, sound_advanced, false)
             .map(|reference| prefix + reference)
     }

@@ -1288,9 +1288,10 @@ impl Bus {
     pub(super) fn commit_cached_read_sequence(
         &mut self,
         mut sequence: crate::onchip::ReadSequence,
+        abus: Option<&crate::scu::Abus>,
     ) {
-        sequence.advance(self.main_clocks);
-        if let Some(abus) = sequence.abus() {
+        sequence.advance_with_abus(self.main_clocks, abus);
+        if let Some(abus) = abus {
             self.scu.commit_cached_abus(abus);
         }
         self.onchip[0].commit_cached_reads(sequence, self.main_clocks);
