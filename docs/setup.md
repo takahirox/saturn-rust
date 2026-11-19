@@ -113,8 +113,8 @@ its public license, then creates
 `web/pkg/saturn_rust.js` / `saturn_rust_bg.wasm`. Generated Wasm bindings are ignored
 by Git; the reproducible ISO and its license are committed. Rebuild after changing
 Rust or guest source. Opening `index.html` as a `file:` URL will not work. The
-client needs browser support for ES modules, module Workers, Wasm and the
-`wasm-unsafe-eval` CSP directive; the tested browser is recorded in
+client needs browser support for ES modules, module Workers, Wasm SIMD and the
+`wasm-unsafe-eval` CSP directive. The tested browser is recorded in
 [validation results](validation-issue-9.md).
 
 `build-web.sh` enables `sound-worker`, which includes `video-worker`. One module

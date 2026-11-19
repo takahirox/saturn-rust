@@ -4883,3 +4883,50 @@ range, forward p99 increases from 67.6 to 100.9 ms, with one additional gap
 above 100 ms and a lower maximum gap. Reverse p99 in that range decreases
 from 115.0 to 100.7 ms. Sustained real-time throughput, continuous audio and
 broader hardware acceptance remain open.
+
+
+## Compare four SH-2 cache tags together (2026-11-19)
+
+Place the four physical ways' tags and valid bits in one array. The Wasm
+build compares the array with one SIMD128 vector. Native and scalar Wasm
+use the same tag encoding and ordered mask operations. Reads still use the
+lowest matching physical way. Writes still touch every matching way in the
+original order. Two-way mode, the address/data arrays, staged cache versions,
+LRU, and the captured loop image format retain their guest behavior.
+
+The browser comparison uses Chrome 157.0.8103.79, Rust 1.100.0,
+wasm-bindgen 0.2.129, and Binaryen 127. Each package boots Machi Disc 1 in a
+fresh player through field 12,900, then measures six continuous ten-second
+windows with the ordinary paced playback, Canvas, and active AudioWorklet.
+Both orders apply the same 151 controller events through their common endpoint.
+Every field is drawn. Audio queue drops and runtime errors are zero.
+
+| Measure | Main to candidate, forward | Main to candidate, reverse |
+| --- | ---: | ---: |
+| Mean fields/s | 52.686 to 52.836 | 52.768 to 52.936 |
+| Matched fields 12,901–16,064, fields/s | 52.668 to 52.808 | 52.776 to 52.910 |
+| Four matched slow ranges, fields/s | 29.668 to 29.973 | 29.782 to 29.994 |
+| Matched p95 field time, ms | 37.7 to 37.0 | 37.8 to 37.1 |
+| Matched p99 field time, ms | 58.7 to 57.5 | 59.4 to 57.8 |
+| Worklet underflow sample frames | 313,891 to 307,425 | 307,185 to 302,204 |
+
+The four slow ranges begin at fields 13,661, 13,821, 14,861, and 15,341.
+Each includes 80 fields. Two individual slow ranges lose throughput in the
+reverse order. Their pooled throughput improves in both orders. The diagnostic
+companion matches all 28 current reference endpoints, including private CPU
+and cache state, WRAM, clocks, pixels, PCM, and complete Sound state. Its four
+slow ranges are effectively flat in aggregate. The original production
+browser contracts pass in normal, direct, and forced Sound return modes.
+
+The baseline WebAssembly SHA-256 is
+`dc7d39781f2bf5d08187c61294414b286da8de3f3490d97ec381a69b0271742c`.
+The candidate is
+`f8f7bc0c1fc70176925a21f43d84a5201be3c7c7f6177719ce446a8996a72c76`.
+Building through `scripts/build-web.sh` reproduces the measured Wasm and
+JavaScript binding. Native cache, cached scheduler and loop tests pass.
+Removing the two-way mask fails the native oracle. Restoring it passes the
+same test. Native and Wasm Clippy pass with warnings denied.
+
+Related to #138 and #17. Sustained 60 fields/s through the measured game,
+continuous production audio, and hardware completion remain open.
+Private firmware, media, controller timelines and raw captures stay local.

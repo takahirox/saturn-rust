@@ -7,11 +7,46 @@ mod shadow;
 pub(crate) use shadow::CachedLines;
 
 pub const CCR: u32 = 0xFFFF_FE92;
+// Keep the four address-array words contiguous. Bit 2 is the hardware
+// valid bit and is disjoint from every address tag.
+const VALID: u32 = 4;
 #[derive(Clone, Default)]
-struct Line {
-    tag: u32,
-    valid: bool,
-    data: [u8; 16],
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+struct CacheSet {
+    tags: [u32; 4],
+    data: [[u8; 16]; 4],
+}
+impl CacheSet {
+    fn matching_ways(&self, tag: u32, first_way: usize) -> u8 {
+        let tag = tag | VALID;
+        #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+        let ways = {
+            use core::arch::wasm32::{i32x4_bitmask, i32x4_eq, i32x4_splat, v128_load};
+            // The array owns all 16 readable bytes. The intrinsic accepts
+            // an address with the array's ordinary u32 alignment.
+            let tags = unsafe { v128_load(self.tags.as_ptr().cast()) };
+            i32x4_bitmask(i32x4_eq(tags, i32x4_splat(tag as i32)))
+        };
+        #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+        let ways = {
+            let [a, b, c, d] = self.tags;
+            u8::from(a == tag)
+                | (u8::from(b == tag) << 1)
+                | (u8::from(c == tag) << 2)
+                | (u8::from(d == tag) << 3)
+        };
+        ways & (0xF << first_way)
+    }
+
+    fn first_match(&self, tag: u32, first_way: usize) -> Option<usize> {
+        let ways = self.matching_ways(tag, first_way);
+        (ways != 0).then(|| ways.trailing_zeros() as usize)
+    }
+
+    fn fill(&mut self, way: usize, tag: u32, data: [u8; 16]) {
+        self.tags[way] = tag | VALID;
+        self.data[way] = data;
+    }
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CacheTouch {
@@ -133,7 +168,7 @@ struct LoopTouches {
 pub(crate) struct Cache {
     loop_touches: Option<LoopTouches>,
     control: u8,
-    lines: Vec<[Line; 4]>,
+    sets: Vec<CacheSet>,
     lru: [u8; 64],
     lookup: [AtomicU32; 64],
 }
@@ -142,9 +177,7 @@ impl Default for Cache {
         Self {
             loop_touches: None,
             control: 0,
-            lines: (0..64)
-                .map(|_| std::array::from_fn(|_| Line::default()))
-                .collect(),
+            sets: vec![CacheSet::default(); 64],
             lru: [0; 64],
             lookup: std::array::from_fn(|_| AtomicU32::new(0)),
         }
@@ -204,12 +237,14 @@ impl Cache {
         let mut bytes = Vec::with_capacity(65 + 64 * 4 * 21);
         bytes.push(self.control);
         bytes.extend(lru);
-        for (set, ways) in self.lines.iter().enumerate() {
-            for (way, line) in ways.iter().enumerate().skip(self.first_cache_way()) {
-                bytes.extend(line.tag.to_be_bytes());
-                bytes.push(u8::from(line.valid));
-                if line.valid {
-                    let address = line.tag | (set as u32) << 4;
+        for (set, ways) in self.sets.iter().enumerate() {
+            for (way, &encoded_tag) in ways.tags.iter().enumerate().skip(self.first_cache_way()) {
+                let tag = encoded_tag & !VALID;
+                let valid = encoded_tag & VALID != 0;
+                bytes.extend(tag.to_be_bytes());
+                bytes.push(u8::from(valid));
+                if valid {
+                    let address = tag | (set as u32) << 4;
                     let (data, touch) = read(address)?;
                     // An ordinary lookup returns the first duplicate tag.
                     // Reject an ambiguous snapshot rather than copy that
@@ -219,7 +254,7 @@ impl Cache {
                     }
                     bytes.extend(data);
                 } else {
-                    bytes.extend(line.data);
+                    bytes.extend(ways.data[way]);
                 }
             }
         }
@@ -229,13 +264,8 @@ impl Cache {
     pub(crate) fn assert_same_contents(&self, other: &Self) {
         assert_eq!(self.control, other.control);
         assert_eq!(self.lru, other.lru);
-        for (a, b) in self
-            .lines
-            .iter()
-            .flatten()
-            .zip(other.lines.iter().flatten())
-        {
-            assert_eq!((a.tag, a.valid, a.data), (b.tag, b.valid, b.data));
+        for (set, (a, b)) in self.sets.iter().zip(&other.sets).enumerate() {
+            assert_eq!(a, b, "cache set {set}");
         }
     }
     pub fn control(&self) -> u8 {
@@ -248,9 +278,9 @@ impl Cache {
         }
         self.control = value & 0xCF;
         if value & 0x10 != 0 {
-            for set in &mut self.lines {
-                for line in set {
-                    line.valid = false;
+            for set in &mut self.sets {
+                for tag in &mut set.tags {
+                    *tag &= !VALID;
                 }
             }
             self.lru.fill(0);
@@ -302,16 +332,12 @@ impl Cache {
     fn hit_way(&self, address: u32) -> Option<usize> {
         let (set, tag, _) = Self::parts(address);
         let lookup = self.lookup[set].load(Ordering::Relaxed);
-        if lookup & !3 == tag | 4 {
+        if lookup & !3 == tag | VALID {
             return Some((lookup & 3) as usize);
         }
-        let way = self.lines[set]
-            .iter()
-            .enumerate()
-            .skip(self.first_cache_way())
-            .find_map(|(way, line)| (line.valid && line.tag == tag).then_some(way));
+        let way = self.sets[set].first_match(tag, self.first_cache_way());
         if let Some(way) = way {
-            self.lookup[set].store(tag | 4 | way as u32, Ordering::Relaxed);
+            self.lookup[set].store(tag | VALID | way as u32, Ordering::Relaxed);
         }
         way
     }
@@ -326,7 +352,7 @@ impl Cache {
         let (set, _, offset) = Self::parts(address);
         let way = self.hit_way(address)?;
         let mut bytes = [0; N];
-        bytes.copy_from_slice(&self.lines[set][way].data[offset..offset + N]);
+        bytes.copy_from_slice(&self.sets[set].data[way][offset..offset + N]);
         lru[set] = Self::touch_replacement(lru[set], way);
         Some(bytes)
     }
@@ -345,7 +371,7 @@ impl Cache {
         let (set, _, offset) = Self::parts(address);
         let way = self.hit_way(address)?;
         let mut bytes = [0; N];
-        bytes.copy_from_slice(&self.lines[set][way].data[offset..offset + N]);
+        bytes.copy_from_slice(&self.sets[set].data[way][offset..offset + N]);
         Some((
             bytes,
             CacheTouch {
@@ -406,30 +432,26 @@ impl Cache {
             }
             let way = self.victim(set);
             self.record_loop_contents_change();
-            self.lines[set][way] = Line {
-                tag,
-                valid: true,
-                data,
-            };
-            self.lookup[set].store(tag | 4 | way as u32, Ordering::Relaxed);
+            self.sets[set].fill(way, tag, data);
+            self.lookup[set].store(tag | VALID | way as u32, Ordering::Relaxed);
             way
         };
         let mut bytes = [0; N];
-        bytes.copy_from_slice(&self.lines[set][way].data[offset..offset + N]);
+        bytes.copy_from_slice(&self.sets[set].data[way][offset..offset + N]);
         self.touch(set, way);
         Ok(Some(bytes))
     }
     pub fn written<const N: usize>(&mut self, address: u32, bytes: [u8; N]) {
-        let ways = self.written_ways(address);
+        let mut ways = self.written_ways(address);
         let (set, _, offset) = Self::parts(address);
         if ways != 0 {
             self.record_loop_contents_change();
         }
-        for way in 0..4 {
-            if ways & (1 << way) != 0 {
-                self.lines[set][way].data[offset..offset + N].copy_from_slice(&bytes);
-                self.touch(set, way);
-            }
+        while ways != 0 {
+            let way = ways.trailing_zeros() as usize;
+            self.sets[set].data[way][offset..offset + N].copy_from_slice(&bytes);
+            self.touch(set, way);
+            ways &= ways - 1;
         }
     }
     fn written_ways(&self, address: u32) -> u8 {
@@ -437,25 +459,14 @@ impl Cache {
             return 0;
         }
         let (set, tag, _) = Self::parts(address);
-        let mut ways = 0;
-        for (way, line) in self.lines[set]
-            .iter()
-            .enumerate()
-            .skip(self.first_cache_way())
-        {
-            if line.valid && line.tag == tag {
-                ways |= 1 << way;
-            }
-        }
-        ways
+        self.sets[set].matching_ways(tag, self.first_cache_way())
     }
     pub(crate) fn plan_written_replacement(&self, address: u32, lru: &mut [u8; 64]) {
-        let ways = self.written_ways(address);
+        let mut ways = self.written_ways(address);
         let (set, _, _) = Self::parts(address);
-        for way in 0..4 {
-            if ways & (1 << way) != 0 {
-                lru[set] = Self::touch_replacement(lru[set], way);
-            }
+        while ways != 0 {
+            lru[set] = Self::touch_replacement(lru[set], ways.trailing_zeros() as usize);
+            ways &= ways - 1;
         }
     }
     pub fn array_read<const N: usize>(&self, address: u32) -> Result<Option<[u8; N]>, BusError> {
@@ -466,15 +477,14 @@ impl Cache {
                     return Err(BusError::UnsupportedDevice { address, width: N });
                 }
                 let set = ((address >> 4) & 63) as usize;
-                let line = &self.lines[set][(self.control >> 6) as usize];
-                let value =
-                    line.tag | (u32::from(self.lru[set]) << 4) | (u32::from(line.valid) << 2);
+                let tag = self.sets[set].tags[(self.control >> 6) as usize];
+                let value = tag | (u32::from(self.lru[set]) << 4);
                 bytes.copy_from_slice(&value.to_be_bytes());
             }
             6 => {
                 let offset = (address & 0xFFF) as usize;
-                let line = &self.lines[(offset >> 4) & 63][offset >> 10];
-                bytes.copy_from_slice(&line.data[offset & 15..(offset & 15) + N]);
+                let data = &self.sets[(offset >> 4) & 63].data[offset >> 10];
+                bytes.copy_from_slice(&data[offset & 15..(offset & 15) + N]);
             }
             _ => return Ok(None),
         }
@@ -491,9 +501,9 @@ impl Cache {
                 if N != 4 {
                     return Err(BusError::UnsupportedDevice { address, width: N });
                 }
-                for line in &mut self.lines[set] {
-                    if line.tag == tag {
-                        line.valid = false;
+                for entry in &mut self.sets[set].tags {
+                    if *entry & !VALID == tag {
+                        *entry &= !VALID;
                     }
                 }
                 self.lookup[set].store(0, Ordering::Relaxed);
@@ -503,15 +513,13 @@ impl Cache {
                     return Err(BusError::UnsupportedDevice { address, width: N });
                 }
                 let value = u32::from_be_bytes(bytes.as_slice().try_into().unwrap());
-                let line = &mut self.lines[set][(self.control >> 6) as usize];
-                line.tag = tag;
-                line.valid = address & 4 != 0;
+                self.sets[set].tags[(self.control >> 6) as usize] = tag | (address & VALID);
                 self.lru[set] = ((value >> 4) & 63) as u8;
                 self.lookup[set].store(0, Ordering::Relaxed);
             }
             6 => {
                 let way = ((address >> 10) & 3) as usize;
-                self.lines[set][way].data[offset..offset + N].copy_from_slice(&bytes);
+                self.sets[set].data[way][offset..offset + N].copy_from_slice(&bytes);
             }
             _ => return Ok(false),
         }
@@ -524,7 +532,7 @@ impl Cache {
     pub(crate) fn copy_private(&mut self, source: &Self, replacement: u8) {
         self.record_loop_contents_change();
         self.control = source.control;
-        self.lines.clone_from(&source.lines);
+        self.sets.clone_from(&source.sets);
         self.lru.fill(replacement);
         for lookup in &self.lookup {
             lookup.store(0, Ordering::Relaxed);
@@ -554,12 +562,23 @@ mod tests {
             .unwrap();
         cache.array_write::<4>(0xC000_0000, [1; 4]).unwrap();
         assert_eq!(cache.peek_cached::<4>(address), Some([1; 4]));
-        cache.set_control(9);
-        assert_eq!(cache.peek_cached::<4>(address), Some([3; 4]));
+        cache.written(address, [0x55; 4]);
+        assert_eq!(cache.array_read::<4>(0xC000_0000), Ok(Some([0x55; 4])));
+        assert_eq!(cache.array_read::<4>(0xC000_0C00), Ok(Some([0x55; 4])));
+        cache.set_control(0xC9);
+        assert_eq!(cache.peek_cached::<4>(address), Some([0x55; 4]));
+        cache.written(address, [0x99; 4]);
+        assert_eq!(cache.array_read::<4>(0xC000_0000), Ok(Some([0x55; 4])));
+        assert_eq!(cache.array_read::<4>(0xC000_0C00), Ok(Some([0x99; 4])));
         cache
             .array_write(0x4000_0000 | address, 0u32.to_be_bytes())
             .unwrap();
         assert_eq!(cache.peek_cached::<4>(address), None);
+        let invalid_tag = address | (u32::from(cache.lru[0]) << 4);
+        assert_eq!(
+            cache.array_read::<4>(0x6000_0000),
+            Ok(Some(invalid_tag.to_be_bytes()))
+        );
     }
     #[test]
     fn decode_peeks_match_discarded_cache_touches_without_changing_lru() {
@@ -664,12 +683,16 @@ mod tests {
         );
         assert_eq!(trace, [0x06002004, 0x06002008]);
         assert_eq!(c.lru, before);
-        assert!(c.lines[0][3].valid);
-        assert_eq!(c.lines[0][3].tag, 0x06001000);
         assert_eq!(
             c.read::<4>(0x06001000, false, |_| panic!("lost old line"))
                 .unwrap(),
             Some([1; 4])
+        );
+        c.set_control(0xC1);
+        let victim = 0x0600_1004u32 | (u32::from(c.lru[0]) << 4);
+        assert_eq!(
+            c.array_read::<4>(0x6000_0000),
+            Ok(Some(victim.to_be_bytes()))
         );
     }
 }
