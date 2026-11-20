@@ -1128,11 +1128,14 @@ impl Vdp1 {
         }
         if kind == 1 && c[0] >> 8 & 15 != 0 {
             let zoom = c[0] >> 8 & 15;
-            if !matches!(zoom, 5..=7 | 9..=11 | 13..=15) || p[1].x < 0 || p[1].y < 0 {
+            if !matches!(zoom, 5..=7 | 9..=11 | 13..=15) {
                 return self.invalid();
             }
-            p[0].x -= p[1].x * (i32::from(zoom & 3) - 1) / 2;
-            p[0].y -= p[1].y * (i32::from(zoom >> 2) - 1) / 2;
+            // The 1997 VDP1 manual, §6.1 Fig. 6.2, rounds centered offsets
+            // down. A negative extent reverses raster traversal independently
+            // of the character read direction programmed in CMDCTRL.
+            p[0].x -= (p[1].x * (i32::from(zoom & 3) - 1)).div_euclid(2);
+            p[0].y -= (p[1].y * (i32::from(zoom >> 2) - 1)).div_euclid(2);
             p[2] = Point {
                 x: p[0].x + p[1].x,
                 y: p[0].y + p[1].y,

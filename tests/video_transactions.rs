@@ -208,6 +208,39 @@ fn guest_write_after_ctrl_fetch_does_not_replace_an_in_flight_vdp1_command() {
 }
 
 #[test]
+fn guest_signed_vdp1_scale_reverses_each_axis_about_the_center() {
+    let original = load(include_str!("fixtures/vdp1-signed-scale.hex"));
+    let mut m = Machine::new();
+    for (width, height, flip, reversed_x, reversed_y) in [
+        (7i16, 3i16, 0u16, false, false),
+        (-7, 3, 0, true, false),
+        (7, -3, 0, false, true),
+        (-7, -3, 0, true, true),
+        (-7, -3, 0x30, false, false),
+    ] {
+        let mut image = original.clone();
+        image[0x100..0x102].copy_from_slice(&(0x0A01 | flip).to_be_bytes());
+        image[0x102..0x104].copy_from_slice(&width.to_be_bytes());
+        image[0x104..0x106].copy_from_slice(&height.to_be_bytes());
+        let mut expected = Vec::new();
+        for y in 0..6 {
+            for x in 0..10 {
+                let color = if (1..=8).contains(&x) && (1..=4).contains(&y) {
+                    let col = if reversed_x { 8 - x } else { x - 1 };
+                    let row = if reversed_y { 4 - y } else { y - 1 };
+                    0x8001 + row * 8 + col
+                } else {
+                    0
+                };
+                expected.push(color);
+            }
+        }
+        expected.extend([2, 0x14, 0x2000, 0x600D]);
+        assert_eq!(run(&mut m, &image, 0x0600EC00, 64), expected);
+    }
+}
+
+#[test]
 fn guest_frt_measures_framebuffer_ownership_pausing_drawing_but_independent_vram_does_not() {
     let original = load(include_str!("fixtures/vdp1-memory-ownership.hex"));
     let mut m = Machine::new();

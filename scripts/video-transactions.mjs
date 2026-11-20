@@ -185,6 +185,25 @@ export async function videoTransactions(page) {
   assert(at >= 0 && beforeStart.indexOf(needle, at + 1) < 0);
   beforeStart.set([0x25, 0x61, 0x24, 0x01], at);
   assert.deepEqual((await run(page, beforeStart, 0x0600E100, 5)).records, [0, 0, 0, 2, 0x600D]);
+  const signedScale = await rom("vdp1-signed-scale");
+  for (const [width, height, flip, reverseX, reverseY] of [
+    [7, 3, 0, false, false], [-7, 3, 0, true, false], [7, -3, 0, false, true],
+    [-7, -3, 0, true, true], [-7, -3, 0x30, false, false],
+  ]) {
+    const image = Buffer.from(signedScale);
+    image.writeUInt16BE(0x0A01 | flip, 0x100);
+    image.writeInt16BE(width, 0x102);
+    image.writeInt16BE(height, 0x104);
+    const pixels = Array.from({ length: 60 }, (_, i) => {
+      const x = i % 10, y = Math.floor(i / 10);
+      if (!x || x === 9 || !y || y === 5) return 0;
+      const col = reverseX ? 8 - x : x - 1, row = reverseY ? 4 - y : y - 1;
+      return 0x8001 + row * 8 + col;
+    });
+    assert.deepEqual((await run(page, image, 0x0600EC00, 64)).records,
+      [...pixels, 2, 0x14, 0x2000, 0x600D]);
+  }
+  console.log("VDP1 signed scale passed: both axes, odd center rounding, CMDCTRL flips, exact framebuffer border and Draw End IRQ in Wasm.");
   const ownership = await rom("vdp1-memory-ownership");
   let referenceTimes;
   for (let repeat = 0; repeat < 2; repeat++) for (const color of [0x801F, 0x83E0]) {
