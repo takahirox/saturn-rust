@@ -620,7 +620,7 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 | --- | --- | --- | --- | --- | --- |
 | VDP1 VRAM/framebuffers/registers, [VDP1] §§2,4 | 512 KiB VRAM, two draw/display buffers, byte/word/long memory; checked paired register writes; MODR; TVM=4 storage, exclusive sprite readout and automatic blank erase | VIDEO, [HDTV vectors](../src/bus/hdtv_tests.rs) | PRISM, [HDTV guest/Canvas](../scripts/vdp1-hdtv.mjs) | Physical bus lanes/mirrors/waits and monitor synchronization | Pending |
 | Command list/control flow, [VDP1] §6.1 | END, next/assign/call/return and skip variants, one return level, invalid links/prohibited commands, bounded cyclic lists | VIDEO, [local-memory vectors](#scheduled-68k-resetiack-and-vdp1-local-memory-ownership) | PRISM; command-fetch guest | Full guest control-flow corpus and command-dependent fetch costs | Pending |
-| Normal/scaled/distorted sprites, [VDP1] §§6.2,7.4–7.6 | Width/height, flips, two-point and nine anchor scales, ruled quadrilateral scan conversion, HSS/EOS source selection | VIDEO, HSSG | PRISM (normal), HSSG | Physical edge/zoom rounding, preclip direction and draw bandwidth | Pending |
+| Normal/scaled/distorted sprites, [VDP1] §§6.1–6.2,7.4–7.6 | Width/height, flips, two-point and nine anchor scales with signed extents, ruled quadrilateral scan conversion, HSS/EOS source selection | VIDEO, HSSG | PRISM (normal), HSSG, `vdp1-signed-scale` | Physical edge/zoom rounding, preclip direction and draw bandwidth | Pending |
 | Polygons/lines/polylines, [VDP1] §§7.7–7.9 | Solid ruled quads and integer line segments | VIDEO | PRISM (polygons) | Full independent sloped-edge and repeated-pixel corpus | Pending |
 | Clip/local coordinates, [VDP1] §§7.1–7.3 | System/user inside/outside clips, local offsets | VIDEO | PRISM (system) | Full extreme-coordinate/clip boundary corpus | Pending |
 | Sprite texture/color modes, [VDP1] §§3.1/5.1/5.2/6.3–6.6 | Packed 4-bit bank/LUT, 64/128/256 bank and RGB555, retained 16-word LUT before drawing, separately fetched character words and framebuffer publication, transparent pixels, two end codes per raster row | VIDEO; [table/character vectors](#retained-vdp1-tables-and-characters-68k-ea-waits-and-cd-transfer-completion) | PRISM (RGB555); original lookup/character rewrite guests | Scaling/end-code interaction, wrapping, physical prefetch overlap and all browser formats | Pending |
@@ -640,6 +640,12 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 | Color calculation/offset/shadow, [VDP2] §§11–14 | Top/second-image ratio selection, gradation horizontal filtering and priority, additive and three/four-image extended blending; SFCCMD character/dot/palette-MSB conditions; signed offsets, normal/MSB/transparent shadows after blend/offset | VIDEO, SPRX, LINE, SPECIAL, GRAD | SPRX, PRISM, LINE, SPECIAL, GRAD | Gradation border/timing conformance, full guest format/extended-composition corpus and raster timing remain | Pending |
 | Back/line color, [VDP2] §§7.1/11.3 | Back-screen single/per-line VRAM table, signed offset; LNCLEN top-only insertion, single/per-line LCTA palette data and coefficient-derived low seven address bits; CCRLB line/back ratios | VIDEO, LINE | PRISM (back), LINE (two line colors, coefficient mutations, extended calculation, Canvas) | Interlace/display-mode line rules, raster-time fetches and complete guest format corpus remain | Pending |
 | Combined VDP1/VDP2 pipeline | Sprite/background overlap, priority, transparency, game result/restart, texture mutation changes actual pixels | VIDEO, PRISM | PRISM + Canvas assertions | Remaining modes/effects and timing above | Pending |
+
+The original `vdp1-signed-scale` guest draws a centered asymmetric 8×4 sprite
+with positive, negative and flipped extents. Native and browser tests check
+all texels, the surrounding border, EDSR, COPR and the SCU Draw End flag.
+The 1997 VDP1 manual specifies reversed drawing for negative extents and downward
+rounding in Fig. 6.2. [VDP1 manual §6.1](https://www.infochunk.com/saturn/segahtml_en/hard/vdp1/hon/p06_10.htm)
 
 VDP1 command fetch retains its 32-main-clock functional deadline. Gouraud reads
 use four separate VRAM word deadlines; shadow/translucency retain a background

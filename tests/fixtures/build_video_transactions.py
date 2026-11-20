@@ -75,6 +75,29 @@ def command_source():
     return s
 
 
+def signed_scale_source():
+    s = 'load 0x0600ec00,r8\n' + put16(0x25D00002, 2)
+    for at, value in [(0, 9), (20, 511), (22, 255),
+                      (32, 0x4000), (64, 0x4000), (96, 0x4000),
+                      (0x84, 0xE8), (0x88, 0x40), (0x8A, 0x0104),
+                      (0x8C, 20), (0x8E, 20), (0xA0, 0x8000)]:
+        s += put16(0x25C00000 + at, value)
+    for src, dst in [(0x100, 0x25C00080), (0x102, 0x25C00090), (0x104, 0x25C00092)]:
+        s += f'load {src:#x},r1\nmov.w @r1,r0\nload {dst:#x},r1\nmov.w r0,@r1\n'
+    s += ('load 0x25c00200,r4\nload 0x8001,r0\nmov #32,r5\ntexture:\n'
+          'mov.w r0,@r4\nadd #2,r4\nadd #1,r0\ndt r5\nbf texture\n')
+    s += put16(0x25D00004, 1)
+    s += ('load 0x25d00010,r1\nwait_draw:\nmov.w @r1,r0\n'
+          'tst #2,r0\nbt wait_draw\n')
+    # Read the entire 8x4 image plus a one-pixel border from the draw buffer.
+    s += ('load 0x25c84820,r4\nload 1004,r7\nmov #6,r6\nrow:\nmov #10,r5\npixel:\n'
+          'mov.w @r4,r0\nextu.w r0,r0\n' + record() +
+          'add #2,r4\ndt r5\nbf pixel\nadd r7,r4\ndt r6\nbf row\n')
+    s += read(0x25D00010, 2) + read(0x25D00014, 2)
+    s += 'load 0x25fe00a4,r1\nmov.l @r1,r0\nload 0x2000,r2\nand r2,r0\n' + record()
+    return s + 'load 0x600d,r0\n' + record() + 'park:\nsleep\nbra park\nnop\n'
+
+
 def contention_source():
     s = 'load 0x0600e200,r8\n' + put16(0x25D00002, 2)
     for at, value in [(0, 9), (20, 511), (22, 255), (32, 6),
@@ -309,6 +332,9 @@ def build():
     files.update(grants)
     commands, command_hash = encode('vdp1-command-fetch', command_source())
     files.update(commands)
+    signed_scale, signed_scale_hash = encode('vdp1-signed-scale', signed_scale_source(),
+                                             [(0x100, 0x0A01), (0x102, 0xFFF9), (0x104, 0xFFFD)])
+    files.update(signed_scale)
     contention, contention_hash = encode('vdp1-memory-ownership', contention_source())
     files.update(contention)
     effects, effects_hash = encode('vdp1-effects-timing', effects_source(), [(0x100, 0xC4), (0x102, 0x8010)])
@@ -321,7 +347,8 @@ def build():
     files.update(preclip)
     files['vdp1-progress.tsv'] = ''.join(f'{v:08X}\n' for v in
         [0x801F, 0, 0, 0, 4, 0, 0x1234, 0x1234, 0xFFFF, 0x600D]).encode()
-    return files, [draw_hash, monitor_hash, grants_hash, command_hash, contention_hash, effects_hash, lookup_hash, character_hash, preclip_hash]
+    return files, [draw_hash, monitor_hash, grants_hash, command_hash, signed_scale_hash,
+                   contention_hash, effects_hash, lookup_hash, character_hash, preclip_hash]
 
 
 if __name__ == '__main__':
