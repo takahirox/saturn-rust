@@ -5357,3 +5357,58 @@ Sound state byte for byte agree at every checkpoint. Every field
 contributes to the matching PCM and pixel digests.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+## Bound the Sound retirement-gap check (2026-11-21)
+
+Cached SH-2 execution uses the gaps between actual peer-admissible
+retirements to decide whether Sound lookahead needs a rollback checkpoint.
+The scheduler converts the existing eight-reference-clock allowance to
+its exact phase-independent main-clock limit. The scan stops at the first
+gap beyond that limit. Borrowed and materialized retirement positions use
+their existing order. Repeated periods retain the same logical timeline.
+
+Fresh Chrome 157.0.8103.79 runs warm through field 12,900, then play six
+twelve-second intervals on Machi Disc 1. The four runs share 3,880 matched
+fields and the same 157 controller events. Every field is drawn with
+Sound and Video Workers and AudioWorklet active. Browser errors and
+queue drops are zero.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Common fields, fields/s | 53.952 to 54.030 | 53.837 to 53.890 |
+| Four matched slow ranges, fields/s | 32.775 to 33.049 | 32.715 to 32.621 |
+| Fields 16,231–16,270, fields/s | 23.298 to 23.215 | 22.562 to 22.990 |
+| Common fields p99 field time, ms | 51.3 to 51.2 | 52.6 to 52.1 |
+| Four slow ranges p99 field time, ms | 108.1 to 107.2 | 107.6 to 107.6 |
+| Worklet underflow sample frames | 313,210 to 309,145 | 318,427 to 314,673 |
+
+The candidate improves overall throughput and reduces shortages in both
+orders. In fields 14,861–14,940 the forward p99 rises from 124.5 to
+129.0 ms, and reverse throughput falls by 1.76%. Throughput around the
+former VDP1 error also varies by order. Sustained real-time execution and
+continuous audio remain open.
+
+Baseline Wasm SHA-256 is
+`0d774eebaeecdcfccea986fd8d8571fa8a31b30289961e9001a1d28555774e2a`.
+Candidate Wasm is
+`4ecdebbe64a5c25e1985c4894dce26b9298a471902cc99c958d0b046db5bbc50`.
+The standard build uses Rust 1.100.0, wasm-bindgen 0.2.129 and Binaryen 127
+with identical JavaScript bindings.
+
+The native regression compares the bounded check with the literal scan
+at each prefix for materialized, repeated and borrowed retirements, and
+checks the allowance for all four PLL modes. Making the gap comparison
+exclusive fails the exact-boundary regression. The restored source
+passes original dual-polling Sound control, HIRQ and physical refresh,
+and Sound arbitration fixtures, cached scheduling, video journal and
+Sound rendezvous tests, and native and Wasm Clippy. Original Chrome
+A-bus timing, refresh arbitration, SCSP clock and SCSP CPU-memory
+scenarios pass on the standard candidate.
+
+The standard packages match over a separate 3,040-field replay at 38
+checkpoints through field 16,860, including the former VDP1 error scene.
+Public SH-2 state and clocks, all work RAM by SHA-256, and canonical
+Sound state byte for byte agree at every checkpoint. All fields
+contribute to the matching rolling PCM and pixel digests.
+
+Related to #138 and #17. Private media and raw captures stay local.

@@ -54,6 +54,11 @@ impl SystemClock {
             .div_ceil(self.frequency())
             .min(u64::from(u32::MAX)) as u32
     }
+    /// Main-clock interval whose worst-case reference span fits the limit.
+    pub fn main_span_limit(&self, reference_clocks: u32) -> u32 {
+        (u64::from(reference_clocks) * self.frequency() / Self::REFERENCE).min(u64::from(u32::MAX))
+            as u32
+    }
     /// Main ticks available after a fixed-domain interval, without changing phase.
     pub fn preview(&self, reference_clocks: u32) -> u32 {
         if self.is_reference() && self.phase == 0 {
