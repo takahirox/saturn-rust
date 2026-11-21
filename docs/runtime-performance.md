@@ -5257,3 +5257,53 @@ state and clocks, all work RAM by SHA-256, and the canonical Sound state
 byte for byte. Every field contributes to the PCM and pixel digests.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+## Reuse private SH-2 transaction storage (2026-11-21)
+
+After a verified Master SH-2 burst, the existing Slave polling proof
+publishes its translated private transaction using the journal buffers
+saved at entry. The translation preserves the pending transfer, replay
+values and positions, and absolute guest clocks. If the burst fails,
+the original transaction is restored with its contents intact.
+
+Each fresh standard Chrome 157.0.8103.79 run warms through field 12,900
+and measures six twelve-second windows on Machi Disc 1. All four runs
+use the same 157 controller events, draw every measured field, and keep
+the Sound and Video Workers and AudioWorklet active. Browser errors and
+audio queue drops are zero.
+
+| Measure | Main to candidate, forward | Main to candidate, reverse |
+| --- | ---: | ---: |
+| Matched 3,869 fields, fields/s | 53.703 to 53.882 | 53.680 to 53.728 |
+| Four matched slow ranges, fields/s | 32.010 to 32.601 | 32.267 to 32.414 |
+| Fields 16,231–16,270, fields/s | 22.458 to 22.860 | 22.856 to 22.928 |
+| Matched p99 field time, ms | 53.5 to 52.3 | 52.4 to 52.4 |
+| Slow ranges p99 field time, ms | 112.0 to 111.0 | 112.3 to 111.4 |
+| Worklet underflow sample frames | 326,138 to 317,721 | 324,522 to 322,149 |
+
+In the reverse order, two of the four slower ranges lose under 0.1%
+of mean throughput while both of their p99 field times improve. Fields
+14,861–14,940 show a higher p99 in the forward order, from 130.4 to
+133.2 ms. Sustained real-time execution and continuous audio remain open.
+
+Baseline Wasm SHA-256 is
+`46783d789b0d6bde2342e9fb9980a1cf2eb9a255a8ff2d4d3e7a7b06813350bc`.
+Candidate Wasm is
+`9ebd8377595dd0016eea93b0ae48d1ef53afe79b65f598d137c044e8b10c985f`.
+The standard build uses Rust 1.100.0, wasm-bindgen 0.2.129 and Binaryen 127
+with identical JavaScript bindings.
+
+The native transaction fixture compares the complete rebased journal
+with an independent copy and checks that the original buffers are reused.
+Replacing reuse with fresh allocations fails that fixture. The restored
+source passes the polling, cached scheduling, video journal and Sound
+rendezvous tests, native and Wasm Clippy, and the Chrome A-bus, SH-2 fetch
+and CD runtime checks.
+
+The two standard Wasm packages match throughout a separate 3,040-field
+replay across 38 checkpoints through field 16,860. The comparison covers
+public SH-2 state and clocks, all work RAM by SHA-256, and the canonical
+Sound state byte for byte. Every field contributes to PCM and pixel
+digests. The replay passes through the former VDP1 error scene.
+
+Related to #138 and #17. Private media and raw captures stay local.

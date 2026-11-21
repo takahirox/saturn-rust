@@ -207,6 +207,62 @@ pub(super) struct Journal {
     current_operation: Option<Operation>,
 }
 impl Journal {
+    fn clone_into_storage(&self, mut storage: Self) -> Self {
+        let Self {
+            irq,
+            nmi_cleared,
+            vector_waiting,
+            synchronous_stack,
+            operations,
+            clocks,
+            errors,
+            cursor,
+            beats,
+            beat_cursor,
+            waiting,
+            completed,
+            pipeline_wait,
+            operand_completion,
+            pending_write,
+            write_accepted,
+            write_context,
+            current_operation,
+        } = self;
+        let ClockJournal {
+            phases,
+            observed_through,
+            phase,
+        } = clocks;
+        storage.operations.clone_from(operations);
+        storage.clocks.phases.clone_from(phases);
+        storage.errors.clone_from(errors);
+        storage.beats.clone_from(beats);
+        Self {
+            irq: *irq,
+            nmi_cleared: *nmi_cleared,
+            vector_waiting: *vector_waiting,
+            synchronous_stack: *synchronous_stack,
+            operations: storage.operations,
+            clocks: ClockJournal {
+                phases: storage.clocks.phases,
+                observed_through: *observed_through,
+                phase: *phase,
+            },
+            errors: storage.errors,
+            cursor: *cursor,
+            beats: storage.beats,
+            beat_cursor: *beat_cursor,
+            waiting: *waiting,
+            completed: *completed,
+            pipeline_wait: *pipeline_wait,
+            operand_completion: *operand_completion,
+            pending_write: pending_write.clone(),
+            write_accepted: *write_accepted,
+            write_context: *write_context,
+            current_operation: *current_operation,
+        }
+    }
+
     #[inline]
     fn replay_operation(&mut self, op: Operation) -> Option<Result<u32, BusError>> {
         if let Some(&(recorded, result)) = self.operations.get(self.cursor) {
@@ -3210,6 +3266,23 @@ pub(crate) struct PrivateTransaction {
     clocks: u32,
 }
 impl PrivateTransaction {
+    pub(super) fn rebase_into_storage(&self, storage: Self, elapsed: u64) -> Self {
+        let Self {
+            journal,
+            active,
+            retained,
+            clocks,
+        } = self;
+        let mut result = Self {
+            journal: journal.clone_into_storage(storage.journal),
+            active: active.clone(),
+            retained: *retained,
+            clocks: *clocks,
+        };
+        result.shift_clock(elapsed);
+        result
+    }
+
     pub(crate) fn shift_clock(&mut self, clocks: u64) {
         for (_, at) in &mut self.journal.clocks.phases {
             *at += clocks;
@@ -3657,5 +3730,63 @@ mod local_journal_tests {
                 assert_eq!(reference.local_journal_counts(), [0, 0]);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod private_storage_tests {
+    use super::*;
+
+    #[test]
+    fn private_transaction_publication_reuses_buffers_and_translates_clock_fields() {
+        let expected = PrivateTransaction {
+            journal: Journal {
+                operations: vec![
+                    (Operation::MemoryAccess(0xFFFF_FE11, false, 17), Ok(0)),
+                    (Operation::BreakPending, Ok(0)),
+                ],
+                clocks: ClockJournal {
+                    phases: vec![(0, 21), (2, 23)],
+                    observed_through: Some(2),
+                    phase: 1,
+                },
+                cursor: 2,
+                operand_completion: Some(23),
+                current_operation: Some(Operation::MemoryAccess(0xFFFF_FE11, false, 24)),
+                waiting: Some(Transfer {
+                    address: 0xFFFF_FE11,
+                    width: 1,
+                    last: true,
+                    ..Transfer::default()
+                }),
+                ..Journal::default()
+            },
+            active: None,
+            retained: Some((0x0600_0120, 0x6000)),
+            clocks: 2,
+        };
+        let mut previous = expected.clone();
+        previous
+            .journal
+            .operations
+            .push((Operation::ClearNmi, Ok(0)));
+        previous.journal.clocks.phases.push((7, 28));
+        previous.journal.cursor = 3;
+        previous
+            .journal
+            .beats
+            .push((Transfer::default(), Ok(0xABCD)));
+        previous.retained = None;
+        previous.clocks = 5;
+        let operations = previous.journal.operations.as_ptr();
+        let phases = previous.journal.clocks.phases.as_ptr();
+        let actual = expected.rebase_into_storage(previous, 11);
+        let mut literal = expected.clone();
+        literal.shift_clock(11);
+        assert!(actual == literal);
+        assert_eq!(actual.journal.operations.as_ptr(), operations);
+        assert_eq!(actual.journal.clocks.phases.as_ptr(), phases);
+        assert_eq!(actual.journal.operand_completion, Some(34));
+        assert_eq!(actual.journal.clocks.phases, [(0, 32), (2, 34)]);
     }
 }
