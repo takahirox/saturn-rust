@@ -11,6 +11,7 @@ use crate::cpu::{CachedClass, CachedInstruction, Cpu, CpuStatus, ResidentControl
 mod hirq_refresh;
 #[cfg(test)]
 mod hirq_refresh_fixture;
+mod hirq_window;
 mod loop_replay;
 use hirq_refresh::PassiveRefresh;
 
@@ -1724,6 +1725,49 @@ impl Bus {
         let reversible_loads = self.reversible_cached_loads;
         #[cfg(not(any(test, feature = "kernel-experiment")))]
         let reversible_loads = true;
+        #[cfg(test)]
+        let enabled = self.cached_hirq_window_enabled;
+        #[cfg(not(test))]
+        let enabled = true;
+        #[cfg(test)]
+        let retain_instruction_words = self.hirq_window_resident_words;
+        #[cfg(not(test))]
+        let retain_instruction_words = true;
+        #[cfg(test)]
+        let mut hirq_window = hirq_window::Window::default();
+        if enabled
+            && memory.passive.as_ref().is_some_and(hirq_window::is_hirq)
+            && self
+                .loop_probe
+                .as_ref()
+                .is_none_or(|probe| !probe.observing)
+        {
+            let timestamps = track_retirements.then_some(&mut points.points);
+            let learning = self
+                .loop_probe
+                .as_deref_mut()
+                .filter(|probe| probe.replaying && probe.learning);
+            let window = if retain_instruction_words {
+                memory.execute_hirq_window::<true>(&mut cpu, count, timestamps, learning)
+            } else {
+                memory.execute_hirq_window::<false>(&mut cpu, count, timestamps, learning)
+            };
+            if window.retired != 0 {
+                retired = window.retired;
+                retired_at = window.at;
+                ready = window.ready;
+                if track_retirements {
+                    points.last_reference = self.system_clock.deadline(
+                        ((retired_at - self.main_clocks) as u32)
+                            .saturating_sub(self.pending_main_clocks),
+                    );
+                }
+            }
+            #[cfg(test)]
+            {
+                hirq_window = window;
+            }
+        }
         while retired < count && memory.clock.get() < end {
             if retired == 0
                 && let Some(probe) = &self.loop_probe
@@ -2455,6 +2499,17 @@ impl Bus {
                 memory.clock.set(ready.min(end));
             }
             retired = selected as u32;
+        }
+        #[cfg(test)]
+        if hirq_window.retired != 0 && retired != 0 {
+            self.cached_hirq_window_counts[0] += 1;
+            self.cached_hirq_window_counts[1] += u64::from(retired.min(hirq_window.retired));
+            self.cached_hirq_window_counts[3] +=
+                u64::from(matches!(poll, Some(PeerSchedule::Pending { .. })));
+            if retired >= hirq_window.retired {
+                self.cached_hirq_window_counts[2] += u64::from(hirq_window.loads);
+                self.cached_hirq_window_counts[4] += u64::from(hirq_window.reused_fetches);
+            }
         }
         let endpoint_issues = if matches!(poll, Some(PeerSchedule::Pending { .. })) {
             let clock = points.at(selected - 1);

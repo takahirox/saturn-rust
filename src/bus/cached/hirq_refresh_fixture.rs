@@ -35,7 +35,29 @@ impl Machine {
         active_sound: bool,
         allow_sound: bool,
     ) -> ([u64; 3], [u64; 2], [u64; 3]) {
+        let (physical, arbitration, counts, _) = Self::verify_hirq_windows(
+            enabled,
+            overlap,
+            wait,
+            two,
+            active_sound,
+            allow_sound,
+            false,
+        );
+        (physical, arbitration, counts)
+    }
+
+    fn verify_hirq_windows(
+        enabled: bool,
+        overlap: bool,
+        wait: bool,
+        two: bool,
+        active_sound: bool,
+        allow_sound: bool,
+        typed_window: bool,
+    ) -> ([u64; 3], [u64; 2], [u64; 3], [u64; 5]) {
         let (mut seconds, mut sound_grants, mut shared_seconds) = (0, 0, 0);
+        let mut window_work = [0; 5];
         let mut total = [0; 3];
         let mut delayed = 0;
         let mut waiting = 0;
@@ -83,6 +105,11 @@ impl Machine {
                         machine
                     };
                     let (mut actual, mut reference) = (make(), make());
+                    reference.enable_cached_hirq_window(false);
+                    actual.enable_cached_hirq_window(typed_window);
+                    actual.enable_hirq_window_resident_words(typed_window);
+                    assert_eq!(actual.hirq_window_resident_words_enabled(), typed_window);
+                    assert_eq!(actual.cached_hirq_window_enabled(), typed_window);
                     actual.bus.hirq_refresh_plan = enabled;
                     actual.bus.hirq_refresh_overlap = overlap;
                     actual.bus.hirq_refresh_wait = wait;
@@ -131,6 +158,13 @@ impl Machine {
                             == reference.sound_domain_snapshot().unwrap(),
                         "the full canonical Sound state must match",
                     );
+                    for (total, work) in window_work
+                        .iter_mut()
+                        .zip(actual.cached_hirq_window_counts())
+                    {
+                        *total += work;
+                    }
+                    assert_eq!(reference.cached_hirq_window_counts(), [0; 5]);
                     let sound = actual.bus.hirq_sound_refresh_grants;
                     let shared = actual.bus.hirq_second_grants_with_sound;
                     if !enabled || !active_sound || !allow_sound || irq {
@@ -174,6 +208,7 @@ impl Machine {
             total,
             [delayed, waiting],
             [seconds, sound_grants, shared_seconds],
+            window_work,
         )
     }
 }
@@ -241,4 +276,27 @@ fn two_hirq_refreshes_and_local_sound_share_the_same_machine_prefix() {
     let [seconds, sound, shared] =
         Machine::verify_hirq_refreshes_with_sound(true, true, true, true, true, true).2;
     assert!(shared > 0 && shared <= sound && shared <= seconds);
+}
+
+#[test]
+fn typed_hirq_window_matches_real_refreshes_and_sound() {
+    for active_sound in [false, true] {
+        let reference =
+            Machine::verify_hirq_windows(true, true, true, true, active_sound, true, false);
+        let actual = Machine::verify_hirq_windows(true, true, true, true, active_sound, true, true);
+        assert_eq!(
+            (actual.0, actual.1, actual.2),
+            (reference.0, reference.1, reference.2)
+        );
+        let [windows, retired, reads, _, reused] = actual.3;
+        assert!(
+            reused > 0,
+            "actual resident instruction words must be reused"
+        );
+        assert!(
+            windows > 0 && reads > windows && retired > reads,
+            "typed HIRQ windows must publish hardware reads and scalar retirements"
+        );
+        assert_eq!(reference.3, [0; 5]);
+    }
 }

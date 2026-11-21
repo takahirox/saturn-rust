@@ -994,3 +994,78 @@ mod resume_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[test]
+fn typed_hirq_window_preserves_live_private_peer_boundaries() {
+    for fast in [false, true] {
+        let make = |offset| {
+            let mut machine = crate::scheduling_tests::cached_pair(
+                &[0xD102, 0x7001, 0x62F1, 0xAFFB, 9, 9, 0x1234, 0x5678],
+                &[0x60F0, 0xC880, 0x89FC, 0xAFFB, 9],
+            );
+            machine.bus.change_system_clock(fast);
+            machine.bus.set_slave_enabled(true);
+            for (cpu, address) in [
+                (Processor::Master, HIGH_WRAM),
+                (Processor::Slave, HIGH_WRAM + 0x100),
+            ] {
+                let mut port = machine.bus.for_cpu(cpu);
+                port.write8(crate::cache::CCR, 0x11).unwrap();
+                port.fetch16(address).unwrap();
+                machine.bus.cpu_delay(cpu, 0);
+            }
+            machine.cpu = Cpu::start(HIGH_WRAM, 0x2000_0000 | (crate::cd::REGISTERS + 8));
+            machine
+                .cpu
+                .prime_fetch(&machine.bus.for_cpu(Processor::Master));
+            machine.slave = Cpu::start(HIGH_WRAM + 0x100, onchip::FRT + 1);
+            machine
+                .slave
+                .prime_fetch(&machine.bus.for_cpu(Processor::Slave));
+            machine.bus.claim_external_bus(Processor::Master);
+            let sound = &mut machine.bus.sound;
+            sound.ram[..4].copy_from_slice(&0x1000u32.to_be_bytes());
+            sound.ram[4..8].copy_from_slice(&0x100u32.to_be_bytes());
+            sound.ram[0x100..0x104].copy_from_slice(&[0x4e, 0x71, 0x60, 0xfc]);
+            sound.set_enabled(true).unwrap();
+            machine.slave_poll_retry = u64::MAX;
+            machine.cpu_ready[0] = machine.bus.main_clocks + 64;
+            for _ in 0..offset {
+                machine.step_hardware_boundary().unwrap();
+            }
+            machine.cpu_ready[0] = machine.bus.main_clocks;
+            machine
+        };
+        let mut pending = 0;
+        for offset in 0..4 {
+            let mut actual = make(offset);
+            let mut reference = make(offset);
+            reference.enable_cached_hirq_window(false);
+            actual.advance_frame().unwrap();
+            reference.advance_frame().unwrap();
+            assert_eq!(actual.cpu, reference.cpu);
+            assert_eq!(actual.slave, reference.slave);
+            assert_eq!(actual.cpu_ready, reference.cpu_ready);
+            assert_eq!(actual.clocks, reference.clocks);
+            assert_eq!(actual.bus.main_clocks, reference.bus.main_clocks);
+            assert!(actual.bus.private_transaction() == reference.bus.private_transaction());
+            assert_eq!(
+                actual.bus.scu.plan_cached_abus(),
+                reference.bus.scu.plan_cached_abus()
+            );
+            assert_eq!(actual.loop_state_hashes(), reference.loop_state_hashes());
+            assert!(
+                actual.sound_domain_snapshot().unwrap()
+                    == reference.sound_domain_snapshot().unwrap()
+            );
+            assert_eq!(actual.framebuffer(), reference.framebuffer());
+            assert_eq!(actual.drain_audio(8192), reference.drain_audio(8192));
+            pending += actual.cached_hirq_window_counts()[3];
+        }
+        assert!(
+            pending > 0,
+            "typed HIRQ must share a real pending Slave and Sound"
+        );
+    }
+}
