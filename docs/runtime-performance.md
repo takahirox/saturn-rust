@@ -5307,3 +5307,53 @@ Sound state byte for byte. Every field contributes to PCM and pixel
 digests. The replay passes through the former VDP1 error scene.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+## Select SH-2 DMA requests from the two physical channels (2026-11-21)
+
+The on-chip DMA selector checks its two physical channels directly in
+hardware priority order. The CPU contention check asks whether either
+channel requests the peripheral bus. A previously accepted DMA unit
+retains priority and continues through the existing grant and data phases.
+
+Each fresh standard Chrome 157.0.8103.79 run warms through field 12,900
+and measures six twelve-second windows on Machi Disc 1. All six runs
+use the same 157 controller events, draw every measured field, and keep
+Sound and Video Workers and AudioWorklet active. Browser errors and
+queue drops are zero.
+
+| Measure | First forward order | Reverse order | Confirming forward order |
+| --- | ---: | ---: | ---: |
+| Common fields, fields/s | 53.767 to 53.709 | 53.752 to 54.194 | 53.764 to 53.941 |
+| Four matched slow ranges, fields/s | 32.541 to 32.400 | 32.436 to 33.246 | 32.621 to 32.801 |
+| Fields 16,231–16,270, fields/s | 22.338 to 22.907 | 23.024 to 23.415 | 22.747 to 22.902 |
+| Four slow ranges p99 field time, ms | 111.5 to 108.1 | 111.7 to 106.8 | 111.3 to 107.7 |
+| Worklet underflow sample frames | 319,599 to 323,132 | 318,031 to 299,227 | 317,233 to 314,362 |
+
+The first two orders share 3,871 matched fields across all four runs.
+The confirming pair shares 3,875 fields. Overall throughput and audio
+shortages improve in two pairs. Mean throughput in fields 14,861–14,940
+falls by 1.49% and 0.25% in the two forward pairs, with lower p99 field
+times in both. The former error scene improves in all three pairs.
+Sustained real-time execution and continuous audio remain open.
+
+Baseline Wasm SHA-256 is
+`9ebd8377595dd0016eea93b0ae48d1ef53afe79b65f598d137c044e8b10c985f`.
+Candidate Wasm is
+`0d774eebaeecdcfccea986fd8d8571fa8a31b30289961e9001a1d28555774e2a`.
+The standard build uses Rust 1.100.0, wasm-bindgen 0.2.129 and Binaryen 127
+with identical JavaScript bindings.
+
+The native regression compares the selected channel and both internal
+bus queries across 110,592 combinations. Reversing DMA priority or
+losing an accepted request fails the regression. The restored source
+passes the DMA, monitor, buffered write, cached execution, video journal
+and Sound rendezvous tests, native and Wasm Clippy, and the Chrome DMAC,
+SH-2 pipeline, SH-2 reset and DMA startup checks.
+
+The standard packages match over a separate 3,040-field replay at 38
+checkpoints through field 16,860, including the former VDP1 error scene.
+Public CPU state and clocks, all work RAM by SHA-256, and canonical
+Sound state byte for byte agree at every checkpoint. Every field
+contributes to the matching PCM and pixel digests.
+
+Related to #138 and #17. Private media and raw captures stay local.

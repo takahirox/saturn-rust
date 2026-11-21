@@ -228,15 +228,20 @@ impl Dma {
         if self.operation & 7 != 1 {
             return None;
         }
-        let order = if self.operation & 8 == 0 && !self.cycle_previous {
-            [0, 1]
+        let [lane0, lane1] = &self.channels;
+        let lane1_first = (self.operation & 8 != 0 || self.cycle_previous) && self.next == 1;
+        let (first, second) = if lane1_first {
+            (lane1, lane0)
         } else {
-            [self.next, 1 - self.next]
+            (lane0, lane1)
         };
-        order.into_iter().find(|&i| {
-            let c = &self.channels[i];
-            c.control & 3 == 1 && Self::requested(c, serial)
-        })
+        if Self::channel_requested(first, serial) {
+            Some(usize::from(lane1_first))
+        } else if Self::channel_requested(second, serial) {
+            Some(usize::from(!lane1_first))
+        } else {
+            None
+        }
     }
     pub(crate) fn internal_request(&self, serial: [bool; 2]) -> bool {
         self.requested_channel(serial).is_some_and(|i| {
@@ -245,7 +250,15 @@ impl Dma {
         })
     }
     pub(crate) fn requests_internal_bus(&self, serial: [bool; 2]) -> bool {
-        self.requested_channel(serial).is_some()
+        // Either lane can contend with the CPU. Only the actual grant needs
+        // priority order. An accepted unit retains its request until release.
+        self.selected.is_some()
+            || (self.operation & 7 == 1
+                && (Self::channel_requested(&self.channels[0], serial)
+                    || Self::channel_requested(&self.channels[1], serial)))
+    }
+    fn channel_requested(channel: &Channel, serial: [bool; 2]) -> bool {
+        channel.control & 3 == 1 && Self::requested(channel, serial)
     }
     /// Returns the SCI request acknowledged, if any. Errors abort DMA and latch
     /// AE; they are not propagated as a host CPU bus failure.
@@ -398,6 +411,90 @@ impl Dma {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn physical_dma_request_routing_retains_priority_and_accepted_units() {
+        let fixed = |control, source, request, external_level, external_edge, burst| Channel {
+            source,
+            control,
+            request,
+            external_level,
+            external_edge,
+            burst,
+            ..Channel::default()
+        };
+        let lanes = [
+            fixed(0, 0x0600_0000, 0, false, false, false),
+            fixed(3, 0x0600_0000, 0, false, true, true),
+            fixed(0x201, 0x0600_0000, 0, false, false, false),
+            fixed(0x201, 0xFFFF_FE10, 0, false, false, false),
+            fixed(0x209, 0xFFFF_FE10, 0, false, false, false),
+            fixed(0x021, 0xFFFF_FE10, 0, true, false, false),
+            fixed(0x061, 0xFFFF_FE10, 0, true, false, false),
+            fixed(0x041, 0xFFFF_FE10, 0, false, true, false),
+            fixed(1, 0x0600_0000, 1, false, false, false),
+            fixed(1, 0xFFFF_FE10, 2, false, false, false),
+            fixed(1, 0xFFFF_FE10, 3, false, false, false),
+            fixed(1, 0xFFFF_FE10, 3, false, false, true),
+        ];
+        for (first, lane0) in lanes.iter().enumerate() {
+            for (second, lane1) in lanes.iter().enumerate() {
+                for operation in 0..16 {
+                    for (cycle_previous, next) in [(false, 0), (false, 1), (true, 0), (true, 1)] {
+                        for selected in [None, Some(0), Some(1)] {
+                            let dma = Dma {
+                                channels: [lane0.clone(), lane1.clone()],
+                                operation,
+                                cycle_previous,
+                                next,
+                                selected,
+                                ..Dma::default()
+                            };
+                            for serial in
+                                [[false, false], [true, false], [false, true], [true, true]]
+                            {
+                                let order = if operation & 8 == 0 && !cycle_previous {
+                                    [0, 1]
+                                } else {
+                                    [next, 1 - next]
+                                };
+                                let expected = selected.or_else(|| {
+                                    (operation & 7 == 1).then_some(())?;
+                                    order.into_iter().find(|&lane| {
+                                        let channel = &dma.channels[lane];
+                                        channel.control & 3 == 1 && Dma::requested(channel, serial)
+                                    })
+                                });
+                                let context = (
+                                    first,
+                                    second,
+                                    operation,
+                                    cycle_previous,
+                                    next,
+                                    selected,
+                                    serial,
+                                );
+                                assert_eq!(dma.requested_channel(serial), expected, "{context:?}");
+                                assert_eq!(
+                                    dma.requests_internal_bus(serial),
+                                    expected.is_some(),
+                                    "{context:?}"
+                                );
+                                assert_eq!(
+                                    dma.internal_request(serial),
+                                    expected.is_some_and(|lane| {
+                                        let channel = &dma.channels[lane];
+                                        channel.control & 8 == 0 && channel.source >= 0xFFFF_FE00
+                                    }),
+                                    "{context:?}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     use std::collections::VecDeque;
 
     struct Pins {
