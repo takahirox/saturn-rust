@@ -7,7 +7,20 @@ pub(crate) struct ReadSequence {
     at: u64,
     pub beats: u64,
 }
+#[derive(Clone, Copy)]
+pub(crate) struct CachedRefreshWindow {
+    pub start: u64,
+    pub complete: u64,
+    pub next: u64,
+}
+
 impl ReadSequence {
+    pub(crate) fn reset_cached_bus_for_refresh(&mut self) {
+        self.bsc.reset_bus();
+    }
+    pub(crate) fn at(&self) -> u64 {
+        self.at
+    }
     fn advance_bus(&mut self, clocks: u32, abus: Option<&crate::scu::Abus>) {
         self.bsc.advance_bus(clocks);
         if let Some(abus) = abus {
@@ -134,6 +147,22 @@ impl ReadSequence {
 }
 
 impl OnChip {
+    pub(crate) fn plan_hirq_refresh(&self, at: u64) -> Option<CachedRefreshWindow> {
+        self.readonly_refresh_deadline()?;
+        let mut probe = self.bsc.clone();
+        let delay = probe.clocks_to_event();
+        if delay == u32::MAX {
+            return None;
+        }
+        probe.advance(delay);
+        let length = probe.grant_refresh()?;
+        let start = at + u64::from(delay);
+        Some(CachedRefreshWindow {
+            start,
+            complete: start + u64::from(length),
+            next: start + u64::from(probe.clocks_to_event()),
+        })
+    }
     pub(crate) fn plan_cached_reads(&self, at: u64) -> ReadSequence {
         ReadSequence {
             bsc: self.bsc.clone(),

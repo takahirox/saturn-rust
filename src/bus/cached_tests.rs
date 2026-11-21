@@ -2887,6 +2887,7 @@ fn prepared_passive_prediction_rejects_width_address_rom_and_deadline_before_con
                 sequence: RefCell::new(PassiveSequence {
                     bsc: chip.plan_cached_reads(1000),
                     abus: None,
+                    refresh: None,
                 }),
             }),
         };
