@@ -1758,13 +1758,14 @@ impl Bus {
         #[cfg(any(test, feature = "sound-worker"))]
         self.observe_sound_rendezvous();
         if self.transactions.active.is_some()
-            && [Processor::Master, Processor::Slave].into_iter().all(|p| {
-                let i = p as usize;
-                let journal = self.transactions.journals[i].borrow();
-                journal.pending_write.is_none()
-                    && journal.waiting.is_none_or(|t| t.address < 0xFFFF_FE00)
-                    && self.dmac_quiescent(p)
-            })
+            && (self.reuse_dmac_boundary_grant()
+                || [Processor::Master, Processor::Slave].into_iter().all(|p| {
+                    let i = p as usize;
+                    let journal = self.transactions.journals[i].borrow();
+                    journal.pending_write.is_none()
+                        && journal.waiting.is_none_or(|t| t.address < 0xFFFF_FE00)
+                        && self.dmac_quiescent(p)
+                }))
         {
             return true;
         }
@@ -1806,6 +1807,70 @@ impl Bus {
         self.observe_sound_rendezvous();
         false
     }
+    // A live external DMA beat already owns the shared bus. With no
+    // contender on either local peripheral bus, the allocator has no grant
+    // to admit. Sound state has already been synchronized before this check.
+    pub(crate) fn reuse_dmac_boundary_grant(&mut self) -> bool {
+        #[cfg(test)]
+        let enabled = self.dmac_settled_grant;
+        #[cfg(not(test))]
+        let enabled = true;
+        if !enabled {
+            return false;
+        }
+        let Some(active) = &self.transactions.active else {
+            return false;
+        };
+        let owner = match active.owner {
+            Owner::Dmac(processor) => Some(processor),
+            Owner::WriteBuffer(_, true) => None,
+            _ => return false,
+        };
+        let address = Self::physical(active.transfer.address);
+        if active.transfer.write.is_none() {
+            if !(LOW_WRAM..LOW_WRAM + WRAM_SIZE as u32).contains(&address)
+                && !(HIGH_WRAM..HIGH_WRAM + WRAM_SIZE as u32).contains(&address)
+            {
+                return false;
+            }
+        } else if !(crate::vdp1::VRAM..crate::devices::VDP2 + 0x120).contains(&address) {
+            return false;
+        }
+
+        for processor in [Processor::Master, Processor::Slave] {
+            let i = processor as usize;
+            // Both peripheral allocators defer to an already granted local
+            // phase or this SH-2's own active, unbuffered external beat.
+            if self.transactions.internal[i].is_some() || owner == Some(processor) {
+                continue;
+            }
+            let cpu = self.transactions.journals[i].borrow();
+            if cpu.pending_write.is_some() || cpu.waiting.is_some_and(|t| t.address >= 0xFFFF_FE00)
+            {
+                return false;
+            }
+            let dmac = self.transactions.journals[i + 2].borrow();
+            if dmac.pending_write.is_some()
+                || dmac.waiting.map_or_else(
+                    || {
+                        self.onchip[i]
+                            .dma
+                            .internal_request(self.onchip[i].serial_dma_requests())
+                    },
+                    |t| t.address >= 0xFFFF_FE00,
+                )
+            {
+                return false;
+            }
+        }
+
+        #[cfg(test)]
+        {
+            self.dmac_settled_grant_uses[usize::from(owner.is_none())] += 1;
+        }
+        true
+    }
+
     #[cfg(any(test, feature = "sound-worker"))]
     pub(super) fn sound_input_inflight(&self) -> bool {
         self.transactions.active.as_ref().is_some_and(|active| {
@@ -3788,5 +3853,126 @@ mod private_storage_tests {
         assert_eq!(actual.journal.clocks.phases.as_ptr(), phases);
         assert_eq!(actual.journal.operand_completion, Some(34));
         assert_eq!(actual.journal.clocks.phases, [(0, 32), (2, 34)]);
+    }
+}
+
+#[cfg(test)]
+mod settled_dmac_grant_tests {
+    use super::*;
+    use crate::onchip::DMAC;
+
+    #[test]
+    fn settled_grant_retains_video_dma_and_real_peer_peripheral_arbitration() {
+        for fast in [false, true] {
+            for owner in [Processor::Master, Processor::Slave] {
+                let peer = if owner == Processor::Master {
+                    Processor::Slave
+                } else {
+                    Processor::Master
+                };
+                let size = if fast { 3 } else { 1 };
+                let video_base = if fast { VRAM } else { crate::vdp1::VRAM };
+                let video = video_base + 0x210;
+                let make = |enabled: bool| {
+                    let mut bus = Bus::default();
+                    if fast {
+                        bus.change_system_clock(true);
+                    }
+                    bus.set_slave_enabled(true);
+                    bus.boundary_grant_reuse = true;
+                    if !enabled {
+                        bus.dmac_settled_grant = false;
+                    }
+                    let source = HIGH_WRAM + 0x100;
+                    for chip in &mut bus.onchip {
+                        chip.write32(0xFFFF_FFE0, 0xA55A_0000).unwrap();
+                        chip.write32(0xFFFF_FFE8, 0xA55A_0000).unwrap();
+                    }
+                    for i in 0..8 {
+                        bus.write32(source + 4 * i, 0x1122_3344 + i).unwrap();
+                    }
+                    let chip = &mut bus.onchip[owner as usize];
+                    chip.write16(crate::onchip::IPRA, 0x600).unwrap();
+                    for (offset, value) in [
+                        (0, source),
+                        (4, video),
+                        (8, 8),
+                        (12, 0x5205 | size << 10),
+                        (0x20, 0x44),
+                        (0x30, 1),
+                    ] {
+                        chip.write32(DMAC + offset, value).unwrap();
+                    }
+                    bus.onchip[peer as usize].capture_strobe();
+                    bus
+                };
+                let (mut candidate, mut reference) = (make(true), make(false));
+                for bus in [&mut candidate, &mut reference] {
+                    assert!(!bus.grant_bus_transaction());
+                    assert!(
+                        matches!(bus.transactions.active.as_ref(),Some(a) if a.owner==Owner::Dmac(owner))
+                    );
+                    assert_eq!(
+                        bus.replay_cpu(peer).read8(crate::onchip::FRT + 1),
+                        Err(BusError::Pending)
+                    );
+                }
+                assert!(
+                    !candidate.reuse_dmac_boundary_grant(),
+                    "a newly queued peer peripheral read must get the real allocator"
+                );
+                for _ in 0..1024 {
+                    let same_grant = candidate.grant_bus_transaction();
+                    let ref_grant = reference.grant_bus_transaction();
+                    assert_eq!(
+                        candidate.advance_cpu_clocks_after_irq_sample(1, false, same_grant),
+                        reference.advance_cpu_clocks_after_irq_sample(1, false, ref_grant),
+                    );
+                    assert!(candidate.same_cpu_journals(&reference));
+                    assert!(candidate.transactions.active == reference.transactions.active);
+                    assert!(candidate.transactions.internal == reference.transactions.internal);
+                    assert_eq!(candidate.irq_observed, reference.irq_observed);
+                    assert_eq!(candidate.main_clocks, reference.main_clocks);
+                    assert_eq!(candidate.pending_main_clocks, reference.pending_main_clocks);
+                    assert_eq!(
+                        candidate.sound.domain_reference_time(),
+                        reference.sound.domain_reference_time()
+                    );
+                    if candidate.take_cpu_transaction_completion(peer) {
+                        assert!(reference.take_cpu_transaction_completion(peer));
+                        for bus in [&mut candidate, &mut reference] {
+                            assert_eq!(
+                                bus.replay_cpu(peer).read8(crate::onchip::FRT + 1),
+                                Ok(0x80)
+                            );
+                            bus.finish_cpu_transaction(peer);
+                        }
+                    }
+                }
+                let offset = (video - video_base) as usize;
+                let contents = |bus: &Bus| {
+                    let ram = if fast { &bus.vdp2.vram } else { &bus.vdp1.vram };
+                    <[u8; 16]>::try_from(&ram[offset..offset + 16]).unwrap()
+                };
+                let a = contents(&candidate);
+                let b = contents(&reference);
+                assert_eq!(a, b);
+                assert!(a.iter().any(|word| *word != 0));
+                assert!(
+                    candidate.dmac_settled_grant_uses[0] > 0,
+                    "a real granted WRAM read must reuse the same-clock allocator"
+                );
+                assert!(
+                    candidate.dmac_settled_grant_uses[1] > 0,
+                    "a real granted video write must reuse the same-clock allocator"
+                );
+                assert_eq!(reference.dmac_settled_grant_uses, [0, 0]);
+                assert_eq!(candidate.onchip[owner as usize].read32(DMAC + 8), Ok(0));
+                assert_eq!(
+                    candidate.onchip[owner as usize].interrupt(),
+                    Some((6, 0x44))
+                );
+            }
+        }
     }
 }

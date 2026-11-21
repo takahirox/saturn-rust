@@ -431,6 +431,10 @@ pub struct Bus {
     pub(crate) boundary_grant_reuse: bool,
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub(crate) boundary_grant_reuses: [u64; 2],
+    #[cfg(test)]
+    pub(crate) dmac_settled_grant: bool,
+    #[cfg(test)]
+    pub(crate) dmac_settled_grant_uses: [u64; 2],
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub(crate) direct_wram_access: bool,
     #[cfg(any(test, feature = "kernel-experiment"))]
@@ -582,6 +586,10 @@ impl Default for Bus {
             boundary_grant_reuse: false,
             #[cfg(any(test, feature = "kernel-experiment"))]
             boundary_grant_reuses: [0; 2],
+            #[cfg(test)]
+            dmac_settled_grant: true,
+            #[cfg(test)]
+            dmac_settled_grant_uses: [0; 2],
             #[cfg(any(test, feature = "kernel-experiment"))]
             direct_wram_access: false,
             #[cfg(any(test, feature = "kernel-experiment"))]
