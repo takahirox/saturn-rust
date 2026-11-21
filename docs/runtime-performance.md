@@ -5465,3 +5465,68 @@ and clocks, all work RAM by SHA-256 and full canonical Sound bytes. Every
 field contributes to matching rolling PCM and pixel digests.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+## Skip empty local arbitration during a granted SH-2 DMA beat (2026-11-22)
+
+A granted SH-2 DMA read in Work RAM or buffered video write holds the
+external bus. The arbiter can still accept an independent peripheral read
+or buffered-write request on either SH-2. The early return checks each
+local port. Its slot must already be occupied, blocked by the active DMA
+owner, or free of peripheral work in the journals and request selector.
+The ordinary allocator handles a queued CPU or DMA contender. Sound
+request synchronization precedes the test.
+
+A diagnostic run of Machi Disc 1 found 51,024–68,864 Master SH-2 DMA reads
+from Work RAM and comparable VDP2 video writes in each of three long
+fields. The Slave SH-2 read its free-running timer about 60,000 times per
+field. Those fields had no CD data events. Across the full diagnostic
+window, about 70% of missing AudioWorklet output samples occurred near a
+CD data event and about 21% near a large VDP2 DMA transfer. The counts use
+adjacent PCM producer fields and AudioWorklet report intervals.
+
+In the independent same-instance comparison the allocator guard improves
+both 80-field windows in all four pairs. The slower matched field
+improves from 144.1 to 135.5 ms in that diagnostic. The production
+measurements below use separate, fresh Chrome 157.0.8103.79 runs, the
+normal player, Sound and Video Workers, and AudioWorklet. After warmup
+through field 12,900, each run measures six twelve-second intervals.
+All four runs share 3,882 compared fields and present all 157 scripted
+inputs at their requested fields. Every field is drawn. Runtime errors
+and audio queue drops are zero.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Common fields, fields/s | 53.869 to 54.021 | 54.137 to 54.247 |
+| Four matched slow ranges, fields/s | 32.825 to 32.937 | 33.380 to 33.564 |
+| Common fields p95, ms | 36.1 to 36.0 | 35.7 to 35.4 |
+| Common fields p99, ms | 51.4 to 50.8 | 50.5 to 50.6 |
+| Common fields maximum, ms | 124.7 to 115.3 | 129.4 to 117.6 |
+| Common fields above 100 ms | 11 to 10 | 11 to 10 |
+| Worklet underflow output sample frames | 311,729 to 307,792 | 300,721 to 294,224 |
+
+The repeated long field intervals near 13,721, 14,918 and 15,969 improve
+by 8.0–11.8 ms across the two orders. The overall gain is 0.20–0.28%.
+Sustained real-time throughput and continuous audio remain open.
+
+Baseline Wasm SHA-256 is
+`eabdb4ae3c77a54e458891ffc87ff40cc8a1528d20a67c7a6b9fd40af2ca257f`.
+Candidate Wasm is
+`ba433b16385a3701db52d553e0fd65a9c1e01cc5d05f1a2d3fdf115316be2f35`.
+Both use Rust 1.100.0, wasm-bindgen 0.2.129, Binaryen 127 and identical
+JavaScript bindings.
+
+The focused native comparison advances real DMA and an independently
+queued peer timer status read in both PLL modes with either SH-2 as the
+DMA owner. Omitting the shortcut fails the exercised-path assertion.
+Ignoring the peer's pending peripheral read fails its arbitration
+assertion. The restored candidate passes the DMA, IRQ, video and Sound
+suites and native and Wasm Clippy. The five original Chrome groups cover
+DMAC bus access, DMA startup, SH-2 pipeline and reset behavior, and video
+transactions.
+
+The standard packages agree over a separate 3,040-field replay at 38
+checkpoints through field 16,860. Each checkpoint matches public SH-2 state
+and clocks, all work RAM by SHA-256 and full canonical Sound bytes. Every
+field contributes to matching rolling PCM and pixel digests.
+
+Related to #138 and #17. Private media and raw captures stay local.
