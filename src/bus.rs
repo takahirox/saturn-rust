@@ -328,6 +328,7 @@ pub struct Bus {
     inline: Option<transactions::InlineProgress>,
     // Retain host retirement-buffer capacity between cached bursts.
     cached_retirement_points: Vec<cached::Retirement>,
+    cached_passive_checkpoints: cached::PassiveCheckpoints,
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub(crate) allow_cached_neutral_cd_write: bool,
     #[cfg(any(test, feature = "kernel-experiment"))]
@@ -469,6 +470,7 @@ impl Default for Bus {
             transactions: transactions::Transactions::default(),
             inline: None,
             cached_retirement_points: Vec::new(),
+            cached_passive_checkpoints: cached::PassiveCheckpoints::default(),
             #[cfg(any(test, feature = "kernel-experiment"))]
             allow_cached_neutral_cd_write: false,
             #[cfg(any(test, feature = "kernel-experiment"))]

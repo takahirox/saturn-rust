@@ -84,7 +84,7 @@ impl Cached<'_> {
         if last_index == first_index {
             return None;
         }
-        let origin = self.snapshot();
+        let origin = self.snapshot(Some(Checkpoint::Attempt));
         let result = (|| {
             let first_owner = first_index as u64 + 1;
             let last_owner = last_index as u64;
