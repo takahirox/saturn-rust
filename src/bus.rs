@@ -335,6 +335,11 @@ pub struct Bus {
     #[cfg(test)]
     hirq_window_resident_words: bool,
     cached_passive_checkpoints: cached::PassiveCheckpoints,
+    #[cfg(test)]
+    pub(crate) hirq_early_entry_enabled: bool,
+    #[cfg(test)]
+    pub(crate) hirq_early_entry_counts: [u64; 4],
+    hirq_early_entries: [Option<cached::hirq_entry::Hint>; 16],
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub(crate) allow_cached_neutral_cd_write: bool,
     #[cfg(any(test, feature = "kernel-experiment"))]
@@ -487,6 +492,11 @@ impl Default for Bus {
             #[cfg(test)]
             hirq_window_resident_words: true,
             cached_passive_checkpoints: cached::PassiveCheckpoints::default(),
+            #[cfg(test)]
+            hirq_early_entry_enabled: false,
+            #[cfg(test)]
+            hirq_early_entry_counts: [0; 4],
+            hirq_early_entries: [None; 16],
             #[cfg(any(test, feature = "kernel-experiment"))]
             allow_cached_neutral_cd_write: false,
             #[cfg(any(test, feature = "kernel-experiment"))]

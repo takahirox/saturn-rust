@@ -5530,3 +5530,67 @@ and clocks, all work RAM by SHA-256 and full canonical Sound bytes. Every
 field contributes to matching rolling PCM and pixel digests.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+## Start CD HIRQ planning at learned resident entries (2026-11-22)
+
+The Master SH-2 can plan a read-only CD status window before its first
+HIRQ load. A committed resident prefix of up to 16 instructions can
+record its starting PC and opcode when the next decoded instruction
+loads the 16-bit status word. A small table uses that observation to
+try the existing passive planner on a later visit. The current fetch,
+operand and clocks still determine each retirement. The existing
+observer horizon and quiet-bus checks govern admission and publication.
+
+An initial controlled comparison over the former VDP1 error interval
+finds 13,483 admitted prefixes that retire real HIRQ reads. The measured
+40-field interval gains 0.93% across four pairs. The adjacent interval
+changes by −0.04%. Both match the independently archived CPU, clock,
+RAM, image and PCM endpoints and full canonical Sound state.
+
+The production build uses Chrome 157.0.8103.79, the normal Web player,
+active Sound and Video Workers, and AudioWorklet. Each fresh run warms
+through field 12,900 and plays six twelve-second intervals of Machi
+Disc 1. All four runs share 3,893 compared fields. They apply all 157
+scripted inputs at the requested fields and draw every completed field.
+Browser errors and audio queue drops are zero.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Common fields, fields/s | 54.242 to 54.558 | 54.020 to 54.419 |
+| Four matched slow ranges, fields/s | 33.501 to 34.015 | 32.998 to 34.046 |
+| Fields 16,231–16,270, fields/s | 23.310 to 24.124 | 22.929 to 24.025 |
+| Common fields p95 field time, ms | 35.4 to 35.1 | 36.1 to 35.3 |
+| Common fields p99 field time, ms | 50.7 to 49.2 | 51.5 to 49.2 |
+| Common fields maximum field time, ms | 118.5 to 114.7 | 118.3 to 114.1 |
+| Worklet underflow output sample frames over six intervals | 295,760 to 277,437 | 308,560 to 285,403 |
+
+Overall throughput gains 0.58% and 0.74%. Worklet shortages fall 6.20%
+and 7.50%. The four slow ranges' p99 field time changes from 102.8 to
+103.3 ms in forward order and from 104.1 to 103.0 ms in reverse order.
+Fields 14,861–14,940 lose 1.45% in forward order and gain 0.88% in
+reverse order. One twelve-second interval in each order has more
+missing PCM output samples. Sustained 60 fields/s and continuous audio
+remain open.
+
+Baseline Wasm SHA-256 is
+`ba433b16385a3701db52d553e0fd65a9c1e01cc5d05f1a2d3fdf115316be2f35`.
+Candidate Wasm is
+`6fabb12f9099cccb52fee682537c129b81e6eaf40df560338d3ebf00e52bc811`.
+Both use Rust 1.100.0, wasm-bindgen 0.2.129 and Binaryen 127 with
+byte-identical JavaScript bindings.
+
+The native originals use both PLL modes, the private Slave and active
+Sound. A learned entry is also tried with a changed live CD operand.
+Suppressing entry learning fails the exercised-path assertion. Accepting
+an unrelated operand fails the ordinary CPU state comparison. The
+restored source passes the HIRQ, cached scheduling, video and Sound
+suites and native and Wasm Clippy. Original Chrome A-bus timing,
+refresh arbitration, SH-2 fetch, CD runtime and SH-2 bus pipeline cases
+pass on the standard candidate.
+
+The two standard packages agree over a separate 3,040-field replay
+through field 16,860. Each of 38 checkpoints matches public SH-2 state
+and clocks, all work RAM by SHA-256 and full canonical Sound bytes.
+Every field contributes to matching rolling PCM and pixel digests.
+
+Related to #138 and #17. Private media and raw captures stay local.
