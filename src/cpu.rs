@@ -374,7 +374,7 @@ impl Cpu {
         self.cached_scalar_block_with_fetch(
             bus.sh2_clock().expect("clocked cache block"),
             limit,
-            |pc, address| {
+            |pc, _, address| {
                 let word = bus.fetch16(address).ok()?;
                 bus.instruction_break(pc, false);
                 Some(word)
@@ -386,7 +386,7 @@ impl Cpu {
         &mut self,
         start: u64,
         limit: u32,
-        mut fetch: impl FnMut(u32, u32) -> Option<u16>,
+        mut fetch: impl FnMut(u32, u16, u32) -> Option<u16>,
     ) -> u32 {
         if self.state.status != CpuStatus::Running
             || self.state.address_error_pending
@@ -403,7 +403,7 @@ impl Cpu {
             let Some(kind) = scalar::decode(words.0) else {
                 break;
             };
-            let Some(future) = fetch(self.state.pc, self.state.pc.wrapping_add(4)) else {
+            let Some(future) = fetch(self.state.pc, words.0, self.state.pc.wrapping_add(4)) else {
                 break;
             };
             scalar::execute(kind, words.0, &mut self.state);
@@ -795,6 +795,35 @@ impl Cpu {
         self.shift_cached_clock(clocks * repetitions);
         true
     }
+    pub(crate) fn repeat_cached_cycle_with_delta(
+        &mut self,
+        before: &Self,
+        clocks: u64,
+        repetitions: u64,
+        register_delta: Option<(usize, i32)>,
+    ) -> bool {
+        let instructions = self.state.instructions - before.state.instructions;
+        let multiplier = self.multiplier.clock - before.multiplier.clock;
+        let mut expected = before.clone();
+        expected.state.instructions += instructions;
+        expected.multiplier.clock += multiplier;
+        if let Some((register, delta)) = register_delta {
+            expected.state.r[register] = expected.state.r[register].wrapping_add_signed(delta);
+        }
+        expected.shift_cached_clock(clocks);
+        if expected != *self {
+            return false;
+        }
+        if let Some((register, delta)) = register_delta {
+            self.state.r[register] =
+                self.state.r[register].wrapping_add_signed(delta.wrapping_mul(repetitions as i32));
+        }
+        self.state.instructions += instructions * repetitions;
+        self.multiplier.clock += multiplier * repetitions;
+        self.shift_cached_clock(clocks * repetitions);
+        true
+    }
+
     fn shift_cached_clock(&mut self, clocks: u64) {
         self.fetch.shift_cached_clock(clocks);
         self.load_pipeline.shift_cached_clock(clocks);

@@ -3,6 +3,8 @@
 //! The parent supplies the ordinary bounded clock horizon and handles peer
 //! selection, Sound lookahead, rollback, and publication of real device edges.
 use super::*;
+mod affine;
+mod regional_cycles;
 mod resident_words;
 
 pub(super) fn is_hirq(passive: &PassiveRead<'_>) -> bool {
@@ -18,10 +20,12 @@ pub(super) struct Window {
     pub(super) loads: u32,
     #[cfg(test)]
     pub(super) reused_fetches: u32,
+    #[cfg(test)]
+    pub(super) folded_regions: [Option<(u32, u32)>; 3],
 }
 
 impl Cached<'_> {
-    pub(super) fn execute_hirq_window<const REUSE_WORDS: bool>(
+    pub(super) fn execute_hirq_window<const REUSE_WORDS: bool, const FOLD_REGIONS: bool>(
         &mut self,
         cpu: &mut Cpu,
         limit: u32,
@@ -31,8 +35,15 @@ impl Cached<'_> {
         let end = self.end.get();
         let mut result = Window::default();
         let mut words = resident_words::Words::default();
+        let fold = FOLD_REGIONS
+            && self
+                .passive
+                .as_ref()
+                .is_some_and(|read| read.sequence.borrow().refresh.is_some());
+        let mut regions = regional_cycles::RegionCycles::default();
         while result.retired < limit && self.clock.get() < end {
             let start = self.clock.get();
+            let old_pc = cpu.state().pc;
             let Some(opcode) = cpu.decoded_opcode().or_else(|| self.opcode(cpu.state().pc)) else {
                 break;
             };
@@ -44,9 +55,14 @@ impl Cached<'_> {
                 self.scalar_active.set(true);
                 let remaining = (limit - result.retired).min((end - start) as u32);
                 let retired = if REUSE_WORDS {
-                    cpu.cached_scalar_block_with_fetch(start, remaining, |pc, address| {
+                    let mut ordinal = result.retired;
+                    cpu.cached_scalar_block_with_fetch(start, remaining, |pc, op, address| {
                         let word = words.prepare(self, address)?.publish(self);
                         self.instruction_break(pc, false);
+                        if fold {
+                            regions.record(ordinal, pc, op, false);
+                            ordinal += 1;
+                        }
                         Some(word)
                     })
                 } else {
@@ -65,6 +81,7 @@ impl Cached<'_> {
                 }
             }
 
+            let mut hirq = false;
             let at = match class {
                 CachedClass::Scalar | CachedClass::Load => {
                     let Some(plan) = cpu.prepare_cached_instruction(opcode, start) else {
@@ -83,6 +100,7 @@ impl Cached<'_> {
                         else {
                             break;
                         };
+                        hirq = true;
                         #[cfg(test)]
                         {
                             result.loads += 1;
@@ -133,6 +151,27 @@ impl Cached<'_> {
             self.clock.set(result.ready.min(end));
             if let Some(points) = points.as_deref_mut() {
                 points.push(Retirement { at });
+            }
+            if fold {
+                regions.record(result.retired - 1, old_pc, opcode, hirq);
+                if class == CachedClass::Control
+                    && matches!(opcode >> 8, 0x89 | 0x8B)
+                    && self.opcode(old_pc.wrapping_sub(2)).is_some_and(|compare| {
+                        matches!(compare & 0xF00F, 0x3002 | 0x3003 | 0x3006 | 0x3007)
+                    })
+                    && old_pc
+                        .checked_sub(cpu.state().pc)
+                        .is_some_and(|distance| (2..=30).contains(&distance))
+                {
+                    regions.after_branch(
+                        self,
+                        cpu,
+                        &mut result,
+                        limit,
+                        points.as_deref_mut(),
+                        learning.as_deref_mut(),
+                    );
+                }
             }
         }
         #[cfg(test)]

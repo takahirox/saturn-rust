@@ -5632,3 +5632,60 @@ witness. A variant that retains debt across the long gap fails the
 long-stall witness.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+## Fold counter-controlled CD status polling loops (2026-11-22)
+
+The resident CD status executor can advance an observed loop that changes a
+single SH-2 register by a fixed immediate. It checks the live instruction body,
+comparison, pipeline, retained fetch, cache replacement, A-bus and BSC state.
+Each fold ends before the next physical refresh or a change in the branch's
+result, including a register wrap. The original retirement times remain
+available for selecting the exact peer and Sound endpoint.
+
+In a separate diagnostic trace of Machi Disc 1, 1,380,456 instruction
+retirements are folded in the busiest 40-field interval. These account for
+60.4% of the 2,285,178 committed typed retirements in that interval. The
+following 40 fields fold 31,851 of 65,989. The last 40 fields fold none.
+All three checkpoints agree on both exposed SH-2 states, clocks, all work RAM,
+full canonical Sound state, and rolling PCM and pixel digests.
+
+Chrome 157.0.8103.79 runs the standard Web player with active Sound and Video
+Workers and AudioWorklet. Each fresh run warms through field 12,900 and then
+plays six twelve-second intervals of Machi Disc 1. Both orders share 3,917
+compared fields and all 157 scripted inputs at their requested presentation
+fields. Every field is drawn. Browser errors and audio queue drops are zero.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Common fields, fields/s | 54.346 to 54.742 | 54.784 to 54.845 |
+| Four matched slow ranges, fields/s | 32.714 to 34.120 | 34.101 to 34.337 |
+| Common fields p95, ms | 36.3 to 35.6 | 35.4 to 35.3 |
+| Common fields p99, ms | 52.5 to 49.7 | 49.7 to 49.2 |
+| Common fields maximum, ms | 120.1 to 115.1 | 115.3 to 115.8 |
+| Common fields above 100 ms | 11 to 9 | 10 to 11 |
+| Worklet underflow output sample frames | 290,543 to 268,368 | 265,808 to 261,999 |
+
+Matched throughput improves 0.73% and 0.11%. Worklet shortages fall 7.63%
+and 1.43%. Sustained nominal playback and continuous audio remain open.
+
+Baseline Wasm SHA-256 is
+`6fabb12f9099cccb52fee682537c129b81e6eaf40df560338d3ebf00e52bc811`.
+Candidate Wasm SHA-256 is
+`033b64e541da01ce62521ec0040299493b538ebfb84f1237678a64361679b866`.
+Both use Rust 1.100.0, wasm-bindgen 0.2.129, Binaryen 127 and identical
+JavaScript bindings.
+
+The focused original covers both PLL modes, real physical refresh and nonzero
+Sound. Deliberately shifting the timestamps by one extra loop period fails the
+retirement witness. The restored candidate passes the CD HIRQ and private-peer
+native suites and the original Chrome A-bus, refresh arbitration, CD runtime,
+SH-2 fetch and SH-2 bus pipeline cases.
+
+The two standard packages agree over a separate 3,040-field replay through
+field 16,860. All 38 checkpoints agree on public SH-2 state and clocks,
+all work RAM by SHA-256, full canonical Sound bytes and rolling PCM and
+pixel digests. The unpaced aggregate is 51.925 to 51.896 fields/s (−0.056%).
+The scoped PR source rebuild matches both measured package files. Native and
+Wasm Clippy pass with warnings denied.
+
+Related to #138 and #17. Private media and raw captures stay local.

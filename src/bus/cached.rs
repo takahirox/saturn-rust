@@ -1041,7 +1041,7 @@ impl Bus {
             return false;
         }
         let clock = self.main_clocks;
-        let count = cpu.cached_scalar_block_with_fetch(clock, 1, |_, address| {
+        let count = cpu.cached_scalar_block_with_fetch(clock, 1, |_, _, address| {
             self.fetch_resident_instruction(processor, address)
         });
         self.onchip[index].count_cached_instructions(u64::from(count));
@@ -1764,6 +1764,10 @@ impl Bus {
         let retain_instruction_words = true;
         #[cfg(test)]
         let mut hirq_window = hirq_window::Window::default();
+        #[cfg(test)]
+        let fold_regions = self.hirq_regional_folds;
+        #[cfg(not(test))]
+        let fold_regions = true;
         if enabled
             && memory.passive.as_ref().is_some_and(hirq_window::is_hirq)
             && self
@@ -1777,9 +1781,13 @@ impl Bus {
                 .as_deref_mut()
                 .filter(|probe| probe.replaying && probe.learning);
             let window = if retain_instruction_words {
-                memory.execute_hirq_window::<true>(&mut cpu, count, timestamps, learning)
+                if fold_regions {
+                    memory.execute_hirq_window::<true, true>(&mut cpu, count, timestamps, learning)
+                } else {
+                    memory.execute_hirq_window::<true, false>(&mut cpu, count, timestamps, learning)
+                }
             } else {
-                memory.execute_hirq_window::<false>(&mut cpu, count, timestamps, learning)
+                memory.execute_hirq_window::<false, false>(&mut cpu, count, timestamps, learning)
             };
             if window.retired != 0 {
                 retired = window.retired;
@@ -2528,6 +2536,19 @@ impl Bus {
                 memory.clock.set(ready.min(end));
             }
             retired = selected as u32;
+        }
+        #[cfg(test)]
+        {
+            let mut distinct = 0;
+            for (region, bounds) in hirq_window.folded_regions.into_iter().enumerate() {
+                if let Some((first, last)) = bounds
+                    && retired > first
+                {
+                    self.hirq_regional_fold_counts[region] += u64::from(retired.min(last) - first);
+                    distinct += 1;
+                }
+            }
+            self.hirq_regional_fold_counts[3] += u64::from(distinct >= 2);
         }
         #[cfg(test)]
         if hirq_window.retired != 0 && retired != 0 {
