@@ -224,6 +224,7 @@ impl Template {
     fn publish(
         &self,
         machine: &mut Machine,
+        storage: PrivateTransaction,
         elapsed: u64,
         master_waiting: bool,
         endpoint_issues: u32,
@@ -264,8 +265,9 @@ impl Template {
         if let Some(issue) = &mut machine.cached_issue[1] {
             issue.shift_private_clock(shift + extra);
         }
-        let mut transaction = state.transaction.clone();
-        transaction.shift_clock(shift + extra);
+        let transaction = state
+            .transaction
+            .rebase_into_storage(storage, shift + extra);
         machine.bus.restore_private_transaction(transaction);
         let epoch = machine.bus.onchip[1].private_poll_epoch() + state.epoch - self.initial.epoch
             + (second.epoch - first.epoch) * copies as u64;
@@ -619,7 +621,6 @@ impl Machine {
                 return Ok(0);
             }
         };
-        drop(saved);
         #[cfg(test)]
         if batch.ready <= self.bus.main_clocks
             && context.templates[index].issue_count_at(self.bus.main_clocks - now) == 1
@@ -640,6 +641,7 @@ impl Machine {
         self.cpu = batch.cpu;
         context.templates[index].publish(
             self,
+            saved,
             self.bus.main_clocks - now,
             batch.ready > self.bus.main_clocks,
             batch.endpoint_issues,
