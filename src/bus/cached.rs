@@ -190,6 +190,7 @@ impl Retirements<'_> {
     }
     /// Include the initial gap and only endpoints accepted by the peer.
     /// Dense master retirements alone do not prove a usable sound horizon.
+    #[cfg(test)]
     fn admissible_gap(&self, limit: usize, origin: u64, permits: impl Fn(u64) -> bool) -> u64 {
         let mut previous = origin;
         let mut gap = 0;
@@ -201,6 +202,31 @@ impl Retirements<'_> {
             }
         }
         gap
+    }
+    fn fits_admissible_gap(
+        &self,
+        limit: usize,
+        origin: u64,
+        permits: impl Fn(u64) -> bool,
+        budget: u64,
+    ) -> bool {
+        let mut previous = origin;
+        let mut fits_next = |at| {
+            if at >= origin && permits(at - origin) {
+                let fits = at - previous <= budget;
+                previous = at;
+                fits
+            } else {
+                true
+            }
+        };
+        if let Some((clocks, shift)) = self.recorded {
+            return clocks[..limit].iter().all(|&at| fits_next(at + shift));
+        }
+        if self.repeated.is_none() {
+            return self.points[..limit].iter().all(|point| fits_next(point.at));
+        }
+        (0..limit).all(|index| fits_next(self.at(index)))
     }
     fn aligned_prefix(&self, limit: usize, origin: u64, poll: Option<&PeerSchedule<'_>>) -> usize {
         let Some(poll) = poll else { return limit };
@@ -2309,10 +2335,14 @@ impl Bus {
             // or after advanced without crossing that write. No rollback copy
             // is needed, including a Retired peer and a non-recorded burst.
             if checkpoint_sound {
-                let gap = points.admissible_gap(selected, self.main_clocks, |elapsed| {
-                    poll.is_none_or(|peer| peer.permits(elapsed))
-                });
-                if self.system_clock.reference_span_bound(gap as u32) < 9 {
+                let permits = |elapsed| poll.is_none_or(|peer| peer.permits(elapsed));
+                let fits = points.fits_admissible_gap(
+                    selected,
+                    self.main_clocks,
+                    permits,
+                    u64::from(self.system_clock.main_span_limit(8)),
+                );
+                if fits {
                     checkpoint_sound = false;
                     #[cfg(any(test, feature = "kernel-experiment"))]
                     {
@@ -2708,6 +2738,56 @@ impl Bus {
 #[cfg(test)]
 mod sound_gap_tests {
     use super::*;
+    #[test]
+    fn bounded_sound_gap_matches_literal_scan_at_every_prefix() {
+        let clocks = [97, 100, 101, 108, 108, 111, 117, 125, 126, 150];
+        let recorded = Retirements {
+            recorded: Some((&clocks, 4)),
+            ..Retirements::default()
+        };
+        let ordinary = Retirements {
+            points: clocks.into_iter().map(|at| Retirement { at }).collect(),
+            ..Retirements::default()
+        };
+        let repeated = Retirements {
+            points: [100, 102, 102, 107, 130, 131]
+                .into_iter()
+                .map(|at| Retirement { at })
+                .collect(),
+            repeated: Some((4, 3, 7, 2)),
+            ..Retirements::default()
+        };
+        for points in [&recorded, &ordinary, &repeated] {
+            for origin in 96..=108 {
+                for limit in 0..=points.len() {
+                    for divisor in 1..=8 {
+                        let permits = |elapsed| elapsed % divisor <= 1 && elapsed != 0;
+                        for budget in 0..=16 {
+                            assert_eq!(
+                                points.fits_admissible_gap(limit, origin, permits, budget),
+                                points.admissible_gap(limit, origin, permits) <= budget,
+                                "bounded sound gap lost the literal prefix"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        for pal in [false, true] {
+            for fast in [false, true] {
+                let mut pll = crate::timing::SystemClock::default();
+                pll.set_pal(pal);
+                pll.select(fast);
+                for gap in 0..32 {
+                    assert_eq!(
+                        gap <= pll.main_span_limit(8),
+                        pll.reference_span_bound(gap) < 9
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn sound_gaps_include_origin_and_only_peer_admissible_endpoints() {
         let points = Retirements {
