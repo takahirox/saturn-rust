@@ -49,6 +49,11 @@ test("short slow fields retain nominal cadence without requiring host headroom",
   }
 });
 
+test("slow fields keep the bounded catch-up time after repeated overruns", async () => {
+  const result = await simulate({ period: 20, cost: (field, p) => field <= 16 ? p * 2 : p / 10 });
+  assert.equal(result.delays[0]?.after, 25);
+});
+
 test("a long host stall rebases rather than replaying the wall-time backlog", async () => {
   const period = 449204000 / 26874100;
   const result = await simulate({ period, cost: (_, p) => p / 10, stallAt: 60, stallMs: 1000 });
