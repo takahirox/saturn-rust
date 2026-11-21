@@ -41,18 +41,38 @@ impl PeerSchedule<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Checkpoint {
+    Entry,
+    Anchor,
+    // Loop replay and individual instruction attempts never nest.
+    Attempt,
+}
+
+#[derive(Default)]
+pub(super) struct PassiveCheckpoints(
+    RefCell<[Option<PassiveSequence>; Checkpoint::Attempt as usize + 1]>,
+);
+
 #[derive(Clone)]
 struct Local {
     clock: u64,
     lru: [u8; 64],
     retained: Option<(u32, u16)>,
     epochs: u64,
-    reads: Option<PassiveSequence>,
+    checkpoint: Option<Checkpoint>,
     write_len: usize,
     fill_len: usize,
     bus_len: usize,
     write_pc: u32,
 }
+struct CachedPublication {
+    lru: [u8; 64],
+    retained: Option<(u32, u16)>,
+    epochs: u64,
+    reads: Option<PassiveSequence>,
+}
+
 struct PassiveRead<'a> {
     address: u32,
     bytes: [u8; 4],
@@ -291,6 +311,7 @@ struct Cached<'a> {
     store_ready: u64,
     store_origin: u64,
     passive: Option<PassiveRead<'a>>,
+    passive_checkpoints: &'a PassiveCheckpoints,
     write_bus: Option<&'a crate::onchip::OnChip>,
     write_protocol: Option<crate::onchip::ReadSequence>,
     idle_vdp1_vram: bool,
@@ -392,7 +413,11 @@ impl Cached<'_> {
         };
         (at <= self.end.get()).then_some(at)
     }
-    fn snapshot(&self) -> Local {
+    fn snapshot(&self, checkpoint: Option<Checkpoint>) -> Local {
+        if let (Some(read), Some(slot)) = (&self.passive, checkpoint) {
+            self.passive_checkpoints.0.borrow_mut()[slot as usize] =
+                Some(read.sequence.borrow().clone());
+        }
         debug_assert_eq!(self.version_count.get(), self.fills.borrow().len());
         debug_assert_eq!(self.refill_count.get(), self.fills.borrow().read_count());
         Local {
@@ -400,7 +425,7 @@ impl Cached<'_> {
             lru: *self.lru.borrow(),
             retained: self.retained.get(),
             epochs: self.epochs.get(),
-            reads: self.passive.as_ref().map(|p| p.sequence.borrow().clone()),
+            checkpoint,
             write_len: self.ram_stores.len(),
             fill_len: self.version_count.get(),
             bus_len: self.bus_events.borrow().len(),
@@ -420,7 +445,36 @@ impl Cached<'_> {
         self.version_count.set(state.fill_len);
         self.refill_count.set(self.fills.get_mut().read_count());
         if let Some(passive) = &mut self.passive {
-            *passive.sequence.get_mut() = state.reads.expect("passive protocol snapshot");
+            let checkpoint = state.checkpoint.expect("passive snapshot slot");
+            *passive.sequence.get_mut() = self.passive_checkpoints.0.borrow()[checkpoint as usize]
+                .as_ref()
+                .expect("populated passive checkpoint")
+                .clone();
+        }
+    }
+    fn passive_repeats(&self, before: &Local, period: u64) -> bool {
+        self.passive.as_ref().is_none_or(|read| {
+            let slot = before.checkpoint.expect("passive cycle checkpoint");
+            let snapshots = self.passive_checkpoints.0.borrow();
+            read.sequence.borrow().repeats(
+                snapshots[slot as usize]
+                    .as_ref()
+                    .expect("saved passive cycle"),
+                period,
+            )
+        })
+    }
+    fn repeat_passive(&self, before: &Local, period: u64, repetitions: u64) {
+        if let Some(read) = &self.passive {
+            let slot = before.checkpoint.expect("passive cycle checkpoint");
+            let snapshots = self.passive_checkpoints.0.borrow();
+            let sequence = snapshots[slot as usize]
+                .as_ref()
+                .expect("saved passive cycle");
+            read.sequence
+                .borrow_mut()
+                .bsc
+                .repeat(&sequence.bsc, period, repetitions);
         }
     }
     fn sequence_before(&self, count: usize) -> crate::onchip::ReadSequence {
@@ -440,7 +494,7 @@ impl Cached<'_> {
             .last()
             .map_or(self.store_ready, |event| event.ready)
     }
-    fn into_parts(self) -> (Local, Option<RamPlan>, CachedLines) {
+    fn into_parts(self) -> (CachedPublication, Option<RamPlan>, CachedLines) {
         let before_last = self.ram_stores.last().map(|last| {
             let mut sequence = self.sequence_before(last.before_event);
             sequence.advance(last.store.at);
@@ -469,16 +523,11 @@ impl Cached<'_> {
                 })
         };
         let fills = self.fills.into_inner();
-        let local = Local {
-            clock: self.clock.get(),
+        let local = CachedPublication {
             lru: self.lru.into_inner(),
             retained: self.retained.get(),
             epochs: self.epochs.get(),
             reads,
-            write_len: self.ram_stores.len(),
-            fill_len: fills.len(),
-            bus_len: self.bus_events.borrow().len(),
-            write_pc: self.write_pc.get(),
         };
         let plan = before_last.map(|before_last| RamPlan {
             stores: self.ram_stores,
@@ -1589,6 +1638,7 @@ impl Bus {
             .then_some(&self.onchip[0]),
             write_protocol: store_window.and_then(|w| w.1),
             idle_vdp1_vram: !self.vdp1.busy(),
+            passive_checkpoints: &self.cached_passive_checkpoints,
             ram_stores: Vec::new(),
             write_pc: Cell::new(0),
             passive,
@@ -1610,7 +1660,7 @@ impl Bus {
             return Ok(None);
         }
         let mut probe_records = Vec::new();
-        let origin = memory.snapshot();
+        let origin = memory.snapshot(Some(Checkpoint::Entry));
         let mut points = Retirements {
             points: std::mem::take(&mut self.cached_retirement_points),
             ..Retirements::default()
@@ -1846,7 +1896,7 @@ impl Bus {
             }
             if anchor.as_ref().is_some_and(|a| retired - a.retired > 16) {
                 anchor = Some(CycleAnchor {
-                    snapshot: Some((cpu.clone(), memory.snapshot())),
+                    snapshot: Some((cpu.clone(), memory.snapshot(Some(Checkpoint::Anchor)))),
                     pc: cpu.state().pc,
                     ready,
                     retired_at,
@@ -1875,7 +1925,7 @@ impl Bus {
                     None
                 };
                 let countdown = dt.map(|op| ((op >> 8) & 15) as usize);
-                let local = memory.snapshot();
+                let local = memory.snapshot(None);
                 let period = local.clock - prior_local.clock;
                 let stable_local = instructions <= 16
                     && period != 0
@@ -1884,11 +1934,7 @@ impl Bus {
                     && local.bus_len == prior_local.bus_len
                     && local.lru == prior_local.lru
                     && local.retained == prior_local.retained
-                    && match (&local.reads, &prior_local.reads) {
-                        (Some(a), Some(b)) => a.repeats(b, period),
-                        (None, None) => true,
-                        _ => false,
-                    }
+                    && memory.passive_repeats(prior_local, period)
                     && ready - previous.ready == period
                     && retired_at - previous.retired_at == period;
                 if stable_local {
@@ -1920,14 +1966,7 @@ impl Bus {
                         }
                         let clocks = period * repetitions;
                         memory.clock.set(memory.clock.get() + clocks);
-                        if let (Some(passive), Some(before)) = (&memory.passive, &prior_local.reads)
-                        {
-                            passive.sequence.borrow_mut().bsc.repeat(
-                                &before.bsc,
-                                period,
-                                repetitions,
-                            );
-                        }
+                        memory.repeat_passive(prior_local, period, repetitions);
                         memory.epochs.set(
                             memory.epochs.get()
                                 + (memory.epochs.get() - prior_local.epochs) * repetitions,
@@ -1958,7 +1997,10 @@ impl Bus {
                         cycle_attempts += 1;
                         anchor = if cycle_attempts < 2 {
                             Some(CycleAnchor {
-                                snapshot: Some((cpu.clone(), memory.snapshot())),
+                                snapshot: Some((
+                                    cpu.clone(),
+                                    memory.snapshot(Some(Checkpoint::Anchor)),
+                                )),
                                 pc: cpu.state().pc,
                                 ready,
                                 retired_at,
@@ -1972,7 +2014,10 @@ impl Bus {
                     cycle_attempts += 1;
                     anchor = if cycle_attempts < 2 {
                         Some(CycleAnchor {
-                            snapshot: Some((cpu.clone(), memory.snapshot())),
+                            snapshot: Some((
+                                cpu.clone(),
+                                memory.snapshot(Some(Checkpoint::Anchor)),
+                            )),
                             pc: cpu.state().pc,
                             ready,
                             retired_at,
@@ -2127,7 +2172,7 @@ impl Bus {
             {
                 break;
             }
-            let before = memory.snapshot();
+            let before = memory.snapshot(Some(Checkpoint::Attempt));
             let started = before.clock;
             let instruction_pc = cpu.state().pc;
             let interrupt_mask = cpu.state().sr & 0xF0;

@@ -5203,3 +5203,57 @@ snapshot byte for byte. Every field contributes to the PCM and pixel
 digests.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+## Compact cached SH-2 checkpoints (2026-11-21)
+
+Cached Master SH-2 execution keeps its passive BSC and A-bus snapshots
+in three reusable slots for the batch entry, a loop anchor and one
+speculative attempt. Per-instruction rollback and loop replay use the
+attempt slot at separate times. Periodic loop checks compare the live
+protocol with the saved anchor directly. Publication keeps the final
+protocol together with the committed cache and instruction state.
+
+The standard Chrome 157.0.8103.79 player warms each fresh instance through
+field 12,900 and measures six twelve-second windows on Machi Disc 1.
+All four runs draw every completed field and replay the same 157 timed
+controller events through the common endpoint. The Sound and Video
+Workers and AudioWorklet remain active. Browser errors and audio queue
+drops are zero.
+
+| Measure | Main to candidate, forward | Main to candidate, reverse |
+| --- | ---: | ---: |
+| Matched 3,865 fields, fields/s | 53.632 to 53.752 | 53.673 to 53.752 |
+| Four matched slow ranges, fields/s | 32.205 to 32.582 | 32.215 to 32.429 |
+| Fields 16,231–16,270, fields/s | 22.594 to 22.633 | 22.873 to 22.642 |
+| Matched p99 field time, ms | 52.9 to 52.3 | 52.1 to 52.4 |
+| Slow ranges p99 field time, ms | 112.4 to 111.5 | 111.6 to 111.9 |
+| Worklet underflow sample frames | 327,100 to 320,386 | 325,134 to 322,841 |
+
+Fields 14,861–14,940 improve by 2.26% and 2.02% in mean throughput,
+with p99 field time increasing from 129.2 to 133.8 ms and from 130.3
+to 133.9 ms. The longest gap moves one field earlier, and the six fields
+around it take 297.7 to 264.6 ms and 299.9 to 262.8 ms. The former fault
+range runs about 1% slower in the reverse order. Its p99 field time
+increases in both orders. Sustained real-time execution and continuous
+audio remain open.
+
+Baseline Wasm SHA-256 is
+`c826a2990569e7131950b32e0b1bcad52ca5f98a895f45d5c5edf76c96bd0481`.
+Candidate Wasm is
+`46783d789b0d6bde2342e9fb9980a1cf2eb9a255a8ff2d4d3e7a7b06813350bc`.
+The standard build uses Rust 1.100.0, wasm-bindgen 0.2.129 and Binaryen 127
+with identical JavaScript bindings.
+
+The original native fixture saves three different states after physical
+passive Work RAM reads and restores them independently. Aliasing the
+entry and attempt checkpoints fails the fixture, and the restored source
+passes. The existing refresh, cached execution, video journal and Sound
+rendezvous fixtures, native and Wasm Clippy, and Chrome A-bus, SH-2 fetch
+and CD runtime checks pass.
+
+Across 3,040 private replay fields, the standard Wasm packages match at
+38 checkpoints through field 16,860. The comparison covers public SH-2
+state and clocks, all work RAM by SHA-256, and the canonical Sound state
+byte for byte. Every field contributes to the PCM and pixel digests.
+
+Related to #138 and #17. Private media and raw captures stay local.

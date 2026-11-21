@@ -1104,8 +1104,10 @@ fn fabricated_mmio_cache_hit_cannot_bypass_the_peripheral_contract() {
     let before = bus.smpc.command_state();
     {
         let cache = bus.cache[0].borrow();
+        let checkpoints = PassiveCheckpoints::default();
         let memory = Cached {
             cache: &cache,
+            passive_checkpoints: &checkpoints,
             code: None,
             fills: RefCell::default(),
             version_count: Cell::new(0),
@@ -2856,8 +2858,9 @@ fn prepared_passive_prediction_rejects_width_address_rom_and_deadline_before_con
             })
             .unwrap();
         let chip = crate::onchip::OnChip::default();
-        let make = || Cached {
+        let make = |passive_checkpoints| Cached {
             cache: &cache,
+            passive_checkpoints,
             code: None,
             fills: RefCell::default(),
             version_count: Cell::new(0),
@@ -2891,8 +2894,10 @@ fn prepared_passive_prediction_rejects_width_address_rom_and_deadline_before_con
                 }),
             }),
         };
-        let mut actual = make();
-        let mut reference_memory = make();
+        let actual_checkpoints = PassiveCheckpoints::default();
+        let reference_checkpoints = PassiveCheckpoints::default();
+        let mut actual = make(&actual_checkpoints);
+        let mut reference_memory = make(&reference_checkpoints);
         let mut cpu = Cpu::start(base, address);
         cpu.prime_fetch(&actual);
         let mut reference = Cpu::start(base, address);
@@ -2932,6 +2937,7 @@ fn prepared_passive_prediction_rejects_width_address_rom_and_deadline_before_con
                 .borrow()
                 .repeats(&before, 0)
         );
+        let entry = actual.snapshot(Some(Checkpoint::Entry));
         reference_memory.end.set(at);
         cpu.execute_cached_instruction(plan, &mut actual);
         reference.step(&mut reference_memory).unwrap();
@@ -2946,6 +2952,33 @@ fn prepared_passive_prediction_rejects_width_address_rom_and_deadline_before_con
         assert!(actual_sequence.bsc.beats > before.bsc.beats);
         assert_eq!(actual_sequence.bsc.beats, reference_sequence.bsc.beats);
         assert!(actual_sequence.repeats(&reference_sequence, 0));
+        drop(actual_sequence);
+        drop(reference_sequence);
+
+        let progress = |memory: &Cached<'_>| {
+            let phase = memory.passive.as_ref().unwrap().sequence.borrow();
+            (memory.clock.get(), phase.bsc.at(), phase.bsc.beats)
+        };
+        let after = actual.snapshot(Some(Checkpoint::Anchor));
+        let first = progress(&actual);
+        actual.end.set(10000);
+        match width {
+            1 => actual.read::<1>(address).map(|_| ()),
+            2 => actual.read::<2>(address).map(|_| ()),
+            4 => actual.read::<4>(address).map(|_| ()),
+            _ => unreachable!(),
+        }
+        .unwrap();
+        let last = progress(&actual);
+        let attempt = actual.snapshot(Some(Checkpoint::Attempt));
+        assert!(last.2 > first.2 && first.2 > before.bsc.beats);
+
+        actual.restore(after);
+        assert_eq!(progress(&actual), first);
+        actual.restore(entry);
+        assert_eq!(progress(&actual), (1000, before.bsc.at(), before.bsc.beats));
+        actual.restore(attempt);
+        assert_eq!(progress(&actual), last);
     }
 }
 
