@@ -183,14 +183,20 @@ async function start({ paced = true } = {}) {
   playing = playWanted;
   run = (async () => {
     let due = performance.now();
+    let previousCompletion = due;
     while (playing) {
       if (paced && due > performance.now()) await delay(due - performance.now());
       const period = await produce(true);
       if (period == null) break;
       due += period;
-      // Keep the phase through short slow fields so later fast fields can
-      // recover. Rebase long stalls without skipping any guest field.
-      if (performance.now() - due >= period * MAX_PACING_LAG_FIELDS) due = performance.now();
+      const now = performance.now();
+      const budget = period * MAX_PACING_LAG_FIELDS;
+      // Keep bounded catch-up time after a sequence of expensive fields.
+      // A single long gap starts a new pacing phase on return.
+      if (now - due >= budget) {
+        due = now - previousCompletion >= budget * 2 ? now : now - budget;
+      }
+      previousCompletion = now;
     }
   })().catch(error => {
     playing = false;

@@ -5594,3 +5594,41 @@ and clocks, all work RAM by SHA-256 and full canonical Sound bytes.
 Every field contributes to matching rolling PCM and pixel digests.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+## Retain bounded playback debt through slow fields (2026-11-22)
+
+The playback Worker retains up to eight guest field periods of pacing debt
+when expensive fields overrun the schedule. A gap of at least sixteen field
+periods between completions starts a fresh pacing phase. The Worker still
+emulates and presents each field using the guest's existing clock, PCM and
+frame-credit paths.
+
+Chrome 157.0.8103.79 runs the normal Web player with active Sound and Video
+Workers and AudioWorklet. Each fresh run warms through field 12,900 and plays
+six twelve-second intervals of Machi Disc 1. Both execution orders share
+3,915 presented fields and all 157 scripted input events at the requested
+presentation fields. Audio queue drops and browser errors are zero. The
+shared Wasm SHA-256 is `6fabb12f9099cccb52fee682537c129b81e6eaf40df560338d3ebf00e52bc811`. The
+modified playback Worker SHA-256 is `08ce8a937cf9b388a722b4bf9f665a944cf1f5b9fc63fca74566e8abaa4c1c19`.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Common fields, fields/s | 54.319 to 54.857 | 54.433 to 54.790 |
+| Four matched slow ranges, fields/s | 33.813 to 34.475 | 34.098 to 34.289 |
+| Common fields p99 field time, ms | 49.6 to 49.5 | 49.3 to 49.6 |
+| Common fields maximum field time, ms | 117.1 to 117.5 | 117.3 to 117.5 |
+| Worklet underflow output sample frames over six intervals | 295,290 to 261,072 | 286,330 to 265,040 |
+
+Worklet shortages fall 11.59% and 7.44% overall. The third twelve-second
+interval increases from 17,194 to 19,015 missing frames in forward order
+and from 17,507 to 18,728 in reverse order. The schedule still produces
+nine field gaps over 100 ms in each arm. Sustained nominal gameplay rate
+and continuous audio remain open.
+
+The focused virtual-clock tests exercise the production pacing loop,
+including repeated overruns, a long host stall, a permanently slow host
+and uncapped playback. A full-reset variant fails the repeated-overrun
+witness. A variant that retains debt across the long gap fails the
+long-stall witness.
+
+Related to #138 and #17. Private media and raw captures stay local.
