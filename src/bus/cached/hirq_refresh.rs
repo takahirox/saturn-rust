@@ -3,7 +3,7 @@ use super::{Bus, PassiveSequence, Processor, ScuError};
 use crate::onchip::{CachedRefreshWindow, ReadSequence};
 use crate::scu::Abus;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct RefreshEdge {
     compare: u64,
     delay: u64,
@@ -28,7 +28,7 @@ impl RefreshEdge {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(super) struct PassiveRefresh {
     edges: [RefreshEdge; 2],
     length: u64,
@@ -62,6 +62,16 @@ impl PassiveRefresh {
 
     pub(super) fn start(&self) -> u64 {
         self.edges[0].start()
+    }
+
+    pub(super) fn region(&self) -> usize {
+        self.visited
+    }
+
+    pub(super) fn repeat_before(&self) -> u64 {
+        self.edges[..self.edge_count]
+            .get(self.visited)
+            .map_or(u64::MAX, |edge| edge.compare - 1)
     }
 
     fn record_read(&mut self, granted: u64) {

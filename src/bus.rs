@@ -333,6 +333,10 @@ pub struct Bus {
     #[cfg(test)]
     cached_hirq_window_counts: [u64; 5],
     #[cfg(test)]
+    hirq_regional_folds: bool,
+    #[cfg(test)]
+    hirq_regional_fold_counts: [u64; 4],
+    #[cfg(test)]
     hirq_window_resident_words: bool,
     cached_passive_checkpoints: cached::PassiveCheckpoints,
     #[cfg(test)]
@@ -489,6 +493,10 @@ impl Default for Bus {
             cached_hirq_window_enabled: true,
             #[cfg(test)]
             cached_hirq_window_counts: [0; 5],
+            #[cfg(test)]
+            hirq_regional_folds: true,
+            #[cfg(test)]
+            hirq_regional_fold_counts: [0; 4],
             #[cfg(test)]
             hirq_window_resident_words: true,
             cached_passive_checkpoints: cached::PassiveCheckpoints::default(),

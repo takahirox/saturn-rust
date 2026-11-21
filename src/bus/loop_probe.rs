@@ -96,6 +96,10 @@ impl LoopProbe {
             }
         }
     }
+    #[cfg(test)]
+    pub(super) fn discovered_headers(&self) -> &BTreeSet<u32> {
+        &self.headers
+    }
     pub fn is_header(&self, pc: u32) -> bool {
         self.headers.contains(&pc)
     }
