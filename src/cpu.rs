@@ -579,6 +579,14 @@ impl Cpu {
         self.retire_cached_instruction(plan, future, split);
         bus.instruction_break(pc, true);
     }
+    pub(crate) fn retire_resident_scalar(&mut self, plan: CachedInstruction, future: u16) {
+        let CachedEffect::Scalar(kind) = plan.effect else {
+            unreachable!("proven resident scalar");
+        };
+        scalar::execute(kind, plan.opcode, &mut self.state);
+        self.retire_cached_instruction(plan, future, 0);
+    }
+
     pub(crate) fn retire_prepared_load(
         &mut self,
         plan: CachedInstruction,

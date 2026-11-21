@@ -5412,3 +5412,56 @@ Sound state byte for byte agree at every checkpoint. All fields
 contribute to the matching rolling PCM and pixel digests.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+## Execute resident instructions around passive HIRQ reads (2026-11-21)
+
+An admitted CD HIRQ window can retire register operations, resident branches
+and 16-bit HIRQ loads using the existing SH-2 instruction plans. Each load
+uses the current operand, sign extension and one shadow plan for the real
+BSC and A-bus read. An eight-entry table reuses instruction words inside
+this read-only window while applying the original retained-fetch and cache
+replacement effects. The scheduler still selects the retirement prefix and
+publishes physical refresh, Sound and Slave events at the existing boundaries.
+
+Fresh Chrome 157.0.8103.79 runs warm through field 12,900, then play six
+twelve-second intervals on Machi Disc 1. The four runs share 3,886 matched
+fields with 157 controller events at the same fields. Every field is drawn
+with Sound and Video Workers and AudioWorklet active. Browser errors and
+audio queue drops are zero.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Common fields, fields/s | 53.964 to 53.971 | 53.924 to 54.071 |
+| Four matched slow ranges, fields/s | 32.816 to 32.738 | 32.732 to 33.055 |
+| Fields 16,231–16,270, fields/s | 22.886 to 23.229 | 22.906 to 23.359 |
+| Common fields p99 field time, ms | 51.9 to 51.4 | 52.1 to 50.6 |
+| Worklet underflow sample frames | 311,504 to 310,992 | 316,154 to 304,879 |
+
+The former VDP1 error interval gains 1.50% and 1.98% across the two orders.
+Its p99 field time changes from 78.4 to 78.7 ms and from 79.5 to 78.1 ms.
+Forward throughput falls in three of the four matched slow ranges, with
+the largest loss of 0.81% in fields 14,861–14,940. Reverse throughput rises
+in all four. Sustained real-time execution and continuous audio remain open.
+
+Baseline Wasm SHA-256 is
+`4ecdebbe64a5c25e1985c4894dce26b9298a471902cc99c958d0b046db5bbc50`.
+Candidate Wasm is
+`eabdb4ae3c77a54e458891ffc87ff40cc8a1528d20a67c7a6b9fd40af2ca257f`.
+The standard build uses Rust 1.100.0, wasm-bindgen 0.2.129 and Binaryen 127
+with identical JavaScript bindings.
+
+The native regressions compare against literal execution with both NTSC PLL
+settings, physical refresh and an armed refresh IRQ, an active Sound CPU
+and a pending private Slave transaction. Adding one clock to a read or
+swapping the two bytes of the retained instruction halfword fails the
+CPU-retirement oracle. The restored source passes cached scheduling, video
+journal, Sound rendezvous and native and Wasm Clippy checks. Original
+Chrome A-bus timing, refresh arbitration, SH-2 fetch and CD runtime
+scenarios pass on the standard candidate.
+
+The standard packages agree over a separate 3,040-field replay at 38
+checkpoints through field 16,860. Each checkpoint matches public SH-2 state
+and clocks, all work RAM by SHA-256 and full canonical Sound bytes. Every
+field contributes to matching rolling PCM and pixel digests.
+
+Related to #138 and #17. Private media and raw captures stay local.

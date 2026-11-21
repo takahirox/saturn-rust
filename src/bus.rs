@@ -328,6 +328,12 @@ pub struct Bus {
     inline: Option<transactions::InlineProgress>,
     // Retain host retirement-buffer capacity between cached bursts.
     cached_retirement_points: Vec<cached::Retirement>,
+    #[cfg(test)]
+    cached_hirq_window_enabled: bool,
+    #[cfg(test)]
+    cached_hirq_window_counts: [u64; 5],
+    #[cfg(test)]
+    hirq_window_resident_words: bool,
     cached_passive_checkpoints: cached::PassiveCheckpoints,
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub(crate) allow_cached_neutral_cd_write: bool,
@@ -470,6 +476,12 @@ impl Default for Bus {
             transactions: transactions::Transactions::default(),
             inline: None,
             cached_retirement_points: Vec::new(),
+            #[cfg(test)]
+            cached_hirq_window_enabled: true,
+            #[cfg(test)]
+            cached_hirq_window_counts: [0; 5],
+            #[cfg(test)]
+            hirq_window_resident_words: true,
             cached_passive_checkpoints: cached::PassiveCheckpoints::default(),
             #[cfg(any(test, feature = "kernel-experiment"))]
             allow_cached_neutral_cd_write: false,
@@ -3463,5 +3475,26 @@ mod abus_dma_tests {
             b.advance_clocks(100).unwrap();
             assert_eq!(b.read32(HIGH_WRAM), Ok(0x12345678));
         }
+    }
+}
+
+#[cfg(test)]
+impl crate::Machine {
+    pub fn enable_cached_hirq_window(&mut self, enabled: bool) {
+        self.bus.cached_hirq_window_enabled = enabled;
+        self.bus.cached_hirq_window_counts = [0; 5];
+    }
+    pub fn cached_hirq_window_enabled(&self) -> bool {
+        self.bus.cached_hirq_window_enabled
+    }
+    pub fn enable_hirq_window_resident_words(&mut self, enabled: bool) {
+        self.bus.hirq_window_resident_words = enabled;
+        self.bus.cached_hirq_window_counts = [0; 5];
+    }
+    pub fn hirq_window_resident_words_enabled(&self) -> bool {
+        self.bus.hirq_window_resident_words
+    }
+    pub fn cached_hirq_window_counts(&self) -> Vec<u64> {
+        self.bus.cached_hirq_window_counts.to_vec()
     }
 }
