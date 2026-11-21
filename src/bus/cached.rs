@@ -8,6 +8,7 @@ use super::poll_cycle::PollCycle;
 use super::*;
 use crate::cache::{CacheTouch, CachedLines};
 use crate::cpu::{CachedClass, CachedInstruction, Cpu, CpuStatus, ResidentControl};
+pub(super) mod hirq_entry;
 mod hirq_refresh;
 #[cfg(test)]
 mod hirq_refresh_fixture;
@@ -1085,13 +1086,17 @@ impl Bus {
         }
         let op = initial.decoded_opcode()?;
         let address = initial.cached_load_address(op)?;
+        if op >> 12 == 4 {
+            return None;
+        }
+        self.passive_read_at(address)
+    }
+
+    fn passive_read_at<'a>(&self, address: u32) -> Option<PassiveRead<'a>> {
         // WRAM and passive device words remain stable inside this burst.
         // Observer deadlines and the quiet bus exclude intervening writes.
         let physical = Bus::physical(address);
-        if !(0x2000_0000..0x4000_0000).contains(&address)
-            || op >> 12 == 4
-            || !self.cached_reads_quiet()
-        {
+        if !(0x2000_0000..0x4000_0000).contains(&address) || !self.cached_reads_quiet() {
             return None;
         }
         let ram = if (LOW_WRAM..LOW_WRAM + WRAM_SIZE as u32).contains(&physical) {
@@ -1450,6 +1455,30 @@ impl Bus {
         // during board catch-up. Convert fixed-domain deadlines through the
         // current PLL phase, including an already admitted second main tick.
         let mut passive = self.passive_read(initial);
+        #[cfg(test)]
+        let allow_earlier_entry = self.hirq_early_entry_enabled;
+        #[cfg(not(test))]
+        let allow_earlier_entry = true;
+        let entry = allow_earlier_entry
+            .then(|| hirq_entry::Entry::new(initial))
+            .flatten();
+        let was_passive = passive.is_some();
+        // A learned entry can plan ahead of the first status load. Actual
+        // instruction fetches, addresses and retirement clocks still decide
+        // which part of this private window can be committed.
+        let used_hint = if let Some(entry) = entry.filter(|_| !was_passive)
+            && let Some(hint) = self.hirq_early_entries[entry.slot()].filter(|h| h.entry == entry)
+            && let Some(held) = self.passive_read_at(hint.address)
+        {
+            passive = Some(held);
+            #[cfg(test)]
+            {
+                self.hirq_early_entry_counts[1] += 1;
+            }
+            true
+        } else {
+            false
+        };
         if let Some(reads) = &mut passive
             && reads.address == u32::MAX
         {
@@ -2523,6 +2552,34 @@ impl Bus {
         };
         points.recycle_into(&mut self.cached_retirement_points);
         let store = memory.store.get();
+        if let Some(entry) = entry {
+            #[cfg(test)]
+            if used_hint {
+                let beats = memory.passive.as_ref().unwrap().sequence.borrow().bsc.beats;
+                self.hirq_early_entry_counts[2] += u64::from(beats != 0);
+                self.hirq_early_entry_counts[3] += beats;
+            }
+            // Learn only from a committed resident prefix with no external
+            // penalty or observer crossing. The next entry remains a hint;
+            // every actual opcode, operand and completion is proved afresh.
+            if !was_passive
+                && !used_hint
+                && retired <= 16
+                && retired_at <= normal_end
+                && !transfer_active
+                && store.is_none()
+                && memory.version_count.get() == 0
+                && memory.ram_stores.is_empty()
+                && let Some(address) = hirq_entry::next_word(&cpu, ready)
+                && entry.starts_readonly_prefix()
+            {
+                self.hirq_early_entries[entry.slot()] = Some(hirq_entry::Hint { entry, address });
+                #[cfg(test)]
+                {
+                    self.hirq_early_entry_counts[0] += 1;
+                }
+            }
+        }
         let probe_eligible = memory.passive.is_none()
             && memory.refill_count.get() == 0
             && store.is_none()

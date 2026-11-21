@@ -996,46 +996,71 @@ mod resume_tests {
 }
 
 #[cfg(test)]
+fn hirq_with_private_peer(program: &[u16], fast: bool, offset: usize) -> Machine {
+    let mut machine =
+        crate::scheduling_tests::cached_pair(program, &[0x60F0, 0xC880, 0x89FC, 0xAFFB, 9]);
+    machine.bus.change_system_clock(fast);
+    machine.bus.set_slave_enabled(true);
+    for (cpu, address) in [
+        (Processor::Master, HIGH_WRAM),
+        (Processor::Slave, HIGH_WRAM + 0x100),
+    ] {
+        let mut port = machine.bus.for_cpu(cpu);
+        port.write8(crate::cache::CCR, 0x11).unwrap();
+        port.fetch16(address).unwrap();
+        machine.bus.cpu_delay(cpu, 0);
+    }
+    machine.cpu = Cpu::start(HIGH_WRAM, 0x2000_0000 | (crate::cd::REGISTERS + 8));
+    machine
+        .cpu
+        .prime_fetch(&machine.bus.for_cpu(Processor::Master));
+    machine.slave = Cpu::start(HIGH_WRAM + 0x100, onchip::FRT + 1);
+    machine
+        .slave
+        .prime_fetch(&machine.bus.for_cpu(Processor::Slave));
+    machine.bus.claim_external_bus(Processor::Master);
+    let sound = &mut machine.bus.sound;
+    sound.ram[..4].copy_from_slice(&0x1000u32.to_be_bytes());
+    sound.ram[4..8].copy_from_slice(&0x100u32.to_be_bytes());
+    sound.ram[0x100..0x104].copy_from_slice(&[0x4e, 0x71, 0x60, 0xfc]);
+    sound.set_enabled(true).unwrap();
+    machine.slave_poll_retry = u64::MAX;
+    machine.cpu_ready[0] = machine.bus.main_clocks + 64;
+    for _ in 0..offset {
+        machine.step_hardware_boundary().unwrap();
+    }
+    machine.cpu_ready[0] = machine.bus.main_clocks;
+    machine
+}
+
+#[cfg(test)]
+fn assert_hirq_peer_state(actual: &mut Machine, reference: &mut Machine) {
+    assert_eq!(actual.cpu, reference.cpu);
+    assert_eq!(actual.slave, reference.slave);
+    assert_eq!(actual.cpu_ready, reference.cpu_ready);
+    assert_eq!(actual.clocks, reference.clocks);
+    assert_eq!(actual.bus.main_clocks, reference.bus.main_clocks);
+    assert!(actual.bus.private_transaction() == reference.bus.private_transaction());
+    assert_eq!(
+        actual.bus.scu.plan_cached_abus(),
+        reference.bus.scu.plan_cached_abus()
+    );
+    assert_eq!(actual.loop_state_hashes(), reference.loop_state_hashes());
+    assert!(actual.sound_domain_snapshot().unwrap() == reference.sound_domain_snapshot().unwrap());
+    assert_eq!(actual.framebuffer(), reference.framebuffer());
+    assert_eq!(actual.drain_audio(8192), reference.drain_audio(8192));
+}
+
+#[cfg(test)]
 #[test]
 fn typed_hirq_window_preserves_live_private_peer_boundaries() {
     for fast in [false, true] {
         let make = |offset| {
-            let mut machine = crate::scheduling_tests::cached_pair(
+            hirq_with_private_peer(
                 &[0xD102, 0x7001, 0x62F1, 0xAFFB, 9, 9, 0x1234, 0x5678],
-                &[0x60F0, 0xC880, 0x89FC, 0xAFFB, 9],
-            );
-            machine.bus.change_system_clock(fast);
-            machine.bus.set_slave_enabled(true);
-            for (cpu, address) in [
-                (Processor::Master, HIGH_WRAM),
-                (Processor::Slave, HIGH_WRAM + 0x100),
-            ] {
-                let mut port = machine.bus.for_cpu(cpu);
-                port.write8(crate::cache::CCR, 0x11).unwrap();
-                port.fetch16(address).unwrap();
-                machine.bus.cpu_delay(cpu, 0);
-            }
-            machine.cpu = Cpu::start(HIGH_WRAM, 0x2000_0000 | (crate::cd::REGISTERS + 8));
-            machine
-                .cpu
-                .prime_fetch(&machine.bus.for_cpu(Processor::Master));
-            machine.slave = Cpu::start(HIGH_WRAM + 0x100, onchip::FRT + 1);
-            machine
-                .slave
-                .prime_fetch(&machine.bus.for_cpu(Processor::Slave));
-            machine.bus.claim_external_bus(Processor::Master);
-            let sound = &mut machine.bus.sound;
-            sound.ram[..4].copy_from_slice(&0x1000u32.to_be_bytes());
-            sound.ram[4..8].copy_from_slice(&0x100u32.to_be_bytes());
-            sound.ram[0x100..0x104].copy_from_slice(&[0x4e, 0x71, 0x60, 0xfc]);
-            sound.set_enabled(true).unwrap();
-            machine.slave_poll_retry = u64::MAX;
-            machine.cpu_ready[0] = machine.bus.main_clocks + 64;
-            for _ in 0..offset {
-                machine.step_hardware_boundary().unwrap();
-            }
-            machine.cpu_ready[0] = machine.bus.main_clocks;
-            machine
+                fast,
+                offset,
+            )
         };
         let mut pending = 0;
         for offset in 0..4 {
@@ -1044,28 +1069,77 @@ fn typed_hirq_window_preserves_live_private_peer_boundaries() {
             reference.enable_cached_hirq_window(false);
             actual.advance_frame().unwrap();
             reference.advance_frame().unwrap();
-            assert_eq!(actual.cpu, reference.cpu);
-            assert_eq!(actual.slave, reference.slave);
-            assert_eq!(actual.cpu_ready, reference.cpu_ready);
-            assert_eq!(actual.clocks, reference.clocks);
-            assert_eq!(actual.bus.main_clocks, reference.bus.main_clocks);
-            assert!(actual.bus.private_transaction() == reference.bus.private_transaction());
-            assert_eq!(
-                actual.bus.scu.plan_cached_abus(),
-                reference.bus.scu.plan_cached_abus()
-            );
-            assert_eq!(actual.loop_state_hashes(), reference.loop_state_hashes());
-            assert!(
-                actual.sound_domain_snapshot().unwrap()
-                    == reference.sound_domain_snapshot().unwrap()
-            );
-            assert_eq!(actual.framebuffer(), reference.framebuffer());
-            assert_eq!(actual.drain_audio(8192), reference.drain_audio(8192));
+            assert_hirq_peer_state(&mut actual, &mut reference);
             pending += actual.cached_hirq_window_counts()[3];
         }
         assert!(
             pending > 0,
             "typed HIRQ must share a real pending Slave and Sound"
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn learned_hirq_origin_preserves_live_operands_and_peer_boundaries() {
+    // ADD #1,R0; MOV.W @R15,R0; BRA back; NOP.
+    let program = [0x7001, 0x60F1, 0xAFFC, 0x0009];
+    for fast in [false, true] {
+        let mut coverage = [0; 4];
+        for offset in 0..4 {
+            let mut actual = hirq_with_private_peer(&program, fast, offset);
+            let mut reference = hirq_with_private_peer(&program, fast, offset);
+            actual.bus.hirq_early_entry_enabled = true;
+            for _ in 0..2 {
+                actual.advance_frame().unwrap();
+                reference.advance_frame().unwrap();
+                assert_hirq_peer_state(&mut actual, &mut reference);
+            }
+            for (total, count) in coverage.iter_mut().zip(actual.bus.hirq_early_entry_counts) {
+                *total += count;
+            }
+        }
+        assert!(
+            coverage.iter().all(|&count| count != 0),
+            "learn and use a real CD entry with a private peer at PLL {fast}: {coverage:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn learned_hirq_origin_rejects_a_different_live_cd_register() {
+    // Train the same resident prefix to expect HIRQ. Then run with the same
+    // code and a live address pointing to the distinct HIRQMASK register.
+    let program = [0x7001, 0x60F1, 0xAFFC, 0x0009];
+    for fast in [false, true] {
+        let mut trained = hirq_with_private_peer(&program, fast, 0);
+        trained.bus.hirq_early_entry_enabled = true;
+        trained.advance_frame().unwrap();
+        assert!(trained.bus.hirq_early_entry_counts[2] != 0);
+
+        let with_mask_address = || {
+            let mut machine = hirq_with_private_peer(&program, fast, 0);
+            let mask = 0x2000_0000 | (crate::cd::REGISTERS + 12);
+            machine.cpu = Cpu::start(HIGH_WRAM, mask);
+            machine
+                .cpu
+                .prime_fetch(&machine.bus.for_cpu(Processor::Master));
+            machine
+        };
+        let mut actual = with_mask_address();
+        let mut reference = with_mask_address();
+        actual.bus.hirq_early_entries = trained.bus.hirq_early_entries;
+        actual.bus.hirq_early_entry_enabled = true;
+        actual.advance_frame().unwrap();
+        reference.advance_frame().unwrap();
+        assert_hirq_peer_state(&mut actual, &mut reference);
+        let [_, admitted, used, reads] = actual.bus.hirq_early_entry_counts;
+        assert!(admitted != 0, "the stale HIRQ entry must be tried");
+        assert_eq!(
+            [used, reads],
+            [0, 0],
+            "a stale HIRQ entry may not consume a different register"
         );
     }
 }
