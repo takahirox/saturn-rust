@@ -9,7 +9,7 @@ mod dma;
 mod sci;
 mod ubc;
 mod wdt;
-pub(crate) use cached::ReadSequence;
+pub(crate) use cached::{CachedRefreshWindow, ReadSequence};
 use divu::Division;
 use dma::Dma;
 pub(crate) use dma::PendingWriteKey;

@@ -1295,6 +1295,10 @@ impl Bus {
             self.scu.commit_cached_abus(abus);
         }
         self.onchip[0].commit_cached_reads(sequence, self.main_clocks);
+        self.commit_cached_read_arbitration();
+    }
+
+    pub(super) fn commit_cached_read_arbitration(&mut self) {
         self.transactions.previous = Some(Processor::Master);
         self.transactions.dmac_yield = false;
     }

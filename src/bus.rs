@@ -337,6 +337,28 @@ pub struct Bus {
     #[cfg(any(test, feature = "kernel-experiment"))]
     pub(crate) reversible_cached_load_counts: [u64; 3],
     #[cfg(test)]
+    pub(crate) hirq_refresh_plan: bool,
+    #[cfg(test)]
+    pub(crate) hirq_refresh_plan_counts: [u64; 3],
+    #[cfg(test)]
+    pub(crate) hirq_refresh_overlap: bool,
+    #[cfg(test)]
+    pub(crate) hirq_refresh_delayed_grants: u64,
+    #[cfg(test)]
+    pub(crate) hirq_refresh_wait: bool,
+    #[cfg(test)]
+    pub(crate) hirq_refresh_waits: u64,
+    #[cfg(test)]
+    pub(crate) hirq_two_refreshes: bool,
+    #[cfg(test)]
+    pub(crate) hirq_second_grants: u64,
+    #[cfg(test)]
+    pub(crate) hirq_sound_refresh: bool,
+    #[cfg(test)]
+    pub(crate) hirq_sound_refresh_grants: u64,
+    #[cfg(test)]
+    pub(crate) hirq_second_grants_with_sound: u64,
+    #[cfg(test)]
     cached_sound_event_elisions: u64,
     #[cfg(any(test, feature = "kernel-experiment"))]
     cached_sound_gap_elisions: u64,
@@ -455,6 +477,28 @@ impl Default for Bus {
             reversible_cached_loads: false,
             #[cfg(any(test, feature = "kernel-experiment"))]
             reversible_cached_load_counts: [0; 3],
+            #[cfg(test)]
+            hirq_refresh_plan: false,
+            #[cfg(test)]
+            hirq_refresh_plan_counts: [0; 3],
+            #[cfg(test)]
+            hirq_refresh_overlap: false,
+            #[cfg(test)]
+            hirq_refresh_delayed_grants: 0,
+            #[cfg(test)]
+            hirq_refresh_wait: false,
+            #[cfg(test)]
+            hirq_refresh_waits: 0,
+            #[cfg(test)]
+            hirq_two_refreshes: false,
+            #[cfg(test)]
+            hirq_second_grants: 0,
+            #[cfg(test)]
+            hirq_sound_refresh: false,
+            #[cfg(test)]
+            hirq_sound_refresh_grants: 0,
+            #[cfg(test)]
+            hirq_second_grants_with_sound: 0,
             #[cfg(test)]
             cached_sound_event_elisions: 0,
             #[cfg(any(test, feature = "kernel-experiment"))]

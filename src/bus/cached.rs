@@ -8,7 +8,11 @@ use super::poll_cycle::PollCycle;
 use super::*;
 use crate::cache::{CacheTouch, CachedLines};
 use crate::cpu::{CachedClass, CachedInstruction, Cpu, CpuStatus, ResidentControl};
+mod hirq_refresh;
+#[cfg(test)]
+mod hirq_refresh_fixture;
 mod loop_replay;
+use hirq_refresh::PassiveRefresh;
 
 /// A ready peer publishes proven instruction retirements. A pending peer
 /// publishes a proven microstate after Master yields or after one ordinary peer issue.
@@ -63,13 +67,20 @@ struct PassiveRead<'a> {
 struct PassiveSequence {
     bsc: crate::onchip::ReadSequence,
     abus: Option<crate::scu::Abus>,
+    refresh: Option<PassiveRefresh>,
 }
 impl PassiveSequence {
-    fn read(&mut self, address: u32, width: usize, at: u64) -> u64 {
-        self.bsc.read(address, width, at, self.abus.as_ref())
+    fn read(&mut self, address: u32, width: usize, at: u64) -> Option<u64> {
+        if let Some(window) = &mut self.refresh {
+            return window.read(&mut self.bsc, self.abus.as_mut()?, address, width, at);
+        }
+        Some(self.bsc.read(address, width, at, self.abus.as_ref()))
     }
     fn repeats(&self, before: &Self, period: u64) -> bool {
-        self.bsc.repeats(&before.bsc, period) && self.abus == before.abus
+        self.refresh.is_none()
+            && before.refresh.is_none()
+            && self.bsc.repeats(&before.bsc, period)
+            && self.abus == before.abus
     }
 }
 impl PassiveRead<'_> {
@@ -375,7 +386,7 @@ impl Cached<'_> {
                 let start = plan.issue_at() + u64::from(plan.load_wait(plan.issue_at(), true));
                 let mut sequence = passive.sequence.borrow().clone();
                 sequence
-                    .read(address & 0x1FFF_FFFF, width as usize, start)
+                    .read(address & 0x1FFF_FFFF, width as usize, start)?
                     .max(plan.at)
             }
         };
@@ -453,6 +464,7 @@ impl Cached<'_> {
                     PassiveSequence {
                         bsc: sequence,
                         abus: None,
+                        refresh: None,
                     }
                 })
         };
@@ -511,10 +523,10 @@ impl Cached<'_> {
             || !address.is_multiple_of(width as u32)
             || self.store.get().is_some()
             || self.ram_stores.len() == 16
-            || self
-                .passive
-                .as_ref()
-                .is_some_and(|p| p.rom.is_some() || p.sequence.borrow().bsc.beats != 0)
+            || self.passive.as_ref().is_some_and(|p| {
+                let sequence = p.sequence.borrow();
+                p.rom.is_some() || sequence.bsc.beats != 0 || sequence.refresh.is_some()
+            })
         {
             return false;
         }
@@ -532,7 +544,8 @@ impl Cached<'_> {
             let at = passive
                 .sequence
                 .borrow_mut()
-                .read(address, N, self.clock.get());
+                .read(address, N, self.clock.get())
+                .ok_or(BusError::Pending)?;
             if at > self.end.get() {
                 return Err(BusError::Pending);
             }
@@ -547,11 +560,11 @@ impl Cached<'_> {
                 && address == passive.address
                 && passive.allowed_widths & N as u8 != 0
             {
-                let at =
-                    passive
-                        .sequence
-                        .borrow_mut()
-                        .read(address & 0x1FFF_FFFF, N, self.clock.get());
+                let at = passive
+                    .sequence
+                    .borrow_mut()
+                    .read(address & 0x1FFF_FFFF, N, self.clock.get())
+                    .ok_or(BusError::Pending)?;
                 if at > self.end.get() {
                     return Err(BusError::Pending);
                 }
@@ -990,6 +1003,7 @@ impl Bus {
                 sequence: RefCell::new(PassiveSequence {
                     bsc: self.onchip[0].plan_cached_reads(self.main_clocks),
                     abus: None,
+                    refresh: None,
                 }),
             });
         }
@@ -1044,6 +1058,7 @@ impl Bus {
         let sequence = PassiveSequence {
             bsc: self.onchip[0].plan_cached_reads(self.main_clocks),
             abus: (physical == crate::cd::REGISTERS + 8).then(|| self.scu.plan_cached_abus()),
+            refresh: None,
         };
         Some(PassiveRead {
             address,
@@ -1471,10 +1486,63 @@ impl Bus {
             .filter(|&wide| wide > span)
             .map(|wide| self.main_clocks + u64::from(wide));
         let normal_end = self.main_clocks + u64::from(span);
+        let peer_span = poll.map_or(u32::MAX, PeerSchedule::span);
         let span = readonly_refresh
             .or(neutral_cd_span)
             .unwrap_or(span)
-            .min(poll.map_or(u32::MAX, PeerSchedule::span));
+            .min(peer_span);
+        #[cfg(test)]
+        let plan_hirq_refresh = self.hirq_refresh_plan;
+        #[cfg(not(test))]
+        let plan_hirq_refresh = true;
+        #[cfg(test)]
+        let allow_hirq_sound = self.hirq_sound_refresh;
+        #[cfg(not(test))]
+        let allow_hirq_sound = true;
+        let widened = if plan_hirq_refresh
+            && (!sound_lookahead || allow_hirq_sound)
+            && matches!(poll, None | Some(PeerSchedule::Pending { .. }))
+            && let Some(reads) = passive.as_mut().filter(|read| read.rom.is_none())
+            && reads.sequence.get_mut().abus.is_some()
+            && let Some(local) = self.onchip[0].readonly_refresh_deadline()
+            && let Some(window) = self.onchip[0].plan_hirq_refresh(self.main_clocks)
+        {
+            #[cfg(test)]
+            let allow_second = self.hirq_two_refreshes;
+            #[cfg(not(test))]
+            let allow_second = true;
+            let available = self
+                .observable_deadline_with_onchip(local)
+                .saturating_sub(1)
+                .min(fixed_span)
+                .min(peer_span)
+                .min(1024);
+            let length = window.complete - window.start;
+            let second = allow_second
+                && window.complete < window.next
+                && self.main_clocks + u64::from(available) > window.next + length;
+            let next = window.next
+                + if second {
+                    window.next - window.start
+                } else {
+                    0
+                };
+            let through = available.min((next - self.main_clocks - 1) as u32);
+            if through > span && self.main_clocks + u64::from(through) > window.complete {
+                #[cfg(test)]
+                let (overlap, wait) = (self.hirq_refresh_overlap, self.hirq_refresh_wait);
+                #[cfg(not(test))]
+                let (overlap, wait) = (true, true);
+                reads.sequence.get_mut().refresh =
+                    Some(PassiveRefresh::new(window, overlap, wait, second));
+                through
+            } else {
+                span
+            }
+        } else {
+            span
+        };
+        let span = widened;
         if span < 2 {
             return Ok(None);
         }
@@ -2333,7 +2401,7 @@ impl Bus {
                 .iter()
                 .all(|s| work_ram(Bus::physical(s.store.address)));
         let probe_stores = memory.ram_stores.len() as u64;
-        let (local, ram_plan, fills) = memory.into_parts();
+        let (mut local, ram_plan, fills) = memory.into_parts();
         debug_assert!(store.is_none() || (ram_plan.is_none() && fills.read_count() == 0));
         drop(cache);
         self.instruction_word[0].set(local.retained);
@@ -2365,6 +2433,12 @@ impl Bus {
                 sound_lookahead,
                 transfer_active,
             )
+        } else if local.reads.as_ref().is_some_and(|read| {
+            read.refresh
+                .as_ref()
+                .is_some_and(|refresh| retired_at >= refresh.start())
+        }) {
+            self.commit_hirq_refresh(local.reads.take().unwrap(), retired_at, sound_lookahead)
         } else if readonly_refresh.is_some() {
             self.advance_readonly_refresh_clocks(
                 (retired_at - self.main_clocks) as u32,

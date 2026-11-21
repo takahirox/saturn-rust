@@ -5150,3 +5150,56 @@ pass with warnings denied.
 Related to #138 and #17. Sustained real-time execution, continuous
 audio and hardware completion remain open. Private media and raw
 captures stay local.
+
+
+## Batch passive CD reads across memory refresh (2026-11-21)
+
+A cached Master SH-2 prefix can include passive CD interrupt-status reads
+across up to two refresh requests with the refresh interrupt disabled.
+The board grants each refresh through the existing arbiter. An accepted
+CD read can finish before the refresh obtains the bus, and a pending CD
+read can first acquire it at the refresh completion. Each planned window
+uses the existing device and peer deadlines and retains the next
+unplanned refresh compare as a fence. The Sound lookahead can select an
+earlier retirement and preserves the canonical Sound state at that boundary.
+
+The standard Chrome 157.0.8103.79 player warms each fresh instance through
+field 12,900 and measures six twelve-second windows on Machi Disc 1.
+All four runs draw every completed field and replay the same 157 timed
+controller events through the common endpoint. Both Workers and the
+AudioWorklet remain active. Browser errors and audio queue drops are zero.
+
+| Measure | Main to candidate, forward | Main to candidate, reverse |
+| --- | ---: | ---: |
+| Matched 3,852 fields, fields/s | 53.545 to 53.665 | 53.451 to 53.637 |
+| Four matched slow ranges, fields/s | 31.686 to 32.368 | 31.562 to 32.274 |
+| Fields 16,231–16,270, fields/s | 21.720 to 22.681 | 21.639 to 22.618 |
+| Matched p99 field time, ms | 55.3 to 52.3 | 55.1 to 52.6 |
+| Slow ranges p99 field time, ms | 112.5 to 110.9 | 112.4 to 111.4 |
+| Worklet underflow sample frames | 333,721 to 323,902 | 338,713 to 325,930 |
+
+Fields 15,341–15,420 average 1.16% and 1.10% less throughput in the
+forward and reverse orders. The sustained real-time and continuous audio
+targets remain open.
+
+Baseline Wasm SHA-256 is
+`a9b4de0d47b957714f319cee7231fd45176cf6aa98f7080ea4f3a442bc8463e0`.
+Candidate Wasm is
+`c826a2990569e7131950b32e0b1bcad52ca5f98a895f45d5c5edf76c96bd0481`.
+The standard build uses Rust 1.100.0, wasm-bindgen 0.2.129 and Binaryen 127
+with identical JavaScript bindings.
+
+The native fixture compares real physical grants and CPU retirements
+against the ordinary path in both PLLs. It includes refresh interrupts,
+queued reads, overlapping reads and concurrent local Sound. Omitting the
+second grant and advancing Sound twice at the second grant fail the
+intended checks. Restored fixtures, native/Wasm Clippy, and Chrome
+A-bus, SH-2 instruction fetch and CD runtime tests pass.
+
+Across 3,040 private replay fields, the two standard packages match at
+38 checkpoints through field 16,860. The comparison covers public SH-2
+state and clocks, all work RAM by SHA-256, and the full canonical Sound
+snapshot byte for byte. Every field contributes to the PCM and pixel
+digests.
+
+Related to #138 and #17. Private media and raw captures stay local.
