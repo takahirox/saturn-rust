@@ -9,6 +9,7 @@ pub(crate) struct CachedLoad {
     pub(crate) plan: CachedInstruction,
     pub(crate) future: u16,
     pub(super) scheduled: bool,
+    pub(super) cd_word: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -194,6 +195,7 @@ impl Bus {
                 plan,
                 future,
                 scheduled,
+                cd_word: cd && scheduled && width == 2 && address & 1 == 0,
             },
             wait != 0,
         ))

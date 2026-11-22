@@ -5744,3 +5744,57 @@ Rust 1.100.0, wasm-bindgen 0.2.129 and Binaryen 127 produce identical binding
 bytes for both packages.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+## Issue prepared CD word reads through the physical journal (2026-11-22)
+
+Prepared SH-2 loads for aligned CD words can issue their physical beat directly
+through the same bus journal used by ordinary scheduled accesses. The load
+still retains its MA timing and checks the live bus width. Arbitration, sampled
+data, little-endian conversion and user-break observation use the existing
+clocked paths. FIFO reads advance at physical completion and a CR4 read
+releases the response latch there.
+
+The original CPU fixture compares the direct path against both an ordinary
+instruction replay and the previous prepared-load path. The same fixture exercises the retained longword FIFO path. The candidate
+passes the Chrome `cdCopy`, `cdRuntime`, `abusTiming` and `sh2Load` originals.
+
+A continuous 240-field comparison through field 16,420 has six matched
+checkpoints. Both builds agree on public SH-2 state and clocks, all work RAM,
+canonical Sound bytes and rolling PCM and pixel digests. Unpaced throughput
+changes from 43.516 to 43.858 fields/s. Five of six windows improve. The
+37-field CD-intensive interval takes 1,914.6 ms on the baseline and 1,894.3 ms
+with the candidate. Normal playback is measured separately.
+
+A broader unpaced replay through field 16,860 matches all 3,200 fields
+at 80 CPU, clock, full WRAM, Sound, PCM and pixel checkpoints. Its pooled
+throughput changes from 52.506 to 52.248 fields/s (−0.49%). The same
+37-field CD interval changes from 1,881.2 to 1,884.7 ms in this run.
+
+Chrome 157.0.8103.79 runs the normal Web player with both Workers and
+AudioWorklet. Each fresh run warms through field 12,900 and measures six
+twelve-second intervals of Machi Disc 1. The four runs share 3,894 fields
+and 157 input events at the requested presentation fields. Every field is
+drawn. Browser errors and audio queue drops are zero.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Common fields, fields/s | 54.877 to 54.964 | 54.032 to 54.452 |
+| Four matched slow ranges, fields/s | 34.674 to 34.907 | 32.194 to 33.657 |
+| Common fields p95, ms | 35.5 to 35.5 | 38.3 to 37.1 |
+| Common fields p99, ms | 49.9 to 48.9 | 53.9 to 53.2 |
+| Common fields maximum, ms | 115.1 to 113.7 | 120.5 to 121.5 |
+| Common fields above 100 ms | 3 to 3 | 3 to 2 |
+| Worklet underflow output sample frames | 258,927 to 253,776 | 307,792 to 283,150 |
+
+Matched throughput rises 0.16% and 0.78%. Total audio shortages fall 1.99%
+and 8.01%. The third twelve-second interval has more shortages in both
+orders. Sustained nominal gameplay and continuous audio remain open.
+
+Baseline Wasm SHA-256 is
+`f9fc6c9b269b8e6fdc67b4c474f08162565d44a500ca380d92b9998f0b71a85f`.
+Candidate Wasm SHA-256 is
+`1a371f6c4c4b3c0ffeeb6947f25432824486f91323fee3b1df54fd89f1d24bcd`.
+Rust 1.100.0, wasm-bindgen 0.2.129 and Binaryen 127 produce identical
+JavaScript binding bytes for both packages.
+
+Related to #138 and #17. Private media and raw captures stay local.

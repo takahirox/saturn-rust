@@ -356,6 +356,19 @@ impl Journal {
                 })
     }
 
+    fn schedule_beat(&mut self, transfer: Transfer) -> Result<u32, BusError> {
+        if let Some(&(recorded, result)) = self.beats.get(self.beat_cursor) {
+            assert_eq!(
+                transfer, recorded,
+                "instruction replay changed its physical bus sequence"
+            );
+            self.beat_cursor += 1;
+            return self.resolve_result(result);
+        }
+        self.waiting = Some(transfer);
+        Err(BusError::Pending)
+    }
+
     // Normal replay records carry four-byte values or indices. Keep the large
     // device diagnostic only on the exceptional path, without changing BusError.
     fn retain_result(&mut self, result: Result<u32, BusError>) -> Result<u32, u32> {
@@ -1666,6 +1679,39 @@ impl Bus {
         let journal = self.transactions.journals[processor as usize].get_mut();
         journal.beat_cursor = 0;
         journal.operand_completion = load.scheduled.then_some(load.plan.at);
+        #[cfg(test)]
+        let direct = self.direct_cd_words;
+        #[cfg(not(test))]
+        let direct = true;
+        if direct && load.cd_word {
+            let physical = Bus::physical(address);
+            let chip = &self.onchip[processor as usize];
+            if chip.external_bus_width(physical) >= 2 {
+                // Keep MA and the real sampled result in the ordinary beat
+                // journal. CD reads can consume data or release CR4 here
+                // only through the existing physical completion.
+                let value = journal.schedule_beat(Transfer {
+                    address,
+                    width: 2,
+                    first: true,
+                    last: true,
+                    unit_end: address + 2,
+                    ..Transfer::default()
+                })? as u16;
+                let value = if chip.external_little_endian(physical) {
+                    value.swap_bytes()
+                } else {
+                    value
+                };
+                self.for_cpu(processor)
+                    .observe(address, 2, u32::from(value), false);
+                #[cfg(test)]
+                {
+                    self.direct_cd_word_reads += 1;
+                }
+                return Ok(u32::from(value));
+            }
+        }
         let memory = CpuBus {
             bus: self,
             processor,
@@ -2686,18 +2732,9 @@ impl CpuBus<'_> {
         self.scheduled_transfer(transfer)
     }
     pub(super) fn scheduled_transfer(&self, transfer: Transfer) -> Result<u32, BusError> {
-        let mut journal = self.bus.transactions.journals[self.journal_index()].borrow_mut();
-        let cursor = journal.beat_cursor;
-        if let Some(&(recorded, result)) = journal.beats.get(cursor) {
-            assert_eq!(
-                transfer, recorded,
-                "instruction replay changed its physical bus sequence"
-            );
-            journal.beat_cursor += 1;
-            return journal.resolve_result(result);
-        }
-        journal.waiting = Some(transfer);
-        Err(BusError::Pending)
+        self.bus.transactions.journals[self.journal_index()]
+            .borrow_mut()
+            .schedule_beat(transfer)
     }
 }
 
