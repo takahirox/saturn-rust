@@ -8,8 +8,8 @@ import { runInNewContext } from "node:vm";
 const source = readFileSync(new URL("../web/playback-worker.js", import.meta.url), "utf8");
 const from = source.indexOf("async function start(");
 const to = source.indexOf("\nasync function dispatch(", from);
-const budget = source.match(/^const MAX_PACING_LAG_FIELDS = .*;$/m)?.[0];
-assert(from >= 0 && to > from && budget, "production pacing loop must be exercised");
+const limits = source.match(/^const (?:MAX_PACING_LAG_FIELDS|RESET_PACING_GAP_FIELDS) = .*;$/gm);
+assert(from >= 0 && to > from && limits?.length === 2, "production pacing loop must be exercised");
 
 async function simulate({ period = 449204000 / 26874100, cost, paced = true,
   stallAt = 0, stallMs = 0, duration = 5000 }) {
@@ -35,7 +35,7 @@ async function simulate({ period = 449204000 / 26874100, cost, paced = true,
       return period;
     },
   };
-  runInNewContext(`${budget}\n${source.slice(from, to)}\nglobalThis.begin = start;`, context);
+  runInNewContext(`${limits.join('\n')}\n${source.slice(from, to)}\nglobalThis.begin = start;`, context);
   await context.begin({ paced }); await context.run;
   assert.deepEqual(messages, []);
   return { now, fields, delays, guestMs: fields * period };
@@ -50,8 +50,8 @@ test("short slow fields retain nominal cadence without requiring host headroom",
 });
 
 test("slow fields keep the bounded catch-up time after repeated overruns", async () => {
-  const result = await simulate({ period: 20, cost: (field, p) => field <= 16 ? p * 2 : p / 10 });
-  assert.equal(result.delays[0]?.after, 25);
+  const result = await simulate({ period: 20, cost: (field, p) => field <= 20 ? p * 2 : p / 10 });
+  assert.equal(result.delays[0]?.after, 38);
 });
 
 test("a long host stall rebases rather than replaying the wall-time backlog", async () => {

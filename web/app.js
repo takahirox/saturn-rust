@@ -144,7 +144,7 @@ async function pause() {
 }
 function deliverAudio({ pcm }) {
   if (!playing || !audio.node || audio.context.state !== "running") return;
-  if (!audio.paused) { audio.deliver(pcm); return; }
+  if (!audio.paused) return audio.deliverPaced(pcm);
   queuedAudio.push(pcm);
   if (queuedAudio.reduce((sum, part) => sum + (part.length >>> 1), 0) < 1024) return;
   const samples = new Int16Array(queuedAudio.reduce((sum, part) => sum + part.length, 0));

@@ -9,15 +9,37 @@ export class PlaybackClient {
     this.ready.catch(() => {});
     this.worker = new Worker(new URL("./playback-worker.js", import.meta.url), { type: "module" });
     this.worker.onerror = event => this.fail(new Error(event.message || "Playback Worker failed"));
-    const frames = [];
+    const frames = [], audio = [];
+    let audioAccepted = 0, awaitingAudio = false;
     const present = () => {
-      while (frames.length && frames[0].sequence < this.nextAudio) {
+      while (frames.length && frames[0].sequence < audioAccepted) {
         const data = frames.shift();
         if (data.epoch === this.epoch) {
           const result = this.onFrame(data);
           if (result?.then) throw new Error("Presentation callback must finish synchronously");
         }
         this.worker.postMessage({ type: "presented", epoch: data.epoch, sequence: data.sequence });
+      }
+    };
+    const acceptAudio = () => {
+      while (!awaitingAudio && !this.closed && !this.error && audio.length) {
+        const packet = audio.shift();
+        const result = packet.epoch === this.epoch ? this.onAudio(packet) : null;
+        if (result?.then) {
+          // Withhold presentation credit while the Worklet queue is full.
+          // The producer can retain at most its normal two pending fields.
+          awaitingAudio = true;
+          Promise.resolve(result).then(() => {
+            awaitingAudio = false;
+            if (this.closed || this.error) return;
+            audioAccepted++;
+            present();
+            acceptAudio();
+          }).catch(error => this.fail(error));
+          return;
+        }
+        audioAccepted++;
+        present();
       }
     };
     const receive = ({ data }) => {
@@ -28,8 +50,8 @@ export class PlaybackClient {
         if (data.type === "playback-error") { if (data.epoch === this.epoch) this.onError(new Error(data.message)); return; }
         if (data.type === "audio") {
           if (data.sequence !== this.nextAudio++ || !(data.pcm instanceof Int16Array)) throw new Error("PCM order changed");
-          if (data.epoch === this.epoch) this.onAudio(data);
-          present();
+          audio.push(data);
+          acceptAudio();
           return;
         }
         if (data.type === "frame") {
