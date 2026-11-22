@@ -5975,3 +5975,50 @@ still lacks 4.90–5.22 seconds of sound at 44.1 kHz per 72 seconds.
 Sustained nominal gameplay and continuous audio remain open.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+
+## Adjust SH-2 DMA read code generation in Wasm (2026-11-23)
+
+Rust emits `advance_dmac_block_read` as a separate function for the Wasm
+target. The helper no longer appears as a separate named function after
+Binaryen optimizes the module. The verified named build and release package
+have identical bytes after removing custom sections. DMA admission, physical
+reads and write acceptance retain the same ordering and guest clocks.
+
+With the Sound and Video Workers active, an unpaced Machi Disc 1 comparison
+matches 80 checkpoints over 3,200 fields. Each field contributes to the PCM and
+pixel digests. Every checkpoint compares both CPUs, clocks, WRAM, and canonical
+Sound transport bytes. The diagnostic throughput is 52.439 to 52.745 fields/s.
+The 37-field CD-intensive interval takes 1,858.6 to 1,846.0 ms. A separate
+profile-guided build using the three DMA functions as its training input did
+not improve overall throughput and was held.
+
+Chrome 157.0.8103.79 runs the ordinary paced player with the Sound and Video
+Workers and AudioWorklet. Each arm warms through field 12,900 and measures six
+12-second intervals. The comparisons match 4,006 fields in forward order and
+4,011 in reverse order. All 157 controller events match their requested
+presentation fields in both orders. Every emulated field is drawn. Runtime
+errors and audio queue drops are zero.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Overall playback, fields/s | 55.546 to 55.770 | 55.668 to 55.721 |
+| Matched playback, fields/s | 55.572 to 55.750 | 55.649 to 55.712 |
+| Four matched slow ranges, change | +1.68% | +0.27% |
+| Matched field gap p99, ms | 47.4 to 46.5 | 46.6 to 46.1 |
+| Matched field gap maximum, ms | 104.8 to 103.3 | 104.8 to 106.3 |
+| Worklet underflow output frames | 226,830 to 215,919 | 220,911 to 218,351 |
+
+The audio shortages decrease by about 0.25 s and 0.06 s per 72 s. The forward
+median queue delay for an admitted PCM packet is approximately 166 ms on both
+packages. The game still has audible shortages and remains below nominal
+real-time playback.
+
+Formatting, 42 selected native DMA tests, and 24 Sound rendezvous tests pass.
+The standard Wasm has SHA-256
+`f979281be5937c6499cc7c69acdd67d81575d182ec8f90b9ab39bd409b68aa57`.
+The Chrome `dmacBus`, `dmaStartup`, `cdStream`, and `videoTransactions` original
+groups pass with that Wasm. Private media and raw captures stay local.
+
+Related to #138 and #17. Sustained real-time gameplay, continuous audio, and
+broader hardware conformance remain open.
