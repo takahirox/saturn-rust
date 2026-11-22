@@ -5,7 +5,8 @@ import { VideoRenderClient } from "./video-render-client.js";
 import { SoundClient, SOUND_TRANSPORT_METHODS } from "./sound-client.js";
 
 const REFERENCE_HZ = 26874100;
-const MAX_PACING_LAG_FIELDS = 8;
+const MAX_PACING_LAG_FIELDS = 16;
+const RESET_PACING_GAP_FIELDS = 16;
 let machine, video, sound, epoch = 0, sequence = 0, playing = false, input = {};
 let lastSize = [320, 224], peakPendingFrames = 0;
 let run = Promise.resolve(), failed = false;
@@ -193,8 +194,10 @@ async function start({ paced = true } = {}) {
       const budget = period * MAX_PACING_LAG_FIELDS;
       // Keep bounded catch-up time after a sequence of expensive fields.
       // A single long gap starts a new pacing phase on return.
-      if (now - due >= budget) {
-        due = now - previousCompletion >= budget * 2 ? now : now - budget;
+      if (now > due && now - previousCompletion >= period * RESET_PACING_GAP_FIELDS) {
+        due = now;
+      } else if (now - due >= budget) {
+        due = now - budget;
       }
       previousCompletion = now;
     }

@@ -103,7 +103,7 @@ jobs:
           python3 scripts/ci-time.py chromium-install npx playwright install chromium
       - name: Validate runner failure propagation and publication gates
         if: matrix.shard == 'shared'
-        run: python3 scripts/ci-time.py runner-tests node --test scripts/ci-runner.test.mjs scripts/playback-pacing.test.mjs
+        run: python3 scripts/ci-time.py runner-tests node --test scripts/ci-runner.test.mjs scripts/playback-pacing.test.mjs scripts/playback-audio.test.mjs
       - name: Validate browser shard at /saturn-rust/
         run: python3 scripts/ci-time.py browser-${{ matrix.shard }} npm run test:browser -- --shard=${{ matrix.shard }} --report=target/browser-results/${{ matrix.shard }}.json
       - name: Retain successful shard coverage and tested-artifact digest

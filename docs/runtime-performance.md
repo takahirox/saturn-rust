@@ -5931,3 +5931,47 @@ of 44.1 kHz samples are still missing during each candidate run. Sustained
 nominal gameplay and continuous audio remain open.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+## Keep paced catch-up within the AudioWorklet queue (2026-11-22)
+
+The player can retain up to sixteen fields of catch-up after sustained
+slow frames. A single long host pause starts a new pacing phase. Each
+AudioWorklet acknowledgement reports the number of PCM frames in its ring.
+The player reserves space for sent packets until they are acknowledged.
+When a packet cannot fit, the Worklet reports available space before the
+player sends it and releases its presentation credit. The ring holds
+8,192 stereo sample frames and the playback Worker retains at most two
+pending fields. Pausing or suspending audio releases blocked playback.
+
+The browser package uses the same Wasm and bindings as the base revision.
+Only the five Web player files differ. The original Chrome
+`scspCpuMemory`, `scspPcm` and `videoTransactions` groups pass. The
+local JavaScript tests exercise both stereo channels, an unacknowledged
+packet, exact FIFO recovery after a full ring, presentation credit, and
+pause and suspend recovery. A separate Chrome fixture with controls applied
+at fixed guest fields produces identical SHA-256 digests over 40 fields
+of stereo PCM and packet lengths.
+
+Chrome 157.0.8103.79 runs the ordinary Web player with its Sound and
+Video Workers and AudioWorklet. Each run warms through field 12,900
+and measures six twelve-second intervals of Machi Disc 1. The runs
+match 3,984 fields in the forward order and 3,994 in the reverse,
+with all 157 controller events reaching their requested presentation
+fields. Every emulated field is drawn. Runtime errors and audio queue
+drops are zero.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Overall playback, fields/s | 55.279 to 55.763 | 55.405 to 55.498 |
+| Matched playback, fields/s | 55.272 to 55.730 | 55.416 to 55.489 |
+| Four matched slow ranges, change | +1.67% | −1.52% |
+| Matched field gap p99, ms | 47.7 to 46.4 | 47.1 to 47.8 |
+| Matched field gap maximum, ms | 104.4 to 103.6 | 103.7 to 104.7 |
+| Worklet underflow output sample frames | 241,713 to 215,919 | 232,687 to 230,127 |
+
+The two playback orders reduce the missing audio by 10.67% and 1.10%.
+Field gaps and individual intervals vary between runs. The candidate
+still lacks 4.90–5.22 seconds of sound at 44.1 kHz per 72 seconds.
+Sustained nominal gameplay and continuous audio remain open.
+
+Related to #138 and #17. Private media and raw captures stay local.
