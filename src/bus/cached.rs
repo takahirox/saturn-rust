@@ -79,6 +79,7 @@ struct PassiveRead<'a> {
     address: u32,
     bytes: [u8; 4],
     allowed_widths: u8,
+    grant_after: u64,
     little: bool,
     rom: Option<&'a [u8]>,
     sequence: RefCell<PassiveSequence>,
@@ -106,6 +107,13 @@ impl PassiveSequence {
     }
 }
 impl PassiveRead<'_> {
+    fn response_word(&self) -> bool {
+        matches!(
+            Bus::physical(self.address).wrapping_sub(crate::cd::REGISTERS),
+            0x1C | 0x20
+        )
+    }
+
     fn permits(&self, address: u32) -> bool {
         self.rom.map_or(address == self.address, |rom| {
             (address as usize) < rom.len()
@@ -435,7 +443,11 @@ impl Cached<'_> {
                 let start = plan.issue_at() + u64::from(plan.load_wait(plan.issue_at(), true));
                 let mut sequence = passive.sequence.borrow().clone();
                 sequence
-                    .read(address & 0x1FFF_FFFF, width as usize, start)?
+                    .read(
+                        address & 0x1FFF_FFFF,
+                        width as usize,
+                        start.max(passive.grant_after),
+                    )?
                     .max(plan.at)
             }
         };
@@ -596,18 +608,24 @@ impl Cached<'_> {
         }
     }
     fn writable(&self, address: u32, width: usize) -> bool {
+        let physical = Bus::physical(address);
         if !buffered_memory(address)
             || !address.is_multiple_of(width as u32)
             || self.store.get().is_some()
             || self.ram_stores.len() == 16
             || self.passive.as_ref().is_some_and(|p| {
                 let sequence = p.sequence.borrow();
-                p.rom.is_some() || sequence.bsc.beats != 0 || sequence.refresh.is_some()
+                p.rom.is_some()
+                    || sequence.refresh.is_some()
+                    || (sequence.bsc.beats != 0
+                        && !(sequence.bsc.beats == 1
+                            && p.response_word()
+                            && width == 2
+                            && work_ram(physical)))
             })
         {
             return false;
         }
-        let physical = Bus::physical(address);
         let ram = self.write_bus.is_some()
             && (work_ram(physical) || (self.idle_vdp1_vram && vdp1_vram(physical)));
         ram || (self.ram_stores.is_empty() && self.refill_count.get() == 0)
@@ -640,7 +658,11 @@ impl Cached<'_> {
                 let at = passive
                     .sequence
                     .borrow_mut()
-                    .read(address & 0x1FFF_FFFF, N, self.clock.get())
+                    .read(
+                        address & 0x1FFF_FFFF,
+                        N,
+                        self.clock.get().max(passive.grant_after),
+                    )
                     .ok_or(BusError::Pending)?;
                 if at > self.end.get() {
                     return Err(BusError::Pending);
@@ -1075,6 +1097,7 @@ impl Bus {
                 address: u32::MAX,
                 bytes: [0; 4],
                 allowed_widths: 1 | 2 | 4,
+                grant_after: self.main_clocks,
                 little: false,
                 rom: None,
                 sequence: RefCell::new(PassiveSequence {
@@ -1096,9 +1119,16 @@ impl Bus {
         // WRAM and passive device words remain stable inside this burst.
         // Observer deadlines and the quiet bus exclude intervening writes.
         let physical = Bus::physical(address);
-        if !(0x2000_0000..0x4000_0000).contains(&address) || !self.cached_reads_quiet() {
+        if !(0x2000_0000..0x4000_0000).contains(&address) {
             return None;
         }
+        let delay = if self.cached_reads_quiet() {
+            0
+        } else if matches!(physical.wrapping_sub(crate::cd::REGISTERS), 0x1C | 0x20) {
+            self.accepted_wram_write_remaining()?
+        } else {
+            return None;
+        };
         let ram = if (LOW_WRAM..LOW_WRAM + WRAM_SIZE as u32).contains(&physical) {
             Some((&self.low, LOW_WRAM))
         } else if (HIGH_WRAM..HIGH_WRAM + WRAM_SIZE as u32).contains(&physical) {
@@ -1106,6 +1136,12 @@ impl Bus {
         } else {
             None
         };
+        let cd_offset = physical.wrapping_sub(crate::cd::REGISTERS);
+        let cd_response = matches!(cd_offset, 0x1C | 0x20);
+        #[cfg(any(test, feature = "sound-worker"))]
+        let cd_response = cd_response
+            && !(self.sound_rendezvous.enabled && self.sound_input_address(physical, None));
+        let cd_word = cd_offset == 8 || cd_response;
         let (bytes, allowed_widths) = if let Some((ram, base)) = ram {
             let remaining = &ram[(physical - base) as usize..];
             let length = remaining.len().min(4);
@@ -1128,23 +1164,32 @@ impl Bus {
             let a = self.vdp1.read16(physical).ok()?.to_be_bytes();
             let b = self.vdp1.read16(physical + 2).ok()?.to_be_bytes();
             ([a[0], a[1], b[0], b[1]], 2 | 4)
-        } else if physical == crate::cd::REGISTERS + 8 {
-            // HIRQ reads preserve pending flags. CR4 and data ports have
-            // read side effects and remain on the ordinary bus path.
+        } else if cd_word {
+            // HIRQ, CR2 and CR3 are nonconsuming A-bus words.
+            // CD deadlines still bound the response captured here.
             let word = self.cd.peek16(physical).ok()?.to_be_bytes();
             ([word[0], word[1], 0, 0], 2)
         } else {
             return None;
         };
-        let sequence = PassiveSequence {
+        let mut sequence = PassiveSequence {
             bsc: self.onchip[0].plan_cached_reads(self.main_clocks),
-            abus: (physical == crate::cd::REGISTERS + 8).then(|| self.scu.plan_cached_abus()),
+            abus: cd_word.then(|| self.scu.plan_cached_abus()),
             refresh: None,
         };
+        let grant_after = self.main_clocks + u64::from(delay);
+        if delay != 0 {
+            // The granted physical WRAM write remains live. Wait for its
+            // final beat; only the response read uses the private timing model.
+            sequence
+                .bsc
+                .advance_with_abus(grant_after, sequence.abus.as_ref());
+        }
         Some(PassiveRead {
             address,
             bytes,
             allowed_widths,
+            grant_after,
             rom: None,
             little: self.onchip[0].external_little_endian(Bus::physical(address)),
             sequence: RefCell::new(sequence),
@@ -1607,7 +1652,7 @@ impl Bus {
         let widened = if plan_hirq_refresh
             && (!sound_lookahead || allow_hirq_sound)
             && matches!(poll, None | Some(PeerSchedule::Pending { .. }))
-            && let Some(reads) = passive.as_mut().filter(|read| read.rom.is_none())
+            && let Some(reads) = passive.as_mut().filter(|read| hirq_window::is_hirq(read))
             && reads.sequence.get_mut().abus.is_some()
             && let Some(local) = self.onchip[0].readonly_refresh_deadline()
             && let Some(window) = self.onchip[0].plan_hirq_refresh(self.main_clocks)
@@ -2640,6 +2685,7 @@ impl Bus {
                 retired_at,
                 sound_lookahead,
                 transfer_active,
+                local.reads.take().filter(|read| read.bsc.beats != 0),
             )
         } else if local.reads.as_ref().is_some_and(|read| {
             read.refresh
@@ -2747,7 +2793,7 @@ impl Bus {
             }
         }
         self.commit_cached_read_sequence(plan.before_last, None);
-        self.commit_planned_store(last.store, last.pc, retired_at, sound_advanced, false)
+        self.commit_planned_store(last.store, last.pc, retired_at, sound_advanced, false, None)
             .map(|reference| prefix + reference)
     }
     fn issue_planned_store(&mut self, store: PlannedStore, pc: u32) -> Result<(), BusError> {
@@ -2771,6 +2817,7 @@ impl Bus {
         retired_at: u64,
         sound_advanced: bool,
         transfer_active: bool,
+        earlier_read: Option<PassiveSequence>,
     ) -> Result<u64, ScuError> {
         assert!(retired_at > store.at);
         let mut reference = self.advance_isolated_clocks(
@@ -2778,6 +2825,17 @@ impl Bus {
             sound_advanced,
             transfer_active,
         )?;
+        if let Some(read) = earlier_read {
+            // The passive CD word occupied the same bus before the WRAM
+            // write. Publish its BSC and A-bus phases before accepting the
+            // store, so its wait uses the real address turnaround.
+            debug_assert!(read.refresh.is_none() && read.bsc.beats == 1 && read.abus.is_some());
+            #[cfg(test)]
+            {
+                self.cached_read_beats += read.bsc.beats;
+            }
+            self.commit_cached_read_sequence(read.bsc, read.abus.as_ref());
+        }
         let physical = Self::physical(store.address);
         let wram = [LOW_WRAM, HIGH_WRAM].into_iter().any(|base| {
             physical >= base && physical + store.width as u32 <= base + WRAM_SIZE as u32

@@ -5798,3 +5798,69 @@ Rust 1.100.0, wasm-bindgen 0.2.129 and Binaryen 127 produce identical
 JavaScript binding bytes for both packages.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+## Plan CD response words after an accepted WRAM write (2026-11-22)
+
+The cached Master can plan a nonconsuming CR2 or CR3 word behind the final
+physical beat of its already accepted WRAM write. The planned read starts at
+the later of its normal MA boundary and the existing grant's end. The WRAM
+beat completes on the real arbiter. The cached span keeps the original
+peer, interrupt, CD, Sound, refresh and raster deadlines. The planner can
+retire the one following WRAM word store in the same span. It publishes
+the response read's BSC and A-bus protocol state before the normal store
+acceptance. CR4 still releases the response latch at physical completion.
+
+Original native tests exercise both PLL settings and the actual selected
+paths, including a CD response while the Master owns the final WRAM phase.
+The literal single-instruction comparison checks CPU and readiness state,
+clocks, WRAM, active physical/internal transfers, buffered contents, and
+BSC/A-bus protocol. All 60 tests in the cached-execution group pass. Native
+all-target/all-feature and Wasm all-feature Clippy pass with warnings denied.
+The standard browser fixtures `cdRuntime`, `cdReports`, `abusTiming`,
+`sh2Store`, and `refreshArbitration` pass.
+
+The standard Chrome build uses Rust 1.100.0, wasm-bindgen 0.2.129 and Binaryen
+127. Stock Wasm SHA-256 is
+`1a371f6c4c4b3c0ffeeb6947f25432824486f91323fee3b1df54fd89f1d24bcd`.
+Candidate Wasm SHA-256 is
+`97da6c95937afe5368538de4960c373fb5e07289d86945bf84799ff17ca3ec75`.
+The browser binding and Worker files match stock.
+
+An exact local Chrome comparison on the authorized game and one controller
+timeline matches all 520 fields in thirteen checkpoints. It compares both
+SH-2 states and clocks, SHA-256 for all WRAM, rolling video and PCM digests,
+and the full canonical Sound snapshot size and checksum. Unpaced diagnostic
+throughput is **45.9084 → 46.3037 fields/s (+0.86%)**, with nine of thirteen
+windows improving. The dense CD interval (37 fields) takes
+**1883.6 → 1849.4 ms**. A second correctness-only fixed-field run matches a
+frozen exact stock reference in all 80 checkpoints over 3,200 fields, including
+the three acute DMA fields, dense CD interval and subsequent story. The first
+59 of those stock checkpoints were also reproduced independently from the
+same stock package. These diagnostic intervals use the standard Sound and
+Video Workers and drain generated PCM directly.
+
+Chrome 157.0.8103.79 runs the normal Web player with its Sound and Video
+Workers and AudioWorklet. Each fresh run warms through field 12,900, then
+measures six twelve-second intervals of Machi Disc 1. The four runs share
+3,966 compared fields and all 157 controller inputs at their requested
+presentation fields. Every field is drawn. Runtime errors and Worklet queue
+drops are zero.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Overall playback, fields/s | 55.267 to 55.499 | 55.014 to 55.347 |
+| Common fields, fields/s | 55.242 to 55.451 | 55.030 to 55.319 |
+| Four matched slow ranges, fields/s | 35.372 to 36.305 | 34.741 to 35.751 |
+| Common fields p95, ms | 34.7 to 34.2 | 35.6 to 34.7 |
+| Common fields p99, ms | 47.0 to 46.0 | 48.5 to 47.0 |
+| Common fields maximum, ms | 111.9 to 113.8 | 115.6 to 115.2 |
+| Common fields above 100 ms | 2 to 2 | 3 to 3 |
+| Worklet underflow output sample frames | 241,872 to 229,938 | 253,745 to 237,423 |
+
+Matched throughput rises 0.38% and 0.52%. Audio shortages fall 4.93%
+and 6.43%. Shortages increase in the third twelve-second interval in
+both orders. The candidate still lacks 5.21–5.38 seconds of audio sample
+frames at 44.1 kHz over each 72-second run. Sustained nominal gameplay
+and continuous audio remain open.
+
+Related to #138 and #17. Private media and raw captures stay local.

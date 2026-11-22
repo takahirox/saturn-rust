@@ -1346,6 +1346,21 @@ impl Bus {
     pub(super) fn cached_transfer_active(&self) -> bool {
         self.transactions.active.is_some()
     }
+    pub(super) fn accepted_wram_write_remaining(&self) -> Option<u32> {
+        let active = self.transactions.active.as_ref()?;
+        let write = self.transactions.writes[0].as_ref()?;
+        let address = Self::physical(active.transfer.address);
+        (self.external_owner.get() == Some(Processor::Master)
+            && self.onchip[1].cached_batch_allowed()
+            && self.transactions.writes[1].is_none()
+            && active.owner == Owner::WriteBuffer(Processor::Master, false)
+            && active.transfer.last
+            && write.beats.len() == 1
+            && [LOW_WRAM, HIGH_WRAM]
+                .into_iter()
+                .any(|base| (base..base + WRAM_SIZE as u32).contains(&address)))
+        .then_some(active.remaining)
+    }
     pub(super) fn cached_reads_quiet(&self) -> bool {
         self.cached_readonly_bus_quiet() && self.external_owner.get() == Some(Processor::Master)
     }
@@ -1549,6 +1564,30 @@ impl Bus {
             .zip(&other.transactions.journals)
             .all(|(a, b)| *a.borrow() == *b.borrow())
     }
+    #[cfg(test)]
+    pub(crate) fn same_active_cpu_transfers(&self, other: &Self) -> bool {
+        let a = &self.transactions;
+        let b = &other.transactions;
+        a.active == b.active
+            && a.internal == b.internal
+            && a.cpu_group == b.cpu_group
+            && a.writes.iter().zip(&b.writes).all(|(x, y)| match (x, y) {
+                (Some(x), Some(y)) => {
+                    x.dmac == y.dmac && x.beats == y.beats && x.context == y.context
+                }
+                (None, None) => true,
+                _ => false,
+            })
+            && a.journals.iter().zip(&b.journals).all(|(x, y)| {
+                let x = x.borrow();
+                let y = y.borrow();
+                x.waiting == y.waiting
+                    && x.pending_write == y.pending_write
+                    && x.pipeline_wait == y.pipeline_wait
+                    && x.completed == y.completed
+            })
+    }
+
     pub(crate) fn finish_cpu_transaction(&mut self, processor: Processor) {
         let journal = self.transactions.journals[processor as usize].get_mut();
         journal.operations.clear();
