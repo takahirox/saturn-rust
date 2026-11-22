@@ -413,6 +413,20 @@ pub struct Bus {
     pub(crate) direct_cd_words: bool,
     #[cfg(test)]
     pub(crate) direct_cd_word_reads: u64,
+    #[cfg(test)]
+    dmac_read_tail: bool,
+    #[cfg(test)]
+    dmac_read_tails: u64,
+    #[cfg(test)]
+    dmac_block_read_words: u64,
+    #[cfg(test)]
+    dmac_block_write_words: u64,
+    #[cfg(test)]
+    dmac_queued_reads_reused: u64,
+    #[cfg(test)]
+    dmac_terminal_blocks: u64,
+    #[cfg(test)]
+    dmac_terminal_reads: u64,
     pub sound: Sound,
     pub cd: crate::cd::CdBlock,
     smpc: Smpc,
@@ -577,6 +591,20 @@ impl Default for Bus {
             direct_cd_words: true,
             #[cfg(test)]
             direct_cd_word_reads: 0,
+            #[cfg(test)]
+            dmac_read_tail: true,
+            #[cfg(test)]
+            dmac_read_tails: 0,
+            #[cfg(test)]
+            dmac_block_read_words: 0,
+            #[cfg(test)]
+            dmac_block_write_words: 0,
+            #[cfg(test)]
+            dmac_queued_reads_reused: 0,
+            #[cfg(test)]
+            dmac_terminal_blocks: 0,
+            #[cfg(test)]
+            dmac_terminal_reads: 0,
             sound: Sound::default(),
             cd: crate::cd::CdBlock::default(),
             smpc: Smpc::default(),
