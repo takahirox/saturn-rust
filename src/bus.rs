@@ -409,6 +409,10 @@ pub struct Bus {
     high: Vec<u8>,
     pub(crate) vdp2: Vdp2,
     pub(crate) vdp1: Vdp1,
+    #[cfg(test)]
+    pub(crate) direct_cd_words: bool,
+    #[cfg(test)]
+    pub(crate) direct_cd_word_reads: u64,
     pub sound: Sound,
     pub cd: crate::cd::CdBlock,
     smpc: Smpc,
@@ -569,6 +573,10 @@ impl Default for Bus {
             high: vec![0; WRAM_SIZE],
             vdp2: Vdp2::clocked(),
             vdp1: Vdp1::default(),
+            #[cfg(test)]
+            direct_cd_words: true,
+            #[cfg(test)]
+            direct_cd_word_reads: 0,
             sound: Sound::default(),
             cd: crate::cd::CdBlock::default(),
             smpc: Smpc::default(),

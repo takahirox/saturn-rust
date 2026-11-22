@@ -196,25 +196,32 @@ mod scheduling_tests {
                 machine
             };
             let mut reference = make();
+            let mut prepared = make();
             let mut optimized = make();
+            prepared.bus.prepared_cd_load = true;
+            prepared.bus.direct_cd_words = false;
             optimized.bus.prepared_cd_load = true;
             for _ in 0..128 {
-                reference.step_hardware_boundary_with_idle(true).unwrap();
                 optimized.step_hardware_boundary_with_idle(true).unwrap();
-                assert_eq!(optimized.cpu, reference.cpu);
-                assert_eq!(optimized.slave, reference.slave);
-                assert_eq!(optimized.cpu_ready, reference.cpu_ready);
-                assert_eq!(optimized.clocks, reference.clocks);
-                assert_eq!(optimized.bus.main_clocks, reference.bus.main_clocks);
-                assert_eq!(
-                    optimized.bus.cd.peek16(cd::DATA),
-                    reference.bus.cd.peek16(cd::DATA)
-                );
+                for control in [&mut reference, &mut prepared] {
+                    control.step_hardware_boundary_with_idle(true).unwrap();
+                    assert_eq!(optimized.cpu, control.cpu);
+                    assert_eq!(optimized.slave, control.slave);
+                    assert_eq!(optimized.cpu_ready, control.cpu_ready);
+                    assert_eq!(optimized.clocks, control.clocks);
+                    assert_eq!(optimized.bus.main_clocks, control.bus.main_clocks);
+                    assert_eq!(
+                        optimized.bus.cd.peek16(cd::DATA),
+                        control.bus.cd.peek16(cd::DATA)
+                    );
+                }
                 if optimized.cpu.state().instructions != 0 {
                     break;
                 }
             }
             assert_eq!(optimized.bus.prepared_cd_loads, 1);
+            assert_eq!(optimized.bus.direct_cd_word_reads, u64::from(op == 0x60F1));
+            assert_eq!(prepared.bus.direct_cd_word_reads, 0);
             assert_eq!(optimized.cpu.state().instructions, 1);
             assert_eq!(optimized.cpu.state().r[0], expected);
             assert_eq!(optimized.bus.cd.peek16(cd::DATA), Ok(next));
