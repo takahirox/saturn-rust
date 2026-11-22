@@ -1749,8 +1749,9 @@ impl Bus {
             }
         }
     }
-    /// True if no allocator ran. Synchronizing the Sound RAM request and
-    /// reporting rendezvous bookkeeping do not change the live IRQ inputs.
+    /// True if the allocation is settled until another operation or clock
+    /// and no live IRQ input changed. With the external bus already owned, a
+    /// local CPU grant can settle the allocator without changing an IRQ.
     pub(crate) fn grant_bus_transaction(&mut self) -> bool {
         // Drop canceled DRAM work before allocating a replacement bus beat.
         // A retained manual-reset drain is still active and keeps its grant.
@@ -1796,7 +1797,7 @@ impl Bus {
         }
         #[cfg(any(test, feature = "sound-worker"))]
         let had_active = self.transactions.active.is_some();
-        self.allocate_bus_transaction();
+        let settled = self.allocate_bus_transaction();
         #[cfg(any(test, feature = "sound-worker"))]
         if !had_active && self.transactions.active.is_some() {
             self.sound_rendezvous.next_id += 1;
@@ -1805,7 +1806,7 @@ impl Bus {
         self.sound.main_ram_request(self.sound_ram_request());
         #[cfg(any(test, feature = "sound-worker"))]
         self.observe_sound_rendezvous();
-        false
+        settled
     }
     // A live external DMA beat already owns the shared bus. With no
     // contender on either local peripheral bus, the allocator has no grant
@@ -1899,7 +1900,8 @@ impl Bus {
             }
         }
     }
-    fn allocate_bus_transaction(&mut self) {
+    fn allocate_bus_transaction(&mut self) -> bool {
+        let mut prepared_local_dma = false;
         for processor in [Processor::Master, Processor::Slave] {
             let i = processor as usize;
             if self.onchip[i].reset_active()
@@ -1927,6 +1929,7 @@ impl Bus {
                 // address while another master owns the external bus.
                 continue;
             }
+            prepared_local_dma = true;
             self.prepare_dmac(processor);
             if self.accept_buffered_write(processor, true) {
                 continue;
@@ -1947,20 +1950,23 @@ impl Bus {
         }
         self.grant_cpu_internal();
         if self.transactions.active.is_some() {
-            return;
+            // Local CPU allocation either leaves each port unchanged or
+            // occupies it. Peripheral reads/writes complete only after time
+            // advances. DMA preparation can change request and IRQ state.
+            return !prepared_local_dma;
         }
         if let Some(processor) = self.transactions.reset_owner {
             if !self.external_monitor_waits_for_internal() {
                 self.grant_reset_drain(processor);
             }
-            return;
+            return false;
         }
         if let Some(processor) = self.transactions.cpu_group {
             if self.transactions.writes[processor as usize].is_some() {
                 if !self.external_monitor_waits_for_internal() {
                     self.grant_buffered_write(processor);
                 }
-                return;
+                return false;
             }
             // The interpreter resumes the same operand to queue the next
             // beat. An empty queue here is not a bus release.
@@ -1973,13 +1979,13 @@ impl Bus {
                 self.grant_cpu_beat(processor, transfer, false);
             }
             self.grant_cpu_internal();
-            return;
+            return false;
         }
         // A narrow operand already accepted by the BSC finishes before
         // self-refresh can inhibit a new external request (§§7.5.7/7.10).
         if self.onchip[0].inhibits_external_bus() {
             self.grant_cpu_internal();
-            return;
+            return false;
         }
         if self.transactions.lock.is_none()
             && self.transactions.dmac_owner.is_none()
@@ -2006,21 +2012,21 @@ impl Bus {
                 remaining,
             });
             self.grant_cpu_internal();
-            return;
+            return false;
         }
         if self.external_monitor_waits_for_internal() {
             // Do not pass the external bus to a new master until an
             // already accepted peripheral cycle has released its monitor bus.
             // Refresh is BSC-local and does not drive an external data cycle.
             self.grant_cpu_internal();
-            return;
+            return false;
         }
         if self.transactions.lock.is_none()
             && self.transactions.dmac_owner.is_some()
             && self.grant_dmac()
         {
             self.grant_cpu_internal();
-            return;
+            return false;
         }
         if self.transactions.lock.is_none()
             && self.scu.dma_pending()
@@ -2098,11 +2104,11 @@ impl Bus {
                 remaining,
             });
             self.grant_cpu_internal();
-            return;
+            return false;
         }
         if self.transactions.lock.is_none() && !self.transactions.dmac_yield && self.grant_dmac() {
             self.grant_cpu_internal();
-            return;
+            return false;
         }
         self.grant_cpu_internal();
         // Round-robin at beat boundaries; TAS is the only retained CPU lock.
@@ -2119,7 +2125,7 @@ impl Bus {
                     .is_none_or(|owner| owner == processor)
             {
                 self.grant_reset_drain(processor);
-                return;
+                return false;
             }
             if self.onchip[processor as usize].reset_active() {
                 continue;
@@ -2130,7 +2136,7 @@ impl Bus {
                 && self.grant_buffered_write(processor)
             {
                 self.transactions.dmac_yield = false;
-                return;
+                return false;
             }
             if self.transactions.internal[processor as usize].is_some()
                 || self.transactions.writes[processor as usize].is_some()
@@ -2167,7 +2173,7 @@ impl Bus {
                     remaining: 2,
                 });
                 self.transactions.previous = Some(processor);
-                return;
+                return false;
             }
             let Some(transfer) = self.transactions.journals[processor as usize]
                 .borrow()
@@ -2184,7 +2190,7 @@ impl Bus {
             self.grant_cpu_beat(processor, transfer, false);
             self.transactions.dmac_yield = false;
             self.transactions.previous = Some(processor);
-            return;
+            return false;
         }
         // Sleeping/cache-only CPUs need no external cycle. Cycle-steal must
         // continue in that case, without introducing a fabricated CPU access.
@@ -2192,6 +2198,7 @@ impl Bus {
             self.transactions.dmac_yield = false;
             self.grant_dmac();
         }
+        false
     }
     fn cpu_ab_write_pending(&self) -> bool {
         // ST-210 §3 item12. Inspect both SH-2 queues at this arbitration
@@ -3860,6 +3867,85 @@ mod private_storage_tests {
 mod settled_dmac_grant_tests {
     use super::*;
     use crate::onchip::DMAC;
+
+    fn start_external_dma(fast: bool) -> Bus {
+        let mut bus = Bus::default();
+        if fast {
+            bus.change_system_clock(true);
+        }
+        bus.set_slave_enabled(true);
+        let source = HIGH_WRAM + 0x100;
+        bus.write16(source, 0x1234).unwrap();
+        for (offset, value) in [(0, source), (4, VRAM), (8, 1), (12, 0x605), (0x30, 1)] {
+            bus.onchip[0].write32(DMAC + offset, value).unwrap();
+        }
+        assert!(!bus.grant_bus_transaction());
+        assert!(matches!(bus.transactions.active.as_ref(),
+            Some(active) if active.owner == Owner::Dmac(Processor::Master)));
+        bus
+    }
+
+    #[test]
+    fn existing_external_grant_settles_after_real_local_cpu_allocation() {
+        for fast in [false, true] {
+            let peer = Processor::Slave;
+            let (mut candidate, mut reference) =
+                (start_external_dma(fast), start_external_dma(fast));
+            reference.boundary_grant_reuse = false;
+            for bus in [&mut candidate, &mut reference] {
+                bus.onchip[1].capture_strobe();
+                assert_eq!(
+                    bus.replay_cpu(peer).read8(crate::onchip::FRT + 1),
+                    Err(BusError::Pending)
+                );
+                assert!(bus.transactions.internal[1].is_none());
+            }
+            assert!(!candidate.reuse_dmac_boundary_grant());
+            let settled = candidate.grant_bus_transaction();
+            assert!(
+                settled,
+                "the completed local grant must settle this arbitration"
+            );
+            assert!(matches!(candidate.transactions.internal[1].as_ref(),
+                Some(active) if active.owner == Owner::Cpu(peer)));
+            reference.grant_bus_transaction();
+            for n in 0..32 {
+                assert_eq!(
+                    candidate.advance_cpu_clocks_after_irq_sample(1, false, n == 0 && settled),
+                    reference.advance_cpu_clocks(1)
+                );
+                assert!(candidate.same_cpu_journals(&reference));
+                assert!(candidate.transactions.active == reference.transactions.active);
+                assert!(candidate.transactions.internal == reference.transactions.internal);
+                assert_eq!(candidate.irq_observed, reference.irq_observed);
+                assert_eq!(candidate.main_clocks, reference.main_clocks);
+                candidate.grant_bus_transaction();
+                reference.grant_bus_transaction();
+            }
+            for bus in [&mut candidate, &mut reference] {
+                assert_eq!(bus.replay_cpu(peer).read8(crate::onchip::FRT + 1), Ok(0x80));
+                assert_eq!(bus.read16(VRAM), Ok(0x1234));
+            }
+        }
+    }
+
+    #[test]
+    fn a_local_dma_preparation_does_not_settle_arbitration() {
+        let mut bus = start_external_dma(false);
+        bus.onchip[1].write8(0xFFFF_FE00, 0x51).unwrap();
+        for (offset, value) in [
+            (0, 0xFFFF_FE00),
+            (4, 0xFFFF_FE01),
+            (8, 1),
+            (12, 0x205),
+            (0x30, 1),
+        ] {
+            bus.onchip[1].write32(DMAC + offset, value).unwrap();
+        }
+        assert!(!bus.grant_bus_transaction());
+        assert!(matches!(bus.transactions.internal[1].as_ref(),
+            Some(active) if active.owner == Owner::Dmac(Processor::Slave)));
+    }
 
     #[test]
     fn settled_grant_retains_video_dma_and_real_peer_peripheral_arbitration() {

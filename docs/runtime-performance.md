@@ -5689,3 +5689,58 @@ The scoped PR source rebuild matches both measured package files. Native and
 Wasm Clippy pass with warnings denied.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+## Reuse a settled bus grant after local CPU allocation (2026-11-22)
+
+When an external transfer already owns the bus, the allocator can still grant
+an independent SH-2 peripheral operation or write-buffer acceptance. Once that
+local allocation has run, another pass at the same clock will see the ports
+unchanged or occupied. The scheduler can reuse that result through the first
+unadvanced clock boundary. A pass that prepared a local DMA request keeps the
+ordinary arbitration and interrupt sampling path. Actual bus operations,
+peripheral completion and Sound request synchronization still take place.
+
+The original native witness queues a real peer FTCSR read during a Master
+SH-2 DMA transfer in both PLL modes. The compared runs match journals, active
+owners, interrupt observations, clocks and the transferred word. A second
+original requires an unsettled result when a real local SCI DMA is prepared.
+An intentionally omitted DMA preparation guard fails that original witness.
+Native and Wasm Clippy pass with warnings denied. The scoped PR source
+rebuild matches the measured package bytes.
+
+A separate continuous 1,600-field replay through field 16,460 matches all 40
+checkpoints, including public SH-2 state and clocks, full WRAM, canonical Sound
+bytes, and rolling PCM and pixel digests. Unpaced throughput changes from
+49.670 to 50.259 fields/s (+1.19%), with 34 of 40 windows faster. The measured
+producer intervals at fields 14,918 and 15,969 change from 120.6 to 119.2 ms and
+from 117.5 to 116.8 ms.
+
+The standard candidate passes the original Chrome SH-2 DMAC, DMA startup,
+SH-2 pipeline and video transaction checks. The normal production player uses
+Sound and Video Workers and AudioWorklet. Each fresh Chrome 157.0.8103.79 run
+warms up through field 12,900 and measures six twelve-second intervals.
+Both orders share 3,956 fields and all 157 inputs at their requested
+presentation fields. Every field is drawn. Browser errors and audio queue
+drops are zero.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Common fields, fields/s | 54.910 to 55.154 | 54.883 to 55.164 |
+| Four matched slow ranges, fields/s | 34.387 to 35.243 | 34.452 to 35.317 |
+| Common fields p95, ms | 35.2 to 34.6 | 35.1 to 34.6 |
+| Common fields p99, ms | 49.5 to 48.5 | 49.5 to 48.5 |
+| Common fields maximum, ms | 116.2 to 114.8 | 119.0 to 116.6 |
+| Common fields above 100 ms | 9 to 3 | 10 to 3 |
+| Worklet underflow output sample frames | 261,231 to 247,089 | 262,736 to 246,383 |
+
+Matched throughput rises 0.45% and 0.51%. Worklet shortages fall 5.41% and
+6.22%. Sustained nominal 60 fields/s and continuous audio remain open.
+
+Baseline Wasm SHA-256 is
+`033b64e541da01ce62521ec0040299493b538ebfb84f1237678a64361679b866`.
+Candidate Wasm SHA-256 is
+`f9fc6c9b269b8e6fdc67b4c474f08162565d44a500ca380d92b9998f0b71a85f`.
+Rust 1.100.0, wasm-bindgen 0.2.129 and Binaryen 127 produce identical binding
+bytes for both packages.
+
+Related to #138 and #17. Private media and raw captures stay local.
