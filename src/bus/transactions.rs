@@ -2490,6 +2490,9 @@ impl Bus {
         true
     }
 
+    // Keep the 16-byte DMA continuation separate from the shared physical
+    // completion path in the Web build.
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
     fn advance_dmac_block_read(&mut self, processor: Processor, low: Transfer) -> Option<()> {
         let i = processor as usize;
         if low.width != 2
