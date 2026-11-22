@@ -5977,11 +5977,13 @@ Sustained nominal gameplay and continuous audio remain open.
 Related to #138 and #17. Private media and raw captures stay local.
 
 
-## Keep the SH-2 DMA read continuation separate in Wasm (2026-11-23)
+## Adjust SH-2 DMA read code generation in Wasm (2026-11-23)
 
-The Web build keeps `advance_dmac_block_read` out of the shared physical
-completion function. The compiler attribute is Wasm-specific. DMA admission,
-physical reads and write acceptance retain the same ordering and guest clocks.
+Rust emits `advance_dmac_block_read` as a separate function for the Wasm
+target. The helper no longer appears as a separate named function after
+Binaryen optimizes the module. The verified named build and release package
+have identical bytes after removing custom sections. DMA admission, physical
+reads and write acceptance retain the same ordering and guest clocks.
 
 With the Sound and Video Workers active, an unpaced Machi Disc 1 comparison
 matches 80 checkpoints over 3,200 fields. Each field contributes to the PCM and

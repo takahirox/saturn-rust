@@ -2490,8 +2490,8 @@ impl Bus {
         true
     }
 
-    // Keep the 16-byte DMA continuation separate from the shared physical
-    // completion path in the Web build.
+    // Keep the 16-byte DMA continuation separate during Rust's Wasm code
+    // generation. The Web build then applies the standard Binaryen optimizer.
     #[cfg_attr(target_arch = "wasm32", inline(never))]
     fn advance_dmac_block_read(&mut self, processor: Processor, low: Transfer) -> Option<()> {
         let i = processor as usize;
