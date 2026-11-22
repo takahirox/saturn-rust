@@ -3,6 +3,209 @@ use super::*;
 use crate::{Boot, Machine, MachineError};
 
 #[test]
+fn passive_cr2_and_cr3_keep_physical_cd_response_timing() {
+    for fast in [false, true] {
+        for offset in [0x1C, 0x20] {
+            let mut bytes = rom(include_str!("../../examples/runtime-poll.hex"));
+            let address = 0x2589_0000u32 + offset;
+            bytes[0x224..0x228].copy_from_slice(&address.to_be_bytes());
+            for (i, opcode) in [0x6041u16, 0x7801, 0xAFFC, 9].into_iter().enumerate() {
+                bytes[0x20C + i * 2..0x20E + i * 2].copy_from_slice(&opcode.to_be_bytes());
+            }
+            let (mut actual, mut literal) = pair(&bytes);
+            for m in [&mut actual, &mut literal] {
+                m.bus.change_system_clock(fast);
+                m.bus.onchip[0].write32(0xFFFFFFE4, 0xA55A00FC).unwrap();
+                m.bus.scu.write32(SCU + 0xB4, 0).unwrap();
+                m.bus.scu.write32(SCU + 0xB8, 0x1F).unwrap();
+                m.bus.cd.write16(crate::cd::REGISTERS + 12, 0x1357).unwrap();
+            }
+            let mut response_retired = 0;
+            while actual.cpu_state().instructions < 256 {
+                let response = actual.bus.passive_read(&actual.cpu).is_some_and(|value| {
+                    value.address == address && value.sequence.borrow().abus.is_some()
+                });
+                let limit = (256 - actual.cpu_state().instructions).min(64) as u32;
+                let count = actual.try_cached_batch(limit).unwrap();
+                if response {
+                    response_retired += count;
+                }
+                if count == 0 {
+                    actual.step_inner_with_idle(true).unwrap();
+                }
+                while literal.cpu_state().instructions < actual.cpu_state().instructions {
+                    literal.step().unwrap();
+                }
+                assert_eq!(actual.cpu, literal.cpu);
+                assert_eq!(actual.clocks(), literal.clocks());
+                actual.bus.onchip[0].assert_cached_read_bus_matches(&literal.bus.onchip[0]);
+                assert_eq!(
+                    actual.bus.scu.plan_cached_abus(),
+                    literal.bus.scu.plan_cached_abus()
+                );
+            }
+            assert!(
+                response_retired > 0,
+                "response word was not admitted at {address:#X}"
+            );
+            for unsupported in [0x2589_000C, 0x2589_0018, 0x2589_0024] {
+                assert!(actual.bus.passive_read_at(unsupported).is_none());
+            }
+        }
+    }
+}
+
+#[test]
+fn passive_cd_response_word_and_wram_store_publish_in_physical_order() {
+    for fast in [false, true] {
+        for offset in [0x1C, 0x20] {
+            let mut bytes = rom(include_str!("../../examples/runtime-poll.hex"));
+            let response = 0x2589_0000u32 + offset;
+            let destination = 0x2600_0400u32;
+            // Leave enough ordinary cached instructions after the store
+            // for its physical beat to finish before the next response read.
+            let mut program = vec![
+                0xD10Fu16, 0xE001, 0x2100, 0xD40F, 0xD50F, 0xE101, 0x6041, 0x2501,
+            ];
+            program.extend([9; 12]);
+            program.extend([0xAFF0, 9]);
+            for (i, opcode) in program.into_iter().enumerate() {
+                bytes[0x200 + i * 2..0x202 + i * 2].copy_from_slice(&opcode.to_be_bytes());
+            }
+            bytes[0x240..0x244].copy_from_slice(&0xFFFF_FE92u32.to_be_bytes());
+            bytes[0x244..0x248].copy_from_slice(&response.to_be_bytes());
+            bytes[0x248..0x24C].copy_from_slice(&destination.to_be_bytes());
+            let (mut actual, mut literal) = pair(&bytes);
+            for m in [&mut actual, &mut literal] {
+                m.bus.change_system_clock(fast);
+                m.bus.onchip[0].write32(0xFFFFFFE4, 0xA55A00FC).unwrap();
+                m.bus.onchip[0].write32(0xFFFFFFE8, 0xA55A0000).unwrap();
+                m.bus.scu.write32(SCU + 0xB4, 0).unwrap();
+                m.bus.scu.write32(SCU + 0xB8, 0x1F).unwrap();
+                m.bus.cd.write16(crate::cd::REGISTERS + 12, 0).unwrap();
+                m.bus.write16(HIGH_WRAM + 0x400, 0xAA55).unwrap();
+            }
+            let mut combined = 0;
+            while actual.cpu_state().instructions < 256 {
+                let reads = actual.bus.cached_read_beats;
+                let stores = actual.bus.cached_stores;
+                let limit = (256 - actual.cpu_state().instructions).min(64) as u32;
+                let count = actual.try_cached_batch(limit).unwrap();
+                if actual.bus.cached_read_beats > reads && actual.bus.cached_stores > stores {
+                    assert!(count >= 2);
+                    combined += 1;
+                }
+                if count == 0 {
+                    actual.step_inner_with_idle(true).unwrap();
+                }
+                while literal.cpu_state().instructions < actual.cpu_state().instructions {
+                    literal.step().unwrap();
+                }
+                assert_eq!(actual.cpu, literal.cpu);
+                assert_eq!(actual.cpu_ready, literal.cpu_ready);
+                assert_eq!(actual.clocks(), literal.clocks());
+                assert_eq!(actual.bus.high, literal.bus.high);
+                assert!(
+                    actual.bus.same_active_cpu_transfers(&literal.bus),
+                    "physical transfers differ at {} instructions, {combined} combinations",
+                    actual.cpu_state().instructions
+                );
+                actual.bus.onchip[0].assert_cached_read_bus_matches(&literal.bus.onchip[0]);
+                assert_eq!(
+                    actual.bus.scu.plan_cached_abus(),
+                    literal.bus.scu.plan_cached_abus()
+                );
+            }
+            assert!(
+                combined > 0,
+                "no combination: PLL={fast}, register={offset:X}, cached={}, reads={}, stores={}, r4={:X}, r5={:X}",
+                actual.cached_retired,
+                actual.bus.cached_read_beats,
+                actual.bus.cached_stores,
+                actual.cpu_state().r[4],
+                actual.cpu_state().r[5]
+            );
+            assert_ne!(actual.bus.read16(HIGH_WRAM + 0x400), Ok(0xAA55));
+        }
+    }
+}
+
+#[test]
+fn passive_cd_response_waits_behind_real_active_wram_write() {
+    for fast in [false, true] {
+        for offset in [0x1C, 0x20] {
+            let mut bytes = rom(include_str!("../../examples/runtime-poll.hex"));
+            let response = 0x2589_0000u32 + offset;
+            let destination = 0x2600_0400u32;
+            let program = [
+                0xD10Fu16, 0xE001, 0x2100, 0xD40F, 0xD50F, 0xE101, 0x6041, 0x2501, 0xAFFC, 9,
+            ];
+            for (i, opcode) in program.into_iter().enumerate() {
+                bytes[0x200 + i * 2..0x202 + i * 2].copy_from_slice(&opcode.to_be_bytes());
+            }
+            bytes[0x240..0x244].copy_from_slice(&0xFFFF_FE92u32.to_be_bytes());
+            bytes[0x244..0x248].copy_from_slice(&response.to_be_bytes());
+            bytes[0x248..0x24C].copy_from_slice(&destination.to_be_bytes());
+            let (mut actual, mut literal) = pair(&bytes);
+            for m in [&mut actual, &mut literal] {
+                m.bus.change_system_clock(fast);
+                m.bus.onchip[0].write32(0xFFFFFFE4, 0xA55A00FC).unwrap();
+                m.bus.onchip[0].write32(0xFFFFFFE8, 0xA55AAAC0).unwrap();
+                m.bus.scu.write32(SCU + 0xB4, 0).unwrap();
+                m.bus.scu.write32(SCU + 0xB8, 0x1F).unwrap();
+                m.bus.cd.write16(crate::cd::REGISTERS + 12, 0).unwrap();
+                m.bus.write16(HIGH_WRAM + 0x400, 0xAA55).unwrap();
+            }
+            let mut combined = 0;
+            while actual.cpu_state().instructions < 256 {
+                let reads = actual.bus.cached_read_beats;
+                let limit = (256 - actual.cpu_state().instructions).min(64) as u32;
+                let active = actual.bus.accepted_wram_write_remaining().is_some();
+                let operand = actual
+                    .cpu
+                    .cached_load_address(actual.cpu.decoded_opcode().unwrap_or(0))
+                    == Some(response);
+                let count = actual.try_cached_batch(limit).unwrap();
+                if active && operand && actual.bus.cached_read_beats > reads {
+                    assert!(count >= 1);
+                    combined += 1;
+                }
+                if count == 0 {
+                    actual.step_inner_with_idle(true).unwrap();
+                }
+                while literal.cpu_state().instructions < actual.cpu_state().instructions {
+                    literal.step().unwrap();
+                }
+                assert_eq!(actual.cpu, literal.cpu);
+                assert_eq!(actual.cpu_ready, literal.cpu_ready);
+                assert_eq!(actual.clocks(), literal.clocks());
+                assert_eq!(actual.bus.high, literal.bus.high);
+                assert!(
+                    actual.bus.same_active_cpu_transfers(&literal.bus),
+                    "physical transfers differ at {} instructions, {combined} combinations",
+                    actual.cpu_state().instructions
+                );
+                actual.bus.onchip[0].assert_cached_read_bus_matches(&literal.bus.onchip[0]);
+                assert_eq!(
+                    actual.bus.scu.plan_cached_abus(),
+                    literal.bus.scu.plan_cached_abus()
+                );
+            }
+            assert!(
+                combined > 0,
+                "no combination: PLL={fast}, register={offset:X}, cached={}, reads={}, stores={}, r4={:X}, r5={:X}",
+                actual.cached_retired,
+                actual.bus.cached_read_beats,
+                actual.bus.cached_stores,
+                actual.cpu_state().r[4],
+                actual.cpu_state().r[5]
+            );
+            assert_ne!(actual.bus.read16(HIGH_WRAM + 0x400), Ok(0xAA55));
+        }
+    }
+}
+
+#[test]
 fn cd_hirq_polling_preserves_abus_protocol_width_and_command_edges() {
     let mut bytes = rom(include_str!("../../examples/runtime-poll.hex"));
     bytes[0x224..0x228].copy_from_slice(&0x25890008u32.to_be_bytes());
@@ -2884,6 +3087,7 @@ fn prepared_passive_prediction_rejects_width_address_rom_and_deadline_before_con
             passive: Some(PassiveRead {
                 address,
                 bytes: [0x89, 0xAB, 0xCD, 0xEF],
+                grant_after: 0,
                 allowed_widths: width,
                 little: false,
                 rom: None,
