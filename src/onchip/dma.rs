@@ -68,6 +68,40 @@ pub(crate) struct PendingWriteKey {
     control: u32,
 }
 
+impl PendingWriteKey {
+    fn matches_block_write(self, address: u32, slot: usize) -> bool {
+        self.control >> 10 & 3 == 3
+            && self.control >> 12 & 3 != 3
+            && self.control >> 14 & 3 != 3
+            && self.source.is_multiple_of(16)
+            && self.destination.is_multiple_of(4)
+            && address == self.destination.wrapping_add(slot as u32 * 4)
+    }
+
+    pub(crate) fn next_block_write(self, address: u32, slot: usize) -> Option<(u32, u32)> {
+        if slot >= 3
+            || !self.matches_block_write(address, slot)
+            || (self.count != 0 && self.count <= slot as u32 + 1)
+        {
+            return None;
+        }
+        Some((
+            self.source.wrapping_add((slot + 1) as u32 * 4),
+            address.wrapping_add(4),
+        ))
+    }
+
+    pub(crate) fn first_block_write(self, last_read: u32) -> Option<(u32, u32)> {
+        (self.source.wrapping_add(12) == last_read && self.matches_block_write(self.destination, 0))
+            .then_some((self.source, self.destination))
+    }
+
+    pub(crate) fn full_block_last_write(self, address: u32) -> Option<(u32, u32)> {
+        (self.matches_block_write(address, 3) && (self.count == 0 || self.count >= 4))
+            .then_some((self.source, self.destination))
+    }
+}
+
 impl Dma {
     pub(crate) fn pending_write_key(&self) -> Option<PendingWriteKey> {
         let selected = self.selected?;
@@ -210,6 +244,23 @@ impl Dma {
                 2 => serial[1],
                 _ => false,
             }
+    }
+    pub(crate) fn continues_block_read(&self, address: u32, slot: usize) -> bool {
+        let Some(selected) = self.selected else {
+            return false;
+        };
+        let c = &self.channels[selected];
+        !self.address_error
+            && self.operation & 1 != 0
+            && c.control & 3 == 1
+            && c.control & 8 == 0
+            && c.control >> 10 & 3 == 3
+            && c.control >> 12 & 3 != 3
+            && c.control >> 14 & 3 != 3
+            && c.source.is_multiple_of(16)
+            && c.destination.is_multiple_of(4)
+            && slot < 4
+            && address == c.source.wrapping_add(slot as u32 * 4)
     }
     pub(crate) fn in_progress(&self) -> bool {
         self.selected.is_some()
@@ -382,6 +433,24 @@ impl Dma {
             self.address_error = true;
             return None;
         }
+        Some(self.complete_transfer(selected, size, count, single, input))
+    }
+
+    pub(crate) fn complete_full_block(&mut self, key: PendingWriteKey) -> u8 {
+        debug_assert!(self.pending_write_key() == Some(key));
+        self.selected = None;
+        self.complete_transfer(key.selected, 16, 4, false, false)
+    }
+
+    fn complete_transfer(
+        &mut self,
+        selected: usize,
+        size: u32,
+        count: u32,
+        single: bool,
+        input: bool,
+    ) -> u8 {
+        let c = &mut self.channels[selected];
         let update = |address: u32, mode: u32| match mode {
             1 => address.wrapping_add(size),
             2 => address.wrapping_sub(size),
@@ -404,7 +473,7 @@ impl Dma {
         }
         self.cycle_previous = c.control & 0x10 == 0;
         self.next = 1 - selected;
-        Some(if c.control & 0x200 != 0 { 0 } else { c.request })
+        if c.control & 0x200 != 0 { 0 } else { c.request }
     }
 }
 

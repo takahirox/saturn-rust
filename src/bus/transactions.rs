@@ -417,12 +417,20 @@ struct DmacWriteWait {
     operation: Operation,
 }
 
+#[derive(Clone, Copy)]
+struct DmacReadWait {
+    unit: crate::onchip::PendingWriteKey,
+    operation: Operation,
+    transfer: Transfer,
+}
+
 #[derive(Default)]
 pub(super) struct Transactions {
     journals: [RefCell<Journal>; 4],
     #[cfg(any(test, feature = "kernel-experiment"))]
     dmac_write_wait_enabled: bool,
     dmac_write_wait: [Option<DmacWriteWait>; 2],
+    dmac_read_wait: [Option<DmacReadWait>; 2],
     #[cfg(any(test, feature = "kernel-experiment"))]
     dmac_write_wait_counts: [u64; 2],
     #[cfg(any(test, feature = "kernel-experiment"))]
@@ -1126,6 +1134,19 @@ impl Bus {
         })
     }
 
+    fn retain_dmac_read_wait(&mut self, processor: Processor) {
+        let i = processor as usize;
+        let journal = self.transactions.journals[i + 2].get_mut();
+        self.transactions.dmac_read_wait[i] =
+            self.onchip[i].dma.pending_write_key().and_then(|unit| {
+                Some(DmacReadWait {
+                    unit,
+                    operation: journal.current_operation?,
+                    transfer: journal.waiting?,
+                })
+            });
+    }
+
     fn prepare_dmac(&mut self, processor: Processor) {
         let i = processor as usize;
         if (i == 1 && !self.slave_enabled)
@@ -1155,6 +1176,23 @@ impl Bus {
             }
             return;
         }
+        if let Some(wait) = &self.transactions.dmac_read_wait[i] {
+            let journal = self.transactions.journals[i + 2].get_mut();
+            if journal.waiting == Some(wait.transfer)
+                && journal.current_operation == Some(wait.operation)
+                && self.onchip[i].dma.pending_write_key() == Some(wait.unit)
+                && self.onchip[i].external_bus_width(Self::physical(wait.transfer.address)) == 2
+            {
+                // This accepted dual-address unit cannot consume another
+                // request while its recorded physical read is still pending.
+                #[cfg(test)]
+                {
+                    self.dmac_queued_reads_reused += 1;
+                }
+                return;
+            }
+            self.transactions.dmac_read_wait[i] = None;
+        }
         self.transactions.journals[i + 2].get_mut().cursor = 0;
         let requests = self.onchip[i].serial_dma_requests();
         let mut dma = std::mem::take(&mut self.onchip[i].dma);
@@ -1175,19 +1213,24 @@ impl Bus {
             self.onchip[i].acknowledge_serial_dma(source);
         }
         if !in_progress {
-            *self.transactions.journals[i + 2].get_mut() = Journal::default();
-            if self.transactions.dmac_owner == Some(processor) && !burst {
-                self.transactions.dmac_owner = None;
-                self.transactions.dmac_yield = acknowledged.is_some();
-            }
+            self.finish_dmac_journal(processor, burst, acknowledged.is_some());
         }
         if self.dmac_pending_write_runtime() {
             let next = self.dmac_write_wait(processor);
             self.transactions.dmac_write_wait[i] = next;
         }
     }
+    fn finish_dmac_journal(&mut self, processor: Processor, burst: bool, acknowledged: bool) {
+        *self.transactions.journals[processor as usize + 2].get_mut() = Journal::default();
+        if self.transactions.dmac_owner == Some(processor) && !burst {
+            self.transactions.dmac_owner = None;
+            self.transactions.dmac_yield = acknowledged;
+        }
+    }
+
     pub(super) fn cancel_dmac_transaction(&mut self, processor: Processor) {
         self.transactions.dmac_write_wait[processor as usize] = None;
+        self.transactions.dmac_read_wait[processor as usize] = None;
         if self.transactions.internal[processor as usize]
             .as_ref()
             .is_some_and(|a| matches!(a.owner, Owner::Dmac(p) | Owner::WriteAccept(p, true) if p == processor))
@@ -2390,6 +2433,295 @@ impl Bus {
         }
         Ok(())
     }
+    fn queue_dmac_read_tail(&mut self, processor: Processor, high: Transfer) -> bool {
+        let i = processor as usize;
+        if high.width != 2
+            || high.address & 3 != 0
+            || high.address >= 0x4000_0000
+            || high.write.is_some()
+            || high.last
+            || high.locked
+            || high.bridge_read
+            || high.unit_end != high.address + 4
+            || (i == 1 && !self.slave_enabled)
+            || self.onchip[i].reset_active()
+            || self.onchip[i].dma_stopped()
+            || self.inline.is_some()
+        {
+            return false;
+        }
+        let address = Self::physical(high.address);
+        if Self::wram_port::<2>(address).is_none()
+            || self.onchip[i].external_bus_width(address) != 2
+        {
+            return false;
+        }
+        let journal = self.transactions.journals[i + 2].get_mut();
+        let Some(Operation::DmaRead(base, first, last)) = journal.current_operation else {
+            return false;
+        };
+        let slot = journal.operations.len();
+        if base != high.address
+            || first != high.first
+            || first != (slot == 0)
+            || last != (slot == 3)
+            || journal.cursor != slot
+            || journal.beat_cursor != 0
+            || !matches!(journal.beats.as_slice(), [(_, Ok(_))])
+            || self.transactions.dmac_write_wait[i].is_some()
+            || !self.onchip[i].dma.continues_block_read(base, slot)
+        {
+            return false;
+        }
+        // The first physical half is retained in the real journal. The
+        // next normal arbitration sees exactly the pending second half.
+        journal.beat_cursor = 1;
+        journal.waiting = Some(Transfer {
+            address: base + 2,
+            first: false,
+            last,
+            ..high
+        });
+        self.retain_dmac_read_wait(processor);
+        #[cfg(test)]
+        {
+            self.dmac_read_tails += 1;
+        }
+        true
+    }
+
+    fn advance_dmac_block_read(&mut self, processor: Processor, low: Transfer) -> Option<()> {
+        let i = processor as usize;
+        if low.width != 2
+            || low.address & 3 != 2
+            || low.address >= 0x4000_0000
+            || low.write.is_some()
+            || low.first
+            || low.locked
+            || low.bridge_read
+            || low.unit_end != low.address + 2
+            || (i == 1 && !self.slave_enabled)
+            || self.onchip[i].reset_active()
+            || self.onchip[i].dma_stopped()
+            || self.inline.is_some()
+        {
+            return None;
+        }
+        let journal = self.transactions.journals[i + 2].get_mut();
+        let op @ Operation::DmaRead(address, first, last) = journal.current_operation? else {
+            return None;
+        };
+        let slot = journal.operations.len();
+        if slot > 3
+            || address + 2 != low.address
+            || first != (slot == 0)
+            || last != (slot == 3)
+            || low.last != last
+            || journal.cursor != slot
+            || journal.beat_cursor != 1
+            || self.transactions.dmac_write_wait[i].is_some()
+            || !self.onchip[i].dma.continues_block_read(address, slot)
+        {
+            return None;
+        }
+        let [(high, Ok(upper)), (sampled_low, Ok(lower))] = journal.beats.as_slice() else {
+            return None;
+        };
+        if high.address != address
+            || high.width != 2
+            || high.first != first
+            || high.last
+            || high.unit_end != low.unit_end
+            || *sampled_low != low
+        {
+            return None;
+        }
+        let physical = Self::physical(address);
+        let next_address = address + 4;
+        let next_physical = Self::physical(next_address);
+        let chip = &self.onchip[i];
+        if Self::wram_port::<4>(physical).is_none() || chip.external_bus_width(physical) != 2 {
+            return None;
+        }
+        let first_write = if last {
+            if self.transactions.lock == Some(processor)
+                || journal.synchronous_stack
+                || journal.pending_write.is_some()
+                || journal.write_accepted
+            {
+                return None;
+            }
+            let (source, destination) = chip.dma.pending_write_key()?.first_block_write(address)?;
+            if destination >= 0x4000_0000
+                || !(VRAM..VRAM + 0x80000).contains(&Self::physical(destination))
+                || !journal
+                    .operations
+                    .iter()
+                    .enumerate()
+                    .all(|(index, &(op, result))| {
+                        op == Operation::DmaRead(
+                            source.wrapping_add(index as u32 * 4),
+                            index == 0,
+                            false,
+                        ) && result.is_ok()
+                    })
+            {
+                return None;
+            }
+            match journal.operations[0].1 {
+                Ok(value) => Some((destination, value)),
+                Err(_) => unreachable!(),
+            }
+        } else {
+            if Self::wram_port::<4>(next_physical).is_none()
+                || chip.external_bus_width(next_physical) != 2
+            {
+                return None;
+            }
+            None
+        };
+        let mut value = upper << 16 | lower;
+        if chip.external_little_endian(physical) {
+            value = value.swap_bytes();
+        }
+        // The physical halves already reached their original observers.
+        // Retain the logical word and notify the owning on-chip monitor at
+        // the same completion before requesting the next real bus phase.
+        chip.observe_access(address, 4, value, false, false, false);
+        journal.retain_operation(op, Ok(value));
+        if let Some((destination, value)) = first_write {
+            self.request_dmac_block_write(processor, destination, value);
+            #[cfg(test)]
+            {
+                self.dmac_terminal_reads += 1;
+            }
+            return Some(());
+        }
+        journal.current_operation = Some(Operation::DmaRead(next_address, false, slot == 2));
+        journal.beat_cursor = 0;
+        journal.waiting = Some(Transfer {
+            address: next_address,
+            unit_end: next_address + 4,
+            ..low
+        });
+        self.retain_dmac_read_wait(processor);
+        #[cfg(test)]
+        {
+            self.dmac_block_read_words += 1;
+        }
+        Some(())
+    }
+
+    fn advance_dmac_block_store(&mut self, processor: Processor) -> Option<()> {
+        let i = processor as usize;
+        let proof = self.transactions.dmac_write_wait[i]?;
+        if self.transactions.lock == Some(processor)
+            || self.inline.is_some()
+            || self.onchip[i].reset_active()
+            || self.onchip[i].dma_stopped()
+            || (i == 1 && !self.slave_enabled)
+            || self.onchip[i].dma.pending_write_key() != Some(proof.unit)
+        {
+            return None;
+        }
+        let journal = self.transactions.journals[i + 2].get_mut();
+        let Operation::Write(address, 4, terminal_value) = proof.operation else {
+            return None;
+        };
+        let slot = journal.operations.len().checked_sub(4)?;
+        if !journal.write_accepted
+            || journal.current_operation != Some(proof.operation)
+            || journal.cursor != journal.operations.len()
+            || journal.pending_write.is_some()
+            || journal.waiting.is_some()
+            || !journal.beats.is_empty()
+        {
+            return None;
+        }
+        if slot == 3 {
+            let (source, destination) = proof.unit.full_block_last_write(address)?;
+            let reads = &journal.operations[..4];
+            if reads[3].1 != Ok(terminal_value)
+                || !reads.iter().enumerate().all(|(index, &(op, result))| {
+                    op == Operation::DmaRead(
+                        source.wrapping_add(index as u32 * 4),
+                        index == 0,
+                        index == 3,
+                    ) && result.is_ok()
+                })
+                || !journal.operations[4..]
+                    .iter()
+                    .enumerate()
+                    .all(|(index, &(op, result))| {
+                        let Ok(value) = reads[index].1 else {
+                            return false;
+                        };
+                        op == Operation::Write(destination.wrapping_add(index as u32 * 4), 4, value)
+                            && result == Ok(0)
+                    })
+                || Self::wram_port::<4>(Self::physical(source)).is_none()
+                || !(VRAM..VRAM + 0x80000).contains(&Self::physical(destination))
+                || !(VRAM..VRAM + 0x80000).contains(&Self::physical(address))
+            {
+                return None;
+            }
+            // Every prior logical phase is retained and the final write was
+            // just accepted by the real buffer. Finish with the same DMAOR,
+            // channel, request acknowledgement and cycle-steal bookkeeping.
+            let chip = &mut self.onchip[i];
+            let serial = chip.serial_dma_requests();
+            let acknowledged = chip.dma.complete_full_block(proof.unit);
+            let burst = chip.dma.burst_requested(serial);
+            chip.acknowledge_serial_dma(acknowledged);
+            self.finish_dmac_journal(processor, burst, true);
+            self.transactions.dmac_write_wait[i] = None;
+            #[cfg(test)]
+            {
+                self.dmac_terminal_blocks += 1;
+            }
+            return Some(());
+        }
+        let (source, destination) = proof.unit.next_block_write(address, slot)?;
+        let &(Operation::DmaRead(recorded, false, last), Ok(value)) =
+            journal.operations.get(slot + 1)?
+        else {
+            return None;
+        };
+        if recorded != source
+            || last != (slot == 2)
+            || Self::wram_port::<4>(Self::physical(source)).is_none()
+            || !(VRAM..VRAM + 0x80000).contains(&Self::physical(address))
+            || !(VRAM..VRAM + 0x80000).contains(&Self::physical(destination))
+        {
+            return None;
+        }
+        // Consume the actual internal acceptance, then stage the following
+        // logical word from the real reads retained in this DMA unit.
+        journal.write_accepted = false;
+        journal.retain_operation(proof.operation, Ok(0));
+        self.request_dmac_block_write(processor, destination, value);
+        #[cfg(test)]
+        {
+            self.dmac_block_write_words += 1;
+        }
+        Some(())
+    }
+
+    fn request_dmac_block_write(&mut self, processor: Processor, destination: u32, value: u32) {
+        let i = processor as usize;
+        let journal = self.transactions.journals[i + 2].get_mut();
+        journal.current_operation = Some(Operation::Write(destination, 4, value));
+        journal.beat_cursor = 0;
+        let mut memory = CpuBus {
+            bus: self,
+            processor,
+            cached: false,
+            scheduled: true,
+        };
+        assert_eq!(memory.write32(destination, value), Err(BusError::Pending));
+        self.transactions.dmac_write_wait[i] = self.dmac_write_wait(processor);
+    }
+
     fn complete_bus_transaction(&mut self, active: Active) -> Result<(), ScuError> {
         if let Owner::Vector(processor, level) = active.owner {
             // Only an IVECF transaction reaches the board endpoint. Internal
@@ -2417,7 +2749,13 @@ impl Bus {
             journal.write_accepted = true;
             journal.completed = true;
             if dmac {
-                self.prepare_dmac(processor);
+                #[cfg(test)]
+                let direct = self.dmac_read_tail;
+                #[cfg(not(test))]
+                let direct = true;
+                if !direct || self.advance_dmac_block_store(processor).is_none() {
+                    self.prepare_dmac(processor);
+                }
             }
             return Ok(());
         }
@@ -2677,7 +3015,17 @@ impl Bus {
             journal.waiting = None;
             journal.completed = true;
             if matches!(active.owner, Owner::Dmac(_)) {
-                self.prepare_dmac(processor);
+                self.transactions.dmac_read_wait[processor as usize] = None;
+                #[cfg(test)]
+                let queue_tail = self.dmac_read_tail;
+                #[cfg(not(test))]
+                let queue_tail = true;
+                if !queue_tail
+                    || !(self.queue_dmac_read_tail(processor, t)
+                        || self.advance_dmac_block_read(processor, t).is_some())
+                {
+                    self.prepare_dmac(processor);
+                }
             }
         }
         Ok(())
@@ -3943,6 +4291,116 @@ mod private_storage_tests {
 mod settled_dmac_grant_tests {
     use super::*;
     use crate::onchip::DMAC;
+
+    #[test]
+    fn physical_dmac_wram_tail_keeps_bus_order_and_disabled_channel_behavior() {
+        for fast in [false, true] {
+            for stop_at in 0..=3 {
+                let make = |direct| {
+                    let mut b = Bus {
+                        dmac_read_tail: direct,
+                        ..Bus::default()
+                    };
+                    b.transactions.dmac_write_wait_enabled = true;
+                    b.change_system_clock(fast);
+                    b.onchip[0].write32(0xFFFF_FFE4, 0xA55A_00BC).unwrap();
+                    let source = HIGH_WRAM + 0x100;
+                    for j in 0..8 {
+                        b.write32(source + j * 4, 0x2400_0000 + j).unwrap();
+                    }
+                    for (offset, value) in [
+                        (0, source),
+                        (4, VRAM + 0x200),
+                        (8, 8),
+                        (12, 0x5E05),
+                        (0x30, 1),
+                    ] {
+                        b.onchip[0].write32(DMAC + offset, value).unwrap();
+                    }
+                    assert!(!b.grant_bus_transaction());
+                    assert!(matches!(b.transactions.active.as_ref(), Some(a)
+                        if a.owner == Owner::Dmac(Processor::Master) && a.transfer.width == 2));
+                    if stop_at == 1 {
+                        b.onchip[0].write32(DMAC + 0x30, 0).unwrap();
+                    }
+                    b
+                };
+                let (mut candidate, mut reference) = (make(true), make(false));
+                let mut reuses_at_disable = None;
+                let mut stopped_at_terminal = false;
+                for _ in 0..1024 {
+                    assert_eq!(
+                        candidate.advance_cpu_clocks(1),
+                        reference.advance_cpu_clocks(1)
+                    );
+                    assert!(candidate.same_cpu_journals(&reference));
+                    assert!(candidate.transactions.active == reference.transactions.active);
+                    assert!(candidate.transactions.internal == reference.transactions.internal);
+                    for offset in [0, 4, 8, 12, 0x30] {
+                        assert_eq!(
+                            candidate.onchip[0].read32(DMAC + offset),
+                            reference.onchip[0].read32(DMAC + offset)
+                        );
+                    }
+                    assert_eq!(
+                        candidate.read32(VRAM + 0x200),
+                        reference.read32(VRAM + 0x200)
+                    );
+                    if stop_at == 2
+                        && reuses_at_disable.is_none()
+                        && candidate.transactions.dmac_read_wait[0].is_some()
+                    {
+                        reuses_at_disable = Some(candidate.dmac_queued_reads_reused);
+                        for bus in [&mut candidate, &mut reference] {
+                            bus.onchip[0].write32(DMAC + 0x30, 0).unwrap();
+                        }
+                    }
+                    if stop_at == 3 && !stopped_at_terminal {
+                        let last_write_pending = |bus: &mut Bus| {
+                            let journal = bus.transactions.journals[2].get_mut();
+                            journal.pending_write.is_some()
+                                && matches!(journal.current_operation, Some(Operation::Write(at, 4, _)) if at == VRAM + 0x20C)
+                        };
+                        if last_write_pending(&mut candidate) {
+                            assert!(last_write_pending(&mut reference));
+                            stopped_at_terminal = true;
+                            for bus in [&mut candidate, &mut reference] {
+                                bus.onchip[0].write32(DMAC + 0x30, 0).unwrap();
+                            }
+                        }
+                    }
+                }
+                assert_eq!(reference.dmac_read_tails, 0);
+                assert_eq!(reference.dmac_block_read_words, 0);
+                assert_eq!(reference.dmac_block_write_words, 0);
+                assert_eq!(reference.dmac_queued_reads_reused, 0);
+                assert_eq!(reference.dmac_terminal_blocks, 0);
+                assert_eq!(reference.dmac_terminal_reads, 0);
+                assert_eq!(candidate.dmac_terminal_reads, [2, 0, 0, 1][stop_at]);
+                assert_eq!(
+                    candidate.dmac_terminal_blocks,
+                    if stop_at == 0 { 2 } else { 0 }
+                );
+                assert_eq!(candidate.dmac_read_tails, [8, 0, 1, 4][stop_at]);
+                assert_eq!(candidate.dmac_block_read_words, [6, 0, 0, 3][stop_at]);
+                assert_eq!(candidate.dmac_block_write_words, [6, 0, 0, 3][stop_at]);
+                match stop_at {
+                    0 => assert!(candidate.dmac_queued_reads_reused > 0),
+                    1 => assert_eq!(candidate.dmac_queued_reads_reused, 0),
+                    2 => assert_eq!(Some(candidate.dmac_queued_reads_reused), reuses_at_disable),
+                    _ => assert!(stopped_at_terminal),
+                }
+                assert_eq!(
+                    candidate.read32(VRAM + 0x200),
+                    Ok(if stop_at == 0 || stop_at == 3 {
+                        0x2400_0000
+                    } else {
+                        0
+                    })
+                );
+            }
+        }
+    }
 
     fn start_external_dma(fast: bool) -> Bus {
         let mut bus = Bus::default();

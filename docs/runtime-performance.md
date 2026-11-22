@@ -5864,3 +5864,70 @@ frames at 44.1 kHz over each 72-second run. Sustained nominal gameplay
 and continuous audio remain open.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+## Continue 16-byte SH-2 DMA units from physical completion (2026-11-22)
+
+The scoped path retains the already sampled halves of aligned 32-bit Work
+RAM reads inside a 16-byte dual-address SH-2 DMA unit. A pending physical
+read is revalidated against the selected channel and live bus width. Each
+real phase still uses the ordinary arbiter and external observation. The
+fourth logical read can request the first eligible VDP2 buffered store. The
+next store is requested after actual internal write acceptance. The final
+write acceptance uses the existing channel completion, interrupt, request
+acknowledgement and cycle-steal state. Other modes use the ordinary replay.
+
+The native differential checks two PLLs and compares active and internal
+transfers, journals, channel state, clocks and video memory at every tick.
+It exercises the split reads, read-to-write transition and both complete
+16-byte units. Three separate DME withdrawal points preserve the literal
+results. The 22 board DMA regressions and three OnChip DMA regressions pass.
+
+The standard Chrome packages use Rust 1.100.0, wasm-bindgen 0.2.129 and
+Binaryen 127. Baseline Wasm SHA-256 is
+`97da6c95937afe5368538de4960c373fb5e07289d86945bf84799ff17ca3ec75`.
+Candidate Wasm SHA-256 is
+`1072c0107e01a086435ec4e418eaeeb74a62a7809cfcd96fac9c8cdc745931b8`.
+JavaScript bindings and playback Workers match.
+
+A local fixed-field replay of Machi Disc 1 matches 520 fields at 13
+checkpoints. The checkpoints compare the public state of both SH-2s,
+clocks, the SHA-256 of all WRAM, rolling PCM and pixels, and canonical
+Sound checksum and size. Video transport counts and bytes also match
+in each checked window. Unpaced throughput improves from 46.306 to
+46.599 fields/s (+0.63%), with 11 of 13 windows faster. The long field with
+no CD phase changes from 114.8 to 104.9 ms, four adjacent late DMA fields
+change from 352.3 to 339.5 ms in total, and the 37-field CD/DMA interval
+changes from 1853.4 to 1828.1 ms. These results measure the fixed-field
+runner with both playback Workers and direct PCM draining.
+
+A separate correctness replay matches the same stock package in all 80
+checkpoints over 3,200 fields. The candidate passes the Chrome `dmacBus`,
+`sh2BusPipeline`, `videoTransactions` and `refreshArbitration` originals.
+Native all-target/all-feature and Wasm all-feature Clippy pass with warnings
+denied.
+
+Chrome 157.0.8103.79 runs the ordinary Web player with both playback Workers
+and AudioWorklet. Each independent run warms through field 12,900, then
+plays six twelve-second intervals. The four runs share 3,992 fields and all
+157 controller inputs at the requested presentation fields. Every field is
+drawn. Runtime errors and audio queue drops are zero.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Overall playback, fields/s | 55.460 to 55.528 | 55.379 to 55.489 |
+| Common fields, fields/s | 55.452 to 55.525 | 55.383 to 55.473 |
+| Four matched slow ranges, fields/s | 36.079 to 36.404 | 35.859 to 35.951 |
+| Common fields p95, ms | 34.0 to 34.1 | 34.6 to 34.1 |
+| Common fields p99, ms | 46.5 to 46.3 | 46.7 to 46.3 |
+| Common fields maximum, ms | 113.9 to 103.9 | 114.3 to 102.9 |
+| Common fields above 100 ms | 2 to 2 | 3 to 2 |
+| Worklet underflow output sample frames | 231,760 to 227,536 | 235,600 to 230,608 |
+
+Matched throughput rises 0.13% and 0.16%, and total audio sample shortages
+fall 1.82% and 2.12%. The third interval in the forward order and fourth
+interval in the reverse order have more shortages. The earlier video-error
+range changes by −0.37% and +2.01%, respectively. About 5.16–5.23 seconds
+of 44.1 kHz samples are still missing during each candidate run. Sustained
+nominal gameplay and continuous audio remain open.
+
+Related to #138 and #17. Private media and raw captures stay local.
