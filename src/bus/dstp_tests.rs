@@ -65,7 +65,7 @@ fn dstp_leaves_dma_samples_deadlines_priority_retrigger_and_reset_cancellation_i
                             // data and IRQ at exactly the same machine clock.
                             let active = b.transactions.active.as_ref().map(|a| {
                                 (
-                                    a.remaining,
+                                    a.clocks_left(b.main_clocks),
                                     a.transfer.address,
                                     a.transfer.width,
                                     a.transfer.write,

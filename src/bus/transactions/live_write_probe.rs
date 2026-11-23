@@ -477,7 +477,7 @@ impl Probe {
         assert!(delta != 0);
         let physical = self.board.transactions.active.as_ref().and_then(|active| {
             (active.owner == Owner::WriteBuffer(Processor::Master, false)
-                && active.remaining == delta)
+                && active.clocks_left(self.board.main_clocks) == delta)
                 .then(|| PhysicalWrite {
                     at: self.board.main_clocks + u64::from(delta),
                     address: Bus::physical(active.transfer.address),
@@ -491,7 +491,7 @@ impl Probe {
             self.board.onchip[1].advance_live_write_bus(delta);
         }
         self.board.scu.advance_live_write_abus(delta);
-        self.board.advance_bus_transaction(delta).unwrap();
+        self.board.advance_bus_transaction().unwrap();
         if let Some(physical) = physical {
             self.report.physical.push(physical);
         }

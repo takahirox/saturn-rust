@@ -81,7 +81,7 @@ fn uncached_fetch_is_one_aligned_longword_split_on_physical_widths_and_retains_t
                             active.transfer.first,
                             active.transfer.last,
                         ));
-                        let n = active.remaining;
+                        let n = active.clocks_left(b.main_clocks);
                         clocks += n;
                         b.advance_clocks(n).unwrap();
                     }

@@ -91,7 +91,14 @@ fn request(bus: &mut Bus, owner: Owner, address: u32) -> u32 {
             .is_some_and(|active| active.owner == owner)
     );
     // Reset BCR1 selects six Tw states for CS2; ordinary T1/T2 add two.
-    assert_eq!(bus.transactions.active.as_ref().unwrap().remaining, 8);
+    assert_eq!(
+        bus.transactions
+            .active
+            .as_ref()
+            .unwrap()
+            .clocks_left(bus.main_clocks),
+        8
+    );
     startup
 }
 
@@ -391,10 +398,17 @@ fn both_sh2_adapters_capture_only_physically_completed_erase_writes_at_field_cha
                             Err(BusError::Pending)
                         );
                         bus.grant_bus_transaction();
-                        assert_eq!(bus.transactions.active.as_ref().unwrap().remaining, 8);
+                        assert_eq!(
+                            bus.transactions
+                                .active
+                                .as_ref()
+                                .unwrap()
+                                .clocks_left(bus.main_clocks),
+                            8
+                        );
                         advance_inspected(&mut bus, 7, chunk, inspect);
                         let active = bus.transactions.active.as_ref().unwrap();
-                        assert_eq!(active.remaining, 1);
+                        assert_eq!(active.clocks_left(bus.main_clocks), 1);
                         assert_eq!(active.transfer.address, address);
                         assert_eq!(active.transfer.write, Some(u32::from(value)));
                         // SH-2 write-buffer acceptance already completed, but

@@ -1444,7 +1444,7 @@ impl Bus {
                 .max(1);
             reference += self.advance_isolated_segment::<false>(delta, sound_advanced, false)?;
             if active {
-                self.advance_bus_transaction(delta)?;
+                self.advance_bus_transaction()?;
             }
             remaining -= delta;
         }
@@ -1551,7 +1551,7 @@ impl Bus {
         self.vdp2.counters(h, v);
         self.vdp2.scan_field(self.raster.odd());
         if transactions {
-            self.advance_bus_transaction(main)?;
+            self.advance_bus_transaction()?;
             self.sample_interrupts();
         }
         // With no transfer or observable device edge, neither IRQ input can
@@ -3019,14 +3019,14 @@ impl Bus {
             assert_eq!(self.issue_planned_store(store, pc), Err(BusError::Pending));
             self.grant_bus_transaction();
             self.main_clocks += 1;
-            self.advance_bus_transaction(1)?;
+            self.advance_bus_transaction()?;
             assert_eq!(self.issue_planned_store(store, pc), Ok(()));
             let mut tail = (retired_at - self.main_clocks) as u32;
             while tail != 0 {
                 self.grant_cached_transaction();
                 let delta = tail.min(self.bus_main_deadline().max(1));
                 self.main_clocks += u64::from(delta);
-                self.advance_bus_transaction(delta)?;
+                self.advance_bus_transaction()?;
                 tail -= delta;
             }
             self.finish_cpu_transaction(Processor::Master);

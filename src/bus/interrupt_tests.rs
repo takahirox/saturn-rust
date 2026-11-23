@@ -420,7 +420,7 @@ fn external_acquisition_uses_accepted_level_and_consumes_once_at_model_completio
             // A=5, pushes 8..16 and 16..24, E24..25, IVECF25..27.
             let a = m.bus.transactions.active.as_ref().unwrap();
             assert!(matches!(a.owner, Owner::Vector(Processor::Master, 13)));
-            assert_eq!(a.remaining, 1);
+            assert_eq!(a.clocks_left(m.bus.main_clocks), 1);
             assert_eq!(m.bus.scu.read32(SCU + 0xA4).unwrap() & 5, 5);
             trace(&mut m, p, 27, chunk, inspect);
             assert_eq!(m.bus.scu.read32(SCU + 0xA4).unwrap() & 5, 1);
@@ -481,7 +481,14 @@ fn vector_cycle_ignores_programmable_waits_and_replay_never_reacquires() {
             b.transactions.active.as_ref().unwrap().owner,
             Owner::Vector(_, 13)
         ));
-        assert_eq!(b.transactions.active.as_ref().unwrap().remaining, 2);
+        assert_eq!(
+            b.transactions
+                .active
+                .as_ref()
+                .unwrap()
+                .clocks_left(b.main_clocks),
+            2
+        );
         b.advance_clocks(1).unwrap();
         assert_eq!(b.scu.read32(SCU + 0xA4).unwrap() & 4, 4);
         b.advance_clocks(1).unwrap();

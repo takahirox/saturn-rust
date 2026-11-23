@@ -72,7 +72,7 @@ impl Bus {
         if self.slave_enabled {
             self.onchip[1].kernel_advance_bus(clocks);
         }
-        self.advance_bus_transaction(clocks)
+        self.advance_bus_transaction()
     }
 
     pub(crate) fn kernel_bus_deadline(&self) -> u32 {

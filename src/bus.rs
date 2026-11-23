@@ -1273,7 +1273,7 @@ impl Bus {
             // emulator's ordering convention, not measured electrical timing.
             self.acquire_display();
             // Complete the granted data phase before contenders at this edge.
-            self.advance_bus_transaction(delta)?;
+            self.advance_bus_transaction()?;
             self.sample_interrupts();
             for processor in [Processor::Master, Processor::Slave] {
                 if self.cpu_reset_active(processor) {

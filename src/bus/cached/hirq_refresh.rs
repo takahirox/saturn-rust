@@ -192,7 +192,7 @@ impl Bus {
             let complete = start + refresh.length;
             let during = (retired_at.min(complete) - start) as u32;
             reference += self.advance_isolated_segment::<false>(during, sound_advanced, false)?;
-            self.advance_bus_transaction(during)?;
+            self.advance_bus_transaction()?;
             if edge.waited {
                 debug_assert_eq!(
                     edge.first_read,
