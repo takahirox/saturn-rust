@@ -955,6 +955,93 @@ impl Cached<'_> {
         self.clock.set(at);
         Ok(())
     }
+    fn stage_data_store<const N: usize, const VERSIONED: bool>(
+        &mut self,
+        store: PlannedStore,
+        bytes: [u8; N],
+        physical: u32,
+    ) {
+        let before_event = self.bus_events.borrow().len();
+        let mut sequence = self.sequence_before(before_event);
+        let ready = if vdp1_vram(physical) {
+            sequence.write_video(physical, N, store.at)
+        } else {
+            sequence.write(physical, N, store.at)
+        };
+        let read_beats = self
+            .bus_events
+            .borrow()
+            .last()
+            .map_or(0, |event| event.read_beats);
+        self.bus_events.get_mut().push(BusEvent {
+            sequence,
+            ready,
+            read: false,
+            read_beats,
+        });
+        if VERSIONED {
+            let fills = self.fills.get_mut();
+            fills.written(self.cache, store.address, bytes, self.lru.get_mut());
+            self.version_count.set(fills.len());
+        }
+        self.ram_stores.push(RamStore {
+            store,
+            pc: self.write_pc.get(),
+            before_event,
+        });
+    }
+
+    fn retire_resident_wram_store(&mut self, cpu: &mut Cpu, op: u16) -> Option<u64> {
+        if self.passive.is_some()
+            || self.write_bus.is_none()
+            || self.store.get().is_some()
+            || self.ram_stores.len() == 16
+        {
+            return None;
+        }
+        let plan = cpu.prepare_cached_store(op, self.clock.get())?;
+        let (address, width) = plan.operand?;
+        debug_assert!(matches!(width, 2 | 4));
+        let physical = Bus::physical(address);
+        if address >= 0x4000_0000 || !work_ram(physical) {
+            return None;
+        }
+        let issue = plan.issue_at();
+        let ma = issue + u64::from(plan.load_wait(issue, true));
+        let acceptance = ma.max(self.bus_ready());
+        let at = plan.at.max(acceptance + 1);
+        if at > self.end.get() {
+            return None;
+        }
+        let mut retained = self.retained.get();
+        let (future, touch) = self.peek_resident_instruction(plan.future, &mut retained)?;
+        self.instruction_break(cpu.state().pc, false);
+        if let Some(touch) = touch {
+            touch.apply(self.lru.get_mut());
+        }
+        self.retained.set(retained);
+        let value = plan.store_value().expect("prepared word or longword store");
+        let value = if width == 2 {
+            u32::from(value as u16)
+        } else {
+            value
+        };
+        let store = PlannedStore {
+            address,
+            width: width as usize,
+            value,
+            at: acceptance,
+        };
+        if width == 4 {
+            self.stage_data_store::<4, true>(store, value.to_be_bytes(), physical);
+        } else {
+            self.stage_data_store::<2, true>(store, (value as u16).to_be_bytes(), physical);
+        }
+        self.clock.set(at);
+        cpu.retire_prepared_store(plan, future, at);
+        Some(at)
+    }
+
     fn write<const N: usize, const VERSIONED: bool>(
         &mut self,
         address: u32,
@@ -976,34 +1063,7 @@ impl Cached<'_> {
             at,
         };
         if ram {
-            let before_event = self.bus_events.borrow().len();
-            let mut sequence = self.sequence_before(before_event);
-            let ready = if vdp1_vram(physical) {
-                sequence.write_video(physical, N, at)
-            } else {
-                sequence.write(physical, N, at)
-            };
-            let read_beats = self
-                .bus_events
-                .borrow()
-                .last()
-                .map_or(0, |event| event.read_beats);
-            self.bus_events.get_mut().push(BusEvent {
-                sequence,
-                ready,
-                read: false,
-                read_beats,
-            });
-            if VERSIONED {
-                let mut fills = self.fills.borrow_mut();
-                fills.written(self.cache, address, bytes, &mut self.lru.borrow_mut());
-                self.version_count.set(fills.len());
-            }
-            self.ram_stores.push(RamStore {
-                store,
-                pc: self.write_pc.get(),
-                before_event,
-            });
+            self.stage_data_store::<N, VERSIONED>(store, bytes, physical);
         } else {
             self.cache
                 .plan_written_replacement(address, &mut self.lru.borrow_mut());
@@ -1944,6 +2004,10 @@ impl Bus {
         {
             return Ok(None);
         }
+        #[cfg(test)]
+        let allow_peer_resident_stores = self.enable_resident_peer_wram_stores;
+        #[cfg(not(test))]
+        let allow_peer_resident_stores = true;
         let reuse_planner_storage = !self.slave_enabled;
         if reuse_planner_storage {
             *memory.fills.get_mut() = std::mem::take(&mut self.cached_fill_storage);
@@ -2547,6 +2611,30 @@ impl Bus {
                     retired += prefix.retired;
                     continue;
                 }
+            }
+            // These resident MOV.W/MOV.L stores use the saved IF and the
+            // real staged WRAM write directly.
+            if (op >> 12 == 1 || matches!(op & 0xF00F, 0x2001 | 0x2002 | 0x2005 | 0x2006))
+                && (poll.is_none()
+                    || (allow_peer_resident_stores
+                        && matches!(poll, Some(PeerSchedule::Pending { .. }))))
+                && !sound_lookahead
+                && store_available
+                && let Some(at) = memory.retire_resident_wram_store(&mut cpu, op)
+            {
+                #[cfg(test)]
+                {
+                    self.cached_resident_wram_stores += 1;
+                    self.cached_peer_wram_stores += u64::from(poll.is_some());
+                }
+                retired_at = at;
+                ready = (cpu.execution_clock().unwrap() + u64::from(cpu.last_clocks())).max(at);
+                memory.clock.set(ready.min(end));
+                retired += 1;
+                if track_retirements {
+                    points.points.push(Retirement { at });
+                }
+                continue;
             }
             // The reference interpreter supplies all remaining pipeline semantics.
             // Keep failed attempts' cache/prefetch/epoch changes private.
