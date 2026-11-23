@@ -26,6 +26,18 @@ impl Access {
         self.successor_ex += extra;
     }
 
+    /// Both operand reads and the actual IF have zero external latency.
+    /// The first MA still completes at first_end and the second still waits
+    /// for the preceding accumulator operation to become available.
+    pub fn resident_boundaries(&mut self, issue: u64, ex: u64) -> (u64, u64) {
+        if self.memory_mac {
+            self.memory_access = true;
+            (self.end + u64::from(self.stall), self.first_end + 1)
+        } else {
+            (issue + u64::from(self.stall), issue.max(ex + 1))
+        }
+    }
+
     pub fn first_if(&mut self, duration: u64) {
         // wait() observes first-MA stretching and the IF extension together.
         // Its baseline already includes the first state of a real IF split.
@@ -160,6 +172,15 @@ impl Multiplier {
         bus: &impl Memory,
         pipeline: &mut super::timing::LoadPipeline,
     ) -> u32 {
+        self.finish_at(access, bus.sh2_clock(), pipeline)
+    }
+
+    pub fn finish_at(
+        &mut self,
+        access: Access,
+        clock: Option<u64>,
+        pipeline: &mut super::timing::LoadPipeline,
+    ) -> u32 {
         if access.memory_access && access.successor_ex < access.end {
             // P table7.2/figs7.23/34/89/91: MA completion does not delay the
             // successor's EX. Keep effects at MA, but recover its overlap.
@@ -167,13 +188,12 @@ impl Multiplier {
             // retain its final clock, rather than expiring at nominal MA end.
             let successor_ex = access.successor_ex + u64::from(access.stall);
             pipeline.retain_ex(
-                bus.sh2_clock()
-                    .map_or(successor_ex, |now| successor_ex.max(now.saturating_sub(1))),
+                clock.map_or(successor_ex, |now| successor_ex.max(now.saturating_sub(1))),
             );
         }
         if access.tail != 0 {
             let end = access.end + u64::from(access.stall);
-            self.ready = bus.sh2_clock().map_or(end, |now| end.max(now)) + access.tail;
+            self.ready = clock.map_or(end, |now| end.max(now)) + access.tail;
         }
         access.stall
     }
