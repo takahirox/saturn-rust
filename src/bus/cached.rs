@@ -383,11 +383,15 @@ struct RamStore {
     pc: u32,
     before_event: usize,
 }
-struct BusEvent {
+pub(super) struct BusEvent {
     sequence: crate::onchip::ReadSequence,
     ready: u64,
     read: bool,
     read_beats: u64,
+}
+fn recycle_bus_events(mut events: Vec<BusEvent>, storage: &mut Vec<BusEvent>) {
+    events.clear();
+    *storage = events;
 }
 struct RamPlan {
     stores: Vec<RamStore>,
@@ -656,7 +660,10 @@ impl Cached<'_> {
             .last()
             .map_or(self.store_ready, |event| event.ready)
     }
-    fn into_parts(self) -> (CachedPublication, Option<RamPlan>, CachedLines) {
+    fn into_parts(
+        self,
+        storage: Option<&mut Vec<BusEvent>>,
+    ) -> (CachedPublication, Option<RamPlan>, CachedLines) {
         let before_last = self.ram_stores.last().map(|last| {
             let mut sequence = self.sequence_before(last.before_event);
             sequence.advance(last.store.at);
@@ -684,6 +691,9 @@ impl Cached<'_> {
                     }
                 })
         };
+        if let Some(storage) = storage {
+            recycle_bus_events(self.bus_events.into_inner(), storage);
+        }
         let fills = self.fills.into_inner();
         let local = CachedPublication {
             lru: self.lru.into_inner(),
@@ -1882,6 +1892,11 @@ impl Bus {
         {
             return Ok(None);
         }
+        let reuse_planner_storage = !self.slave_enabled;
+        if reuse_planner_storage {
+            *memory.fills.get_mut() = std::mem::take(&mut self.cached_fill_storage);
+            *memory.bus_events.get_mut() = std::mem::take(&mut self.cached_bus_events);
+        }
         let mut probe_records = Vec::new();
         let origin = memory.snapshot(Some(Checkpoint::Entry));
         let mut points = Retirements {
@@ -2606,6 +2621,11 @@ impl Bus {
         }
         if selected == 0 {
             points.recycle_into(&mut self.cached_retirement_points);
+            if reuse_planner_storage {
+                self.cached_fill_storage = memory.fills.into_inner();
+                self.cached_fill_storage.discard();
+                recycle_bus_events(memory.bus_events.into_inner(), &mut self.cached_bus_events);
+            }
             return Ok(None);
         }
         if sound_lookahead {
@@ -2677,6 +2697,11 @@ impl Bus {
             {
                 self.sound.restore_cached_lookahead(checkpoint);
                 points.recycle_into(&mut self.cached_retirement_points);
+                if reuse_planner_storage {
+                    self.cached_fill_storage = memory.fills.into_inner();
+                    self.cached_fill_storage.discard();
+                    recycle_bus_events(memory.bus_events.into_inner(), &mut self.cached_bus_events);
+                }
                 return Ok(None);
             }
             let selected_reference = self.system_clock.deadline(
@@ -2824,7 +2849,8 @@ impl Bus {
                 .iter()
                 .all(|s| work_ram(Bus::physical(s.store.address)));
         let probe_stores = memory.ram_stores.len() as u64;
-        let (mut local, ram_plan, fills) = memory.into_parts();
+        let (mut local, ram_plan, mut fills) =
+            memory.into_parts(reuse_planner_storage.then_some(&mut self.cached_bus_events));
         debug_assert!(store.is_none() || (ram_plan.is_none() && fills.read_count() == 0));
         drop(cache);
         self.instruction_word[0].set(local.retained);
@@ -2889,7 +2915,12 @@ impl Bus {
         {
             self.cached_code_fills += fills.read_count() as u64;
         }
-        fills.commit(self.cache[0].get_mut());
+        if reuse_planner_storage {
+            fills.commit(self.cache[0].get_mut());
+            self.cached_fill_storage = fills;
+        } else {
+            fills.commit_and_release(self.cache[0].get_mut());
+        }
         self.cache[0].get_mut().commit_replacement_state(local.lru);
         #[cfg(test)]
         {

@@ -328,6 +328,8 @@ pub struct Bus {
     inline: Option<transactions::InlineProgress>,
     // Retain host retirement-buffer capacity between cached bursts.
     cached_retirement_points: Vec<cached::Retirement>,
+    cached_fill_storage: crate::cache::CachedLines,
+    cached_bus_events: Vec<cached::BusEvent>,
     #[cfg(test)]
     cached_hirq_window_enabled: bool,
     #[cfg(test)]
@@ -511,6 +513,8 @@ impl Default for Bus {
             transactions: transactions::Transactions::default(),
             inline: None,
             cached_retirement_points: Vec::new(),
+            cached_fill_storage: Default::default(),
+            cached_bus_events: Vec::new(),
             #[cfg(test)]
             cached_hirq_window_enabled: true,
             #[cfg(test)]
