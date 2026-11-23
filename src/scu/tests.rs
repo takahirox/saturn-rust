@@ -7,14 +7,15 @@ use crate::bus::{Bus, HIGH_WRAM};
 #[test]
 fn interrupt_priority_matches_literal_selection_across_both_factor_banks() {
     let mut scu = Scu::default();
-    for mask in [0, 0x8000, 0x1555, 0x2AAA, 0xBFFF] {
-        scu.mask = mask;
+    for mask in [0u16, 0x8000, 0x1555, 0x2AAA, 0xBFFF] {
+        scu.write32(SCU + 0xA0, u32::from(mask)).unwrap();
         for first in 0..32 {
             for second in first..32 {
-                scu.status = 1 << first | 1 << second;
+                let status = 1 << first | 1 << second;
+                scu.set_interrupt_status(status);
                 let expected = (0..32)
                     .filter(|&bit| {
-                        scu.status & (1 << bit) != 0
+                        status & (1 << bit) != 0
                             && (bit < 14 && mask & (1 << bit) == 0
                                 || bit >= 16 && mask & 0x8000 == 0)
                     })

@@ -57,6 +57,7 @@ pub struct Scu {
     dsp: dsp::Dsp,
     mask: u16,
     status: u32,
+    irq_output: Option<(u8, u8)>,
     abus_ack: bool,
     timer0_compare: u16,
     timer0: u16,
@@ -74,6 +75,7 @@ impl Default for Scu {
             dsp: dsp::Dsp::default(),
             mask: 0xBFFF,
             status: 0,
+            irq_output: None,
             abus_ack: false,
             timer0_compare: 0,
             timer0: 0,
@@ -90,6 +92,9 @@ impl Default for Scu {
 impl Scu {
     /// ST-097 table 2.1. Only the master receives the SCU interrupt output.
     pub fn interrupt(&self) -> Option<(u8, u8)> {
+        self.irq_output
+    }
+    fn select_interrupt(&self) -> Option<(u8, u8)> {
         let internal = self.status & !u32::from(self.mask) & 0x3FFF;
         // Within each bank, levels descend in vector order. Only compare
         // the first pending internal factor with the first A-bus factor.
@@ -102,9 +107,21 @@ impl Scu {
         }
         (bit < 32).then(|| (INTERRUPT_LEVELS[bit as usize], 0x40 + bit as u8))
     }
+    fn set_interrupt_status(&mut self, status: u32) {
+        if self.status != status {
+            self.status = status;
+            self.irq_output = self.select_interrupt();
+        }
+    }
+    fn set_interrupt_mask(&mut self, mask: u16) {
+        if self.mask != mask {
+            self.mask = mask;
+            self.irq_output = self.select_interrupt();
+        }
+    }
     fn acknowledge(&mut self, vector: u8) {
         if (0x40..=0x5F).contains(&vector) {
-            self.status &= !(1 << (vector - 0x40));
+            self.set_interrupt_status(self.status & !(1 << (vector - 0x40)));
         }
     }
     /// Functional SCU endpoint for H §5.2.3's IVECF/A3–A0 interface.
@@ -162,7 +179,7 @@ impl Scu {
             }
             self.abus_ack = false;
         }
-        self.status |= 1 << bit;
+        self.set_interrupt_status(self.status | (1 << bit));
         let trigger = match bit {
             0..=4 => Some(bit),
             6 => Some(5),
@@ -247,11 +264,11 @@ impl Scu {
                     self.timer1_remaining = None;
                 }
             }
-            0xA0 => self.mask = value as u16 & 0xBFFF,
+            0xA0 => self.set_interrupt_mask(value as u16 & 0xBFFF),
             // SYS_SETSCUIM/SYS_CHGSCUIM require zero-clear/one-preserve.
             // ST-210 #7 warns of lost edges, not a CPU bus exception.
             // Concurrent electrical set/clear priority is not reconstructed.
-            0xA4 => self.status &= value,
+            0xA4 => self.set_interrupt_status(self.status & value),
             0xA8 => self.abus_ack = value & 1 != 0,
             0xB0 | 0xB4 | 0xB8 => self.abus.write(address - SCU, value),
             0xC4 => self.sdram = value & 1 != 0,
