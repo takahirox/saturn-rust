@@ -158,13 +158,35 @@ impl CachedLines {
         self.reads += 1;
         self.heads.get_or_insert_with(|| Box::new([0; 64]))[index] = self.versions.len();
     }
-    pub fn commit(self, cache: &mut Cache) {
-        if !self.versions.is_empty() {
-            cache.record_contents_change();
+    fn reset_heads(&mut self) {
+        self.reads = 0;
+        if let Some(heads) = &mut self.heads {
+            heads.fill(0);
         }
-        for version in self.versions {
-            cache.sets[version.index] = version.ways;
-            cache.lookup[version.index].store(0, Ordering::Relaxed);
+    }
+    pub fn discard(&mut self) {
+        if !self.versions.is_empty() {
+            self.versions.clear();
+            self.reset_heads();
+        }
+    }
+    pub fn commit(&mut self, cache: &mut Cache) {
+        if self.versions.is_empty() {
+            return;
+        }
+        Self::publish(cache, self.versions.drain(..));
+        self.reset_heads();
+    }
+    pub fn commit_and_release(self, cache: &mut Cache) {
+        Self::publish(cache, self.versions.into_iter());
+    }
+    fn publish(cache: &mut Cache, versions: impl ExactSizeIterator<Item = SetVersion>) {
+        if versions.len() != 0 {
+            cache.record_contents_change();
+            for version in versions {
+                cache.sets[version.index] = version.ways;
+                cache.lookup[version.index].store(0, Ordering::Relaxed);
+            }
         }
     }
 }
@@ -187,6 +209,35 @@ mod tests {
             sets: cache.sets.clone(),
             lru: cache.lru,
             lookup: std::array::from_fn(|_| std::sync::atomic::AtomicU32::new(0)),
+        }
+    }
+
+    #[test]
+    fn reused_version_storage_exposes_only_new_burst_edits() {
+        let mut cache = Cache::default();
+        cache.set_control(1);
+        let mut shadow = CachedLines::default();
+        let lru = cache.replacement_state();
+        for discard in [true, false] {
+            shadow.fill(&cache, 0x0600_0000, [0x12; 16], &lru);
+            shadow.fill(&cache, 0x0600_0010, [0x34; 16], &lru);
+            assert_eq!(shadow.read_count(), 2);
+            if discard {
+                shadow.discard();
+            } else {
+                shadow.commit(&mut cache);
+            }
+            assert_eq!(shadow.read_count(), 0);
+            assert_eq!(shadow.len(), 0);
+            assert_eq!(
+                shadow.peek::<4>(&cache, 0x0600_0000),
+                (!discard).then_some([0x12; 4])
+            );
+            shadow.fill(&cache, 0x0600_0020, [0x56; 16], &lru);
+            assert_eq!(shadow.read_count(), 1);
+            assert_eq!(shadow.peek::<4>(&cache, 0x0600_0020), Some([0x56; 4]));
+            shadow.discard();
+            assert_eq!(shadow.peek::<4>(&cache, 0x0600_0020), None);
         }
     }
 

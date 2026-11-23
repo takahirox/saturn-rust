@@ -6252,3 +6252,49 @@ The JavaScript bindings match the baseline. Nominal real-time playback,
 continuous audio and broader hardware conformance remain open.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+
+## Reuse cache planning storage for solo SH-2 execution (2026-11-23)
+
+Cached master bursts stage physical bus operations and cache-line versions
+until a CPU prefix can retire. Bursts reuse both backing allocations while
+the Slave SH-2 is disabled. Discarded attempts clear their staged operations.
+A successful prefix publishes its cache versions in order and resets the
+lookup heads. The existing dual-CPU path retains its per-burst storage.
+
+Fixed-work Chrome 158.0.8127.36 replays agree at every measured field and
+checkpoint, covering 3,200 game fields at 80 checkpoints and 720 firmware
+fields at 18 checkpoints. Both SH-2 states, clocks, WRAM, renderer transport,
+full Sound state, pixels, and PCM agree. Game throughput is 53.536 to
+53.713 fields/s. The CD-intensive 37-field interval takes 1,783.8 to
+1,785.4 ms. The following four-field DMA interval takes 320.2 to 323.4 ms.
+
+Fresh ordinary-player runs in both orders use the Sound and Video Workers
+and the 44.1 kHz AudioWorklet. Each game pair measures six twelve-second
+intervals after field 12,900. All 157 input events reach their scheduled
+fields, 4,028 measured fields are common, and every field is drawn. The
+custom BIOS runs use no disc, match 14 inputs and render matching video
+signatures through field 900. There are zero runtime errors or queue drops.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Game overall playback, fields/s | 55.875 to 56.056 | 56.015 to 56.086 |
+| Game matched field gap p95, ms | 32.7 to 32.6 | 32.5 to 32.3 |
+| Game matched field gap p99, ms | 46.3 to 44.8 | 45.3 to 44.5 |
+| Game audio shortage per 72 s, seconds | 4.774 to 4.545 | 4.591 to 4.496 |
+| BIOS animation fields 601–720, fields/s | 30.245 to 31.005 | 30.325 to 31.045 |
+| BIOS audio shortage after clock confirmation through field 720, seconds | 3.665 to 3.459 | 3.628 to 3.479 |
+
+Matched throughput in the four slow game intervals improves 1.82% and
+0.80%. Their p99 field gap increases from 84.8 to 85.3 ms in reverse order.
+The original Chrome `sh2Fetch`, `sh2Load`, `sh2BusPipeline`, and
+`refreshArbitration` groups pass. Native coverage includes 73 cached/scheduling
+tests and five cache-shadow tests, including repeated publication and discard
+with the same storage.
+
+The standard Wasm SHA-256 is
+`488b9e8f3d7236853f24b82a998c3d8830377221de9bab5df007ea9d2096b45d`.
+The JavaScript bindings match the baseline. Sustained real-time playback,
+continuous audio, and broader hardware conformance remain open.
+
+Related to #138 and #17. Private media and raw captures stay local.
