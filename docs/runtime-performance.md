@@ -6357,9 +6357,10 @@ physical write queue and the staged cache versions before the selected
 prefix publishes. A pending private Slave SH-2 poll retains the existing
 observer deadline and uses the recorded store retirement clocks.
 
-Fixed-work replays match at all 3,200 game fields and 80 checkpoints, and
-all 720 BIOS fields and 18 checkpoints. Both SH-2 states, cache contents,
-WRAM, clocks, renderer transport, full Sound state, pixels, and PCM agree.
+Fixed-work replays cover 3,200 game fields at 80 checkpoints and 720 BIOS
+fields at 18 checkpoints. At those checkpoints, the exposed SH-2 states,
+WRAM, clocks, renderer transport, and complete Sound snapshots agree.
+Rolling hashes cover the pixels and PCM of every measured field.
 Game diagnostic throughput is 53.054 to 52.890 fields/s in the full sample
 and 53.640 to 53.862 fields/s in a separate 680-field sample. The same
 CD-intensive 37 fields take 1,793.7 to 1,806.0 ms in the full run and
@@ -6393,11 +6394,11 @@ field gap increases from 36.8 to 37.7 ms. Continuous audio, nominal
 real-time playback, and broader hardware conformance remain open.
 
 Original native tests exercise all five forms across both NTSC PLLs with
-a private peer and include eleven physical store cases. The original
-Chrome `sh2Store`, `sh2BusPipeline`, `interruptEntry`, and
-`refreshArbitration` groups pass. Formatting and native and Wasm Clippy
-with warnings denied pass. The review worktree reproduces both measured
-Web assets byte for byte.
+a private peer and compare both caches directly. Eleven physical store
+cases also pass. The original Chrome groups `sh2Store`, `sh2BusPipeline`,
+`interruptEntry`, and `refreshArbitration` pass. Formatting and native and
+Wasm Clippy with warnings denied pass. The review worktree reproduces
+both measured Web assets byte for byte.
 
 The standard Wasm SHA-256 is
 `fd753320327cfd0992ee6f0227b787547f15474523b2784b9cdf1bd319377361`.
