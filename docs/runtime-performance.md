@@ -6173,12 +6173,12 @@ output signatures and zero runtime errors are observed through field 900.
 | Animation p95 field gap, ms | 40.3 to 37.5 | 39.9 to 37.3 |
 | Worklet underflow after confirmation through field 720, seconds | 4.165 to 3.807 | 4.097 to 3.720 |
 
-An unpaced startup comparison matches all 720 fields and 18 checkpoints.
-Throughput rises from 40.818 to 41.611 fields/s. A separate unpaced Machi
-Disc 1 comparison matches all 3,200 fields and 80 checkpoints, with
-throughput of 51.730 and 51.693 fields/s respectively. The comparisons match
-both CPUs, cache and timing state, WRAM, renderer transport, full canonical
-Sound state, and per-field PCM and pixel digests.
+The unpaced Chrome replay covers 720 startup fields at 18 checkpoints and
+3,200 Machi Disc 1 fields at 80 checkpoints. The exposed SH-2 states,
+clocks, WRAM, renderer transport, and complete Sound snapshots match at
+those checkpoints. Rolling PCM and pixel hashes cover every measured
+field. Startup throughput rises from 40.818 to 41.611 fields/s. Game
+throughput changes from 51.730 to 51.693 fields/s.
 
 In ordinary Machi Disc 1 playback, both orders warm through field 12,900 and
 measure six 12-second windows with both Workers and the Worklet active. All
