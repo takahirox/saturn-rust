@@ -6298,3 +6298,51 @@ The JavaScript bindings match the baseline. Sustained real-time playback,
 continuous audio, and broader hardware conformance remain open.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+
+## Retire settled DIVU reads within cached SH-2 bursts (2026-11-24)
+
+Master-only cached bursts can include aligned longword reads from an
+idle, enabled SH7604 division unit. Each read retains the internal bus
+clocks. The first selected read consumes the stored write-to-read
+instruction dependency, including its extra clock when the read immediately
+follows the write. Rejected prefixes restore the staged dependency.
+Division reads are excluded from persistent loop replay. Busy divisions
+and accesses outside the admitted observer interval use ordinary scheduling.
+
+Fixed-input Chrome 158.0.8127.36 runs match 720 firmware fields at 18
+checkpoints and 3,200 game fields at 80 checkpoints. Both CPU states,
+clocks, WRAM, full Sound state, renderer transport, pixels, and PCM match.
+The game diagnostic improves from 53.469 to 53.673 fields/s. The
+CD-intensive 37-field interval takes 1,802.7 to 1,786.7 ms. In the repeated
+firmware diagnostic, fields 601–720 take 4,191.1 to 4,040.1 ms.
+
+The ordinary player uses the Sound and Video Workers and 44.1 kHz
+AudioWorklet. The game compares six twelve-second intervals after field
+12,900. All 157 inputs land at the requested fields, 4,030 measured fields
+are common, and every field is drawn. The custom BIOS pairs with no disc
+match all 14 inputs and render the same signatures through field 900.
+There are zero runtime errors or audio queue drops.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Game overall playback, fields/s | 56.070 to 56.073 | 55.891 to 56.058 |
+| Game matched field gap p95, ms | 32.9 to 32.7 | 33.5 to 32.6 |
+| Game matched field gap p99, ms | 45.0 to 44.8 | 45.8 to 45.3 |
+| Game audio shortage per 72 s, seconds | 4.533 to 4.524 | 4.725 to 4.550 |
+| BIOS animation fields 601–720, fields/s | 30.863 to 31.889 | 31.055 to 31.998 |
+| BIOS audio shortage after clock confirmation through field 720, seconds | 3.500 to 3.315 | 3.430 to 3.241 |
+
+The former VDP1 fault interval is 0.96% slower in forward order and
+1.53% faster in reverse order. The forward maximum matched field gap
+increases by 2.3 ms. Native validation includes 62 cached scheduler tests
+and four DIVU tests. All 32 shared Chrome regression groups and the
+original `sh2Load`, `sh2BusPipeline`, and `interruptEntry` groups pass.
+Both native and Wasm Clippy pass with warnings denied.
+
+The exact standard Wasm SHA-256 is
+`3636c34ff6af3e87ccd9cce03e19a771785eb341a9f2024f6109733bfd40c6ce`.
+The JavaScript bindings match the baseline. Sustained real-time playback,
+continuous audio, and broader hardware conformance remain open.
+
+Related to #138 and #17. Private media and raw captures stay local.

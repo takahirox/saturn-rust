@@ -593,6 +593,37 @@ impl OnChip {
         (winner.0 != 0).then_some((winner.0 as u8, winner.1 as u8))
     }
 
+    /// Peek a settled internal read and its pending write-to-read interlock.
+    pub(crate) fn cached_division_read32(
+        &self,
+        address: u32,
+        epoch_delta: u64,
+        already_read: bool,
+    ) -> Option<(u32, u32)> {
+        let offset = address.checked_sub(DIVU)?;
+        if offset >= 0x18 || offset & 3 != 0 || self.module_stop & 4 != 0 {
+            return None;
+        }
+        let division = self.division.borrow();
+        if division.busy() {
+            return None;
+        }
+        let epoch = self.instruction_epoch.get().wrapping_add(epoch_delta);
+        let waits = u32::from(
+            !already_read
+                && self
+                    .division_write_epoch
+                    .get()
+                    .is_some_and(|written| written.wrapping_add(1) == epoch),
+        );
+        Some((division.read(offset)?, waits))
+    }
+
+    pub(crate) fn commit_cached_division_read(&self) {
+        self.division_write_epoch.take();
+        self.peripheral_deadline.set(None);
+    }
+
     pub(crate) fn cpu_peripheral_wait(&self, address: u32, width: usize, write: bool) -> u32 {
         // H §10.4: the internal bus remains busy until DIVU completes.
         // Scheduled CPU accesses must let hardware time elapse, rather than

@@ -331,6 +331,8 @@ pub struct Bus {
     cached_fill_storage: crate::cache::CachedLines,
     cached_bus_events: Vec<cached::BusEvent>,
     #[cfg(test)]
+    cached_idle_division_reads: bool,
+    #[cfg(test)]
     cached_hirq_window_enabled: bool,
     #[cfg(test)]
     cached_hirq_window_counts: [u64; 5],
@@ -515,6 +517,8 @@ impl Default for Bus {
             cached_retirement_points: Vec::new(),
             cached_fill_storage: Default::default(),
             cached_bus_events: Vec::new(),
+            #[cfg(test)]
+            cached_idle_division_reads: false,
             #[cfg(test)]
             cached_hirq_window_enabled: true,
             #[cfg(test)]
