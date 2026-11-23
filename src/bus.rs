@@ -402,6 +402,10 @@ pub struct Bus {
     cached_prepared_passive: u64,
     #[cfg(test)]
     cached_prepared_slots: u64,
+    #[cfg(test)]
+    cached_resident_multiplier: [u64; 3],
+    #[cfg(test)]
+    cached_resident_multiplier_prefix: u64,
     // Opt-in, first 64 completed legacy-DSTP transactions; no guest reads.
     pub(crate) dstp_trace: Option<Vec<String>>,
     bios: Option<Vec<u8>>,
@@ -581,6 +585,10 @@ impl Default for Bus {
             cached_prepared_passive: 0,
             #[cfg(test)]
             cached_prepared_slots: 0,
+            #[cfg(test)]
+            cached_resident_multiplier: [0; 3],
+            #[cfg(test)]
+            cached_resident_multiplier_prefix: 0,
             dstp_trace: None,
             bios: None,
             low: vec![0; WRAM_SIZE],

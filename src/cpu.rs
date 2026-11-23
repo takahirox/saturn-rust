@@ -316,6 +316,20 @@ impl CachedInstruction {
     }
 }
 
+pub(crate) struct ResidentMultiplier {
+    pub at: u64,
+    pub future: u32,
+    pub operands: Option<[u32; 2]>,
+    successor: u32,
+    next_word: u16,
+    decode_ready: u64,
+    ex: u64,
+    opcode: u16,
+    states: u32,
+    pipeline: timing::LoadPipeline,
+    access: multiplier::Access,
+}
+
 impl Cpu {
     pub(crate) fn cached_cycle_differences(&self, prior: &Self, elapsed: u64) -> [u32; 3] {
         let mut expected = prior.clone();
@@ -628,6 +642,98 @@ impl Cpu {
         self.multiplier.clock += u64::from(self.last_clocks);
         self.fetch
             .finish_cached_pair(self.state.pc, (plan.words.1, future), plan.decode_ready);
+    }
+
+    /// Prepare CLRMAC, STS MACH/MACL, or MAC.L with an already decoded
+    /// successor. The bus proves all real zero-wait reads before retirement.
+    pub(crate) fn prepare_resident_multiplier(
+        &self,
+        opcode: u16,
+        now: u64,
+    ) -> Option<ResidentMultiplier> {
+        let mac = opcode & 0xF00F == 0x000F;
+        if !(mac || opcode == 0x0028 || matches!(opcode & 0xF0FF, 0x000A | 0x001A))
+            || self.state.status != CpuStatus::Running
+            || self.state.address_error_pending
+        {
+            return None;
+        }
+        let successor = self
+            .state
+            .delay_target
+            .unwrap_or(self.state.pc.wrapping_add(2));
+        let (decoded, next_word) = self.fetch.cached_pair_for(self.state.pc, successor, now)?;
+        if decoded != opcode {
+            return None;
+        }
+        let mut pipeline = self.load_pipeline.clone();
+        let instruction = timing::instruction(opcode);
+        let ex = pipeline.issue_clock(now);
+        let interlock = pipeline.issue_instruction(instruction);
+        let issue = now + u64::from(interlock.saturating_sub(pipeline.issue_overlap));
+        let execute = ex + u64::from(interlock);
+        let (mut access, split) = self.multiplier.access(opcode, successor, execute, true)?;
+        let (at, decode_ready) = access.resident_boundaries(issue, execute);
+        let operands = mac.then(|| {
+            let n = usize::from(opcode >> 8 & 15);
+            let m = usize::from(opcode >> 4 & 15);
+            [
+                self.state.r[n],
+                self.state.r[m].wrapping_add(if n == m { 4 } else { 0 }),
+            ]
+        });
+        Some(ResidentMultiplier {
+            at,
+            future: successor.wrapping_add(2),
+            operands,
+            successor,
+            next_word,
+            decode_ready,
+            ex,
+            opcode,
+            states: instruction.states(self.state.sr & T != 0) + interlock + split,
+            pipeline,
+            access,
+        })
+    }
+
+    pub(crate) fn retire_resident_multiplier(
+        &mut self,
+        mut plan: ResidentMultiplier,
+        future: u16,
+        operands: [u32; 2],
+    ) {
+        let inhibit = if plan.operands.is_some() {
+            commit_mac(
+                &mut self.state,
+                plan.opcode,
+                4,
+                operands.map(|value| value as i32 as i64),
+            );
+            false
+        } else if plan.opcode == 0x0028 {
+            self.state.mach = 0;
+            self.state.macl = 0;
+            false
+        } else {
+            self.state.r[usize::from(plan.opcode >> 8 & 15)] =
+                special(&self.state, false, (plan.opcode >> 4) & 3);
+            true
+        };
+        self.last_clocks = plan.states
+            + self
+                .multiplier
+                .finish_at(plan.access, Some(plan.at), &mut plan.pipeline);
+        self.multiplier.clock += u64::from(self.last_clocks);
+        self.load_pipeline = plan.pipeline;
+        self.execution_clock = Some(plan.ex);
+        self.interrupt_inhibited = inhibit;
+        self.address_error_inhibited = false;
+        self.state.pc = plan.successor;
+        self.state.delay_target = None;
+        self.state.instructions += 1;
+        self.fetch
+            .finish_cached_pair(plan.successor, (plan.next_word, future), plan.decode_ready);
     }
 
     pub(crate) fn prepare_resident_control(&self, now: u64) -> Option<ResidentControl> {
@@ -1655,21 +1761,7 @@ impl Cpu {
                         )
                         .map_err(access)?;
                     let b = read_operand(bus, m_address, width).map_err(access)? as i32 as i64;
-                    s.r[n] = s.r[n].wrapping_add(width);
-                    s.r[m] = s.r[m].wrapping_add(width);
-                    let product = a * b;
-                    if s.sr & S == 0 {
-                        s.set_accumulator(s.accumulator().wrapping_add(product as u64));
-                    } else if width == 2 {
-                        // SH-2 (unlike SH-1) leaves MACH unchanged for saturated MAC.W.
-                        s.macl = (s.macl as i32 as i64 + product)
-                            .clamp(i32::MIN as i64, i32::MAX as i64)
-                            as u32;
-                    } else {
-                        let acc = ((s.accumulator() << 16) as i64) >> 16;
-                        let sum = (acc + product).clamp(-(1_i64 << 47), (1_i64 << 47) - 1);
-                        s.set_accumulator(sum as u64);
-                    }
+                    commit_mac(s, opcode, width, [a, b]);
                 }
                 _ if byte_memory => {
                     // P figs7.75/76: hold younger ID/IF through initial EX
@@ -1927,6 +2019,24 @@ impl Cpu {
         }
         self.multiplier.clock += u64::from(self.last_clocks);
         Ok(())
+    }
+}
+
+fn commit_mac(s: &mut CpuState, opcode: u16, width: u32, [a, b]: [i64; 2]) {
+    let n = usize::from(opcode >> 8 & 15);
+    let m = usize::from(opcode >> 4 & 15);
+    s.r[n] = s.r[n].wrapping_add(width);
+    s.r[m] = s.r[m].wrapping_add(width);
+    let product = a * b;
+    if s.sr & S == 0 {
+        s.set_accumulator(s.accumulator().wrapping_add(product as u64));
+    } else if width == 2 {
+        // SH-2 (unlike SH-1) leaves MACH unchanged for saturated MAC.W.
+        s.macl = (s.macl as i32 as i64 + product).clamp(i32::MIN as i64, i32::MAX as i64) as u32;
+    } else {
+        let acc = ((s.accumulator() << 16) as i64) >> 16;
+        let sum = (acc + product).clamp(-(1_i64 << 47), (1_i64 << 47) - 1);
+        s.set_accumulator(sum as u64);
     }
 }
 

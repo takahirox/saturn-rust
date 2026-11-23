@@ -7,7 +7,9 @@
 use super::poll_cycle::PollCycle;
 use super::*;
 use crate::cache::{CacheTouch, CachedLines};
-use crate::cpu::{CachedClass, CachedInstruction, Cpu, CpuStatus, ResidentControl};
+use crate::cpu::{
+    CachedClass, CachedInstruction, Cpu, CpuStatus, ResidentControl, ResidentMultiplier,
+};
 pub(super) mod hirq_entry;
 mod hirq_refresh;
 #[cfg(test)]
@@ -124,6 +126,20 @@ struct ResidentFetches {
     values: [u16; 3],
     touches: [Option<CacheTouch>; 3],
     retained: Option<(u32, u16)>,
+}
+struct ResidentMultiplierReads {
+    operands: [u32; 2],
+    instruction: u16,
+    touches: [Option<CacheTouch>; 3],
+    retained: Option<(u32, u16)>,
+}
+#[derive(Default)]
+struct ResidentMultiplierPrefix {
+    retired: u32,
+    at: u64,
+    ready: u64,
+    #[cfg(test)]
+    shapes: [u64; 3],
 }
 struct CycleAnchor {
     // The entry CPU and local state already live for the whole batch.
@@ -396,34 +412,140 @@ impl Cached<'_> {
             retained: self.retained.get(),
         };
         for (i, &(address, _, discard)) in plan.fetches.iter().flatten().enumerate() {
-            if !ordinary_memory(address) || address & 1 != 0 {
-                return None;
-            }
             if discard {
                 result.retained = None;
             }
-            if let Some((at, word)) = result.retained
-                && at == address
-            {
-                result.retained = None;
-                result.values[i] = word;
-                continue;
-            }
-            let (bytes, touch): ([u8; 4], _) = if self.version_count.get() == 0 {
-                self.cache.peek_cached_touch(address & !3)?
-            } else {
-                self.fills.borrow().peek_touch(self.cache, address & !3)?
-            };
-            result.touches[i] = Some(touch);
-            if address & 2 == 0 {
-                result.values[i] = u16::from_be_bytes([bytes[0], bytes[1]]);
-                result.retained = Some((address + 2, u16::from_be_bytes([bytes[2], bytes[3]])));
-            } else {
-                result.values[i] = u16::from_be_bytes([bytes[2], bytes[3]]);
-                result.retained = None;
-            }
+            let (word, touch) = self.peek_resident_instruction(address, &mut result.retained)?;
+            result.values[i] = word;
+            result.touches[i] = touch;
         }
         Some(result)
+    }
+    fn peek_resident_instruction(
+        &self,
+        address: u32,
+        retained: &mut Option<(u32, u16)>,
+    ) -> Option<(u16, Option<CacheTouch>)> {
+        if !ordinary_memory(address) || address & 1 != 0 {
+            return None;
+        }
+        if let Some((at, word)) = *retained
+            && at == address
+        {
+            *retained = None;
+            return Some((word, None));
+        }
+        let (bytes, touch): ([u8; 4], _) = if self.version_count.get() == 0 {
+            self.cache.peek_cached_touch(address & !3)?
+        } else {
+            self.fills.borrow().peek_touch(self.cache, address & !3)?
+        };
+        if address & 2 == 0 {
+            *retained = Some((address + 2, u16::from_be_bytes([bytes[2], bytes[3]])));
+            Some((u16::from_be_bytes([bytes[0], bytes[1]]), Some(touch)))
+        } else {
+            *retained = None;
+            Some((u16::from_be_bytes([bytes[2], bytes[3]]), Some(touch)))
+        }
+    }
+    fn peek_resident_long(&self, address: u32) -> Option<(u32, CacheTouch)> {
+        if !ordinary_memory(address) || !address.is_multiple_of(4) {
+            return None;
+        }
+        let (bytes, touch) = if self.version_count.get() == 0 {
+            self.cache.peek_cached_touch(address)?
+        } else {
+            self.fills.borrow().peek_touch(self.cache, address)?
+        };
+        Some((u32::from_be_bytes(bytes), touch))
+    }
+    fn resident_multiplier_reads(
+        &self,
+        plan: &ResidentMultiplier,
+    ) -> Option<ResidentMultiplierReads> {
+        if self.store.get().is_some() {
+            return None;
+        }
+        let mut operands = [0; 2];
+        let mut touches = [None; 3];
+        let mut retained = self.retained.get();
+        if let Some([first, _]) = plan.operands {
+            let (value, touch) = self.peek_resident_long(first)?;
+            operands[0] = value;
+            touches[0] = Some(touch);
+        }
+        let (instruction, touch) = self.peek_resident_instruction(plan.future, &mut retained)?;
+        touches[1] = touch;
+        if let Some([_, second]) = plan.operands {
+            let (value, touch) = self.peek_resident_long(second)?;
+            operands[1] = value;
+            touches[2] = Some(touch);
+        }
+        Some(ResidentMultiplierReads {
+            operands,
+            instruction,
+            touches,
+            retained,
+        })
+    }
+    // Keep the Master-only loop separate during Rust's Wasm code generation.
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
+    fn resident_multiplier_prefix(
+        &mut self,
+        cpu: &mut Cpu,
+        mut opcode: u16,
+        limit: u32,
+        end: u64,
+        mut record: impl FnMut(u64) -> bool,
+    ) -> ResidentMultiplierPrefix {
+        let mut prefix = ResidentMultiplierPrefix::default();
+        while let Some(plan) = cpu.prepare_resident_multiplier(opcode, self.clock.get()) {
+            let at = plan.at;
+            if at > self.end.get() {
+                break;
+            }
+            let Some(reads) = self.resident_multiplier_reads(&plan) else {
+                break;
+            };
+            if !record(at) {
+                break;
+            }
+            self.instruction_break(cpu.state().pc, false);
+            let lru = self.lru.get_mut();
+            for touch in reads.touches.into_iter().flatten() {
+                touch.apply(lru);
+            }
+            self.retained.set(reads.retained);
+            #[cfg(test)]
+            {
+                let shape = if opcode == 0x0028 {
+                    0
+                } else if plan.operands.is_none() {
+                    1
+                } else {
+                    2
+                };
+                prefix.shapes[shape] += 1;
+            }
+            cpu.retire_resident_multiplier(plan, reads.instruction, reads.operands);
+            prefix.at = at;
+            prefix.ready = (cpu.execution_clock().unwrap() + u64::from(cpu.last_clocks())).max(at);
+            self.clock.set(prefix.ready.min(end));
+            prefix.retired += 1;
+            if prefix.retired == limit
+                || self.clock.get() >= end
+                || !ordinary_memory(cpu.state().pc)
+            {
+                break;
+            }
+            let Some(next) = cpu.decoded_opcode().filter(|op| {
+                *op == 0x0028 || matches!(*op & 0xF0FF, 0x000A | 0x001A) || *op & 0xF00F == 0x000F
+            }) else {
+                break;
+            };
+            opcode = next;
+        }
+        prefix
     }
     fn prepared_retirement(&self, plan: &CachedInstruction) -> Option<u64> {
         let at = match plan.operand {
@@ -2307,6 +2429,54 @@ impl Bus {
                         points.points.push(Retirement { at });
                         points.last_reference = reference;
                     }
+                    continue;
+                }
+            }
+            if poll.is_none()
+                && class == CachedClass::Other
+                && op >> 12 == 0
+                && memory.passive.is_none()
+                && ordinary_memory(cpu.state().pc)
+            {
+                let limit = if !sound_lookahead
+                    && self
+                        .loop_probe
+                        .as_ref()
+                        .is_none_or(|probe| !probe.observing)
+                {
+                    count - retired
+                } else {
+                    1
+                };
+                let prefix = memory.resident_multiplier_prefix(&mut cpu, op, limit, end, |at| {
+                    if !sound_lookahead {
+                        return true;
+                    }
+                    let reference = self.system_clock.deadline(
+                        ((at - self.main_clocks) as u32).saturating_sub(self.pending_main_clocks),
+                    );
+                    if !checkpoint_sound && reference.saturating_sub(points.last_reference) >= 9 {
+                        return false;
+                    }
+                    points.points.push(Retirement { at });
+                    points.last_reference = reference;
+                    true
+                });
+                if prefix.retired != 0 {
+                    #[cfg(test)]
+                    {
+                        for (total, count) in self
+                            .cached_resident_multiplier
+                            .iter_mut()
+                            .zip(prefix.shapes)
+                        {
+                            *total += count;
+                        }
+                        self.cached_resident_multiplier_prefix += u64::from(prefix.retired - 1);
+                    }
+                    retired_at = prefix.at;
+                    ready = prefix.ready;
+                    retired += prefix.retired;
                     continue;
                 }
             }

@@ -6151,3 +6151,54 @@ captures stay local.
 
 Related to #138 and #17. Sustained real-time gameplay, continuous audio and
 broader hardware conformance remain open.
+
+
+## Keep resident SH-2 multiply-accumulate execution in the startup burst (2026-11-23)
+
+A bounded cached burst can retire resident CLRMAC, STS MACH, STS MACL and
+MAC.L directly. It checks the actual instruction fetch, operands, interlocks
+and retirement deadline before publishing each instruction. The Wasm build
+keeps this loop out of the shared dispatcher. The path uses the existing
+cache replacement, interrupt admission and Sound timing rules.
+
+The ordinary Chrome 158.0.8127.36 player starts with a locally supplied Custom
+BIOS and no disc. Both orders use the same 14 stamped controller inputs to
+confirm the clock menu and show the startup animation. Every field is drawn
+and the 44.1 kHz AudioWorklet reports zero queue drops. The same rendered
+output signatures and zero runtime errors are observed through field 900.
+
+| Custom BIOS measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Animation fields 601–720, fields/s | 28.049 to 29.800 | 28.414 to 30.008 |
+| Animation p95 field gap, ms | 40.3 to 37.5 | 39.9 to 37.3 |
+| Worklet underflow after confirmation through field 720, seconds | 4.165 to 3.807 | 4.097 to 3.720 |
+
+An unpaced startup comparison matches all 720 fields and 18 checkpoints.
+Throughput rises from 40.818 to 41.611 fields/s. A separate unpaced Machi
+Disc 1 comparison matches all 3,200 fields and 80 checkpoints, with
+throughput of 51.730 and 51.693 fields/s respectively. The comparisons match
+both CPUs, cache and timing state, WRAM, renderer transport, full canonical
+Sound state, and per-field PCM and pixel digests.
+
+In ordinary Machi Disc 1 playback, both orders warm through field 12,900 and
+measure six 12-second windows with both Workers and the Worklet active. All
+157 controller events land at their requested fields. All fields are drawn
+with zero errors or audio queue drops. There are 3,965 common measured fields.
+
+| Game measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Overall playback, fields/s | 54.988 to 55.944 | 55.933 to 55.931 |
+| Matched playback, fields/s | 55.012 to 55.881 | 55.868 to 55.881 |
+| Matched p99 field gap, ms | 49.1 to 45.6 | 45.3 to 45.5 |
+| Worklet underflow, seconds | 5.800 to 4.676 | 4.696 to 4.678 |
+
+All 27 targeted native multiplier tests and the original Chrome
+`sh2Multiplier`, `sh2BusPipeline`, `sh2Load` and `interruptEntry`
+groups pass. Native and Wasm Clippy pass with warnings denied. The standard
+Wasm SHA-256 is
+`42e6df52489703592af468218150d4beb3fb396ae663cb9eff55045726e8a1ac`.
+The JavaScript binding bytes match the baseline. Private media and raw
+captures stay local.
+
+Related to #138 and #17. The startup and game still fall short of real-time
+playback with continuous audio. Broader hardware conformance remains open.

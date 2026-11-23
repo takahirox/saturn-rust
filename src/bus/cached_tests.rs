@@ -3447,3 +3447,77 @@ fn deferred_display_marks_empty_edge_before_same_edge_register_completion() {
     );
     assert_eq!(trace[3].words, [0x1234, 0x5671]);
 }
+
+#[test]
+fn resident_multiplier_accumulate_matches_every_hardware_retirement() {
+    for limit in [1, 64] {
+        for fast in [false, true] {
+            for saturating in [false, true] {
+                for alias in [false, true] {
+                    for delay_slot in [false, true] {
+                        let data = HIGH_WRAM + 0xFF0;
+                        let first = data + 12;
+                        let second = if alias { first + 4 } else { data + 0x1000 };
+                        let mut bytes = vec![0; BIOS_SIZE];
+                        bytes[..4].copy_from_slice(&0x200u32.to_be_bytes());
+                        bytes[4..8].copy_from_slice(&0x060F_F000u32.to_be_bytes());
+                        let mac = if alias { 0x011F } else { 0x012F };
+                        let mut program = vec![0xE300 | (u16::from(saturating) * 2), 0x430E];
+                        // Loop over two MAC operations to retain a busy multiplier
+                        // between iterations. Reload the addressing registers.
+                        program.extend([0xD10E, 0xD20F, 0x0028]);
+                        if delay_slot {
+                            program.extend([0xA000, mac, mac]);
+                        } else {
+                            program.extend([mac, mac, 0x0009]);
+                        }
+                        program.extend([0x041A, 0x050A, 0xAFF6, 0x0009]);
+                        for (i, word) in program.into_iter().enumerate() {
+                            bytes[0x200 + i * 2..0x202 + i * 2]
+                                .copy_from_slice(&word.to_be_bytes());
+                        }
+                        bytes[0x240..0x244].copy_from_slice(&first.to_be_bytes());
+                        bytes[0x244..0x248].copy_from_slice(&second.to_be_bytes());
+                        let (mut a, mut b) = pair(&bytes);
+                        for machine in [&mut a, &mut b] {
+                            machine.bus.change_system_clock(fast);
+                            machine.bus.cache[0].get_mut().set_control(1);
+                            for (address, value) in [
+                                (first, 0x8000_0040),
+                                (second, 0x7FFF_FFFF),
+                                (second + 4, 0xFFFF_FFFF),
+                                (first + if alias { 12 } else { 4 }, 0xFFFF_FFFE),
+                                (first + 8, 0x4000_0000),
+                            ] {
+                                machine.bus.write32(address, value).unwrap();
+                            }
+                        }
+                        while a.cpu_state().instructions < 256 {
+                            if a.try_cached_batch(limit).unwrap() == 0 {
+                                a.step_inner_with_idle(true).unwrap();
+                            }
+                            while b.cpu_state().instructions < a.cpu_state().instructions {
+                                b.step().unwrap();
+                            }
+                            assert_eq!(a.cpu, b.cpu);
+                            assert_eq!(a.clocks(), b.clocks());
+                            assert_eq!(a.cpu_ready, b.cpu_ready);
+                            assert_eq!(a.bus.instruction_word, b.bus.instruction_word);
+                            a.bus.cache[0]
+                                .borrow()
+                                .assert_same_contents(&b.bus.cache[0].borrow());
+                            a.bus.onchip[0].assert_cached_read_bus_matches(&b.bus.onchip[0]);
+                        }
+                        assert!(
+                            a.bus
+                                .cached_resident_multiplier
+                                .into_iter()
+                                .all(|count| count > 0)
+                        );
+                        assert_eq!(a.bus.cached_resident_multiplier_prefix != 0, limit > 1);
+                    }
+                }
+            }
+        }
+    }
+}
