@@ -401,6 +401,53 @@ impl Bsc {
         }));
         (base, waits)
     }
+    /// A private cache refill samples immutable Work RAM before publication.
+    /// Use the real first-beat timing and retain its row and turnaround state.
+    /// Every remaining beat is on the same interface and has no turnaround.
+    pub(super) fn cached_refill(&self, first_address: u32) -> Option<(u32, u64)> {
+        if first_address >= 0x0800_0000
+            || first_address & 3 != 0
+            || self.refresh_remaining.get() != 0
+            || self.access.get().is_some_and(|prior| prior.busy != 0)
+        {
+            return None;
+        }
+        let area = first_address >> 25;
+        let width = self.bus_width(first_address).min(4);
+        let beats = 16 / width as u32;
+        let interface = self.interface(first_address);
+        let suffix = match interface {
+            Interface::Ordinary => {
+                let waits = self.software_waits(first_address);
+                let second_halves =
+                    4 * u32::from(area == 0 && self.registers[0] & 0x800 != 0 && waits != 0);
+                (beats - 1) * (2 + waits) - second_halves
+            }
+            Interface::Sdram => {
+                let mcr = self.registers[3];
+                let active = area == 3 && mcr & 0x200 != 0;
+                let trp = 1 + u32::from(mcr >> 15);
+                let latency_is_one = self.registers[2] >> (area * 2) & 3 == 0;
+                let precharge = if active {
+                    0
+                } else {
+                    trp - u32::from(!latency_is_one)
+                };
+                (beats - 1) + precharge
+            }
+            Interface::Dram | Interface::Pseudo => return None,
+        };
+        let (base, waits) = self.access_timing(first_address, width, false, true, false);
+        let head = base + waits;
+        self.advance_bus(head);
+        // Same-area read beats leave the preceding read with zero busy clocks
+        // and zero gap. SDRAM additionally counts every word of the burst.
+        if interface == Interface::Sdram {
+            self.burst_words.set(beats);
+        }
+        Some((head + suffix, u64::from(beats)))
+    }
+
     pub fn extend_access(&self, clocks: u32) {
         if let Some(mut access) = self.access.get() {
             access.busy = access.busy.saturating_add(clocks);
@@ -1052,3 +1099,102 @@ mod mode_tests {
 mod kernel;
 #[cfg(any(test, feature = "kernel-experiment"))]
 pub(crate) use kernel::KernelBusClock;
+
+#[cfg(test)]
+mod cached_refill_tests {
+    use super::*;
+    use crate::bus::{HIGH_WRAM, LOW_WRAM};
+
+    fn literal(bsc: &Bsc, first: u32) -> (u32, u64) {
+        let mut clocks = 0;
+        let width = bsc.bus_width(first).min(4);
+        let count = 16 / width;
+        for beat in 0..count {
+            let address = (first & !15) | (first.wrapping_add((beat * width) as u32) & 15);
+            let (base, waits) =
+                bsc.access_timing(address, width, false, beat == 0, beat + 1 == count);
+            bsc.advance_bus(base + waits);
+            clocks += base + waits;
+        }
+        (clocks, count as u64)
+    }
+
+    #[test]
+    fn work_ram_refill_aggregate_preserves_bus_timing_rows_and_turnaround() {
+        let mut admitted = [0; 2];
+        for area in [LOW_WRAM, HIGH_WRAM] {
+            for (bcr1, mcr) in [
+                (0x0000, 0x0000),
+                (0x0B00, 0x0000),
+                (0x0001, 0x0000),
+                (0x0001, 0xC240),
+                (0x0005, 0x0240),
+                (0x0002, 0x0400),
+                (0x0003, 0x0000),
+            ] {
+                for bcr2 in [0x0054, 0x00A8, 0x00FC] {
+                    for wcr in [0x0000, 0x5555, 0xAAAA, 0xAAFF] {
+                        if matches!(bcr1 & 7, 2 | 3) && wcr >> 6 & 3 == 3 {
+                            continue;
+                        }
+                        for predecessor in [0, LOW_WRAM, 0x0400_0000, HIGH_WRAM, HIGH_WRAM + 0x2000]
+                        {
+                            for gap in 0..=2 {
+                                let mut bus = Bsc::default();
+                                bus.write(BSC, 0xA55A_0000 | bcr1).unwrap();
+                                bus.write(BSC + 4, 0xA55A_0000 | bcr2).unwrap();
+                                bus.write(BSC + 8, 0xA55A_0000 | wcr).unwrap();
+                                bus.write(BSC + 12, 0xA55A_0000 | mcr).unwrap();
+                                if predecessor != 0 {
+                                    let (base, waits) = bus.access_timing(
+                                        predecessor,
+                                        bus.bus_width(predecessor),
+                                        false,
+                                        true,
+                                        true,
+                                    );
+                                    bus.advance_bus(base + waits + gap);
+                                }
+                                for offset in [0, 4, 8, 12] {
+                                    let first = area + offset;
+                                    let actual = bus.clone();
+                                    let expected = bus.clone();
+                                    if let Some(timing) = actual.cached_refill(first) {
+                                        assert_eq!(timing, literal(&expected, first));
+                                        assert_eq!(actual, expected);
+                                        admitted[usize::from(
+                                            bus.interface(first) == Interface::Sdram,
+                                        )] += 1;
+                                    } else {
+                                        assert!(matches!(
+                                            bus.interface(first),
+                                            Interface::Dram | Interface::Pseudo
+                                        ));
+                                        assert_eq!(actual, bus);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(admitted.into_iter().all(|uses| uses > 100));
+    }
+
+    #[test]
+    fn physical_recovery_or_a_held_beat_uses_the_literal_refill() {
+        let bus = Bsc::default();
+        for refresh in [false, true] {
+            if refresh {
+                bus.reset_bus();
+                bus.refresh_remaining.set(3);
+            } else {
+                bus.access_timing(HIGH_WRAM, 2, false, true, true);
+            }
+            let expected = bus.clone();
+            assert_eq!(bus.cached_refill(HIGH_WRAM), None);
+            assert_eq!(bus, expected);
+        }
+    }
+}

@@ -6022,3 +6022,46 @@ groups pass with that Wasm. Private media and raw captures stay local.
 
 Related to #138 and #17. Sustained real-time gameplay, continuous audio, and
 broader hardware conformance remain open.
+
+
+
+## Aggregate BSC timing for private SH-2 cache refills (2026-11-23)
+
+The cached executor stages a 16-byte WRAM refill inside an already admitted
+observer window. The BSC planner uses the existing first-beat operation to
+establish turnaround and row state, then calculates the duration of the
+remaining beats together. Ordinary memory retains the configured wait and CS0
+nibble cycles. SDRAM retains the burst length, active row and final precharge.
+The literal planner handles held bus phases, refresh recovery, DRAM and
+pseudo-static RAM.
+
+An unpaced comparison in Chrome 157.0.8103.79 matches 80 checkpoints across
+3,200 fields of Machi Disc 1. Both CPUs, guest clocks, WRAM, canonical Sound and
+renderer transport match. Every field contributes to matching PCM and pixel
+digests. Throughput rises from 51.361 to 51.740 fields/s across the comparison,
+with gains in 64 of 80 windows. The CD-intensive interval takes 1,882.7 to
+1,874.5 ms. The four late fields dominated by DMA take 342.7 to 347.1 ms.
+
+The ordinary Chrome player uses the Sound and Video Workers and AudioWorklet.
+Each arm warms through field 12,900 and measures six 12-second windows. All
+four arms draw every emulated field, apply all 157 controller events and
+report zero runtime errors and audio queue drops. Both orders share 4,011
+matched presentation fields.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Overall playback, fields/s | 55.737 to 55.890 | 55.668 to 55.751 |
+| Matched playback, fields/s | 55.741 to 55.869 | 55.657 to 55.744 |
+| Four matched slow ranges, change | +1.52% | +0.50% |
+| Worklet underflow output frames | 216,431 to 209,391 | 220,911 to 216,431 |
+| Worklet underflow duration, seconds | 4.91 to 4.75 | 5.01 to 4.91 |
+
+The 22 native BSC tests cover ordinary and SDRAM refill timings, all four
+longword positions, earlier reads and idle states, open rows, precharge,
+refresh recovery and held bus phases. The standard Wasm has SHA-256
+`496127abe365a6ed58d2ebd28bae34c880c516a631146cfbe28b9badb40e603e`.
+The Chrome `refreshArbitration`, `sh2Fetch`, `sh2BusPipeline` and
+`abusTiming` original groups pass against that artifact.
+
+Related to #138 and #17. Sustained real-time gameplay, continuous audio and
+broader hardware conformance remain open.
