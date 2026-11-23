@@ -155,7 +155,14 @@ fn completed_sh2_words_define_the_sample_and_equal_edge_is_only_an_emulator_prob
                                 let _ = b.vdp2.framebuffer().unwrap();
                             }
                         }
-                        assert_eq!(b.transactions.active.as_ref().unwrap().remaining, 1);
+                        assert_eq!(
+                            b.transactions
+                                .active
+                                .as_ref()
+                                .unwrap()
+                                .clocks_left(b.main_clocks),
+                            1
+                        );
                         assert_eq!(
                             b.replay_cpu(p).write16(REGISTERS | 0x20000000, initial ^ 8),
                             Ok(())

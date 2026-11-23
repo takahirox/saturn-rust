@@ -185,6 +185,35 @@ impl ClockJournal {
         self.phase = 0;
     }
 }
+fn clocks_until(completes: u64, main: u64) -> u32 {
+    // A phase or pipeline wait is at most u32 clocks away when scheduled.
+    // A larger forward distance means its completion is already due.
+    completes.wrapping_sub(main).try_into().unwrap_or(0)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PipelineWait {
+    requested: u32,
+    completes: u64,
+}
+impl PipelineWait {
+    fn new(requested: u32, main: u64) -> Self {
+        Self {
+            requested,
+            completes: main.wrapping_add(u64::from(requested)),
+        }
+    }
+
+    fn clocks_left(&self, main: u64) -> u32 {
+        clocks_until(self.completes, main)
+    }
+
+    fn shifted(mut self, elapsed: u64) -> Self {
+        self.completes = self.completes.wrapping_add(elapsed);
+        self
+    }
+}
+
 #[derive(Clone, Default, PartialEq, Eq)]
 pub(super) struct Journal {
     irq: Option<InterruptRequest>,
@@ -199,7 +228,7 @@ pub(super) struct Journal {
     beat_cursor: usize,
     waiting: Option<Transfer>,
     completed: bool,
-    pipeline_wait: Option<(u32, u32)>, // requested clocks, remaining clocks
+    pipeline_wait: Option<PipelineWait>,
     operand_completion: Option<u64>,
     pending_write: Option<WriteBeats>,
     write_accepted: bool,
@@ -340,7 +369,7 @@ impl Journal {
             &prior.beat_cursor,
             &prior.waiting,
             &prior.completed,
-            &prior.pipeline_wait,
+            &prior.pipeline_wait.map(|wait| wait.shifted(elapsed)),
             &prior.pending_write,
             &prior.write_accepted,
             &prior.write_context,
@@ -403,7 +432,12 @@ struct BufferedWrite {
 struct Active {
     owner: Owner,
     transfer: Transfer,
-    remaining: u32,
+    completes: u64,
+}
+impl Active {
+    pub(super) fn clocks_left(&self, clock: u64) -> u32 {
+        clocks_until(self.completes, clock)
+    }
 }
 struct ScuUnit {
     cycle: crate::scu::DmaCycle,
@@ -553,7 +587,9 @@ impl ScheduledMemory<'_> {
             }
             Operation::PipelineWait(clocks) => {
                 let mut journal = self.0.bus.transactions.journals[i].borrow_mut();
-                journal.pipeline_wait.get_or_insert((clocks, clocks));
+                journal
+                    .pipeline_wait
+                    .get_or_insert_with(|| PipelineWait::new(clocks, self.0.bus.main_clocks));
                 Err(BusError::Pending)
             }
             Operation::MemoryAccess(address, write, completion) => {
@@ -1329,7 +1365,7 @@ impl Bus {
                 Owner::Cpu(processor)
             },
             transfer,
-            remaining,
+            completes: self.main_clocks.wrapping_add(u64::from(remaining)),
         });
     }
     pub(super) fn cached_bus_compatible(&self) -> bool {
@@ -1402,7 +1438,7 @@ impl Bus {
             && [LOW_WRAM, HIGH_WRAM]
                 .into_iter()
                 .any(|base| (base..base + WRAM_SIZE as u32).contains(&address)))
-        .then_some(active.remaining)
+        .then_some(active.clocks_left(self.main_clocks))
     }
     pub(super) fn cached_reads_quiet(&self) -> bool {
         self.cached_readonly_bus_quiet() && self.external_owner.get() == Some(Processor::Master)
@@ -1489,7 +1525,8 @@ impl Bus {
         }
         let address = Self::physical(active.transfer.address);
         if write.beats.len() == 1 {
-            return Self::isolated_data_memory(address).then_some((active.remaining, None));
+            return Self::isolated_data_memory(address)
+                .then_some((active.clocks_left(self.main_clocks), None));
         }
         if !self.cached_isolated_write_pending() {
             return None;
@@ -1498,7 +1535,7 @@ impl Bus {
         // remaining clocks, then preview each admitted continuation with its
         // original first/last signals. Real board catch-up still publishes it.
         let mut sequence = self.onchip[0].plan_cached_reads(self.main_clocks);
-        let mut ready = self.main_clocks + u64::from(active.remaining);
+        let mut ready = active.completes;
         sequence.advance(ready);
         for beat in write.beats.iter().skip(1) {
             ready = sequence.write_phase(
@@ -1707,7 +1744,7 @@ impl Bus {
         self.transactions.internal[i] = Some(Active {
             owner: Owner::WriteAccept(processor, dmac),
             transfer: *journal.pending_write.as_ref().unwrap().front().unwrap(),
-            remaining: 1,
+            completes: self.main_clocks.wrapping_add(1),
         });
         self.transactions.writes[i] = Some(BufferedWrite {
             dmac,
@@ -1750,7 +1787,7 @@ impl Bus {
         let journal = self.transactions.journals[processor as usize].get_mut();
         debug_assert!(journal.pipeline_wait.is_none() && !journal.completed && clocks != 0);
         journal.operations.clear();
-        journal.pipeline_wait = Some((clocks, clocks));
+        journal.pipeline_wait = Some(PipelineWait::new(clocks, self.main_clocks));
     }
     pub(crate) fn resume_cached_load(
         &mut self,
@@ -1866,13 +1903,15 @@ impl Bus {
                     transfer,
                     // CPU reads first determine the cycle on the cache bus;
                     // writes and DMAC cycles need no such extra state.
-                    remaining: ((if transfer.write.is_some() { 1 } else { 2 })
-                        + self.onchip[i].cpu_peripheral_wait(
-                            transfer.address,
-                            transfer.width,
-                            transfer.write.is_some(),
-                        ))
-                    .max(self.operand_completion_wait(processor)),
+                    completes: self.main_clocks.wrapping_add(u64::from(
+                        ((if transfer.write.is_some() { 1 } else { 2 })
+                            + self.onchip[i].cpu_peripheral_wait(
+                                transfer.address,
+                                transfer.width,
+                                transfer.write.is_some(),
+                            ))
+                        .max(self.operand_completion_wait(processor)),
+                    )),
                 });
             }
         }
@@ -2069,7 +2108,11 @@ impl Bus {
                 self.transactions.internal[i] = Some(Active {
                     owner: Owner::Dmac(processor),
                     transfer,
-                    remaining: 1 + self.onchip[i].dma_wait_clocks(transfer.address, transfer.width),
+                    completes: self.main_clocks.wrapping_add(
+                        1 + u64::from(
+                            self.onchip[i].dma_wait_clocks(transfer.address, transfer.width),
+                        ),
+                    ),
                 });
                 if self.transactions.dmac_owner == Some(processor) {
                     self.transactions.dmac_owner = None;
@@ -2137,7 +2180,7 @@ impl Bus {
                     bridge_read: false,
                     bridge_write: None,
                 },
-                remaining,
+                completes: self.main_clocks.wrapping_add(u64::from(remaining)),
             });
             self.grant_cpu_internal();
             return false;
@@ -2229,7 +2272,7 @@ impl Bus {
                     bridge_read: false,
                     bridge_write: None,
                 },
-                remaining,
+                completes: self.main_clocks.wrapping_add(u64::from(remaining)),
             });
             self.grant_cpu_internal();
             return false;
@@ -2298,7 +2341,7 @@ impl Bus {
                         bridge_read: false,
                         bridge_write: None,
                     },
-                    remaining: 2,
+                    completes: self.main_clocks.wrapping_add(2),
                 });
                 self.transactions.previous = Some(processor);
                 return false;
@@ -2366,45 +2409,37 @@ impl Bus {
             .active
             .iter()
             .chain(self.transactions.internal.iter().flatten())
-            .map(|a| a.remaining)
+            .map(|a| a.clocks_left(self.main_clocks))
             .min()
             .unwrap_or(u32::MAX);
         self.transactions.journals[..2]
             .iter()
-            .filter_map(|j| j.borrow().pipeline_wait.map(|(_, remaining)| remaining))
+            .filter_map(|j| {
+                j.borrow()
+                    .pipeline_wait
+                    .map(|wait| wait.clocks_left(self.main_clocks))
+            })
             .fold(bus, u32::min)
     }
-    pub(super) fn advance_bus_transaction(&mut self, clocks: u32) -> Result<(), ScuError> {
-        // Decrement every already-granted phase before completing any of
-        // them: a completion may queue a new phase, never retroactively age it.
-        for active in self
-            .transactions
-            .internal
-            .iter_mut()
-            .flatten()
-            .chain(self.transactions.active.iter_mut())
-        {
-            active.remaining = active.remaining.saturating_sub(clocks);
-        }
+    pub(super) fn advance_bus_transaction(&mut self) -> Result<(), ScuError> {
+        // All grants use absolute completion clocks. A phase queued by
+        // another completion is dated from the new boundary automatically.
         for journal in &mut self.transactions.journals[..2] {
             let journal = journal.get_mut();
-            if let Some((requested, remaining)) = journal.pipeline_wait {
-                let remaining = remaining.saturating_sub(clocks);
-                journal.pipeline_wait = if remaining == 0 {
-                    journal
-                        .operations
-                        .push((Operation::PipelineWait(requested), Ok(0)));
-                    journal.completed = true;
-                    None
-                } else {
-                    Some((requested, remaining))
-                };
+            if let Some(wait) = journal.pipeline_wait
+                && wait.clocks_left(self.main_clocks) == 0
+            {
+                journal
+                    .operations
+                    .push((Operation::PipelineWait(wait.requested), Ok(0)));
+                journal.completed = true;
+                journal.pipeline_wait = None;
             }
         }
         for i in 0..2 {
             if self.transactions.internal[i]
                 .as_ref()
-                .is_some_and(|a| a.remaining == 0)
+                .is_some_and(|a| a.clocks_left(self.main_clocks) == 0)
             {
                 let active = self.transactions.internal[i].take().unwrap();
                 self.complete_bus_transaction(active)?;
@@ -2414,7 +2449,7 @@ impl Bus {
             .transactions
             .active
             .as_ref()
-            .is_some_and(|a| a.remaining == 0)
+            .is_some_and(|a| a.clocks_left(self.main_clocks) == 0)
         {
             let sound_memory = self.transactions.active.as_ref().is_some_and(|active| {
                 let physical = active.transfer.address & 0x1FFF_FFFF;
@@ -2425,7 +2460,8 @@ impl Bus {
                 // retained memory result is ready. Recheck on the next main-clock edge;
                 // PLL selection must not convert a reference wait into an
                 // incorrect number of main clocks.
-                self.transactions.active.as_mut().unwrap().remaining = 1;
+                self.transactions.active.as_mut().unwrap().completes =
+                    self.main_clocks.wrapping_add(1);
                 return Ok(());
             }
             let active = self.transactions.active.take().unwrap();
@@ -3145,6 +3181,26 @@ mod tests {
         b.advance_clocks(clocks).unwrap();
     }
     #[test]
+    fn a_real_peripheral_transfer_keeps_its_deadline_across_main_clock_wrap() {
+        let mut bus = Bus::default();
+        let p = Processor::Master;
+        let address = crate::onchip::FRT + 1;
+        bus.main_clocks = u64::MAX - 1;
+        assert_eq!(bus.replay_cpu(p).read8(address), Err(BusError::Pending));
+        bus.grant_bus_transaction();
+        assert_eq!(bus.bus_main_deadline(), 2);
+        bus.main_clocks = bus.main_clocks.wrapping_add(1);
+        bus.advance_bus_transaction().unwrap();
+        assert_eq!(bus.bus_main_deadline(), 1);
+        assert!(!bus.take_cpu_transaction_completion(p));
+        bus.main_clocks = bus.main_clocks.wrapping_add(1);
+        bus.advance_bus_transaction().unwrap();
+        assert_eq!(bus.bus_main_deadline(), u32::MAX);
+        assert!(bus.take_cpu_transaction_completion(p));
+        assert_eq!(bus.replay_cpu(p).read8(address), Ok(0));
+    }
+
+    #[test]
     fn adjacent_clock_observations_replay_the_same_phases_after_late_resume() {
         let mut b = Bus::default();
         let p = Processor::Master;
@@ -3170,6 +3226,43 @@ mod tests {
         assert_eq!(attempt(&mut b), Err(BusError::Pending));
         b.advance_clocks(5).unwrap();
         assert_eq!(attempt(&mut b), Ok((17, 22)));
+    }
+
+    #[test]
+    fn queued_pipeline_wait_deadlines_are_rebased_with_the_private_cpu() {
+        let mut source = Bus::default();
+        let mut later = Bus::default();
+        for (bus, clock) in [(&mut source, 32), (&mut later, 1024)] {
+            bus.set_slave_enabled(true);
+            bus.main_clocks = clock;
+            assert_eq!(
+                bus.replay_cpu(Processor::Slave).sh2_pipeline_wait(5),
+                Err(BusError::Pending)
+            );
+        }
+        let origin = source.private_transaction().unwrap();
+        assert!(later.private_transaction_matches(&origin, 1024 - 32));
+        assert!(!later.private_transaction_matches(&origin, 1024 - 31));
+        later.restore_private_transaction(origin.rebase_into_storage(
+            PrivateTransaction {
+                journal: Journal::default(),
+                active: None,
+                retained: None,
+                clocks: 0,
+            },
+            1024 - 32,
+        ));
+        later.main_clocks += 4;
+        later.advance_bus_transaction().unwrap();
+        assert_eq!(later.bus_main_deadline(), 1);
+        assert!(!later.take_cpu_transaction_completion(Processor::Slave));
+        later.main_clocks += 1;
+        later.advance_bus_transaction().unwrap();
+        assert!(later.take_cpu_transaction_completion(Processor::Slave));
+        assert_eq!(
+            later.replay_cpu(Processor::Slave).sh2_pipeline_wait(5),
+            Ok(())
+        );
     }
 
     #[test]
@@ -3747,7 +3840,7 @@ impl Bus {
             b.transactions
                 .active
                 .as_ref()
-                .map(|v| (v.owner, v.transfer, v.remaining))
+                .map(|v| (v.owner, v.transfer, v.clocks_left(b.main_clocks)))
         };
         assert!(
             active(self) == active(other),
@@ -3783,6 +3876,10 @@ impl PrivateTransaction {
     }
 
     pub(crate) fn shift_clock(&mut self, clocks: u64) {
+        if let Some(active) = &mut self.active {
+            active.completes = active.completes.wrapping_add(clocks);
+        }
+        self.journal.pipeline_wait = self.journal.pipeline_wait.map(|wait| wait.shifted(clocks));
         for (_, at) in &mut self.journal.clocks.phases {
             *at += clocks;
         }
@@ -3873,7 +3970,11 @@ impl Bus {
         prior: &PrivateTransaction,
         elapsed: u64,
     ) -> bool {
-        if self.transactions.internal[1] != prior.active
+        let mut shifted_active = prior.active.clone();
+        if let Some(active) = &mut shifted_active {
+            active.completes = active.completes.wrapping_add(elapsed);
+        }
+        if self.transactions.internal[1] != shifted_active
             || self.instruction_word[1].get() != prior.retained
             || self.cpu_bus_clocks[1].get() != prior.clocks
         {

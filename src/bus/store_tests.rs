@@ -207,7 +207,7 @@ fn store_buffer_backpressure_retains_payload_then_external_read_is_a_publication
                 .transactions
                 .active
                 .as_ref()
-                .map(|v| (v.transfer.address, v.remaining))
+                .map(|v| (v.transfer.address, v.clocks_left(m.bus.main_clocks)))
         );
         assert_eq!(state(&m, p).instructions, 1);
         advance(&mut m, origin + 42);

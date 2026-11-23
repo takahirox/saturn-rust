@@ -135,7 +135,14 @@ fn cpu_writes_publish_before_at_or_after_a_display_access_on_both_processors() {
                     Err(BusError::Pending)
                 );
                 b.grant_bus_transaction();
-                assert_eq!(b.transactions.active.as_ref().unwrap().remaining, 8);
+                assert_eq!(
+                    b.transactions
+                        .active
+                        .as_ref()
+                        .unwrap()
+                        .clocks_left(b.main_clocks),
+                    8
+                );
                 advance(&mut b, 7, chunk);
                 assert_eq!(b.read16(VRAM + 4), Ok(0x1111));
                 advance(&mut b, 1, chunk);

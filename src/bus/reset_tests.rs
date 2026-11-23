@@ -101,7 +101,7 @@ fn manual_reset_stops_cache_fill_at_current_longword_and_never_installs_partial_
                 for clock in 0..550 {
                     b.grant_bus_transaction();
                     if let Some(a) = &b.transactions.active
-                        && a.remaining == 1
+                        && a.clocks_left(b.main_clocks) == 1
                     {
                         trace.push((clock + 1, a.transfer.address, a.transfer.width));
                     }
@@ -138,7 +138,7 @@ fn manual_reset_during_narrow_word_read_stops_at_word_end_instead_of_longword_en
             for _ in 0..40 {
                 b.grant_bus_transaction();
                 if let Some(a) = &b.transactions.active
-                    && a.remaining == 1
+                    && a.clocks_left(b.main_clocks) == 1
                 {
                     addresses.push(a.transfer.address);
                 }
@@ -201,7 +201,14 @@ fn slow_video_cycle_holds_manual_reset_past_watchdog_pulse_without_stopping_peer
         arm(&mut b, p, true, 1);
         b.grant_bus_transaction();
         // Ordinary bus base2 + 1280 blanking wait (ST-058 §3.3).
-        assert_eq!(b.transactions.active.as_ref().unwrap().remaining, 1282);
+        assert_eq!(
+            b.transactions
+                .active
+                .as_ref()
+                .unwrap()
+                .clocks_left(b.main_clocks),
+            1282
+        );
         b.advance_clocks(514).unwrap();
         assert!(b.cpu_reset_active(p));
         assert_eq!(b.take_cpu_reset(p), None); // pulse ended, bus still draining
@@ -281,7 +288,7 @@ fn manual_reset_finishes_only_current_dma_longword_without_resuming_sixteen_byte
             for clock in 0..550 {
                 b.grant_bus_transaction();
                 if let Some(a) = &b.transactions.active
-                    && a.remaining == 1
+                    && a.clocks_left(b.main_clocks) == 1
                 {
                     trace.push((clock + 1, a.transfer.address, a.transfer.width));
                 }

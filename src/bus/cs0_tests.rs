@@ -46,7 +46,11 @@ fn phase(b: &mut Bus, address: u32, width: usize, duration: u32, chunk: u32) {
     b.grant_bus_transaction();
     let a = b.transactions.active.as_ref().unwrap();
     assert_eq!(
-        (a.transfer.address, a.transfer.width, a.remaining),
+        (
+            a.transfer.address,
+            a.transfer.width,
+            a.clocks_left(b.main_clocks)
+        ),
         (address, width, duration)
     );
     // Debugger reads cannot age, sample or publish the outstanding phase.
@@ -57,7 +61,14 @@ fn phase(b: &mut Bus, address: u32, width: usize, duration: u32, chunk: u32) {
             b.read32(address & !3).unwrap();
         }
     }
-    assert_eq!(b.transactions.active.as_ref().unwrap().remaining, duration);
+    assert_eq!(
+        b.transactions
+            .active
+            .as_ref()
+            .unwrap()
+            .clocks_left(b.main_clocks),
+        duration
+    );
     elapse(b, duration, chunk);
 }
 
@@ -369,7 +380,7 @@ fn cs0_refresh_waits_for_both_word_phases_before_peer_grant() {
             b.grant_bus_transaction();
             let a = b.transactions.active.as_ref().unwrap();
             assert!(a.owner == Owner::Refresh);
-            assert_eq!(a.remaining, 6);
+            assert_eq!(a.clocks_left(b.main_clocks), 6);
             let peer = if p == Processor::Master {
                 Processor::Slave
             } else {
@@ -485,11 +496,11 @@ fn cs0_reset_at_each_refill_and_dma_read_word_stops_at_the_documented_unit() {
                                 delta = delta.min(assertion - clock);
                             }
                             if let Some(a) = &b.transactions.active
-                                && a.remaining <= delta
+                                && a.clocks_left(b.main_clocks) <= delta
                             {
                                 assert!(a.transfer.write.is_none());
                                 trace.push((
-                                    clock + a.remaining,
+                                    clock + a.clocks_left(b.main_clocks),
                                     a.transfer.address,
                                     a.transfer.width,
                                 ));

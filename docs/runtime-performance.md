@@ -6202,3 +6202,53 @@ captures stay local.
 
 Related to #138 and #17. The startup and game still fall short of real-time
 playback with continuous audio. Broader hardware conformance remains open.
+
+
+## Schedule bus completions on the main clock (2026-11-23)
+
+Granted internal and shared bus phases and CPU-local pipeline waits retain
+their completion timestamps on the main clock. At each boundary the board
+still completes CPU-local waits, internal phases, and the shared phase in
+the established order. A retained Sound RAM phase retries on the next
+main clock if the memory result is pending. The private Slave transaction
+translates its deadlines along with the existing replay timestamps.
+
+Native validation covers 205 bus transaction tests and 11 private-poll
+tests, including a real peripheral transfer across main-clock wrap and
+a pending CPU-local wait restored at a later clock. Formatting, native
+all-target/all-feature Clippy, Wasm all-feature Clippy, and the standard
+build pass. The package is byte-identical to the measured candidate.
+The original Chrome groups `busTransactions`, `sh2BusPipeline`,
+`dmacBus`, and `refreshArbitration` pass.
+
+Fixed-work Chrome 158.0.8127.36 replays match 3,200 game fields at 80
+checkpoints and 720 firmware fields at 18 checkpoints. Both CPU states,
+hardware clocks, WRAM, renderer transport, and full Sound state match.
+Every measured field contributes to equal pixel and PCM digests. The
+game diagnostic rises from 53.319 to 53.625 fields/s. The CD-intensive
+37-field interval takes 1,804.6 to 1,784.9 ms. In the firmware diagnostic,
+fields 601–720 take 4,302.7 to 4,191.8 ms.
+
+The ordinary player keeps the Sound and Video Workers and the 44.1 kHz
+AudioWorklet active. The game pairs compare six twelve-second intervals
+after field 12,900. All 157 input events reach their requested fields,
+4,027 measured fields are common, and every field is drawn. The custom
+BIOS pairs run without a mounted disc, with 14 matched inputs and
+matching video signatures through field 900. There are no runtime
+errors or audio queue drops.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Game overall playback, fields/s | 55.946 to 56.029 | 55.863 to 56.002 |
+| Game matched field gap p99, ms | 45.6 to 44.9 | 45.8 to 44.9 |
+| Game audio shortage per 72 s, seconds | 4.673 to 4.571 | 4.774 to 4.612 |
+| BIOS animation fields 601–720, fields/s | 30.062 to 30.643 | 30.060 to 30.654 |
+| BIOS audio shortage after clock confirmation through field 720, seconds | 3.715 to 3.535 | 3.701 to 3.528 |
+
+The reverse game pair's maximum matched field gap rises from 97.3 to
+97.5 ms. The standard Wasm SHA-256 is
+`4c99513a3d7e3f0dac52e990db593f7663da16af50d964a0d3029566e6cae46c`.
+The JavaScript bindings match the baseline. Nominal real-time playback,
+continuous audio and broader hardware conformance remain open.
+
+Related to #138 and #17. Private media and raw captures stay local.

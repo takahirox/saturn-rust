@@ -34,7 +34,13 @@ fn p1_fetch_of_second_successor_owns_bus_before_first_retirement_on_both_cpus() 
         );
         let active = m.bus.transactions.active.as_ref().unwrap();
         assert!(active.owner == Owner::Cpu(p));
-        assert_eq!((active.transfer.address, active.remaining), (0x26000004, 1));
+        assert_eq!(
+            (
+                active.transfer.address,
+                active.clocks_left(m.bus.main_clocks)
+            ),
+            (0x26000004, 1)
+        );
         assert_eq!(m.bus.read16(HIGH_WRAM + 4), Ok(9));
     }
 }
@@ -398,7 +404,7 @@ fn stc_long_holds_younger_if_through_ex_and_retains_completion_bytes_on_both_cpu
                                 .as_ref()
                                 .is_some_and(|a| a.owner == Owner::Cpu(p)
                                     && a.transfer.address == 0x26000004
-                                    && a.remaining == 1)
+                                    && a.clocks_left(m.bus.main_clocks) == 1)
                         );
                         m.bus.write16(HIGH_WRAM + 4, 0xE82B).unwrap();
                         trace(&mut m, p, sample, chunk, inspect);
@@ -586,7 +592,8 @@ fn delay_slot_multiplier_uses_target_alignment_for_grants_and_samples_on_both_cp
                                     .transactions
                                     .active
                                     .as_ref()
-                                    .is_some_and(|a| a.owner == Owner::Cpu(p) && a.remaining == 1)
+                                    .is_some_and(|a| a.owner == Owner::Cpu(p)
+                                        && a.clocks_left(m.bus.main_clocks) == 1)
                             );
                             // This instruction is in the first target longword at
                             // 4n, and in the later contending longword at 4n+2.
@@ -656,7 +663,7 @@ fn ldc_long_stalls_younger_if_until_operand_completion_and_retains_samples_on_bo
                                 .as_ref()
                                 .is_some_and(|a| a.owner == Owner::Cpu(p)
                                     && a.transfer.address == stack
-                                    && a.remaining == 1)
+                                    && a.clocks_left(m.bus.main_clocks) == 1)
                         );
                         m.bus.write32(stack, 2).unwrap();
                         trace(&mut m, p, operand_sample, chunk, inspect);
@@ -672,7 +679,7 @@ fn ldc_long_stalls_younger_if_until_operand_completion_and_retains_samples_on_bo
                                 .as_ref()
                                 .is_some_and(|a| a.owner == Owner::Cpu(p)
                                     && a.transfer.address == 0x26000004
-                                    && a.remaining == 1)
+                                    && a.clocks_left(m.bus.main_clocks) == 1)
                         );
                         m.bus.write16(HIGH_WRAM + 4, 0xE82B).unwrap();
                         trace(&mut m, p, instruction_sample, chunk, inspect);
@@ -922,7 +929,7 @@ fn trapa_samples_and_discards_second_successor_before_exception_accesses_on_both
                             .transactions
                             .active
                             .as_ref()
-                            .map(|a| (a.transfer.address, a.remaining)),
+                            .map(|a| (a.transfer.address, a.clocks_left(m.bus.main_clocks))),
                         Some((0x26000004, 1))
                     );
                     // Change bytes before sampling and after completion. Neither
@@ -1057,7 +1064,7 @@ fn rte_target_if_follows_both_ma_slots_and_retains_completion_bytes_on_both_cpus
                         .transactions
                         .active
                         .as_ref()
-                        .map(|a| (a.transfer.address, a.remaining)),
+                        .map(|a| (a.transfer.address, a.clocks_left(m.bus.main_clocks))),
                     Some((0x26000100, 1))
                 );
                 // Change the target while its IF still owns the bus, then
@@ -1485,7 +1492,7 @@ fn byte_memory_stalls_order_operand_and_younger_if_samples_on_both_cpus() {
                                 .as_ref()
                                 .is_some_and(|a| a.owner == Owner::Cpu(p)
                                     && a.transfer.address == 0x26000008
-                                    && a.remaining == 1)
+                                    && a.clocks_left(m.bus.main_clocks) == 1)
                         );
                         m.bus.write16(HIGH_WRAM + 8, 0xE62B).unwrap();
                         trace(&mut m, p, sample, chunk, inspect);
@@ -1704,7 +1711,7 @@ fn pr_memory_transfers_schedule_ma_and_retain_completion_samples_on_both_cpus() 
                                 assert!(m.bus.transactions.active.as_ref().is_some_and(
                                     |a| a.owner == Owner::Cpu(p)
                                         && a.transfer.address == address
-                                        && a.remaining == 1
+                                        && a.clocks_left(m.bus.main_clocks) == 1
                                 ));
                                 m.bus.write32(address, 43).unwrap();
                             }

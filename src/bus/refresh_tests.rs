@@ -32,7 +32,7 @@ fn stop(b: &mut Bus, p: Processor) {
 fn owner(b: &Bus, expected: Owner, remaining: u32) {
     let a = b.transactions.active.as_ref().expect("granted bus cycle");
     assert!(a.owner == expected);
-    assert_eq!(a.remaining, remaining);
+    assert_eq!(a.clocks_left(b.main_clocks), remaining);
 }
 fn advance(b: &mut Bus, mut clocks: u32, chunk: u32) {
     while clocks != 0 {
