@@ -6107,3 +6107,47 @@ local.
 
 Related to #138 and #17. Sustained real-time gameplay, continuous audio and
 broader hardware conformance remain open.
+
+
+## Reuse the selected SCU interrupt output (2026-11-23)
+
+The SCU stores the selected interrupt level and vector and updates them when
+IMS or IST changes. The same factor ordering applies across the internal and
+A-bus banks. Signal acknowledgement and DMA triggers still execute at their
+existing edges. External vector acquisition still selects from the live status
+for the accepted level.
+
+An unpaced Machi Disc 1 comparison in Chrome 158.0.8127.36 matches all 3,200
+fields and 80 checkpoints. Both SH-2s and their caches, clocks, WRAM,
+renderer transport and canonical Sound state match. Every field contributes to
+matching PCM and pixel digests. Diagnostic throughput increases from 52.215
+to 52.978 fields/s, with gains in 76 of 80 windows. The 37 CD-intensive fields
+take 1,826.9 to 1,787.8 ms. The final four DMA-intensive fields take 337.7 to
+319.4 ms.
+
+The ordinary Chrome player runs with the Sound and Video Workers and a real
+44.1 kHz AudioWorklet. Each arm warms through field 12,900 and measures six
+12-second windows. All four arms draw every emulated field, apply all 157
+controller events at their requested presentation fields and report zero
+runtime errors and audio queue drops. The matched comparisons use 4,000
+common fields across both orders.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Overall playback, fields/s | 55.490 to 55.918 | 55.792 to 56.013 |
+| Matched playback, fields/s | 55.503 to 55.891 | 55.762 to 55.991 |
+| Matched p95 field gap, ms | 35.2 to 32.8 | 33.7 to 32.7 |
+| Matched p99 field gap, ms | 47.9 to 45.8 | 46.3 to 44.9 |
+| Four matched slow ranges, change | +4.19% | +2.31% |
+| Worklet underflow output frames | 230,383 to 207,471 | 215,023 to 202,095 |
+| Worklet underflow duration, seconds | 5.22 to 4.70 | 4.88 to 4.58 |
+
+All 88 SCU-related native tests pass, including the exhaustive priority test
+across both banks. The Chrome `interruptEntry`, `dmaStartup`, `cdStream` and
+`dmacBus` originals pass with the standard Wasm SHA-256
+`c3cc1ed49e2f33f606fef5c6543c30f6575cb67c04409c91bf93121dccaeec0f`.
+The JavaScript binding bytes match the baseline. Private media and raw
+captures stay local.
+
+Related to #138 and #17. Sustained real-time gameplay, continuous audio and
+broader hardware conformance remain open.
