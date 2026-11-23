@@ -96,6 +96,12 @@ impl ReadSequence {
     /// The first/last signals enclose the entire refill, including lane splits.
     pub fn read_cache_line(&mut self, requested: u32, at: u64) -> u64 {
         self.advance(at);
+        let first = (requested & !15) | ((requested.wrapping_add(4)) & 12);
+        if let Some((clocks, beats)) = self.bsc.cached_refill(first) {
+            self.at += u64::from(clocks);
+            self.beats += beats;
+            return self.at;
+        }
         for word in 1..=4 {
             let address = (requested & !15) | (((requested & 12) + word * 4) & 15);
             let width = self.bsc.bus_width(address).min(4);
