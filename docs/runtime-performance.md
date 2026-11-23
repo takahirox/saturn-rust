@@ -6346,3 +6346,61 @@ The JavaScript bindings match the baseline. Sustained real-time playback,
 continuous audio, and broader hardware conformance remain open.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+
+## Retire resident WRAM stores inside cached SH-2 bursts (2026-11-24)
+
+Cached Master SH-2 bursts retire resident word and longword MOV stores to
+WRAM through the existing prepared pipeline. The fast path covers direct
+and predecrement addressing and longword displacement. Each store uses the
+physical write queue and the staged cache versions before the selected
+prefix publishes. A pending private Slave SH-2 poll retains the existing
+observer deadline and uses the recorded store retirement clocks.
+
+Fixed-work replays match at all 3,200 game fields and 80 checkpoints, and
+all 720 BIOS fields and 18 checkpoints. Both SH-2 states, cache contents,
+WRAM, clocks, renderer transport, full Sound state, pixels, and PCM agree.
+Game diagnostic throughput is 53.054 to 52.890 fields/s in the full sample
+and 53.640 to 53.862 fields/s in a separate 680-field sample. The same
+CD-intensive 37 fields take 1,793.7 to 1,806.0 ms in the full run and
+1,786.9 to 1,775.9 ms in the focused sample. The full run's last four
+fields of that range take 324.1 to 319.9 ms. Fixed-work BIOS fields
+601–720 take 4,054.8 to 3,962.8 ms.
+
+Fresh ordinary-player runs in both orders use the Sound and Video Workers
+and the 44.1 kHz AudioWorklet in Chrome 158.0.8127.36. Each game comparison
+measures six twelve-second intervals after field 12,900. All 157 inputs
+land at the scheduled fields, 4,018 measured fields are common, and every
+field is drawn. The custom BIOS pairs use no disc, match 14 inputs, and draw
+the same video signatures through field 900. All runs finish without
+runtime errors or audio queue drops.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Game overall playback, fields/s | 55.724 to 56.097 | 55.862 to 55.876 |
+| Game matched field gap p95, ms | 33.9 to 32.2 | 33.8 to 33.1 |
+| Game matched field gap p99, ms | 46.6 to 44.3 | 46.0 to 46.2 |
+| Game audio shortage per 72 s, seconds | 4.925 to 4.481 | 4.771 to 4.763 |
+| Game audio shortage near the CD-intensive 37-field range, seconds | 0.933 to 0.845 | 0.926 to 0.885 |
+| BIOS animation fields 601–720, fields/s | 31.831 to 32.870 | 31.890 to 32.535 |
+| BIOS audio shortage after clock confirmation through field 720, seconds | 3.308 to 3.078 | 3.314 to 3.154 |
+
+The CD-intensive audio figures use the AudioWorklet reports closest to
+the requested boundary fields. Two of the six game intervals in each
+order have larger shortages, and matched throughput across four slow
+field ranges changes by +3.59% and −0.02%. The peak reverse BIOS animation
+field gap increases from 36.8 to 37.7 ms. Continuous audio, nominal
+real-time playback, and broader hardware conformance remain open.
+
+Original native tests exercise all five forms across both NTSC PLLs with
+a private peer and include eleven physical store cases. The original
+Chrome `sh2Store`, `sh2BusPipeline`, `interruptEntry`, and
+`refreshArbitration` groups pass. Formatting and native and Wasm Clippy
+with warnings denied pass. The review worktree reproduces both measured
+Web assets byte for byte.
+
+The standard Wasm SHA-256 is
+`fd753320327cfd0992ee6f0227b787547f15474523b2784b9cdf1bd319377361`.
+The JavaScript bindings match the baseline.
+
+Related to #138 and #17. Private media and raw captures stay local.

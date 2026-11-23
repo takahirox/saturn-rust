@@ -764,9 +764,10 @@ fn planned_special_store_preserves_self_modifying_successor_and_retained_if_word
 #[test]
 fn multiple_work_ram_stores_preserve_bus_protocol_aliases_and_cache_forwarding() {
     let source = "00000000 0000 0200 060F F000\n\
-        00000200 D10B E001 2100 D10B D50B E000 7001 2102\n\
+        00000200 D10B E001 2100 D10B D50B E000 7001 1100\n\
         00000210 6252 7001 2100 6350 7001 2101 6451 AFF4 0009\n\
         00000230 FFFF FE92 0602 0000 0602 0000\n";
+    let mut displaced_stores = 0;
     for (mode, mcr) in [
         (0, 0),
         (1, 0),
@@ -847,6 +848,7 @@ fn multiple_work_ram_stores_preserve_bus_protocol_aliases_and_cache_forwarding()
                                 }
                             }
                             same(&mut a, &mut b);
+                            displaced_stores += a.bus.cached_resident_wram_stores;
                             assert!(
                                 multiple,
                                 "must exercise multiple stores: mode={mode} mcr={mcr:X} fast={fast} physical={physical:X} bypass={bypass} narrow={narrow} little={little}"
@@ -857,6 +859,10 @@ fn multiple_work_ram_stores_preserve_bus_protocol_aliases_and_cache_forwarding()
             }
         }
     }
+    assert!(
+        displaced_stores > 0,
+        "resident WRAM test must use the displacement store"
+    );
 }
 
 #[test]
@@ -902,6 +908,12 @@ fn planned_work_ram_stores_keep_width_updates_and_buffer_configuration() {
             }
         }
         assert!(a.bus.cached_stores > 0, "opcode={opcode:04X}");
+        if opcode >> 12 == 1 || matches!(opcode & 0xF00F, 0x2001 | 0x2002 | 0x2005 | 0x2006) {
+            assert!(
+                a.bus.cached_resident_wram_stores > 0,
+                "resident WRAM opcode={opcode:04X}"
+            );
+        }
     }
 }
 
@@ -2244,6 +2256,78 @@ fn short_retirement_wait_retains_fractional_pll_boundaries() {
         }
     }
     assert!(admitted > 0 && fallback > 0);
+}
+
+#[test]
+fn resident_wram_store_keeps_the_real_private_peer_endpoint() {
+    for (store, width, predecrement) in [
+        (0x1F00, 4, false),
+        (0x2F01, 2, false),
+        (0x2F02, 4, false),
+        (0x2F05, 2, true),
+        (0x2F06, 4, true),
+    ] {
+        let target = HIGH_WRAM + 0x3000 - if predecrement { width } else { 0 };
+        let result = |machine: &Machine| {
+            if width == 4 {
+                machine.bus.read32(target)
+            } else {
+                machine.bus.read16(target).map(u32::from)
+            }
+        };
+        for fast in [false, true] {
+            let make = || {
+                let mut m = crate::scheduling_tests::cached_pair(
+                    &[0xE055, store, 9, 0xAFFC, 9],
+                    &[0x60F0, 0xC880, 0x89FC, 0xAFFB, 9],
+                );
+                m.cpu = Cpu::start(HIGH_WRAM, HIGH_WRAM + 0x3000);
+                m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
+                m.slave = Cpu::start(HIGH_WRAM + 0x100, crate::onchip::FRT + 1);
+                m.slave.prime_fetch(&m.bus.for_cpu(Processor::Slave));
+                m.bus.change_system_clock(fast);
+                m.bus.set_slave_enabled(true);
+                m.bus.cache[1].get_mut().set_control(1);
+                m.bus.onchip[1].write32(0xFFFF_FFE8, 0xA55A_0000).unwrap();
+                m
+            };
+            let (mut a, mut b) = (make(), make());
+            b.bus.enable_resident_peer_wram_stores = false;
+            while a.clocks < 4096 {
+                // Compare at the same scheduler boundary. An ordinary single
+                // hardware turn can yield before the last same-clock issue.
+                let a_retired = a.try_private_poll_batch(32).unwrap();
+                let b_retired = b.try_private_poll_batch(32).unwrap();
+                assert_eq!(
+                    a_retired, b_retired,
+                    "fast={fast}, clock={}",
+                    a.bus.main_clocks
+                );
+                if a_retired == 0 {
+                    assert_eq!(a.step_hardware_boundary(), b.step_hardware_boundary());
+                }
+                assert_eq!(a.cpu, b.cpu);
+                assert_eq!(a.slave, b.slave);
+                assert_eq!(a.cpu_ready, b.cpu_ready);
+                assert!(a.cached_issue == b.cached_issue);
+                assert_eq!((a.clocks, a.bus.main_clocks), (b.clocks, b.bus.main_clocks));
+                assert_eq!(result(&a), result(&b));
+                a.bus.onchip[0].assert_cached_read_bus_matches(&b.bus.onchip[0]);
+            }
+            assert!(
+                a.bus.cached_peer_wram_stores > 0,
+                "store={store:04X} fast={fast}"
+            );
+            assert_eq!(b.bus.cached_peer_wram_stores, 0);
+            assert_eq!(result(&a), Ok(0x55));
+            a.bus.cache[0]
+                .borrow()
+                .assert_same_contents(&b.bus.cache[0].borrow());
+            a.bus.cache[1]
+                .borrow()
+                .assert_same_contents(&b.bus.cache[1].borrow());
+        }
+    }
 }
 
 #[test]
