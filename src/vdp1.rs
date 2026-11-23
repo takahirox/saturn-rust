@@ -836,7 +836,12 @@ impl Vdp1 {
                 remaining -= drawn;
                 continue;
             }
-            let mut delta = remaining.min(self.clocks_to_event());
+            // Every retained draw or erase phase has a positive deadline.
+            let mut delta = if remaining == 1 {
+                1
+            } else {
+                remaining.min(self.clocks_to_event())
+            };
             // Retire the work before ENDR's final clock. Stopping a multi-clock
             // phase at once would discard its already elapsed prefix.
             if delta > 1 && self.stop_remaining == Some(delta) {
@@ -921,7 +926,7 @@ impl Vdp1 {
         vram_busy: bool,
         framebuffer_busy: bool,
     ) -> Result<bool, BusError> {
-        assert!(clocks <= self.clocks_to_event());
+        debug_assert!(clocks > 0 && clocks <= self.clocks_to_event());
         self.advance_erase(clocks);
         if !self.running {
             return Ok(false);
@@ -955,10 +960,8 @@ impl Vdp1 {
                 };
                 current.dot > current.last
             });
-        let needs_vram =
-            self.drawing.as_ref().is_none_or(|draw| {
-                draw.tables_pending() || draw.texture_pending(self.draw_control)
-            }) && self.pending_pixel.is_none();
+        let needs_vram = self.pending_pixel.is_none()
+            && (self.drawing.is_none() || tables_pending || texture_pending);
         if (vram_busy && needs_vram)
             || (framebuffer_busy
                 && self.drawing.is_some()

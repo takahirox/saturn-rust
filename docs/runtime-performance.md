@@ -6065,3 +6065,45 @@ The Chrome `refreshArbitration`, `sh2Fetch`, `sh2BusPipeline` and
 
 Related to #138 and #17. Sustained real-time gameplay, continuous audio and
 broader hardware conformance remain open.
+
+
+## Avoid repeating VDP1 phase checks for a single clock (2026-11-23)
+
+Every retained VDP1 draw or erase phase has a positive deadline. The single-clock
+path uses that fact to advance one clock. Longer intervals still consult the
+next deadline, including the final forced-stop edge. The private phase advance
+checks the interval in debug builds and reuses the texture and table checks for
+VRAM arbitration. The underlying texture, pixel and erase operations still run
+at their existing times.
+
+In Chrome 158.0.8127.36, an unpaced comparison covers the same 3,200 fields of
+Machi Disc 1 across 80 windows. Both CPUs, guest clocks, WRAM, canonical Sound
+and video transport match at every checkpoint. All fields contribute to the
+matching PCM and pixel digests. Throughput rises from 52.353 to 52.889 fields/s,
+and 76 of 80 windows improve. The CD-intensive 37 fields take 1,861.3 to
+1,819.6 ms. The four late fields dominated by DMA take 341.8 to 336.8 ms.
+
+The ordinary Chrome player runs with the Sound and Video Workers and a real
+AudioWorklet at 44.1 kHz. Each arm warms through field 12,900 and measures six
+12-second windows. All four arms draw every emulated field, apply all 157
+controller events and report zero runtime errors and audio queue drops. The
+matched results use 4,004 common presentation fields across both orders.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Overall playback, fields/s | 55.600 to 55.792 | 55.528 to 55.806 |
+| Matched playback, fields/s | 55.591 to 55.781 | 55.555 to 55.793 |
+| Matched p95 field time, ms | 34.4 to 33.6 | 34.4 to 33.4 |
+| Matched p99 field time, ms | 47.2 to 45.9 | 47.4 to 46.3 |
+| Four matched slow ranges, change | +1.75% | +2.82% |
+| Worklet underflow output frames | 225,135 to 214,030 | 227,470 to 213,615 |
+| Worklet underflow duration, seconds | 5.11 to 4.85 | 5.16 to 4.84 |
+
+All 52 native VDP1-related tests pass. The standard Wasm has SHA-256
+`57764c339d8f537805b8bb4d4b4967e3db4d11f066505bf303c33671cfb97fbc`.
+The Chrome `videoTransactions`, `spriteShrink`, `dmaStartup` and `dmacBus`
+original groups pass against that artifact. Private media and raw captures stay
+local.
+
+Related to #138 and #17. Sustained real-time gameplay, continuous audio and
+broader hardware conformance remain open.
