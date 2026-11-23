@@ -69,12 +69,14 @@ struct Local {
     fill_len: usize,
     bus_len: usize,
     write_pc: u32,
+    division_read: bool,
 }
 struct CachedPublication {
     lru: [u8; 64],
     retained: Option<(u32, u16)>,
     epochs: u64,
     reads: Option<PassiveSequence>,
+    division_read: bool,
 }
 
 struct PassiveRead<'a> {
@@ -348,6 +350,8 @@ impl WramInstructions<'_> {
 struct Cached<'a> {
     cache: &'a Cache,
     code: Option<WramInstructions<'a>>,
+    idle_division: Option<&'a crate::onchip::OnChip>,
+    division_read: Cell<bool>,
     fills: RefCell<CachedLines>,
     version_count: Cell<usize>,
     refill_count: Cell<usize>,
@@ -551,6 +555,21 @@ impl Cached<'_> {
         }
         prefix
     }
+    fn idle_division_read(&self, address: u32, before_issue: bool) -> Option<(u32, u32)> {
+        self.idle_division?.cached_division_read32(
+            address,
+            self.epochs.get().wrapping_add(u64::from(before_issue)),
+            self.division_read.get(),
+        )
+    }
+
+    fn division_read_completion(&self, requested: u64, waits: u32) -> Option<u64> {
+        // A read occupies the cache-bus determination clock and the internal
+        // peripheral phase. Admission proves DIVU and the local bus idle.
+        let at = requested + 2 + u64::from(waits);
+        (at <= self.end.get().min(self.fill_end)).then_some(at)
+    }
+
     fn prepared_retirement(&self, plan: &CachedInstruction) -> Option<u64> {
         let at = match plan.operand {
             None => plan.at,
@@ -561,6 +580,13 @@ impl Cached<'_> {
                 plan.at
             }
             Some((address, width)) => {
+                if width == 4
+                    && let Some((_, waits)) = self.idle_division_read(address, true)
+                {
+                    let requested =
+                        plan.issue_at() + u64::from(plan.load_wait(plan.issue_at(), true));
+                    return self.division_read_completion(requested, waits);
+                }
                 let passive = self.passive.as_ref().filter(|p| {
                     p.rom.is_none() && p.address == address && p.allowed_widths & width as u8 != 0
                 })?;
@@ -596,11 +622,13 @@ impl Cached<'_> {
             fill_len: self.version_count.get(),
             bus_len: self.bus_events.borrow().len(),
             write_pc: self.write_pc.get(),
+            division_read: self.division_read.get(),
         }
     }
     fn restore(&mut self, state: Local) {
         self.store.set(None);
         self.write_pc.set(state.write_pc);
+        self.division_read.set(state.division_read);
         self.ram_stores.truncate(state.write_len);
         self.bus_events.get_mut().truncate(state.bus_len);
         self.clock.set(state.clock);
@@ -700,6 +728,7 @@ impl Cached<'_> {
             retained: self.retained.get(),
             epochs: self.epochs.get(),
             reads,
+            division_read: self.division_read.get(),
         };
         let plan = before_last.map(|before_last| RamPlan {
             stores: self.ram_stores,
@@ -782,6 +811,16 @@ impl Cached<'_> {
         // A forged address-array tag must not bypass peripheral lane/width
         // validation that CpuBus performs even before a cache hit.
         if !ordinary_memory(address) {
+            if N == 4
+                && let Some((value, waits)) = self.idle_division_read(address, false)
+            {
+                let at = self
+                    .division_read_completion(self.clock.get(), waits)
+                    .ok_or(BusError::Pending)?;
+                self.clock.set(at);
+                self.division_read.set(true);
+                return Ok(value.to_be_bytes().as_slice().try_into().unwrap());
+            }
             if let Some(passive) = &self.passive
                 && passive.rom.is_none()
                 && address == passive.address
@@ -864,6 +903,7 @@ impl Cached<'_> {
                     .code
                     .as_ref()
                     .is_some_and(|code| code.line(address).is_some()))
+            || self.idle_division_read(address, true).is_some()
     }
     fn read_data<const N: usize>(&self, address: u32) -> Result<[u8; N], BusError> {
         match self.read(address) {
@@ -1846,10 +1886,22 @@ impl Bus {
                 bus: &self.onchip[0],
                 blocked: self.cached_pending_write_bounds(),
             });
+        #[cfg(test)]
+        let allow_idle_division = self.cached_idle_division_reads;
+        #[cfg(not(test))]
+        let allow_idle_division = true;
+        let idle_division = (allow_idle_division
+            && passive.is_none()
+            && poll.is_none()
+            && !transfer_active
+            && !sound_lookahead)
+            .then_some(&self.onchip[0]);
         let cache = self.cache[0].borrow();
         let mut memory = Cached {
             cache: &cache,
             code,
+            idle_division,
+            division_read: Cell::new(false),
             fills: RefCell::default(),
             version_count: Cell::new(0),
             refill_count: Cell::new(0),
@@ -2223,6 +2275,7 @@ impl Bus {
                     && local.bus_len == prior_local.bus_len
                     && local.lru == prior_local.lru
                     && local.retained == prior_local.retained
+                    && local.division_read == prior_local.division_read
                     && memory.passive_repeats(prior_local, period)
                     && ready - previous.ready == period
                     && retired_at - previous.retired_at == period;
@@ -2831,6 +2884,7 @@ impl Bus {
                 && store.is_none()
                 && memory.version_count.get() == 0
                 && memory.ram_stores.is_empty()
+                && !memory.division_read.get()
                 && let Some(address) = hirq_entry::next_word(&cpu, ready)
                 && entry.starts_readonly_prefix()
             {
@@ -2842,6 +2896,7 @@ impl Bus {
             }
         }
         let probe_eligible = memory.passive.is_none()
+            && !memory.division_read.get()
             && memory.refill_count.get() == 0
             && store.is_none()
             && memory
@@ -2914,6 +2969,9 @@ impl Bus {
         #[cfg(test)]
         {
             self.cached_code_fills += fills.read_count() as u64;
+        }
+        if local.division_read {
+            self.onchip[0].commit_cached_division_read();
         }
         if reuse_planner_storage {
             fills.commit(self.cache[0].get_mut());

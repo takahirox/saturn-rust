@@ -1312,6 +1312,8 @@ fn fabricated_mmio_cache_hit_cannot_bypass_the_peripheral_contract() {
             cache: &cache,
             passive_checkpoints: &checkpoints,
             code: None,
+            idle_division: None,
+            division_read: Cell::new(false),
             fills: RefCell::default(),
             version_count: Cell::new(0),
             refill_count: Cell::new(0),
@@ -1721,6 +1723,55 @@ fn readonly_cache_bursts_preserve_refresh_grants_and_keep_enabled_irq_horizons()
                     }
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn settled_division_read_reuses_real_internal_phases_and_retirement() {
+    for fast in [false, true] {
+        for (age, prior_write, expected) in [(64, false, 1), (64, true, 1), (1, true, 0)] {
+            let make = |optimized| {
+                let mut m =
+                    crate::scheduling_tests::cached_pair(&[0x60F2, 0x7101, 0x001B, 9], &[9]);
+                m.bus.change_system_clock(fast);
+                m.bus.cached_idle_division_reads = optimized;
+                let chip = &mut m.bus.onchip[0];
+                chip.write32(crate::onchip::DIVU, 7).unwrap();
+                chip.write32(crate::onchip::DIVU + 4, 98).unwrap();
+                m.bus.advance_clocks(age).unwrap();
+                m.clocks += u64::from(age);
+                if !prior_write {
+                    assert_eq!(m.bus.onchip[0].read32(crate::onchip::DIVU + 4), Ok(14));
+                }
+                m.cpu = Cpu::start(HIGH_WRAM, crate::onchip::DIVU + 4);
+                m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
+                m.cpu_ready[0] = m.bus.main_clocks;
+                m
+            };
+            let (mut a, mut b) = (make(true), make(false));
+            for _ in 0..64 {
+                if a.cpu_state().instructions == 3 {
+                    break;
+                }
+                if a.try_cached_batch(1).unwrap() == 0 {
+                    a.step_inner_with_idle(true).unwrap();
+                }
+                while b.cpu_state().instructions < a.cpu_state().instructions {
+                    b.step().unwrap();
+                }
+                same(&mut a, &mut b);
+                assert_eq!(a.cpu, b.cpu);
+                assert_eq!(a.bus.external_owner, b.bus.external_owner);
+                assert_eq!(a.bus.instruction_word[0], b.bus.instruction_word[0]);
+                a.bus.onchip[0].assert_cached_read_bus_matches(&b.bus.onchip[0]);
+            }
+            assert_eq!(a.cpu_state().instructions, 3);
+            assert_eq!(a.cpu_state().r[0], 14);
+            assert_eq!(
+                a.bus.cached_prepared_loads, expected,
+                "fast={fast} age={age}"
+            );
         }
     }
 }
@@ -3065,6 +3116,8 @@ fn prepared_passive_prediction_rejects_width_address_rom_and_deadline_before_con
             cache: &cache,
             passive_checkpoints,
             code: None,
+            idle_division: None,
+            division_read: Cell::new(false),
             fills: RefCell::default(),
             version_count: Cell::new(0),
             refill_count: Cell::new(0),
