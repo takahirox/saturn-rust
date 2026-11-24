@@ -22,6 +22,7 @@ class SaturnPcm extends AudioWorkletProcessor {
     this.cursor = HOP;
     this.analysis = 0;
     this.haveTail = false;
+    this.tailSourceStart = 0;
     this.rate = 1;
     this.ingressRate = 1;
     this.rateFrames = 0;
@@ -89,7 +90,16 @@ class SaturnPcm extends AudioWorkletProcessor {
     // to prepare the next block.
     const surplusFrames = this.length - 2 * HOP;
     const rate = Math.min(this.rate, Math.max(LOW_QUEUE_RATE, surplusFrames / 1600));
-    if (this.haveTail && rate < 0.997) {
+    const sourceBase = this.stats.received - this.length;
+    const contiguous = this.tailSourceStart - sourceBase;
+    if (this.haveTail && rate === 1 && this.stats.stretchRate < 0.997 &&
+        contiguous >= first && contiguous <= last && this.tail.some(sample => sample !== 0)) {
+      // The previous alignment may have shifted away from the nominal
+      // source. Continue an audible tail at unity rate and rebase later
+      // grains. Silence needs no realignment.
+      start = contiguous;
+      this.analysis += contiguous - near;
+    } else if (this.haveTail && rate < 0.997) {
       let energy = 0;
       for (let i = 0; i < HOP * 2; i += 8) {
         energy += this.tail[i] ** 2 + this.tail[i + 1] ** 2;
@@ -119,6 +129,7 @@ class SaturnPcm extends AudioWorkletProcessor {
         this.tail[out] = this.ring[tail + ch] / 32768;
       }
     }
+    this.tailSourceStart = sourceBase + start + HOP;
     this.haveTail = true;
     this.analysis += HOP * rate;
     this.stats.stretchRate = rate;
