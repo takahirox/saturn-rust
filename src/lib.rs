@@ -132,6 +132,78 @@ mod scheduling_tests {
     }
 
     #[test]
+    fn dual_cached_register_and_branch_issue_matches_replay_during_own_dma() {
+        use crate::onchip::DMAC;
+
+        const WORDS: u32 = 64;
+        const SOURCE: u32 = HIGH_WRAM + 0x400;
+        const MASTER_DEST: u32 = HIGH_WRAM + 0x800;
+        const SLAVE_DEST: u32 = HIGH_WRAM + 0xC00;
+        const PROGRAM: &[u16] = &[0x7001, 0xAFFD, 0x7101];
+        for burst in [false, true] {
+            let make = || {
+                let mut m = cached_pair(PROGRAM, PROGRAM);
+                for i in 0..WORDS {
+                    m.bus.write32(SOURCE + i * 4, 0x11223344 + i).unwrap();
+                }
+                for (processor, dest) in [
+                    (Processor::Master, MASTER_DEST),
+                    (Processor::Slave, SLAVE_DEST),
+                ] {
+                    let mut memory = m.bus.for_cpu(processor);
+                    for (offset, value) in [
+                        (0, SOURCE),
+                        (4, dest),
+                        (8, WORDS),
+                        (12, 0x5A01 | if burst { 0x10 } else { 0 }),
+                        (0x30, 1),
+                    ] {
+                        memory.write32(DMAC + offset, value).unwrap();
+                    }
+                    m.bus.cpu_delay(processor, 0);
+                }
+                m
+            };
+            let mut reference = make();
+            let mut optimized = make();
+            optimized.bus.resident_branch_issues = true;
+            let mut scalar_during_dma = false;
+            let mut branch_during_dma = false;
+            for _ in 0..4096 {
+                let scalars = optimized.cached_dual_scalars;
+                let branches = optimized.bus.resident_branch_issue_count;
+                let successor = optimized.step_hardware_boundary_with_idle(true).unwrap();
+                assert_eq!(successor, reference.step_hardware_boundary().unwrap());
+                assert_eq!(optimized.cpu, reference.cpu);
+                assert_eq!(optimized.slave, reference.slave);
+                assert_eq!(optimized.cpu_ready, reference.cpu_ready);
+                assert_eq!(optimized.bus.main_clocks, reference.bus.main_clocks);
+                let mut both_transfers_pending = true;
+                for dest in [MASTER_DEST, SLAVE_DEST] {
+                    for offset in [0, (WORDS - 1) * 4] {
+                        assert_eq!(
+                            optimized.bus.read32(dest + offset),
+                            reference.bus.read32(dest + offset)
+                        );
+                    }
+                    both_transfers_pending &= optimized.bus.read32(dest + (WORDS - 1) * 4) == Ok(0);
+                }
+                if both_transfers_pending {
+                    scalar_during_dma |= optimized.cached_dual_scalars > scalars;
+                    branch_during_dma |= optimized.bus.resident_branch_issue_count > branches;
+                }
+            }
+            assert!(scalar_during_dma && branch_during_dma, "burst={burst}");
+            for dest in [MASTER_DEST, SLAVE_DEST] {
+                for i in 0..WORDS {
+                    assert_eq!(optimized.bus.read32(dest + i * 4), Ok(0x11223344 + i));
+                    assert_eq!(reference.bus.read32(dest + i * 4), Ok(0x11223344 + i));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn dual_cached_ftcsr_poll_samples_the_peer_strobe_on_the_internal_bus() {
         let make = || {
             let mut m = cached_pair(

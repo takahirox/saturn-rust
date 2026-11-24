@@ -248,7 +248,7 @@ impl Bus {
         let index = processor as usize;
         if !initial.has_cached_control(op)
             || !ordinary_memory(initial.state().pc)
-            || !self.onchip[index].cached_batch_allowed()
+            || !self.onchip[index].resident_issue_allowed()
         {
             return None;
         }

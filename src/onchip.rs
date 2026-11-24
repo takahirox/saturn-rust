@@ -980,7 +980,10 @@ impl OnChip {
             .borrow_mut()
             .observe(address, width, value, write, master, None);
     }
-    pub(crate) fn cached_batch_allowed(&self) -> bool {
+    /// One instruction whose fetches and execution stay in the CPU can use
+    /// its cache while its DMAC owns the external bus. Board scheduling
+    /// still performs each DMA phase and samples input at each CPU boundary.
+    pub(crate) fn resident_issue_allowed(&self) -> bool {
         !self.standby
             && !self.reset_active()
             && self.watchdog.request.is_none()
@@ -988,9 +991,10 @@ impl OnChip {
             && !self.bsc.refresh_is_pending()
             && !self.bsc.inhibits_external_bus()
             && self.ubc.borrow().comparisons_disabled()
-            && !self.dma.active()
-            && !self.dma.in_progress()
             && !self.dma.address_error
+    }
+    pub(crate) fn cached_batch_allowed(&self) -> bool {
+        self.resident_issue_allowed() && !self.dma.active() && !self.dma.in_progress()
     }
     pub(crate) fn count_cached_instructions(&self, count: u64) {
         self.instruction_epoch

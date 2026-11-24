@@ -1291,7 +1291,7 @@ impl Bus {
     /// A missing IF must fall back before changing CPU or cache state.
     pub(crate) fn issue_cached_scalar(&mut self, processor: Processor, cpu: &mut Cpu) -> bool {
         let index = processor as usize;
-        if !self.onchip[index].cached_batch_allowed() {
+        if !self.onchip[index].resident_issue_allowed() {
             return false;
         }
         let clock = self.main_clocks;
