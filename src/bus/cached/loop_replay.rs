@@ -35,7 +35,22 @@ impl Cached<'_> {
             return None;
         }
         let current_clock = initial.execution_clock()?;
-        let (first_index, shift) = data.by_pc.get(&initial.state().pc)?.iter().find_map(|&i| {
+        let pc = initial.state().pc;
+        let origins = data.by_pc.get(&pc)?;
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        let observed;
+        #[cfg(any(test, feature = "kernel-experiment"))]
+        let origins = if diagnostics.is_some() {
+            observed = data.phases[..data.phases.len() - 1]
+                .iter()
+                .enumerate()
+                .filter_map(|(i, phase)| (phase.cpu.state().pc == pc).then_some(i))
+                .collect::<Vec<_>>();
+            &observed
+        } else {
+            origins
+        };
+        let (first_index, shift) = origins.iter().find_map(|&i| {
             let phase = &data.phases[i];
             if !phase.cpu.loop_multiplier_idle() {
                 return None;

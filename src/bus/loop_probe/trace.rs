@@ -58,6 +58,48 @@ pub(in crate::bus) struct Store {
     pub(in crate::bus) width: usize,
     pub(in crate::bus) value: u32,
 }
+fn equivalent_origin(earlier: &Phase, later: &Phase) -> bool {
+    if earlier.retained != later.retained
+        || !earlier.cpu.loop_multiplier_idle()
+        || !later.cpu.loop_multiplier_idle()
+    {
+        return false;
+    }
+    let Some(shift) = later
+        .cpu
+        .execution_clock()
+        .and_then(|now| now.checked_sub(earlier.cpu.execution_clock()?))
+    else {
+        return false;
+    };
+    earlier.ready.checked_add(shift) == Some(later.ready)
+        && later.cpu.same_loop_origin(&earlier.cpu, shift)
+}
+
+/// Replay chooses the first matching CPU origin before testing cache guards.
+fn remove_equivalent_origins(indices: &mut Vec<usize>, phases: &[Phase]) {
+    if indices.len() < 16 {
+        return;
+    }
+    let mut representatives = [0; 8];
+    let mut count = 0;
+    for &index in indices.iter() {
+        if representatives[..count]
+            .iter()
+            .any(|&earlier| equivalent_origin(&phases[earlier], &phases[index]))
+        {
+            continue;
+        }
+        if count == representatives.len() {
+            return;
+        }
+        representatives[count] = index;
+        count += 1;
+    }
+    indices.truncate(count);
+    indices.copy_from_slice(&representatives[..count]);
+}
+
 pub(in crate::bus) struct CapturedLoop {
     pub(in crate::bus) phases: Vec<Phase>,
     pub(in crate::bus) reads: Vec<Read>,
@@ -514,6 +556,11 @@ impl Machine {
                     .map(|phase| (phase.at, phase.cpu.state().sr)),
             );
         }
+        if data.complete && data.multiplier_constant && !data.compiled.is_empty() {
+            for indices in data.by_pc.values_mut() {
+                remove_equivalent_origins(indices, &data.phases);
+            }
+        }
         let first = &data.phases[0];
         let last = data.phases.last().unwrap();
         let missing = data.stores.iter().filter(|s| s.requested.is_none()).count();
@@ -579,6 +626,45 @@ impl Machine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn equivalent_shifted_origins_keep_first_match_and_keep_different_inputs() {
+        let mut machine = super::super::original_machine(false, false, false);
+        machine.bus.set_slave_enabled(false);
+        let mut last_instruction = 100;
+        let mut phases = Vec::new();
+        for _ in 0..20_000 {
+            machine.step().unwrap();
+            let cpu = machine.cpu.state();
+            if cpu.pc != crate::bus::HIGH_WRAM || cpu.instructions <= last_instruction {
+                continue;
+            }
+            last_instruction = cpu.instructions;
+            phases.push(machine.loop_trace_phase(phases.last()).unwrap());
+            if phases.len() == 32 {
+                break;
+            }
+        }
+        assert_eq!(phases.len(), 32);
+        phases[30].retained = Some((u32::MAX, 0));
+        phases[31].ready += 1;
+
+        let recorded: Vec<_> = (0..phases.len()).collect();
+        let mut representatives = recorded.clone();
+        remove_equivalent_origins(&mut representatives, &phases);
+        assert!(representatives.len() < phases.len() / 2);
+        assert!(representatives.contains(&30));
+        assert!(representatives.contains(&31));
+        for live in &phases {
+            let first = |indices: &[usize]| {
+                indices
+                    .iter()
+                    .copied()
+                    .find(|&index| equivalent_origin(&phases[index], live))
+            };
+            assert_eq!(first(&representatives), first(&recorded));
+        }
+    }
 
     #[test]
     fn captured_cache_contents_are_shared_only_until_a_mutation() {
