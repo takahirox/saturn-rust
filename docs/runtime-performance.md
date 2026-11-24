@@ -6514,3 +6514,37 @@ The bindings and player assets match #237. The slow fields remain above
 the 16.7 ms budget.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+
+## Complete buffered DMA words at real write acceptance (2026-11-24)
+
+The on-chip DMA controller can finish an accepted 16-bit WRAM-to-VDP2
+unit directly when its journal proves the source read and destination
+write. The completion uses the same address, count, transfer-end,
+request and interrupt updates as ordinary execution. The real write
+buffer retains its publication deadline and all physical bus ownership.
+
+The normal Chrome 158 player with Custom BIOS and Disc 1 drew every
+generated field. Both comparison orders matched 14 input stamps,
+1,185 source PCM hashes and sampled video signatures. Both had zero
+runtime errors and dropped PCM. Audio shortages from clock confirmation
+through field 900 were zero.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Mean time per field, fields 1150–1155, ms | 105.70 to 100.93 | 102.95 to 101.15 |
+| Worklet output frames missing from fields 900–1185 | 14,848 to 13,440 | 13,952 to 12,928 |
+| Wall time from field 1 to field 1185, s | 26.898 to 26.935 | 26.911 to 26.822 |
+
+Twelve single-field checkpoints through the DMA transition matched
+both CPUs, board clocks, both WRAM hashes, canonical Sound, PCM, video
+and video transport. The native regression compares every hardware clock
+through buffer acceptance and external publication in both PLL modes,
+under cycle-steal and burst DMA.
+
+The standard candidate Wasm SHA-256 is
+`9c3137986fb2f4cb1289ca35b65bae53b799fc36e08c2008cbfb261e19dc4a3b`.
+The JavaScript bindings and Web player assets match #238. The six slow
+fields remain above 16.7 ms and measured overall boot duration varies.
+
+Related to #138 and #17. Private media and raw captures stay local.
