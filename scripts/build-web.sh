@@ -27,8 +27,11 @@ fi
 rustflags="${RUSTFLAGS--C llvm-args=--inline-threshold=1000 -C target-feature=+simd128}"
 target_wasm="${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/saturn_rust.wasm"
 build_package() {
-  RUSTFLAGS="$1" cargo build --locked --release --target wasm32-unknown-unknown --features sound-worker
-  wasm-bindgen --target web --out-dir "$2" --no-typescript "$target_wasm"
+  flags="$1"
+  output="$2"
+  shift 2
+  RUSTFLAGS="$flags" cargo rustc --locked --release --target wasm32-unknown-unknown --lib --features sound-worker -- "$@"
+  wasm-bindgen --target web --out-dir "$output" --no-typescript "$target_wasm"
 }
 
 optimize_package() (
@@ -48,6 +51,17 @@ build_package "$rustflags" web/pkg
 optimize_package web/pkg
 tail_package="$(mktemp -d)"
 trap 'rm -rf "$tail_package"' EXIT HUP INT TERM
-build_package "$rustflags -C target-feature=+tail-call" "$tail_package"
+# These branch counts come from an original, locally authored Saturn guest.
+# Keep the regular optimized build on toolchains with a different LLVM format.
+if [ "${RUSTFLAGS+x}" != x ] && [ "$(rustc --version)" = 'rustc 1.100.0 (0ef1bc386 2026-11-09)' ]; then
+  profile="$tail_package/saturn-wasm.profdata"
+  python3 -c 'import gzip, shutil, sys
+with gzip.open(sys.argv[1], "rb") as source, open(sys.argv[2], "wb") as destination:
+    shutil.copyfileobj(source, destination)' scripts/saturn-wasm.profdata.gz "$profile"
+  build_package "$rustflags -C target-feature=+tail-call" "$tail_package" \
+    "-Cprofile-use=$profile" -Cllvm-args=-disable-vp
+else
+  build_package "$rustflags -C target-feature=+tail-call" "$tail_package"
+fi
 optimize_package "$tail_package" --enable-tail-call
 python3 scripts/select-web-wasm.py web/pkg "$tail_package"
