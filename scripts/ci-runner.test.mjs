@@ -351,12 +351,17 @@ test("web build optimizes custom-target output by default and rejects tool or op
     const tool = (name, body) => writeFile(join(directory, "bin", name), `#!/bin/sh\nset -eu\n${body}\n`, { mode: 0o755 });
     // Only tool plumbing is faked in this disposable directory. The full CI
     // paths separately build real fixtures, compile real Wasm and run Chromium.
-    await tool("python3", "exit 0");
+    await tool("python3", [
+      'if [ "$1" = scripts/select-web-wasm.py ]; then',
+      '  /bin/cp "$2/saturn_rust_bg.wasm" "$2/saturn_rust_compatible_bg.wasm"',
+      '  /bin/cp "$3/saturn_rust_bg.wasm" "$2/saturn_rust_bg.wasm"',
+      'fi',
+    ].join("\n"));
     await tool("cp", "exit 0");
     await tool("dirname", 'exec /usr/bin/dirname "$@"');
     await tool("cargo", 'mkdir -p "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release"\nprintf "fresh-wasm\\n" > "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/saturn_rust.wasm"');
-    await tool("wasm-bindgen", 'if [ "$1" = "--version" ]; then cat tool-version.txt; exit 0; fi\nfor input do :; done\ntest "$(cat "$input")" = fresh-wasm\nprintf "%s" "$input" > selected.txt\nmkdir -p web/pkg\nprintf bound-wasm > web/pkg/saturn_rust_bg.wasm');
-    await tool("wasm-opt", 'if [ "$1" = "--version" ]; then cat optimizer-version.txt; exit 0; fi\ntest "$(cat "$1")" = bound-wasm\nprintf "%s\\n" "$@" > optimizer-args.txt\nwhile [ "$1" != "-o" ]; do shift; done\nprintf optimized-wasm > "$2"\nexit "$(cat optimizer-exit.txt)"');
+    await tool("wasm-bindgen", 'if [ "$1" = "--version" ]; then cat tool-version.txt; exit 0; fi\nwhile [ "$1" != "--out-dir" ]; do shift; done\nout=$2\nfor input do :; done\ntest "$(cat "$input")" = fresh-wasm\nprintf "%s" "$input" > selected.txt\nmkdir -p "$out"\nprintf bound-wasm > "$out/saturn_rust_bg.wasm"');
+    await tool("wasm-opt", 'if [ "$1" = "--version" ]; then cat optimizer-version.txt; exit 0; fi\ntest "$(cat "$1")" = bound-wasm\nprintf "%s\\n" "$@" >> optimizer-args.txt\nwhile [ "$1" != "-o" ]; do shift; done\nprintf optimized-wasm > "$2"\nexit "$(cat optimizer-exit.txt)"');
     await writeFile(join(directory, "tool-version.txt"), "wasm-bindgen 0.2.129\n");
     await writeFile(join(directory, "optimizer-version.txt"), "wasm-opt version 127\n");
     await writeFile(join(directory, "optimizer-exit.txt"), "0\n");
@@ -368,6 +373,8 @@ test("web build optimizes custom-target output by default and rejects tool or op
     assert.equal(await readFile(join(directory, "selected.txt"), "utf8"), join(customTarget, "wasm32-unknown-unknown/release/saturn_rust.wasm"));
     assert.equal(await readFile(join(directory, "web/pkg/saturn_rust_bg.wasm"), "utf8"), "optimized-wasm");
     assert.match(await readFile(join(directory, "optimizer-args.txt"), "utf8"), /^web\/pkg\/saturn_rust_bg\.wasm\n-O4\n/);
+    assert.equal(await readFile(join(directory, "web/pkg/saturn_rust_compatible_bg.wasm"), "utf8"), "optimized-wasm");
+    assert.match(await readFile(join(directory, "optimizer-args.txt"), "utf8"), /--enable-tail-call\n/);
     assert(!(await readdir(join(directory, "web/pkg"))).some(name => name.startsWith(".saturn-opt-")));
     await writeFile(join(directory, "optimizer-version.txt"), "wasm-opt version 127 (version_127)\n");
     const releaseOptimizer = run();

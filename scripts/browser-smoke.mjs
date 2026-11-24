@@ -67,7 +67,7 @@ const assert = timings.instrumentAssertions(nodeAssert);
 
 setup("assets");
 // Fail before upload if web/ includes anything beyond the public runtime assets.
-const assets = ["worker-emulator.js", "playback-client.js", "playback-worker.js", "sound-client.js", "sound-worker.js", "audio.js", "audio-worklet.js", "video-render-client.js", "video-worker.js", "app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt", "prism-courier.iso", "prism-courier-LICENSE.txt", "hardware-lab.iso", "hardware-lab-audio.bin", "hardware-lab.cue", "hardware-lab-LICENSE.txt"];
+const assets = ["worker-emulator.js", "playback-client.js", "playback-worker.js", "sound-client.js", "sound-worker.js", "audio.js", "audio-worklet.js", "video-render-client.js", "video-worker.js", "app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "pkg/saturn_rust_compatible_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt", "prism-courier.iso", "prism-courier-LICENSE.txt", "hardware-lab.iso", "hardware-lab-audio.bin", "hardware-lab.cue", "hardware-lab-LICENSE.txt"];
 assert.deepEqual((await readdir("web", { recursive: true })).sort(), [...assets, "pkg"].sort());
 assert((await lstat("web/pkg")).isDirectory());
 for (const asset of assets) {
@@ -121,6 +121,31 @@ try {
     if (asset.endsWith(".wasm")) {
       assert.deepEqual((await response.body()).subarray(0, 4), Buffer.from([0, 97, 115, 109]));
     }
+  }
+  const fallbackContext = await browser.newContext();
+  try {
+    const fallbackPage = await fallbackContext.newPage();
+    await fallbackPage.goto(address + prefix);
+    await fallbackPage.waitForFunction(() => document.getElementById("status").textContent === "Ready");
+    const fallbackUrl = prefix + "pkg/saturn_rust_compatible_bg.wasm";
+    const fallbackResponse = fallbackPage.waitForResponse(response =>
+      new URL(response.url()).pathname === fallbackUrl);
+    await fallbackPage.evaluate(async base => {
+      const path = new URL("pkg/saturn_rust.js?compatibility-check", base);
+      const {default: init, Emulator} = await import(path);
+      const validate = WebAssembly.validate;
+      try {
+        WebAssembly.validate = () => false;
+        await init();
+      } finally {
+        WebAssembly.validate = validate;
+      }
+      const emulator = new Emulator();
+      emulator.free();
+    }, address + prefix);
+    assert.equal((await fallbackResponse).status(), 200);
+  } finally {
+    await fallbackContext.close();
   }
   assert(await page.evaluate(() => [...document.styleSheets].some((sheet) => sheet.href?.endsWith("/saturn-rust/style.css") && sheet.cssRules.length > 0)));
   const scenarios = { vdp2Status, videoTransactions, abusTiming, dspArithmetic,
