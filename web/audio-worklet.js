@@ -6,6 +6,7 @@ const GUEST_RATE = 44100;
 const TARGET_QUEUE = 2400;
 const RATE_INTERVAL = 2048;
 const MIN_RATE = 0.38;
+const LOW_QUEUE_RATE = 0.25;
 class SaturnPcm extends AudioWorkletProcessor {
   constructor() {
     super();
@@ -82,8 +83,10 @@ class SaturnPcm extends AudioWorkletProcessor {
     const last = Math.min(near + SEARCH, this.length - 2 * HOP);
     if (first > last) return false;
     let start = Math.min(near, last);
-    // React within one grain if the queue falls before the rate estimate.
-    const rate = Math.min(this.rate, Math.max(MIN_RATE, (this.length - HOP) / 1600));
+    // Slow consumption before the queue reaches the two grains needed
+    // to prepare the next block.
+    const surplusFrames = this.length - 2 * HOP;
+    const rate = Math.min(this.rate, Math.max(LOW_QUEUE_RATE, surplusFrames / 1600));
     if (this.haveTail && rate < 0.997) {
       let energy = 0;
       for (let i = 0; i < HOP * 2; i += 8) {
