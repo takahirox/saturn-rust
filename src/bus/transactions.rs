@@ -1148,6 +1148,12 @@ impl Bus {
         }
     }
 
+    fn retained_dmac_write_wait(&self, processor: Processor) -> bool {
+        self.dmac_pending_write_runtime()
+            && self.transactions.dmac_write_wait[processor as usize]
+                .is_some_and(|proof| self.dmac_write_wait(processor) == Some(proof))
+    }
+
     fn dmac_write_wait(&self, processor: Processor) -> Option<DmacWriteWait> {
         let i = processor as usize;
         let journal = self.transactions.journals[i + 2].borrow();
@@ -1200,10 +1206,7 @@ impl Bus {
         // A queued write retains the request already built by the adapter.
         // The arbiter takes that queue, and the real acceptance callback
         // runs preparation before issuing the next operation.
-        if self.dmac_pending_write_runtime()
-            && let Some(proof) = self.transactions.dmac_write_wait[i]
-            && self.dmac_write_wait(processor) == Some(proof)
-        {
+        if self.retained_dmac_write_wait(processor) {
             #[cfg(any(test, feature = "kernel-experiment"))]
             {
                 self.transactions.dmac_write_wait_counts[0] += 1;
@@ -2071,6 +2074,22 @@ impl Bus {
         let mut prepared_local_dma = false;
         for processor in [Processor::Master, Processor::Slave] {
             let i = processor as usize;
+            #[cfg(test)]
+            let skip_blocked = self.skip_blocked_local_dma_write;
+            #[cfg(not(test))]
+            let skip_blocked = true;
+            if skip_blocked
+                && self.transactions.writes[i].is_some()
+                && self.retained_dmac_write_wait(processor)
+            {
+                // The existing buffer prevents acceptance. The retained
+                // request has no read phase or DMA state update to perform.
+                #[cfg(test)]
+                {
+                    self.skipped_blocked_local_dma_writes += 1;
+                }
+                continue;
+            }
             if self.onchip[i].reset_active()
                 || self.transactions.internal[i].is_some()
                 || self.external_monitor_owns_internal(processor)
@@ -4612,6 +4631,82 @@ mod settled_dmac_grant_tests {
         assert!(matches!(bus.transactions.active.as_ref(),
             Some(active) if active.owner == Owner::Dmac(Processor::Master)));
         bus
+    }
+
+    #[test]
+    fn an_occupied_write_buffer_defers_retained_local_dma_without_preparing_it() {
+        let source = HIGH_WRAM + 0x100;
+        let destination = VRAM + 0x200;
+        let make = |reuse| {
+            let mut bus = Bus {
+                skip_blocked_local_dma_write: reuse,
+                dmac_read_tail: true,
+                ..Bus::default()
+            };
+            bus.transactions.dmac_write_wait_enabled = true;
+            bus.onchip[0].write32(0xFFFF_FFE4, 0xA55A_00BC).unwrap();
+            for i in 0..8 {
+                bus.write32(source + i * 4, 0x12340000 + i).unwrap();
+            }
+            for (offset, value) in [
+                (0, source),
+                (4, destination),
+                (8, 8),
+                (12, 0x5E05),
+                (0x30, 1),
+            ] {
+                bus.onchip[0].write32(DMAC + offset, value).unwrap();
+            }
+            bus
+        };
+        for disable_after_skip in [false, true] {
+            let mut normal = make(false);
+            let mut candidate = make(true);
+            let mut skips_at_disable = None;
+            for _ in 0..512 {
+                assert_eq!(
+                    candidate.advance_cpu_clocks(1),
+                    normal.advance_cpu_clocks(1)
+                );
+                assert!(candidate.same_active_cpu_transfers(&normal));
+                assert!(candidate.same_cpu_journals(&normal));
+                for offset in [0, 4, 8, 12, 0x30] {
+                    assert_eq!(
+                        candidate.onchip[0].read32(DMAC + offset),
+                        normal.onchip[0].read32(DMAC + offset)
+                    );
+                }
+                if disable_after_skip
+                    && skips_at_disable.is_none()
+                    && candidate.skipped_blocked_local_dma_writes > 0
+                    && candidate.transactions.dmac_write_wait[0].is_some()
+                    && candidate.transactions.writes[0].is_some()
+                {
+                    skips_at_disable = Some(candidate.skipped_blocked_local_dma_writes);
+                    candidate.onchip[0].write32(DMAC + 0x30, 0).unwrap();
+                    normal.onchip[0].write32(DMAC + 0x30, 0).unwrap();
+                }
+            }
+            assert!(candidate.skipped_blocked_local_dma_writes > 0);
+            match skips_at_disable {
+                Some(skips) => {
+                    assert_eq!(candidate.skipped_blocked_local_dma_writes, skips);
+                    assert_ne!(candidate.onchip[0].read32(DMAC + 8), Ok(0));
+                }
+                None => {
+                    assert!(!disable_after_skip);
+                    for i in 0..8 {
+                        assert_eq!(candidate.read32(destination + i * 4), Ok(0x12340000 + i));
+                    }
+                }
+            }
+            for i in 0..8 {
+                assert_eq!(
+                    candidate.read32(destination + i * 4),
+                    normal.read32(destination + i * 4)
+                );
+            }
+        }
     }
 
     #[test]
