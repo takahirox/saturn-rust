@@ -1121,6 +1121,32 @@ impl CdBlock {
                 .any(|track| track.mode == TrackMode::Audio)
         })
     }
+    /// Ordinary forward reads can only move within their active range,
+    /// stop, or repeat at its start. Directory jobs and scan are separate
+    /// pickup drivers. Main continues to execute every clock and disk event.
+    #[cfg(any(test, feature = "sound-worker"))]
+    fn sound_data_play_range(&self) -> bool {
+        if !self.playing
+            || self.scan.is_some()
+            || self.authentication.is_some()
+            || self.directory_read.is_some()
+            || self.rw_active
+            || !self.rw.is_idle()
+        {
+            return false;
+        }
+        let end = self.play_end();
+        self.fad >= self.play_start
+            && self.fad < end
+            && self.media.as_ref().is_some_and(|media| {
+                !media.tracks().iter().any(|track| {
+                    track.mode == TrackMode::Audio
+                        && track.index0 < end
+                        && self.play_start < track.end
+                })
+            })
+    }
+
     #[cfg(any(test, feature = "sound-worker"))]
     pub(crate) fn sound_source_deadline(
         &self,
@@ -1130,12 +1156,23 @@ impl CdBlock {
         // Media is immutable between canonical, serialized host replacements.
         // audio_source() requires an Audio track even for audible scanning.
         if self.active() && (strict_inputs || self.sound_can_receive_cd_audio()) {
-            if independent_queries
+            let independent_command = independent_queries
                 && !strict_inputs
                 && self
                     .pending
-                    .is_some_and(|(command, _)| self.sound_neutral_query(command))
-            {
+                    .is_some_and(|(command, _)| self.sound_neutral_query(command));
+            if !strict_inputs && self.sound_data_play_range() {
+                // Keep the first command that could redirect the pickup, even
+                // when it was already pending before Sound acquired this range.
+                return self.pending.map_or(u32::MAX, |(_, remaining)| {
+                    if independent_command {
+                        u32::MAX
+                    } else {
+                        remaining.saturating_sub(self.quiet_clocks.map_or(0, |quiet| quiet.elapsed))
+                    }
+                });
+            }
+            if independent_command {
                 // This command's completion is irrelevant to silent CD-DA.
                 // Retain every drive/report, seek, copy, R-W and other deadline.
                 // The main CD scheduler always uses command_deadline unchanged.
@@ -2516,6 +2553,42 @@ mod quiet_clock_tests {
         cd.advance(drive - 1076);
         assert!(cd.audio_quiet());
         cd.advance(1);
+        assert!(!cd.audio_quiet());
+    }
+
+    #[test]
+    fn sound_projection_through_data_range_keeps_later_cdda_command_boundary() {
+        let mut cd = CdBlock::default();
+        let bytes = vec![0; 7 * RAW_SECTOR];
+        cd.mount(Media::cue(
+            "FILE \"fixture\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nTRACK 02 AUDIO\nINDEX 00 00:00:04\nINDEX 01 00:00:05",
+            &[("fixture", &bytes)],
+        ).unwrap());
+        cd.playing = true;
+        cd.play_start = 150;
+        cd.fad = 151;
+        cd.end = 154;
+        cd.repeat = 15;
+        cd.status = 3;
+        assert!(cd.audio_quiet());
+        assert_eq!(cd.sound_source_deadline(false, true), u32::MAX);
+        assert_eq!(cd.sound_source_deadline(true, true), cd.clocks_to_event());
+        assert_ne!(cd.sound_source_deadline(true, true), u32::MAX);
+
+        // An audio pregap belongs to the audio track before its INDEX 01.
+        cd.end = 155;
+        assert_eq!(cd.sound_source_deadline(false, true), cd.clocks_to_event());
+        cd.end = 154;
+
+        cd.pending = Some(([0x1080, 155, 0x80, 2], 1075));
+        assert_eq!(cd.sound_source_deadline(false, true), 1075);
+        cd.advance(300);
+        assert_eq!(cd.sound_source_deadline(false, true), 775);
+        assert!(cd.audio_quiet());
+        cd.advance(775);
+        assert!(cd.audio_quiet());
+        assert_eq!(cd.fad, 155);
+        cd.advance(cd.seeking);
         assert!(!cd.audio_quiet());
     }
 
