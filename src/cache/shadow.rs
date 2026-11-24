@@ -177,9 +177,6 @@ impl CachedLines {
         Self::publish(cache, self.versions.drain(..));
         self.reset_heads();
     }
-    pub fn commit_and_release(self, cache: &mut Cache) {
-        Self::publish(cache, self.versions.into_iter());
-    }
     fn publish(cache: &mut Cache, versions: impl ExactSizeIterator<Item = SetVersion>) {
         if versions.len() != 0 {
             cache.record_contents_change();
