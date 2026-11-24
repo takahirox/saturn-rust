@@ -34,13 +34,25 @@ def build():
             s += read(address | 0x20000000)
         expected += ([0xccddeeee] if code == 0 else [0x11223344, 0xaabbccdd] if code == 1
                      else [0x1122eeee, 0x3344eeee, 0xaabbeeee, 0xccddeeee])
-    # Real B-bus sound RAM input. Add2 is the final-spec permitted encoding.
-    for address, value in [(0x25a01000, 0x12345678), (0x25a01004, 0xbad0bad0),
-                           (0x25a01008, 0x9abcdef0)]:
+    # DMA2 reads adjacent longwords from sound RAM. The third longword
+    # detects an erroneous eight-byte stride.
+    for address, value in [(0x25a01000, 0x12345678), (0x25a01004, 0x9abcdef0),
+                           (0x25a01008, 0xbad0bad0)]:
         s += store(address, value)
     s += start([0x00001c3f, 0x98000000 | (0x05a01000//4), 0xc0010002, 0xf8000000])
     s += wait('wait_input') + store(0x25fe0088, 63) + read(0x25fe008c) + read(0x25fe008c)
     expected += [0x12345678, 0x9abcdef0]
+    # While T0 is set, the polling loop rewrites CT3 in its delay slot.
+    # All eight words must land in order using the cursor captured by DMA2.
+    base = 0x05c04000
+    words = [0x13420000 + i * 0x10199 for i in range(8)]
+    for i, value in enumerate(words + [0xbad0bad0]):
+        s += store((base | 0x20000000) + i * 4, value)
+    s += start([0x00001f08, 0x98000000 | (base//4), 0xc0010308,
+                0xd3400003, 0x00001f08, 0xf8000000])
+    s += wait('wait_polling_input') + store(0x25fe0088, 3 * 64 + 8)
+    s += read(0x25fe008c) * len(words)
+    expected += words
     s += 'load 0x600d,r0\n' + record() + 'finished:\nsleep\nbra finished\nnop\n'
     expected += [0x600d]
     code = assembler.assemble(s, base=0x200)

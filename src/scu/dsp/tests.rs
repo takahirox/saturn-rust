@@ -158,9 +158,9 @@ fn b_bus_input_publishes_only_a_complete_word_and_retains_the_first_sample() {
             if beat == 0 {
                 0xff680400 // The MVI's signed 25-bit immediate, not yet updated.
             } else if beat < 3 {
-                0x01680402
+                0x01680401
             } else {
-                0x01680404
+                0x01680402
             }
         );
     }
@@ -169,11 +169,49 @@ fn b_bus_input_publishes_only_a_complete_word_and_retains_the_first_sample() {
         [
             (false, 0x05a01000, 0x1234),
             (false, 0x05a01002, 0x5678),
-            (false, 0x05a01008, 0x9abc),
-            (false, 0x05a0100a, 0xdef0),
+            (false, 0x05a01004, 0x9abc),
+            (false, 0x05a01006, 0xdef0),
         ]
     );
     assert!(!d.dma_pending());
+}
+
+#[test]
+fn ct_writes_during_b_bus_dma_do_not_redirect_later_words() {
+    for write in [false, true] {
+        let mut d = start(write, false, if write { 1 } else { 2 }, 2, 0x05a01000);
+        let mut port = Port::default();
+        port.read_value.set(0x1357);
+        d.dma_beat(&mut port).unwrap();
+        d.dma_beat(&mut port).unwrap();
+        assert_eq!(d.ct[0], 0);
+
+        // The DSP can write the CT register while DMA owns the RAM bank.
+        // This instruction executes before the second word's first grant.
+        d.prefetched = Some((d.pc, 0x00001c3f)); // MOV #63,CT0
+        assert!(!d.step().unwrap());
+        assert_eq!(d.ct[0], 63);
+
+        port.read_value.set(0x2468);
+        d.dma_beat(&mut port).unwrap();
+        d.dma_beat(&mut port).unwrap();
+        assert!(!d.dma_pending());
+        assert_eq!(d.ct[0], 1);
+        if write {
+            assert_eq!(
+                *port.cycles.borrow(),
+                [
+                    (true, 0x05a01000, 0x1122),
+                    (true, 0x05a01002, 0x3344),
+                    (true, 0x05a01004, 0xaabb),
+                    (true, 0x05a01006, 0xccdd),
+                ]
+            );
+        } else {
+            assert_eq!(d.data[0][63], 0x13571357);
+            assert_eq!(d.data[0][0], 0x24682468);
+        }
+    }
 }
 
 #[test]
