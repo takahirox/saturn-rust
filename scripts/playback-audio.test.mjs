@@ -160,6 +160,27 @@ test("BIOS audio follows a slow producer and preserves stereo pitch", async () =
   assertStereo(render(128), 0.125);
 });
 
+test("BIOS audio stays continuous across several delayed PCM packets", async () => {
+  const { output, processor, flush, render } = await audioHarness();
+  const packetFrames = 737;
+  assert(output.start(stereo(4 * packetFrames, 8192), true));
+  flush();
+  let due = packetFrames;
+  let packets = 0;
+  for (let time = 0; time < 44100 * 1.5; time += 128) {
+    while (due <= time && output.hasCapacity(packetFrames)) {
+      assert(output.deliver(stereo(packetFrames, 8192)));
+      flush();
+      packets++;
+      // Three consecutive slow fields arrive about 52 ms apart.
+      due += packets > 10 && packets <= 13 ? 44100 * 0.052 : packetFrames;
+    }
+    assertStereo(render(128), 0.25);
+  }
+  assert.equal(processor.stats.underflow, 0);
+  assert.equal(processor.stats.dropped, 0);
+});
+
 test("presentation receipts remain ordered across asynchronous PCM admission", async () => {
   globalThis.Worker = class {
     constructor() { this.messages = []; }

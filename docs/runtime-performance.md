@@ -6595,3 +6595,38 @@ The reproduced artifact and bindings match the measured build.
 The worst fields remain above the real-time budget.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+## Keep lookahead available for BIOS audio (2026-11-24)
+
+The Worklet needs two input grains to prepare a block of stereo audio.
+When the queue is falling quickly, its immediate rate limit now responds
+to the frames available beyond those two grains. This protects the
+next block while the slower arrival-rate estimate catches up. The
+Worklet still reports a shortage if input stops for long enough.
+
+Chrome 158 replayed Custom BIOS with Disc 1 and the production Sound
+and Video workers and AudioWorklet. Both comparison orders applied
+the same 14 inputs at the specified guest fields. All 1,226 common
+guest PCM packet hashes and sampled video signatures matched. Every
+field was drawn, with zero dropped PCM frames and runtime errors.
+
+| Worklet output frames missing | Forward order | Reverse order |
+| --- | ---: | ---: |
+| First 140 fields before audible input | 896 to 0 | 768 to 0 |
+| Clock confirmation through field 900 | 0 to 0 | 0 to 0 |
+| Field 900 through field 1185 | 14,592 to 9,216 | 14,208 to 9,856 |
+
+The queue-based latency estimate during the animation changed from
+118.7 to 118.3 ms for the median and 133.7 to 134.3 ms for the 95th
+percentile in forward order. In reverse order the estimates changed
+from 120.7 to 115.5 ms and 135.4 to 132.2 ms. The estimate uses queue
+depth, the current stretch rate and the length of one output grain.
+
+The regression feeds three consecutive PCM packets at 52 ms intervals.
+The earlier Worklet produces a discontinuity on the original stereo
+signal. The candidate plays every output frame continuously. Existing
+pitch, mute, pause, bounded queue and stopped-producer tests pass.
+Both browser arms used the same Wasm and bindings from #240.
+Sustained real-time emulation and shorter post-logo stalls remain open.
+
+Related to #138 and #17. Private media and raw captures stay local.
