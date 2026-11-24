@@ -6478,3 +6478,39 @@ The standard candidate Wasm SHA-256 is
 The JavaScript bindings and player assets matched the baseline.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+
+## Prepare resident SH-2 reads of active DMA control registers (2026-11-24)
+
+A cached SH-2 instruction that reads CHCR0 or CHCR1 with an aligned
+longword can prepare its instruction pipeline in advance. The existing
+peripheral bus still samples the value at the real MA completion and
+records whether the read saw the transfer-end flag. A pending internal
+DMA request keeps its normal bus priority. Other memory operands retain
+the existing guard.
+
+Against #237, the regular Chrome 158 player with Custom BIOS and Disc 1
+drew every generated field. In each order all 1,185 source PCM packet
+hashes, sampled video signatures and 14 input stamps matched. There were
+no dropped PCM frames or runtime errors, and both builds delivered audio
+without a shortage from clock confirmation through field 900.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Mean time per field, fields 1150–1155, ms | 117.60 to 102.42 | 116.80 to 103.82 |
+| Wall time from field 1 to field 1185, s | 27.122 to 26.829 | 26.933 to 26.839 |
+| Worklet output frames missing from fields 900–1185 | 17,536 to 13,440 | 16,896 to 14,208 |
+
+Every checkpoint from field 1147 through field 1158 matched both SH-2s,
+board clocks, both WRAM hashes, canonical Sound, PCM, and decoded video.
+The original native test polls each DMA channel during a real WRAM
+transfer and compares the CPU and board against ordinary replay. The
+guest verifies that its live read observes TE and permits the following
+write to clear it. The transfer contents also match.
+
+The standard candidate Wasm SHA-256 is
+`96314b382bade2a8940f413ca1b9b3eb08f749b96e2aec6257a041eb8e485e07`.
+The bindings and player assets match #237. The slow fields remain above
+the 16.7 ms budget.
+
+Related to #138 and #17. Private media and raw captures stay local.
