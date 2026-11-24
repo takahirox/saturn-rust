@@ -35,32 +35,37 @@ impl Cached<'_> {
             return None;
         }
         let current_clock = initial.execution_clock()?;
-        let (first_index, shift) = data.by_pc.get(&initial.state().pc)?.iter().find_map(|&i| {
-            let phase = &data.phases[i];
-            if !phase.cpu.loop_multiplier_idle() {
-                return None;
-            }
-            let shift = current_clock.checked_sub(phase.cpu.execution_clock()?)?;
-            if let Some(diagnostics) = diagnostics {
-                let [gpr, architecture, private] =
-                    initial.cached_cycle_differences(&phase.cpu, shift);
-                let key = [
-                    gpr,
-                    architecture,
-                    private,
-                    u32::from(phase.ready.checked_add(shift) == Some(self.clock.get())),
-                    u32::from(phase.retained == self.retained.get()),
-                ];
-                let mut rows = diagnostics.borrow_mut();
-                if rows.len() < 128 || rows.contains_key(&key) {
-                    *rows.entry(key).or_default() += 1;
+        let (first_index, shift) = data
+            .by_pc
+            .get(&initial.state().pc)?
+            .candidates(diagnostics.is_some())
+            .iter()
+            .find_map(|&i| {
+                let phase = &data.phases[i];
+                if !phase.cpu.loop_multiplier_idle() {
+                    return None;
                 }
-            }
-            (phase.ready.checked_add(shift) == Some(self.clock.get())
-                && phase.retained == self.retained.get()
-                && initial.same_loop_origin(&phase.cpu, shift))
-            .then_some((i, shift))
-        })?;
+                let shift = current_clock.checked_sub(phase.cpu.execution_clock()?)?;
+                if let Some(diagnostics) = diagnostics {
+                    let [gpr, architecture, private] =
+                        initial.cached_cycle_differences(&phase.cpu, shift);
+                    let key = [
+                        gpr,
+                        architecture,
+                        private,
+                        u32::from(phase.ready.checked_add(shift) == Some(self.clock.get())),
+                        u32::from(phase.retained == self.retained.get()),
+                    ];
+                    let mut rows = diagnostics.borrow_mut();
+                    if rows.len() < 128 || rows.contains_key(&key) {
+                        *rows.entry(key).or_default() += 1;
+                    }
+                }
+                (phase.ready.checked_add(shift) == Some(self.clock.get())
+                    && phase.retained == self.retained.get()
+                    && initial.same_loop_origin(&phase.cpu, shift))
+                .then_some((i, shift))
+            })?;
         let first = &data.phases[first_index];
         if (first.cpu.state().sr ^ initial.state().sr) & 0xF0 != 0 {
             return None;
