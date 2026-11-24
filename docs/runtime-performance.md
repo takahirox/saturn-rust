@@ -6630,3 +6630,44 @@ Both browser arms used the same Wasm and bindings from #240.
 Sustained real-time emulation and shorter post-logo stalls remain open.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+## Reuse cached planning storage with both SH-2s enabled
+
+The cached executor reuses its existing shadow cache and bus-event vector
+after initial opcode and operand admission, including when the second SH-2
+is enabled. The accepted prefix publishes its cache versions and transfer
+effects at the original boundaries. A rejected prefix clears its temporary
+versions and events before returning the storage.
+
+A Chrome 158.0.8127.36 fixed-work comparison rendered 640 consecutive game
+fields. All 32 checkpoints agreed on both CPUs, clocks, all work RAM, the
+complete Sound snapshot, renderer transport and rolling PCM and pixel
+hashes. The initial prototype reduced mean processing time from 19.19 to
+18.75 ms per field and improved 30 of 32 windows. The two slow subregions
+improved from 31.88 to 31.02 ms and from 28.79 to 28.32 ms per field.
+
+The final candidate was compared in both orders with ordinary playback,
+the production Sound and Video workers, and the 44.1 kHz AudioWorklet.
+Each comparison measured 13 seconds after field 16,150. The same 168
+controller events reached their scheduled guest fields. All common PCM
+packet hashes and sampled pixel signatures agreed through fields 16,815
+and 16,811 respectively. Every field was drawn, with zero queue drops and
+runtime errors.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Presented fields per second | 50.84 to 51.37 | 50.53 to 50.92 |
+| First slow subregion, ms per field | 30.35 to 30.07 | 30.92 to 30.53 |
+| Second slow subregion, ms per field | 28.43 to 27.53 | 28.82 to 28.24 |
+| Field gap p95, ms | 40.4 to 39.1 | 42.1 to 40.2 |
+| Field gap p99, ms | 44.4 to 42.5 | 45.4 to 43.2 |
+| Worklet output frames missing | 0 to 0 | 256 to 0 |
+
+The ordinary Worklet still stretches audio during both slow subregions.
+Sustained real-time emulation and normal-speed audio remain open.
+Seventy-five native cached-execution tests, five cache-shadow tests, and
+the original browser SH-2 fetch, load, bus pipeline and refresh arbitration
+groups pass. The final production Wasm SHA-256 is
+`276e2250cc06d3714ac6572c345d774312fa21736b242cd2f1686b2f2459a003`.
+
+Related to #138 and #17. Private media and raw captures stay local.
