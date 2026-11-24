@@ -65,7 +65,7 @@ export class AudioOutput {
   }
   // Queue the first PCM and resume in one Worklet message. No empty
   // rendering quantum can occur between an unpause and its initial data.
-  start(pcm) { return this.deliver(pcm, true); }
+  start(pcm, stretch = false) { return this.deliver(pcm, true, stretch); }
   hasCapacity(frames) {
     // The last reported queue depth is an upper bound until more PCM arrives.
     // Pending packets account for every write the Worklet has yet to report.
@@ -100,7 +100,7 @@ export class AudioOutput {
     }
     return this.waitAndDeliver(pcm, frames);
   }
-  deliver(pcm, resume = false) {
+  deliver(pcm, resume = false, stretch = false) {
     const frames = pcm.length >>> 1;
     if (!frames || !this.node || (this.paused && !resume) || this.context.state !== "running") return false;
     // Bound transferable messages waiting for the audio thread, in addition to
@@ -114,7 +114,7 @@ export class AudioOutput {
     this.pending += frames;
     const copy = new Int16Array(pcm);
     if (resume) this.paused = false;
-    this.node.port.postMessage(resume ? { pcm: copy, paused: false } : { pcm: copy }, [copy.buffer]);
+    this.node.port.postMessage(resume ? { pcm: copy, paused: false, stretch } : { pcm: copy }, [copy.buffer]);
     if (resume) this.status("ready");
     return true;
   }

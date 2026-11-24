@@ -6405,3 +6405,40 @@ The standard Wasm SHA-256 is
 The JavaScript bindings match the baseline.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+## Keep Custom BIOS audio continuous during slow startup (2026-11-24)
+
+After clock confirmation the normal browser player can generate PCM slower
+than the audio device consumes it. Custom BIOS playback primes at least
+2,400 sample frames, then the Worklet estimates the incoming sample rate
+and uses queue depth to adjust playout. Its stereo overlap-add follows the
+[waveform-similarity method](https://www.isca-archive.org/eurospeech_1993/roelands93_eurospeech.html).
+Both channels use the same alignment. The audio can follow a slower
+animation while retaining the pitch of the incoming waveform. The Worklet
+still reports a shortage during a prolonged pause in delivery.
+
+The normal Chrome 158 player ran 28 seconds per arm with a local BIOS and
+no disc. Every generated field was drawn. The same 14 inputs reached their
+requested fields, and decoded video signatures and guest stereo packet
+hashes matched through field 900. Both orders reported zero PCM drops and
+runtime errors. The Wasm and bindings match those from the startup chime
+fix (#235).
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Animation fields 600–720, fields/s | 32.958 to 32.922 | 32.356 to 32.754 |
+| Worklet audio shortage from fields 416–900, seconds | 4.375 to 0 | 4.610 to 0 |
+| Worklet shortage throughout the capture, output frames | 238,535 to 512 | 254,407 to 1,152 |
+
+The remaining shortages ended by field 130, before the first audible
+input response. Queue depth and the current playout rate estimate a
+median delay of 97–99 ms and a 95th percentile of about 112 ms during
+fields 480–720. This is a queue-based estimate. Real-time emulation
+throughput remains open.
+
+The Worklet test feeds a 110 Hz stereo signal at nominal speed, slows its
+producer to 32.5 fields/s, and restores nominal speed. It checks pitch,
+stereo, sample shortages, mute, a stopped producer and playback after
+reset. Existing direct playback and pacing tests also pass.
+
+Related to #138 and #17. Private media and raw captures stay local.
