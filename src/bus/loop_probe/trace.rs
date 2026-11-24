@@ -58,6 +58,62 @@ pub(in crate::bus) struct Store {
     pub(in crate::bus) width: usize,
     pub(in crate::bus) value: u32,
 }
+#[derive(Default)]
+pub(in crate::bus) struct PhaseOrigins {
+    recorded: Vec<usize>,
+    representatives: Vec<usize>,
+}
+impl PhaseOrigins {
+    fn equivalent(earlier: &Phase, later: &Phase) -> bool {
+        if earlier.retained != later.retained
+            || !earlier.cpu.loop_multiplier_idle()
+            || !later.cpu.loop_multiplier_idle()
+        {
+            return false;
+        }
+        let Some(shift) = later
+            .cpu
+            .execution_clock()
+            .and_then(|now| now.checked_sub(earlier.cpu.execution_clock()?))
+        else {
+            return false;
+        };
+        earlier.ready.checked_add(shift) == Some(later.ready)
+            && later.cpu.same_loop_origin(&earlier.cpu, shift)
+    }
+
+    fn keep_distinct_origins(&mut self, phases: &[Phase]) {
+        if self.recorded.len() < 16 {
+            return;
+        }
+        let mut distinct = Vec::new();
+        for &index in &self.recorded {
+            if distinct
+                .iter()
+                .any(|&earlier| Self::equivalent(&phases[earlier], &phases[index]))
+            {
+                continue;
+            }
+            // Bound work for traces with many distinct states at one PC.
+            if distinct.len() == 8 {
+                return;
+            }
+            distinct.push(index);
+        }
+        // Replay picks the first equally shifted CPU origin before testing
+        // its cache guards. A later equivalent origin cannot be selected.
+        self.representatives = distinct;
+    }
+
+    pub(in crate::bus) fn candidates(&self, diagnosing: bool) -> &[usize] {
+        if diagnosing || self.representatives.is_empty() {
+            &self.recorded
+        } else {
+            &self.representatives
+        }
+    }
+}
+
 pub(in crate::bus) struct CapturedLoop {
     pub(in crate::bus) phases: Vec<Phase>,
     pub(in crate::bus) reads: Vec<Read>,
@@ -68,7 +124,7 @@ pub(in crate::bus) struct CapturedLoop {
     pub(in crate::bus) header_checks: Vec<[u32; 9]>,
     pub(in crate::bus) touches: Vec<crate::cache::CacheTouch>,
     compact_touches: Vec<Vec<(usize, crate::cache::CacheTouch)>>,
-    pub(in crate::bus) by_pc: BTreeMap<u32, Vec<usize>>,
+    pub(in crate::bus) by_pc: BTreeMap<u32, PhaseOrigins>,
     pub(in crate::bus) multiplier_constant: bool,
     pub(in crate::bus) compiled: Vec<Vec<compiled::Guard>>,
     pub(in crate::bus) timeline: Option<timeline::Timeline>,
@@ -484,7 +540,11 @@ impl Machine {
             data.by_pc
                 .entry(phase.cpu.state().pc)
                 .or_default()
+                .recorded
                 .push(index);
+        }
+        for origins in data.by_pc.values_mut() {
+            origins.keep_distinct_origins(&data.phases);
         }
         data.touches = self.bus.cache[0].borrow_mut().end_loop_touches();
         if let Some(touches) = truncated_touches {
@@ -579,6 +639,48 @@ impl Machine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn equivalent_shifted_origins_keep_first_match_and_keep_different_inputs() {
+        let mut machine = super::super::original_machine(false, false, false);
+        machine.bus.set_slave_enabled(false);
+        let mut last_instruction = 100;
+        let mut phases = Vec::new();
+        for _ in 0..20_000 {
+            machine.step().unwrap();
+            let cpu = machine.cpu.state();
+            if cpu.pc != crate::bus::HIGH_WRAM || cpu.instructions <= last_instruction {
+                continue;
+            }
+            last_instruction = cpu.instructions;
+            phases.push(machine.loop_trace_phase(phases.last()).unwrap());
+            if phases.len() == 32 {
+                break;
+            }
+        }
+        assert_eq!(phases.len(), 32);
+        phases[30].retained = Some((u32::MAX, 0));
+        phases[31].ready += 1;
+
+        let mut origins = PhaseOrigins {
+            recorded: (0..phases.len()).collect(),
+            ..PhaseOrigins::default()
+        };
+        origins.keep_distinct_origins(&phases);
+        let representatives = origins.candidates(false);
+        assert!(representatives.len() < phases.len() / 2);
+        assert!(representatives.contains(&30));
+        assert!(representatives.contains(&31));
+        for live in &phases {
+            let first = |indices: &[usize]| {
+                indices
+                    .iter()
+                    .copied()
+                    .find(|&index| PhaseOrigins::equivalent(&phases[index], live))
+            };
+            assert_eq!(first(representatives), first(origins.candidates(true)));
+        }
+    }
 
     #[test]
     fn captured_cache_contents_are_shared_only_until_a_mutation() {
