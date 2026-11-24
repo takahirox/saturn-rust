@@ -110,12 +110,17 @@ output on failure. See the
 Open <http://127.0.0.1:8000>. The build regenerates the original licensed ISO and
 its public license, then creates
 `target/wasm32-unknown-unknown/release/saturn_rust.wasm` and the generated
-`web/pkg/saturn_rust.js` / `saturn_rust_bg.wasm`. Generated Wasm bindings are ignored
-by Git; the reproducible ISO and its license are committed. Rebuild after changing
-Rust or guest source. Opening `index.html` as a `file:` URL will not work. The
-client needs browser support for ES modules, module Workers, Wasm SIMD and the
-`wasm-unsafe-eval` CSP directive. The tested browser is recorded in
-[validation results](validation-issue-9.md).
+`web/pkg/saturn_rust.js`, `saturn_rust_bg.wasm` and
+`saturn_rust_compatible_bg.wasm`. The generated bindings select the first Wasm
+file when the browser validates a WebAssembly tail-call instruction. Other browsers
+load the compatible Wasm file with the existing instruction requirements.
+Serve both files together. [WebAssembly feature status](https://webassembly.org/features/)
+
+Git ignores the generated WebAssembly package and tracks the reproducible ISO
+and its license. Rebuild after changing Rust or guest source. Serve
+`index.html` over HTTP. The client needs browser support for ES modules, module
+Workers, Wasm SIMD and the `wasm-unsafe-eval` CSP directive.
+[Browser validation results](validation-issue-9.md)
 
 `build-web.sh` enables `sound-worker`, which includes `video-worker`. One module
 Worker owns the original Rust Machine during playback, pause and debugging;
