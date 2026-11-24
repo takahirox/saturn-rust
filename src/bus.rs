@@ -440,6 +440,8 @@ pub struct Bus {
     #[cfg(test)]
     dmac_terminal_blocks: u64,
     #[cfg(test)]
+    dmac_terminal_words: u64,
+    #[cfg(test)]
     dmac_terminal_reads: u64,
     pub sound: Sound,
     pub cd: crate::cd::CdBlock,
@@ -631,6 +633,8 @@ impl Default for Bus {
             dmac_queued_reads_reused: 0,
             #[cfg(test)]
             dmac_terminal_blocks: 0,
+            #[cfg(test)]
+            dmac_terminal_words: 0,
             #[cfg(test)]
             dmac_terminal_reads: 0,
             sound: Sound::default(),

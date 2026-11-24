@@ -2651,7 +2651,7 @@ impl Bus {
         Some(())
     }
 
-    fn advance_dmac_block_store(&mut self, processor: Processor) -> Option<()> {
+    fn advance_dmac_buffered_store(&mut self, processor: Processor) -> Option<()> {
         let i = processor as usize;
         let proof = self.transactions.dmac_write_wait[i]?;
         if self.transactions.lock == Some(processor)
@@ -2664,10 +2664,9 @@ impl Bus {
             return None;
         }
         let journal = self.transactions.journals[i + 2].get_mut();
-        let Operation::Write(address, 4, terminal_value) = proof.operation else {
+        let Operation::Write(address, width, terminal_value) = proof.operation else {
             return None;
         };
-        let slot = journal.operations.len().checked_sub(4)?;
         if !journal.write_accepted
             || journal.current_operation != Some(proof.operation)
             || journal.cursor != journal.operations.len()
@@ -2677,6 +2676,30 @@ impl Bus {
         {
             return None;
         }
+        if width == 2 {
+            let source = proof.unit.word_write_source(address)?;
+            // The retained value came from the physical read. The real
+            // buffer has accepted the VDP2 write and still owns its drain.
+            if journal.operations.as_slice()
+                != [(Operation::Read(source, 2, false, false), Ok(terminal_value))]
+                || source >= 0x4000_0000
+                || Self::wram_port::<2>(Self::physical(source)).is_none()
+                || address >= 0x4000_0000
+                || !(crate::devices::VRAM..0x05F0_0000).contains(&Self::physical(address))
+            {
+                return None;
+            }
+            self.finish_dmac_buffered_transfer(processor, proof.unit, 2);
+            #[cfg(test)]
+            {
+                self.dmac_terminal_words += 1;
+            }
+            return Some(());
+        }
+        if width != 4 {
+            return None;
+        }
+        let slot = journal.operations.len().checked_sub(4)?;
         if slot == 3 {
             let (source, destination) = proof.unit.full_block_last_write(address)?;
             let reads = &journal.operations[..4];
@@ -2707,13 +2730,7 @@ impl Bus {
             // Every prior logical phase is retained and the final write was
             // just accepted by the real buffer. Finish with the same DMAOR,
             // channel, request acknowledgement and cycle-steal bookkeeping.
-            let chip = &mut self.onchip[i];
-            let serial = chip.serial_dma_requests();
-            let acknowledged = chip.dma.complete_full_block(proof.unit);
-            let burst = chip.dma.burst_requested(serial);
-            chip.acknowledge_serial_dma(acknowledged);
-            self.finish_dmac_journal(processor, burst, true);
-            self.transactions.dmac_write_wait[i] = None;
+            self.finish_dmac_buffered_transfer(processor, proof.unit, 16);
             #[cfg(test)]
             {
                 self.dmac_terminal_blocks += 1;
@@ -2744,6 +2761,22 @@ impl Bus {
             self.dmac_block_write_words += 1;
         }
         Some(())
+    }
+
+    fn finish_dmac_buffered_transfer(
+        &mut self,
+        processor: Processor,
+        unit: crate::onchip::PendingWriteKey,
+        size: u32,
+    ) {
+        let i = processor as usize;
+        let chip = &mut self.onchip[i];
+        let serial = chip.serial_dma_requests();
+        let acknowledged = chip.dma.complete_buffered_dual(unit, size);
+        let burst = chip.dma.burst_requested(serial);
+        chip.acknowledge_serial_dma(acknowledged);
+        self.finish_dmac_journal(processor, burst, true);
+        self.transactions.dmac_write_wait[i] = None;
     }
 
     fn request_dmac_block_write(&mut self, processor: Processor, destination: u32, value: u32) {
@@ -2792,7 +2825,7 @@ impl Bus {
                 let direct = self.dmac_read_tail;
                 #[cfg(not(test))]
                 let direct = true;
-                if !direct || self.advance_dmac_block_store(processor).is_none() {
+                if !direct || self.advance_dmac_buffered_store(processor).is_none() {
                     self.prepare_dmac(processor);
                 }
             }
@@ -4395,6 +4428,64 @@ mod private_storage_tests {
 mod settled_dmac_grant_tests {
     use super::*;
     use crate::onchip::DMAC;
+
+    #[test]
+    fn buffered_dmac_words_keep_acceptance_and_vdp2_publication_order() {
+        let source = HIGH_WRAM + 0x100;
+        let destination = crate::devices::VRAM + 0x200;
+        for fast_clock in [false, true] {
+            for burst in [false, true] {
+                let make = |direct| {
+                    let mut bus = Bus {
+                        dmac_read_tail: direct,
+                        ..Bus::default()
+                    };
+                    bus.transactions.dmac_write_wait_enabled = true;
+                    bus.change_system_clock(fast_clock);
+                    bus.onchip[0].write32(0xFFFF_FFE8, 0xA55A_0000).unwrap();
+                    for i in 0..4 {
+                        bus.write16(source + i * 2, 0x1234 + i as u16).unwrap();
+                    }
+                    for (offset, value) in [
+                        (0, source),
+                        (4, destination),
+                        (8, 4),
+                        (12, 0x5605 | if burst { 0x10 } else { 0 }),
+                        (0x20, 0x44),
+                        (0x30, 1),
+                    ] {
+                        bus.onchip[0].write32(DMAC + offset, value).unwrap();
+                    }
+                    bus
+                };
+                let mut reference = make(false);
+                let mut candidate = make(true);
+                for _ in 0..128 {
+                    assert_eq!(
+                        candidate.advance_cpu_clocks(1),
+                        reference.advance_cpu_clocks(1)
+                    );
+                    assert!(candidate.transactions.active == reference.transactions.active);
+                    assert!(candidate.transactions.internal == reference.transactions.internal);
+                    assert!(candidate.same_cpu_journals(&reference));
+                    for offset in [0, 4, 8, 12, 0x30] {
+                        assert_eq!(
+                            candidate.onchip[0].read32(DMAC + offset),
+                            reference.onchip[0].read32(DMAC + offset)
+                        );
+                    }
+                    for i in 0..4 {
+                        let address = destination + i * 2;
+                        assert_eq!(candidate.read16(address), reference.read16(address));
+                    }
+                }
+                assert_eq!(candidate.dmac_terminal_words, 4);
+                for i in 0..4 {
+                    assert_eq!(candidate.read16(destination + i * 2), Ok(0x1234 + i as u16));
+                }
+            }
+        }
+    }
 
     #[test]
     fn physical_dmac_wram_tail_keeps_bus_order_and_disabled_channel_behavior() {

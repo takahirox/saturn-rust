@@ -69,6 +69,16 @@ pub(crate) struct PendingWriteKey {
 }
 
 impl PendingWriteKey {
+    pub(crate) fn word_write_source(self, destination: u32) -> Option<u32> {
+        (self.control >> 10 & 3 == 1
+            && self.control >> 12 & 3 != 3
+            && self.control >> 14 & 3 != 3
+            && self.source.is_multiple_of(2)
+            && self.destination == destination
+            && destination.is_multiple_of(2))
+        .then_some(self.source)
+    }
+
     fn matches_block_write(self, address: u32, slot: usize) -> bool {
         self.control >> 10 & 3 == 3
             && self.control >> 12 & 3 != 3
@@ -436,10 +446,16 @@ impl Dma {
         Some(self.complete_transfer(selected, size, count, single, input))
     }
 
-    pub(crate) fn complete_full_block(&mut self, key: PendingWriteKey) -> u8 {
+    pub(crate) fn complete_buffered_dual(&mut self, key: PendingWriteKey, size: u32) -> u8 {
         debug_assert!(self.pending_write_key() == Some(key));
         self.selected = None;
-        self.complete_transfer(key.selected, 16, 4, false, false)
+        self.complete_transfer(
+            key.selected,
+            size,
+            if size == 16 { 4 } else { 1 },
+            false,
+            false,
+        )
     }
 
     fn complete_transfer(
