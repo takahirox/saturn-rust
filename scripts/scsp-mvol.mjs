@@ -30,7 +30,7 @@ export async function scspMvol(page) {
           const p=pcm[(phase+i)%4];
           const dry=mode===0 || mode===3;
           const wet=mode===1 || mode===3;
-          const left=(dry ? p/16 : 0)+(wet ? p*coef/32768 : 0)+(mode>=2 ? cdLeft : 0);
+          const left=(dry ? p/16 : 0)+(wet ? pcm[(phase+i+3)%4]*coef/32768 : 0)+(mode>=2 ? cdLeft : 0);
           const right=(dry ? p : 0)+(mode>=2 ? -1000-cd-i : 0);
           if(samples[i*2]!==expected(left,gain) || samples[i*2+1]!==expected(right,gain)) {found=false;break;}
         }

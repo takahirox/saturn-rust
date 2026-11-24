@@ -18,7 +18,7 @@ fn rom() -> Vec<u8> {
 }
 
 #[test]
-fn real_cpus_upload_a_dsp_that_distinguishes_early_late_and_sample_wrap_publication() {
+fn real_cpus_upload_a_dsp_that_reads_the_completed_mix_at_early_and_late_steps() {
     let original = rom();
     let operands: Vec<_> = include_str!("fixtures/scsp-pipeline.tsv")
         .split_whitespace()
@@ -36,8 +36,8 @@ fn real_cpus_upload_a_dsp_that_distinguishes_early_late_and_sample_wrap_publicat
             }
             let (left, right) = (if omit == 0 { b as i16 / 2 } else { 0 }, a as i16 / 2);
             let expected = [
-                u32::from(right as u16),
-                u32::from(left as u16),
+                u32::from(right as u16) * 0x10001,
+                u32::from(left as u16) * 0x10001,
                 0x30060000,
                 0x600D,
             ];

@@ -3505,7 +3505,7 @@ try {
   const effectMove=Buffer.from([0x33,0xFC,0x40,0,0,0x10,7,0]);
   const effectAt=labIso.indexOf(effectMove);
   assert(effectAt>=0);assert.equal(labIso.indexOf(effectMove,effectAt+1),-1);
-  for(const [coef,result,left] of [[0x4000,0x900,2304],[0x2000,0x480,1280],[0,0,256]]) {
+  for(const [coef,result] of [[0x4000,0x900],[0x2000,0x480],[0,0]]) {
     const effectIso=Buffer.from(labIso);effectIso.writeUInt16BE(coef,effectAt+2);
     await lab.locator("#disc").setInputFiles(labFiles(effectIso,Buffer.alloc(labAudio.length)));
     await labLoaded();
@@ -3516,7 +3516,8 @@ try {
       return {result:(await emulator.read_long(0x06010028)),samples:Array.from((await emulator.audio_samples(8192)))};
     });
     assert.equal(effect.result,result);
-    const expected=[left,4096,-left,-4096,-left*2,-8192,left*2,8192];
+    const wet=4096*coef/32768;
+    const expected=[256+2*wet,4096,-256+wet,-4096,-512-wet,-8192,512-2*wet,8192];
     assert(effect.samples.some((_,i)=>i%2===0&&expected.every((v,j)=>effect.samples[i+j]===v)));
   }
   const changedLab=Buffer.from(labIso);changedLab[60*2048+3]=9;

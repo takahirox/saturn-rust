@@ -97,9 +97,7 @@ fn mixed_disc_guest_computes_slave_dsp_dma_cd_sound_backup_and_video_results() {
 fn guest_uploaded_effects_program_changes_exact_stereo_samples_and_computed_result() {
     let original = include_bytes!("../web/hardware-lab.iso");
     let silent_cd = vec![0; include_bytes!("../web/hardware-lab-audio.bin").len()];
-    for (coefficient, result, left) in
-        [(0x4000u16, 0x900, 2304), (0x2000, 0x480, 1280), (0, 0, 256)]
-    {
+    for (coefficient, result) in [(0x4000u16, 0x900), (0x2000, 0x480), (0, 0)] {
         let mut iso = original.to_vec();
         // Change only the immediate in the original 68k MOVE.W #coef,$100700.
         // No host state writes after boot, and no emulator-side disc detection.
@@ -133,9 +131,19 @@ fn guest_uploaded_effects_program_changes_exact_stereo_samples_and_computed_resu
         // one complete field so every rotation of the four-sample waveform
         // contains the full authored eight-value stereo vector.
         machine.advance_frame().unwrap();
-        // Wet PCM is half/quarter/zero gain panned left; direct PCM retains
-        // pan8 (left /16). Dry right is unchanged and CD samples are all zero.
-        let expected = [left, 4096, -left, -4096, -left * 2, -8192, left * 2, 8192];
+        // The dry waveform goes right at full gain and left at 1/16.
+        // The left DSP output applies the coefficient to the previous sample.
+        let wet = (4096 * i32::from(coefficient) / 32768) as i16;
+        let expected = [
+            256 + 2 * wet,
+            4096,
+            -256 + wet,
+            -4096,
+            -512 - wet,
+            -8192,
+            512 - 2 * wet,
+            8192,
+        ];
         let samples = machine.drain_audio(8192);
         assert!(
             samples.windows(8).any(|w| w == expected),
