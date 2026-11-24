@@ -49,16 +49,16 @@ struct Dma {
     address: u32,
     add: u32,
     hold: bool,
-    // Technical Bulletin SOA #8 §5.6: every PRG transfer begins at zero.
-    // This cursor is independent of the CPU program-upload port and PC.
-    program_address: u8,
+    // Latch the selected bank's starting index for the transfer. A DSP
+    // instruction writing CT while T0 is set cannot redirect later words.
+    // PRG transfers start at zero (Technical Bulletin SOA #8 §5.6).
+    cursor: u8,
     // ST-097 §4.5: B-bus transfers use two external 16-bit cycles.
     // Retain the sampled longword between grants; a DSP RAM write between
     // its halves must not replace the low half of the in-flight word.
     halfword: Option<u32>,
-    // Address/data sampled when the arbiter grants a word, retained through
-    // both B-bus halves even if parallel DSP instructions change CT/RAM.
-    latch: Option<(usize, u32)>,
+    // Output data sampled on grant and retained through both B-bus halves.
+    latch: Option<u32>,
 }
 impl Default for Dsp {
     fn default() -> Self {
@@ -484,7 +484,7 @@ impl Dsp {
                         address: address.wrapping_mul(4) & 0x07FF_FFFF,
                         add,
                         hold: instruction & 0x4000 != 0,
-                        program_address: 0,
+                        cursor: self.ct.get(usize::from(bank)).copied().unwrap_or(0),
                         halfword: None,
                         latch: None,
                     });
@@ -532,15 +532,10 @@ impl Dsp {
     }
     pub(super) fn grant_dma_cycle(&mut self) {
         if let Some(dma) = self.dma.as_mut()
+            && dma.write
             && dma.latch.is_none()
         {
-            let bank = dma.bank as usize;
-            let ct = if bank < 4 {
-                self.ct[bank] as usize
-            } else {
-                dma.program_address as usize
-            };
-            dma.latch = Some((ct, if dma.write { self.data[bank][ct] } else { 0 }));
+            dma.latch = Some(self.data[usize::from(dma.bank)][usize::from(dma.cursor)]);
         }
     }
     pub(super) fn dma_beat(&mut self, memory: &mut impl Memory) -> Result<(), ScuError> {
@@ -550,7 +545,7 @@ impl Dsp {
         };
         let bank = dma.bank as usize;
         let address = dma.address;
-        let (ct, outgoing) = dma.latch.unwrap();
+        let ct = usize::from(dma.cursor);
         if dma.write {
             if !super::dma::valid_destination(address) {
                 return Err(ScuError::DmaParameters { channel: 3 });
@@ -566,7 +561,7 @@ impl Dsp {
                     memory.write16(low_address, value as u16)?;
                     dma.halfword = None;
                 } else {
-                    let value = outgoing;
+                    let value = dma.latch.unwrap();
                     memory.write16(address, (value >> 16) as u16)?;
                     dma.halfword = Some(value);
                     return Ok(());
@@ -578,41 +573,44 @@ impl Dsp {
                 if dma.add > 1 {
                     return Err(ScuError::DmaParameters { channel: 3 });
                 }
-                memory.write32(address, outgoing)?;
+                memory.write32(address, dma.latch.unwrap())?;
                 dma.address = address.wrapping_add(dma.add * 4);
             }
         } else {
             if !super::dma::valid_source(address) {
                 return Err(ScuError::DmaParameters { channel: 3 });
             }
-            if super::dma::b_bus(address) && dma.add != 2 {
-                return Err(ScuError::DmaParameters { channel: 3 });
-            }
-            let value = if super::dma::b_bus(address) {
+            let (value, stride) = if super::dma::b_bus(address) {
+                // ST-210 #27 requires DMA2 for B-bus input. The two 16-bit
+                // cycles consume one contiguous longword before advancing by four bytes.
+                if dma.add != 2 {
+                    return Err(ScuError::DmaParameters { channel: 3 });
+                }
                 if let Some(high) = dma.halfword {
                     if !super::dma::valid_source(address + 3) {
                         return Err(ScuError::DmaParameters { channel: 3 });
                     }
                     let value = high | u32::from(memory.read16(address + 2)?);
                     dma.halfword = None;
-                    value
+                    (value, 4)
                 } else {
                     dma.halfword = Some(u32::from(memory.read16(address)?) << 16);
                     return Ok(());
                 }
             } else {
-                memory.read32(address)?
+                (memory.read32(address)?, dma.add * 4)
             };
             if bank == 4 {
                 self.program[ct] = value;
-                dma.program_address = (ct as u8).wrapping_add(1);
             } else {
                 self.data[bank][ct] = value;
             }
-            dma.address = address.wrapping_add(dma.add * 4);
+            dma.address = address.wrapping_add(stride);
         }
+        dma.cursor = dma.cursor.wrapping_add(1);
         if bank < 4 {
-            self.ct[bank] = (ct as u8).wrapping_add(1) & 63;
+            dma.cursor &= 63;
+            self.ct[bank] = dma.cursor;
         }
         dma.latch = None;
         dma.remaining -= 1;
