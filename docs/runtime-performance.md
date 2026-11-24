@@ -6442,3 +6442,39 @@ stereo, sample shortages, mute, a stopped producer and playback after
 reset. Existing direct playback and pacing tests also pass.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+## Issue resident SH-2 instructions during local DMA (2026-11-24)
+
+An active on-chip DMA channel previously blocked the single-instruction
+cached path. Per the [SH7604 hardware manual](https://antime.kapsi.fi/sega/files/sh7604.pdf)
+(§§7.11, 9.2.4 and 9.3), the CPU can continue executing cache hits while
+its DMA controller transfers data. Register instructions and prepared
+branches can use the existing resident paths. The scheduler retains all
+DMA phases, CPU deadlines and interrupt boundaries. Cache misses, loads,
+stores and bulk batches retain their original admission rules.
+
+In normal Chrome 158 with the local Custom BIOS and Disc 1, activating
+the slave SH-2 and polling DMA completion produced six slow fields
+(1150–1155). The same 14 inputs, sampled video signatures and all 1,185
+source PCM packet hashes matched across both comparison orders. All
+generated fields were drawn, with zero dropped PCM or runtime errors.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Mean time per field, fields 1150–1155, ms | 150.38 to 117.92 | 149.58 to 117.45 |
+| Wall time from field 1 to field 1185, s | 27.729 to 27.456 | 27.425 to 27.182 |
+| Worklet output frames missing from fields 900–1185 | 28,032 to 18,560 | 27,776 to 18,176 |
+
+The slow interval contains silent guest PCM. It still exceeds the
+16.7 ms field budget. At one-field checkpoints from 1147 through 1158,
+both builds matched CPU registers and instruction counts, board clocks,
+both WRAM hashes, canonical Sound snapshots, PCM and decoded video.
+The native regression exercises both CPUs with active local DMA in
+cycle-steal and burst modes. It compares every hardware boundary with
+ordinary CPU replay and verifies both completed WRAM transfers.
+
+The standard candidate Wasm SHA-256 is
+`bcc947d56a48b026f9c093bb6b188f195ccd1fe3a6069850fc013d4c209efc3d`.
+The JavaScript bindings and player assets matched the baseline.
+
+Related to #138 and #17. Private media and raw captures stay local.
