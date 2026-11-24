@@ -145,12 +145,16 @@ async function pause() {
 function deliverAudio({ pcm }) {
   if (!playing || !audio.node || audio.context.state !== "running") return;
   if (!audio.paused) return audio.deliverPaced(pcm);
+  const stretch = effectiveBootMode() === "bios";
   queuedAudio.push(pcm);
-  if (queuedAudio.reduce((sum, part) => sum + (part.length >>> 1), 0) < 1024) return;
-  const samples = new Int16Array(queuedAudio.reduce((sum, part) => sum + part.length, 0));
+  const samplesLength = queuedAudio.reduce((sum, part) => sum + part.length, 0);
+  // The BIOS starts with silence. A few more samples give the audio
+  // clock time to follow slow startup before the first sound.
+  if (samplesLength / 2 < (stretch ? 2400 : 1024)) return;
+  const samples = new Int16Array(samplesLength);
   let at = 0;
   for (const part of queuedAudio) { samples.set(part, at); at += part.length; }
-  if (audio.start(samples)) queuedAudio = [];
+  if (audio.start(samples, stretch)) queuedAudio = [];
 }
 
 function setDisplayRatio(width, height) {

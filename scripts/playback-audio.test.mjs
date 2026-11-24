@@ -105,6 +105,61 @@ test("pausing or suspending releases a held field before a new playback epoch", 
   }
 });
 
+test("BIOS audio follows a slow producer and preserves stereo pitch", async () => {
+  const { output, processor, flush, render } = await audioHarness();
+  const frequency = 110;
+  let source = 0;
+  function wave(frames) {
+    const samples = new Int16Array(frames * 2);
+    for (let i = 0; i < frames; i++, source++) {
+      samples[i * 2] = Math.round(12000 * Math.sin(2 * Math.PI * frequency * source / 44100));
+      samples[i * 2 + 1] = -samples[i * 2];
+    }
+    return samples;
+  }
+  assert(output.start(wave(2948), true));
+  flush();
+  const crossings = [];
+  let previous = 0;
+  let nextArrival = 737;
+  for (let time = 0; time < 44100 * 5; time += 128) {
+    while (nextArrival <= time) {
+      assert(output.deliver(wave(737)));
+      flush();
+      const rate = time < 44100 || time >= 4 * 44100 ? 59.8265 : 32.5;
+      nextArrival += 44100 / rate;
+    }
+    const [left, right] = render(128);
+    assert(left.every((value, i) => value === -right[i]));
+    for (let i = 0; i < left.length; i++) {
+      if (time >= 2 * 44100 && time < 4 * 44100 && previous < 0 && left[i] >= 0) {
+        crossings.push(time + i);
+      }
+      previous = left[i];
+    }
+  }
+  assert(crossings.length > 210);
+  const pitch = (crossings.length - 1) * 44100 / (crossings.at(-1) - crossings[0]);
+  assert(Math.abs(pitch - frequency) < 1, `110 Hz input produced ${pitch} Hz`);
+  assert.equal(processor.stats.underflow, 0);
+  assert.equal(processor.stats.dropped, 0);
+
+  output.setMuted(true);
+  flush();
+  assertStereo(render(128), 0);
+  output.setMuted(false);
+  flush();
+  for (let i = 0; i < 170; i++) render(128);
+  assert(processor.stats.underflow > 0, "a stopped producer must report underflow");
+
+  output.setPaused(true);
+  flush();
+  assert.equal(processor.length, 0);
+  assert(output.start(stereo(128, 4096)));
+  flush();
+  assertStereo(render(128), 0.125);
+});
+
 test("presentation receipts remain ordered across asynchronous PCM admission", async () => {
   globalThis.Worker = class {
     constructor() { this.messages = []; }

@@ -1,5 +1,11 @@
 // Stereo 44.1 kHz guest PCM -> host sample rate. Fixed ring, no shared host data.
 const CAPACITY = 8192;
+const HOP = 384;
+const SEARCH = 224;
+const GUEST_RATE = 44100;
+const TARGET_QUEUE = 2400;
+const RATE_INTERVAL = 2048;
+const MIN_RATE = 0.38;
 class SaturnPcm extends AudioWorkletProcessor {
   constructor() {
     super();
@@ -7,6 +13,16 @@ class SaturnPcm extends AudioWorkletProcessor {
     this.read = 0;
     this.length = 0;
     this.phase = 0;
+    this.stretch = false;
+    this.block = new Float32Array(HOP * 2);
+    this.tail = new Float32Array(HOP * 2);
+    this.cursor = HOP;
+    this.analysis = 0;
+    this.haveTail = false;
+    this.rate = 1;
+    this.ingressRate = 1;
+    this.rateFrames = 0;
+    this.lastReceived = 0;
     this.paused = true;
     this.muted = false;
     this.stats = { received: 0, rendered: 0, underflow: 0, dropped: 0, peak: 0, queued: 0, underflowing: false };
@@ -15,9 +31,20 @@ class SaturnPcm extends AudioWorkletProcessor {
     this.port.onmessage = ({ data }) => {
       if (data.paused !== undefined) this.paused = data.paused;
       if (data.muted !== undefined) this.muted = data.muted;
+      if (data.stretch !== undefined) {
+        this.stretch = data.stretch;
+        this.lastReceived = this.stats.received;
+      }
       if (data.clear) {
         this.length = 0; this.read = 0; this.phase = 0;
         this.spaceRequest = null;
+        this.stretch = false;
+        this.cursor = HOP;
+        this.analysis = 0;
+        this.haveTail = false;
+        this.rate = this.ingressRate = 1;
+        this.rateFrames = 0;
+        this.stats.stretchRate = 1;
       }
       if (data.waitForSpace) this.spaceRequest = data.waitForSpace;
       if (data.pcm) {
@@ -28,6 +55,7 @@ class SaturnPcm extends AudioWorkletProcessor {
           if (this.length === CAPACITY) {
             this.read = (this.read + 1) % CAPACITY;
             this.length--;
+            this.analysis = Math.max(0, this.analysis - 1);
             this.stats.dropped++;
           }
           const write = (this.read + this.length) % CAPACITY;
@@ -46,11 +74,97 @@ class SaturnPcm extends AudioWorkletProcessor {
     this.spaceRequest = null;
     this.port.postMessage({ queued: this.length });
   }
+  // Compare the previous grain's tail with candidate input at the next
+  // analysis position. Both channels use the same alignment.
+  prepareBlock() {
+    const near = Math.floor(this.analysis);
+    const first = Math.max(0, near - SEARCH);
+    const last = Math.min(near + SEARCH, this.length - 2 * HOP);
+    if (first > last) return false;
+    let start = Math.min(near, last);
+    // React within one grain if the queue falls before the rate estimate.
+    const rate = Math.min(this.rate, Math.max(MIN_RATE, (this.length - HOP) / 1600));
+    if (this.haveTail && rate < 0.997) {
+      let energy = 0;
+      for (let i = 0; i < HOP * 2; i += 8) {
+        energy += this.tail[i] ** 2 + this.tail[i + 1] ** 2;
+      }
+      if (energy > 1e-7) {
+        let best = -Infinity;
+        for (let candidate = first; candidate <= last; candidate += 2) {
+          let dot = 0, nextEnergy = 0;
+          for (let i = 0; i < HOP; i += 4) {
+            const at = ((this.read + candidate + i) & (CAPACITY - 1)) * 2;
+            const l = this.ring[at] / 32768, r = this.ring[at + 1] / 32768;
+            dot += this.tail[i * 2] * l + this.tail[i * 2 + 1] * r;
+            nextEnergy += l * l + r * r;
+          }
+          const score = dot / Math.sqrt(energy * nextEnergy + 1e-12) - Math.abs(candidate - near) * 0.00005;
+          if (score > best) { start = candidate; best = score; }
+        }
+      }
+    }
+    for (let i = 0; i < HOP; i++) {
+      const head = ((this.read + start + i) & (CAPACITY - 1)) * 2;
+      const tail = ((this.read + start + HOP + i) & (CAPACITY - 1)) * 2;
+      const weight = this.haveTail ? i / HOP : 1;
+      for (let ch = 0; ch < 2; ch++) {
+        const out = i * 2 + ch;
+        this.block[out] = this.tail[out] * (1 - weight) + this.ring[head + ch] * (weight / 32768);
+        this.tail[out] = this.ring[tail + ch] / 32768;
+      }
+    }
+    this.haveTail = true;
+    this.analysis += HOP * rate;
+    this.stats.stretchRate = rate;
+    const consumed = Math.min(this.length, Math.max(0, Math.floor(this.analysis) - SEARCH));
+    this.analysis -= consumed;
+    this.read = (this.read + consumed) & (CAPACITY - 1);
+    this.length -= consumed;
+    return true;
+  }
+  stretchFrame(left, right, i) {
+    if (this.cursor >= HOP) {
+      if (!this.prepareBlock()) return false;
+      this.cursor -= HOP;
+    }
+    const at = Math.floor(this.cursor), alpha = this.cursor - at;
+    const following = at + 1 === HOP ? this.tail : this.block;
+    const next = at + 1 === HOP ? 0 : (at + 1) * 2;
+    left[i] = this.block[at * 2] * (1 - alpha) + following[next] * alpha;
+    right[i] = this.block[at * 2 + 1] * (1 - alpha) + following[next + 1] * alpha;
+    this.cursor += GUEST_RATE / sampleRate;
+    return true;
+  }
+  adjustRate(frames) {
+    this.rateFrames += frames;
+    if (this.rateFrames < RATE_INTERVAL) return;
+    const incoming = (this.stats.received - this.lastReceived) / (this.rateFrames * GUEST_RATE / sampleRate);
+    this.lastReceived = this.stats.received;
+    this.rateFrames = 0;
+    this.ingressRate += (Math.min(1.15, incoming) - this.ingressRate) * 0.22;
+    // The arrival estimate tracks sustained slow emulation. Queue feedback
+    // speeds up playout when headroom returns and consumes the reserve
+    // more slowly when it is nearly gone.
+    this.rate = Math.max(MIN_RATE, Math.min(1, this.ingressRate + (this.length - TARGET_QUEUE) / 24000));
+  }
   process(_inputs, outputs) {
     const [left, right] = outputs[0];
     this.stats.underflowing = false;
+    if (!this.paused && this.stretch) this.adjustRate(left.length);
     for (let i = 0; i < left.length; i++) {
       if (this.paused) continue;
+      if (this.stretch) {
+        if (!this.stretchFrame(left, right, i)) {
+          this.stats.underflow++;
+          this.stats.underflowing = true;
+          continue;
+        }
+        if (this.muted) left[i] = right[i] = 0;
+        this.stats.peak = Math.max(this.stats.peak, Math.abs(left[i]), Math.abs(right[i]));
+        this.stats.rendered++;
+        continue;
+      }
       if (!this.length) { this.stats.underflow++; this.stats.underflowing = true; continue; }
       const next = (this.read + (this.length > 1 ? 1 : 0)) % CAPACITY;
       const l = (this.ring[this.read * 2] * (1 - this.phase) + this.ring[next * 2] * this.phase) / 32768;
