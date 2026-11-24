@@ -240,6 +240,62 @@ mod scheduling_tests {
     }
 
     #[test]
+    fn prepared_dmac_control_load_preserves_live_te_sampling_and_acknowledgment() {
+        use crate::onchip::DMAC;
+
+        const SOURCE: u32 = HIGH_WRAM + 0x400;
+        const DEST: u32 = HIGH_WRAM + 0x800;
+        const PROGRAM: &[u16] = &[0x60F2, 0xC802, 0x89FC, 0x2F22, 0x001B, 9];
+        for channel in [0, 0x10] {
+            let make = || {
+                let mut m = cached_pair(PROGRAM, &[0xAFFE, 9]);
+                m.cpu = Cpu::start(HIGH_WRAM, DMAC + channel + 12);
+                m.cpu.prime_fetch(&m.bus.for_cpu(Processor::Master));
+                for i in 0..8 {
+                    m.bus.write32(SOURCE + i * 4, 0x11223344 + i).unwrap();
+                }
+                for (offset, value) in [(0, SOURCE), (4, DEST), (8, 8), (12, 0x5A01)] {
+                    m.bus.write32(DMAC + channel + offset, value).unwrap();
+                }
+                m.bus.write32(DMAC + 0x30, 1).unwrap();
+                m
+            };
+            let mut reference = make();
+            let mut optimized = make();
+            let mut polled_during_dma = false;
+            for _ in 0..512 {
+                let advanced = optimized.step_hardware_boundary_with_idle(true).unwrap();
+                assert_eq!(advanced, reference.step_hardware_boundary().unwrap());
+                assert_eq!(optimized.cpu, reference.cpu);
+                assert_eq!(optimized.slave, reference.slave);
+                assert_eq!(optimized.cpu_ready[1], reference.cpu_ready[1]);
+                if optimized.cached_issue[0].is_none() {
+                    assert_eq!(optimized.cpu_ready[0], reference.cpu_ready[0]);
+                }
+                assert_eq!(optimized.bus.main_clocks, reference.bus.main_clocks);
+                let remaining = optimized.bus.read32(DMAC + channel + 8).unwrap();
+                assert_eq!(reference.bus.read32(DMAC + channel + 8), Ok(remaining));
+                polled_during_dma |= remaining != 0
+                    && matches!(optimized.cached_issue[0], Some(CachedIssue::Load(_)));
+                if optimized.cpu.state().status == cpu::CpuStatus::Sleeping {
+                    break;
+                }
+            }
+            assert!(polled_during_dma);
+            assert_eq!(optimized.cpu.state().status, cpu::CpuStatus::Sleeping);
+            assert_eq!(optimized.cpu.state().r[0], 0x5A03);
+            // The guest's final write clears TE only because its prior
+            // live CHCR read observed the transfer-end flag.
+            for m in [&optimized, &reference] {
+                assert_eq!(m.bus.read32(DMAC + channel + 12), Ok(0));
+                for i in 0..8 {
+                    assert_eq!(m.bus.read32(DEST + i * 4), Ok(0x11223344 + i));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn prepared_cd_operand_keeps_fifo_sampling_and_cpu_clocks() {
         for (port, op, expected, next) in [
             (cd::WORD_DATA, 0x60F1, 0x4100, 150),

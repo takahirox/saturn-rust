@@ -148,6 +148,9 @@ impl Bus {
         let address = cpu.cached_load_address(op)?;
         let physical = Bus::physical(address);
         let ftcsr = address == crate::onchip::FRT + 1;
+        // A CHCR read arms a later write to clear TE. Sample CHCR on the
+        // ordinary peripheral bus, where an internal DMA beat can delay it.
+        let dmac_control = matches!(address.wrapping_sub(crate::onchip::DMAC), 0xC | 0x1C);
         #[cfg(any(test, feature = "kernel-experiment"))]
         let prepared_cd_load = self.prepared_cd_load;
         #[cfg(not(any(test, feature = "kernel-experiment")))]
@@ -160,10 +163,17 @@ impl Bus {
                     physical.wrapping_sub(crate::cd::REGISTERS),
                     8 | 12 | 0x18 | 0x1C | 0x20 | 0x24
                 ));
+        let chip = &self.onchip[index];
+        let admitted = if dmac_control {
+            chip.resident_issue_allowed()
+        } else {
+            chip.cached_batch_allowed()
+        };
         if !ordinary_memory(cpu.state().pc)
-            || !self.onchip[index].cached_batch_allowed()
+            || !admitted
             || (!ftcsr
                 && !cd
+                && !dmac_control
                 && (address >= 0x4000_0000
                     || !ordinary_memory(physical)
                     || (physical < super::BIOS_SIZE as u32 && self.bios.is_none())))
@@ -174,6 +184,7 @@ impl Bus {
         let plan = cpu.prepare_cached_instruction(op, now)?;
         let (_, width) = plan.operand?;
         if (ftcsr && width != 1)
+            || (dmac_control && width != 4)
             || (cd && width != 2 && !(width == 4 && physical == crate::cd::DATA))
             || plan.issue_at() != now
         {
