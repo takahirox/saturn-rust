@@ -190,6 +190,43 @@ test("BIOS audio stays continuous across several delayed PCM packets", async () 
   assert.equal(processor.stats.dropped, 0);
 });
 
+test("the Worklet keeps the previous grain continuous when returning to unity rate", async () => {
+  const { output, processor, flush, render } = await audioHarness();
+  const source = Int16Array.from({ length: 4096 * 2 }, (_, i) => (i * 119 % 8192) - 4096);
+  assert(output.start(source, true));
+  flush();
+
+  processor.rate = 0.8;
+  render(384);
+  assert.equal(processor.stats.stretchRate, 0.8);
+
+  processor.rate = 1;
+  const [left, right] = render(768);
+  assert.equal(processor.stats.stretchRate, 1);
+  for (const [channel, samples] of [left, right].entries()) {
+    assert(samples.every((sample, i) => sample === source[(384 + i) * 2 + channel] / 32768));
+  }
+  assert.equal(processor.stats.underflow, 0);
+  assert.equal(processor.stats.dropped, 0);
+});
+
+test("a silent tail keeps the nominal grain position when returning to unity rate", async () => {
+  const { output, processor, flush, render } = await audioHarness();
+  const source = stereo(4096, 8192);
+  source.fill(0, 0, 768 * 2);
+  assert(output.start(source, true));
+  flush();
+
+  processor.rate = 0.8;
+  assertStereo(render(384), 0);
+  processor.rate = 1;
+  const [left, right] = render(768);
+  // The first unity grain begins at source frame 307. The signal starts
+  // at source frame 768, leaving 461 silent output frames.
+  assertStereo([left.slice(0, 461), right.slice(0, 461)], 0);
+  assertStereo([left.slice(461), right.slice(461)], 0.25);
+});
+
 test("presentation receipts remain ordered across asynchronous PCM admission", async () => {
   globalThis.Worker = class {
     constructor() { this.messages = []; }
