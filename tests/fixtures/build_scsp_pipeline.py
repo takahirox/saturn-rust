@@ -37,15 +37,16 @@ def build():
         if slot == 31: metadata.append(at)
         at = write(0x100000+slot*32,0x820)
         if slot == 31: metadata.append(at)
-    write(0x100016, 0)       # no direct/early output
+    write(0x100016, 0)       # DSP-only output
     write(0x100036, 0xef)    # EF1 -> right
     write(0x100076, 0xff)    # EF3 -> left
     for index in range(5):
         write(0x100780+index*2,0x480+index)  # TABLE RAM records900..908
     program = []
-    # Read immediately before and at/after the post-level boundary. Stores
-    # run one instruction later; TABLE/NOFL also publishes each result to RAM.
-    for read, store, mix, effect, record in [(22,23,0,0,0),(24,25,0,1,1),
+    # MIXS must contain the last completed slot sum even at instruction zero.
+    # Later reads must see the same sum across both slots' OP7 deadlines.
+    # TABLE/NOFL publishes the shifter result one instruction later.
+    for read, store, mix, effect, record in [(0,1,0,0,0),(24,25,0,1,1),
                                              (18,19,1,2,2),(20,21,1,3,3)]:
         program += [(read,[0,0xa800+mix*64,2,0]),
                     (store,[0,0,0xd002+effect*256,0x8000+record*4])]

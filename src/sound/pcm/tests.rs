@@ -224,13 +224,17 @@ fn reset_cancels_either_read_and_completed_operands_cannot_leak_into_the_next_vo
 }
 
 #[test]
-fn dsp_input_routing_observes_a_completed_slot_without_an_early_or_canned_sample() {
+fn dsp_input_sums_early_and_wrapped_slots_on_the_same_bus() {
     for chunk in [1, 3, 17, 10000] {
         let mut s = Sound::default();
         voice(&mut s, 0, 0, true);
+        voice(&mut s, 31, 0, true);
+        s.scsp.write16(31 * 32 + 2, 0x1100).unwrap();
         s.scsp.write16(20, 7).unwrap(); // ISEL0 / full gain
+        s.scsp.write16(31 * 32 + 20, 6).unwrap(); // ISEL0 / half gain
         s.scsp.write16(0x700, 0x4000).unwrap(); // half gain
-        s.ram[0x1000..0x1004].copy_from_slice(&[0x20, 0, 0x40, 0]);
+        s.ram[0x1000..0x1008].copy_from_slice(&[0x20, 0].repeat(4));
+        s.ram[0x1100..0x1108].copy_from_slice(&[0xF0, 0].repeat(4));
         for (step, words) in [
             (0, [0u16, 0xA800, 2, 0]),
             (1, [0, 0, 0x1002, 0]),
@@ -244,17 +248,23 @@ fn dsp_input_routing_observes_a_completed_slot_without_an_early_or_canned_sample
             }
         }
         until(&mut s, 2, chunk);
-        assert_eq!(s.scsp.read16(0xEC0), Ok(0)); // PCM not completed
+        assert_eq!(s.scsp.read16(0xEC0), Ok(0));
         until(&mut s, 26, chunk);
-        assert_eq!(s.scsp.read16(0xEC2), Ok(4096)); // actual 8192 * .5
+        assert_eq!(s.scsp.read16(0xEC2), Ok(0));
+        // The first mix includes slot 0, but slot 31 has yet to publish.
+        until(&mut s, 128 + 26, chunk);
+        assert_eq!(s.scsp.read16(0xEC0), Ok(4096));
+        assert_eq!(s.scsp.read16(0xEC2), Ok(4096));
+        until(&mut s, 256 + 26, chunk);
+        assert_eq!(s.scsp.read16(0xEC0), Ok(3072)); // (8192 - 4096/2) / 2
+        assert_eq!(s.scsp.read16(0xEC2), Ok(3072));
     }
 }
 
 #[test]
-fn primary_pipeline_deadlines_keep_direct_and_executing_dsp_private_until_level_completion() {
-    // Authored from fig4.30 and fig4.18 before production changes: OP1=4*s,
-    // OP3=4*s+8, OP7=4*s+24. A full IMXL send yields PCM<<4 MIXS;
-    // DSP .5 and its one-instruction shifter delay yield PCM/2 EFREG.
+fn completed_slot_levels_reach_the_next_dsp_sample_at_instruction_zero() {
+    // ST-077 figs. 4.18 and 4.30: OP1=4*s, OP3=4*s+8, OP7=4*s+24.
+    // Full IMXL yields PCM<<4 in the mix, and DSP .5 yields PCM/2 in EFREG.
     for slot in [0, 7, 31] {
         for pcm8 in [false, true] {
             for chunk in [1, 3, 17, 10000] {
@@ -269,9 +279,11 @@ fn primary_pipeline_deadlines_keep_direct_and_executing_dsp_private_until_level_
                     s.ram[0x1000..0x1004].copy_from_slice(&[0x80, 0, 0x60, 0]);
                 }
                 let publish = u64::from(slot) * 4 + 25;
+                let boundary = publish.div_ceil(128) * 128;
                 for (tick, words) in [
-                    (publish - 1, [0, 0xA800, 2, 0]),
-                    (publish, [0, 0xA800, 0x1002, 0]),
+                    (1, [0, 0xA800, 2, 0]),
+                    (2, [0, 0, 0x1002, 0]),
+                    (publish, [0, 0xA800, 2, 0]),
                     (publish + 1, [0, 0, 0x1102, 0]),
                 ] {
                     for (part, word) in words.into_iter().enumerate() {
@@ -287,15 +299,23 @@ fn primary_pipeline_deadlines_keep_direct_and_executing_dsp_private_until_level_
                 s.ram[0x1000..0x1004].fill(0x7F); // retained operands must win
                 until(&mut s, publish - 1, chunk);
                 assert_eq!(s.scsp.frame_mix, [0; 2]);
+                assert_eq!(s.scsp.dsp.slot_mix[0], 0);
                 assert_eq!(s.scsp.read16(0xE82), Ok(0));
                 until(&mut s, publish, chunk);
                 assert_eq!(s.scsp.frame_mix, [-4096; 2]);
-                assert_eq!(s.scsp.read16(0xE82), Ok(0xF000));
-                assert_eq!(s.scsp.read16(0xEC0), Ok(0)); // read just before publication
+                assert_eq!(s.scsp.dsp.slot_mix[0], -4096 << 4);
+                assert_eq!(s.scsp.read16(0xE82), Ok(0));
                 until(&mut s, publish + 1, chunk);
-                assert_eq!(s.scsp.read16(0xEC2), Ok((-2048i16) as u16));
+                assert_eq!(s.scsp.read16(0xEC2), Ok(0));
                 until(&mut s, publish + 3, chunk);
                 assert_eq!(s.scsp.frame_mix, [-4096; 2]); // once only
+                until(&mut s, boundary, chunk);
+                assert_eq!(s.scsp.dsp.slot_mix[0], 0);
+                assert_eq!(s.scsp.read16(0xE82), Ok(0xF000));
+                until(&mut s, boundary + 1, chunk);
+                assert_eq!(s.scsp.read16(0xEC0), Ok(0));
+                until(&mut s, boundary + 2, chunk);
+                assert_eq!(s.scsp.read16(0xEC0), Ok((-2048i16) as u16));
             }
         }
     }
@@ -429,6 +449,7 @@ fn reset_cancels_every_retained_stage_but_cpu_disable_keeps_synthesis_running() 
             assert!(s.scsp.pcm_word.is_none());
             assert_eq!(s.scsp.stack.data, [0; 64]);
             assert_eq!(s.scsp.dsp.mix, [0; 16]);
+            assert_eq!(s.scsp.dsp.slot_mix, [0; 16]);
             s.scsp.set_reset(false);
             until(&mut s, 384, chunk);
             assert!(s.scsp.drain(8).iter().all(|&v| v == 0));
@@ -463,7 +484,7 @@ fn simultaneous_pipeline_publications_memory_records_and_audio_are_chunk_and_ins
                         s.scsp.read16(at).unwrap();
                     }
                 }
-                publications.push((tick, s.scsp.frame_mix, s.scsp.dsp.mix[0]));
+                publications.push((tick, s.scsp.frame_mix, s.scsp.dsp.slot_mix[0]));
             }
             assert_eq!(
                 publications,
@@ -556,7 +577,7 @@ fn compact_inactive_tokens_match_retained_operands_through_writes_and_reset() {
             compact.scsp.voices[i as usize].active = enabled & (1 << i) != 0;
         }
         compact.ram[0x1000..0x1008].copy_from_slice(&[0x12, 0x34, 0x80, 0, 0x7F, 0xFF, 0xFE, 0xDC]);
-        compact.scsp.dsp.mix.fill(0x1234_5678);
+        compact.scsp.dsp.slot_mix.fill(0x1234_5678);
         compact.scsp.stack.data.fill(-1234);
         let mut full = Sound {
             scsp: compact.scsp.clone(),

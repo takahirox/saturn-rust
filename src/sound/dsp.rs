@@ -15,6 +15,7 @@ pub(super) struct Dsp {
     temp: [i32; 128],
     mems: [i32; 32],
     pub mix: [i32; 16],
+    pub(super) slot_mix: [i32; 16],
     pub effects: [i16; 16],
     decrement: u16,
     accumulator: i32,
@@ -38,6 +39,7 @@ impl Default for Dsp {
             temp: [0; 128],
             mems: [0; 32],
             mix: [0; 16],
+            slot_mix: [0; 16],
             effects: [0; 16],
             decrement: 0,
             accumulator: 0,
@@ -165,8 +167,8 @@ impl Dsp {
             let index = usize::from((routing >> 3) & 15);
             // A full-level signed PCM16 occupies all 20 MIXS bits. Overflow
             // wraps; ST-077 §4.2 explicitly specifies no overflow protection.
-            self.mix[index] = signed(
-                i64::from(self.mix[index]) + ((i64::from(value) << (level - 1)) >> 2),
+            self.slot_mix[index] = signed(
+                i64::from(self.slot_mix[index]) + ((i64::from(value) << (level - 1)) >> 2),
                 20,
             );
         }
@@ -408,7 +410,10 @@ impl Dsp {
     }
     pub fn end_sample(&mut self) {
         self.decrement = self.decrement.wrapping_sub(1);
-        self.mix.fill(0);
+        // The input mixer sums the completed slot sends (ST-077 §4.2);
+        // every DSP instruction, including step zero, sees that sample's
+        // sum while the slot pipeline builds the next one.
+        self.mix = std::mem::take(&mut self.slot_mix);
     }
     #[cfg(test)]
     pub fn sample(
@@ -433,4 +438,4 @@ mod clock_tests;
 mod tests;
 
 #[cfg(any(test, feature = "sound-worker"))]
-crate::sound::wire::structure!(Dsp { coefficients, addresses, program, temp, mems, mix, effects, decrement, accumulator, y, fraction, address, memory, reads, programmed, nonzero_program, live_steps, nonzero_temp } defaults { validated_program: std::cell::Cell::new(None) });
+crate::sound::wire::structure!(Dsp { coefficients, addresses, program, temp, mems, mix, slot_mix, effects, decrement, accumulator, y, fraction, address, memory, reads, programmed, nonzero_program, live_steps, nonzero_temp } defaults { validated_program: std::cell::Cell::new(None) });

@@ -29,7 +29,7 @@ export async function scspPipeline(page) {
           return {records,frames:audio.length/2,stereo:audio.length>=128 && audio.every((v,i)=>v===(i%2 ? right : left)),
             exceptions:(await emulator.exception_count()),halted:(await emulator.sound_halted())};
         },{bytes:[...image],left,right});
-        assert.deepEqual(result.records,[right&65535,left&65535,0x30060000,0x600D]);
+        assert.deepEqual(result.records,[(right&65535)*0x10001,(left&65535)*0x10001,0x30060000,0x600D]);
         assert(result.stereo); assert.equal(result.exceptions,"0");
         assert.equal(result.halted,false);
         if (previous) assert.deepEqual(result,previous);
@@ -62,5 +62,5 @@ export async function scspPipeline(page) {
       assert.equal(stats.blocked,"blocked");
     }
   }
-  console.log("SCSP pipeline passed: original SH-2/68k-uploaded DSP probes post-level MIXS publication and slot31 sample wrap; signed operand/send/KEYON mutations, cold boots, exact stereo and production AudioWorklet render/underflow/drop/blocked states.");
+  console.log("SCSP pipeline passed. The uploaded DSP reads completed MIXS at instruction zero and after the slot 0 and 31 level deadlines. Signed source and routing mutations, cold resets, exact stereo, and AudioWorklet diagnostics pass.");
 }

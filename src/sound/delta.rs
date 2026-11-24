@@ -2,7 +2,7 @@
 use super::*;
 use wire::{Error, Input, LIMIT, Wire, checksum};
 const PAGE: usize = 4096;
-const HEADER: &[u8; 8] = b"SRDP\x01\0\0\0";
+const HEADER: &[u8; 8] = b"SRDP\x02\0\0\0";
 
 // The generic Wasm memcmp scans bytes. Compare complete, equal-sized pages
 // in words, retaining exact equality and early exit without SIMD or alignment.

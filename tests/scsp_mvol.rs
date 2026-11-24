@@ -138,7 +138,7 @@ fn assert_authored(samples: &[i16], mode: usize, gain: u16, wave: u8, coef: u16,
                         [0, 0]
                     };
                     let wet = if mode == 1 || mode == 3 {
-                        p * i32::from(coef) / 32768
+                        pcm[(phase + i + 3) % 4] * i32::from(coef) / 32768
                     } else {
                         0
                     };

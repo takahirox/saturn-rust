@@ -122,9 +122,8 @@ def sound_image(effects=False, synthesis=False, peripherals=False, envelope=Fals
         movw(0x2000, 0x100702)  # .25
         movw(0, 0x100E00)
         movw(0x1200, 0x100E02)  # MEMS0=0x120000 -> EFREG1=0x0900
-        # ST-077 figs4.18/4.30: slot0's level calculation finishes at OP7,
-        # six slot intervals (24 memory steps) after OP1. Read MIXS only
-        # after that result reaches the input mixer, preserving wet arithmetic.
+        # The DSP reads the previous sample's completed input mix.
+        # Keep the arithmetic probes at their established steps 24–31.
         program = [[0, 0, 2, 0] for _ in range(24)] + [
             [0, 0xA800, 0x0002, 0], [0, 0, 0x1002, 0],
             [0, 0xA000, 0x0002, 0], [0, 0, 0x1102, 0],

@@ -302,7 +302,8 @@ fn slot_send_wraps_mix_without_saturation_and_dsp_output_obeys_routing() {
     let mut ram = vec![0; SOUND_RAM_SIZE];
     scsp.dsp.add_slot(7, 32767);
     scsp.dsp.add_slot(7, 32767);
-    assert_eq!(scsp.dsp.mix[0], -32);
+    assert_eq!(scsp.dsp.mix[0], 0);
+    assert_eq!(scsp.dsp.slot_mix[0], -32);
     scsp.write16(0x400, 15).unwrap();
     scsp.write16(0x700, 0x4000).unwrap();
     // Half EXTS0 -> EFREG0 -> left only. Half EXTS1 -> EFREG1 -> right only.
@@ -326,6 +327,7 @@ fn slot_send_wraps_mix_without_saturation_and_dsp_output_obeys_routing() {
     assert_eq!(scsp.drain(1), [4000, -6000]);
     assert_eq!(scsp.read16(0xEC0), Ok(4000));
     assert_eq!(scsp.read16(0xEC2), Ok((-6000i16) as u16));
+    assert_eq!(scsp.dsp.mix[0], -32);
     scsp.write16(0x16, 0).unwrap();
     scsp.write16(0x36, 0).unwrap();
     scsp.sample(&mut ram).unwrap();

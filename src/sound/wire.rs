@@ -335,7 +335,7 @@ impl super::Sound {
             return Err("sound projection is not canonical state");
         }
         let mut out = Vec::with_capacity(super::SOUND_RAM_SIZE + 32768);
-        out.extend_from_slice(b"SRSD\x01\0\0\0");
+        out.extend_from_slice(b"SRSD\x02\0\0\0");
         self.put(&mut out);
         if out.len() + 8 > LIMIT {
             return Err("sound snapshot size");
@@ -356,7 +356,7 @@ impl super::Sound {
         Ok(())
     }
     pub(crate) fn from_domain_snapshot(bytes: &[u8]) -> Result<Self, Error> {
-        if bytes.len() < 16 || bytes.len() > LIMIT || bytes[..8] != *b"SRSD\x01\0\0\0" {
+        if bytes.len() < 16 || bytes.len() > LIMIT || bytes[..8] != *b"SRSD\x02\0\0\0" {
             return Err("sound snapshot header");
         }
         let (payload, trailer) = bytes.split_at(bytes.len() - 8);

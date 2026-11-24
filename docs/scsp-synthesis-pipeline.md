@@ -8,10 +8,9 @@ Figures 4.24–4.25, independently states six intervals from OP1 to OP7
 and five from OP2 to OP7.
 
 Figure 4.18 positively places the DIRECT and DSP slot output **after** the
-waveform level calculation. IMXL/ISEL route that output into MIXS, and Figure
-5.1 supplies MIXS to DSP INPUTS. Thus neither consumer may see a result at
-waveform-read completion: interpolation and both level intervals must finish.
-This follows the output datapath, independently of the stack delay.
+waveform level calculation. IMXL/ISEL route that output to the input mixer,
+and Figure 5.1 supplies MIXS from that mixer to DSP INPUTS. Interpolation and
+both level intervals must finish before a slot contributes to either mixer.
 
 There is an off-by-one error in the p.56 prose snapshot: it assigns slot30
 both to level calculation and stack writing when OP1 is slot3. The Figure4.30
@@ -40,15 +39,14 @@ OP1 start, not elapsed host instruction counts.
 | OP4 | 12 | Signed interpolation, EG/ALFO; retain interpolation and envelope operands |
 | OP5 | 16 | Level calculation in flight |
 | OP6 | 20 | Second level interval; result remains private |
-| OP7 | 24 | Completed level result enters DIRECT and IMXL/ISEL MIXS once, and sound stack once |
+| OP7 | 24 | Completed level result enters DIRECT, the IMXL/ISEL input sum and the sound stack once |
 
 The manuals establish relative stages and the post-level output connection.
 They do **not** specify an absolute phase against MPRO0, a CPU-visible register
 latch for every stage, nor ordering of equal interface edges. This emulator
 chooses OP1 slot 0 at memory step 0 / MPRO0, captures slot registers at OP1,
-and publishes completed results before a DSP read or OP2 read on the same
-edge. These are explicit deterministic interface conventions, not measured pin
-timing. EG fetch suppression uses a preview of the retained envelope calculation;
+and publishes completed stack results before OP2 reads on the same edge.
+EG fetch suppression uses a preview of the retained envelope calculation;
 the actual envelope state advances at OP4. Existing numerical EG slopes remain
 an approximation outside #67.
 
@@ -62,8 +60,8 @@ is visible on the equal edge; distance four is not.
 A physical output sample owns contributions **published** during its 128 steps,
 not voices whose OP1 happened in that sample. Slots 26–31 therefore publish
 in the following sample; slots 30–31 also acquire waveform data there. The
-pipeline is bounded to seven retained slots and survives frame clearing of
-DIRECT/MIXS. On a cold start it is empty; no negative-time work is fabricated.
+pipeline is bounded to seven retained slots and survives the output sample edge.
+On a cold start it is empty.
 SCSP RESET cancels all stages, grants, stack and DSP state. Sound-CPU disable
 retains the SCSP domain. Idle slots still advance PG/LFO/stack on their own
 edges; KEYON joins the next eligible OP1, including within an idle sample.
@@ -72,9 +70,36 @@ Independent first-generation deadlines (one-based scheduler ticks) are:
 slot0 grants 9/11, interpolation 13, publication25;
 slot7 grants37/39, interpolation41, publication53;
 slot31 grants133/135, interpolation137, publication149. Native tests place
-writes on both sides of those grants and DSP reads on both sides of publication.
-These values were authored before changing production scheduling.
+writes on both sides of those grants and check the retained sample at publication.
 
-The inherited immediate-publication PCM oracle is corrected by these references:
-its operand mutation, signed arithmetic, DRAM geometry, ownership and routing
-assertions remain; only stage deadlines and cold-start sample ownership change.
+## Completed DSP input mix
+
+[ST-077 §4.2, pp. 83–85 and §5.2](https://antime.kapsi.fi/sega/files/ST-077-R2-052594.pdf)
+describes each MIXS input as the sum of all slot sends to that bus. The input
+mixer accumulates OP7 sends in a separate 20-bit sum per bus. At the sample
+edge that sum becomes the DSP's MIXS input for all 128 steps. CPU reads and
+writes address the published MIXS registers. A guest write can update the
+published value until the next sample edge.
+
+The previous scheduling cleared MIXS at the sample edge and added sends
+directly to the DSP registers as slots completed. A program that reads MIXS0
+at instruction zero could therefore receive silence before slot 0 completed.
+This occurred during the startup animation of a locally tested BIOS. A native
+Beetle Saturn run of the same scene supplied signal to its DSP. The manuals
+describe the aggregate input and its datapath. The emulator's sample-edge
+convention is inferred from those descriptions and the observed behavior.
+
+A local check used the normal Chrome 158 player with the Video and Sound
+Workers and a 44.1 kHz AudioWorklet. Both runs enabled audio before boot,
+used the same 14 controller inputs, presented every generated field and
+reported no runtime errors or audio drops. The signed PCM peak for fields
+720–739 rose from 2 to 14,728. The worklet rendered the chime. The animation
+still ran around 33 fields per second in these captures, with about 3 seconds
+of worklet starvation between clock confirmation and field 720. Sustained
+real-time playback and continuous audio delivery remain open.
+
+The original SH-2/68k guest reads MIXS at instruction zero and on both sides
+of later slots' level deadlines. Native and browser assertions compare signed
+RAM results and wet-only stereo after changing the sources, sends and KEYON.
+Native timing vectors cover the cold empty sum, slot 31 wrap, two slots sharing
+one bus, and the first effect store in the next sample.
