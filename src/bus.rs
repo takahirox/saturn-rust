@@ -442,6 +442,10 @@ pub struct Bus {
     #[cfg(test)]
     dmac_terminal_words: u64,
     #[cfg(test)]
+    skip_blocked_local_dma_write: bool,
+    #[cfg(test)]
+    skipped_blocked_local_dma_writes: u64,
+    #[cfg(test)]
     dmac_terminal_reads: u64,
     pub sound: Sound,
     pub cd: crate::cd::CdBlock,
@@ -635,6 +639,10 @@ impl Default for Bus {
             dmac_terminal_blocks: 0,
             #[cfg(test)]
             dmac_terminal_words: 0,
+            #[cfg(test)]
+            skip_blocked_local_dma_write: false,
+            #[cfg(test)]
+            skipped_blocked_local_dma_writes: 0,
             #[cfg(test)]
             dmac_terminal_reads: 0,
             sound: Sound::default(),

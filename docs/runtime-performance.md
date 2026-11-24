@@ -6548,3 +6548,50 @@ The JavaScript bindings and Web player assets match #238. The six slow
 fields remain above 16.7 ms and measured overall boot duration varies.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+## Defer retained DMA writes behind an occupied buffer (2026-11-24)
+
+A retained SH-2 DMA write already has its complete request and unit
+proof. When an earlier write still owns the same buffer, reconsidering
+the retained request can neither prepare another phase nor accept the
+write. The allocator checks the existing proof and continues to the
+other contenders. It can keep its settled result when no other local
+DMA work changed the state. The real buffer drain and all later
+arbitration run on their original deadlines.
+
+A normal Chrome 158 player replayed Custom BIOS and Disc 1 with the
+production Sound and Video workers and AudioWorklet. The local test
+harness delivers the controller mask before producing the specified
+guest field and records its application. Both comparison orders
+matched 157 inputs, all 16,809 common source PCM packet hashes and the
+sampled video signatures. Every field was drawn and delivery shortages
+totaled zero from clock confirmation through field 900. There were zero
+dropped PCM frames and runtime errors.
+
+| Measure | Forward order | Reverse order |
+| --- | ---: | ---: |
+| Mean time per field, fields 16270–16273, ms | 78.40 to 69.48 | 77.80 to 70.40 |
+| Worklet output frames missing, fields 16150–16380 | 3,584 to 2,048 | 3,072 to 2,816 |
+| Matched throughput, fields 16150–16380, fields/s | 46.897 to 47.418 | 47.115 to 46.897 |
+| Full 12-second playback, fields/s | 54.577 to 54.916 | 54.744 to 54.580 |
+
+The ordinary player's input delivery can arrive at different emulated
+phases even when the presentation field numbers match. Two runs of the
+same control build reproduced an earlier PCM and video difference
+observed in the first comparison. The guest-field input harness
+records identical applied inputs in the comparisons above.
+
+The 200-field fixed replay matches 20 checkpoints including both
+CPUs and board clocks, both WRAM hashes, canonical Sound, PCM, pixels
+and video transport. The original native witness exercises a real
+wait behind a buffered write and compares the journals, grants,
+DMA registers and published VRAM at every clock. It also clears DME
+while the retained write is pending. Existing Chrome DMA, bus
+transaction and interrupt guests pass.
+
+The standard Wasm SHA-256 is
+`555f20495d8e0fa46404a85607136ba86a0d5c0ab66f1ce0e91ec4c2e2832113`.
+The reproduced artifact and bindings match the measured build.
+The worst fields remain above the real-time budget.
+
+Related to #138 and #17. Private media and raw captures stay local.
