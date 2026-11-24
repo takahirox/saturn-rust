@@ -456,16 +456,71 @@ impl Cached<'_> {
             Some((u16::from_be_bytes([bytes[2], bytes[3]]), Some(touch)))
         }
     }
-    fn peek_resident_long(&self, address: u32) -> Option<(u32, CacheTouch)> {
-        if !ordinary_memory(address) || !address.is_multiple_of(4) {
+    fn peek_resident_data<const N: usize>(&self, address: u32) -> Option<([u8; N], CacheTouch)> {
+        if !ordinary_memory(address) || !address.is_multiple_of(N as u32) {
             return None;
         }
-        let (bytes, touch) = if self.version_count.get() == 0 {
-            self.cache.peek_cached_touch(address)?
+        if self.version_count.get() == 0 {
+            self.cache.peek_cached_touch(address)
         } else {
-            self.fills.borrow().peek_touch(self.cache, address)?
+            self.fills.borrow().peek_touch(self.cache, address)
+        }
+    }
+    fn peek_resident_long(&self, address: u32) -> Option<(u32, CacheTouch)> {
+        self.peek_resident_data(address)
+            .map(|(bytes, touch)| (u32::from_be_bytes(bytes), touch))
+    }
+    fn retire_resident_load(&mut self, cpu: &mut Cpu, plan: CachedInstruction) -> Option<()> {
+        let (address, width) = plan.operand?;
+        let (value, operand_touch) = match width {
+            1 => self
+                .peek_resident_data(address)
+                .map(|([byte], touch)| (i8::from_ne_bytes([byte]) as i32 as u32, touch)),
+            2 => self
+                .peek_resident_data(address)
+                .map(|(bytes, touch)| (i16::from_be_bytes(bytes) as i32 as u32, touch)),
+            4 => self.peek_resident_long(address),
+            _ => unreachable!("prepared MOV size"),
+        }?;
+        let mut retained = self.retained.get();
+        let (future, instruction_touch) =
+            self.peek_resident_instruction(plan.future, &mut retained)?;
+        // Proving a read never edits cache replacement. Apply both receipts in
+        // the literal IF then MA order, including two hits in the same set.
+        #[cfg(test)]
+        let expected = {
+            let before = self.snapshot(None);
+            let mut literal = cpu.clone();
+            literal.execute_cached_instruction(plan.clone(), self);
+            let after = self.snapshot(None);
+            self.restore(before);
+            (literal, after)
         };
-        Some((u32::from_be_bytes(bytes), touch))
+        self.instruction_break(cpu.state().pc, false);
+        let lru = self.lru.get_mut();
+        if let Some(touch) = instruction_touch {
+            touch.apply(lru);
+        }
+        operand_touch.apply(lru);
+        self.retained.set(retained);
+        self.clock.set(plan.at);
+        cpu.retire_prepared_load(plan, future, value, self.clock.get());
+        #[cfg(test)]
+        {
+            let (literal, after) = expected;
+            assert_eq!(*cpu, literal);
+            let actual = self.snapshot(None);
+            assert_eq!(actual.clock, after.clock);
+            assert_eq!(actual.lru, after.lru);
+            assert_eq!(actual.retained, after.retained);
+            assert_eq!(actual.epochs, after.epochs);
+            assert_eq!(actual.write_len, after.write_len);
+            assert_eq!(actual.fill_len, after.fill_len);
+            assert_eq!(actual.bus_len, after.bus_len);
+            assert_eq!(actual.write_pc, after.write_pc);
+            assert_eq!(actual.division_read, after.division_read);
+        }
+        Some(())
     }
     fn resident_multiplier_reads(
         &self,
@@ -2474,29 +2529,52 @@ impl Bus {
             if matches!(class, CachedClass::Scalar | CachedClass::Load)
                 && memory.passive.as_ref().is_none_or(|p| p.rom.is_none())
                 && let Some(plan) = cpu.prepare_cached_instruction(op, memory.clock.get())
-                && let Some(at) = memory.prepared_retirement(&plan)
             {
-                let future = plan.future;
-                let reference = self.system_clock.deadline(
-                    ((at - self.main_clocks) as u32).saturating_sub(self.pending_main_clocks),
-                );
-                if ordinary_memory(future)
-                    && (memory.retained.get().is_some_and(|(a, _)| a == future)
-                        || memory.hit(future))
-                    && at <= memory.end.get()
-                    && (checkpoint_sound
-                        || !sound_lookahead
-                        || reference.saturating_sub(points.last_reference) < 9)
-                {
-                    #[cfg(test)]
-                    let loading = plan.operand.is_some();
-                    #[cfg(test)]
-                    let passive_load = plan
-                        .operand
-                        .is_some_and(|(address, _)| !ordinary_memory(address));
-                    #[cfg(test)]
-                    let slot = cpu.state().delay_target.is_some();
-                    cpu.execute_cached_instruction(plan, &mut memory);
+                let direct = plan
+                    .operand
+                    .is_some_and(|(address, _)| ordinary_memory(address))
+                    && memory.passive.is_none()
+                    && memory.store.get().is_none();
+                let (future, at) = (plan.future, plan.at);
+                #[cfg(test)]
+                let loading = plan.operand.is_some();
+                #[cfg(test)]
+                let passive_load = plan
+                    .operand
+                    .is_some_and(|(address, _)| !ordinary_memory(address));
+                #[cfg(test)]
+                let slot = cpu.state().delay_target.is_some();
+                let committed = if direct {
+                    let reference = self.system_clock.deadline(
+                        ((at - self.main_clocks) as u32).saturating_sub(self.pending_main_clocks),
+                    );
+                    (at <= memory.end.get()
+                        && (checkpoint_sound
+                            || !sound_lookahead
+                            || reference.saturating_sub(points.last_reference) < 9)
+                        && memory.retire_resident_load(&mut cpu, plan).is_some())
+                    .then_some((at, reference))
+                } else if let Some(at) = memory.prepared_retirement(&plan) {
+                    let reference = self.system_clock.deadline(
+                        ((at - self.main_clocks) as u32).saturating_sub(self.pending_main_clocks),
+                    );
+                    if ordinary_memory(future)
+                        && (memory.retained.get().is_some_and(|(a, _)| a == future)
+                            || memory.hit(future))
+                        && at <= memory.end.get()
+                        && (checkpoint_sound
+                            || !sound_lookahead
+                            || reference.saturating_sub(points.last_reference) < 9)
+                    {
+                        cpu.execute_cached_instruction(plan, &mut memory);
+                        Some((at, reference))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some((at, reference)) = committed {
                     #[cfg(test)]
                     {
                         if slot {
