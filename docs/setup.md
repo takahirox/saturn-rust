@@ -116,6 +116,20 @@ file when the browser validates a WebAssembly tail-call instruction. Other brows
 load the compatible Wasm file with the existing instruction requirements.
 Serve both files together. [WebAssembly feature status](https://webassembly.org/features/)
 
+The accelerated build uses measured branch counts with the standard compiler
+arguments on Rust 1.100.0 (`0ef1bc386`). Other compiler builds and custom
+`RUSTFLAGS` use the regular optimizer settings. The checked-in compressed
+profile contains LLVM counters from fields 122–571 of an original guest. It
+uses both SH-2s and the existing Sound and Video Workers. Generate this guest
+from the repository sources.
+
+```sh
+python3 scripts/build-wasm-profile-fixture.py target/wasm-profile.hex
+```
+
+The underlying indexed LLVM profile has SHA-256
+`b11ace23302b3ac0433ba96c8e2edf5a8fe90745a92f5fe14d6ae432b8172ea0`.
+
 Git ignores the generated WebAssembly package and tracks the reproducible ISO
 and its license. Rebuild after changing Rust or guest source. Serve
 `index.html` over HTTP. The client needs browser support for ES modules, module
