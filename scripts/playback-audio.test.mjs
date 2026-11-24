@@ -105,9 +105,9 @@ test("pausing or suspending releases a held field before a new playback epoch", 
   }
 });
 
-test("BIOS audio follows a slow producer and preserves stereo pitch", async () => {
-  const { output, processor, flush, render } = await audioHarness();
-  const frequency = 110;
+async function assertStretchPitch(frequency, slowFieldsPerSecond) {
+  const harness = await audioHarness();
+  const { output, processor, flush, render } = harness;
   let source = 0;
   function wave(frames) {
     const samples = new Int16Array(frames * 2);
@@ -126,7 +126,7 @@ test("BIOS audio follows a slow producer and preserves stereo pitch", async () =
     while (nextArrival <= time) {
       assert(output.deliver(wave(737)));
       flush();
-      const rate = time < 44100 || time >= 4 * 44100 ? 59.8265 : 32.5;
+      const rate = time < 44100 || time >= 4 * 44100 ? 59.8265 : slowFieldsPerSecond;
       nextArrival += 44100 / rate;
     }
     const [left, right] = render(128);
@@ -138,12 +138,16 @@ test("BIOS audio follows a slow producer and preserves stereo pitch", async () =
       previous = left[i];
     }
   }
-  assert(crossings.length > 210);
+  assert(crossings.length > frequency * 1.9);
   const pitch = (crossings.length - 1) * 44100 / (crossings.at(-1) - crossings[0]);
-  assert(Math.abs(pitch - frequency) < 1, `110 Hz input produced ${pitch} Hz`);
+  assert(Math.abs(pitch - frequency) < 1, `${frequency} Hz input produced ${pitch} Hz`);
   assert.equal(processor.stats.underflow, 0);
   assert.equal(processor.stats.dropped, 0);
+  return harness;
+}
 
+test("BIOS audio follows a slow producer and preserves stereo pitch", async () => {
+  const { output, processor, flush, render } = await assertStretchPitch(110, 32.5);
   output.setMuted(true);
   flush();
   assertStereo(render(128), 0);
@@ -158,6 +162,11 @@ test("BIOS audio follows a slow producer and preserves stereo pitch", async () =
   assert(output.start(stereo(128, 4096)));
   flush();
   assertStereo(render(128), 0.125);
+});
+
+test("BIOS audio preserves bass pitch with no PCM shortages during slow playback", async () => {
+  await assertStretchPitch(40, 24);
+  await assertStretchPitch(55, 42);
 });
 
 test("BIOS audio stays continuous across several delayed PCM packets", async () => {

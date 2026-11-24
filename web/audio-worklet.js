@@ -1,7 +1,9 @@
 // Stereo 44.1 kHz guest PCM -> host sample rate. Fixed ring, no shared host data.
 const CAPACITY = 8192;
 const HOP = 384;
-const SEARCH = 224;
+// A 40 Hz cycle is 1,103 frames at 44.1 kHz. Search on both sides of
+// the nominal position so low notes can align across an entire cycle.
+const SEARCH = 576;
 const GUEST_RATE = 44100;
 const TARGET_QUEUE = 2400;
 const RATE_INTERVAL = 2048;
