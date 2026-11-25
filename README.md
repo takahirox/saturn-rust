@@ -44,7 +44,9 @@ retained media without reading the file again; it resumes an existing Play sessi
 when settings are closed. Debug Reset cold-boots and stays paused.
 
 The display is rasterized in Rust from guest-written video state; input goes
-through emulated SMPC hardware. **Enable audio** requires a user gesture and
+through emulated SMPC hardware. Play uses
+[relaxed CPU/device interleaving](docs/runtime-performance.md#relaxed-timing-playback-2026-11-25)
+to keep real-time speed; Debug instruction steps and tests use the exact scheduler. **Enable audio** requires a user gesture and
 reports blocked, muted, paused and underflow states. Actual guest sound travels
 through the bounded WebAudio consumer; no soundtrack is supplied by the UI.
 

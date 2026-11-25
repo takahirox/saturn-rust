@@ -6671,3 +6671,84 @@ groups pass. The final production Wasm SHA-256 is
 `276e2250cc06d3714ac6572c345d774312fa21736b242cd2f1686b2f2459a003`.
 
 Related to #138 and #17. Private media and raw captures stay local.
+
+## Relaxed-timing playback (2026-11-25)
+
+With a Custom BIOS, the browser player ran the BIOS logo animation at 31–41
+fields/s and the Machi opening movie at 22–28 fields/s. The AudioWorklet then
+slowed playout to 0.45–0.6× (BIOS chime) or its 0.38× floor (movie), which is
+heard as lower, unstable audio. Native recordings show that the core already
+produces the startup chime at the same pitch as the reference core (spectral
+peak ratio 1.000), so the audible problem was emulation speed, not synthesis.
+
+A Chrome profile of the playback Worker during the movie attributed about 98%
+of its time to the exact SH-2/bus scheduler. In that scene the master issued
+about 42,000 ordinary single-instruction steps per field; 18,000 cached-batch
+attempts per field were rejected because a master write to Sound RAM still
+occupied the write buffer, and the slave spent the whole movie in an FTCSR
+polling loop. Incremental exact-model changes could not close a 3–5× gap.
+
+The player therefore uses a separate relaxed scheduler (`src/fast.rs`,
+`Machine::set_fast_mode`). The exact scheduler remains the default for the
+library, all hardware tests and debugger instruction steps.
+
+- Each SH-2 runs `Cpu::step` against immediate functional memory for a
+  128-reference-clock slice, accumulating instruction states and the existing
+  BSC/A-bus/VRAM wait models (bounded per instruction). The devices then
+  advance over the same interval. CPUs yield while an SCU DMA owns the bus.
+- Interrupts are sampled at slice starts and after the mask is lowered;
+  external vectors are acquired from the SCU at entry.
+- A short backward loop that returns to an identical register state without
+  any write is idle until the next device update, so polling loops cost
+  nothing until the polled state can change.
+- Sound runs whole 68K instructions with immediate Sound RAM/SCSP access and
+  executes SCSP slots in bulk up to the current tick, without RAM arbitration.
+  It hands over from the cycle-level path at an instruction boundary.
+- Board devices are stepped only at their own events; DMA beats complete at
+  their bus edges while other devices catch up together. VDP1 advances by
+  command boundaries rather than per-pixel edges.
+- VDP2 renders each line from live memory at scanout (`LineRendering` video
+  command) instead of acquiring operands at every VRAM access slot, both in
+  the video Worker and on the board.
+
+Measured in the normal Chrome 158 player (Sound/Video Workers, AudioWorklet)
+with a local Custom BIOS, Machi Disc 1 and the existing clock-screen input,
+4-second windows from cold start through field 5,987:
+
+| Scene | Before (main 4af2a21) | Relaxed playback |
+| --- | --- | --- |
+| BIOS logo animation | 31–41 fields/s, stretch 0.45–0.61 | 59.7–60.0 fields/s, stretch 1.0 |
+| Chunsoft logo | 22–28 fields/s, stretch 0.38, underflows | 59.7–60.2 fields/s, stretch 1.0 |
+| Opening movie | 22–28 fields/s, stretch 0.25–0.49, underflows | 59.7–60.0 fields/s, stretch 1.0 |
+| All windows | — | 59.83 fields/s combined, p99 field gap 18.7–27.7 ms, zero underflow |
+
+BIOS-only boot (no disc) reaches the system menu at 59.7–60.0 fields/s. The
+final production Wasm SHA-256 is
+`3727d23075ac02793cf591e68722b5f1ff8af94445510b5341afc34461d213a2`.
+
+Native single-thread measurements on the same Apple M4 Max host use the
+same input with video transport enabled and Sound on the board thread
+(average fields/s over each scene):
+
+| Scene | Exact scheduler | Relaxed playback | Speedup |
+| --- | ---: | ---: | ---: |
+| BIOS logo (fields 540–840) | 29.9 | 90.7 | 3.0× |
+| Chunsoft logo (1500–1860) | 26.2 | 104.0 | 4.0× |
+| Title (2700–3600) | 58.9 | 203.4 | 3.5× |
+| Opening movie (3960–4500) | 23.8 | 99.5 | 4.2× |
+
+The locally built Beetle Saturn reference (JIT disabled, full cache
+emulation, software renderer) runs this disc at 205–300 fields/s natively,
+including rendering.
+
+Relaxed playback is not a conformance oracle: CPU accesses observe devices at
+slice granularity, Sound RAM arbitration and VRAM slot timing are not modeled,
+and guest-visible timing differs from the exact scheduler. The original
+`tests/fast_playback.rs` guests still produce the exact scheduler's game
+states, computed hardware-lab results and framebuffer. The startup chime
+matches the reference core's spectrum. Independently of this change, both
+schedulers omit the low sustained tone the reference core plays under the
+Chunsoft logo, and `smpc_transactions::idle_commands_execute_without_fabricating_sf_in_original_firmware`
+already fails on main 4af2a21.
+
+Related to #138 and #17. Private media and raw captures stay local.

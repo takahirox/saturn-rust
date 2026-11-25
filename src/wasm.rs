@@ -87,6 +87,14 @@ impl Emulator {
         self.machine.mount_media(media);
         Ok(())
     }
+    /// Relaxed-timing playback (default for the player); the debugger's
+    /// instruction steps always use the exact scheduler.
+    pub fn set_fast_mode(&mut self, enabled: bool) {
+        self.machine.set_fast_mode(enabled);
+    }
+    pub fn fast_mode(&self) -> bool {
+        self.machine.fast_mode()
+    }
     pub fn advance_frame(&mut self) -> Result<(), JsValue> {
         self.machine.advance_frame().map_err(js_error)
     }

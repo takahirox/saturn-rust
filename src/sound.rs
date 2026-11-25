@@ -575,6 +575,8 @@ pub struct Sound {
     reset_output_start: Option<u64>,
     reset_output_end: Option<u64>,
     transactions: transactions::Transactions,
+    /// Relaxed playback hands over at the next 68K instruction boundary.
+    stop_at_boundary: bool,
 }
 impl Default for Sound {
     fn default() -> Self {
@@ -598,6 +600,7 @@ impl Default for Sound {
             reset_output_start: None,
             reset_output_end: None,
             transactions: transactions::Transactions::default(),
+            stop_at_boundary: false,
         }
     }
 }
@@ -1029,6 +1032,10 @@ impl Sound {
                 target = now;
                 break;
             }
+            if self.stop_at_boundary && self.fast_boundary() {
+                target = now;
+                break;
+            }
         }
         self.scsp.advance_midi((target - now) as u32);
         self.sample_interrupt_input();
@@ -1036,6 +1043,82 @@ impl Sound {
         self.time = target;
         observe(target, self.scsp.main_interrupt());
         Ok(())
+    }
+    /// Relaxed playback: execute whole 68K instructions with immediate
+    /// memory and complete each SCSP sample's remaining slots together.
+    /// RAM arbitration between the 68K, SCSP and main bus is not modeled.
+    pub(crate) fn advance_fast(
+        &mut self,
+        clocks: u32,
+        mut cd: Option<&mut crate::cd::CdBlock>,
+    ) -> Result<(), BusError> {
+        #[cfg(any(test, feature = "sound-worker"))]
+        if self.projection.is_some() {
+            return self.advance_domain(clocks, cd);
+        }
+        let target = self.time + u64::from(clocks);
+        // Finish an instruction or reset sequence begun by the exact path.
+        if !self.fast_boundary() {
+            self.stop_at_boundary = true;
+            let result = self.advance_domain_recorded(clocks, cd.as_deref_mut(), false, None);
+            self.stop_at_boundary = false;
+            result?;
+            if self.time >= target || !self.fast_boundary() {
+                return self.advance_domain_recorded((target - self.time) as u32, cd, false, None);
+            }
+        }
+        let clocks = (target - self.time) as u32;
+        // As in the exact path, slots up to the current tick have executed.
+        let target_tick = target * DSP_HZ / REFERENCE_HZ;
+        loop {
+            let end_tick = ((self.scsp_tick | 127) + 1).min(target_tick);
+            let limit = (end_tick * REFERENCE_HZ).div_ceil(DSP_HZ).min(target);
+            while self.next_cpu <= limit {
+                self.sample_interrupt_input();
+                let cycles = self.cpu.step(&mut SoundBus {
+                    ram: &mut self.ram,
+                    scsp: &mut self.scsp,
+                });
+                self.cpu_ticks += u64::from(cycles.max(4));
+                self.next_cpu =
+                    self.cpu_origin + (self.cpu_ticks * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
+            }
+            if self.scsp_tick >= end_tick {
+                break;
+            }
+            for tick in self.scsp_tick + 1..=end_tick {
+                let step = ((tick - 1) & 127) as usize;
+                if step == 0 {
+                    self.scsp.external = cd.as_mut().map_or([0; 2], |cd| cd.audio_sample());
+                }
+                self.scsp.sample_cycle(step, &mut self.ram)?;
+                self.scsp.memory_owner = None;
+            }
+            self.scsp_tick = end_tick;
+            self.sample_interrupt_input();
+        }
+        // CPU cycles past the last slot still precede the target.
+        while self.next_cpu <= target {
+            self.sample_interrupt_input();
+            let cycles = self.cpu.step(&mut SoundBus {
+                ram: &mut self.ram,
+                scsp: &mut self.scsp,
+            });
+            self.cpu_ticks += u64::from(cycles.max(4));
+            self.next_cpu =
+                self.cpu_origin + (self.cpu_ticks * REFERENCE_HZ).div_ceil(SOUND_CPU_HZ);
+        }
+        self.scsp.advance_midi(clocks);
+        self.sample_interrupt_input();
+        self.time = target;
+        Ok(())
+    }
+    fn fast_boundary(&self) -> bool {
+        self.transactions.at_boundary()
+            && self.first_cpu_request.is_none()
+            && self.reset_output_start.is_none()
+            && self.reset_output_end.is_none()
+            && !self.memory.pending()
     }
     fn sample_interrupt_input(&mut self) {
         if self.enabled {
@@ -1067,4 +1150,4 @@ crate::sound::wire::structure!(Voice {
 #[cfg(any(test, feature = "sound-worker"))]
 crate::sound::wire::structure!(Scsp { reset_held, dsp, slots, voices, common, timer_phase, pending, main_pending, midi_in, midi_overflow, midi_out, midi_sent, midi_phase, stack, lfo, dma_remaining, dma_word, pcm_pipeline, pcm_slots, pcm_free, pcm_word, refresh_pending, memory_owner, external, frame_mix, generated, dropped, output } defaults { pcm_quiescent: Cell::new(None), #[cfg(test)] full_pcm_slots: false });
 #[cfg(any(test, feature = "sound-worker"))]
-crate::sound::wire::structure!(Sound { cpu, scsp, enabled, time, cpu_ticks, cpu_origin, next_cpu, first_cpu_request, ram_busy_until, memory, scsp_tick, reset_output_start, reset_output_end, transactions } bytes { ram } defaults { #[cfg(any(test, feature = "kernel-experiment"))] domain_trace: None, projection: None });
+crate::sound::wire::structure!(Sound { cpu, scsp, enabled, time, cpu_ticks, cpu_origin, next_cpu, first_cpu_request, ram_busy_until, memory, scsp_tick, reset_output_start, reset_output_end, transactions } bytes { ram } defaults { #[cfg(any(test, feature = "kernel-experiment"))] domain_trace: None, projection: None, stop_at_boundary: false });

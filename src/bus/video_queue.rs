@@ -50,10 +50,13 @@ pub enum Command {
     Reset {
         pal: bool,
     },
+    /// Relaxed playback: render whole lines at scanout without slot timing.
+    LineRendering(bool),
 }
 
 pub struct Renderer {
     raster: Raster,
+    line_rendering: bool,
     video: Vdp2,
     sprites: Vdp1,
 }
@@ -61,6 +64,7 @@ impl Default for Renderer {
     fn default() -> Self {
         Self {
             raster: Raster::default(),
+            line_rendering: false,
             video: Vdp2::clocked(),
             sprites: Vdp1::default(),
         }
@@ -109,11 +113,14 @@ impl Renderer {
     }
     fn advance(&mut self, mut clocks: u32, before: Vec<FrontPatch>, endpoint: Endpoint) {
         assert!(clocks > 0, "an endpoint needs a positive logical span");
-        self.acquire();
+        let slots = !self.line_rendering;
+        if slots {
+            self.acquire();
+        }
         let mut before = Some(before);
         let mut endpoint = Some(endpoint);
         while clocks != 0 {
-            let display = if self.video.display_active() {
+            let display = if slots && self.video.display_active() {
                 self.raster
                     .clocks_to_display_slot()
                     .min(if self.video.rotation_display_active() {
@@ -182,7 +189,9 @@ impl Renderer {
             let (h, v) = self.raster.counters();
             self.video.counters(h, v);
             self.video.scan_field(self.raster.odd());
-            self.acquire();
+            if slots {
+                self.acquire();
+            }
             clocks -= delta;
         }
     }
@@ -225,8 +234,14 @@ impl Renderer {
                 self.raster.select_clock(fast);
                 self.raster.configure(0);
                 self.video = Vdp2::clocked();
+                self.video.set_clocked(!self.line_rendering);
                 self.video.pal = self.raster.pal;
                 self.sprites = Vdp1::default();
+            }
+            Command::LineRendering(enabled) => {
+                self.flush();
+                self.line_rendering = enabled;
+                self.video.set_clocked(!enabled);
             }
             Command::Reset { pal } => {
                 *self = Self::default();
@@ -257,6 +272,7 @@ impl Domain {
     pub(super) fn new(video: &Vdp2, raster: &Raster, sprites: &Vdp1) -> Option<Self> {
         let mut renderer = Renderer {
             raster: raster.clone(),
+            line_rendering: false,
             video: video.renderer_seed()?,
             sprites: Vdp1::default(),
         };
@@ -330,6 +346,9 @@ impl super::Bus {
         domain
             .journal
             .push(Command::FrontSurface(self.vdp1.display_surface()));
+        if self.fast_video {
+            domain.journal.push(Command::LineRendering(true));
+        }
         self.video_domain = Some(Box::new(std::cell::RefCell::new(domain)));
         self.vdp1.enable_display_journal(true);
         self.display_deadline = 0;

@@ -101,6 +101,10 @@ impl Transactions {
         matches!(self.waiting, Some(Operation::Write(a, _, _)) if a & 0xFF_FFFF >= SOUND_RAM_SIZE as u32)
             || self.waiting == Some(Operation::ResetOutput)
     }
+    /// No replayed instruction or reset sequence is in progress.
+    pub(crate) fn at_boundary(&self) -> bool {
+        self.waiting.is_none() && self.reset.is_none() && self.cpu.is_none()
+    }
     pub fn ram_request(&self, pc: u32) -> Option<memory::Request> {
         let (address, width, write) = if let Some(reset) = &self.reset {
             let address = if reset.word < 4 {

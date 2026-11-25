@@ -459,6 +459,12 @@ pub struct Bus {
     display_deadline: u64,
     #[cfg(any(test, feature = "video-worker"))]
     video_domain: Option<Box<RefCell<video_queue::Domain>>>,
+    /// Interrupt being accepted by the relaxed playback scheduler.
+    fast_vector: Option<InterruptRequest>,
+    /// Functional CPU writes, letting relaxed playback recognize side-effect-free polls.
+    fast_writes: Cell<u64>,
+    /// Relaxed playback renders whole lines without VRAM access-slot timing.
+    fast_video: bool,
     #[cfg(test)]
     literal_display: bool,
     #[cfg(test)]
@@ -657,6 +663,9 @@ impl Default for Bus {
             display_deadline: 0,
             #[cfg(any(test, feature = "video-worker"))]
             video_domain: None,
+            fast_vector: None,
+            fast_writes: Cell::new(0),
+            fast_video: false,
             #[cfg(test)]
             literal_display: false,
             #[cfg(test)]
@@ -792,6 +801,29 @@ impl Bus {
             .map(|r| (r.level, r.vector))
     }
 
+    /// Relaxed playback samples the live request at each instruction boundary.
+    pub(crate) fn fast_interrupt(&self, processor: Processor) -> Option<InterruptRequest> {
+        self.interrupt_request(processor)
+    }
+    pub(crate) fn begin_fast_vector(&mut self, irq: InterruptRequest) {
+        self.fast_vector = Some(irq);
+    }
+    pub(crate) fn end_fast_vector(&mut self) {
+        self.fast_vector = None;
+    }
+    pub(crate) fn fast_writes(&self) -> u64 {
+        self.fast_writes.get()
+    }
+    pub(crate) fn set_fast_video(&mut self, enabled: bool) {
+        if self.fast_video == enabled {
+            return;
+        }
+        self.fast_video = enabled;
+        self.vdp2.set_clocked(!enabled);
+        self.display_deadline = 0;
+        #[cfg(any(test, feature = "video-worker"))]
+        self.record_video_command(video_queue::Command::LineRendering(enabled));
+    }
     fn interrupt_request(&self, processor: Processor) -> Option<InterruptRequest> {
         let internal = self.onchip[processor as usize].interrupt();
         let user_break =
@@ -1246,58 +1278,7 @@ impl Bus {
             #[cfg(any(test, feature = "video-worker"))]
             let video_before = self.vdp1.take_display_journal();
             let raster_event = self.raster.advance(delta);
-            match raster_event {
-                Some(RasterEvent::HBlankIn) => {
-                    if self.raster.line < self.raster.display_lines() {
-                        if self.render_video() {
-                            self.vdp2
-                                .scanline(&self.vdp1, usize::from(self.raster.line));
-                        }
-                        self.vdp1.erase_display_line(
-                            usize::from(self.raster.line),
-                            self.vdp2.dimensions().0,
-                        );
-                    }
-                    self.vdp1.hblank_in();
-                    self.vdp2.hblank = true;
-                    self.scu.hblank_in();
-                }
-                Some(RasterEvent::VBlankIn) => {
-                    self.vdp1.vblank_in(
-                        self.raster.line_clocks(),
-                        u32::from(self.raster.blank_lines()),
-                    );
-                    if self.render_video() {
-                        self.vdp2.finish_field();
-                    }
-                    self.vdp2.hblank = false;
-                    self.vdp2.vblank = true;
-                    self.smpc.vblank_in();
-                    self.scu.signal(0);
-                }
-                Some(RasterEvent::VBlankOut) => {
-                    self.vdp2.hblank = false;
-                    self.vdp2.vblank = false;
-                    self.scu.vblank_out();
-                    let active = self.system_clock.deadline(self.raster.active_clocks());
-                    self.smpc.vblank_out_after(active);
-                    self.vdp1.vblank_out();
-                    self.vdp2.scan_field(self.raster.odd());
-                    if self.render_video() {
-                        self.vdp2.begin_scanline(0);
-                    }
-                }
-                Some(RasterEvent::LineStart) => {
-                    self.vdp2.hblank = false;
-                    if self.render_video() && self.raster.line < self.raster.display_lines() {
-                        self.vdp2.begin_scanline(usize::from(self.raster.line));
-                    }
-                }
-                None => (),
-            }
-            let (h, v) = self.raster.counters();
-            self.vdp2.counters(h, v);
-            self.vdp2.scan_field(self.raster.odd());
+            self.raster_event(raster_event);
             #[cfg(any(test, feature = "video-worker"))]
             self.record_video_advance(delta, video_before, raster_event);
             // Display samples (including rotation-parameter request reads)
@@ -1317,6 +1298,163 @@ impl Bus {
         Ok(command)
     }
 
+    /// Main clocks that a relaxed playback slice of `reference` clocks yields.
+    pub(crate) fn fast_main_span(&self, reference: u32) -> u32 {
+        self.system_clock.preview(reference) + self.pending_main_clocks
+    }
+    /// Relaxed playback: advance the fixed domains (sound, CD, SMPC) once
+    /// over the whole slice, then the main-clock devices over the matching
+    /// main interval. CPU accesses were already applied functionally.
+    pub(crate) fn fast_advance(&mut self, reference: u32) -> Result<Option<u8>, ScuError> {
+        let main =
+            self.system_clock.advance(reference) + std::mem::take(&mut self.pending_main_clocks);
+        // Fixed domains run once over the whole slice. Their own events (68K
+        // instructions, SCSP samples, CD sectors) step internally without
+        // stopping the board.
+        let command = self.advance_fixed_fast(reference)?;
+        let mut remaining = main;
+        // Clocks elapsed on the bus but not yet applied to the other devices.
+        // DMA beats complete at their own edges; devices catch up together
+        // at their next event or the end of the slice.
+        let mut lag = 0;
+        // Devices are not advanced while only bus beats complete, so their
+        // deadline stays valid until the next catch-up.
+        let mut devices = self.fast_device_deadline().max(1);
+        while remaining != 0 {
+            self.grant_bus_transaction();
+            let delta = remaining
+                .min(devices - lag)
+                .min(self.bus_main_deadline().max(1));
+            self.main_clocks = self.main_clocks.wrapping_add(u64::from(delta));
+            lag += delta;
+            remaining -= delta;
+            if lag == devices || remaining == 0 {
+                self.fast_devices(std::mem::take(&mut lag))?;
+                devices = self.fast_device_deadline().max(1);
+            }
+            self.advance_bus_transaction()?;
+        }
+        if let Some(completed @ (0x0E | 0x0F)) = command {
+            self.change_system_clock(completed == 0x0E);
+        }
+        Ok(command)
+    }
+    fn advance_fixed_fast(&mut self, clocks: u32) -> Result<Option<u8>, ScuError> {
+        self.cd.advance(clocks);
+        if self.cd.interrupt() {
+            self.scu.signal(16);
+        }
+        self.sound.advance_fast(clocks, Some(&mut self.cd))?;
+        if self.sound.main_interrupt() {
+            self.scu.signal(6);
+        }
+        let command = self.smpc.advance_clocks(clocks);
+        if self.smpc.take_irq() {
+            self.scu.signal(7);
+        }
+        Ok(command)
+    }
+    /// Advance the main-clock devices together over `delta`, which never
+    /// crosses one of their own events.
+    fn fast_devices(&mut self, delta: u32) -> Result<(), ScuError> {
+        self.onchip[0].advance_to_event(delta);
+        if self.slave_enabled {
+            self.onchip[1].advance_to_event(delta);
+        }
+        self.scu.advance_clocks(delta)?;
+        let (vram_busy, framebuffer_busy) = self.vdp1_bus_ownership();
+        if self
+            .vdp1
+            .advance_with_bus(delta, vram_busy, framebuffer_busy)?
+        {
+            self.scu.signal(13);
+        }
+        #[cfg(any(test, feature = "video-worker"))]
+        let video_before = self.vdp1.take_display_journal();
+        let raster_event = self.raster.advance(delta);
+        self.raster_event(raster_event);
+        #[cfg(any(test, feature = "video-worker"))]
+        self.record_video_advance(delta, video_before, raster_event);
+        for processor in [Processor::Master, Processor::Slave] {
+            if self.cpu_reset_active(processor) {
+                self.hold_cpu_reset(processor);
+            }
+        }
+        Ok(())
+    }
+    fn fast_device_deadline(&self) -> u32 {
+        self.onchip[0]
+            .clocks_to_event()
+            .min(if self.slave_enabled {
+                self.onchip[1].clocks_to_event()
+            } else {
+                u32::MAX
+            })
+            // Line rendering needs no VRAM access-slot edges.
+            .min(self.raster.clocks_to_event())
+            .min(self.scu.clocks_to_event())
+            // VDP1 steps its own pixel and fetch edges inside one advance;
+            // only command boundaries are visible to other devices.
+            .min(self.vdp1.clocks_to_observable_event())
+    }
+
+    /// Apply one raster edge to the video, SMPC and SCU devices, then publish
+    /// the beam counters. Shared by the exact and relaxed schedulers.
+    fn raster_event(&mut self, raster_event: Option<RasterEvent>) {
+        match raster_event {
+            Some(RasterEvent::HBlankIn) => {
+                if self.raster.line < self.raster.display_lines() {
+                    if self.render_video() {
+                        self.vdp2
+                            .scanline(&self.vdp1, usize::from(self.raster.line));
+                    }
+                    self.vdp1.erase_display_line(
+                        usize::from(self.raster.line),
+                        self.vdp2.dimensions().0,
+                    );
+                }
+                self.vdp1.hblank_in();
+                self.vdp2.hblank = true;
+                self.scu.hblank_in();
+            }
+            Some(RasterEvent::VBlankIn) => {
+                self.vdp1.vblank_in(
+                    self.raster.line_clocks(),
+                    u32::from(self.raster.blank_lines()),
+                );
+                if self.render_video() {
+                    self.vdp2.finish_field();
+                }
+                self.vdp2.hblank = false;
+                self.vdp2.vblank = true;
+                self.smpc.vblank_in();
+                self.scu.signal(0);
+            }
+            Some(RasterEvent::VBlankOut) => {
+                self.vdp2.hblank = false;
+                self.vdp2.vblank = false;
+                self.scu.vblank_out();
+                let active = self.system_clock.deadline(self.raster.active_clocks());
+                self.smpc.vblank_out_after(active);
+                self.vdp1.vblank_out();
+                self.vdp2.scan_field(self.raster.odd());
+                if self.render_video() {
+                    self.vdp2.begin_scanline(0);
+                }
+            }
+            Some(RasterEvent::LineStart) => {
+                self.vdp2.hblank = false;
+                if self.render_video() && self.raster.line < self.raster.display_lines() {
+                    self.vdp2.begin_scanline(usize::from(self.raster.line));
+                }
+            }
+            None => (),
+        }
+        let (h, v) = self.raster.counters();
+        self.vdp2.counters(h, v);
+        self.vdp2.scan_field(self.raster.odd());
+    }
+
     /// SMPC §§2.3.9–10: PLL change resets the listed LSIs, not work RAM,
     /// the master architectural state, CD block or battery-backed storage.
     fn change_system_clock(&mut self, fast: bool) {
@@ -1331,6 +1469,7 @@ impl Bus {
             self.record_video_command(video_queue::Command::Clock(fast));
         }
         self.vdp2 = Vdp2::clocked();
+        self.vdp2.set_clocked(!self.fast_video);
         self.vdp2.pal = self.raster.pal;
         self.raster.configure(0);
         self.scu = Scu::default();
@@ -1691,10 +1830,16 @@ impl Bus {
         // ST-169 §1.2/fig1.3: byte-only, before any lane side effects,
         // cache fill or BSC narrow-bus decomposition. Rejection is an emulator
         // boundary, not a claim about undefined electrical bus behavior.
-        if width != 1
-            && (0..width).any(|i| {
-                (SMPC..SMPC + 0x80).contains(&Self::physical(address.wrapping_add(i as u32)))
-            })
+        // Only CS0 addresses within the SMPC decode can map to its registers.
+        let base = address & !0x2000_0000;
+        if width == 1
+            || address >= 0x4000_0000
+            || !(SMPC.saturating_sub(width as u32)..SMPC + 0x80000).contains(&base)
+        {
+            return Ok(());
+        }
+        if (0..width)
+            .any(|i| (SMPC..SMPC + 0x80).contains(&Self::physical(address.wrapping_add(i as u32))))
         {
             return Err(self.smpc_error(
                 self.smpc.access_fault(
@@ -2225,6 +2370,11 @@ impl Memory for Bus {
 }
 
 impl CpuBus<'_> {
+    /// Relaxed playback treats a polling loop as idle only if it wrote nothing.
+    fn note_write(&self) {
+        let writes = &self.bus.fast_writes;
+        writes.set(writes.get().wrapping_add(1));
+    }
     fn instruction_prefetchable(address: u32) -> bool {
         let physical = Bus::physical(address);
         address & 1 == 0
@@ -2546,6 +2696,16 @@ impl Memory for CpuBus<'_> {
     fn check_exception_access(&self, address: u32, write: Option<u32>) -> Result<(), BusError> {
         self.bus.check_smpc_width(address, 4, write)
     }
+    fn sh2_interrupt_vector(&mut self, level: u8, vector: u8) -> Result<u8, BusError> {
+        match self.bus.fast_vector {
+            Some(irq) if irq.external => Ok(self.bus.scu.acquire_vector(level)),
+            Some(irq) if irq.source == InterruptSource::Break => {
+                self.bus.onchip[self.processor as usize].acknowledge_break();
+                Ok(vector)
+            }
+            _ => Ok(vector),
+        }
+    }
     fn sh2_speculative_fetch(&self, address: u32) -> bool {
         Self::instruction_prefetchable(address)
     }
@@ -2642,6 +2802,7 @@ impl Memory for CpuBus<'_> {
         Ok(value)
     }
     fn write8(&mut self, address: u32, value: u8) -> Result<(), BusError> {
+        self.note_write();
         if address == CCR && self.cached {
             self.bus.cache[self.processor as usize]
                 .get_mut()
@@ -2666,6 +2827,7 @@ impl Memory for CpuBus<'_> {
         Ok(())
     }
     fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
+        self.note_write();
         if (0xFFFF8000..0xFFFFC000).contains(&address) {
             let i = self.processor as usize;
             let states = self.bus.onchip[i].sdram_mode_states(address)?;
@@ -2697,6 +2859,7 @@ impl Memory for CpuBus<'_> {
         Ok(())
     }
     fn write32(&mut self, address: u32, value: u32) -> Result<(), BusError> {
+        self.note_write();
         if address >= 0xFFFF_FE00 {
             if !self.cached && address >= 0xFFFF_FF40 {
                 return Err(BusError::UnsupportedDevice { address, width: 4 });

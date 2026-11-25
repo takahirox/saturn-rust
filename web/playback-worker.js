@@ -37,6 +37,8 @@ const ready = init().then(async () => {
   await Promise.all([video.ready, sound.ready]);
   video.activate();
   if (!machine.enable_video_transport(true)) throw new Error("Renderer requires a pristine Machine");
+  // Playback uses relaxed CPU/device interleaving for real-time speed.
+  machine.set_fast_mode(true);
   methods = new Set(Object.getOwnPropertyNames(Emulator.prototype).filter(name =>
     !name.startsWith("_") && !SOUND_TRANSPORT_METHODS.has(name) && !["constructor", "free", "enable_video_transport", "enable_video_journal"].includes(name)
     && typeof machine[name] === "function"));

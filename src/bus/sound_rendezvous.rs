@@ -214,7 +214,10 @@ impl crate::Machine {
     /// Prefer the existing whole-field path for disabled sound CPUs and HLE.
     /// This is a cost policy; synthesis still runs accurately on that path.
     pub fn sound_worker_field_eligible(&self) -> bool {
-        self.mode == Some(crate::BootMode::ExternalBios) && self.bus.sound.enabled
+        // Relaxed playback runs Sound locally with the board.
+        self.mode == Some(crate::BootMode::ExternalBios)
+            && self.bus.sound.enabled
+            && !self.fast_ready()
     }
     pub fn remote_sound_projection_range(&self, clocks: u32) -> Vec<u32> {
         let quiet = self

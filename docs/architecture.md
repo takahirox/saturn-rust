@@ -25,6 +25,7 @@ automated local/CI checks; live Pages inspection is not a completion gate.
 | src/sound.rs | Shared sound RAM, direct PCM SCSP, independent 68k/sample clocks |
 | src/smpc.rs | SMPC commands, RTC/SMEM, digital/analog joystick levels and INTBACK |
 | src/lib.rs | Explicit cold-boot modes, independent master/slave ownership, bounded functional interleaving |
+| src/fast.rs | Relaxed-timing playback scheduler: per-slice CPU execution with functional memory, idle-loop skipping |
 | src/onchip.rs | CPU-local FRT/WDT/SCI/DIVU/DMAC and internal INTC |
 | src/scu.rs, src/scu/ | SCU interrupt controller, three DMA channels and original DSP interpreter |
 | src/timing.rs | NTSC/PAL PLLs, selectable display intervals and field/counter deadlines |
@@ -55,6 +56,11 @@ SCU transactions. Cycle-steal yields after a unit; bursts retain ownership and
 TAS excludes DMA. Bounded IF/ID scheduling is described below; complete refresh,
 display, sound and peripheral-bus ownership/timing remain required. See the
 [CPU timing evidence](hardware-conformance.md#independent-sh-2-issue-deadlines-and-clocked-on-chip-dma).
+The browser player enables `Machine::set_fast_mode`: each SH-2 executes a
+128-reference-clock slice against functional memory before the devices catch
+up, Sound executes whole 68K instructions and SCSP slots in bulk, and VDP2
+renders whole lines at scanout. Guest-visible timing is approximate; see
+[relaxed-timing playback](runtime-performance.md#relaxed-timing-playback-2026-11-25).
 The browser advances at most one frame per requestAnimationFrame callback,
 limited to 60 updates per second; it does no catch-up loop. Actual speed depends
 on the browser. The guest waits for a VBLANK edge, so holding a key changes state
