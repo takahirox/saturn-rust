@@ -236,8 +236,21 @@ impl Scsp {
             }
             0x406 => Ok(0), // MIDI output is write-only.
             0x408 => {
+                // CA, SGC and EG of the MSLC slot. Sound drivers read the
+                // envelope phase and level to allocate voices; an ended voice
+                // reports release at the minimum level.
                 let slot = ((self.common[4] >> 11) & 31) as usize;
-                Ok(self.voices[slot].call_address << 7)
+                let voice = &self.voices[slot];
+                let regs = &self.slots[slot];
+                // A one-shot that reached LEA keeps its EG state; only the
+                // waveform address stops.
+                let (sgc, level) = voice.envelope.monitor(regs[4] & 0x20 != 0);
+                // A slot at maximum attenuation no longer reads its waveform
+                // (unless SDIR), so it reports no current address.
+                let fetching =
+                    voice.active && (regs[6] & 0x100 != 0 || voice.envelope.level() < 1023);
+                let ca = if fetching { voice.call_address } else { 0 };
+                Ok(ca << 7 | sgc << 5 | level >> 5)
             }
             0x412..=0x416 => Ok(if offset == 0x416 {
                 self.common[11] & 0x7000
@@ -298,7 +311,7 @@ impl Scsp {
                                     phase: 0,
                                     call_address: 0,
                                     reverse: false,
-                                    envelope: envelope::Envelope::default(),
+                                    envelope: envelope::Envelope::key_on(),
                                 };
                             }
                         } else {
@@ -473,11 +486,12 @@ impl Scsp {
             self.timer_phase[timer] += 1;
             if self.timer_phase[timer] >= prescale {
                 self.timer_phase[timer] = 0;
-                let count = self.common[index] & 255;
-                if count != 255 {
-                    self.common[index] = (self.common[index] & !255) | (count + 1);
-                }
-                if count == 254 {
+                // The 8-bit up-counter wraps and keeps running; each pass
+                // through FFh raises its interrupt, whether or not software
+                // reloads TIMx (Mednafen's hardware-tested SCSP model).
+                let count = (self.common[index] + 1) & 255;
+                self.common[index] = (self.common[index] & !255) | count;
+                if count == 255 {
                     self.request(1 << (6 + timer));
                 }
             }

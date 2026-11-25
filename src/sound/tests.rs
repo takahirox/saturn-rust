@@ -134,9 +134,17 @@ fn guest_ram_pcm16_loop_pan_key_off_and_all_thirty_two_slots() {
         scsp.drain(100),
         [0, 4096, 0, -4096, 0, 8192, 0, -8192, 0, 4096, 0, -4096]
     );
+    // SDIR output ignores the EG; the released voice stops once its
+    // release (RR=31) reaches maximum attenuation and reads stop.
+    scsp.write16(10, 31).unwrap();
     scsp.write16(0, 0x1000).unwrap();
+    for _ in 0..128 {
+        scsp.sample(&mut ram).unwrap();
+    }
+    scsp.drain(usize::MAX);
     scsp.sample(&mut ram).unwrap();
     assert_eq!(scsp.drain(1), [0, 0]);
+    assert!(!scsp.voices[0].active);
     let mut scsp = Scsp::default();
     ram[0x100] = 1;
     for slot in 0..32 {
@@ -272,6 +280,27 @@ fn timer_prescale_pending_enable_level_and_independent_sound_main_acknowledge() 
     assert_eq!(scsp.interrupt_level(), 1);
 }
 #[test]
+fn timer_counter_wraps_and_raises_its_interrupt_every_256_counts_without_reload() {
+    // Sound drivers program TIMA once and count its periodic interrupts;
+    // the up-counter keeps running through FFh -> 00h.
+    let mut scsp = Scsp::default();
+    let mut ram = vec![0; SOUND_RAM_SIZE];
+    scsp.write16(0x418, 0x00FE).unwrap(); // TACTL=0: one count per sample
+    scsp.write16(0x41E, 0x40).unwrap();
+    scsp.write16(0x426, 0x40).unwrap();
+    scsp.write16(0x428, 0x40).unwrap();
+    for period in 0..3 {
+        let samples = if period == 0 { 1 } else { 256 };
+        for _ in 1..samples {
+            scsp.sample(&mut ram).unwrap();
+            assert_eq!(scsp.interrupt_level(), 0, "period {period}");
+        }
+        scsp.sample(&mut ram).unwrap();
+        assert_eq!(scsp.interrupt_level(), 6, "period {period}");
+        scsp.write16(0x422, 0x40).unwrap();
+    }
+}
+#[test]
 fn scsp_dma_moves_register_words_both_directions_clears_gate_and_requests_irq() {
     let mut scsp = Scsp::default();
     let mut ram = vec![0; SOUND_RAM_SIZE];
@@ -325,7 +354,8 @@ fn thirty_two_envelopes_release_retrigger_and_bypass_independently() {
     for slot in 0..32 {
         direct(&mut scsp, slot, 0x100, 1, false, 0);
         scsp.write16(slot * 32 + 8, 31).unwrap();
-        scsp.write16(slot * 32 + 10, 0x3C1F).unwrap();
+        // KRS=1 at OCT=0: AR31 + KS1 reaches 32, an instant attack.
+        scsp.write16(slot * 32 + 10, 0x041F).unwrap();
         scsp.write16(slot * 32 + 12, 0).unwrap();
     }
     scsp.sample(&mut ram).unwrap();
@@ -346,8 +376,10 @@ fn thirty_two_envelopes_release_retrigger_and_bypass_independently() {
     scsp.write16(8, 31 | 31 << 6).unwrap();
     scsp.write16(10, 0x3FFF).unwrap(); // decay level31, KRS off, RR31
     scsp.write16(0, 0x1820).unwrap();
+    // D1R31 clocks the EG on alternate samples.
     scsp.sample(&mut ram).unwrap();
-    assert!(scsp.drain(1)[0] < 16384);
+    scsp.sample(&mut ram).unwrap();
+    assert!(scsp.drain(2)[2] < 16384);
     // Direct mode bypasses a running envelope as well as TL and ALFO.
     scsp.write16(12, 0x1FF).unwrap();
     scsp.write16(18, 0xFFFF).unwrap();
@@ -640,7 +672,8 @@ fn total_level_held_attack_amplitude_lfo_and_direct_bypass_affect_real_stereo() 
     direct(&mut scsp, 0, 0x100, 1, false, 0);
     scsp.write16(12, 16).unwrap(); // SDIR=0, TL16=1/2
     scsp.sample(&mut ram).unwrap();
-    assert_eq!(scsp.drain(1), [0, 0]); // zero AR stays at full attenuation
+    // Zero AR holds the key-on level 280h: ten octaves below 8192.
+    assert_eq!(scsp.drain(1), [8, 8]);
     scsp.write16(8, 0x20).unwrap(); // EGHOLD=1, AR=0: held unity attack
     scsp.sample(&mut ram).unwrap();
     assert_eq!(scsp.drain(1), [8192, 8192]);
@@ -797,11 +830,15 @@ fn scsp_dma_zero_execute_write_preserves_busy_and_completion_interrupt() {
     }
 }
 
+/// Monitor SGC=0 (attack) and EG=280h>>5 right after key-on.
+const KEY_ON_MONITOR: u16 = 0x280 >> 5;
+
 #[test]
 fn slot_monitor_uses_documented_ca_bits_all_selectors_and_independent_byte_lanes() {
-    // ST-077 §4.1 fig.4.3 / §4.2 p.89. CA occupies bits10:7;
-    // write-only MSLC is bits15:11. One CA unit is 4096 samples,
-    // independent of PCM width, SA, pitch and the other slot selectors.
+    // ST-077 §4.1 fig.4.3 / §4.2 p.89. CA occupies bits10:7, SGC bits6:5
+    // and EG bits4:0; write-only MSLC is bits15:11. One CA unit is 4096
+    // samples, independent of PCM width, SA, pitch and the other selectors.
+    // These AR=0 voices hold the attack at the key-on level 280h.
     for pcm8 in [false, true] {
         let mut scsp = Scsp::default();
         let mut ram = vec![0; SOUND_RAM_SIZE];
@@ -815,7 +852,7 @@ fn slot_monitor_uses_documented_ca_bits_all_selectors_and_independent_byte_lanes
         // from the PG phase before the address calculation actually runs.
         scsp.sample_cycle(0, &mut ram).unwrap();
         for slot in 0..32 {
-            let expected = ((slot % 16) << 7) as u16;
+            let expected = ((slot % 16) << 7) as u16 | KEY_ON_MONITOR;
             scsp.write16(0x408, (slot << 11) as u16).unwrap();
             assert_eq!(scsp.read16(0x408), Ok(expected));
             assert_eq!(scsp.read8(0x408), Ok((expected >> 8) as u8));
@@ -827,7 +864,10 @@ fn slot_monitor_uses_documented_ca_bits_all_selectors_and_independent_byte_lanes
             assert_eq!(scsp.common[4], (slot << 11) as u16);
             scsp.write8(0x408, (((31 - slot) << 3) & 255) as u8)
                 .unwrap();
-            assert_eq!(scsp.read16(0x408), Ok((((31 - slot) % 16) << 7) as u16));
+            assert_eq!(
+                scsp.read16(0x408),
+                Ok((((31 - slot) % 16) << 7) as u16 | KEY_ON_MONITOR)
+            );
         }
     }
 }
@@ -837,9 +877,10 @@ fn slot_monitor_retains_the_current_output_address_across_pitch_and_loop_boundar
     // Read before/after output at the 4K boundary. Looking at the phase
     // after its increment reports CA too early. Forward/reverse/alternate
     // loops must report the address actually used after loop normalization.
+    // A one-shot past LEA stops reading and reports no address.
     for pcm8 in [false, true] {
         for (mode, samples, expected) in [
-            (0, 4, [0, 0x80, 0x80, 0x80]),
+            (0, 4, [0, 0x80, 0, 0]),
             (1, 4, [0, 0x80, 0, 0x80]),
             (2, 4, [0x80, 0, 0x80, 0]),
             (3, 4, [0, 0x80, 0x80, 0]),
@@ -852,6 +893,7 @@ fn slot_monitor_retains_the_current_output_address_across_pitch_and_loop_boundar
             scsp.voices[0].phase = 4095 << 16;
             for value in expected.into_iter().take(samples) {
                 scsp.sample(&mut ram).unwrap();
+                let value = value | KEY_ON_MONITOR;
                 assert_eq!(scsp.read16(0x408), Ok(value), "PCM8={pcm8}, loop={mode}");
                 assert_eq!(scsp.read16(0x408), Ok(value)); // no read side effect
             }
@@ -859,8 +901,9 @@ fn slot_monitor_retains_the_current_output_address_across_pitch_and_loop_boundar
             // voice's monitored address. Power/LSI reset also clears it.
             scsp.write16(0, 0x1000).unwrap();
             scsp.write16(0, 0x1820 | if pcm8 { 16 } else { 0 }).unwrap();
-            assert_eq!(scsp.read16(0x408), Ok(0));
-            assert_eq!(Scsp::default().read16(0x408), Ok(0));
+            assert_eq!(scsp.read16(0x408), Ok(KEY_ON_MONITOR));
+            // Power/LSI reset leaves every slot released at maximum level.
+            assert_eq!(Scsp::default().read16(0x408), Ok(0x7F));
         }
     }
 }
@@ -878,7 +921,7 @@ fn slot_monitor_follows_the_fm_waveform_address_without_moving_the_phase_generat
     scsp.stack.data.fill(16384);
     scsp.sample(&mut ram).unwrap();
     scsp.write16(0x408, 5 << 11).unwrap();
-    assert_eq!(scsp.read16(0x408), Ok(0x80));
+    assert_eq!(scsp.read16(0x408), Ok(0x80 | KEY_ON_MONITOR));
     assert_eq!(scsp.voices[5].phase, 4096 << 16);
 }
 

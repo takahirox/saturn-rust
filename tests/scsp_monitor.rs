@@ -85,8 +85,8 @@ fn guest_loop_and_waveform_mutations_change_only_the_computed_monitor_or_audio_r
     );
     let (records, audio) = run(&mut machine, &changed);
     let mut vectors = expected();
-    vectors[62] = 0x01800180;
-    vectors[63] = 0x01800000;
+    vectors[62] = 0x01940194;
+    vectors[63] = 0x01940000;
     assert_eq!(records, vectors);
     assert!(
         audio[audio.len() - 128..]
@@ -114,7 +114,7 @@ fn guest_loop_and_waveform_mutations_change_only_the_computed_monitor_or_audio_r
 }
 
 #[test]
-fn omitting_guest_key_on_executes_the_same_reads_without_pcm_or_nonzero_monitors() {
+fn omitting_guest_key_on_executes_the_same_reads_without_pcm_or_waveform_addresses() {
     let mut changed = rom();
     replace(
         &mut changed,
@@ -122,7 +122,9 @@ fn omitting_guest_key_on_executes_the_same_reads_without_pcm_or_nonzero_monitors
         &[0x33, 0xFC, 0, 0x21, 0, 0x10, 0, 0],
     );
     let (records, audio) = run(&mut Machine::new(), &changed);
-    assert_eq!(records, vec![0; 64]);
+    // Unkeyed slots stay released at maximum attenuation (SGC3, EG 1Fh)
+    // and report no waveform address.
+    assert_eq!(records, [0x007F007F, 0x007F0000].repeat(32));
     assert!(!audio.is_empty());
     assert!(audio.iter().all(|sample| *sample == 0));
 }

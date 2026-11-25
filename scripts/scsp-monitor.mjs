@@ -20,14 +20,15 @@ export async function scspMonitor(page) {
     if (variant === "loop") {
       replace(image, [0x33, 0xFC, 0x20, 0, 0, 0x10, 3, 0xE4], [0x33, 0xFC, 0x30, 0, 0, 0x10, 3, 0xE4]);
       replace(image, [0x33, 0xFC, 0x20, 1, 0, 0x10, 3, 0xE6], [0x33, 0xFC, 0x30, 1, 0, 0x10, 3, 0xE6]);
-      expected[62] = 0x01800180; expected[63] = 0x01800000;
+      expected[62] = 0x01940194; expected[63] = 0x01940000;
     }
     if (variant === "waveform") {
       replace(image, [0x33, 0xFC, 0x11, 0, 0, 1, 0x20, 0], [0x33, 0xFC, 0x09, 0, 0, 1, 0x20, 0]);
     }
     if (variant === "unkeyed") {
       replace(image, [0x33, 0xFC, 0x18, 0x21, 0, 0x10, 0, 0], [0x33, 0xFC, 0, 0x21, 0, 0x10, 0, 0]);
-      expected.fill(0);
+      // Unkeyed slots stay released at maximum attenuation without an address.
+      expected.forEach((_, i) => { expected[i] = i % 2 ? 0x007F0000 : 0x007F007F; });
     }
     await page.locator("#bios").setInputFiles({ name: `original-scsp-monitor-${variant}.bin`, mimeType: "application/octet-stream", buffer: image });
     await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Resetting"));

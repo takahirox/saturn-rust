@@ -2231,9 +2231,12 @@ try {
   assert.deepEqual(soundFinished.mailbox, [1, 0x600D]);
   assert.deepEqual(soundFinished.waveform, [0x1000F000, 0xE0002000]);
   assert.deepEqual(soundFinished.samples, [256,4096,-256,-4096,-512,-8192,512,8192,256,4096,-256,-4096,-512,-8192,512,8192]);
-  assert.equal(soundFinished.irqs,2);
-  assert.equal(soundFinished.irqReturn,0x182); // FD->FF wakes STOP after the first acknowledgement
-  assert.equal(BigInt(soundFinished.count),32n); // setup23 + two IRQ3 handlers + two STOPs + BRA
+  // FD->FF wakes STOP after the first acknowledgement; the counter then keeps
+  // running through FFh, interrupting STOP again every 256 samples.
+  assert(soundFinished.irqs > 2);
+  assert.equal(soundFinished.irqReturn,0x182);
+  // setup23, then per interrupt a STOP, handler3 and (after the first) BRA.
+  assert.equal(BigInt(soundFinished.count),22n + 5n * BigInt(soundFinished.irqs));
   assert.equal(soundFinished.dropped, "0");
   await page.locator("#reset").click();
   assert.deepEqual(await soundResult(), soundFinished);
@@ -2430,7 +2433,9 @@ try {
   for(let reset=0;reset<2;reset++) {
     const result=await soundIoResults(soundIoRom);
     assert.equal(result.done,0x600D);
-    for(const [offset,value] of [[0x804,1],[0x810,0xA55A1234],[0x818,1],[0x81C,1],
+    // The free-running timer A interrupts every 256 samples; its handler counts each.
+    assert(result.words[1]>=1);
+    for(const [offset,value] of [[0x810,0xA55A1234],[0x818,1],[0x81C,1],
       [0x830,0x99],[0x834,1],[0x838,0x99],[0x83C,0x12345678],[0x840,0x11223344],
       [0x844,0x55667788],[0x848,0x4500],[0x850,0xCAFEBABE],[0x854,0xDEADBEEF],
       [0x858,0x80000],[0x860,0x00150000],[0x864,0x80000],[0x868,0x4CD80000],
@@ -2640,22 +2645,28 @@ try {
   }
   const envelope=await synthesisResult(envelopeRom);
   assert.equal(envelope.mailbox,0x600D);
+  // Key-on starts at 280h; AR31 with KRS disabled clocks every other sample,
+  // halving the remaining attenuation (64 units halve the amplitude).
   envelope.first.forEach((s,i)=>{
-    const expected=Math.floor(1024*2**(-i*0.75/64));
-    assert(Math.abs(s[1]-expected)<=1,`EG decay ${i}: ${s[1]} vs ${expected}`);
+    const level=-64*Math.log2(s[1]/1024), expected=640/2**(Math.floor(i/2)+1);
+    assert(Math.abs(level-expected)<=3,`EG attack ${i}: ${s[1]} level ${level} vs ${expected}`);
   });
-  assert(envelope.right.includes(255));
+  assert(envelope.right.includes(256)); // DL4, D2R0 sustain
   assert(envelope.tail.every(s=>s[1]===0));
   assert.deepEqual(await synthesisResult(envelopeRom),envelope);
   const heldEnvelope=Buffer.from(envelopeRom);
   patchSynthesis(heldEnvelope,0x1000CA,0x3C9F,0x3C80);
-  assert((await synthesisResult(heldEnvelope)).tail.every(s=>s[1]===255));
+  assert((await synthesisResult(heldEnvelope)).tail.every(s=>s[1]===256));
   const zeroAttack=Buffer.from(envelopeRom);
   patchSynthesis(zeroAttack,0x1000C8,0x06DF,0x06C0);
-  assert.deepEqual((await synthesisResult(zeroAttack)).right,[0]);
+  // AR0 holds the key-on level 280h: ten halvings of 1024.
+  const zeroRight=(await synthesisResult(zeroAttack)).right;
+  assert(zeroRight.every(v=>v<=1) && zeroRight.includes(1),String(zeroRight));
   const linkedEnvelope=Buffer.from(envelopeRom);
   patchSynthesis(linkedEnvelope,0x1000CA,0x3C9F,0x7C9F);
-  assert.deepEqual((await synthesisResult(linkedEnvelope)).right,[0]);
+  // The attack ends at the first loop-start crossing after one clock from 280h.
+  const linkedRight=(await synthesisResult(linkedEnvelope)).right;
+  assert(linkedRight.every(v=>v<=32) && linkedRight.some(v=>v>0),String(linkedRight));
   // Reload held PCM so the production worklet check below validates FM/ALFO.
   await synthesisResult(heldEnvelope);
   // Exercise this synthesized output through the production AudioWorklet too.

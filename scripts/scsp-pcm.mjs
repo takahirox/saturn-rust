@@ -78,7 +78,9 @@ export async function scspPcm(page) {
   for (let repeat=0;repeat<3;repeat++) {
     const result = await page.evaluate(async bytes=>{
       const { emulator } = await import("./app.js");
-      (await emulator.reset_bios(Uint8Array.from(bytes))); (await emulator.run_steps(10000));
+      (await emulator.reset_bios(Uint8Array.from(bytes)));
+      // The guest first waits about 256 samples for its decays to reach 3FF.
+      for (let i=0;i<100 && (await emulator.read_long(0x0600EE20))!==0x600D;i++) (await emulator.run_steps(10000));
       return { records:(await Promise.all(Array.from({length:9},async (_,i)=>(await emulator.read_long(0x0600EE00+i*4))))),
         exceptions:(await emulator.exception_count()) };
     },[...arbitration]);

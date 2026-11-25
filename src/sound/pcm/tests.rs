@@ -98,7 +98,9 @@ fn maximum_eg_suppresses_reads_but_sdir_and_unrouted_voices_still_fetch() {
         for source in [0, 1, 2] {
             let mut s = Sound::default();
             voice(&mut s, 0, source << 7, direct);
-            s.scsp.write16(8, 0).unwrap(); // AR=0, EG remains3FF
+            // Key-on starts at 280h; hold a silent EG at 3FF with AR=0.
+            s.scsp.write16(8, 0).unwrap();
+            s.scsp.voices[0].envelope = crate::sound::envelope::Envelope::silent_attack();
             s.scsp.write16(22, 0).unwrap(); // no output send
             let mut busy = Vec::new();
             for tick in 1..=128 {
