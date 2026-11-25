@@ -75,7 +75,13 @@ fn guest_frt_measures_all_pcm_fetches_and_suppression_in_real_dma_completion_tim
     let mut previous = None;
     for _ in 0..3 {
         m.reset(Boot::ExternalBios(&original)).unwrap();
-        m.run_steps(10000).unwrap();
+        // The guest first waits about 256 samples for its decays to reach 3FF.
+        for _ in 0..100 {
+            m.run_steps(10000).unwrap();
+            if m.bus().read32(0x0600EE20) == Ok(0x600D) {
+                break;
+            }
+        }
         let records: Vec<_> = (0..9)
             .map(|i| m.bus().read32(0x0600EE00 + i * 4).unwrap())
             .collect();

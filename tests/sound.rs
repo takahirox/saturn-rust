@@ -27,12 +27,22 @@ fn master_uploads_starts_sound_cpu_and_observes_scsp_irq_guest_computation_and_s
     for _ in 0..2 {
         m.reset(Boot::ExternalBios(&rom)).unwrap();
         let mut timer_edge_before_second_acknowledgement = false;
+        // Guest state once the second handler has returned to STOP.
+        let mut second = None;
         for _ in 0..100000 {
             m.step().unwrap();
-            if (0x300..=0x306).contains(&m.sound_state().pc) && m.sound_state().exceptions == 2 {
+            let state = m.sound_state();
+            if (0x300..=0x306).contains(&state.pc) && state.exceptions == 2 {
                 timer_edge_before_second_acknowledgement |=
                     m.bus().read16(SCSP + 0x418).unwrap() & 255 == 255
                         && m.bus().read16(SCSP + 0x420).unwrap() & 0x40 != 0;
+            }
+            if second.is_none() && state.exceptions == 2 && state.stopped {
+                second = Some((
+                    m.bus().read32(SOUND_RAM + 0x804).unwrap(),
+                    m.bus().read32(SOUND_RAM + 0x7FEFC).unwrap(),
+                    state.instructions,
+                ));
             }
         }
         assert!(timer_edge_before_second_acknowledgement);
@@ -51,11 +61,18 @@ fn master_uploads_starts_sound_cpu_and_observes_scsp_irq_guest_computation_and_s
         // setup23 + 2*handler3 + STOP2 + BRA1 = 32 instructions; the second
         // frame saves the STOP successor at $182. The master's first latch
         // remains one, independently of the later interrupt.
-        assert_eq!(m.bus().read32(SOUND_RAM + 0x804), Ok(2));
-        assert_eq!(m.sound_state().exceptions, 2);
+        assert_eq!(second, Some((2, 0x182, 32)));
+        // The up-counter keeps running through FFh, so every further 256
+        // samples interrupt STOP again; the guest counts each handler.
+        let exceptions = m.sound_state().exceptions;
+        assert!(exceptions > 2);
+        assert_eq!(
+            m.bus().read32(SOUND_RAM + 0x804),
+            Ok(u32::try_from(exceptions).unwrap())
+        );
         assert_eq!(m.bus().read32(SOUND_RAM + 0x7FEFC), Ok(0x182));
-        assert_eq!(m.sound_state().instructions, 32);
-        assert_eq!(m.bus().read16(SCSP + 0x420).unwrap() & 0x40, 0);
+        // setup23, then per interrupt a STOP, handler3 and (after the first) BRA.
+        assert_eq!(m.sound_state().instructions, 22 + 5 * exceptions);
         let audio = m.drain_audio(8192);
         let nonzero = audio.iter().position(|v| *v != 0).unwrap();
         assert_eq!(

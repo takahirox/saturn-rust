@@ -26,10 +26,10 @@ add #2,r1
 load 0x1,r0
 mov.w r0,@r1
 add #2,r1
-load 0x0,r0
+load 0xffdf,r0
 mov.w r0,@r1
 add #2,r1
-load 0x0,r0
+load 0x7ff,r0
 mov.w r0,@r1
 add #2,r1
 load 0x0,r0
@@ -56,6 +56,20 @@ bf slots
 load 0x25b003e0,r1
 load 0x1820,r0
 mov.w r0,@r1
+load 0x25b00408,r1
+mov #0,r0
+mov.w r0,@r1
+load 0x5f,r2
+load 0x7f,r3
+eg_wait:
+mov.w @r1,r0
+and r3,r0
+cmp/eq r2,r0
+bf eg_wait
+load 0x2000,r3
+settle:
+dt r3
+bf settle
 load 0x2600ee00,r8
 load 0x25b00412,r1
 load 0x1000,r0

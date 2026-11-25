@@ -33,18 +33,34 @@ fn executing_68k_envelopes_decay_sustain_and_release_have_computed_stereo_and_mu
     assert_eq!(m.bus().read16(0x05B000C8).unwrap(), 0x06DF);
     assert_eq!(m.bus().read16(0x05B000CA).unwrap(), 0x3C9F);
     let samples = audible(&audio);
-    // Independently calculate the documented functional rate policy, with a
-    // floating-point attenuation oracle instead of the engine's integer exp2.
-    // D1R27, KRS disabled: 3/4 EG units/sample; 64 units halve the amplitude.
-    for (i, s) in samples[..100].iter().enumerate() {
-        let expected = (1024.0 * 2f64.powf(-(i as f64 * 0.75) / 64.0)).floor();
+    // Recover the EG attenuation from the integer output with a floating-point
+    // oracle (64 units halve the amplitude) instead of the engine's exp2.
+    let level = |s: [i16; 2]| -64.0 * (f64::from(s[1]) / 1024.0).log2();
+    let near = |i: usize, expected: f64| {
+        let actual = level(samples[i]);
         assert!(
-            (f64::from(s[1]) - expected).abs() <= 1.0,
-            "sample {i}: {s:?}"
+            (actual - expected).abs() <= 3.0,
+            "sample {i}: {:?} level {actual:.1}, expected {expected:.1}",
+            samples[i]
         );
+    };
+    // Key-on starts at 280h. AR31 with KRS disabled is not instant: it clocks
+    // every other sample, each time halving the remaining attenuation.
+    for k in 0..=8 {
+        for i in [2 * k, 2 * k + 1] {
+            near(i, 640.0 / 2f64.powi(k as i32 + 1));
+        }
     }
-    assert!(samples.iter().any(|s| s[1] == 255)); // DL4, D2R0 sustain
-    assert!(samples.windows(100).any(|s| s.iter().all(|f| f[1] == 255)));
+    assert_eq!(samples[16][1], 1024);
+    // D1R27 also clocks every other sample, alternately adding two and four
+    // units (1.5 units/sample) until DL4 (128 units).
+    for j in 1..=40 {
+        for i in [16 + 2 * j, 17 + 2 * j] {
+            near(i, f64::from(3 * j as u32 - j as u32 % 2));
+        }
+    }
+    assert!(samples.iter().any(|s| s[1] == 256)); // DL4, D2R0 sustain
+    assert!(samples.windows(100).any(|s| s.iter().all(|f| f[1] == 256)));
     assert!(samples[samples.len() - 100..].iter().all(|s| s[1] == 0));
     assert!(samples.iter().any(|s| s[0] > 0)); // independent executing FM voice
     assert_eq!(execute(&mut m, &rom), audio);
@@ -52,16 +68,21 @@ fn executing_68k_envelopes_decay_sustain_and_release_have_computed_stereo_and_mu
     let mut hold = rom.clone();
     change(&mut hold, 0x1000CA, 0x3C9F, 0x3C80); // RR0 holds key-off level
     let held = execute(&mut m, &hold);
-    assert!(held[held.len() - 100..].iter().all(|s| s[1] == 255));
+    assert!(held[held.len() - 100..].iter().all(|s| s[1] == 256));
     let mut decay2 = rom.clone();
     change(&mut decay2, 0x1000C8, 0x06DF, 0xDEDF); // D2R27 continues after DL
     assert_ne!(execute(&mut m, &decay2), audio);
     let mut zero_attack = rom.clone();
     change(&mut zero_attack, 0x1000C8, 0x06DF, 0x06C0);
-    assert!(execute(&mut m, &zero_attack).iter().all(|s| s[1] == 0));
+    // AR0 holds the key-on level 280h: ten halvings of 1024.
+    let zero = execute(&mut m, &zero_attack);
+    assert!(zero.iter().all(|s| s[1] <= 1) && zero.iter().any(|s| s[1] == 1));
     let mut linked = rom.clone();
     change(&mut linked, 0x1000CA, 0x3C9F, 0x7C9F); // LSA0 forces early decay
-    assert!(execute(&mut m, &linked).iter().all(|s| s[1] == 0));
+    // The attack ends at the first loop-start crossing, after one attack
+    // clock from 280h (320 units: 1/32 amplitude), then decays.
+    let linked = execute(&mut m, &linked);
+    assert!(linked.iter().all(|s| s[1] <= 32) && linked.iter().any(|s| s[1] > 0));
 }
 fn change(rom: &mut [u8], address: u32, old: u16, value: u16) {
     // Replace only an original MOVE.W immediate operand; actual 68k code must

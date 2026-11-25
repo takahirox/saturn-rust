@@ -34,7 +34,11 @@ fn sound_guest_polls_dma_and_paced_midi_then_acknowledges_three_interrupt_levels
         assert_eq!(m.bus().read16(SOUND_RAM + 0x814).unwrap() & 0x210, 0x210);
         assert_eq!(m.bus().read32(SOUND_RAM + 0x818).unwrap(), 1);
         assert_eq!(m.bus().read32(SOUND_RAM + 0x81C).unwrap(), 1);
-        assert_eq!(m.sound_state().exceptions, 5);
+        // TRAP, the bus fault, MIDI and DMA once each; the free-running
+        // timer A interrupts every 256 samples and its handler counts each.
+        let timers = m.bus().read32(SOUND_RAM + 0x804).unwrap();
+        assert!(timers >= 1);
+        assert_eq!(m.sound_state().exceptions, 4 + u64::from(timers));
         for (offset, value) in [
             (0x830, 0x99),
             (0x834, 1),

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Original MIT SH-2/MC68EC000 SCSP slot-monitor diagnostic; LICENSE.
 
-ST-077 §4.1 fig.4.3 and §4.2 p.89: MSLC[15:11], CA[10:7],
-4K samples per CA unit. The sound CPU programs all 32 actual PCM voices,
+ST-077 §4.1 fig.4.3 and §4.2 p.89: MSLC[15:11], CA[10:7], SGC[6:5] and
+EG[4:0], 4K samples per CA unit. The voices leave AR=0, so each attack holds
+the key-on level 280h (SGC0, EG field 14h). The sound CPU programs all 32 actual PCM voices,
 waits on the sample interrupt flag, and records word/byte reads. No firmware,
 SDK objects, emulator core, host callbacks or sampled golden results.
 """
@@ -76,8 +77,8 @@ def build():
             text.append(f'{at:04X} ' + ' '.join(f'{w:04X}' for w in struct.unpack('>8H', rom[at:at + 16])))
     vectors = []
     for slot in range(32):
-        ca = (slot % 15 + 1) << 7
-        vectors += [(ca << 16) | ca, ca << 16]
+        monitor = (slot % 15 + 1) << 7 | 0x280 >> 5
+        vectors += [(monitor << 16) | monitor, monitor << 16]
     return {'scsp-monitor.hex': '\n'.join(text) + '\n',
             'scsp-monitor.tsv': ''.join(f'{v:08X}\n' for v in vectors)}, hashlib.sha256(rom).hexdigest()
 

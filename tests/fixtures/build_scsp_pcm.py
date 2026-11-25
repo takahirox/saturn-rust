@@ -68,10 +68,18 @@ def build_arbitration():
     host += ('load 0x25a01000,r1\nload 0x1230,r0\nmov #64,r2\nfill:\n'
              'mov.w r0,@r1\nadd #2,r1\nadd #8,r0\ndt r2\nbf fill\n')
     host += 'load 0x25b00000,r1\nmov #32,r2\nslots:\n'
-    for value in [0x820,0x1000,0,1,0,0,0,0,0,0,0,0]:
+    # AR31 + KS1 attacks instantly; D1R31 to DL31, then D2R31 reaches EG3FF
+    # while the voices remain keyed on.
+    for value in [0x820,0x1000,0,1,0xffdf,0x7ff,0,0,0,0,0,0]:
         host += f'load {value:#x},r0\nmov.w r0,@r1\nadd #2,r1\n'
     host += 'add #8,r1\ndt r2\nbf slots\n'
-    host += word(0x25b003e0,0x1820)  # KEYONEX for all32; AR0, EG3FF
+    host += word(0x25b003e0,0x1820)  # KEYONEX for all32
+    # Slot monitor MSLC0: wait for decay2 (SGC2) at EG field 31, then let
+    # D2R31 finish the last 31 units to 3FF.
+    host += ('load 0x25b00408,r1\nmov #0,r0\nmov.w r0,@r1\n'
+             'load 0x5f,r2\nload 0x7f,r3\neg_wait:\nmov.w @r1,r0\n'
+             'and r3,r0\ncmp/eq r2,r0\nbf eg_wait\n'
+             'load 0x2000,r3\nsettle:\ndt r3\nbf settle\n')
     host += 'load 0x2600ee00,r8\n'
     for mode in range(3):
         if mode == 1:
