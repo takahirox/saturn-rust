@@ -75,6 +75,7 @@
     "scspCpuMemory",
     "scspMvol",
     "largeMedia",
+    "crtDisplay",
     "hardwareBoundaries"
   ]
 }

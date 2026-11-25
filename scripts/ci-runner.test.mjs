@@ -146,7 +146,7 @@ test("shared versus fresh contexts retain complete guest clock, DMAC, Canvas and
 test("complete-suite inventory covers all original groups and missing groups fail", async () => {
   const source = await readFile(new URL("./browser-smoke.mjs", import.meta.url), "utf8");
   const registered = [...source.matchAll(/(?:timings\.(?:group|measure)|setup)\("([^"]+)"/g)].map(m => m[1]);
-  assert.equal(groups.length, 74);
+  assert.equal(groups.length, 75);
   assert(groups.includes("sh2Store"));
   assert(groups.includes("sh2Fetch"));
   assert(groups.includes("cdRw"));
@@ -155,15 +155,16 @@ test("complete-suite inventory covers all original groups and missing groups fai
   assert(groups.includes("cdRuntime"));
   assert(groups.includes("cdStream"));
   assert(groups.includes("chd"));
+  assert(groups.includes("crtDisplay"));
   assert.deepEqual([...new Set(registered)], groups);
   assert.deepEqual(scenarioGroups, [...source.matchAll(/timings.measure\("([^"]+)"/g)].map(m => m[1]));
   assert.deepEqual(shards.shared, [...groups.filter(g => !scenarioGroups.includes(g)), ...sharedScenarios]);
   const scenarioRegistry = source.match(/const scenarios = \{ ([^}]+) \}/)[1].split(/,\s+/);
-  assert.deepEqual([...scenarioRegistry, "largeMedia"].sort(), [...scenarioGroups].sort());
-  assert.equal((source.match(/if \(includeScenarios\) await timings.measure/g) ?? []).length, 44);
+  assert.deepEqual([...scenarioRegistry, "largeMedia", "crtDisplay"].sort(), [...scenarioGroups].sort());
+  assert.equal((source.match(/if \(includeScenarios\) await timings.measure/g) ?? []).length, 45);
   assert.deepEqual(selection([]).groups, groups);
   assert.equal(shards.shared.length, 32);
-  assert.equal(shards.scenarios.length, 42);
+  assert.equal(shards.scenarios.length, 43);
   assert(shards.scenarios.includes("hardwareBoundaries"));
   assert(!shards.shared.includes("hardwareBoundaries"));
   assert.deepEqual(sharedScenarios, ["chd", "cdStream"]);
@@ -307,7 +308,7 @@ test("aggregate rejects missing/duplicate groups or shards, failed assertions, s
       r[1].groups.push(...r[0].groups.splice(at, 1));
     }
   });
-  for (const name of ["chd", "cdStream", "scspMvol", "largeMedia"]) {
+  for (const name of ["chd", "cdStream", "scspMvol", "largeMedia", "crtDisplay"]) {
     const shard = shards.shared.includes(name) ? 0 : 1;
     bad(r => { r[shard].groups = r[shard].groups.filter(group => group.name !== name); });
     bad(r => { r[shard].groups.find(group => group.name === name).status = "failed"; });

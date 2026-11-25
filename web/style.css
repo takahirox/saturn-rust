@@ -18,6 +18,7 @@ main { max-width: 1440px; margin: auto; padding: 2rem; }
 .player-shell { padding: 1rem; border: 1px solid var(--line); border-radius: .65rem; background: #141d2a; }
 .display-surround { position: relative; background: #070c13; }
 #screen { display: block; width: 100%; height: auto; aspect-ratio: 4 / 3; image-rendering: pixelated; background: #030609; }
+#crt-screen { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .empty-state { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; color: var(--muted); text-align: center; }
 .empty-state p { color: #e0e8f4; font-size: 1.15rem; margin: 1.25rem 0 .25rem; }
 .empty-state small { font-size: .8rem; }
@@ -25,6 +26,9 @@ main { max-width: 1440px; margin: auto; padding: 2rem; }
 .disc-motif::after { content: ""; width: 14px; height: 14px; border: 1px solid #3b4d69; border-radius: 50%; }
 .player-toolbar, .actions, .advanced-nav { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
 .player-toolbar { margin-top: .9rem; }
+.display-filter { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
+.display-filter label { margin: 0; }
+.display-filter select { width: auto; }
 button, input, select { font: inherit; font-size: .85rem; border: 1px solid #4b5c75; border-radius: .35rem; background: #202d40; color: inherit; padding: .65rem .75rem; max-width: 100%; min-width: 0; min-height: 44px; }
 button { cursor: pointer; font-weight: 600; }
 button:hover { background: #30415c; }
@@ -35,7 +39,7 @@ button.primary:hover { background: #c6ddff; }
 p { line-height: 1.55; overflow-wrap: anywhere; }
 .input-hint { color: var(--muted); font-size: .75rem; }
 #fullscreen-status, .player-feedback { font-size: .8rem; }
-#fullscreen-status:empty, #error:empty { display: none; }
+#fullscreen-status:empty, #display-filter-status:empty, #error:empty { display: none; }
 #player-status { color: var(--accent); }
 #error { color: #ffb9ac; white-space: pre-wrap; }
 #audio-status, #recovery { color: var(--muted); }
