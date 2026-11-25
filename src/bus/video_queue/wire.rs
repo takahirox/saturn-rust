@@ -91,6 +91,10 @@ pub(super) fn encode(journal: &mut Journal) -> Vec<u8> {
                 out.push(u8::from(pal));
             }
             Command::Flush => out.push(9),
+            Command::LineRendering(enabled) => {
+                out.push(10);
+                out.push(u8::from(enabled));
+            }
         }
     }
     assert!(
@@ -232,6 +236,7 @@ pub(super) fn replay(renderer: &mut Renderer, bytes: &[u8]) -> Result<(), String
                 pal: input.boolean()?,
             },
             9 => Command::Flush,
+            10 => Command::LineRendering(input.boolean()?),
             _ => return Err("unknown video command".into()),
         };
         if commands.len() >= 262144 {

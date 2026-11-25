@@ -415,6 +415,12 @@ impl Vdp2 {
             ..Self::default()
         }
     }
+    /// Relaxed playback renders each line from live memory at its scanout
+    /// instead of acquiring operands at every VRAM access slot.
+    pub(crate) fn set_clocked(&mut self, clocked: bool) {
+        self.clocked = clocked;
+        self.display_fetch.reset();
+    }
 
     fn prepare_display_line(&mut self, field: u64, line: usize) {
         let fetch = &mut self.display_fetch;

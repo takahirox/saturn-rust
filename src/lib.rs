@@ -8,6 +8,7 @@ mod cd_rw;
 pub mod cpu;
 pub mod devices;
 pub mod disc;
+mod fast;
 mod hle;
 #[cfg(test)]
 mod load_scheduler_tests;
@@ -762,6 +763,7 @@ pub struct Machine {
     slave_poll_retry: u64,
     cpu_reset_vectors: [Option<onchip::ResetRequest>; 2],
     fault: Option<MachineError>,
+    fast: fast::Fast,
 }
 
 impl Machine {
@@ -911,6 +913,8 @@ impl Machine {
         self.cpu = Cpu::default();
         self.slave = Cpu::default();
         self.bus.reset_volatile();
+        self.bus.set_fast_video(self.fast.enabled);
+        self.fast.reset();
     }
 
     /// Restart the retained immutable medium without copying its stored bytes.
@@ -1062,6 +1066,15 @@ impl Machine {
         self.advance_frame_mode::<false>()
     }
     fn advance_frame_mode<const FIELD_BOUNDARY: bool>(&mut self) -> Result<(), MachineError> {
+        if let Some(error) = &self.fault {
+            return Err(error.clone());
+        }
+        if self.fast_ready() {
+            let target = self.frames() + 1;
+            return self
+                .advance_frame_fast(target)
+                .inspect_err(|error| self.fault = Some(error.clone()));
+        }
         self.advance_frame_bounded::<FIELD_BOUNDARY, false>(self.frames() + 1, 0)
             .map(|_| ())
     }
@@ -1905,6 +1918,7 @@ impl Machine {
                     None
                 };
                 self.bus.system_reset();
+                self.bus.set_fast_video(self.fast.enabled);
                 self.cpu = Cpu::default();
                 self.slave = Cpu::default();
                 self.nmi_pending = false;

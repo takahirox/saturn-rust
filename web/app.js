@@ -368,6 +368,8 @@ try {
       if (emulator?.state) void act(async () => { throw error; });
     } });
   await emulator.ready;
+  // Playback uses relaxed timing; `?timing=exact` keeps the cycle scheduler.
+  if (new URLSearchParams(location.search).get("timing") === "exact") await emulator.set_fast_mode(false);
   $("backup-import").addEventListener("change", async () => {
     const generation = ++backupGeneration;
     const file = $("backup-import").files[0];

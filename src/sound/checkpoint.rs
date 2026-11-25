@@ -71,6 +71,7 @@ impl Sound {
                 reset_output_start: self.reset_output_start,
                 reset_output_end: self.reset_output_end,
                 transactions: self.transactions.clone(),
+                stop_at_boundary: false,
             }),
             undo: RamUndo::default(),
             output_len: self.scsp.output.len(),

@@ -1371,6 +1371,35 @@ impl Bus {
             completes: self.main_clocks.wrapping_add(u64::from(remaining)),
         });
     }
+    /// No CPU-owned bus work remains, so the relaxed scheduler can issue
+    /// CPU accesses functionally. Device DMA and refresh continue normally.
+    pub(crate) fn fast_bus_idle(&self) -> bool {
+        let t = &self.transactions;
+        let device = |a: &Active| {
+            matches!(
+                a.owner,
+                Owner::Refresh
+                    | Owner::Scu
+                    | Owner::Dmac(_)
+                    | Owner::WriteBuffer(_, true)
+                    | Owner::WriteAccept(_, true)
+            )
+        };
+        t.active.as_ref().is_none_or(device)
+            && t.internal.iter().flatten().all(device)
+            && t.writes.iter().all(|w| w.as_ref().is_none_or(|w| w.dmac))
+            && t.cpu_group.is_none()
+            && t.lock.is_none()
+            && t.reset_owner.is_none()
+            && t.journals[..2].iter().all(|j| {
+                let j = j.borrow();
+                j.waiting.is_none()
+                    && j.pipeline_wait.is_none()
+                    && j.pending_write.is_none()
+                    && j.vector_waiting.is_none()
+                    && j.operations.is_empty()
+            })
+    }
     pub(super) fn cached_bus_compatible(&self) -> bool {
         self.cached_bus_compatible_with_private_slave::<false>()
     }

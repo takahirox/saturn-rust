@@ -109,6 +109,8 @@ try {
   page.on("response", (response) => responses.set(new URL(response.url()).pathname, response));
   await page.goto(address + prefix);
   await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
+  // The normal player keeps real-time speed with relaxed playback timing.
+  assert.equal(await page.evaluate(async () => (await import("./app.js")).emulator.fast_mode()), true);
   await timings.instrument(page);
   for (const [asset, mime] of [
     ["", "text/html"], ["style.css", "text/css"], ["app.js", "javascript"],
@@ -170,8 +172,11 @@ try {
           const fresh = await isolated.newPage();
           const errors = [];
           fresh.on("pageerror", error => errors.push(error.message));
-          await fresh.goto(address + prefix);
+          // Hardware scenarios assert cycle-level results; select the exact
+          // scheduler instead of the player's relaxed playback timing.
+          await fresh.goto(address + prefix + "?timing=exact");
           await fresh.waitForFunction(() => document.getElementById("status").textContent === "Ready");
+          assert.equal(await fresh.evaluate(async () => (await import("./app.js")).emulator.fast_mode()), false);
           await timings.instrument(fresh);
           await fresh.locator("#view-debug").click();
           await fresh.locator("#settings > summary").click();
