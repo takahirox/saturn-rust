@@ -268,6 +268,7 @@ async function startPlaying() {
   queuedAudio = [];
   audio.setPaused(true);
   screen.focus({ preventScroll: true });
+  screen.scrollIntoView({ block: "nearest", inline: "nearest" });
   await emulator.play();
 }
 

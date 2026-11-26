@@ -354,7 +354,7 @@ export async function playUi(browser, url) {
       await checkGuest();
     }
     assert.equal(requests.length, beforeCaseRequests, "Local CUE resolution must make no network requests");
-    await playerLayouts(browser, page, url, iso);
+    await playerLayouts(browser, page, url);
     await playerAudio(browser, url);
     await playerAudio(browser, url, "worklet");
     await framePacing(browser, url);
@@ -682,25 +682,34 @@ async function framePacing(browser, url) {
   } finally { await context.close(); }
 }
 
-async function playerLayouts(browser, desktop, url, iso) {
-  const touch = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 3 });
+async function playerLayouts(browser, desktop, url) {
+  const touch = await browser.newContext({ viewport: { width: 320, height: 568 }, hasTouch: true, isMobile: true, deviceScaleFactor: 3 });
   try {
     const mobile = await touch.newPage();
     await mobile.goto(url);
     await mobile.waitForFunction(() => !document.getElementById("controls").disabled);
-    const longName = "long".repeat(59) + ".iso";
+    const longName = "long".repeat(56) + "-star-collector.iso";
     const [chooser] = await Promise.all([
       mobile.waitForEvent("filechooser"),
       mobile.getByRole("button", { name: "Insert disc" }).tap(),
     ]);
     assert(chooser.isMultiple());
-    await chooser.setFiles({ name: longName, mimeType: "application/octet-stream", buffer: iso });
+    assert(await mobile.evaluate(() => scrollY > 0), "Tapping Insert disc scrolls down to the media slot");
+    await chooser.setFiles({ name: longName, mimeType: "application/octet-stream", buffer: await readFile("web/star-collector.iso") });
     await mobile.waitForFunction(() => !document.getElementById("play").disabled);
     assert.equal(await mobile.locator("#disc-selection").textContent(), longName);
     assert(await mobile.getByRole("button", { name: "Change disc" }).isEnabled());
     const play = mobile.locator("#play"), help = mobile.locator("#show-help");
     await play.tap();
     await mobile.waitForFunction(() => document.getElementById("empty-state").hidden);
+    const playingDisplay = await mobile.evaluate(() => {
+      const screen = document.getElementById("screen");
+      const bounds = screen.getBoundingClientRect();
+      return { ...bounds.toJSON(), hit: document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2) === screen,
+        focused: document.activeElement === screen, viewportHeight: innerHeight };
+    });
+    assert(playingDisplay.focused && playingDisplay.hit && playingDisplay.top >= 0 && playingDisplay.bottom <= playingDisplay.viewportHeight,
+      `Play brings the running display into view after using the disc picker: ${JSON.stringify(playingDisplay)}`);
     await help.focus();
     await mobile.keyboard.press("Enter");
     const dialog = mobile.getByRole("dialog", { name: "Help" });
@@ -769,6 +778,7 @@ async function playerLayouts(browser, desktop, url, iso) {
         for (const other of result.actions.slice(i + 1)) assert(disjoint(box, other), "Player toolbar and media actions cannot overlap");
       }
       if (coarse) {
+        assert(picture.hit && picture.top >= 0 && picture.bottom <= height, JSON.stringify(picture));
         assert.equal(controls.length, 13);
         for (const [i, box] of controls.entries()) {
           assert(box.width >= 44 && box.height >= 44 && safeWidth(box) && box.top >= 0 && box.bottom <= height, JSON.stringify(box));
@@ -776,7 +786,6 @@ async function playerLayouts(browser, desktop, url, iso) {
           for (const other of controls.slice(i + 1)) assert(disjoint(box, other), "Touch buttons cannot overlap");
         }
         if (width > height) {
-          assert(picture.hit && picture.top >= 0 && picture.bottom <= height, JSON.stringify(picture));
           assert(controls.find(b => b.mask === 2048).right <= picture.left);
           assert(controls.find(b => b.mask === 4096).left >= picture.right);
         } else assert(controls.every(b => b.top >= picture.bottom));
@@ -832,12 +841,18 @@ async function playerLayouts(browser, desktop, url, iso) {
     await mobile.setViewportSize({ width: 320, height: 568 });
     const cdp = await touch.newCDPSession(mobile);
     await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: { left: 30, right: 30 } });
-    await mobile.evaluate(() => scrollTo(0, 0));
+    assert(await mobile.evaluate(() => {
+      const header = document.querySelector(".site-header");
+      header.style.font = "22px/1.45 monospace";
+      scrollTo(0, 0);
+      return header.querySelector("button").getBoundingClientRect().top < header.querySelector("a").getBoundingClientRect().top;
+    }), "Wide header text wraps the navigation within the side insets");
     await check(mobile, 320, 568, true, false, 30);
     await fullscreenCheck(mobile, 320, 568, true, undefined, 30);
     assert.deepEqual(await machine(), paused);
     await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: {} });
     await cdp.detach();
+    await mobile.evaluate(() => document.querySelector(".site-header").style.removeProperty("font"));
     await mobile.locator("#bios").setInputFiles({ name: "rejected".repeat(26) + ".bin", mimeType: "application/octet-stream", buffer: Buffer.alloc(1) });
     assert.match(await mobile.getByRole("alert").textContent(), /raw 512 KiB BIOS.*received 1 bytes/);
     assert.equal(await mobile.locator("#bios-state").textContent(), "Needs attention");

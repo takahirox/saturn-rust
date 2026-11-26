@@ -106,10 +106,10 @@ button.primary:hover:not(:disabled) { background: #24407d; }
 .display-filter label { color: var(--muted); font-size: .85rem; }
 #volume { width: clamp(80px, 12vw, 116px); margin: 0; accent-color: var(--accent); }
 #volume-value { min-width: 3.1ch; text-align: end; font-size: .8rem; font-variant-numeric: tabular-nums; color: var(--muted); }
-.player-feedback, #fullscreen-status { color: var(--muted); font-size: .86rem; }
-.player-feedback p, #fullscreen-status { margin: 6px 0; }
+.player-feedback, .display-status { color: var(--muted); font-size: .86rem; }
+.player-feedback p, .display-status { margin: 6px 0; }
 .player-feedback p:empty { margin: 0; }
-#fullscreen-status:empty { position: absolute; margin: 0; }
+.display-status:empty { position: absolute; margin: 0; }
 #error { color: #98251d; white-space: pre-wrap; }
 
 .media-panel, .tools, .panel { border: 1px solid var(--line); border-radius: 12px; background: #fff; }
@@ -201,7 +201,8 @@ dialog p { margin: 5px 0 14px; }
 .player-shell:fullscreen .display-well { container-type: size; padding: 0; }
 .player-shell:fullscreen .display-surround { max-width: min(100cqw, calc(100cqh * (var(--display-ratio)))); }
 .player-shell:fullscreen .player-toolbar { flex: none; justify-content: center; gap: 6px; margin-top: 0; }
-.player-shell:fullscreen #volume-value, .player-shell:fullscreen #fullscreen-status { color: #c4cad6; }
+.player-shell:fullscreen #volume-value, .player-shell:fullscreen .display-status { color: #c4cad6; }
+.player-shell:fullscreen .display-status { flex: none; margin: 0; }
 .player-shell:fullscreen #fullscreen { display: none; }
 .player-shell:fullscreen #exit-fullscreen { display: block; min-width: 44px; }
 
@@ -221,10 +222,20 @@ dialog p { margin: 5px 0 14px; }
     grid-template-rows: minmax(90px, 1fr) auto auto;
   }
 
-  /* 132px D-pad + 136px face buttons + 6px gap. Below that width,
-     stagger the face buttons below the D-pad's two middle-row targets. */
+  /* Below the 274px needed for side-by-side clusters, stagger the face
+     buttons and put Start beside L to save a row. */
   @container player (224px <= width < 274px) {
+    .player-stage, .player-shell:fullscreen .player-stage {
+      grid-template-areas: "picture picture" "left right";
+    }
+    .player-shell:fullscreen .player-stage { grid-template-rows: minmax(90px, 1fr) auto; }
     .face-buttons { margin-block-start: 88px; }
+    .touch-start {
+      grid-area: left;
+      place-self: start;
+      width: 70px;
+      margin-inline-start: 68px;
+    }
   }
   @container player (width < 224px) {
     .player-stage, .player-shell:fullscreen .player-stage {
