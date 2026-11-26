@@ -691,6 +691,10 @@ async function playerLayouts(browser, desktop, url) {
     await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: topInset } });
     await mobile.goto(url);
     await mobile.waitForFunction(() => !document.getElementById("controls").disabled);
+    const cartridge = mobile.getByRole("complementary", { name: "Media" }).getByRole("combobox", { name: "Cartridge" });
+    await cartridge.tap();
+    assert(await cartridge.evaluate(select => select === document.activeElement));
+    await mobile.keyboard.press("Escape");
     const longName = "long".repeat(56) + "-star-collector.iso";
     const [chooser] = await Promise.all([
       mobile.waitForEvent("filechooser"),
@@ -751,7 +755,7 @@ async function playerLayouts(browser, desktop, url) {
           exit: target($("exit-fullscreen")), screenNative: [$("screen").width, $("screen").height],
           scrollable: getComputedStyle(document.body).touchAction === "auto",
           fitsFullscreen: !fullscreen || ($("player-shell").scrollHeight <= innerHeight && $("player-shell").scrollWidth <= innerWidth),
-          actions: [...document.querySelectorAll(".player-toolbar button, .player-toolbar select, #volume, .media-slot button")]
+          actions: [...document.querySelectorAll(".player-toolbar button, .player-toolbar select, #volume, .media-slot button, .media-slot select")]
             .filter(node => (!fullscreen || !node.closest(".media-slot")) && node.getClientRects().length)
             .map(target),
         };
