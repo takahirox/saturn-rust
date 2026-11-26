@@ -21,6 +21,16 @@ async function useHostClock(context, url, now) {
   }));
 }
 
+function backupIncrementGuest() {
+  const rom = Buffer.alloc(524288);
+  rom.writeUInt32BE(0x200, 0); // Original reset-vector guest.
+  rom.writeUInt32BE(0x060FF000, 4);
+  // Load the backup address, read a byte, increment it, write it back and loop.
+  [0xD107, 0x6010, 0x7001, 0x2100, 0xAFFE, 0x0009].forEach((word, i) => rom.writeUInt16BE(word, 0x200 + i * 2));
+  rom.writeUInt32BE(0x20180001, 0x220);
+  return rom;
+}
+
 async function openRecovery(page, warning) {
   assert.equal(await page.locator("#settings").evaluate(details => details.open), false);
   assert(await page.locator("#save-warning").isVisible());
@@ -212,8 +222,7 @@ async function pausedClockReload(browser, url) {
       return [...await emulator.export_smpc_battery()];
     });
     const reload = async () => { await page.reload(); await ready(page); };
-    await reload();
-    assert.deepEqual(await battery(), snapshot, "The paused session started from the committed clock");
+    assert.deepEqual(await battery(), snapshot, "The session committed its clock before pausing");
     const worker = page.workers().find(worker => worker.url() === url + "playback-worker.js");
     assert(worker);
     now += 20000;
@@ -226,6 +235,53 @@ async function pausedClockReload(browser, url) {
     await reload();
     snapshot[6] = 0x13;
     assert.deepEqual(await battery(), snapshot, "Time after the acknowledged flush still advances the clock on restore");
+  } finally { await context.close(); }
+}
+
+async function passiveTabPreservesGuestSave(browser, url) {
+  const context = await browser.newContext();
+  try {
+    let now = 100000;
+    await useHostClock(context, url, () => now);
+    const writer = await context.newPage();
+    await writer.goto(url);
+    await ready(writer);
+    await writer.locator("#bios").setInputFiles(filename("backup-increment-guest.bin", backupIncrementGuest()));
+    await writer.waitForFunction(() => !document.getElementById("play").disabled);
+    const runGuest = () => writer.evaluate(async () => {
+      const { emulator } = await import("./app.js");
+      await emulator.run_steps(64);
+      await emulator.pause();
+    });
+    const image = Buffer.alloc(32768);
+    image[0] = 1;
+    await runGuest();
+    await status(writer, "Local storage is up to date.");
+    assert.equal((await digests(writer))[0], checksum(image));
+    await writer.locator("#restart").click();
+    await writer.waitForFunction(() => !document.getElementById("play").disabled);
+
+    now += 10000;
+    const passive = await context.newPage();
+    await passive.goto(url);
+    await ready(passive);
+    await passive.evaluate(() => {
+      window.advancedToggle = new Promise(resolve => document.getElementById("settings")
+        .addEventListener("toggle", () => resolve(), { once: true }));
+    });
+    await settings(passive).click();
+    await passive.evaluate(() => window.advancedToggle);
+    await standby(passive);
+    assert.equal((await digests(passive))[0], checksum(image));
+
+    await runGuest();
+    image[0] = 2;
+    assert.equal((await digests(writer))[0], checksum(image), "The original guest updated internal backup RAM");
+    assert.match(await text(writer, "save-storage-status"), /^Local storage is up to date\./,
+      "Opening Advanced in a passive tab must leave the guest writer able to commit");
+    await writer.reload();
+    await ready(writer);
+    assert.equal((await digests(writer))[0], checksum(image), "Reload restored the acknowledged guest write");
   } finally { await context.close(); }
 }
 
@@ -263,13 +319,7 @@ async function retryAfterGuestRead(browser, url) {
     await status(page, "Local storage is up to date.");
 
     const worker = await denyStorageOnStartup(page, url);
-    const rom = Buffer.alloc(524288);
-    rom.writeUInt32BE(0x200, 0); // Original reset-vector guest.
-    rom.writeUInt32BE(0x060FF000, 4);
-    // Load the backup address, read a byte, increment it, write it back and loop.
-    [0xD107, 0x6010, 0x7001, 0x2100, 0xAFFE, 0x0009].forEach((word, i) => rom.writeUInt16BE(word, 0x200 + i * 2));
-    rom.writeUInt32BE(0x20180001, 0x220);
-    await page.locator("#bios").setInputFiles(filename("backup-retry-guest.bin", rom));
+    await page.locator("#bios").setInputFiles(filename("backup-retry-guest.bin", backupIncrementGuest()));
     await page.waitForFunction(() => !document.getElementById("play").disabled);
     const readInGuest = () => page.evaluate(async () => {
       const { emulator } = await import("./app.js");
@@ -808,6 +858,7 @@ async function storageFailures(browser, url) {
 }
 
 export async function consoleSaves(browser, url) {
+  await passiveTabPreservesGuestSave(browser, url);
   await retryAfterGuestRead(browser, url);
   await importDuringGuestFormat(browser, url);
   await pausedClockReload(browser, url);

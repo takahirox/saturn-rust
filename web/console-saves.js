@@ -102,7 +102,6 @@ export class ConsoleSaves {
     this.now = now;
     this.database = database;
     this.revisions = this.currentRevisions();
-    this.battery = machine.export_smpc_battery();
     this.state = "loading";
     this.report({ state: this.state });
   }
@@ -146,7 +145,9 @@ export class ConsoleSaves {
       this.head = head;
       this.restored = true;
       this.revisions = this.currentRevisions();
-      if (head) this.battery = images[2];
+      // Use the clock after offline advancement as the baseline for local changes.
+      this.battery = this.machine.export_smpc_battery();
+      this.hasCommitted = false;
       this.lastCheckpoint = now;
       this.status(head ? "ready" : "empty");
       return Boolean(head);
@@ -241,9 +242,9 @@ export class ConsoleSaves {
       const checkClock = force || now - this.lastCheckpoint >= RTC_CHECKPOINT_MS;
       if (!replacement && !changed.some(Boolean) && !checkClock) return;
       const battery = replacement?.index === 2 ? replacement.bytes : this.machine.export_smpc_battery();
-      // At a session boundary, checkpoint paused time as well so that only time
-      // after this flush is counted as offline on restore.
-      const reanchor = force && this.head && now > this.head.anchor;
+      // Once this session has committed its own changes, checkpoint paused time
+      // too. A tab that only restored must leave the shared revision untouched.
+      const reanchor = force && this.hasCommitted && now > this.head.anchor;
       if (!replacement && !reanchor && !changed.some(Boolean) && battery.every((byte, i) => byte === this.battery[i])) {
         this.lastCheckpoint = now;
         if (this.error) this.status(this.head ? "ready" : "empty");
@@ -300,6 +301,7 @@ export class ConsoleSaves {
         revisions[index] = this.currentRevisions()[index];
       }
       this.head = head;
+      this.hasCommitted = true;
       this.revisions = revisions;
       this.battery = images[2];
       this.lastCheckpoint = now;
