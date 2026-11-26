@@ -686,6 +686,9 @@ async function playerLayouts(browser, desktop, url) {
   const touch = await browser.newContext({ viewport: { width: 320, height: 568 }, hasTouch: true, isMobile: true, deviceScaleFactor: 3 });
   try {
     const mobile = await touch.newPage();
+    const cdp = await touch.newCDPSession(mobile);
+    const topInset = 44;
+    await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: topInset } });
     await mobile.goto(url);
     await mobile.waitForFunction(() => !document.getElementById("controls").disabled);
     const longName = "long".repeat(56) + "-star-collector.iso";
@@ -708,8 +711,9 @@ async function playerLayouts(browser, desktop, url) {
       return { ...bounds.toJSON(), hit: document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2) === screen,
         focused: document.activeElement === screen, viewportHeight: innerHeight };
     });
-    assert(playingDisplay.focused && playingDisplay.hit && playingDisplay.top >= 0 && playingDisplay.bottom <= playingDisplay.viewportHeight,
-      `Play brings the running display into view after using the disc picker: ${JSON.stringify(playingDisplay)}`);
+    assert(playingDisplay.focused && playingDisplay.hit && playingDisplay.top >= topInset && playingDisplay.bottom <= playingDisplay.viewportHeight,
+      `Play brings the running display into the safe area after using the disc picker: ${JSON.stringify(playingDisplay)}`);
+    await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: {} });
     await help.focus();
     await mobile.keyboard.press("Enter");
     const dialog = mobile.getByRole("dialog", { name: "Help" });
@@ -839,8 +843,21 @@ async function playerLayouts(browser, desktop, url) {
       await fullscreenCheck(mobile, width, height, true, rotation);
       assert.deepEqual(await machine(), paused);
     }
+    await mobile.setViewportSize({ width: 568, height: 320 });
+    const insets = { top: 24, left: 44, right: 44 };
+    await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets });
+    await help.tap();
+    const close = dialog.getByRole("button", { name: "Close help" });
+    for (const target of [dialog, close]) {
+      const bounds = await target.boundingBox();
+      assert(bounds && bounds.x >= insets.left && bounds.x + bounds.width <= 568 - insets.right &&
+        bounds.y >= insets.top && bounds.y + bounds.height <= 320,
+        `Landscape Help stays within the safe area: ${JSON.stringify(bounds)}`);
+    }
+    await close.tap();
+    assert(await dialog.isHidden());
+    assert.deepEqual(await machine(), paused);
     await mobile.setViewportSize({ width: 320, height: 568 });
-    const cdp = await touch.newCDPSession(mobile);
     await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: { left: 30, right: 30 } });
     assert(await mobile.evaluate(() => {
       const header = document.querySelector(".site-header");
