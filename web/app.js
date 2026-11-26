@@ -483,6 +483,15 @@ function saveReplaced(generation) {
   clearDisplay();
 }
 
+async function installCartridge(requestedSlot) {
+  const { slot, cartridgeError, transportError } = await emulator.set_cartridge(requestedSlot);
+  cartridge = slot;
+  if (pendingCartridge === requestedSlot) pendingCartridge = undefined;
+  try { localStorage.setItem(cartridgePreference, String(slot)); } catch { /* Optional preference. */ }
+  if (transportError) throw new Error(`Playback error (${transportError}).`);
+  if (cartridgeError) throw new Error(cartridgeError);
+}
+
 async function reset({ clearMedia = false } = {}) {
   const generation = ++bootGeneration;
   resetting = true;
@@ -508,13 +517,7 @@ async function reset({ clearMedia = false } = {}) {
     try { await emulator.reset_bios(new Uint8Array()); } catch { /* Expected size rejection. */ }
     if (!current()) return;
     // A media selection may supersede the reset that requested the slot.
-    const slot = pendingCartridge;
-    if (slot !== undefined) {
-      await emulator.set_cartridge(slot);
-      cartridge = slot;
-      if (pendingCartridge === slot) pendingCartridge = undefined;
-      try { localStorage.setItem(cartridgePreference, String(slot)); } catch { /* Optional preference. */ }
-    }
+    if (pendingCartridge !== undefined) await installCartridge(pendingCartridge);
     if (!current()) return;
     // Claim the bytes only when this reset is ready to transfer them. A newer
     // BIOS reset can otherwise supersede this operation while retaining the disc.
@@ -583,9 +586,12 @@ try {
   await emulator.ready;
   // Playback uses relaxed timing; `?timing=exact` keeps the cycle scheduler.
   if (new URLSearchParams(location.search).get("timing") === "exact") await emulator.set_fast_mode(false);
-  try { cartridge = Number(localStorage.getItem(cartridgePreference)); } catch { /* Optional preference. */ }
-  if ([1, 2, 3].includes(cartridge)) await emulator.set_cartridge(cartridge);
-  else cartridge = 0;
+  let preferredSlot;
+  try { preferredSlot = Number(localStorage.getItem(cartridgePreference)); } catch { /* Optional preference. */ }
+  if ([1, 2, 3].includes(preferredSlot)) {
+    try { await installCartridge(preferredSlot); }
+    catch (error) { setText("error", String(error)); }
+  }
   $("cartridge").addEventListener("change", async event => {
     const select = event.currentTarget;
     const slot = Number(select.value);

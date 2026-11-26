@@ -99,18 +99,20 @@ function clockSettings(page) {
   });
 }
 
+function injectSoundResetFailure(resetsUntilFailure) {
+  const postMessage = Worker.prototype.postMessage;
+  Worker.prototype.postMessage = function (message, ...args) {
+    if (message.type !== "reset" || --resetsUntilFailure !== 0) return postMessage.call(this, message, ...args);
+    Worker.prototype.postMessage = postMessage;
+    // Reject only the Sound Worker's reset acknowledgement.
+    queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", {
+      data: { type: "error", message: "Test Sound Worker reset failure" },
+    })));
+  };
+}
+
 async function failNextSoundReset(worker) {
-  await worker.evaluate(() => {
-    const postMessage = Worker.prototype.postMessage;
-    Worker.prototype.postMessage = function (message, ...args) {
-      if (message.type !== "reset") return postMessage.call(this, message, ...args);
-      Worker.prototype.postMessage = postMessage;
-      // Reject only the Sound Worker's reset acknowledgement.
-      queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", {
-        data: { type: "error", message: "Test Sound Worker reset failure" },
-      })));
-    };
-  });
+  await worker.evaluate(injectSoundResetFailure, 1);
 }
 
 async function failNextVideoFrame(worker, duringPlayback) {
@@ -174,6 +176,54 @@ async function replacementAfterSoundFailure(browser, url) {
       await load();
       assert.deepEqual(await digests(page), expected);
     }
+  } finally { await context.close(); }
+}
+
+async function cartridgeAfterSoundFailure(browser, url) {
+  const context = await browser.newContext();
+  try {
+    const workerUrl = url + "playback-worker.js";
+    const page = await context.newPage();
+    const cartridge = Buffer.alloc(524288, 0xA5);
+    const selector = page.getByLabel("Virtual cartridge");
+    const soundError = () => page.waitForFunction(() =>
+      document.getElementById("error").textContent.includes("Test Sound Worker reset failure"));
+    const installedSlot = () => page.evaluate(async () => (await import("./app.js")).emulator.cartridge());
+    await page.goto(url);
+    await ready(page);
+    await settings(page).click();
+    await page.locator("#cartridge-backup-import").setInputFiles(filename("power-memory.bin", cartridge));
+    await page.waitForFunction(() => document.getElementById("cartridge-backup-status").textContent.startsWith("Imported"));
+    await status(page, savedStatus);
+    assert.equal(await selector.inputValue(), "0");
+
+    const worker = page.workers().find(worker => worker.url() === workerUrl);
+    assert(worker);
+    // The UI first clears execution with the empty BIOS reset.
+    await worker.evaluate(injectSoundResetFailure, 2);
+    await selector.selectOption("1");
+    await soundError();
+    await standby(page);
+    assert.equal(await installedSlot(), 1);
+    assert.equal(await selector.inputValue(), "1", "The selector reflects the installed cartridge after a Sound reset failure");
+    assert.equal(await page.evaluate(() => localStorage.getItem("saturn-rust-cartridge")), "1");
+    assert.equal(await page.locator("#play").isDisabled(), true);
+
+    const source = await readFile("web/playback-worker.js", "utf8");
+    await context.route(workerUrl, route => route.fulfill({
+      contentType: "text/javascript", body: `(${injectSoundResetFailure})(1);\n${source}`,
+    }));
+    await page.reload();
+    await soundError();
+    assert.equal(await page.locator("#cartridge-backup-export").isEnabled(), true, "Startup keeps Save management enabled");
+    await status(page, savedStatus);
+    await settings(page).click();
+    await standby(page);
+    assert.equal(await selector.inputValue(), "1");
+    assert.equal(await installedSlot(), 1);
+    const [name, exported] = await download(page, "cartridge-backup-export");
+    assert.equal(name, "saturn-power-memory.bin");
+    assert.deepEqual(exported, cartridge, "Startup still restores and exports the saved Power Memory image");
   } finally { await context.close(); }
 }
 
@@ -326,6 +376,70 @@ async function pausedClockReload(browser, url) {
     await reload();
     snapshot[6] = 0x13;
     assert.deepEqual(await battery(), snapshot, "Time after the acknowledged flush still advances the clock on restore");
+  } finally { await context.close(); }
+}
+
+async function clockCheckpointAfterRollback(browser, url) {
+  const context = await browser.newContext();
+  try {
+    const workerUrl = url + "playback-worker.js";
+    const source = await readFile("web/playback-worker.js", "utf8");
+    await context.route(workerUrl, route => route.fulfill({
+      contentType: "text/javascript", body: `
+        self.testHostTime = 100000;
+        self.testElapsed = 0;
+        Date.now = () => self.testHostTime;
+        performance.now = () => self.testElapsed;
+        self.setInterval = poll => { self.testPollSaves = poll; };
+        ${source}`,
+    }));
+    const page = await context.newPage();
+    await page.goto(url);
+    await ready(page);
+    const rom = backupIncrementGuest();
+    rom.writeUInt16BE(0xAFFE, 0x200); // Loop without writing to any battery-backed device.
+    rom.writeUInt16BE(0x0009, 0x202);
+    await page.locator("#bios").setInputFiles(filename("rtc-checkpoint-probe.bin", rom));
+    await page.waitForFunction(() => !document.getElementById("play").disabled);
+    const revision = await page.evaluate(async () => {
+      const { emulator } = await import("./app.js");
+      await emulator.restore_smpc_battery(await emulator.export_smpc_battery(), 999n);
+      await emulator.pause();
+      return emulator.smpc_battery_revision();
+    });
+    const storedClock = async previousToken => {
+      const db = await new Promise((resolve, reject) => {
+        const request = indexedDB.open("saturn-rust-console");
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      try {
+        return await new Promise((resolve, reject) => {
+          const tx = db.transaction("battery");
+          const store = tx.objectStore("battery");
+          const head = store.get("head"), battery = store.get("smpc");
+          tx.oncomplete = () => resolve(head.result.token !== previousToken && { head: head.result, bytes: [...battery.result] });
+          tx.onabort = () => reject(tx.error);
+        });
+      } finally { db.close(); }
+    };
+    const before = await page.evaluate(storedClock);
+    const worker = page.workers().find(worker => worker.url() === workerUrl);
+    assert(worker);
+    await worker.evaluate(() => { self.testHostTime -= 60000; });
+    const clock = await page.evaluate(async () => {
+      const { emulator } = await import("./app.js");
+      // Advance the real guest through the Worker without a pause/flush request.
+      await emulator.client.advance(2, { inspect: false });
+      return { revision: await emulator.smpc_battery_revision(), bytes: [...await emulator.export_smpc_battery()] };
+    });
+    assert.equal(clock.revision, revision, "Only ordinary guest clock progression can trigger the checkpoint");
+    assert.notEqual(clock.bytes[6], before.bytes[6]);
+    await worker.evaluate(() => { self.testElapsed = 30000; self.testPollSaves(); });
+    await waitForGuest(page, storedClock, before.head.token, { timeout: 5000 });
+    const after = await page.evaluate(storedClock);
+    assert.deepEqual(after.bytes, clock.bytes, "Periodic polling committed the new guest clock despite wall-clock rollback");
+    assert.equal(after.head.anchor, before.head.anchor, "The offline anchor never moves backward");
   } finally { await context.close(); }
 }
 
@@ -1153,6 +1267,8 @@ async function storageFailures(browser, url) {
 }
 
 export async function consoleSaves(browser, url) {
+  await cartridgeAfterSoundFailure(browser, url);
+  await clockCheckpointAfterRollback(browser, url);
   await replacementAfterSoundFailure(browser, url);
   await passiveTabPreservesGuestSave(browser, url);
   await cartridgeChangeDuringBiosSelection(browser, url);
