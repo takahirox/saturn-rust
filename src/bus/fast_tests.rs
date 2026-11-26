@@ -8,6 +8,7 @@ const TEXTURE: u32 = VRAM | 0x2000_0000;
 fn relaxed() -> Bus {
     let mut bus = Bus::default();
     bus.set_fast_video(true);
+    bus.set_fast_running(true);
     bus
 }
 
@@ -51,7 +52,10 @@ fn relaxed_cpu_stores_are_posted_and_the_next_external_access_waits() {
 
 #[test]
 fn exact_scheduler_functional_stores_keep_the_serial_charge() {
+    // Relaxed playback may be selected while debugger steps or a fallback
+    // field run the exact scheduler; only a relaxed field posts stores.
     let mut bus = Bus::default();
+    bus.set_fast_video(true);
     bus.set_fast_cpu_time(Processor::Master, 100);
     bus.for_cpu(Processor::Master)
         .write32(TEXTURE, 0x1234_5678)

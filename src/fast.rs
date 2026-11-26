@@ -91,6 +91,20 @@ impl Machine {
         // relaxed field; resume from its CPU readiness.
         let now = self.bus.main_clocks;
         self.fast.time = [self.cpu_ready[0].max(now), self.cpu_ready[1].max(now)];
+        self.bus.set_fast_running(true);
+        let result = self.run_fast_fields(target);
+        self.bus.set_fast_running(false);
+        result?;
+        self.cpu_ready = [
+            self.fast.time[0].max(self.bus.main_clocks),
+            self.fast.time[1].max(self.bus.main_clocks),
+        ];
+        #[cfg(any(test, feature = "video-worker"))]
+        self.bus.drain_video_journal();
+        Ok(())
+    }
+
+    fn run_fast_fields(&mut self, target: u64) -> Result<(), MachineError> {
         while self.frames() < target {
             let end = self.bus.main_clocks + u64::from(self.bus.fast_main_span(SLICE));
             self.fast_run_cpu(Processor::Master, end)?;
@@ -111,12 +125,6 @@ impl Machine {
                 *time = (*time).max(now.saturating_sub(u64::from(self.bus.fast_main_span(SLICE))));
             }
         }
-        self.cpu_ready = [
-            self.fast.time[0].max(self.bus.main_clocks),
-            self.fast.time[1].max(self.bus.main_clocks),
-        ];
-        #[cfg(any(test, feature = "video-worker"))]
-        self.bus.drain_video_journal();
         Ok(())
     }
 

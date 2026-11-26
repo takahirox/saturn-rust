@@ -471,6 +471,9 @@ pub struct Bus {
     /// beats held VDP1 VRAM and the drawn framebuffer, not yet charged to
     /// VDP1 drawing. ST-013 §2.1: the system side has priority on each port.
     fast_vdp1_busy: [Cell<u32>; 2],
+    /// The relaxed scheduler is running a field. Debugger steps and fields
+    /// that fall back to the exact scheduler keep its own accounting.
+    fast_running: bool,
     /// Relaxed playback: main clock at which each CPU issued its current
     /// instruction, and at which its posted external write finishes.
     fast_cpu_time: [Cell<u64>; 2],
@@ -677,6 +680,7 @@ impl Default for Bus {
             fast_writes: Cell::new(0),
             fast_video: false,
             fast_vdp1_busy: [Cell::new(0), Cell::new(0)],
+            fast_running: false,
             fast_cpu_time: [Cell::new(0), Cell::new(0)],
             fast_posted_until: [Cell::new(0), Cell::new(0)],
             #[cfg(test)]
@@ -826,6 +830,14 @@ impl Bus {
     pub(crate) fn fast_dmac_holds_bus(&self, processor: Processor) -> bool {
         let chip = &self.onchip[processor as usize];
         chip.dma.holds_external_bus(chip.serial_dma_requests())
+    }
+    pub(crate) fn set_fast_running(&mut self, running: bool) {
+        self.fast_running = running;
+        if !running {
+            // Exact steps restart from completed bus state.
+            self.fast_posted_until.iter().for_each(|until| until.set(0));
+            self.fast_vdp1_busy.iter().for_each(|busy| busy.set(0));
+        }
     }
     /// Relaxed playback: the CPU's issue clock for posted-write accounting.
     pub(crate) fn set_fast_cpu_time(&self, processor: Processor, time: u64) {
@@ -2687,7 +2699,7 @@ impl CpuBus<'_> {
                     ),
                 );
             }
-            if self.bus.fast_video && (vdp1::VRAM..vdp1::REGISTERS).contains(&physical) {
+            if self.bus.fast_running && (vdp1::VRAM..vdp1::REGISTERS).contains(&physical) {
                 // The SCU bridges the access as 16-bit B-bus cycles, each
                 // holding the VDP1 port for the access's cycles and waits.
                 let waits = self.bus.onchip[self.processor as usize]
@@ -2699,7 +2711,7 @@ impl CpuBus<'_> {
                     base.saturating_add(waits).saturating_mul(halves),
                 );
             }
-            if self.bus.fast_video {
+            if self.bus.fast_running {
                 self.post_fast_write(write, first, base, waits_before);
             }
         }

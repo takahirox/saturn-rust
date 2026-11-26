@@ -137,6 +137,18 @@ fn guest_video_writes_both_cpus_dmac_frt_readback_and_two_palette_publications()
     }
 }
 #[test]
+fn selecting_relaxed_playback_keeps_exact_debugger_steps_and_palette_publication() {
+    // The browser player selects relaxed playback and then steps this guest
+    // with the exact scheduler, as `run` does, before advancing one field.
+    for (payload, color) in [(0x11223344u32, 0x000000FFu32), (0x55667788, 0x0000FF00)] {
+        let rom = image(payload, color, false);
+        let mut exact = Machine::new();
+        let mut relaxed = Machine::new();
+        relaxed.set_fast_mode(true);
+        assert_eq!(run(&mut relaxed, &rom, 500), run(&mut exact, &rom, 500));
+    }
+}
+#[test]
 fn guest_video_records_and_pixels_are_identical_across_chunks_and_passive_previews() {
     let rom = image(0x11223344, 0xFF, false);
     let mut expected = None;
