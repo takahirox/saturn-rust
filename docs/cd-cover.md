@@ -42,6 +42,10 @@ physical cover position. Pending commands and unread CR4 responses retain their
 normal handshake.
 [Sega CD Communication Interface §4.1](https://docs.exodusemulator.com/Archives/SSDDV25/segahtml/prgg/sysg/cdif/hon/p04_10.htm)
 
+Opening cancels pending media-dependent commands and pending sector operations
+whose partition loses sectors. The emulator returns WAIT for these commands at
+their original completion deadline.
+
 The existing software-only automatic tray behavior of command 05 remains
 available separately. A physically open cover requires a host close.
 
@@ -52,6 +56,10 @@ and pending medium work on opening. Sega's generic tray contract retains
 buffer data. The host exchange path explicitly flushes old disc-derived
 sectors so they cannot cross the media boundary. The game can still use data
 it placed in work RAM or other board devices before opening.
+
+The last sector search result survives if eviction leaves the matched sector
+at the reported index. Eviction that removes or shifts the match produces the
+same result as a search with no match. [Sega CD Communication Interface §5.5](https://docs.exodusemulator.com/Archives/SSDDV25/segahtml/prgg/sysg/cdif/hon/p05_10.htm)
 
 The Worker waits for the current field and presentation receipts. Sound is
 canonical at that boundary. The Machine clears the SCSP's latched CD input
