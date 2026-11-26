@@ -267,11 +267,12 @@ in Play, Debug and expanded settings (including a selected BIOS).
 The test exercises actual Fullscreen API entry/exit and focus restoration when
 the headless browser allows it, and reports the path taken. It always checks
 unavailable feedback and, when the API is enabled, a deterministic rejected
-request. Headless Chromium cannot establish OS fullscreen/Escape behavior or
-support in Safari, Firefox or mobile browsers; responsive tests resize a desktop
-browser and do not emulate touch hardware. Keyboard, not virtual touch controls,
-is required. See [Issue #9 validation](validation-issue-9.md) for actual browsers
-and results. Nonzero exit means failure.
+request. Responsive checks use Chromium desktop viewports and emulated touch
+phones and tablets, including rotation, fullscreen and safe-area insets. CDP
+touch input drives the virtual controller and checks the guest's SMPC reports.
+This evidence is scoped to Chromium emulation. Nonzero exit means failure.
+See [Issue #257 validation](validation-issue-257.md#browser-evidence) for the
+tested configurations and input coverage.
 
 ## GitHub Pages
 

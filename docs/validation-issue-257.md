@@ -27,7 +27,7 @@ The table lists the tested Chromium CSS viewports.
 | Fine | 1280×720, 1440×900 | 1 | Media beside the screen, touch controller hidden |
 | Coarse | 320×568, 390×844 | 3 | Screen above the controller, media below the toolbar |
 | Coarse | 768×1024 | 3 | Tablet portrait |
-| Coarse | 568×320, 844×390 | 3 | Direction and face clusters flank the screen |
+| Coarse | 480×320, 500×320, 540×320, 568×320, 844×390 | 3 | Direction and face clusters flank the screen |
 | Fine | CRT player and differential contexts | 2 | Live/paused CRT redraw, fullscreen and WebGL fallback |
 
 Tests check aspect ratio, exact screen/toolbar ordering, the maximum image that
@@ -36,7 +36,11 @@ touch targets of at least 44×44 CSS pixels with hit testing. Phone portrait
 and landscape fullscreen include all thirteen controls. The tests check
 rotation from 320×568 to 568×320 inline and in fullscreen. They also hold a
 button while rotating inside fullscreen and verify release through the guest.
-Landscape viewports under 560 CSS pixels use the stacked controller layout.
+Landscape touch layouts flank the screen when the player container is at least
+410 CSS pixels wide. Below that width, the controls sit under the screen. The
+tests check that tapping Play after the disc picker at 320×568 keeps the image
+below a 44 CSS pixel top inset. At 568×320, they check that Help and its Close
+button fit within 44 CSS pixel side insets and a 24 CSS pixel top inset.
 Browser fullscreen requires support for the element Fullscreen API. Very short
 windows can scroll to reach all controls.
 

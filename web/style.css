@@ -89,6 +89,9 @@ button.primary:hover:not(:disabled) { background: #24407d; }
   background: #080b10;
 }
 #screen { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+.player-shell:not(:fullscreen) #screen {
+  scroll-margin-block: env(safe-area-inset-top) env(safe-area-inset-bottom);
+}
 #screen:focus-visible { outline-offset: -3px; outline-color: #9fb9ff; }
 #crt-screen { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .empty-state {
@@ -144,8 +147,13 @@ caption { text-align: left; padding-block: 8px; }
 th, td { padding: 6px; border-bottom: 1px solid var(--line); text-align: left; }
 th { font-weight: 400; }
 dialog {
-  width: min(calc(100% - 32px), 560px);
-  max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - max(16px, env(safe-area-inset-bottom)));
+  --dialog-top: max(16px, env(safe-area-inset-top));
+  --dialog-right: max(16px, env(safe-area-inset-right));
+  --dialog-bottom: max(16px, env(safe-area-inset-bottom));
+  --dialog-left: max(16px, env(safe-area-inset-left));
+  inset: var(--dialog-top) var(--dialog-right) var(--dialog-bottom) var(--dialog-left);
+  width: min(560px, calc(100% - var(--dialog-left) - var(--dialog-right)));
+  max-height: calc(100dvh - var(--dialog-top) - var(--dialog-bottom));
   padding: 16px;
   border: 1px solid var(--line);
   border-radius: 12px;
