@@ -10,7 +10,11 @@ insert an authorized local disc or BIOS, then select **Play**.
 - **BIOS** accepts a raw 512 KiB file. An accepted BIOS takes precedence and can
   boot with or without a disc. With a disc alone, the player uses BIOS-less HLE.
   Pending or rejected BIOS selections block Play. Replace or clear the BIOS to
-  recover. Changing either selection stops playback.
+  recover. Changing the BIOS stops playback.
+- During a BIOS session, choose **Open cover**, insert or drop a disc, or
+  **Remove** the current one, then choose **Close cover**. The running guest
+  detects the change and decides what to do next. A paused session stays
+  paused until **Resume**. BIOS-less HLE uses cold disc selection.
 
 The display is beside the media slots on desktop and above them on narrow
 screens. The 320×224 framebuffer is shown at 4:3 with pixelated rendering.
@@ -60,6 +64,7 @@ PCM, emulation timing and pitch handling intact.
 - [Cartridges and persistent saves](docs/validation-issue-260.md)
 - [Supported CPU, disc boot and hardware; limitations and primary manuals](docs/architecture.md)
 - [Local BIOS startup, private ZIP probe and compatibility limits](docs/bios-startup.md)
+- [Live CD cover behavior and validation](docs/cd-cover.md)
 - [Hardware conformance matrix and outstanding Issue #17 scope](docs/hardware-conformance.md)
 - [Hardware implementation and automated validation](docs/validation-issue-17.md)
 - [Historical address-error implementation and automated validation](docs/validation-issue-15.md)

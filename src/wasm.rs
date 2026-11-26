@@ -90,6 +90,28 @@ impl Emulator {
         self.machine.mount_media(media);
         Ok(())
     }
+    pub fn set_cd_cover_open(&mut self, open: bool) {
+        self.machine.set_cd_cover_open(open);
+    }
+    pub fn insert_open_disc(&mut self, bytes: Vec<u8>) -> Result<(), JsValue> {
+        let media =
+            standalone_media(bytes).map_err(|error| JsValue::from_str(&error.to_string()))?;
+        self.replace_open_media(Some(media))
+    }
+    pub fn insert_open_cue(
+        &mut self,
+        cue: &str,
+        names: &str,
+        lengths: &[u32],
+        bytes: Vec<u8>,
+    ) -> Result<(), JsValue> {
+        let media = cue_media(cue, names, lengths, bytes)
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        self.replace_open_media(Some(media))
+    }
+    pub fn remove_open_disc(&mut self) -> Result<(), JsValue> {
+        self.replace_open_media(None)
+    }
     /// Relaxed-timing playback (default for the player); the debugger's
     /// instruction steps always use the exact scheduler.
     pub fn set_fast_mode(&mut self, enabled: bool) {
@@ -314,6 +336,18 @@ impl Emulator {
             CpuStatus::Sleeping => "Sleeping — waiting for an interrupt".into(),
             CpuStatus::Halted => "Halted".into(),
             CpuStatus::Faulted(error) => format!("Faulted: {error}"),
+        }
+    }
+}
+
+impl Emulator {
+    fn replace_open_media(&mut self, media: Option<crate::media::Media>) -> Result<(), JsValue> {
+        if self.machine.replace_open_media(media) {
+            Ok(())
+        } else {
+            Err(JsValue::from_str(
+                "Open the CD cover before changing the disc.",
+            ))
         }
     }
 }

@@ -560,6 +560,10 @@ impl Scsp {
         }
         Ok(())
     }
+    pub(crate) fn discard_output(&mut self) {
+        self.output.clear();
+    }
+
     pub fn drain(&mut self, frames: usize) -> Vec<i16> {
         let count = frames
             .min(BUFFER_FRAMES)

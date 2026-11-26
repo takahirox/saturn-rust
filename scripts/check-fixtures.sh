@@ -115,3 +115,5 @@ python3 tests/fixtures/build_cd_stream.py --check
 python3 tests/fixtures/build_chd.py --check
 
 python3 tests/fixtures/build_bios_initialization.py --check
+
+python3 tests/fixtures/build_cd_cover.py --check
