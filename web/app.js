@@ -153,6 +153,10 @@ const touchButtons = [...touchControls.querySelectorAll("[data-mask]")];
 const dpad = $("dpad");
 const dpadLeft = dpad.querySelector(".left");
 
+function acceptsTouchInput() {
+  return playing && !document.hidden && acceptsInput();
+}
+
 function dpadMask(event) {
   const bounds = dpad.getBoundingClientRect();
   const x = event.clientX - bounds.left;
@@ -175,7 +179,7 @@ function updateTouchMask() {
 }
 
 touchControls.addEventListener("pointerdown", event => {
-  if (event.button !== 0 || document.hidden || !playing || !acceptsInput()) return;
+  if (event.button !== 0 || !acceptsTouchInput()) return;
   const target = event.target.closest("#dpad") || event.target.closest("[data-mask]");
   if (!target) return;
   event.preventDefault(); // Preserve display focus and suppress synthetic mouse activation.
@@ -340,6 +344,11 @@ function render() {
   const playbackReady = playerReady && (sessionStarted || !hasError);
   $("play").disabled = busy || (!playing && !playbackReady);
   setText("play", playing ? "Pause" : sessionStarted ? "Resume" : "Play");
+  const touchDisabled = !acceptsTouchInput();
+  if (touchDisabled) releaseTouchInput();
+  for (const button of touchButtons) {
+    if (button.disabled !== touchDisabled) button.disabled = touchDisabled;
+  }
   $("restart").disabled = busy || Boolean(selectionError()) || !inputReady;
   $("frame").disabled = !playerReady || playing;
   $("backup-export").disabled = busy;

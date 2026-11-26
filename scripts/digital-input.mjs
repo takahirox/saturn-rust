@@ -301,12 +301,22 @@ async function touchInput(browser, url, rom) {
       const play = document.getElementById("play");
       return play.textContent === "Pause" && !play.disabled;
     });
+    const touchAvailability = async enabled => {
+      const a = page.getByRole("button", { name: "A", exact: true });
+      assert.equal(await a.isEnabled(), enabled);
+      assert.equal(await page.locator("#touch-controls button:disabled").count(), enabled ? 0 : 13);
+      const opacity = await a.evaluate(node => Number(getComputedStyle(node).opacity));
+      assert.equal(opacity < 1, !enabled, "Unavailable touch controls are dimmed");
+    };
     await wait(() => !document.getElementById("controls").disabled);
+    await touchAvailability(false);
     await page.locator("#bios").setInputFiles(firmware);
     await ready();
+    await touchAvailability(false);
     const play = page.locator("#play");
     await play.tap();
     await playing();
+    await touchAvailability(true);
     await page.evaluate(() => {
       window.pad = { connected: true, mapping: "standard", axes: [], buttons: Array.from({length: 16}, () => ({ pressed: false, value: 0 })) };
       Object.defineProperty(navigator, "getGamepads", { value: () => [window.pad] });
@@ -455,6 +465,12 @@ async function touchInput(browser, url, rom) {
         await rotate(390, 844);
       }
       if (["visibility", "pause", "help", "advanced", "debug"].includes(action)) assert.equal(await play.textContent(), "Resume");
+      if (action === "pause") {
+        await touchAvailability(false);
+        await play.tap();
+        await playing();
+        await touchAvailability(true);
+      }
     }
     await page.evaluate(() => scrollTo(0, 0));
     await down(await button(256));

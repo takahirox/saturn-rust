@@ -274,11 +274,19 @@ async function checkPlayer(page) {
   await cdp.detach();
   await filter(page).selectOption("clean");
   await visible(page, false);
-  const picture = () => page.locator("#screen").screenshot();
+  const screen = page.locator("#screen");
+  const picture = () => screen.screenshot();
+  await page.locator("#play").focus();
   const cleanPicture = await picture();
-  for (const preset of presets.slice(1)) {
+  for (const preset of presets) {
     await filter(page).selectOption(preset);
-    await visible(page, true);
+    await visible(page, preset !== "clean");
+    const unfocused = await picture();
+    await page.keyboard.press("Shift+Tab");
+    assert(await screen.evaluate(node => node.matches(":focus-visible")), `${preset}: display has keyboard focus`);
+    assert(!(await picture()).equals(unfocused), `${preset}: keyboard focus changes the composed display`);
+    await page.keyboard.press("Tab");
+    assert((await picture()).equals(unfocused), `${preset}: moving focus restores the paused picture`);
     assert.deepEqual(await state(), paused);
   }
   assert.notDeepEqual(await picture(), cleanPicture, "The composed display must show the CRT surface");
