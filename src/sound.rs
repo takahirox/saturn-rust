@@ -566,6 +566,12 @@ impl Scsp {
         }
         Ok(())
     }
+    pub(crate) fn discard_cd_audio(&mut self) {
+        // An SCSP sample can straddle the host cover boundary.
+        self.external = [0; 2];
+        self.output.clear();
+    }
+
     pub fn drain(&mut self, frames: usize) -> Vec<i16> {
         let count = frames
             .min(BUFFER_FRAMES)

@@ -14,11 +14,14 @@ fn data_port(address: u32) -> bool {
     matches!(address, DATA | WORD_DATA) || address == DATA + 2
 }
 const HZ: u64 = 26_874_100;
+// Three stopped report intervals allow the guest to observe BUSY and WAIT.
+const RECOGNITION_CLOCKS: u32 = (HZ / 20) as u32;
 const CMOK: u16 = 1;
 const DRDY: u16 = 2;
 const CSCT: u16 = 4;
 const BFUL: u16 = 8;
 const PEND: u16 = 16;
+const DCHG: u16 = 32;
 const ESEL: u16 = 64;
 const EHST: u16 = 128;
 const ECPY: u16 = 256;
@@ -75,14 +78,44 @@ struct Sector {
     fad: u32,
     raw: [u8; RAW_SECTOR],
 }
+impl Sector {
+    fn is_disc_derived(&self) -> bool {
+        self.fad != 0 // Put Sector Data creates sectors with FAD 0.
+    }
+}
+
+#[derive(Default)]
+struct SectorSearch {
+    words: [u16; 3],
+    matched_sector: Option<(usize, u64)>,
+}
+
+impl SectorSearch {
+    const NO_MATCH: Self = Self {
+        words: [0xFFFF; 3],
+        matched_sector: None,
+    };
+}
+
+enum TransferKind {
+    Drive,
+    DiscSectors,
+    HostSectors,
+}
+
+impl TransferKind {
+    // ST-162 §3.2 table3.2: EHST belongs to sector-buffer I/O.
+    fn is_sector_io(&self) -> bool {
+        matches!(self, Self::DiscSectors | Self::HostSectors)
+    }
+}
+
 struct Transfer {
     bytes: Vec<u8>,
     position: usize,
     put: Option<(usize, usize, usize)>, // filter, count, retained sector length
     delete: Option<(usize, Vec<u64>)>,
-    // ST-162 §3.2 table3.2: EHST belongs to sector-buffer I/O, not
-    // TOC, subcode or file-information transfers of a coincident byte count.
-    host_io: bool,
+    kind: TransferKind,
     rw: Option<u64>,
 }
 
@@ -91,6 +124,7 @@ struct SelectorTransfer {
     sectors: std::collections::VecDeque<u64>,
     destination: u8,
     moving: bool,
+    uses_disc_sectors: bool,
     clocks: u32,
 }
 
@@ -109,6 +143,7 @@ pub struct CdBlock {
     mask: u16,
     response_latched: Cell<bool>,
     pending: Option<([u16; 4], u32)>,
+    pending_cancelled: bool,
     status: u8,
     fad: u32,
     // Seek Home has no public position. Keep its origin separate from the
@@ -144,7 +179,12 @@ pub struct CdBlock {
     // drive tick. Preserve direction and whether scan began during playback.
     scan: Option<(bool, bool)>,
     buffer_paused: bool,
-    tray_open: bool,
+    // The existing software tray command models an automatic tray. A host
+    // cover opening additionally requires a physical close before recognition.
+    software_tray_open: bool,
+    cover_open: bool,
+    recognition: Option<u32>,
+    deferred_drive: Option<[u16; 4]>,
     seeking: u32,
     authentication: Option<(u32, u16)>,
     authenticated: u16,
@@ -160,7 +200,7 @@ pub struct CdBlock {
     get_length: usize,
     put_length: usize,
     actual_size: u32,
-    search: [u16; 3],
+    search: SectorSearch,
     copy_error: u16,
     copying: Option<SelectorTransfer>,
     next_sector_id: u64,
@@ -287,10 +327,11 @@ impl Default for CdBlock {
             mask: 0,
             response_latched: Cell::new(false),
             pending: None,
+            pending_cancelled: false,
             status: 7,
             fad: 150,
             at_home: false,
-            end: 150,
+            end: u32::MAX,
             play_start: 150,
             repeat: 0,
             repeats: 0,
@@ -318,7 +359,10 @@ impl Default for CdBlock {
             retry_attempts: 0,
             scan: None,
             buffer_paused: false,
-            tray_open: false,
+            software_tray_open: false,
+            cover_open: false,
+            recognition: None,
+            deferred_drive: None,
             seeking: 0,
             authentication: None,
             authenticated: 0,
@@ -334,7 +378,7 @@ impl Default for CdBlock {
             get_length: 2048,
             put_length: 2048,
             actual_size: 0,
-            search: [0; 3],
+            search: SectorSearch::default(),
             copy_error: 0,
             copying: None,
             next_sector_id: 0,
@@ -349,22 +393,103 @@ impl Default for CdBlock {
 
 impl CdBlock {
     pub fn mount(&mut self, media: Media) {
+        if self.cover_open {
+            self.replace_open_media(Some(media));
+            return;
+        }
         self.settle_quiet_clocks();
+        self.search = SectorSearch::default();
+        self.copying = None;
+        self.copy_error = 0;
+        *self.transfer.get_mut() = None;
+        self.invalidate_medium();
+        self.pending = None;
+        self.pending_cancelled = false;
+        self.response_latched.set(false);
+        self.raise(CMOK);
+        self.software_tray_open = false;
+        self.media = Some(media);
+        self.recognize_medium();
+        self.report(false);
+        self.raise(DCHG);
+    }
+
+    pub fn cover_open(&self) -> bool {
+        self.cover_open
+    }
+
+    fn tray_open(&self) -> bool {
+        self.cover_open || self.software_tray_open
+    }
+
+    pub fn set_cover_open(&mut self, open: bool) {
+        if self.cover_open == open {
+            return;
+        }
+        self.settle_quiet_clocks();
+        self.cover_open = open;
+        self.software_tray_open = false;
+        if open {
+            self.pending_cancelled |= self
+                .pending
+                .is_some_and(|(command, _)| self.command_uses_old_medium(command));
+            let interrupted = self.invalidate_medium();
+            self.status = 6;
+            self.raise(DCHG | EFLS | interrupted);
+        } else if self.media.is_some() {
+            self.status = 0;
+            self.recognition = Some(RECOGNITION_CLOCKS);
+        } else {
+            self.deferred_drive = None;
+            self.status = 7;
+        }
+        self.report_drive_change();
+    }
+
+    /// Exchange physical media only while the host cover is open.
+    pub fn replace_open_media(&mut self, media: Option<Media>) -> bool {
+        if !self.cover_open {
+            return false;
+        }
+        self.settle_quiet_clocks();
+        self.media = media;
+        self.audio_track_at.set(None);
+        true
+    }
+
+    fn report_drive_change(&self) {
+        // Preserve command timing and any response awaiting CR4 acknowledgement.
+        if self.pending.is_none() && !self.response_latched.get() {
+            self.report(false);
+        }
+    }
+
+    fn recognize_medium(&mut self) {
+        let media = self.media.as_ref().expect("recognition requires media");
+        self.fad = media.tracks[0].start;
+        self.audio_track_at.set(None);
+        self.at_home = false;
+        // The initial whole-disc range is fixed by the first recognized
+        // medium. Removing the disc later does not discard host play settings.
+        if self.end == u32::MAX {
+            self.play_start = self.fad;
+            self.end = media.leadout;
+        }
+        self.status = 1;
+    }
+
+    fn stop_pickup(&mut self) {
+        self.recognition = None;
+        self.deferred_drive = None;
         self.cancel_rw_transfer();
         self.rw = crate::cd_rw::Decoder::default();
         self.rw_active = false;
-        let cold = self.media.is_none();
         self.directory_read = None;
-        self.pending = None;
-        self.copying = None;
-        self.copy_error = 0;
         self.retry_attempts = 0;
-        self.tray_open = false;
         self.files.clear();
         self.directory = None;
         self.volume_end = 0;
         self.file_read = None;
-        *self.transfer.get_mut() = None;
         self.playing = false;
         self.seeking = 0;
         self.authentication = None;
@@ -374,20 +499,63 @@ impl CdBlock {
         self.scan = None;
         self.buffer_paused = false;
         self.pause_clocks = 0;
-        self.fad = media.tracks[0].start;
-        self.at_home = false;
-        // ST-162 §5.5: tray changes retain host play information. A fresh
-        // block still needs the initial disc range; power reset initializes
-        // its retained medium's range separately.
-        if cold {
-            self.play_start = self.fad;
-            self.end = media.leadout;
+    }
+
+    fn command_uses_old_medium(&self, command: [u16; 4]) -> bool {
+        match command[0] >> 8 {
+            0x02 | 0x03 | 0x10..=0x12 | 0x20 | 0x70..=0x75 | 0xE0..=0xE1 => true,
+            // Eviction can change which sectors these offsets select.
+            0x52 | 0x54..=0x55 | 0x61..=0x63 | 0x65..=0x66 => self
+                .partitions
+                .get(usize::from(command[2] >> 8))
+                .is_some_and(|partition| partition.iter().any(Sector::is_disc_derived)),
+            _ => false,
         }
-        self.media = Some(media);
-        self.audio_track_at.set(None);
-        self.status = 1;
-        self.report(false);
-        self.raise(0x20);
+    }
+
+    fn invalidate_medium(&mut self) -> u16 {
+        self.stop_pickup();
+        let mut interrupted = 0;
+        // ST-162 §5.5 retains host buffer state and copy/move results.
+        if self
+            .copying
+            .as_ref()
+            .is_some_and(|job| job.uses_disc_sectors)
+        {
+            self.copying = None;
+            self.copy_error = 1;
+            interrupted |= ECPY;
+        }
+        let transfer = self.transfer.get_mut();
+        match transfer.as_ref().map(|t| &t.kind) {
+            Some(TransferKind::HostSectors) => (),
+            kind => {
+                if matches!(kind, Some(TransferKind::DiscSectors)) {
+                    interrupted |= EHST;
+                }
+                *transfer = None;
+                self.hirq.set(self.hirq.get() & !DRDY);
+            }
+        }
+        // Disc sectors, including copies of them, must not cross the exchange.
+        for (selector, partition) in self.partitions.iter_mut().enumerate() {
+            let before = partition.len();
+            partition.retain(|sector| !sector.is_disc_derived());
+            // ST-162 §5.5 retains the host's search result. If eviction
+            // removes or displaces the match, report the usual no-match result.
+            if partition.len() != before
+                && let Some((matched_selector, id)) = self.search.matched_sector
+                && matched_selector == selector
+                && partition
+                    .get(usize::from(self.search.words[0]))
+                    .is_none_or(|sector| sector.id != id)
+            {
+                self.search = SectorSearch::NO_MATCH;
+            }
+        }
+        self.last = 255;
+        self.hirq.set(self.hirq.get() & !(CSCT | BFUL | PEND));
+        interrupted
     }
     pub fn media(&self) -> Option<&Media> {
         self.media.as_ref()
@@ -397,9 +565,11 @@ impl CdBlock {
             self.settle_quiet_clocks();
             let media = self.media.take();
             *self = Self {
-                end: media.as_ref().map_or(150, |m| m.leadout),
+                end: media.as_ref().map_or(u32::MAX, |m| m.leadout),
                 media,
                 enabled: false,
+                cover_open: self.cover_open,
+                recognition: self.recognition,
                 #[cfg(any(test, feature = "kernel-experiment"))]
                 quiet_clock_enabled: self.quiet_clock_enabled,
                 #[cfg(any(test, feature = "kernel-experiment"))]
@@ -412,7 +582,15 @@ impl CdBlock {
             };
         } else if !self.enabled && enabled {
             self.enabled = true;
-            self.status = if self.media.is_some() { 1 } else { 7 };
+            self.status = if self.cover_open {
+                6
+            } else if self.recognition.is_some() {
+                0
+            } else if self.media.is_some() {
+                1
+            } else {
+                7
+            };
             self.report(false);
         }
     }
@@ -430,6 +608,7 @@ impl CdBlock {
             && (self.playing
                 || self.scan.is_some()
                 || self.pending.is_some()
+                || self.recognition.is_some()
                 || self.seeking != 0
                 || self.copying.is_some())
     }
@@ -465,6 +644,7 @@ impl CdBlock {
         };
         limit
             .min(standby)
+            .min(self.recognition.unwrap_or(u32::MAX))
             .min(self.copying.as_ref().map_or(u32::MAX, |job| job.clocks))
             .min(self.authentication.map_or(u32::MAX, |(clocks, _)| clocks))
             .min(self.rw.clocks())
@@ -547,10 +727,13 @@ impl CdBlock {
         ]);
     }
     fn invalid_report(&self) -> bool {
-        matches!(self.status, 6 | 7 | 9) || (self.status == 2 && self.at_home)
+        self.cover_open
+            || self.recognition.is_some()
+            || matches!(self.status, 6 | 7 | 9)
+            || (self.status == 2 && self.at_home)
     }
     fn track_report(&self) -> Option<(u8, u8, u8, u32)> {
-        let media = self.media.as_ref().filter(|_| !self.tray_open)?;
+        let media = self.media.as_ref().filter(|_| !self.tray_open())?;
         if self.fad == media.leadout {
             // §4.2: completion at disc end reports the lead-out area.
             // §7.2.5: TNO=AA, relative time starts at the lead-out boundary.
@@ -810,7 +993,10 @@ impl CdBlock {
             if let Some((cmd, left)) = self.pending {
                 if delta >= left {
                     self.pending = None;
-                    if !self.execute(cmd) {
+                    if std::mem::take(&mut self.pending_cancelled) {
+                        self.report(false);
+                        self.wait();
+                    } else if !self.execute(cmd) {
                         let mut r = self.response.get();
                         r[0] = 0xFF00;
                         self.response.set(r);
@@ -819,6 +1005,25 @@ impl CdBlock {
                     self.raise(CMOK);
                 } else {
                     self.pending = Some((cmd, left - delta));
+                }
+            }
+            if let Some(left) = self.recognition {
+                if delta < left {
+                    self.recognition = Some(left - delta);
+                } else if let Some((packet, remaining)) = self.pending
+                    && matches!(packet[0] >> 8, 0x04 | 0x05 | 0x10..=0x12)
+                {
+                    // A drive command already submitted via CR4 takes
+                    // priority over the older deferred command.
+                    self.recognition = Some(remaining);
+                } else {
+                    self.recognition = None;
+                    self.recognize_medium();
+                    if let Some(packet) = self.deferred_drive.take() {
+                        // A command invalid for the new disc leaves it paused.
+                        self.execute_drive(packet, false);
+                    }
+                    self.report_drive_change();
                 }
             }
             clocks -= delta;
@@ -846,7 +1051,7 @@ impl CdBlock {
             && !self.buffer_paused
             && self.seeking == 0
             && self.scan.is_none()
-            && !self.tray_open
+            && !self.tray_open()
             && self
                 .media
                 .as_ref()
@@ -1321,7 +1526,7 @@ impl CdBlock {
         &mut self,
         bytes: Vec<u8>,
         delete: Option<(usize, Vec<u64>)>,
-        host_io: bool,
+        kind: TransferKind,
     ) -> bool {
         if self.transfer.borrow().is_some() {
             return false;
@@ -1331,7 +1536,7 @@ impl CdBlock {
             position: 0,
             put: None,
             delete,
-            host_io,
+            kind,
             rw: None,
         });
         let mut r = self.response.get();
@@ -1357,6 +1562,102 @@ impl CdBlock {
                 .and_then(|t| t.index(field as u8))
         }
     }
+    fn play(&mut self, c: [u16; 4]) -> bool {
+        let field1 = (u32::from(c[0] & 255) << 16) | u32::from(c[1]);
+        let field2 = (u32::from(c[2] & 255) << 16) | u32::from(c[3]);
+        let Some(m) = &self.media else {
+            return false;
+        };
+        let Some(start) = self.position(field1, self.pause_position()) else {
+            return false;
+        };
+        let end = if field2 == 0xFF_FFFF {
+            self.end
+        } else if field2 & 0x80_0000 != 0 {
+            start.saturating_add(field2 & 0x7F_FFFF)
+        } else if field2 == 0 {
+            m.leadout
+        } else {
+            let Some(end) = self.position(field2, m.leadout) else {
+                return false;
+            };
+            end
+        };
+        if start < 150
+            || (field1 != 0xFF_FFFF && start >= end.min(m.leadout))
+            || (field2 != 0xFF_FFFF && end > m.leadout)
+        {
+            return false;
+        }
+        self.software_tray_open = false;
+        self.scan = None;
+        self.buffer_paused = false;
+        self.pause_clocks = 0;
+        let from_home = self.at_home;
+        let continuing = field1 == 0xFF_FFFF && self.rw_active && !from_home;
+        if continuing {
+            self.rw.set_end(end);
+        } else {
+            self.stop_rw();
+        }
+        self.at_home = false;
+        let repeat = if c[2] >> 8 & 0x7F == 0x7F {
+            self.repeat
+        } else {
+            (c[2] >> 8 & 15) as u8
+        };
+        if (field1 != 0xFF_FFFF && start != self.play_start)
+            || end != self.end
+            || repeat != self.repeat
+        {
+            self.repeats = 0;
+        }
+        self.fad = start;
+        self.end = end;
+        // ST-162 §8.2.2: an unchanged start cancels pause without
+        // replaying the current sector or restarting the loop range.
+        if field1 != 0xFF_FFFF {
+            self.play_start = start;
+        }
+        if field1 != 0xFF_FFFF || from_home {
+            self.audio_index = 0;
+            self.deemphasis = crate::cd_audio::Deemphasis::default();
+        }
+        // ST-162 §4.2 p.37: canceling pause outside either retained
+        // range bound stays paused; it must not read or repeat a sector.
+        self.playing = (self.play_start..self.play_end()).contains(&start);
+        if !self.playing {
+            self.raise(PEND);
+        }
+        self.retry_attempts = 0;
+        self.seeking = if !self.playing || (field1 == 0xFF_FFFF && !from_home) {
+            0
+        } else {
+            if self.init_flags & 2 != 0
+                && self
+                    .media
+                    .as_ref()
+                    .and_then(|m| m.track(start))
+                    .is_some_and(|t| t.mode == TrackMode::Audio)
+            {
+                crate::cd_rw::PREROLL + 26_875
+            } else {
+                26_875
+            }
+        };
+        if self.init_flags & 2 != 0 && self.seeking > crate::cd_rw::PREROLL {
+            self.rw.prepare(start, self.seeking - crate::cd_rw::PREROLL);
+        }
+        self.status = if self.seeking != 0 {
+            4
+        } else if self.playing {
+            3
+        } else {
+            1
+        };
+        self.repeat = repeat;
+        true
+    }
     fn wait(&self) -> bool {
         let mut r = self.response.get();
         r[0] |= 0x8000;
@@ -1373,7 +1674,7 @@ impl CdBlock {
         let transfer = self.transfer.borrow();
         let transfer_busy = transfer.as_ref().is_some_and(|t| {
             matches!(command, 0x02 | 0x20 | 0x61 | 0x63 | 0x64 | 0x73)
-                || (t.host_io && command == 0x62)
+                || (t.kind.is_sector_io() && command == 0x62)
         });
         drop(transfer);
         if !software_reset
@@ -1402,10 +1703,14 @@ impl CdBlock {
                 flags,
             ]);
         };
-        // ST-162 §8.2.1 functions1.5/1.6: OPEN/NODISC wait, with a
-        // valid drive report. They are not malformed-command REJECTs and
-        // must neither start DATATRNS nor manufacture TOC/session data.
-        if matches!(command, 0x02 | 0x03) && (self.tray_open || self.media.is_none()) {
+        // ST-162 §8.2.1 functions1.5/1.6: TOC/session wait for a closed
+        // drive and recognized disc. File reads and authentication also
+        // wait while the manual cover is open or the TOC is being read.
+        if (matches!(command, 0x02 | 0x03)
+            && (self.tray_open() || self.recognition.is_some() || self.media.is_none()))
+            || ((self.cover_open || self.recognition.is_some())
+                && matches!(command, 0x70 | 0x71 | 0x74 | 0xE0))
+        {
             return self.wait();
         }
         match command {
@@ -1417,7 +1722,7 @@ impl CdBlock {
                 };
                 let toc = m.toc();
                 transfer_size(self, 204, 0);
-                return self.begin_get(toc, None, false);
+                return self.begin_get(toc, None, TransferKind::Drive);
             }
             0x03 => {
                 let Some(m) = &self.media else {
@@ -1435,105 +1740,21 @@ impl CdBlock {
                 r[0] &= 0xFF00;
                 self.response.set(r);
             }
-            0x04 => {
-                let flags = c[0] as u8;
-                let ecc = (c[3] >> 8) as u8;
-                let retry = c[3] as u8;
-                // Validate before any drive/selector/configuration mutation.
-                // A software reset ignores every other initialization argument.
-                if !software_reset
-                    && (!matches!(ecc, 0..=5 | 0x80 | 0xFF)
-                        || !matches!(retry, 0..=15 | 0x40..=0x4F | 0x80 | 0xFF))
-                {
+            0x04 | 0x10..=0x12 => {
+                if !self.execute_drive(c, software_reset) {
                     return false;
                 }
-                if software_reset {
-                    self.init_flags = 0;
-                    self.ecc = 0;
-                    self.retry = 0;
-                    self.standby_seconds = 180;
-                } else {
-                    if flags & 0x80 == 0 {
-                        self.init_flags = flags & 0x1E;
-                    }
-                    if ecc != 0xFF {
-                        self.ecc = ecc;
-                    }
-                    if retry != 0xFF {
-                        self.retry = retry;
-                    }
-                }
-                if !software_reset && c[1] != 0xFFFF {
-                    self.standby_seconds = if c[1] == 0 { 180 } else { c[1] };
-                }
-                self.pause_clocks = 0;
-                self.stop_rw();
-                self.fad = self.pause_position();
-                self.at_home = false;
-                self.tray_open = false;
-                self.scan = None;
-                self.buffer_paused = false;
-                self.playing = false;
-                self.seeking = 0;
-                self.authentication = None;
-                self.audio_index = 0;
-                self.deemphasis = crate::cd_audio::Deemphasis::default();
-                self.finish_directory(false);
-                self.file_read = None;
-                self.retry_attempts = 0;
-                self.speed = if self.init_flags & 0x10 != 0 { 1 } else { 2 };
-                if software_reset {
-                    self.rw = crate::cd_rw::Decoder::default();
-                    self.filters = std::array::from_fn(Filter::reset);
-                    for p in &mut self.partitions {
-                        p.clear();
-                    }
-                    self.connection = 255;
-                    *self.transfer.get_mut() = None;
-                    self.get_length = 2048;
-                    self.put_length = 2048;
-                    self.actual_size = 0;
-                    self.search = [0; 3];
-                    self.copy_error = 0;
-                    self.copying = None;
-                    self.last = 255;
-                    self.play_start = 150;
-                    self.end = self.media.as_ref().map_or(self.fad, |m| m.leadout);
-                    self.repeat = 0;
-                    self.repeats = 0;
-                    self.files.clear();
-                    self.directory = None;
-                    self.volume_end = 0;
-                    self.hirq
-                        .set(self.hirq.get() & !(DRDY | CSCT | BFUL | PEND));
-                }
-                self.status = if self.media.is_some() { 1 } else { 7 };
                 self.report(false);
-                if software_reset {
-                    self.raise(ESEL | EHST | ECPY | EFLS | 0x800);
-                }
             }
             0x05 => {
-                self.stop_rw();
-                self.rw = crate::cd_rw::Decoder::default();
-                self.cancel_rw_transfer();
-                self.finish_directory(false);
-                self.retry_attempts = 0;
-                self.files.clear();
-                self.directory = None;
-                self.volume_end = 0;
-                self.playing = false;
-                self.scan = None;
-                self.seeking = 0;
-                self.audio_index = 0;
-                self.deemphasis = crate::cd_audio::Deemphasis::default();
-                self.tray_open = true;
-                self.authentication = None;
-                self.authenticated = 0;
+                if !self.cover_open {
+                    self.stop_pickup();
+                    self.software_tray_open = true;
+                    self.raise(DCHG | EFLS);
+                }
+                self.deferred_drive = None;
                 self.status = 6;
-                self.file_read = None;
                 self.report(false);
-                self.raise(0x20 | EFLS);
             }
             0x06 => {
                 let Some(t) = self.transfer.get_mut().take() else {
@@ -1582,7 +1803,7 @@ impl CdBlock {
                     }
                 }
                 self.hirq.set(self.hirq.get() & !DRDY);
-                if t.host_io {
+                if t.kind.is_sector_io() {
                     self.raise(EHST);
                 }
                 let mut r = self.response.get();
@@ -1590,167 +1811,13 @@ impl CdBlock {
                 r[1] = words as u16;
                 self.response.set(r);
             }
-            0x10 => {
-                let Some(m) = &self.media else {
-                    return false;
-                };
-                let Some(start) = self.position(field1, self.pause_position()) else {
-                    return false;
-                };
-                let end = if field2 == 0xFF_FFFF {
-                    self.end
-                } else if field2 & 0x80_0000 != 0 {
-                    start.saturating_add(field2 & 0x7F_FFFF)
-                } else if field2 == 0 {
-                    m.leadout
-                } else {
-                    let Some(end) = self.position(field2, m.leadout) else {
-                        return false;
-                    };
-                    end
-                };
-                if start < 150
-                    || (field1 != 0xFF_FFFF && start >= end.min(m.leadout))
-                    || (field2 != 0xFF_FFFF && end > m.leadout)
-                {
-                    return false;
-                }
-                self.tray_open = false;
-                self.scan = None;
-                self.buffer_paused = false;
-                self.pause_clocks = 0;
-                let from_home = self.at_home;
-                let continuing = field1 == 0xFF_FFFF && self.rw_active && !from_home;
-                if continuing {
-                    self.rw.set_end(end);
-                } else {
-                    self.stop_rw();
-                }
-                self.at_home = false;
-                let repeat = if c[2] >> 8 & 0x7F == 0x7F {
-                    self.repeat
-                } else {
-                    (c[2] >> 8 & 15) as u8
-                };
-                if (field1 != 0xFF_FFFF && start != self.play_start)
-                    || end != self.end
-                    || repeat != self.repeat
-                {
-                    self.repeats = 0;
-                }
-                self.fad = start;
-                self.end = end;
-                // ST-162 §8.2.2: an unchanged start cancels pause without
-                // replaying the current sector or restarting the loop range.
-                if field1 != 0xFF_FFFF {
-                    self.play_start = start;
-                }
-                if field1 != 0xFF_FFFF || from_home {
-                    self.audio_index = 0;
-                    self.deemphasis = crate::cd_audio::Deemphasis::default();
-                }
-                // ST-162 §4.2 p.37: canceling pause outside either retained
-                // range bound stays paused; it must not read or repeat a sector.
-                self.playing = (self.play_start..self.play_end()).contains(&start);
-                if !self.playing {
-                    self.raise(PEND);
-                }
-                self.retry_attempts = 0;
-                self.seeking = if !self.playing || (field1 == 0xFF_FFFF && !from_home) {
-                    0
-                } else {
-                    if self.init_flags & 2 != 0
-                        && self
-                            .media
-                            .as_ref()
-                            .and_then(|m| m.track(start))
-                            .is_some_and(|t| t.mode == TrackMode::Audio)
-                    {
-                        crate::cd_rw::PREROLL + 26_875
-                    } else {
-                        26_875
-                    }
-                };
-                if self.init_flags & 2 != 0 && self.seeking > crate::cd_rw::PREROLL {
-                    self.rw.prepare(start, self.seeking - crate::cd_rw::PREROLL);
-                }
-                self.status = if self.seeking != 0 {
-                    4
-                } else if self.playing {
-                    3
-                } else {
-                    1
-                };
-                self.repeat = repeat;
-                self.report(false);
-            }
-            0x11 => {
-                if field1 == 0 {
-                    if self.media.is_none() {
-                        return false;
-                    }
-                    self.tray_open = false;
-                    self.stop_rw();
-                    self.playing = false;
-                    self.retry_attempts = 0;
-                    self.scan = None;
-                    self.buffer_paused = false;
-                    self.seeking = 0;
-                    self.at_home = true;
-                    self.status = 2;
-                    self.report(false);
-                    return true;
-                }
-                let Some(fad) = self.position(field1, self.pause_position()) else {
-                    return false;
-                };
-                if self
-                    .media
-                    .as_ref()
-                    .is_none_or(|m| fad > m.leadout || (fad == m.leadout && field1 != 0xFF_FFFF))
-                {
-                    return false;
-                }
-                self.tray_open = false;
-                self.stop_rw();
-                self.scan = None;
-                self.buffer_paused = false;
-                self.pause_clocks = 0;
-                self.fad = fad;
-                self.playing = false;
-                self.retry_attempts = 0;
-                if field1 != 0xFF_FFFF || self.at_home {
-                    self.audio_index = 0;
-                    self.deemphasis = crate::cd_audio::Deemphasis::default();
-                }
-                self.at_home = false;
-                self.status = 4;
-                self.seeking = 26_875;
-                self.report(false);
-            }
-            0x12 => {
-                if c[0] & 255 > 1 || self.media.is_none() {
-                    return false;
-                }
-                let audible = self.scan.map_or(self.playing, |(_, audible)| audible);
-                self.stop_rw();
-                self.scan = Some((c[0] & 1 != 0, audible));
-                self.fad = self.pause_position();
-                self.at_home = false;
-                self.tray_open = false;
-                self.playing = false;
-                self.buffer_paused = false;
-                self.seeking = 0;
-                self.status = 5;
-                self.report(false);
-            }
             0x20 => {
                 if c[0] & 255 == 1 {
                     let Some((sequence, flags)) = self.rw.front() else {
                         return self.wait();
                     };
                     transfer_size(self, 12, flags);
-                    if !self.begin_get(vec![0; 24], None, false) {
+                    if !self.begin_get(vec![0; 24], None, TransferKind::Drive) {
                         return false;
                     }
                     self.transfer.get_mut().as_mut().unwrap().rw = Some(sequence);
@@ -1772,7 +1839,7 @@ impl CdBlock {
                     bytes[7..10].copy_from_slice(&self.fad.to_be_bytes()[1..]);
                 }
                 transfer_size(self, 5, 0);
-                return self.begin_get(bytes, None, false);
+                return self.begin_get(bytes, None, TransferKind::Drive);
             }
             0x30 => {
                 // ST-162 §5.3 table5.1: a filter input has one source;
@@ -1924,25 +1991,19 @@ impl CdBlock {
                         self.raise(ESEL);
                     }
                     0x61 | 0x63 => {
-                        let bytes = self.partitions[selector][start..start + count]
+                        let sectors = &self.partitions[selector][start..start + count];
+                        let bytes = sectors
                             .iter()
                             .flat_map(|s| self.data(s).iter().copied())
                             .collect();
-                        return self.begin_get(
-                            bytes,
-                            if command == 0x63 {
-                                Some((
-                                    selector,
-                                    self.partitions[selector][start..start + count]
-                                        .iter()
-                                        .map(|s| s.id)
-                                        .collect(),
-                                ))
-                            } else {
-                                None
-                            },
-                            true,
-                        );
+                        let delete = (command == 0x63)
+                            .then(|| (selector, sectors.iter().map(|s| s.id).collect()));
+                        let kind = if sectors.iter().any(Sector::is_disc_derived) {
+                            TransferKind::DiscSectors
+                        } else {
+                            TransferKind::HostSectors
+                        };
+                        return self.begin_get(bytes, delete, kind);
                     }
                     0x62 => {
                         self.partitions[selector].drain(start..start + count);
@@ -1956,14 +2017,13 @@ impl CdBlock {
                         if command == 0x65 && self.used() + count > POOL {
                             return self.wait();
                         }
+                        let sectors = &self.partitions[selector][start..start + count];
                         self.copying = Some(SelectorTransfer {
                             source: selector,
-                            sectors: self.partitions[selector][start..start + count]
-                                .iter()
-                                .map(|s| s.id)
-                                .collect(),
+                            sectors: sectors.iter().map(|s| s.id).collect(),
                             destination: destination as u8,
                             moving: command == 0x66,
+                            uses_disc_sectors: sectors.iter().any(Sector::is_disc_derived),
                             clocks: COPY_CLOCKS,
                         });
                         self.copy_error = 255;
@@ -2010,12 +2070,16 @@ impl CdBlock {
                     .enumerate()
                     .skip(c[1] as usize)
                     .find(|(_, s)| s.fad >= field2)
-                    .map_or([0xFFFF; 3], |(i, s)| {
-                        [i as u16, (s.fad >> 16) as u16, s.fad as u16]
+                    .map_or(SectorSearch::NO_MATCH, |(i, s)| SectorSearch {
+                        words: [i as u16, (s.fad >> 16) as u16, s.fad as u16],
+                        matched_sector: Some((selector, s.id)),
                     });
                 self.raise(ESEL);
             }
-            0x56 => response(self, self.search[0], self.search[1], self.search[2]),
+            0x56 => {
+                let [index, fad_hi, fad_lo] = self.search.words;
+                response(self, index, fad_hi, fad_lo);
+            }
             0x60 => {
                 let sizes = [2048, 2336, 2340, 2352];
                 let a = c[0] & 255;
@@ -2044,7 +2108,7 @@ impl CdBlock {
                     position: 0,
                     put: Some((selector, n, self.put_length)),
                     delete: None,
-                    host_io: true,
+                    kind: TransferKind::HostSectors,
                     rw: None,
                 });
                 self.raise(DRDY);
@@ -2058,7 +2122,7 @@ impl CdBlock {
                 self.response.set(r);
             }
             0x70 | 0x71 => {
-                if selector >= SELECTORS || self.media.is_none() || self.tray_open {
+                if selector >= SELECTORS || self.media.is_none() || self.tray_open() {
                     return false;
                 }
                 if self.directory_read.is_some() {
@@ -2149,7 +2213,7 @@ impl CdBlock {
                     bytes.extend([f.unit, f.gap, f.number, f.flags]);
                 }
                 transfer_size(self, (bytes.len() / 2) as u32, 0);
-                return self.begin_get(bytes, None, false);
+                return self.begin_get(bytes, None, TransferKind::Drive);
             }
             0x74 => {
                 let Some(f) = self
@@ -2205,12 +2269,14 @@ impl CdBlock {
                 self.retry_attempts = 0;
                 self.file_read = None;
                 self.playing = false;
-                self.status = 1;
+                if !matches!(self.status, 0 | 6 | 7) {
+                    self.status = 1;
+                }
                 self.raise(EFLS);
             }
             0xE0 => {
                 // Stock disc authentication only; no MPEG cartridge is modeled.
-                if c[0] & 255 != 0 || c[1] != 0 || self.tray_open {
+                if c[0] & 255 != 0 || c[1] != 0 || self.tray_open() {
                     return false;
                 }
                 let Some(media) = &self.media else {
@@ -2255,6 +2321,168 @@ impl CdBlock {
                 self.response.set([status, self.authenticated, 0, 0]);
             }
             _ => return false,
+        }
+        true
+    }
+    // Apply a drive command without touching the command response registers.
+    // Recognition can replay the deferred command while a response is latched.
+    fn execute_drive(&mut self, c: [u16; 4], software_reset: bool) -> bool {
+        let command = c[0] >> 8;
+        let flags = c[0] as u8;
+        let ecc = (c[3] >> 8) as u8;
+        let retry = c[3] as u8;
+        // A software reset ignores the other initialization arguments.
+        if (command == 0x04
+            && !software_reset
+            && (!matches!(ecc, 0..=5 | 0x80 | 0xFF)
+                || !matches!(retry, 0..=15 | 0x40..=0x4F | 0x80 | 0xFF)))
+            || (command == 0x12 && flags > 1)
+        {
+            return false;
+        }
+        // ST-162 §4.1: the latest drive command waits for the manual cover
+        // to close and the TOC to be read. Soft reset runs independently.
+        if !software_reset && (self.cover_open || self.recognition.is_some()) {
+            self.deferred_drive = Some(c);
+            self.status = 0;
+            return true;
+        }
+        match command {
+            0x04 => {
+                if software_reset {
+                    self.init_flags = 0;
+                    self.ecc = 0;
+                    self.retry = 0;
+                    self.standby_seconds = 180;
+                } else {
+                    if flags & 0x80 == 0 {
+                        self.init_flags = flags & 0x1E;
+                    }
+                    if ecc != 0xFF {
+                        self.ecc = ecc;
+                    }
+                    if retry != 0xFF {
+                        self.retry = retry;
+                    }
+                }
+                if !software_reset && c[1] != 0xFFFF {
+                    self.standby_seconds = if c[1] == 0 { 180 } else { c[1] };
+                }
+                self.pause_clocks = 0;
+                self.stop_rw();
+                self.fad = self.pause_position();
+                self.at_home = false;
+                self.software_tray_open = false;
+                self.scan = None;
+                self.buffer_paused = false;
+                self.playing = false;
+                self.deferred_drive = None;
+                self.seeking = 0;
+                self.authentication = None;
+                self.audio_index = 0;
+                self.deemphasis = crate::cd_audio::Deemphasis::default();
+                self.finish_directory(false);
+                self.file_read = None;
+                self.retry_attempts = 0;
+                self.speed = if self.init_flags & 0x10 != 0 { 1 } else { 2 };
+                if software_reset {
+                    self.rw = crate::cd_rw::Decoder::default();
+                    self.filters = std::array::from_fn(Filter::reset);
+                    for p in &mut self.partitions {
+                        p.clear();
+                    }
+                    self.connection = 255;
+                    *self.transfer.get_mut() = None;
+                    self.get_length = 2048;
+                    self.put_length = 2048;
+                    self.actual_size = 0;
+                    self.search = SectorSearch::default();
+                    self.copy_error = 0;
+                    self.copying = None;
+                    self.last = 255;
+                    self.play_start = 150;
+                    self.end = self.media.as_ref().map_or(u32::MAX, |m| m.leadout);
+                    self.repeat = 0;
+                    self.repeats = 0;
+                    self.files.clear();
+                    self.directory = None;
+                    self.volume_end = 0;
+                    self.hirq
+                        .set(self.hirq.get() & !(DRDY | CSCT | BFUL | PEND));
+                }
+                self.status = if self.cover_open {
+                    6
+                } else if self.recognition.is_some() {
+                    0
+                } else if self.media.is_some() {
+                    1
+                } else {
+                    7
+                };
+                if software_reset {
+                    self.raise(ESEL | EHST | ECPY | EFLS | 0x800);
+                }
+            }
+            0x10 => return self.play(c),
+            0x11 => {
+                let field1 = (u32::from(flags) << 16) | u32::from(c[1]);
+                if field1 == 0 {
+                    if self.media.is_none() {
+                        return false;
+                    }
+                    self.software_tray_open = false;
+                    self.stop_rw();
+                    self.playing = false;
+                    self.retry_attempts = 0;
+                    self.scan = None;
+                    self.buffer_paused = false;
+                    self.seeking = 0;
+                    self.at_home = true;
+                    self.status = 2;
+                    return true;
+                }
+                let Some(fad) = self.position(field1, self.pause_position()) else {
+                    return false;
+                };
+                if self
+                    .media
+                    .as_ref()
+                    .is_none_or(|m| fad > m.leadout || (fad == m.leadout && field1 != 0xFF_FFFF))
+                {
+                    return false;
+                }
+                self.software_tray_open = false;
+                self.stop_rw();
+                self.scan = None;
+                self.buffer_paused = false;
+                self.pause_clocks = 0;
+                self.fad = fad;
+                self.playing = false;
+                self.retry_attempts = 0;
+                if field1 != 0xFF_FFFF || self.at_home {
+                    self.audio_index = 0;
+                    self.deemphasis = crate::cd_audio::Deemphasis::default();
+                }
+                self.at_home = false;
+                self.status = 4;
+                self.seeking = 26_875;
+            }
+            0x12 => {
+                if self.media.is_none() {
+                    return false;
+                }
+                let audible = self.scan.map_or(self.playing, |(_, audible)| audible);
+                self.stop_rw();
+                self.scan = Some((c[0] & 1 != 0, audible));
+                self.fad = self.pause_position();
+                self.at_home = false;
+                self.software_tray_open = false;
+                self.playing = false;
+                self.buffer_paused = false;
+                self.seeking = 0;
+                self.status = 5;
+            }
+            _ => unreachable!(),
         }
         true
     }

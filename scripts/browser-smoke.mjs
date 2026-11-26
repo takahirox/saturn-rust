@@ -28,7 +28,8 @@ import { chd } from "./chd.mjs";
 import { cdStream } from "./cd-stream.mjs";
 import { cdRuntime } from "./cd-runtime.mjs";
 import { externalDiscovery } from "./external-discovery.mjs";
-import { externalStartup } from "./external-startup.mjs";
+import { cdCover } from "./cd-cover.mjs";
+import { externalStartup as externalStartupGuest } from "./external-startup.mjs";
 import { interruptEntry } from "./interrupt-entry.mjs";
 import { sh2Fetch } from "./sh2-fetch.mjs";
 import { sh2Load } from "./sh2-load.mjs";
@@ -159,6 +160,10 @@ try {
     await fallbackContext.close();
   }
   assert(await page.evaluate(() => [...document.styleSheets].some((sheet) => sheet.href?.endsWith("/saturn-rust/style.css") && sheet.cssRules.length > 0)));
+  const externalStartup = async page => {
+    await externalStartupGuest(page);
+    await cdCover(browser, address + prefix);
+  };
   const scenarios = { vdp2Status, videoTransactions, abusTiming, dspArithmetic,
       busTransactions, bBusReads, videoWrites, slaveRaster, hleDual, scuFringe,
       dmacBus, sh2BusPipeline, sh2ResetBus, cs0Transfers, spriteShrink,

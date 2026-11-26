@@ -79,3 +79,33 @@ fn guest_cdda_preemphasis_has_reference_stereo_samples_and_continuous_sector_his
         }
     }
 }
+
+#[test]
+fn opening_cover_mutes_the_first_post_open_field_without_resetting_sound() {
+    let cue = "FILE a BINARY\nTRACK 01 AUDIO\nINDEX 01 00:00:00\n";
+    let audio = [0x12; 3 * 2352];
+    for fast in [false, true] {
+        let mut machine = Machine::new();
+        machine.reset(Boot::ExternalBios(&rom())).unwrap();
+        machine.set_fast_mode(fast);
+        machine.mount_media(Media::cue(cue, &[("a", &audio)]).unwrap());
+        machine.advance_frame().unwrap();
+        assert_eq!(machine.bus().read32(0x06009010), Ok(0x600D));
+        assert!(machine.drain_audio(8192).ends_with(&[0x1212; 2]));
+
+        let generated = machine.audio_generated();
+        let sound_pc = machine.sound_state().pc;
+        machine.set_cd_cover_open(true);
+        assert_eq!(machine.audio_generated(), generated);
+        assert_eq!(machine.sound_state().pc, sound_pc);
+        assert!(machine.drain_audio(8192).is_empty());
+        machine.advance_frame().unwrap();
+        let samples = machine.drain_audio(8192);
+        assert!(!samples.is_empty());
+        assert!(samples.iter().all(|&sample| sample == 0));
+        assert_eq!(
+            machine.audio_generated(),
+            generated + samples.len() as u64 / 2
+        );
+    }
+}

@@ -1847,6 +1847,7 @@ impl Bus {
         let sound_rendezvous = std::mem::take(&mut self.sound_rendezvous);
         let bios = self.bios.take();
         let media = self.cd.media().cloned();
+        let cover_open = self.cd.cover_open();
         let pal = self.raster.pal;
         #[cfg(any(test, feature = "video-worker"))]
         let video_domain = self.video_domain.take();
@@ -1875,6 +1876,7 @@ impl Bus {
         if let Some(media) = media {
             self.cd.mount(media);
         }
+        self.cd.set_cover_open(cover_open);
     }
 
     /// Debugger word access bypasses CD CR4-release and FIFO-consume effects.

@@ -79,7 +79,7 @@ export async function chd(page) {
   const select=async(buffer,name='ordinary.chd')=>{
     await page.locator('#disc').setInputFiles({name,mimeType:'application/octet-stream',buffer});
     await page.waitForFunction(()=>document.getElementById('main').getAttribute('aria-busy')==='false'
-      && (document.getElementById('status').textContent==='Ready'||document.getElementById('error').textContent.includes('CHD')||document.getElementById('error').textContent.includes('Select one')));
+      && ['Loaded locally','Needs attention'].includes(document.getElementById('disc-state').textContent));
   };
   await select(chd);assert.equal(await page.locator('#error').textContent(),'');
   const lab=()=>page.evaluate(async()=>{
@@ -101,13 +101,14 @@ export async function chd(page) {
   const corrupt=Buffer.from(chd);corrupt[124]^=255;variants.push([corrupt,/CHD/]);
   variants.push([chd.subarray(0,150),/CHD/],[Buffer.alloc(124),/CHD/]);
   for(const [bytes,message] of variants){
-    await select(bytes);assert.match(await page.locator('#error').textContent(),message);
+    await select(bytes,'rejected.chd');assert.match(await page.locator('#error').textContent(),message);
+    assert.equal(await page.locator('#disc-selection').textContent(),'ordinary.chd');
     assert(await page.locator('#run').isDisabled());
     const stopped=await page.evaluate(async()=>{const {emulator:m}=await import('./app.js');return [(await m.instruction_count()),(await m.read_long(0x06010020))];});
     assert.deepEqual(stopped,['0',0],'failed load discarded stale guest state');
   }
   await select(Buffer.alloc(18*2048),'lonely.bin');assert.match(await page.locator('#error').textContent(),/BIN needs its CUE/);
   await select(chd);await page.locator('#disc').setInputFiles([]);
-  assert(await page.locator('#run').isDisabled(),'cancelled replacement has no stale medium');
+  assert(await page.locator('#run').isDisabled(),'clearing the selection disables execution');
   assert.equal(requests.filter(r=>r.method!=='GET'||r.body!==null).length,0);
 }

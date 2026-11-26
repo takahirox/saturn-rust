@@ -91,8 +91,10 @@
             <h2 id="disc-heading">Disc</h2>
             <p id="disc-selection" class="media-name">No disc selected.</p>
             <p id="disc-state" role="status"></p>
+            <p id="disc-error" role="status" hidden></p>
             <div class="actions">
               <input id="disc" type="file" accept=".chd,.iso,.cue,.bin,.srw" multiple hidden>
+              <button id="disc-cover" type="button" aria-describedby="disc-state" hidden>Open cover</button>
               <button id="disc-choose" type="button" aria-label="Insert disc" aria-describedby="disc-state">Insert</button>
               <button id="disc-clear" type="button" aria-label="Clear disc" disabled>Clear</button>
             </div>
@@ -229,6 +231,7 @@
       <h3>Local media</h3>
       <p>Insert one CHD v5 CD-ROM (cdlz/cdzl/cdfl or uncompressed), a cooked 2048-byte-sector ISO, or a CUE and all its BINARY tracks together. You can also drop them on the Disc slot. CHD and CUE track data are limited to 1,058,400,000 bytes, CUE sheets to 1 MiB, and ISO images to 18–450,000 sectors. CUE sheets may explicitly reference an SRW1 diagnostic companion. Large images need sufficient browser memory.</p>
       <p>A valid raw 512 KiB BIOS takes precedence and can boot with or without a disc. Clear a rejected BIOS or replace it to recover. With a disc alone, the emulator uses BIOS-less HLE. Firmware and game compatibility are incomplete. Use media you are authorized to use.</p>
+      <p>After starting a BIOS session, select Open cover to insert, change, drop or remove a disc. Select Close cover so the guest can recognize it without restarting the console. If you paused playback, select Resume to continue.</p>
       <p>Disc and BIOS files stay in this tab. Internal memory, backup cartridge saves, the clock and console settings are saved locally for this site in your browser. Clearing site data can erase them. Keep copies using Save management in Advanced.</p>
       <h3>Playback</h3>
       <p>Reset cold-boots the selected media and retains backup RAM. Help, Advanced and Debug pause playback. Select Resume when ready. If your browser blocks sound, select Enable audio.</p>

@@ -8,6 +8,10 @@ export let emulator;
 let pendingDisc = null;
 let discMount = null;
 let loadedDisc = false;
+let discCandidate = "";
+let coverOpen = false;
+let changingLiveDisc = false;
+let liveDiscError = "";
 // Resource bounds mirror disc.rs, independent of Saturn's recording standards.
 const MAX_ISO_BYTES = 450000 * 2048;
 const MAX_MEDIA_BYTES = 450000 * 2352;
@@ -96,6 +100,7 @@ function effectiveBootMode() {
 function playerInputReady(mode = effectiveBootMode()) {
   return mode === "bios" || (mode === "disc" && loadedDisc);
 }
+const liveDiscSession = () => sessionStarted && bootValid && effectiveBootMode() === "bios";
 function acceptsInput() {
   return !$("help").open && bootValid && playerInputReady() && !loadingFile() && !loadingBackup() && pendingActions === 0 && !selectionError();
 }
@@ -249,7 +254,7 @@ async function pause({ checkpoint = playing } = {}) {
   if (emulator) await emulator.pause({ checkpoint });
 }
 function deliverAudio({ pcm }) {
-  if (!playing || !audio.node || audio.context.state !== "running") return;
+  if (!playing || (changingLiveDisc && !coverOpen) || !audio.node || audio.context.state !== "running") return;
   if (!audio.paused) return audio.deliverPaced(pcm);
   const stretch = effectiveBootMode() === "bios";
   queuedAudio.push(pcm);
@@ -335,19 +340,34 @@ function render() {
     rows($("special"), ["PC", "SR", "PR", "GBR", "VBR", "MACH", "MACL"], emulator.state.special);
     $("frames").textContent = emulator.state.frames;
   }
+  const liveDisc = liveDiscSession();
+  const busy = loadingFile() || loadingBackup() || pendingActions > 0;
   for (const [id, loading] of [["disc", loadingDisc], ["bios", loadingBios]]) {
-    const selected = Boolean(selectionNames[id]);
+    const liveSlot = id === "disc" && liveDisc;
+    const blockedByCover = liveSlot && (!coverOpen || busy);
+    const candidate = id === "disc" && discCandidate;
+    const name = selectionNames[id] || candidate;
+    const selected = Boolean(name);
     const status = selectionErrors[id] ? "Needs attention" : loading ? "Reading locally…" :
-      id === "disc" && selected && !loadedDisc ? "Validating…" : selected ? "Loaded locally" : "";
-    setText(`${id}-selection`, selectionNames[id] || `No ${id === "bios" ? "BIOS" : "disc"} selected.`);
-    setText(`${id}-state`, status);
+      candidate ? "Validating…" : selected ? "Loaded locally" : "";
+    setText(`${id}-selection`, name || `No ${id === "bios" ? "BIOS" : "disc"} selected.`);
+    setText(`${id}-state`, liveSlot ?
+      `Cover ${coverOpen ? "open" : "closed"} · ${loadedDisc ? "Disc inserted" : "Empty"}${loadingDisc ? " · Reading locally…" : ""}` : status);
     const choose = $(`${id}-choose`);
     const action = selected ? "Change" : "Insert";
     setText(`${id}-choose`, action);
     choose.setAttribute("aria-label", `${action} ${id === "bios" ? "BIOS" : "disc"}`);
-    $(`${id}-clear`).disabled = !selected;
+    choose.disabled = blockedByCover;
+    $(`${id}-clear`).disabled = blockedByCover || (!selected && !selectionErrors[id]);
   }
-  const busy = loadingFile() || loadingBackup() || pendingActions > 0;
+  const cover = $("disc-cover");
+  cover.hidden = !liveDisc;
+  cover.disabled = busy;
+  setText("disc-cover", coverOpen ? "Close cover" : "Open cover");
+  setText("disc-clear", liveDisc ? "Remove" : "Clear");
+  $("disc-clear").setAttribute("aria-label", liveDisc ? "Remove disc" : "Clear disc");
+  $("disc-error").hidden = !liveDisc || !liveDiscError;
+  setText("disc-error", liveDisc ? liveDiscError : "");
   const ready = bootValid && !busy && !selectionError() && canExecute(machineStatus);
   $("step").disabled = !ready;
   $("run").disabled = !ready;
@@ -495,6 +515,12 @@ async function installCartridge(requestedSlot) {
 async function reset({ clearMedia = false } = {}) {
   const generation = ++bootGeneration;
   resetting = true;
+  if (coverOpen && loadingDisc) {
+    discGeneration++;
+    loadingDisc = false;
+  }
+  coverOpen = false;
+  liveDiscError = "";
   const current = () => generation === bootGeneration;
   if (backupReadStatus) {
     backupReadStatus.textContent = "Import cancelled by boot change; current console data was preserved.";
@@ -526,14 +552,19 @@ async function reset({ clearMedia = false } = {}) {
       const discToken = discGeneration;
       pendingDisc = null;
       const mount = media.cue !== undefined ? emulator.mount_cue(media.cue, media.names, media.lengths, media.bytes) : emulator.mount_disc(media.bytes);
-      discMount = mount.then(() => {
-        if (discToken === discGeneration) loadedDisc = true;
+      const mounting = mount.then(() => {
+        if (discMount === mounting) {
+          loadedDisc = true;
+          selectionNames.disc = media.name;
+        }
       }, error => {
         if (discToken === discGeneration) selectionErrors.disc = String(error);
         throw error;
       }).finally(() => {
-        if (discToken === discGeneration) discMount = null;
+        if (discMount === mounting) discMount = null;
+        if (discToken === discGeneration) discCandidate = "";
       });
+      discMount = mounting;
     }
     // A newer machine reset can reuse an in-flight mount for the same disc.
     if (discMount) await discMount;
@@ -739,6 +770,7 @@ try {
     biosSelected = loadedDisc = false;
     $("disc").value = $("bios").value = "";
     selectionNames.disc = selectionNames.bios = "";
+    discCandidate = "";
     debugFixture = true;
     void reset({ clearMedia: true });
   });
@@ -797,18 +829,60 @@ try {
       act(() => {});
     }
   });
+  // The Worker drains its current field before mutating the CD block. Drop
+  // already mixed host PCM while that field and its presentation are settled.
+  async function changeLiveDisc(operation) {
+    changingLiveDisc = true;
+    if (!coverOpen) {
+      queuedAudio = [];
+      audio.setPaused(true);
+    }
+    liveDiscError = "";
+    try {
+      await operation();
+    } catch (error) {
+      liveDiscError = `Could not change the disc: ${error.message}. Try again with a complete local image.`;
+    } finally {
+      changingLiveDisc = false;
+      render();
+    }
+  }
+  $("disc-cover").addEventListener("click", () => void act(() => changeLiveDisc(async () => {
+    const open = !coverOpen;
+    await emulator.set_cd_cover_open(open);
+    coverOpen = open;
+  })));
+
   const selectDisc = async (files) => {
-    if ($("controls").disabled) return;
+    if ($("controls").disabled || !files.length) return;
+    const live = liveDiscSession();
+    if (live && (!coverOpen || loadingDisc || changingLiveDisc)) {
+      if (!coverOpen) {
+        liveDiscError = "Open the cover before inserting or changing the disc.";
+        render();
+      }
+      return;
+    }
     selectionErrors.disc = "";
+    liveDiscError = "";
     const generation = ++discGeneration;
-    debugFixture = false;
-    sessionStarted = false;
-    selectionNames.disc = files.map(file => file.name).join("\n");
-    pendingDisc = discMount = null;
-    loadedDisc = false;
-    loadingDisc = Boolean(files.length);
-    void reset({ clearMedia: true });
-    if (!files.length) return;
+    const boot = bootGeneration;
+    const name = files.map(file => file.name).join("\n");
+    if (!live) {
+      debugFixture = false;
+      sessionStarted = false;
+      discCandidate = name;
+      pendingDisc = null;
+      if (playing) void act(pause);
+    }
+    const current = () => generation === discGeneration && (!live || boot === bootGeneration);
+    const reject = message => {
+      loadingDisc = false;
+      discCandidate = "";
+      if (live) liveDiscError = message;
+      else selectionErrors.disc = $("error").textContent = message;
+      render();
+    };
     const cueFiles = files.filter((file) => /\.cue$/i.test(file.name));
     const cue = cueFiles.length === 1 ? cueFiles[0] : null;
     const file = files[0];
@@ -816,40 +890,73 @@ try {
     if ((!cue && (files.length !== 1 || (chd ? file.size < 124 || file.size > MAX_MEDIA_BYTES : !/\.iso$/i.test(file.name) || file.size < 18 * 2048 || file.size > MAX_ISO_BYTES || file.size % 2048 !== 0))) ||
         cueFiles.length > 1 || files.filter((file) => file !== cue).reduce((total, file) => total + file.size, 0) > MAX_MEDIA_BYTES ||
         (cue && (cue.size > 1048576 || files.length < 2 || files.length > 100))) {
-      loadingDisc = false;
-      selectionErrors.disc = $("error").textContent = "Select one self-contained CHD v5 CD-ROM, one complete 2048-byte-sector ISO (18 to 450000 sectors), or one CUE and all its referenced BINARY track files together (up to 1058400000 bytes). A lone raw BIN needs its CUE.";
-      render();
+      reject("Select one self-contained CHD v5 CD-ROM, one complete 2048-byte-sector ISO (18 to 450000 sectors), or one CUE and all its referenced BINARY track files together (up to 1058400000 bytes). A lone raw BIN needs its CUE.");
       return;
     }
     loadingDisc = true;
     $("error").textContent = selectionError();
     render();
     try {
+      let media;
       if (cue) {
         const tracks = files.filter((file) => file !== cue);
         const cueText = new TextDecoder("utf-8", { fatal: true }).decode(await cue.arrayBuffer());
-        if (generation !== discGeneration) return;
+        if (!current()) return;
         // Blob concatenates the selected local file handles, avoiding retained
         // per-file ArrayBuffers plus a second complete JS aggregate copy.
         const bytes = new Uint8Array(await new Blob(tracks).arrayBuffer());
-        if (generation !== discGeneration) return;
-        pendingDisc = { cue: cueText, names: tracks.map((file) => file.name).join("\0"), lengths: new Uint32Array(tracks.map((file) => file.size)), bytes };
+        if (!current()) return;
+        media = { cue: cueText, names: tracks.map((file) => file.name).join("\0"), lengths: new Uint32Array(tracks.map((file) => file.size)), bytes };
       } else {
         const bytes = new Uint8Array(await file.arrayBuffer());
-        if (generation !== discGeneration) return;
+        if (!current()) return;
         if (chd && new TextDecoder().decode(bytes.subarray(0, 8)) !== "MComprHD") throw new Error("Invalid CHD header; expected CHD v5 CD-ROM.");
-        pendingDisc = { bytes };
+        media = { bytes };
       }
       loadingDisc = false;
-      await reset();
+      if (live) {
+        await act(() => changeLiveDisc(async () => {
+          if (media.cue !== undefined) await emulator.insert_open_cue(media.cue, media.names, media.lengths, media.bytes);
+          else await emulator.insert_open_disc(media.bytes);
+          loadedDisc = true;
+          selectionNames.disc = name;
+        }));
+      } else {
+        pendingDisc = { ...media, name };
+        await reset();
+      }
     } catch (error) {
-      if (generation !== discGeneration) return;
-      loadingDisc = false;
-      selectionErrors.disc = `Could not read disc locally: ${error}. Select the file again.`;
-      act(() => {});
+      if (current()) reject(`Could not read disc locally: ${error}. Select the file again.`);
     }
   };
-  $("disc").addEventListener("change", () => selectDisc([...$("disc").files]));
+  function removeDisc() {
+    if (liveDiscSession()) {
+      if (!coverOpen || !loadedDisc || loadingDisc || changingLiveDisc) return;
+      void act(() => changeLiveDisc(async () => {
+        await emulator.remove_open_disc();
+        loadedDisc = false;
+        selectionNames.disc = "";
+      }));
+      return;
+    }
+    discGeneration++;
+    selectionErrors.disc = selectionNames.disc = discCandidate = "";
+    pendingDisc = discMount = null;
+    loadedDisc = loadingDisc = false;
+    debugFixture = sessionStarted = false;
+    void reset({ clearMedia: true });
+  }
+  $("disc").addEventListener("change", () => {
+    const files = [...$("disc").files];
+    if (files.length) void selectDisc(files);
+    else if (!liveDiscSession()) removeDisc();
+  });
+  $("disc").addEventListener("cancel", () => {
+    if (liveDiscSession() && coverOpen) {
+      liveDiscError = "Selection cancelled. Choose the disc files to try again.";
+      render();
+    }
+  });
   for (const id of ["bios", "disc"]) {
     $(id + "-choose").addEventListener("click", () => {
       const picker = $(id);
@@ -858,14 +965,15 @@ try {
     });
     $(id + "-clear").addEventListener("click", () => {
       $(id).value = "";
-      $(id).dispatchEvent(new Event("change"));
+      if (id === "disc") removeDisc();
+      else $(id).dispatchEvent(new Event("change"));
       $(id + "-choose").focus({ preventScroll: true });
     });
   }
   const dropZone = $("disc-drop");
   for (const type of ["dragenter", "dragover"]) dropZone.addEventListener(type, event => {
     event.preventDefault();
-    if (!$("controls").disabled) dropZone.classList.add("drag-over");
+    if (!$("controls").disabled && (!liveDiscSession() || coverOpen)) dropZone.classList.add("drag-over");
   });
   dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-over"));
   dropZone.addEventListener("drop", event => {
