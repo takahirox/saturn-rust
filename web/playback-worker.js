@@ -3,6 +3,7 @@
 import init, { Emulator } from "./pkg/saturn_rust.js";
 import { VideoRenderClient } from "./video-render-client.js";
 import { SoundClient, SOUND_TRANSPORT_METHODS } from "./sound-client.js";
+import { ConsoleSaves } from "./console-saves.js";
 
 const REFERENCE_HZ = 26874100;
 const MAX_PACING_LAG_FIELDS = 16;
@@ -13,7 +14,10 @@ let run = Promise.resolve(), failed = false;
 let resolvePresentation;
 const presentation = new Promise(resolve => { resolvePresentation = resolve; });
 let directPresentation = false;
-let methods;
+let methods, saves;
+const mediaChange = method => method?.startsWith("reset_") || method?.startsWith("mount_")
+  || method === "clear_media" || method === "set_cartridge";
+const saveReplacement = method => ["import_backup_ram", "import_cartridge_backup_ram"].includes(method);
 let playWanted = false, playOptions = { paced: true };
 const pending = new Map();
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -30,13 +34,18 @@ function fatal(error) {
 const ready = init().then(async () => {
   machine = new Emulator();
   if (!machine.enable_video_transport) throw new Error("Use the renderer-enabled Wasm build");
-  const port = await presentation;
+  const { port, persistSaves } = await presentation;
   directPresentation = Boolean(port);
   video = new VideoRenderClient({ presentationPort: port });
   sound = new SoundClient(machine);
   await Promise.all([video.ready, sound.ready]);
   video.activate();
   if (!machine.enable_video_transport(true)) throw new Error("Renderer requires a pristine Machine");
+  if (persistSaves) {
+    saves = new ConsoleSaves(machine, status => self.postMessage({ type: "save-status", status }));
+    await saves.restore();
+    setInterval(() => saves.poll(), 1000);
+  }
   // Playback uses relaxed CPU/device interleaving for real-time speed.
   machine.set_fast_mode(true);
   methods = new Set(Object.getOwnPropertyNames(Emulator.prototype).filter(name =>
@@ -125,13 +134,17 @@ async function invoke(data) {
   for (const { method, args } of data.operations) {
     try {
       if (!methods.has(method) || !Array.isArray(args)) throw new Error("Unknown emulator method");
-      if (method.startsWith("reset_") || method === "clear_media") resetSound = true;
+      if (saves && mediaChange(method)) await saves.flush();
+      if (method.startsWith("reset_") || method === "clear_media" || method === "set_cartridge") resetSound = true;
       video.activate();
+      if (method === "set_cartridge") input = {};
       applyInput();
       let value;
       if (method === "framebuffer" || method === "video_width" || method === "video_height") {
         const receipt = await capture(method === "framebuffer");
         value = method === "framebuffer" ? receipt.pixels : method === "video_width" ? receipt.width : receipt.height;
+      } else if (saves && saveReplacement(method)) {
+        await saves.replace(method === "import_backup_ram" ? 0 : 1, args[0]);
       } else value = machine[method](...args);
       values.push({ ok: true, value });
     } catch (error) { values.push({ ok: false, error: String(error?.message ?? error) }); }
@@ -166,6 +179,7 @@ async function stop() {
 }
 async function reset(data) {
   await stop();
+  await saves?.flush();
   epoch = data.epoch;
   input = {};
   video.activate();
@@ -214,8 +228,9 @@ async function dispatch(data) {
   switch (data.command) {
     case "reset": return reset(data);
     case "play": return start(data);
-    case "pause": await stop(); return snapshot();
-    case "view": await stop(); applyInput(); return { epoch, view: view() };
+    case "pause": await stop(); await saves?.flush(); return snapshot();
+    case "view": await stop(); await saves?.flush(); applyInput(); return { epoch, view: view() };
+    case "retry-saves": await stop(); await saves?.flush({ retry: true }); return { epoch, view: view() };
     case "advance": {
       await stop();
       if (!Number.isInteger(data.fields) || data.fields < 1 || data.fields > 8) throw new Error("Advance one to eight fields");
@@ -231,7 +246,7 @@ async function dispatch(data) {
 }
 self.onmessage = ({ data }) => {
   if (data.type === "presentation") {
-    resolvePresentation(data.port ?? null);
+    resolvePresentation({ port: data.port, persistSaves: data.persistSaves });
     return;
   }
   if (data.type === "presented") {
@@ -256,7 +271,7 @@ self.onmessage = ({ data }) => {
     playOptions = { paced: data.paced !== false };
   } else {
     playing = false;
-    if (data.command !== "invoke" || data.operations?.some(op => op.method?.startsWith("reset_") || op.method === "clear_media")) playWanted = false;
+    if (data.command !== "invoke" || data.operations?.some(op => mediaChange(op.method) || saveReplacement(op.method))) playWanted = false;
   }
   control = control.then(async () => {
     try { self.postMessage({ type: "result", id: data.id, result: await dispatch(data) }); }

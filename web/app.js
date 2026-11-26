@@ -97,7 +97,15 @@ function playerInputReady(mode = effectiveBootMode()) {
 function acceptsInput() {
   return !$("help").open && bootValid && playerInputReady() && !loadingFile() && !loadingBackup && pendingActions === 0 && !selectionError();
 }
+const backupDevices = [
+  { id: "backup", name: "internal memory", size: 32768, suffix: "", file: "saturn-backup.bin" },
+  { id: "cartridge-backup", name: "backup cartridge", size: 524288, suffix: "cartridge_", file: "saturn-power-memory.bin" },
+];
 let backupGeneration = 0;
+let backupStatusId = "backup-status";
+let cartridge = 0;
+let saveStorage = { state: "loading" };
+const cartridgePreference = "saturn-rust-cartridge";
 let loadingBackup = false;
 let readingBackup = false;
 let view = "play";
@@ -351,7 +359,15 @@ function render() {
   }
   $("restart").disabled = busy || Boolean(selectionError()) || !inputReady;
   $("frame").disabled = !playerReady || playing;
-  $("backup-export").disabled = busy;
+  $("cartridge").disabled = busy || $("backup-controls").disabled;
+  if ($("cartridge").value !== String(cartridge)) $("cartridge").value = String(cartridge);
+  const storageError = saveStorage.state.endsWith("-error");
+  for (const { id } of backupDevices) {
+    $(`${id}-export`).disabled = busy;
+    $(`${id}-clear`).disabled = busy || storageError;
+  }
+  $("retry-saves").disabled = busy;
+  $("retry-saves").hidden = !storageError;
   const state = loadingFile() ? "Reading local media…" : loadingBackup ? "Reading backup RAM…" :
     busy ? "Working…" :
     playing ? `Running${machineStatus === "Ready" ? "" : ` · ${machineStatus}`}` :
@@ -434,11 +450,11 @@ async function act(operation, { current = () => true, clearError = true } = {}) 
   } finally { pendingActions--; render(); }
 }
 
-async function reset({ clearMedia = false } = {}) {
+async function reset({ clearMedia = false, slot } = {}) {
   const generation = ++bootGeneration;
   resetting = true;
   const current = () => generation === bootGeneration;
-  if (loadingBackup) $("backup-status").textContent = readingBackup
+  if (loadingBackup) $(backupStatusId).textContent = readingBackup
     ? "Backup import cancelled by boot change; backup RAM was preserved."
     : "Accepted backup import retained through the boot change.";
   backupGeneration++;
@@ -458,6 +474,12 @@ async function reset({ clearMedia = false } = {}) {
     if (!current()) return;
     // The rejected empty ROM clears execution while retaining mounted media.
     try { await emulator.reset_bios(new Uint8Array()); } catch { /* Expected size rejection. */ }
+    if (!current()) return;
+    if (slot !== undefined) {
+      await emulator.set_cartridge(slot);
+      cartridge = slot;
+      try { localStorage.setItem(cartridgePreference, String(slot)); } catch { /* Optional preference. */ }
+    }
     if (!current()) return;
     // Claim the bytes only when this reset is ready to transfer them. A newer
     // BIOS reset can otherwise supersede this operation while retaining the disc.
@@ -492,8 +514,28 @@ async function reset({ clearMedia = false } = {}) {
   }
 }
 
+function showSaveStorage(status) {
+  saveStorage = status;
+  const message = {
+    loading: "Restoring local saves…",
+    empty: "Local storage is available. No console saves have been stored yet.",
+    ready: "Local storage is up to date.",
+    pending: "New save changes are waiting to be stored…",
+    saving: "Saving changes locally…",
+    "restore-error": "Could not restore local saves. Existing storage is protected.",
+    "write-error": "Changes are unsaved. Export a copy or retry local storage.",
+  }[status.state];
+  setText("save-storage-status", status.message ? `${message} ${status.message}` : message);
+  for (const [index, { id }] of backupDevices.entries()) {
+    const saved = status.devices?.[index];
+    setText(`${id}-persistence`, status.state.endsWith("-error") ? "Current session only until storage recovers." :
+      saved ? "Local copy is available." : status.state === "loading" ? "Restoring…" : "No local copy yet.");
+  }
+  if (emulator?.state) render();
+}
+
 try {
-  emulator = new WorkerEmulator({ onFrame: presentFrame, onAudio: deliverAudio,
+  emulator = new WorkerEmulator({ onFrame: presentFrame, onAudio: deliverAudio, persistSaves: true, onSaveStatus: showSaveStorage,
     onError: error => {
       // The ready rejection below owns actionable startup diagnostics.
       if (emulator?.state) void act(async () => { throw error; });
@@ -501,55 +543,92 @@ try {
   await emulator.ready;
   // Playback uses relaxed timing; `?timing=exact` keeps the cycle scheduler.
   if (new URLSearchParams(location.search).get("timing") === "exact") await emulator.set_fast_mode(false);
-  $("backup-import").addEventListener("change", async () => {
-    const generation = ++backupGeneration;
-    const file = $("backup-import").files[0];
-    $("backup-import").value = ""; // Selecting the same file again must work.
-    loadingBackup = readingBackup = Boolean(file);
-    await pause();
-    if (generation !== backupGeneration) return;
-    if (!file) { render(); return; }
-    if (file.size !== 32768) {
-      loadingBackup = readingBackup = false;
-      $("backup-status").textContent = `Backup unchanged: select a packed 32 KiB file (32768 bytes); received ${file.size} bytes.`;
-      render();
-      return;
-    }
-    loadingBackup = true;
-    $("backup-status").textContent = "Reading backup RAM locally…";
-    render();
-    try {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      if (generation !== backupGeneration) return;
-      readingBackup = false;
-      $("backup-status").textContent = "Importing 32768 backup bytes…";
-      await emulator.import_backup_ram(bytes);
-      if (generation !== backupGeneration) return;
-      $("backup-status").textContent = "Imported 32768 backup bytes. Playback is paused; Reset to let the guest read the new data.";
-    } catch (error) {
-      if (generation !== backupGeneration) return;
-      $("backup-status").textContent = `Backup unchanged: could not import locally: ${error}`;
-    } finally {
-      if (generation === backupGeneration) { loadingBackup = readingBackup = false; render(); }
-    }
+  try { cartridge = Number(localStorage.getItem(cartridgePreference)); } catch { /* Optional preference. */ }
+  if ([1, 2, 3].includes(cartridge)) await emulator.set_cartridge(cartridge);
+  else cartridge = 0;
+  $("cartridge").addEventListener("change", async event => {
+    const select = event.currentTarget;
+    const slot = Number(select.value);
+    if (slot === cartridge) return;
+    const restoreFocus = document.activeElement === select;
+    await reset({ slot });
+    if (restoreFocus && document.activeElement === document.body && !select.disabled) select.focus();
   });
-  $("backup-export").addEventListener("click", async () => {
+  $("retry-saves").addEventListener("click", () => void act(async () => {
     await pause();
-    let url;
-    try {
-      const bytes = await emulator.export_backup_ram();
-      url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = "saturn-backup.bin";
-      link.click();
-      $("backup-status").textContent = "Exported 32768 backup bytes. Keep this file to restore the backup in a later session.";
-    } catch (error) {
-      $("backup-status").textContent = `Could not export backup RAM: ${error}`;
-    } finally {
-      if (url) setTimeout(() => URL.revokeObjectURL(url), 1000);
-      render();
-    }
+    await emulator.retrySaves();
+  }, { clearError: false }));
+
+  const dialog = $("clear-backup");
+  let clearDevice;
+  for (const device of backupDevices) {
+    const { id, name, size, suffix, file: downloadName } = device;
+    const picker = $(`${id}-import`);
+    const output = $(`${id}-status`);
+    picker.addEventListener("change", async () => {
+      const generation = ++backupGeneration;
+      backupStatusId = output.id;
+      const file = picker.files[0];
+      picker.value = ""; // Selecting the same file again must work.
+      loadingBackup = readingBackup = Boolean(file);
+      try {
+        await pause();
+        if (generation !== backupGeneration || !file) return;
+        if (file.size !== size) throw new Error(`select a packed ${size}-byte file; received ${file.size} bytes.`);
+        output.textContent = "Reading backup RAM locally…";
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        if (generation !== backupGeneration) return;
+        readingBackup = false;
+        output.textContent = `Importing ${size} backup bytes…`;
+        await emulator[`import_${suffix}backup_ram`](bytes);
+        if (generation !== backupGeneration) return;
+        output.textContent = `Imported ${size} backup bytes. Playback is paused. Reset to let the guest read the new data.`;
+      } catch (error) {
+        if (generation === backupGeneration) output.textContent = `Backup unchanged: ${error}`;
+      } finally {
+        if (generation === backupGeneration) { loadingBackup = readingBackup = false; render(); }
+      }
+    });
+    $(`${id}-export`).addEventListener("click", async () => {
+      let url;
+      try {
+        await pause();
+        const bytes = await emulator[`export_${suffix}backup_ram`]();
+        url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = downloadName;
+        link.click();
+        output.textContent = `Exported ${size} backup bytes.`;
+      } catch (error) {
+        output.textContent = `Could not export backup RAM: ${error}`;
+      } finally {
+        if (url) setTimeout(() => URL.revokeObjectURL(url), 1000);
+        render();
+      }
+    });
+    $(`${id}-clear`).addEventListener("click", () => {
+      clearDevice = device;
+      dialog.returnValue = "cancel";
+      setText("clear-backup-title", `Clear ${name}?`);
+      dialog.showModal();
+    });
+  }
+  dialog.addEventListener("close", async () => {
+    if (dialog.returnValue !== "clear") return;
+    const { id, name, size, suffix } = clearDevice;
+    const button = $(id + "-clear");
+    const restoreFocus = document.activeElement === button;
+    await act(async () => {
+      await pause();
+      try {
+        await emulator[`import_${suffix}backup_ram`](new Uint8Array(size));
+        setText(`${id}-status`, `Cleared ${name}. Playback is paused.`);
+      } catch (error) {
+        setText(`${id}-status`, `Backup unchanged: ${error}`);
+      }
+    }, { clearError: false });
+    if (restoreFocus && document.activeElement === document.body && !button.disabled) button.focus();
   });
   $("reset").addEventListener("click", () => {
     biosGeneration++;
@@ -746,6 +825,7 @@ try {
   }
   $("screen").addEventListener("blur", releaseButtons);
   window.addEventListener("blur", releaseButtons);
+  window.addEventListener("pagehide", () => { void pause().catch(() => {}); });
   document.addEventListener("visibilitychange", () => { if (document.hidden) void act(pause, { clearError: false }); });
   requestAnimationFrame(animate);
   $("controls").disabled = false;

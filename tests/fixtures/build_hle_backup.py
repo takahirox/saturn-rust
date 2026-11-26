@@ -138,17 +138,81 @@ def probe():
     return s
 
 
-if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--check',action='store_true');args=p.parse_args()
-    # Keep the existing ISO writer's bounded 0xB000 first-read contract: place
-    # the probe at 0600E000 rather than extending the boot executable range.
-    a=assembler;code=a.assemble(main());probe_code=a.assemble(probe(),base=0x0600E000)
-    assert len(code)<0xA000
-    binary=bytearray(0xA000+len(probe_code));binary[:len(code)]=code;binary[0xA000:]=probe_code
-    image=a.build(bytes(binary),(HERE/'LICENSE').read_bytes(),'BACKUP SERVICES','BUP-001 V1.000')
-    table=''.join(f'{name}\t{value:08x}\n' for name,value in RECORDS)
-    for name,data in [('hle-backup.iso',image),('hle-backup.tsv',table.encode())]:
-        path=HERE/name
-        if args.check: assert path.read_bytes()==data,f'Rebuild {name}'
-        else:path.write_bytes(data)
-        print(f'{"Verified" if args.check else "Built"} {name}; SHA-256 {hashlib.sha256(data).hexdigest()}')
+def init():
+    return (f'load {TRACE:#x},r8\nload {LIB:#x},r4\nload 0x06040000,r5\nload {CONF:#x},r6\n'
+            'load 0x06000358,r1\nmov.l @r1,r1\njsr @r1\nnop\n')
+
+
+def cartridge_main():
+    RECORDS.clear()
+    s = init() + words(CONF, [0x10001, 0x20001, 0], 'configuration')
+    s += call(0, [1, 0]) + result('partition 0', 0)
+    s += call(0, [1, 1]) + result('invalid partition', 9)
+    s += call(0, [2, 0]) + result('absent device', 1)
+    s += call(2, [1, 257, STAT]) + result('unformatted cartridge', 2)
+    for device in [0, 1]:
+        s += call(1, [device]) + result(f'format {device}', 0)
+    s += bytes_at(DATA, [0xDE, 0xCA, 0xFB, 0xAD])
+    s += directory(b'A', 4) + call(3, [0, DIR, DATA, 1]) + result('write internal A', 0)
+    s += bytes_at(DATA, [0x12, 0x34, 0x56, 0x78])
+    s += directory(b'A', 513) + call(3, [1, DIR, DATA, 1]) + result('write external A', 0)
+    s += call(3, [1, DIR, DATA, 1]) + result('external duplicate', 6)
+    s += call(7, [1, DIR, DATA]) + result('verify external A', 0)
+    s += call(4, [1, DIR, OUT]) + result('read external A', 0)
+    s += words(OUT, [0x12345678], 'external payload')
+    s += directory(b'B', 1) + call(3, [1, DIR, DATA, 1]) + result('write external B', 0)
+    s += bytes_at(DIR, b'FILE_A\0') + call(5, [1, DIR]) + result('delete external A', 0)
+    s += call(4, [1, DIR, OUT]) + result('external A missing', 5)
+    s += bytes_at(DIR, b'FILE_\0') + call(6, [1, DIR, 4, OUT]) + result('directory after compact', 1)
+    s += words(OUT, [0x46494C45, 0x5F420000], 'external B name')
+    s += directory(b'B', 523225) + call(3, [1, DIR, DATA, 0]) + result('oversized write', 4)
+    s += store(DIR+28, 513) + call(3, [1, DIR, DATA, 0]) + result('replace compacted B', 0)
+    s += directory(b'X', 523224) + call(3, [1, DIR, DATA, 0]) + result('insufficient free blocks', 4)
+    s += call(2, [1, 513, STAT]) + result('cartridge status', 0)
+    s += words(STAT, [524288, 1024, 512, 522240, 1020, 510], 'cartridge capacity')
+    s += call(2, [1, 0xffffffff, STAT]) + result('oversized status', 0)
+    s += words(STAT+20, [0], 'oversized status slots')
+    s += directory(b'A', 4) + call(4, [0, DIR, OUT]) + result('internal A preserved', 0)
+    s += words(OUT, [0xDECAFBAD], 'internal payload')
+    return s + 'load 0x600d,r0\n' + result('done', 0x600D) + 'sleep\n'
+
+
+def cartridge_probe():
+    s = init()
+    for device, letter in [(0, b'A'), (1, b'B')]:
+        s += bytes_at(DIR, b'FILE_'+letter+b'\0')
+        s += call(2, [device, 513, STAT]) + 'mov.l r0,@r8\nadd #4,r8\n'
+        s += call(4, [device, DIR, OUT]) + 'mov.l r0,@r8\nadd #4,r8\n'
+        s += f'load {OUT:#x},r1\nmov.l @r1,r0\nmov.l r0,@r8\nadd #4,r8\n'
+    return s + 'load 0x600d,r0\nmov.l r0,@r8\nsleep\n'
+
+
+def fixtures(main_source, probe_source, basename, title, product):
+    # Keep the ISO writer's bounded 0xB000 first-read contract: place the
+    # read-only probe at 0600E000 and select it through the original IP AIP.
+    a = assembler
+    code = a.assemble(main_source)
+    probe_code = a.assemble(probe_source, base=0x0600E000)
+    assert len(code) < 0xA000
+    binary = bytearray(0xA000 + len(probe_code))
+    binary[:len(code)] = code
+    binary[0xA000:] = probe_code
+    yield basename + '.iso', a.build(bytes(binary), (HERE/'LICENSE').read_bytes(), title, product)
+    yield basename + '.tsv', ''.join(f'{name}\t{value:08x}\n' for name, value in RECORDS).encode()
+
+
+if __name__ == '__main__':
+    p = argparse.ArgumentParser()
+    p.add_argument('--check', action='store_true')
+    args = p.parse_args()
+    for main_fn, probe_fn, name, title, product in [
+        (main, probe, 'hle-backup', 'BACKUP SERVICES', 'BUP-001 V1.000'),
+        (cartridge_main, cartridge_probe, 'hle-cartridge-backup', 'CARTRIDGE BACKUP', 'BUP-002 V1.000'),
+    ]:
+        for filename, data in fixtures(main_fn(), probe_fn(), name, title, product):
+            path = HERE / filename
+            if args.check:
+                assert path.read_bytes() == data, f'Rebuild {filename}'
+            else:
+                path.write_bytes(data)
+            print(f'{"Verified" if args.check else "Built"} {filename}; SHA-256 {hashlib.sha256(data).hexdigest()}')

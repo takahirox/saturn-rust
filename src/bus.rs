@@ -1,6 +1,7 @@
 //! Checked partial Saturn map; devices and cache-through aliases are documented separately.
 use crate::backup::{BACKUP_RAM, BACKUP_SELECT, BackupRam};
 use crate::cache::{CCR, Cache};
+use crate::cartridge::CartridgeSlot;
 use crate::devices::{SMPC, Smpc, VDP2, VRAM, Vdp2};
 use crate::onchip::OnChip;
 use crate::scu::{SCU, Scu, ScuError};
@@ -124,6 +125,9 @@ pub enum BusError {
     BackupLength {
         actual: usize,
     },
+    CartridgeBackupLength {
+        actual: usize,
+    },
     UnsupportedDevice {
         address: u32,
         width: usize,
@@ -151,6 +155,10 @@ impl fmt::Display for BusError {
             Self::BiosLength { actual } => write!(
                 f,
                 "Select a raw 512 KiB BIOS ({BIOS_SIZE} bytes); received {actual} bytes"
+            ),
+            Self::CartridgeBackupLength { actual } => write!(
+                f,
+                "Select a packed 512 KiB backup cartridge file (524288 bytes); received {actual} bytes"
             ),
             Self::BackupLength { actual } => write!(
                 f,
@@ -420,7 +428,7 @@ pub struct Bus {
     cached_resident_multiplier_prefix: u64,
     // Opt-in, first 64 completed legacy-DSTP transactions; no guest reads.
     pub(crate) dstp_trace: Option<Vec<String>>,
-    bios: Option<Vec<u8>>,
+    pub(crate) bios: Option<Vec<u8>>,
     low: Vec<u8>,
     high: Vec<u8>,
     pub(crate) vdp2: Vdp2,
@@ -451,7 +459,7 @@ pub struct Bus {
     dmac_terminal_reads: u64,
     pub sound: Sound,
     pub cd: crate::cd::CdBlock,
-    smpc: Smpc,
+    pub(crate) smpc: Smpc,
     pub(crate) scu: Scu,
     pub(crate) raster: Raster,
     cpu_dma_errors: [bool; 2],
@@ -484,6 +492,7 @@ pub struct Bus {
     display_coalesced_spans: u64,
     system_clock: SystemClock,
     pub(crate) backup: BackupRam,
+    pub(crate) cartridge: CartridgeSlot,
     onchip: [OnChip; 2],
     cache: [RefCell<Cache>; 2],
     instruction_word: [Cell<Option<(u32, u16)>>; 2],
@@ -689,6 +698,7 @@ impl Default for Bus {
             display_coalesced_spans: 0,
             system_clock: SystemClock::default(),
             backup: BackupRam::default(),
+            cartridge: CartridgeSlot::default(),
             onchip: std::array::from_fn(|i| {
                 let mut chip = OnChip::default();
                 chip.set_slave(i == 1);
@@ -1808,12 +1818,16 @@ impl Bus {
         #[cfg(any(test, feature = "video-worker"))]
         let video_domain = self.video_domain.take();
         let backup = std::mem::take(&mut self.backup);
+        let cartridge = std::mem::take(&mut self.cartridge);
         let mut smpc = std::mem::take(&mut self.smpc);
         smpc.reset_volatile();
+        let mut cartridge = cartridge;
+        cartridge.power_cycle();
         *self = Self {
             #[cfg(any(test, feature = "video-worker"))]
             video_domain,
             backup,
+            cartridge,
             smpc,
             ..Self::default()
         };
@@ -1837,6 +1851,7 @@ impl Bus {
         #[cfg(any(test, feature = "video-worker"))]
         let video_domain = self.video_domain.take();
         let backup = std::mem::take(&mut self.backup);
+        let cartridge = std::mem::take(&mut self.cartridge);
         let mut smpc = std::mem::take(&mut self.smpc);
         smpc.system_reset();
         *self = Self {
@@ -1846,6 +1861,7 @@ impl Bus {
             video_domain,
             bios,
             backup,
+            cartridge,
             smpc,
             ..Self::default()
         };
@@ -1986,7 +2002,8 @@ impl Bus {
     fn unconnected(address: u32) -> bool {
         (0x0040_0000..0x0100_0000).contains(&address)
             || (0x0100_0004..0x0180_0000).contains(&address)
-            || (0x0180_0004..0x0580_0000).contains(&address)
+            || (0x0180_0004..0x0200_0000).contains(&address)
+            || (0x0500_0000..0x0580_0000).contains(&address)
             || (0x0590_0000..0x05A0_0000).contains(&address)
     }
 
@@ -2026,6 +2043,11 @@ impl Bus {
         self.check_smpc_width(guest_address, N, None)?;
         if !address.is_multiple_of(N as u32) {
             return Err(BusError::Unaligned { address, width: N });
+        }
+        if (0x0200_0000..0x0500_0000).contains(&address) {
+            return Ok(std::array::from_fn(|i| {
+                self.cartridge.read(address + i as u32)
+            }));
         }
         if Self::unconnected(address)
             || (0x0100_0000..0x0100_0004).contains(&address)
@@ -2204,6 +2226,12 @@ impl Bus {
         }
         if !address.is_multiple_of(N as u32) {
             return Err(BusError::Unaligned { address, width: N });
+        }
+        if (0x0200_0000..0x0500_0000).contains(&address) {
+            for (i, byte) in bytes.into_iter().enumerate() {
+                self.cartridge.write(address + i as u32, byte);
+            }
+            return Ok(());
         }
         if Self::unconnected(address) {
             return Ok(());
@@ -3816,47 +3844,57 @@ mod abus_dma_tests {
     use super::*;
     #[test]
     fn a_bus_waits_delay_scu_data_publication_and_reset_cancels_the_next_beat() {
-        // ST-097 §3.2 and H §7.4: setup2, two separate CS0 halfword
+        // ST-097 §3.2 and H §7.4: setup2, two separate CS0/CS1 halfword
         // reads of8+NW3, then RAM write8+IW2. Later units repeat22+10.
         // Publication is at the END (34/66), never before the second read.
-        for chunk in [1, 3, 8, 17, 64] {
-            let mut b = Bus::default();
-            b.write32(SCU + 0xB0, 0x00300000).unwrap();
-            for (off, value) in [
-                (0, 0x02000000),
-                (4, HIGH_WRAM),
-                (8, 8),
-                (12, 0x102),
-                (20, 7),
-                (16, 0x101),
-            ] {
-                b.write32(SCU + off, value).unwrap();
-            }
-            let mut elapsed = 0;
-            for (deadline, first, second) in [
-                (33, 0, 0),
-                (34, u32::MAX, 0),
-                (65, u32::MAX, 0),
-                (66, u32::MAX, u32::MAX),
-            ] {
-                while elapsed < deadline {
-                    let n = (deadline - elapsed).min(chunk);
-                    b.advance_clocks(n).unwrap();
-                    elapsed += n;
+        use crate::cartridge::Cartridge;
+        for (kind, source, first_word, second_word) in [
+            (Cartridge::None, 0x0200_0000, u32::MAX, u32::MAX),
+            (Cartridge::Ram1MiB, 0x0240_0000, 0x1234_5678, 0xABCD_EF91),
+            (Cartridge::Backup, 0x0400_0000, 0xFF34_FF78, 0xFFCD_FF91),
+        ] {
+            for chunk in [1, 3, 8, 17, 64] {
+                let mut b = Bus::default();
+                b.cartridge.insert(kind);
+                b.write32(source, 0x12345678).unwrap();
+                b.write32(source + 4, 0xABCDEF91).unwrap();
+                b.write32(SCU + 0xB0, 0x0030_0030).unwrap();
+                for (off, value) in [
+                    (0, source),
+                    (4, HIGH_WRAM),
+                    (8, 8),
+                    (12, 0x102),
+                    (20, 7),
+                    (16, 0x101),
+                ] {
+                    b.write32(SCU + off, value).unwrap();
                 }
-                assert_eq!(
-                    b.read32(HIGH_WRAM),
-                    Ok(first),
-                    "chunk={chunk},time={deadline}"
-                );
-                assert_eq!(b.read32(HIGH_WRAM + 4), Ok(second));
+                let mut elapsed = 0;
+                for (deadline, first, second) in [
+                    (33, 0, 0),
+                    (34, first_word, 0),
+                    (65, first_word, 0),
+                    (66, first_word, second_word),
+                ] {
+                    while elapsed < deadline {
+                        let n = (deadline - elapsed).min(chunk);
+                        b.advance_clocks(n).unwrap();
+                        elapsed += n;
+                    }
+                    assert_eq!(
+                        b.read32(HIGH_WRAM),
+                        Ok(first),
+                        "{kind:?},chunk={chunk},time={deadline}"
+                    );
+                    assert_eq!(b.read32(HIGH_WRAM + 4), Ok(second));
+                }
+                b.write32(SCU + 16, 0x101).unwrap();
+                b.advance_clocks(8).unwrap();
+                b.system_reset();
+                b.write32(HIGH_WRAM, 0x12345678).unwrap();
+                b.advance_clocks(100).unwrap();
+                assert_eq!(b.read32(HIGH_WRAM), Ok(0x12345678));
             }
-            b.write32(SCU + 16, 0x101).unwrap();
-            b.advance_clocks(8).unwrap();
-            b.system_reset();
-            b.write32(HIGH_WRAM, 0x12345678).unwrap();
-            b.advance_clocks(100).unwrap();
-            assert_eq!(b.read32(HIGH_WRAM), Ok(0x12345678));
         }
     }
 }

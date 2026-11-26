@@ -23,6 +23,7 @@ import { dmacBus } from "./dmac-bus.mjs";
 import { sh2Store } from "./sh2-store.mjs";
 import { playUi } from "./play-ui.mjs";
 import { crtDisplay } from "./crt-display.mjs";
+import { consoleSaves } from "./console-saves.mjs";
 import { chd } from "./chd.mjs";
 import { cdStream } from "./cd-stream.mjs";
 import { cdRuntime } from "./cd-runtime.mjs";
@@ -68,7 +69,7 @@ const assert = timings.instrumentAssertions(nodeAssert);
 
 setup("assets");
 // Fail before upload if web/ includes anything beyond the public runtime assets.
-const assets = ["worker-emulator.js", "playback-client.js", "playback-worker.js", "sound-client.js", "sound-worker.js", "audio.js", "audio-worklet.js", "video-render-client.js", "video-worker.js", "app.js", "crt-display.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "pkg/saturn_rust_compatible_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt", "prism-courier.iso", "prism-courier-LICENSE.txt", "hardware-lab.iso", "hardware-lab-audio.bin", "hardware-lab.cue", "hardware-lab-LICENSE.txt"];
+const assets = ["console-saves.js", "worker-emulator.js", "playback-client.js", "playback-worker.js", "sound-client.js", "sound-worker.js", "audio.js", "audio-worklet.js", "video-render-client.js", "video-worker.js", "app.js", "crt-display.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "pkg/saturn_rust_compatible_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt", "prism-courier.iso", "prism-courier-LICENSE.txt", "hardware-lab.iso", "hardware-lab-audio.bin", "hardware-lab.cue", "hardware-lab-LICENSE.txt"];
 assert.deepEqual((await readdir("web", { recursive: true })).sort(), [...assets, "pkg"].sort());
 assert((await lstat("web/pkg")).isDirectory());
 for (const asset of assets) {
@@ -173,6 +174,10 @@ try {
       await timings.measure(name, async () => {
         if (name === "crtDisplay") {
           await crtDisplay(browser, address + prefix);
+          return;
+        }
+        if (name === "consoleSaves") {
+          await consoleSaves(browser, address + prefix);
           return;
         }
         if (name === "largeMedia") {
@@ -3329,7 +3334,8 @@ try {
   await context.setOffline(false);
   await anotherTab.goto(address + prefix);
   await anotherTab.waitForFunction(() => document.getElementById("status").textContent === "Ready");
-  assert(await anotherTab.evaluate(async () => (await (await import("./app.js")).emulator.export_backup_ram()).every((byte) => byte === 0)));
+  assert.deepEqual(Buffer.from(await anotherTab.evaluate(async () =>
+    Array.from(await (await import("./app.js")).emulator.export_backup_ram()))), Buffer.from(await backup()));
   await anotherTab.close();
   timings.group("prism-courier");
   // Original playable VDP1+VDP2+SCSP disc. UI selects the fixture as a local file; only
@@ -3453,6 +3459,9 @@ try {
   await lab.waitForFunction(() => document.getElementById("status").textContent === "Ready");
   await lab.locator("#view-debug").click();
   await lab.locator("#settings > summary").click();
+  const labBefore = await lab.evaluate(async () =>
+    (await (await import("./app.js")).emulator.export_backup_ram())[0]);
+  assert.equal(labBefore, (await backup())[0]);
   const labIso = await readFile("web/hardware-lab.iso");
   const labAudio = await readFile("web/hardware-lab-audio.bin");
   const labCue = await readFile("web/hardware-lab.cue");
@@ -3501,13 +3510,13 @@ try {
   await labLoaded();
   const labResult=await labTrace();
   assertLab(labResult);
-  assert.equal(labResult.backup,1);
+  assert.equal(labResult.backup, (labBefore + 1) & 255);
   assert.deepEqual(labResult.wasm,labPixels);
   // Restart uses controller pins, not a host write to the result table.
   await lab.evaluate(async()=>{const {emulator}=await import("./app.js");(await emulator.set_buttons(1<<7));(await emulator.run_steps(50));(await emulator.set_buttons(0));});
   const labRestart=await labTrace();
   assertLab(labRestart);
-  assert.equal(labRestart.backup,2);
+  assert.equal(labRestart.backup, (labBefore + 2) & 255);
   assert.deepEqual(labRestart.wasm,labPixels);
   // Mutate only guest LOAD literals in the original disc's video routine.
   for (const [address,before,after,points,expected] of [
@@ -3605,6 +3614,9 @@ try {
   });
   if (includeScenarios) await timings.measure("crtDisplay", async () => {
     await crtDisplay(browser, address + prefix);
+  });
+  if (includeScenarios) await timings.measure("consoleSaves", async () => {
+    await consoleSaves(browser, address + prefix);
   });
   timings.group("cdda");
   // IEC 60908 PRE changes actual CD PCM, driven only by an original SH-2

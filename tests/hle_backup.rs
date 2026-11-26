@@ -173,3 +173,88 @@ fn changed_guest_xor_operand_changes_computed_and_persisted_data() {
     assert_eq!(m.backup_ram()[169], 90);
     assert_eq!(m.backup_ram()[424], 91);
 }
+
+#[test]
+fn cartridge_services_use_independent_geometry_and_preserve_detached_images() {
+    use saturn_rust::{cartridge::Cartridge, cartridge::POWER_MEMORY_SIZE};
+
+    const CART_ISO: &[u8] = include_bytes!("fixtures/hle-cartridge-backup.iso");
+    let mut machine = Machine::new();
+    machine.set_cartridge(Cartridge::Backup).unwrap();
+    machine.reset(Boot::HleDisc(CART_ISO)).unwrap();
+    let records: Vec<_> = include_str!("fixtures/hle-cartridge-backup.tsv")
+        .lines()
+        .map(|line| {
+            let (name, word) = line.split_once('\t').unwrap();
+            (name, u32::from_str_radix(word, 16).unwrap())
+        })
+        .collect();
+    complete(&mut machine, TRACE + (records.len() as u32 - 1) * 4);
+    for (i, (name, word)) in records.iter().enumerate() {
+        assert_eq!(
+            machine.bus().read32(TRACE + i as u32 * 4),
+            Ok(*word),
+            "{name}"
+        );
+    }
+    let internal = machine.backup_ram().to_vec();
+    let external = machine.cartridge_backup_ram().unwrap().to_vec();
+    assert_eq!(&external[..8], b"SRBUP001");
+    assert_eq!(&external[1028..1035], b"FILE_B\0");
+    assert_eq!(&external[1064..1068], &[0x12, 0x34, 0x56, 0x78]);
+
+    let mut iso = CART_ISO.to_vec();
+    iso[0xE28..0xE2C].copy_from_slice(&0x0600_E000_u32.to_be_bytes());
+    let probe = |m: &mut Machine, device, entry, payload| {
+        m.reset(Boot::HleDisc(&iso)).unwrap();
+        complete(m, TRACE + 24);
+        for (i, word) in [0, 0, 0xDECAFBAD, device, entry, payload]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(m.bus().read32(TRACE + i as u32 * 4), Ok(word));
+        }
+        assert_eq!(m.backup_ram(), internal);
+    };
+    for kind in [
+        Cartridge::None,
+        Cartridge::Ram1MiB,
+        Cartridge::Ram4MiB,
+        Cartridge::Backup,
+    ] {
+        machine.set_cartridge(kind).unwrap();
+        if kind == Cartridge::Backup {
+            probe(&mut machine, 0, 0, 0x12345678);
+        } else {
+            probe(&mut machine, 1, 1, 0xDECAFBAD);
+        }
+        assert_eq!(machine.cartridge_backup_ram().unwrap(), external);
+    }
+
+    let mut full = external.clone();
+    for offset in [1025, 1060] {
+        full[offset..offset + 2].copy_from_slice(&1022_u16.to_be_bytes());
+    }
+    machine.import_cartridge_backup_ram(&full).unwrap();
+    probe(&mut machine, 0, 0, 0x12345678);
+    assert_eq!(machine.bus().read32(0x0602_3010), Ok(0)); // No free blocks.
+
+    for (offset, bytes, stat, read) in [
+        (1025, vec![0, 0], 8, 8),
+        (1025, vec![4, 0], 8, 8),
+        (1056, vec![0xFF; 4], 8, 8),
+        (1064, vec![0x33], 0, 8),
+        (0, vec![0x42], 2, 2),
+    ] {
+        let mut damaged = external.clone();
+        damaged[offset..offset + bytes.len()].copy_from_slice(&bytes);
+        machine.import_cartridge_backup_ram(&damaged).unwrap();
+        probe(&mut machine, stat, read, 0xDECAFBAD);
+        assert_eq!(machine.cartridge_backup_ram().unwrap(), damaged);
+    }
+
+    let unknown = vec![0x5A; POWER_MEMORY_SIZE];
+    machine.import_cartridge_backup_ram(&unknown).unwrap();
+    probe(&mut machine, 2, 2, 0xDECAFBAD);
+    assert_eq!(machine.cartridge_backup_ram().unwrap(), unknown);
+}

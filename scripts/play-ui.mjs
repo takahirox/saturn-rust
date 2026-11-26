@@ -884,7 +884,7 @@ async function playerLayouts(browser, desktop, url) {
     assert.deepEqual(await mobile.evaluate(async () => ({
       local: localStorage.length, session: sessionStorage.length, databases: await indexedDB.databases(),
       caches: await caches.keys(), cookies: document.cookie,
-    })), { local: 0, session: 0, databases: [], caches: [], cookies: "" });
+    })), { local: 0, session: 0, databases: [{ name: "saturn-rust-console", version: 1 }], caches: [], cookies: "" });
 
     await mobile.setViewportSize({ width: 844, height: 390 });
     await enterFullscreen(mobile);

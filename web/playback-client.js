@@ -1,7 +1,7 @@
 // Asynchronous owner of an original-Rust playback Worker. Presentation is
 // synchronous: the receipt is returned only after the caller draws the field.
 export class PlaybackClient {
-  constructor({ onFrame = () => {}, onAudio = () => {}, onError = () => {}, directPresentation = false } = {}) {
+  constructor({ onFrame = () => {}, onAudio = () => {}, onError = () => {}, directPresentation = false, persistSaves = false, onSaveStatus = () => {} } = {}) {
     this.onFrame = onFrame; this.onAudio = onAudio; this.onError = onError;
     this.epoch = 0; this.command = 0; this.nextFrame = 0; this.nextAudio = 0;
     this.pending = new Map(); this.error = null; this.closed = false;
@@ -46,6 +46,7 @@ export class PlaybackClient {
       if (this.closed || this.error) return;
       try {
         if (data.type === "ready") { this.methods = data.methods ?? []; this.view = data.view; this.resolveReady(); return; }
+        if (data.type === "save-status") { onSaveStatus(data.status); return; }
         if (data.type === "fatal") throw new Error(data.message);
         if (data.type === "playback-error") { if (data.epoch === this.epoch) this.onError(new Error(data.message)); return; }
         if (data.type === "audio") {
@@ -75,8 +76,8 @@ export class PlaybackClient {
       const channel = new MessageChannel();
       this.presentationPort = channel.port1;
       channel.port1.onmessage = receive;
-      this.worker.postMessage({ type: "presentation", port: channel.port2 }, [channel.port2]);
-    } else this.worker.postMessage({ type: "presentation" });
+      this.worker.postMessage({ type: "presentation", port: channel.port2, persistSaves }, [channel.port2]);
+    } else this.worker.postMessage({ type: "presentation", persistSaves });
   }
   fail(error, notify = true) {
     if (this.error) return;
@@ -99,7 +100,7 @@ export class PlaybackClient {
   advance(fields = 1, { inspect = true } = {}) { return this.call("advance", { fields, inspect }); }
   inspect() { return this.call("inspect"); }
   invoke(operations) {
-    if (operations.some(({ method }) => method.startsWith("reset_"))) this.epoch++;
+    if (operations.some(({ method }) => method.startsWith("reset_") || method === "set_cartridge")) this.epoch++;
     return this.call("invoke", { operations, epoch: this.epoch });
   }
   setInput(input) {

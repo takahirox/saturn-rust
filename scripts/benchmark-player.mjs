@@ -44,9 +44,9 @@ const events = values.buttons ? (await readFile(values.buttons,"utf8")).split(/\
 }) : [];
 assert(events.every((event,i)=>!i||event[0]>events[i-1][0]),"controller fields must increase");
 const assets = new Map(), hashes = {};
-for (const file of ["index.html", "style.css", "app.js", "crt-display.js", "audio.js", "audio-worklet.js", "video-render-client.js", "video-worker.js", "worker-emulator.js", "playback-client.js", "playback-worker.js", "sound-client.js", "sound-worker.js"]) {
+for (const file of ["index.html", "style.css", "app.js", "crt-display.js", "audio.js", "audio-worklet.js", "video-render-client.js", "video-worker.js", "worker-emulator.js", "playback-client.js", "playback-worker.js", "console-saves.js", "sound-client.js", "sound-worker.js"]) {
   try { const bytes = await readFile(web + "/" + file); assets.set("/" + file, bytes); hashes[file] = createHash("sha256").update(bytes).digest("hex"); }
-  catch (error) { if (error.code !== "ENOENT" || !["crt-display.js", "worker-emulator.js", "playback-client.js", "playback-worker.js", "sound-client.js", "sound-worker.js"].includes(file)) throw error; }
+  catch (error) { if (error.code !== "ENOENT" || !["crt-display.js", "worker-emulator.js", "playback-client.js", "playback-worker.js", "console-saves.js", "sound-client.js", "sound-worker.js"].includes(file)) throw error; }
 }
 for (const file of ["saturn_rust.js", "saturn_rust_bg.wasm", "saturn_rust_compatible_bg.wasm"]) {
   try {

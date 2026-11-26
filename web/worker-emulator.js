@@ -4,12 +4,12 @@ import { PlaybackClient } from "./playback-client.js";
 // Native method results are asynchronous; independent reads in one JS task
 // share bounded batches without changing native ordering or error results.
 export class WorkerEmulator {
-  constructor({ onFrame = () => {}, onAudio = () => {}, onError = () => {}, directPresentation = true } = {}) {
+  constructor({ onFrame = () => {}, onAudio = () => {}, onError = () => {}, directPresentation = true, persistSaves = false, onSaveStatus } = {}) {
     this.input = { buttons: 0, port2Buttons: 0, ports: [] };
     this.queued = [];
     this.commands = Promise.resolve();
     this.inputQueued = false;
-    this.client = new PlaybackClient({ directPresentation, onAudio, onError,
+    this.client = new PlaybackClient({ directPresentation, onAudio, onError, persistSaves, onSaveStatus,
       onFrame: packet => {
         this.acceptView({ ...packet.view, clocks: packet.clocks, frames: packet.fields, width: packet.width, height: packet.height }, packet.epoch);
         return onFrame(packet);
@@ -93,6 +93,10 @@ export class WorkerEmulator {
     const response = await this.client.call("view");
     this.acceptView(response.view, response.epoch);
     return this.state;
+  }
+  async retrySaves() {
+    const response = await this.client.call("retry-saves");
+    this.acceptView(response.view, response.epoch);
   }
   async advanceField() {
     await this.ready;

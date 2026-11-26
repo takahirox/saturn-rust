@@ -130,6 +130,15 @@ fieldset { border: 0; min-width: 0; padding: 0; margin: 0; }
 .settings { flex: 1; min-width: 0; }
 summary { min-height: 44px; padding: 11px 8px; border-radius: 8px; }
 .settings-body { padding: 0 8px 8px; font-size: .9rem; }
+.cartridge-setting { padding-block: 8px; }
+.cartridge-setting select { display: block; max-inline-size: 100%; min-height: 44px; margin-block: 4px; }
+.backup-devices { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 255px), 1fr)); gap: 12px; }
+.backup-devices fieldset { padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+.backup-devices p { margin: 0 0 8px; }
+.backup-devices p:empty { margin: 0; }
+.backup-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.backup-actions + p:not(:empty) { margin-top: 8px; }
+
 .panel { padding: 12px; min-width: 0; }
 .tools, .debug-panel, .register-panel { grid-column: 1 / -1; }
 legend { color: var(--muted); padding: 0; margin-bottom: 8px; font-weight: 600; }
