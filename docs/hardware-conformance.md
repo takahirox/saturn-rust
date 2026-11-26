@@ -4261,3 +4261,39 @@ window, and it agrees with the reference. It is not measured electrical timing,
 and the line-zero display buffer change is unchanged. Relaxed playback remains a
 non-conformance scheduler. All other Issue #17 criteria remain open, and this
 does not establish commercial-game compatibility.
+
+## SCSP one-shot end keeps the EG running (2026-11-26)
+
+Related to #17. In local retail diagnosis of Machi (no private media or traces
+are published), a scene change sometimes waited about 13 seconds in silence
+before its text continued, and music after such a wait could lose parts. The
+game's sound driver frees a voice only when the slot monitor (0x408) reports a
+key-off release that has reached a quiet level. Before starting the next piece,
+it waits for every voice to be free, giving up after 65,535 polls.
+
+| Behavior | Previous model | Implementation | Evidence |
+| --- | --- | --- | --- |
+| One-shot end (LPCTL=0) and LEA=0/empty loops | The voice stopped completely, cleared KYONB and froze its EG at the current level. A later key-off set the release phase but never advanced it, so the monitor kept reporting release at about 0x20 attenuation. Twenty-one of 32 voices stayed allocated, and the driver's stop routine ran to its timeout | [`Scsp::begin_slot`](../src/sound/pcm.rs) marks the voice `stopped`. It no longer reads the waveform (output 0, no monitor CA), but its EG keeps running and KYONB stays set. Key-off releases it to 3FFh as for any voice, and the slot then ends. The hardware-tested reference SCSP (Mednafen/Beetle Saturn) clears only its waveform access at a one-shot's end | `one_shot_end_stops_reads_but_keeps_kyonb_and_the_monitored_eg_through_release` keeps KYONB, outputs zero, monitors full level and then reports 0x7F after an RR=31 key-off release. `pcm_activity_summary_follows_keyon_retained_slots_and_sample_end` now keeps a held EG active until its release ends |
+
+On a local Machi protagonist route, the 819-field silence before the next scene
+is now 15 fields under relaxed playback (17 under the exact scheduler; the
+reference shows 23), and the scene's text continues at once. On that route the
+previous build stalled only under relaxed playback; the freeze needs a one-shot to
+reach LEA before its key-off, which depends on timing. Just before a
+later scene, the previous build had 23 of 32 voices marked busy; this build
+has five. One is a streaming slot that is still playing. The other four are slots the driver's own main loop misreads: it
+reselects the monitor for its streaming slots and does not restore the
+selection, so the next timer handler reads the wrong slot. The music started
+after the old wait lost about 3 dB in the 2–8 kHz band during its first
+ten seconds. It now matches the reference's band levels within the reference's
+own output scaling, and its spectrogram correlation with the reference is higher
+in every five-second window. Another local route shows no change against the
+reference. One later scene change now waits about 110 fields for its music, both
+under relaxed playback and under the exact scheduler. The reference waits about 30
+fields there, and the previous build about 25. The driver's voices are all free
+during this wait. The game reads its next two files in the opposite order, after
+reaching the scene about 66 fields earlier than the reference. This change does
+not explain that, and it remains open. Mednafen's sticky waveform-access
+threshold (EG ≥ 3C0h) is not adopted here. This is a reference-emulator calibration, not
+physical measurement evidence. All other Issue #17 audio and synthesis criteria
+remain open, and this does not establish commercial-game compatibility.

@@ -94,6 +94,10 @@ struct Voice {
     /// relative to SA. Keep the sampled address, not the next phase accumulator.
     call_address: u16,
     reverse: bool,
+    /// A one-shot that passed LEA (or a slot with no playable loop) stops
+    /// reading its waveform, but its EG keeps running until key-off release
+    /// ends, as in the hardware-tested reference SCSP model.
+    stopped: bool,
     envelope: envelope::Envelope,
 }
 #[derive(Clone)]
@@ -242,13 +246,14 @@ impl Scsp {
                 let slot = ((self.common[4] >> 11) & 31) as usize;
                 let voice = &self.voices[slot];
                 let regs = &self.slots[slot];
-                // A one-shot that reached LEA keeps its EG state; only the
+                // A one-shot that reached LEA keeps running its EG; only the
                 // waveform address stops.
                 let (sgc, level) = voice.envelope.monitor(regs[4] & 0x20 != 0);
                 // A slot at maximum attenuation no longer reads its waveform
                 // (unless SDIR), so it reports no current address.
-                let fetching =
-                    voice.active && (regs[6] & 0x100 != 0 || voice.envelope.level() < 1023);
+                let fetching = voice.active
+                    && !voice.stopped
+                    && (regs[6] & 0x100 != 0 || voice.envelope.level() < 1023);
                 let ca = if fetching { voice.call_address } else { 0 };
                 Ok(ca << 7 | sgc << 5 | level >> 5)
             }
@@ -311,6 +316,7 @@ impl Scsp {
                                     phase: 0,
                                     call_address: 0,
                                     reverse: false,
+                                    stopped: false,
                                     envelope: envelope::Envelope::key_on(),
                                 };
                             }
@@ -1159,6 +1165,7 @@ crate::sound::wire::structure!(Voice {
     phase,
     call_address,
     reverse,
+    stopped,
     envelope
 });
 #[cfg(any(test, feature = "sound-worker"))]

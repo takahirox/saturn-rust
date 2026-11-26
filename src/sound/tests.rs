@@ -909,6 +909,41 @@ fn slot_monitor_retains_the_current_output_address_across_pitch_and_loop_boundar
 }
 
 #[test]
+fn one_shot_end_stops_reads_but_keeps_kyonb_and_the_monitored_eg_through_release() {
+    // Calibrated against the hardware-tested reference SCSP (Mednafen): a
+    // no-loop slot past LEA stops waveform access only. Sound drivers free a
+    // voice when the monitor reports its key-off release at full
+    // attenuation, so a frozen EG would keep the voice allocated forever.
+    let mut scsp = Scsp::default();
+    let mut ram = vec![0; SOUND_RAM_SIZE];
+    ram[0x100..0x108].copy_from_slice(&[0x10, 0, 0x20, 0, 0x30, 0, 0x40, 0]);
+    direct(&mut scsp, 0, 0x100, 0, false, 0);
+    scsp.write16(8, 31).unwrap(); // AR=31: full level at once.
+    for _ in 0..8 {
+        scsp.sample(&mut ram).unwrap();
+    }
+    assert!(scsp.voices[0].stopped);
+    assert_ne!(scsp.slots[0][0] & 0x800, 0, "KYONB is not cleared");
+    scsp.drain(usize::MAX);
+    scsp.sample(&mut ram).unwrap();
+    assert_eq!(scsp.drain(1), [0, 0], "no waveform past LEA");
+    scsp.write16(0x408, 0).unwrap();
+    let held = scsp.read16(0x408).unwrap();
+    assert_eq!(held & 0x780, 0, "no current address");
+    assert_ne!((held >> 5) & 3, 3, "not released");
+    assert_eq!(held & 31, 0, "full level");
+    scsp.write16(10, 31).unwrap(); // RR=31
+    scsp.write16(0, 0x1000).unwrap(); // KEYOFF
+    scsp.sample(&mut ram).unwrap();
+    assert_eq!((scsp.read16(0x408).unwrap() >> 5) & 3, 3);
+    for _ in 0..600 {
+        scsp.sample(&mut ram).unwrap();
+    }
+    assert_eq!(scsp.read16(0x408), Ok(0x7F));
+    assert!(!scsp.voices[0].active);
+}
+
+#[test]
 fn slot_monitor_follows_the_fm_waveform_address_without_moving_the_phase_generator() {
     // ST-077 table4.17: MDL5 with a half-scale past-slot source displaces
     // the waveform by sixteen samples, crossing the 4K monitor boundary.
@@ -1154,17 +1189,29 @@ fn pcm_activity_summary_follows_keyon_retained_slots_and_sample_end() {
     sound.scsp.write16(6, 4).unwrap(); // Four-sample, non-looping source.
     sound.scsp.write16(0, 0x1800).unwrap(); // KEYON + execution strobe.
     assert!(!sound.scsp.pcm_quiescent());
-    for _ in 0..8192 {
-        sound.advance(1).unwrap();
-        let literal = !sound.scsp.voices.iter().any(|v| v.active)
-            && !sound
-                .scsp
-                .pcm_slots
-                .iter()
-                .flatten()
-                .any(|s| s.active || s.fetch);
-        assert_eq!(sound.scsp.pcm_quiescent(), literal);
-        assert_eq!(sound.scsp.pcm_quiescent(), literal);
+    let run = |sound: &mut Sound| {
+        for _ in 0..8192 {
+            sound.advance(1).unwrap();
+            let literal = !sound.scsp.voices.iter().any(|v| v.active)
+                && !sound
+                    .scsp
+                    .pcm_slots
+                    .iter()
+                    .flatten()
+                    .any(|s| s.active || s.fetch);
+            assert_eq!(sound.scsp.pcm_quiescent(), literal);
+            assert_eq!(sound.scsp.pcm_quiescent(), literal);
+        }
+    };
+    run(&mut sound);
+    // The waveform has ended, but the held EG keeps the slot running.
+    assert!(sound.scsp.voices[0].stopped);
+    assert!(!sound.scsp.pcm_quiescent());
+    sound.scsp.write16(10, 31).unwrap(); // RR=31
+    sound.scsp.write16(0, 0x1000).unwrap(); // KEYOFF
+    // The RR=31 release spans a few hundred samples.
+    for _ in 0..64 {
+        run(&mut sound);
     }
     assert!(sound.scsp.pcm_quiescent());
     sound.scsp.write16(0, 0x1800).unwrap();
