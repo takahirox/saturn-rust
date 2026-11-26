@@ -560,7 +560,9 @@ impl Scsp {
         }
         Ok(())
     }
-    pub(crate) fn discard_output(&mut self) {
+    pub(crate) fn discard_cd_audio(&mut self) {
+        // An SCSP sample can straddle the host cover boundary.
+        self.external = [0; 2];
         self.output.clear();
     }
 
