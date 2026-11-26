@@ -50,12 +50,14 @@ The existing software-only automatic tray behavior of command 05 remains
 available separately. A physically open cover requires a host close.
 
 The block keeps initialization settings, play range, repeat state, selectors,
-sector lengths and host-written sectors. It invalidates the disc-derived
-sector cache (including copies), FIFO, file information, authentication,
-and pending medium work on opening. Sega's generic tray contract retains
-buffer data. The host exchange path explicitly flushes old disc-derived
-sectors so they cannot cross the media boundary. The game can still use data
-it placed in work RAM or other board devices before opening.
+sector lengths and host-written sectors. FIFO transfers and selector copy or
+move jobs using only host-written data continue across opening. The completed
+copy/move result is retained. Opening invalidates the disc-derived sector cache
+(including copies), drive and disc-sector FIFO transfers, file information,
+authentication, and pending medium work. An interrupted disc-sector FIFO
+transfer signals EHST. An interrupted disc-sector copy or move signals ECPY
+with a copy error. The game can still use data it placed in work RAM or other
+board devices before opening.
 
 The last sector search result survives if eviction leaves the matched sector
 at the reported index. Eviction that removes or shifts the match produces the
