@@ -229,8 +229,87 @@ async function pausedClockReload(browser, url) {
   } finally { await context.close(); }
 }
 
-async function sessionRecovery(page, url, storedImages) {
+async function denyStorageOnStartup(page, url) {
   const workerUrl = url + "playback-worker.js";
+  const source = await readFile("web/playback-worker.js", "utf8");
+  await page.route(workerUrl, route => route.fulfill({ contentType: "text/javascript", body: `
+    self.testStorageDenied = true;
+    const testDatabase = self.indexedDB;
+    Object.defineProperty(self, "indexedDB", { get() {
+      if (self.testStorageDenied) throw new DOMException("Test storage denied", "SecurityError");
+      return testDatabase;
+    } });
+    ${source}
+  ` }));
+  await page.reload();
+  await ready(page);
+  await status(page, "Could not restore local saves.");
+  const worker = page.workers().find(worker => worker.url() === workerUrl);
+  assert(worker);
+  return worker;
+}
+
+async function retryAfterGuestRead(browser, url) {
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    await page.goto(url);
+    await ready(page);
+    const saved = Buffer.alloc(32768, 0x41);
+    await page.evaluate(async size => {
+      const { emulator } = await import("./app.js");
+      await emulator.import_backup_ram(new Uint8Array(size).fill(0x41));
+    }, saved.length);
+    await status(page, "Local storage is up to date.");
+
+    const worker = await denyStorageOnStartup(page, url);
+    const rom = Buffer.alloc(524288);
+    rom.writeUInt32BE(0x200, 0); // Original reset-vector guest.
+    rom.writeUInt32BE(0x060FF000, 4);
+    // Load the backup address, read a byte, increment it, write it back and loop.
+    [0xD107, 0x6010, 0x7001, 0x2100, 0xAFFE, 0x0009].forEach((word, i) => rom.writeUInt16BE(word, 0x200 + i * 2));
+    rom.writeUInt32BE(0x20180001, 0x220);
+    await page.locator("#bios").setInputFiles(filename("backup-retry-guest.bin", rom));
+    await page.waitForFunction(() => !document.getElementById("play").disabled);
+    const readInGuest = () => page.evaluate(async () => {
+      const { emulator } = await import("./app.js");
+      for (let i = 0; i < 64; i++) {
+        if (emulator.state.special[0] === 0x204) return emulator.state.registers[0];
+        await emulator.step();
+      }
+      throw new Error("The original guest did not reach the instruction after its backup read");
+    });
+    assert.equal(await readInGuest(), 0, "The guest read empty RAM before storage recovered");
+    await openRecovery(page, /Could not restore local saves/);
+    await worker.evaluate(() => { self.testStorageDenied = false; });
+    await page.locator("#retry-saves").click();
+    await standby(page);
+    await status(page, "Local storage is up to date.");
+    assert.equal((await digests(page))[0], checksum(saved), "Retry recovered the stored image");
+
+    const resumeError = await page.evaluate(async () => {
+      const { emulator } = await import("./app.js");
+      const error = await emulator.run_steps(64).then(() => null, error => error.message);
+      await emulator.pause();
+      return error;
+    });
+    assert.equal((await digests(page))[0], checksum(saved), "The stale guest must never overwrite the recovered byte");
+    assert.match(resumeError, /CPU is stopped/);
+    assert.equal(await page.locator("#play").isDisabled(), true);
+    assert.equal(await page.locator("#run").isDisabled(), true);
+    assert.equal(await text(page, "player-status"), "Reset required");
+
+    await page.locator("#restart").click();
+    await page.waitForFunction(() => !document.getElementById("play").disabled);
+    assert.equal(await readInGuest(), 0x41, "Reset booted the accepted BIOS against the recovered image");
+    await page.unroute(url + "playback-worker.js");
+    await page.reload();
+    await ready(page);
+    assert.equal((await digests(page))[0], checksum(saved), "The recovered image survived reload byte-for-byte");
+  } finally { await context.close(); }
+}
+
+async function sessionRecovery(page, url, storedImages) {
   const storedHead = () => page.evaluate(async () => {
     const db = await new Promise((resolve, reject) => {
       const request = indexedDB.open("saturn-rust-console");
@@ -247,19 +326,7 @@ async function sessionRecovery(page, url, storedImages) {
   });
   await standby(page);
   const head = await storedHead();
-  const source = await readFile("web/playback-worker.js", "utf8");
-  await page.route(workerUrl, route => route.fulfill({ contentType: "text/javascript", body: `
-    self.testStorageDenied = true;
-    const testDatabase = self.indexedDB;
-    Object.defineProperty(self, "indexedDB", { get() {
-      if (self.testStorageDenied) throw new DOMException("Test storage denied", "SecurityError");
-      return testDatabase;
-    } });
-    ${source}
-  ` }));
-  await page.reload();
-  await ready(page);
-  await status(page, "Could not restore local saves.");
+  const worker = await denyStorageOnStartup(page, url);
   await openRecovery(page, /Could not restore local saves/);
   const sessionOnly = page.getByRole("checkbox", { name: "Import for this session only" });
   assert.equal(await sessionOnly.isChecked(), false);
@@ -277,8 +344,6 @@ async function sessionRecovery(page, url, storedImages) {
   }
   // Restore access in the same Worker. Explicit Retry and reset must still
   // leave the stored revision untouched until the session is discarded.
-  const worker = page.workers().find(worker => worker.url() === workerUrl);
-  assert(worker);
   await worker.evaluate(() => { self.testStorageDenied = false; });
   await page.evaluate(async () => (await import("./app.js")).emulator.retrySaves());
   await page.locator("#view-debug").click();
@@ -287,7 +352,7 @@ async function sessionRecovery(page, url, storedImages) {
   await status(page, "Console changes are kept in this session.");
   assert.deepEqual(await digests(page), recovered.map(checksum));
   assert.deepEqual(await storedHead(), head);
-  await page.unroute(workerUrl);
+  await page.unroute(url + "playback-worker.js");
   await page.reload();
   await ready(page);
   assert.deepEqual(await digests(page), storedImages);
@@ -743,6 +808,7 @@ async function storageFailures(browser, url) {
 }
 
 export async function consoleSaves(browser, url) {
+  await retryAfterGuestRead(browser, url);
   await importDuringGuestFormat(browser, url);
   await pausedClockReload(browser, url);
   await production(browser, url);

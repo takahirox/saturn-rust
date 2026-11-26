@@ -243,7 +243,20 @@ async function dispatch(data) {
     case "play": return start(data);
     case "pause": await stop(); await saves?.flush(); return snapshot();
     case "view": await stop(); await saves?.flush(); applyInput(); return { epoch, view: view() };
-    case "retry-saves": await stop(); await saves?.flush({ retry: true }); return { epoch, view: view() };
+    case "retry-saves": {
+      await stop();
+      epoch = data.epoch;
+      const resetRequired = Boolean(await saves?.flush({ retry: true }));
+      if (resetRequired) {
+        // A guest that ran before the restore may still act on the old data.
+        video.activate();
+        machine.stop_execution();
+        input = {};
+        await sound.reset();
+        lastSize = [320, 224];
+      }
+      return { epoch, view: view(), resetRequired };
+    }
     case "advance": {
       await stop();
       if (!Number.isInteger(data.fields) || data.fields < 1 || data.fields > 8) throw new Error("Advance one to eight fields");
