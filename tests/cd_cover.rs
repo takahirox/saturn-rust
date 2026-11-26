@@ -16,10 +16,14 @@ fn response(cd: &CdBlock) -> [u16; 4] {
     std::array::from_fn(|i| cd.read16(CD + 0x18 + i as u32 * 4).unwrap())
 }
 
-fn issue(cd: &mut CdBlock, packet: [u16; 4]) -> [u16; 4] {
+fn submit(cd: &mut CdBlock, packet: [u16; 4]) {
     for (i, word) in packet.into_iter().enumerate() {
         cd.write16(CD + 0x18 + i as u32 * 4, word).unwrap();
     }
+}
+
+fn issue(cd: &mut CdBlock, packet: [u16; 4]) -> [u16; 4] {
+    submit(cd, packet);
     cd.advance(1075);
     assert_eq!(cd.read16(CD + 8).unwrap() & 1, 1);
     response(cd)
@@ -78,9 +82,7 @@ fn open_invalidates_old_reads_and_close_recognizes_with_a_bounded_deadline() {
 
     // While a response is latched, DCHG and the FIFO change immediately
     // and the next status command observes OPEN with the normal handshake.
-    for (i, word) in [0x0100, 0, 0, 0].into_iter().enumerate() {
-        cd.write16(CD + 0x18 + i as u32 * 4, word).unwrap();
-    }
+    submit(&mut cd, [0x0100, 0, 0, 0]);
     cd.advance(1075);
     cd.set_cover_open(true);
     assert_eq!(response(&cd)[1], 2);
@@ -106,6 +108,97 @@ fn open_invalidates_old_reads_and_close_recognizes_with_a_bounded_deadline() {
     assert_eq!(issue(&mut cd, [0; 4])[3], 151);
     issue(&mut cd, [0x6300, 0, 0, 1]);
     assert_eq!(cd.read16(DATA), Ok(0x5252));
+}
+
+#[test]
+fn opening_cancels_pending_get_and_delete_before_partition_offsets_shift() {
+    let mut cd = CdBlock::default();
+    cd.mount(image(0xa1, 18));
+    issue(&mut cd, [0x3000, 0, 0, 0]);
+    issue(&mut cd, [0x1080, 150, 0x80, 1]);
+    cd.advance(250_000);
+    issue(&mut cd, [0x6400, 0, 0, 1]);
+    cd.write16(DATA, 0x1234).unwrap();
+    issue(&mut cd, [0x0600, 0, 0, 0]);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 2);
+    assert_eq!(issue(&mut cd, [0x5400, 0, 0, 0])[1], 150);
+    cd.write16(CD + 8, 0).unwrap();
+
+    submit(&mut cd, [0x6300, 0, 0, 1]);
+    cd.advance(1000);
+    cd.set_cover_open(true);
+    assert_eq!(cd.read16(CD + 8).unwrap() & 0x21, 0x20);
+    cd.advance(74);
+    assert_eq!(cd.read16(CD + 8).unwrap() & 1, 0);
+    cd.advance(1);
+    assert_eq!(cd.read16(CD + 8).unwrap() & 0x23, 0x21);
+    assert_eq!(cd.read16(DATA), Ok(0xffff));
+    assert_eq!(response(&cd), wait(OPEN));
+
+    issue(&mut cd, [0x0600, 0, 0, 0]); // No stale deletion to finalize.
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 1);
+    issue(&mut cd, [0x6100, 0, 0, 1]);
+    assert_eq!(cd.read16(DATA), Ok(0x1234));
+}
+
+#[test]
+fn opening_cancels_pending_play_from_before_the_disc_exchange() {
+    let mut cd = CdBlock::default();
+    cd.mount(image(0xa1, 18));
+    issue(&mut cd, [0x3000, 0, 0, 0]);
+    cd.write16(CD + 8, 0).unwrap();
+
+    submit(&mut cd, [0x1080, 150, 0x80, 1]);
+    cd.set_cover_open(true);
+    assert!(cd.replace_open_media(Some(image(0x52, 32))));
+    cd.set_cover_open(false);
+    assert_eq!(cd.read16(CD + 8).unwrap() & 0x21, 0x20);
+    cd.advance(1075);
+    assert_eq!(cd.read16(CD + 8).unwrap() & 0x21, 0x21);
+    // Even periodic reports and recognition leave the response latched.
+    cd.advance(RECOGNITION + 250_000);
+    assert_eq!(response(&cd), wait(BUSY));
+    assert_eq!(issue(&mut cd, [0; 4]), [0x0180, 0x4101, 0x0100, 150]);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 0);
+
+    issue(&mut cd, [0x1080, 150, 0x80, 1]);
+    cd.advance(250_000);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 1);
+    issue(&mut cd, [0x6100, 0, 0, 1]);
+    assert_eq!(cd.read16(DATA), Ok(0x5252));
+}
+
+#[test]
+fn opening_preserves_search_results_with_the_same_sector_at_the_same_index() {
+    for (selector, index, fad, retained) in [
+        (1, 1, 0, true),
+        (0, 0, 0, true),
+        (0, 1, 150, false),
+        (0, 2, 0, false),
+    ] {
+        let mut cd = CdBlock::default();
+        cd.mount(image(0xa1, 18));
+        issue(&mut cd, [0x3000, 0, 0, 0]);
+        issue(&mut cd, [0x6400, 0, 0, 1]);
+        issue(&mut cd, [0x0600, 0, 0, 0]);
+        issue(&mut cd, [0x1080, 150, 0x80, 1]);
+        cd.advance(250_000);
+        issue(&mut cd, [0x6400, 0, 0, 1]);
+        issue(&mut cd, [0x0600, 0, 0, 0]);
+        issue(&mut cd, [0x6400, 0, 0x0100, 2]);
+        issue(&mut cd, [0x0600, 0, 0, 0]);
+
+        issue(&mut cd, [0x5500, index, selector << 8, 0]);
+        assert_eq!(issue(&mut cd, [0x5600, 0, 0, 0])[1..], [index, 0, fad]);
+        cd.set_cover_open(true);
+        assert_eq!(issue(&mut cd, [0x5100, 0, selector << 8, 0])[3], 2);
+        let expected = if retained {
+            [index, 0, fad]
+        } else {
+            [0xffff; 3]
+        };
+        assert_eq!(issue(&mut cd, [0x5600, 0, 0, 0])[1..], expected);
+    }
 }
 
 #[test]

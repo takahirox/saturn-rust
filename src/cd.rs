@@ -78,6 +78,19 @@ struct Sector {
     fad: u32,
     raw: [u8; RAW_SECTOR],
 }
+#[derive(Default)]
+struct SectorSearch {
+    words: [u16; 3],
+    matched_sector: Option<(usize, u64)>,
+}
+
+impl SectorSearch {
+    const NO_MATCH: Self = Self {
+        words: [0xFFFF; 3],
+        matched_sector: None,
+    };
+}
+
 struct Transfer {
     bytes: Vec<u8>,
     position: usize,
@@ -112,6 +125,7 @@ pub struct CdBlock {
     mask: u16,
     response_latched: Cell<bool>,
     pending: Option<([u16; 4], u32)>,
+    pending_cancelled: bool,
     status: u8,
     fad: u32,
     // Seek Home has no public position. Keep its origin separate from the
@@ -168,7 +182,7 @@ pub struct CdBlock {
     get_length: usize,
     put_length: usize,
     actual_size: u32,
-    search: [u16; 3],
+    search: SectorSearch,
     copy_error: u16,
     copying: Option<SelectorTransfer>,
     next_sector_id: u64,
@@ -295,6 +309,7 @@ impl Default for CdBlock {
             mask: 0,
             response_latched: Cell::new(false),
             pending: None,
+            pending_cancelled: false,
             status: 7,
             fad: 150,
             at_home: false,
@@ -345,7 +360,7 @@ impl Default for CdBlock {
             get_length: 2048,
             put_length: 2048,
             actual_size: 0,
-            search: [0; 3],
+            search: SectorSearch::default(),
             copy_error: 0,
             copying: None,
             next_sector_id: 0,
@@ -365,8 +380,10 @@ impl CdBlock {
             return;
         }
         self.settle_quiet_clocks();
+        self.search = SectorSearch::default();
         self.invalidate_medium();
         self.pending = None;
+        self.pending_cancelled = false;
         self.response_latched.set(false);
         self.raise(CMOK);
         self.software_tray_open = false;
@@ -392,6 +409,9 @@ impl CdBlock {
         self.cover_open = open;
         self.software_tray_open = false;
         if open {
+            self.pending_cancelled |= self
+                .pending
+                .is_some_and(|(command, _)| self.command_uses_old_medium(command));
             let interrupted = self.invalidate_medium();
             self.copy_error = u16::from(interrupted & ECPY != 0);
             self.status = 6;
@@ -418,7 +438,7 @@ impl CdBlock {
     }
 
     fn report_drive_change(&self) {
-        // Preserve an in-flight command and the CR4 acknowledgement contract.
+        // Preserve command timing and any response awaiting CR4 acknowledgement.
         if self.pending.is_none() && !self.response_latched.get() {
             self.report(false);
         }
@@ -461,6 +481,18 @@ impl CdBlock {
         self.pause_clocks = 0;
     }
 
+    fn command_uses_old_medium(&self, command: [u16; 4]) -> bool {
+        match command[0] >> 8 {
+            0x02 | 0x03 | 0x10..=0x12 | 0x20 | 0x70..=0x75 | 0xE0..=0xE1 => true,
+            // Eviction can change which sectors these offsets select.
+            0x52 | 0x54..=0x55 | 0x61..=0x63 | 0x65..=0x66 => self
+                .partitions
+                .get(usize::from(command[2] >> 8))
+                .is_some_and(|partition| partition.iter().any(|sector| sector.fad != 0)),
+            _ => false,
+        }
+    }
+
     fn invalidate_medium(&mut self) -> u16 {
         self.stop_pickup();
         let mut interrupted = 0;
@@ -478,11 +510,22 @@ impl CdBlock {
         }
         // Keep host-written sectors (FAD 0), filters and sector lengths.
         // Disc sectors, including copies of them, must not cross the exchange.
-        for partition in &mut self.partitions {
+        for (selector, partition) in self.partitions.iter_mut().enumerate() {
+            let before = partition.len();
             partition.retain(|sector| sector.fad == 0);
+            // ST-162 §5.5 retains the host's search result. If eviction
+            // removes or displaces the match, report the usual no-match result.
+            if partition.len() != before
+                && let Some((matched_selector, id)) = self.search.matched_sector
+                && matched_selector == selector
+                && partition
+                    .get(usize::from(self.search.words[0]))
+                    .is_none_or(|sector| sector.id != id)
+            {
+                self.search = SectorSearch::NO_MATCH;
+            }
         }
         self.last = 255;
-        self.search = [0; 3];
         self.hirq
             .set(self.hirq.get() & !(DRDY | CSCT | BFUL | PEND));
         interrupted
@@ -923,7 +966,10 @@ impl CdBlock {
             if let Some((cmd, left)) = self.pending {
                 if delta >= left {
                     self.pending = None;
-                    if !self.execute(cmd) {
+                    if std::mem::take(&mut self.pending_cancelled) {
+                        self.report(false);
+                        self.wait();
+                    } else if !self.execute(cmd) {
                         let mut r = self.response.get();
                         r[0] = 0xFF00;
                         self.response.set(r);
@@ -2004,12 +2050,16 @@ impl CdBlock {
                     .enumerate()
                     .skip(c[1] as usize)
                     .find(|(_, s)| s.fad >= field2)
-                    .map_or([0xFFFF; 3], |(i, s)| {
-                        [i as u16, (s.fad >> 16) as u16, s.fad as u16]
+                    .map_or(SectorSearch::NO_MATCH, |(i, s)| SectorSearch {
+                        words: [i as u16, (s.fad >> 16) as u16, s.fad as u16],
+                        matched_sector: Some((selector, s.id)),
                     });
                 self.raise(ESEL);
             }
-            0x56 => response(self, self.search[0], self.search[1], self.search[2]),
+            0x56 => {
+                let [index, fad_hi, fad_lo] = self.search.words;
+                response(self, index, fad_hi, fad_lo);
+            }
             0x60 => {
                 let sizes = [2048, 2336, 2340, 2352];
                 let a = c[0] & 255;
@@ -2326,7 +2376,7 @@ impl CdBlock {
                     self.get_length = 2048;
                     self.put_length = 2048;
                     self.actual_size = 0;
-                    self.search = [0; 3];
+                    self.search = SectorSearch::default();
                     self.copy_error = 0;
                     self.copying = None;
                     self.last = 255;
