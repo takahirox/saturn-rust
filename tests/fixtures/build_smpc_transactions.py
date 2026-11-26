@@ -119,6 +119,39 @@ def timed_peripherals():
             expected += [0, 0xc0, 0x10, 0xf1, 2, 0xff, 0xff, 0xf1, 2, 0xff, 0xff]
         s += read(0x2601a100) + 'load 0x25fe00a4,r1\nmov.l @r1,r0\nload 0x80,r2\nand r2,r0\n' + record()
         expected += [count, 0]
+    # A firmware reboot path stores RESDISA without SF while the requested
+    # continuation is pending. The packet still completes and raises its IRQ;
+    # the control then runs, and the next status reports reset disabled.
+    s += WINDOW_CALL + idle('claim_enable') + issue(0x19) + idle('enable')
+    expected += WINDOW_EXPECTED
+    s += WINDOW_CALL + idle('claim_overlap') + byte(0x20100063, 1)
+    expected += WINDOW_EXPECTED
+    for i, value in enumerate([1, 8, 0xf0]):
+        s += byte(0x20100001 + i * 2, value)
+    s += byte(0x2010001f, 0x10)
+    count += 1
+    s += f'load 0x2601a100,r1\nload {count},r2\noverlap_status:\nmov.l @r1,r0\ncmp/eq r2,r0\nbf overlap_status\n'
+    # OREG0 bit7 reflects the host's RTC; compare only RESD (bit6).
+    s += read(0x20100061, 1) + 'load 0x20100021,r1\nmov.b @r1,r0\nload 0x40,r2\nand r2,r0\n' + record()
+    expected += [0x60, 0]
+    s += byte(0x20100001, 0x81) + byte(0x2010001f, 0x1a)
+    count += 1
+    s += f'load 0x2601a100,r1\nload {count},r2\noverlap_packet:\nmov.l @r1,r0\ncmp/eq r2,r0\nbf overlap_packet\n'
+    s += read(0x20100063, 1) + read(0x20100061, 1) + read(0x2010005f, 1)
+    for i in range(4):
+        s += read(0x20100021 + i * 2, 1)
+    expected += [1, 0xc0, 0x1a, 0xf1, 2, 0xff, 0xff]
+    s += idle('overlap_control') + read(0x20100063, 1) + read(0x2010005f, 1)
+    expected += [0, 0x1a]
+    s += WINDOW_CALL + idle('claim_disabled') + byte(0x20100063, 1)
+    expected += WINDOW_EXPECTED
+    for i, value in enumerate([1, 0, 0xf0]):
+        s += byte(0x20100001 + i * 2, value)
+    s += byte(0x2010001f, 0x10)
+    count += 1
+    s += f'load 0x2601a100,r1\nload {count},r2\ndisabled_status:\nmov.l @r1,r0\ncmp/eq r2,r0\nbf disabled_status\n'
+    s += 'load 0x20100021,r1\nmov.b @r1,r0\nload 0x40,r2\nand r2,r0\n' + record() + read(0x2601a100)
+    expected += [0x40, count]
     s += 'load 0x600d,r0\n' + record() + 'park:\nsleep\nbra park\nnop\n' + command_window()
     files, _ = encode('smpc-timed-peripherals', s, irq_operands())
     files['smpc-timed-peripherals.tsv'] = ''.join(f'{v:08X}\n' for v in expected + [0x600d]).encode()

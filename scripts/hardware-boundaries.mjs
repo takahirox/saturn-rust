@@ -396,7 +396,7 @@ export async function hardwareBoundaries(page) {
   const timedRom = await rom("smpc-timed-peripherals");
   const timedExpected = (await readFile("tests/fixtures/smpc-timed-peripherals.tsv", "utf8")).trim().split(/\r?\n/).map(v => parseInt(v, 16));
   let timedReference;
-  // Native raster_gated_intback retains the full matrix and all six IRQs.
+  // Native raster_gated_intback retains the full matrix and all nine IRQs.
   for (const [chunk, observe] of [[1, true], [3, true], [127, true], [10000, false]]) {
     await load(page, "smpc-timed-peripherals", timedRom);
     const result = await page.evaluate(async ({chunk, observe, count}) => {
@@ -414,7 +414,7 @@ export async function hardwareBoundaries(page) {
     }, {chunk, observe, count: timedExpected.length});
     assert.deepEqual(result.trace, timedExpected);
     assertProgress("smpc-timed-peripherals", 500000, result);
-    assert.equal(result.exceptions, "6");
+    assert.equal(result.exceptions, "9");
     timedReference ??= result;
     assert.deepEqual(result, timedReference, `raster-gated INTBACK chunk ${chunk}, observe ${observe}`);
   }
