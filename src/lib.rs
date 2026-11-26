@@ -968,6 +968,20 @@ impl Machine {
         self.bus.cd.mount(media);
     }
 
+    /// Move the physical CD cover without changing guest execution.
+    pub fn set_cd_cover_open(&mut self, open: bool) {
+        let was_open = self.bus.cd.cover_open();
+        self.bus.cd.set_cover_open(open);
+        if open && !was_open {
+            self.bus.sound.scsp.discard_output();
+        }
+    }
+
+    /// Insert, replace or remove the disc with the physical cover open.
+    pub fn replace_open_media(&mut self, media: Option<media::Media>) -> bool {
+        self.bus.cd.replace_open_media(media)
+    }
+
     /// Discard a local media selection before cold reset. This host selection
     /// operation is separate from the guest's timed tray/drive commands.
     pub fn clear_media(&mut self) {

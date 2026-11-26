@@ -238,7 +238,8 @@ export async function digitalInput(browser, url) {
               await new Promise(resolve => setTimeout(resolve, 1));
             }
           };
-          if (action === "canvas-blur") $("disc-choose").focus();
+          // The disc picker is disabled when a running BIOS has its cover closed.
+          if (action === "canvas-blur") $("bios-choose").focus();
           if (action === "window-blur") window.dispatchEvent(new Event("blur"));
           if (action === "hidden") {
             Object.defineProperty(document,"hidden",{configurable:true,value:true});

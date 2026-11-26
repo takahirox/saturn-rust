@@ -14,11 +14,14 @@ fn data_port(address: u32) -> bool {
     matches!(address, DATA | WORD_DATA) || address == DATA + 2
 }
 const HZ: u64 = 26_874_100;
+// Three stopped report intervals allow the guest to observe BUSY and WAIT.
+const RECOGNITION_CLOCKS: u32 = (HZ / 20) as u32;
 const CMOK: u16 = 1;
 const DRDY: u16 = 2;
 const CSCT: u16 = 4;
 const BFUL: u16 = 8;
 const PEND: u16 = 16;
+const DCHG: u16 = 32;
 const ESEL: u16 = 64;
 const EHST: u16 = 128;
 const ECPY: u16 = 256;
@@ -144,7 +147,11 @@ pub struct CdBlock {
     // drive tick. Preserve direction and whether scan began during playback.
     scan: Option<(bool, bool)>,
     buffer_paused: bool,
-    tray_open: bool,
+    // The existing software tray command models an automatic tray. A host
+    // cover opening additionally requires a physical close before recognition.
+    software_tray_open: bool,
+    cover_open: bool,
+    recognition: Option<u32>,
     seeking: u32,
     authentication: Option<(u32, u16)>,
     authenticated: u16,
@@ -290,7 +297,7 @@ impl Default for CdBlock {
             status: 7,
             fad: 150,
             at_home: false,
-            end: 150,
+            end: u32::MAX,
             play_start: 150,
             repeat: 0,
             repeats: 0,
@@ -318,7 +325,9 @@ impl Default for CdBlock {
             retry_attempts: 0,
             scan: None,
             buffer_paused: false,
-            tray_open: false,
+            software_tray_open: false,
+            cover_open: false,
+            recognition: None,
             seeking: 0,
             authentication: None,
             authenticated: 0,
@@ -349,22 +358,94 @@ impl Default for CdBlock {
 
 impl CdBlock {
     pub fn mount(&mut self, media: Media) {
+        if self.cover_open {
+            self.replace_open_media(Some(media));
+            return;
+        }
         self.settle_quiet_clocks();
+        self.invalidate_medium();
+        self.pending = None;
+        self.response_latched.set(false);
+        self.raise(CMOK);
+        self.software_tray_open = false;
+        self.media = Some(media);
+        self.recognize_medium();
+        self.report(false);
+        self.raise(DCHG);
+    }
+
+    pub fn cover_open(&self) -> bool {
+        self.cover_open
+    }
+
+    fn tray_open(&self) -> bool {
+        self.cover_open || self.software_tray_open
+    }
+
+    pub fn set_cover_open(&mut self, open: bool) {
+        if self.cover_open == open {
+            return;
+        }
+        self.settle_quiet_clocks();
+        self.cover_open = open;
+        self.software_tray_open = false;
+        if open {
+            let interrupted = self.invalidate_medium();
+            self.copy_error = u16::from(interrupted & ECPY != 0);
+            self.status = 6;
+            self.raise(DCHG | EFLS | interrupted);
+        } else if self.media.is_some() {
+            self.status = 0;
+            self.recognition = Some(RECOGNITION_CLOCKS);
+        } else {
+            self.status = 7;
+        }
+        self.report_drive_change();
+    }
+
+    /// Exchange physical media only while the host cover is open.
+    pub fn replace_open_media(&mut self, media: Option<Media>) -> bool {
+        if !self.cover_open {
+            return false;
+        }
+        self.settle_quiet_clocks();
+        self.media = media;
+        self.audio_track_at.set(None);
+        true
+    }
+
+    fn report_drive_change(&self) {
+        // Preserve an in-flight command and the CR4 acknowledgement contract.
+        if self.pending.is_none() && !self.response_latched.get() {
+            self.report(false);
+        }
+    }
+
+    fn recognize_medium(&mut self) {
+        let media = self.media.as_ref().expect("recognition requires media");
+        self.fad = media.tracks[0].start;
+        self.audio_track_at.set(None);
+        self.at_home = false;
+        // The initial whole-disc range is fixed by the first recognized
+        // medium. Removing the disc later does not discard host play settings.
+        if self.end == u32::MAX {
+            self.play_start = self.fad;
+            self.end = media.leadout;
+        }
+        self.status = 1;
+    }
+
+    fn stop_pickup(&mut self) {
+        self.recognition = None;
         self.cancel_rw_transfer();
         self.rw = crate::cd_rw::Decoder::default();
         self.rw_active = false;
-        let cold = self.media.is_none();
         self.directory_read = None;
-        self.pending = None;
-        self.copying = None;
-        self.copy_error = 0;
         self.retry_attempts = 0;
-        self.tray_open = false;
         self.files.clear();
         self.directory = None;
         self.volume_end = 0;
         self.file_read = None;
-        *self.transfer.get_mut() = None;
         self.playing = false;
         self.seeking = 0;
         self.authentication = None;
@@ -374,20 +455,33 @@ impl CdBlock {
         self.scan = None;
         self.buffer_paused = false;
         self.pause_clocks = 0;
-        self.fad = media.tracks[0].start;
-        self.at_home = false;
-        // ST-162 §5.5: tray changes retain host play information. A fresh
-        // block still needs the initial disc range; power reset initializes
-        // its retained medium's range separately.
-        if cold {
-            self.play_start = self.fad;
-            self.end = media.leadout;
+    }
+
+    fn invalidate_medium(&mut self) -> u16 {
+        self.stop_pickup();
+        let mut interrupted = 0;
+        self.copy_error = 0;
+        if self.copying.take().is_some() {
+            interrupted |= ECPY;
         }
-        self.media = Some(media);
-        self.audio_track_at.set(None);
-        self.status = 1;
-        self.report(false);
-        self.raise(0x20);
+        if self
+            .transfer
+            .get_mut()
+            .take()
+            .is_some_and(|transfer| transfer.host_io)
+        {
+            interrupted |= EHST;
+        }
+        // Keep host-written sectors (FAD 0), filters and sector lengths.
+        // Disc sectors, including copies of them, must not cross the exchange.
+        for partition in &mut self.partitions {
+            partition.retain(|sector| sector.fad == 0);
+        }
+        self.last = 255;
+        self.search = [0; 3];
+        self.hirq
+            .set(self.hirq.get() & !(DRDY | CSCT | BFUL | PEND));
+        interrupted
     }
     pub fn media(&self) -> Option<&Media> {
         self.media.as_ref()
@@ -397,9 +491,11 @@ impl CdBlock {
             self.settle_quiet_clocks();
             let media = self.media.take();
             *self = Self {
-                end: media.as_ref().map_or(150, |m| m.leadout),
+                end: media.as_ref().map_or(u32::MAX, |m| m.leadout),
                 media,
                 enabled: false,
+                cover_open: self.cover_open,
+                recognition: self.recognition,
                 #[cfg(any(test, feature = "kernel-experiment"))]
                 quiet_clock_enabled: self.quiet_clock_enabled,
                 #[cfg(any(test, feature = "kernel-experiment"))]
@@ -412,7 +508,15 @@ impl CdBlock {
             };
         } else if !self.enabled && enabled {
             self.enabled = true;
-            self.status = if self.media.is_some() { 1 } else { 7 };
+            self.status = if self.cover_open {
+                6
+            } else if self.recognition.is_some() {
+                0
+            } else if self.media.is_some() {
+                1
+            } else {
+                7
+            };
             self.report(false);
         }
     }
@@ -430,6 +534,7 @@ impl CdBlock {
             && (self.playing
                 || self.scan.is_some()
                 || self.pending.is_some()
+                || self.recognition.is_some()
                 || self.seeking != 0
                 || self.copying.is_some())
     }
@@ -465,6 +570,7 @@ impl CdBlock {
         };
         limit
             .min(standby)
+            .min(self.recognition.unwrap_or(u32::MAX))
             .min(self.copying.as_ref().map_or(u32::MAX, |job| job.clocks))
             .min(self.authentication.map_or(u32::MAX, |(clocks, _)| clocks))
             .min(self.rw.clocks())
@@ -547,10 +653,12 @@ impl CdBlock {
         ]);
     }
     fn invalid_report(&self) -> bool {
-        matches!(self.status, 6 | 7 | 9) || (self.status == 2 && self.at_home)
+        self.recognition.is_some()
+            || matches!(self.status, 6 | 7 | 9)
+            || (self.status == 2 && self.at_home)
     }
     fn track_report(&self) -> Option<(u8, u8, u8, u32)> {
-        let media = self.media.as_ref().filter(|_| !self.tray_open)?;
+        let media = self.media.as_ref().filter(|_| !self.tray_open())?;
         if self.fad == media.leadout {
             // §4.2: completion at disc end reports the lead-out area.
             // §7.2.5: TNO=AA, relative time starts at the lead-out boundary.
@@ -747,6 +855,15 @@ impl CdBlock {
             if was_seeking && self.seeking == 0 {
                 self.status = if self.playing { 3 } else { 1 };
             }
+            if let Some(left) = self.recognition {
+                if delta >= left {
+                    self.recognition = None;
+                    self.recognize_medium();
+                    self.report_drive_change();
+                } else {
+                    self.recognition = Some(left - delta);
+                }
+            }
             if let Some((left, result)) = self.authentication {
                 if delta >= left {
                     self.authentication = None;
@@ -846,7 +963,7 @@ impl CdBlock {
             && !self.buffer_paused
             && self.seeking == 0
             && self.scan.is_none()
-            && !self.tray_open
+            && !self.tray_open()
             && self
                 .media
                 .as_ref()
@@ -1402,10 +1519,14 @@ impl CdBlock {
                 flags,
             ]);
         };
-        // ST-162 §8.2.1 functions1.5/1.6: OPEN/NODISC wait, with a
-        // valid drive report. They are not malformed-command REJECTs and
-        // must neither start DATATRNS nor manufacture TOC/session data.
-        if matches!(command, 0x02 | 0x03) && (self.tray_open || self.media.is_none()) {
+        // ST-162 §8.2.1 functions1.5/1.6: TOC/session wait for a closed
+        // drive and recognized disc. Other pickup operations wait while
+        // the manual cover is open or the pickup is reading the TOC.
+        if (matches!(command, 0x02 | 0x03)
+            && (self.tray_open() || self.recognition.is_some() || self.media.is_none()))
+            || ((self.cover_open || self.recognition.is_some())
+                && matches!(command, 0x10..=0x12 | 0x70 | 0x71 | 0x74 | 0xE0))
+        {
             return self.wait();
         }
         match command {
@@ -1470,7 +1591,7 @@ impl CdBlock {
                 self.stop_rw();
                 self.fad = self.pause_position();
                 self.at_home = false;
-                self.tray_open = false;
+                self.software_tray_open = false;
                 self.scan = None;
                 self.buffer_paused = false;
                 self.playing = false;
@@ -1498,7 +1619,7 @@ impl CdBlock {
                     self.copying = None;
                     self.last = 255;
                     self.play_start = 150;
-                    self.end = self.media.as_ref().map_or(self.fad, |m| m.leadout);
+                    self.end = self.media.as_ref().map_or(u32::MAX, |m| m.leadout);
                     self.repeat = 0;
                     self.repeats = 0;
                     self.files.clear();
@@ -1507,33 +1628,28 @@ impl CdBlock {
                     self.hirq
                         .set(self.hirq.get() & !(DRDY | CSCT | BFUL | PEND));
                 }
-                self.status = if self.media.is_some() { 1 } else { 7 };
+                self.status = if self.cover_open {
+                    6
+                } else if self.recognition.is_some() {
+                    0
+                } else if self.media.is_some() {
+                    1
+                } else {
+                    7
+                };
                 self.report(false);
                 if software_reset {
                     self.raise(ESEL | EHST | ECPY | EFLS | 0x800);
                 }
             }
             0x05 => {
-                self.stop_rw();
-                self.rw = crate::cd_rw::Decoder::default();
-                self.cancel_rw_transfer();
-                self.finish_directory(false);
-                self.retry_attempts = 0;
-                self.files.clear();
-                self.directory = None;
-                self.volume_end = 0;
-                self.playing = false;
-                self.scan = None;
-                self.seeking = 0;
-                self.audio_index = 0;
-                self.deemphasis = crate::cd_audio::Deemphasis::default();
-                self.tray_open = true;
-                self.authentication = None;
-                self.authenticated = 0;
-                self.status = 6;
-                self.file_read = None;
-                self.report(false);
-                self.raise(0x20 | EFLS);
+                if !self.cover_open {
+                    self.stop_pickup();
+                    self.software_tray_open = true;
+                    self.status = 6;
+                    self.report(false);
+                    self.raise(DCHG | EFLS);
+                }
             }
             0x06 => {
                 let Some(t) = self.transfer.get_mut().take() else {
@@ -1615,7 +1731,7 @@ impl CdBlock {
                 {
                     return false;
                 }
-                self.tray_open = false;
+                self.software_tray_open = false;
                 self.scan = None;
                 self.buffer_paused = false;
                 self.pause_clocks = 0;
@@ -1689,7 +1805,7 @@ impl CdBlock {
                     if self.media.is_none() {
                         return false;
                     }
-                    self.tray_open = false;
+                    self.software_tray_open = false;
                     self.stop_rw();
                     self.playing = false;
                     self.retry_attempts = 0;
@@ -1711,7 +1827,7 @@ impl CdBlock {
                 {
                     return false;
                 }
-                self.tray_open = false;
+                self.software_tray_open = false;
                 self.stop_rw();
                 self.scan = None;
                 self.buffer_paused = false;
@@ -1737,7 +1853,7 @@ impl CdBlock {
                 self.scan = Some((c[0] & 1 != 0, audible));
                 self.fad = self.pause_position();
                 self.at_home = false;
-                self.tray_open = false;
+                self.software_tray_open = false;
                 self.playing = false;
                 self.buffer_paused = false;
                 self.seeking = 0;
@@ -2058,7 +2174,7 @@ impl CdBlock {
                 self.response.set(r);
             }
             0x70 | 0x71 => {
-                if selector >= SELECTORS || self.media.is_none() || self.tray_open {
+                if selector >= SELECTORS || self.media.is_none() || self.tray_open() {
                     return false;
                 }
                 if self.directory_read.is_some() {
@@ -2205,12 +2321,14 @@ impl CdBlock {
                 self.retry_attempts = 0;
                 self.file_read = None;
                 self.playing = false;
-                self.status = 1;
+                if !matches!(self.status, 0 | 6 | 7) {
+                    self.status = 1;
+                }
                 self.raise(EFLS);
             }
             0xE0 => {
                 // Stock disc authentication only; no MPEG cartridge is modeled.
-                if c[0] & 255 != 0 || c[1] != 0 || self.tray_open {
+                if c[0] & 255 != 0 || c[1] != 0 || self.tray_open() {
                     return false;
                 }
                 let Some(media) = &self.media else {
