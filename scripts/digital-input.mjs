@@ -472,6 +472,17 @@ async function touchInput(browser, url, rom) {
     assert.deepEqual(await page.evaluate(() => [innerWidth, innerHeight, screen.orientation.type]), [844, 390, "landscape-secondary"]);
     await packet(neutral, false, "Same-axis rotation releases A before pointerup");
     await up();
+
+    await rotate(320, 568);
+    await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: { left: 30, right: 30 } });
+    await wait(() => document.getElementById("player-shell").clientWidth === 260);
+    await page.evaluate(() => scrollTo(0, 0));
+    await down(await point("#dpad", 1, .97, .83));
+    await packet([0x5f, 0xff], false, "Inset portrait lower-right D-pad corner sends Down+Right");
+    await dispatch("touchMove", [await point("#dpad .down", 1, .91, .5)]);
+    await packet([0xdf, 0xff], false, "Inset portrait Down button keeps its full hit area");
+    await up();
+    await packet();
     assert.deepEqual(errors, []);
   } finally { await context.close(); }
 }
