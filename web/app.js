@@ -324,22 +324,25 @@ function render() {
   $("run").disabled = !ready;
   const inputReady = playerInputReady(bootMode);
   const playerReady = ready && inputReady;
-  const launchReady = playerReady && !$("error").textContent;
-  $("play").disabled = busy || (!playing && !launchReady);
+  const hasError = Boolean($("error").textContent);
+  // A host-side Debug error can leave the paused machine runnable.
+  const playbackReady = playerReady && (sessionStarted || !hasError);
+  $("play").disabled = busy || (!playing && !playbackReady);
   setText("play", playing ? "Pause" : sessionStarted ? "Resume" : "Play");
   $("restart").disabled = busy || Boolean(selectionError()) || !inputReady;
   $("frame").disabled = !playerReady || playing;
   $("backup-export").disabled = busy;
   const state = loadingFile() ? "Reading local media…" : loadingBackup ? "Reading backup RAM…" :
-    busy ? "Working…" : $("error").textContent ? "Stopped" :
+    busy ? "Working…" :
     playing ? `Running${machineStatus === "Ready" ? "" : ` · ${machineStatus}`}` :
-    launchReady ? (sessionStarted ? "Paused" : `${bootMode === "bios" ? "BIOS" : "Disc"} ready`) :
+    playbackReady ? (sessionStarted ? "Paused" : `${bootMode === "bios" ? "BIOS" : "Disc"} ready`) :
+    hasError ? "Stopped" :
     bootMode === "fixture" && bootValid ? "Bootstrap fixture ready in Debug" : bootValid ? machineStatus : "";
   setText("player-status", state);
-  const emptyTitle = $("error").textContent ? "Check the error below" : playing ? "Starting…" :
-    busy ? "Loading…" : launchReady ? "Ready to play" : bootMode === "fixture" ? "Debug fixture" : "Insert a disc or BIOS";
+  const emptyTitle = playing ? "Starting…" : busy ? "Loading…" : playbackReady ? "Ready to play" :
+    hasError ? "Check the error below" : bootMode === "fixture" ? "Debug fixture" : "Insert a disc or BIOS";
   setText("empty-title", emptyTitle);
-  $("recovery").hidden = !$("error").textContent || loadingFile();
+  $("recovery").hidden = !hasError || loadingFile() || (bootValid && !selectionError());
 }
 
 // Navigation is presentational: preserve the machine, file generations and errors.
