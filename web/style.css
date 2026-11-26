@@ -209,7 +209,7 @@ dialog p { margin: 5px 0 14px; }
   .player-shell:fullscreen { grid-template-areas: "picture picture" "left left" "right right" "start exit"; grid-template-rows: minmax(90px, 1fr) auto auto auto; }
   .touch-left, .touch-right { justify-self: center; }
 }
-@media (any-pointer: coarse) and (orientation: landscape) and (min-width: 540px) {
+@media (any-pointer: coarse) and (orientation: landscape) and (min-width: 500px) {
   .player-shell {
     grid-template-areas: "left picture right" "left start right";
     grid-template-columns: max-content minmax(0, 1fr) max-content;

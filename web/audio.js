@@ -29,7 +29,7 @@ export class AudioOutput {
         this.context = new AudioContext({ sampleRate: 44100, latencyHint: "interactive" });
         this.context.onstatechange = () => {
           if (this.context.state !== "running") this.finishCapacityWait(false);
-          this.status(this.context.state !== "running" ? "blocked" : this.paused ? "paused" : this.muted ? "muted" : "ready");
+          this.status(this.statusForControls());
         };
       }
       // Call resume before waiting for the module load so Play can unlock audio.
@@ -38,7 +38,7 @@ export class AudioOutput {
         this.initializing = this.initialize().finally(() => { this.initializing = null; });
       }
       await Promise.all([resumed, this.initializing]);
-      this.status(this.context.state !== "running" ? "blocked" : this.paused ? "paused" : this.muted ? "muted" : "ready");
+      this.status(this.statusForControls());
     } catch (error) {
       this.status("blocked");
       throw error;
@@ -84,9 +84,9 @@ export class AudioOutput {
     this.status(this.statusForControls());
   }
   statusForControls() {
-    if (this.stats.state === "blocked" && (!this.node || this.context.state !== "running")) return "blocked";
-    if (!this.node) return "disabled";
-    if (this.context.state !== "running") return "blocked";
+    if (this.context && this.context.state !== "running") return "blocked";
+    // A running context cannot recover a failed worklet on its own.
+    if (!this.node) return this.stats.state === "blocked" ? "blocked" : "disabled";
     return this.paused ? "paused" : this.muted ? "muted" : "ready";
   }
   // Queue the first PCM and resume in one Worklet message. No empty
