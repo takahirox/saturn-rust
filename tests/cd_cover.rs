@@ -142,6 +142,109 @@ fn opening_cancels_pending_get_and_delete_before_partition_offsets_shift() {
 }
 
 #[test]
+fn opening_preserves_an_active_put_and_its_fifo_position() {
+    let mut cd = CdBlock::default();
+    cd.write16(CD + 8, 0).unwrap();
+    assert_eq!(issue(&mut cd, [0x6400, 0, 0, 1])[0] & 0x4000, 0x4000);
+    cd.write16(DATA, 0x1234).unwrap();
+
+    cd.set_cover_open(true);
+    assert_eq!(cd.read16(CD + 8).unwrap() & 0x00a2, 0x0022); // DCHG, DRDY
+    cd.write16(DATA, 0x5678).unwrap();
+    assert_eq!(issue(&mut cd, [0x0600, 0, 0, 0])[1], 2);
+    assert_eq!(cd.read16(CD + 8).unwrap() & 0x0082, 0x0080); // EHST
+    issue(&mut cd, [0x6100, 0, 0, 1]);
+    assert_eq!(cd.read16(DATA), Ok(0x1234));
+    assert_eq!(cd.read16(DATA), Ok(0x5678));
+}
+
+#[test]
+fn opening_preserves_host_get_and_delete_when_disc_eviction_shifts_its_sector() {
+    let mut cd = CdBlock::default();
+    cd.mount(image(0xa1, 18));
+    issue(&mut cd, [0x3000, 0, 0, 0]);
+    issue(&mut cd, [0x1080, 150, 0x80, 1]);
+    cd.advance(250_000);
+    issue(&mut cd, [0x6400, 0, 0, 2]);
+    cd.write16(DATA, 0x1234).unwrap();
+    cd.write16(DATA, 0x5678).unwrap();
+    issue(&mut cd, [0x0600, 0, 0, 0]);
+    cd.write16(CD + 8, 0).unwrap();
+    issue(&mut cd, [0x6300, 1, 0, 1]);
+    assert_eq!(cd.read16(DATA), Ok(0x1234));
+
+    cd.set_cover_open(true);
+    assert_eq!(cd.read16(CD + 8).unwrap() & 0x0082, 0x0002);
+    assert_eq!(cd.read16(DATA), Ok(0x5678));
+    issue(&mut cd, [0x0600, 0, 0, 0]);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 1);
+}
+
+#[test]
+fn opening_preserves_host_selector_jobs_and_their_completion_deadline() {
+    for (command, remaining) in [(0x6501, 1), (0x6601, 0)] {
+        let mut cd = CdBlock::default();
+        issue(&mut cd, [0x6400, 0, 0, 1]);
+        cd.write16(DATA, 0x1234).unwrap();
+        issue(&mut cd, [0x0600, 0, 0, 0]);
+        cd.write16(CD + 8, 0).unwrap();
+        issue(&mut cd, [command, 0, 0, 1]);
+        assert_eq!(issue(&mut cd, [0x6700, 0, 0, 0])[0] & 255, 255);
+
+        cd.set_cover_open(true);
+        assert_eq!(cd.read16(CD + 8).unwrap() & 0x100, 0);
+        cd.advance(2352 - 1075 - 1);
+        assert_eq!(cd.read16(CD + 8).unwrap() & 0x100, 0);
+        cd.advance(1);
+        assert_eq!(cd.read16(CD + 8).unwrap() & 0x100, 0x100);
+        assert_eq!(issue(&mut cd, [0x6700, 0, 0, 0])[0] & 255, 0);
+        assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], remaining);
+        assert_eq!(issue(&mut cd, [0x5100, 0, 0x0100, 0])[3], 1);
+        issue(&mut cd, [0x6100, 0, 0x0100, 1]);
+        assert_eq!(cd.read16(DATA), Ok(0x1234));
+    }
+}
+
+#[test]
+fn opening_cancels_a_selector_job_that_includes_disc_sectors() {
+    let mut cd = CdBlock::default();
+    cd.mount(image(0xa1, 18));
+    issue(&mut cd, [0x3000, 0, 0, 0]);
+    issue(&mut cd, [0x1080, 150, 0x80, 1]);
+    cd.advance(250_000);
+    issue(&mut cd, [0x6400, 0, 0, 1]);
+    issue(&mut cd, [0x0600, 0, 0, 0]);
+    cd.write16(CD + 8, !0x100).unwrap();
+    issue(&mut cd, [0x6501, 0, 0, 2]);
+    cd.advance(2352); // The first copy has published a disc sector.
+    assert_eq!(issue(&mut cd, [0x5400, 0, 0x0100, 0])[1], 150);
+    assert_eq!(cd.read16(CD + 8).unwrap() & 0x100, 0);
+
+    cd.set_cover_open(true);
+    assert_eq!(cd.read16(CD + 8).unwrap() & 0x100, 0x100);
+    cd.advance(2352);
+    assert_eq!(issue(&mut cd, [0x6700, 0, 0, 0])[0] & 255, 1);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 1);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0x0100, 0])[3], 0);
+}
+
+#[test]
+fn opening_preserves_a_completed_copy_error() {
+    let mut cd = CdBlock::default();
+    issue(&mut cd, [0x6400, 0, 0, 1]);
+    issue(&mut cd, [0x0600, 0, 0, 0]);
+    issue(&mut cd, [0x4601, 0xff00, 0x0100, 0]); // Disconnect copy destination.
+    issue(&mut cd, [0x6501, 0, 0, 1]);
+    cd.advance(2352);
+    assert_eq!(issue(&mut cd, [0x6700, 0, 0, 0])[0] & 255, 1);
+    cd.write16(CD + 8, !0x100).unwrap();
+
+    cd.set_cover_open(true);
+    assert_eq!(issue(&mut cd, [0x6700, 0, 0, 0])[0] & 255, 1);
+    assert_eq!(cd.read16(CD + 8).unwrap() & 0x100, 0);
+}
+
+#[test]
 fn opening_cancels_pending_play_from_before_the_disc_exchange() {
     let mut cd = CdBlock::default();
     cd.mount(image(0xa1, 18));

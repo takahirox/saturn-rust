@@ -78,6 +78,12 @@ struct Sector {
     fad: u32,
     raw: [u8; RAW_SECTOR],
 }
+impl Sector {
+    fn is_disc_derived(&self) -> bool {
+        self.fad != 0 // Put Sector Data creates sectors with FAD 0.
+    }
+}
+
 #[derive(Default)]
 struct SectorSearch {
     words: [u16; 3],
@@ -91,14 +97,25 @@ impl SectorSearch {
     };
 }
 
+enum TransferKind {
+    Drive,
+    DiscSectors,
+    HostSectors,
+}
+
+impl TransferKind {
+    // ST-162 §3.2 table3.2: EHST belongs to sector-buffer I/O.
+    fn is_sector_io(&self) -> bool {
+        matches!(self, Self::DiscSectors | Self::HostSectors)
+    }
+}
+
 struct Transfer {
     bytes: Vec<u8>,
     position: usize,
     put: Option<(usize, usize, usize)>, // filter, count, retained sector length
     delete: Option<(usize, Vec<u64>)>,
-    // ST-162 §3.2 table3.2: EHST belongs to sector-buffer I/O, not
-    // TOC, subcode or file-information transfers of a coincident byte count.
-    host_io: bool,
+    kind: TransferKind,
     rw: Option<u64>,
 }
 
@@ -107,6 +124,7 @@ struct SelectorTransfer {
     sectors: std::collections::VecDeque<u64>,
     destination: u8,
     moving: bool,
+    uses_disc_sectors: bool,
     clocks: u32,
 }
 
@@ -381,6 +399,9 @@ impl CdBlock {
         }
         self.settle_quiet_clocks();
         self.search = SectorSearch::default();
+        self.copying = None;
+        self.copy_error = 0;
+        *self.transfer.get_mut() = None;
         self.invalidate_medium();
         self.pending = None;
         self.pending_cancelled = false;
@@ -413,7 +434,6 @@ impl CdBlock {
                 .pending
                 .is_some_and(|(command, _)| self.command_uses_old_medium(command));
             let interrupted = self.invalidate_medium();
-            self.copy_error = u16::from(interrupted & ECPY != 0);
             self.status = 6;
             self.raise(DCHG | EFLS | interrupted);
         } else if self.media.is_some() {
@@ -488,7 +508,7 @@ impl CdBlock {
             0x52 | 0x54..=0x55 | 0x61..=0x63 | 0x65..=0x66 => self
                 .partitions
                 .get(usize::from(command[2] >> 8))
-                .is_some_and(|partition| partition.iter().any(|sector| sector.fad != 0)),
+                .is_some_and(|partition| partition.iter().any(Sector::is_disc_derived)),
             _ => false,
         }
     }
@@ -496,23 +516,31 @@ impl CdBlock {
     fn invalidate_medium(&mut self) -> u16 {
         self.stop_pickup();
         let mut interrupted = 0;
-        self.copy_error = 0;
-        if self.copying.take().is_some() {
+        // ST-162 §5.5 retains host buffer state and copy/move results.
+        if self
+            .copying
+            .as_ref()
+            .is_some_and(|job| job.uses_disc_sectors)
+        {
+            self.copying = None;
+            self.copy_error = 1;
             interrupted |= ECPY;
         }
-        if self
-            .transfer
-            .get_mut()
-            .take()
-            .is_some_and(|transfer| transfer.host_io)
-        {
-            interrupted |= EHST;
+        let transfer = self.transfer.get_mut();
+        match transfer.as_ref().map(|t| &t.kind) {
+            Some(TransferKind::HostSectors) => (),
+            kind => {
+                if matches!(kind, Some(TransferKind::DiscSectors)) {
+                    interrupted |= EHST;
+                }
+                *transfer = None;
+                self.hirq.set(self.hirq.get() & !DRDY);
+            }
         }
-        // Keep host-written sectors (FAD 0), filters and sector lengths.
         // Disc sectors, including copies of them, must not cross the exchange.
         for (selector, partition) in self.partitions.iter_mut().enumerate() {
             let before = partition.len();
-            partition.retain(|sector| sector.fad == 0);
+            partition.retain(|sector| !sector.is_disc_derived());
             // ST-162 §5.5 retains the host's search result. If eviction
             // removes or displaces the match, report the usual no-match result.
             if partition.len() != before
@@ -526,8 +554,7 @@ impl CdBlock {
             }
         }
         self.last = 255;
-        self.hirq
-            .set(self.hirq.get() & !(DRDY | CSCT | BFUL | PEND));
+        self.hirq.set(self.hirq.get() & !(CSCT | BFUL | PEND));
         interrupted
     }
     pub fn media(&self) -> Option<&Media> {
@@ -1499,7 +1526,7 @@ impl CdBlock {
         &mut self,
         bytes: Vec<u8>,
         delete: Option<(usize, Vec<u64>)>,
-        host_io: bool,
+        kind: TransferKind,
     ) -> bool {
         if self.transfer.borrow().is_some() {
             return false;
@@ -1509,7 +1536,7 @@ impl CdBlock {
             position: 0,
             put: None,
             delete,
-            host_io,
+            kind,
             rw: None,
         });
         let mut r = self.response.get();
@@ -1647,7 +1674,7 @@ impl CdBlock {
         let transfer = self.transfer.borrow();
         let transfer_busy = transfer.as_ref().is_some_and(|t| {
             matches!(command, 0x02 | 0x20 | 0x61 | 0x63 | 0x64 | 0x73)
-                || (t.host_io && command == 0x62)
+                || (t.kind.is_sector_io() && command == 0x62)
         });
         drop(transfer);
         if !software_reset
@@ -1695,7 +1722,7 @@ impl CdBlock {
                 };
                 let toc = m.toc();
                 transfer_size(self, 204, 0);
-                return self.begin_get(toc, None, false);
+                return self.begin_get(toc, None, TransferKind::Drive);
             }
             0x03 => {
                 let Some(m) = &self.media else {
@@ -1776,7 +1803,7 @@ impl CdBlock {
                     }
                 }
                 self.hirq.set(self.hirq.get() & !DRDY);
-                if t.host_io {
+                if t.kind.is_sector_io() {
                     self.raise(EHST);
                 }
                 let mut r = self.response.get();
@@ -1790,7 +1817,7 @@ impl CdBlock {
                         return self.wait();
                     };
                     transfer_size(self, 12, flags);
-                    if !self.begin_get(vec![0; 24], None, false) {
+                    if !self.begin_get(vec![0; 24], None, TransferKind::Drive) {
                         return false;
                     }
                     self.transfer.get_mut().as_mut().unwrap().rw = Some(sequence);
@@ -1812,7 +1839,7 @@ impl CdBlock {
                     bytes[7..10].copy_from_slice(&self.fad.to_be_bytes()[1..]);
                 }
                 transfer_size(self, 5, 0);
-                return self.begin_get(bytes, None, false);
+                return self.begin_get(bytes, None, TransferKind::Drive);
             }
             0x30 => {
                 // ST-162 §5.3 table5.1: a filter input has one source;
@@ -1964,25 +1991,19 @@ impl CdBlock {
                         self.raise(ESEL);
                     }
                     0x61 | 0x63 => {
-                        let bytes = self.partitions[selector][start..start + count]
+                        let sectors = &self.partitions[selector][start..start + count];
+                        let bytes = sectors
                             .iter()
                             .flat_map(|s| self.data(s).iter().copied())
                             .collect();
-                        return self.begin_get(
-                            bytes,
-                            if command == 0x63 {
-                                Some((
-                                    selector,
-                                    self.partitions[selector][start..start + count]
-                                        .iter()
-                                        .map(|s| s.id)
-                                        .collect(),
-                                ))
-                            } else {
-                                None
-                            },
-                            true,
-                        );
+                        let delete = (command == 0x63)
+                            .then(|| (selector, sectors.iter().map(|s| s.id).collect()));
+                        let kind = if sectors.iter().any(Sector::is_disc_derived) {
+                            TransferKind::DiscSectors
+                        } else {
+                            TransferKind::HostSectors
+                        };
+                        return self.begin_get(bytes, delete, kind);
                     }
                     0x62 => {
                         self.partitions[selector].drain(start..start + count);
@@ -1996,14 +2017,13 @@ impl CdBlock {
                         if command == 0x65 && self.used() + count > POOL {
                             return self.wait();
                         }
+                        let sectors = &self.partitions[selector][start..start + count];
                         self.copying = Some(SelectorTransfer {
                             source: selector,
-                            sectors: self.partitions[selector][start..start + count]
-                                .iter()
-                                .map(|s| s.id)
-                                .collect(),
+                            sectors: sectors.iter().map(|s| s.id).collect(),
                             destination: destination as u8,
                             moving: command == 0x66,
+                            uses_disc_sectors: sectors.iter().any(Sector::is_disc_derived),
                             clocks: COPY_CLOCKS,
                         });
                         self.copy_error = 255;
@@ -2088,7 +2108,7 @@ impl CdBlock {
                     position: 0,
                     put: Some((selector, n, self.put_length)),
                     delete: None,
-                    host_io: true,
+                    kind: TransferKind::HostSectors,
                     rw: None,
                 });
                 self.raise(DRDY);
@@ -2193,7 +2213,7 @@ impl CdBlock {
                     bytes.extend([f.unit, f.gap, f.number, f.flags]);
                 }
                 transfer_size(self, (bytes.len() / 2) as u32, 0);
-                return self.begin_get(bytes, None, false);
+                return self.begin_get(bytes, None, TransferKind::Drive);
             }
             0x74 => {
                 let Some(f) = self
