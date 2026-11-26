@@ -737,11 +737,11 @@ async function playerLayouts(browser, desktop, url) {
         };
         const picture = target($("screen")), well = rect(document.querySelector(".display-well"));
         const controls = [...document.querySelectorAll("#touch-controls button")].map(node => ({
-          ...target(node), mask: Number(node.dataset.mask),
+          ...target(node), mask: Number(node.dataset.mask), inDpad: $("dpad").contains(node),
         }));
         const visible = controls.some(b => b.width > 0);
         return {
-          picture, well, controls, visible, dpr: devicePixelRatio, width: innerWidth, height: innerHeight,
+          picture, well, controls, dpad: rect($("dpad")), visible, dpr: devicePixelRatio, width: innerWidth, height: innerHeight,
           pointer: matchMedia("(pointer: coarse)").matches, overflow: document.documentElement.scrollWidth > innerWidth,
           media: rect($("setup")), toolbar: rect(document.querySelector(".player-toolbar")),
           exit: target($("exit-fullscreen")), screenNative: [$("screen").width, $("screen").height],
@@ -783,6 +783,7 @@ async function playerLayouts(browser, desktop, url) {
         for (const [i, box] of controls.entries()) {
           assert(box.width >= 44 && box.height >= 44 && safeWidth(box) && box.top >= 0 && box.bottom <= height, JSON.stringify(box));
           assert(box.hit && disjoint(picture, box), JSON.stringify(box));
+          if (!box.inDpad) assert(disjoint(result.dpad, box), "The D-pad hit area must be clear of other buttons");
           for (const other of controls.slice(i + 1)) assert(disjoint(box, other), "Touch buttons cannot overlap");
         }
         if (width > height) {
@@ -867,6 +868,40 @@ async function playerLayouts(browser, desktop, url) {
       local: localStorage.length, session: sessionStorage.length, databases: await indexedDB.databases(),
       caches: await caches.keys(), cookies: document.cookie,
     })), { local: 0, session: 0, databases: [], caches: [], cookies: "" });
+
+    await mobile.setViewportSize({ width: 844, height: 390 });
+    await enterFullscreen(mobile);
+    await play.tap();
+    await mobile.waitForFunction(() => document.getElementById("empty-state").hidden);
+    await mobile.evaluate(async () => {
+      const { emulator } = await import("./app.js");
+      const resetDisc = emulator.reset_loaded_disc;
+      emulator.reset_loaded_disc = async () => {
+        emulator.reset_loaded_disc = resetDisc;
+        throw new Error("Disc boot failed during Reset test");
+      };
+    });
+    const reset = mobile.getByRole("button", { name: "Reset", exact: true });
+    await reset.tap();
+    await waitForActions(mobile);
+    assert(await play.isDisabled());
+    assert.equal(await mobile.locator("#empty-title").textContent(), "Check the error below");
+    const alert = mobile.getByRole("alert");
+    assert.equal(await alert.textContent(), "Error: Disc boot failed during Reset test");
+    assert(await alert.evaluate(region => {
+      const bounds = region.getBoundingClientRect();
+      const picture = document.getElementById("screen").getBoundingClientRect();
+      return document.fullscreenElement?.contains(region) && bounds.top >= picture.bottom &&
+        bounds.bottom <= innerHeight && region.contains(document.elementFromPoint(
+          bounds.left + bounds.width / 2, bounds.top + bounds.height / 2));
+    }), "The fullscreen alert is onscreen below the image");
+    await (await liveRegions(mobile))("#error", "Error: Disc boot failed during Reset test", "alert");
+    await check(mobile, 844, 390, true, true);
+    assert.match(await mobile.locator("#recovery").textContent(), /Try Reset again/);
+    await reset.tap();
+    await waitForGuest(mobile, () => document.getElementById("empty-state").hidden);
+    assert.equal(await alert.textContent(), "");
+    await mobile.getByRole("button", { name: "Exit fullscreen" }).tap();
   } finally { await touch.close(); }
 }
 
@@ -937,10 +972,26 @@ async function playerAudio(browser, url, failure = "resume") {
       return document.fullscreenElement.scrollHeight <= innerHeight &&
         document.elementFromPoint(x + width / 2, y + height / 2) === button;
     }), "Enable audio is onscreen and hit-testable in fullscreen");
-    await recovery[touch ? "tap" : "click"]();
+    if (touch) {
+      await page.getByRole("button", { name: "Pause", exact: true }).tap();
+      await waitForActions(page);
+    }
+    await recovery.focus();
+    await page.keyboard.press("Enter");
     await page.waitForFunction(() => document.getElementById("audio-enable").hidden);
+    assert.equal(await page.evaluate(() => document.activeElement.id), touch ? "mute" : "screen");
     await live("#audio-warning");
     assert.deepEqual(await page.evaluate(() => window.audioGestures), [true, true]);
+    if (touch) {
+      const resume = page.getByRole("button", { name: "Resume", exact: true });
+      assert(await resume.isEnabled(), "Audio recovery leaves the session paused");
+      await resume.tap();
+    } else {
+      const x = await page.evaluate(async () => (await import("./app.js")).emulator.read_long(0x06018000));
+      await page.keyboard.down("ArrowRight");
+      await waitForGuest(page, async x => (await (await import("./app.js")).emulator.read_long(0x06018000)) > x, x);
+      await page.keyboard.up("ArrowRight");
+    }
     await page.locator("#exit-fullscreen").click();
     await page.waitForFunction(() => !document.fullscreenElement);
     await waitForGuest(page, async () => {

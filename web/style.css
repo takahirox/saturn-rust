@@ -110,7 +110,7 @@ button.primary:hover:not(:disabled) { background: #24407d; }
 .player-feedback p, .display-status { margin: 6px 0; }
 .player-feedback p:empty { margin: 0; }
 .display-status:empty { position: absolute; margin: 0; }
-#error { color: #98251d; white-space: pre-wrap; }
+#error { color: #98251d; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .media-panel, .tools, .panel { border: 1px solid var(--line); border-radius: 12px; background: #fff; }
 fieldset { border: 0; min-width: 0; padding: 0; margin: 0; }
@@ -154,7 +154,7 @@ dialog {
 dialog::backdrop { background: #11172599; }
 .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
 dialog p { margin: 5px 0 14px; }
-:is(.visually-hidden, .player-shell:fullscreen .display-filter label) { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+:is(.visually-hidden, .player-shell:fullscreen :is(.display-filter label, #player-status)) { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 #touch-controls, #exit-fullscreen { display: none; }
 .touch-left { grid-area: left; justify-self: start; }
@@ -201,8 +201,11 @@ dialog p { margin: 5px 0 14px; }
 .player-shell:fullscreen .display-well { container-type: size; padding: 0; }
 .player-shell:fullscreen .display-surround { max-width: min(100cqw, calc(100cqh * (var(--display-ratio)))); }
 .player-shell:fullscreen .player-toolbar { flex: none; justify-content: center; gap: 6px; margin-top: 0; }
-.player-shell:fullscreen #volume-value, .player-shell:fullscreen .display-status { color: #c4cad6; }
-.player-shell:fullscreen .display-status { flex: none; margin: 0; }
+.player-shell:fullscreen :is(#volume-value, .display-status, .player-feedback) { color: #c4cad6; }
+.player-shell:fullscreen .player-feedback { display: contents; }
+.player-shell:fullscreen :is(.display-status, #error, #recovery) { flex: none; margin: 0; }
+.player-shell:fullscreen #error { color: #ffb4ab; }
+.player-shell:fullscreen #error:empty { position: absolute; }
 .player-shell:fullscreen #fullscreen { display: none; }
 .player-shell:fullscreen #exit-fullscreen { display: block; min-width: 44px; }
 
@@ -222,14 +225,17 @@ dialog p { margin: 5px 0 14px; }
     grid-template-rows: minmax(90px, 1fr) auto auto;
   }
 
-  /* Below the 274px needed for side-by-side clusters, stagger the face
-     buttons and put Start beside L to save a row. */
-  @container player (224px <= width < 274px) {
+  /* Narrow the neutral center of the D-pad while keeping its buttons
+     44px wide and the full pad clear of the face buttons. */
+  @container player (248px <= width < 274px) {
     .player-stage, .player-shell:fullscreen .player-stage {
       grid-template-areas: "picture picture" "left right";
+      grid-template-columns: minmax(0, 1fr) max-content;
     }
     .player-shell:fullscreen .player-stage { grid-template-rows: minmax(90px, 1fr) auto; }
-    .face-buttons { margin-block-start: 88px; }
+    .touch-left { justify-self: stretch; }
+    .dpad { grid-template-columns: 44px minmax(0, 1fr) 44px; }
+    .dpad :is(.up, .down) { justify-self: center; }
     .touch-start {
       grid-area: left;
       place-self: start;
@@ -237,7 +243,7 @@ dialog p { margin: 5px 0 14px; }
       margin-inline-start: 68px;
     }
   }
-  @container player (width < 224px) {
+  @container player (width < 248px) {
     .player-stage, .player-shell:fullscreen .player-stage {
       grid-template-areas: "picture picture" "left left" "right right" "start start";
     }

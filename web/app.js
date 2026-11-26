@@ -105,7 +105,12 @@ let view = "play";
 export const audio = new AudioOutput((stats) => {
   setText("audio-status", `Audio: ${stats.state}${stats.state === "underflow" ? " · buffer empty" : ""}`);
   const blocked = stats.state === "blocked";
-  if ($("audio-enable").hidden === blocked) $("audio-enable").hidden = !blocked;
+  const enable = $("audio-enable");
+  if (enable.hidden === blocked) {
+    const restoreFocus = !blocked && document.activeElement === enable;
+    enable.hidden = !blocked;
+    if (restoreFocus) (playing ? screen : $("mute")).focus({ preventScroll: true });
+  }
   setText("audio-warning", blocked ? "Audio is blocked." : "");
   setText("audio-diagnostics", `${stats.rendered} audio frames · ${stats.underflow} underflow · ${stats.dropped} dropped`);
 });
@@ -146,13 +151,18 @@ function rows(target, names, values) {
 const touchControls = $("touch-controls");
 const touchButtons = [...touchControls.querySelectorAll("[data-mask]")];
 const dpad = $("dpad");
+const dpadLeft = dpad.querySelector(".left");
 
 function dpadMask(event) {
   const bounds = dpad.getBoundingClientRect();
-  const x = (event.clientX - bounds.left) / bounds.width;
+  const x = event.clientX - bounds.left;
   const y = (event.clientY - bounds.top) / bounds.height;
-  if (!(x >= 0 && x < 1 && y >= 0 && y < 1)) return 0;
-  return (x < 1 / 3 ? 4 : x >= 2 / 3 ? 8 : 0) | (y < 1 / 3 ? 1 : y >= 2 / 3 ? 2 : 0);
+  if (!(x >= 0 && x < bounds.width && y >= 0 && y < 1)) return 0;
+  const vertical = y < 1 / 3 ? 1 : y >= 2 / 3 ? 2 : 0;
+  const buttonWidth = dpadLeft.offsetWidth;
+  // Keep the whole centered Up and Down buttons clear of the diagonals.
+  const edge = vertical ? (bounds.width - buttonWidth) / 2 : buttonWidth;
+  return vertical | (x < edge ? 4 : x >= bounds.width - edge ? 8 : 0);
 }
 
 function updateTouchMask() {
@@ -344,6 +354,10 @@ function render() {
     hasError ? "Check the error below" : bootMode === "fixture" ? "Debug fixture" : "Insert a disc or BIOS";
   setText("empty-title", emptyTitle);
   $("recovery").hidden = !hasError || loadingFile() || (bootValid && !selectionError());
+  if (!$("recovery").hidden) {
+    setText("recovery", $("restart").disabled ? "Replace or clear a rejected image. See Debug for machine details." :
+      "Try Reset again. If the error persists, replace the selected media or see Debug.");
+  }
 }
 
 // Navigation is presentational: preserve the machine, file generations and errors.
