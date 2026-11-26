@@ -95,19 +95,19 @@ function playerInputReady(mode = effectiveBootMode()) {
   return mode === "bios" || (mode === "disc" && loadedDisc);
 }
 function acceptsInput() {
-  return !$("help").open && bootValid && playerInputReady() && !loadingFile() && !loadingBackup && pendingActions === 0 && !selectionError();
+  return !$("help").open && bootValid && playerInputReady() && !loadingFile() && !loadingBackup() && pendingActions === 0 && !selectionError();
 }
 const backupDevices = [
   { id: "backup", name: "internal memory", size: 32768, suffix: "", file: "saturn-backup.bin" },
   { id: "cartridge-backup", name: "backup cartridge", size: 524288, suffix: "cartridge_", file: "saturn-power-memory.bin" },
 ];
 let backupGeneration = 0;
-let backupStatusId = "backup-status";
 let cartridge = 0;
 let saveStorage = { state: "loading" };
 const cartridgePreference = "saturn-rust-cartridge";
-let loadingBackup = false;
-let readingBackup = false;
+let backupReadStatus = null;
+let importingBackup = false;
+const loadingBackup = () => Boolean(backupReadStatus) || importingBackup;
 let view = "play";
 
 export const audio = new AudioOutput((stats) => {
@@ -341,7 +341,7 @@ function render() {
     choose.setAttribute("aria-label", `${action} ${id === "bios" ? "BIOS" : "disc"}`);
     $(`${id}-clear`).disabled = !selected;
   }
-  const busy = loadingFile() || loadingBackup || pendingActions > 0;
+  const busy = loadingFile() || loadingBackup() || pendingActions > 0;
   const ready = bootValid && !busy && !selectionError() && canExecute(machineStatus);
   $("step").disabled = !ready;
   $("run").disabled = !ready;
@@ -362,13 +362,19 @@ function render() {
   $("cartridge").disabled = busy || $("backup-controls").disabled;
   if ($("cartridge").value !== String(cartridge)) $("cartridge").value = String(cartridge);
   const storageError = saveStorage.state.endsWith("-error");
+  const sessionOnly = saveStorage.state === "session-only";
   for (const { id } of backupDevices) {
+    $(`${id}-import`).disabled = importingBackup;
     $(`${id}-export`).disabled = busy;
-    $(`${id}-clear`).disabled = busy || storageError;
+    $(`${id}-clear`).disabled = busy || storageError || sessionOnly;
   }
   $("retry-saves").disabled = busy;
   $("retry-saves").hidden = !storageError;
-  const state = loadingFile() ? "Reading local media…" : loadingBackup ? "Reading backup RAM…" :
+  $("session-only-option").hidden = !storageError;
+  $("session-only-import").disabled = busy;
+  if (!storageError) $("session-only-import").checked = false;
+  const state = loadingFile() ? "Reading local media…" : backupReadStatus ? "Reading backup RAM…" :
+    importingBackup ? "Importing backup RAM…" :
     busy ? "Working…" :
     playing ? `Running${machineStatus === "Ready" ? "" : ` · ${machineStatus}`}` :
     playbackReady ? (sessionStarted ? "Paused" : `${bootMode === "bios" ? "BIOS" : "Disc"} ready`) :
@@ -454,11 +460,11 @@ async function reset({ clearMedia = false, slot } = {}) {
   const generation = ++bootGeneration;
   resetting = true;
   const current = () => generation === bootGeneration;
-  if (loadingBackup) $(backupStatusId).textContent = readingBackup
-    ? "Backup import cancelled by boot change; backup RAM was preserved."
-    : "Accepted backup import retained through the boot change.";
-  backupGeneration++;
-  loadingBackup = readingBackup = false;
+  if (backupReadStatus) {
+    backupReadStatus.textContent = "Backup import cancelled by boot change; backup RAM was preserved.";
+    backupGeneration++;
+    backupReadStatus = null;
+  }
   playing = false;
   queuedAudio = [];
   audio.setPaused(true);
@@ -522,13 +528,15 @@ function showSaveStorage(status) {
     ready: "Local storage is up to date.",
     pending: "New save changes are waiting to be stored…",
     saving: "Saving changes locally…",
+    "session-only": "Console changes are kept in this session. Export copies before reloading.",
     "restore-error": "Could not restore local saves. Existing storage is protected.",
     "write-error": "Changes are unsaved. Export a copy or retry local storage.",
   }[status.state];
   setText("save-storage-status", status.message ? `${message} ${status.message}` : message);
   for (const [index, { id }] of backupDevices.entries()) {
     const saved = status.devices?.[index];
-    setText(`${id}-persistence`, status.state.endsWith("-error") ? "Current session only until storage recovers." :
+    setText(`${id}-persistence`, status.state === "session-only" ? "Session only." :
+      status.state.endsWith("-error") ? "Current session only until storage recovers." :
       saved ? "Local copy is available." : status.state === "loading" ? "Restoring…" : "No local copy yet.");
   }
   if (emulator?.state) render();
@@ -566,11 +574,13 @@ try {
     const picker = $(`${id}-import`);
     const output = $(`${id}-status`);
     picker.addEventListener("change", async () => {
+      if (importingBackup) return;
       const generation = ++backupGeneration;
-      backupStatusId = output.id;
       const file = picker.files[0];
       picker.value = ""; // Selecting the same file again must work.
-      loadingBackup = readingBackup = Boolean(file);
+      const sessionOnly = saveStorage.state === "session-only" ||
+        (!$("session-only-option").hidden && $("session-only-import").checked);
+      backupReadStatus = file ? output : null;
       try {
         await pause();
         if (generation !== backupGeneration || !file) return;
@@ -578,15 +588,22 @@ try {
         output.textContent = "Reading backup RAM locally…";
         const bytes = new Uint8Array(await file.arrayBuffer());
         if (generation !== backupGeneration) return;
-        readingBackup = false;
+        backupReadStatus = null;
+        importingBackup = true;
+        const importBoot = bootGeneration;
         output.textContent = `Importing ${size} backup bytes…`;
-        await emulator[`import_${suffix}backup_ram`](bytes);
-        if (generation !== backupGeneration) return;
-        output.textContent = `Imported ${size} backup bytes. Playback is paused. Reset to let the guest read the new data.`;
+        render();
+        await emulator[`import_${suffix}backup_ram`](bytes, sessionOnly);
+        const resetHint = importBoot === bootGeneration ? " Reset to let the guest read the new data." : "";
+        output.textContent = `Imported ${size} backup bytes${sessionOnly ? " for this session only" : ""}. Playback is paused.${resetHint}`;
       } catch (error) {
         if (generation === backupGeneration) output.textContent = `Backup unchanged: ${error}`;
       } finally {
-        if (generation === backupGeneration) { loadingBackup = readingBackup = false; render(); }
+        if (generation === backupGeneration) {
+          backupReadStatus = null;
+          importingBackup = false;
+          render();
+        }
       }
     });
     $(`${id}-export`).addEventListener("click", async () => {

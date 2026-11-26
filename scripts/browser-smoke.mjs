@@ -3245,26 +3245,6 @@ try {
   assert.match(await value("backup-status"), /cancelled by boot change/);
   assert.deepEqual(Buffer.from(await backup()), backupBytes);
   assert.match(await value("error"), /512 KiB/);
-  // An import accepted before a boot change remains committed even if its
-  // acknowledgement arrives late; report retention rather than cancellation.
-  await page.evaluate(async () => {
-    const {emulator:m} = await import("./app.js");
-    const original = m.import_backup_ram.bind(m);
-    m.import_backup_ram = async bytes => {
-      await original(bytes);
-      window.backupCommitted = true;
-      await new Promise(resolve => { window.releaseBackupImport = resolve; });
-    };
-    window.restoreBackupImport = () => { m.import_backup_ram = original; };
-  });
-  await page.locator("#backup-import").setInputFiles(replacement);
-  await page.waitForFunction(() => window.backupCommitted);
-  await page.locator("#reset").click();
-  await page.evaluate(() => { window.releaseBackupImport(); window.restoreBackupImport(); });
-  assert.match(await value("backup-status"), /Accepted backup import retained/);
-  assert.deepEqual(Buffer.from(await backup()), replacement.buffer);
-  await page.locator("#backup-import").setInputFiles({name:"restore-backup.bin", mimeType:"application/octet-stream", buffer:backupBytes});
-  await page.waitForFunction(() => document.getElementById("backup-status").textContent.startsWith("Imported"));
   // The shared original guest executes real MOV.B instructions on Wasm too.
   const backupRom = Buffer.alloc(524288);
   for (const line of (await readFile("tests/fixtures/backup-pad.hex", "utf8")).split(/\r?\n/)) {

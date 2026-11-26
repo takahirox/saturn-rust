@@ -132,6 +132,10 @@
               <legend>Save management</legend>
               <p id="save-storage-status" role="status">Restoring local saves…</p>
               <button id="retry-saves" type="button" hidden>Retry local storage</button>
+              <p id="session-only-option" hidden>
+                <label><input id="session-only-import" type="checkbox"> Import for this session only</label>
+                <span>Console changes stay in memory until you reload.</span>
+              </p>
               <p id="backup-format">Raw import replaces the whole device. Export a copy first. HLE uses SRBUP001. Use your BIOS memory manager for saves made with that BIOS.</p>
               <div class="backup-devices">
                 <fieldset>

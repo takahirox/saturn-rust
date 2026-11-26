@@ -144,7 +144,7 @@ async function invoke(data) {
         const receipt = await capture(method === "framebuffer");
         value = method === "framebuffer" ? receipt.pixels : method === "video_width" ? receipt.width : receipt.height;
       } else if (saves && saveReplacement(method)) {
-        await saves.replace(method === "import_backup_ram" ? 0 : 1, args[0]);
+        await saves.replace(method === "import_backup_ram" ? 0 : 1, args[0], { sessionOnly: args[1] === true });
       } else value = machine[method](...args);
       values.push({ ok: true, value });
     } catch (error) { values.push({ ok: false, error: String(error?.message ?? error) }); }

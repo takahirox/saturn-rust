@@ -215,17 +215,20 @@ and cold-boots the accepted media. Select **Resume** when ready.
 **Save management** handles two whole-device raw images in ascending odd-address
 order. Internal memory accepts exactly 32768 bytes and the detached or installed
 backup cartridge accepts exactly 524288 bytes. The files have no wrapper or
-header. Each import pauses and commits the replacement before installing it.
+header. A normal import pauses and commits the replacement before installing it.
 Clear erases a device after confirmation. Export a copy first and use the game
 or supplied firmware to format the cleared device if prompted. The HLE library
 uses [SRBUP001](../src/hle/README.md#independent-backup-library).
 
 Local storage is shared across all games and BIOS choices under the site's origin.
-If storage is unavailable, the current RAM remains available to export. Retry
+If storage fails, you can export the current RAM or select **Import for this
+session only** before choosing a raw image for either device. This keeps all
+console changes in memory until reload and leaves the stored records intact.
+Export any changes you want to keep before reloading. You can also retry storage
 after fixing permission or capacity problems. If another tab has committed
-newer saves, export the current session's copy before reloading to accept the
-newer storage. Changing browsers, private browsing, eviction and clearing site
-data can affect availability. A process kill can interrupt the last write.
+newer saves, reloading accepts the newer storage. Changing browsers, private
+browsing, eviction and clearing site data can affect availability. A process
+kill can interrupt the last write.
 
 The site stores only battery-backed save/clock data and related player
 preferences locally. BIOS, game ROMs, disc images, traces, expansion RAM and save

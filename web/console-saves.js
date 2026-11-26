@@ -72,12 +72,13 @@ function readConsole(db) {
   return transaction(db, "readonly", (store, finish) => {
     const head = store.get("head");
     const images = KEYS.map(key => store.get(key));
-    images.at(-1).onsuccess = () => finish([head.result, images.map(request => request.result)]);
+    const count = store.count();
+    count.onsuccess = () => finish([head.result, images.map(request => request.result), count.result]);
   });
 }
 
-function validateConsole(head, images) {
-  if (head === undefined && images.every(image => image === undefined)) return;
+function validateConsole(head, images, count) {
+  if (head === undefined && count === 0) return;
   if (!head || head.version !== VERSION) throw new Error("Unsupported console save record");
   if (typeof head.token !== "string" || !/^[0-9a-f]{32}$/.test(head.token)
       || !Array.isArray(head.hashes) || head.hashes.length !== KEYS.length
@@ -130,8 +131,8 @@ export class ConsoleSaves {
       if (this.currentRevisions().some((revision, i) => revision !== this.revisions[i])) {
         throw new Error("This session has changed saves or clock settings. Export your saves before reloading to recover local storage.");
       }
-      const [head, images] = await readConsole(await this.connect());
-      validateConsole(head, images);
+      const [head, images, count] = await readConsole(await this.connect());
+      validateConsole(head, images, count);
       const now = nowMillis(this.now);
       if (head) {
         // The core validates BCD, calendar ranges, flags and phase before
@@ -152,12 +153,16 @@ export class ConsoleSaves {
   // A low-frequency timer checks three small revision numbers. The clock
   // snapshot is sampled separately. Backup images cross Wasm only when dirty.
   poll() {
-    if (!this.restored || this.saving || this.error) return;
+    if (!this.restored || this.saving || this.error || this.state === "session-only") return;
     this.saveIfChanged(false);
   }
 
   async flush({ retry = false, replacement } = {}) {
     while (this.saving) await this.saving;
+    if (this.state === "session-only") {
+      if (replacement) throw new Error("Reload the player to resume local storage.");
+      return;
+    }
     if (!this.restored && retry) await this.restore();
     if (!this.restored || (this.error && !retry)) {
       if (replacement) throw this.error ?? new Error("Local saves are still loading");
@@ -167,22 +172,30 @@ export class ConsoleSaves {
       // A rejected replacement can leave no dirty bytes. Confirm that this
       // session still owns its observed revision before clearing the error.
       try {
-        const head = await transaction(await this.connect(), "readonly", (store, finish) => {
-          const request = store.get("head");
-          request.onsuccess = () => finish(request.result);
+        const matches = await transaction(await this.connect(), "readonly", (store, finish) => {
+          this.checkRevision(store, finish);
         });
-        if (!this.matchesHead(head)) throw conflict();
+        if (!matches) throw conflict();
       } catch (error) { this.status("write-error", error); return; }
     }
     await this.saveIfChanged(true, replacement);
     if (replacement && this.error) throw this.error;
   }
 
-  replace(index, bytes) {
-    if (!(bytes instanceof Uint8Array) || bytes.length !== SIZES[index] || index > 1) {
+  async replace(index, bytes, { sessionOnly = false } = {}) {
+    if ((index !== 0 && index !== 1) || !(bytes instanceof Uint8Array) || bytes.length !== SIZES[index]) {
       throw new Error(`Expected a packed ${SIZES[index]}-byte backup image`);
     }
-    return this.flush({ replacement: { index, bytes } });
+    if (!sessionOnly) return this.flush({ replacement: { index, bytes } });
+    while (this.saving) await this.saving;
+    this.installBackup(index, bytes);
+    // Until reload, automatic writes and retries must leave the stored copy alone.
+    this.status("session-only");
+  }
+
+  installBackup(index, bytes) {
+    if (index === 0) this.machine.import_backup_ram(bytes);
+    else this.machine.import_cartridge_backup_ram(bytes);
   }
 
   saveIfChanged(force, replacement) {
@@ -210,8 +223,15 @@ export class ConsoleSaves {
     } catch (error) { this.status("write-error", error); }
   }
 
-  matchesHead(head) {
-    return head?.token === this.head?.token && (head === undefined || head?.version === VERSION);
+  checkRevision(store, finish) {
+    if (this.head === undefined) {
+      // A missing head alone can also mean that the store contains orphaned images.
+      const count = store.count();
+      count.onsuccess = () => finish(count.result === 0);
+    } else {
+      const read = store.get("head");
+      read.onsuccess = () => finish(read.result?.version === VERSION && read.result.token === this.head.token);
+    }
   }
 
   async commit(images, revisions, now, replacement) {
@@ -223,9 +243,8 @@ export class ConsoleSaves {
         hashes: images.map((bytes, i) => bytes ? checksum(bytes) : this.head?.hashes[i] ?? null),
       };
       await transaction(await this.connect(), "readwrite", (store, _finish, cancel) => {
-        const read = store.get("head");
-        read.onsuccess = () => {
-          if (!this.matchesHead(read.result)) {
+        this.checkRevision(store, matches => {
+          if (!matches) {
             cancel(conflict());
             return;
           }
@@ -235,12 +254,11 @@ export class ConsoleSaves {
             }
             store.put(head, "head");
           } catch (error) { cancel(error); }
-        };
+        });
       });
       if (replacement) {
         const { index, bytes } = replacement;
-        if (index === 0) this.machine.import_backup_ram(bytes);
-        else this.machine.import_cartridge_backup_ram(bytes);
+        this.installBackup(index, bytes);
         revisions[index] = this.currentRevisions()[index];
       }
       this.head = head;
