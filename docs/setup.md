@@ -223,10 +223,12 @@ uses [SRBUP001](../src/hle/README.md#independent-backup-library).
 Local storage is shared across all games and BIOS choices under the site's origin.
 The player shows storage failures next to the playback status. Select **Open
 Save management** to export the current RAM and clock settings or retry after
-fixing permission or capacity problems. After a conflict, export the files you
-want to keep and reload to accept the newer stored revision. You can then
-explicitly import individual files. **Import clock and settings** replaces the
-RTC and SMEM from a validated `saturn-clock-settings.bin` export and advances
+fixing permission or capacity problems. If retry restores local saves after
+startup, select **Reset** to boot the selected media with the recovered data.
+After a conflict, export the files you want to keep and reload to accept the
+newer stored revision. You can then explicitly import individual files.
+**Import clock and settings** replaces the RTC and SMEM from a validated
+`saturn-clock-settings.bin` export and advances
 the clock by elapsed time since export. During a storage failure, **Import for
 this session only** keeps imported data and subsequent console changes in
 memory until reload while preserving the stored records. Changing browsers,

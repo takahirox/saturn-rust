@@ -149,6 +149,7 @@ export class ConsoleSaves {
       if (head) this.battery = images[2];
       this.lastCheckpoint = now;
       this.status(head ? "ready" : "empty");
+      return Boolean(head);
     } catch (error) { this.status("restore-error", error); }
   }
 
@@ -165,7 +166,7 @@ export class ConsoleSaves {
       if (replacement) throw new Error("Reload the player to resume local storage.");
       return;
     }
-    if (!this.restored && retry) await this.restore();
+    const restoredRecord = !this.restored && retry && await this.restore();
     if (!this.restored || (this.error && !retry)) {
       if (replacement) throw this.error ?? new Error("Local saves are still loading");
       return;
@@ -182,6 +183,7 @@ export class ConsoleSaves {
     }
     await this.saveIfChanged(true, replacement);
     if (replacement && this.error) throw this.error;
+    return restoredRecord;
   }
 
   async replace(index, bytes, { sessionOnly = false } = {}) {

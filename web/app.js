@@ -592,7 +592,8 @@ try {
   });
   $("retry-saves").addEventListener("click", () => void act(async () => {
     await pause();
-    await emulator.retrySaves();
+    const generation = bootGeneration;
+    if (await emulator.retrySaves()) backupReplaced(generation);
   }, { clearError: false }));
 
   const dialog = $("clear-backup");

@@ -98,6 +98,7 @@ export class PlaybackClient {
   reset(args) { this.epoch++; return this.call("reset", { ...args, epoch: this.epoch }); }
   play({ paced = true } = {}) { return this.call("play", { paced }); }
   pause() { return this.call("pause"); }
+  retrySaves() { return this.call("retry-saves", { epoch: ++this.epoch }); }
   advance(fields = 1, { inspect = true } = {}) { return this.call("advance", { fields, inspect }); }
   inspect() { return this.call("inspect"); }
   invoke(operations) {
