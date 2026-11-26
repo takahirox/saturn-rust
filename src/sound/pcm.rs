@@ -20,6 +20,8 @@ pub(super) struct Slot {
     pub active: bool,
     phase: i64,
     reverse: bool,
+    /// The waveform has ended; the EG still runs, but nothing is read.
+    stopped: bool,
     envelope: envelope::Envelope,
     value: i16,
     generation: u64,
@@ -110,6 +112,7 @@ impl Scsp {
             active: false,
             phase: 0,
             reverse: false,
+            stopped: false,
             envelope: self.voices[i].envelope,
             value: 0,
             generation: self.voices[i].generation,
@@ -121,14 +124,18 @@ impl Scsp {
         let voice = &mut self.voices[i];
         let lsa = i64::from(regs[2]) << 16;
         let lea = i64::from(regs[3]) << 16;
-        if lea == 0 {
-            voice.active = false;
-            return slot;
-        }
         let looping = (regs[0] >> 5) & 3;
         let span = lea - lsa;
-        if looping != 0 && span <= 0 {
-            voice.active = false;
+        // A stopped waveform keeps its EG running: key-off still releases it
+        // and the slot monitor reports that release. Mednafen's SCSP clears
+        // only its waveform access at a one-shot's end, keeping KYONB and
+        // the EG; drivers poll the monitor to free voices.
+        if voice.stopped || lea == 0 || (looping != 0 && span <= 0) {
+            voice.stopped = true;
+            slot.active = true;
+            slot.started = true;
+            slot.stopped = true;
+            slot.phase = voice.phase;
             return slot;
         }
         // ST-077 figure 4.10: reverse mode skips from the attack's LSA
@@ -140,8 +147,11 @@ impl Scsp {
         if voice.phase >= lea {
             match looping {
                 0 => {
-                    voice.active = false;
-                    self.slots[i][0] &= !0x800;
+                    voice.stopped = true;
+                    slot.active = true;
+                    slot.started = true;
+                    slot.stopped = true;
+                    slot.phase = voice.phase;
                     return slot;
                 }
                 1 => voice.phase = lsa + (voice.phase - lsa).rem_euclid(span),
@@ -274,8 +284,10 @@ impl Scsp {
         slot.addresses = addresses;
         slot.fraction = fraction;
         slot.samples = samples;
-        slot.fetch =
-            source == 0 && slot.active && (regs[6] & 0x100 != 0 || slot.attenuation < 1023 << 16);
+        slot.fetch = source == 0
+            && slot.active
+            && !slot.stopped
+            && (regs[6] & 0x100 != 0 || slot.attenuation < 1023 << 16);
     }
     fn interpolate_slot(&mut self) {
         let Some(token) = self.pcm_pipeline[3] else {
@@ -427,6 +439,7 @@ crate::sound::wire::structure!(Slot {
     active,
     phase,
     reverse,
+    stopped,
     envelope,
     value,
     generation,
