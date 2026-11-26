@@ -19,66 +19,68 @@
     <div class="workspace">
       <section class="player-column" aria-label="Saturn player">
         <div id="player-shell" class="player-shell">
-          <div class="display-well">
-            <div class="display-surround">
-              <canvas id="screen" width="320" height="224" tabindex="0" aria-label="Emulated Saturn display" aria-description="Focus to use keyboard and gamepad controls.">Your browser needs Canvas support.</canvas>
-              <canvas id="crt-screen" aria-hidden="true" hidden></canvas>
-              <div id="empty-state" class="empty-state"><p id="empty-title">Insert a disc or BIOS</p></div>
-            </div>
-          </div>
-          <div id="touch-controls" role="group" aria-label="Player 1 touch controller">
-            <div class="touch-left">
-              <button class="shoulder" type="button" tabindex="-1" data-mask="2048" aria-label="L shoulder">L</button>
-              <div id="dpad" class="dpad" role="group" aria-label="Directional pad">
-                <button class="up" type="button" tabindex="-1" data-mask="1" aria-label="Up">▲</button>
-                <button class="left" type="button" tabindex="-1" data-mask="4" aria-label="Left">◀</button>
-                <button class="right" type="button" tabindex="-1" data-mask="8" aria-label="Right">▶</button>
-                <button class="down" type="button" tabindex="-1" data-mask="2" aria-label="Down">▼</button>
+          <div class="player-stage">
+            <div class="display-well">
+              <div class="display-surround">
+                <canvas id="screen" width="320" height="224" tabindex="0" aria-label="Emulated Saturn display" aria-description="Focus to use keyboard and gamepad controls.">Your browser needs Canvas support.</canvas>
+                <canvas id="crt-screen" aria-hidden="true" hidden></canvas>
+                <div id="empty-state" class="empty-state"><p id="empty-title">Insert a disc or BIOS</p></div>
               </div>
             </div>
-            <div class="touch-right">
-              <button class="shoulder" type="button" tabindex="-1" data-mask="4096" aria-label="R shoulder">R</button>
-              <div class="face-buttons" role="group" aria-label="Face buttons">
-                <button type="button" tabindex="-1" data-mask="1024">X</button>
-                <button type="button" tabindex="-1" data-mask="512">Y</button>
-                <button type="button" tabindex="-1" data-mask="256">Z</button>
-                <button type="button" tabindex="-1" data-mask="64">A</button>
-                <button type="button" tabindex="-1" data-mask="16">B</button>
-                <button type="button" tabindex="-1" data-mask="32">C</button>
+            <div id="touch-controls" role="group" aria-label="Player 1 touch controller">
+              <div class="touch-left">
+                <button class="shoulder" type="button" tabindex="-1" data-mask="2048" aria-label="L shoulder">L</button>
+                <div id="dpad" class="dpad" role="group" aria-label="Directional pad">
+                  <button class="up" type="button" tabindex="-1" data-mask="1" aria-label="Up">▲</button>
+                  <button class="left" type="button" tabindex="-1" data-mask="4" aria-label="Left">◀</button>
+                  <button class="right" type="button" tabindex="-1" data-mask="8" aria-label="Right">▶</button>
+                  <button class="down" type="button" tabindex="-1" data-mask="2" aria-label="Down">▼</button>
+                </div>
               </div>
+              <div class="touch-right">
+                <button class="shoulder" type="button" tabindex="-1" data-mask="4096" aria-label="R shoulder">R</button>
+                <div class="face-buttons" role="group" aria-label="Face buttons">
+                  <button type="button" tabindex="-1" data-mask="1024">X</button>
+                  <button type="button" tabindex="-1" data-mask="512">Y</button>
+                  <button type="button" tabindex="-1" data-mask="256">Z</button>
+                  <button type="button" tabindex="-1" data-mask="64">A</button>
+                  <button type="button" tabindex="-1" data-mask="16">B</button>
+                  <button type="button" tabindex="-1" data-mask="32">C</button>
+                </div>
+              </div>
+              <button class="touch-start" type="button" tabindex="-1" data-mask="128" aria-label="Saturn Start">Start</button>
             </div>
-            <button class="touch-start" type="button" tabindex="-1" data-mask="128" aria-label="Saturn Start">Start</button>
           </div>
-          <button id="exit-fullscreen" type="button">Exit fullscreen</button>
-        </div>
-        <div class="player-toolbar" role="group" aria-label="Playback controls">
-          <button id="play" class="primary" type="button" disabled>Play</button>
-          <button id="restart" type="button" disabled>Reset</button>
-          <div class="audio-controls" role="group" aria-label="Audio">
-            <button id="mute" type="button" aria-pressed="false">Mute</button>
-            <label for="volume" class="visually-hidden">Volume</label>
-            <input id="volume" type="range" min="0" max="100" value="100" aria-valuetext="100%">
-            <output id="volume-value" for="volume" aria-hidden="true">100%</output>
+          <div class="player-toolbar" role="group" aria-label="Playback controls">
+            <button id="play" class="primary" type="button" disabled>Play</button>
+            <button id="restart" type="button" disabled>Reset</button>
+            <p id="audio-warning" class="visually-hidden" role="status"></p>
+            <button id="audio-enable" type="button" hidden>Enable audio</button>
+            <div class="audio-controls" role="group" aria-label="Audio">
+              <button id="mute" type="button" aria-pressed="false">Mute</button>
+              <label for="volume" class="visually-hidden">Volume</label>
+              <input id="volume" type="range" min="0" max="100" value="100" aria-valuetext="100%">
+              <output id="volume-value" for="volume" aria-hidden="true">100%</output>
+            </div>
+            <div class="display-filter">
+              <label for="display-filter">Display filter</label>
+              <select id="display-filter" aria-describedby="display-filter-status">
+                <option value="clean" selected>Clean</option>
+                <option value="composite">CRT Composite</option>
+                <option value="s-video">CRT S-Video</option>
+                <option value="rgb">CRT RGB</option>
+              </select>
+            </div>
+            <button id="fullscreen" type="button">Fullscreen</button>
+            <button id="exit-fullscreen" type="button" aria-label="Exit fullscreen">Exit</button>
           </div>
-          <div class="display-filter">
-            <label for="display-filter">Display filter</label>
-            <select id="display-filter" aria-describedby="display-filter-status">
-              <option value="clean" selected>Clean</option>
-              <option value="composite">CRT Composite</option>
-              <option value="s-video">CRT S-Video</option>
-              <option value="rgb">CRT RGB</option>
-            </select>
-          </div>
-          <button id="fullscreen" type="button">Fullscreen</button>
+          <p id="fullscreen-status" role="status"></p>
         </div>
         <div class="player-feedback">
           <p id="player-status" role="status">Loading emulator…</p>
           <p id="error" role="alert"></p>
           <p id="recovery" hidden>Replace or clear a rejected image. See Debug for machine details.</p>
-          <p id="fullscreen-status" role="status"></p>
           <p id="display-filter-status" role="status"></p>
-          <p id="audio-warning" role="status"></p>
-          <button id="audio-enable" type="button" hidden>Enable audio</button>
         </div>
       </section>
       <aside id="setup" class="media-panel" aria-label="Media">

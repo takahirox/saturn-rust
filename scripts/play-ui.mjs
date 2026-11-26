@@ -6,6 +6,11 @@ import { waitForGuest } from "./browser-transport.mjs";
 
 const waitForActions = page => page.waitForFunction(() => document.getElementById("main").getAttribute("aria-busy") === "false");
 
+async function enterFullscreen(page) {
+  await page.locator("#fullscreen").click();
+  await page.waitForFunction(() => document.fullscreenElement?.id === "player-shell" && document.activeElement.id === "screen");
+}
+
 async function liveRegions(page) {
   const cdp = await page.context().newCDPSession(page);
   const { root } = await cdp.send("DOM.getDocument", { depth: 0 });
@@ -572,6 +577,12 @@ async function automaticBootSelections(page, firmware, iso) {
     assert.deepEqual(await snapshot(), hle);
     assert.equal(await input("play").textContent(), "Play");
     assert.equal(hle.mode, "BIOS-less HLE disc");
+    await input("play").click();
+    await input("bios").setInputFiles({...firmware, buffer:Buffer.alloc(1)});
+    await waitForActions(page);
+    await blocked(/received 1 bytes/);
+    await input("bios-clear").click();
+    await ready();
     // The fixture is explicit, clears files, survives Reset, and cannot Play.
     await input("view-debug").click();
     await input("fixture").click();
@@ -707,7 +718,7 @@ async function playerLayouts(browser, desktop, url, iso) {
     assert.deepEqual(await machine(), paused, "Closing Help never resumes");
     assert.equal(await play.textContent(), "Resume");
 
-    const check = async (page, width, height, coarse, fullscreen = false) => {
+    const check = async (page, width, height, coarse, fullscreen = false, sideInset = 0) => {
       const result = await page.evaluate(fullscreen => {
         const $ = id => document.getElementById(id);
         const rect = node => node.getBoundingClientRect().toJSON();
@@ -727,8 +738,9 @@ async function playerLayouts(browser, desktop, url, iso) {
           exit: target($("exit-fullscreen")), screenNative: [$("screen").width, $("screen").height],
           scrollable: getComputedStyle(document.body).touchAction === "auto",
           fitsFullscreen: !fullscreen || ($("player-shell").scrollHeight <= innerHeight && $("player-shell").scrollWidth <= innerWidth),
-          labels: fullscreen ? [] : [...document.querySelectorAll(".player-toolbar button, .player-toolbar select, #volume, .media-slot button")]
-            .map(rect),
+          actions: [...document.querySelectorAll(".player-toolbar button, .player-toolbar select, #volume, .media-slot button")]
+            .filter(node => (!fullscreen || !node.closest(".media-slot")) && node.getClientRects().length)
+            .map(target),
         };
       }, fullscreen);
       assert.equal(result.width, width, "CSS viewport width");
@@ -744,15 +756,22 @@ async function playerLayouts(browser, desktop, url, iso) {
       const { picture, well, controls } = result;
       assert(Math.abs(picture.width / picture.height - aspect) < .006);
       const disjoint = (a, b) => a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top;
-      assert(picture.width > 140 && picture.left >= 0 && picture.right <= width);
-      for (const box of result.labels) assert(box.left >= 0 && box.right <= width && box.height >= 44);
-      for (const [i, box] of result.labels.entries()) {
-        for (const other of result.labels.slice(i + 1)) assert(disjoint(box, other), "Player toolbar and media actions cannot overlap");
+      const safeWidth = box => box.left >= sideInset && box.right <= width - sideInset;
+      assert(picture.width > 140 && safeWidth(picture), JSON.stringify(picture));
+      for (const box of result.actions) {
+        assert(safeWidth(box) && box.height >= 44);
+        if (fullscreen) {
+          assert(box.hit && box.top >= 0 && box.bottom <= height && disjoint(box, picture), JSON.stringify(box));
+          if (coarse) assert(controls.every(control => disjoint(box, control)), "Toolbar and touch controls cannot overlap");
+        }
+      }
+      for (const [i, box] of result.actions.entries()) {
+        for (const other of result.actions.slice(i + 1)) assert(disjoint(box, other), "Player toolbar and media actions cannot overlap");
       }
       if (coarse) {
         assert.equal(controls.length, 13);
         for (const [i, box] of controls.entries()) {
-          assert(box.width >= 44 && box.height >= 44 && box.left >= 0 && box.right <= width && box.top >= 0 && box.bottom <= height, JSON.stringify(box));
+          assert(box.width >= 44 && box.height >= 44 && safeWidth(box) && box.top >= 0 && box.bottom <= height, JSON.stringify(box));
           assert(box.hit && disjoint(picture, box), JSON.stringify(box));
           for (const other of controls.slice(i + 1)) assert(disjoint(box, other), "Touch buttons cannot overlap");
         }
@@ -774,10 +793,9 @@ async function playerLayouts(browser, desktop, url, iso) {
       } else if (coarse) assert(result.media.top >= result.toolbar.bottom);
       else assert(result.media.left >= picture.right);
     };
-    const fullscreenCheck = async (page, width, height, coarse, rotation) => {
-      await page.locator("#fullscreen").click();
-      await page.waitForFunction(() => document.fullscreenElement?.id === "player-shell" && document.activeElement.id === "screen");
-      await check(page, width, height, coarse, true);
+    const fullscreenCheck = async (page, width, height, coarse, rotation, sideInset = 0) => {
+      await enterFullscreen(page);
+      await check(page, width, height, coarse, true, sideInset);
       if (rotation) {
         const [width, height] = rotation;
         // Resize the emulated device without resizing the native fullscreen window.
@@ -798,7 +816,7 @@ async function playerLayouts(browser, desktop, url, iso) {
       await check(desktop, width, height, false);
       await fullscreenCheck(desktop, width, height, false);
     }
-    for (const [width, height] of [[320, 568], [390, 844], [768, 1024], [844, 390], [540, 320], [500, 320]]) {
+    for (const [width, height] of [[320, 568], [390, 844], [768, 1024], [844, 390], [540, 320], [500, 320], [480, 320]]) {
       await mobile.setViewportSize({ width, height });
       await mobile.evaluate(() => scrollTo(0, 0));
       await check(mobile, width, height, true);
@@ -812,6 +830,14 @@ async function playerLayouts(browser, desktop, url, iso) {
       assert.deepEqual(await machine(), paused);
     }
     await mobile.setViewportSize({ width: 320, height: 568 });
+    const cdp = await touch.newCDPSession(mobile);
+    await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: { left: 30, right: 30 } });
+    await mobile.evaluate(() => scrollTo(0, 0));
+    await check(mobile, 320, 568, true, false, 30);
+    await fullscreenCheck(mobile, 320, 568, true, undefined, 30);
+    assert.deepEqual(await machine(), paused);
+    await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: {} });
+    await cdp.detach();
     await mobile.locator("#bios").setInputFiles({ name: "rejected".repeat(26) + ".bin", mimeType: "application/octet-stream", buffer: Buffer.alloc(1) });
     assert.match(await mobile.getByRole("alert").textContent(), /raw 512 KiB BIOS.*received 1 bytes/);
     assert.equal(await mobile.locator("#bios-state").textContent(), "Needs attention");
@@ -830,7 +856,8 @@ async function playerLayouts(browser, desktop, url, iso) {
 }
 
 async function playerAudio(browser, url, failure = "resume") {
-  const context = await browser.newContext();
+  const touch = failure === "worklet";
+  const context = await browser.newContext(touch ? { viewport: { width: 320, height: 568 }, isMobile: true, hasTouch: true } : {});
   try {
     const page = await context.newPage();
     await page.addInitScript(failure => {
@@ -856,10 +883,15 @@ async function playerAudio(browser, url, failure = "resume") {
     }, failure);
     await page.goto(url);
     await page.waitForFunction(() => !document.getElementById("controls").disabled);
+    if (touch) {
+      const cdp = await context.newCDPSession(page);
+      await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: { left: 30, right: 30 } });
+    }
     const live = await liveRegions(page);
     await live("#audio-warning");
     await page.locator("#disc").setInputFiles("web/prism-courier.iso");
     await page.waitForFunction(() => !document.getElementById("play").disabled);
+    if (!touch) await enterFullscreen(page);
     await page.getByRole("button", { name: "Play", exact: true }).click();
     const recovery = page.locator("#audio-enable");
     await recovery.waitFor();
@@ -883,10 +915,19 @@ async function playerAudio(browser, url, failure = "resume") {
       assert(await recovery.isVisible());
       await live("#audio-warning", "Audio is blocked.");
     }
-    await recovery.click();
+    if (touch) await enterFullscreen(page);
+    assert.equal(await page.locator("#play").textContent(), "Pause");
+    assert(await recovery.evaluate(button => {
+      const { x, y, width, height } = button.getBoundingClientRect();
+      return document.fullscreenElement.scrollHeight <= innerHeight &&
+        document.elementFromPoint(x + width / 2, y + height / 2) === button;
+    }), "Enable audio is onscreen and hit-testable in fullscreen");
+    await recovery[touch ? "tap" : "click"]();
     await page.waitForFunction(() => document.getElementById("audio-enable").hidden);
     await live("#audio-warning");
     assert.deepEqual(await page.evaluate(() => window.audioGestures), [true, true]);
+    await page.locator("#exit-fullscreen").click();
+    await page.waitForFunction(() => !document.fullscreenElement);
     await waitForGuest(page, async () => {
       const { audio } = await import("./app.js");
       return audio.stats.rendered > 128 && audio.stats.peak > .05;
@@ -943,5 +984,43 @@ async function playerAudio(browser, url, failure = "resume") {
     await page.locator("#restart").click();
     await page.waitForFunction(() => document.getElementById("play").textContent === "Pause");
     assert.equal(await slider.inputValue(), "37");
+
+    await waitForGuest(page, async () => Number(await (await import("./app.js")).emulator.frames()) > 1);
+    await page.locator("#view-debug").click();
+    await waitForActions(page);
+    const snapshot = () => page.evaluate(async () => {
+      const { emulator } = await import("./app.js");
+      return [await emulator.instruction_count(), await emulator.frames()];
+    });
+    const paused = await snapshot();
+    await page.locator("#count").fill("0");
+    await page.locator("#run").click();
+    await waitForActions(page);
+    assert.match(await page.locator("#error").textContent(), /whole instruction count/);
+    assert.equal(await page.locator("#status").textContent(), "Ready");
+    await page.locator("#view-play").click();
+    await waitForActions(page);
+    assert.equal(await page.locator("#player-status").textContent(), "Paused");
+    assert(await page.locator("#recovery").isHidden());
+    await enterFullscreen(page);
+    assert.deepEqual(await snapshot(), paused, "Debug and fullscreen entry preserve the paused guest");
+    await page.evaluate(async () => {
+      const { emulator } = await import("./app.js");
+      const play = emulator.play.bind(emulator);
+      emulator.play = async () => {
+        emulator.play = play;
+        window.resumeState = [await emulator.instruction_count(), await emulator.frames()];
+        return play();
+      };
+    });
+    const play = page.getByRole("group", { name: "Playback controls" });
+    await play.getByRole("button", { name: "Resume" }).click();
+    await waitForGuest(page, async pausedFrames => Number(await (await import("./app.js")).emulator.frames()) > Number(pausedFrames), paused[1]);
+    assert.deepEqual(await page.evaluate(() => window.resumeState), paused, "Resume continues from the paused state");
+    assert.equal(await page.locator("#error").textContent(), "");
+    await play.getByRole("button", { name: "Pause", exact: true }).click();
+    await waitForActions(page);
+    assert.equal(await page.locator("#play").textContent(), "Resume");
+    assert.equal(await page.evaluate(() => document.fullscreenElement?.id), "player-shell");
   } finally { await context.close(); }
 }

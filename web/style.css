@@ -64,6 +64,9 @@ button.primary:hover:not(:disabled) { background: #24407d; }
 .player-column, .media-panel, .tools { min-width: 0; }
 .player-shell {
   --display-ratio: 4 / 3;
+  container: player / inline-size;
+}
+.player-stage {
   display: grid;
   grid-template-areas: "picture picture" "left right" "start start";
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -103,9 +106,10 @@ button.primary:hover:not(:disabled) { background: #24407d; }
 .display-filter label { color: var(--muted); font-size: .85rem; }
 #volume { width: clamp(80px, 12vw, 116px); margin: 0; accent-color: var(--accent); }
 #volume-value { min-width: 3.1ch; text-align: end; font-size: .8rem; font-variant-numeric: tabular-nums; color: var(--muted); }
-.player-feedback { color: var(--muted); font-size: .86rem; }
-.player-feedback p { margin: 6px 0; }
+.player-feedback, #fullscreen-status { color: var(--muted); font-size: .86rem; }
+.player-feedback p, #fullscreen-status { margin: 6px 0; }
 .player-feedback p:empty { margin: 0; }
+#fullscreen-status:empty { position: absolute; margin: 0; }
 #error { color: #98251d; white-space: pre-wrap; }
 
 .media-panel, .tools, .panel { border: 1px solid var(--line); border-radius: 12px; background: #fff; }
@@ -150,7 +154,7 @@ dialog {
 dialog::backdrop { background: #11172599; }
 .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
 dialog p { margin: 5px 0 14px; }
-.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+:is(.visually-hidden, .player-shell:fullscreen .display-filter label) { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 #touch-controls, #exit-fullscreen { display: none; }
 .touch-left { grid-area: left; justify-self: start; }
@@ -182,44 +186,63 @@ dialog p { margin: 5px 0 14px; }
 .face-buttons button { border-radius: 50%; }
 
 .player-shell:fullscreen {
-  grid-template-areas: "picture picture" "exit exit";
-  grid-template-rows: minmax(90px, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   gap: 6px;
   padding: max(6px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
   background: #10141c;
   overflow: auto;
 }
+.player-shell:fullscreen .player-stage {
+  flex: 1 0 auto;
+  grid-template-areas: "picture picture";
+  grid-template-rows: minmax(90px, 1fr);
+}
 .player-shell:fullscreen .display-well { container-type: size; padding: 0; }
 .player-shell:fullscreen .display-surround { max-width: min(100cqw, calc(100cqh * (var(--display-ratio)))); }
-.player-shell:fullscreen #exit-fullscreen { display: block; grid-area: exit; justify-self: center; }
+.player-shell:fullscreen .player-toolbar { flex: none; justify-content: center; gap: 6px; margin-top: 0; }
+.player-shell:fullscreen #volume-value, .player-shell:fullscreen #fullscreen-status { color: #c4cad6; }
+.player-shell:fullscreen #fullscreen { display: none; }
+.player-shell:fullscreen #exit-fullscreen { display: block; min-width: 44px; }
+
+@container player (width < 274px) {
+  .player-shell:fullscreen .player-toolbar button { padding-inline: 8px; }
+  .player-shell:fullscreen #play { min-width: 72px; }
+}
 
 @media (min-width: 920px) and (pointer: fine) {
   .workspace { grid-template-columns: minmax(0, 1fr) 220px; }
 }
 @media (any-pointer: coarse) {
   #touch-controls { display: contents; }
-  .player-shell { gap: 6px; }
-  .player-shell:fullscreen {
-    grid-template-areas: "picture picture" "left right" "start exit";
+  .player-stage { gap: 6px; }
+  .player-shell:fullscreen .player-stage {
+    grid-template-areas: "picture picture" "left right" "start start";
     grid-template-rows: minmax(90px, 1fr) auto auto;
   }
-}
-@media (any-pointer: coarse) and (max-width: 303px) {
-  .player-shell { grid-template-areas: "picture picture" "left left" "right right" "start start"; }
-  .player-shell:fullscreen { grid-template-areas: "picture picture" "left left" "right right" "start exit"; grid-template-rows: minmax(90px, 1fr) auto auto auto; }
-  .touch-left, .touch-right { justify-self: center; }
-}
-@media (any-pointer: coarse) and (orientation: landscape) and (min-width: 500px) {
-  .player-shell {
-    grid-template-areas: "left picture right" "left start right";
-    grid-template-columns: max-content minmax(0, 1fr) max-content;
-    align-items: center;
+
+  /* 132px D-pad + 136px face buttons + 6px gap. Below that width,
+     stagger the face buttons below the D-pad's two middle-row targets. */
+  @container player (224px <= width < 274px) {
+    .face-buttons { margin-block-start: 88px; }
   }
-  .display-well { align-self: stretch; }
-  .display-surround { max-width: calc(max(150px, 100svh - 166px) * (var(--display-ratio))); }
-  .player-shell:fullscreen {
-    grid-template-areas: "left picture picture right" "left start exit right";
-    grid-template-columns: max-content repeat(2, minmax(0, 1fr)) max-content;
-    grid-template-rows: minmax(90px, 1fr) auto;
+  @container player (width < 224px) {
+    .player-stage, .player-shell:fullscreen .player-stage {
+      grid-template-areas: "picture picture" "left left" "right right" "start start";
+    }
+    .player-shell:fullscreen .player-stage { grid-template-rows: minmax(90px, 1fr) auto auto auto; }
+    .touch-left, .touch-right { justify-self: center; }
+  }
+  @media (orientation: landscape) {
+    @container player (width >= 410px) {
+      .player-stage, .player-shell:fullscreen .player-stage {
+        grid-template-areas: "left picture right" "left start right";
+        grid-template-columns: max-content minmax(0, 1fr) max-content;
+        align-items: center;
+      }
+      .display-well { align-self: stretch; }
+      .display-surround { max-width: calc(max(150px, 100svh - 166px) * (var(--display-ratio))); }
+      .player-shell:fullscreen .player-stage { grid-template-rows: minmax(90px, 1fr) auto; }
+    }
   }
 }
