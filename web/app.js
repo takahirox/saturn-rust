@@ -15,7 +15,7 @@ let playing = false;
 let sessionStarted = false;
 let attemptedBoot = false;
 let bootValid = false;
-let backupResetRequired = false;
+let saveResetRequired = false;
 let buttons = 0;
 let touchMask = 0;
 const touches = new Map();
@@ -385,11 +385,11 @@ function render() {
     busy ? "Working…" :
     playing ? `Running${machineStatus === "Ready" ? "" : ` · ${machineStatus}`}` :
     playbackReady ? (sessionStarted ? "Paused" : `${bootMode === "bios" ? "BIOS" : "Disc"} ready`) :
-    hasError ? "Stopped" : backupResetRequired ? "Reset required" :
+    hasError ? "Stopped" : saveResetRequired ? "Reset required" :
     bootMode === "fixture" && bootValid ? "Bootstrap fixture ready in Debug" : bootValid ? machineStatus : "";
   setText("player-status", state);
   const emptyTitle = playing ? "Starting…" : busy ? "Loading…" : playbackReady ? "Ready to play" :
-    hasError ? "Check the error below" : backupResetRequired ? "Reset to boot with the new backup data" :
+    hasError ? "Check the error below" : saveResetRequired ? "Reset to boot with the new console data" :
     bootMode === "fixture" ? "Debug fixture" : "Insert a disc or BIOS";
   setText("empty-title", emptyTitle);
   $("recovery").hidden = !hasError || loadingFile() || (bootValid && !selectionError());
@@ -475,10 +475,10 @@ function clearDisplay() {
   $("empty-state").hidden = false;
 }
 
-function backupReplaced(generation) {
+function saveReplaced(generation) {
   if (generation !== bootGeneration || !bootValid) return;
   bootValid = false;
-  backupResetRequired = true;
+  saveResetRequired = true;
   clearDisplay();
 }
 
@@ -498,7 +498,7 @@ async function reset({ clearMedia = false, slot } = {}) {
   clearDisplay();
   attemptedBoot = true;
   bootValid = false;
-  backupResetRequired = false;
+  saveResetRequired = false;
   const mode = effectiveBootMode(), rom = biosBytes;
   await act(async () => {
     if (clearMedia) await emulator.clear_media();
@@ -550,7 +550,7 @@ function showSaveStorage(status) {
   const message = {
     loading: "Restoring local saves…",
     empty: "Local storage is available. No console saves have been stored yet.",
-    ready: "Local storage is up to date.",
+    ready: "A saved copy is available locally.",
     pending: "New save changes are waiting to be stored…",
     saving: "Saving changes locally…",
     "session-only": "Console changes are kept in this session. Export copies before reloading.",
@@ -593,7 +593,7 @@ try {
   $("retry-saves").addEventListener("click", () => void act(async () => {
     await pause();
     const generation = bootGeneration;
-    if (await emulator.retrySaves()) backupReplaced(generation);
+    if (await emulator.retrySaves()) saveReplaced(generation);
   }, { clearError: false }));
 
   const dialog = $("clear-backup");
@@ -626,8 +626,8 @@ try {
         output.textContent = `Importing ${description}…`;
         render();
         await emulator[`import_${method}`](bytes, sessionOnly);
-        if (!battery) backupReplaced(importBoot);
-        const resetHint = !battery && backupResetRequired ? " Reset to boot with the new data." : "";
+        saveReplaced(importBoot);
+        const resetHint = saveResetRequired ? " Reset to boot with the new data." : "";
         output.textContent = `Imported ${description}${sessionOnly ? " for this session only" : ""}. Playback is paused.${resetHint}`;
       } catch (error) {
         if (generation === backupGeneration) output.textContent = `${battery ? "Clock and settings" : "Backup"} unchanged: ${error}`;
@@ -676,8 +676,8 @@ try {
       const clearBoot = bootGeneration;
       try {
         await emulator[`import_${method}`](new Uint8Array(size));
-        backupReplaced(clearBoot);
-        const resetHint = backupResetRequired ? " Reset to boot with the cleared device." : "";
+        saveReplaced(clearBoot);
+        const resetHint = saveResetRequired ? " Reset to boot with the cleared device." : "";
         setText(`${id}-status`, `Cleared ${name}. Playback is paused.${resetHint}`);
       } catch (error) {
         setText(`${id}-status`, `Backup unchanged: ${error}`);

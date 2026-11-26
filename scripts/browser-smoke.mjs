@@ -3205,7 +3205,10 @@ try {
   assert.deepEqual(Buffer.from(await backup()), backupBytes);
   for (const size of [0, 1, 32767, 32769, 65536]) {
     await page.locator("#backup-import").setInputFiles({name:"invalid-backup.bin", mimeType:"application/octet-stream", buffer:Buffer.alloc(size)});
-    assert.match(await value("backup-status"), /Backup unchanged/);
+    await page.waitForFunction(size => {
+      const status = document.getElementById("backup-status").textContent;
+      return status.startsWith("Backup unchanged:") && status.endsWith(`received ${size} bytes.`);
+    }, size);
     assert.deepEqual(Buffer.from(await backup()), backupBytes);
     assert.deepEqual(await machine(), stopped);
   }

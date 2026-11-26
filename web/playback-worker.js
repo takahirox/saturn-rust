@@ -150,11 +150,11 @@ async function invoke(data) {
         value = method === "framebuffer" ? receipt.pixels : method === "video_width" ? receipt.width : receipt.height;
       } else if (method === "export_battery_recovery") {
         value = saves.exportBatteryRecovery();
-      } else if (method === "import_battery_recovery") {
-        await saves.importBatteryRecovery(args[0], { sessionOnly: args[1] === true });
-      } else if (saves && backupReplacement(method)) {
-        await saves.replace(method === "import_backup_ram" ? 0 : 1, args[0], { sessionOnly: args[1] === true });
-        // The paused guest may be in the middle of writing or formatting this device.
+      } else if (saves && saveReplacement(method)) {
+        const options = { sessionOnly: args[1] === true };
+        if (method === "import_battery_recovery") await saves.importBatteryRecovery(args[0], options);
+        else await saves.replace(method === "import_backup_ram" ? 0 : 1, args[0], options);
+        // Paused guest code and queued SMPC commands can overwrite replaced data.
         machine.stop_execution();
         input = {};
         resetSound = true;
