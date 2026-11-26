@@ -545,7 +545,8 @@ instruction-specific microsequences and SCSP register-bus/physical interface pha
 | MMIO widths/side effects, device manuals | Unsupported accesses return errors | devices.rs | SC | Full device routing/width rules missing | Pending |
 | Backup byte storage, SCU §1.2 figs.1.3/1.5; SMPC §2.3 SYSRES p.29 | 32 KiB, odd-byte storage; even lanes read FF and ignore writes; word/long strobes; P1 aliases; unformatted zero initialization | BK; `backup_byte_lanes_endpoints_and_cache_through_access_do_not_alias_work_ram` | BK | BUPG adds guest-executed filesystem/service integration; MEMG adds all eight 64 KiB aliases and invalid-import/reset checks; remaining reset domains pending | Pending |
 | Backup reset retention, SMPC §2.3 SYSRES p.29 | Bytes survive successful/rejected HLE, disc and ROM resets and guest SYSRES; new Machine starts empty | BK; `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot`, PWRG | BK, PWRG, reset/mode/read-race checks | SYSRES guest retention now covered by PWRG; remaining power/reset and service contracts pending | Pending |
-| Local backup import/export (host interface) | Exact 32768 packed bytes; atomic replacement; explicit local download; stale import cancellation; no network/storage | `packed_import_is_atomic_and_survives_every_boot_mode_and_rejected_boot` | Download byte comparison, offline import, invalid size/read errors, races, fresh-tab isolation | BUPG provides independent HLE backup calls; optional cartridge backup is absent; no automatic cross-session persistence | Pending |
+| Cartridge slot, ST-097 §1.2, STN-47 | Exclusive Power Memory, 1 MiB and 4 MiB expansion. Physical ID/lane/bank decode, P0/P1 and both DMA engines. Cold boot clears expansion and retains backup | [Cartridge reset-vector guests](../tests/cartridge.rs) | [Production console saves](../scripts/console-saves.mjs) | Pin-level wait, init and open-bus limits in the [cartridge evidence](validation-issue-260.md#cartridge-evidence) | Pending |
+| Local backup and battery storage | Separate packed 32768/524288-byte images. Origin-scoped IndexedDB, validated RTC/SMEM, transaction acknowledgement, stale writer protection and explicit clear | BK, [cartridge BUP](../tests/hle_backup.rs), [RTC](../tests/cartridge.rs) | Local download byte comparison, reload, failure injection, concurrent tabs and site-data clearing | [Issue #260 validation](validation-issue-260.md) bounds platform durability and filesystem interoperability | Scoped evidence |
 | Shared event scheduler, O clock domains | Deterministic CPU order, raster/SCU event deadlines and clock-driven DSP/DMA; field deadlines replace instruction budgets | TIME, SCUROM, game.rs, DUAL | SCUROM, SC, DUAL | BUSG adds CPU/SCU arbitration, deferred data phases and reset cancellation; DMABG/CPUIO/RFSHG add local DMAC/internal buses and refresh ownership; full CPU pipeline, display/sound ownership and cross-clock ordering remain; CD command/sector/sample deadlines are exercised by CLAB | Pending |
 | Video timing, VDP2 display registers | Selectable NTSC/PAL 224/240/256-visible raster, interlace field/counter flags, HBLANK/VBLANK and SCU edges; bounded field advancement | TIME, SCUROM, game.rs | SCUROM, SC | CLKG and TVG below cover PLL/display intervals; half-line beam phase, counter discontinuities and bus arbitration remain required | Pending |
 | Audio timing, SCSP/CD | Independent 68k/sample deadlines, bounded stereo output and worklet; underflow/mute/blocked instrumentation | SNDV, SNDR | SNDR | Exact CPU/bus timing and effects DSP | Pending |
@@ -1654,16 +1655,16 @@ A genuine BIOS/private filesystem compatibility result is not claimed or require
 
 BUPG means [the original MIT diagnostic builder](../tests/fixtures/build_hle_backup.py),
 [ISO](../tests/fixtures/hle-backup.iso), [158 independent ABI records](../tests/fixtures/hle-backup.tsv),
-[six native tests](../tests/hle_backup.rs) and identical actual Wasm execution in
+[native tests](../tests/hle_backup.rs) and identical actual Wasm execution in
 [browser-smoke.mjs](../scripts/browser-smoke.mjs). Guest code computes, reads and
 verifies payloads through the emulated odd-byte bus; the host does not intercept
 calls or fill running guest results. Media contain the adjacent fixture MIT license.
 
 | Documented interface | Implementation | Native and browser evidence | Deviations / remaining coverage |
 | --- | --- | --- | --- |
-| Init, function 1; BupConfig | [ROM5000 copy/relocation/publication](../src/hle/system.s), [ROM10000 library](../src/hle/backup.s), [HLE-only installation](../src/hle.rs) | Actual 16 KiB expansion to two different caller addresses, RAM354 vector table/slots4–40, device0 unit1/partition1, absent devices1/2, unchanged backup on Init | Helpers execute in the original guest ROM; optional backup peripherals absent |
-| SelPart/Format, functions 2/3 | `bup_selpart`, `bup_format` | Partition0, invalid partition, absent device; explicit format, unknown raw import remains untouched | Internal device is writable; no optional cartridge write protection |
-| Stat, function 4; BupStat | `bup_stat`, `scan_next` | All six fields at empty/partial/full/freed capacity; 0/257-byte data counts and maximum size; 510 real allocated blocks | Capacity policy and metadata overhead belong to documented SRBUP001 format |
+| Init, function 1 and BupConfig | [ROM5000 copy/relocation/publication](../src/hle/system.s), [ROM10000 library](../src/hle/backup.s), [HLE-only installation](../src/hle.rs) | Actual 16 KiB expansion to two different caller addresses, RAM354 vector table/slots4–40, device0 unit1/partition1, Power Memory device1 unit2/partition1, unchanged backup on Init | Helpers execute in the original guest ROM. Parallel/serial peripherals are absent |
+| SelPart/Format, functions 2/3 | `bup_selpart`, `bup_format` | Partition 0, invalid partition, absent device, explicit format and untouched unknown raw imports | Internal memory and Power Memory are writable |
+| Stat, function 4 and BupStat | `bup_stat`, `scan_next` | All six fields at empty/partial/full/freed capacity, 0/257-byte data counts and maximum size. 510 internal and 1022 cartridge file blocks | Capacity policy and metadata overhead belong to documented SRBUP001 format |
 | Write, function 5 | `bup_write`, `write_allocate` | Empty/257/65/32600-byte files, duplicate-name mode, shrinking overwrite, full device, size overflow and failed-write retention | Original HLE format; interrupted writes need not be transactional (manual reset-disable warning) |
 | Read/Verify, functions 6/9 | `bup_read`, `bup_verify`, `checksum_byte` | Three computed byte endpoints; exact data/mismatch/not-found/broken statuses; changed XOR operand changes guest and persisted data; full-size verification | Sum checksum detects ordinary byte corruption, not all same-sum changes |
 | Delete/Dir, functions 7/8; BupDir | `bup_delete`, `compact_copy`, `bup_dir` | First/middle/last/full deletion, moved-file retention, prefix matches, zero-size files, negative insufficient-table count, 36-byte structure stride and untouched output guard | Unused raw bytes after directory terminator are ignored |
@@ -1675,7 +1676,7 @@ Reproduce with `python3 src/hle/build.py --check` and
 The disc SHA-256 is
 `aed258ed218fd4bcee94890e6582ee59185341842b70cf60aa1f6644c7b372db`;
 the backup library image is
-`992e935cf3a0bd64435ee7ec7c35afad05b3c8fcf8d7e2767914ca902bdc52b2`.
+`684c9bc9533f1335aaa3546c00e5eb2f055b415d3be2055210eba89b4ac5c8e3`.
 The original boot ROM fragment and all three existing demonstration media remain
 byte-identical. BUPG is diagnostic media, not a replacement demonstration.
 No mandatory Issue #17 umbrella checkbox is completed by this addition. All

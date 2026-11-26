@@ -3,6 +3,7 @@
 import init, { Emulator } from "./pkg/saturn_rust.js";
 import { VideoRenderClient } from "./video-render-client.js";
 import { SoundClient, SOUND_TRANSPORT_METHODS } from "./sound-client.js";
+import { ConsoleSaves } from "./console-saves.js";
 
 const REFERENCE_HZ = 26874100;
 const MAX_PACING_LAG_FIELDS = 16;
@@ -13,8 +14,15 @@ let run = Promise.resolve(), failed = false;
 let resolvePresentation;
 const presentation = new Promise(resolve => { resolvePresentation = resolve; });
 let directPresentation = false;
-let methods;
+let methods, saves;
+const mediaChange = method => method?.startsWith("reset_") || method?.startsWith("mount_")
+  || method === "clear_media" || method === "set_cartridge";
+const saveExport = method => method === "export_backup_ram" || method === "export_cartridge_backup_ram"
+  || method === "export_smpc_battery" || method === "export_battery_recovery";
+const backupReplacement = method => method === "import_backup_ram" || method === "import_cartridge_backup_ram";
+const saveReplacement = method => backupReplacement(method) || method === "import_battery_recovery";
 let playWanted = false, playOptions = { paced: true };
+let reportedVideoError = false;
 const pending = new Map();
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -27,21 +35,39 @@ function fatal(error) {
   video?.close();
   self.close();
 }
+function playbackError(error) {
+  playing = false;
+  playWanted = false;
+  if (error === video.error) {
+    if (reportedVideoError) return;
+    reportedVideoError = true;
+  }
+  self.postMessage({ type: "playback-error", epoch, message: String(error?.message ?? error) });
+}
 const ready = init().then(async () => {
   machine = new Emulator();
   if (!machine.enable_video_transport) throw new Error("Use the renderer-enabled Wasm build");
-  const port = await presentation;
+  const { port, persistSaves } = await presentation;
   directPresentation = Boolean(port);
   video = new VideoRenderClient({ presentationPort: port });
   sound = new SoundClient(machine);
   await Promise.all([video.ready, sound.ready]);
   video.activate();
   if (!machine.enable_video_transport(true)) throw new Error("Renderer requires a pristine Machine");
+  if (persistSaves) {
+    saves = new ConsoleSaves(machine, status => self.postMessage({ type: "save-status", status }));
+    await saves.restore();
+    setInterval(() => saves.poll(), 1000);
+  }
   // Playback uses relaxed CPU/device interleaving for real-time speed.
   machine.set_fast_mode(true);
   methods = new Set(Object.getOwnPropertyNames(Emulator.prototype).filter(name =>
-    !name.startsWith("_") && !SOUND_TRANSPORT_METHODS.has(name) && !["constructor", "free", "enable_video_transport", "enable_video_journal"].includes(name)
+    !name.startsWith("_") && !SOUND_TRANSPORT_METHODS.has(name) && !["constructor", "free", "enable_video_transport", "enable_video_journal", "stop_execution"].includes(name)
     && typeof machine[name] === "function"));
+  if (saves) {
+    methods.add("export_battery_recovery");
+    methods.add("import_battery_recovery");
+  }
   self.postMessage({ type: "ready", methods: [...methods], view: view() });
 }).catch(fatal);
 let control = ready;
@@ -88,7 +114,14 @@ async function produce(automatic = false) {
       width: receipt.width, height: receipt.height, pixels: receipt.pixels, view: identity.view }, [receipt.pixels.buffer]);
     return presented;
   }).then(() => { pending.delete(id); });
-  done.catch(fatal);
+  done.catch(error => {
+    // The renderer can fail with fields in flight. Keep the Machine and its
+    // battery-backed data available for recovery.
+    if (error === video.error) {
+      pending.delete(id);
+      playbackError(error);
+    } else fatal(error);
+  });
   pending.set(id, { epoch: fieldEpoch, acknowledge, done, presented: false });
   peakPendingFrames = Math.max(peakPendingFrames, pending.size);
   // Both arrays are owned, not borrowed Wasm views. Main-thread presentation
@@ -123,25 +156,69 @@ async function invoke(data) {
   const values = [];
   let resetSound = false;
   for (const { method, args } of data.operations) {
+    const result = { ok: true, value: undefined };
     try {
       if (!methods.has(method) || !Array.isArray(args)) throw new Error("Unknown emulator method");
-      if (method.startsWith("reset_") || method === "clear_media") resetSound = true;
+      if (saveExport(method)) {
+        result.value = method === "export_battery_recovery" ? saves.exportBatteryRecovery() : machine[method](...args);
+        values.push(result);
+        continue;
+      }
+      if (saves && mediaChange(method)) await saves.flush({ checkpoint: true });
+      if (method.startsWith("reset_") || method === "clear_media" || method === "set_cartridge") resetSound = true;
       video.activate();
+      if (method === "set_cartridge") input = {};
       applyInput();
-      let value;
       if (method === "framebuffer" || method === "video_width" || method === "video_height") {
         const receipt = await capture(method === "framebuffer");
-        value = method === "framebuffer" ? receipt.pixels : method === "video_width" ? receipt.width : receipt.height;
-      } else value = machine[method](...args);
-      values.push({ ok: true, value });
-    } catch (error) { values.push({ ok: false, error: String(error?.message ?? error) }); }
+        result.value = method === "framebuffer" ? receipt.pixels : method === "video_width" ? receipt.width : receipt.height;
+      } else if (saves && saveReplacement(method)) {
+        const options = { sessionOnly: args[1] === true };
+        if (method === "import_battery_recovery") await saves.importBatteryRecovery(args[0], options);
+        else await saves.replace(method === "import_backup_ram" ? 0 : 1, args[0], options);
+        result.reportsTransportError = true;
+        result.value = { transportError: null };
+        // Paused guest code and queued SMPC commands can overwrite replaced data.
+        input = {};
+        resetSound = true;
+        machine.stop_execution();
+      } else if (method === "set_cartridge") {
+        let cartridgeError = null;
+        try { machine.set_cartridge(...args); }
+        catch (error) { cartridgeError = String(error?.message ?? error); }
+        // Installation precedes the cold boot and transport reset, either of which can fail.
+        result.value = { slot: machine.cartridge(), cartridgeError, transportError: null };
+        result.reportsTransportError = true;
+      } else result.value = machine[method](...args);
+    } catch (error) {
+      const message = String(error?.message ?? error);
+      if (result.reportsTransportError) result.value.transportError = message;
+      else {
+        values.push({ ok: false, error: message });
+        continue;
+      }
+    }
+    values.push(result);
   }
-  if (resetSound) await sound.reset();
-  // Also acknowledge chunks generated by long paused debugger runs.
-  await capture(false);
-  const result = { values, epoch, view: view() };
-  if (playWanted) await start(playOptions);
-  return result;
+  let pausedView;
+  try {
+    if (resetSound) await sound.reset();
+    // Also acknowledge chunks generated by long paused debugger runs.
+    if (data.operations.some(({ method }) => !saveExport(method))) await capture(false);
+    pausedView = view();
+    if (playWanted) await start(playOptions);
+  } catch (error) {
+    // Save data and the installed slot remain available after transport errors.
+    const hasRecoveryResult = values.some((result, index) =>
+      result.ok && (result.reportsTransportError || saveExport(data.operations[index].method)));
+    if (!hasRecoveryResult) throw error;
+    const message = String(error?.message ?? error);
+    for (const [index, result] of values.entries()) {
+      if (result.reportsTransportError) result.value.transportError ??= message;
+      else if (result.ok && !saveExport(data.operations[index].method)) values[index] = { ok: false, error: message };
+    }
+  }
+  return { values, epoch, view: pausedView ?? view() };
 }
 function snapshot() {
   return {
@@ -162,10 +239,14 @@ function snapshot() {
 async function stop() {
   playing = false;
   await run;
-  await drain();
+  try { await drain(); }
+  catch (error) {
+    if (error !== video.error) throw error;
+  }
 }
 async function reset(data) {
   await stop();
+  await saves?.flush({ checkpoint: true });
   epoch = data.epoch;
   input = {};
   video.activate();
@@ -203,19 +284,30 @@ async function start({ paced = true } = {}) {
       }
       previousCompletion = now;
     }
-  })().catch(error => {
-    playing = false;
-    playWanted = false;
-    self.postMessage({ type: "playback-error", epoch, message: String(error?.message ?? error) });
-  });
+  })().catch(error => playbackError(error));
   return { playing: true, epoch };
 }
 async function dispatch(data) {
   switch (data.command) {
     case "reset": return reset(data);
     case "play": return start(data);
-    case "pause": await stop(); return snapshot();
-    case "view": await stop(); applyInput(); return { epoch, view: view() };
+    case "pause": await stop(); await saves?.flush({ checkpoint: true }); return snapshot();
+    case "view": await stop(); await saves?.flush({ checkpoint: data.checkpoint === true }); applyInput(); return { epoch, view: view() };
+    case "retry-saves": {
+      await stop();
+      epoch = data.epoch;
+      const resetRequired = Boolean(await saves?.flush({ retry: true }));
+      let transportError = null;
+      if (resetRequired) {
+        // A guest that ran before the restore may still act on the old data.
+        machine.stop_execution();
+        input = {};
+        lastSize = [320, 224];
+        try { await sound.reset(); }
+        catch (error) { transportError = String(error?.message ?? error); }
+      }
+      return { epoch, view: view(), resetRequired, transportError };
+    }
     case "advance": {
       await stop();
       if (!Number.isInteger(data.fields) || data.fields < 1 || data.fields > 8) throw new Error("Advance one to eight fields");
@@ -231,11 +323,12 @@ async function dispatch(data) {
 }
 self.onmessage = ({ data }) => {
   if (data.type === "presentation") {
-    resolvePresentation(data.port ?? null);
+    resolvePresentation({ port: data.port, persistSaves: data.persistSaves });
     return;
   }
   if (data.type === "presented") {
     const item = pending.get(data.sequence);
+    if (!item && video?.error) return;
     if (!item || item.epoch !== data.epoch || item.presented) { fatal(new Error("Unexpected presentation receipt")); return; }
     item.presented = true;
     item.acknowledge();
@@ -252,11 +345,12 @@ self.onmessage = ({ data }) => {
   }
   if (data.type !== "command") { fatal(new Error("Unknown playback message")); return; }
   if (data.command === "play") {
+    reportedVideoError = false;
     playWanted = true;
     playOptions = { paced: data.paced !== false };
   } else {
     playing = false;
-    if (data.command !== "invoke" || data.operations?.some(op => op.method?.startsWith("reset_") || op.method === "clear_media")) playWanted = false;
+    if (data.command !== "invoke" || data.operations?.some(op => mediaChange(op.method) || saveReplacement(op.method))) playWanted = false;
   }
   control = control.then(async () => {
     try { self.postMessage({ type: "result", id: data.id, result: await dispatch(data) }); }

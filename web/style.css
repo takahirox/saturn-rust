@@ -116,7 +116,8 @@ button.primary:hover:not(:disabled) { background: #24407d; }
 .player-feedback p, .display-status { margin: 6px 0; }
 .player-feedback p:empty { margin: 0; }
 .display-status:empty { position: absolute; margin: 0; }
-#error { color: #98251d; white-space: pre-wrap; overflow-wrap: anywhere; }
+#error, #save-warning { color: #98251d; overflow-wrap: anywhere; }
+#error { white-space: pre-wrap; }
 
 .media-panel, .tools, .panel { border: 1px solid var(--line); border-radius: 12px; background: #fff; }
 fieldset { border: 0; min-width: 0; padding: 0; margin: 0; }
@@ -130,6 +131,15 @@ fieldset { border: 0; min-width: 0; padding: 0; margin: 0; }
 .settings { flex: 1; min-width: 0; }
 summary { min-height: 44px; padding: 11px 8px; border-radius: 8px; }
 .settings-body { padding: 0 8px 8px; font-size: .9rem; }
+.cartridge-setting { padding-block: 8px; }
+.cartridge-setting select { display: block; max-inline-size: 100%; min-height: 44px; margin-block: 4px; }
+.backup-devices { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 255px), 1fr)); gap: 12px; }
+.backup-devices fieldset { padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+.backup-devices p { margin: 0 0 8px; }
+.backup-devices p:empty { margin: 0; }
+.backup-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.backup-actions + p:not(:empty) { margin-top: 8px; }
+
 .panel { padding: 12px; min-width: 0; }
 .tools, .debug-panel, .register-panel { grid-column: 1 / -1; }
 legend { color: var(--muted); padding: 0; margin-bottom: 8px; font-weight: 600; }
@@ -214,9 +224,9 @@ dialog p { margin: 5px 0 14px; }
 .player-shell:fullscreen .player-toolbar { flex: none; justify-content: center; gap: 6px; margin-top: 0; }
 .player-shell:fullscreen :is(#volume-value, .display-status, .player-feedback) { color: #c4cad6; }
 .player-shell:fullscreen .player-feedback { display: contents; }
-.player-shell:fullscreen :is(.display-status, #error, #recovery) { flex: none; margin: 0; }
-.player-shell:fullscreen #error { color: #ffb4ab; }
-.player-shell:fullscreen #error:empty { position: absolute; }
+.player-shell:fullscreen :is(.display-status, #error, #recovery, #save-warning, #open-save-management) { flex: none; margin: 0; }
+.player-shell:fullscreen :is(#error, #save-warning) { color: #ffb4ab; }
+.player-shell:fullscreen :is(#error, #save-warning):empty { position: absolute; }
 .player-shell:fullscreen #fullscreen { display: none; }
 .player-shell:fullscreen #exit-fullscreen { display: block; min-width: 44px; }
 

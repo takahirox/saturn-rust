@@ -289,6 +289,10 @@ impl Wire for crate::bus::BusError {
                 6u8.put(out);
                 actual.put(out)
             }
+            Self::CartridgeBackupLength { actual } => {
+                8u8.put(out);
+                actual.put(out)
+            }
             Self::UnsupportedDevice { address, width } => {
                 7u8.put(out);
                 address.put(out);
@@ -321,6 +325,9 @@ impl Wire for crate::bus::BusError {
             7 => Self::UnsupportedDevice {
                 address: u32::get(input)?,
                 width: usize::get(input)?,
+            },
+            8 => Self::CartridgeBackupLength {
+                actual: usize::get(input)?,
             },
             _ => return Err("invalid sound bus error"),
         })

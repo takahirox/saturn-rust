@@ -13,7 +13,8 @@ automated local/CI checks; live Pages inspection is not a completion gate.
 | --- | --- |
 | src/cpu.rs | Independent SH-2 interpreter, architectural registers, delayed branches and sticky faults |
 | src/bus.rs | Aligned big-endian byte/word/long accesses, RAM, ROM, VRAM and MMIO routing |
-| src/backup.rs | Packed battery RAM, atomic import and odd-byte storage with word/long bus lanes |
+| src/backup.rs, src/cartridge.rs | Packed backup images, dirty revisions, and exclusive decoding for Power Memory and the two expansion RAM cartridges |
+| web/console-saves.js | Worker-owned, origin-scoped battery restore and acknowledged IndexedDB commits |
 | src/disc.rs | Bounded ISO9660 and Saturn IP validation, first-read executable selection |
 | src/hle.rs, src/hle/ | HLE boot tables and original guest-executed vector, callback, mask, semaphore, priority, clock and backup-library services |
 | src/media.rs | Retained CHD/cooked/raw/BIN/CUE data/audio media, track indices/gaps and bounded caller-supplied SRW1 companions |
@@ -315,6 +316,9 @@ bus locking/arbitration between processors, or native Sega BIOS compatibility.
 | 00180000–0018FFFF | 32 KiB backup RAM on odd lanes; even lanes FF/ignored writes; word/long cycles strobe odd bytes |
 | 00200000–002FFFFF | 1 MiB low work RAM, mirrored through 003FFFFF |
 | 01000000 / 01800000 | Write-only word capture strobes to slave/master FRT |
+| 02000000–03FFFFFF | A-bus CS0, expansion RAM cartridge banks at 02400000 and 02600000 |
+| 04000000–04FFFFFF | A-bus CS1, Power Memory odd-byte lanes and read-only cartridge ID at 04FFFFFF |
+| 05000000–057FFFFF | A-bus reserved select, pulled-up reads and ignored writes including the expansion init strobe |
 | 05818000 / 05890000 | CD FIFO and command/HIRQ ports, 16-bit registers and FIFO long transfers |
 | 05A00000–05AFFFFF | 512 KiB shared sound RAM with mirror; 68k map 000000–07FFFF |
 | 05B00000–05B00FFF | SCSP implemented slot/common/stack ports; 68k map 100000–100FFF |
@@ -548,17 +552,31 @@ SRBUP001 filesystem; unknown imported bytes remain untouched until guest Format.
 Cold resets, successful boot-mode changes and rejected boot images retain these
 bytes while discarding volatile RAM/CPU/device state.
 
-The native/Wasm API accepts exactly 32768 packed bytes (ascending odd-address
-order, no header) and validates before mutation. Browser import pauses playback
-and replaces only backup RAM; it preserves CPU, media and runtime diagnostics.
-Export downloads a raw copy. Reset/mode changes cancel pending imports; a newer
-selection supersedes an older read. File errors and invalid lengths preserve all
-bytes. There is no automatic browser storage or network transfer. Reloading or
-closing loses the in-memory copy; users must explicitly export/import to retain
-it across sessions. Raw import/export is separate from the guest BUP ABI and does not implement
-cartridge RAM or save states. The original shared
-[diagnostic guest](../tests/fixtures/backup-pad.hex) and [tests](../tests/backup.rs)
-exercise real SH-2 loads/stores and port-2 reads natively and in Chromium/Wasm.
+The exclusive virtual slot shares the CPU P0/P1 hardware path and the SCU and
+SH-2 DMA scheduler. Power Memory and the internal device retain independent raw
+bytes across every boot selection and remain available when the cartridge is
+detached. Power-on and slot changes zero the selected expansion RAM. Guest
+SYSRES and SH-2 manual reset preserve the powered expansion. See the
+[cartridge evidence and bounded choices](validation-issue-260.md#cartridge-evidence).
+
+Native/Wasm imports require 32768 packed internal bytes or 524288 packed
+cartridge bytes, in ascending odd-address order. One revision per image changes
+only when bytes change. The SMPC exports a validated 16-byte snapshot with
+seven INTBACK calendar bytes, the time-set bit, four SMEM bytes and a
+big-endian reference-clock phase. Native/Wasm restore takes elapsed milliseconds
+as an explicit input. The scheduler itself uses emulated clocks.
+
+The browser's playback Worker restores the console before accepting guest
+commands. It checks revisions on a one-second timer and takes periodic clock
+checkpoints. On pause, media/slot/reset changes and tab hiding, it attempts to
+flush at the stopped Worker boundary. One in-flight IndexedDB transaction writes
+any changed images and the RTC snapshot with a wall-time anchor. IndexedDB's
+completion event acknowledges durability. A revision token checked inside the
+write transaction prevents concurrent or deleted storage from being overwritten
+by a stale tab. On error the Worker retains recoverable RAM. A raw replacement
+requires a successful commit before installing the bytes. The store is scoped
+to the origin and contains no game or firmware identity. The optional slot
+preference is separate from the saved images.
 
 ## Disc and BIOS-less HLE boot
 

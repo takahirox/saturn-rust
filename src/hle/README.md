@@ -137,7 +137,7 @@ acceptance criteria remain mandatory.
 
 ## Independent backup library
 
-[backup.s](backup.s) implements the built-in device's documented backup-library
+[backup.s](backup.s) implements the documented backup-library
 functions 1–11 from ST-162-R1 (backup chapter, data specifications 1–4 and
 function specifications 1–11). The public addresses, table slots and numeric
 status definitions were checked against Sega's original
@@ -148,34 +148,39 @@ BUP_Init executes SH-2 loads/stores to expand the original library to the
 caller's 16 KiB buffer. It publishes that buffer at `06000354`; function slots
 at offsets 4–40 implement SelPart, Format, Stat, Write, Read, Delete, Dir,
 Verify, GetDate and SetDate. The first private word retains the caller's work
-buffer pointer. Built-in device 0 reports unit 1/one partition; optional devices
-1/2 are absent. R8–R14 and PR obey the SHC callee-save convention. Internal
+buffer pointer. Built-in device 0 reports unit 1 and one partition. Device 1
+reports unit 2 and one partition when guest code reads the Power Memory ID 21h
+at 24FFFFFF. An empty slot and expansion RAM both report device 1 absent. Device
+2 is absent. R8–R14 and PR obey the SHC callee-save convention. Internal
 helpers are ordinary SH-2 subroutines in this independent boot ROM.
 
 Status values are success=0, absent=1, unformatted=2, write-protect=3,
 space=4, not-found=5, found=6, mismatch=7 and broken=8. Invalid names/partition
-arguments return other-failure=9. Internal RAM is writable, so there is no
-write-protect switch for this device. Write checks capacity and overwrite policy
+arguments return other-failure=9. Both backup devices allow guest writes. Write checks capacity and overwrite policy
 before altering stored bytes. Dir matches prefixes, writes at most the supplied
 number of 36-byte SHC directory structures and returns the negative hit count
-when the output table is short. GetDate/SetDate convert Gregorian dates for
-the representable BupDate years 1980–2235 to/from minutes since 1980-01-01;
-weekday is computed, independent of the SetDate input weekday.
+when the output table is short. Dir returns zero hits and leaves the table
+untouched if Power Memory is absent, unformatted or has malformed metadata.
+Stat reports the device or format error in those cases. GetDate/SetDate convert
+Gregorian dates for the representable BupDate years 1980–2235 to/from minutes
+since 1980-01-01. The conversion computes the weekday independently of the
+SetDate input weekday.
 
 The HLE has its own explicitly identified storage format, **SRBUP001**.
-ST-162-R1 leaves the library's physical format opaque. No interoperability with
-Sega firmware's private filesystem representation is claimed. External BIOS
-mode continues to execute only the selected ROM against the unchanged raw RAM
-bus. Unknown imported formats report unformatted and remain byte-for-byte
+ST-162-R1 leaves the library's physical format opaque. The
+[format investigation](../../docs/validation-issue-260.md#format-compatibility)
+describes the layouts and why HLE retains SRBUP001. In external BIOS mode, the
+selected firmware accesses the raw storage devices directly. Unknown imported formats report unformatted and remain byte-for-byte
 intact until the guest explicitly formats them. Installing HLE or calling Init
 does not format, migrate or clear backup RAM. The existing packed raw
 import/export, atomic length rejection, local-file privacy and reset retention
 contracts remain intact.
 
-Packed bytes are stored only through odd-byte bus addresses at `20180001`.
-There are 512 physical 64-byte blocks: blocks 0–1 hold the eight-byte signature
-and reserved zeros, leaving 510 blocks for dense file records. Each record has
-the following original layout (offsets in packed physical bytes):
+Both devices use the same record layout with per-device block geometry.
+Internal memory begins at odd address 20180001 and has 512 blocks of 64 bytes.
+Power Memory begins at 24000001 and has 1024 blocks of 512 bytes. Blocks 0–1
+hold the eight-byte signature and reserved zeros. Allocations start in block 2.
+The table gives record offsets in packed physical bytes.
 
 | Offset | Stored field |
 | --- | --- |
@@ -187,7 +192,7 @@ the following original layout (offsets in packed physical bytes):
 | 38–39 | Sum of payload bytes modulo 65536 |
 | 40 onward | Payload and zero allocation padding |
 
-Record blocks are `ceil((datasize+40)/64)`. Delete/overwrite compact subsequent
+Record blocks are `ceil((datasize+40)/block_size)`. Delete/overwrite compact subsequent
 records using guest byte copies and clear the released tail. Allocation scans
 bound every next record and payload length to the physical window, check name
 and comment terminators, language and redundant block counts, and reject broken

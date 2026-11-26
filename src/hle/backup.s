@@ -7,12 +7,13 @@
 .section 0x10100
 ; BUP_SelPart: public copied-library entry.
 bup_selpart:
-tst r4,r4
-bt partition_device
-mov #1,r0
-rts
+sts pr,r3
+load 0x12100,r1
+jsr @r1
 nop
-partition_device:
+lds r3,pr
+tst r0,r0
+bf partition_ok
 mov #0,r0
 tst r5,r5
 bt partition_ok
@@ -33,21 +34,21 @@ mov.l r13,@-r15
 mov.l r14,@-r15
 sts pr,r0
 mov.l r0,@-r15
-tst r4,r4
-bt format_device
-mov #1,r0
-bra format_end
+load 0x12100,r1
+jsr @r1
 nop
-format_device:
-load 0x20180001,r1
-load 32768,r2
+tst r0,r0
+bf format_end
+mov r1,r8
+add #-1,r1
+shlr r2
 mov #0,r0
 format_clear:
-mov.b r0,@r1
-add #2,r1
+mov.l r0,@r1
+add #4,r1
 dt r2
 bf format_clear
-load 0x20180001,r1
+mov r8,r1
 mov #83,r0
 mov.b r0,@r1
 add #2,r1
@@ -110,37 +111,40 @@ jsr @r1
 nop
 tst r0,r0
 bf.l stat_end
-load 510,r11
+tst r4,r4
+bf stat_cartridge
+load 32768,r1
+load 512,r2
+mov #64,r3
+bra stat_geometry
+nop
+stat_cartridge:
+load 524288,r1
+load 1024,r2
+load 512,r3
+stat_geometry:
+mov r2,r11
+add #-2,r11
 sub r10,r11
 mov r6,r8
-load 32768,r0
-mov.l r0,@r8
+mov.l r1,@r8
 add #4,r8
-load 512,r0
-mov.l r0,@r8
+mov.l r2,@r8
 add #4,r8
-mov #64,r0
-mov.l r0,@r8
+mov.l r3,@r8
 add #4,r8
-mov r11,r0
-shll2 r0
-shll2 r0
-shll2 r0
+mul.l r3,r11
+sts macl,r0
 mov.l r0,@r8
 add #4,r8
 mov.l r11,@r8
 add #4,r8
 mov.l @r15,r0
-load 32600,r1
-cmp/hs r0,r1
-bf stat_large
-add #103,r0
-shlr r0
-shlr r0
-shlr r0
-shlr r0
-shlr r0
-shlr r0
+load 0x12200,r7
+jsr @r7
+nop
+tst r0,r0
+bt stat_store
 mov r0,r1
 mov r11,r0
 load 0x11f00,r7
@@ -148,8 +152,6 @@ jsr @r7
 nop
 bra stat_store
 nop
-stat_large:
-mov #0,r0
 stat_store:
 mov.l r0,@r8
 mov #0,r0
@@ -219,21 +221,20 @@ bf.l write_bad_name
 mov r5,r1
 add #28,r1
 mov.l @r1,r0
-load 32600,r1
-cmp/hs r0,r1
-bf.l write_no_space
-add #103,r0
-shlr r0
-shlr r0
-shlr r0
-shlr r0
-shlr r0
-shlr r0
+load 0x12200,r1
+jsr @r1
+nop
+tst r0,r0
+bt.l write_no_space
 mov r0,r14
 mov r10,r0
 sub r11,r0
 add r14,r0
 load 510,r1
+tst r4,r4
+bt write_capacity
+load 1022,r1
+write_capacity:
 cmp/hs r0,r1
 bf.l write_no_space
 tst r9,r9
@@ -247,6 +248,11 @@ mov r14,r13
 shll2 r13
 shll2 r13
 shll2 r13
+tst r4,r4
+bt write_clear_start
+shll2 r13
+shll r13
+write_clear_start:
 mov #0,r0
 write_clear:
 mov.b r0,@r12
@@ -511,16 +517,21 @@ load 0x11900,r1
 jsr @r1
 nop
 tst r0,r0
-bf.l dir_end
+bf.l dir_unavailable
 load 0x11a00,r1
 jsr @r1
 nop
 tst r0,r0
-bf.l dir_end
+bf.l dir_unavailable
 mov.l @r15,r14
 mov r7,r12
 extu.w r6,r11
+mov r4,r6
 load 0x20180101,r9
+tst r6,r6
+bt dir_begin
+load 0x24000801,r9
+dir_begin:
 mov #0,r10
 dir_next:
 cmp/hs r8,r9
@@ -539,6 +550,11 @@ or r2,r0
 mov r0,r13
 shll8 r13
 shlr r13
+tst r6,r6
+bt dir_block
+shll2 r13
+shll r13
+dir_block:
 add r9,r13
 mov r14,r1
 mov r9,r2
@@ -583,6 +599,15 @@ cmp/hs r10,r11
 bt dir_end
 mov #0,r0
 sub r10,r0
+bra dir_end
+nop
+dir_unavailable:
+; Device 1 has no directory hits when absent or its metadata is unreadable.
+; Preserve the legacy return values for other device numbers.
+mov #1,r1
+cmp/eq r1,r4
+bf dir_end
+mov #0,r0
 dir_end:
 add #4,r15
 mov.l @r15+,r1
@@ -885,13 +910,13 @@ rts
 nop
 
 .section 0x11900
-tst r4,r4
-bt check_device
-mov #1,r0
-rts
+sts pr,r3
+load 0x12100,r1
+jsr @r1
 nop
-check_device:
-load 0x20180001,r1
+lds r3,pr
+tst r0,r0
+bf check_return
 mov.b @r1,r0
 mov #83,r2
 cmp/eq r0,r2
@@ -937,16 +962,24 @@ rts
 nop
 check_unformatted:
 mov #2,r0
+check_return:
 rts
 nop
 
 .section 0x11a00
 load 0x20180101,r8
+load 0x20190001,r1
+tst r4,r4
+bt scan_start
+load 0x24000801,r8
+load 0x24100001,r1
+scan_start:
+mov.l r1,@-r15
 mov #0,r9
 mov #0,r10
 mov #0,r11
 scan_next:
-load 0x20190001,r1
+mov.l @r15,r1
 cmp/hs r1,r8
 bt.l scan_success
 mov.b @r8,r0
@@ -970,14 +1003,16 @@ or r2,r0
 mov r0,r13
 tst r13,r13
 bt.l scan_broken
-load 510,r1
-cmp/hs r13,r1
-bf.l scan_broken
 mov r13,r12
 shll8 r12
 shlr r12
+tst r4,r4
+bt scan_block
+shll2 r12
+shll r12
+scan_block:
 add r8,r12
-load 0x20190001,r1
+mov.l @r15,r1
 cmp/hs r12,r1
 bf.l scan_broken
 mov r8,r1
@@ -1002,10 +1037,9 @@ mov.b @r1,r2
 extu.b r2,r2
 or r2,r0
 mov r0,r14
-mov r13,r0
-shll2 r0
-shll2 r0
-shll2 r0
+mov r12,r0
+sub r8,r0
+shlr r0
 add #-40,r0
 cmp/hs r14,r0
 bf.l scan_broken
@@ -1071,11 +1105,11 @@ nop
 scan_success:
 mov #0,r0
 rts
-nop
+add #4,r15
 scan_broken:
 mov #8,r0
 rts
-nop
+add #4,r15
 
 .section 0x11d00
 mov r9,r1
@@ -1121,6 +1155,11 @@ nop
 mov r11,r0
 shll8 r0
 shlr r0
+tst r4,r4
+bt compact_block
+shll2 r0
+shll r0
+compact_block:
 mov r9,r1
 add r0,r1
 mov r9,r2
@@ -1210,3 +1249,61 @@ month_feb_ordinary:
 mov #28,r0
 rts
 nop
+
+
+.section 0x12100
+; R4 device. Return status in R0, packed base/size in R1/R2.
+; Preserve R3 so leaf callers can hold PR there.
+tst r4,r4
+bt device_internal
+mov #1,r0
+cmp/eq r4,r0
+bf device_absent
+load 0x24ffffff,r1
+mov.b @r1,r0
+mov #33,r2
+cmp/eq r2,r0
+bf device_absent
+load 0x24000001,r1
+load 524288,r2
+rts
+mov #0,r0
+device_internal:
+load 0x20180001,r1
+load 32768,r2
+rts
+mov #0,r0
+device_absent:
+rts
+mov #1,r0
+
+.section 0x12200
+; R4 device, R0 payload bytes. Return required blocks or zero if oversized.
+tst r4,r4
+bf blocks_cartridge
+load 32600,r1
+cmp/hs r0,r1
+bf blocks_oversized
+add #103,r0
+bra blocks_common
+nop
+blocks_cartridge:
+load 523224,r1
+cmp/hs r0,r1
+bf blocks_oversized
+load 551,r1
+add r1,r0
+shlr r0
+shlr r0
+shlr r0
+blocks_common:
+shlr r0
+shlr r0
+shlr r0
+shlr r0
+shlr r0
+rts
+shlr r0
+blocks_oversized:
+rts
+mov #0,r0

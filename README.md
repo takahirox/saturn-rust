@@ -39,12 +39,14 @@ display characteristics. Switch during playback or pause. If WebGL 2 is
 unavailable, the player shows Clean.
 
 **Debug** reveals CPU registers, Step, bounded Run, Reset machine and frame
-advance. **Advanced** contains audio diagnostics and backup RAM import/export.
+advance. **Advanced** contains the virtual cartridge selector, Save management
+and audio diagnostics.
 Help, Advanced and Debug pause playback and release held input. Losing focus
 releases input, and hiding the tab pauses. Select **Resume** to continue.
 Toolbar Reset cold-boots accepted media and restarts an existing Play session
 when Advanced and Debug are closed. Debug's Reset machine stays paused.
-Both retain backup RAM.
+Both retain internal memory, backup cartridge saves and clock settings. A
+cartridge change cold-boots the selected BIOS/disc and leaves playback paused.
 
 The display is rasterized in Rust from guest-written video state, and input
 goes through emulated SMPC hardware. Play uses
@@ -55,6 +57,7 @@ PCM, emulation timing and pitch handling intact.
 
 - [Build, run, test and Pages setup](docs/setup.md)
 - [Player and touch controller validation](docs/validation-issue-257.md)
+- [Cartridges and persistent saves](docs/validation-issue-260.md)
 - [Supported CPU, disc boot and hardware; limitations and primary manuals](docs/architecture.md)
 - [Local BIOS startup, private ZIP probe and compatibility limits](docs/bios-startup.md)
 - [Hardware conformance matrix and outstanding Issue #17 scope](docs/hardware-conformance.md)
@@ -88,16 +91,23 @@ BIOS-only eligibility does not guarantee an authentic firmware menu. Native Sega
 BIOS boot/game support is incomplete and often faults on unimplemented devices
 or bus behavior. BIOS mode never silently changes into HLE.
 
-Local BIOS/disc bytes stay in the tab's memory, with no upload, browser storage,
-analytics, CDN or backend. Only public static runtime assets are fetched by
-the normal Play flow. Use files you are authorized to use; do not contribute
-proprietary media.
+The browser stores internal backup memory (32 KiB), Power Memory saves (512 KiB),
+the SMPC clock and settings in one IndexedDB database per origin. Games and
+boot modes share the same console. The cartridge preference is stored
+separately. BIOS, disc images, ROMs, traces, save states and expansion RAM stay
+in session memory. The player fetches its public runtime assets and has no
+uploads, network sync or analytics. Use media you are authorized to use.
 
-**Advanced** offers **Backup RAM** import/export.
-The packed 32768-byte raw
-backup survives resets and boot changes in the current tab. Export before closing
-or reloading; import explicitly replaces the bytes. This is not a save state or
-BIOS backup-library emulation.
+**Advanced → Save management** exports and imports complete packed raw images.
+Export a copy before replacing or clearing either device. The cartridge's saves
+are available even when the slot is empty or contains expansion RAM. HLE uses
+its own [SRBUP001 format](src/hle/README.md#independent-backup-library). Use the
+game's save menus or your supplied firmware for individual files.
+
+Keep exported copies if you change browsers or origins, or if your browser
+restricts or clears site data. The player reports a save as stored when
+IndexedDB commits it. An abrupt browser or process exit can lose outstanding
+changes.
 
 The **Browser Pages** workflow validates native Rust, Wasm and Chromium on pushes
 to `main` and PRs targeting `main`; successful `main` revisions deploy only `web/`.

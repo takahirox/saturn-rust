@@ -78,6 +78,8 @@
           <p id="display-filter-status" class="display-status" role="status"></p>
           <div class="player-feedback">
             <p id="player-status" role="status">Loading emulator…</p>
+            <p id="save-warning" role="status"></p>
+            <button id="open-save-management" type="button" aria-controls="backup-controls" hidden>Open Save management</button>
             <p id="error" role="alert"></p>
             <p id="recovery" hidden>Replace or clear a rejected image. See Debug for machine details.</p>
           </div>
@@ -118,14 +120,59 @@
             <p id="boot-method">Auto · BIOS-less HLE</p>
             <p id="audio-status">Audio: disabled</p>
             <p id="audio-diagnostics">Audio has not been enabled.</p>
-            <fieldset id="backup-controls" disabled>
-              <legend>Backup RAM</legend>
-              <p>Backup RAM survives Reset, Restart and boot changes in this tab. Export it to keep a copy before closing or reloading.</p>
-              <label for="backup-import">Replace backup RAM from a local packed 32 KiB file</label>
-              <input id="backup-import" type="file" aria-describedby="backup-format">
-              <p id="backup-format">Import replaces all backup bytes and pauses playback. Only a 32768-byte raw file is accepted; this is not a save state or an ISO. Export your current backup first if you need to keep it.</p>
-              <button id="backup-export" type="button">Export backup RAM</button>
-              <p id="backup-status" role="status"></p>
+            <div class="cartridge-setting">
+              <label for="cartridge">Virtual cartridge</label>
+              <select id="cartridge" aria-describedby="cartridge-note" disabled>
+                <option value="0">None</option>
+                <option value="1">Backup Memory (512 KiB)</option>
+                <option value="2">Expansion RAM (1 MiB)</option>
+                <option value="3">Expansion RAM (4 MiB)</option>
+              </select>
+              <p id="cartridge-note">Changing the cartridge cold-boots the selected media and leaves playback paused.</p>
+            </div>
+            <fieldset id="backup-controls" tabindex="-1" aria-describedby="save-storage-status" disabled>
+              <legend>Save management</legend>
+              <p id="save-storage-status" role="status">Restoring local saves…</p>
+              <button id="retry-saves" type="button" hidden>Retry local storage</button>
+              <p id="session-only-option" hidden>
+                <label><input id="session-only-import" type="checkbox"> Import for this session only</label>
+                <span>Console changes stay in memory until you reload.</span>
+              </p>
+              <p id="backup-format">Raw import replaces the whole device. Export a copy first. HLE uses SRBUP001. Use your BIOS memory manager for saves made with that BIOS.</p>
+              <div class="backup-devices">
+                <fieldset>
+                  <legend>Internal memory · 32 KiB</legend>
+                  <p id="backup-persistence"></p>
+                  <label for="backup-import">Import internal memory (32768 bytes)</label>
+                  <input id="backup-import" type="file" aria-describedby="backup-format">
+                  <div class="backup-actions">
+                    <button id="backup-export" type="button">Export backup RAM</button>
+                    <button id="backup-clear" type="button">Clear internal memory</button>
+                  </div>
+                  <p id="backup-status" role="status"></p>
+                </fieldset>
+                <fieldset>
+                  <legend>Backup cartridge · 512 KiB</legend>
+                  <p id="cartridge-backup-persistence"></p>
+                  <label for="cartridge-backup-import">Import cartridge (524288 bytes)</label>
+                  <input id="cartridge-backup-import" type="file" aria-describedby="backup-format">
+                  <div class="backup-actions">
+                    <button id="cartridge-backup-export" type="button">Export backup cartridge</button>
+                    <button id="cartridge-backup-clear" type="button">Clear backup cartridge</button>
+                  </div>
+                  <p id="cartridge-backup-status" role="status"></p>
+                </fieldset>
+                <fieldset>
+                  <legend>Clock and console settings</legend>
+                  <p id="smpc-battery-note">Import replaces the Saturn clock and settings with an exported copy.</p>
+                  <label for="smpc-battery-import">Import clock and settings</label>
+                  <input id="smpc-battery-import" type="file" aria-describedby="smpc-battery-note">
+                  <div class="backup-actions">
+                    <button id="smpc-battery-export" type="button">Export clock and settings</button>
+                  </div>
+                  <p id="smpc-battery-status" role="status"></p>
+                </fieldset>
+              </div>
             </fieldset>
 
           </div>
@@ -182,10 +229,18 @@
       <h3>Local media</h3>
       <p>Insert one CHD v5 CD-ROM (cdlz/cdzl/cdfl or uncompressed), a cooked 2048-byte-sector ISO, or a CUE and all its BINARY tracks together. You can also drop them on the Disc slot. CHD and CUE track data are limited to 1,058,400,000 bytes, CUE sheets to 1 MiB, and ISO images to 18–450,000 sectors. CUE sheets may explicitly reference an SRW1 diagnostic companion. Large images need sufficient browser memory.</p>
       <p>A valid raw 512 KiB BIOS takes precedence and can boot with or without a disc. Clear a rejected BIOS or replace it to recover. With a disc alone, the emulator uses BIOS-less HLE. Firmware and game compatibility are incomplete. Use media you are authorized to use.</p>
-      <p>Disc, BIOS and backup RAM stay in this tab. Export backup RAM in Advanced before closing or reloading.</p>
+      <p>Disc and BIOS files stay in this tab. Internal memory, backup cartridge saves, the clock and console settings are saved locally for this site in your browser. Clearing site data can erase them. Keep copies using Save management in Advanced.</p>
       <h3>Playback</h3>
       <p>Reset cold-boots the selected media and retains backup RAM. Help, Advanced and Debug pause playback. Select Resume when ready. If your browser blocks sound, select Enable audio.</p>
       <p>Clean shows the original pixels. CRT Composite blends the most, S-Video keeps colors sharper, and RGB keeps the sharpest edges. CRT modes fall back to Clean when WebGL 2 is unavailable.</p>
+    </dialog>
+    <dialog id="clear-backup" aria-labelledby="clear-backup-title" aria-describedby="clear-backup-message">
+      <h2 id="clear-backup-title"></h2>
+      <p id="clear-backup-message">This erases all saves on this device. Cancel to export a copy first. Use the game or BIOS memory manager to format the cleared device if prompted.</p>
+      <form method="dialog" class="backup-actions">
+        <button value="cancel" autofocus>Cancel</button>
+        <button value="clear">Erase all saves</button>
+      </form>
     </dialog>
     <noscript><p>JavaScript and WebAssembly are required. Enable JavaScript, then reload.</p></noscript>
   </main>

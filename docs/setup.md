@@ -78,7 +78,7 @@ python3 homebrew/star-collector/build.py
 sh scripts/check-fixtures.sh
 ```
 
-This is the complete 106-command CI reproducibility registry, including all three
+This is the complete 107-command CI reproducibility registry, including all three
 homebrew discs, HLE code, hardware guests and standard-size media. Individual
 `python3 ... --check` commands in that script remain usable for focused checks.
 
@@ -207,19 +207,42 @@ stop the machine until reset. Invisible registers are not updated during Play.
 original debugger fixture. Reset and Run 6 yields `R0=4`, `R1=7`,
 `PC=0x0600000E`; further runs stay in the BRA/NOP loop. It is not firmware.
 
-**Advanced** contains packed 32768-byte backup RAM
-import/export. Import replaces all bytes and pauses; export the old backup first
-if needed. Backup survives either Reset action, mode changes and failed boots within
-this tab. Export before closing or reloading; import explicitly in a later tab.
-It is not a save state or BIOS backup-file service.
+**Advanced → Virtual cartridge** defaults to **None**. Select **Backup Memory
+(512 KiB)** for Power Memory or **Expansion RAM (1 MiB)** / **Expansion RAM
+(4 MiB)** for games that need work RAM. A change pauses playback, releases input
+and cold-boots the accepted media. Select **Resume** when ready.
 
-All selected files stay in this tab’s memory. There are no uploads, browser
-storage, analytics, CDN, automatic BIOS downloads or implicit persistence. Public
-static runtime files alone are fetched by Play. Local media work offline once
-runtime assets have loaded; offline reload is not supported (no service worker).
-This is not a secure memory-erasure guarantee. Original licensed homebrew discs
-remain in `web/` for reproducible fixture coverage and explicit local selection;
-they are not promotional controls or default launches.
+**Save management** handles two whole-device raw images in ascending odd-address
+order. Internal memory accepts exactly 32768 bytes and the detached or installed
+backup cartridge accepts exactly 524288 bytes. The files have no wrapper or
+header. A normal import pauses and commits the replacement before installing it.
+Clear erases a device after confirmation. Export a copy first and use the game
+or supplied firmware to format the cleared device if prompted. The HLE library
+uses [SRBUP001](../src/hle/README.md#independent-backup-library).
+
+Local storage is shared across all games and BIOS choices under the site's origin.
+The player shows storage failures next to the playback status. Select **Open
+Save management** to export the current RAM and clock settings or retry after
+fixing permission or capacity problems. If retry restores local saves after
+startup, select **Reset** to boot the selected media with the recovered data.
+After a conflict, export the files you want to keep and reload to accept the
+newer stored revision. You can then explicitly import individual files.
+**Import clock and settings** replaces the RTC and SMEM from a validated
+`saturn-clock-settings.bin` export and advances the clock by elapsed time since
+export. After a successful import, select **Reset** to boot the selected media
+with the imported settings. During a storage failure, **Import for
+this session only** keeps imported data and subsequent console changes in
+memory until reload while preserving the stored records. Changing browsers,
+private browsing, eviction and clearing site data can affect availability. A
+process kill can interrupt the last write.
+
+The site stores only battery-backed save/clock data and related player
+preferences locally. BIOS, game ROMs, disc images, traces, expansion RAM and save
+states are excluded. The player fetches public static runtime assets and has no
+upload, network sync, analytics, CDN or automatic BIOS/game downloads. Local
+media work offline after the runtime loads. This is not a secure memory-erasure
+guarantee. Licensed sample discs in the static tree are available for explicit
+use and fixture reproduction.
 
 ## Automated browser smoke test
 
@@ -256,7 +279,7 @@ updates, loading/view races, player Reset and Debug frame advancement. At
 the hardware boundary it also executes an original backup/port-2 guest as a
 synthetic ROM and temporary local ISO, checks local backup import/export bytes,
 reset retention, rejected/read-failing imports and stale-read cancellation,
-second-pad input release and fresh-tab isolation. It also executes the original
+second-pad input release and same-origin save recovery. It also executes the original
 dual-SH-2 ROM, checking independent CPU registers/stacks, shared guest computation,
 FRT IRQ/capture results, two slave starts/stops, master NMI and a visible sticky
 slave exception-entry fault. At
@@ -302,9 +325,9 @@ On main pushes only, `site` waits for all those jobs and uploads that same
 artifact; `deploy` still checks current main. PRs cannot publish. Main runs are
 serialized and superseded PR validation can be canceled.
 
-The direct `npm run test:browser` command runs **all 75 registered groups** with
+The direct `npm run test:browser` command runs **all 76 registered groups** with
 at most two independent Node/Chromium process trees. Each owns its loopback
-server, page state, media and backup RAM. The scenario shard creates a fresh
+server, browser contexts, media and console storage. The scenario shard creates a fresh
 context for each module and closes it before the next; the shared UI trace
 retains its original order and page lifecycle. No callbacks run concurrently on
 a shared page. CI uses separate Ubuntu 24.04 runners for the two browser shards;

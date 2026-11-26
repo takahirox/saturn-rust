@@ -267,9 +267,20 @@ dt r1
 bf bup_relocate
 load 0x00010001,r0
 mov.l r0,@r6
+load 0x24ffffff,r1
+mov.b @r1,r0
+mov #33,r2
+cmp/eq r2,r0
+bf bup_no_cartridge
+load 0x00020001,r0
+bra bup_store_cartridge
+nop
+bup_no_cartridge:
 mov #0,r0
+bup_store_cartridge:
 add #4,r6
 mov.l r0,@r6
+mov #0,r0
 add #4,r6
 mov.l r0,@r6
 rts

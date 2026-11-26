@@ -146,7 +146,7 @@ test("shared versus fresh contexts retain complete guest clock, DMAC, Canvas and
 test("complete-suite inventory covers all original groups and missing groups fail", async () => {
   const source = await readFile(new URL("./browser-smoke.mjs", import.meta.url), "utf8");
   const registered = [...source.matchAll(/(?:timings\.(?:group|measure)|setup)\("([^"]+)"/g)].map(m => m[1]);
-  assert.equal(groups.length, 75);
+  assert.equal(groups.length, 76);
   assert(groups.includes("sh2Store"));
   assert(groups.includes("sh2Fetch"));
   assert(groups.includes("cdRw"));
@@ -156,15 +156,16 @@ test("complete-suite inventory covers all original groups and missing groups fai
   assert(groups.includes("cdStream"));
   assert(groups.includes("chd"));
   assert(groups.includes("crtDisplay"));
+  assert(groups.includes("consoleSaves"));
   assert.deepEqual([...new Set(registered)], groups);
   assert.deepEqual(scenarioGroups, [...source.matchAll(/timings.measure\("([^"]+)"/g)].map(m => m[1]));
   assert.deepEqual(shards.shared, [...groups.filter(g => !scenarioGroups.includes(g)), ...sharedScenarios]);
   const scenarioRegistry = source.match(/const scenarios = \{ ([^}]+) \}/)[1].split(/,\s+/);
-  assert.deepEqual([...scenarioRegistry, "largeMedia", "crtDisplay"].sort(), [...scenarioGroups].sort());
-  assert.equal((source.match(/if \(includeScenarios\) await timings.measure/g) ?? []).length, 45);
+  assert.deepEqual([...scenarioRegistry, "largeMedia", "crtDisplay", "consoleSaves"].sort(), [...scenarioGroups].sort());
+  assert.equal((source.match(/if \(includeScenarios\) await timings.measure/g) ?? []).length, 46);
   assert.deepEqual(selection([]).groups, groups);
   assert.equal(shards.shared.length, 32);
-  assert.equal(shards.scenarios.length, 43);
+  assert.equal(shards.scenarios.length, 44);
   assert(shards.scenarios.includes("hardwareBoundaries"));
   assert(!shards.shared.includes("hardwareBoundaries"));
   assert.deepEqual(sharedScenarios, ["chd", "cdStream"]);
@@ -466,8 +467,9 @@ test("CI gates publication on both suites and retains the actually tested assets
   assert.equal(JSON.parse(await readFile("package.json", "utf8")).scripts["test:browser"], "node scripts/browser-suite.mjs");
   // Exact registry: moving commands must not lose fixtures/options.
   const fixtures = (await readFile("scripts/check-fixtures.sh", "utf8")).split("\n").filter(s => s.startsWith("python3 "));
-  assert.equal(fixtures.length, 106);
+  assert.equal(fixtures.length, 107);
   assert(fixtures.includes("python3 tests/fixtures/build_scu_dstp.py --check"));
+  assert(fixtures.includes("python3 tests/fixtures/build_cartridge.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_smpc_transactions.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_interrupt_entry.py --check"));
   assert(fixtures.includes("python3 tests/fixtures/build_external_startup.py --check"));

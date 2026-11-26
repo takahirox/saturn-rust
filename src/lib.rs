@@ -2,6 +2,7 @@
 pub mod backup;
 pub mod bus;
 pub mod cache;
+pub mod cartridge;
 pub mod cd;
 mod cd_audio;
 mod cd_rw;
@@ -866,18 +867,14 @@ impl Machine {
     /// External firmware resets retain the physical medium, but reset every CD
     /// command, selector, FIFO and interrupt. Use clear_media to change selection.
     pub fn reset(&mut self, boot: Boot<'_>) -> Result<(), MachineError> {
-        let medium = if matches!(boot, Boot::ExternalBios(_)) {
-            self.bus.cd.media().cloned()
+        if matches!(boot, Boot::ExternalBios(_)) {
+            self.stop_execution();
         } else {
-            None
-        };
-        self.clear_execution();
+            self.clear_execution();
+        }
         match boot {
             Boot::ExternalBios(bytes) => {
                 self.mode = Some(BootMode::ExternalBios);
-                if let Some(medium) = medium {
-                    self.bus.cd.mount(medium);
-                }
                 self.bus.load_bios(bytes)?;
                 self.schedule_cpu_reset(Processor::Master, onchip::ResetRequest::PowerOn);
             }
@@ -896,6 +893,16 @@ impl Machine {
             }
         }
         Ok(())
+    }
+
+    /// Discard guest execution without booting. Keep mounted media and battery data.
+    pub(crate) fn stop_execution(&mut self) {
+        let medium = self.bus.cd.media().cloned();
+        self.clear_execution();
+        self.mode = None;
+        if let Some(medium) = medium {
+            self.bus.cd.mount(medium);
+        }
     }
 
     fn clear_execution(&mut self) {
@@ -1023,6 +1030,76 @@ impl Machine {
 
     pub fn set_port2_buttons(&mut self, buttons: u16) {
         self.bus.set_port2_buttons(buttons);
+    }
+
+    pub fn cartridge(&self) -> cartridge::Cartridge {
+        self.bus.cartridge.kind()
+    }
+
+    /// Change the physical slot at a cold-boot boundary. Retain the accepted
+    /// disc and installed firmware, and discard queued input and volatile RAM.
+    pub fn set_cartridge(&mut self, kind: cartridge::Cartridge) -> Result<(), MachineError> {
+        if self.cartridge() == kind {
+            return Ok(());
+        }
+        self.bus.cartridge.insert(kind);
+        if self.mode == Some(BootMode::HleDisc) && self.bus.cd.media().is_some() {
+            return self.reset_loaded_disc();
+        }
+        let media = self.bus.cd.media().cloned();
+        let firmware = self.bus.bios.take();
+        let result = if self.mode == Some(BootMode::HlePrototype) {
+            self.reset(Boot::HlePrototype)
+        } else {
+            self.clear_execution();
+            self.bus.bios = firmware;
+            if self.mode == Some(BootMode::ExternalBios) && self.bus.bios.is_some() {
+                self.schedule_cpu_reset(Processor::Master, onchip::ResetRequest::PowerOn);
+            }
+            Ok(())
+        };
+        if let Some(media) = media {
+            self.bus.cd.mount(media);
+        }
+        result
+    }
+
+    pub fn cartridge_backup_ram(&self) -> Option<&[u8]> {
+        self.bus.cartridge.backup().map(backup::BackupRam::bytes)
+    }
+
+    pub fn import_cartridge_backup_ram(&mut self, bytes: &[u8]) -> Result<(), MachineError> {
+        self.bus.cartridge.backup_mut().import(bytes)?;
+        Ok(())
+    }
+
+    pub fn backup_revision(&self) -> u32 {
+        self.bus.backup.revision()
+    }
+
+    pub fn cartridge_backup_revision(&self) -> u32 {
+        self.bus
+            .cartridge
+            .backup()
+            .map_or(0, backup::BackupRam::revision)
+    }
+
+    /// The SMPC clock advances from emulated clocks after restore. The caller
+    /// supplies elapsed offline time explicitly, with no host clock in the core.
+    pub fn restore_smpc_battery(
+        &mut self,
+        bytes: &[u8],
+        elapsed_ms: u64,
+    ) -> Result<(), &'static str> {
+        self.bus.smpc.restore_battery(bytes, elapsed_ms)
+    }
+
+    pub fn export_smpc_battery(&self) -> [u8; smpc::BATTERY_SNAPSHOT_SIZE] {
+        self.bus.smpc.export_battery()
+    }
+
+    pub fn smpc_battery_revision(&self) -> u32 {
+        self.bus.smpc.battery_revision()
     }
 
     pub fn backup_ram(&self) -> &[u8] {

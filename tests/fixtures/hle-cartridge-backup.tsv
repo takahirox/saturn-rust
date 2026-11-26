@@ -1,0 +1,36 @@
+configuration 0	00010001
+configuration 1	00020001
+configuration 2	00000000
+partition 0	00000000
+invalid partition	00000009
+absent device	00000001
+unformatted cartridge	00000002
+format 0	00000000
+format 1	00000000
+write internal A	00000000
+write external A	00000000
+external duplicate	00000006
+verify external A	00000000
+read external A	00000000
+external payload 0	12345678
+write external B	00000000
+delete external A	00000000
+external A missing	00000005
+directory after compact	00000001
+external B name 0	46494c45
+external B name 1	5f420000
+oversized write	00000004
+replace compacted B	00000000
+insufficient free blocks	00000004
+cartridge status	00000000
+cartridge capacity 0	00080000
+cartridge capacity 1	00000400
+cartridge capacity 2	00000200
+cartridge capacity 3	0007f800
+cartridge capacity 4	000003fc
+cartridge capacity 5	000001fe
+oversized status	00000000
+oversized status slots 0	00000000
+internal A preserved	00000000
+internal payload 0	decafbad
+done	0000600d

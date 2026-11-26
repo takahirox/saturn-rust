@@ -14,7 +14,7 @@ const assets = new Map(), sha256 = {};
 for (const [url, file] of [
   ["/pkg/saturn_rust.js", resolve(values.pkg, "saturn_rust.js")],
   ["/pkg/saturn_rust_bg.wasm", resolve(values.pkg, "saturn_rust_bg.wasm")],
-  ...["video-worker.js", "video-render-client.js", "playback-worker.js", "playback-client.js", "sound-client.js", "sound-worker.js", "worker-emulator.js"].map(name => ["/" + name, resolve("web", name)]),
+  ...["video-worker.js", "video-render-client.js", "playback-worker.js", "console-saves.js", "playback-client.js", "sound-client.js", "sound-worker.js", "worker-emulator.js"].map(name => ["/" + name, resolve("web", name)]),
 ]) {
   let bytes = await readFile(file);
   if (url === "/worker-emulator.js" && values["interleave-batches"]) {

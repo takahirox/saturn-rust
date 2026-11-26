@@ -8,6 +8,7 @@ pub mod diagnostics;
 use controller::{Analog, DigitalMux, Handshake};
 use diagnostics::Rejection;
 const REFERENCE_HZ: u64 = 26_874_100;
+pub const BATTERY_SNAPSHOT_SIZE: usize = 16;
 
 /// SMPC ST-169 §2.4.2 OREG9: physical console area straps. Region is
 /// independent of mounted media and survives CPU/system resets. Television
@@ -55,6 +56,7 @@ struct Battery {
     phase: u64,
     set: bool,
     memory: [u8; 4],
+    revision: u32,
 }
 impl Default for Battery {
     fn default() -> Self {
@@ -69,6 +71,7 @@ impl Default for Battery {
             phase: 0,
             set: false,
             memory: [0; 4],
+            revision: 0,
         }
     }
 }
@@ -139,37 +142,64 @@ impl Battery {
             ..Self::default()
         })
     }
+
+    fn snapshot(&self) -> [u8; BATTERY_SNAPSHOT_SIZE] {
+        let mut bytes = [0; BATTERY_SNAPSHOT_SIZE];
+        bytes[..7].copy_from_slice(&self.packet());
+        bytes[7] = u8::from(self.set);
+        bytes[8..12].copy_from_slice(&self.memory);
+        bytes[12..].copy_from_slice(&(self.phase as u32).to_be_bytes());
+        bytes
+    }
+
+    fn from_snapshot(bytes: &[u8], elapsed_ms: u64) -> Result<Self, &'static str> {
+        const INVALID: &str = "Invalid SMPC battery snapshot";
+        let bytes: &[u8; BATTERY_SNAPSHOT_SIZE] = bytes.try_into().map_err(|_| INVALID)?;
+        let mut battery = Self::parse(bytes[..7].try_into().unwrap()).ok_or(INVALID)?;
+        battery.phase = u64::from(u32::from_be_bytes(bytes[12..].try_into().unwrap()));
+        if bytes[7] > 1 || battery.phase >= REFERENCE_HZ {
+            return Err(INVALID);
+        }
+        battery.set = bytes[7] != 0;
+        battery.memory.copy_from_slice(&bytes[8..12]);
+        battery.advance_seconds(elapsed_ms / 1000);
+        battery.advance(((elapsed_ms % 1000) * REFERENCE_HZ / 1000) as u32);
+        Ok(battery)
+    }
+
     fn advance(&mut self, clocks: u32) {
         self.phase += u64::from(clocks);
-        while self.phase >= REFERENCE_HZ {
-            self.phase -= REFERENCE_HZ;
-            self.second += 1;
-            if self.second < 60 {
-                continue;
+        if self.phase >= REFERENCE_HZ {
+            self.advance_seconds(self.phase / REFERENCE_HZ);
+            self.phase %= REFERENCE_HZ;
+        }
+    }
+
+    fn advance_seconds(&mut self, seconds: u64) {
+        // A complete 10,000-year calendar has a whole number of weeks.
+        const CALENDAR_SECONDS: u64 = 3_652_425 * 86_400;
+        let day_seconds =
+            u64::from(self.hour) * 3600 + u64::from(self.minute) * 60 + u64::from(self.second);
+        let total = day_seconds + seconds % CALENDAR_SECONDS;
+        self.second = (total % 60) as u8;
+        self.minute = (total / 60 % 60) as u8;
+        self.hour = (total / 3600 % 24) as u8;
+        let mut days = total / 86_400;
+        self.weekday = (self.weekday + (days % 7) as u8) % 7;
+        loop {
+            let remaining = u64::from(Self::days(self.year, self.month) - self.day + 1);
+            if days < remaining {
+                self.day += days as u8;
+                break;
             }
-            self.second = 0;
-            self.minute += 1;
-            if self.minute < 60 {
-                continue;
-            }
-            self.minute = 0;
-            self.hour += 1;
-            if self.hour < 24 {
-                continue;
-            }
-            self.hour = 0;
-            self.weekday = (self.weekday + 1) % 7;
-            self.day += 1;
-            if self.day <= Self::days(self.year, self.month) {
-                continue;
-            }
+            days -= remaining;
             self.day = 1;
-            self.month += 1;
-            if self.month <= 12 {
-                continue;
+            if self.month == 12 {
+                self.month = 1;
+                self.year = (self.year + 1) % 10000;
+            } else {
+                self.month += 1;
             }
-            self.month = 1;
-            self.year = (self.year + 1) % 10000;
         }
     }
 }
@@ -319,6 +349,39 @@ impl Smpc {
     pub fn set_region(&mut self, region: Region) {
         self.region = region;
     }
+    pub(crate) fn battery_revision(&self) -> u32 {
+        self.battery.revision
+    }
+
+    pub(crate) fn export_battery(&self) -> [u8; BATTERY_SNAPSHOT_SIZE] {
+        // Any deferred clocks are strictly before the next SMPC edge.
+        let mut battery = self.battery.clone();
+        if let Some(interval) = self.quiet_interval {
+            battery.advance(interval.elapsed);
+        }
+        battery.snapshot()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn advance_battery_snapshot(
+        bytes: &[u8],
+        elapsed_ms: u64,
+    ) -> Result<[u8; BATTERY_SNAPSHOT_SIZE], &'static str> {
+        Ok(Battery::from_snapshot(bytes, elapsed_ms)?.snapshot())
+    }
+
+    pub(crate) fn restore_battery(
+        &mut self,
+        bytes: &[u8],
+        elapsed_ms: u64,
+    ) -> Result<(), &'static str> {
+        let mut battery = Battery::from_snapshot(bytes, elapsed_ms)?;
+        self.settle_quiet_interval();
+        battery.revision = self.battery.revision.wrapping_add(1);
+        self.battery = battery;
+        Ok(())
+    }
+
     pub(crate) fn system_reset(&mut self) {
         self.settle_quiet_interval();
         let region = self.region;
@@ -477,11 +540,19 @@ impl Smpc {
             0x1A => self.reset_disabled = true,
             0x16 => {
                 // Parameters are latched at issue, protected from writes while busy.
-                let memory = self.battery.memory;
-                self.battery = Battery::parse(self.input).expect("validated SETTIME");
-                self.battery.memory = memory;
+                let mut updated = Battery::parse(self.input).expect("validated SETTIME");
+                updated.memory = self.battery.memory;
+                updated.revision = self.battery.revision.wrapping_add(u32::from(
+                    !self.battery.set
+                        || self.battery.packet() != self.input
+                        || self.battery.phase != 0,
+                ));
+                self.battery = updated;
             }
-            0x17 => self.battery.memory.copy_from_slice(&self.input[..4]),
+            0x17 if self.battery.memory != self.input[..4] => {
+                self.battery.memory.copy_from_slice(&self.input[..4]);
+                self.battery.revision = self.battery.revision.wrapping_add(1);
+            }
             0x10 => {
                 if self.peripheral_phase {
                     self.peripherals();

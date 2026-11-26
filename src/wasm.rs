@@ -47,6 +47,9 @@ impl Emulator {
     pub fn reset_loaded_disc(&mut self) -> Result<(), JsValue> {
         self.machine.reset_loaded_disc().map_err(js_error)
     }
+    pub fn stop_execution(&mut self) {
+        self.machine.stop_execution();
+    }
     pub fn clear_media(&mut self) {
         self.machine.clear_media();
     }
@@ -146,6 +149,56 @@ impl Emulator {
     }
     pub fn set_port2_buttons(&mut self, buttons: u16) {
         self.machine.set_port2_buttons(buttons);
+    }
+    pub fn cartridge(&self) -> u8 {
+        self.machine.cartridge() as u8
+    }
+    pub fn set_cartridge(&mut self, kind: u8) -> Result<(), JsValue> {
+        use crate::cartridge::Cartridge;
+        let kind = match kind {
+            0 => Cartridge::None,
+            1 => Cartridge::Backup,
+            2 => Cartridge::Ram1MiB,
+            3 => Cartridge::Ram4MiB,
+            _ => return Err(JsValue::from_str("Unknown cartridge")),
+        };
+        self.machine.set_cartridge(kind).map_err(js_error)
+    }
+    pub fn export_cartridge_backup_ram(&self) -> Vec<u8> {
+        self.machine.cartridge_backup_ram().map_or_else(
+            || vec![0; crate::cartridge::POWER_MEMORY_SIZE],
+            <[u8]>::to_vec,
+        )
+    }
+    pub fn import_cartridge_backup_ram(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+        self.machine
+            .import_cartridge_backup_ram(bytes)
+            .map_err(js_error)
+    }
+    pub fn export_smpc_battery(&self) -> Vec<u8> {
+        self.machine.export_smpc_battery().to_vec()
+    }
+    pub fn restore_smpc_battery(&mut self, bytes: &[u8], elapsed_ms: u64) -> Result<(), JsValue> {
+        self.machine
+            .restore_smpc_battery(bytes, elapsed_ms)
+            .map_err(JsValue::from_str)
+    }
+    pub fn advance_smpc_battery_snapshot(
+        bytes: &[u8],
+        elapsed_ms: u64,
+    ) -> Result<Vec<u8>, JsValue> {
+        crate::smpc::Smpc::advance_battery_snapshot(bytes, elapsed_ms)
+            .map(|snapshot| snapshot.to_vec())
+            .map_err(JsValue::from_str)
+    }
+    pub fn backup_revision(&self) -> u32 {
+        self.machine.backup_revision()
+    }
+    pub fn cartridge_backup_revision(&self) -> u32 {
+        self.machine.cartridge_backup_revision()
+    }
+    pub fn smpc_battery_revision(&self) -> u32 {
+        self.machine.smpc_battery_revision()
     }
     pub fn export_backup_ram(&self) -> Vec<u8> {
         self.machine.backup_ram().to_vec()

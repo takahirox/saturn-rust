@@ -61,7 +61,10 @@ export class VideoRenderClient {
   activate() {
     if (this.closed || this.error) throw this.error ?? new Error("Video Worker is closed");
     globalThis.__saturnVideoChunk = bytes => {
-      if (this.closed || this.error) throw this.error ?? new Error("Video Worker is closed");
+      if (this.closed) throw this.error ?? new Error("Video Worker is closed");
+      // A field can still be completing in the producer after the renderer
+      // fails. Let it reach the next boundary, where submit reports the failure.
+      if (this.error) return;
       if (this.postedBytes - this.acknowledgedBytes + bytes.byteLength > this.maxBytes) {
         throw new Error("Video command queue capacity exceeded");
       }

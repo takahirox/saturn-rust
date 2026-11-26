@@ -29,11 +29,11 @@ export async function cdRuntime(page) {
   const run=(image,{bios=rom,raw=false,restart=false,sysres=false,chunk=10000,fixed=0,inspect=false,draw=false,resetTransfer=false,noMedia=false}={})=>page.evaluate(async args=>{
     const {emulator:m,advanceFrame}=await import("./app.js");
     const O=0x06070000,rom=Uint8Array.from(args.bios);
+    if(args.sysres)(await m.import_backup_ram(new Uint8Array(32768).fill(0xA5)));
     (await m.reset_bios(rom));
     if(args.noMedia)(await m.clear_media());
     else if(args.raw)(await m.mount_cue('FILE "d" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00',"d",new Uint32Array([args.image.length]),Uint8Array.from(args.image)));
     else (await m.mount_disc(Uint8Array.from(args.image)));
-    if(args.sysres)(await m.import_backup_ram(new Uint8Array(32768).fill(0xA5)));
     const advance=async ()=>{
       let left=args.fixed||6000000;
       while(left>0) {
