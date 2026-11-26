@@ -1,4 +1,5 @@
 import { AudioOutput } from "./audio.js";
+import { CrtDisplay } from "./crt-display.js";
 import { WorkerEmulator } from "./worker-emulator.js";
 const $ = (id) => document.getElementById(id);
 const hex = (value) => `0x${value.toString(16).toUpperCase().padStart(8, "0")}`;
@@ -60,7 +61,9 @@ let pendingActions = 0;
 let bootGeneration = 0;
 let resetting = false;
 let queuedAudio = [];
-const context = $("screen").getContext("2d");
+const screen = $("screen");
+const context = screen.getContext("2d");
+const crtDisplay = new CrtDisplay(screen, $("crt-screen"), $("display-filter"), $("display-filter-status"));
 let biosBytes = null;
 let biosSelected = false;
 let debugFixture = false;
@@ -159,20 +162,23 @@ function deliverAudio({ pcm }) {
 
 function setDisplayRatio(width, height) {
   const ratio = width === 320 && height === 224 ? "4 / 3" : `${width} / ${height}`;
-  $("screen").style.aspectRatio = ratio;
+  screen.style.aspectRatio = ratio;
   $("player-shell").style.setProperty("--display-ratio", ratio);
 }
 
 function presentFrame({ pixels, width, height }) {
   if (resetting) return;
   $("empty-state").hidden = true;
-  const canvas = $("screen");
-  if (canvas.width !== width || canvas.height !== height) {
-    canvas.width = width;
-    canvas.height = height;
+  if (screen.width !== width || screen.height !== height) {
+    screen.width = width;
+    screen.height = height;
     setDisplayRatio(width, height);
   }
-  context.putImageData(new ImageData(new Uint8ClampedArray(pixels), width, height), 0, 0);
+  // The transferred frame remains owned by this page. ImageData can use the
+  // same storage for the raw display and the optional shader upload.
+  const rgba = new Uint8ClampedArray(pixels.buffer, pixels.byteOffset, pixels.byteLength);
+  context.putImageData(new ImageData(rgba, width, height), 0, 0);
+  crtDisplay.present(pixels, width, height);
   render();
 }
 export async function advanceFrame() {
@@ -325,8 +331,8 @@ async function reset({ clearMedia = false } = {}) {
   queuedAudio = [];
   audio.setPaused(true);
   releaseButtons();
-  const canvas = $("screen");
-  context.clearRect(0, 0, canvas.width, canvas.height);
+  crtDisplay.clear();
+  context.clearRect(0, 0, screen.width, screen.height);
   attemptedBoot = true;
   bootValid = false;
   $("empty-state").hidden = false;
@@ -355,9 +361,9 @@ async function reset({ clearMedia = false } = {}) {
   }, { current });
   if (current()) {
     resetting = false;
-    canvas.width = emulator.state.width;
-    canvas.height = emulator.state.height;
-    setDisplayRatio(canvas.width, canvas.height);
+    screen.width = emulator.state.width;
+    screen.height = emulator.state.height;
+    setDisplayRatio(screen.width, screen.height);
   }
 }
 

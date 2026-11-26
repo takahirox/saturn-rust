@@ -69,8 +69,9 @@ no benchmark, hardware, human-approval or post-merge gate.
 
 ## Issue #107 execution cost and shard balance
 
-The current inventory is **74 groups: 32 shared / 42 scenarios**. The baseline
-assignment was 31/43; do not infer today's counts from historical records below.
+Issue #107 finalized **74 groups: 32 shared / 42 scenarios** from the 31/43
+baseline assignment. See [setup](setup.md#automated-browser-smoke-test) for the current
+browser test command and inventory.
 The [validation record](validation-issue-107.md) and
 [per-group measurements](ci-performance-issue-107.json) distinguish work reduction,
 scheduling and the exact-final-head hosted PR gate. After the failed runs below,

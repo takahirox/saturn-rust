@@ -185,7 +185,13 @@ narrow screens setup comes first.
    Pause/Resume, Restart and Fullscreen. Restart reuses the retained medium,
    cold-boots and resumes an existing Play session when advanced settings are
    closed. Fullscreen failures leave the normal player usable; focus returns
-   to its button on exit.
+   to its button on exit. **Display filter** changes the displayed frame during
+   playback or pause. **Clean** is the default. **CRT Composite** applies the
+   most horizontal luma and chroma blending, **CRT S-Video** reduces the
+   blending, and **CRT RGB** keeps the sharpest edges. The three approximations
+   use restrained scanline and phosphor effects, and the original Canvas image
+   stays available for debug reads and WebGL 2 fallback. See the
+   [CRT design and validation](validation-issue-254.md).
 
 See [automatic boot selection validation](validation-issue-135.md) for file-state
 and race coverage, and [BIOS-only startup validation](validation-issue-101.md)
@@ -306,7 +312,7 @@ On main pushes only, `site` waits for all those jobs and uploads that same
 artifact; `deploy` still checks current main. PRs cannot publish. Main runs are
 serialized and superseded PR validation can be canceled.
 
-The direct `npm run test:browser` command runs **all 74 registered groups** with
+The direct `npm run test:browser` command runs **all 75 registered groups** with
 at most two independent Node/Chromium process trees. Each owns its loopback
 server, page state, media and backup RAM. The scenario shard creates a fresh
 context for each module and closes it before the next; the shared UI trace
@@ -609,5 +615,5 @@ by `python3 tests/fixtures/build_bios_initialization.py --check` and runs inside
 the required `externalStartup` browser group. It executes shared MMIO, DMA, DSP,
 68000 clear-loop acknowledgement and CD WAIT/periodic NODISC checks with identical
 native/Wasm bytes. See the [contract](bios-startup.md) and
-[validation record](validation-issue-113.md). The registry has 106 commands;
-the complete browser inventory remains 74 groups.
+[validation record](validation-issue-113.md). That validation covered the
+106-command fixture registry and the then-current 74 browser groups.

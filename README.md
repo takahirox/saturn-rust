@@ -33,6 +33,12 @@ digital controls on both ports; see Controls, privacy & compatibility for button
 numbers. Virtual touchscreen controls are not included.
 Pause/Resume, Restart, audio and Fullscreen are beneath the display. Fullscreen
 reports unavailable or denied requests without interrupting the normal player.
+**Display filter** defaults to **Clean**, which shows the original pixels.
+**CRT Composite** softens horizontal edges and blends dithering most.
+**CRT S-Video** keeps more color detail, and **CRT RGB** preserves the sharpest
+edges with a subtle phosphor mask. The presets approximate analog video and CRT
+display characteristics. Switch during playback or pause. If WebGL 2 is
+unavailable, the player shows Clean.
 
 **Advanced → Debug** reveals CPU registers, Step, bounded Run, Reset and frame
 advance. **Advanced / backup RAM & format details** contains import/export and

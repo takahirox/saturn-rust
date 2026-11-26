@@ -22,6 +22,7 @@ import { scuFringe } from "./scu-fringe.mjs";
 import { dmacBus } from "./dmac-bus.mjs";
 import { sh2Store } from "./sh2-store.mjs";
 import { playUi } from "./play-ui.mjs";
+import { crtDisplay } from "./crt-display.mjs";
 import { chd } from "./chd.mjs";
 import { cdStream } from "./cd-stream.mjs";
 import { cdRuntime } from "./cd-runtime.mjs";
@@ -67,7 +68,7 @@ const assert = timings.instrumentAssertions(nodeAssert);
 
 setup("assets");
 // Fail before upload if web/ includes anything beyond the public runtime assets.
-const assets = ["worker-emulator.js", "playback-client.js", "playback-worker.js", "sound-client.js", "sound-worker.js", "audio.js", "audio-worklet.js", "video-render-client.js", "video-worker.js", "app.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "pkg/saturn_rust_compatible_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt", "prism-courier.iso", "prism-courier-LICENSE.txt", "hardware-lab.iso", "hardware-lab-audio.bin", "hardware-lab.cue", "hardware-lab-LICENSE.txt"];
+const assets = ["worker-emulator.js", "playback-client.js", "playback-worker.js", "sound-client.js", "sound-worker.js", "audio.js", "audio-worklet.js", "video-render-client.js", "video-worker.js", "app.js", "crt-display.js", "index.html", "pkg/saturn_rust.js", "pkg/saturn_rust_bg.wasm", "pkg/saturn_rust_compatible_bg.wasm", "style.css", "star-collector.iso", "star-collector-LICENSE.txt", "prism-courier.iso", "prism-courier-LICENSE.txt", "hardware-lab.iso", "hardware-lab-audio.bin", "hardware-lab.cue", "hardware-lab-LICENSE.txt"];
 assert.deepEqual((await readdir("web", { recursive: true })).sort(), [...assets, "pkg"].sort());
 assert((await lstat("web/pkg")).isDirectory());
 for (const asset of assets) {
@@ -96,7 +97,14 @@ try {
       if (match) { clearTimeout(timer); resolve(`http://127.0.0.1:${match[1]}`); }
     });
   });
-  browser = await chromium.launch({ headless: true, ...(process.env.BROWSER_CHANNEL ? { channel: process.env.BROWSER_CHANNEL } : {}) });
+  browser = await chromium.launch({ headless: true,
+    ...(process.env.BROWSER_CHANNEL ? { channel: process.env.BROWSER_CHANNEL } : {}),
+    // Enable WebGL in the headless CRT checks. Hosted Linux runners can use
+    // SwiftShader for these local test pages and original fixtures.
+    ...(selected.groups.includes("crtDisplay")
+      ? { args: ["--enable-gpu", ...(process.platform === "linux" ? ["--enable-unsafe-swiftshader"] : [])] }
+      : {}),
+  });
   instrumentBrowser(browser, timings);
   setup("page-init-and-assets");
   const context = await browser.newContext();
@@ -113,7 +121,7 @@ try {
   assert.equal(await page.evaluate(async () => (await import("./app.js")).emulator.fast_mode()), true);
   await timings.instrument(page);
   for (const [asset, mime] of [
-    ["", "text/html"], ["style.css", "text/css"], ["app.js", "javascript"],
+    ["", "text/html"], ["style.css", "text/css"], ["app.js", "javascript"], ["crt-display.js", "javascript"],
     ["pkg/saturn_rust.js", "javascript"], ["pkg/saturn_rust_bg.wasm", "application/wasm"],
   ]) {
     const response = responses.get(prefix + asset);
@@ -163,6 +171,10 @@ try {
     // media, backup RAM and audio state. Never share a page between workers.
     for (const name of names) {
       await timings.measure(name, async () => {
+        if (name === "crtDisplay") {
+          await crtDisplay(browser, address + prefix);
+          return;
+        }
         if (name === "largeMedia") {
           await largeMedia(browser, address + prefix);
           return;
@@ -3591,6 +3603,9 @@ try {
   await lab.close();
   if (includeScenarios) await timings.measure("largeMedia", async () => {
     await largeMedia(browser, address+prefix);
+  });
+  if (includeScenarios) await timings.measure("crtDisplay", async () => {
+    await crtDisplay(browser, address + prefix);
   });
   timings.group("cdda");
   // IEC 60908 PRE changes actual CD PCM, driven only by an original SH-2

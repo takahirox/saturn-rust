@@ -71,6 +71,7 @@
   "missing-build",
   "hardware-lab",
   "largeMedia",
+  "crtDisplay",
   "cdda",
   "hle-player"
 ]

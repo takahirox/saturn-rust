@@ -51,6 +51,7 @@
         <div id="player-shell" class="player-shell">
           <div class="display-surround">
             <canvas id="screen" width="320" height="224" tabindex="0" aria-label="Emulated Saturn display" aria-describedby="input-hint">Your browser needs Canvas support.</canvas>
+            <canvas id="crt-screen" aria-hidden="true" hidden></canvas>
             <div id="empty-state" class="empty-state"><span class="disc-motif" aria-hidden="true"></span><p id="empty-title">Load a disc to begin</p><small id="empty-hint">Or add a local BIOS to start without a disc.</small></div>
           </div>
           <div class="player-toolbar" aria-label="Playback controls">
@@ -58,9 +59,19 @@
             <button id="restart" type="button" disabled>Restart</button>
             <button id="audio-enable" type="button">Enable audio</button>
             <button id="fullscreen" type="button">Fullscreen</button>
+            <div class="display-filter">
+              <label for="display-filter">Display filter</label>
+              <select id="display-filter" aria-describedby="display-filter-status">
+                <option value="clean" selected>Clean</option>
+                <option value="composite">CRT Composite</option>
+                <option value="s-video">CRT S-Video</option>
+                <option value="rgb">CRT RGB</option>
+              </select>
+            </div>
           </div>
           <p id="input-hint" class="input-hint">Focus the display · P1 Arrows: directions · Z/X/C: A/B/C · A/S/D: X/Y/Z · Q/W: L/R · Enter: Start<br>Standard gamepads: full controls on both ports. P2 keyboard details in Advanced.</p>
           <p id="fullscreen-status" role="status"></p>
+          <p id="display-filter-status" class="input-hint" role="status"></p>
           <div class="player-feedback">
             <p id="player-status" role="status">Loading emulator…</p>
             <p id="error" role="alert"></p>
@@ -137,6 +148,7 @@
       <summary>Controls, privacy &amp; compatibility</summary>
       <p>Focus the display for keyboard input. Player 1: Arrows for directions, Z/X/C for A/B/C, A/S/D for X/Y/Z, Q/W for L/R, Enter for Saturn Start. Bindings use physical key positions, independent of Shift, Caps Lock or keyboard layout. Player 2 (partial keyboard controls): I/K/J/L for up/down/left/right, U/O/P for A/B/C, Right Shift for Start; X/Y/Z/L/R require a gamepad. The first two connected gamepads take free ports; a connected pad keeps its port when another disconnects. Standard buttons 0/1/2/3/4/5 map to A/B/C/X/Y/Z, 7/6 to L/R, 9 to Start and 12–15 to directions. Losing focus releases held input; hiding the tab pauses. Returning from Debug or closing advanced settings never resumes automatically. Touch controls are not included.</p>
       <p>Enable audio with a click; status reports blocked, muted, paused and underflow states. Fullscreen uses your browser’s API. Restart cold-boots the automatically selected method; Debug offers CPU Step, bounded Run, Reset and frame advance.</p>
+      <p>Display filter changes the picture during play or pause. Clean shows the original pixels. CRT Composite blends edges and dithering most, S-Video keeps colors sharper, and RGB keeps the sharpest edges. The effects approximate a CRT and use Clean when WebGL 2 is unavailable.</p>
       <p>This is an independent emulator under development. Loading media does not guarantee that a game or retail BIOS will run. No commercial screenshots or simulated game output are shown.</p>
       <p>Disc, BIOS and backup bytes stay in memory in this tab. No uploads, browser persistence, analytics or CDN. Export backup RAM under Advanced before closing or reloading. This is not a save state.</p>
     </details>
