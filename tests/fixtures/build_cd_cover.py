@@ -58,7 +58,8 @@ def build():
     """ + record()
     source += read(HIRQ) + "mov #32,r5\nand r5,r0\n" + record()
     source += acknowledge(0x20) + read(HIRQ) + "mov #32,r5\nand r5,r0\n" + record()
-    source += command(0x0400, 0xFFFF) + record()
+    # Query the open drive without requesting a transition to BUSY.
+    source += command(0x0000) + record()
     source += command(0x0200) + record() + command(0x0300) + record()
     source += """
     await_close:

@@ -26,17 +26,22 @@ See [Mednafen's CD block implementation](https://sources.debian.org/src/mednafen
 | --- | --- |
 | Start closed and empty | NODISC after initialization, with invalid position fields. TOC and session requests WAIT. |
 | Open | OPEN with invalid position fields. HIRQ latches DCHG and EFLS at the opening boundary and normal write-zero acknowledgement clears them. The pickup, scan, queued read work, and CD-DA source stop immediately. |
-| Insert, replace, or remove while open | The physical medium changes. The guest receives OPEN unless a Play request is waiting for closure, in which case it receives BUSY. TOC and session requests WAIT with no DATATRNS payload. |
-| Close empty | NODISC, with no new DCHG edge. |
-| Close with a disc | BUSY with invalid position fields and TOC/session WAIT, followed by PAUSE at the first track or execution of a deferred Play request. TOC and session information becomes usable. DCHG reports the earlier opening and remains latched until acknowledged. |
+| Insert, replace, or remove while open | The physical medium changes. The guest receives OPEN, or BUSY if a drive command is waiting for closure. TOC and session requests WAIT with no DATATRNS payload. |
+| Close empty | NODISC, with no new DCHG edge. Any deferred drive command is discarded. |
+| Close with a disc | BUSY with invalid position fields and TOC/session WAIT, followed by PAUSE at the first track or execution of the latest deferred drive command. TOC and session information becomes usable. DCHG reports the earlier opening and remains latched until acknowledged. |
 
 Recognition lasts 1,343,705 reference clocks (50 ms). This provides three
 stopped-report intervals at 60 Hz for polling and makes no claim about
-measured spin-up time. Pending commands and unread CR4 responses retain their
-normal handshake. Initialization preserves the physical cover position.
-Play issued while open or recognizing returns BUSY and proceeds after a disc
-is recognized (§8.2.2). Closing empty cancels the request. Seek and scan issued
-while open or recognizing return WAIT and may be retried.
+measured spin-up time. A drive command in flight at the recognition deadline
+can extend BUSY by up to one command-response interval (1,075 clocks).
+Ordinary Initialize, Play, Seek (including Pause and Stop), and Scan issued
+while open or recognizing return BUSY. The latest command supersedes any
+earlier deferred command and takes effect after recognition. Soft reset takes
+effect at command completion, clears the deferred command, and preserves the
+physical cover position. Pending commands and unread CR4 responses retain their
+normal handshake.
+[Sega CD Communication Interface §4.1](https://docs.exodusemulator.com/Archives/SSDDV25/segahtml/prgg/sysg/cdif/hon/p04_10.htm)
+
 The existing software-only automatic tray behavior of command 05 remains
 available separately. A physically open cover requires a host close.
 
@@ -58,7 +63,9 @@ and playback epoch. The guest still controls system resets and game launches.
 
 - `cargo test --locked --all-features --test cd_cover` checks opening, interrupt
   and command acknowledgement, CD-DA and FIFO cancellation, retention,
-  recognition timing, deferred Play, removal and replacement. The original
+  recognition timing, deferred drive commands, removal and replacement. The
+  command regression verifies that Seek Home supersedes Play and leaves the
+  drive in STANDBY with no sector delivery after recognition. The original
   reset-vector guest polls periodic CD reports and reads TOC, session lead-out
   and distinct sector data via MMIO in both exact and relaxed modes. The native
   harness checks PC, frame and clock continuity, WRAM records, and backup RAM.
