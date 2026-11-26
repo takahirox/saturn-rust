@@ -386,11 +386,11 @@ function render() {
     busy ? "Working…" :
     playing ? `Running${machineStatus === "Ready" ? "" : ` · ${machineStatus}`}` :
     playbackReady ? (sessionStarted ? "Paused" : `${bootMode === "bios" ? "BIOS" : "Disc"} ready`) :
-    hasError ? "Stopped" : saveResetRequired ? "Reset required" :
+    saveResetRequired ? "Reset required" : hasError ? "Stopped" :
     bootMode === "fixture" && bootValid ? "Bootstrap fixture ready in Debug" : bootValid ? machineStatus : "";
   setText("player-status", state);
   const emptyTitle = playing ? "Starting…" : busy ? "Loading…" : playbackReady ? "Ready to play" :
-    hasError ? "Check the error below" : saveResetRequired ? "Reset to boot with the new console data" :
+    saveResetRequired ? "Reset to boot with the new console data" : hasError ? "Check the error below" :
     bootMode === "fixture" ? "Debug fixture" : "Insert a disc or BIOS";
   setText("empty-title", emptyTitle);
   $("recovery").hidden = !hasError || loadingFile() || (bootValid && !selectionError());
@@ -598,7 +598,10 @@ try {
   $("retry-saves").addEventListener("click", () => void act(async () => {
     await pause();
     const generation = bootGeneration;
-    if (await emulator.retrySaves()) saveReplaced(generation);
+    const { resetRequired, transportError } = await emulator.retrySaves();
+    if (generation !== bootGeneration) return;
+    if (resetRequired) saveReplaced(generation);
+    if (transportError) setText("error", `Playback error (${transportError}).`);
   }, { clearError: false }));
 
   const dialog = $("clear-backup");
