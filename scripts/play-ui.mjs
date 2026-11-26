@@ -351,6 +351,7 @@ export async function playUi(browser, url) {
     assert.equal(requests.length, beforeCaseRequests, "Local CUE resolution must make no network requests");
     await playerLayouts(browser, page, url, iso);
     await playerAudio(browser, url);
+    await playerAudio(browser, url, "worklet");
     await framePacing(browser, url);
     await digitalInput(browser, url);
     assert.deepEqual(errors,[]);
@@ -710,11 +711,11 @@ async function playerLayouts(browser, desktop, url, iso) {
       const result = await page.evaluate(fullscreen => {
         const $ = id => document.getElementById(id);
         const rect = node => node.getBoundingClientRect().toJSON();
-        const picture = rect($("screen")), well = rect(document.querySelector(".display-well"));
         const target = node => {
           const b = rect(node);
           return { ...b, hit: document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2) === node };
         };
+        const picture = target($("screen")), well = rect(document.querySelector(".display-well"));
         const controls = [...document.querySelectorAll("#touch-controls button")].map(node => ({
           ...target(node), mask: Number(node.dataset.mask),
         }));
@@ -756,6 +757,7 @@ async function playerLayouts(browser, desktop, url, iso) {
           for (const other of controls.slice(i + 1)) assert(disjoint(box, other), "Touch buttons cannot overlap");
         }
         if (width > height) {
+          assert(picture.hit && picture.top >= 0 && picture.bottom <= height, JSON.stringify(picture));
           assert(controls.find(b => b.mask === 2048).right <= picture.left);
           assert(controls.find(b => b.mask === 4096).left >= picture.right);
         } else assert(controls.every(b => b.top >= picture.bottom));
@@ -766,7 +768,7 @@ async function playerLayouts(browser, desktop, url, iso) {
       if (fullscreen) {
         assert(picture.top >= 0 && picture.bottom <= height && disjoint(result.exit, picture));
         const { exit } = result;
-        assert(exit.hit && exit.height >= 44 && exit.top >= 0 && exit.bottom <= height && exit.left >= 0 && exit.right <= width, JSON.stringify(exit));
+        assert(exit.hit && exit.width >= 44 && exit.height >= 44 && exit.top >= 0 && exit.bottom <= height && exit.left >= 0 && exit.right <= width, JSON.stringify(exit));
         assert(Math.abs(picture.width - Math.min(well.width, well.height * aspect)) < 1);
         if (coarse) assert(controls.every(b => disjoint(result.exit, b)));
       } else if (coarse) assert(result.media.top >= result.toolbar.bottom);
@@ -796,7 +798,7 @@ async function playerLayouts(browser, desktop, url, iso) {
       await check(desktop, width, height, false);
       await fullscreenCheck(desktop, width, height, false);
     }
-    for (const [width, height] of [[320, 568], [390, 844], [768, 1024], [844, 390], [540, 320]]) {
+    for (const [width, height] of [[320, 568], [390, 844], [768, 1024], [844, 390], [540, 320], [500, 320]]) {
       await mobile.setViewportSize({ width, height });
       await mobile.evaluate(() => scrollTo(0, 0));
       await check(mobile, width, height, true);
@@ -827,22 +829,31 @@ async function playerLayouts(browser, desktop, url, iso) {
   } finally { await touch.close(); }
 }
 
-async function playerAudio(browser, url) {
+async function playerAudio(browser, url, failure = "resume") {
   const context = await browser.newContext();
   try {
     const page = await context.newPage();
-    await page.addInitScript(() => {
+    await page.addInitScript(failure => {
+      if (failure === "worklet") {
+        const addModule = AudioWorklet.prototype.addModule;
+        AudioWorklet.prototype.addModule = function () {
+          AudioWorklet.prototype.addModule = addModule;
+          return Promise.reject(new Error("Worklet module load failed for recovery test"));
+        };
+      }
       const resume = AudioContext.prototype.resume;
       window.audioGestures = [];
       AudioContext.prototype.resume = async function () {
         window.audioGestures.push(navigator.userActivation.isActive);
         if (window.audioGestures.length === 1) {
           await this.suspend();
-          throw new DOMException("Blocked for recovery test", "NotAllowedError");
+          if (failure === "resume") throw new DOMException("Blocked for recovery test", "NotAllowedError");
+          // Deliver the native running event after the module rejection.
+          await new Promise(resolve => { window.releaseAudioResume = resolve; });
         }
         return resume.call(this);
       };
-    });
+    }, failure);
     await page.goto(url);
     await page.waitForFunction(() => !document.getElementById("controls").disabled);
     const live = await liveRegions(page);
@@ -855,6 +866,23 @@ async function playerAudio(browser, url) {
     await live("#audio-warning", "Audio is blocked.");
     await page.waitForFunction(() => document.getElementById("player-status").textContent.startsWith("Running"));
     assert.deepEqual(await page.evaluate(() => window.audioGestures), [true]);
+    if (failure === "worklet") {
+      await waitForGuest(page, async () => {
+        const { audio } = await import("./app.js");
+        return typeof window.releaseAudioResume === "function" && !audio.initializing && !audio.node;
+      });
+      await page.evaluate(async () => {
+        const { audio } = await import("./app.js");
+        audio.context.addEventListener("statechange", () => {
+          if (audio.context.state === "running") window.audioStateAfterResume = audio.stats.state;
+        });
+        window.releaseAudioResume();
+      });
+      await page.waitForFunction(() => window.audioStateAfterResume !== undefined);
+      assert.equal(await page.evaluate(() => window.audioStateAfterResume), "blocked");
+      assert(await recovery.isVisible());
+      await live("#audio-warning", "Audio is blocked.");
+    }
     await recovery.click();
     await page.waitForFunction(() => document.getElementById("audio-enable").hidden);
     await live("#audio-warning");
@@ -876,6 +904,10 @@ async function playerAudio(browser, url) {
         return { gain: audio.gain.gain.value, source: rms(input), output: rms(output) };
       };
     });
+    if (failure === "worklet") {
+      await page.waitForFunction(() => window.gainReading().output > .01);
+      return;
+    }
     const slider = page.getByRole("slider", { name: "Volume" });
     await slider.focus();
     await page.keyboard.press("Home");
