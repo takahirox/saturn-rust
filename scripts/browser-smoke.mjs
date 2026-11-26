@@ -3193,20 +3193,21 @@ try {
   assert.equal(await value("pc"), "0x06000000");
   assert.deepEqual(pageErrors, []);
 
-  // Explicit backup import/export stays local and preserves machine state.
+  // A successful backup import stays local and stops old execution. Rejected imports preserve state.
   const backupBytes = Buffer.from(Array.from({length: 32768}, (_, i) => (i ^ (i >> 8)) & 255));
   const backup = () => page.evaluate(async () => Array.from(await (await import("./app.js")).emulator.export_backup_ram()));
-  const beforeImport = await machine();
   await context.setOffline(true);
   await page.locator("#backup-import").setInputFiles({name:"original-backup.bin", mimeType:"application/octet-stream", buffer:backupBytes});
   await page.waitForFunction(() => document.getElementById("backup-status").textContent.startsWith("Imported"));
-  assert.deepEqual(await machine(), beforeImport);
+  const stopped = await machine();
+  assert.match(stopped.status, /^Reset —/);
+  assert.equal(stopped.special[0], 0);
   assert.deepEqual(Buffer.from(await backup()), backupBytes);
   for (const size of [0, 1, 32767, 32769, 65536]) {
     await page.locator("#backup-import").setInputFiles({name:"invalid-backup.bin", mimeType:"application/octet-stream", buffer:Buffer.alloc(size)});
     assert.match(await value("backup-status"), /Backup unchanged/);
     assert.deepEqual(Buffer.from(await backup()), backupBytes);
-    assert.deepEqual(await machine(), beforeImport);
+    assert.deepEqual(await machine(), stopped);
   }
   const downloadReady = page.waitForEvent("download");
   await page.locator("#backup-export").click();
@@ -3222,7 +3223,7 @@ try {
   await page.waitForFunction(() => document.getElementById("backup-status").textContent.includes("simulated local read failure"));
   await page.evaluate(() => window.restoreFailedBackupRead());
   assert.deepEqual(Buffer.from(await backup()), backupBytes);
-  assert.deepEqual(await machine(), beforeImport);
+  assert.deepEqual(await machine(), stopped);
   // A late read cannot replace bytes after a rejected replacement or mode switch.
   await page.evaluate(() => {
     const original = File.prototype.arrayBuffer;

@@ -867,18 +867,14 @@ impl Machine {
     /// External firmware resets retain the physical medium, but reset every CD
     /// command, selector, FIFO and interrupt. Use clear_media to change selection.
     pub fn reset(&mut self, boot: Boot<'_>) -> Result<(), MachineError> {
-        let medium = if matches!(boot, Boot::ExternalBios(_)) {
-            self.bus.cd.media().cloned()
+        if matches!(boot, Boot::ExternalBios(_)) {
+            self.stop_execution();
         } else {
-            None
-        };
-        self.clear_execution();
+            self.clear_execution();
+        }
         match boot {
             Boot::ExternalBios(bytes) => {
                 self.mode = Some(BootMode::ExternalBios);
-                if let Some(medium) = medium {
-                    self.bus.cd.mount(medium);
-                }
                 self.bus.load_bios(bytes)?;
                 self.schedule_cpu_reset(Processor::Master, onchip::ResetRequest::PowerOn);
             }
@@ -897,6 +893,16 @@ impl Machine {
             }
         }
         Ok(())
+    }
+
+    /// Discard guest execution without booting. Keep mounted media and battery data.
+    pub(crate) fn stop_execution(&mut self) {
+        let medium = self.bus.cd.media().cloned();
+        self.clear_execution();
+        self.mode = None;
+        if let Some(medium) = medium {
+            self.bus.cd.mount(medium);
+        }
     }
 
     fn clear_execution(&mut self) {

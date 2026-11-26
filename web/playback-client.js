@@ -3,6 +3,7 @@
 export class PlaybackClient {
   constructor({ onFrame = () => {}, onAudio = () => {}, onError = () => {}, directPresentation = false, persistSaves = false, onSaveStatus = () => {} } = {}) {
     this.onFrame = onFrame; this.onAudio = onAudio; this.onError = onError;
+    this.persistSaves = persistSaves;
     this.epoch = 0; this.command = 0; this.nextFrame = 0; this.nextAudio = 0;
     this.pending = new Map(); this.error = null; this.closed = false;
     this.ready = new Promise((resolve, reject) => { this.resolveReady = resolve; this.rejectReady = reject; });
@@ -100,7 +101,8 @@ export class PlaybackClient {
   advance(fields = 1, { inspect = true } = {}) { return this.call("advance", { fields, inspect }); }
   inspect() { return this.call("inspect"); }
   invoke(operations) {
-    if (operations.some(({ method }) => method.startsWith("reset_") || method === "set_cartridge")) this.epoch++;
+    if (operations.some(({ method }) => method.startsWith("reset_") || method === "set_cartridge"
+      || (this.persistSaves && (method === "import_backup_ram" || method === "import_cartridge_backup_ram")))) this.epoch++;
     return this.call("invoke", { operations, epoch: this.epoch });
   }
   setInput(input) {

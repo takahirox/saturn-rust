@@ -14,6 +14,13 @@ const ready = page => page.waitForFunction(() => !document.getElementById("contr
 const standby = page => page.waitForFunction(() => document.getElementById("main").getAttribute("aria-busy") === "false");
 const status = (page, from) => page.waitForFunction(from => document.getElementById("save-storage-status").textContent.startsWith(from), from);
 
+async function useHostClock(context, url, now) {
+  const source = await readFile("web/playback-worker.js", "utf8");
+  await context.route(url + "playback-worker.js", route => route.fulfill({
+    contentType: "text/javascript", body: `self.testHostTime = ${now()}; Date.now = () => self.testHostTime;\n${source}`,
+  }));
+}
+
 async function openRecovery(page, warning) {
   assert.equal(await page.locator("#settings").evaluate(details => details.open), false);
   assert(await page.locator("#save-warning").isVisible());
@@ -72,6 +79,8 @@ function clockSettings(page) {
 async function importAcrossReset(browser, url) {
   const context = await browser.newContext();
   try {
+    // Target the import's write receipt, independent of pause checkpoints.
+    await useHostClock(context, url, () => 100000);
     const page = await context.newPage();
     await page.goto(url);
     await ready(page);
@@ -128,6 +137,95 @@ async function importAcrossReset(browser, url) {
     await page.reload();
     await ready(page);
     assert.equal((await digests(page))[0], checksum(committed));
+  } finally { await context.close(); }
+}
+
+async function importDuringGuestFormat(browser, url) {
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    await page.goto(url);
+    await ready(page);
+    await settings(page).click();
+    await page.getByLabel("Virtual cartridge").selectOption("1");
+    await standby(page);
+    const importImage = async (name, bytes) => {
+      await page.locator("#cartridge-backup-import").setInputFiles(filename(name, bytes));
+      await page.waitForFunction(() => document.getElementById("cartridge-backup-status").textContent.startsWith("Imported"));
+      await status(page, "Local storage is up to date.");
+    };
+    await importImage("unformatted.bin", Buffer.alloc(524288, 0xA5));
+    const iso = await readFile("tests/fixtures/hle-cartridge-backup.iso");
+    await page.locator("#disc").setInputFiles(filename("format-guest.iso", iso));
+    await waitForLoadedDisc(page);
+    const formatting = await page.evaluate(async () => {
+      const { emulator } = await import("./app.js");
+      for (let i = 0; i < 20; i++) {
+        await emulator.run_steps(10000);
+        const [first, last] = await Promise.all([emulator.read_long(0x24000000), emulator.read_long(0x240FFFFC)]);
+        if (first === 0xFF00FF00 && last === 0xFFA5FFA5) return true;
+      }
+      return false;
+    });
+    assert(formatting, "The original HLE guest must have cleared only part of Power Memory");
+    const replacement = Buffer.alloc(524288, 0x5A);
+    await importImage("replacement.bin", replacement);
+    assert.equal((await digests(page))[1], checksum(replacement), "The import was acknowledged before attempting to resume");
+    const resumeError = await page.evaluate(async () => {
+      const { emulator } = await import("./app.js");
+      const error = await emulator.run_steps(64).then(() => null, error => error.message);
+      await emulator.pause();
+      return error;
+    });
+    assert.equal((await digests(page))[1], checksum(replacement), "The paused BUP_Format must never resume over the imported image");
+    assert.match(resumeError, /CPU is stopped/);
+    assert.equal(await page.locator("#play").isDisabled(), true);
+    assert.equal(await page.locator("#run").isDisabled(), true);
+    assert.match(await text(page, "cartridge-backup-status"), /Reset to boot/);
+    await page.locator("#view-debug").click();
+    await page.locator("#reset").click();
+    await waitForLoadedDisc(page);
+    assert.equal((await digests(page))[1], checksum(replacement));
+    await page.reload();
+    await ready(page);
+    assert.equal((await digests(page))[1], checksum(replacement), "Reload must restore the imported bytes");
+  } finally { await context.close(); }
+}
+
+async function pausedClockReload(browser, url) {
+  const context = await browser.newContext();
+  try {
+    let now = 100000;
+    await useHostClock(context, url, () => now);
+    const page = await context.newPage();
+    await page.goto(url);
+    await ready(page);
+    const snapshot = [0x20, 0x24, 0x11, 1, 0, 0, 0x10, 1, 0x12, 0x34, 0x56, 0x78, 0, 0, 0, 0];
+    await page.evaluate(async snapshot => {
+      const { emulator } = await import("./app.js");
+      await emulator.restore_smpc_battery(Uint8Array.from(snapshot), 0n);
+      await emulator.pause();
+    }, snapshot);
+    await status(page, "Local storage is up to date.");
+    const battery = () => page.evaluate(async () => {
+      const { emulator } = await import("./app.js");
+      return [...await emulator.export_smpc_battery()];
+    });
+    const reload = async () => { await page.reload(); await ready(page); };
+    await reload();
+    assert.deepEqual(await battery(), snapshot, "The paused session started from the committed clock");
+    const worker = page.workers().find(worker => worker.url() === url + "playback-worker.js");
+    assert(worker);
+    now += 20000;
+    await worker.evaluate(now => { self.testHostTime = now; }, now);
+    assert.deepEqual(await battery(), snapshot, "Paused wall time did not advance the guest clock");
+    await page.evaluate(async () => (await import("./app.js")).emulator.pause());
+    await reload();
+    assert.deepEqual(await battery(), snapshot, "An immediate reload did not count paused time as offline");
+    now += 3000;
+    await reload();
+    snapshot[6] = 0x13;
+    assert.deepEqual(await battery(), snapshot, "Time after the acknowledged flush still advances the clock on restore");
   } finally { await context.close(); }
 }
 
@@ -206,6 +304,9 @@ async function bios() {
 
 async function production(browser, url) {
   const context = await browser.newContext({ viewport: { width: 360, height: 780 } });
+  const now = Date.now();
+  // Keep the competing tabs on the same host anchor until a guest or import writes.
+  await useHostClock(context, url, () => now);
   const errors = [], unexpectedRequests = [];
   context.on("request", request => {
     if (!request.url().startsWith(url) || request.method() !== "GET" || request.postData()
@@ -357,6 +458,7 @@ async function production(browser, url) {
     await settings(page).click();
     await page.locator("#cartridge-backup-clear").click();
     await dialog.getByRole("button", { name: "Erase all saves" }).click();
+    await page.waitForFunction(() => document.getElementById("cartridge-backup-status").textContent.includes("Reset to boot"));
     await status(page, "Local storage is up to date.");
     const cleared = [original[0], checksum(Buffer.alloc(524288))];
     assert.deepEqual(await digests(page), cleared);
@@ -641,6 +743,8 @@ async function storageFailures(browser, url) {
 }
 
 export async function consoleSaves(browser, url) {
+  await importDuringGuestFormat(browser, url);
+  await pausedClockReload(browser, url);
   await production(browser, url);
   await importAcrossReset(browser, url);
   await storageFailures(browser, url);

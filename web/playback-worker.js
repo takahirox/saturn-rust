@@ -17,7 +17,8 @@ let directPresentation = false;
 let methods, saves;
 const mediaChange = method => method?.startsWith("reset_") || method?.startsWith("mount_")
   || method === "clear_media" || method === "set_cartridge";
-const saveReplacement = method => ["import_backup_ram", "import_cartridge_backup_ram", "import_battery_recovery"].includes(method);
+const backupReplacement = method => method === "import_backup_ram" || method === "import_cartridge_backup_ram";
+const saveReplacement = method => backupReplacement(method) || method === "import_battery_recovery";
 let playWanted = false, playOptions = { paced: true };
 const pending = new Map();
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -49,7 +50,7 @@ const ready = init().then(async () => {
   // Playback uses relaxed CPU/device interleaving for real-time speed.
   machine.set_fast_mode(true);
   methods = new Set(Object.getOwnPropertyNames(Emulator.prototype).filter(name =>
-    !name.startsWith("_") && !SOUND_TRANSPORT_METHODS.has(name) && !["constructor", "free", "enable_video_transport", "enable_video_journal"].includes(name)
+    !name.startsWith("_") && !SOUND_TRANSPORT_METHODS.has(name) && !["constructor", "free", "enable_video_transport", "enable_video_journal", "stop_execution"].includes(name)
     && typeof machine[name] === "function"));
   if (saves) {
     methods.add("export_battery_recovery");
@@ -151,8 +152,12 @@ async function invoke(data) {
         value = saves.exportBatteryRecovery();
       } else if (method === "import_battery_recovery") {
         await saves.importBatteryRecovery(args[0], { sessionOnly: args[1] === true });
-      } else if (saves && saveReplacement(method)) {
+      } else if (saves && backupReplacement(method)) {
         await saves.replace(method === "import_backup_ram" ? 0 : 1, args[0], { sessionOnly: args[1] === true });
+        // The paused guest may be in the middle of writing or formatting this device.
+        machine.stop_execution();
+        input = {};
+        resetSound = true;
       } else value = machine[method](...args);
       values.push({ ok: true, value });
     } catch (error) { values.push({ ok: false, error: String(error?.message ?? error) }); }

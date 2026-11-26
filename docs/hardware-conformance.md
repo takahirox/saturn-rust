@@ -1676,7 +1676,7 @@ Reproduce with `python3 src/hle/build.py --check` and
 The disc SHA-256 is
 `aed258ed218fd4bcee94890e6582ee59185341842b70cf60aa1f6644c7b372db`;
 the backup library image is
-`a531fdf1d699ed1cecd3fb793b3313decbff566e92d68a45278fde99e1bdcac9`.
+`684c9bc9533f1335aaa3546c00e5eb2f055b415d3be2055210eba89b4ac5c8e3`.
 The original boot ROM fragment and all three existing demonstration media remain
 byte-identical. BUPG is diagnostic media, not a replacement demonstration.
 No mandatory Issue #17 umbrella checkbox is completed by this addition. All

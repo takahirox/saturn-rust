@@ -47,6 +47,9 @@ impl Emulator {
     pub fn reset_loaded_disc(&mut self) -> Result<(), JsValue> {
         self.machine.reset_loaded_disc().map_err(js_error)
     }
+    pub fn stop_execution(&mut self) {
+        self.machine.stop_execution();
+    }
     pub fn clear_media(&mut self) {
         self.machine.clear_media();
     }

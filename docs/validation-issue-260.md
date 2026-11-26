@@ -115,6 +115,8 @@ checks the last accepted token and updates the head and dirty records in one
 read/write transaction. The completion event acknowledges the write. An
 unobserved revision or site-data deletion blocks stale writes, including
 destructive imports. Retry handles transient open/read/write failures.
+Successful backup imports and clears discard paused guest execution and require
+a fresh boot with the accepted media. Failed replacements preserve execution.
 After a conflict, export current RAM and clock settings and reload before
 explicitly replacing data in the newer console. Opening an unreadable record
 leaves it intact. If the session then changes backup bytes or clock settings,
@@ -128,7 +130,9 @@ by the nonnegative milliseconds between the acknowledged host anchor and the
 newly opened session. A backward clock gives zero elapsed time and the anchor
 does not move backwards on commits. Native and Wasm clocks advance deterministically
 with emulated time while a session is active. Paused tabs retain that time until
-emulation proceeds. Gregorian month/year/leap rules and 9999-to-0000 wrap apply.
+emulation proceeds. An acknowledged session-boundary flush records the current
+snapshot and host anchor, including when the clock was paused. Gregorian
+month/year/leap rules and 9999-to-0000 wrap apply.
 [SMPC ST-169](https://antime.kapsi.fi/sega/files/ST-169-R1-072694.pdf).
 
 The separate 36-byte clock recovery file contains the ASCII signature

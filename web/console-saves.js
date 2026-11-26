@@ -146,7 +146,7 @@ export class ConsoleSaves {
       this.head = head;
       this.restored = true;
       this.revisions = this.currentRevisions();
-      this.battery = this.machine.export_smpc_battery();
+      if (head) this.battery = images[2];
       this.lastCheckpoint = now;
       this.status(head ? "ready" : "empty");
     } catch (error) { this.status("restore-error", error); }
@@ -239,7 +239,10 @@ export class ConsoleSaves {
       const checkClock = force || now - this.lastCheckpoint >= RTC_CHECKPOINT_MS;
       if (!replacement && !changed.some(Boolean) && !checkClock) return;
       const battery = replacement?.index === 2 ? replacement.bytes : this.machine.export_smpc_battery();
-      if (!replacement && !changed.some(Boolean) && battery.every((byte, i) => byte === this.battery[i])) {
+      // At a session boundary, checkpoint paused time as well so that only time
+      // after this flush is counted as offline on restore.
+      const reanchor = force && this.head && now > this.head.anchor;
+      if (!replacement && !reanchor && !changed.some(Boolean) && battery.every((byte, i) => byte === this.battery[i])) {
         this.lastCheckpoint = now;
         if (this.error) this.status(this.head ? "ready" : "empty");
         return;

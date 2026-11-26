@@ -15,6 +15,7 @@ let playing = false;
 let sessionStarted = false;
 let attemptedBoot = false;
 let bootValid = false;
+let backupResetRequired = false;
 let buttons = 0;
 let touchMask = 0;
 const touches = new Map();
@@ -384,11 +385,12 @@ function render() {
     busy ? "Working…" :
     playing ? `Running${machineStatus === "Ready" ? "" : ` · ${machineStatus}`}` :
     playbackReady ? (sessionStarted ? "Paused" : `${bootMode === "bios" ? "BIOS" : "Disc"} ready`) :
-    hasError ? "Stopped" :
+    hasError ? "Stopped" : backupResetRequired ? "Reset required" :
     bootMode === "fixture" && bootValid ? "Bootstrap fixture ready in Debug" : bootValid ? machineStatus : "";
   setText("player-status", state);
   const emptyTitle = playing ? "Starting…" : busy ? "Loading…" : playbackReady ? "Ready to play" :
-    hasError ? "Check the error below" : bootMode === "fixture" ? "Debug fixture" : "Insert a disc or BIOS";
+    hasError ? "Check the error below" : backupResetRequired ? "Reset to boot with the new backup data" :
+    bootMode === "fixture" ? "Debug fixture" : "Insert a disc or BIOS";
   setText("empty-title", emptyTitle);
   $("recovery").hidden = !hasError || loadingFile() || (bootValid && !selectionError());
   if (!$("recovery").hidden) {
@@ -467,6 +469,19 @@ async function act(operation, { current = () => true, clearError = true } = {}) 
   } finally { pendingActions--; render(); }
 }
 
+function clearDisplay() {
+  crtDisplay.clear();
+  context.clearRect(0, 0, screen.width, screen.height);
+  $("empty-state").hidden = false;
+}
+
+function backupReplaced(generation) {
+  if (generation !== bootGeneration || !bootValid) return;
+  bootValid = false;
+  backupResetRequired = true;
+  clearDisplay();
+}
+
 async function reset({ clearMedia = false, slot } = {}) {
   const generation = ++bootGeneration;
   resetting = true;
@@ -480,11 +495,10 @@ async function reset({ clearMedia = false, slot } = {}) {
   queuedAudio = [];
   audio.setPaused(true);
   releaseButtons();
-  crtDisplay.clear();
-  context.clearRect(0, 0, screen.width, screen.height);
+  clearDisplay();
   attemptedBoot = true;
   bootValid = false;
-  $("empty-state").hidden = false;
+  backupResetRequired = false;
   const mode = effectiveBootMode(), rom = biosBytes;
   await act(async () => {
     if (clearMedia) await emulator.clear_media();
@@ -611,7 +625,8 @@ try {
         output.textContent = `Importing ${description}…`;
         render();
         await emulator[`import_${method}`](bytes, sessionOnly);
-        const resetHint = !battery && importBoot === bootGeneration ? " Reset to let the guest read the new data." : "";
+        if (!battery) backupReplaced(importBoot);
+        const resetHint = !battery && backupResetRequired ? " Reset to boot with the new data." : "";
         output.textContent = `Imported ${description}${sessionOnly ? " for this session only" : ""}. Playback is paused.${resetHint}`;
       } catch (error) {
         if (generation === backupGeneration) output.textContent = `${battery ? "Clock and settings" : "Backup"} unchanged: ${error}`;
@@ -657,9 +672,12 @@ try {
     const restoreFocus = document.activeElement === button;
     await act(async () => {
       await pause();
+      const clearBoot = bootGeneration;
       try {
         await emulator[`import_${method}`](new Uint8Array(size));
-        setText(`${id}-status`, `Cleared ${name}. Playback is paused.`);
+        backupReplaced(clearBoot);
+        const resetHint = backupResetRequired ? " Reset to boot with the cleared device." : "";
+        setText(`${id}-status`, `Cleared ${name}. Playback is paused.${resetHint}`);
       } catch (error) {
         setText(`${id}-status`, `Backup unchanged: ${error}`);
       }
