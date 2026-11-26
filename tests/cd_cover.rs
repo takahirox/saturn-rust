@@ -10,6 +10,7 @@ const RECOGNITION: u32 = 1_343_705;
 const OPEN: [u16; 4] = [0x06ff, 0xffff, 0xffff, 0xffff];
 const NO_DISC: [u16; 4] = [0x07ff, 0xffff, 0xffff, 0xffff];
 const BUSY: [u16; 4] = [0x00ff, 0xffff, 0xffff, 0xffff];
+const STANDBY: [u16; 4] = [0x02ff, 0xffff, 0xffff, 0xffff];
 
 fn response(cd: &CdBlock) -> [u16; 4] {
     std::array::from_fn(|i| cd.read16(CD + 0x18 + i as u32 * 4).unwrap())
@@ -46,13 +47,7 @@ fn open_invalidates_old_reads_and_close_recognizes_with_a_bounded_deadline() {
     cd.write16(CD + 8, !0x20).unwrap();
     assert!(!cd.interrupt());
     assert!(cd.replace_open_media(Some(image(0xa1, 18))));
-    for packet in [
-        [0x0200, 0, 0, 0],
-        [0x0301, 0, 0, 0],
-        [0x1100, 0, 0, 0],
-        [0x1200, 0, 0, 0],
-        [0xe000, 0, 0, 0],
-    ] {
+    for packet in [[0x0200, 0, 0, 0], [0x0301, 0, 0, 0], [0xe000, 0, 0, 0]] {
         assert_eq!(issue(&mut cd, packet), wait(OPEN));
     }
     assert_eq!(issue(&mut cd, [0x0401, 0, 0, 0]), OPEN);
@@ -139,6 +134,56 @@ fn play_waits_for_manual_closure_then_reads_the_replacement_disc() {
     assert_eq!(issue(&mut cd, [0x5400, 0, 0, 0])[1], 151);
     issue(&mut cd, [0x6300, 0, 0, 1]);
     assert_eq!(cd.read16(DATA), Ok(0x5252));
+}
+
+#[test]
+fn stop_supersedes_deferred_play_during_recognition() {
+    for clocks_left in [RECOGNITION, 1] {
+        let mut cd = CdBlock::default();
+        issue(&mut cd, [0x3000, 0, 0, 0]);
+        cd.set_cover_open(true);
+        assert_eq!(issue(&mut cd, [0x1080, 150, 0x80, 1]), BUSY);
+        assert!(cd.replace_open_media(Some(image(0x52, 32))));
+        cd.set_cover_open(false);
+        cd.advance(RECOGNITION - clocks_left);
+        assert_eq!(issue(&mut cd, [0x1100, 0, 0, 0]), BUSY);
+        cd.advance(clocks_left + 250_000);
+        assert_eq!(issue(&mut cd, [0; 4]), STANDBY);
+        assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 0);
+        assert_eq!(cd.read16(CD + 8).unwrap() & 0x0e, 0);
+    }
+}
+
+#[test]
+fn initialize_seek_and_scan_wait_for_manual_closure() {
+    for (packet, ready) in [
+        ([0x0400, 0, 0, 0], [0x0180, 0x4101, 0x0100, 150]),
+        ([0x1180, 157, 0, 0], [0x0400, 0x4101, 0x0100, 157]),
+        ([0x1200, 0, 0, 0], [0x0500, 0x4101, 0x0100, 150]),
+    ] {
+        let mut cd = CdBlock::default();
+        cd.set_cover_open(true);
+        assert_eq!(issue(&mut cd, [0x1080, 151, 0x80, 1]), BUSY);
+        assert_eq!(issue(&mut cd, packet), BUSY);
+        assert!(cd.cover_open());
+        assert!(cd.replace_open_media(Some(image(0x52, 32))));
+        cd.set_cover_open(false);
+        cd.advance(RECOGNITION);
+        assert_eq!(response(&cd), ready);
+    }
+}
+
+#[test]
+fn soft_reset_keeps_the_cover_open_and_cancels_deferred_play() {
+    let mut cd = CdBlock::default();
+    cd.set_cover_open(true);
+    assert_eq!(issue(&mut cd, [0x1080, 151, 0x80, 1]), BUSY);
+    assert_eq!(issue(&mut cd, [0x0401, 0, 0, 0]), OPEN);
+    assert!(cd.cover_open());
+    assert!(cd.replace_open_media(Some(image(0x52, 32))));
+    cd.set_cover_open(false);
+    cd.advance(RECOGNITION);
+    assert_eq!(response(&cd), [0x0180, 0x4101, 0x0100, 150]);
 }
 
 #[test]
