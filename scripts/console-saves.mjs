@@ -99,6 +99,65 @@ function clockSettings(page) {
   });
 }
 
+async function replacementAfterSoundFailure(browser, url) {
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    const internal = Buffer.alloc(32768, 0x55);
+    const cartridge = Buffer.alloc(524288, 0xA5);
+    const clearCartridge = Buffer.alloc(524288);
+    const load = async () => {
+      await ready(page);
+      await settings(page).click();
+      await standby(page);
+    };
+    await page.goto(url);
+    await load();
+    await page.locator("#cartridge-backup-import").setInputFiles(filename("power-memory.bin", cartridge));
+    await page.waitForFunction(() => document.getElementById("cartridge-backup-status").textContent.startsWith("Imported"));
+    assert.deepEqual(await digests(page), [checksum(Buffer.alloc(32768)), checksum(cartridge)]);
+
+    for (const clear of [false, true]) {
+      await page.locator("#bios").setInputFiles(filename("backup-transport-probe.bin", backupIncrementGuest()));
+      await page.waitForFunction(() => !document.getElementById("play").disabled);
+      const worker = page.workers().find(worker => worker.url() === url + "playback-worker.js");
+      assert(worker);
+      await worker.evaluate(() => {
+        const postMessage = Worker.prototype.postMessage;
+        Worker.prototype.postMessage = function (message, ...args) {
+          if (message.type !== "reset") return postMessage.call(this, message, ...args);
+          Worker.prototype.postMessage = postMessage;
+          // Reject only the Sound Worker's reset acknowledgement.
+          queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", {
+            data: { type: "error", message: "Test Sound Worker reset failure" },
+          })));
+        };
+      });
+      if (clear) {
+        await page.locator("#cartridge-backup-clear").click();
+        await page.getByRole("button", { name: "Erase all saves" }).click();
+      } else {
+        await page.locator("#backup-import").setInputFiles(filename("internal.bin", internal));
+      }
+      const id = clear ? "cartridge-backup-status" : "backup-status";
+      await page.waitForFunction(id => /Test Sound Worker reset failure/.test(document.getElementById(id).textContent), id);
+      await status(page, savedStatus);
+      await standby(page);
+      const expected = [checksum(internal), checksum(clear ? clearCartridge : cartridge)];
+      assert.deepEqual(await digests(page), expected);
+      assert.match(await text(page, id), clear ? /^Cleared backup cartridge\./ : /^Imported 32768 backup bytes\./);
+      assert.match(await text(page, id), /Reset to boot/);
+      assert.equal(await text(page, "player-status"), "Reset required");
+      assert.equal(await page.locator("#play").isDisabled(), true);
+      assert.equal(await page.locator("#run").isDisabled(), true);
+      assert.equal(await page.locator("#restart").isEnabled(), true);
+      await page.reload();
+      await load();
+      assert.deepEqual(await digests(page), expected);
+    }
+  } finally { await context.close(); }
+}
+
 async function importAcrossReset(browser, url) {
   const context = await browser.newContext();
   try {
@@ -1033,6 +1092,7 @@ async function storageFailures(browser, url) {
 }
 
 export async function consoleSaves(browser, url) {
+  await replacementAfterSoundFailure(browser, url);
   await passiveTabPreservesGuestSave(browser, url);
   await cartridgeChangeDuringBiosSelection(browser, url);
   await retryAfterGuestRead(browser, url);
