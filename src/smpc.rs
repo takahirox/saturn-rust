@@ -142,6 +142,31 @@ impl Battery {
             ..Self::default()
         })
     }
+
+    fn snapshot(&self) -> [u8; BATTERY_SNAPSHOT_SIZE] {
+        let mut bytes = [0; BATTERY_SNAPSHOT_SIZE];
+        bytes[..7].copy_from_slice(&self.packet());
+        bytes[7] = u8::from(self.set);
+        bytes[8..12].copy_from_slice(&self.memory);
+        bytes[12..].copy_from_slice(&(self.phase as u32).to_be_bytes());
+        bytes
+    }
+
+    fn from_snapshot(bytes: &[u8], elapsed_ms: u64) -> Result<Self, &'static str> {
+        const INVALID: &str = "Invalid SMPC battery snapshot";
+        let bytes: &[u8; BATTERY_SNAPSHOT_SIZE] = bytes.try_into().map_err(|_| INVALID)?;
+        let mut battery = Self::parse(bytes[..7].try_into().unwrap()).ok_or(INVALID)?;
+        battery.phase = u64::from(u32::from_be_bytes(bytes[12..].try_into().unwrap()));
+        if bytes[7] > 1 || battery.phase >= REFERENCE_HZ {
+            return Err(INVALID);
+        }
+        battery.set = bytes[7] != 0;
+        battery.memory.copy_from_slice(&bytes[8..12]);
+        battery.advance_seconds(elapsed_ms / 1000);
+        battery.advance(((elapsed_ms % 1000) * REFERENCE_HZ / 1000) as u32);
+        Ok(battery)
+    }
+
     fn advance(&mut self, clocks: u32) {
         self.phase += u64::from(clocks);
         if self.phase >= REFERENCE_HZ {
@@ -334,12 +359,15 @@ impl Smpc {
         if let Some(interval) = self.quiet_interval {
             battery.advance(interval.elapsed);
         }
-        let mut bytes = [0; BATTERY_SNAPSHOT_SIZE];
-        bytes[..7].copy_from_slice(&battery.packet());
-        bytes[7] = u8::from(battery.set);
-        bytes[8..12].copy_from_slice(&battery.memory);
-        bytes[12..].copy_from_slice(&(battery.phase as u32).to_be_bytes());
-        bytes
+        battery.snapshot()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn advance_battery_snapshot(
+        bytes: &[u8],
+        elapsed_ms: u64,
+    ) -> Result<[u8; BATTERY_SNAPSHOT_SIZE], &'static str> {
+        Ok(Battery::from_snapshot(bytes, elapsed_ms)?.snapshot())
     }
 
     pub(crate) fn restore_battery(
@@ -347,17 +375,7 @@ impl Smpc {
         bytes: &[u8],
         elapsed_ms: u64,
     ) -> Result<(), &'static str> {
-        const INVALID: &str = "Invalid SMPC battery snapshot";
-        let bytes: &[u8; BATTERY_SNAPSHOT_SIZE] = bytes.try_into().map_err(|_| INVALID)?;
-        let mut battery = Battery::parse(bytes[..7].try_into().unwrap()).ok_or(INVALID)?;
-        battery.phase = u64::from(u32::from_be_bytes(bytes[12..].try_into().unwrap()));
-        if bytes[7] > 1 || battery.phase >= REFERENCE_HZ {
-            return Err(INVALID);
-        }
-        battery.set = bytes[7] != 0;
-        battery.memory.copy_from_slice(&bytes[8..12]);
-        battery.advance_seconds(elapsed_ms / 1000);
-        battery.advance(((elapsed_ms % 1000) * REFERENCE_HZ / 1000) as u32);
+        let mut battery = Battery::from_snapshot(bytes, elapsed_ms)?;
         self.settle_quiet_interval();
         battery.revision = self.battery.revision.wrapping_add(1);
         self.battery = battery;

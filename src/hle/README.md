@@ -159,9 +159,12 @@ space=4, not-found=5, found=6, mismatch=7 and broken=8. Invalid names/partition
 arguments return other-failure=9. Both backup devices allow guest writes. Write checks capacity and overwrite policy
 before altering stored bytes. Dir matches prefixes, writes at most the supplied
 number of 36-byte SHC directory structures and returns the negative hit count
-when the output table is short. GetDate/SetDate convert Gregorian dates for
-the representable BupDate years 1980–2235 to/from minutes since 1980-01-01;
-weekday is computed, independent of the SetDate input weekday.
+when the output table is short. Dir returns zero hits and leaves the table
+untouched if Power Memory is absent, unformatted or has malformed metadata.
+Stat reports the device or format error in those cases. GetDate/SetDate convert
+Gregorian dates for the representable BupDate years 1980–2235 to/from minutes
+since 1980-01-01. The conversion computes the weekday independently of the
+SetDate input weekday.
 
 The HLE has its own explicitly identified storage format, **SRBUP001**.
 ST-162-R1 leaves the library's physical format opaque. The

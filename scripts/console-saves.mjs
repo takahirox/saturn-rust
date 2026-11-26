@@ -14,6 +14,16 @@ const ready = page => page.waitForFunction(() => !document.getElementById("contr
 const standby = page => page.waitForFunction(() => document.getElementById("main").getAttribute("aria-busy") === "false");
 const status = (page, from) => page.waitForFunction(from => document.getElementById("save-storage-status").textContent.startsWith(from), from);
 
+async function openRecovery(page, warning) {
+  assert.equal(await page.locator("#settings").evaluate(details => details.open), false);
+  assert(await page.locator("#save-warning").isVisible());
+  assert.match(await text(page, "save-warning"), warning);
+  await page.getByRole("button", { name: "Open Save management" }).focus();
+  await page.keyboard.press("Enter");
+  await standby(page);
+  assert.equal(await page.evaluate(() => document.activeElement.id), "backup-controls");
+}
+
 function guestWords(page, address, count) {
   return page.evaluate(async ({ address, count }) => {
     const { emulator } = await import("./app.js");
@@ -23,12 +33,16 @@ function guestWords(page, address, count) {
 
 async function playUntil(page, address) {
   await page.locator("#play").click();
-  await waitForGuest(page, async address => {
+  await waitForDone(page, address);
+  await page.locator("#play").click();
+}
+
+function waitForDone(page, address) {
+  return waitForGuest(page, async address => {
     const { emulator } = await import("./app.js");
     await new Promise(resolve => setTimeout(resolve, 100));
     return (await emulator.read_long(address)) === 0x600D;
   }, address, { timeout: 120000 });
-  await page.locator("#play").click();
 }
 
 function digests(page) {
@@ -45,6 +59,14 @@ async function download(page, id) {
   await page.locator("#" + id).click();
   const file = await downloaded;
   return [file.suggestedFilename(), await readFile(await file.path())];
+}
+
+function clockSettings(page) {
+  return page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    const bytes = await emulator.export_smpc_battery();
+    return [...bytes.slice(0, 2), ...bytes.slice(7, 12)];
+  });
 }
 
 async function importAcrossReset(browser, url) {
@@ -139,8 +161,8 @@ async function sessionRecovery(page, url, storedImages) {
   ` }));
   await page.reload();
   await ready(page);
-  await settings(page).click();
   await status(page, "Could not restore local saves.");
+  await openRecovery(page, /Could not restore local saves/);
   const sessionOnly = page.getByRole("checkbox", { name: "Import for this session only" });
   assert.equal(await sessionOnly.isChecked(), false);
   await sessionOnly.focus();
@@ -218,8 +240,27 @@ async function production(browser, url) {
 
     await page.locator("#disc").setInputFiles(filename("original-cartridge-backup.iso", iso));
     await waitForLoadedDisc(page);
-    await playUntil(page, TRACE + (expected.length - 1) * 4);
+    const worker = page.workers().find(worker => worker.url() === url + "playback-worker.js");
+    assert(worker);
+    await worker.evaluate(() => {
+      const put = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (value, key) {
+        if (key === "head") throw new DOMException("Test guest save quota failure", "QuotaExceededError");
+        return put.call(this, value, key);
+      };
+      self.removeQuotaFailure = () => { IDBObjectStore.prototype.put = put; };
+    });
+    await page.locator("#play").click();
+    await waitForDone(page, TRACE + (expected.length - 1) * 4);
+    await status(page, "Changes are unsaved.");
+    assert.match(await text(page, "player-status"), /^Running/);
+    await openRecovery(page, /Changes are unsaved/);
+    await worker.evaluate(() => self.removeQuotaFailure());
+    await page.locator("#retry-saves").click();
     await status(page, "Local storage is up to date.");
+    assert.equal(await page.locator("#save-warning").isVisible(), false);
+    assert.equal(await page.locator("#open-save-management").isVisible(), false);
+    await settings(page).click();
     assert.deepEqual(await guestWords(page, TRACE, expected.length), expected);
     const original = await digests(page);
 
@@ -296,8 +337,9 @@ async function production(browser, url) {
     probe.writeUInt32BE(0x0600E000, 0xE28);
     await page.locator("#disc").setInputFiles(filename("another-disc.iso", probe));
     await waitForLoadedDisc(page);
-    await playUntil(page, TRACE + 24);
-    assert.deepEqual(await guestWords(page, TRACE, 7), [0, 0, 0xDECAFBAD, 0, 0, 0x12345678, 0x600D]);
+    await playUntil(page, TRACE + 36);
+    assert.deepEqual(await guestWords(page, TRACE, 10),
+      [0, 0, 0xDECAFBAD, 0, 0, 0x12345678, 1, 0x46494C45, 0xAABBCCDD, 0x600D]);
     const firmware = await bios();
     firmware.writeUInt32BE(0x1400); // Read-only reset vector, no HLE or writes.
     await page.locator("#bios").setInputFiles(filename("original-firmware.bin", firmware));
@@ -318,6 +360,7 @@ async function production(browser, url) {
     await status(page, "Local storage is up to date.");
     const cleared = [original[0], checksum(Buffer.alloc(524288))];
     assert.deepEqual(await digests(page), cleared);
+    const newerSettings = await clockSettings(page);
     const picker = other.locator("#cartridge-backup-import");
     await picker.setInputFiles(filename("bad-size.bin", Buffer.alloc(524287)));
     await other.waitForFunction(() => document.getElementById("cartridge-backup-status").textContent.includes("received 524287"));
@@ -329,18 +372,51 @@ async function production(browser, url) {
     await status(other, "Changes are unsaved.");
     const [, recovered] = await download(other, "cartridge-backup-export");
     assert.deepEqual(recovered, exported);
+
+    // The stale tab can retain guest SETTIME and SETSMEM after a failed retry.
+    // Its recovery file is independent of the newer tab's two backup images.
+    const writer = await bios();
+    await other.locator("#bios").setInputFiles(filename("original-battery-writer.bin", writer));
+    await settings(other).click();
+    await playUntil(other, BIOS_TRACE + 42 * 4);
+    const guestSettings = [0x20, 0x24, 1, 0x12, 0x34, 0x56, 0x78];
+    assert.deepEqual(await clockSettings(other), guestSettings);
+    assert.notDeepEqual(newerSettings, guestSettings);
+    await openRecovery(other, /Changes are unsaved/);
+    await other.locator("#retry-saves").click();
+    await standby(other);
+    await status(other, "Changes are unsaved.");
+    const [clockFile, clockRecovery] = await download(other, "smpc-battery-export");
+    assert.equal(clockFile, "saturn-clock-settings.bin");
+    assert.equal(clockRecovery.length, 36);
+    const importClock = (tab, bytes) => tab.locator("#smpc-battery-import").setInputFiles(filename(clockFile, bytes));
+    await importClock(other, clockRecovery);
+    await other.waitForFunction(() => document.getElementById("smpc-battery-status").textContent.includes("Local saves changed"));
+    assert.deepEqual(await clockSettings(other), guestSettings);
     await other.close();
 
     await page.reload();
     await ready(page);
     assert.deepEqual(await digests(page), cleared);
+    assert.deepEqual(await clockSettings(page), newerSettings);
     await settings(page).click();
+    const damagedClock = Buffer.from(clockRecovery);
+    damagedClock[24] ^= 1;
+    await importClock(page, damagedClock);
+    await page.waitForFunction(() => document.getElementById("smpc-battery-status").textContent.includes("Damaged clock"));
+    assert.deepEqual(await clockSettings(page), newerSettings);
+    await importClock(page, clockRecovery);
+    await page.waitForFunction(() => document.getElementById("smpc-battery-status").textContent.startsWith("Imported"));
+    await status(page, "Local storage is up to date.");
+    assert.deepEqual(await clockSettings(page), guestSettings);
+    assert.deepEqual(await digests(page), cleared);
     await page.locator("#cartridge-backup-import").setInputFiles(filename(name, exported));
     await page.waitForFunction(() => document.getElementById("cartridge-backup-status").textContent.startsWith("Imported"));
     await status(page, "Local storage is up to date.");
     await page.reload();
     await ready(page);
     assert.deepEqual(await digests(page), original);
+    assert.deepEqual(await clockSettings(page), guestSettings);
     const devtools = await context.newCDPSession(page);
     await devtools.send("Storage.clearDataForOrigin", { origin: new URL(url).origin, storageTypes: "indexeddb,local_storage" });
     await page.reload();
@@ -354,7 +430,6 @@ async function production(browser, url) {
     await selector.selectOption("1");
     await standby(page);
     await settings(page).click();
-    const writer = await bios();
     await page.locator("#bios").setInputFiles(filename("original-battery-writer.bin", writer));
     await page.waitForFunction(() => !document.getElementById("play").disabled);
     await playUntil(page, BIOS_TRACE + 42 * 4);
@@ -395,7 +470,11 @@ async function storageFailures(browser, url) {
       await init();
       const require = (value, description) => { if (!value) throw new Error(description); };
       const failed = async (promise, pattern) => {
-        try { await promise; } catch (error) { require(pattern.test(error.message), error.message); return; }
+        try { await promise; } catch (error) {
+          const message = error?.message ?? String(error);
+          require(pattern.test(message), message);
+          return;
+        }
         throw new Error("Expected a storage failure");
       };
       const snapshot = Uint8Array.of(0x20, 0x24, 0x32, 0x29, 0x23, 0x59, 0x59, 1, 0x12, 0x34, 0x56, 0x78, 0, 0, 0, 0);
@@ -517,6 +596,44 @@ async function storageFailures(browser, url) {
       const unsupported = make(new Emulator());
       await unsupported.restore();
       require(unsupported.state === "restore-error" && /Unsupported/.test(unsupported.error.message), "unsupported version protected");
+
+      await editStorage(retry.db, store => store.clear());
+      now = 30000;
+      const source = make(new Emulator()), recovery = make(new Emulator());
+      await source.restore();
+      await recovery.restore();
+      source.machine.restore_smpc_battery(snapshot, 0n);
+      const file = source.exportBatteryRecovery();
+      const invalidCalendar = file.slice();
+      invalidCalendar[19] = 0x30; // February 30, with an otherwise valid file checksum.
+      let hash = 2166136261;
+      for (const byte of invalidCalendar.subarray(0, 32)) hash = Math.imul(hash ^ byte, 16777619);
+      new DataView(invalidCalendar.buffer).setUint32(32, hash);
+      const beforeRecovery = recovery.machine.export_smpc_battery();
+      await failed(recovery.importBatteryRecovery(invalidCalendar), /Invalid SMPC battery snapshot/);
+      require(recovery.state === "empty" &&
+        recovery.machine.export_smpc_battery().every((byte, i) => byte === beforeRecovery[i]),
+      "invalid calendar left the machine and storage unchanged");
+
+      now = 32000;
+      await recovery.importBatteryRecovery(file);
+      const expectedRecovery = Uint8Array.of(0x20, 0x24, 0x43, 1, 0, 0, 1, 1, 0x12, 0x34, 0x56, 0x78, 0, 0, 0, 0);
+      require(recovery.state === "ready" &&
+        recovery.machine.export_smpc_battery().every((byte, i) => byte === expectedRecovery[i]),
+      "recovery file advanced across leap-day rollover");
+      const reopened = make(new Emulator());
+      await reopened.restore();
+      require(reopened.machine.export_smpc_battery().every((byte, i) => byte === expectedRecovery[i]),
+        "reload restored the acknowledged clock without counting elapsed time twice");
+      now = 29000;
+      await reopened.importBatteryRecovery(file, { sessionOnly: true });
+      require(reopened.state === "session-only" &&
+        reopened.machine.export_smpc_battery().every((byte, i) => byte === snapshot[i]),
+      "host rollback left the recovered clock unchanged in the current session");
+      const durableClock = make(new Emulator());
+      await durableClock.restore();
+      require(durableClock.machine.export_smpc_battery().every((byte, i) => byte === expectedRecovery[i]),
+        "session-only clock recovery preserved the stored snapshot");
       return received.some(status => status.state === "saving") && received.some(status => status.state === "write-error");
     });
     assert.equal(result, true);

@@ -184,6 +184,11 @@ def cartridge_probe():
         s += call(2, [device, 513, STAT]) + 'mov.l r0,@r8\nadd #4,r8\n'
         s += call(4, [device, DIR, OUT]) + 'mov.l r0,@r8\nadd #4,r8\n'
         s += f'load {OUT:#x},r1\nmov.l @r1,r0\nmov.l r0,@r8\nadd #4,r8\n'
+    for offset in range(0, 40, 4):
+        s += store(OUT + offset, 0xAABBCCDD)
+    s += call(6, [1, DIR, 1, OUT]) + 'mov.l r0,@r8\nadd #4,r8\n'
+    for offset in [0, 36]:
+        s += f'load {OUT+offset:#x},r1\nmov.l @r1,r0\nmov.l r0,@r8\nadd #4,r8\n'
     return s + 'load 0x600d,r0\nmov.l r0,@r8\nsleep\n'
 
 

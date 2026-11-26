@@ -78,6 +78,8 @@
           <p id="display-filter-status" class="display-status" role="status"></p>
           <div class="player-feedback">
             <p id="player-status" role="status">Loading emulator…</p>
+            <p id="save-warning" role="status"></p>
+            <button id="open-save-management" type="button" aria-controls="backup-controls" hidden>Open Save management</button>
             <p id="error" role="alert"></p>
             <p id="recovery" hidden>Replace or clear a rejected image. See Debug for machine details.</p>
           </div>
@@ -128,7 +130,7 @@
               </select>
               <p id="cartridge-note">Changing the cartridge cold-boots the selected media and leaves playback paused.</p>
             </div>
-            <fieldset id="backup-controls" disabled>
+            <fieldset id="backup-controls" tabindex="-1" aria-describedby="save-storage-status" disabled>
               <legend>Save management</legend>
               <p id="save-storage-status" role="status">Restoring local saves…</p>
               <button id="retry-saves" type="button" hidden>Retry local storage</button>
@@ -159,6 +161,16 @@
                     <button id="cartridge-backup-clear" type="button">Clear backup cartridge</button>
                   </div>
                   <p id="cartridge-backup-status" role="status"></p>
+                </fieldset>
+                <fieldset>
+                  <legend>Clock and console settings</legend>
+                  <p id="smpc-battery-note">Import replaces the Saturn clock and settings with an exported copy.</p>
+                  <label for="smpc-battery-import">Import clock and settings</label>
+                  <input id="smpc-battery-import" type="file" aria-describedby="smpc-battery-note">
+                  <div class="backup-actions">
+                    <button id="smpc-battery-export" type="button">Export clock and settings</button>
+                  </div>
+                  <p id="smpc-battery-status" role="status"></p>
                 </fieldset>
               </div>
             </fieldset>

@@ -205,14 +205,23 @@ fn cartridge_services_use_independent_geometry_and_preserve_detached_images() {
 
     let mut iso = CART_ISO.to_vec();
     iso[0xE28..0xE2C].copy_from_slice(&0x0600_E000_u32.to_be_bytes());
-    let probe = |m: &mut Machine, device, entry, payload| {
+    let probe = |m: &mut Machine, device, entry, payload, hits| {
         m.reset(Boot::HleDisc(&iso)).unwrap();
-        complete(m, TRACE + 24);
-        for (i, word) in [0, 0, 0xDECAFBAD, device, entry, payload]
-            .into_iter()
-            .enumerate()
+        complete(m, TRACE + 36);
+        let sentinel = 0xAABBCCDD;
+        let name = if hits == 0 { sentinel } else { 0x46494C45 };
+        for (i, word) in [
+            0, 0, 0xDECAFBAD, device, entry, payload, hits, name, sentinel,
+        ]
+        .into_iter()
+        .enumerate()
         {
             assert_eq!(m.bus().read32(TRACE + i as u32 * 4), Ok(word));
+        }
+        if hits == 0 {
+            for offset in (0..40).step_by(4) {
+                assert_eq!(m.bus().read32(0x0602_2000 + offset), Ok(sentinel));
+            }
         }
         assert_eq!(m.backup_ram(), internal);
     };
@@ -224,9 +233,9 @@ fn cartridge_services_use_independent_geometry_and_preserve_detached_images() {
     ] {
         machine.set_cartridge(kind).unwrap();
         if kind == Cartridge::Backup {
-            probe(&mut machine, 0, 0, 0x12345678);
+            probe(&mut machine, 0, 0, 0x12345678, 1);
         } else {
-            probe(&mut machine, 1, 1, 0xDECAFBAD);
+            probe(&mut machine, 1, 1, 0xDECAFBAD, 0);
         }
         assert_eq!(machine.cartridge_backup_ram().unwrap(), external);
     }
@@ -236,7 +245,7 @@ fn cartridge_services_use_independent_geometry_and_preserve_detached_images() {
         full[offset..offset + 2].copy_from_slice(&1022_u16.to_be_bytes());
     }
     machine.import_cartridge_backup_ram(&full).unwrap();
-    probe(&mut machine, 0, 0, 0x12345678);
+    probe(&mut machine, 0, 0, 0x12345678, 1);
     assert_eq!(machine.bus().read32(0x0602_3010), Ok(0)); // No free blocks.
 
     for (offset, bytes, stat, read) in [
@@ -249,12 +258,12 @@ fn cartridge_services_use_independent_geometry_and_preserve_detached_images() {
         let mut damaged = external.clone();
         damaged[offset..offset + bytes.len()].copy_from_slice(&bytes);
         machine.import_cartridge_backup_ram(&damaged).unwrap();
-        probe(&mut machine, stat, read, 0xDECAFBAD);
+        probe(&mut machine, stat, read, 0xDECAFBAD, u32::from(stat == 0));
         assert_eq!(machine.cartridge_backup_ram().unwrap(), damaged);
     }
 
     let unknown = vec![0x5A; POWER_MEMORY_SIZE];
     machine.import_cartridge_backup_ram(&unknown).unwrap();
-    probe(&mut machine, 2, 2, 0xDECAFBAD);
+    probe(&mut machine, 2, 2, 0xDECAFBAD, 0);
     assert_eq!(machine.cartridge_backup_ram().unwrap(), unknown);
 }

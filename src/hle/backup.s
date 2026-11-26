@@ -517,12 +517,12 @@ load 0x11900,r1
 jsr @r1
 nop
 tst r0,r0
-bf.l dir_end
+bf.l dir_unavailable
 load 0x11a00,r1
 jsr @r1
 nop
 tst r0,r0
-bf.l dir_end
+bf.l dir_unavailable
 mov.l @r15,r14
 mov r7,r12
 extu.w r6,r11
@@ -599,6 +599,15 @@ cmp/hs r10,r11
 bt dir_end
 mov #0,r0
 sub r10,r0
+bra dir_end
+nop
+dir_unavailable:
+; Device 1 has no directory hits when absent or its metadata is unreadable.
+; Preserve the legacy return values for other device numbers.
+mov #1,r1
+cmp/eq r1,r4
+bf dir_end
+mov #0,r0
 dir_end:
 add #4,r15
 mov.l @r15+,r1

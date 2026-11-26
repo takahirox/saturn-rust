@@ -180,6 +180,14 @@ impl Emulator {
             .restore_smpc_battery(bytes, elapsed_ms)
             .map_err(JsValue::from_str)
     }
+    pub fn advance_smpc_battery_snapshot(
+        bytes: &[u8],
+        elapsed_ms: u64,
+    ) -> Result<Vec<u8>, JsValue> {
+        crate::smpc::Smpc::advance_battery_snapshot(bytes, elapsed_ms)
+            .map(|snapshot| snapshot.to_vec())
+            .map_err(JsValue::from_str)
+    }
     pub fn backup_revision(&self) -> u32 {
         self.machine.backup_revision()
     }

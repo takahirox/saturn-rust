@@ -1,4 +1,5 @@
 import { AudioOutput } from "./audio.js";
+import { BATTERY_RECOVERY_SIZE } from "./console-saves.js";
 import { CrtDisplay } from "./crt-display.js";
 import { WorkerEmulator } from "./worker-emulator.js";
 const $ = (id) => document.getElementById(id);
@@ -98,8 +99,11 @@ function acceptsInput() {
   return !$("help").open && bootValid && playerInputReady() && !loadingFile() && !loadingBackup() && pendingActions === 0 && !selectionError();
 }
 const backupDevices = [
-  { id: "backup", name: "internal memory", size: 32768, suffix: "", file: "saturn-backup.bin" },
-  { id: "cartridge-backup", name: "backup cartridge", size: 524288, suffix: "cartridge_", file: "saturn-power-memory.bin" },
+  { id: "backup", name: "internal memory", size: 32768, method: "backup_ram", file: "saturn-backup.bin" },
+  { id: "cartridge-backup", name: "backup cartridge", size: 524288, method: "cartridge_backup_ram", file: "saturn-power-memory.bin" },
+];
+const saveFiles = [...backupDevices,
+  { id: "smpc-battery", size: BATTERY_RECOVERY_SIZE, method: "battery_recovery", file: "saturn-clock-settings.bin" },
 ];
 let backupGeneration = 0;
 let cartridge = 0;
@@ -363,9 +367,11 @@ function render() {
   if ($("cartridge").value !== String(cartridge)) $("cartridge").value = String(cartridge);
   const storageError = saveStorage.state.endsWith("-error");
   const sessionOnly = saveStorage.state === "session-only";
-  for (const { id } of backupDevices) {
+  for (const { id } of saveFiles) {
     $(`${id}-import`).disabled = importingBackup;
     $(`${id}-export`).disabled = busy;
+  }
+  for (const { id } of backupDevices) {
     $(`${id}-clear`).disabled = busy || storageError || sessionOnly;
   }
   $("retry-saves").disabled = busy;
@@ -373,8 +379,8 @@ function render() {
   $("session-only-option").hidden = !storageError;
   $("session-only-import").disabled = busy;
   if (!storageError) $("session-only-import").checked = false;
-  const state = loadingFile() ? "Reading local media…" : backupReadStatus ? "Reading backup RAM…" :
-    importingBackup ? "Importing backup RAM…" :
+  const state = loadingFile() ? "Reading local media…" : backupReadStatus ? "Reading save file…" :
+    importingBackup ? "Importing save file…" :
     busy ? "Working…" :
     playing ? `Running${machineStatus === "Ready" ? "" : ` · ${machineStatus}`}` :
     playbackReady ? (sessionStarted ? "Paused" : `${bootMode === "bios" ? "BIOS" : "Disc"} ready`) :
@@ -413,6 +419,11 @@ $("show-help").addEventListener("click", () => {
 $("settings").addEventListener("toggle", () => {
   if ($("settings").open) void act(pause, { clearError: false });
 });
+$("open-save-management").addEventListener("click", () => void act(async () => {
+  if (document.fullscreenElement === $("player-shell")) await document.exitFullscreen();
+  $("settings").open = true;
+  $("backup-controls").focus();
+}, { clearError: false }));
 
 let fullscreenReturnFocus;
 $("fullscreen").addEventListener("click", async () => {
@@ -461,7 +472,7 @@ async function reset({ clearMedia = false, slot } = {}) {
   resetting = true;
   const current = () => generation === bootGeneration;
   if (backupReadStatus) {
-    backupReadStatus.textContent = "Backup import cancelled by boot change; backup RAM was preserved.";
+    backupReadStatus.textContent = "Import cancelled by boot change; current console data was preserved.";
     backupGeneration++;
     backupReadStatus = null;
   }
@@ -533,6 +544,9 @@ function showSaveStorage(status) {
     "write-error": "Changes are unsaved. Export a copy or retry local storage.",
   }[status.state];
   setText("save-storage-status", status.message ? `${message} ${status.message}` : message);
+  const needsRecovery = status.state.endsWith("-error") || status.state === "session-only";
+  setText("save-warning", needsRecovery ? message : "");
+  $("open-save-management").hidden = !needsRecovery;
   for (const [index, { id }] of backupDevices.entries()) {
     const saved = status.devices?.[index];
     setText(`${id}-persistence`, status.state === "session-only" ? "Session only." :
@@ -569,8 +583,9 @@ try {
 
   const dialog = $("clear-backup");
   let clearDevice;
-  for (const device of backupDevices) {
-    const { id, name, size, suffix, file: downloadName } = device;
+  for (const { id, size, method, file: downloadName } of saveFiles) {
+    const battery = method === "battery_recovery";
+    const description = battery ? "clock and settings" : `${size} backup bytes`;
     const picker = $(`${id}-import`);
     const output = $(`${id}-status`);
     picker.addEventListener("change", async () => {
@@ -584,20 +599,22 @@ try {
       try {
         await pause();
         if (generation !== backupGeneration || !file) return;
-        if (file.size !== size) throw new Error(`select a packed ${size}-byte file; received ${file.size} bytes.`);
-        output.textContent = "Reading backup RAM locally…";
+        if (file.size !== size) {
+          throw new Error(`select a ${size}-byte ${battery ? "clock and settings file" : "packed image"}; received ${file.size} bytes.`);
+        }
+        output.textContent = battery ? "Reading clock and settings locally…" : "Reading backup RAM locally…";
         const bytes = new Uint8Array(await file.arrayBuffer());
         if (generation !== backupGeneration) return;
         backupReadStatus = null;
         importingBackup = true;
         const importBoot = bootGeneration;
-        output.textContent = `Importing ${size} backup bytes…`;
+        output.textContent = `Importing ${description}…`;
         render();
-        await emulator[`import_${suffix}backup_ram`](bytes, sessionOnly);
-        const resetHint = importBoot === bootGeneration ? " Reset to let the guest read the new data." : "";
-        output.textContent = `Imported ${size} backup bytes${sessionOnly ? " for this session only" : ""}. Playback is paused.${resetHint}`;
+        await emulator[`import_${method}`](bytes, sessionOnly);
+        const resetHint = !battery && importBoot === bootGeneration ? " Reset to let the guest read the new data." : "";
+        output.textContent = `Imported ${description}${sessionOnly ? " for this session only" : ""}. Playback is paused.${resetHint}`;
       } catch (error) {
-        if (generation === backupGeneration) output.textContent = `Backup unchanged: ${error}`;
+        if (generation === backupGeneration) output.textContent = `${battery ? "Clock and settings" : "Backup"} unchanged: ${error}`;
       } finally {
         if (generation === backupGeneration) {
           backupReadStatus = null;
@@ -610,36 +627,38 @@ try {
       let url;
       try {
         await pause();
-        const bytes = await emulator[`export_${suffix}backup_ram`]();
+        const bytes = await emulator[`export_${method}`]();
         url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
         const link = document.createElement("a");
         link.href = url;
         link.download = downloadName;
         link.click();
-        output.textContent = `Exported ${size} backup bytes.`;
+        output.textContent = `Exported ${description}.`;
       } catch (error) {
-        output.textContent = `Could not export backup RAM: ${error}`;
+        output.textContent = `Could not export ${battery ? "clock and settings" : "backup RAM"}: ${error}`;
       } finally {
         if (url) setTimeout(() => URL.revokeObjectURL(url), 1000);
         render();
       }
     });
-    $(`${id}-clear`).addEventListener("click", () => {
+  }
+  for (const device of backupDevices) {
+    $(`${device.id}-clear`).addEventListener("click", () => {
       clearDevice = device;
       dialog.returnValue = "cancel";
-      setText("clear-backup-title", `Clear ${name}?`);
+      setText("clear-backup-title", `Clear ${device.name}?`);
       dialog.showModal();
     });
   }
   dialog.addEventListener("close", async () => {
     if (dialog.returnValue !== "clear") return;
-    const { id, name, size, suffix } = clearDevice;
+    const { id, name, size, method } = clearDevice;
     const button = $(id + "-clear");
     const restoreFocus = document.activeElement === button;
     await act(async () => {
       await pause();
       try {
-        await emulator[`import_${suffix}backup_ram`](new Uint8Array(size));
+        await emulator[`import_${method}`](new Uint8Array(size));
         setText(`${id}-status`, `Cleared ${name}. Playback is paused.`);
       } catch (error) {
         setText(`${id}-status`, `Backup unchanged: ${error}`);

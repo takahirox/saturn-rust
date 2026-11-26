@@ -17,7 +17,7 @@ let directPresentation = false;
 let methods, saves;
 const mediaChange = method => method?.startsWith("reset_") || method?.startsWith("mount_")
   || method === "clear_media" || method === "set_cartridge";
-const saveReplacement = method => ["import_backup_ram", "import_cartridge_backup_ram"].includes(method);
+const saveReplacement = method => ["import_backup_ram", "import_cartridge_backup_ram", "import_battery_recovery"].includes(method);
 let playWanted = false, playOptions = { paced: true };
 const pending = new Map();
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -51,6 +51,10 @@ const ready = init().then(async () => {
   methods = new Set(Object.getOwnPropertyNames(Emulator.prototype).filter(name =>
     !name.startsWith("_") && !SOUND_TRANSPORT_METHODS.has(name) && !["constructor", "free", "enable_video_transport", "enable_video_journal"].includes(name)
     && typeof machine[name] === "function"));
+  if (saves) {
+    methods.add("export_battery_recovery");
+    methods.add("import_battery_recovery");
+  }
   self.postMessage({ type: "ready", methods: [...methods], view: view() });
 }).catch(fatal);
 let control = ready;
@@ -143,6 +147,10 @@ async function invoke(data) {
       if (method === "framebuffer" || method === "video_width" || method === "video_height") {
         const receipt = await capture(method === "framebuffer");
         value = method === "framebuffer" ? receipt.pixels : method === "video_width" ? receipt.width : receipt.height;
+      } else if (method === "export_battery_recovery") {
+        value = saves.exportBatteryRecovery();
+      } else if (method === "import_battery_recovery") {
+        await saves.importBatteryRecovery(args[0], { sessionOnly: args[1] === true });
       } else if (saves && saveReplacement(method)) {
         await saves.replace(method === "import_backup_ram" ? 0 : 1, args[0], { sessionOnly: args[1] === true });
       } else value = machine[method](...args);

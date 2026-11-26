@@ -115,10 +115,11 @@ checks the last accepted token and updates the head and dirty records in one
 read/write transaction. The completion event acknowledges the write. An
 unobserved revision or site-data deletion blocks stale writes, including
 destructive imports. Retry handles transient open/read/write failures.
-After a conflict, export current RAM and reload before explicitly replacing data
-in the newer console. Opening an unreadable record leaves it intact. If the
-session then changes backup bytes or clock settings, retry preserves those
-changes instead of installing the recovered record over them.
+After a conflict, export current RAM and clock settings and reload before
+explicitly replacing data in the newer console. Opening an unreadable record
+leaves it intact. If the session then changes backup bytes or clock settings,
+retry preserves those changes instead of installing the recovered record over
+them.
 
 The battery snapshot contains the SETTIME calendar and time-set bit, the
 four SETSMEM bytes and the subsecond phase. ST-169 §§2.4.2–4 distinguishes these
@@ -129,6 +130,13 @@ does not move backwards on commits. Native and Wasm clocks advance deterministic
 with emulated time while a session is active. Paused tabs retain that time until
 emulation proceeds. Gregorian month/year/leap rules and 9999-to-0000 wrap apply.
 [SMPC ST-169](https://antime.kapsi.fi/sega/files/ST-169-R1-072694.pdf).
+
+The separate 36-byte clock recovery file contains the ASCII signature
+`SRSMPC01`, an unsigned 64-bit big-endian host time in Unix milliseconds, the
+16-byte SMPC snapshot and a 32-bit big-endian FNV-1a checksum of the preceding
+32 bytes. Import validates the file and the SMPC snapshot before replacing the
+clock. A durable import uses the same revision check as RAM imports and
+installs the recovered clock after IndexedDB acknowledges the commit.
 
 Small revision checks run once per second. Clock-only periodic checkpoints are
 at least 30 seconds apart and write 16 bytes plus the head. Pause, reset,

@@ -221,14 +221,17 @@ or supplied firmware to format the cleared device if prompted. The HLE library
 uses [SRBUP001](../src/hle/README.md#independent-backup-library).
 
 Local storage is shared across all games and BIOS choices under the site's origin.
-If storage fails, you can export the current RAM or select **Import for this
-session only** before choosing a raw image for either device. This keeps all
-console changes in memory until reload and leaves the stored records intact.
-Export any changes you want to keep before reloading. You can also retry storage
-after fixing permission or capacity problems. If another tab has committed
-newer saves, reloading accepts the newer storage. Changing browsers, private
-browsing, eviction and clearing site data can affect availability. A process
-kill can interrupt the last write.
+The player shows storage failures next to the playback status. Select **Open
+Save management** to export the current RAM and clock settings or retry after
+fixing permission or capacity problems. After a conflict, export the files you
+want to keep and reload to accept the newer stored revision. You can then
+explicitly import individual files. **Import clock and settings** replaces the
+RTC and SMEM from a validated `saturn-clock-settings.bin` export and advances
+the clock by elapsed time since export. During a storage failure, **Import for
+this session only** keeps imported data and subsequent console changes in
+memory until reload while preserving the stored records. Changing browsers,
+private browsing, eviction and clearing site data can affect availability. A
+process kill can interrupt the last write.
 
 The site stores only battery-backed save/clock data and related player
 preferences locally. BIOS, game ROMs, disc images, traces, expansion RAM and save

@@ -6,7 +6,9 @@ const KEYS = ["internal", "cartridge", "smpc"];
 const SIZES = [32768, 524288, 16];
 const IO_TIMEOUT = 5000;
 const RTC_CHECKPOINT_MS = 30000;
-const conflict = () => new Error("Local saves changed in another tab or were cleared. Export this session’s saves, then reload.");
+const BATTERY_SIGNATURE = new TextEncoder().encode("SRSMPC01");
+export const BATTERY_RECOVERY_SIZE = 36;
+const conflict = () => new Error("Local saves changed in another tab or were cleared. Export this session’s saves and clock settings before reloading.");
 
 function checksum(bytes) {
   let hash = 2166136261;
@@ -129,7 +131,7 @@ export class ConsoleSaves {
   async restore() {
     try {
       if (this.currentRevisions().some((revision, i) => revision !== this.revisions[i])) {
-        throw new Error("This session has changed saves or clock settings. Export your saves before reloading to recover local storage.");
+        throw new Error("This session has changed saves or clock settings. Export both before reloading to recover local storage.");
       }
       const [head, images, count] = await readConsole(await this.connect());
       validateConsole(head, images, count);
@@ -186,16 +188,47 @@ export class ConsoleSaves {
     if ((index !== 0 && index !== 1) || !(bytes instanceof Uint8Array) || bytes.length !== SIZES[index]) {
       throw new Error(`Expected a packed ${SIZES[index]}-byte backup image`);
     }
-    if (!sessionOnly) return this.flush({ replacement: { index, bytes } });
+    return this.replaceImage({ index, bytes }, sessionOnly);
+  }
+
+  exportBatteryRecovery() {
+    const recovery = new Uint8Array(BATTERY_RECOVERY_SIZE);
+    const view = new DataView(recovery.buffer);
+    recovery.set(BATTERY_SIGNATURE);
+    view.setBigUint64(8, BigInt(Math.max(nowMillis(this.now), this.head?.anchor ?? 0)));
+    recovery.set(this.machine.export_smpc_battery(), 16);
+    view.setUint32(32, checksum(recovery.subarray(0, 32)));
+    return recovery;
+  }
+
+  async importBatteryRecovery(recovery, { sessionOnly = false } = {}) {
+    if (!(recovery instanceof Uint8Array) || recovery.length !== BATTERY_RECOVERY_SIZE
+        || !BATTERY_SIGNATURE.every((byte, i) => byte === recovery[i])) {
+      throw new Error("Unsupported clock and settings file");
+    }
+    const view = new DataView(recovery.buffer, recovery.byteOffset, recovery.byteLength);
+    const anchor = Number(view.getBigUint64(8));
+    if (!Number.isSafeInteger(anchor) || checksum(recovery.subarray(0, 32)) !== view.getUint32(32)) {
+      throw new Error("Damaged clock and settings file");
+    }
+    const now = nowMillis(this.now);
+    const bytes = this.machine.constructor.advance_smpc_battery_snapshot(
+      recovery.subarray(16, 32), BigInt(Math.max(0, now - anchor)));
+    return this.replaceImage({ index: 2, bytes, anchor: Math.max(now, anchor) }, sessionOnly);
+  }
+
+  async replaceImage(replacement, sessionOnly) {
+    if (!sessionOnly) return this.flush({ replacement });
     while (this.saving) await this.saving;
-    this.installBackup(index, bytes);
+    this.installImage(replacement);
     // Until reload, automatic writes and retries must leave the stored copy alone.
     this.status("session-only");
   }
 
-  installBackup(index, bytes) {
+  installImage({ index, bytes }) {
     if (index === 0) this.machine.import_backup_ram(bytes);
-    else this.machine.import_cartridge_backup_ram(bytes);
+    else if (index === 1) this.machine.import_cartridge_backup_ram(bytes);
+    else this.machine.restore_smpc_battery(bytes, 0n);
   }
 
   saveIfChanged(force, replacement) {
@@ -205,7 +238,7 @@ export class ConsoleSaves {
       const changed = revisions.map((revision, i) => revision !== this.revisions[i]);
       const checkClock = force || now - this.lastCheckpoint >= RTC_CHECKPOINT_MS;
       if (!replacement && !changed.some(Boolean) && !checkClock) return;
-      const battery = this.machine.export_smpc_battery();
+      const battery = replacement?.index === 2 ? replacement.bytes : this.machine.export_smpc_battery();
       if (!replacement && !changed.some(Boolean) && battery.every((byte, i) => byte === this.battery[i])) {
         this.lastCheckpoint = now;
         if (this.error) this.status(this.head ? "ready" : "empty");
@@ -239,7 +272,7 @@ export class ConsoleSaves {
       const token = Array.from(crypto.getRandomValues(new Uint8Array(16)),
         byte => byte.toString(16).padStart(2, "0")).join("");
       const head = {
-        version: VERSION, token, anchor: Math.max(now, this.head?.anchor ?? 0),
+        version: VERSION, token, anchor: Math.max(now, replacement?.anchor ?? 0, this.head?.anchor ?? 0),
         hashes: images.map((bytes, i) => bytes ? checksum(bytes) : this.head?.hashes[i] ?? null),
       };
       await transaction(await this.connect(), "readwrite", (store, _finish, cancel) => {
@@ -257,8 +290,8 @@ export class ConsoleSaves {
         });
       });
       if (replacement) {
-        const { index, bytes } = replacement;
-        this.installBackup(index, bytes);
+        const { index } = replacement;
+        this.installImage(replacement);
         revisions[index] = this.currentRevisions()[index];
       }
       this.head = head;
