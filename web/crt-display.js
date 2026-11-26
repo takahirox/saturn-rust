@@ -22,8 +22,9 @@ void main() {
   vec2 scale = outputSize / size;
   float line = uv.y * size.y;
   vec2 point = vec2(uv.x, (floor(line) + 0.5) / size.y);
-  // High horizontal resolution represents twice as many dots per scanline.
-  vec2 tap = vec2((size.x >= 640.0 ? 2.0 : 1.0) / size.x, 0.0);
+  // Widen the blend in high-resolution modes. Linear filtering at 1.5 dots
+  // mixes both phases of one-pixel dithering, which two-dot taps would miss.
+  vec2 tap = vec2((size.x >= 640.0 ? 1.5 : 1.0) / size.x, 0.0);
   vec3 center = texture(source, point).rgb;
   vec3 adjacent = 0.5 * (texture(source, point - tap).rgb + texture(source, point + tap).rgb);
   vec3 delta = adjacent - center;

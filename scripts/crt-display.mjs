@@ -47,7 +47,10 @@ async function checkPatterns(page) {
       }
       return rgba;
     };
-    const dimensions = [[320, 224, 1], [320, 224, 4], [352, 240, 2.5], [704, 480, 2], [320, 448, 4]];
+    const dimensions = [
+      [320, 224, 1], [320, 224, 4], [352, 240, 2.5], [320, 448, 4],
+      [640, 224, 1], [640, 224, 2], [704, 480, 1], [704, 480, 2],
+    ];
     const results = [];
     let pixels, gl;
     const original = WebGL2RenderingContext.prototype.drawArrays;
@@ -120,11 +123,15 @@ async function checkPatterns(page) {
     assert(solid.every(value => value >= 195 && value <= 225), JSON.stringify(entry));
     assert(corners.every((value, i) => Math.abs(value - [48, 208, 160, 160][i]) < 31), JSON.stringify(entry));
   }
-  for (const [composite, svideo, rgb] of [0, 3].map(i => result.results.slice(i, i + 3))) {
+  for (let i = 0; i < result.results.length; i += 3) {
+    const [composite, svideo, rgb] = result.results.slice(i, i + 3);
     const metrics = JSON.stringify([composite, svideo, rgb]);
+    if (Number.isInteger(composite.scale)) {
+      assert(composite.checker + 8 < svideo.checker && svideo.checker + 5 < rgb.checker, `Checkerboard contrast: ${metrics}`);
+    }
+    if (composite.width !== 320 || composite.height !== 224) continue;
     assert(composite.edge > svideo.edge + 8 && svideo.edge > rgb.edge + 7, metrics);
     assert(composite.bleed > svideo.bleed + 8 && svideo.bleed > rgb.bleed + 5, metrics);
-    assert(composite.checker < svideo.checker && svideo.checker < rgb.checker, metrics);
     assert(composite.text > 65 && rgb.text > composite.text, metrics);
   }
   console.log("CRT WebGL output", JSON.stringify(result));

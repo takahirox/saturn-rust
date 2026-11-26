@@ -18,14 +18,14 @@ The coefficients are visual approximations without physical calibration.
 
 [The original MIT shader](../web/crt-display.js) makes one WebGL 2 draw with three
 horizontal samples, clamped at image boundaries. It separates the luma change
-from the chroma change in display RGB. High horizontal modes double the sample
-offset to keep the blend width proportional to the picture. Vertical sampling
-retains the source row. The beam follows each source line and fades in from
-1.75 to 3.5 physical pixels per line. Double-density interlace and 480-line
-modes suppress the beam. The shader uses the completed image of every field
-with no field-parity modulation. A faint RGB triad starts above three physical
-pixels per source dot and reaches its maximum at five. The implementation uses
-local code and no third-party shader assets.
+from the chroma change in display RGB. High horizontal modes use a 1.5-dot
+offset so the linear texture samples mix both phases of one-pixel dithering.
+Vertical sampling retains the source row. The beam follows each source line
+and fades in from 1.75 to 3.5 physical pixels per line. Double-density interlace
+and 480-line modes suppress the beam. The shader uses the completed image of
+every field with no field-parity modulation. A faint RGB triad starts above
+three physical pixels per source dot and reaches its maximum at five. The
+implementation uses local code and no third-party shader assets.
 
 The focusable `#screen` still gets every original frame through Canvas 2D.
 The separate WebGL canvas overlays it, follows its aspect ratio, and leaves
@@ -46,9 +46,11 @@ output. The [scenario](../scripts/crt-display.mjs) uses original sharp edges,
 RGB bars, a checkerboard, grayscale levels, flat fields and small bitmap text.
 The production shader runs through WebGL and the test reads its output with a
 one-code-value tolerance for repeat draws. It samples edges, picture corners,
-flat regions, glyph strokes and attenuation at 320×224, 352×240, 320×448 and
-704×480, at integer and fractional scales. The original visual patterns carry
-the MIT license.
+flat regions, glyph strokes and attenuation at 320×224, 352×240, 320×448,
+640×224 and 704×480, at integer and fractional scales. At 1× and 2× in both
+high-resolution modes, checkerboard contrast must be lowest for Composite,
+followed by S-Video and then RGB. The original visual patterns carry the MIT
+license.
 
 At 1×, the Composite/S-Video/RGB grayscale edge spread was 35/15/3 code
 values and red-to-green bleed was 61/26/4. The checkerboard contrast was
@@ -56,6 +58,13 @@ values and red-to-green bleed was 61/26/4. The checkerboard contrast was
 224 in the primary channel at 1× and at least 213 at 4×. Sampled flat gray at 4×
 varied by 9–11 code values vertically on 224-line output and by zero on
 448-line output. Repeat draws matched byte for byte on the tested renderer.
+
+With the revised offsets, pinned Chromium produced 108/156/184 code values
+of checkerboard contrast for Composite/S-Video/RGB at 1× in both
+high-resolution modes. At 2× it produced 53/77/92 at 640×224 and 54/78/92
+at 704×480. ANGLE Metal and SwiftShader agreed on these samples. The original
+shader measured 192 for all three presets at 640×224 at 1× and failed the new
+assertion on both renderers.
 
 The byte comparison uses the original [Hardware Lab](../homebrew/hardware-lab/README.md)
 ISO and [TV mode/INTBACK guest](../tests/fixtures/display-modes.hex). For each of
