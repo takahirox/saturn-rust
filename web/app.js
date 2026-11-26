@@ -4,8 +4,8 @@ import { WorkerEmulator } from "./worker-emulator.js";
 const $ = (id) => document.getElementById(id);
 const hex = (value) => `0x${value.toString(16).toUpperCase().padStart(8, "0")}`;
 export let emulator;
-let discBytes = null;
-let cueMedia = null;
+let pendingDisc = null;
+let discMount = null;
 let loadedDisc = false;
 // Resource bounds mirror disc.rs, independent of Saturn's recording standards.
 const MAX_ISO_BYTES = 450000 * 2048;
@@ -15,6 +15,8 @@ let sessionStarted = false;
 let attemptedBoot = false;
 let bootValid = false;
 let buttons = 0;
+let touchMask = 0;
+const touches = new Map();
 let port2Buttons = 0;
 const gamepadMasks = [0, 0];
 const analogConnected = [false, false];
@@ -51,13 +53,20 @@ export function pollGamepads() {
       // The report overlay supplies full keyboard travel without changing its latch.
       emulator.set_3d_pad(port, true, axis(rawX / radius), axis(rawY / radius),
         trigger(7), trigger(6));
-      emulator.set_3d_pad_digital(port, port === 0 ? buttons : port2Buttons);
+      if (port === 1) emulator.set_3d_pad_digital(port, port2Buttons);
     } else emulator.set_analog(port, analogConnected[port], pad ? axis(pad.axes[0]) : 128, pad ? axis(pad.axes[1]) : 128, pad ? axis(pad.axes[2] ?? -1) : 0);
   }
-  emulator.set_buttons(buttons | gamepadMasks[0]);
+  sendPlayerOneInput();
   emulator.set_port2_buttons(port2Buttons | gamepadMasks[1]);
 }
+function sendPlayerOneInput() {
+  const digital = buttons | touchMask;
+  if (pad3d[0]) emulator.set_3d_pad_digital(0, digital);
+  emulator.set_buttons(digital | gamepadMasks[0]);
+}
+
 let pendingActions = 0;
+let pauseRevision = 0;
 let bootGeneration = 0;
 let resetting = false;
 let queuedAudio = [];
@@ -74,6 +83,7 @@ let loadingBios = false;
 let loadingDisc = false;
 const loadingFile = () => loadingBios || loadingDisc;
 const selectionErrors = { bios: "", disc: "" };
+const selectionNames = { bios: "", disc: "" };
 const selectionError = () => selectionErrors.bios || selectionErrors.disc;
 // A selected but unaccepted BIOS always blocks Play, including cancelled reads.
 function effectiveBootMode() {
@@ -85,7 +95,7 @@ function playerInputReady(mode = effectiveBootMode()) {
   return mode === "bios" || (mode === "disc" && loadedDisc);
 }
 function acceptsInput() {
-  return bootValid && playerInputReady() && !loadingFile() && !loadingBackup && pendingActions === 0 && !selectionError();
+  return !$("help").open && bootValid && playerInputReady() && !loadingFile() && !loadingBackup && pendingActions === 0 && !selectionError();
 }
 let backupGeneration = 0;
 let loadingBackup = false;
@@ -94,17 +104,33 @@ let view = "play";
 
 export const audio = new AudioOutput((stats) => {
   setText("audio-status", `Audio: ${stats.state}${stats.state === "underflow" ? " · buffer empty" : ""}`);
-  $("audio-diagnostics").textContent = `${stats.rendered} audio frames · ${stats.underflow} underflow · ${stats.dropped} dropped`;
+  const blocked = stats.state === "blocked";
+  const enable = $("audio-enable");
+  if (enable.hidden === blocked) {
+    const restoreFocus = !blocked && document.activeElement === enable;
+    enable.hidden = !blocked;
+    if (restoreFocus) (playing ? screen : $("mute")).focus({ preventScroll: true });
+  }
+  setText("audio-warning", blocked ? "Audio is blocked." : "");
+  setText("audio-diagnostics", `${stats.rendered} audio frames · ${stats.underflow} underflow · ${stats.dropped} dropped`);
 });
-$("audio-enable").addEventListener("click", async () => {
-  try {
-    if (!audio.node || audio.context.state !== "running") {
-      await audio.enable();
-      queuedAudio = [];
-      audio.setPaused(true);
-    } else audio.setMuted(!audio.muted);
-    $("audio-enable").textContent = audio.muted ? "Unmute audio" : "Mute audio";
-  } catch (error) { $("audio-status").textContent = `Audio: blocked · ${error}`; }
+
+function enableAudio() {
+  if (audio.node && audio.context.state === "running" && audio.stats.state !== "blocked") return;
+  void audio.enable().catch(() => {
+    setText("audio-status", "Audio blocked. Select Enable audio to retry.");
+  });
+}
+$("audio-enable").addEventListener("click", enableAudio);
+$("mute").addEventListener("click", () => {
+  audio.setMuted(!audio.muted);
+  $("mute").setAttribute("aria-pressed", String(audio.muted));
+});
+$("volume").addEventListener("input", () => {
+  const volume = $("volume").valueAsNumber;
+  audio.setVolume(volume / 100);
+  $("volume").setAttribute("aria-valuetext", `${volume}%`);
+  setText("volume-value", `${volume}%`);
 });
 export async function pumpAudio() { audio.deliver(await emulator.audio_samples(8192)); }
 
@@ -122,7 +148,69 @@ function rows(target, names, values) {
   }));
 }
 
+const touchControls = $("touch-controls");
+const touchButtons = [...touchControls.querySelectorAll("[data-mask]")];
+const dpad = $("dpad");
+const dpadLeft = dpad.querySelector(".left");
+
+function acceptsTouchInput() {
+  return playing && !document.hidden && acceptsInput();
+}
+
+function dpadMask(event) {
+  const bounds = dpad.getBoundingClientRect();
+  const x = event.clientX - bounds.left;
+  const y = (event.clientY - bounds.top) / bounds.height;
+  if (!(x >= 0 && x < bounds.width && y >= 0 && y < 1)) return 0;
+  const vertical = y < 1 / 3 ? 1 : y >= 2 / 3 ? 2 : 0;
+  const buttonWidth = dpadLeft.offsetWidth;
+  // Keep the whole centered Up and Down buttons clear of the diagonals.
+  const edge = vertical ? (bounds.width - buttonWidth) / 2 : buttonWidth;
+  return vertical | (x < edge ? 4 : x >= bounds.width - edge ? 8 : 0);
+}
+
+function updateTouchMask() {
+  let mask = 0;
+  for (const touch of touches.values()) mask |= touch.mask;
+  if (touchMask === mask) return;
+  touchMask = mask;
+  for (const button of touchButtons) button.classList.toggle("pressed", Boolean(mask & Number(button.dataset.mask)));
+  sendPlayerOneInput();
+}
+
+touchControls.addEventListener("pointerdown", event => {
+  if (event.button !== 0 || !acceptsTouchInput()) return;
+  const target = event.target.closest("#dpad") || event.target.closest("[data-mask]");
+  if (!target) return;
+  event.preventDefault(); // Preserve display focus and suppress synthetic mouse activation.
+  if (document.activeElement !== screen) screen.focus({ preventScroll: true });
+  target.setPointerCapture(event.pointerId);
+  touches.set(event.pointerId, { target, mask: target === dpad ? dpadMask(event) : Number(target.dataset.mask) });
+  updateTouchMask();
+});
+touchControls.addEventListener("pointermove", event => {
+  const touch = touches.get(event.pointerId);
+  if (touch?.target !== dpad) return;
+  touch.mask = dpadMask(event);
+  updateTouchMask();
+});
+for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
+  touchControls.addEventListener(type, event => {
+    if (touches.delete(event.pointerId)) updateTouchMask();
+  });
+}
+touchControls.addEventListener("contextmenu", event => event.preventDefault());
+
+function releaseTouchInput() {
+  if (!touches.size) return;
+  const held = [...touches];
+  touches.clear();
+  for (const [id, { target }] of held) if (target.hasPointerCapture(id)) target.releasePointerCapture(id);
+  updateTouchMask();
+}
+
 function releaseButtons() {
+  releaseTouchInput();
   buttons = 0;
   emulator?.set_buttons(0);
   port2Buttons = 0;
@@ -138,6 +226,7 @@ function releaseButtons() {
 }
 
 async function pause() {
+  pauseRevision++;
   playing = false;
   queuedAudio = [];
   audio.setPaused(true);
@@ -162,7 +251,6 @@ function deliverAudio({ pcm }) {
 
 function setDisplayRatio(width, height) {
   const ratio = width === 320 && height === 224 ? "4 / 3" : `${width} / ${height}`;
-  screen.style.aspectRatio = ratio;
   $("player-shell").style.setProperty("--display-ratio", ratio);
 }
 
@@ -179,7 +267,7 @@ function presentFrame({ pixels, width, height }) {
   const rgba = new Uint8ClampedArray(pixels.buffer, pixels.byteOffset, pixels.byteLength);
   context.putImageData(new ImageData(rgba, width, height), 0, 0);
   crtDisplay.present(pixels, width, height);
-  render();
+  if (view === "debug" || renderedStatus !== emulator.state.status || renderedCanExecute !== canExecute()) render();
 }
 export async function advanceFrame() {
   pollGamepads();
@@ -193,7 +281,8 @@ async function startPlaying() {
   playing = true;
   queuedAudio = [];
   audio.setPaused(true);
-  $("screen").focus();
+  screen.focus({ preventScroll: true });
+  screen.scrollIntoView({ block: "nearest", inline: "nearest" });
   await emulator.play();
 }
 
@@ -206,8 +295,11 @@ function canExecute(status = emulator.state.status) {
   return status === "Ready" || (status.startsWith("Resetting") && emulator.state.hardwareWakePossible) || (status.startsWith("Sleeping") && (emulator.state.addressErrorPending || emulator.state.hardwareWakePossible));
 }
 
+let renderedStatus, renderedCanExecute;
 function render() {
   if (!emulator?.state) return;
+  renderedStatus = emulator.state.status;
+  renderedCanExecute = canExecute();
   $("main").setAttribute("aria-busy", String(pendingActions > 0));
   const machineStatus = attemptedBoot ? emulator.state.status : "Ready";
   const mode = bootValid ? emulator.state.mode : "Not started";
@@ -229,36 +321,52 @@ function render() {
     rows($("special"), ["PC", "SR", "PR", "GBR", "VBR", "MACH", "MACL"], emulator.state.special);
     $("frames").textContent = emulator.state.frames;
   }
-  $("bios-clear").disabled = !biosSelected;
-  $("disc-clear").disabled = !loadedDisc && !loadingDisc && !selectionErrors.disc;
+  for (const [id, loading] of [["disc", loadingDisc], ["bios", loadingBios]]) {
+    const selected = Boolean(selectionNames[id]);
+    const status = selectionErrors[id] ? "Needs attention" : loading ? "Reading locally…" :
+      id === "disc" && selected && !loadedDisc ? "Validating…" : selected ? "Loaded locally" : "";
+    setText(`${id}-selection`, selectionNames[id] || `No ${id === "bios" ? "BIOS" : "disc"} selected.`);
+    setText(`${id}-state`, status);
+    const choose = $(`${id}-choose`);
+    const action = selected ? "Change" : "Insert";
+    setText(`${id}-choose`, action);
+    choose.setAttribute("aria-label", `${action} ${id === "bios" ? "BIOS" : "disc"}`);
+    $(`${id}-clear`).disabled = !selected;
+  }
   const busy = loadingFile() || loadingBackup || pendingActions > 0;
   const ready = bootValid && !busy && !selectionError() && canExecute(machineStatus);
   $("step").disabled = !ready;
   $("run").disabled = !ready;
-  $("reset").disabled = false;
-  const playerReady = ready && playerInputReady(bootMode);
   const inputReady = playerInputReady(bootMode);
-  $("pause").disabled = busy || !sessionStarted || (!playing && !playerReady);
-  $("pause").hidden = !sessionStarted;
-  $("pause").textContent = playing ? "Pause" : "Resume";
+  const playerReady = ready && inputReady;
+  const hasError = Boolean($("error").textContent);
+  // A host-side Debug error can leave the paused machine runnable.
+  const playbackReady = playerReady && (sessionStarted || !hasError);
+  $("play").disabled = busy || (!playing && !playbackReady);
+  setText("play", playing ? "Pause" : sessionStarted ? "Resume" : "Play");
+  const touchDisabled = !acceptsTouchInput();
+  if (touchDisabled) releaseTouchInput();
+  for (const button of touchButtons) {
+    if (button.disabled !== touchDisabled) button.disabled = touchDisabled;
+  }
   $("restart").disabled = busy || Boolean(selectionError()) || !inputReady;
   $("frame").disabled = !playerReady || playing;
-  const launchReady = playerReady && !$("error").textContent && inputReady;
-  $("start").disabled = !launchReady || playing;
-  $("start").hidden = sessionStarted;
   $("backup-export").disabled = busy;
-  const needsInput = "Select a disc or add a 512 KiB BIOS to begin";
-  const state = pendingActions > 0 && !loadingFile() && !loadingBackup ? "Working…" : loadingFile() ? "Loading image…" : loadingBackup ? "Reading backup RAM…" : $("error").textContent ? "Stopped — check the error" :
-    playing ? `Running${machineStatus === "Ready" ? "" : ` · ${machineStatus}`}` : launchReady ? (sessionStarted ? "Paused — Resume to play" : `${bootMode === "bios" ? "BIOS" : "Disc"} ready — press Start`) :
-    bootValid ? machineStatus : needsInput;
-  setText("player-status", `${state} · ${bootMethod}`);
-  setText("launch-status", busy ? (loadingBios ? "Reading BIOS locally… Start is blocked until validation completes." : "Reading local data…") : $("error").textContent ? "Check the error beside the player. Replace or clear the rejected selection." :
-    bootMode === "fixture" ? "Debugger fixture selected. Use the advanced CPU controls." :
-    launchReady ? (sessionStarted ? "Playback controls are beneath the display." : `Ready to start.${bootMode === "bios" ? " Disc optional in BIOS mode." : ""} Audio is enabled separately.`) :
-    bootValid ? `Machine: ${machineStatus}. See Debug for details.` : needsInput);
-  setText("empty-title", bootMode === "bios" ? "Start with your BIOS" : bootMode === "blocked" ? "BIOS selection needs attention" : "Load a disc to begin");
-  setText("empty-hint", bootMode === "bios" ? "Disc optional. Firmware support is incomplete." : bootMode === "blocked" ? "Wait for loading, or replace or clear the BIOS selection." : "Or add a local BIOS to start without a disc.");
-  $("recovery").hidden = !$("error").textContent || loadingFile();
+  const state = loadingFile() ? "Reading local media…" : loadingBackup ? "Reading backup RAM…" :
+    busy ? "Working…" :
+    playing ? `Running${machineStatus === "Ready" ? "" : ` · ${machineStatus}`}` :
+    playbackReady ? (sessionStarted ? "Paused" : `${bootMode === "bios" ? "BIOS" : "Disc"} ready`) :
+    hasError ? "Stopped" :
+    bootMode === "fixture" && bootValid ? "Bootstrap fixture ready in Debug" : bootValid ? machineStatus : "";
+  setText("player-status", state);
+  const emptyTitle = playing ? "Starting…" : busy ? "Loading…" : playbackReady ? "Ready to play" :
+    hasError ? "Check the error below" : bootMode === "fixture" ? "Debug fixture" : "Insert a disc or BIOS";
+  setText("empty-title", emptyTitle);
+  $("recovery").hidden = !hasError || loadingFile() || (bootValid && !selectionError());
+  if (!$("recovery").hidden) {
+    setText("recovery", $("restart").disabled ? "Replace or clear a rejected image. See Debug for machine details." :
+      "Try Reset again. If the error persists, replace the selected media or see Debug.");
+  }
 }
 
 // Navigation is presentational: preserve the machine, file generations and errors.
@@ -268,40 +376,50 @@ for (const nextView of ["play", "debug"]) {
     void act(pause, { clearError: false });
     view = nextView;
     $("main").className = `view-${view}`;
+    $("view-play").hidden = view === "play";
     for (const name of ["play", "debug"]) $(`view-${name}`).setAttribute("aria-pressed", String(view === name));
     for (const id of ["debug-view", "register-panel"]) $(id).hidden = view !== "debug";
     render();
+    $(view === "debug" ? "view-play" : "view-debug").focus({ preventScroll: true });
   });
 }
+$("show-help").addEventListener("click", () => {
+  void act(pause, { clearError: false });
+  $("show-help").focus({ preventScroll: true });
+  $("help").showModal();
+});
 $("settings").addEventListener("toggle", () => {
   if ($("settings").open) void act(pause, { clearError: false });
 });
 
 let fullscreenReturnFocus;
 $("fullscreen").addEventListener("click", async () => {
-  $("fullscreen-status").textContent = "";
+  setText("fullscreen-status", "");
   if (!$("player-shell").requestFullscreen || !document.fullscreenEnabled) {
-    $("fullscreen-status").textContent = "Fullscreen is unavailable in this browser. The player still resizes with the window.";
+    setText("fullscreen-status", "Fullscreen is unavailable in this browser.");
     return;
   }
-  const exiting = document.fullscreenElement === $("player-shell");
   try {
-    if (exiting) await document.exitFullscreen();
-    else {
-      fullscreenReturnFocus = document.activeElement;
-      await $("player-shell").requestFullscreen();
-    }
+    fullscreenReturnFocus = document.activeElement;
+    await $("player-shell").requestFullscreen();
   } catch (error) {
-    $("fullscreen-status").textContent = `Fullscreen could not ${exiting ? "exit" : "open"}: ${error}. You can keep playing here.`;
+    setText("fullscreen-status", `Could not open fullscreen: ${error}`);
   }
 });
-document.addEventListener("fullscreenchange", () => {
-  const fullscreen = document.fullscreenElement === $("player-shell");
-  $("fullscreen").textContent = fullscreen ? "Exit fullscreen" : "Fullscreen";
-  releaseButtons();
-  if (fullscreen) $("screen").focus();
-  else fullscreenReturnFocus?.focus();
+$("exit-fullscreen").addEventListener("click", () => {
+  void document.exitFullscreen().catch(error => {
+    setText("fullscreen-status", `Could not exit fullscreen: ${error}`);
+  });
 });
+document.addEventListener("fullscreenchange", () => {
+  releaseButtons();
+  if (document.fullscreenElement === $("player-shell")) screen.focus({ preventScroll: true });
+  else fullscreenReturnFocus?.focus({ preventScroll: true });
+});
+for (const query of ["(orientation: portrait)", "(any-pointer: coarse)"]) {
+  matchMedia(query).addEventListener("change", releaseTouchInput);
+}
+window.screen.orientation?.addEventListener("change", releaseTouchInput);
 
 async function act(operation, { current = () => true, clearError = true } = {}) {
   pendingActions++;
@@ -311,7 +429,7 @@ async function act(operation, { current = () => true, clearError = true } = {}) 
   catch (error) {
     if (current()) {
       await pause().catch(() => {});
-      $("error").textContent = selectionError() || String(error);
+      if (current()) $("error").textContent = selectionError() || String(error);
     }
   } finally { pendingActions--; render(); }
 }
@@ -320,8 +438,6 @@ async function reset({ clearMedia = false } = {}) {
   const generation = ++bootGeneration;
   resetting = true;
   const current = () => generation === bootGeneration;
-  const media = { cue: cueMedia, bytes: discBytes }, discToken = discGeneration;
-  discBytes = cueMedia = null;
   if (loadingBackup) $("backup-status").textContent = readingBackup
     ? "Backup import cancelled by boot change; backup RAM was preserved."
     : "Accepted backup import retained through the boot change.";
@@ -343,15 +459,24 @@ async function reset({ clearMedia = false } = {}) {
     // The rejected empty ROM clears execution while retaining mounted media.
     try { await emulator.reset_bios(new Uint8Array()); } catch { /* Expected size rejection. */ }
     if (!current()) return;
-    try {
-      if (media.cue) await emulator.mount_cue(media.cue.cue, media.cue.names, media.cue.lengths, media.cue.bytes);
-      else if (media.bytes) await emulator.mount_disc(media.bytes);
-      if (discToken === discGeneration) loadedDisc = loadedDisc || Boolean(media.cue || media.bytes);
-      if (!current()) return;
-    } catch (error) {
-      if (discToken === discGeneration) selectionErrors.disc = String(error);
-      throw error;
+    // Claim the bytes only when this reset is ready to transfer them. A newer
+    // BIOS reset can otherwise supersede this operation while retaining the disc.
+    if (pendingDisc) {
+      const media = pendingDisc;
+      const discToken = discGeneration;
+      pendingDisc = null;
+      const mount = media.cue !== undefined ? emulator.mount_cue(media.cue, media.names, media.lengths, media.bytes) : emulator.mount_disc(media.bytes);
+      discMount = mount.then(() => {
+        if (discToken === discGeneration) loadedDisc = true;
+      }, error => {
+        if (discToken === discGeneration) selectionErrors.disc = String(error);
+        throw error;
+      }).finally(() => {
+        if (discToken === discGeneration) discMount = null;
+      });
     }
+    // A newer machine reset can reuse an in-flight mount for the same disc.
+    if (discMount) await discMount;
     if (!current() || loadingFile() || selectionError() || mode === "blocked") return;
     if (mode === "fixture") await emulator.reset_hle();
     else if (mode === "bios") await emulator.reset_bios(rom);
@@ -428,15 +553,26 @@ try {
   });
   $("reset").addEventListener("click", () => {
     biosGeneration++;
-    discGeneration++;
     if (loadingBios) selectionErrors.bios = "BIOS read cancelled by Reset. Replace or clear the BIOS selection.";
-    if (loadingDisc) selectionErrors.disc = "Disc read cancelled by Reset. Replace or clear the disc selection.";
+    if (loadingDisc) {
+      discGeneration++;
+      selectionErrors.disc = "Disc read cancelled by Reset. Replace or clear the disc selection.";
+    }
     loadingBios = false;
     loadingDisc = false;
     reset();
   });
-  $("start").addEventListener("click", () => {
-    if ($("start").disabled) return;
+  $("play").addEventListener("click", event => {
+    const play = event.currentTarget;
+    if (play.disabled) return;
+    if (playing) {
+      const wasFocused = document.activeElement === play;
+      void act(pause).then(() => {
+        if (wasFocused && document.activeElement === document.body && !play.disabled) play.focus({ preventScroll: true });
+      });
+      return;
+    }
+    enableAudio(); // Resume AudioContext within the user activation.
     sessionStarted = true;
     void act(startPlaying);
   });
@@ -446,18 +582,22 @@ try {
     discGeneration++;
     loadingBios = loadingDisc = false;
     selectionErrors.bios = selectionErrors.disc = "";
-    biosBytes = discBytes = cueMedia = null;
+    biosBytes = pendingDisc = discMount = null;
     biosSelected = loadedDisc = false;
     $("disc").value = $("bios").value = "";
-    $("disc-selection").textContent = "No disc selected.";
-    $("bios-selection").textContent = "No BIOS selected.";
+    selectionNames.disc = selectionNames.bios = "";
     debugFixture = true;
     void reset({ clearMedia: true });
   });
   $("restart").addEventListener("click", async () => {
     if ($("restart").disabled) return;
-    await reset();
-    if (sessionStarted && bootValid && !selectionError() && playerInputReady() && canExecute() && !$("settings").open && view === "play") {
+    if (sessionStarted) enableAudio();
+    const revision = pauseRevision;
+    const boot = reset();
+    const generation = bootGeneration;
+    await boot;
+    if (pauseRevision === revision && generation === bootGeneration && !document.hidden && !$("help").open &&
+        sessionStarted && bootValid && !selectionError() && playerInputReady() && canExecute() && !$("settings").open && view === "play") {
       await act(startPlaying);
     }
   });
@@ -476,7 +616,7 @@ try {
     biosSelected = Boolean(file);
     debugFixture = false;
     sessionStarted = false;
-    $("bios-selection").textContent = file ? `${file.name} · ${file.size.toLocaleString()} bytes (not yet validated)` : "No BIOS selected.";
+    selectionNames.bios = file?.name ?? "";
     biosBytes = null;
     loadingBios = Boolean(file);
     reset(); // Immediately stop the old machine, even if reading the new file fails.
@@ -495,7 +635,6 @@ try {
       if (generation !== biosGeneration) return;
       if (bytes.length !== 524288) throw new Error("BIOS read did not contain 524288 bytes");
       biosBytes = bytes;
-      $("bios-selection").textContent = `${file.name} · 512 KiB · loaded locally`;
       loadingBios = false;
       await reset();
     } catch (error) {
@@ -511,9 +650,8 @@ try {
     const generation = ++discGeneration;
     debugFixture = false;
     sessionStarted = false;
-    $("disc-selection").textContent = files.length ? files.map(file => `${file.name} · ${file.size.toLocaleString()} bytes`).join("\n") + "\nNot yet validated." : "No disc selected.";
-    discBytes = null;
-    cueMedia = null;
+    selectionNames.disc = files.map(file => file.name).join("\n");
+    pendingDisc = discMount = null;
     loadedDisc = false;
     loadingDisc = Boolean(files.length);
     void reset({ clearMedia: true });
@@ -542,16 +680,15 @@ try {
         // per-file ArrayBuffers plus a second complete JS aggregate copy.
         const bytes = new Uint8Array(await new Blob(tracks).arrayBuffer());
         if (generation !== discGeneration) return;
-        cueMedia = { cue: cueText, names: tracks.map((file) => file.name).join("\0"), lengths: new Uint32Array(tracks.map((file) => file.size)), bytes };
+        pendingDisc = { cue: cueText, names: tracks.map((file) => file.name).join("\0"), lengths: new Uint32Array(tracks.map((file) => file.size)), bytes };
       } else {
         const bytes = new Uint8Array(await file.arrayBuffer());
         if (generation !== discGeneration) return;
         if (chd && new TextDecoder().decode(bytes.subarray(0, 8)) !== "MComprHD") throw new Error("Invalid CHD header; expected CHD v5 CD-ROM.");
-        discBytes = bytes;
+        pendingDisc = { bytes };
       }
       loadingDisc = false;
       await reset();
-      if (loadedDisc) $("disc-selection").textContent = files.map(file => `${file.name} · ${file.size.toLocaleString()} bytes`).join("\n") + "\nLoaded locally. Replacement stops playback.";
     } catch (error) {
       if (generation !== discGeneration) return;
       loadingDisc = false;
@@ -560,10 +697,18 @@ try {
     }
   };
   $("disc").addEventListener("change", () => selectDisc([...$("disc").files]));
-  for (const id of ["bios", "disc"]) $(id + "-clear").addEventListener("click", () => {
-    $(id).value = "";
-    $(id).dispatchEvent(new Event("change"));
-  });
+  for (const id of ["bios", "disc"]) {
+    $(id + "-choose").addEventListener("click", () => {
+      const picker = $(id);
+      picker.value = ""; // Allow retrying the same file. Cancel leaves the current selection intact.
+      picker.click();
+    });
+    $(id + "-clear").addEventListener("click", () => {
+      $(id).value = "";
+      $(id).dispatchEvent(new Event("change"));
+      $(id + "-choose").focus({ preventScroll: true });
+    });
+  }
   const dropZone = $("disc-drop");
   for (const type of ["dragenter", "dragover"]) dropZone.addEventListener(type, event => {
     event.preventDefault();
@@ -579,10 +724,6 @@ try {
   });
   // Prevent a dropped image outside the target from navigating away from the tab.
   for (const type of ["dragover", "drop"]) window.addEventListener(type, event => event.preventDefault());
-  $("pause").addEventListener("click", () => {
-    if ($("pause").disabled) return;
-    void act(playing ? pause : startPlaying);
-  });
   $("frame").addEventListener("click", () => act(advanceFrame));
   const keys = { ArrowUp: 1, ArrowDown: 2, ArrowLeft: 4, ArrowRight: 8,
     KeyZ: 64, KeyX: 16, KeyC: 32, KeyA: 1024, KeyS: 512, KeyD: 256,
@@ -609,6 +750,7 @@ try {
   requestAnimationFrame(animate);
   $("controls").disabled = false;
   $("debug-controls").disabled = false;
+  $("fixture").disabled = false;
   $("backup-controls").disabled = false;
   render();
 } catch (error) {

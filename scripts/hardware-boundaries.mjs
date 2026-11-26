@@ -18,7 +18,7 @@ async function load(page,name,image) {
   // Resetting can still describe the empty reset while the new file is read.
   await page.waitForFunction(() =>
     document.getElementById("status").textContent.startsWith("Resetting")
-    && document.getElementById("bios-selection").textContent.includes("loaded locally")
+    && document.getElementById("bios-state").textContent === "Loaded locally"
     && document.getElementById("main").getAttribute("aria-busy") === "false");
 }
 

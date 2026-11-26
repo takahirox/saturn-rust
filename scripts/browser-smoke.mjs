@@ -241,9 +241,8 @@ try {
       assert(Math.abs(layout.width / layout.height - 4 / 3) < 0.005);
       assert.deepEqual(layout.native, [320, 224]);
       assert.equal(layout.pixels, "pixelated");
-      const controls = isPlay ? ["view-debug", "start", "restart", "fullscreen"] : ["view-play", "step", "run", "reset", "frame", "count"];
-      if (isPlay && !(await page.locator("#start").isVisible())) controls.splice(controls.indexOf("start"), 1);
-      for (const id of ["disc", "bios"]) if (await page.locator(`#${id}`).isVisible()) controls.push(id);
+      const controls = isPlay ? ["view-debug", "play", "restart", "fullscreen"] : ["view-play", "step", "run", "reset", "frame", "count"];
+      controls.push("disc-choose", "bios-choose");
       for (const id of controls) {
         const control = page.locator(`#${id}`);
         assert(await control.isVisible(), `Missing ${id} at ${width}`);
@@ -263,12 +262,12 @@ try {
           `Overlapping ${a.id}/${b.id} at ${width}`);
       }
       if (isPlay) {
-        // Disc setup sits beside the display on desktop and precedes it on mobile.
+        // Disc selection sits beside the display on desktop and follows it on mobile.
         await page.evaluate(() => window.scrollTo(0, 0));
         const canvas = await page.locator("#screen").boundingBox();
-        const cta = await page.locator("#disc").boundingBox();
+        const cta = await page.locator("#disc-choose").boundingBox();
         if (width > 900) assert(cta.x > canvas.x + canvas.width);
-        else assert(cta.y < canvas.y);
+        else assert(cta.y > canvas.y + canvas.height);
       }
       // Keyboard navigation works at every size, including with local media.
       const beforeSwitch = await machine();
@@ -286,11 +285,11 @@ try {
   assert.equal(await page.locator("#register-panel").isVisible(), false);
   assert.equal(await page.locator("#settings").getAttribute("open"), null);
   assert.equal(await page.locator("#registers tr").count(), 0);
-  assert.equal(await page.title(), "Saturn Disc Player");
+  assert.equal(await page.title(), "saturn-rust · Saturn player");
   assert.equal(await page.locator("#mode").count(), 0);
   assert(await page.locator("#empty-state").isVisible());
-  assert(await page.locator("#start").isDisabled());
-  assert(await page.locator("#pause").isHidden());
+  assert(await page.locator("#play").isDisabled());
+  assert.equal(await value("play"), "Play");
   assert.equal(await value("error"), "");
   assert.equal(requests.some(request => /\.iso$/.test(request.url)), false);
   await responsive(true);
@@ -299,7 +298,7 @@ try {
   await settings.focus();
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.getElementById("settings").open);
-  await page.locator("#bios").focus();
+  await page.locator("#bios-choose").focus();
   await page.keyboard.press("Tab");
   assert.deepEqual(await machine(), initialMachine);
   await settings.focus();
@@ -2252,9 +2251,9 @@ try {
   assert.equal(soundFinished.dropped, "0");
   await page.locator("#reset").click();
   assert.deepEqual(await soundResult(), soundFinished);
-  // A real user gesture enables AudioWorklet. Instrument the same producer path
-  // used by frame playback, and assert the consumer actually renders nonzero PCM.
-  await page.locator("#audio-enable").click();
+  // Activate the production AudioWorklet for the directly stepped sound guest.
+  // The frame playback producer must render nonzero PCM through this consumer.
+  await page.evaluate(async () => (await import("./app.js")).audio.enable());
   await page.waitForFunction(() => document.getElementById("audio-status").textContent.includes("paused"));
   await page.evaluate(async () => {
     const { emulator, audio, pumpAudio } = await import("./app.js");
@@ -2901,21 +2900,21 @@ try {
   });
   await page.locator("#disc").setInputFiles({name:"star-collector.iso", mimeType:"application/octet-stream", buffer:await readFile("web/star-collector.iso")});
   await page.waitForFunction(() => typeof window.finishLocalRead === "function");
-  assert.match(await value("player-status"), /Loading image/);
-  assert(await page.locator("#start").isDisabled());
+  assert.match(await value("player-status"), /Reading local media/);
+  assert(await page.locator("#play").isDisabled());
   await settings.click();
-  await page.locator("#bios").focus();
+  await page.locator("#bios-choose").focus();
   await settings.click();
   await showView("debug");
   await showView("play");
   await page.evaluate(async () => { await window.finishLocalRead(); window.restoreLocalRead(); });
-  await page.waitForFunction(() => !document.getElementById("start").disabled);
+  await page.waitForFunction(() => !document.getElementById("play").disabled);
   assert.match(await value("player-status"), /Disc ready/);
   assert.equal(Number((await machine()).frames), 0);
-  await page.locator("#start").click();
+  await page.locator("#play").click();
   await page.waitForFunction(() => window.emulatedFrames() > 0);
   assert.equal(await value("active-mode"), "BIOS-less HLE disc");
-  await page.locator("#pause").click();
+  await page.locator("#play").click();
   assert.match(await value("player-status"), /Paused/);
   // Hidden register tables are not rewritten during real playback.
   await page.evaluate(() => {
@@ -2923,7 +2922,7 @@ try {
     new MutationObserver(() => window.registerChanges++).observe(document.getElementById("registers"), {childList: true, subtree: true});
   });
   const observedFrames = Number((await machine()).frames);
-  await page.locator("#pause").click();
+  await page.locator("#play").click();
   await page.waitForFunction((frames) => window.emulatedFrames() >= frames + 5, observedFrames);
   assert.equal(await page.evaluate(() => window.registerChanges), 0);
   // Navigation drains at most the two already committed Worker fields. Once
@@ -2945,7 +2944,7 @@ try {
   });
   assert.equal(switchState.before, switchState.after);
   assert(switchState.fields >= 0 && switchState.fields <= 2, "Navigation must respect the two-field drain bound");
-  assert.equal(await value("pause"), "Resume");
+  assert.equal(await value("play"), "Resume");
   const pausedMachine = await machine();
   await showView("play");
   await showView("debug");
@@ -3034,16 +3033,16 @@ try {
             await new Promise(resolve => setTimeout(resolve, 1));
           }
         };
-        document.getElementById("pause").click(); await idle();
+        document.getElementById("play").click(); await idle();
         const before = emulator.state.frames;
-        document.getElementById("pause").click(); await idle();
+        document.getElementById("play").click(); await idle();
         return emulator.state.frames - before;
       });
       assert(drained >= 0 && drained <= 2, "Pause must drain at most two committed fields");
       stationary = (await gameState()).state.slice(0,4);
     } else if (action === "settings") {
       await settings.click();
-      await page.locator("#disc").focus();
+      await page.locator("#disc-choose").focus();
       await page.keyboard.down("ArrowRight");
       await page.keyboard.up("ArrowRight");
       await settings.click();
@@ -3053,13 +3052,13 @@ try {
     await page.keyboard.up("ArrowRight");
   }
   // Opening settings during playback pauses; dismissing it never resumes/reset.
-  await page.locator("#pause").click();
+  await page.locator("#play").click();
   await settings.click();
-  await page.waitForFunction(() => document.getElementById("pause").textContent === "Resume");
+  await page.waitForFunction(() => document.getElementById("play").textContent === "Resume");
   const settingsMachine = await machine();
   await settings.click();
   assert.deepEqual(await machine(), settingsMachine);
-  assert.equal(await value("pause"), "Resume");
+  assert.equal(await value("play"), "Resume");
   await showView("debug");
   const beforeFrame = Number((await machine()).frames);
   await page.locator("#frame").click();
@@ -3075,10 +3074,10 @@ try {
     await page.waitForFunction(() => document.activeElement === document.getElementById("screen"));
     const rect = await page.locator("#screen").boundingBox();
     assert(Math.abs(rect.width / rect.height - 4 / 3) < 0.005);
-    await page.locator("#fullscreen").click();
+    await page.locator("#exit-fullscreen").click();
     await page.waitForFunction(() => !document.fullscreenElement);
     await page.waitForFunction(() => document.activeElement === document.getElementById("fullscreen") && document.getElementById("fullscreen").textContent === "Fullscreen");
-  } else assert.match(await value("fullscreen-status"), /unavailable|could not open/);
+  } else assert.match(await value("fullscreen-status"), /unavailable|could not open/i);
   // Deterministic denied/unavailable paths, even on browsers that permit it.
   await page.evaluate(() => {
     window.originalFullscreen = document.getElementById("player-shell").requestFullscreen;
@@ -3095,9 +3094,9 @@ try {
   await responsive(true);
   await page.locator("#restart").click();
   await page.waitForFunction(() => window.emulatedFrames() > 0);
-  assert.equal(await value("pause"), "Pause");
+  assert.equal(await value("play"), "Pause");
   assert.match(await value("player-status"), /Running/);
-  await page.locator("#pause").click();
+  await page.locator("#play").click();
   await showView("debug");
   await settings.click();
   // Local supported ISO works offline, and selecting bad media clears old CPU.
@@ -3153,7 +3152,7 @@ try {
   await page.waitForFunction(() => /missing Saturn hardware identifier/.test(document.getElementById("error").textContent));
   await page.locator("#disc").setInputFiles({name:"authorized-homebrew.iso", mimeType:"application/octet-stream", buffer:disc});
   await waitForLoadedDisc(page);
-  assert.equal(await value("start"), "Start");
+  assert.equal(await value("play"), "Play");
   await settings.click();
   const localMachine = await machine();
   await showView("play");
@@ -3319,10 +3318,10 @@ try {
   assert.equal(await samplePad(), 0x3F);
   await page.keyboard.up("i");
   await settings.click();
-  await page.locator("#start").click();
+  await page.locator("#play").click();
   await page.locator("#screen").focus();
   await page.keyboard.down("i");
-  await page.locator("#pause").click();
+  await page.locator("#play").click();
   assert.equal(await samplePad(), 0x3F);
   await page.keyboard.up("i");
   assert.equal((await backup())[0], 2);
@@ -3346,10 +3345,10 @@ try {
     window.courierState = async () => (await Promise.all([0,4,8,12,16].map(async (offset) => (await emulator.read_long(0x06018000+offset)))));
   });
   await courier.locator("#disc").setInputFiles({name:"prism-courier.iso", mimeType:"application/octet-stream", buffer:await readFile("web/prism-courier.iso")});
-  await courier.waitForFunction(() => !document.getElementById("start").disabled);
-  await courier.locator("#start").click();
+  await courier.waitForFunction(() => !document.getElementById("play").disabled);
+  await courier.locator("#play").click();
   await waitForGuest(courier, async () => (await window.courierState())[4] > 2);
-  await courier.locator("#pause").click();
+  await courier.locator("#play").click();
   const courierState = () => courier.evaluate(() => window.courierState());
   assert.deepEqual((await courierState()).slice(0,4), [24,112,0,0]);
   const courierFrames = async (n) => courier.evaluate(async (n) => {
@@ -3400,7 +3399,7 @@ try {
   await courier.keyboard.up("Enter");
   assert.deepEqual((await courierFrames(3)).pixels, courierInitial.pixels);
   // The new disc's computed PCM also traverses the actual AudioWorklet.
-  await courier.locator("#audio-enable").click();
+  await courier.evaluate(async () => (await import("./app.js")).audio.enable());
   await courier.waitForFunction(() => document.getElementById("audio-status").textContent.includes("paused"));
   await courier.evaluate(async () => {
     const { emulator, audio } = await import("./app.js");
@@ -3528,7 +3527,7 @@ try {
     assertLab(result);
     assert.deepEqual(result.wasm,expected);
   }
-  await lab.locator("#audio-enable").click();
+  await lab.evaluate(async () => (await import("./app.js")).audio.enable());
   await lab.waitForFunction(()=>document.getElementById("audio-status").textContent.includes("paused"));
   await lab.evaluate(async()=>{
     const {emulator,audio}=await import("./app.js");audio.setPaused(false);
@@ -3625,7 +3624,7 @@ try {
   const cddaPage = await context.newPage();
   await cddaPage.goto(address + prefix);
   await cddaPage.waitForFunction(() => document.getElementById("status").textContent === "Ready");
-  await cddaPage.locator("#audio-enable").click();
+  await cddaPage.evaluate(async () => (await import("./app.js")).audio.enable());
   for (const pre of [false, true]) {
     const samples = await cddaPage.evaluate(async ({ rom, track, pre }) => {
       const { default: init, Emulator } = await import("./pkg/saturn_rust.js");

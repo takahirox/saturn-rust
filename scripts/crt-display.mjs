@@ -10,6 +10,22 @@ const ready = page => page.waitForFunction(() => {
 });
 const visible = (page, expected) => page.waitForFunction(expected => document.getElementById("crt-screen").hidden === !expected, expected);
 
+async function enterFullscreen(page) {
+  await page.locator("#fullscreen").click();
+  await page.waitForFunction(() => document.fullscreenElement?.id === "player-shell" && document.activeElement.id === "screen");
+}
+
+async function fullscreenFallbackStatus(page, expected) {
+  const status = page.getByRole("status").and(page.locator("#display-filter-status"));
+  assert.match(await status.textContent(), expected);
+  assert(await status.evaluate(node => {
+    const { left, top, right, bottom } = node.getBoundingClientRect();
+    const hit = document.elementFromPoint((left + right) / 2, (top + bottom) / 2);
+    return document.fullscreenElement?.contains(node) && node.contains(hit) && top >= 0 && bottom <= innerHeight &&
+      top >= document.getElementById("screen").getBoundingClientRect().bottom;
+  }), "The CRT fallback live region is visible below the fullscreen image");
+}
+
 async function rom(name) {
   const bytes = Buffer.alloc(524288);
   for (const line of (await readFile(`tests/fixtures/${name}.hex`, "utf8")).split(/\r?\n/)) {
@@ -218,8 +234,7 @@ async function checkPlayer(page) {
   assert.deepEqual(await filter(page).locator("option").allTextContents(), ["Clean", "CRT Composite", "CRT S-Video", "CRT RGB"]);
   await page.locator("#disc").setInputFiles("web/star-collector.iso");
   await ready(page);
-  await page.locator("#audio-enable").click();
-  await page.locator("#start").click();
+  await page.locator("#play").click();
   await page.waitForFunction(() => document.getElementById("empty-state").hidden);
   for (const preset of presets.slice(1)) {
     await filter(page).selectOption(preset);
@@ -229,7 +244,7 @@ async function checkPlayer(page) {
   await page.waitForFunction(async () => (await import("./app.js")).audio.stats.rendered > 0);
   const settings = page.locator("#settings > summary");
   await settings.click();
-  await page.waitForFunction(() => document.getElementById("pause").textContent === "Resume");
+  await page.waitForFunction(() => document.getElementById("play").textContent === "Resume");
   await ready(page);
   await settings.click();
   await ready(page);
@@ -259,11 +274,19 @@ async function checkPlayer(page) {
   await cdp.detach();
   await filter(page).selectOption("clean");
   await visible(page, false);
-  const picture = () => page.locator("#screen").screenshot();
+  const screen = page.locator("#screen");
+  const picture = () => screen.screenshot();
+  await page.locator("#play").focus();
   const cleanPicture = await picture();
-  for (const preset of presets.slice(1)) {
+  for (const preset of presets) {
     await filter(page).selectOption(preset);
-    await visible(page, true);
+    await visible(page, preset !== "clean");
+    const unfocused = await picture();
+    await page.keyboard.press("Shift+Tab");
+    assert(await screen.evaluate(node => node.matches(":focus-visible")), `${preset}: display has keyboard focus`);
+    assert(!(await picture()).equals(unfocused), `${preset}: keyboard focus changes the composed display`);
+    await page.keyboard.press("Tab");
+    assert((await picture()).equals(unfocused), `${preset}: moving focus restores the paused picture`);
     assert.deepEqual(await state(), paused);
   }
   assert.notDeepEqual(await picture(), cleanPicture, "The composed display must show the CRT surface");
@@ -271,27 +294,23 @@ async function checkPlayer(page) {
   assert.deepEqual(await picture(), cleanPicture, "Returning to Clean must restore the same picture");
   await filter(page).selectOption("rgb");
 
-  const fullscreen = await page.evaluate(() => document.fullscreenEnabled);
-  if (fullscreen) {
-    await page.locator("#fullscreen").click();
-    await page.waitForFunction(() => document.fullscreenElement?.id === "player-shell" && document.activeElement.id === "screen");
-    await matchSurface();
-    await page.locator("#fullscreen").click();
-    await page.waitForFunction(() => !document.fullscreenElement && document.activeElement.id === "fullscreen");
-  }
+  await enterFullscreen(page);
+  await matchSurface();
   const lose = await page.evaluate(() => {
     const gl = document.getElementById("crt-screen").getContext("webgl2");
     window.crtLoss = gl.getExtension("WEBGL_lose_context");
     window.crtLoss?.loseContext();
     return Boolean(window.crtLoss);
   });
-  if (lose) {
-    await page.waitForFunction(() => document.getElementById("display-filter-status").textContent.includes("interrupted"));
-    await visible(page, false);
-    await page.evaluate(() => window.crtLoss.restoreContext());
-    await visible(page, true);
-    assert.equal(await page.locator("#display-filter-status").textContent(), "");
-  }
+  assert(lose, "Chromium must provide WEBGL_lose_context to exercise recovery");
+  await visible(page, false);
+  await fullscreenFallbackStatus(page, /interrupted.*Showing Clean/);
+  await page.evaluate(() => window.crtLoss.restoreContext());
+  await visible(page, true);
+  await matchSurface();
+  assert.equal(await page.locator("#display-filter-status").textContent(), "");
+  await page.locator("#exit-fullscreen").click();
+  await page.waitForFunction(() => !document.fullscreenElement && document.activeElement.id === "fullscreen");
   await page.locator("#view-debug").click();
   await ready(page);
   await visible(page, true);
@@ -304,9 +323,9 @@ async function checkPlayer(page) {
   await visible(page, true);
   await page.locator("#view-play").click();
   await ready(page);
-  assert.equal(await page.locator("#pause").textContent(), "Resume");
+  assert.equal(await page.locator("#play").textContent(), "Resume");
   assert.equal(await page.locator("#error").textContent(), "");
-  console.log(`CRT player passed at DPR 2, fullscreen ${fullscreen}, context restoration ${lose}.`);
+  console.log("CRT player passed at DPR 2, including context loss and restoration in fullscreen.");
 }
 
 async function checkFallback(page, url, failure) {
@@ -327,17 +346,19 @@ async function checkFallback(page, url, failure) {
   }, failure);
   await page.goto(url);
   await ready(page);
+  if (failure === "creation") await enterFullscreen(page);
   await filter(page).selectOption("composite");
   assert.match(await page.locator("#display-filter-status").textContent(), /Showing Clean/);
   await page.locator("#disc").setInputFiles("web/star-collector.iso");
   await ready(page);
-  await page.locator("#start").click();
+  await page.locator("#play").click();
   await page.waitForFunction(() => {
     const canvas = document.getElementById("screen");
     return canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data.some((channel, i) => i % 4 !== 3 && channel !== 0);
   });
   await visible(page, false);
   assert.equal(await page.locator("#error").textContent(), "");
+  if (failure === "creation") await fullscreenFallbackStatus(page, /unavailable.*Showing Clean/);
   await filter(page).selectOption("clean");
   assert.equal(await page.locator("#display-filter-status").textContent(), "");
 }

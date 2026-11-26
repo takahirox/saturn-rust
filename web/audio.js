@@ -5,6 +5,9 @@ export class AudioOutput {
     this.onStatus = onStatus;
     this.context = null;
     this.node = null;
+    this.initializing = null;
+    this.gain = null;
+    this.volume = 1;
     this.muted = false;
     this.paused = true;
     this.pending = 0;
@@ -24,44 +27,67 @@ export class AudioOutput {
         const AudioContext = globalThis.AudioContext || globalThis.webkitAudioContext;
         if (!AudioContext) throw new Error("WebAudio is unavailable");
         this.context = new AudioContext({ sampleRate: 44100, latencyHint: "interactive" });
-        await this.context.audioWorklet.addModule(new URL("./audio-worklet.js", import.meta.url));
-        this.node = new AudioWorkletNode(this.context, "saturn-pcm", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
-        this.node.port.onmessage = ({ data }) => {
-          if (data.ack) this.pending = Math.max(0, this.pending - data.ack);
-          if (Number.isSafeInteger(data.queued)) this.queuedUpperBound = data.queued;
-          if (data.stats) {
-            this.queuedUpperBound = data.stats.queued;
-            Object.assign(this.stats, data.stats, { dropped: data.stats.dropped + this.producerDropped });
-            this.status(this.paused ? "paused" : this.muted ? "muted" : this.context.state !== "running" ? "blocked" : data.stats.underflowing ? "underflow" : "playing");
-          }
-          if (this.capacityWait && this.hasCapacity(this.capacityWait.frames)) {
-            this.finishCapacityWait(true);
-          }
-        };
-        this.node.connect(this.context.destination);
         this.context.onstatechange = () => {
           if (this.context.state !== "running") this.finishCapacityWait(false);
-          this.status(this.context.state !== "running" ? "blocked" : this.paused ? "paused" : this.muted ? "muted" : "ready");
+          this.status(this.statusForControls());
         };
       }
-      await this.context.resume();
-      this.node.port.postMessage({ paused: this.paused, muted: this.muted });
-      this.status(this.context.state === "running" ? (this.paused ? "paused" : "ready") : "blocked");
+      // Call resume before waiting for the module load so Play can unlock audio.
+      const resumed = this.context.resume();
+      if (!this.node && !this.initializing) {
+        this.initializing = this.initialize().finally(() => { this.initializing = null; });
+      }
+      await Promise.all([resumed, this.initializing]);
+      this.status(this.statusForControls());
     } catch (error) {
       this.status("blocked");
       throw error;
     }
   }
+  async initialize() {
+    const context = this.context;
+    await context.audioWorklet.addModule(new URL("./audio-worklet.js", import.meta.url));
+    const gain = context.createGain();
+    const node = new AudioWorkletNode(context, "saturn-pcm", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
+    gain.gain.value = this.volume;
+    node.connect(gain);
+    gain.connect(context.destination);
+    this.gain = gain;
+    this.node = node;
+    node.port.onmessage = ({ data }) => {
+      if (data.ack) this.pending = Math.max(0, this.pending - data.ack);
+      if (Number.isSafeInteger(data.queued)) this.queuedUpperBound = data.queued;
+      if (data.stats) {
+        this.queuedUpperBound = data.stats.queued;
+        Object.assign(this.stats, data.stats, { dropped: data.stats.dropped + this.producerDropped });
+        this.status(context.state !== "running" ? "blocked" : this.paused ? "paused" : this.muted ? "muted" : data.stats.underflowing ? "underflow" : "playing");
+      }
+      if (this.capacityWait && this.hasCapacity(this.capacityWait.frames)) this.finishCapacityWait(true);
+    };
+    node.port.postMessage({ paused: this.paused, muted: this.muted });
+    // A browser may leave a policy-blocked resume promise pending until a gesture.
+    if (context.state !== "running") this.status("blocked");
+  }
+  setVolume(volume) {
+    this.volume = Number.isFinite(volume) ? Math.max(0, Math.min(1, volume)) : 1;
+    if (this.gain) this.gain.gain.value = this.volume;
+  }
   setPaused(paused) {
     this.paused = paused;
     if (paused) this.finishCapacityWait(false);
     this.node?.port.postMessage({ paused, clear: paused });
-    this.status(!this.node ? "disabled" : this.context.state !== "running" ? "blocked" : paused ? "paused" : this.muted ? "muted" : "ready");
+    this.status(this.statusForControls());
   }
   setMuted(muted) {
     this.muted = muted;
     this.node?.port.postMessage({ muted });
-    this.status(this.paused ? "paused" : muted ? "muted" : "ready");
+    this.status(this.statusForControls());
+  }
+  statusForControls() {
+    if (this.context && this.context.state !== "running") return "blocked";
+    // A running context cannot recover a failed worklet on its own.
+    if (!this.node) return this.stats.state === "blocked" ? "blocked" : "disabled";
+    return this.paused ? "paused" : this.muted ? "muted" : "ready";
   }
   // Queue the first PCM and resume in one Worklet message. No empty
   // rendering quantum can occur between an unpause and its initial data.
