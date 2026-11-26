@@ -5,6 +5,7 @@ const $ = (id) => document.getElementById(id);
 const hex = (value) => `0x${value.toString(16).toUpperCase().padStart(8, "0")}`;
 export let emulator;
 let pendingDisc = null;
+let discMount = null;
 let loadedDisc = false;
 // Resource bounds mirror disc.rs, independent of Saturn's recording standards.
 const MAX_ISO_BYTES = 450000 * 2048;
@@ -391,6 +392,7 @@ document.addEventListener("fullscreenchange", () => {
 for (const query of ["(orientation: portrait)", "(any-pointer: coarse)"]) {
   matchMedia(query).addEventListener("change", releaseTouchInput);
 }
+window.screen.orientation?.addEventListener("change", releaseTouchInput);
 
 async function act(operation, { current = () => true, clearError = true } = {}) {
   pendingActions++;
@@ -400,7 +402,7 @@ async function act(operation, { current = () => true, clearError = true } = {}) 
   catch (error) {
     if (current()) {
       await pause().catch(() => {});
-      $("error").textContent = selectionError() || String(error);
+      if (current()) $("error").textContent = selectionError() || String(error);
     }
   } finally { pendingActions--; render(); }
 }
@@ -436,15 +438,18 @@ async function reset({ clearMedia = false } = {}) {
       const media = pendingDisc;
       const discToken = discGeneration;
       pendingDisc = null;
-      try {
-        if (media.cue !== undefined) await emulator.mount_cue(media.cue, media.names, media.lengths, media.bytes);
-        else await emulator.mount_disc(media.bytes);
+      const mount = media.cue !== undefined ? emulator.mount_cue(media.cue, media.names, media.lengths, media.bytes) : emulator.mount_disc(media.bytes);
+      discMount = mount.then(() => {
         if (discToken === discGeneration) loadedDisc = true;
-      } catch (error) {
+      }, error => {
         if (discToken === discGeneration) selectionErrors.disc = String(error);
         throw error;
-      }
+      }).finally(() => {
+        if (discToken === discGeneration) discMount = null;
+      });
     }
+    // A newer machine reset can reuse an in-flight mount for the same disc.
+    if (discMount) await discMount;
     if (!current() || loadingFile() || selectionError() || mode === "blocked") return;
     if (mode === "fixture") await emulator.reset_hle();
     else if (mode === "bios") await emulator.reset_bios(rom);
@@ -521,17 +526,23 @@ try {
   });
   $("reset").addEventListener("click", () => {
     biosGeneration++;
-    discGeneration++;
     if (loadingBios) selectionErrors.bios = "BIOS read cancelled by Reset. Replace or clear the BIOS selection.";
-    if (loadingDisc) selectionErrors.disc = "Disc read cancelled by Reset. Replace or clear the disc selection.";
+    if (loadingDisc) {
+      discGeneration++;
+      selectionErrors.disc = "Disc read cancelled by Reset. Replace or clear the disc selection.";
+    }
     loadingBios = false;
     loadingDisc = false;
     reset();
   });
-  $("play").addEventListener("click", () => {
-    if ($("play").disabled) return;
+  $("play").addEventListener("click", event => {
+    const play = event.currentTarget;
+    if (play.disabled) return;
     if (playing) {
-      void act(pause);
+      const wasFocused = document.activeElement === play;
+      void act(pause).then(() => {
+        if (wasFocused && document.activeElement === document.body && !play.disabled) play.focus({ preventScroll: true });
+      });
       return;
     }
     enableAudio(); // Resume AudioContext within the user activation.
@@ -544,7 +555,7 @@ try {
     discGeneration++;
     loadingBios = loadingDisc = false;
     selectionErrors.bios = selectionErrors.disc = "";
-    biosBytes = pendingDisc = null;
+    biosBytes = pendingDisc = discMount = null;
     biosSelected = loadedDisc = false;
     $("disc").value = $("bios").value = "";
     selectionNames.disc = selectionNames.bios = "";
@@ -613,7 +624,7 @@ try {
     debugFixture = false;
     sessionStarted = false;
     selectionNames.disc = files.map(file => file.name).join("\n");
-    pendingDisc = null;
+    pendingDisc = discMount = null;
     loadedDisc = false;
     loadingDisc = Boolean(files.length);
     void reset({ clearMedia: true });

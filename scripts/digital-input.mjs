@@ -334,9 +334,10 @@ async function touchInput(browser, url, rom) {
     const dispatch = (type, touchPoints = []) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints });
     // Playwright cannot resize the native window while the element is
     // fullscreen. Apply mobile metrics without changing the native window.
-    const rotate = (width, height) => cdp.send("Emulation.setDeviceMetricsOverride", {
+    const rotate = (width, height, screenOrientation = width > height
+      ? { type: "landscapePrimary", angle: 90 } : { type: "portraitPrimary", angle: 0 }) => cdp.send("Emulation.setDeviceMetricsOverride", {
       width, height, deviceScaleFactor: 3, mobile: true, screenWidth: width, screenHeight: height,
-      screenOrientation: width > height ? { type: "landscapePrimary", angle: 90 } : { type: "portraitPrimary", angle: 0 },
+      screenOrientation,
     });
     const down = (...points) => dispatch("touchStart", points);
     const up = (...points) => dispatch("touchEnd", points);
@@ -460,6 +461,17 @@ async function touchInput(browser, url, rom) {
     await packet([0xff, 0xef], false, "Landscape keeps Z identity");
     await up();
     await packet();
+
+    await down(await button(64));
+    await packet([0xfb, 0xff], false, "Landscape-primary holds A");
+    await page.evaluate(() => {
+      screen.orientation.addEventListener("change", () => { window.orientationChanged = true; }, { once: true });
+    });
+    await rotate(844, 390, { type: "landscapeSecondary", angle: 270 });
+    await wait(() => window.orientationChanged);
+    assert.deepEqual(await page.evaluate(() => [innerWidth, innerHeight, screen.orientation.type]), [844, 390, "landscape-secondary"]);
+    await packet(neutral, false, "Same-axis rotation releases A before pointerup");
+    await up();
     assert.deepEqual(errors, []);
   } finally { await context.close(); }
 }
