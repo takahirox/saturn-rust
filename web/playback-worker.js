@@ -176,16 +176,23 @@ async function invoke(data) {
         const options = { sessionOnly: args[1] === true };
         if (method === "import_battery_recovery") await saves.importBatteryRecovery(args[0], options);
         else await saves.replace(method === "import_backup_ram" ? 0 : 1, args[0], options);
-        result.saveReplaced = true;
+        result.reportsTransportError = true;
         result.value = { transportError: null };
         // Paused guest code and queued SMPC commands can overwrite replaced data.
         input = {};
         resetSound = true;
         machine.stop_execution();
+      } else if (method === "set_cartridge") {
+        let cartridgeError = null;
+        try { machine.set_cartridge(...args); }
+        catch (error) { cartridgeError = String(error?.message ?? error); }
+        // Installation precedes the cold boot and transport reset, either of which can fail.
+        result.value = { slot: machine.cartridge(), cartridgeError, transportError: null };
+        result.reportsTransportError = true;
       } else result.value = machine[method](...args);
     } catch (error) {
       const message = String(error?.message ?? error);
-      if (result.saveReplaced) result.value.transportError = message;
+      if (result.reportsTransportError) result.value.transportError = message;
       else {
         values.push({ ok: false, error: message });
         continue;
@@ -201,13 +208,13 @@ async function invoke(data) {
     pausedView = view();
     if (playWanted) await start(playOptions);
   } catch (error) {
-    // Save exports and acknowledged replacements survive transport errors.
-    const hasSaveResult = values.some((result, index) =>
-      result.ok && (result.saveReplaced || saveExport(data.operations[index].method)));
-    if (!hasSaveResult) throw error;
+    // Save data and the installed slot remain available after transport errors.
+    const hasRecoveryResult = values.some((result, index) =>
+      result.ok && (result.reportsTransportError || saveExport(data.operations[index].method)));
+    if (!hasRecoveryResult) throw error;
     const message = String(error?.message ?? error);
     for (const [index, result] of values.entries()) {
-      if (result.saveReplaced) result.value.transportError ??= message;
+      if (result.reportsTransportError) result.value.transportError ??= message;
       else if (result.ok && !saveExport(data.operations[index].method)) values[index] = { ok: false, error: message };
     }
   }

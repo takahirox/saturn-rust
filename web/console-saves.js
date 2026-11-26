@@ -148,7 +148,7 @@ export class ConsoleSaves {
       // Use the clock after offline advancement as the baseline for local changes.
       this.battery = this.machine.export_smpc_battery();
       this.hasCommitted = false;
-      this.lastCheckpoint = now;
+      this.lastCheckpoint = performance.now();
       this.status(head ? "ready" : "empty");
       return Boolean(head);
     } catch (error) { this.status("restore-error", error); }
@@ -241,14 +241,14 @@ export class ConsoleSaves {
       const now = nowMillis(this.now);
       const revisions = this.currentRevisions();
       const changed = revisions.map((revision, i) => revision !== this.revisions[i]);
-      const checkClock = immediate || now - this.lastCheckpoint >= RTC_CHECKPOINT_MS;
+      const checkClock = immediate || performance.now() - this.lastCheckpoint >= RTC_CHECKPOINT_MS;
       if (!replacement && !changed.some(Boolean) && !checkClock) return;
       const battery = replacement?.index === 2 ? replacement.bytes : this.machine.export_smpc_battery();
       // Only session boundaries can reanchor an unchanged clock, and only
       // after this session has committed changes of its own.
       const reanchor = checkpoint && this.hasCommitted && now > this.head.anchor;
       if (!replacement && !reanchor && !changed.some(Boolean) && battery.every((byte, i) => byte === this.battery[i])) {
-        this.lastCheckpoint = now;
+        this.lastCheckpoint = performance.now();
         if (this.error) this.status(this.head ? "ready" : "empty");
         return;
       }
@@ -306,7 +306,7 @@ export class ConsoleSaves {
       this.hasCommitted = true;
       this.revisions = revisions;
       this.battery = images[2];
-      this.lastCheckpoint = now;
+      this.lastCheckpoint = performance.now();
       this.status(this.currentRevisions().some((revision, i) => revision !== revisions[i]) ? "pending" : "ready");
     } catch (error) { this.status("write-error", error); }
   }
