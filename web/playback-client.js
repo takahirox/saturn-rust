@@ -103,7 +103,8 @@ export class PlaybackClient {
   inspect() { return this.call("inspect"); }
   invoke(operations) {
     if (operations.some(({ method }) => method.startsWith("reset_") || method === "set_cartridge"
-      || (this.persistSaves && (method === "import_backup_ram" || method === "import_cartridge_backup_ram")))) this.epoch++;
+      || (this.persistSaves && (method === "import_backup_ram" || method === "import_cartridge_backup_ram"
+        || method === "import_battery_recovery")))) this.epoch++;
     return this.call("invoke", { operations, epoch: this.epoch });
   }
   setInput(input) {

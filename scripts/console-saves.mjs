@@ -13,6 +13,7 @@ const settings = page => page.locator("#settings > summary");
 const ready = page => page.waitForFunction(() => !document.getElementById("controls").disabled);
 const standby = page => page.waitForFunction(() => document.getElementById("main").getAttribute("aria-busy") === "false");
 const status = (page, from) => page.waitForFunction(from => document.getElementById("save-storage-status").textContent.startsWith(from), from);
+const savedStatus = "A saved copy is available locally.";
 
 async function useHostClock(context, url, now) {
   const source = await readFile("web/playback-worker.js", "utf8");
@@ -162,7 +163,7 @@ async function importDuringGuestFormat(browser, url) {
     const importImage = async (name, bytes) => {
       await page.locator("#cartridge-backup-import").setInputFiles(filename(name, bytes));
       await page.waitForFunction(() => document.getElementById("cartridge-backup-status").textContent.startsWith("Imported"));
-      await status(page, "Local storage is up to date.");
+      await status(page, savedStatus);
     };
     await importImage("unformatted.bin", Buffer.alloc(524288, 0xA5));
     const iso = await readFile("tests/fixtures/hle-cartridge-backup.iso");
@@ -216,7 +217,7 @@ async function pausedClockReload(browser, url) {
       await emulator.restore_smpc_battery(Uint8Array.from(snapshot), 0n);
       await emulator.pause();
     }, snapshot);
-    await status(page, "Local storage is up to date.");
+    await status(page, savedStatus);
     const battery = () => page.evaluate(async () => {
       const { emulator } = await import("./app.js");
       return [...await emulator.export_smpc_battery()];
@@ -238,6 +239,68 @@ async function pausedClockReload(browser, url) {
   } finally { await context.close(); }
 }
 
+async function importWithPendingSetsmem(browser, url) {
+  const context = await browser.newContext();
+  try {
+    await useHostClock(context, url, () => 100000);
+    const page = await context.newPage();
+    await page.goto(url);
+    await ready(page);
+    await settings(page).click();
+    const originalBattery = await page.evaluate(async () => {
+      const { emulator } = await import("./app.js");
+      const original = await emulator.export_smpc_battery();
+      const replacement = original.slice();
+      replacement[8] = 0xAA;
+      await emulator.restore_smpc_battery(replacement, 0n);
+      return [...original];
+    });
+    const [name, recovery] = await download(page, "smpc-battery-export");
+    const importedSettings = await clockSettings(page);
+    await page.evaluate(async original => {
+      const { emulator } = await import("./app.js");
+      await emulator.restore_smpc_battery(Uint8Array.from(original), 0n);
+    }, originalBattery);
+    const pending = await bios("smpc-reset-pending-17");
+    // Skip the fixture's raster wait. This test pauses at the command checkpoint.
+    pending.writeUInt16BE(0x0009, 0x230);
+    await page.locator("#bios").setInputFiles(filename("pending-setsmem.bin", pending));
+    await page.waitForFunction(() => !document.getElementById("play").disabled);
+
+    const queued = await page.evaluate(async () => {
+      const { emulator } = await import("./app.js");
+      for (let step = 0; step < 512; step++) {
+        await emulator.step();
+        // The original guest marks this point immediately after sampling SF and OREG31.
+        if ((await emulator.read_long(0x0601A200)) >>> 24 === 0x55) {
+          return Promise.all([emulator.read_long(0x0601A000), emulator.read_long(0x0601A004)]);
+        }
+      }
+      throw new Error("Guest did not reach the pending SETSMEM checkpoint");
+    });
+    assert.deepEqual(queued, [1, 0x17]);
+    assert.notDeepEqual(await clockSettings(page), importedSettings);
+
+    await page.locator("#smpc-battery-import").setInputFiles(filename(name, recovery));
+    await page.waitForFunction(() => document.getElementById("smpc-battery-status").textContent.startsWith("Imported"));
+    await status(page, savedStatus);
+    assert.deepEqual(await clockSettings(page), importedSettings);
+    const resumeError = await page.evaluate(async () => {
+      const { emulator } = await import("./app.js");
+      const error = await emulator.run_steps(2048).then(() => null, error => error.message);
+      await emulator.pause();
+      return error;
+    });
+    assert.deepEqual(await clockSettings(page), importedSettings, "The stale SETSMEM must not change the imported settings");
+    assert.match(resumeError, /CPU is stopped/);
+    assert.equal(await page.locator("#play").isDisabled(), true);
+    assert.match(await text(page, "smpc-battery-status"), /Reset to boot/);
+    await page.reload();
+    await ready(page);
+    assert.deepEqual(await clockSettings(page), importedSettings, "Reload must restore the imported settings");
+  } finally { await context.close(); }
+}
+
 async function passiveTabPreservesGuestSave(browser, url) {
   const context = await browser.newContext();
   try {
@@ -256,7 +319,7 @@ async function passiveTabPreservesGuestSave(browser, url) {
     const image = Buffer.alloc(32768);
     image[0] = 1;
     await runGuest();
-    await status(writer, "Local storage is up to date.");
+    await status(writer, savedStatus);
     assert.equal((await digests(writer))[0], checksum(image));
     await writer.locator("#restart").click();
     await writer.waitForFunction(() => !document.getElementById("play").disabled);
@@ -277,7 +340,7 @@ async function passiveTabPreservesGuestSave(browser, url) {
     await runGuest();
     image[0] = 2;
     assert.equal((await digests(writer))[0], checksum(image), "The original guest updated internal backup RAM");
-    assert.match(await text(writer, "save-storage-status"), /^Local storage is up to date\./,
+    assert.equal(await text(writer, "save-storage-status"), savedStatus,
       "Opening Advanced in a passive tab must leave the guest writer able to commit");
     await writer.reload();
     await ready(writer);
@@ -316,7 +379,7 @@ async function retryAfterGuestRead(browser, url) {
       const { emulator } = await import("./app.js");
       await emulator.import_backup_ram(new Uint8Array(size).fill(0x41));
     }, saved.length);
-    await status(page, "Local storage is up to date.");
+    await status(page, savedStatus);
 
     const worker = await denyStorageOnStartup(page, url);
     await page.locator("#bios").setInputFiles(filename("backup-retry-guest.bin", backupIncrementGuest()));
@@ -334,7 +397,7 @@ async function retryAfterGuestRead(browser, url) {
     await worker.evaluate(() => { self.testStorageDenied = false; });
     await page.locator("#retry-saves").click();
     await standby(page);
-    await status(page, "Local storage is up to date.");
+    await status(page, savedStatus);
     assert.equal((await digests(page))[0], checksum(saved), "Retry recovered the stored image");
 
     const resumeError = await page.evaluate(async () => {
@@ -408,9 +471,9 @@ async function sessionRecovery(page, url, storedImages) {
   assert.deepEqual(await digests(page), storedImages);
 }
 
-async function bios() {
+async function bios(fixture = "cartridge") {
   const bytes = Buffer.alloc(524288);
-  for (const line of (await readFile("tests/fixtures/cartridge.hex", "utf8")).trim().split("\n").slice(1)) {
+  for (const line of (await readFile(`tests/fixtures/${fixture}.hex`, "utf8")).trim().split("\n").slice(1)) {
     const [at, ...words] = line.split(/\s+/).map(word => parseInt(word, 16));
     words.forEach((word, i) => bytes.writeUInt16BE(word, at + i * 2));
   }
@@ -473,7 +536,7 @@ async function production(browser, url) {
     await openRecovery(page, /Changes are unsaved/);
     await worker.evaluate(() => self.removeQuotaFailure());
     await page.locator("#retry-saves").click();
-    await status(page, "Local storage is up to date.");
+    await status(page, savedStatus);
     assert.equal(await page.locator("#save-warning").isVisible(), false);
     assert.equal(await page.locator("#open-save-management").isVisible(), false);
     await settings(page).click();
@@ -563,7 +626,7 @@ async function production(browser, url) {
     await playUntil(page, BIOS_TRACE + 21 * 4);
     assert.deepEqual(await guestWords(page, BIOS_TRACE, 5), [0x21, 0xFF21, 0xFF00FF21, 0xFF53FF52, 0xFF53FF52]);
     assert.deepEqual(await digests(page), original);
-    await status(page, "Local storage is up to date.");
+    await status(page, savedStatus);
 
     const other = await context.newPage();
     await other.goto(url);
@@ -574,7 +637,7 @@ async function production(browser, url) {
     await page.locator("#cartridge-backup-clear").click();
     await dialog.getByRole("button", { name: "Erase all saves" }).click();
     await page.waitForFunction(() => document.getElementById("cartridge-backup-status").textContent.includes("Reset to boot"));
-    await status(page, "Local storage is up to date.");
+    await status(page, savedStatus);
     const cleared = [original[0], checksum(Buffer.alloc(524288))];
     assert.deepEqual(await digests(page), cleared);
     const newerSettings = await clockSettings(page);
@@ -624,12 +687,12 @@ async function production(browser, url) {
     assert.deepEqual(await clockSettings(page), newerSettings);
     await importClock(page, clockRecovery);
     await page.waitForFunction(() => document.getElementById("smpc-battery-status").textContent.startsWith("Imported"));
-    await status(page, "Local storage is up to date.");
+    await status(page, savedStatus);
     assert.deepEqual(await clockSettings(page), guestSettings);
     assert.deepEqual(await digests(page), cleared);
     await page.locator("#cartridge-backup-import").setInputFiles(filename(name, exported));
     await page.waitForFunction(() => document.getElementById("cartridge-backup-status").textContent.startsWith("Imported"));
-    await status(page, "Local storage is up to date.");
+    await status(page, savedStatus);
     await page.reload();
     await ready(page);
     assert.deepEqual(await digests(page), original);
@@ -650,7 +713,7 @@ async function production(browser, url) {
     await page.locator("#bios").setInputFiles(filename("original-battery-writer.bin", writer));
     await page.waitForFunction(() => !document.getElementById("play").disabled);
     await playUntil(page, BIOS_TRACE + 42 * 4);
-    await status(page, "Local storage is up to date.");
+    await status(page, savedStatus);
     const newInternal = Buffer.alloc(32768), newCartridge = Buffer.alloc(524288);
     newInternal.set([0x22, 0x44]);
     newCartridge.set([0xB2, 0xD4, 0x67]);
@@ -861,6 +924,7 @@ export async function consoleSaves(browser, url) {
   await passiveTabPreservesGuestSave(browser, url);
   await retryAfterGuestRead(browser, url);
   await importDuringGuestFormat(browser, url);
+  await importWithPendingSetsmem(browser, url);
   await pausedClockReload(browser, url);
   await production(browser, url);
   await importAcrossReset(browser, url);
