@@ -191,8 +191,9 @@ impl Machine {
                     }
                 }
             }
-            if self.bus.scu.dma_pending() {
-                // SCU DMA owns the board bus; CPU external cycles wait for it.
+            if self.bus.scu.dma_pending() || self.bus.fast_dmac_holds_bus(processor) {
+                // SCU DMA owns the board bus, and the CPU's own block DMAC
+                // keeps it; CPU external cycles wait for them.
                 self.fast.time[i] = end;
                 return Ok(());
             }

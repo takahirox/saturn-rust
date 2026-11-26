@@ -202,6 +202,7 @@ fn deadline_geometry_preserves_dot_bounds_without_pixel_inputs() {
                     lookup: [0; 16],
                     lookup_read: 16,
                     texture: None,
+                    overlap: 0,
                     row: 0,
                     rows,
                     line: None,
@@ -244,8 +245,9 @@ fn texture_writes_between_pixel_clocks_change_only_unfetched_dots() {
         bus.write16(VRAM + 0x800 + x * 2, 0x801F).unwrap();
     }
     reg(&mut bus, 4, 1);
-    // Four independently fetched RGB words (2+1 clocks each).
-    advance(&mut bus, 76, 8);
+    // Four RGB words: the first read takes two clocks; each later read
+    // overlaps the previous dot's clock and needs one more (2+1, then 1+1).
+    advance(&mut bus, 73, 8);
     for x in 0..8 {
         bus.write16(VRAM + 0x800 + x * 2, 0x83E0).unwrap();
     }

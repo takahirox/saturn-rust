@@ -49,6 +49,10 @@ struct Drawing {
     lookup: [u16; 16],
     lookup_read: usize,
     texture: Option<(usize, u16)>,
+    /// Dot clocks plotted since the current character word arrived. The
+    /// character port is separate from the framebuffer (ST-013 §2.1), so
+    /// the next word's two-clock read overlaps up to two of these clocks.
+    overlap: u32,
     row: i32,
     rows: i32,
     line: Option<RasterLine>,
@@ -891,6 +895,7 @@ impl Vdp1 {
                 continue;
             }
             self.draw_next(&mut draw);
+            self.overlap_fetch(&mut draw, vram_busy);
             used += 1;
             if draw.row > draw.rows || self.pending_pixel.is_some() {
                 break;
@@ -918,6 +923,32 @@ impl Vdp1 {
             draw.line = None;
             draw.row += 1;
             draw.texture = None;
+            draw.overlap = 0;
+        } else if draw.texture.is_some() {
+            // A six-state dot keeps the character port free for its duration.
+            let clocks = if self.pending_pixel.is_some() { 6 } else { 1 };
+            draw.overlap = (draw.overlap + clocks).min(COMMAND_WORD_CLOCKS);
+        }
+    }
+    /// Start the next character word's read during the dots already plotted
+    /// from the current word. A completed overlap delivers the word at this
+    /// dot boundary; a partial one leaves the remaining read phase.
+    fn overlap_fetch(&mut self, draw: &mut Drawing, vram_busy: bool) {
+        let overlap = std::mem::take(&mut draw.overlap);
+        if overlap == 0 || vram_busy || self.phase != 0 || draw.row > draw.rows {
+            return;
+        }
+        let Some(address) = draw
+            .texture_address(self.draw_control)
+            .filter(|&address| draw.texture.is_none_or(|(old, _)| old != address))
+        else {
+            draw.overlap = overlap;
+            return;
+        };
+        if overlap >= COMMAND_WORD_CLOCKS {
+            draw.texture = Some((address, self.word(address)));
+        } else {
+            self.phase = overlap;
         }
     }
     fn advance_phase(
@@ -1032,6 +1063,7 @@ impl Vdp1 {
                 return Ok(false);
             }
             self.draw_next(&mut draw);
+            self.overlap_fetch(&mut draw, vram_busy);
             if draw.row <= draw.rows || self.pending_pixel.is_some() {
                 self.drawing = Some(draw);
             }
@@ -1175,6 +1207,7 @@ impl Vdp1 {
                 16
             },
             texture: None,
+            overlap: 0,
             row: 0,
             rows,
             line: None,

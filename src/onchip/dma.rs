@@ -275,6 +275,16 @@ impl Dma {
     pub(crate) fn in_progress(&self) -> bool {
         self.selected.is_some()
     }
+    /// An enabled auto-request block or requested burst keeps arbitrating
+    /// for the external bus until its count ends.
+    pub(crate) fn holds_external_bus(&self, serial: [bool; 2]) -> bool {
+        self.operation & 7 == 1
+            && self.channels.iter().any(|c| {
+                c.control & 3 == 1
+                    && (c.control & 0x200 != 0
+                        || (c.control & 0x10 != 0 && Self::requested(c, serial)))
+            })
+    }
     pub(crate) fn burst_requested(&self, serial: [bool; 2]) -> bool {
         self.operation & 7 == 1
             && self
