@@ -218,8 +218,7 @@ async function checkPlayer(page) {
   assert.deepEqual(await filter(page).locator("option").allTextContents(), ["Clean", "CRT Composite", "CRT S-Video", "CRT RGB"]);
   await page.locator("#disc").setInputFiles("web/star-collector.iso");
   await ready(page);
-  await page.locator("#audio-enable").click();
-  await page.locator("#start").click();
+  await page.locator("#play").click();
   await page.waitForFunction(() => document.getElementById("empty-state").hidden);
   for (const preset of presets.slice(1)) {
     await filter(page).selectOption(preset);
@@ -229,7 +228,7 @@ async function checkPlayer(page) {
   await page.waitForFunction(async () => (await import("./app.js")).audio.stats.rendered > 0);
   const settings = page.locator("#settings > summary");
   await settings.click();
-  await page.waitForFunction(() => document.getElementById("pause").textContent === "Resume");
+  await page.waitForFunction(() => document.getElementById("play").textContent === "Resume");
   await ready(page);
   await settings.click();
   await ready(page);
@@ -276,7 +275,7 @@ async function checkPlayer(page) {
     await page.locator("#fullscreen").click();
     await page.waitForFunction(() => document.fullscreenElement?.id === "player-shell" && document.activeElement.id === "screen");
     await matchSurface();
-    await page.locator("#fullscreen").click();
+    await page.locator("#exit-fullscreen").click();
     await page.waitForFunction(() => !document.fullscreenElement && document.activeElement.id === "fullscreen");
   }
   const lose = await page.evaluate(() => {
@@ -304,7 +303,7 @@ async function checkPlayer(page) {
   await visible(page, true);
   await page.locator("#view-play").click();
   await ready(page);
-  assert.equal(await page.locator("#pause").textContent(), "Resume");
+  assert.equal(await page.locator("#play").textContent(), "Resume");
   assert.equal(await page.locator("#error").textContent(), "");
   console.log(`CRT player passed at DPR 2, fullscreen ${fullscreen}, context restoration ${lose}.`);
 }
@@ -331,7 +330,7 @@ async function checkFallback(page, url, failure) {
   assert.match(await page.locator("#display-filter-status").textContent(), /Showing Clean/);
   await page.locator("#disc").setInputFiles("web/star-collector.iso");
   await ready(page);
-  await page.locator("#start").click();
+  await page.locator("#play").click();
   await page.waitForFunction(() => {
     const canvas = document.getElementById("screen");
     return canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data.some((channel, i) => i % 4 !== 3 && channel !== 0);

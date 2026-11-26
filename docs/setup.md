@@ -149,49 +149,35 @@ operations; await their results. Independent reads can use `Promise.all` to shar
 an ordered batch. Input setters remain synchronous host updates. Pause waits for
 already committed fields to finish without resetting the Machine.
 
-The default page is an idle **Saturn Disc Player**. It does not select, fetch or
-run a bundled sample. On desktop the player is beside the three-step setup; on
-narrow screens setup comes first.
+The player opens with an idle screen. The Disc and BIOS slots sit beside it on
+wide desktop layouts and follow the display and toolbar on narrow screens.
 
-1. **Select disc** with the accessible multi-file picker or drag-and-drop area.
-   Required in HLE disc mode; optional in user-BIOS mode.
-   Choose one supported self-contained CHD v5 CD-ROM (cdlz/cdzl/cdfl/none, at most
-   1,058,400,000 compressed bytes), one cooked ISO (18–450,000 2048-byte sectors,
-   at most 921,600,000 bytes), or one CUE and all referenced BINARY tracks
-   (at most 1,058,400,000 track bytes plus a 1 MiB CUE). A lone raw BIN requires
-   its CUE. SRW1 companions are optional diagnostic input only when explicitly
-   referenced by a CUE. Errors identify invalid/missing input; the old machine
-   stops on replacement. Large images need memory for local input and the
-   retained Wasm medium. See [media formats](media.md) for codec/layout/hunk
-   restrictions, gaps/indices, CD-DA and resource bounds.
-2. **Add BIOS (optional)** from a local raw 524288-byte file. A valid selection
-   automatically uses your firmware, with or without a disc. Without a BIOS,
-   the selected disc boots through BIOS-less HLE using the first data track’s
-   Saturn IP / ISO9660 executable. No BIOS is bundled or downloaded; size
-   validation establishes neither authenticity nor region. Pending, invalid,
-   cancelled or unreadable BIOS selections block Start and Restart until you
-   replace or explicitly clear the selection. Firmware never redirects to HLE.
-   **Clear BIOS** returns to disc HLE while retaining validated media; replacing
-   or clearing the disc preserves the BIOS bytes. Selection changes stop playback.
-3. **Start playing** is enabled after a valid disc with no BIOS selection, or a
-   fully accepted BIOS (with or without a disc). The read-only boot method shows
-   the automatic choice; there is no manual boot-mode control.
-   Pending reads and rejected selections block execution until resolved. BIOS-only
-   Start executes the real SH-2 firmware; it does not promise an authentic system
-   menu, CD player or retail-game compatibility. Nothing auto-starts
-   after a read, view change or closing advanced settings. Audio has a separate
-   user-gesture **Enable audio** button and meaningful disabled/blocked/muted/
-   paused/underflow status. Playback controls beneath the display offer
-   Pause/Resume, Restart and Fullscreen. Restart reuses the retained medium,
-   cold-boots and resumes an existing Play session when advanced settings are
-   closed. Fullscreen failures leave the normal player usable; focus returns
-   to its button on exit. **Display filter** changes the displayed frame during
-   playback or pause. **Clean** is the default. **CRT Composite** applies the
-   most horizontal luma and chroma blending, **CRT S-Video** reduces the
-   blending, and **CRT RGB** keeps the sharpest edges. The three approximations
-   use restrained scanline and phosphor effects, and the original Canvas image
-   stays available for debug reads and WebGL 2 fallback. See the
-   [CRT design and validation](validation-issue-254.md).
+- **Insert disc** opens a multi-file picker. You can also drop files on the Disc
+  slot. Choose a self-contained CHD v5 CD-ROM (cdlz/cdzl/cdfl/none, up to
+  1,058,400,000 bytes), a cooked ISO (18–450,000 sectors of 2048 bytes), or a
+  CUE and all its referenced BINARY tracks (up to 1,058,400,000 track bytes plus
+  a 1 MiB CUE). A lone raw BIN requires its CUE. A CUE can explicitly reference
+  an optional SRW1 diagnostic companion. Large images need browser memory for
+  local input and the retained Wasm medium. See [media formats](media.md).
+- **Insert BIOS** accepts a local raw 524288-byte file. A valid selection uses
+  your firmware with or without a disc. Size validation alone cannot establish
+  authenticity or region. With a disc alone, BIOS-less HLE boots
+  the first data track’s Saturn IP / ISO9660 executable. Pending, cancelled or
+  rejected BIOS selections block Play and Reset until you change or clear them.
+  Clear BIOS to return to HLE while retaining accepted disc media. Replacing or
+  clearing the disc preserves the firmware selection. Media changes stop play.
+- **Play** enables after the current selection validates. The same action
+  becomes **Pause** while playing and **Resume** after pausing. Toolbar **Reset**
+  cold-boots accepted media and resumes an existing session when the advanced
+  tools are closed. Play activates audio on the user gesture. If blocked,
+  **Enable audio** retries activation. **Mute** preserves the selected 0–100%
+  volume. Audio queue, mute and underrun status are available in Advanced.
+- **Fullscreen** sizes the picture to the available space with a separate
+  **Exit fullscreen** action. Touch buttons remain available with safe-area
+  padding. Exit returns focus to the toolbar button. **Display filter** can
+  change during playback or pause. **Clean** is the default, with **CRT
+  Composite**, **CRT S-Video** and **CRT RGB** available on WebGL 2. See the
+  [CRT design and validation](validation-issue-254.md).
 
 See [automatic boot selection validation](validation-issue-135.md) for file-state
 and race coverage, and [BIOS-only startup validation](validation-issue-101.md)
@@ -204,13 +190,15 @@ positions, unaffected by Shift, Caps Lock or layout. The second pad's partial
 keyboard mapping uses I/K/J/L directions, U/O/P for A/B/C and Right Shift for
 Start; X/Y/Z/L/R require a gamepad. Standard Gamepad input is supported on both
 ports. Focus loss releases held input;
-hiding the tab pauses. Touchscreen controls are not included. Standard 320×224
-pixels are presented at 4:3; mode changes update dimensions and the display ratio.
+hiding the tab pauses. On coarse-pointer screens, the Player 1 touch controller
+provides the same thirteen digital controls. Slide across its D-pad for
+diagonals. Touch, keyboard and physical gamepad can be held together. Standard
+320×224 pixels are presented at 4:3 and other modes update the display ratio.
 
-Under the player, **Advanced → Debug** reveals CPU R0–R15 and special registers,
+Under the player, **Debug** reveals CPU R0–R15 and special registers,
 retired instructions, exceptions, pending delay target, machine state, Step,
-Run (1–10000 whole machine turns), Reset and frame advance. Switching views
-preserves machine/media/errors and pauses input; returning requires Resume.
+Run (1–10000 whole machine turns), Reset and frame advance. Opening Help, Advanced or Debug releases input and pauses play. Use Resume
+to continue after closing them.
 Frame advancement requires a ready, paused disc or user-BIOS machine.
 Sleeping/resetting CPUs retain controls when an implemented hardware event can
 wake them. CPU/device faults
@@ -219,9 +207,9 @@ stop the machine until reset. Invisible registers are not updated during Play.
 original debugger fixture. Reset and Run 6 yields `R0=4`, `R1=7`,
 `PC=0x0600000E`; further runs stay in the BRA/NOP loop. It is not firmware.
 
-**Advanced / backup RAM & format details** contains packed 32768-byte backup RAM
+**Advanced** contains packed 32768-byte backup RAM
 import/export. Import replaces all bytes and pauses; export the old backup first
-if needed. Backup survives Reset, Restart, mode changes and failed boots within
+if needed. Backup survives either Reset action, mode changes and failed boots within
 this tab. Export before closing or reloading; import explicitly in a later tab.
 It is not a save state or BIOS backup-file service.
 
@@ -260,10 +248,11 @@ counters and Canvas pixel differences, completes and restarts, rejects malformed
 local discs, checks overlapping-file, cancellation and replacement races, and
 loads a local ISO offline. It uses
 only original licensed guest content and no Sega firmware. It also checks the
-disc-first empty state, three-step setup, multi-file CUE drops, keyboard view
-navigation and advanced disclosure,
+idle player, keyboard and touch media actions, multi-file CUE drops, Help focus
+return, fullscreen at emulated phone/tablet sizes, Web Audio gain and
+guest-visible multi-touch input. It also checks advanced disclosure,
 CPU/media/diagnostic preservation, pause and held-key release, hidden register
-updates, loading/view races, Play Restart and Debug frame advancement. At
+updates, loading/view races, player Reset and Debug frame advancement. At
 the hardware boundary it also executes an original backup/port-2 guest as a
 synthetic ROM and temporary local ISO, checks local backup import/export bytes,
 reset retention, rejected/read-failing imports and stale-read cancellation,
@@ -401,7 +390,7 @@ The hosted build supports Star Collector and the documented synthetic diagnostic
 subsets, including SCU DSP/DMA/interrupts, MC68EC000/direct SCSP PCM, SMPC
 RTC/INTBACK and NTSC raster timing. The original game has no soundtrack; a
 bounded AudioWorklet path plays emulated PCM when explicitly enabled. External
-BIOS mode supports local/private firmware-only Start and reset-vector stepping
+BIOS mode supports local/private firmware-only Play and reset-vector stepping
 but does not promise a Sega BIOS splash screen or game boot. No proprietary BIOS/security
 code or commercial disc is distributed. See [architecture](architecture.md) and
 [game license/provenance](homebrew-provenance.md).
@@ -415,11 +404,11 @@ instrumentation, drain/underflow, mute and suspended-context feedback. Synthetic
 Gamepads exercise two independent ports and focus release. These fixtures are
 diagnostics and do not replace the two required original demonstration discs.
 
-Explicitly select `web/prism-courier.iso` locally and press **Start** to run the
+Explicitly select `web/prism-courier.iso` locally and select **Play** to run the
 original MIT-licensed VDP1+VDP2+SCSP disc.
 Steer the cyan prism through the red barrier's gap to the green dock; collision
-turns the banner red, delivery turns it green, and Enter/Start restarts. Enable
-audio for the separately executing 68k's computed stereo tone. The source,
+turns the banner red, delivery turns it green, and Enter/Start restarts. The
+separately executing 68k supplies a computed stereo tone. The source,
 license, reproducible SHA-256 and guest contract are in its
 [README](../homebrew/prism-courier/README.md). The native and browser suites now
 test this disc's pixels, VDP1 IRQ, input, loss/win/restart, 68k computation and

@@ -1,38 +1,36 @@
 # saturn-rust
 
 An independently implemented Rust SH-2 interpreter and minimal Saturn devices,
-compiled to WebAssembly. The browser opens as a **Saturn Disc Player** with an
-empty display and a visible three-step setup:
+compiled to WebAssembly. Open the [saturn-rust player](https://takahirox.github.io/saturn-rust/),
+insert an authorized local disc or BIOS, then select **Play**.
 
-1. Select your authorized disc: a supported self-contained CHD v5 CD-ROM, a
-   cooked ISO, or a CUE together with all referenced BINARY tracks. Use the file
-   picker or drop the files onto **Select disc**. A lone raw BIN needs its CUE.
-   A disc is required in HLE disc mode and optional in user-BIOS mode.
-2. Optionally add a local raw 512 KiB BIOS. A valid BIOS automatically selects
-   **User-provided BIOS**, with or without a disc. Without a BIOS, a disc uses
-   **BIOS-less HLE**. Pending, invalid or failed BIOS reads block startup;
-   firmware failures never fall back to HLE. **Clear BIOS** returns to disc HLE
-   while retaining the disc. Changing either selection stops playback.
-3. Press **Start** once the selected files have loaded and validated.
+- **Disc** accepts a supported self-contained CHD v5 CD-ROM, a cooked ISO, or
+  a CUE and all referenced BINARY tracks. Use **Insert disc** or drop the files
+  onto the Disc slot.
+- **BIOS** accepts a raw 512 KiB file. An accepted BIOS takes precedence and can
+  boot with or without a disc. With a disc alone, the player uses BIOS-less HLE.
+  Pending or rejected BIOS selections block Play. Replace or clear the BIOS to
+  recover. Changing either selection stops playback.
 
-Open **https://takahirox.github.io/saturn-rust/** for the player. No bundled game
-is selected or downloaded automatically. This UI does not expand emulator
-compatibility: general homebrew, retail games and native BIOS boot remain
-incomplete. Original MIT-licensed Star Collector, Prism Courier and Hardware Lab
-remain buildable fixtures with native/Wasm/browser coverage; they can be loaded
-explicitly as local discs.
+The display is beside the media slots on desktop and above them on narrow
+screens. The 320×224 framebuffer is shown at 4:3 with pixelated rendering.
+Other core dimensions update the display ratio. On touch screens, the Player 1
+pad includes the D-pad, A/B/C, X/Y/Z, L/R and Start. Slide across the D-pad for
+diagonals and hold multiple controls at once. In wide landscape layouts the
+controls flank the screen, including in fullscreen.
 
-The desktop layout places a large player beside setup; smaller screens place
-setup first. The standard 320×224 framebuffer is displayed at 4:3 with pixelated
-rendering; other core dimensions update the display ratio. Focus the display for
-keyboard input: Arrows for directions, Z/X/C for A/B/C, A/S/D for X/Y/Z,
-Q/W for L/R, Enter for Saturn Start (physical key positions). Player 2 retains
-I/K/J/L directions, U/O/P for A/B/C and Right Shift for Start; its keyboard
-mapping is partial (X/Y/Z/L/R require a gamepad). Standard gamepads provide full
-digital controls on both ports; see Controls, privacy & compatibility for button
-numbers. Virtual touchscreen controls are not included.
-Pause/Resume, Restart, audio and Fullscreen are beneath the display. Fullscreen
-reports unavailable or denied requests without interrupting the normal player.
+Focus the display for keyboard input. Player 1 uses the arrows, Z/X/C for
+A/B/C, A/S/D for X/Y/Z, Q/W for L/R and Enter for Start. Player 2 uses I/K/J/L
+for directions, U/O/P for A/B/C and Right Shift for Start. Standard gamepads
+provide full digital controls on both ports. See **Help** for the physical
+gamepad mapping and media details.
+
+The toolbar has a single **Play**, **Pause** or **Resume** action, plus
+**Reset**, **Mute**, **Volume**, **Display filter** and **Fullscreen**.
+Play also starts audio and shows **Enable audio** if the browser blocks it.
+Mute preserves the volume setting. Fullscreen fits the picture to the window
+and includes **Exit fullscreen**.
+
 **Display filter** defaults to **Clean**, which shows the original pixels.
 **CRT Composite** softens horizontal edges and blends dithering most.
 **CRT S-Video** keeps more color detail, and **CRT RGB** preserves the sharpest
@@ -40,23 +38,23 @@ edges with a subtle phosphor mask. The presets approximate analog video and CRT
 display characteristics. Switch during playback or pause. If WebGL 2 is
 unavailable, the player shows Clean.
 
-**Advanced → Debug** reveals CPU registers, Step, bounded Run, Reset and frame
-advance. **Advanced / backup RAM & format details** contains import/export and
-media limits. Opening advanced settings or switching views pauses and releases
-held input; closing settings or returning to Play never resumes automatically.
-Losing display/window focus releases input; hiding the tab pauses. View changes
-preserve CPU state, files and errors. Restart cold-boots the selected BIOS and/or
-retained media without reading the file again; it resumes an existing Play session
-when settings are closed. Debug Reset cold-boots and stays paused.
+**Debug** reveals CPU registers, Step, bounded Run, Reset machine and frame
+advance. **Advanced** contains audio diagnostics and backup RAM import/export.
+Help, Advanced and Debug pause playback and release held input. Losing focus
+releases input, and hiding the tab pauses. Select **Resume** to continue.
+Toolbar Reset cold-boots accepted media and restarts an existing Play session
+when Advanced and Debug are closed. Debug's Reset machine stays paused.
+Both retain backup RAM.
 
-The display is rasterized in Rust from guest-written video state; input goes
-through emulated SMPC hardware. Play uses
+The display is rasterized in Rust from guest-written video state, and input
+goes through emulated SMPC hardware. Play uses
 [relaxed CPU/device interleaving](docs/runtime-performance.md#relaxed-timing-playback-2026-11-25)
-to keep real-time speed; Debug instruction steps and tests use the exact scheduler. **Enable audio** requires a user gesture and
-reports blocked, muted, paused and underflow states. Actual guest sound travels
-through the bounded WebAudio consumer; no soundtrack is supplied by the UI.
+for real-time playback. Debug instruction steps and tests use the exact
+scheduler. Volume applies after the bounded Web Audio consumer, leaving guest
+PCM, emulation timing and pitch handling intact.
 
 - [Build, run, test and Pages setup](docs/setup.md)
+- [Player and touch controller validation](docs/validation-issue-257.md)
 - [Supported CPU, disc boot and hardware; limitations and primary manuals](docs/architecture.md)
 - [Local BIOS startup, private ZIP probe and compatibility limits](docs/bios-startup.md)
 - [Hardware conformance matrix and outstanding Issue #17 scope](docs/hardware-conformance.md)
@@ -68,7 +66,7 @@ through the bounded WebAudio consumer; no soundtrack is supplied by the UI.
 - [Redistribution/provenance audit](docs/homebrew-provenance.md)
 - [Play/Debug validation and pending deployment verification](docs/validation-issue-9.md)
 
-Use **Select disc** to load one supported
+Use **Insert disc** to load one supported
 self-contained CHD v5 CD-ROM, one cooked ISO, or one CUE
 with its referenced BINARY tracks selected together. Ordinary discs need no
 emulator-specific sidecar, extracted executable or per-title metadata. Adding
@@ -82,10 +80,10 @@ and generated disc image. No Sega security objects, SDK libraries or firmware ar
 bundled; this is not a stock-console authenticated disc.
 
 The original **HLE bootstrap prototype** debugger fixture remains available in
-**Advanced → Debug → Load HLE bootstrap fixture**. Loading this diagnostic
-clears both image selections. Reset, then Run 6 yields `R0=4`, `R1=7`,
+**Debug → Load HLE bootstrap fixture**. Loading this diagnostic
+clears both image selections. Reset machine, then Run 6 yields `R0=4`, `R1=7`,
 `PC=0x0600000E`. **User-provided BIOS** accepts a local raw 512 KiB file and uses
-its actual reset vectors, with or without a disc. Start advances the real guest;
+its actual reset vectors, with or without a disc. Play advances the real guest;
 BIOS-only eligibility does not guarantee an authentic firmware menu. Native Sega
 BIOS boot/game support is incomplete and often faults on unimplemented devices
 or bus behavior. BIOS mode never silently changes into HLE.
@@ -95,13 +93,11 @@ analytics, CDN or backend. Only public static runtime assets are fetched by
 the normal Play flow. Use files you are authorized to use; do not contribute
 proprietary media.
 
-**Advanced / backup RAM & format details** offers **Backup RAM** import/export.
+**Advanced** offers **Backup RAM** import/export.
 The packed 32768-byte raw
 backup survives resets and boot changes in the current tab. Export before closing
 or reloading; import explicitly replaces the bytes. This is not a save state or
-BIOS backup-library emulation. A second direct
-digital pad is available to guest programs: I/K/J/L directions, U/O/P for A/B/C,
-Right Shift for Start. Both pads release on focus loss and pause.
+BIOS backup-library emulation.
 
 The **Browser Pages** workflow validates native Rust, Wasm and Chromium on pushes
 to `main` and PRs targeting `main`; successful `main` revisions deploy only `web/`.
