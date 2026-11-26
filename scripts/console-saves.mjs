@@ -306,19 +306,31 @@ async function passiveTabPreservesGuestSave(browser, url) {
   try {
     let now = 100000;
     await useHostClock(context, url, () => now);
-    const writer = await context.newPage();
-    await writer.goto(url);
-    await ready(writer);
-    await writer.locator("#bios").setInputFiles(filename("backup-increment-guest.bin", backupIncrementGuest()));
-    await writer.waitForFunction(() => !document.getElementById("play").disabled);
-    const runGuest = () => writer.evaluate(async () => {
+    const loadGuest = async page => {
+      await page.locator("#bios").setInputFiles(filename("backup-increment-guest.bin", backupIncrementGuest()));
+      await page.waitForFunction(() => !document.getElementById("play").disabled);
+    };
+    const runGuest = page => page.evaluate(async () => {
       const { emulator } = await import("./app.js");
       await emulator.run_steps(64);
       await emulator.pause();
     });
+    const openAdvanced = async page => {
+      await page.evaluate(() => {
+        window.advancedToggle = new Promise(resolve => document.getElementById("settings")
+          .addEventListener("toggle", () => resolve(), { once: true }));
+      });
+      await settings(page).click();
+      await page.evaluate(() => window.advancedToggle);
+      await standby(page);
+    };
+    const writer = await context.newPage();
+    await writer.goto(url);
+    await ready(writer);
+    await loadGuest(writer);
     const image = Buffer.alloc(32768);
     image[0] = 1;
-    await runGuest();
+    await runGuest(writer);
     await status(writer, savedStatus);
     assert.equal((await digests(writer))[0], checksum(image));
     await writer.locator("#restart").click();
@@ -328,23 +340,34 @@ async function passiveTabPreservesGuestSave(browser, url) {
     const passive = await context.newPage();
     await passive.goto(url);
     await ready(passive);
-    await passive.evaluate(() => {
-      window.advancedToggle = new Promise(resolve => document.getElementById("settings")
-        .addEventListener("toggle", () => resolve(), { once: true }));
-    });
-    await settings(passive).click();
-    await passive.evaluate(() => window.advancedToggle);
-    await standby(passive);
+    await openAdvanced(passive);
     assert.equal((await digests(passive))[0], checksum(image));
 
-    await runGuest();
+    await runGuest(writer);
     image[0] = 2;
     assert.equal((await digests(writer))[0], checksum(image), "The original guest updated internal backup RAM");
     assert.equal(await text(writer, "save-storage-status"), savedStatus,
       "Opening Advanced in a passive tab must leave the guest writer able to commit");
-    await writer.reload();
-    await ready(writer);
-    assert.equal((await digests(writer))[0], checksum(image), "Reload restored the acknowledged guest write");
+
+    // Reverse roles. The idle tab now has a successful commit in this session,
+    // and the guest writer has already restored that shared revision.
+    await passive.reload();
+    await ready(passive);
+    assert.equal((await digests(passive))[0], checksum(image), "Reload restored the acknowledged guest write");
+    await loadGuest(passive);
+    const idleWorker = writer.workers().find(worker => worker.url() === url + "playback-worker.js");
+    assert(idleWorker);
+    await idleWorker.evaluate(now => { self.testHostTime = now; }, now);
+    await openAdvanced(writer);
+
+    await runGuest(passive);
+    image[0] = 3;
+    assert.equal((await digests(passive))[0], checksum(image), "The new guest writer updated internal backup RAM");
+    assert.equal(await text(passive, "save-storage-status"), savedStatus,
+      "Opening Advanced in an idle tab that previously saved must leave the new guest writer able to commit");
+    await passive.reload();
+    await ready(passive);
+    assert.equal((await digests(passive))[0], checksum(image), "Reload restored the new guest writer's save");
   } finally { await context.close(); }
 }
 
@@ -478,6 +501,46 @@ async function bios(fixture = "cartridge") {
     words.forEach((word, i) => bytes.writeUInt16BE(word, at + i * 2));
   }
   return bytes;
+}
+
+async function cartridgeChangeDuringBiosSelection(browser, url) {
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    await page.goto(url);
+    await ready(page);
+    await settings(page).click();
+    await standby(page);
+    await page.evaluate(async () => {
+      const { emulator } = await import("./app.js");
+      const resetBios = emulator.reset_bios;
+      window.cartridgeResetAcknowledged = new Promise(acknowledged => {
+        emulator.reset_bios = async bytes => {
+          emulator.reset_bios = resetBios;
+          try { return await resetBios(bytes); }
+          finally {
+            // Hold the cold-reset receipt while the BIOS selection starts a new boot.
+            await new Promise(release => {
+              window.releaseCartridgeReset = release;
+              acknowledged();
+            });
+          }
+        };
+      });
+    });
+    const selector = page.getByLabel("Virtual cartridge");
+    await selector.selectOption("1");
+    await page.evaluate(() => window.cartridgeResetAcknowledged);
+    const firmware = await bios();
+    firmware.writeUInt32BE(0x1400); // Original read-only cartridge probe.
+    await page.locator("#bios").setInputFiles(filename("original-cartridge-probe.bin", firmware));
+    await page.evaluate(() => window.releaseCartridgeReset());
+    await page.waitForFunction(() => !document.getElementById("play").disabled &&
+      document.getElementById("bios-state").textContent === "Loaded locally");
+    await playUntil(page, BIOS_TRACE + 21 * 4);
+    assert.equal((await guestWords(page, BIOS_TRACE, 1))[0], 0x21, "The surviving BIOS boot detected Power Memory");
+    assert.equal(await selector.inputValue(), "1");
+  } finally { await context.close(); }
 }
 
 async function production(browser, url) {
@@ -922,6 +985,7 @@ async function storageFailures(browser, url) {
 
 export async function consoleSaves(browser, url) {
   await passiveTabPreservesGuestSave(browser, url);
+  await cartridgeChangeDuringBiosSelection(browser, url);
   await retryAfterGuestRead(browser, url);
   await importDuringGuestFormat(browser, url);
   await importWithPendingSetsmem(browser, url);

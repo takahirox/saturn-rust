@@ -108,6 +108,7 @@ const saveFiles = [...backupDevices,
 ];
 let backupGeneration = 0;
 let cartridge = 0;
+let pendingCartridge;
 let saveStorage = { state: "loading" };
 const cartridgePreference = "saturn-rust-cartridge";
 let backupReadStatus = null;
@@ -238,14 +239,14 @@ function releaseButtons() {
   }
 }
 
-async function pause() {
+async function pause({ checkpoint = playing } = {}) {
   pauseRevision++;
   playing = false;
   queuedAudio = [];
   audio.setPaused(true);
   releaseButtons();
   render();
-  if (emulator) await emulator.pause();
+  if (emulator) await emulator.pause({ checkpoint });
 }
 function deliverAudio({ pcm }) {
   if (!playing || !audio.node || audio.context.state !== "running") return;
@@ -482,7 +483,7 @@ function saveReplaced(generation) {
   clearDisplay();
 }
 
-async function reset({ clearMedia = false, slot } = {}) {
+async function reset({ clearMedia = false } = {}) {
   const generation = ++bootGeneration;
   resetting = true;
   const current = () => generation === bootGeneration;
@@ -506,9 +507,12 @@ async function reset({ clearMedia = false, slot } = {}) {
     // The rejected empty ROM clears execution while retaining mounted media.
     try { await emulator.reset_bios(new Uint8Array()); } catch { /* Expected size rejection. */ }
     if (!current()) return;
+    // A media selection may supersede the reset that requested the slot.
+    const slot = pendingCartridge;
     if (slot !== undefined) {
       await emulator.set_cartridge(slot);
       cartridge = slot;
+      if (pendingCartridge === slot) pendingCartridge = undefined;
       try { localStorage.setItem(cartridgePreference, String(slot)); } catch { /* Optional preference. */ }
     }
     if (!current()) return;
@@ -587,7 +591,8 @@ try {
     const slot = Number(select.value);
     if (slot === cartridge) return;
     const restoreFocus = document.activeElement === select;
-    await reset({ slot });
+    pendingCartridge = slot;
+    await reset();
     if (restoreFocus && document.activeElement === document.body && !select.disabled) select.focus();
   });
   $("retry-saves").addEventListener("click", () => void act(async () => {
@@ -880,8 +885,10 @@ try {
   }
   $("screen").addEventListener("blur", releaseButtons);
   window.addEventListener("blur", releaseButtons);
-  window.addEventListener("pagehide", () => { void pause().catch(() => {}); });
-  document.addEventListener("visibilitychange", () => { if (document.hidden) void act(pause, { clearError: false }); });
+  window.addEventListener("pagehide", () => { void pause({ checkpoint: true }).catch(() => {}); });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) void act(() => pause({ checkpoint: true }), { clearError: false });
+  });
   requestAnimationFrame(animate);
   $("controls").disabled = false;
   $("debug-controls").disabled = false;

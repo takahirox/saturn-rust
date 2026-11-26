@@ -87,10 +87,10 @@ export class WorkerEmulator {
     this.queueInput();
   }
   async play() { await this.ready; this.flushInput(); return this.client.play(); }
-  async pause() {
+  async pause({ checkpoint = true } = {}) {
     await this.ready;
     this.flushInput();
-    const response = await this.client.call("view");
+    const response = await this.client.call("view", { checkpoint });
     this.acceptView(response.view, response.epoch);
     return this.state;
   }

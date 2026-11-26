@@ -158,10 +158,10 @@ export class ConsoleSaves {
   // snapshot is sampled separately. Backup images cross Wasm only when dirty.
   poll() {
     if (!this.restored || this.saving || this.error || this.state === "session-only") return;
-    this.saveIfChanged(false);
+    this.saveIfChanged();
   }
 
-  async flush({ retry = false, replacement } = {}) {
+  async flush({ checkpoint = false, retry = false, replacement } = {}) {
     while (this.saving) await this.saving;
     if (this.state === "session-only") {
       if (replacement) throw new Error("Reload the player to resume local storage.");
@@ -182,7 +182,7 @@ export class ConsoleSaves {
         if (!matches) throw conflict();
       } catch (error) { this.status("write-error", error); return; }
     }
-    await this.saveIfChanged(true, replacement);
+    await this.saveIfChanged({ immediate: true, checkpoint, replacement });
     if (replacement && this.error) throw this.error;
     return restoredRecord;
   }
@@ -234,17 +234,17 @@ export class ConsoleSaves {
     else this.machine.restore_smpc_battery(bytes, 0n);
   }
 
-  saveIfChanged(force, replacement) {
+  saveIfChanged({ immediate = false, checkpoint = false, replacement } = {}) {
     try {
       const now = nowMillis(this.now);
       const revisions = this.currentRevisions();
       const changed = revisions.map((revision, i) => revision !== this.revisions[i]);
-      const checkClock = force || now - this.lastCheckpoint >= RTC_CHECKPOINT_MS;
+      const checkClock = immediate || now - this.lastCheckpoint >= RTC_CHECKPOINT_MS;
       if (!replacement && !changed.some(Boolean) && !checkClock) return;
       const battery = replacement?.index === 2 ? replacement.bytes : this.machine.export_smpc_battery();
-      // Once this session has committed its own changes, checkpoint paused time
-      // too. A tab that only restored must leave the shared revision untouched.
-      const reanchor = force && this.hasCommitted && now > this.head.anchor;
+      // Only session boundaries can reanchor an unchanged clock, and only
+      // after this session has committed changes of its own.
+      const reanchor = checkpoint && this.hasCommitted && now > this.head.anchor;
       if (!replacement && !reanchor && !changed.some(Boolean) && battery.every((byte, i) => byte === this.battery[i])) {
         this.lastCheckpoint = now;
         if (this.error) this.status(this.head ? "ready" : "empty");
