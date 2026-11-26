@@ -33,11 +33,23 @@ function backupIncrementGuest() {
 }
 
 async function openRecovery(page, warning) {
-  assert.equal(await page.locator("#settings").evaluate(details => details.open), false);
+  const advanced = page.locator("#settings");
+  assert.equal(await advanced.evaluate(details => details.open), false);
   assert(await page.locator("#save-warning").isVisible());
   assert.match(await text(page, "save-warning"), warning);
+  // The recovery shortcut opens Advanced before its queued toggle starts the pause.
+  await advanced.evaluate(details => {
+    window.recoveryAdvancedOpened = false;
+    function opened() {
+      if (!details.open) return;
+      window.recoveryAdvancedOpened = true;
+      details.removeEventListener("toggle", opened);
+    }
+    details.addEventListener("toggle", opened);
+  });
   await page.getByRole("button", { name: "Open Save management" }).focus();
   await page.keyboard.press("Enter");
+  await page.waitForFunction(() => window.recoveryAdvancedOpened);
   await standby(page);
   assert.equal(await page.evaluate(() => document.activeElement.id), "backup-controls");
 }
@@ -465,10 +477,14 @@ async function sessionRecovery(page, url, storedImages) {
   const worker = await denyStorageOnStartup(page, url);
   await openRecovery(page, /Could not restore local saves/);
   const sessionOnly = page.getByRole("checkbox", { name: "Import for this session only" });
+  const hasFocus = () => sessionOnly.evaluate(input => document.activeElement === input);
+  assert.equal(await sessionOnly.isEnabled(), true);
   assert.equal(await sessionOnly.isChecked(), false);
   await sessionOnly.focus();
+  assert.equal(await hasFocus(), true);
   await page.keyboard.press("Space");
   assert.equal(await sessionOnly.isChecked(), true);
+  assert.equal(await hasFocus(), true);
   const recovered = [Buffer.alloc(32768, 0x59), Buffer.alloc(524288, 0xA7)];
   for (const [index, id] of ["backup", "cartridge-backup"].entries()) {
     const bytes = recovered[index];
@@ -753,9 +769,27 @@ async function production(browser, url) {
     await status(page, savedStatus);
     assert.deepEqual(await clockSettings(page), guestSettings);
     assert.deepEqual(await digests(page), cleared);
+
+    // A new import for the cartridge supersedes a pending internal image read.
+    await page.evaluate(() => {
+      const read = File.prototype.arrayBuffer;
+      File.prototype.arrayBuffer = function () {
+        if (this.name !== "superseded-internal.bin") return read.call(this);
+        return new Promise(resolve => { window.finishInternalRead = async () => {
+          File.prototype.arrayBuffer = read;
+          resolve(await read.call(this));
+        }; });
+      };
+    });
+    await page.locator("#backup-import").setInputFiles(filename("superseded-internal.bin", Buffer.alloc(32768, 0x5A)));
+    await page.waitForFunction(() => Boolean(window.finishInternalRead));
+    assert.equal(await text(page, "backup-status"), "Reading backup RAM locally…");
     await page.locator("#cartridge-backup-import").setInputFiles(filename(name, exported));
     await page.waitForFunction(() => document.getElementById("cartridge-backup-status").textContent.startsWith("Imported"));
     await status(page, savedStatus);
+    await page.evaluate(() => window.finishInternalRead());
+    assert.match(await text(page, "backup-status"), /cancelled by a newer import/);
+    assert.deepEqual(await digests(page), original);
     await page.reload();
     await ready(page);
     assert.deepEqual(await digests(page), original);
@@ -977,6 +1011,21 @@ async function storageFailures(browser, url) {
       await durableClock.restore();
       require(durableClock.machine.export_smpc_battery().every((byte, i) => byte === expectedRecovery[i]),
         "session-only clock recovery preserved the stored snapshot");
+
+      const withoutStorage = () => new ConsoleSaves(new Emulator(), () => {}, { now: () => now, database: () => null });
+      now = 20000;
+      const offline = withoutStorage();
+      await offline.restore();
+      require(offline.state === "restore-error", "local storage unavailable during clock recovery");
+      await offline.importBatteryRecovery(file, { sessionOnly: true });
+      const reexported = offline.exportBatteryRecovery();
+      require(new DataView(reexported.buffer).getBigUint64(8) === 30000n, "re-export kept the accepted recovery anchor");
+      now = 30000;
+      const roundTrip = withoutStorage();
+      await roundTrip.restore();
+      await roundTrip.importBatteryRecovery(reexported, { sessionOnly: true });
+      require(roundTrip.machine.export_smpc_battery().every((byte, i) => byte === snapshot[i]),
+        "re-export during rollback did not add time when the host recovered");
       return received.some(status => status.state === "saving") && received.some(status => status.state === "write-error");
     });
     assert.equal(result, true);
