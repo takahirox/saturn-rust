@@ -633,10 +633,11 @@ try {
         const importBoot = bootGeneration;
         output.textContent = `Importing ${description}…`;
         render();
-        await emulator[`import_${method}`](bytes, sessionOnly);
+        const { transportError } = await emulator[`import_${method}`](bytes, sessionOnly);
         saveReplaced(importBoot);
         const resetHint = saveResetRequired ? " Reset to boot with the new data." : "";
-        output.textContent = `Imported ${description}${sessionOnly ? " for this session only" : ""}. Playback is paused.${resetHint}`;
+        const playbackError = transportError ? ` Playback error (${transportError}).` : "";
+        output.textContent = `Imported ${description}${sessionOnly ? " for this session only" : ""}. Playback is paused.${resetHint}${playbackError}`;
       } catch (error) {
         if (generation === backupGeneration) output.textContent = `${battery ? "Clock and settings" : "Backup"} unchanged: ${error}`;
       } finally {
@@ -683,10 +684,11 @@ try {
       await pause();
       const clearBoot = bootGeneration;
       try {
-        await emulator[`import_${method}`](new Uint8Array(size));
+        const { transportError } = await emulator[`import_${method}`](new Uint8Array(size));
         saveReplaced(clearBoot);
         const resetHint = saveResetRequired ? " Reset to boot with the cleared device." : "";
-        setText(`${id}-status`, `Cleared ${name}. Playback is paused.${resetHint}`);
+        const playbackError = transportError ? ` Playback error (${transportError}).` : "";
+        setText(`${id}-status`, `Cleared ${name}. Playback is paused.${resetHint}${playbackError}`);
       } catch (error) {
         setText(`${id}-status`, `Backup unchanged: ${error}`);
       }
