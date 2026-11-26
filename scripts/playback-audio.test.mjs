@@ -19,6 +19,7 @@ async function audioHarness() {
   const processor = new Processor();
   globalThis.AudioContext = class {
     constructor() { this.state = "running"; this.audioWorklet = { addModule: async () => {} }; }
+    createGain() { return { gain: { value: 1 }, connect() {} }; }
     async resume() { this.state = "running"; this.onstatechange?.(); }
   };
   globalThis.AudioWorkletNode = class {

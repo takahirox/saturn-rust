@@ -75,14 +75,15 @@ try {
     requests.push({ externalOrWrite:true }); return route.abort();
   });
   await page.goto(origin);
+  const playback = page.locator("#play, #start:not([hidden]), #pause:not([hidden])");
   await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
   if (bios) {
     await page.locator("#bios").setInputFiles(bios);
-    await page.waitForFunction(() => !document.getElementById("start").disabled);
+    await page.waitForFunction(() => !(document.getElementById("play") ?? document.getElementById("start")).disabled);
   }
   if (values.disc) {
     await page.locator("#disc").setInputFiles([values.disc,...(values.track ?? [])].map(file=>resolve(file)));
-    await page.waitForFunction(() => !document.getElementById("start").disabled, undefined, {timeout:120000});
+    await page.waitForFunction(() => !(document.getElementById("play") ?? document.getElementById("start")).disabled, undefined, {timeout:120000});
   }
   assert.equal(await page.locator("#error").textContent(), "");
   await page.evaluate(async events => {
@@ -135,9 +136,9 @@ try {
     state.timer = setInterval(() => state.ticks++, 1);
   }, events);
   if (values["display-filter"]) await page.getByLabel("Display filter", { exact: true }).selectOption(values["display-filter"]);
-  await page.locator("#audio-enable").click();
+  if (await page.locator("#audio-enable").isVisible()) await page.locator("#audio-enable").click();
+  await playback.click();
   await page.waitForFunction(() => playbackMeasurement.app.audio.context?.state === "running");
-  await page.locator("#start").click();
   if (values.unpaced) await page.evaluate(async () => {
     const client = playbackMeasurement.app.emulator.client;
     if (!client) throw new Error("Unpaced capacity requires Worker playback");
@@ -175,7 +176,7 @@ try {
       allocations:s.allocations-before.allocations, workerFrameBytes:s.frameBytes-before.frameBytes,
       audioBefore:audio,audioAfter:{...s.app.audio.stats},fps:(s.fields()-before.fields)*1000/elapsed };
   }, { seconds, fixedFields }));
-  await page.locator("#pause").click();
+  await playback.click();
   await page.waitForFunction(() => document.getElementById("main").getAttribute("aria-busy") !== "true");
   const final = await page.evaluate(async () => {
     const s = playbackMeasurement; clearInterval(s.timer);

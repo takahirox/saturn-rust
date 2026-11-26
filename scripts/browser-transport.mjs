@@ -45,9 +45,9 @@ export async function waitForGuest(page, predicate, argument, {timeout = 30000} 
 export function waitForLoadedDisc(page, { timeout = 30000 } = {}) {
   return page.waitForFunction(() =>
     document.getElementById("status").textContent === "Ready"
-    && document.getElementById("disc-selection").textContent.includes("Loaded locally.")
+    && document.getElementById("disc-state").textContent === "Loaded locally"
     && document.getElementById("main").getAttribute("aria-busy") === "false"
-    && !document.getElementById("start").disabled, undefined, { timeout });
+    && !document.getElementById("play").disabled, undefined, { timeout });
 }
 
 export function instrumentPage(page, { compact, record }) {

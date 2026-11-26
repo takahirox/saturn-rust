@@ -27,7 +27,7 @@ export async function largeMedia(browser, url) {
         await page.waitForFunction(() => document.getElementById("status").textContent === "Ready");
         await page.locator("#view-debug").click();
         await page.locator("#settings > summary").click();
-        if (mixed) await page.locator("#audio-enable").click();
+        if (mixed) await page.evaluate(async () => (await import("./app.js")).audio.enable());
         await context.setOffline(true);
         // A genuine asynchronous local read cancelled by the Reset button must
         // never mount the pending bytes. A later valid selection must still work.

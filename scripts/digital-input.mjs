@@ -15,6 +15,12 @@ const bindings = [
 const neutral = [0xff, 0xff];
 
 export async function digitalInput(browser, url) {
+  const rom = Buffer.alloc(524288);
+  for (const line of (await readFile("tests/fixtures/digital-input.hex", "utf8")).split(/\r?\n/)) {
+    if (!line || line.startsWith("#")) continue;
+    const [at, ...words] = line.trim().split(/\s+/).map(w => parseInt(w, 16));
+    words.forEach((w, i) => rom.writeUInt16BE(w, at+i*2));
+  }
   const context = await browser.newContext();
   try {
     // Explicit guest stepping keeps input observations independent of RAF timing.
@@ -23,14 +29,8 @@ export async function digitalInput(browser, url) {
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(url);
-    const ready = () => page.waitForFunction(() => !document.getElementById("start").disabled, undefined, {polling:10});
+    const ready = () => page.waitForFunction(() => !document.getElementById("play").disabled, undefined, {polling:10});
     await page.waitForFunction(() => !document.getElementById("controls").disabled, undefined, {polling:10});
-    const rom = Buffer.alloc(524288);
-    for (const line of (await readFile("tests/fixtures/digital-input.hex", "utf8")).split(/\r?\n/)) {
-      if (!line || line.startsWith("#")) continue;
-      const [at, ...words] = line.trim().split(/\s+/).map(w => parseInt(w, 16));
-      words.forEach((w, i) => rom.writeUInt16BE(w, at+i*2));
-    }
     // Reuse the original licensed ISO container; only its executable is replaced.
     const iso = Buffer.from(await readFile("web/star-collector.iso"));
     const payload = rom.subarray(0x200, 0x300);
@@ -71,15 +71,7 @@ export async function digitalInput(browser, url) {
       (await import("./app.js")).pollGamepads();
     }, pressed);
     const sample = async (masks, packets, label) => {
-      const result = await page.evaluate(async () => {
-        const {emulator:m} = await import("./app.js");
-        const before = (await m.read_long(0x06008044));
-        // Two completed reports ensure a command in flight at keyup is retired.
-        for (let i=0; i<100 && (await m.read_long(0x06008044))<before+2; i++) (await m.run_steps(1000));
-        const packet = (await Promise.all(Array.from({length:4}, async (_, i) => (await m.read_long(0x06008020+i*4)))))
-          .flatMap(w => [w>>>24, (w>>>16)&255, (w>>>8)&255, w&255]);
-        return {masks:window.inputMasks, packet, fresh:(await m.read_long(0x06008044))>=before+2};
-      });
+      const result = await guestReport(page);
       assert(result.fresh, `${label}: guest must complete fresh INTBACK reports`);
       assert.deepEqual(result.masks, masks, `${label}: frontend masks`);
       const expected = packets.flatMap(packet => [0xf1, packet.length === 2 ? 2 : 0x16, ...packet]);
@@ -88,7 +80,7 @@ export async function digitalInput(browser, url) {
     // Identical position-independent code must work under external BIOS and HLE.
     for (const mode of ["bios", "disc"]) {
       await selectBoot(mode);
-      await page.locator("#start").click();
+      await page.locator("#play").click();
       await focus();
       await sample([0, 0], [neutral, neutral], `${mode} initial`);
       for (const [code, index, mask, packet] of bindings) {
@@ -246,7 +238,7 @@ export async function digitalInput(browser, url) {
               await new Promise(resolve => setTimeout(resolve, 1));
             }
           };
-          if (action === "canvas-blur") $("disc").focus();
+          if (action === "canvas-blur") $("disc-choose").focus();
           if (action === "window-blur") window.dispatchEvent(new Event("blur"));
           if (action === "hidden") {
             Object.defineProperty(document,"hidden",{configurable:true,value:true});
@@ -254,8 +246,8 @@ export async function digitalInput(browser, url) {
             delete document.hidden;
           }
           if (action === "pause") {
-            if ($("pause").textContent === "Resume") { $("pause").click(); await idle(); }
-            $("pause").click();
+            if ($("play").textContent === "Resume") { $("play").click(); await idle(); }
+            $("play").click();
           }
           if (action === "settings") $("settings").open = true;
           if (action === "view") $("view-debug").click();
@@ -263,7 +255,7 @@ export async function digitalInput(browser, url) {
           await idle();
         }, action);
         if (action === "boot-change") await selectBoot(mode === "bios" ? "disc" : "bios");
-        if (action === "settings") await page.waitForFunction(() => document.getElementById("pause").textContent === "Resume", undefined, {polling:10});
+        if (action === "settings") await page.waitForFunction(() => document.getElementById("play").textContent === "Resume", undefined, {polling:10});
         // A held key's autorepeat after returning focus cannot reacquire it.
         await focus(); await key("KeyW", true, {repeat:true});
         await sample([0, 0], [neutral, neutral], `${action} released`);
@@ -273,10 +265,181 @@ export async function digitalInput(browser, url) {
       }
       await selectBoot(mode);
       // Input outside the display remains available to normal UI controls.
-      await page.locator("#disc").focus();
+      await page.locator("#disc-choose").focus();
       assert.equal(await key("KeyZ"), false);
       await sample([0, 0], [neutral, neutral], "unfocused keyboard");
     }
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+  await touchInput(browser, url, rom);
+}
+
+async function guestReport(page) {
+  return page.evaluate(async () => {
+    const {emulator:m} = await import("./app.js");
+    const before = (await m.read_long(0x06008044));
+    // Two completed reports ensure a command in flight at keyup is retired.
+    for (let i=0; i<100 && (await m.read_long(0x06008044))<before+2; i++) (await m.run_steps(1000));
+    const packet = (await Promise.all(Array.from({length:4}, async (_, i) => (await m.read_long(0x06008020+i*4)))))
+      .flatMap(w => [w>>>24, (w>>>16)&255, (w>>>8)&255, w&255]);
+    return {masks:window.inputMasks, packet, fresh:(await m.read_long(0x06008044))>=before+2};
+  });
+}
+
+async function touchInput(browser, url, rom) {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 3 });
+  try {
+    await context.addInitScript(() => { window.requestAnimationFrame = () => 1; });
+    const page = await context.newPage(), errors = [];
+    page.on("pageerror", error => errors.push(error.message));
+    await page.goto(url);
+    const cdp = await context.newCDPSession(page);
+    const wait = predicate => page.waitForFunction(predicate, undefined, { polling: 10 });
+    const firmware = { name: "original-digital-input.bin", mimeType: "application/octet-stream", buffer: rom };
+    const ready = () => wait(() => !document.getElementById("play").disabled);
+    await wait(() => !document.getElementById("controls").disabled);
+    await page.locator("#bios").setInputFiles(firmware);
+    await ready();
+    const play = page.locator("#play");
+    await play.tap();
+    await page.evaluate(() => {
+      window.pad = { connected: true, mapping: "standard", axes: [], buttons: Array.from({length: 16}, () => ({ pressed: false, value: 0 })) };
+      Object.defineProperty(navigator, "getGamepads", { value: () => [window.pad] });
+    });
+    const pad = async (pressed, analog = false) => page.evaluate(async ({ pressed, analog }) => {
+      window.pad.axes = analog ? [0, 0] : [];
+      for (const [i, button] of window.pad.buttons.entries()) {
+        button.pressed = pressed.includes(i);
+        button.value = Number(button.pressed);
+      }
+      (await import("./app.js")).pollGamepads();
+    }, { pressed, analog });
+    const packet = async (expected = neutral, analog = false, label = "") => {
+      const actual = await guestReport(page);
+      assert(actual.fresh, `Touch INTBACK reports must advance: ${label}`);
+      const p1 = [0xf1, analog ? 0x16 : 2, ...expected];
+      const p2 = [0xf1, 2, ...neutral];
+      assert.deepEqual(actual.packet, [...p1, ...p2, ...Array(16 - p1.length - p2.length).fill(255)], label);
+    };
+    const point = async (selector, id = 1, u = .5, v = .5) => {
+      const box = await page.locator(selector).boundingBox();
+      return { id, x: box.x + box.width * u, y: box.y + box.height * v };
+    };
+    const button = (mask, id = 1) => point(`[data-mask="${mask}"]`, id);
+    const dispatch = (type, touchPoints = []) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints });
+    // Playwright cannot resize the native window while the element is
+    // fullscreen. Apply mobile metrics without changing the native window.
+    const rotate = (width, height) => cdp.send("Emulation.setDeviceMetricsOverride", {
+      width, height, deviceScaleFactor: 3, mobile: true, screenWidth: width, screenHeight: height,
+      screenOrientation: width > height ? { type: "landscapePrimary", angle: 90 } : { type: "portraitPrimary", angle: 0 },
+    });
+    const down = (...points) => dispatch("touchStart", points);
+    const up = (...points) => dispatch("touchEnd", points);
+    await page.evaluate(() => scrollTo(0, 0));
+    for (const [, , mask, expected] of bindings) {
+      await down(await button(mask));
+      await packet(expected, false, `Touch button ${mask}`);
+      await up();
+      await packet(neutral, false, `Release button ${mask}`);
+    }
+    const upperLeft = await point("#dpad", 1, .16, .16);
+    const lowerRight = await point("#dpad", 1, .83, .83);
+    const face = await button(64, 2), shoulder = await button(2048, 3);
+    await down(upperLeft, face, shoulder);
+    await packet([0xab, 0x7f], false, "Up+Left, A and L");
+    await dispatch("touchMove", [lowerRight, face, shoulder]);
+    await packet([0x5b, 0x7f], false, "Slide to Down+Right");
+    await up(face);
+    await packet([0x5f, 0x7f], false, "Release A independently");
+    await up(shoulder);
+    await packet([0x5f, 0xff], false, "Release L independently");
+    await dispatch("touchMove", [{ ...lowerRight, y: lowerRight.y - 220 }]);
+    await packet(neutral, false, "Slide outside captured D-pad");
+    await dispatch("touchMove", [upperLeft]);
+    await packet([0xaf, 0xff], false, "Slide back inside captured D-pad");
+    await dispatch("touchCancel");
+    await packet();
+
+    await down(face);
+    await page.keyboard.down("z");
+    await pad([0, 1]);
+    await up();
+    await packet([0xfa, 0xff], false, "Touch release retains physical A and B");
+    await down(face);
+    await page.keyboard.up("z");
+    await pad([]);
+    await packet([0xfb, 0xff], false, "Physical release retains touch A");
+    await pad([1], true);
+    await down(shoulder);
+    await packet([0xfa, 0x7f, 128, 128, 255, 0], true, "3D pad B plus touch A and full L travel");
+    await up(shoulder);
+    await packet([0xfa, 0xff, 128, 128, 0, 0], true, "3D overlay releases touch trigger");
+    await up();
+    await pad([]);
+
+    await page.evaluate(() => {
+      document.querySelector('[data-mask="64"]').addEventListener("gotpointercapture", event => {
+        window.capturedPointer = event.pointerId;
+      }, { once: true });
+    });
+    await down(face);
+    await dispatch("touchMove", [{ ...face, x: face.x + 8 }]);
+    await wait(() => window.capturedPointer !== undefined);
+    await page.locator('[data-mask="64"]').evaluate(node => node.releasePointerCapture(window.capturedPointer));
+    await dispatch("touchMove", [{ ...face, x: face.x + 16 }]);
+    await wait(() => !document.querySelector('[data-mask="64"]').classList.contains("pressed"));
+    await packet(neutral, false, "Lost capture releases face button");
+    await up();
+
+    const settle = () => wait(() => document.getElementById("main").getAttribute("aria-busy") === "false");
+    for (const action of ["blur", "visibility", "pause", "help", "advanced", "debug", "reset", "media", "fullscreen", "orientation"]) {
+      if (await play.textContent() !== "Pause") await play.tap();
+      await settle();
+      await page.evaluate(() => scrollTo(0, 0));
+      await down(await button(64));
+      await packet([0xfb, 0xff], false, `${action} held`);
+      if (action === "media") await page.locator("#bios").setInputFiles(firmware);
+      else if (action === "fullscreen") {
+        await page.locator("#fullscreen").click();
+        await wait(() => document.fullscreenElement?.id === "player-shell");
+      } else if (action === "orientation") await rotate(844, 390);
+      else await page.evaluate(action => {
+        const selectors = { pause: "#play", help: "#show-help", advanced: "#settings > summary", debug: "#view-debug", reset: "#restart" };
+        if (action === "blur") window.dispatchEvent(new Event("blur"));
+        else if (action === "visibility") {
+          Object.defineProperty(document, "hidden", { configurable: true, value: true });
+          document.dispatchEvent(new Event("visibilitychange"));
+          delete document.hidden;
+        } else document.querySelector(selectors[action]).click();
+      }, action);
+      await settle();
+      await packet(neutral, false, `${action} releases touch before pointerup`);
+      await up();
+      if (action === "help") await page.keyboard.press("Escape");
+      if (action === "advanced") await page.locator("#settings > summary").click();
+      if (action === "debug") await page.locator("#view-play").click();
+      if (action === "fullscreen") {
+        await down(await button(32));
+        await packet([0xfd, 0xff], false, "Fullscreen touch C");
+        await rotate(844, 390);
+        await wait(() => innerWidth > innerHeight && !document.querySelector('[data-mask="32"]').classList.contains("pressed"));
+        await packet(neutral, false, "Rotate fullscreen with C held");
+        await up();
+        await down(await button(32));
+        await packet([0xfd, 0xff], false, "Landscape fullscreen touch C");
+        await page.locator("#exit-fullscreen").click();
+        await wait(() => !document.fullscreenElement);
+        await packet(neutral, false, "Exiting fullscreen releases touch");
+        await up();
+        await rotate(390, 844);
+      }
+      if (["visibility", "pause", "help", "advanced", "debug"].includes(action)) assert.equal(await play.textContent(), "Resume");
+    }
+    await page.evaluate(() => scrollTo(0, 0));
+    await down(await button(256));
+    await packet([0xff, 0xef], false, "Landscape keeps Z identity");
+    await up();
+    await packet();
     assert.deepEqual(errors, []);
   } finally { await context.close(); }
 }
