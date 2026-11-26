@@ -6695,7 +6695,9 @@ library, all hardware tests and debugger instruction steps.
 - Each SH-2 runs `Cpu::step` against immediate functional memory for a
   128-reference-clock slice, accumulating instruction states and the existing
   BSC/A-bus/VRAM wait models (bounded per instruction). The devices then
-  advance over the same interval. CPUs yield while an SCU DMA owns the bus.
+  advance over the same interval. CPUs yield while an SCU DMA owns the bus,
+  and a CPU also yields while its own auto-request or burst DMAC block is
+  active (the exact scheduler retires none of its instructions meanwhile).
 - Interrupts are sampled at slice starts and after the mask is lowered;
   external vectors are acquired from the SCU at entry.
 - A short backward loop that returns to an identical register state without

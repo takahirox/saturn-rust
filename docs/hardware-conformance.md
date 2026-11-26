@@ -623,7 +623,7 @@ in bus.rs (1/3/8/17/32-clock chunks, reset, source 13 and DMA trigger 6).
 | Normal/scaled/distorted sprites, [VDP1] §§6.1–6.2,7.4–7.6 | Width/height, flips, two-point and nine anchor scales with signed extents, ruled quadrilateral scan conversion, HSS/EOS source selection | VIDEO, HSSG | PRISM (normal), HSSG, `vdp1-signed-scale` | Physical edge/zoom rounding, preclip direction and draw bandwidth | Pending |
 | Polygons/lines/polylines, [VDP1] §§7.7–7.9 | Solid ruled quads and integer line segments | VIDEO | PRISM (polygons) | Full independent sloped-edge and repeated-pixel corpus | Pending |
 | Clip/local coordinates, [VDP1] §§7.1–7.3 | System/user inside/outside clips, local offsets | VIDEO | PRISM (system) | Full extreme-coordinate/clip boundary corpus | Pending |
-| Sprite texture/color modes, [VDP1] §§3.1/5.1/5.2/6.3–6.6 | Packed 4-bit bank/LUT, 64/128/256 bank and RGB555, retained 16-word LUT before drawing, separately fetched character words and framebuffer publication, transparent pixels, two end codes per raster row | VIDEO; [table/character vectors](#retained-vdp1-tables-and-characters-68k-ea-waits-and-cd-transfer-completion) | PRISM (RGB555); original lookup/character rewrite guests | Scaling/end-code interaction, wrapping, physical prefetch overlap and all browser formats | Pending |
+| Sprite texture/color modes, [VDP1] §§3.1/5.1/5.2/6.3–6.6 | Packed 4-bit bank/LUT, 64/128/256 bank and RGB555, retained 16-word LUT before drawing, separately fetched character words and framebuffer publication, transparent pixels, two end codes per raster row | VIDEO; [table/character vectors](#retained-vdp1-tables-and-characters-68k-ea-waits-and-cd-transfer-completion) | PRISM (RGB555); original lookup/character rewrite guests | Scaling/end-code interaction, wrapping, measured prefetch timing and all browser formats; the [character-read overlap](#scsp-dsp-reserved-fields-vdp1-character-overlap-and-relaxed-dmac-ownership-2026-11-26) is a reference-model calibration | Pending |
 | Shading/color calculation, [VDP1] §6.3 | Gouraud vertex-word fetches, mesh, MSB-only, six-clock shadow/transparency, half-luminance and combined Gouraud effects | VIDEO, [VDP1 memory/effect vectors](#vertical-counter-and-vdp1smpc-memory-boundaries) | PRISM; original FRT/pixel effects guest | Subpixel interpolation and duplicate-coverage edges; complete readout/effects corpus | Pending |
 | Draw/erase/swap/status/IRQ, [VDP1] §4 | PTMR; bounded 30-clock ENDR; per-dot draw cursor, manual transfer-over; scanline display erase and raster-sampled VBE with capacity-preserving word publication; manual/auto change, persistent VBE, CEF/BEF/COPR/LOPR; SCU IRQ/DMA trigger | VIDEO, VIRQ, PRISM, VTX; [local-memory vectors](#scheduled-68k-resetiack-and-vdp1-local-memory-ownership) | PRISM, VTX; command-fetch/ownership guests | Complete command/effect memory costs, physical erase cadence and half-line/swap phase | Pending |
 | VDP2 VRAM, [VDP2] §3 | Bitmap RAM/bank offsets; all eight cycle words select CPU grants, split-bank matching and idle/linked timing, unused-screen release, rotation ownership and high-resolution slot limits; beam output requires addressed-bank display grants and format/reduction bandwidth | VIDEO, SC, VTX, [FETCHG](#vdp2-display-fetch-grants-and-line-table-latches-fetchg); `access.rs`, `vram_grant_tests.rs` | PRISM, SC, VTX, FETCHG | Per-word display-fetch phase/retention and complete SCU/DMA arbitration remain | Pending |
@@ -1040,7 +1040,7 @@ processor core, assembler, SDK object or effect program was used.
 | MRD/MWT/IWT/IWA, TABLE/MASA/NXADR, RBL/RBP | `Dsp::step` sound RAM path, read latch after two steps | DSPV `ring_table_linear_reads_use_two_step_latency_and_preserve_read_before_write` | Complete sound RAM/pipeline guest corpus and CPU/DMA contention remain |
 | NOFL linear/normalized-float conversion | `pack/unpack`, `Dsp::step` | DSPV `floating_memory_format_has_independent_bit_patterns_and_bounded_error` | Full independent float/subnormal/rounding and delayed memory-cycle corroboration remains |
 | IMXL/ISEL, EFSDL/EFPAN, external CD route | `Dsp::add_slot`, `Scsp::sample` | DSPV `slot_send_wraps_mix_without_saturation_and_dsp_output_obeys_routing`; CLAB exact samples | CLAB in browser: changed guest coefficient changes exact stereo and computed result; real AudioWorklet, changed CD track; full synthesis remains |
-| Invalid instructions/ports | `Dsp::step/read/write` bounded diagnostics | DSPV `illegal_memory_steps_and_reserved_ports_fail_without_faking_effects` | Guest fault corpus remains |
+| Invalid instructions/ports | `Dsp::step/read/write` bounded diagnostics; reserved MPRO63/MPRO44/MPRO8:7 are not decoded ([details](#scsp-dsp-reserved-fields-vdp1-character-overlap-and-relaxed-dmac-ownership-2026-11-26)) | DSPV `illegal_memory_steps_and_reserved_ports_fail_without_faking_effects`, `reserved_instruction_fields_do_not_change_execution` | Guest fault corpus remains |
 
 The sound scheduler uses the rational 5.6448 MHz instruction clock from
 [SCSP] §2.2/table2.2 (128 steps at 44.1 kHz). Each instruction reads live MPRO,
@@ -4212,3 +4212,22 @@ calibration, not primary-source or physical measurement evidence for envelope
 times, and it does not establish commercial-game compatibility. All other
 Issue #17 audio and synthesis criteria remain open.
 
+## SCSP DSP reserved fields, VDP1 character overlap and relaxed DMAC ownership (2026-11-26)
+
+Related to #17. Local retail diagnosis (no private media or traces are
+published) found that choosing a protagonist in Machi stopped playback with an
+unsupported SCSP access, and that switching protagonists on the selection screen
+flickered for one field. Three behaviors differed from the hardware-tested
+reference model (Mednafen/Beetle Saturn) and from the exact scheduler:
+
+| Behavior | Previous model | Implementation | Evidence |
+| --- | --- | --- | --- |
+| DSP reserved fields | MPRO63, MPRO44 and MPRO8:7 faulted at execution; the game's reverb program reads a table word as `0000 0000 A000 0134` (MPRO8 set) | [`Dsp::step_core`](../src/sound/dsp.rs) and the cached validation no longer decode them, as in the reference DSP | `reserved_instruction_fields_do_not_change_execution` compares every reserved field against the same table-read/MEMS/TEMP/EFREG program; the scenario now continues through the character's opening |
+| VDP1 character reads | Each character word read took two clocks before its dots, so 4/8-bit sprites cost 1.5–2 clocks per dot. The selection screen (two 320×224 sprites, two portraits and twelve tiles each field) drew until line 257–262 of 263 and overran into the next field | [`Vdp1::overlap_fetch`](../src/vdp1.rs): VRAM and the framebuffer are separate ports (ST-013 §2.1), so the next word's read overlaps up to two clocks of dots already plotted from the current word. A row's first word still takes two clocks; 16-bit dots still take two clocks each; a busy VRAM port stops the overlap | Updated [table](../src/vdp1/table_tests.rs), [progress](../src/vdp1/progress_tests.rs) and [ownership](../src/bus/vdp1_tests.rs) vectors still check that a word read before a mutation keeps its old dots; the scene now ends drawing by line 128–167 |
+| Relaxed DMAC ownership | Relaxed playback kept executing a CPU while its own auto-request DMAC copied a 25 KB portrait into VDP1 VRAM. The exact scheduler retires no master instruction for those 45 lines (the slave keeps running), so the game advanced one field early and showed the previous portrait for one field | [`Bus::fast_dmac_holds_bus`](../src/bus.rs) holds that CPU for the block, as for SCU DMA | Relaxed frames equal the exact scheduler's through the first eight of ten local selection moves; in the last two the slide animation runs a few fields apart, and no move shows the previous portrait again |
+
+The overlap is a reference-emulator calibration, not physical timing evidence;
+the reference charges about one clock per dot plus a small depth-dependent
+adjustment. Relaxed playback remains a non-conformance scheduler. All other
+Issue #17 criteria remain open, and this does not establish commercial-game
+compatibility.

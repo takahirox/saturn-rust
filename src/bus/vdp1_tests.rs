@@ -215,9 +215,10 @@ fn every_board_master_holds_unfetched_lookup_words_but_preserves_captured_entrie
             advance(&mut bus, capture - 63 - startup - 8, chunk);
             bus.write16(VRAM + 0x1000, 0xFC00).unwrap();
             bus.write16(VRAM + 0x1002, 0x801F).unwrap();
-            // Uncontended:64 command+32 LUT+4 texture+8 dots+32 END=140.
+            // Uncontended: 64 command + 32 LUT + 2 first texture word + 8 dots
+            // (the second word's read overlaps the first four) + 32 END = 138.
             // CPU/DMAC add one8-clock word; SCU adds two8-clock byte fringes.
-            let finish = if owner == Owner::Scu { 156 } else { 148 };
+            let finish = if owner == Owner::Scu { 154 } else { 146 };
             advance(&mut bus, finish - capture - 1, chunk);
             assert_eq!(bus.read16(FRAMEBUFFER), Ok(0x83E0));
             assert_eq!(
@@ -256,7 +257,7 @@ fn every_board_framebuffer_owner_allows_texture_fetch_and_blocks_pixel_publicati
             // write under reset BSC settings. All8 dots plus the second
             // two-clock character fetch finish in that independent interval;
             // the second framebuffer read overlaps END's VRAM reads.
-            let finish = if owner == Owner::Scu { 148 } else { 146 };
+            let finish = if owner == Owner::Scu { 146 } else { 144 };
             advance(&mut bus, finish - 96 - startup - 8 - 1, chunk);
             for (x, color) in [
                 0x8000, 0x8001, 0x8002, 0x8003, 0x8004, 0x8005, 0x8006, 0x8007,

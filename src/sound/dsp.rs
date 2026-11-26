@@ -229,13 +229,7 @@ impl Dsp {
             .program
             .iter()
             .enumerate()
-            .all(|(step, &[a, b, c, d])| {
-                a & 0x8000 == 0
-                    && b & 0x1000 == 0
-                    && d & 0x180 == 0
-                    && (b >> 6) & 63 <= 49
-                    && (c & 0x6000 == 0 || step & 1 != 0)
-            });
+            .all(|(step, &[_, b, c, _])| (b >> 6) & 63 <= 49 && (c & 0x6000 == 0 || step & 1 != 0));
         self.validated_program.set(Some(valid));
         valid
     }
@@ -286,10 +280,9 @@ impl Dsp {
             }
             return Ok(());
         }
-        // MPRO63, MPRO44 and MPRO8:7 are reserved on SCSP.
-        if a & 0x8000 != 0 || b & 0x1000 != 0 || d & 0x180 != 0 {
-            return Err(Scsp::error(0x800 + step as u32 * 8));
-        }
+        // MPRO63, MPRO44 and MPRO8:7 are reserved on SCSP. The decoder does
+        // not read them: original drivers (Machi) set MPRO8 in table reads,
+        // and Mednafen's hardware-tested DSP ignores all three fields.
         let tra = usize::from((a >> 8) & 127);
         let temp = self.temp[(tra + usize::from(self.decrement)) & 127];
         let ira = usize::from((b >> 6) & 63);

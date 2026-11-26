@@ -805,6 +805,15 @@ impl Bus {
     pub(crate) fn fast_interrupt(&self, processor: Processor) -> Option<InterruptRequest> {
         self.interrupt_request(processor)
     }
+    /// An auto-request or burst SH-2 DMAC block re-arbitrates for the
+    /// external bus after every unit until its count ends. The exact
+    /// scheduler retires no instruction from the owning CPU meanwhile (a
+    /// 25 KB Machi character copy stops the master for 45 lines while the
+    /// slave keeps running), so relaxed playback holds that CPU too.
+    pub(crate) fn fast_dmac_holds_bus(&self, processor: Processor) -> bool {
+        let chip = &self.onchip[processor as usize];
+        chip.dma.holds_external_bus(chip.serial_dma_requests())
+    }
     pub(crate) fn begin_fast_vector(&mut self, irq: InterruptRequest) {
         self.fast_vector = Some(irq);
     }

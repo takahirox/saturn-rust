@@ -336,14 +336,54 @@ fn slot_send_wraps_mix_without_saturation_and_dsp_output_obeys_routing() {
 }
 
 #[test]
-fn illegal_memory_steps_and_reserved_ports_fail_without_faking_effects() {
-    for words in [
-        [0, 0, 0x2000, 0],
-        [0, 0, 0x4000, 0],
+fn reserved_instruction_fields_do_not_change_execution() {
+    // Machi's reverb program reads a table word with MPRO8 set
+    // (0000 0000 A000 0134); MPRO63 and MPRO44 are equally undecoded.
+    let run = |reserved: [u16; 4]| {
+        let mut dsp = Dsp {
+            programmed: true,
+            ..Dsp::default()
+        };
+        let mut ram = vec![0; SOUND_RAM_SIZE];
+        ram[0x4000..0x4040]
+            .iter_mut()
+            .enumerate()
+            .for_each(|(i, b)| *b = (i * 37) as u8);
+        dsp.addresses[13] = 3;
+        dsp.coefficients[0] = 0x4000;
+        let program = [
+            [0, 0, 0xA000, 0x0034], // TABLE/MRD from MADRS13
+            [0, 0x0020, 0x0002, 0],
+            [0, 0x0021, 0x0002, 0],      // MEMS1 after two steps
+            [0x0080, 0xA040, 0x0002, 0], // MEMS1 * coefficient -> TEMP0
+            [0, 0, 0x1002, 0],
+        ];
+        for (step, words) in program.into_iter().enumerate() {
+            let mut words: [u16; 4] = words;
+            for (word, bits) in words.iter_mut().zip(reserved) {
+                *word |= bits;
+            }
+            dsp.program[step * 2 + 1] = words;
+        }
+        dsp.sample(&mut ram, RamConfig { four_mbit: true }, 2, [0; 2])
+            .unwrap();
+        (dsp.mems, dsp.temp[0], dsp.effects[0], dsp.accumulator, ram)
+    };
+    let plain = run([0; 4]);
+    assert_ne!(plain.0[1], 0);
+    for reserved in [
         [0x8000, 0, 0, 0],
+        [0, 0x1000, 0, 0],
+        [0, 0, 0, 0x100],
         [0, 0, 0, 0x180],
-        [0, 0x8FC0, 0, 0],
     ] {
+        assert_eq!(run(reserved), plain, "{reserved:X?}");
+    }
+}
+
+#[test]
+fn illegal_memory_steps_and_reserved_ports_fail_without_faking_effects() {
+    for words in [[0, 0, 0x2000, 0], [0, 0, 0x4000, 0], [0, 0x8FC0, 0, 0]] {
         let mut dsp = Dsp {
             programmed: true,
             ..Dsp::default()

@@ -49,6 +49,24 @@ fn pixel(v: &Vdp1, x: usize, y: usize) -> u16 {
     u16::from_be_bytes(v.draw_buffer()[at..at + 2].try_into().unwrap())
 }
 
+/// Character-word read deadlines and total drawing clocks for the 8x2
+/// sprite. A row's first word takes two clocks; each later read overlaps
+/// up to two clocks of the previous word's dots (separate VRAM port).
+fn word_reads(dots_per_word: u32) -> (Vec<u32>, u32) {
+    let mut reads = Vec::new();
+    let mut clocks = 0;
+    for _ in 0..2 {
+        clocks += 2;
+        reads.push(clocks);
+        for _ in 1..8 / dots_per_word {
+            clocks += dots_per_word + 2 - dots_per_word.min(2);
+            reads.push(clocks);
+        }
+        clocks += dots_per_word;
+    }
+    (reads, clocks)
+}
+
 #[test]
 fn lookup_words_are_retained_at_separate_deadlines_before_any_texture_pixel() {
     for chunk in [1, 3, 17, 10000] {
@@ -65,7 +83,7 @@ fn lookup_words_are_retained_at_separate_deadlines_before_any_texture_pixel() {
                     // Complete table, sixteen pixels, then stop just before END.
                     assert!(!advance(
                         &mut v,
-                        (16 - captured) * 2 + 8 + 16 + 31,
+                        (16 - captured) * 2 + word_reads(4).1 + 31,
                         chunk,
                         false,
                         false
@@ -197,20 +215,15 @@ fn physical_texture_words_retain_all_nibbles_bytes_and_rgb_dots_in_both_directio
                         _ => (),
                     }
                     let setup = 64 + if mode == 1 { 32 } else { 0 };
+                    let (reads, total) = word_reads(dots_per_word);
                     let elapsed = if captured == 0 {
                         0
                     } else {
-                        captured * 2 + (captured - 1) * dots_per_word
+                        reads[captured as usize - 1]
                     };
                     advance(&mut v, setup + elapsed, chunk, false, false);
                     v.vram[0x800..0x820].fill(0);
-                    let remaining = (words - captured) * 2 + 16
-                        - if captured == 0 {
-                            0
-                        } else {
-                            (captured - 1) * dots_per_word
-                        }
-                        + 31;
+                    let remaining = total - elapsed + 31;
                     assert!(!advance(&mut v, remaining, chunk, false, false));
                     for y in 0..2 {
                         for x in 0..8 {
