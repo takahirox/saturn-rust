@@ -185,7 +185,7 @@ async function cartridgeAfterSoundFailure(browser, url) {
     const workerUrl = url + "playback-worker.js";
     const page = await context.newPage();
     const cartridge = Buffer.alloc(524288, 0xA5);
-    const selector = page.getByLabel("Virtual cartridge");
+    const selector = page.getByRole("combobox", { name: "Cartridge" });
     const soundError = () => page.waitForFunction(() =>
       document.getElementById("error").textContent.includes("Test Sound Worker reset failure"));
     const installedSlot = () => page.evaluate(async () => (await import("./app.js")).emulator.cartridge());
@@ -298,7 +298,7 @@ async function importDuringGuestFormat(browser, url) {
     await page.goto(url);
     await ready(page);
     await settings(page).click();
-    await page.getByLabel("Virtual cartridge").selectOption("1");
+    await page.getByRole("combobox", { name: "Cartridge" }).selectOption("1");
     await standby(page);
     const importImage = async (name, bytes) => {
       await page.locator("#cartridge-backup-import").setInputFiles(filename(name, bytes));
@@ -778,7 +778,7 @@ async function cartridgeChangeDuringBiosSelection(browser, url) {
         };
       });
     });
-    const selector = page.getByLabel("Virtual cartridge");
+    const selector = page.getByRole("combobox", { name: "Cartridge" });
     await selector.selectOption("1");
     await page.evaluate(() => window.cartridgeResetAcknowledged);
     const firmware = await bios();
@@ -813,20 +813,25 @@ async function production(browser, url) {
   try {
     await page.goto(url);
     await ready(page);
-    await settings(page).click();
-    assert.equal(await page.locator("#cartridge").inputValue(), "0");
-    assert.equal(await page.getByRole("group", { name: "Internal memory · 32 KiB" }).count(), 1);
-    assert.equal(await page.getByRole("group", { name: "Backup cartridge · 512 KiB" }).count(), 1);
-    await status(page, "Local storage is available.");
-    const selector = page.getByLabel("Virtual cartridge");
-    await page.waitForFunction(() => !document.getElementById("cartridge").disabled);
+    const selector = page.getByRole("complementary", { name: "Media" }).getByRole("combobox", { name: "Cartridge" });
+    assert(await selector.isVisible(), "Cartridge is available in Media with Advanced closed");
+    assert.equal(await page.getByRole("combobox", { name: "Cartridge", includeHidden: true }).count(), 1);
+    assert.equal(await selector.inputValue(), "0");
+    assert.equal(await selector.locator("option:checked").textContent(), "No cartridge inserted");
+    assert.match(await text(page, "cartridge-note"), /restarts the console and leaves playback paused/);
     await selector.focus();
     await page.keyboard.press("Tab");
     await page.keyboard.press("Shift+Tab");
     assert.equal(await page.evaluate(() => document.activeElement.id), "cartridge");
-    await selector.selectOption("1");
+    await page.keyboard.press("p");
     await standby(page);
     assert.equal(await selector.inputValue(), "1");
+    assert.deepEqual(await selector.locator("option").allTextContents(),
+      ["None", "Power Memory (512 KiB)", "Expansion RAM (1 MiB)", "Expansion RAM (4 MiB)"]);
+    await settings(page).click();
+    assert.equal(await page.getByRole("group", { name: "Internal memory · 32 KiB" }).count(), 1);
+    assert.equal(await page.getByRole("group", { name: "Backup cartridge · 512 KiB" }).count(), 1);
+    await status(page, "Local storage is available.");
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 360);
     await settings(page).click();
 
@@ -874,23 +879,30 @@ async function production(browser, url) {
       return [dbs.map(db => db.name), values, [...Object.keys(localStorage)].sort()];
     }), [["saturn-rust-console"], [["cartridge", "head", "internal", "smpc"], [524288, 0, 32768, 16]], ["saturn-rust-cartridge"]]);
 
-    await settings(page).click();
+    await page.locator("#play").click();
+    await standby(page);
+    assert.match(await text(page, "player-status"), /^Running/);
+    await selector.selectOption("1"); // Dispatches change even when the value is unchanged.
+    await standby(page);
+    assert.match(await text(page, "player-status"), /^Running/);
+    assert.deepEqual(await guestWords(page, TRACE, expected.length), expected);
     await selector.selectOption("3");
     await standby(page);
     assert.deepEqual(await digests(page), original);
-    assert.match(await text(page, "play"), /Resume/);
+    assert.equal(await text(page, "play"), "Resume");
+    assert.equal(await text(page, "player-status"), "Paused");
     assert.match(await text(page, "disc-selection"), /original-cartridge-backup.iso/);
     assert.deepEqual(await guestWords(page, TRACE, 2), [0, 0]); // Cold-boot, still paused.
     assert.equal((await guestWords(page, 0x24FFFFFC, 1))[0], 0xFFFFFF5C);
     await page.reload();
     await ready(page);
-    await settings(page).click();
     assert.equal(await selector.inputValue(), "3");
     assert.deepEqual(await digests(page), original); // Before any guest can execute.
     assert.equal(await text(page, "disc-selection"), "No disc selected.");
     assert.equal(await text(page, "bios-selection"), "No BIOS selected.");
     await selector.selectOption("1");
     await standby(page);
+    await settings(page).click();
     const [name, exported] = await download(page, "cartridge-backup-export");
     assert.equal(name, "saturn-power-memory.bin");
     assert.equal(exported.length, 524288);
@@ -940,6 +952,25 @@ async function production(browser, url) {
     assert.deepEqual(await guestWords(page, BIOS_TRACE, 5), [0x21, 0xFF21, 0xFF00FF21, 0xFF53FF52, 0xFF53FF52]);
     assert.deepEqual(await digests(page), original);
     await status(page, savedStatus);
+
+    const clock = () => page.evaluate(async () => {
+      const { emulator } = await import("./app.js");
+      return [...await emulator.export_smpc_battery()];
+    });
+    const battery = await clock();
+    await selector.selectOption({ label: "None" });
+    await standby(page);
+    assert.equal(await selector.locator("option:checked").textContent(), "No cartridge inserted");
+    assert.equal(await text(page, "player-status"), "Paused");
+    assert.deepEqual(await guestWords(page, BIOS_TRACE, 5), [0, 0, 0, 0, 0]);
+    assert.match(await text(page, "disc-selection"), /another-disc.iso/);
+    assert.equal(await text(page, "disc-state"), "Cover closed · Disc inserted");
+    assert.equal(await text(page, "bios-selection"), "original-firmware.bin");
+    assert.equal(await text(page, "bios-state"), "Loaded locally");
+    await selector.selectOption("1");
+    await standby(page);
+    assert.deepEqual(await digests(page), original);
+    assert.deepEqual(await clock(), battery);
 
     const other = await context.newPage();
     await other.goto(url);

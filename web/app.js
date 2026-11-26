@@ -385,7 +385,8 @@ function render() {
   }
   $("restart").disabled = busy || Boolean(selectionError()) || !inputReady;
   $("frame").disabled = !playerReady || playing;
-  $("cartridge").disabled = busy || $("backup-controls").disabled;
+  $("cartridge").disabled = busy;
+  setText("cartridge-empty", cartridge === 0 ? "No cartridge inserted" : "None");
   if ($("cartridge").value !== String(cartridge)) $("cartridge").value = String(cartridge);
   const storageError = saveStorage.state.endsWith("-error");
   const sessionOnly = saveStorage.state === "session-only";
