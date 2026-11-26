@@ -139,7 +139,7 @@ async function invoke(data) {
   for (const { method, args } of data.operations) {
     try {
       if (!methods.has(method) || !Array.isArray(args)) throw new Error("Unknown emulator method");
-      if (saves && mediaChange(method)) await saves.flush();
+      if (saves && mediaChange(method)) await saves.flush({ checkpoint: true });
       if (method.startsWith("reset_") || method === "clear_media" || method === "set_cartridge") resetSound = true;
       video.activate();
       if (method === "set_cartridge") input = {};
@@ -192,7 +192,7 @@ async function stop() {
 }
 async function reset(data) {
   await stop();
-  await saves?.flush();
+  await saves?.flush({ checkpoint: true });
   epoch = data.epoch;
   input = {};
   video.activate();
@@ -241,8 +241,8 @@ async function dispatch(data) {
   switch (data.command) {
     case "reset": return reset(data);
     case "play": return start(data);
-    case "pause": await stop(); await saves?.flush(); return snapshot();
-    case "view": await stop(); await saves?.flush(); applyInput(); return { epoch, view: view() };
+    case "pause": await stop(); await saves?.flush({ checkpoint: true }); return snapshot();
+    case "view": await stop(); await saves?.flush({ checkpoint: data.checkpoint === true }); applyInput(); return { epoch, view: view() };
     case "retry-saves": {
       await stop();
       epoch = data.epoch;
