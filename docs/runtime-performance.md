@@ -6698,6 +6698,9 @@ library, all hardware tests and debugger instruction steps.
   advance over the same interval. CPUs yield while an SCU DMA owns the bus,
   and a CPU also yields while its own auto-request or burst DMAC block is
   active (the exact scheduler retires none of its instructions meanwhile).
+- External CPU stores are posted as in the exact scheduler's write buffer:
+  acceptance costs one clock, and the next external access of that CPU waits
+  for the beats to finish.
 - Interrupts are sampled at slice starts and after the mask is lowered;
   external vectors are acquired from the SCU at entry.
 - A short backward loop that returns to an identical register state without
@@ -6708,7 +6711,9 @@ library, all hardware tests and debugger instruction steps.
   It hands over from the cycle-level path at an instruction boundary.
 - Board devices are stepped only at their own events; DMA beats complete at
   their bus edges while other devices catch up together. VDP1 advances by
-  command boundaries rather than per-pixel edges.
+  command boundaries rather than per-pixel edges. CPU stores (per 16-bit
+  B-bus half) and DMA beats that held VDP1 VRAM or the framebuffer are
+  charged as stall clocks at the next catch-up.
 - VDP2 renders each line from live memory at scanout (`LineRendering` video
   command) instead of acquiring operands at every VRAM access slot, both in
   the video Worker and on the board.

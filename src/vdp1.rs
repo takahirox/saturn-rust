@@ -269,6 +269,8 @@ pub struct Vdp1 {
     draw_control: u16,
     fb_request: bool,
     ptmr: u16,
+    /// PTM=10B drawing waits for the first HBlank-in after the change.
+    auto_start_pending: bool,
     erase: [u16; 3],
     erase_latched: [u16; 3],
     edsr: u16,
@@ -327,6 +329,7 @@ impl Default for Vdp1 {
             command_words: [0; 16],
             command_read: 0,
             stop_remaining: None,
+            auto_start_pending: false,
             vblank: false,
             vbe_sample_pending: false,
             vbe_effective: false,
@@ -350,7 +353,7 @@ impl Vdp1 {
         &mut self.buffers[self.draw]
     }
     pub fn busy(&self) -> bool {
-        self.running
+        self.running || self.auto_start_pending
     }
     pub(crate) fn rotated_scanout(&self) -> bool {
         self.tvmr & 2 != 0
@@ -504,6 +507,7 @@ impl Vdp1 {
         self.phase = 0;
         self.command_read = 0;
         self.stop_remaining = None;
+        self.auto_start_pending = false;
     }
     /// Field-change latch; CPU sees only the buffer currently being drawn.
     pub fn vblank_out(&mut self) {
@@ -532,7 +536,14 @@ impl Vdp1 {
         };
         self.fb_request = false;
         if change && self.ptmr == 2 {
+            // The change ends the previous field's drawing at once. ST-013
+            // §4.2 latches FCM/FCT at the first HBlank-in after VBlank-OUT
+            // (writes are prohibited from it to the next HBlank-in), and
+            // automatic drawing begins with that frame (§4.3); see
+            // docs/vdp1-vbe-timing.md. Mednafen also starts it there.
             self.start(false);
+            self.running = false;
+            self.auto_start_pending = true;
         }
     }
     fn erase_area(&self, buffer: usize) -> EraseArea {
@@ -632,6 +643,9 @@ impl Vdp1 {
         self.blank_remaining = line_clocks * blank_lines;
     }
     pub(crate) fn hblank_in(&mut self) {
+        if self.auto_start_pending {
+            self.start(false);
+        }
         if !self.vbe_sample_pending {
             return;
         }

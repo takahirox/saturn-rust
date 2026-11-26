@@ -246,7 +246,9 @@ fn hdtv_ptmr_changes_end_irq_transitions_and_reset_cancel_retained_work() {
         }
         reg(&mut b, 2, if automatic { 0 } else { 3 });
         reg(&mut b, 4, if automatic { 2 } else { 1 });
-        advance(&mut b, FIELD - WINDOW + 200, 17, false);
+        // Automatic drawing starts at the first HBlank-in (H=640) after
+        // VBlank-OUT; both modes have finished 200 clocks later.
+        advance(&mut b, FIELD - WINDOW + 640 + 200, 17, false);
         assert!(!b.vdp1.busy());
         assert_eq!(b.read32(SCU + 0xA4).unwrap() & 0x2000, 0x2000);
         assert_eq!(b.read16(REGISTERS + 0x14), Ok(8));
@@ -259,7 +261,7 @@ fn hdtv_ptmr_changes_end_irq_transitions_and_reset_cancel_retained_work() {
         } else {
             assert_eq!(b.vdp1.display_pixel(0, 0), 0x801F);
         }
-        advance(&mut b, WINDOW - 200, 10000, false);
+        advance(&mut b, WINDOW - 640 - 200, 10000, false);
         reg(&mut b, 0, 0);
         assert_eq!(b.read16(REGISTERS + 0x16).unwrap() & 15, 0);
         reg(&mut b, 0, 4);
