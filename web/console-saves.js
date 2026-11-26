@@ -198,7 +198,8 @@ export class ConsoleSaves {
     const recovery = new Uint8Array(BATTERY_RECOVERY_SIZE);
     const view = new DataView(recovery.buffer);
     recovery.set(BATTERY_SIGNATURE);
-    view.setBigUint64(8, BigInt(Math.max(nowMillis(this.now), this.head?.anchor ?? 0)));
+    const anchor = Math.max(nowMillis(this.now), this.head?.anchor ?? 0, this.sessionBatteryAnchor ?? 0);
+    view.setBigUint64(8, BigInt(anchor));
     recovery.set(this.machine.export_smpc_battery(), 16);
     view.setUint32(32, checksum(recovery.subarray(0, 32)));
     return recovery;
@@ -224,6 +225,7 @@ export class ConsoleSaves {
     if (!sessionOnly) return this.flush({ replacement });
     while (this.saving) await this.saving;
     this.installImage(replacement);
+    if (replacement.index === 2) this.sessionBatteryAnchor = replacement.anchor;
     // Until reload, automatic writes and retries must leave the stored copy alone.
     this.status("session-only");
   }

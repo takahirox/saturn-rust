@@ -615,6 +615,9 @@ try {
       picker.value = ""; // Selecting the same file again must work.
       const sessionOnly = saveStorage.state === "session-only" ||
         (!$("session-only-option").hidden && $("session-only-import").checked);
+      if (backupReadStatus) {
+        backupReadStatus.textContent = "Import cancelled by a newer import. Current console data was preserved.";
+      }
       backupReadStatus = file ? output : null;
       try {
         await pause();
