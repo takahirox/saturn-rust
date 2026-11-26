@@ -4,6 +4,21 @@ import { readFile } from "node:fs/promises";
 import { digitalInput } from "./digital-input.mjs";
 import { waitForGuest } from "./browser-transport.mjs";
 
+async function liveRegions(page) {
+  const cdp = await page.context().newCDPSession(page);
+  const { root } = await cdp.send("DOM.getDocument", { depth: 0 });
+  return async (selector, message = "", role = "status") => {
+    const { nodeId } = await cdp.send("DOM.querySelector", { nodeId: root.nodeId, selector });
+    const { nodes: [region, ...related] } = await cdp.send("Accessibility.getPartialAXTree", { nodeId });
+    assert.equal(region.ignored, false, selector);
+    assert.equal(region.role.value, role, selector);
+    assert.equal(region.properties.find(property => property.name === "live")?.value.value,
+      role === "status" ? "polite" : "assertive", selector);
+    const contents = related.filter(node => region.childIds?.includes(node.nodeId) && node.role?.value === "StaticText");
+    assert.equal(contents.map(node => node.name.value).join(""), message, selector);
+  };
+}
+
 export async function playUi(browser, url) {
   const context = await browser.newContext();
   try {
@@ -23,6 +38,11 @@ export async function playUi(browser, url) {
     assert.equal(await page.getByRole("group", { name: "Playback controls" }).getByRole("button", { name: "Play", exact: true }).count(), 1);
     assert.equal(await page.locator(".setup-steps").count(), 0);
     assert.equal(await page.locator("#audio-status").textContent(), "Audio: disabled");
+    const live = await liveRegions(page);
+    for (const selector of ["#player-status", "#disc-state", "#bios-state", "#fullscreen-status", "#display-filter-status", "#audio-warning"]) {
+      await live(selector);
+    }
+    await live("#error", "", "alert");
     assert.equal(requests.some(r => /\.(iso|chd|bin)$/.test(r.url)), false);
     const idle = await page.evaluate(async () => {
       const {emulator} = await import("./app.js");
@@ -62,6 +82,7 @@ export async function playUi(browser, url) {
     await page.locator("#bios").setInputFiles(firmware);
     await ready();
     assert.match(await page.locator("#player-status").textContent(), /BIOS ready/);
+    await live("#bios-state", "Loaded locally");
     assert.match(await page.locator("#status").textContent(), /Resetting/);
     await page.evaluate(async () => { window.biosMachine = (await import("./app.js")).emulator; });
     const state = () => page.evaluate(async () => ({
@@ -195,6 +216,7 @@ export async function playUi(browser, url) {
     const selected = await page.locator("#disc-selection").textContent();
     for (const file of files) assert(selected.includes(file.name));
     assert.equal(await page.locator("#disc-state").textContent(), "Loaded locally");
+    await live("#disc-state", "Loaded locally");
     assert.equal(await page.locator("#play").textContent(), "Play");
     // Adding firmware automatically switches paths without losing the disc.
     await page.locator("#bios").setInputFiles(firmware);
@@ -666,7 +688,7 @@ async function playerLayouts(browser, desktop, url, iso) {
           assert(box.hit && disjoint(picture, box), JSON.stringify(box));
           for (const other of controls.slice(i + 1)) assert(disjoint(box, other), "Touch buttons cannot overlap");
         }
-        if (width >= 640 && width > height) {
+        if (width > height) {
           assert(controls.find(b => b.mask === 2048).right <= picture.left);
           assert(controls.find(b => b.mask === 4096).left >= picture.right);
         } else assert(controls.every(b => b.top >= picture.bottom));
@@ -682,10 +704,21 @@ async function playerLayouts(browser, desktop, url, iso) {
       } else if (coarse) assert(result.media.top >= result.toolbar.bottom);
       else assert(result.media.left >= picture.right);
     };
-    const fullscreenCheck = async (page, width, height, coarse) => {
+    const fullscreenCheck = async (page, width, height, coarse, rotation) => {
       await page.locator("#fullscreen").click();
       await page.waitForFunction(() => document.fullscreenElement?.id === "player-shell" && document.activeElement.id === "screen");
       await check(page, width, height, coarse, true);
+      if (rotation) {
+        const [width, height] = rotation;
+        // Resize the emulated device without resizing the native fullscreen window.
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send("Emulation.setDeviceMetricsOverride", {
+          width, height, deviceScaleFactor: 3, mobile: true, screenWidth: width, screenHeight: height,
+          screenOrientation: { type: "landscapePrimary", angle: 90 },
+        });
+        await page.waitForFunction(([width, height]) => innerWidth === width && innerHeight === height, rotation);
+        await check(page, width, height, coarse, true);
+      }
       await page.locator("#exit-fullscreen")[coarse ? "tap" : "click"]();
       await page.waitForFunction(() => !document.fullscreenElement && document.activeElement.id === "fullscreen");
     };
@@ -699,7 +732,13 @@ async function playerLayouts(browser, desktop, url, iso) {
       await mobile.setViewportSize({ width, height });
       await mobile.evaluate(() => scrollTo(0, 0));
       await check(mobile, width, height, true);
-      await fullscreenCheck(mobile, width, height, true);
+      const rotation = width === 320 ? [568, 320] : undefined;
+      if (rotation) {
+        await mobile.setViewportSize({ width: rotation[0], height: rotation[1] });
+        await check(mobile, ...rotation, true);
+        await mobile.setViewportSize({ width, height });
+      }
+      await fullscreenCheck(mobile, width, height, true, rotation);
       assert.deepEqual(await machine(), paused);
     }
     await mobile.setViewportSize({ width: 320, height: 568 });
@@ -738,15 +777,19 @@ async function playerAudio(browser, url) {
     });
     await page.goto(url);
     await page.waitForFunction(() => !document.getElementById("controls").disabled);
+    const live = await liveRegions(page);
+    await live("#audio-warning");
     await page.locator("#disc").setInputFiles("web/prism-courier.iso");
     await page.waitForFunction(() => !document.getElementById("play").disabled);
     await page.getByRole("button", { name: "Play", exact: true }).click();
     const recovery = page.locator("#audio-enable");
     await recovery.waitFor();
+    await live("#audio-warning", "Audio is blocked.");
     await page.waitForFunction(() => document.getElementById("player-status").textContent.startsWith("Running"));
     assert.deepEqual(await page.evaluate(() => window.audioGestures), [true]);
     await recovery.click();
     await page.waitForFunction(() => document.getElementById("audio-enable").hidden);
+    await live("#audio-warning");
     assert.deepEqual(await page.evaluate(() => window.audioGestures), [true, true]);
     await waitForGuest(page, async () => {
       const { audio } = await import("./app.js");

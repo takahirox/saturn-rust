@@ -105,7 +105,7 @@ button.primary:hover:not(:disabled) { background: #24407d; }
 #volume-value { min-width: 3.1ch; text-align: end; font-size: .8rem; font-variant-numeric: tabular-nums; color: var(--muted); }
 .player-feedback { color: var(--muted); font-size: .86rem; }
 .player-feedback p { margin: 6px 0; }
-.player-feedback p:empty { display: none; }
+.player-feedback p:empty { margin: 0; }
 #error { color: #98251d; white-space: pre-wrap; }
 
 .media-panel, .tools, .panel { border: 1px solid var(--line); border-radius: 12px; background: #fff; }
@@ -114,7 +114,7 @@ fieldset { border: 0; min-width: 0; padding: 0; margin: 0; }
 .media-slot + .media-slot { border-top: 1px solid var(--line); }
 .media-slot.drag-over { background: #e0e8fb; outline: 2px dashed var(--accent); outline-offset: -3px; }
 .media-slot p { color: var(--muted); font-size: .86rem; margin: 4px 0 8px; }
-.media-slot p:empty { display: none; }
+.media-slot p:empty { margin: 0; }
 .media-name { white-space: pre-line; max-block-size: 7em; overflow: auto; }
 .tools { display: flex; align-items: start; gap: 8px; padding: 8px; }
 .settings { flex: 1; min-width: 0; }
@@ -209,7 +209,7 @@ dialog p { margin: 5px 0 14px; }
   .player-shell:fullscreen { grid-template-areas: "picture picture" "left left" "right right" "start exit"; grid-template-rows: minmax(90px, 1fr) auto auto auto; }
   .touch-left, .touch-right { justify-self: center; }
 }
-@media (any-pointer: coarse) and (orientation: landscape) and (min-width: 640px) {
+@media (any-pointer: coarse) and (orientation: landscape) and (min-width: 560px) {
   .player-shell {
     grid-template-areas: "left picture right" "left start right";
     grid-template-columns: max-content minmax(0, 1fr) max-content;
