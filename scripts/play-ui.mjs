@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 import { digitalInput } from "./digital-input.mjs";
 import { waitForGuest } from "./browser-transport.mjs";
 
+const waitForActions = page => page.waitForFunction(() => document.getElementById("main").getAttribute("aria-busy") === "false");
+
 async function liveRegions(page) {
   const cdp = await page.context().newCDPSession(page);
   const { root } = await cdp.send("DOM.getDocument", { depth: 0 });
@@ -94,13 +96,18 @@ export async function playUi(browser, url) {
     await waitForGuest(page, async () => (await window.biosMachine.read_long(0x06001000)) > 0);
     assert.match(await page.locator("#player-status").textContent(), /Running/);
     assert(await page.locator("#empty-state").isHidden());
-    await page.locator("#play").click();
+    await ready();
+    await page.locator("#play").focus();
+    await page.keyboard.press("Enter");
+    await waitForActions(page);
+    assert.equal(await page.locator("#play").textContent(), "Resume");
+    assert.equal(await page.evaluate(() => document.activeElement.id), "play", "Keyboard Pause keeps Resume focused");
     const paused = await state();
     assert(Number(paused.count) > 100);
     assert(Number(paused.frames) > 0);
     await page.waitForTimeout(50);
     assert.deepEqual(await state(), paused, "Pause stops guest execution");
-    await page.locator("#play").click();
+    await page.keyboard.press("Enter");
     await waitForGuest(page, async count => Number((await window.biosMachine.instruction_count())) > Number(count), paused.count);
     // Observe the completed Worker reset at the boundary before playback resumes.
     const restarted = await restartRecord(page, 0x06001000);
@@ -162,6 +169,7 @@ export async function playUi(browser, url) {
     assert.match(await page.locator("#player-status").textContent(), /Sleeping/);
     assert(await page.locator("#play").isEnabled());
     await page.locator("#play").click();
+    await waitForActions(page);
     assert(await page.locator("#play").isDisabled());
     assert.match(await page.locator("#player-status").textContent(), /Sleeping/);
     assert.doesNotMatch(await page.locator("#player-status").textContent(), /Load a disc/);
@@ -293,6 +301,7 @@ export async function playUi(browser, url) {
     const picker = selection => page.locator("#disc").setInputFiles(selection.map(file => ({
       name:file.name, mimeType:"application/octet-stream", buffer:Buffer.from(file.bytes),
     })));
+    await discMountRaces(page, iso, () => picker(files.slice(0, 2)));
     const guest = () => page.evaluate(async () => {
       const {emulator:m, advanceFrame} = await import("./app.js");
       for (let i=0; i<40 && (await m.read_long(0x06010020))!==0x600D; i++) (await m.run_steps(10000));
@@ -347,6 +356,60 @@ export async function playUi(browser, url) {
     assert.deepEqual(errors,[]);
     assert(requests.every(r => r.url.startsWith(url) && r.method === "GET" && r.body === null));
   } finally { await context.close(); }
+}
+
+async function discMountRaces(page, iso, selectIncompleteCue) {
+  const selectIso = name => page.locator("#disc").setInputFiles({ name, mimeType: "application/octet-stream", buffer: iso });
+  const waitForGate = name => page.waitForFunction(name => typeof window[name] === "function", name);
+  const release = name => page.evaluate(name => { window[name](); delete window[name]; }, name);
+  const assertReady = async name => {
+    await waitForActions(page);
+    assert.equal(await page.locator("#disc-selection").textContent(), name);
+    assert.equal(await page.locator("#disc-state").textContent(), "Loaded locally");
+    assert.equal(await page.locator("#error").textContent(), "");
+    assert(await page.locator("#play").isEnabled());
+    assert.equal(await page.locator("#active-mode").textContent(), "BIOS-less HLE disc");
+  };
+
+  await page.locator("#view-debug").click();
+  await page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    const mountDisc = emulator.mount_disc.bind(emulator);
+    emulator.mount_disc = async bytes => {
+      emulator.mount_disc = mountDisc;
+      await mountDisc(bytes);
+      await new Promise(resolve => { window.releaseDiscMount = resolve; });
+    };
+  });
+  await selectIso("reset-during-mount.iso");
+  await waitForGate("releaseDiscMount");
+  assert.equal(await page.locator("#disc-state").textContent(), "Validating…");
+  await page.getByRole("button", { name: "Reset machine" }).click();
+  // Queue a Worker read behind Reset before delivering the original mount reply.
+  assert.equal(await page.evaluate(async () => (await import("./app.js")).emulator.instruction_count()), "0");
+  await release("releaseDiscMount");
+  await assertReady("reset-during-mount.iso");
+  await page.locator("#view-play").click();
+
+  await page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    const pause = emulator.pause.bind(emulator);
+    emulator.pause = async () => {
+      emulator.pause = pause;
+      await pause();
+      await new Promise(resolve => { window.releaseCueErrorPause = resolve; });
+    };
+  });
+  await selectIncompleteCue();
+  await waitForGate("releaseCueErrorPause");
+  assert.equal(await page.locator("#disc-state").textContent(), "Needs attention");
+  await selectIso("replacement-during-cue-error.iso");
+  await waitForGuest(page, async () => {
+    const { emulator } = await import("./app.js");
+    return document.getElementById("disc-state").textContent === "Loaded locally" && emulator.state.mode === "BIOS-less HLE disc";
+  });
+  await release("releaseCueErrorPause");
+  await assertReady("replacement-during-cue-error.iso");
 }
 
 // Inspect the real reset Machine before its first resumed instruction. The
@@ -469,7 +532,7 @@ async function automaticBootSelections(page, firmware, iso) {
     // An accepted disc read can hand off to a newer BIOS reset before its
     // own reset reaches the mount call. Keep the independently accepted bytes.
     await input("disc").setInputFiles({...disc, name:"pending-stage.iso"});
-    await page.waitForFunction(() => document.getElementById("main").getAttribute("aria-busy") === "false");
+    await waitForActions(page);
     await page.evaluate(async () => {
       const { emulator } = await import("./app.js");
       const resetBios = emulator.reset_bios.bind(emulator);
@@ -515,6 +578,7 @@ async function automaticBootSelections(page, firmware, iso) {
     assert(await input("play").isDisabled());
     assert(await input("restart").isDisabled());
     await input("run").click();
+    await waitForActions(page);
     assert.equal(await input("r0").textContent(), "0x00000004");
     await input("reset").click();
     assert.equal((await snapshot()).pc, 0x06000000);
@@ -647,16 +711,19 @@ async function playerLayouts(browser, desktop, url, iso) {
         const $ = id => document.getElementById(id);
         const rect = node => node.getBoundingClientRect().toJSON();
         const picture = rect($("screen")), well = rect(document.querySelector(".display-well"));
-        const controls = [...document.querySelectorAll("#touch-controls button")].map(node => {
+        const target = node => {
           const b = rect(node);
-          return { ...b, mask: Number(node.dataset.mask), hit: document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2) === node };
-        });
+          return { ...b, hit: document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2) === node };
+        };
+        const controls = [...document.querySelectorAll("#touch-controls button")].map(node => ({
+          ...target(node), mask: Number(node.dataset.mask),
+        }));
         const visible = controls.some(b => b.width > 0);
         return {
           picture, well, controls, visible, dpr: devicePixelRatio, width: innerWidth, height: innerHeight,
           pointer: matchMedia("(pointer: coarse)").matches, overflow: document.documentElement.scrollWidth > innerWidth,
           media: rect($("setup")), toolbar: rect(document.querySelector(".player-toolbar")),
-          exit: rect($("exit-fullscreen")), screenNative: [$("screen").width, $("screen").height],
+          exit: target($("exit-fullscreen")), screenNative: [$("screen").width, $("screen").height],
           scrollable: getComputedStyle(document.body).touchAction === "auto",
           fitsFullscreen: !fullscreen || ($("player-shell").scrollHeight <= innerHeight && $("player-shell").scrollWidth <= innerWidth),
           labels: fullscreen ? [] : [...document.querySelectorAll(".player-toolbar button, .player-toolbar select, #volume, .media-slot button")]
@@ -698,7 +765,8 @@ async function playerLayouts(browser, desktop, url, iso) {
       }
       if (fullscreen) {
         assert(picture.top >= 0 && picture.bottom <= height && disjoint(result.exit, picture));
-        assert(result.exit.height >= 44 && result.exit.bottom <= height);
+        const { exit } = result;
+        assert(exit.hit && exit.height >= 44 && exit.top >= 0 && exit.bottom <= height && exit.left >= 0 && exit.right <= width, JSON.stringify(exit));
         assert(Math.abs(picture.width - Math.min(well.width, well.height * aspect)) < 1);
         if (coarse) assert(controls.every(b => disjoint(result.exit, b)));
       } else if (coarse) assert(result.media.top >= result.toolbar.bottom);
@@ -728,7 +796,7 @@ async function playerLayouts(browser, desktop, url, iso) {
       await check(desktop, width, height, false);
       await fullscreenCheck(desktop, width, height, false);
     }
-    for (const [width, height] of [[320, 568], [390, 844], [768, 1024], [844, 390]]) {
+    for (const [width, height] of [[320, 568], [390, 844], [768, 1024], [844, 390], [540, 320]]) {
       await mobile.setViewportSize({ width, height });
       await mobile.evaluate(() => scrollTo(0, 0));
       await check(mobile, width, height, true);
