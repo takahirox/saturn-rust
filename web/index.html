@@ -109,6 +109,16 @@
               <button id="bios-clear" type="button" aria-label="Clear BIOS" disabled>Clear</button>
             </div>
           </section>
+          <section class="media-slot" aria-labelledby="cartridge-heading">
+            <h2 id="cartridge-heading"><label for="cartridge">Cartridge</label></h2>
+            <p id="cartridge-note">Changing the cartridge restarts the console and leaves playback paused.</p>
+            <select id="cartridge" aria-describedby="cartridge-note" disabled>
+              <option id="cartridge-empty" value="0">No cartridge inserted</option>
+              <option value="1">Power Memory (512 KiB)</option>
+              <option value="2">Expansion RAM (1 MiB)</option>
+              <option value="3">Expansion RAM (4 MiB)</option>
+            </select>
+          </section>
         </fieldset>
       </aside>
       <section class="tools" aria-label="Advanced tools">
@@ -122,16 +132,6 @@
             <p id="boot-method">Auto · BIOS-less HLE</p>
             <p id="audio-status">Audio: disabled</p>
             <p id="audio-diagnostics">Audio has not been enabled.</p>
-            <div class="cartridge-setting">
-              <label for="cartridge">Virtual cartridge</label>
-              <select id="cartridge" aria-describedby="cartridge-note" disabled>
-                <option value="0">None</option>
-                <option value="1">Backup Memory (512 KiB)</option>
-                <option value="2">Expansion RAM (1 MiB)</option>
-                <option value="3">Expansion RAM (4 MiB)</option>
-              </select>
-              <p id="cartridge-note">Changing the cartridge cold-boots the selected media and leaves playback paused.</p>
-            </div>
             <fieldset id="backup-controls" tabindex="-1" aria-describedby="save-storage-status" disabled>
               <legend>Save management</legend>
               <p id="save-storage-status" role="status">Restoring local saves…</p>
@@ -232,6 +232,7 @@
       <p>Insert one CHD v5 CD-ROM (cdlz/cdzl/cdfl or uncompressed), a cooked 2048-byte-sector ISO, or a CUE and all its BINARY tracks together. You can also drop them on the Disc slot. CHD and CUE track data are limited to 1,058,400,000 bytes, CUE sheets to 1 MiB, and ISO images to 18–450,000 sectors. CUE sheets may explicitly reference an SRW1 diagnostic companion. Large images need sufficient browser memory.</p>
       <p>A valid raw 512 KiB BIOS takes precedence and can boot with or without a disc. Clear a rejected BIOS or replace it to recover. With a disc alone, the emulator uses BIOS-less HLE. Firmware and game compatibility are incomplete. Use media you are authorized to use.</p>
       <p>After starting a BIOS session, select Open cover to insert, change, drop or remove a disc. Select Close cover so the guest can recognize it without restarting the console. If you paused playback, select Resume to continue.</p>
+      <p>Use Cartridge beside Disc and BIOS to insert or change a cartridge. Choose None to remove it. Changing the cartridge cold-boots the loaded media and leaves playback paused.</p>
       <p>Disc and BIOS files stay in this tab. Internal memory, backup cartridge saves, the clock and console settings are saved locally for this site in your browser. Clearing site data can erase them. Keep copies using Save management in Advanced.</p>
       <h3>Playback</h3>
       <p>Reset cold-boots the selected media and retains backup RAM. Help, Advanced and Debug pause playback. Select Resume when ready. If your browser blocks sound, select Enable audio.</p>

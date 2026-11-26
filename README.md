@@ -15,6 +15,10 @@ insert an authorized local disc or BIOS, then select **Play**.
   **Remove** the current one, then choose **Close cover**. The running guest
   detects the change and decides what to do next. A paused session stays
   paused until **Resume**. BIOS-less HLE uses cold disc selection.
+- **Cartridge** sits beside Disc and BIOS. The slot is empty by default. Choose
+  **Power Memory (512 KiB)**, **Expansion RAM (1 MiB)** or **Expansion RAM
+  (4 MiB)** to insert or exchange a cartridge, or **None** to remove it. A
+  change cold-boots the loaded media and leaves playback paused.
 
 The display is beside the media slots on desktop and above them on narrow
 screens. The 320×224 framebuffer is shown at 4:3 with pixelated rendering.
@@ -43,14 +47,13 @@ display characteristics. Switch during playback or pause. If WebGL 2 is
 unavailable, the player shows Clean.
 
 **Debug** reveals CPU registers, Step, bounded Run, Reset machine and frame
-advance. **Advanced** contains the virtual cartridge selector, Save management
-and audio diagnostics.
+advance. **Advanced** contains Save management and audio diagnostics.
 Help, Advanced and Debug pause playback and release held input. Losing focus
 releases input, and hiding the tab pauses. Select **Resume** to continue.
 Toolbar Reset cold-boots accepted media and restarts an existing Play session
 when Advanced and Debug are closed. Debug's Reset machine stays paused.
-Both retain internal memory, backup cartridge saves and clock settings. A
-cartridge change cold-boots the selected BIOS/disc and leaves playback paused.
+Reset and cartridge changes retain internal memory, backup cartridge saves and
+clock settings.
 
 The display is rasterized in Rust from guest-written video state, and input
 goes through emulated SMPC hardware. Play uses
