@@ -27,15 +27,16 @@ The table lists the tested Chromium CSS viewports.
 | Fine | 1280×720, 1440×900 | 1 | Media beside the screen, touch controller hidden |
 | Coarse | 320×568, 390×844 | 3 | Screen above the controller, media below the toolbar |
 | Coarse | 768×1024 | 3 | Tablet portrait |
-| Coarse | 844×390 | 3 | Direction and face clusters flank the screen |
+| Coarse | 568×320, 844×390 | 3 | Direction and face clusters flank the screen |
 | Fine | CRT player and differential contexts | 2 | Live/paused CRT redraw, fullscreen and WebGL fallback |
 
 Tests check aspect ratio, exact screen/toolbar ordering, the maximum image that
 fits the fullscreen well, exit focus, no horizontal overflow, and disjoint
 touch targets of at least 44×44 CSS pixels with hit testing. Phone portrait
-and landscape fullscreen include all thirteen controls. The tests hold a
+and landscape fullscreen include all thirteen controls. The tests check
+rotation from 320×568 to 568×320 inline and in fullscreen. They also hold a
 button while rotating inside fullscreen and verify release through the guest.
-Landscape viewports under 640 CSS pixels use the stacked controller layout.
+Landscape viewports under 560 CSS pixels use the stacked controller layout.
 Browser fullscreen requires support for the element Fullscreen API. Very short
 windows can scroll to reach all controls.
 
@@ -48,7 +49,8 @@ full digital shoulder travel overlays without affecting physical trigger
 hysteresis. Separate checks retain both physical controller ports and keyboard
 mapping tests in HLE and external BIOS mode. Focus loss, hiding, Pause, Help,
 Advanced, Debug, Reset, media replacement, fullscreen and rotation release
-touch state.
+touch state. An explicit Resume with Advanced or Debug still open accepts
+fresh touch input, verified through the guest's SMPC report.
 
 | Source | Directions | A/B/C | X/Y/Z | L/R | Start |
 | --- | --- | --- | --- | --- | --- |
@@ -65,6 +67,8 @@ confirm a nonzero source and proportional output at 0, 25, 60 and 100 percent.
 Keyboard mute/unmute restores 37 percent, Pause clears pending playback, and
 Reset retains volume while starting a new playback epoch. Existing pitch,
 FIFO/backpressure and exact PCM tests remain in the suite.
+Chromium accessibility tree checks cover media and player feedback while the
+live regions are empty, and verify media and audio messages as they update.
 
 ## Clean playback comparison
 

@@ -164,7 +164,7 @@ function updateTouchMask() {
 }
 
 touchControls.addEventListener("pointerdown", event => {
-  if (event.button !== 0 || document.hidden || !playing || !acceptsInput() || view !== "play" || $("settings").open) return;
+  if (event.button !== 0 || document.hidden || !playing || !acceptsInput()) return;
   const target = event.target.closest("#dpad") || event.target.closest("[data-mask]");
   if (!target) return;
   event.preventDefault(); // Preserve display focus and suppress synthetic mouse activation.

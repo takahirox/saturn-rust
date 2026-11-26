@@ -297,11 +297,16 @@ async function touchInput(browser, url, rom) {
     const wait = predicate => page.waitForFunction(predicate, undefined, { polling: 10 });
     const firmware = { name: "original-digital-input.bin", mimeType: "application/octet-stream", buffer: rom };
     const ready = () => wait(() => !document.getElementById("play").disabled);
+    const playing = () => wait(() => {
+      const play = document.getElementById("play");
+      return play.textContent === "Pause" && !play.disabled;
+    });
     await wait(() => !document.getElementById("controls").disabled);
     await page.locator("#bios").setInputFiles(firmware);
     await ready();
     const play = page.locator("#play");
     await play.tap();
+    await playing();
     await page.evaluate(() => {
       window.pad = { connected: true, mapping: "standard", axes: [], buttons: Array.from({length: 16}, () => ({ pressed: false, value: 0 })) };
       Object.defineProperty(navigator, "getGamepads", { value: () => [window.pad] });
@@ -394,7 +399,7 @@ async function touchInput(browser, url, rom) {
     const settle = () => wait(() => document.getElementById("main").getAttribute("aria-busy") === "false");
     for (const action of ["blur", "visibility", "pause", "help", "advanced", "debug", "reset", "media", "fullscreen", "orientation"]) {
       if (await play.textContent() !== "Pause") await play.tap();
-      await settle();
+      await playing();
       await page.evaluate(() => scrollTo(0, 0));
       await down(await button(64));
       await packet([0xfb, 0xff], false, `${action} held`);
@@ -416,8 +421,23 @@ async function touchInput(browser, url, rom) {
       await packet(neutral, false, `${action} releases touch before pointerup`);
       await up();
       if (action === "help") await page.keyboard.press("Escape");
-      if (action === "advanced") await page.locator("#settings > summary").click();
-      if (action === "debug") await page.locator("#view-play").click();
+      if (action === "advanced" || action === "debug") {
+        const panel = action === "advanced" ? "#settings[open] .settings-body" : "#debug-view";
+        assert(await page.locator(panel).isVisible());
+        assert.equal(await play.textContent(), "Resume");
+        await play.tap();
+        await playing();
+        assert(await page.locator(panel).isVisible());
+        await page.evaluate(() => scrollTo(0, 0));
+        await down(await button(64));
+        await packet([0xfb, 0xff], false, `Touch A after Resume with ${action} open`);
+        await up();
+        await packet(neutral, false, `Release A with ${action} open`);
+        await play.tap();
+        await settle();
+        await page.locator(action === "advanced" ? "#settings > summary" : "#view-play").click();
+        await settle();
+      }
       if (action === "fullscreen") {
         await down(await button(32));
         await packet([0xfd, 0xff], false, "Fullscreen touch C");
