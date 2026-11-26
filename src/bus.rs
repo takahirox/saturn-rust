@@ -15,6 +15,8 @@ mod cached_issue;
 #[cfg(test)]
 mod dmac_tests;
 #[cfg(test)]
+mod fast_tests;
+#[cfg(test)]
 mod hdtv_tests;
 mod loop_probe;
 #[cfg(any(test, feature = "sound-worker"))]
@@ -465,6 +467,14 @@ pub struct Bus {
     fast_writes: Cell<u64>,
     /// Relaxed playback renders whole lines without VRAM access-slot timing.
     fast_video: bool,
+    /// Relaxed playback: main clocks that functional CPU accesses and bus
+    /// beats held VDP1 VRAM and the drawn framebuffer, not yet charged to
+    /// VDP1 drawing. ST-013 §2.1: the system side has priority on each port.
+    fast_vdp1_busy: [Cell<u32>; 2],
+    /// Relaxed playback: main clock at which each CPU issued its current
+    /// instruction, and at which its posted external write finishes.
+    fast_cpu_time: [Cell<u64>; 2],
+    fast_posted_until: [Cell<u64>; 2],
     #[cfg(test)]
     literal_display: bool,
     #[cfg(test)]
@@ -666,6 +676,9 @@ impl Default for Bus {
             fast_vector: None,
             fast_writes: Cell::new(0),
             fast_video: false,
+            fast_vdp1_busy: [Cell::new(0), Cell::new(0)],
+            fast_cpu_time: [Cell::new(0), Cell::new(0)],
+            fast_posted_until: [Cell::new(0), Cell::new(0)],
             #[cfg(test)]
             literal_display: false,
             #[cfg(test)]
@@ -814,6 +827,10 @@ impl Bus {
         let chip = &self.onchip[processor as usize];
         chip.dma.holds_external_bus(chip.serial_dma_requests())
     }
+    /// Relaxed playback: the CPU's issue clock for posted-write accounting.
+    pub(crate) fn set_fast_cpu_time(&self, processor: Processor, time: u64) {
+        self.fast_cpu_time[processor as usize].set(time);
+    }
     pub(crate) fn begin_fast_vector(&mut self, irq: InterruptRequest) {
         self.fast_vector = Some(irq);
     }
@@ -828,6 +845,8 @@ impl Bus {
             return;
         }
         self.fast_video = enabled;
+        self.fast_vdp1_busy.iter().for_each(|busy| busy.set(0));
+        self.fast_posted_until.iter().for_each(|until| until.set(0));
         self.vdp2.set_clocked(!enabled);
         self.display_deadline = 0;
         #[cfg(any(test, feature = "video-worker"))]
@@ -1334,6 +1353,10 @@ impl Bus {
             let delta = remaining
                 .min(devices - lag)
                 .min(self.bus_main_deadline().max(1));
+            // Devices catch up later; charge this beat's VDP1 port ownership
+            // now instead of sampling whichever beat is active at catch-up.
+            let ownership = self.vdp1_bus_ownership();
+            self.charge_fast_vdp1_busy(ownership, delta);
             self.main_clocks = self.main_clocks.wrapping_add(u64::from(delta));
             lag += delta;
             remaining -= delta;
@@ -1371,11 +1394,7 @@ impl Bus {
             self.onchip[1].advance_to_event(delta);
         }
         self.scu.advance_clocks(delta)?;
-        let (vram_busy, framebuffer_busy) = self.vdp1_bus_ownership();
-        if self
-            .vdp1
-            .advance_with_bus(delta, vram_busy, framebuffer_busy)?
-        {
+        if self.advance_fast_vdp1(delta)? {
             self.scu.signal(13);
         }
         #[cfg(any(test, feature = "video-worker"))]
@@ -1390,6 +1409,42 @@ impl Bus {
             }
         }
         Ok(())
+    }
+    fn charge_fast_vdp1_busy(&self, (vram, framebuffer): (bool, bool), clocks: u32) {
+        for (busy, held) in self.fast_vdp1_busy.iter().zip([vram, framebuffer]) {
+            if held {
+                busy.set(busy.get().saturating_add(clocks));
+            }
+        }
+    }
+    /// Relaxed playback: VDP1 first spends the charged system-side port
+    /// clocks stalled, as the exact scheduler stalls it beat by beat, then
+    /// draws freely. Charges beyond `delta` carry into the next catch-up.
+    fn advance_fast_vdp1(&mut self, delta: u32) -> Result<bool, BusError> {
+        let [vram, framebuffer] = self.fast_vdp1_busy.each_ref().map(|busy| {
+            let held = busy.get().min(delta);
+            busy.set(busy.get() - held);
+            held
+        });
+        let mut ended = false;
+        let mut done = 0;
+        for (until, vram_busy, framebuffer_busy) in [
+            (vram.min(framebuffer), true, true),
+            (
+                vram.max(framebuffer),
+                vram > framebuffer,
+                framebuffer > vram,
+            ),
+            (delta, false, false),
+        ] {
+            if until > done {
+                ended |= self
+                    .vdp1
+                    .advance_with_bus(until - done, vram_busy, framebuffer_busy)?;
+                done = until;
+            }
+        }
+        Ok(ended)
     }
     fn fast_device_deadline(&self) -> u32 {
         self.onchip[0]
@@ -2606,6 +2661,7 @@ impl CpuBus<'_> {
             // software waits. Keep those clocks separate from Tw and internal
             // execution states; cache hits and on-chip accesses do not enter.
             let clocks = &self.bus.cpu_bus_clocks[self.processor as usize];
+            let waits_before = self.bus.onchip[self.processor as usize].pending_wait_clocks();
             let base = self.bus.onchip[self.processor as usize].external_access(
                 // Address decoding may mirror the RAM backing store, but
                 // BSC row/bank comparators see the actual A26-A0 pins.
@@ -2631,6 +2687,47 @@ impl CpuBus<'_> {
                     ),
                 );
             }
+            if self.bus.fast_video && (vdp1::VRAM..vdp1::REGISTERS).contains(&physical) {
+                // The SCU bridges the access as 16-bit B-bus cycles, each
+                // holding the VDP1 port for the access's cycles and waits.
+                let waits = self.bus.onchip[self.processor as usize]
+                    .pending_wait_clocks()
+                    .saturating_sub(waits_before);
+                let halves = width.div_ceil(2) as u32;
+                self.bus.charge_fast_vdp1_busy(
+                    (physical < vdp1::FRAMEBUFFER, physical >= vdp1::FRAMEBUFFER),
+                    base.saturating_add(waits).saturating_mul(halves),
+                );
+            }
+            if self.bus.fast_video {
+                self.post_fast_write(write, first, base, waits_before);
+            }
+        }
+    }
+    /// Relaxed playback follows the exact scheduler's buffered CPU writes:
+    /// the internal bus accepts a store in one clock and the BSC finishes its
+    /// beats while the CPU continues. The next external access waits for them.
+    fn post_fast_write(&self, write: bool, first: bool, base: u32, waits_before: u32) {
+        let i = self.processor as usize;
+        let chip = &self.bus.onchip[i];
+        let now = self.bus.fast_cpu_time[i].get();
+        let until = &self.bus.fast_posted_until[i];
+        let drain = u32::try_from(until.get().saturating_sub(now)).unwrap_or(u32::MAX);
+        if write {
+            let clocks = &self.bus.cpu_bus_clocks[i];
+            let added = chip.pending_wait_clocks().saturating_sub(waits_before);
+            clocks.set(clocks.get().saturating_sub(base));
+            let accept = u32::from(first);
+            chip.set_pending_wait_clocks(waits_before.saturating_add(if first {
+                drain.saturating_add(accept)
+            } else {
+                0
+            }));
+            let start = until.get().max(now) + u64::from(accept);
+            until.set(start + u64::from(base.saturating_add(added)));
+        } else if drain != 0 {
+            chip.add_wait_clocks(drain);
+            until.set(now);
         }
     }
     fn observe_external_data(&self, address: u32, width: usize, value: u32, write: bool) {

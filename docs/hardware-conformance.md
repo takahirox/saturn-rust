@@ -4231,3 +4231,32 @@ the reference charges about one clock per dot plus a small depth-dependent
 adjustment. Relaxed playback remains a non-conformance scheduler. All other
 Issue #17 criteria remain open, and this does not establish commercial-game
 compatibility.
+
+## VDP1 automatic draw start and relaxed write and port timing (2026-11-26)
+
+Related to #17. In local retail diagnosis of Machi (no private media or traces
+are published), a text fade-out that ends with sprite colour calculation turned
+off showed the faded text again at full brightness for one field. The
+hardware-tested reference model (Mednafen/Beetle Saturn) shows no such field.
+The game uses an SCU DMA started by VBlank-OUT to rewrite its VDP1 command table
+for that field. At the same time the CPU clears the text texture that the
+previous table drew.
+
+| Behavior | Previous model | Implementation | Evidence |
+| --- | --- | --- | --- |
+| PTM=10B draw start | Automatic drawing began at the VBlank-OUT edge, and VDP1 read the old table 128 clocks later. The DMA wrote it at +354–614, so every field drew the previous field's table. With colour calculation already off, the last fade field drew the full text | [`Vdp1::vblank_out`](../src/vdp1.rs) still changes buffers at VBlank-OUT and ends the old drawing. [`Vdp1::hblank_in`](../src/vdp1.rs) starts automatic drawing at the first HBlank-in. ST-013 §4.2 has FCM/FCT written right after VBlank-OUT and forbids access from that HBlank-in to the next, the window this emulator also uses to sample VBE. §4.3 starts PTM=10B drawing with the frame. Mednafen starts it at the same HBlank | `automatic_drawing_starts_at_the_first_hblank_after_the_field_change` redraws a table rewritten before that edge. The HDTV PTMR vector measures from the new start |
+| Relaxed VDP1 port ownership | Devices catch up after each CPU slice. Functional CPU stores never stalled VDP1, and bus beats were sampled only at catch-up. The text sprite read its texture before the CPU clear, unlike the exact scheduler | [`Bus::charge_fast_vdp1_busy`](../src/bus.rs) records CPU stores (one charge per 16-bit B-bus half) and DMA beats that hold VDP1 VRAM or the framebuffer. [`Bus::advance_fast_vdp1`](../src/bus.rs) stalls drawing for them at the next catch-up | Relaxed playback charges 54,295 clocks in the clear field, against the exact scheduler's 54,288. Drawing ends on line 73 (exact: 74). `relaxed_vdp1_stores_hold_the_port_for_both_b_bus_halfwords` and `relaxed_vdp1_drawing_waits_for_charged_port_clocks_at_catch_up` |
+| Relaxed CPU stores | Every external store charged its whole bus time to the instruction. The clear loop took 9 clocks per store; the exact scheduler's buffered write takes 8 | Under relaxed playback, [`CpuBus::post_fast_write`](../src/bus.rs) accepts a store in one clock and lets its beats finish while the CPU continues. The next external access waits for them | `relaxed_cpu_stores_are_posted_and_the_next_external_access_waits`; `exact_scheduler_functional_stores_keep_the_serial_charge`. The clear now takes lines 1–43 (exact: 2–44) |
+
+On a local 8,000-field Machi walk with 20 text fade-outs, the previous build showed
+the full-brightness field six times under relaxed playback and four times under
+the exact scheduler. Both now show it zero times; every fade ends dark, as in
+the reference. On the protagonist selection screen, all ten moves still
+cross-fade without showing the previous portrait again. For about ten fields
+the new portrait appears with the previous name, which the reference also shows.
+Relaxed playback of 9,000 fields takes about 2% longer natively (90.0 s →
+92.1 s). The HBlank draw start is a convention inside the ST-013 setting
+window, and it agrees with the reference. It is not measured electrical timing,
+and the line-zero display buffer change is unchanged. Relaxed playback remains a
+non-conformance scheduler. All other Issue #17 criteria remain open, and this
+does not establish commercial-game compatibility.

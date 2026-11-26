@@ -66,6 +66,17 @@ write API rejected TVM=4 (HDTV) at the #65 checkpoint. The subsequent
 exclusive-monitor sprites using this same blank-erase convention. Complete
 monitor/half-line timing remains outside this increment.
 
+The field change itself keeps the VBlank-OUT edge: buffers swap and the previous
+field's drawing ends there. Automatic drawing (PTM=10B) begins at the next
+HBlank-in, on line zero. [§4.2](https://www.infochunk.com/saturn/segahtml_en/hard/vdp1/hon/p04_12.htm)
+has FCM/FCT written immediately after the VBlank-OUT interrupt and forbids access
+from that HBlank-in to the next. That is the post-VBlank-OUT counterpart of
+the VBE window. [§4.3](https://www.infochunk.com/saturn/segahtml_en/hard/vdp1/hon/p04_13.htm)
+starts PTM=10B drawing with the frame and gives no earlier edge. Mednafen
+also starts it on that HBlank. Command tables that a VBlank-OUT DMA
+rewrites before this edge are drawn in the same field. This phase is a
+convention, not measured electrical timing.
+
 | Event / legal written sequence | Effective decision / publication |
 | --- | --- |
 | VBlank-in; write 0→1, unchanged TVM, manual erase/change | No writes yet; MODR reports written 1 |

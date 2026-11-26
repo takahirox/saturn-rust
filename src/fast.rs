@@ -154,6 +154,7 @@ impl Machine {
                 self.fast.time[i] = end;
                 return Ok(());
             }
+            self.bus.set_fast_cpu_time(processor, self.fast.time[i]);
             if !slave && self.nmi_pending {
                 let mut memory = self.bus.for_cpu(processor);
                 if self.cpu.accept_nmi(&mut memory).map_err(wrap)? {

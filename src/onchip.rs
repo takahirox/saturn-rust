@@ -174,6 +174,9 @@ impl OnChip {
     pub(crate) fn pending_wait_clocks(&self) -> u32 {
         self.wait_clocks.get()
     }
+    pub(crate) fn set_pending_wait_clocks(&self, clocks: u32) {
+        self.wait_clocks.set(clocks);
+    }
 
     fn unsupported(address: u32, width: usize) -> BusError {
         if address == SBYCR

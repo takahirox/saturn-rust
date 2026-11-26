@@ -624,3 +624,31 @@ fn framebuffer_calculation_contention_stop_restart_and_reset_cancel_unpublished_
         }
     }
 }
+
+#[test]
+fn automatic_drawing_starts_at_the_first_hblank_after_the_field_change() {
+    const LINE: u32 = 1708;
+    for chunk in [1, 17, 4096] {
+        let mut bus = Bus::default();
+        command(&mut bus, 0, &[(0, 9), (20, 511), (22, 255)]);
+        command(&mut bus, 32, &[(0, 6), (4, 0xC0), (6, 0x801F)]);
+        command(&mut bus, 64, &[(0, 0x8000)]);
+        reg(&mut bus, 2, 0); // one-cycle mode: change every field
+        reg(&mut bus, 4, 2); // draw automatically at the change
+        advance(&mut bus, 263 * LINE - 1, 30000);
+        assert_eq!(bus.raster.fields, 0);
+        advance(&mut bus, 1, 1);
+        assert_eq!(bus.raster.fields, 1);
+        // The change ended the old field; drawing waits for the first
+        // HBlank-in (H=1280), so a table rewritten in between is drawn.
+        assert!(bus.vdp1.busy());
+        command(&mut bus, 32, &[(6, 0x83E0)]);
+        advance(&mut bus, 1280, chunk);
+        assert_eq!(bus.read16(FRAMEBUFFER), Ok(0));
+        assert_eq!(bus.read16(REGISTERS + 0x14), Ok(0));
+        advance(&mut bus, 200, chunk);
+        assert_eq!(bus.read16(FRAMEBUFFER), Ok(0x83E0));
+        assert!(!bus.vdp1.busy());
+        assert_eq!(bus.read16(REGISTERS + 0x10), Ok(2));
+    }
+}
