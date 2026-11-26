@@ -152,6 +152,7 @@ pub struct CdBlock {
     software_tray_open: bool,
     cover_open: bool,
     recognition: Option<u32>,
+    deferred_play: Option<[u16; 4]>,
     seeking: u32,
     authentication: Option<(u32, u16)>,
     authenticated: u16,
@@ -328,6 +329,7 @@ impl Default for CdBlock {
             software_tray_open: false,
             cover_open: false,
             recognition: None,
+            deferred_play: None,
             seeking: 0,
             authentication: None,
             authenticated: 0,
@@ -398,6 +400,7 @@ impl CdBlock {
             self.status = 0;
             self.recognition = Some(RECOGNITION_CLOCKS);
         } else {
+            self.deferred_play = None;
             self.status = 7;
         }
         self.report_drive_change();
@@ -437,6 +440,7 @@ impl CdBlock {
 
     fn stop_pickup(&mut self) {
         self.recognition = None;
+        self.deferred_play = None;
         self.cancel_rw_transfer();
         self.rw = crate::cd_rw::Decoder::default();
         self.rw_active = false;
@@ -653,7 +657,8 @@ impl CdBlock {
         ]);
     }
     fn invalid_report(&self) -> bool {
-        self.recognition.is_some()
+        self.cover_open
+            || self.recognition.is_some()
             || matches!(self.status, 6 | 7 | 9)
             || (self.status == 2 && self.at_home)
     }
@@ -855,15 +860,6 @@ impl CdBlock {
             if was_seeking && self.seeking == 0 {
                 self.status = if self.playing { 3 } else { 1 };
             }
-            if let Some(left) = self.recognition {
-                if delta >= left {
-                    self.recognition = None;
-                    self.recognize_medium();
-                    self.report_drive_change();
-                } else {
-                    self.recognition = Some(left - delta);
-                }
-            }
             if let Some((left, result)) = self.authentication {
                 if delta >= left {
                     self.authentication = None;
@@ -920,6 +916,19 @@ impl CdBlock {
                 job.clocks -= delta;
                 if job.clocks == 0 {
                     self.copy_sector();
+                }
+            }
+            if let Some(left) = self.recognition {
+                if delta >= left {
+                    self.recognition = None;
+                    self.recognize_medium();
+                    if let Some(packet) = self.deferred_play.take() {
+                        // A range invalid for the new disc leaves it paused.
+                        self.play(packet);
+                    }
+                    self.report_drive_change();
+                } else {
+                    self.recognition = Some(left - delta);
                 }
             }
             // A completed command takes effect at the end of this interval,
@@ -1474,6 +1483,102 @@ impl CdBlock {
                 .and_then(|t| t.index(field as u8))
         }
     }
+    fn play(&mut self, c: [u16; 4]) -> bool {
+        let field1 = (u32::from(c[0] & 255) << 16) | u32::from(c[1]);
+        let field2 = (u32::from(c[2] & 255) << 16) | u32::from(c[3]);
+        let Some(m) = &self.media else {
+            return false;
+        };
+        let Some(start) = self.position(field1, self.pause_position()) else {
+            return false;
+        };
+        let end = if field2 == 0xFF_FFFF {
+            self.end
+        } else if field2 & 0x80_0000 != 0 {
+            start.saturating_add(field2 & 0x7F_FFFF)
+        } else if field2 == 0 {
+            m.leadout
+        } else {
+            let Some(end) = self.position(field2, m.leadout) else {
+                return false;
+            };
+            end
+        };
+        if start < 150
+            || (field1 != 0xFF_FFFF && start >= end.min(m.leadout))
+            || (field2 != 0xFF_FFFF && end > m.leadout)
+        {
+            return false;
+        }
+        self.software_tray_open = false;
+        self.scan = None;
+        self.buffer_paused = false;
+        self.pause_clocks = 0;
+        let from_home = self.at_home;
+        let continuing = field1 == 0xFF_FFFF && self.rw_active && !from_home;
+        if continuing {
+            self.rw.set_end(end);
+        } else {
+            self.stop_rw();
+        }
+        self.at_home = false;
+        let repeat = if c[2] >> 8 & 0x7F == 0x7F {
+            self.repeat
+        } else {
+            (c[2] >> 8 & 15) as u8
+        };
+        if (field1 != 0xFF_FFFF && start != self.play_start)
+            || end != self.end
+            || repeat != self.repeat
+        {
+            self.repeats = 0;
+        }
+        self.fad = start;
+        self.end = end;
+        // ST-162 §8.2.2: an unchanged start cancels pause without
+        // replaying the current sector or restarting the loop range.
+        if field1 != 0xFF_FFFF {
+            self.play_start = start;
+        }
+        if field1 != 0xFF_FFFF || from_home {
+            self.audio_index = 0;
+            self.deemphasis = crate::cd_audio::Deemphasis::default();
+        }
+        // ST-162 §4.2 p.37: canceling pause outside either retained
+        // range bound stays paused; it must not read or repeat a sector.
+        self.playing = (self.play_start..self.play_end()).contains(&start);
+        if !self.playing {
+            self.raise(PEND);
+        }
+        self.retry_attempts = 0;
+        self.seeking = if !self.playing || (field1 == 0xFF_FFFF && !from_home) {
+            0
+        } else {
+            if self.init_flags & 2 != 0
+                && self
+                    .media
+                    .as_ref()
+                    .and_then(|m| m.track(start))
+                    .is_some_and(|t| t.mode == TrackMode::Audio)
+            {
+                crate::cd_rw::PREROLL + 26_875
+            } else {
+                26_875
+            }
+        };
+        if self.init_flags & 2 != 0 && self.seeking > crate::cd_rw::PREROLL {
+            self.rw.prepare(start, self.seeking - crate::cd_rw::PREROLL);
+        }
+        self.status = if self.seeking != 0 {
+            4
+        } else if self.playing {
+            3
+        } else {
+            1
+        };
+        self.repeat = repeat;
+        true
+    }
     fn wait(&self) -> bool {
         let mut r = self.response.get();
         r[0] |= 0x8000;
@@ -1520,12 +1625,12 @@ impl CdBlock {
             ]);
         };
         // ST-162 §8.2.1 functions1.5/1.6: TOC/session wait for a closed
-        // drive and recognized disc. Other pickup operations wait while
-        // the manual cover is open or the pickup is reading the TOC.
+        // drive and recognized disc. Seek, scan, file reads and authentication
+        // also wait while the manual cover is open or the TOC is being read.
         if (matches!(command, 0x02 | 0x03)
             && (self.tray_open() || self.recognition.is_some() || self.media.is_none()))
             || ((self.cover_open || self.recognition.is_some())
-                && matches!(command, 0x10..=0x12 | 0x70 | 0x71 | 0x74 | 0xE0))
+                && matches!(command, 0x11 | 0x12 | 0x70 | 0x71 | 0x74 | 0xE0))
         {
             return self.wait();
         }
@@ -1595,6 +1700,7 @@ impl CdBlock {
                 self.scan = None;
                 self.buffer_paused = false;
                 self.playing = false;
+                self.deferred_play = None;
                 self.seeking = 0;
                 self.authentication = None;
                 self.audio_index = 0;
@@ -1646,10 +1752,11 @@ impl CdBlock {
                 if !self.cover_open {
                     self.stop_pickup();
                     self.software_tray_open = true;
-                    self.status = 6;
-                    self.report(false);
                     self.raise(DCHG | EFLS);
                 }
+                self.deferred_play = None;
+                self.status = 6;
+                self.report(false);
             }
             0x06 => {
                 let Some(t) = self.transfer.get_mut().take() else {
@@ -1707,97 +1814,14 @@ impl CdBlock {
                 self.response.set(r);
             }
             0x10 => {
-                let Some(m) = &self.media else {
-                    return false;
-                };
-                let Some(start) = self.position(field1, self.pause_position()) else {
-                    return false;
-                };
-                let end = if field2 == 0xFF_FFFF {
-                    self.end
-                } else if field2 & 0x80_0000 != 0 {
-                    start.saturating_add(field2 & 0x7F_FFFF)
-                } else if field2 == 0 {
-                    m.leadout
-                } else {
-                    let Some(end) = self.position(field2, m.leadout) else {
-                        return false;
-                    };
-                    end
-                };
-                if start < 150
-                    || (field1 != 0xFF_FFFF && start >= end.min(m.leadout))
-                    || (field2 != 0xFF_FFFF && end > m.leadout)
-                {
+                if self.cover_open || self.recognition.is_some() {
+                    // ST-162 §§4.1, 8.2.1–8.2.2: acknowledge Play with BUSY
+                    // while waiting for manual closure and TOC recognition.
+                    self.deferred_play = Some(c);
+                    self.status = 0;
+                } else if !self.play(c) {
                     return false;
                 }
-                self.software_tray_open = false;
-                self.scan = None;
-                self.buffer_paused = false;
-                self.pause_clocks = 0;
-                let from_home = self.at_home;
-                let continuing = field1 == 0xFF_FFFF && self.rw_active && !from_home;
-                if continuing {
-                    self.rw.set_end(end);
-                } else {
-                    self.stop_rw();
-                }
-                self.at_home = false;
-                let repeat = if c[2] >> 8 & 0x7F == 0x7F {
-                    self.repeat
-                } else {
-                    (c[2] >> 8 & 15) as u8
-                };
-                if (field1 != 0xFF_FFFF && start != self.play_start)
-                    || end != self.end
-                    || repeat != self.repeat
-                {
-                    self.repeats = 0;
-                }
-                self.fad = start;
-                self.end = end;
-                // ST-162 §8.2.2: an unchanged start cancels pause without
-                // replaying the current sector or restarting the loop range.
-                if field1 != 0xFF_FFFF {
-                    self.play_start = start;
-                }
-                if field1 != 0xFF_FFFF || from_home {
-                    self.audio_index = 0;
-                    self.deemphasis = crate::cd_audio::Deemphasis::default();
-                }
-                // ST-162 §4.2 p.37: canceling pause outside either retained
-                // range bound stays paused; it must not read or repeat a sector.
-                self.playing = (self.play_start..self.play_end()).contains(&start);
-                if !self.playing {
-                    self.raise(PEND);
-                }
-                self.retry_attempts = 0;
-                self.seeking = if !self.playing || (field1 == 0xFF_FFFF && !from_home) {
-                    0
-                } else {
-                    if self.init_flags & 2 != 0
-                        && self
-                            .media
-                            .as_ref()
-                            .and_then(|m| m.track(start))
-                            .is_some_and(|t| t.mode == TrackMode::Audio)
-                    {
-                        crate::cd_rw::PREROLL + 26_875
-                    } else {
-                        26_875
-                    }
-                };
-                if self.init_flags & 2 != 0 && self.seeking > crate::cd_rw::PREROLL {
-                    self.rw.prepare(start, self.seeking - crate::cd_rw::PREROLL);
-                }
-                self.status = if self.seeking != 0 {
-                    4
-                } else if self.playing {
-                    3
-                } else {
-                    1
-                };
-                self.repeat = repeat;
                 self.report(false);
             }
             0x11 => {

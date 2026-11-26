@@ -973,7 +973,7 @@ impl Machine {
         let was_open = self.bus.cd.cover_open();
         self.bus.cd.set_cover_open(open);
         if open && !was_open {
-            self.bus.sound.scsp.discard_output();
+            self.bus.sound.scsp.discard_cd_audio();
         }
     }
 

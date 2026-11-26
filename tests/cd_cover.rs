@@ -49,7 +49,6 @@ fn open_invalidates_old_reads_and_close_recognizes_with_a_bounded_deadline() {
     for packet in [
         [0x0200, 0, 0, 0],
         [0x0301, 0, 0, 0],
-        [0x1080, 150, 0x80, 1],
         [0x1100, 0, 0, 0],
         [0x1200, 0, 0, 0],
         [0xe000, 0, 0, 0],
@@ -112,6 +111,51 @@ fn open_invalidates_old_reads_and_close_recognizes_with_a_bounded_deadline() {
     assert_eq!(issue(&mut cd, [0; 4])[3], 151);
     issue(&mut cd, [0x6300, 0, 0, 1]);
     assert_eq!(cd.read16(DATA), Ok(0x5252));
+}
+
+#[test]
+fn play_waits_for_manual_closure_then_reads_the_replacement_disc() {
+    let mut cd = CdBlock::default();
+    cd.mount(image(0xa1, 18));
+    issue(&mut cd, [0x3000, 0, 0, 0]);
+    cd.set_cover_open(true);
+    assert_eq!(issue(&mut cd, [0x1080, 151, 0x80, 1]), BUSY);
+    assert!(cd.cover_open());
+    assert!(cd.replace_open_media(Some(image(0x52, 32))));
+    cd.advance(RECOGNITION);
+    assert_eq!(issue(&mut cd, [0; 4]), BUSY);
+    assert_eq!(issue(&mut cd, [0x0200, 0, 0, 0]), wait(BUSY));
+    assert_eq!(issue(&mut cd, [0x0300, 0, 0, 0]), wait(BUSY));
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 0);
+    cd.set_cover_open(false);
+    assert_eq!(issue(&mut cd, [0x0200, 0, 0, 0]), wait(BUSY));
+    assert_eq!(issue(&mut cd, [0x0300, 0, 0, 0]), wait(BUSY));
+    cd.advance(RECOGNITION - 2 * 1075 - 1);
+    assert_eq!(cd.peek16(CD + 0x18).unwrap() & 0x0f00, 0);
+    cd.advance(1);
+    assert_eq!(response(&cd), [0x0400, 0x4101, 0x0100, 151]);
+    cd.advance(250_000);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 1);
+    assert_eq!(issue(&mut cd, [0x5400, 0, 0, 0])[1], 151);
+    issue(&mut cd, [0x6300, 0, 0, 1]);
+    assert_eq!(cd.read16(DATA), Ok(0x5252));
+}
+
+#[test]
+fn empty_closure_discards_deferred_play() {
+    let mut cd = CdBlock::default();
+    issue(&mut cd, [0x3000, 0, 0, 0]);
+    cd.set_cover_open(true);
+    assert_eq!(issue(&mut cd, [0x1080, 150, 0x80, 1]), BUSY);
+    cd.set_cover_open(false);
+    assert_eq!(issue(&mut cd, [0; 4]), NO_DISC);
+
+    cd.set_cover_open(true);
+    assert!(cd.replace_open_media(Some(image(0x52, 32))));
+    cd.set_cover_open(false);
+    cd.advance(RECOGNITION + 250_000);
+    assert_eq!(issue(&mut cd, [0; 4]), [0x0180, 0x4101, 0x0100, 150]);
+    assert_eq!(issue(&mut cd, [0x5100, 0, 0, 0])[3], 0);
 }
 
 #[test]

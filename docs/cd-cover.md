@@ -26,15 +26,17 @@ See [Mednafen's CD block implementation](https://sources.debian.org/src/mednafen
 | --- | --- |
 | Start closed and empty | NODISC after initialization, with invalid position fields. TOC and session requests WAIT. |
 | Open | OPEN with invalid position fields. HIRQ latches DCHG and EFLS at the opening boundary and normal write-zero acknowledgement clears them. The pickup, scan, queued read work, and CD-DA source stop immediately. |
-| Insert, replace, or remove while open | The physical medium changes. The guest still receives OPEN, and TOC and session requests WAIT with no DATATRNS payload. |
+| Insert, replace, or remove while open | The physical medium changes. The guest receives OPEN unless a Play request is waiting for closure, in which case it receives BUSY. TOC and session requests WAIT with no DATATRNS payload. |
 | Close empty | NODISC, with no new DCHG edge. |
-| Close with a disc | BUSY with invalid position fields and TOC/session WAIT, followed by PAUSE at the first track with usable TOC/session information. DCHG reports the earlier opening and remains latched until acknowledged. |
+| Close with a disc | BUSY with invalid position fields and TOC/session WAIT, followed by PAUSE at the first track or execution of a deferred Play request. TOC and session information becomes usable. DCHG reports the earlier opening and remains latched until acknowledged. |
 
 Recognition lasts 1,343,705 reference clocks (50 ms). This provides three
 stopped-report intervals at 60 Hz for polling and makes no claim about
 measured spin-up time. Pending commands and unread CR4 responses retain their
 normal handshake. Initialization preserves the physical cover position.
-Pickup commands issued while open or recognizing return WAIT and may be retried.
+Play issued while open or recognizing returns BUSY and proceeds after a disc
+is recognized (§8.2.2). Closing empty cancels the request. Seek and scan issued
+while open or recognizing return WAIT and may be retried.
 The existing software-only automatic tray behavior of command 05 remains
 available separately. A physically open cover requires a host close.
 
@@ -47,19 +49,22 @@ sectors so they cannot cross the media boundary. The game can still use data
 it placed in work RAM or other board devices before opening.
 
 The Worker waits for the current field and presentation receipts. Sound is
-canonical at that boundary. The Machine drops accumulated mixed PCM on
-opening, and the page clears host-queued PCM. CPU, renderer, Sound devices,
-backup, and RTC continue on the same Machine and playback epoch. The guest
-still controls any real system reset or game launch.
+canonical at that boundary. The Machine clears the SCSP's latched CD input
+and drops accumulated mixed PCM on opening. The page clears host-queued PCM.
+CPU, renderer, Sound devices, backup, and RTC continue on the same Machine
+and playback epoch. The guest still controls system resets and game launches.
 
 ## Validation
 
 - `cargo test --locked --all-features --test cd_cover` checks opening, interrupt
   and command acknowledgement, CD-DA and FIFO cancellation, retention,
-  recognition timing, removal and replacement. The original reset-vector
-  guest polls periodic CD reports and reads TOC, session lead-out and distinct
-  sector data via MMIO in both exact and relaxed modes. The native harness
-  checks PC, frame and clock continuity, WRAM records, and backup RAM.
+  recognition timing, deferred Play, removal and replacement. The original
+  reset-vector guest polls periodic CD reports and reads TOC, session lead-out
+  and distinct sector data via MMIO in both exact and relaxed modes. The native
+  harness checks PC, frame and clock continuity, WRAM records, and backup RAM.
+- `cargo test --locked --all-features --test cdda` checks that the first audio
+  field after opening emits silence with the original CD-DA routing guest in
+  both exact and relaxed modes.
 - `python3 tests/fixtures/build_cd_cover.py --check` verifies the original guest
   bytes. The adjacent [MIT license](../tests/fixtures/LICENSE) covers the fixture.
 - `npm run test:browser -- --group=externalStartup` includes the same guest in
