@@ -731,7 +731,7 @@ fn raster_gated_intback_forms_publish_results_and_service_each_irq() {
                 .map(|i| m.bus().read32(0x0601d000 + i as u32 * 4).unwrap())
                 .collect();
             assert_eq!(actual, expected);
-            assert_eq!(m.cpu_state().exceptions, 6);
+            assert_eq!(m.cpu_state().exceptions, 9);
             progress::assert_progress("smpc-timed-peripherals", 500000, &m);
             let result = (m.clocks(), m.cpu_state().clone());
             assert_eq!(*reference.get_or_insert(result.clone()), result);

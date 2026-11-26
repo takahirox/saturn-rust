@@ -1072,8 +1072,9 @@ fn no_prewrite_intback_preserves_continue_break_and_reset_cancellation() {
             s.vblank_out();
             s.advance_clocks(8599);
         }
+        // Parameter commands cannot share IREG with INTBACK in any phase.
         assert!(
-            matches!(s.write(SMPC + 0x1f, 7), Err(BusError::Smpc(f)) if f.reason == Rejection::Busy)
+            matches!(s.write(SMPC + 0x1f, 0x17), Err(BusError::Smpc(f)) if f.reason == Rejection::Busy)
         );
         if phase % 2 == 0 {
             s.write(SMPC + 1, 0x40).unwrap();
@@ -1086,6 +1087,81 @@ fn no_prewrite_intback_preserves_continue_break_and_reset_cancellation() {
         assert!(!s.take_irq());
         assert_eq!(s.pending, None);
     }
+}
+
+#[test]
+fn peripheral_phase_control_waits_for_the_packet_timeout_or_break() {
+    // Firmware reboot paths write RESDISA without SF while a continuation
+    // is pending. 0: continue requested, 1: collection in flight then
+    // VBlank-in timeout, 2: BREAK, 3: continuation not yet requested.
+    for case in 0..4 {
+        for control in [6, 9, 0x1a] {
+            let mut s = Smpc::default();
+            input(&mut s, &[1, 8, 0xf0]);
+            issue(&mut s, 0x10);
+            assert_eq!(s.advance_clocks(Smpc::STATUS_CLOCKS), Some(0x10));
+            assert!(s.take_irq() && s.await_continue && s.sf);
+            if case != 3 {
+                s.write(SMPC + 1, 0x80).unwrap();
+                assert!(s.await_vblank && s.peripheral_phase);
+            }
+            if case == 1 {
+                s.vblank_out();
+                assert_eq!(s.advance_clocks(100), None);
+            }
+            s.write(SMPC + 0x1f, control).unwrap();
+            let duration = Smpc::control_clocks(control).unwrap();
+            if case == 3 {
+                assert_eq!(s.deferred_control, None);
+                assert_eq!(s.pending, Some((control, duration)));
+                assert!(!s.await_continue && s.status & 0x20 == 0);
+            } else {
+                assert_eq!(s.deferred_control, Some(control));
+                assert!(
+                    matches!(s.write(SMPC + 0x1f, 7), Err(BusError::Smpc(f)) if f.reason == Rejection::Busy)
+                );
+                assert_eq!(s.deferred_control, Some(control));
+            }
+            match case {
+                0 => {
+                    s.vblank_out();
+                    assert_eq!(s.advance_clocks(Smpc::STATUS_CLOCKS - 1), None);
+                    assert_eq!(s.advance_clocks(1), Some(0x10));
+                    assert!(s.take_irq());
+                    assert_eq!(output(&s, 4), [0xf1, 2, 0xff, 0xff]);
+                }
+                1 => {
+                    s.vblank_in();
+                    assert!(!s.take_irq());
+                }
+                2 => s.write(SMPC + 1, 0x40).unwrap(),
+                _ => (),
+            }
+            assert_eq!(s.pending, Some((control, duration)));
+            assert_eq!((s.command, s.read(SMPC + 0x5f)), (control, Ok(control)));
+            assert!(s.sf && !s.await_continue && !s.await_vblank && !s.peripheral_phase);
+            assert_eq!(s.advance_clocks(duration - 1), None);
+            assert_eq!(s.advance_clocks(1), Some(control));
+            assert!(!s.sf && !s.busy() && !s.take_irq());
+            match control {
+                6 => assert!(s.sound_enabled),
+                9 => assert!(!s.cd_enabled),
+                _ => assert!(s.reset_disabled),
+            }
+            s.vblank_out();
+            assert_eq!(s.advance_clocks(100000), None);
+            assert!(!s.take_irq());
+        }
+    }
+    let mut s = Smpc::default();
+    input(&mut s, &[0, 8, 0xf0]);
+    issue(&mut s, 0x10);
+    s.write(SMPC + 0x1f, 6).unwrap();
+    s.reset_volatile();
+    assert_eq!(s.deferred_control, None);
+    s.vblank_out();
+    s.advance_clocks(100000);
+    assert!(!s.sound_enabled && !s.busy() && !s.take_irq());
 }
 
 #[test]

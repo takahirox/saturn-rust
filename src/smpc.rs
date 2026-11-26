@@ -581,20 +581,26 @@ impl Smpc {
             }
             _ => (),
         }
-        if command == 0x10
-            && let Some(control) = self.deferred_control.take()
-        {
-            // Publish the real status/IRQ first, then abandon only the unused
-            // peripheral continuation. A fresh command uses its full duration.
+        if command == 0x10 {
+            // Publish the real status/packet and IRQ first.
+            self.start_deferred_control();
+        }
+        self.battery.advance(clocks - elapsed);
+        Some(command)
+    }
+    /// Abandon any unused peripheral continuation and start the queued
+    /// control command with its full duration.
+    fn start_deferred_control(&mut self) {
+        if let Some(control) = self.deferred_control.take() {
             self.await_continue = false;
+            self.await_vblank = false;
+            self.peripheral_phase = false;
             self.status &= !0x20;
             self.command = control;
             self.output[31] = control;
             self.sf = true;
             self.pending = Some((control, Self::control_clocks(control).unwrap()));
         }
-        self.battery.advance(clocks - elapsed);
-        Some(command)
     }
     fn control_clocks(command: u8) -> Option<u32> {
         match command {
@@ -656,6 +662,7 @@ impl Smpc {
         self.pending = None;
         self.sf = false;
         self.status &= !0x20;
+        self.start_deferred_control();
     }
     fn peripherals(&mut self) {
         self.output = [0xFF; 32];
@@ -783,14 +790,19 @@ impl Smpc {
                     Rejection::ProhibitedIssuer,
                 ));
             }
-            0x1F if self.pending.is_some_and(|(command, _)| command == 0x10)
-                && !self.peripheral_phase
-                && !self.await_continue
-                && !self.await_vblank
+            // One control command may overlap any INTBACK phase; firmware
+            // reboot paths issue RESDISA without first ending a peripheral
+            // continuation. It runs after the in-flight packet, BREAK or the
+            // VBlank-in timeout. A continuation not yet requested is abandoned.
+            0x1F if self.command == 0x10
+                && self.busy()
                 && self.deferred_control.is_none()
                 && Self::control_clocks(value).is_some() =>
             {
                 self.deferred_control = Some(value);
+                if self.pending.is_none() && self.await_continue {
+                    self.start_deferred_control();
+                }
             }
             0x1F if self.busy() => {
                 return Err(self.access_fault(address, 1, Some(u32::from(value)), Rejection::Busy));
@@ -798,7 +810,7 @@ impl Smpc {
             // ST-169 documents SF-before-COMREG for software synchronization.
             // Idle SF=0 acceptance is an emulator compatibility policy (#109),
             // not measured electrical behavior. SF is independent of internal
-            // work: never set it implicitly here. Only the bounded status mailbox above
+            // work: never set it implicitly here. Only the bounded INTBACK mailbox above
             // accepts overlap; other busy writes retain diagnostics.
             0x1F => {
                 let clocks = match value {

@@ -4032,8 +4032,9 @@ acceptance or #81/#82 endpoint evidence finding is resolved by this increment.
 The [idle SF=0 compatibility increment (#109)](validation-issue-109.md)
 supersedes #105's `MissingSf` rejection. Valid idle COMREG bytes use the same
 command dispatcher with either SF value, without setting SF on issue. Pending
-commands and INTBACK phases still block overlapping COMREG writes independently
-of SF. Original MIT reset-vector firmware checks power-on RESDISA, observable
+commands still block overlapping COMREG writes independently of SF. During
+INTBACK, one control command can wait in a single mailbox (see
+[the later reboot section](#smpc-control-during-an-intback-continuation-2026-11-27)). Original MIT reset-vector firmware checks power-on RESDISA, observable
 RESENAB→RESDISA, SNDON/SNDOFF, CD off/on and status/SCU IRQ results, with an SF=1
 control, native and production Wasm/Chromium execution, and BIOS-only Play/Restart.
 Unit fences retain every command's deadlines/effects and INTBACK cancellation.
@@ -4297,3 +4298,20 @@ not explain that, and it remains open. Mednafen's sticky waveform-access
 threshold (EG ≥ 3C0h) is not adopted here. This is a reference-emulator calibration, not
 physical measurement evidence. All other Issue #17 audio and synthesis criteria
 remain open, and this does not establish commercial-game compatibility.
+
+## SMPC control during an INTBACK continuation (2026-11-27)
+
+Related to #17. In local retail diagnosis (no private media or traces are
+published), a user-provided BIOS stopped with an SMPC `Busy` fault after the
+cover was opened, a game disc inserted, the cover closed and the CD player's
+game start selected. The BIOS's game boot path re-enters its reset code, which
+stores RESDISA (1Ah) to COMREG without an SF handshake. The menu's INTBACK had
+just requested a peripheral continuation and was waiting for VBlank-out.
+
+| Behavior | Previous model | Implementation | Evidence |
+| --- | --- | --- | --- |
+| A control command (SSHON, SSHOFF, SNDON, SNDOFF, CDON, CDOFF, RESENAB, RESDISA) stored during INTBACK | Held only while the status phase was in flight. A continuation that was waiting for VBlank or collecting a packet rejected it as `Busy` | [`Smpc::write_from`](../src/smpc.rs) keeps one control in the mailbox during every INTBACK phase. The command then starts with its full duration after the packet is published, after BREAK or after the VBlank-in timeout. A continuation not yet requested is abandoned, as already happened after status publication. Parameter commands, NMIREQ, resets, clock changes and a second control are still rejected. The reference SMPC (Mednafen/Beetle Saturn) latches a COMREG write as pending and executes it once INTBACK finishes or aborts at VBlank-in | `peripheral_phase_control_waits_for_the_packet_timeout_or_break` covers each phase with SNDON, CDOFF and RESDISA, the second-control rejection and reset cancellation. The [timed peripheral guest](../tests/fixtures/smpc-timed-peripherals.s) now issues RESENAB, requests a continuation and stores RESDISA without SF. It then checks the packet and its IRQ, the RESDISA report, SF release and a later status with reset disabled, in native and production Wasm/Chromium. The previous model fails it with the same `Busy` fault |
+
+With this change the local session reaches the game's title screen under both
+schedulers. This is a reference-emulator calibration of overlap, not physical
+measurement evidence. The remaining SMPC and Issue #17 criteria are unchanged.
