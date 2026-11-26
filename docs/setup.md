@@ -207,10 +207,11 @@ stop the machine until reset. Invisible registers are not updated during Play.
 original debugger fixture. Reset and Run 6 yields `R0=4`, `R1=7`,
 `PC=0x0600000E`; further runs stay in the BRA/NOP loop. It is not firmware.
 
-**Advanced → Virtual cartridge** defaults to **None**. Select **Backup Memory
-(512 KiB)** for Power Memory or **Expansion RAM (1 MiB)** / **Expansion RAM
-(4 MiB)** for games that need work RAM. A change pauses playback, releases input
-and cold-boots the accepted media. Select **Resume** when ready.
+**Cartridge** sits beside **Disc** and **BIOS** and shows **No cartridge inserted**
+by default. Select **Power Memory (512 KiB)** for backup saves or **Expansion RAM
+(1 MiB)** / **Expansion RAM (4 MiB)** for games that need work RAM. Select **None**
+to remove an installed cartridge. A change pauses playback, releases input and
+cold-boots the accepted media. Select **Resume** when ready.
 
 **Save management** handles two whole-device raw images in ascending odd-address
 order. Internal memory accepts exactly 32768 bytes and the detached or installed
