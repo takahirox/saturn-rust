@@ -95,9 +95,9 @@ export class WorkerEmulator {
     return this.state;
   }
   async retrySaves() {
-    const response = await this.client.retrySaves();
-    this.acceptView(response.view, response.epoch);
-    return response.resetRequired;
+    const { view, epoch, resetRequired, transportError } = await this.client.retrySaves();
+    this.acceptView(view, epoch);
+    return { resetRequired, transportError };
   }
   async advanceField() {
     await this.ready;

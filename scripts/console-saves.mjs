@@ -99,6 +99,35 @@ function clockSettings(page) {
   });
 }
 
+async function failNextSoundReset(worker) {
+  await worker.evaluate(() => {
+    const postMessage = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function (message, ...args) {
+      if (message.type !== "reset") return postMessage.call(this, message, ...args);
+      Worker.prototype.postMessage = postMessage;
+      // Reject only the Sound Worker's reset acknowledgement.
+      queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", {
+        data: { type: "error", message: "Test Sound Worker reset failure" },
+      })));
+    };
+  });
+}
+
+async function failNextVideoFrame(worker, duringPlayback) {
+  await worker.evaluate(duringPlayback => {
+    const postMessage = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function (message, ...args) {
+      if (message.type !== "frame" || Boolean(message.presentation) !== duringPlayback) {
+        return postMessage.call(this, message, ...args);
+      }
+      Worker.prototype.postMessage = postMessage;
+      queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", {
+        data: { type: "error", message: "Test Video Worker failure" },
+      })));
+    };
+  }, duringPlayback);
+}
+
 async function replacementAfterSoundFailure(browser, url) {
   const context = await browser.newContext();
   try {
@@ -122,17 +151,7 @@ async function replacementAfterSoundFailure(browser, url) {
       await page.waitForFunction(() => !document.getElementById("play").disabled);
       const worker = page.workers().find(worker => worker.url() === url + "playback-worker.js");
       assert(worker);
-      await worker.evaluate(() => {
-        const postMessage = Worker.prototype.postMessage;
-        Worker.prototype.postMessage = function (message, ...args) {
-          if (message.type !== "reset") return postMessage.call(this, message, ...args);
-          Worker.prototype.postMessage = postMessage;
-          // Reject only the Sound Worker's reset acknowledgement.
-          queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", {
-            data: { type: "error", message: "Test Sound Worker reset failure" },
-          })));
-        };
-      });
+      await failNextSoundReset(worker);
       if (clear) {
         await page.locator("#cartridge-backup-clear").click();
         await page.getByRole("button", { name: "Erase all saves" }).click();
@@ -442,10 +461,11 @@ async function passiveTabPreservesGuestSave(browser, url) {
   } finally { await context.close(); }
 }
 
-async function denyStorageOnStartup(page, url) {
+async function denyStorageOnStartup(page, url, now) {
   const workerUrl = url + "playback-worker.js";
   const source = await readFile("web/playback-worker.js", "utf8");
   await page.route(workerUrl, route => route.fulfill({ contentType: "text/javascript", body: `
+    ${now === undefined ? "" : `Date.now = () => ${now};`}
     self.testStorageDenied = true;
     const testDatabase = self.indexedDB;
     Object.defineProperty(self, "indexedDB", { get() {
@@ -489,6 +509,7 @@ async function retryAfterGuestRead(browser, url) {
     assert.equal(await readInGuest(), 0, "The guest read empty RAM before storage recovered");
     await openRecovery(page, /Could not restore local saves/);
     await worker.evaluate(() => { self.testStorageDenied = false; });
+    await failNextSoundReset(worker);
     await page.locator("#retry-saves").click();
     await standby(page);
     await status(page, savedStatus);
@@ -505,6 +526,8 @@ async function retryAfterGuestRead(browser, url) {
     assert.equal(await page.locator("#play").isDisabled(), true);
     assert.equal(await page.locator("#run").isDisabled(), true);
     assert.equal(await text(page, "player-status"), "Reset required");
+    assert.equal(await text(page, "empty-title"), "Reset to boot with the new console data");
+    assert.match(await text(page, "error"), /Playback error \(Test Sound Worker reset failure\)/);
 
     await page.locator("#restart").click();
     await page.waitForFunction(() => !document.getElementById("play").disabled);
@@ -513,6 +536,25 @@ async function retryAfterGuestRead(browser, url) {
     await page.reload();
     await ready(page);
     assert.equal((await digests(page))[0], checksum(saved), "The recovered image survived reload byte-for-byte");
+  } finally { await context.close(); }
+}
+
+async function exportAfterPlaybackFailure(browser, url) {
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    await page.goto(url);
+    const worker = await denyStorageOnStartup(page, url);
+    await page.locator("#bios").setInputFiles(filename("backup-increment-guest.bin", backupIncrementGuest()));
+    await page.waitForFunction(() => !document.getElementById("play").disabled);
+    await failNextVideoFrame(worker, true);
+    await page.locator("#play").click();
+    await page.waitForFunction(() => document.getElementById("error").textContent.includes("Test Video Worker failure"));
+    await openRecovery(page, /Could not restore local saves/);
+    const expected = Buffer.alloc(32768);
+    expected[0] = 1;
+    const [, exported] = await download(page, "backup-export");
+    assert.deepEqual(exported, expected, "An in-flight render failure preserved the original guest's unsaved write");
   } finally { await context.close(); }
 }
 
@@ -533,7 +575,7 @@ async function sessionRecovery(page, url, storedImages) {
   });
   await standby(page);
   const head = await storedHead();
-  const worker = await denyStorageOnStartup(page, url);
+  const worker = await denyStorageOnStartup(page, url, 100000);
   await openRecovery(page, /Could not restore local saves/);
   const sessionOnly = page.getByRole("checkbox", { name: "Import for this session only" });
   const hasFocus = () => sessionOnly.evaluate(input => document.activeElement === input);
@@ -562,6 +604,25 @@ async function sessionRecovery(page, url, storedImages) {
   await standby(page);
   await status(page, "Console changes are kept in this session.");
   assert.deepEqual(await digests(page), recovered.map(checksum));
+  assert.deepEqual(await storedHead(), head);
+
+  const expectedClock = await download(page, "smpc-battery-export");
+  await failNextVideoFrame(worker, false);
+  const [captureError, exportedFirstByte] = await page.evaluate(async () => {
+    const { emulator } = await import("./app.js");
+    const [error, bytes] = await Promise.all([
+      emulator.framebuffer().then(() => null, error => error.message),
+      emulator.export_backup_ram(),
+    ]);
+    return [error, bytes[0]];
+  });
+  assert.equal(captureError, "Test Video Worker failure");
+  assert.equal(exportedFirstByte, recovered[0][0], "A failed capture in the same batch must leave the export available");
+  for (const [index, id] of ["backup", "cartridge-backup"].entries()) {
+    const [, exported] = await download(page, `${id}-export`);
+    assert.deepEqual(exported, recovered[index], `${id} remains downloadable after renderer failure`);
+  }
+  assert.deepEqual(await download(page, "smpc-battery-export"), expectedClock, "Clock settings remain downloadable after renderer failure");
   assert.deepEqual(await storedHead(), head);
   await page.unroute(url + "playback-worker.js");
   await page.reload();
@@ -1096,6 +1157,7 @@ export async function consoleSaves(browser, url) {
   await passiveTabPreservesGuestSave(browser, url);
   await cartridgeChangeDuringBiosSelection(browser, url);
   await retryAfterGuestRead(browser, url);
+  await exportAfterPlaybackFailure(browser, url);
   await importDuringGuestFormat(browser, url);
   await importWithPendingSetsmem(browser, url);
   await pausedClockReload(browser, url);
