@@ -170,13 +170,15 @@ wide desktop layouts and follow the display and toolbar on narrow screens.
   becomes **Pause** while playing and **Resume** after pausing. Toolbar **Reset**
   cold-boots accepted media and resumes an existing session when the advanced
   tools are closed. Play activates audio on the user gesture. If blocked,
-  **Enable audio** retries activation. **Mute** preserves the selected 0–100%
-  volume. Audio queue, mute and underrun status are available in Advanced.
+  **Enable audio** retries activation. The **Mute** speaker button preserves the
+  selected 0–100% volume. Audio queue, mute and underrun status are available in
+  Advanced.
 - **Fullscreen** sizes the picture to the available space with a separate
   **Exit fullscreen** action. Touch buttons remain available with safe-area
   padding. Exit returns focus to the toolbar button. **Display filter** can
-  change during playback or pause. **Clean** is the default, with **CRT
-  Composite**, **CRT S-Video** and **CRT RGB** available on WebGL 2. See the
+  change during playback or pause. **CRT S-Video** is the default, with **Clean**,
+  **CRT Composite** and **CRT RGB** also available. The player falls back to
+  Clean if WebGL 2 or the shader is unavailable. See the
   [CRT design and validation](validation-issue-254.md).
 
 See [automatic boot selection validation](validation-issue-135.md) for file-state
@@ -189,9 +191,9 @@ A/S/D for X/Y/Z, Q/W for L/R, Enter for Saturn Start. These are physical key
 positions, unaffected by Shift, Caps Lock or layout. The second pad's partial
 keyboard mapping uses I/K/J/L directions, U/O/P for A/B/C and Right Shift for
 Start; X/Y/Z/L/R require a gamepad. Standard Gamepad input is supported on both
-ports. Focus loss releases held input;
-hiding the tab pauses. On coarse-pointer screens, the Player 1 touch controller
-provides the same thirteen digital controls. Slide across its D-pad for
+ports. Focus loss releases held input. Hiding the tab suspends running playback,
+which resumes when you return. On coarse-pointer screens, the Player 1 touch
+controller provides the same thirteen digital controls. Slide across its D-pad for
 diagonals. Touch, keyboard and physical gamepad can be held together. Standard
 320×224 pixels are presented at 4:3 and other modes update the display ratio.
 

@@ -16,6 +16,7 @@ let liveDiscError = "";
 const MAX_ISO_BYTES = 450000 * 2048;
 const MAX_MEDIA_BYTES = 450000 * 2352;
 let playing = false;
+let visibilityPause = null;
 let sessionStarted = false;
 let attemptedBoot = false;
 let bootValid = false;
@@ -245,6 +246,7 @@ function releaseButtons() {
 }
 
 async function pause({ checkpoint = playing } = {}) {
+  visibilityPause = null;
   pauseRevision++;
   playing = false;
   queuedAudio = [];
@@ -297,6 +299,7 @@ function animate() {
   requestAnimationFrame(animate);
 }
 async function startPlaying() {
+  visibilityPause = null;
   playing = true;
   queuedAudio = [];
   audio.setPaused(true);
@@ -515,6 +518,7 @@ async function installCartridge(requestedSlot) {
 
 async function reset({ clearMedia = false } = {}) {
   const generation = ++bootGeneration;
+  visibilityPause = null;
   resetting = true;
   if (coverOpen && loadingDisc) {
     discGeneration++;
@@ -749,7 +753,7 @@ try {
   });
   $("play").addEventListener("click", event => {
     const play = event.currentTarget;
-    if (play.disabled) return;
+    if (play.disabled || document.hidden) return;
     if (playing) {
       const wasFocused = document.activeElement === play;
       void act(pause).then(() => {
@@ -833,6 +837,7 @@ try {
   // The Worker drains its current field before mutating the CD block. Drop
   // already mixed host PCM while that field and its presentation are settled.
   async function changeLiveDisc(operation) {
+    visibilityPause = null;
     changingLiveDisc = true;
     if (!coverOpen) {
       queuedAudio = [];
@@ -864,6 +869,7 @@ try {
       }
       return;
     }
+    visibilityPause = null;
     selectionErrors.disc = "";
     liveDiscError = "";
     const generation = ++discGeneration;
@@ -1009,8 +1015,23 @@ try {
   $("screen").addEventListener("blur", releaseButtons);
   window.addEventListener("blur", releaseButtons);
   window.addEventListener("pagehide", () => { void pause({ checkpoint: true }).catch(() => {}); });
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) void act(() => pause({ checkpoint: true }), { clearError: false });
+  document.addEventListener("visibilitychange", async () => {
+    if (document.hidden) {
+      if (visibilityPause) return;
+      const wasPlaying = playing;
+      const paused = act(() => pause({ checkpoint: true }), { clearError: false });
+      if (wasPlaying) visibilityPause = paused;
+      return;
+    }
+    const paused = visibilityPause;
+    if (!paused) return;
+    // Let the Worker finish pausing and checkpointing before checking readiness.
+    await paused;
+    if (document.hidden || visibilityPause !== paused) return;
+    visibilityPause = null;
+    if ($("play").disabled) return;
+    enableAudio();
+    void act(startPlaying, { clearError: false });
   });
   requestAnimationFrame(animate);
   $("controls").disabled = false;

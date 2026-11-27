@@ -230,12 +230,29 @@ async function checkGuest(page) {
 }
 
 async function checkPlayer(page) {
-  assert.equal(await filter(page).inputValue(), "clean");
+  assert.equal(await filter(page).inputValue(), "s-video");
   assert.deepEqual(await filter(page).locator("option").allTextContents(), ["Clean", "CRT Composite", "CRT S-Video", "CRT RGB"]);
   await page.locator("#disc").setInputFiles("web/star-collector.iso");
   await ready(page);
+  await page.evaluate(async () => {
+    const { emulator: { client } } = await import("./app.js");
+    const present = client.onFrame;
+    client.onFrame = frame => {
+      client.onFrame = present;
+      present(frame);
+      const canvas = document.getElementById("crt-screen");
+      const gl = canvas.getContext("webgl2");
+      const program = gl?.getParameter(gl.CURRENT_PROGRAM);
+      window.firstPresentation = {
+        visible: !canvas.hidden,
+        preset: program && Array.from(gl.getUniform(program, gl.getUniformLocation(program, "preset"))),
+      };
+    };
+  });
   await page.locator("#play").click();
-  await page.waitForFunction(() => document.getElementById("empty-state").hidden);
+  await page.waitForFunction(() => window.firstPresentation);
+  assert.deepEqual(await page.evaluate(() => window.firstPresentation),
+    { visible: true, preset: Array.from(new Float32Array([0.19, 0.30, 0.12, 0.030])) });
   for (const preset of presets.slice(1)) {
     await filter(page).selectOption(preset);
     await visible(page, true);
@@ -347,8 +364,7 @@ async function checkFallback(page, url, failure) {
   await page.goto(url);
   await ready(page);
   if (failure === "creation") await enterFullscreen(page);
-  await filter(page).selectOption("composite");
-  assert.match(await page.locator("#display-filter-status").textContent(), /Showing Clean/);
+  assert.equal(await filter(page).inputValue(), "s-video");
   await page.locator("#disc").setInputFiles("web/star-collector.iso");
   await ready(page);
   await page.locator("#play").click();
@@ -357,6 +373,7 @@ async function checkFallback(page, url, failure) {
     return canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data.some((channel, i) => i % 4 !== 3 && channel !== 0);
   });
   await visible(page, false);
+  assert.match(await page.locator("#display-filter-status").textContent(), /Showing Clean/);
   assert.equal(await page.locator("#error").textContent(), "");
   if (failure === "creation") await fullscreenFallbackStatus(page, /unavailable.*Showing Clean/);
   await filter(page).selectOption("clean");
