@@ -109,6 +109,9 @@ button.primary:hover:not(:disabled) { background: #24407d; }
 .empty-state p { padding: 0 12px; }
 .player-toolbar { margin-top: 8px; }
 .audio-controls, .display-filter { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
+#mute { display: grid; place-items: center; width: 44px; padding: 0; }
+#mute svg { pointer-events: none; }
+#mute[aria-pressed="false"] .mute-mark, #mute[aria-pressed="true"] .sound-waves { display: none; }
 .display-filter label { color: var(--muted); font-size: .85rem; }
 #volume { width: clamp(80px, 12vw, 116px); margin: 0; accent-color: var(--accent); }
 #volume-value { min-width: 3.1ch; text-align: end; font-size: .8rem; font-variant-numeric: tabular-nums; color: var(--muted); }
