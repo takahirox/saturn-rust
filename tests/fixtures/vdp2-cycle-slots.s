@@ -52,6 +52,10 @@ timed_blank_out:
 mov.w @r1,r0
 tst #8,r0
 bf timed_blank_out
+timed_blank_out_top:
+mov.w @r1,r0
+tst #4,r0
+bf timed_blank_out_top
 load 0xfffffe92,r1
 mov #1,r0
 mov.b r0,@r1

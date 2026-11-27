@@ -50,6 +50,10 @@ out_grant0:
 mov.w @r1,r0
 tst #8,r0
 bf out_grant0
+top_grant0:
+mov.w @r1,r0
+tst #4,r0
+bf top_grant0
 load 0x25e00000,r4
 load 0xfffffe12,r1
 load 0xfffffe13,r2
@@ -110,6 +114,10 @@ out_grant1:
 mov.w @r1,r0
 tst #8,r0
 bf out_grant1
+top_grant1:
+mov.w @r1,r0
+tst #4,r0
+bf top_grant1
 load 0x25e00000,r4
 load 0xfffffe12,r1
 load 0xfffffe13,r2
@@ -170,6 +178,10 @@ out_grant2:
 mov.w @r1,r0
 tst #8,r0
 bf out_grant2
+top_grant2:
+mov.w @r1,r0
+tst #4,r0
+bf top_grant2
 load 0x25e00000,r4
 load 0xfffffe12,r1
 load 0xfffffe13,r2
@@ -230,6 +242,10 @@ out_grant3:
 mov.w @r1,r0
 tst #8,r0
 bf out_grant3
+top_grant3:
+mov.w @r1,r0
+tst #4,r0
+bf top_grant3
 load 0x25e20000,r4
 load 0xfffffe12,r1
 load 0xfffffe13,r2
@@ -290,6 +306,10 @@ out_grant4:
 mov.w @r1,r0
 tst #8,r0
 bf out_grant4
+top_grant4:
+mov.w @r1,r0
+tst #4,r0
+bf top_grant4
 load 0x25e40000,r4
 load 0xfffffe12,r1
 load 0xfffffe13,r2
@@ -350,6 +370,10 @@ out_grant5:
 mov.w @r1,r0
 tst #8,r0
 bf out_grant5
+top_grant5:
+mov.w @r1,r0
+tst #4,r0
+bf top_grant5
 load 0x25e00000,r4
 load 0xfffffe12,r1
 load 0xfffffe13,r2

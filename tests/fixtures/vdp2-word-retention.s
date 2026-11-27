@@ -50,6 +50,10 @@ held_blank_out:
 mov.w @r1,r0
 tst #8,r0
 bf held_blank_out
+held_blank_out_top:
+mov.w @r1,r0
+tst #4,r0
+bf held_blank_out_top
 load 16,r3
 line_16:
 load 0x25f80002,r1

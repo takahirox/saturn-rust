@@ -33,7 +33,17 @@ fn slave_raster_boundaries_modes_fields_plls_and_standards() {
                         (if pal { 313 } else { 263 }) - u32::from(mode & 0xC0 != 0 && field == 1)
                     };
                     let end = line * lines;
+                    // VBLANK falls at horizontal sync of the last line,
+                    // except in exclusive monitor modes.
+                    let vblank_end = if mode & 4 != 0 {
+                        end
+                    } else {
+                        end - line + if fast { 0x177 * 4 } else { 0x15B * 4 }
+                    };
                     let mut samples = vec![
+                        vblank_end - 1,
+                        vblank_end,
+                        vblank_end + 1,
                         0,
                         1,
                         h - 1,
@@ -51,13 +61,14 @@ fn slave_raster_boundaries_modes_fields_plls_and_standards() {
                         end - 1,
                         end,
                     ];
+                    samples.retain(|&t| t <= end);
                     samples.sort_unstable();
                     samples.dedup();
                     let mut previous = 0;
                     for t in samples {
                         b.advance_main_clocks(t - previous, 0).unwrap();
                         previous = t;
-                        let expected = if t >= active * line && t < end {
+                        let expected = if t >= active * line && t < vblank_end {
                             Some((6, 0x43))
                         } else if t % line >= h {
                             Some((2, 0x41))
@@ -70,9 +81,16 @@ fn slave_raster_boundaries_modes_fields_plls_and_standards() {
                             "PAL={pal} fast={fast} mode={mode:X} field={field} t={t}"
                         );
                         let phase = t % line;
+                        let sync = vblank_end + line - end;
                         assert_eq!(
                             b.raster.clocks_to_event(),
-                            if phase < h { h - phase } else { line - phase }
+                            if phase < h {
+                                h - phase
+                            } else if t < vblank_end && t >= end - line {
+                                sync - phase
+                            } else {
+                                line - phase
+                            }
                         );
                         // TVSTAT's forced VBLANK must never be used as an IRQ.
                         assert_ne!(b.read16(VDP2 + 4).unwrap() & 8, 0);
@@ -96,7 +114,10 @@ fn slave_raster_reference_deadlines_are_chunk_invariant() {
             b.set_pal(pal);
             b.change_system_clock(fast);
             let mut now = 0;
-            for edge in [h, line, 224 * line, (if pal { 313 } else { 263 }) * line] {
+            let total = if pal { 313 } else { 263 };
+            // VBlank-OUT at horizontal sync of the last line.
+            let vblank_end = total * line - line + if fast { 0x177 * 4 } else { 0x15B * 4 };
+            for edge in [h, line, 224 * line, vblank_end, total * line] {
                 let deadline = (edge * 26_874_100).div_ceil(freq);
                 for t in [deadline - 1, deadline, deadline + 1] {
                     while now < t {
@@ -105,14 +126,13 @@ fn slave_raster_reference_deadlines_are_chunk_invariant() {
                         now += u64::from(n);
                     }
                     let main = t * freq / 26_874_100;
-                    let expected =
-                        if main >= 224 * line && main < (if pal { 313 } else { 263 }) * line {
-                            Some((6, 0x43))
-                        } else if main % line >= h {
-                            Some((2, 0x41))
-                        } else {
-                            None
-                        };
+                    let expected = if main >= 224 * line && main < vblank_end {
+                        Some((6, 0x43))
+                    } else if main % line >= h {
+                        Some((2, 0x41))
+                    } else {
+                        None
+                    };
                     assert_eq!(
                         b.interrupt(Processor::Slave),
                         expected,

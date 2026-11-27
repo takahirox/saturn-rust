@@ -166,10 +166,12 @@ impl Renderer {
                     self.video.vblank = true;
                 }
                 Some(RasterEvent::VBlankOut) => {
-                    self.video.hblank = false;
+                    self.video.hblank = self.raster.line != 0;
                     self.video.vblank = false;
                     self.video.scan_field(self.raster.odd());
-                    self.video.begin_scanline(0);
+                    if self.raster.line == 0 {
+                        self.video.begin_scanline(0);
+                    }
                 }
                 Some(RasterEvent::LineStart) => {
                     self.video.hblank = false;

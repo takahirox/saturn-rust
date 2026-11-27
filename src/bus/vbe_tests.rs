@@ -95,7 +95,9 @@ fn sampled_erase_preserves_all_standard_tv_capacity_and_end_cancellation() {
                 // after the requested manual change at blank end.
                 reg(&mut b, 2, 3);
                 let blank = (if pal { 313 } else { 263 }) - lines;
-                advance(&mut b, blank * l - 1, 17);
+                // VBlank-OUT falls at horizontal sync of the last blank line.
+                let sync = if fast { 0x177 * 4 } else { 0x15B * 4 };
+                advance(&mut b, blank * l - (l - sync) - 1, 17);
                 let last = capacity.min(131072) - 1;
                 if capacity <= 131072 {
                     let x = if mode == 0 {
@@ -110,8 +112,8 @@ fn sampled_erase_preserves_all_standard_tv_capacity_and_end_cancellation() {
                     );
                 }
                 advance(&mut b, 1, 1);
-                // §4.2: the change is latched at the first HBlank-in.
-                let latch = b.raster.clocks_to_event();
+                // §4.2: the change is latched at the first HBlank-in, on line zero.
+                let latch = b.raster.clocks_to_line_zero() + if fast { 1408 } else { 1280 };
                 advance(&mut b, latch, 17);
                 for word in [0, last, (last + 1).min(131071), 131071] {
                     assert_eq!(

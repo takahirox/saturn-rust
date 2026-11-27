@@ -493,6 +493,9 @@ pub(super) struct Transactions {
     // Each channel may be preempted between physical beats of its accepted
     // logical unit. Keep already sampled data and bus width per channel.
     scu_units: [Option<ScuUnit>; 4],
+    // B-bus write clocks of each DMA channel's buffered unit that its next
+    // High Work RAM read may overlap; see `Bus::scu_read_ahead`.
+    scu_read_ahead: [u32; 3],
 }
 
 #[derive(Default)]
@@ -1737,6 +1740,39 @@ impl Bus {
         }
         self.transactions.scu = None;
         self.transactions.scu_units = std::array::from_fn(|_| None);
+        self.transactions.scu_read_ahead = [0; 3];
+    }
+    /// The SCU bridges the CPU bus and the B-bus and buffers each DMA unit
+    /// between its read and write phases. While a channel writes a buffered
+    /// unit to the B-bus, the CPU bus is free for its next source read, so a
+    /// High Work RAM read is charged only for the part not hidden behind the
+    /// preceding B-bus writes (at least one clock). Any other cycle, or
+    /// another channel's, breaks the overlap. This is a reference calibration,
+    /// not a measured waveform: Mednafen charges almost nothing for these
+    /// reads. The BIOS start-up animation copies up to 23,840 bytes of VDP1
+    /// commands from High Work RAM in its VBlank-in handler and must finish
+    /// before VDP1 latches the manual frame change; serial phases (14 clocks
+    /// per longword) overran the blank by about 11 lines.
+    fn scu_read_ahead(&mut self, channel: usize, address: u32, write: bool, clocks: u32) -> u32 {
+        let credits = &mut self.transactions.scu_read_ahead;
+        for (index, credit) in credits.iter_mut().enumerate() {
+            if index != channel {
+                *credit = 0;
+            }
+        }
+        let Some(credit) = credits.get_mut(channel) else {
+            return clocks;
+        };
+        if write && (0x05A0_0000..0x05FC_0000).contains(&address) {
+            *credit = credit.saturating_add(clocks);
+            clocks
+        } else if !write && (0x0600_0000..0x0610_0000).contains(&address) {
+            let hidden = std::mem::take(credit).min(clocks - 1);
+            clocks - hidden
+        } else {
+            *credit = 0;
+            clocks
+        }
     }
     pub(crate) fn cancel_cpu_transaction(&mut self, processor: Processor) {
         self.transactions.resetting[processor as usize] = false;
@@ -2305,6 +2341,7 @@ impl Bus {
                 remaining = base
                     .saturating_add(self.onchip[0].take_wait_clocks())
                     .max(1);
+                remaining = self.scu_read_ahead(cycle.channel, cycle.address, write, remaining);
             }
             self.transactions.scu = Some(cycle);
             self.transactions.active = Some(Active {
@@ -3707,6 +3744,54 @@ mod dma_tests {
             let n = left.min(chunk);
             b.advance_clocks(n).unwrap();
             left -= n;
+        }
+    }
+    #[test]
+    fn scu_high_ram_reads_overlap_the_preceding_b_bus_writes_of_the_same_channel() {
+        // Bus::scu_read_ahead calibration. The first longword keeps the
+        // serial phases (halves at 20 and 29). The next High Work RAM read
+        // hides behind those writes and costs one clock, so the second
+        // longword's halves follow at 29+1+9 and +9. B-bus reads feeding High
+        // Work RAM writes keep their serial 26-clock period.
+        for (read_sound, published) in [(false, [20, 29, 39, 48]), (true, [28, 28, 54, 54])] {
+            for chunk in [1, 3, 8, 64] {
+                let mut b = Bus::default();
+                let (source, destination) = if read_sound {
+                    (crate::sound::SOUND_RAM + 0x100, HIGH_WRAM + 0x200)
+                } else {
+                    (HIGH_WRAM + 0x100, crate::sound::SOUND_RAM + 0x200)
+                };
+                b.write32(source, 0x11223344).unwrap();
+                b.write32(source + 4, 0x55667788).unwrap();
+                for (offset, value) in [
+                    (0, source),
+                    (4, destination),
+                    (8, 8),
+                    (12, if read_sound { 0x102 } else { 0x101 }),
+                    (20, 7),
+                    (16, 0x101),
+                ] {
+                    b.write32(SCU + offset, value).unwrap();
+                }
+                let words = [
+                    (destination, 0x11220000),
+                    (destination, 0x11223344),
+                    (destination + 4, 0x55660000),
+                    (destination + 4, 0x55667788),
+                ];
+                let mut now = 0;
+                for ((address, value), at) in words.into_iter().zip(published) {
+                    if at > now {
+                        elapse(&mut b, at - 1 - now, chunk);
+                        assert_ne!(b.read32(address), Ok(value), "{read_sound} {at}");
+                        elapse(&mut b, 1, 1);
+                        now = at;
+                    }
+                    if !read_sound || value & 0xffff != 0 {
+                        assert_eq!(b.read32(address), Ok(value), "{read_sound} {at}");
+                    }
+                }
+            }
         }
     }
     #[test]

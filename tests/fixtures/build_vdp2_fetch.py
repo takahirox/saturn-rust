@@ -43,8 +43,11 @@ def build():
     s += 'load 0x25e60000,r1\nload 224,r2\nload 638,r4\nmov #0,r0\nwindow_fill:\n'
     s += 'mov.w r0,@r1\nadd #2,r1\nmov.w r4,@r1\nadd #2,r1\ndt r2\nbf window_fill\n'
     s += put16(0x25F80000,0x8000)
+    # VBLANK ends during horizontal sync of the last blank line; each wait
+    # also lets HBLANK end so the guest starts at line zero.
     s += ('load 0x25f80004,r1\nblank_in:\nmov.w @r1,r0\ntst #8,r0\nbt blank_in\n'
-          'blank_out:\nmov.w @r1,r0\ntst #8,r0\nbf blank_out\n')
+          'blank_out:\nmov.w @r1,r0\ntst #8,r0\nbf blank_out\n'
+          'blank_out_top:\nmov.w @r1,r0\ntst #4,r0\nbf blank_out_top\n')
     s += line(16)+put16(0x25F80010,0x4FFF) # one read cannot supply RGB555
     s += line(32)+put16(0x25F80010,0xFFFF)+put16(0x25F80018,0x4444) # wrong bank
     s += line(48)+put16(0x25F80010,0x4444)
@@ -82,7 +85,8 @@ def build():
     held += ('load 0x100,r1\nmov.w @r1,r0\nload 0x25e00000,r1\nmov.w r0,@r1\n')
     held += put16(0x25F80000,0x8000)
     held += ('load 0x25f80004,r1\nheld_blank_in:\nmov.w @r1,r0\ntst #8,r0\nbt held_blank_in\n'
-             'held_blank_out:\nmov.w @r1,r0\ntst #8,r0\nbf held_blank_out\n')
+             'held_blank_out:\nmov.w @r1,r0\ntst #8,r0\nbf held_blank_out\n'
+          'held_blank_out_top:\nmov.w @r1,r0\ntst #4,r0\nbf held_blank_out_top\n')
     held += line(16) + put16(0x25E00000,0x2222)
     held += ('load 0x25f80004,r1\nheld_finish:\nmov.w @r1,r0\ntst #8,r0\nbt held_finish\n'
              'load 0x2600df04,r1\nload 0x600d,r0\nmov.l r0,@r1\nheld_park:\nsleep\nbra held_park\nnop\n')
@@ -104,7 +108,8 @@ def build():
     timed += ('load 0x100,r1\nmov.w @r1,r0\nload 0x25e00000,r1\nmov.w r0,@r1\n')
     timed += put16(0x25F80000,0x8000)
     timed += ('load 0x25f80004,r1\ntimed_blank_in:\nmov.w @r1,r0\ntst #8,r0\nbt timed_blank_in\n'
-              'timed_blank_out:\nmov.w @r1,r0\ntst #8,r0\nbf timed_blank_out\n')
+              'timed_blank_out:\nmov.w @r1,r0\ntst #8,r0\nbf timed_blank_out\n'
+          'timed_blank_out_top:\nmov.w @r1,r0\ntst #4,r0\nbf timed_blank_out_top\n')
     timed += 'load 0xfffffe92,r1\nmov #1,r0\nmov.b r0,@r1\n'
     timed += line(15)
     timed += ('load 0x25e00000,r5\nload 0x2222,r6\nload 0x102,r1\nmov.w @r1,r3\n'

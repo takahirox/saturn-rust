@@ -106,6 +106,10 @@ out_partial:
 mov.w @r1,r0
 tst #8,r0
 bf out_partial
+top_partial:
+mov.w @r1,r0
+tst #4,r0
+bf top_partial
 load 0x25f80004,r1
 hin_partial0:
 mov.w @r1,r0
@@ -163,6 +167,10 @@ out_publish:
 mov.w @r1,r0
 tst #8,r0
 bf out_publish
+top_publish:
+mov.w @r1,r0
+tst #4,r0
+bf top_publish
 load 0x25f80004,r1
 wait_enable:
 mov.w @r1,r0
@@ -183,6 +191,10 @@ out_erase:
 mov.w @r1,r0
 tst #8,r0
 bf out_erase
+top_erase:
+mov.w @r1,r0
+tst #4,r0
+bf top_erase
 load 0x25f80004,r1
 hin_erase0:
 mov.w @r1,r0

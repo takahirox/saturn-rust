@@ -120,6 +120,10 @@ blank_out:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out
+blank_out_top:
+mov.w @r1,r0
+tst #4,r0
+bf blank_out_top
 load 16,r3
 line_16:
 load 0x25f80002,r1

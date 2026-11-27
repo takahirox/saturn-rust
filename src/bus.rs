@@ -1507,9 +1507,10 @@ impl Bus {
                 self.scu.hblank_in();
             }
             Some(RasterEvent::VBlankIn) => {
-                self.vdp1.vblank_in(
+                self.vdp1.vblank_in_for(
                     self.raster.line_clocks(),
                     u32::from(self.raster.blank_lines()),
+                    self.raster.vblank_clocks(),
                 );
                 if self.render_video() {
                     self.vdp2.finish_field();
@@ -1520,14 +1521,17 @@ impl Bus {
                 self.scu.signal(0);
             }
             Some(RasterEvent::VBlankOut) => {
-                self.vdp2.hblank = false;
+                // Normal modes leave VBLANK during horizontal blank.
+                self.vdp2.hblank = self.raster.line != 0;
                 self.vdp2.vblank = false;
                 self.scu.vblank_out();
-                let active = self.system_clock.deadline(self.raster.active_clocks());
+                let active = self
+                    .system_clock
+                    .deadline(self.raster.active_clocks() + self.raster.clocks_to_line_zero());
                 self.smpc.vblank_out_after(active);
                 self.vdp1.begin_field();
                 self.vdp2.scan_field(self.raster.odd());
-                if self.render_video() {
+                if self.render_video() && self.raster.line == 0 {
                     self.vdp2.begin_scanline(0);
                 }
             }

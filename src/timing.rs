@@ -175,6 +175,38 @@ impl Raster {
     pub fn clocks_to_event(&self) -> u32 {
         if self.phase < self.hblank_clock() {
             self.hblank_clock() - self.phase
+        } else if let Some(edge) = self.early_vblank_out()
+            && self.phase < edge
+        {
+            edge - self.phase
+        } else {
+            self.line_clocks() - self.phase
+        }
+    }
+    /// VBLANK falls at horizontal sync of the last blank line, after its
+    /// HBlank-in, so the first HBlank-in after VBlank-OUT is line zero's
+    /// (Mednafen: dot 0x15B/0x177 of the line before the top line, 400/407
+    /// dots before that edge). Exclusive monitor modes keep the edge at line
+    /// zero. Returns that phase while the beam is on the last line.
+    fn early_vblank_out(&self) -> Option<u32> {
+        self.vblank_out_phase()
+            .filter(|_| self.line + 1 == self.field_lines())
+    }
+    fn vblank_out_phase(&self) -> Option<u32> {
+        (self.mode & 4 == 0).then_some(if self.fast { 0x177 * 4 } else { 0x15B * 4 })
+    }
+    /// VBlank-in to VBlank-OUT, for a beam at VBlank-in.
+    pub(crate) fn vblank_clocks(&self) -> u32 {
+        let lines = u32::from(self.blank_lines()) * self.line_clocks();
+        lines
+            - self
+                .vblank_out_phase()
+                .map_or(0, |edge| self.line_clocks() - edge)
+    }
+    /// Clocks from the current position to the start of line zero.
+    pub(crate) fn clocks_to_line_zero(&self) -> u32 {
+        if self.line == 0 {
+            0
         } else {
             self.line_clocks() - self.phase
         }
@@ -289,6 +321,9 @@ impl Raster {
         if self.phase == self.hblank_clock() {
             return Some(RasterEvent::HBlankIn);
         }
+        if self.early_vblank_out() == Some(self.phase) {
+            return Some(RasterEvent::VBlankOut);
+        }
         if self.phase != self.line_clocks() {
             return None;
         }
@@ -299,7 +334,11 @@ impl Raster {
         } else if self.line >= self.field_lines() {
             self.line = 0;
             self.fields += 1;
-            Some(RasterEvent::VBlankOut)
+            Some(if self.mode & 4 == 0 {
+                RasterEvent::LineStart
+            } else {
+                RasterEvent::VBlankOut
+            })
         } else {
             Some(RasterEvent::LineStart)
         }
@@ -506,13 +545,17 @@ mod tests {
                         true
                     )
                 );
-                assert_eq!(blanks[1].0, total * width_clock);
+                // VBlank-OUT at horizontal sync of each field's last line;
+                // the field parity changes at the following line zero.
+                let sync = width_clock - if mode & 1 != 0 { 0x177 * 4 } else { 0x15B * 4 };
+                assert_eq!(blanks[1].0, total * width_clock - sync);
                 assert_eq!(blanks[2].0, (total + active) * width_clock);
-                assert_eq!(blanks[3].0, (total + even_length) * width_clock);
+                assert_eq!(blanks[3].0, (total + even_length) * width_clock - sync);
                 if mode & 0xC0 == 0xC0 {
                     assert_eq!(blanks[2].2, active as u16 * 2 + 1);
                 }
-                assert_eq!(blanks[1].3, mode & 0xC0 == 0);
+                assert!(blanks[1].3);
+                assert_eq!(blanks[2].3, mode & 0xC0 == 0);
             }
         }
     }
@@ -589,7 +632,8 @@ mod tests {
         }
         assert_eq!(expected[0], (1280, RasterEvent::HBlankIn, 0));
         assert!(expected.contains(&(224 * 1708, RasterEvent::VBlankIn, 224)));
-        assert!(expected.contains(&(CLOCKS_PER_FIELD, RasterEvent::VBlankOut, 0)));
+        assert!(expected.contains(&(CLOCKS_PER_FIELD - 320, RasterEvent::VBlankOut, 262)));
+        assert!(expected.contains(&(CLOCKS_PER_FIELD, RasterEvent::LineStart, 0)));
         assert_eq!(
             expected
                 .iter()

@@ -247,6 +247,10 @@ blank_out_0:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_0
+blank_out_0_top:
+mov.w @r1,r0
+tst #4,r0
+bf blank_out_0_top
 load 0x25f80004,r1
 hin_field_00:
 mov.w @r1,r0
@@ -315,6 +319,10 @@ blank_out_1:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_1
+blank_out_1_top:
+mov.w @r1,r0
+tst #4,r0
+bf blank_out_1_top
 load 0x25f80004,r1
 hin_field_10:
 mov.w @r1,r0
@@ -383,6 +391,10 @@ last_out:
 mov.w @r1,r0
 tst #8,r0
 bf last_out
+last_out_top:
+mov.w @r1,r0
+tst #4,r0
+bf last_out_top
 load 0x25f80004,r1
 completed:
 mov.w @r1,r0

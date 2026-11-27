@@ -11,8 +11,11 @@ from build_clock import put16, read
 HERE=Path(__file__).resolve().parent
 
 def blank(label, inside):
+    # VBLANK ends during horizontal sync of the last blank line; leaving
+    # blank also waits for HBLANK to end so the guest starts at line zero.
+    top = '' if inside else f'{label}_top:\nmov.w @r1,r0\ntst #4,r0\nbf {label}_top\n'
     return (f'load 0x25f80004,r1\n{label}:\nmov.w @r1,r0\ntst #8,r0\n'
-            f'{"bt" if inside else "bf"} {label}\n')
+            f'{"bt" if inside else "bf"} {label}\n' + top)
 
 def line(number):
     return (f'load {number},r3\nline_{number}:\nload 0x25f80002,r1\nmov.w @r1,r0\n'

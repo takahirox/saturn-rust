@@ -149,6 +149,10 @@ out_first:
 mov.w @r1,r0
 tst #8,r0
 bf out_first
+top_first:
+mov.w @r1,r0
+tst #4,r0
+bf top_first
 load 0x25f80004,r1
 wait_blank:
 mov.w @r1,r0

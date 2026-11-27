@@ -54,6 +54,10 @@ blank_out_0:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_0
+blank_top_0:
+mov.w @r1,r0
+tst #4,r0
+bf blank_top_0
 load 0x25f80004,r1
 hin_shrink_00:
 mov.w @r1,r0
@@ -184,6 +188,10 @@ blank_out_1:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_1
+blank_top_1:
+mov.w @r1,r0
+tst #4,r0
+bf blank_top_1
 load 0x25f80004,r1
 hin_shrink_10:
 mov.w @r1,r0
@@ -314,6 +322,10 @@ blank_out_2:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_2
+blank_top_2:
+mov.w @r1,r0
+tst #4,r0
+bf blank_top_2
 load 0x25f80004,r1
 hin_shrink_20:
 mov.w @r1,r0
@@ -444,6 +456,10 @@ blank_out_3:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_3
+blank_top_3:
+mov.w @r1,r0
+tst #4,r0
+bf blank_top_3
 load 0x25f80004,r1
 hin_shrink_30:
 mov.w @r1,r0
@@ -574,6 +590,10 @@ blank_out_4:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_4
+blank_top_4:
+mov.w @r1,r0
+tst #4,r0
+bf blank_top_4
 load 0x25f80004,r1
 hin_shrink_40:
 mov.w @r1,r0
@@ -704,6 +724,10 @@ blank_out_5:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_5
+blank_top_5:
+mov.w @r1,r0
+tst #4,r0
+bf blank_top_5
 load 0x25f80004,r1
 hin_shrink_50:
 mov.w @r1,r0
@@ -834,6 +858,10 @@ blank_out_6:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_6
+blank_top_6:
+mov.w @r1,r0
+tst #4,r0
+bf blank_top_6
 load 0x25f80004,r1
 hin_shrink_60:
 mov.w @r1,r0
@@ -964,6 +992,10 @@ blank_out_7:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_7
+blank_top_7:
+mov.w @r1,r0
+tst #4,r0
+bf blank_top_7
 load 0x25f80004,r1
 hin_shrink_70:
 mov.w @r1,r0
@@ -1088,6 +1120,10 @@ blank_out_8:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_8
+blank_top_8:
+mov.w @r1,r0
+tst #4,r0
+bf blank_top_8
 load 0x25f80004,r1
 hin_shrink_80:
 mov.w @r1,r0
@@ -1212,6 +1248,10 @@ blank_out_9:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_9
+blank_top_9:
+mov.w @r1,r0
+tst #4,r0
+bf blank_top_9
 load 0x25f80004,r1
 hin_shrink_90:
 mov.w @r1,r0
@@ -1348,6 +1388,10 @@ blank_out_10:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_10
+blank_top_10:
+mov.w @r1,r0
+tst #4,r0
+bf blank_top_10
 load 0x25f80004,r1
 hin_shrink_100:
 mov.w @r1,r0
@@ -1514,6 +1558,10 @@ blank_out_11:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_11
+blank_top_11:
+mov.w @r1,r0
+tst #4,r0
+bf blank_top_11
 load 0x25f80004,r1
 hin_shrink_110:
 mov.w @r1,r0

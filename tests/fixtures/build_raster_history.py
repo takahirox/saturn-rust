@@ -21,6 +21,8 @@ def build():
     # Begin on a complete field boundary, after the initial setup field.
     s+=('load 0x25f80004,r1\nblank_in:\nmov.w @r1,r0\ntst #8,r0\nbt blank_in\n'
         'blank_out:\nmov.w @r1,r0\ntst #8,r0\nbf blank_out\n')
+    # VBLANK ends during the last blank line's horizontal sync; start at line 0.
+    s+='top:\nmov.w @r1,r0\ntst #4,r0\nbf top\n'
     for line,color in [(64,0x83E0),(128,0xFC00),(192,0xFFFF)]:
         s+=f'load {line},r3\n'
         s+=(f'line_{line}:\nload 0x25f80002,r1\nmov.w @r1,r0\n'
