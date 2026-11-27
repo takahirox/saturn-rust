@@ -415,6 +415,23 @@ out_publish:
 mov.w @r1,r0
 tst #8,r0
 bf out_publish
+load 0x25f80004,r1
+hin_publish0:
+mov.w @r1,r0
+tst #4,r0
+bt hin_publish0
+hout_publish0:
+mov.w @r1,r0
+tst #4,r0
+bf hout_publish0
+hin_publish1:
+mov.w @r1,r0
+tst #4,r0
+bt hin_publish1
+hout_publish1:
+mov.w @r1,r0
+tst #4,r0
+bf hout_publish1
 load 0x25d00002,r1
 load 0x2,r0
 mov.w r0,@r1

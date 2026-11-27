@@ -9,6 +9,7 @@ from pathlib import Path
 from build_scu import assembler, store
 from build_clock import put16, read
 from build_sprite_rotation import blank
+from build_video_transactions import latched
 HERE=Path(__file__).resolve().parent
 
 def build():
@@ -22,7 +23,7 @@ def build():
     # in an even field while latching odd drawing for the other framebuffer.
     s+='load 0x100,r1\nmov.l @r1,r0\nload 0x25d00002,r1\nmov.w r0,@r1\n'
     for field in range(2):
-        s+=blank(f'blank_in_{field}',True)+blank(f'blank_out_{field}',False)
+        s+=blank(f'blank_in_{field}',True)+blank(f'blank_out_{field}',False)+latched(f'field_{field}')
         s+=put16(0x25d00004,1)
         s+=(f'load 0x25d00010,r1\ndraw_{field}:\nmov.w @r1,r0\ntst #2,r0\nbt draw_{field}\n')
         for y in [214,215,216,217,218,219]:s+=read(0x25c80000+(y*512+10)*2,2)

@@ -70,6 +70,23 @@ wait_capture_a:
 sleep
 cmp/eq r7,r10
 bt wait_capture_a
+load 0x25f80004,r1
+hin_capture_a0:
+mov.w @r1,r0
+tst #4,r0
+bt hin_capture_a0
+hout_capture_a0:
+mov.w @r1,r0
+tst #4,r0
+bf hout_capture_a0
+hin_capture_a1:
+mov.w @r1,r0
+tst #4,r0
+bt hin_capture_a1
+hout_capture_a1:
+mov.w @r1,r0
+tst #4,r0
+bf hout_capture_a1
 mov #0,r11
 load 0x25c80000,r4
 mov #6,r3
@@ -105,6 +122,23 @@ wait_erase_a:
 sleep
 cmp/eq r7,r10
 bt wait_erase_a
+load 0x25f80004,r1
+hin_erase_a0:
+mov.w @r1,r0
+tst #4,r0
+bt hin_erase_a0
+hout_erase_a0:
+mov.w @r1,r0
+tst #4,r0
+bf hout_erase_a0
+hin_erase_a1:
+mov.w @r1,r0
+tst #4,r0
+bt hin_erase_a1
+hout_erase_a1:
+mov.w @r1,r0
+tst #4,r0
+bf hout_erase_a1
 load 0x25d00002,r1
 load 0x3,r0
 mov.w r0,@r1
@@ -173,6 +207,23 @@ wait_erase_b:
 sleep
 cmp/eq r7,r10
 bt wait_erase_b
+load 0x25f80004,r1
+hin_erase_b0:
+mov.w @r1,r0
+tst #4,r0
+bt hin_erase_b0
+hout_erase_b0:
+mov.w @r1,r0
+tst #4,r0
+bf hout_erase_b0
+hin_erase_b1:
+mov.w @r1,r0
+tst #4,r0
+bt hin_erase_b1
+hout_erase_b1:
+mov.w @r1,r0
+tst #4,r0
+bf hout_erase_b1
 load 0x25d00000,r1
 load 0x0,r0
 mov.w r0,@r1
@@ -244,6 +295,23 @@ wait_disabled:
 sleep
 cmp/eq r7,r10
 bt wait_disabled
+load 0x25f80004,r1
+hin_disabled0:
+mov.w @r1,r0
+tst #4,r0
+bt hin_disabled0
+hout_disabled0:
+mov.w @r1,r0
+tst #4,r0
+bf hout_disabled0
+hin_disabled1:
+mov.w @r1,r0
+tst #4,r0
+bt hin_disabled1
+hout_disabled1:
+mov.w @r1,r0
+tst #4,r0
+bf hout_disabled1
 load 0x25c80000,r4
 mov #6,r3
 load 944,r6
@@ -308,6 +376,23 @@ wait_publish_b:
 sleep
 cmp/eq r7,r10
 bt wait_publish_b
+load 0x25f80004,r1
+hin_publish_b0:
+mov.w @r1,r0
+tst #4,r0
+bt hin_publish_b0
+hout_publish_b0:
+mov.w @r1,r0
+tst #4,r0
+bf hout_publish_b0
+hin_publish_b1:
+mov.w @r1,r0
+tst #4,r0
+bt hin_publish_b1
+hout_publish_b1:
+mov.w @r1,r0
+tst #4,r0
+bf hout_publish_b1
 load 0x25d00016,r1
 mov.w @r1,r0
 extu.w r0,r0

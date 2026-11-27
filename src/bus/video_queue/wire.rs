@@ -2,7 +2,7 @@
 //! payload bytes retain their original order. No pointers cross an instance.
 use super::*;
 
-const MAGIC: &[u8; 4] = b"SRV1";
+const MAGIC: &[u8; 4] = b"SRV2";
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 pub(super) const MAX_CLOCKS: u32 = 2_000_000;
 
@@ -49,9 +49,10 @@ pub(super) fn encode(journal: &mut Journal) -> Vec<u8> {
                         out.push(1);
                         patches(&mut out, items);
                     }
-                    Endpoint::VBlankSurface(image) => {
+                    Endpoint::FrameChange(image, items) => {
                         out.push(2);
                         surface(&mut out, image);
+                        patches(&mut out, items);
                     }
                 }
             }
@@ -191,7 +192,10 @@ pub(super) fn replay(renderer: &mut Renderer, bytes: &[u8]) -> Result<(), String
                 let endpoint = match input.byte()? {
                     0 => Endpoint::None,
                     1 => Endpoint::HBlankErase(input.patches()?),
-                    2 => Endpoint::VBlankSurface(input.surface()?),
+                    2 => {
+                        let surface = input.surface()?;
+                        Endpoint::FrameChange(surface, input.patches()?)
+                    }
                     _ => return Err("invalid video endpoint".into()),
                 };
                 Command::Advance {
@@ -260,7 +264,7 @@ pub(super) fn replay(renderer: &mut Renderer, bytes: &[u8]) -> Result<(), String
                 let valid = match endpoint {
                     Endpoint::None => true,
                     Endpoint::HBlankErase(_) => final_event == Some(RasterEvent::HBlankIn),
-                    Endpoint::VBlankSurface(_) => final_event == Some(RasterEvent::VBlankOut),
+                    Endpoint::FrameChange(..) => final_event == Some(RasterEvent::HBlankIn),
                 };
                 if !valid {
                     return Err("video endpoint does not match raster".into());
@@ -305,7 +309,7 @@ mod tests {
         assert_eq!(
             bytes,
             [
-                b'S', b'R', b'V', b'1', 1, 0x34, 0x12, 0, 0, 2, 0, 0, 0, 0xAB, 0xCD, 3, 0, 0, 0xF8,
+                b'S', b'R', b'V', b'2', 1, 0x34, 0x12, 0, 0, 2, 0, 0, 0, 0xAB, 0xCD, 3, 0, 0, 0xF8,
                 5, 0, 0x80, 0, 0
             ]
         );

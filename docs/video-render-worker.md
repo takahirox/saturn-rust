@@ -16,7 +16,9 @@ producer RAM, reusable producer storage or a live front framebuffer.
 The ordered stream contains logical raster spans, VRAM/CRAM/register writes,
 flushes, front-buffer changes, and PAL/PLL/reset transitions. Front changes that
 complete during a span precede its final raster event. HBlank scanout precedes
-display erase; VBlankOut installs the swapped front surface before acquisition.
+display erase. A framebuffer change latched at the first HBlank-in after
+VBlank-OUT (ST-013 §4.2) installs the new front surface before that line is
+composed; its display erase follows the line.
 Every existing video flush remains ordered, including a CPU write to the current
 non-display framebuffer. Cached board catch-up records logical raster progress
 independently of the already advanced board clock.
@@ -96,7 +98,7 @@ separately; do not assume byte identity with a newly built package.
   writes, front erase/swap/pixel completion, both cached catch-up clock modes,
   PLL/PAL/reset, RBG/sprite/interlace guests and independent expected pixels.
 - Consumer and real-producer negative controls fail when prefix flush, span
-  forwarding, HBlank erase or VBlank front-surface ordering is removed. Exact
+  forwarding, HBlank erase or front-surface ordering is removed. Exact
   restored originals pass. The transport golden-byte and invalid trailing
   payload/endpoint tests verify byte order and whole-chunk validation.
 - The public browser Worker verifier passes four RBG/sprite/interlace originals

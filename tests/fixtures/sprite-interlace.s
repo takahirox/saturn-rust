@@ -247,6 +247,23 @@ blank_out_0:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_0
+load 0x25f80004,r1
+hin_field_00:
+mov.w @r1,r0
+tst #4,r0
+bt hin_field_00
+hout_field_00:
+mov.w @r1,r0
+tst #4,r0
+bf hout_field_00
+hin_field_01:
+mov.w @r1,r0
+tst #4,r0
+bt hin_field_01
+hout_field_01:
+mov.w @r1,r0
+tst #4,r0
+bf hout_field_01
 load 0x25d00004,r1
 load 0x1,r0
 mov.w r0,@r1
@@ -298,6 +315,23 @@ blank_out_1:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_1
+load 0x25f80004,r1
+hin_field_10:
+mov.w @r1,r0
+tst #4,r0
+bt hin_field_10
+hout_field_10:
+mov.w @r1,r0
+tst #4,r0
+bf hout_field_10
+hin_field_11:
+mov.w @r1,r0
+tst #4,r0
+bt hin_field_11
+hout_field_11:
+mov.w @r1,r0
+tst #4,r0
+bf hout_field_11
 load 0x25d00004,r1
 load 0x1,r0
 mov.w r0,@r1

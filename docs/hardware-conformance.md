@@ -4315,3 +4315,29 @@ just requested a peripheral continuation and was waiting for VBlank-out.
 With this change the local session reaches the game's title screen under both
 schedulers. This is a reference-emulator calibration of overlap, not physical
 measurement evidence. The remaining SMPC and Issue #17 criteria are unchanged.
+
+## VDP1 frame change latched at the first HBlank-in (2026-11-27)
+
+Related to #17. In local retail diagnosis of Machi (no private media or traces
+are published), one field at the end of an FMV showed garbled colours. The
+movie draws RGB frames through VDP1 with manual changes, and its VBlank-OUT
+handler writes FBCR. At the end it switches VDP2 to palette-only sprites
+(SPCTL type 1, SPCLMD=0) over an NBG1 still, and VDP1 then draws empty frames.
+The new VDP2 settings took effect one field before VDP1 showed an empty frame,
+so the last RGB frame was read as palette data. An instrumented reference
+(Beetle Saturn, built from Mednafen) shows the still in the field after the last
+FMV frame, with no garbled field.
+
+| Behavior | Previous model | Implementation | Evidence |
+| --- | --- | --- | --- |
+| When FCM/FCT decide a frame change | Decided at the VBlank-OUT edge with FBCR as written by then. A write in the VBlank-OUT handler took effect one field later | [`Vdp1::begin_field`](../src/vdp1.rs) handles the VBlank-OUT edge, and [`Vdp1::latch_frame_change`](../src/vdp1.rs) decides and performs the swap at the first HBlank-in, before line zero is composed. The swap still captures EOS/DIE/DIL, the erase registers, LOPR and EDSR, and automatic drawing starts at the same edge. ST-013 §4.2 updates FCM/FCT at the field change, asks for them right after the VBlank-OUT interrupt and prohibits access from that HBlank-in to the next. Mednafen decides the swap there too. This supersedes the VBlank-OUT swap kept in the 2026-11-26 automatic draw start row | `queued_board_installs_a_change_latched_after_vblank_out_before_line_zero` changes the front at that HBlank-in for a request written after VBlank-OUT, composes line zero from it on both the board and the video worker, and defers a request written after line two to the next field. Unit vectors for VBE, HDTV, erase capture and drawing progress now measure from the latch |
+| Video worker front surface | Installed at VBlank-OUT | The transport (`SRV2`) sends the new front with the HBlank-in endpoint that latched it. The worker installs it before composing that line and applies the line's display erase afterwards | Same queued-board test, the wire golden bytes and the existing browser video-transaction groups |
+
+Original sprite-interlace, sprite-shrink, erase-capture, VBE, drawing-progress
+and HDTV guests wrote FBCR or used the new back buffer right after VBlank-OUT.
+They now wait for line two, outside the prohibited window, and keep their
+authored records. Under relaxed and exact scheduling the local session shows
+the still in the field after the last FMV frame, as in the reference.
+This is a reference-emulator calibration, not physical measurement evidence.
+The remaining VDP1 and Issue #17 criteria are unchanged.
+

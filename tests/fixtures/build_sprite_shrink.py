@@ -8,6 +8,7 @@ import struct
 from pathlib import Path
 from build_scu import assembler
 from build_clock import put16,read
+from build_video_transactions import latched
 HERE=Path(__file__).resolve().parent
 
 def build(delta=0, omit=False):
@@ -30,7 +31,7 @@ def build(delta=0, omit=False):
     ]):
         s+=put16(0x25d00002,3|(16 if eos else 0))
         s+=(f'load 0x25f80004,r1\nblank_in_{n}:\nmov.w @r1,r0\ntst #8,r0\nbt blank_in_{n}\n'
-            f'blank_out_{n}:\nmov.w @r1,r0\ntst #8,r0\nbf blank_out_{n}\n')
+            f'blank_out_{n}:\nmov.w @r1,r0\ntst #8,r0\nbf blank_out_{n}\n' + latched(f'shrink_{n}'))
         s+=put16(0x25d00002,2|(16 if eos else 0))
         for x in range(10):s+=put16(0x25c80000+(20*512+10+x)*2,0)
         span=len(indices)

@@ -106,6 +106,23 @@ out_partial:
 mov.w @r1,r0
 tst #8,r0
 bf out_partial
+load 0x25f80004,r1
+hin_partial0:
+mov.w @r1,r0
+tst #4,r0
+bt hin_partial0
+hout_partial0:
+mov.w @r1,r0
+tst #4,r0
+bf hout_partial0
+hin_partial1:
+mov.w @r1,r0
+tst #4,r0
+bt hin_partial1
+hout_partial1:
+mov.w @r1,r0
+tst #4,r0
+bf hout_partial1
 load 0x25d00012,r1
 mov.w @r1,r0
 extu.w r0,r0
@@ -166,6 +183,23 @@ out_erase:
 mov.w @r1,r0
 tst #8,r0
 bf out_erase
+load 0x25f80004,r1
+hin_erase0:
+mov.w @r1,r0
+tst #4,r0
+bt hin_erase0
+hout_erase0:
+mov.w @r1,r0
+tst #4,r0
+bf hout_erase0
+hin_erase1:
+mov.w @r1,r0
+tst #4,r0
+bt hin_erase1
+hout_erase1:
+mov.w @r1,r0
+tst #4,r0
+bf hout_erase1
 load 0x25c80000,r1
 mov.w @r1,r0
 extu.w r0,r0

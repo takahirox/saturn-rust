@@ -20,6 +20,17 @@ def blank(label):
             f'out_{label}:\nmov.w @r1,r0\ntst #8,r0\nbf out_{label}\n')
 
 
+def latched(label):
+    # ST-013 §4.2: FCM/FCT are latched at the first HBlank-in after
+    # VBlank-OUT, and access is prohibited until the next HBlank-in. Wait
+    # for line 2 before using the new back buffer or requesting a later change.
+    s = 'load 0x25f80004,r1\n'
+    for n in range(2):
+        s += (f'hin_{label}{n}:\nmov.w @r1,r0\ntst #4,r0\nbt hin_{label}{n}\n'
+              f'hout_{label}{n}:\nmov.w @r1,r0\ntst #4,r0\nbf hout_{label}{n}\n')
+    return s
+
+
 def draw_source():
     # TVSTAT.VBLANK is forced high when DISP=0. Enable display before
     # waiting on real raster transitions; VDP1 framebuffer reads are separate.
@@ -34,7 +45,7 @@ def draw_source():
     s += put16(0x25D0000C, 0) + 'nop\n' * 32
     s += read(0x25D00010, 2)
     s += 'load 0x25fe00a4,r1\nmov.l @r1,r0\nload 0x2000,r2\nand r2,r0\n' + record()
-    s += put16(0x25D00002, 3) + blank('partial')
+    s += put16(0x25D00002, 3) + blank('partial') + latched('partial')
     s += read(0x25D00012, 2) + read(0x25D00010, 2)
     # Publish three authored words. The erase budget, not a precomputed
     # result or an injected host framebuffer, determines the last two.
@@ -49,7 +60,7 @@ def draw_source():
     s += 'load 0x25f80004,r1\nwait_enable:\nmov.w @r1,r0\ntst #8,r0\nbt wait_enable\n'
     for at, value in [(0, 8), (2, 3)]:
         s += put16(0x25D00000 + at, value)
-    s += blank('erase')
+    s += blank('erase') + latched('erase')
     for word in [0, 58811, 58812]:
         s += read(0x25C80000 + word * 2, 2)
     s += 'load 0x600d,r0\n' + record() + 'park:\nsleep\nbra park\nnop\n'

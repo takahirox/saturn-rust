@@ -359,7 +359,8 @@ fn unfinished_manual_drawing_crosses_a_field_without_fabricating_end_status() {
     command(&mut bus, 64, &[(0, 0x8000)]);
     reg(&mut bus, 2, 3); // one manual change, no auto restart
     reg(&mut bus, 4, 1);
-    advance(&mut bus, 263 * 1708, 30000);
+    // §4.2: the change is latched at the first HBlank-in after VBlank-OUT.
+    advance(&mut bus, 263 * 1708 + 1280, 30000);
     assert!(bus.vdp1.busy());
     assert_eq!(bus.read16(REGISTERS + 0x10), Ok(0)); // BEF=CEF=0, transfer over
     assert_eq!(bus.read16(REGISTERS + 0x12), Ok(4)); // previous in-progress command

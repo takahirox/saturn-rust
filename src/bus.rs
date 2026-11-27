@@ -1489,6 +1489,9 @@ impl Bus {
     fn raster_event(&mut self, raster_event: Option<RasterEvent>) {
         match raster_event {
             Some(RasterEvent::HBlankIn) => {
+                // The first HBlank-in after VBlank-OUT latches FCM/FCT before
+                // this line is composed from the resulting front.
+                self.vdp1.latch_frame_change();
                 if self.raster.line < self.raster.display_lines() {
                     if self.render_video() {
                         self.vdp2
@@ -1522,7 +1525,7 @@ impl Bus {
                 self.scu.vblank_out();
                 let active = self.system_clock.deadline(self.raster.active_clocks());
                 self.smpc.vblank_out_after(active);
-                self.vdp1.vblank_out();
+                self.vdp1.begin_field();
                 self.vdp2.scan_field(self.raster.odd());
                 if self.render_video() {
                     self.vdp2.begin_scanline(0);
