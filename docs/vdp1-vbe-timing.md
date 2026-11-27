@@ -40,8 +40,11 @@ the VBE window or these standard-TV capacities.
 ## Explicit emulator phase convention
 
 The existing integer raster places VBlank-in at the start of the first blank
-line, HBlank-in at H=1280/1408 main clocks for the slow/fast PLL, and
-VBlank-out at the next field's line zero. Sample VBE once at that first
+line and HBlank-in at H=1280/1408 main clocks for the slow/fast PLL.
+VBlank-out falls at horizontal sync of the last blank line, at H=1388/1500
+(dot 347/375), so the first HBlank-in after it is line zero's; exclusive
+monitor modes keep VBlank-out at line zero. Mednafen places VBLANK's end at the
+same dot. Sample VBE once at that first
 HBlank-in, before external bus completions at an equal clock. This chooses a
 phase within the specified ordering; it is not measured electrical timing.
 A write completed strictly before that edge participates. An equal-edge write
@@ -49,7 +52,8 @@ has written readback afterward but misses this field's sample. Writes inside
 the prohibited interval are regression probes only, with no claimed hardware
 result.
 
-Let S be that sample offset and T=`B*L-S`. Preserve C=`(L-200)*B` word
+Let S be that sample offset, P the VBlank-in to VBlank-out interval (`B*L`
+less the 320 clocks after horizontal sync) and T=`P-S`. Preserve C=`(L-200)*B` word
 opportunities by placing opportunity k at `S + ceil(k*T/C)`, for k=1..C.
 This uniform integer cadence publishes individual retained words, never before
 the decision, and consumes exactly C opportunities by blank end. This is an
@@ -57,7 +61,7 @@ aggregate functional phase convention, **not a claim of physical erase bus
 cadence**. There is no per-line restart or catch-up burst at sampling. A small
 rectangle completes early; a large rectangle retains its uncompleted suffix.
 The final opportunity at VBlank-out is processed before cancellation and buffer
-change. For NTSC 320×224, first publication is S+2 and last is B*L.
+change. For NTSC 320×224, first publication is S+2 and last is B*L-320.
 Rotation needs automatic blank erase even with VBE=0 (§4.4); it uses the
 same sample/start phase and aggregate capacity convention. The automatic-mode
 predicate also includes HDTV bit2, as §4.4 requires. The inherited checked TVMR

@@ -20,11 +20,14 @@ fn disp_forces_status_without_moving_raster_counters_or_interrupt_edges() {
         toggled.write16(VDP2, 0).unwrap();
         assert_eq!(toggled.read16(VDP2 + 4), Ok(10));
         let mut time = 100;
+        // VBlank-OUT falls at horizontal sync (dot 347) of the last line.
+        let vblank_out = CLOCKS_PER_FIELD - u64::from(CLOCKS_PER_LINE) + 347 * 4;
         for end in [
             1280,
             u64::from(CLOCKS_PER_LINE) * 224 - 1,
             u64::from(CLOCKS_PER_LINE) * 224,
-            CLOCKS_PER_FIELD - 1,
+            vblank_out - 1,
+            vblank_out,
             CLOCKS_PER_FIELD,
             CLOCKS_PER_FIELD * 2,
         ] {
@@ -44,7 +47,7 @@ fn disp_forces_status_without_moving_raster_counters_or_interrupt_edges() {
             assert_eq!(toggled.read32(SCU + 0xA4), enabled.read32(SCU + 0xA4));
             let expected = if end < u64::from(CLOCKS_PER_LINE) * 224 {
                 0
-            } else if end < CLOCKS_PER_FIELD {
+            } else if end < vblank_out {
                 1
             } else {
                 3

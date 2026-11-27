@@ -246,6 +246,10 @@ start_field:
 mov.w @r1,r0
 tst #8,r0
 bf start_field
+start_field_top:
+mov.w @r1,r0
+tst #4,r0
+bf start_field_top
 load 64,r3
 line_64:
 load 0x25f80002,r1

@@ -62,6 +62,10 @@ out_capture:
 mov.w @r1,r0
 tst #8,r0
 bf out_capture
+top_capture:
+mov.w @r1,r0
+tst #4,r0
+bf top_capture
 load 0x25f80004,r1
 hin_capture0:
 mov.w @r1,r0
@@ -115,6 +119,10 @@ out_automatic:
 mov.w @r1,r0
 tst #8,r0
 bf out_automatic
+top_automatic:
+mov.w @r1,r0
+tst #4,r0
+bf top_automatic
 load 0x25f80004,r1
 hin_automatic0:
 mov.w @r1,r0
@@ -195,6 +203,10 @@ out_hold:
 mov.w @r1,r0
 tst #8,r0
 bf out_hold
+top_hold:
+mov.w @r1,r0
+tst #4,r0
+bf top_hold
 load 0x25f80004,r1
 hin_hold0:
 mov.w @r1,r0

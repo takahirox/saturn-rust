@@ -671,13 +671,20 @@ impl Vdp1 {
     }
     /// Ch.4 p.35/§4.1: written VBE is sampled after one line's display,
     /// not by the CPU write or the VBlank-in edge. See docs/vdp1-vbe-timing.md.
+    #[cfg(test)]
     pub(crate) fn vblank_in(&mut self, line_clocks: u32, blank_lines: u32) {
+        self.vblank_in_for(line_clocks, blank_lines, line_clocks * blank_lines);
+    }
+    /// `period` is the raster's VBlank-in to VBlank-OUT interval. VBlank-OUT
+    /// precedes line zero, so it is shorter than the blank lines; Table 4.5
+    /// still defines the capacity from whole lines.
+    pub(crate) fn vblank_in_for(&mut self, line_clocks: u32, blank_lines: u32, period: u32) {
         self.vblank = true;
         self.vbe_sample_pending = true;
         self.display_erase = None;
         self.erasing = None;
         self.blank_capacity = line_clocks.saturating_sub(200) * blank_lines;
-        self.blank_remaining = line_clocks * blank_lines;
+        self.blank_remaining = period;
     }
     pub(crate) fn hblank_in(&mut self) {
         if self.auto_start_pending {

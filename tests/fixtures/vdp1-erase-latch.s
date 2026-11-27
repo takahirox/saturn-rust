@@ -54,6 +54,10 @@ out_capture_a:
 mov.w @r1,r0
 tst #8,r0
 bf out_capture_a
+top_capture_a:
+mov.w @r1,r0
+tst #4,r0
+bf top_capture_a
 load 0x25f80004,r1
 hin_capture_a0:
 mov.w @r1,r0
@@ -122,6 +126,10 @@ out_erase_a:
 mov.w @r1,r0
 tst #8,r0
 bf out_erase_a
+top_erase_a:
+mov.w @r1,r0
+tst #4,r0
+bf top_erase_a
 load 0x25f80004,r1
 hin_erase_a0:
 mov.w @r1,r0
@@ -210,6 +218,10 @@ out_inspect_b:
 mov.w @r1,r0
 tst #8,r0
 bf out_inspect_b
+top_inspect_b:
+mov.w @r1,r0
+tst #4,r0
+bf top_inspect_b
 load 0x25f80004,r1
 hin_inspect_b0:
 mov.w @r1,r0
@@ -301,6 +313,10 @@ out_publish_b:
 mov.w @r1,r0
 tst #8,r0
 bf out_publish_b
+top_publish_b:
+mov.w @r1,r0
+tst #4,r0
+bf top_publish_b
 load 0x25f80004,r1
 hin_publish_b0:
 mov.w @r1,r0

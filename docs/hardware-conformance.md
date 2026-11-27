@@ -4341,3 +4341,38 @@ the still in the field after the last FMV frame, as in the reference.
 This is a reference-emulator calibration, not physical measurement evidence.
 The remaining VDP1 and Issue #17 criteria are unchanged.
 
+
+## VBlank-OUT at horizontal sync and SCU DMA read-ahead (2026-11-27)
+
+Related to #17. After the frame change moved to the first HBlank-in (previous
+section), local diagnosis with the private JP v1.01 BIOS and Machi (no private
+media or traces are published) found two cases where a VBlank-OUT handler wrote
+FBCR after that HBlank-in, so a manual change request was lost:
+
+- The BIOS start-up animation showed black fields. Its VBlank-in handler
+  copies up to 23,840 bytes of VDP1 commands from High Work RAM by SCU DMA.
+  At 14 clocks per longword the copy ran about 11 lines past VBlank, so the
+  VBlank-OUT handler ran late and the next FBCR write replaced the request.
+- Machi masks interrupts while it waits for a CD command response, about
+  1,360 clocks at a time. VBlank-OUT fell 1,280 clocks before the latch, so a
+  handler delayed by a masked section often missed it. One such field at the
+  end of an FMV showed garbled colours again.
+
+An instrumented reference (Beetle Saturn, built from Mednafen) delivers every
+BIOS FBCR write before the latch, and its swap cadence matches the corrected
+model below.
+
+| Behavior | Previous model | Implementation | Evidence |
+| --- | --- | --- | --- |
+| VBlank-OUT edge | At line zero's first dot, 1,280 clocks before the latch | [`Raster::advance`](../src/timing.rs) ends VBLANK at horizontal sync of the last blank line (dot 347, or 375 in 352/704-dot modes), after that line's HBlank-in. HBLANK stays asserted, the field count and parity still change at line zero, and the first HBlank-in after VBlank-OUT is line zero's, 1,600/1,728 clocks later. Mednafen ends VBLANK at the same dot. Exclusive monitor modes keep the edge at line zero. VDP1 blank erase uses the shorter blank period with the unchanged Table 4.5 capacity, and the SMPC optimized-collection deadline still counts to VBlank-in | `raster_deadlines_are_independent_of_advance_chunk_size`, `tv_modes_have_independent_blank_field_and_counter_vectors`, both slave raster vectors and `disp_forces_status_without_moving_raster_counters_or_interrupt_edges` place the edge, IRQ and HBLANK level literally. `sampled_erase_preserves_all_standard_tv_capacity_and_end_cancellation` and the VBlank erase progress vector still complete Table 4.5 |
+| SCU DMA from High Work RAM to the B-bus | Each read, then both B-bus halfwords, in series | [`Bus::scu_read_ahead`](../src/bus/transactions.rs) charges a channel's next High Work RAM read only for the part not hidden behind its preceding B-bus writes, at least one clock. Another cycle or channel breaks the overlap. Mednafen charges almost nothing for these reads | `scu_high_ram_reads_overlap_the_preceding_b_bus_writes_of_the_same_channel` gives literal publication times and a serial B-bus-to-RAM control |
+
+Original guests that left blank by waiting for VBLANK to clear now also wait
+for HBLANK to clear, so they still start at line zero and keep their authored
+records. They are the shared `blank()` helper and the raster-history,
+sprite-rotation, sprite-shrink, VDP2-fetch and HDTV builders. The dual-SH-2 SMPC
+progress baseline moves by four clocks. Locally, the BIOS animation has no
+black fields in relaxed or exact scheduling, and the Machi FMV end, select-screen
+fades and Keima scene show no garbled, flashing or dropped fields.
+These are reference-emulator calibrations, not physical measurements. The
+remaining VDP1, SCU, VDP2 and Issue #17 criteria are unchanged.

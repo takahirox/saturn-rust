@@ -16,8 +16,11 @@ HERE = Path(__file__).resolve().parent
 
 
 def blank(label):
+    # VBLANK ends during horizontal sync of the last blank line; also wait for
+    # HBLANK to end so the guest starts at line zero.
     return (f'load 0x25f80004,r1\nin_{label}:\nmov.w @r1,r0\ntst #8,r0\nbt in_{label}\n'
-            f'out_{label}:\nmov.w @r1,r0\ntst #8,r0\nbf out_{label}\n')
+            f'out_{label}:\nmov.w @r1,r0\ntst #8,r0\nbf out_{label}\n'
+            f'top_{label}:\nmov.w @r1,r0\ntst #4,r0\nbf top_{label}\n')
 
 
 def latched(label):

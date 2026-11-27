@@ -273,6 +273,10 @@ out_first:
 mov.w @r1,r0
 tst #8,r0
 bf out_first
+top_first:
+mov.w @r1,r0
+tst #4,r0
+bf top_first
 load 0x25f80004,r1
 mov.w @r1,r0
 extu.w r0,r0
@@ -287,6 +291,10 @@ out_second:
 mov.w @r1,r0
 tst #8,r0
 bf out_second
+top_second:
+mov.w @r1,r0
+tst #4,r0
+bf top_second
 load 0x25f80004,r1
 mov.w @r1,r0
 extu.w r0,r0

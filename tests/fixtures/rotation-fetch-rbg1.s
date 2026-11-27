@@ -90,6 +90,10 @@ out_rotation_start:
 mov.w @r1,r0
 tst #8,r0
 bf out_rotation_start
+top_rotation_start:
+mov.w @r1,r0
+tst #4,r0
+bf top_rotation_start
 load 15,r3
 line_15:
 load 0x25f80002,r1
@@ -113,8 +117,6 @@ load 0x25f80008,r4
 load 0x25f80002,r1
 tst #1,r0
 bt omit_wait
-nop
-nop
 timed_wait:
 mov.w @r1,r0
 mov.w @r4,r0

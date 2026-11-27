@@ -185,6 +185,10 @@ out_complete:
 mov.w @r1,r0
 tst #8,r0
 bf out_complete
+top_complete:
+mov.w @r1,r0
+tst #4,r0
+bf top_complete
 load 0x600d,r0
 mov.l r0,@r8
 add #4,r8

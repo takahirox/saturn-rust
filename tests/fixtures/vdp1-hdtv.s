@@ -415,6 +415,10 @@ out_publish:
 mov.w @r1,r0
 tst #8,r0
 bf out_publish
+top_publish:
+mov.w @r1,r0
+tst #4,r0
+bf top_publish
 load 0x25f80004,r1
 hin_publish0:
 mov.w @r1,r0

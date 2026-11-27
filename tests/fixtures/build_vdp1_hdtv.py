@@ -24,8 +24,10 @@ def in_blank(label):
 
 
 def out_blank(label):
+    # Start at line zero: VBLANK may end during the last line's blank.
     return (f'load 0x25f80004,r1\nout_{label}:\nmov.w @r1,r0\n'
-            f'tst #8,r0\nbf out_{label}\n')
+            f'tst #8,r0\nbf out_{label}\n'
+            f'top_{label}:\nmov.w @r1,r0\ntst #4,r0\nbf top_{label}\n')
 
 
 def mode_window(label):
