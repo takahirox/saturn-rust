@@ -6,6 +6,24 @@ import { waitForGuest } from "./browser-transport.mjs";
 
 const waitForActions = page => page.waitForFunction(() => document.getElementById("main").getAttribute("aria-busy") === "false");
 
+async function setPageHidden(page, hidden) {
+  await page.evaluate(hidden => {
+    Object.defineProperty(document, "hidden", { configurable: true, value: hidden });
+    document.dispatchEvent(new Event("visibilitychange"));
+    if (!hidden) delete document.hidden;
+  }, hidden);
+  await waitForActions(page);
+}
+
+async function checkMuteIcon(button, muted) {
+  assert.equal(await button.getAttribute("aria-pressed"), String(muted));
+  assert.equal((await button.textContent()).trim(), "");
+  assert.equal(await button.locator(".sound-waves").isVisible(), !muted);
+  assert.equal(await button.locator(".mute-mark").isVisible(), muted);
+  const { width, height } = await button.boundingBox();
+  assert(width >= 44 && height >= 44, "Mute has a full touch target");
+}
+
 async function enterFullscreen(page) {
   await page.locator("#fullscreen").click();
   await page.waitForFunction(() => document.fullscreenElement?.id === "player-shell" && document.activeElement.id === "screen");
@@ -96,30 +114,95 @@ export async function playUi(browser, url) {
       count:(await window.biosMachine.instruction_count()), counter:(await window.biosMachine.read_long(0x06001000)),
       frames:(await window.biosMachine.frames()), mode:(await window.biosMachine.mode()),
     }));
-    assert.deepEqual(await state(), {count:"0", counter:0, frames:"0", mode:"User-provided BIOS"});
-    await page.locator("#play").click();
+    const play = page.locator("#play");
+    const booted = {count:"0", counter:0, frames:"0", mode:"User-provided BIOS"};
+    const visibilityCycle = async () => {
+      await setPageHidden(page, true);
+      await setPageHidden(page, false);
+    };
+    const audioStatus = await page.locator("#audio-status").textContent();
+    await visibilityCycle();
+    assert.equal(await play.textContent(), "Play");
+    assert.deepEqual(await state(), booted);
+    assert.equal(await page.locator("#audio-status").textContent(), audioStatus);
+
+    await play.click();
     await waitForGuest(page, async () => (await window.biosMachine.read_long(0x06001000)) > 0);
     assert.match(await page.locator("#player-status").textContent(), /Running/);
     assert(await page.locator("#empty-state").isHidden());
+    await waitForGuest(page, async () => {
+      const { audio } = await import("./app.js");
+      return !audio.paused && audio.stats.rendered > 0;
+    });
+    // Blur releases input, but only a visibility change suspends playback.
+    await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    assert.equal(await play.textContent(), "Pause");
+    await page.keyboard.down("ArrowRight");
+    const input = () => page.evaluate(() => window.biosMachine.input.buttons);
+    const epoch = () => page.evaluate(() => window.biosMachine.client.epoch);
+    const runningEpoch = await epoch();
+    assert.equal(await input(), 8);
+    await setPageHidden(page, true);
+    assert.equal(await play.textContent(), "Resume");
+    assert.equal(await input(), 0);
+    const audioState = () => page.evaluate(async () => {
+      const { audio } = await import("./app.js");
+      return { paused: audio.paused, rendered: audio.stats.rendered };
+    });
+    assert((await audioState()).paused);
+    const hidden = await state();
+    await page.waitForTimeout(50);
+    assert.deepEqual(await state(), hidden, "The hidden tab stops advancing the guest");
+    const rendered = (await audioState()).rendered;
+    await setPageHidden(page, false);
+    assert.equal(await play.textContent(), "Pause");
+    assert.equal(await input(), 0);
+    await page.keyboard.up("ArrowRight");
+    await waitForGuest(page, async ({ counter, frames, rendered }) => {
+      const { emulator, audio } = await import("./app.js");
+      return !audio.paused && audio.stats.rendered > rendered && Number(await emulator.frames()) > Number(frames) &&
+        await emulator.read_long(0x06001000) > counter;
+    }, { ...hidden, rendered });
+    assert.equal(await epoch(), runningEpoch, "Tab return does not reset or replace the guest");
+    assert.equal((await state()).mode, hidden.mode);
+
     await ready();
-    await page.locator("#play").focus();
+    await play.focus();
     await page.keyboard.press("Enter");
     await waitForActions(page);
-    assert.equal(await page.locator("#play").textContent(), "Resume");
+    assert.equal(await play.textContent(), "Resume");
     assert.equal(await page.evaluate(() => document.activeElement.id), "play", "Keyboard Pause keeps Resume focused");
     const paused = await state();
     assert(Number(paused.count) > 100);
     assert(Number(paused.frames) > 0);
     await page.waitForTimeout(50);
     assert.deepEqual(await state(), paused, "Pause stops guest execution");
+    await visibilityCycle();
+    assert.equal(await play.textContent(), "Resume");
+    assert.deepEqual(await state(), paused, "An explicitly paused guest stays paused");
+    await play.focus();
     await page.keyboard.press("Enter");
     await waitForGuest(page, async count => Number((await window.biosMachine.instruction_count())) > Number(count), paused.count);
+    const settings = page.locator("#settings > summary");
+    await settings.click();
+    await page.waitForFunction(() => document.getElementById("play").textContent === "Resume");
+    await waitForActions(page);
+    const advanced = await state();
+    await settings.click();
+    await visibilityCycle();
+    assert.equal(await play.textContent(), "Resume");
+    assert.deepEqual(await state(), advanced, "Opening Advanced explicitly pauses the guest");
     // Observe the completed Worker reset at the boundary before playback resumes.
     const restarted = await restartRecord(page, 0x06001000);
     assert.deepEqual(restarted, ["0",0,"0"]);
     await waitForGuest(page, async () => (await window.biosMachine.read_long(0x06001000)) > 0);
     await page.locator("#view-debug").click();
+    await waitForActions(page);
     assert(Number(await page.locator("#instructions").textContent()) > 100);
+    const debug = await state();
+    await visibilityCycle();
+    assert.equal(await play.textContent(), "Resume");
+    assert.deepEqual(await state(), debug, "Entering Debug explicitly pauses the guest");
     await page.locator("#reset").click();
     assert.equal(await page.locator("#play").textContent(), "Resume");
     assert.equal((await state()).count, "0");
@@ -187,6 +270,7 @@ export async function playUi(browser, url) {
     await page.locator("#play").click();
     await failed("Unsupported Saturn device/register");
     assert.match(await page.locator("#status").textContent(), /Faulted/);
+    await visibilityCycle();
     assert(await page.locator("#play").isDisabled());
     await page.locator("#bios").setInputFiles(firmware);
     await ready();
@@ -247,16 +331,18 @@ export async function playUi(browser, url) {
     assert.equal(await page.locator("#play").textContent(), "Resume");
     await page.locator("#restart").click();
     await page.waitForFunction(() => document.getElementById("play").textContent === "Pause");
-    // Visibility pauses and releases input, without a later automatic resume.
-    await page.evaluate(() => {
-      Object.defineProperty(document, "hidden", {configurable:true,value:true});
-      document.dispatchEvent(new Event("visibilitychange"));
-      delete document.hidden;
-      document.dispatchEvent(new Event("visibilitychange"));
-    });
-    assert.equal(await page.locator("#play").textContent(), "Resume");
+    await setPageHidden(page, true);
+    await page.locator("#restart").evaluate(button => button.click());
+    await waitForActions(page);
+    await setPageHidden(page, false);
+    assert.equal(await play.textContent(), "Resume");
+    assert.deepEqual(await state(), booted, "Returning after Reset leaves the new boot paused");
+    await play.click();
+    await setPageHidden(page, true);
     await page.locator("#bios").setInputFiles([]);
     await ready();
+    await setPageHidden(page, false);
+    assert.equal(await play.textContent(), "Play");
     assert.equal(await page.locator("#disc-selection").textContent(), selected);
     // Raw BIN alone is rejected. A valid CHD replaces it via the same picker.
     await page.locator("#disc").setInputFiles({name:"raw.bin",mimeType:"application/octet-stream",buffer:audio});
@@ -691,6 +777,11 @@ async function playerLayouts(browser, desktop, url) {
     await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: topInset } });
     await mobile.goto(url);
     await mobile.waitForFunction(() => !document.getElementById("controls").disabled);
+    const mute = mobile.getByRole("button", { name: "Mute", exact: true });
+    await mute.tap();
+    await checkMuteIcon(mute, true);
+    await mute.tap();
+    await checkMuteIcon(mute, false);
     const cartridge = mobile.getByRole("complementary", { name: "Media" }).getByRole("combobox", { name: "Cartridge" });
     await cartridge.tap();
     assert(await cartridge.evaluate(select => select === document.activeElement));
@@ -732,6 +823,8 @@ async function playerLayouts(browser, desktop, url) {
     assert(await dialog.isHidden());
     assert.equal(await mobile.evaluate(() => document.activeElement.id), "show-help");
     assert(await help.evaluate(el => getComputedStyle(el).outlineStyle === "solid"));
+    await setPageHidden(mobile, true);
+    await setPageHidden(mobile, false);
     assert.deepEqual(await machine(), paused, "Closing Help never resumes");
     assert.equal(await play.textContent(), "Resume");
 
@@ -943,7 +1036,7 @@ async function playerAudio(browser, url, failure = "resume") {
       window.audioGestures = [];
       AudioContext.prototype.resume = async function () {
         window.audioGestures.push(navigator.userActivation.isActive);
-        if (window.audioGestures.length === 1) {
+        if (window.audioGestures.length <= (failure === "resume" ? 2 : 1)) {
           await this.suspend();
           if (failure === "resume") throw new DOMException("Blocked for recovery test", "NotAllowedError");
           // Deliver the native running event after the module rejection.
@@ -969,6 +1062,13 @@ async function playerAudio(browser, url, failure = "resume") {
     await live("#audio-warning", "Audio is blocked.");
     await page.waitForFunction(() => document.getElementById("player-status").textContent.startsWith("Running"));
     assert.deepEqual(await page.evaluate(() => window.audioGestures), [true]);
+    if (failure === "resume") {
+      await setPageHidden(page, true);
+      await setPageHidden(page, false);
+      await page.waitForFunction(() => window.audioGestures.length === 2);
+      assert(await recovery.isVisible(), "A blocked audio retry on tab return still offers recovery");
+      await live("#audio-warning", "Audio is blocked.");
+    }
     if (failure === "worklet") {
       await waitForGuest(page, async () => {
         const { audio } = await import("./app.js");
@@ -1002,7 +1102,9 @@ async function playerAudio(browser, url, failure = "resume") {
     await page.waitForFunction(() => document.getElementById("audio-enable").hidden);
     assert.equal(await page.evaluate(() => document.activeElement.id), touch ? "mute" : "screen");
     await live("#audio-warning");
-    assert.deepEqual(await page.evaluate(() => window.audioGestures), [true, true]);
+    const gestures = await page.evaluate(() => window.audioGestures);
+    assert.equal(gestures.length, touch ? 2 : 3);
+    assert.equal(gestures.at(-1), true);
     if (touch) {
       const resume = page.getByRole("button", { name: "Resume", exact: true });
       assert(await resume.isEnabled(), "Audio recovery leaves the session paused");
@@ -1050,13 +1152,16 @@ async function playerAudio(browser, url, failure = "resume") {
     }
     await slider.fill("37");
     const mute = page.getByRole("button", { name: "Mute", exact: true });
-    await mute.focus();
-    await page.keyboard.press("Space");
-    assert.equal(await mute.getAttribute("aria-pressed"), "true");
+    await checkMuteIcon(mute, false);
+    await mute.click();
+    await checkMuteIcon(mute, true);
     assert.equal(await slider.inputValue(), "37");
     await page.waitForFunction(() => window.gainReading().output === 0);
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Shift+Tab");
+    assert(await mute.evaluate(button => document.activeElement === button && getComputedStyle(button).outlineStyle === "solid"));
     await page.keyboard.press("Space");
-    assert.equal(await mute.getAttribute("aria-pressed"), "false");
+    await checkMuteIcon(mute, false);
     await page.waitForFunction(() => {
       const { gain, source, output } = window.gainReading();
       return Math.abs(gain - .37) < .001 && source > .01 && Math.abs(output / source - gain) < .025;

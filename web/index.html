@@ -57,7 +57,13 @@
             <p id="audio-warning" class="visually-hidden" role="status"></p>
             <button id="audio-enable" type="button" hidden>Enable audio</button>
             <div class="audio-controls" role="group" aria-label="Audio">
-              <button id="mute" type="button" aria-pressed="false">Mute</button>
+              <button id="mute" type="button" aria-label="Mute" aria-pressed="false">
+                <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M11 4 5 9H2v6h3l6 5Z"/>
+                  <path class="sound-waves" d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/>
+                  <path class="mute-mark" d="m16 9 6 6m0-6-6 6"/>
+                </svg>
+              </button>
               <label for="volume" class="visually-hidden">Volume</label>
               <input id="volume" type="range" min="0" max="100" value="100" aria-valuetext="100%">
               <output id="volume-value" for="volume" aria-hidden="true">100%</output>
@@ -65,9 +71,9 @@
             <div class="display-filter">
               <label for="display-filter">Display filter</label>
               <select id="display-filter" aria-describedby="display-filter-status">
-                <option value="clean" selected>Clean</option>
+                <option value="clean">Clean</option>
                 <option value="composite">CRT Composite</option>
-                <option value="s-video">CRT S-Video</option>
+                <option value="s-video" selected>CRT S-Video</option>
                 <option value="rgb">CRT RGB</option>
               </select>
             </div>
@@ -235,8 +241,8 @@
       <p>Use Cartridge beside Disc and BIOS to insert or change a cartridge. Choose None to remove it. Changing the cartridge cold-boots the loaded media and leaves playback paused.</p>
       <p>Disc and BIOS files stay in this tab. Internal memory, backup cartridge saves, the clock and console settings are saved locally for this site in your browser. Clearing site data can erase them. Keep copies using Save management in Advanced.</p>
       <h3>Playback</h3>
-      <p>Reset cold-boots the selected media and retains backup RAM. Help, Advanced and Debug pause playback. Select Resume when ready. If your browser blocks sound, select Enable audio.</p>
-      <p>Clean shows the original pixels. CRT Composite blends the most, S-Video keeps colors sharper, and RGB keeps the sharpest edges. CRT modes fall back to Clean when WebGL 2 is unavailable.</p>
+      <p>Reset cold-boots the selected media and retains backup RAM. Help, Advanced and Debug pause playback. Select Resume when ready. Playback pauses while the tab is hidden and resumes when you return if it was running. If your browser blocks sound, select Enable audio.</p>
+      <p>The default CRT S-Video filter keeps colors sharper than CRT Composite, and CRT RGB keeps the sharpest edges. Clean shows the original pixels. CRT modes fall back to Clean when WebGL 2 or the shader is unavailable.</p>
     </dialog>
     <dialog id="clear-backup" aria-labelledby="clear-backup-title" aria-describedby="clear-backup-message">
       <h2 id="clear-backup-title"></h2>

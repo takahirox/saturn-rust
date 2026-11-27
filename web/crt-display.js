@@ -89,7 +89,7 @@ export class CrtDisplay {
     this.screen = screen;
     this.canvas = canvas;
     this.status = status;
-    this.preset = selector.value = "clean";
+    this.preset = selector.value;
     selector.addEventListener("change", () => {
       this.preset = selector.value;
       this.redraw();

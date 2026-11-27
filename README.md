@@ -34,22 +34,22 @@ provide full digital controls on both ports. See **Help** for the physical
 gamepad mapping and media details.
 
 The toolbar has a single **Play**, **Pause** or **Resume** action, plus
-**Reset**, **Mute**, **Volume**, **Display filter** and **Fullscreen**.
+**Reset**, a speaker button for **Mute**, **Volume**, **Display filter** and **Fullscreen**.
 Play also starts audio and shows **Enable audio** if the browser blocks it.
 Mute preserves the volume setting. Fullscreen fits the picture to the window
 and includes **Exit fullscreen**.
 
-**Display filter** defaults to **Clean**, which shows the original pixels.
-**CRT Composite** softens horizontal edges and blends dithering most.
-**CRT S-Video** keeps more color detail, and **CRT RGB** preserves the sharpest
-edges with a subtle phosphor mask. The presets approximate analog video and CRT
-display characteristics. Switch during playback or pause. If WebGL 2 is
-unavailable, the player shows Clean.
+**Display filter** defaults to **CRT S-Video**, which keeps more color detail
+than **CRT Composite**. Composite softens horizontal edges and blends dithering
+most. **CRT RGB** preserves the sharpest edges with a subtle phosphor mask.
+**Clean** shows the original pixels. Switch during playback or pause. If WebGL 2
+or the shader is unavailable, the player shows Clean.
 
 **Debug** reveals CPU registers, Step, bounded Run, Reset machine and frame
 advance. **Advanced** contains Save management and audio diagnostics.
-Help, Advanced and Debug pause playback and release held input. Losing focus
-releases input, and hiding the tab pauses. Select **Resume** to continue.
+Help, Advanced and Debug pause playback and release held input. Select
+**Resume** to continue after these pauses. Losing focus releases input. Hiding
+the tab suspends running playback, which resumes automatically when you return.
 Toolbar Reset cold-boots accepted media and restarts an existing Play session
 when Advanced and Debug are closed. Debug's Reset machine stays paused.
 Reset and cartridge changes retain internal memory, backup cartridge saves and
