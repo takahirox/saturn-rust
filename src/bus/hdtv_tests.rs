@@ -48,7 +48,13 @@ fn hdtv_scheduled_words_on_both_sh2s_preserve_mode_readback_geometry_and_widths(
                     b.write16(FRAMEBUFFER + at, v).unwrap();
                 }
                 reg(&mut b, 2, 3);
-                advance(&mut b, 263 * 1708 - (225 * 1708 + 1288), chunk, inspect);
+                // The manual change is latched at the first HBlank-in (§4.2).
+                advance(
+                    &mut b,
+                    263 * 1708 + 1280 - (225 * 1708 + 1288),
+                    chunk,
+                    inspect,
+                );
                 for (x, y, v) in [
                     (0, 0, 0x801F),
                     (511, 0, 0x83E0),
@@ -100,19 +106,13 @@ fn hdtv_scheduled_entry_after_vblank_out_cancels_retained_display_erase() {
                         let mut b = Bus::default();
                         b.set_slave_enabled(true);
                         b.raster.configure(4);
-                        // Capture A at an actual VBlank-out in TVM=0, leaving
-                        // a display erase ready for the first two HBlanks.
+                        // Capture A at an actual field change in TVM=0. In
+                        // TVM=0 it leaves a display erase for two HBlanks.
                         for (off, value) in [(6, 0x1234), (8, 0), (10, 1 << 9 | 1), (2, 0)] {
                             reg(&mut b, off, value);
                         }
                         b.vdp1.draw_buffer_mut().fill(0xFF);
                         advance(&mut b, FIELD, chunk, inspect);
-                        b.vdp1.draw_buffer_mut().fill(0xDD);
-                        // B remains pending: canceling display erase must not
-                        // lose A's color, bounds or physical destination.
-                        for (off, value) in [(6, 0x5678), (8, 1 << 9 | 1), (10, 2 << 9 | 2)] {
-                            reg(&mut b, off, value);
-                        }
                         advance(&mut b, completion - 8, chunk, inspect);
                         assert_eq!(
                             b.replay_cpu(p).write16(REGISTERS | 0x20000000, mode),
@@ -128,13 +128,20 @@ fn hdtv_scheduled_entry_after_vblank_out_cancels_retained_display_erase() {
                         );
                         b.finish_cpu_transaction(p);
                         assert_eq!(b.read16(REGISTERS + 0x16).unwrap() & 0xF, mode);
-                        assert_eq!(b.vdp1.display_pixel(0, 0), 0xFFFF);
+                        // §4.2 latches the change at the first HBlank-in.
+                        assert_eq!(b.vdp1.display_pixel(0, 0), 0);
                         // §4.1 permits TVM entry until the first HBlank after
                         // OUT. Check both that edge and a later display line.
                         advance(&mut b, HBLANK - completion, chunk, inspect);
                         let expected = if mode == 4 { 0xFFFF } else { 0x1234 };
                         assert_eq!(b.vdp1.display_pixel(0, 0), expected);
                         assert_eq!(b.vdp1.display_pixel(0, 1), 0xFFFF);
+                        b.vdp1.draw_buffer_mut().fill(0xDD);
+                        // B remains pending: canceling display erase must not
+                        // lose A's color, bounds or physical destination.
+                        for (off, value) in [(6, 0x5678), (8, 1 << 9 | 1), (10, 2 << 9 | 2)] {
+                            reg(&mut b, off, value);
+                        }
                         advance(&mut b, LINE, chunk, inspect);
                         assert_eq!(b.vdp1.display_pixel(7, 1), expected);
                         assert_eq!(b.vdp1.display_pixel(8, 1), 0xFFFF);
@@ -197,6 +204,9 @@ fn hdtv_automatic_blank_erase_has_literal_capacity_no_display_erase_and_cancels_
                     0x1234
                 );
                 advance(&mut b, 1, 1, inspect);
+                // §4.2: the change is latched at the first HBlank-in.
+                let latch = b.raster.clocks_to_event();
+                advance(&mut b, latch, chunk, inspect);
                 for word in [0, capacity - 1, capacity, 131071] {
                     assert_eq!(
                         b.read16(FRAMEBUFFER + word as u32 * 2),

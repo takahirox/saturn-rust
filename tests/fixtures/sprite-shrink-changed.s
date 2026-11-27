@@ -54,6 +54,23 @@ blank_out_0:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_0
+load 0x25f80004,r1
+hin_shrink_00:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_00
+hout_shrink_00:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_00
+hin_shrink_01:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_01
+hout_shrink_01:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_01
 load 0x25d00002,r1
 load 0x2,r0
 mov.w r0,@r1
@@ -167,6 +184,23 @@ blank_out_1:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_1
+load 0x25f80004,r1
+hin_shrink_10:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_10
+hout_shrink_10:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_10
+hin_shrink_11:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_11
+hout_shrink_11:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_11
 load 0x25d00002,r1
 load 0x2,r0
 mov.w r0,@r1
@@ -280,6 +314,23 @@ blank_out_2:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_2
+load 0x25f80004,r1
+hin_shrink_20:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_20
+hout_shrink_20:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_20
+hin_shrink_21:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_21
+hout_shrink_21:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_21
 load 0x25d00002,r1
 load 0x12,r0
 mov.w r0,@r1
@@ -393,6 +444,23 @@ blank_out_3:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_3
+load 0x25f80004,r1
+hin_shrink_30:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_30
+hout_shrink_30:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_30
+hin_shrink_31:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_31
+hout_shrink_31:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_31
 load 0x25d00002,r1
 load 0x2,r0
 mov.w r0,@r1
@@ -506,6 +574,23 @@ blank_out_4:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_4
+load 0x25f80004,r1
+hin_shrink_40:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_40
+hout_shrink_40:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_40
+hin_shrink_41:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_41
+hout_shrink_41:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_41
 load 0x25d00002,r1
 load 0x12,r0
 mov.w r0,@r1
@@ -619,6 +704,23 @@ blank_out_5:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_5
+load 0x25f80004,r1
+hin_shrink_50:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_50
+hout_shrink_50:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_50
+hin_shrink_51:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_51
+hout_shrink_51:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_51
 load 0x25d00002,r1
 load 0x2,r0
 mov.w r0,@r1
@@ -732,6 +834,23 @@ blank_out_6:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_6
+load 0x25f80004,r1
+hin_shrink_60:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_60
+hout_shrink_60:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_60
+hin_shrink_61:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_61
+hout_shrink_61:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_61
 load 0x25d00002,r1
 load 0x12,r0
 mov.w r0,@r1
@@ -845,6 +964,23 @@ blank_out_7:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_7
+load 0x25f80004,r1
+hin_shrink_70:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_70
+hout_shrink_70:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_70
+hin_shrink_71:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_71
+hout_shrink_71:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_71
 load 0x25d00002,r1
 load 0x2,r0
 mov.w r0,@r1
@@ -952,6 +1088,23 @@ blank_out_8:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_8
+load 0x25f80004,r1
+hin_shrink_80:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_80
+hout_shrink_80:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_80
+hin_shrink_81:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_81
+hout_shrink_81:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_81
 load 0x25d00002,r1
 load 0x2,r0
 mov.w r0,@r1
@@ -1059,6 +1212,23 @@ blank_out_9:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_9
+load 0x25f80004,r1
+hin_shrink_90:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_90
+hout_shrink_90:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_90
+hin_shrink_91:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_91
+hout_shrink_91:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_91
 load 0x25d00002,r1
 load 0x2,r0
 mov.w r0,@r1
@@ -1178,6 +1348,23 @@ blank_out_10:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_10
+load 0x25f80004,r1
+hin_shrink_100:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_100
+hout_shrink_100:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_100
+hin_shrink_101:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_101
+hout_shrink_101:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_101
 load 0x25d00002,r1
 load 0x2,r0
 mov.w r0,@r1
@@ -1327,6 +1514,23 @@ blank_out_11:
 mov.w @r1,r0
 tst #8,r0
 bf blank_out_11
+load 0x25f80004,r1
+hin_shrink_110:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_110
+hout_shrink_110:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_110
+hin_shrink_111:
+mov.w @r1,r0
+tst #4,r0
+bt hin_shrink_111
+hout_shrink_111:
+mov.w @r1,r0
+tst #4,r0
+bf hout_shrink_111
 load 0x25d00002,r1
 load 0x2,r0
 mov.w r0,@r1

@@ -9,7 +9,7 @@ import hashlib
 from pathlib import Path
 from build_clock import put16, read
 from build_hle_system import record
-from build_video_transactions import blank, encode
+from build_video_transactions import blank, encode, latched
 from build_vdp1_erase_latch import operand
 
 HERE = Path(__file__).resolve().parent
@@ -88,7 +88,7 @@ def sprite():
     for x,y in [(319,238),(319,239),(351,238),(351,239),(511,255)]:
         s += read(0x25C80000+y*1024+x*2,2)
     s += finish()
-    s += put16(0x25D00002,3)+blank('publish')+put16(0x25D00002,2)
+    s += put16(0x25D00002,3)+blank('publish')+latched('publish')+put16(0x25D00002,2)
     s += 'load 0x600d,r0\n'+record()+'park:\nsleep\nbra park\nnop\n'
     return encode('vdp1-hdtv',s,[(0x100,0x801F),(0x102,0),(0x104,1),(0x106,0x8006)])
 
@@ -103,17 +103,17 @@ def erase():
     words = [0,29339,29340,53135,53136,131071]
     for word in words:
         s += put16(0x25C80000+word*2,0xFFFF)
-    s += out_blank('capture')
+    s += out_blank('capture')+latched('capture')
     s += put16(0x25D00006,0x5678)+put16(0x25D00008,0x0201)+put16(0x25D0000A,0x0602)
     # Only display physical0 should be erased using retained A, not pending B.
     for word in words:
         s += put16(0x25C80000+word*2,0xDDDD)
-    s += blank('automatic')+put16(0x25D00002,2)
+    s += blank('automatic')+latched('automatic')+put16(0x25D00002,2)
     for word in words:
         s += read(0x25C80000+word*2,2)
     s += finish()
     # Holding buffers and advancing beyond display cannot restart A on CPU0.
-    s += blank('hold')+read(0x25C80000+53136*2,2)
+    s += blank('hold')+latched('hold')+read(0x25C80000+53136*2,2)
     s += 'load 0x600d,r0\n'+record()+'park:\nsleep\nbra park\nnop\n'
     return encode('vdp1-hdtv-erase',s,[(0x100,0x8006)])
 

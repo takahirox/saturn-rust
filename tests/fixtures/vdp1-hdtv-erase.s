@@ -62,6 +62,23 @@ out_capture:
 mov.w @r1,r0
 tst #8,r0
 bf out_capture
+load 0x25f80004,r1
+hin_capture0:
+mov.w @r1,r0
+tst #4,r0
+bt hin_capture0
+hout_capture0:
+mov.w @r1,r0
+tst #4,r0
+bf hout_capture0
+hin_capture1:
+mov.w @r1,r0
+tst #4,r0
+bt hin_capture1
+hout_capture1:
+mov.w @r1,r0
+tst #4,r0
+bf hout_capture1
 load 0x25d00006,r1
 load 0x5678,r0
 mov.w r0,@r1
@@ -98,6 +115,23 @@ out_automatic:
 mov.w @r1,r0
 tst #8,r0
 bf out_automatic
+load 0x25f80004,r1
+hin_automatic0:
+mov.w @r1,r0
+tst #4,r0
+bt hin_automatic0
+hout_automatic0:
+mov.w @r1,r0
+tst #4,r0
+bf hout_automatic0
+hin_automatic1:
+mov.w @r1,r0
+tst #4,r0
+bt hin_automatic1
+hout_automatic1:
+mov.w @r1,r0
+tst #4,r0
+bf hout_automatic1
 load 0x25d00002,r1
 load 0x2,r0
 mov.w r0,@r1
@@ -161,6 +195,23 @@ out_hold:
 mov.w @r1,r0
 tst #8,r0
 bf out_hold
+load 0x25f80004,r1
+hin_hold0:
+mov.w @r1,r0
+tst #4,r0
+bt hin_hold0
+hout_hold0:
+mov.w @r1,r0
+tst #4,r0
+bf hout_hold0
+hin_hold1:
+mov.w @r1,r0
+tst #4,r0
+bt hin_hold1
+hout_hold1:
+mov.w @r1,r0
+tst #4,r0
+bf hout_hold1
 load 0x25c99f20,r1
 mov.w @r1,r0
 extu.w r0,r0

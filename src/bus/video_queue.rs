@@ -21,7 +21,9 @@ pub struct FrontPatch {
 pub enum Endpoint {
     None,
     HBlankErase(Vec<FrontPatch>),
-    VBlankSurface(DisplaySurface),
+    /// The first HBlank-in after VBlank-OUT latched a framebuffer change:
+    /// install the new front before composing the line, then erase it.
+    FrameChange(DisplaySurface, Vec<FrontPatch>),
 }
 
 pub enum Command {
@@ -139,18 +141,24 @@ impl Renderer {
             let event = self.raster.advance(delta);
             match event {
                 Some(RasterEvent::HBlankIn) => {
+                    let erase = if final_step {
+                        match endpoint.take().unwrap() {
+                            Endpoint::None => Vec::new(),
+                            Endpoint::HBlankErase(patches) => patches,
+                            Endpoint::FrameChange(surface, patches) => {
+                                self.sprites.install_display_surface(surface);
+                                patches
+                            }
+                        }
+                    } else {
+                        Vec::new()
+                    };
                     if self.raster.line < self.raster.display_lines() {
                         self.video
                             .scanline(&self.sprites, usize::from(self.raster.line));
                     }
                     self.video.hblank = true;
-                    if final_step {
-                        match endpoint.take().unwrap() {
-                            Endpoint::None => (),
-                            Endpoint::HBlankErase(patches) => self.patch(patches),
-                            Endpoint::VBlankSurface(_) => panic!("surface swap requires VBlankOut"),
-                        }
-                    }
+                    self.patch(erase);
                 }
                 Some(RasterEvent::VBlankIn) => {
                     self.video.finish_field();
@@ -160,15 +168,6 @@ impl Renderer {
                 Some(RasterEvent::VBlankOut) => {
                     self.video.hblank = false;
                     self.video.vblank = false;
-                    if final_step {
-                        match endpoint.take().unwrap() {
-                            Endpoint::None => (),
-                            Endpoint::VBlankSurface(surface) => {
-                                self.sprites.install_display_surface(surface)
-                            }
-                            Endpoint::HBlankErase(_) => panic!("display erase requires HBlankIn"),
-                        }
-                    }
                     self.video.scan_field(self.raster.odd());
                     self.video.begin_scanline(0);
                 }
@@ -402,11 +401,10 @@ impl super::Bus {
         }
         let after = self.vdp1.take_display_journal();
         let endpoint = match event {
-            Some(RasterEvent::HBlankIn) => Endpoint::HBlankErase(after),
-            Some(RasterEvent::VBlankOut) => {
-                assert!(after.is_empty(), "unexpected front write after VBlankOut");
-                Endpoint::VBlankSurface(self.vdp1.display_surface())
-            }
+            Some(RasterEvent::HBlankIn) => match self.vdp1.take_changed_front() {
+                Some(surface) => Endpoint::FrameChange(surface, after),
+                None => Endpoint::HBlankErase(after),
+            },
             _ => {
                 assert!(
                     after.is_empty(),

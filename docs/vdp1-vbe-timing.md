@@ -66,16 +66,26 @@ write API rejected TVM=4 (HDTV) at the #65 checkpoint. The subsequent
 exclusive-monitor sprites using this same blank-erase convention. Complete
 monitor/half-line timing remains outside this increment.
 
-The field change itself keeps the VBlank-OUT edge: buffers swap and the previous
-field's drawing ends there. Automatic drawing (PTM=10B) begins at the next
-HBlank-in, on line zero. [§4.2](https://www.infochunk.com/saturn/segahtml_en/hard/vdp1/hon/p04_12.htm)
-has FCM/FCT written immediately after the VBlank-OUT interrupt and forbids access
-from that HBlank-in to the next. That is the post-VBlank-OUT counterpart of
-the VBE window. [§4.3](https://www.infochunk.com/saturn/segahtml_en/hard/vdp1/hon/p04_13.htm)
-starts PTM=10B drawing with the frame and gives no earlier edge. Mednafen
-also starts it on that HBlank. Command tables that a VBlank-OUT DMA
-rewrites before this edge are drawn in the same field. This phase is a
-convention, not measured electrical timing.
+The field change is latched at the first HBlank-in after VBlank-OUT, not at
+the VBlank-OUT edge. [§4.2](https://www.infochunk.com/saturn/segahtml_en/hard/vdp1/hon/p04_12.htm)
+says FCM/FCT written by the CPU are updated inside VDP1 at the field change,
+asks for them to be written immediately after the VBlank-OUT interrupt, and
+forbids access from that HBlank-in to the next. A write in that interrupt
+therefore decides this field's change. Mednafen also decides and performs the
+swap at that HBlank-in. A retail FMV relies on this: it writes FBCR from its
+VBlank-OUT handler, and changing at the VBlank-OUT edge instead displayed its last
+RGB frame for one field under the following palette-only sprite settings.
+
+At the latch, buffers swap, the previous field's drawing ends, and EOS/DIE/DIL,
+EWDR/EWLR/EWRR, LOPR and EDSR are captured as before. The bus applies the latch
+before composing line zero, so the new front is displayed for the whole field;
+the video worker receives that front at the same HBlank-in. Automatic drawing
+(PTM=10B) begins at this same edge. [§4.3](https://www.infochunk.com/saturn/segahtml_en/hard/vdp1/hon/p04_13.htm)
+starts PTM=10B drawing with the frame and gives no earlier edge. Command tables
+that a VBlank-OUT DMA rewrites before this edge are drawn in the same field. A
+request written after the prohibited window waits for the next field. Original
+guests that request a later change or use the new back buffer after VBlank-OUT
+wait for line two. This phase is a convention, not measured electrical timing.
 
 | Event / legal written sequence | Effective decision / publication |
 | --- | --- |
@@ -87,7 +97,8 @@ convention, not measured electrical timing.
 | Later register writes | Cannot launch/restart/recolor the accepted job |
 | Next field without TVMR writes | Persistent 1 accepts one new job; consumed manual-change request does not repeat |
 | Legal clear after VBlank-out or next VBlank-in | Next sample disables erase; written readback is separate |
-| Last opportunity / VBlank-out | Last allowed word, cancel suffix, then requested swap and operand capture |
+| Last opportunity / VBlank-out | Last allowed word, cancel suffix |
+| First HBlank-in after VBlank-out | Requested swap and operand capture, using FBCR as written by then |
 | SYSRES / cold reset | Discard pending sample, retained job and outstanding register transactions |
 
 Reset values are deterministic emulator initialization, not hardware power-on

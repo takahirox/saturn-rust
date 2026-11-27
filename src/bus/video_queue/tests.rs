@@ -254,6 +254,49 @@ fn queued_board_preserves_future_board_clock_catchup_and_video_mutations() {
 }
 
 #[test]
+fn queued_board_installs_a_change_latched_after_vblank_out_before_line_zero() {
+    // ST-013 §4.2: FBCR written right after VBlank-OUT (a retail FMV writes it
+    // from that interrupt) is latched at the first HBlank-in and changes this
+    // field. The consumer must compose line 0 from the new front.
+    const FIELD: u32 = 263 * 1708;
+    let (mut reference, mut queued) = (Bus::default(), Bus::default());
+    for board in [&mut reference, &mut queued] {
+        for (address, value) in [(VDP2, 0x8000), (VDP2 + 0xE0, 0x20), (VDP2 + 0xF0, 1)] {
+            board.write16(address, value).unwrap();
+        }
+        board.write16(crate::vdp1::REGISTERS + 2, 2).unwrap();
+        board.vdp1.install_display_surface(surface(0x801F));
+        board.vdp1.draw_buffer_mut()[..2].copy_from_slice(&0xFC00u16.to_be_bytes());
+    }
+    assert!(queued.enable_video_journal(true));
+    let mut previous = 0;
+    for (target, request, front) in [
+        (FIELD, true, 0x801F),
+        (FIELD + 1279, false, 0x801F),
+        (FIELD + 1280, false, 0xFC00),
+        // After the prohibited window, a request waits for the next field.
+        (FIELD + 3 * 1708, true, 0xFC00),
+        (2 * FIELD + 1279, false, 0xFC00),
+        (2 * FIELD + 1280, false, 0x801F),
+    ] {
+        for board in [&mut reference, &mut queued] {
+            board.advance_main_clocks(target - previous, 0).unwrap();
+        }
+        same_queued_board(&reference, &queued);
+        assert_eq!(queued.vdp1.display_pixel(0, 0), front);
+        if target == FIELD + 1280 {
+            assert_eq!(&reference.vdp2.scanning[..4], &[0, 0, 255, 255]);
+        }
+        if request {
+            for board in [&mut reference, &mut queued] {
+                board.write16(crate::vdp1::REGISTERS + 2, 3).unwrap();
+            }
+        }
+        previous = target;
+    }
+}
+
+#[test]
 fn queued_board_records_captured_front_pixel_at_its_real_completion() {
     let (mut reference, mut queued) = (Bus::default(), Bus::default());
     for board in [&mut reference, &mut queued] {

@@ -110,6 +110,9 @@ fn sampled_erase_preserves_all_standard_tv_capacity_and_end_cancellation() {
                     );
                 }
                 advance(&mut b, 1, 1);
+                // §4.2: the change is latched at the first HBlank-in.
+                let latch = b.raster.clocks_to_event();
+                advance(&mut b, latch, 17);
                 for word in [0, last, (last + 1).min(131071), 131071] {
                     assert_eq!(
                         b.read16(FRAMEBUFFER + word as u32 * 2),
@@ -266,7 +269,8 @@ fn blank_erase_keeps_the_in_flight_drawing_cursor_and_never_fabricates_end_irq()
     advance(&mut b, 224 * 1708, 17);
     reg(&mut b, 0, 8);
     reg(&mut b, 2, 3);
-    advance(&mut b, 39 * 1708, 3);
+    // §4.2: the change is latched at the first HBlank-in after VBlank-OUT.
+    advance(&mut b, 39 * 1708 + 1280, 3);
     assert!(b.vdp1.busy());
     assert_eq!(b.read16(REGISTERS + 0x10), Ok(0));
     assert_eq!(b.read16(REGISTERS + 0x12), Ok(4));

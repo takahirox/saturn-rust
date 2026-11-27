@@ -10,7 +10,7 @@ import hashlib
 from pathlib import Path
 from build_clock import put16, read
 from build_hle_system import record
-from build_video_transactions import blank, encode
+from build_video_transactions import blank, encode, latched
 
 HERE = Path(__file__).resolve().parent
 
@@ -45,18 +45,18 @@ def build():
     s += fill('a') + put16(0x25F800E0, 0x20) + put16(0x25F800F0, 3)
     s += put16(0x25F80000, 0x8000)
     # Display A's initialized buffer and capture A. Manual change does not erase.
-    s += put16(0x25D00002, 3) + blank('capture_a') + fill('b')
+    s += put16(0x25D00002, 3) + blank('capture_a') + latched('capture_a') + fill('b')
     s += operand(0x108, 0) + 'tst r0,r0\nbt omit_b\n'
     for offset, address in [(6, 0x102), (8, 0x104), (10, 0x106)]:
         s += operand(address, 0) + f'load {0x25D00000 + offset:#x},r1\nmov.w r0,@r1\n'
     # §4.1/§4.2: legal post-IN enable and erase/change, unchanged TVM.
     s += 'omit_b:\nload 0x25f80004,r1\nwait_enable:\nmov.w @r1,r0\ntst #8,r0\nbt wait_enable\n'
-    s += put16(0x25D00000, 8) + put16(0x25D00002, 3) + blank('erase_a')
+    s += put16(0x25D00000, 8) + put16(0x25D00002, 3) + blank('erase_a') + latched('erase_a')
     # The erase/change captured B at OUT. CPU now accesses the A result.
-    s += put16(0x25D00002, 3) + observations('a') + blank('inspect_b')
+    s += put16(0x25D00002, 3) + observations('a') + blank('inspect_b') + latched('inspect_b')
     s += put16(0x25D00000, 0) + put16(0x25D00002, 3) + observations('b')
     # Publish B without further erase; the parked guest leaves stable Canvas data.
-    s += blank('publish_b')
+    s += blank('publish_b') + latched('publish_b')
     for address in [0x25D00016, 0x25D00010, 0x25D00014]:
         s += read(address, 2)
     s += 'load 0x25fe00a4,r1\nmov.l @r1,r0\nload 0x2000,r2\nand r2,r0\n' + record()

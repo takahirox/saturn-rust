@@ -13,6 +13,7 @@ from build_scu import assembler, store
 from build_clock import put16, read
 from build_hle_system import record
 from build_vdp1_erase_latch import fill, observations, operand
+from build_video_transactions import latched
 
 HERE = Path(__file__).resolve().parent
 
@@ -21,7 +22,7 @@ def wait_out(label):
     # R10 is modified only by the real VBlank-out handler. SLEEP/RTE resumes
     # this guest; no host polling result is used to trigger a state transition.
     return (f'mov r10,r7\nwait_{label}:\nsleep\ncmp/eq r7,r10\n'
-            f'bt wait_{label}\n')
+            f'bt wait_{label}\n') + latched(label)
 
 
 def source():
@@ -45,12 +46,12 @@ def source():
         s += operand(a, 0) + f'load {0x25D00000+o:#x},r1\nmov.w r0,@r1\n'
     # Handler installs VBE at the next VBlank-in, before first HBlank-in.
     s += operand(0x108, 12) + 'mov #3,r11\n' + wait_out('erase_a')
-    # Request next manual change immediately after OUT, before checksumming.
+    # Request the next manual change after the §4.2 latch, before checksumming.
     s += put16(0x25D00002, 3) + 'mov #0,r11\n' + observations('vbe_a').replace('r9', 'r5')
     # The handler still writes the same enabled VBE. Native vectors additionally
     # cover persistence without writes. B erases the other physical buffer.
     s += wait_out('erase_b')
-    # §4.2 permits clearing immediately after OUT, preserving TVM.
+    # Clear after the §4.2 latch window, preserving TVM.
     s += put16(0x25D00000, 0) + 'mov #0,r12\n' + put16(0x25D00002, 3)
     s += observations('vbe_b').replace('r9', 'r5')
     # With VBE clear, A must remain A, rather than being recolored to B.

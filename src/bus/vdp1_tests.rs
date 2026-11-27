@@ -378,11 +378,13 @@ fn both_sh2_adapters_capture_only_physically_completed_erase_writes_at_field_cha
     // Emulator equal-edge convention: raster capture precedes external data
     // completion. ST-013 ch.4 specifies the boundary, not an electrical phase.
     const FIELD: u32 = 1708 * 263;
+    // ST-013 §4.2: the change is latched at the first HBlank-in (H=1280).
+    const LATCH: u32 = FIELD + 1280;
     for processor in [Processor::Master, Processor::Slave] {
         for chunk in [1, 3, 17, 10000] {
             for inspect in [false, true] {
                 for (offset, value) in [(6, 0x5678), (8, 0x0402), (10, 0x0803)] {
-                    for completion in [FIELD - 1, FIELD, FIELD + 1] {
+                    for completion in [LATCH - 1, LATCH, LATCH + 1] {
                         let mut bus = Bus::default();
                         bus.set_slave_enabled(true);
                         bus.write16(REGISTERS, 8).unwrap();
@@ -424,7 +426,7 @@ fn both_sh2_adapters_capture_only_physically_completed_erase_writes_at_field_cha
                             chunk,
                             inspect,
                         );
-                        let captured = completion < FIELD;
+                        let captured = completion < LATCH;
                         for y in 0..5 {
                             for x in [7, 8, 15, 16, 23, 24, 31, 32] {
                                 let left = if captured && offset == 8 { 16 } else { 8 };

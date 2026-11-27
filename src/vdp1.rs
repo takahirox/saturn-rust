@@ -12,6 +12,7 @@ pub const VRAM_SIZE: usize = 0x80000;
 pub const BUFFER_SIZE: usize = 0x40000;
 /// Owned readout state for the optional renderer-domain experiment.
 #[cfg(any(test, feature = "video-worker"))]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub struct DisplaySurface {
     pub mode: u16,
     pub bytes: Vec<u8>,
@@ -271,6 +272,12 @@ pub struct Vdp1 {
     ptmr: u16,
     /// PTM=10B drawing waits for the first HBlank-in after the change.
     auto_start_pending: bool,
+    /// FCM/FCT are latched at the first HBlank-in after VBlank-OUT (§4.2).
+    frame_change_pending: bool,
+    /// The front installed by a latched change, before that line's display
+    /// erase; video transport republishes it at the same HBlank-in.
+    #[cfg(any(test, feature = "video-worker"))]
+    changed_front: Option<DisplaySurface>,
     erase: [u16; 3],
     erase_latched: [u16; 3],
     edsr: u16,
@@ -330,6 +337,9 @@ impl Default for Vdp1 {
             command_read: 0,
             stop_remaining: None,
             auto_start_pending: false,
+            frame_change_pending: false,
+            #[cfg(any(test, feature = "video-worker"))]
+            changed_front: None,
             vblank: false,
             vbe_sample_pending: false,
             vbe_effective: false,
@@ -353,7 +363,8 @@ impl Vdp1 {
         &mut self.buffers[self.draw]
     }
     pub fn busy(&self) -> bool {
-        self.running || self.auto_start_pending
+        // An unlatched field change may still start automatic drawing.
+        self.running || self.auto_start_pending || self.frame_change_pending && self.ptmr == 2
     }
     pub(crate) fn rotated_scanout(&self) -> bool {
         self.tvmr & 2 != 0
@@ -392,6 +403,7 @@ impl Vdp1 {
     #[cfg(any(test, feature = "video-worker"))]
     pub fn enable_display_journal(&mut self, enabled: bool) {
         self.display_journal = enabled.then(Vec::new);
+        self.changed_front = None;
     }
     #[cfg(any(test, feature = "video-worker"))]
     /// Drain endpoint-local front changes before a framebuffer swap. The
@@ -509,15 +521,38 @@ impl Vdp1 {
         self.stop_remaining = None;
         self.auto_start_pending = false;
     }
-    /// Field-change latch; CPU sees only the buffer currently being drawn.
+    /// VBlank-OUT followed at once by the first HBlank-in latch, with no
+    /// FBCR write between them. The bus drives both edges separately.
     pub fn vblank_out(&mut self) {
-        // §4.2: erase is interrupted at VBlank-OUT, even if unfinished.
+        self.begin_field();
+        self.latch_frame_change();
+    }
+    /// VBlank-OUT edge. §4.2 interrupts erase here; the frame change itself
+    /// waits for FCM/FCT to be latched at the first HBlank-in.
+    pub(crate) fn begin_field(&mut self) {
         self.vblank = false;
         self.vbe_sample_pending = false;
         self.erasing = None;
+        self.frame_change_pending = true;
+    }
+    /// ST-013 §4.2: FCM/FCT are written immediately after the VBlank-OUT
+    /// interrupt and latched at the first HBlank-in after it; access is
+    /// prohibited from that edge to the next HBlank-in. A write in the
+    /// VBlank-OUT handler therefore decides this field's change. The bus
+    /// applies the latch before that line is composed, so the new front is
+    /// displayed for the whole field. Mednafen also decides the swap there.
+    /// CPU accesses see only the buffer currently being drawn.
+    pub(crate) fn latch_frame_change(&mut self) {
+        if !std::mem::take(&mut self.frame_change_pending) {
+            return;
+        }
         let change = self.fbcr & 2 == 0 || self.fb_request && self.fbcr & 1 != 0;
         if change {
             self.draw ^= 1;
+            #[cfg(any(test, feature = "video-worker"))]
+            if self.display_journal.is_some() {
+                self.changed_front = Some(self.display_surface());
+            }
             // ST-013 §4, p.35/43/44: EOS/DIE/DIL apply to drawing
             // only after a framebuffer change, not on the CPU write.
             self.draw_control = self.fbcr & 0x1C;
@@ -536,15 +571,17 @@ impl Vdp1 {
         };
         self.fb_request = false;
         if change && self.ptmr == 2 {
-            // The change ends the previous field's drawing at once. ST-013
-            // §4.2 latches FCM/FCT at the first HBlank-in after VBlank-OUT
-            // (writes are prohibited from it to the next HBlank-in), and
-            // automatic drawing begins with that frame (§4.3); see
-            // docs/vdp1-vbe-timing.md. Mednafen also starts it there.
+            // The change ends the previous field's drawing at once, and
+            // automatic drawing begins with that frame at this same HBlank-in
+            // (§4.3); see docs/vdp1-vbe-timing.md. Mednafen also starts it there.
             self.start(false);
             self.running = false;
             self.auto_start_pending = true;
         }
+    }
+    #[cfg(any(test, feature = "video-worker"))]
+    pub(crate) fn take_changed_front(&mut self) -> Option<DisplaySurface> {
+        self.changed_front.take()
     }
     fn erase_area(&self, buffer: usize) -> EraseArea {
         let (width, height, bytes) = self.geometry();
